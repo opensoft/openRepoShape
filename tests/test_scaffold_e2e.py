@@ -43,6 +43,98 @@ def test_a_bad_project_name_refuses_before_creating_anything(tmp_path):
     assert not remotes.exists()
 
 
+def test_a_descendant_form_project_scaffolds_and_records_the_overlap(tmp_path):
+    """THE PILOT CASE, end to end.
+
+    `./setup.sh --project MedxScribe --org MedxSoft` used to die at step (5)
+    with `naming-role-mismatch: 'MedxScribe' classifies as domain-descendant`.
+    Every project in a `<Domainx>` family organisation hit it. Since the
+    2026-09-02 ruling the descendant form is a CLAIM that needs a REFERENT: no
+    pin on `openScribe` is declared, so the declared role wins and the manifest
+    RECORDS that the name also matches the descendant form.
+    """
+    remotes, work = tmp_path / "remotes", tmp_path / "work"
+    result = run_script(SCAFFOLD, "--org", "MedxSoft", "--project", "MedxScribe",
+                        "--elected-by", "Brett Heap",
+                        "--elected-on", "2026-09-02",
+                        "--local-remote-dir", str(remotes),
+                        "--work-dir", str(work))
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "naming-role-mismatch" not in result.stderr
+
+    # the one-line NOTE in the plan, naming the pin that would change the answer
+    assert ("NOTE MedxScribe also matches the descendant form; it is not a "
+            "descendant because no pin on openScribe is declared — declare "
+            "`contracts/openscribe-pin.yaml` later if it becomes one"
+            ) in result.stdout
+
+    manifest = (work / "MedxScribe" / "project.yaml").read_text()
+    assert "neutral_product_pins: []" in manifest
+    assert ("  - role: assembly\n"
+            "    repository: MedxSoft/MedxScribe\n"
+            '    path: "."\n'
+            "    naming:\n"
+            "      form: project-leg\n"
+            "      role: assembly\n"
+            "      also_matches: [domain-descendant]\n"
+            "      descendant_referent: openScribe\n"
+            "      referent_declared: false\n") in manifest
+    # a leg whose name does NOT match the claim form records an empty overlap
+    assert ("  - role: spec\n"
+            "    repository: MedxSoft/MedxScribe-spec\n"
+            "    path: spec\n"
+            "    naming:\n"
+            "      form: project-leg\n"
+            "      role: spec\n"
+            "      also_matches: []\n") in manifest
+
+    # and the project's own gate agrees with what was written into it
+    for validator in ("validate-manifest.py", "validate-repository-naming.py"):
+        args = ["--project", "project.yaml"] if "naming" in validator else []
+        check = run_script(work / "MedxScribe" / "scripts" / validator, *args,
+                           cwd=work / "MedxScribe")
+        assert check.returncode == 0, f"{validator}: {check.stderr}{check.stdout}"
+
+
+def test_a_neutral_product_form_is_still_refused_as_a_leg(tmp_path):
+    """The overlap that was relaxed is descendant/assembly ONLY. `open` in
+    front says what a name is, and no declared role overrides that."""
+    remotes = tmp_path / "remotes"
+    result = run_script(SCAFFOLD, "--org", ORG, "--project", "openScribe",
+                        "--elected-by", "Test Human",
+                        "--local-remote-dir", str(remotes),
+                        "--work-dir", str(tmp_path / "work"))
+    assert result.returncode == 2
+    assert "naming-role-mismatch" in result.stderr
+    assert "neutral-product" in result.stderr
+    assert not remotes.exists()
+
+
+def test_a_spec_name_offered_as_the_assembly_root_is_refused(tmp_path):
+    """The other refusal that must survive: a `-spec` name is not a root."""
+    remotes = tmp_path / "remotes"
+    result = run_script(SCAFFOLD, "--org", ORG, "--project", "MedxScribe-spec",
+                        "--elected-by", "Test Human",
+                        "--local-remote-dir", str(remotes),
+                        "--work-dir", str(tmp_path / "work"))
+    assert result.returncode == 2
+    assert "naming-role-mismatch" in result.stderr
+    assert "project-leg/spec" in result.stderr
+    assert not remotes.exists()
+
+
+def test_an_install_form_is_still_refused_as_a_leg(tmp_path):
+    remotes = tmp_path / "remotes"
+    result = run_script(SCAFFOLD, "--org", ORG, "--project", "Hermes-Install",
+                        "--elected-by", "Test Human",
+                        "--local-remote-dir", str(remotes),
+                        "--work-dir", str(tmp_path / "work"))
+    assert result.returncode == 2
+    assert "naming-role-mismatch" in result.stderr
+    assert "install" in result.stderr
+    assert not remotes.exists()
+
+
 def test_a_bad_project_id_refuses_before_creating_anything(tmp_path):
     remotes = tmp_path / "remotes"
     result = run_script(SCAFFOLD, "--org", ORG, "--project", "North_Wind",

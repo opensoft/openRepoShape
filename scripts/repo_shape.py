@@ -498,15 +498,71 @@ def recorded_gitlink(repo: Path, path: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+#: How a `<Domainx><Product>` name is split into the domain stem and the
+#: PRODUCT it claims descent from. The stem is greedy, so a name carrying two
+#: `x<Upper>` splits (`MedxDataxChart`) is read at the RIGHTMOST one, which is
+#: the same reading the family's own pattern gives.
+DESCENDANT_SPLIT_PATTERN = r"^(?P<stem>[A-Za-z][A-Za-z0-9]*)x(?P<product>[A-Z][A-Za-z0-9]*)$"
+
+#: `open<Product>` is the canonical referent and is what a manifest records.
+#: `openx<Product>` is accepted as well because the neutral family itself
+#: admits an x-stem (`openxFactory`) and `codexFactory` descends from exactly
+#: that; a descendant that pinned the x-stem spelling has a referent, and
+#: refusing it would be a spelling rule masquerading as a semantic one.
+DESCENDANT_REFERENT_TEMPLATES = ("open{product}", "openx{product}")
+
+
+def form_id(family_id: str, role_id: str | None) -> str:
+    """`("project-leg", "assembly")` -> `"project-leg/assembly"`."""
+    return f"{family_id}/{role_id}" if role_id else family_id
+
+
+class Classification(tuple):
+    """`(family_id, role_id)`, carrying every OTHER form the name satisfies.
+
+    A 2-tuple BY CONSTRUCTION: `classify()` has always returned one and every
+    caller compares against `("project-leg", "assembly")`, so widening it would
+    have been a silent break at every call site. What is new rides alongside —
+    `also_matches`, the forms that were not chosen, and `reason`, the sentence
+    `--explain` prints — because an overlap that is resolved without being
+    RECORDED is exactly the failure this change exists to fix.
+    """
+
+    def __new__(cls, family: str, role: str | None,
+                also_matches=(), reason: str = ""):
+        self = super().__new__(cls, (family, role))
+        self.family = family
+        self.role = role
+        self.also_matches = tuple(also_matches)
+        self.reason = reason
+        return self
+
+    def __repr__(self) -> str:  # pragma: no cover - diagnostics only
+        return (f"Classification({self.family!r}, {self.role!r}, "
+                f"also_matches={list(self.also_matches)!r})")
+
+
 class NamingPolicy:
     """Ordered classifier over `contracts/repository-naming.yaml`.
 
-    ORDER IS SEMANTIC. `openxFactory` satisfies both the neutral-product form
-    and the domain-descendant form (`open` + `x` + `Factory`); `MedxChart`
-    satisfies both the domain-descendant form and the bare assembly-root form.
-    Precedence is therefore declared IN THE DATA and applied first-match-wins,
-    and `--explain` prints every family a name satisfies so an overlap is
-    visible rather than merely resolved.
+    ORDER IS SEMANTIC, AND TWO OF THE FOUR FORMS ARE UNAMBIGUOUS BY
+    CONSTRUCTION. `open<Product>` and `<X>-Install` say what they are in their
+    own characters: nothing else can spell them and nothing else needs to be
+    consulted, so they win outright.
+
+    THE DESCENDANT FORM IS DIFFERENT, and this is the ruling of 2026-09-02
+    (Brett Heap): `<Domainx><Product>` is a CLAIM OF DESCENT, and a claim needs
+    a REFERENT. The name is classified as a domain descendant only when the
+    project declares a pin on the matching `open<Product>`. Without that pin
+    the DECLARED ROLE wins — `MedxScribe` in a `MedxSoft` org is an ordinary
+    project's assembly root, not a descendant of an `openScribe` that does not
+    exist — and the descendant form is recorded in `also_matches` rather than
+    thrown away. The check stays OFFLINE: a declared pin is a fact in the
+    project's own tree, so no GitHub lookup is ever needed to classify a name.
+
+    `matches()` still reports every form a name satisfies, in the data's
+    precedence order, so an overlap stays visible instead of being resolved in
+    silence.
     """
 
     def __init__(self, data: dict):
@@ -519,6 +575,13 @@ class NamingPolicy:
             family["_re"] = re.compile(family["pattern"])
             for role in family.get("roles") or []:
                 role["_re"] = re.compile(role["pattern"])
+            referent = family.get("referent") or {}
+            family["_split_re"] = re.compile(
+                referent.get("split_pattern") or DESCENDANT_SPLIT_PATTERN)
+            templates = [referent.get("canonical_template")
+                         or DESCENDANT_REFERENT_TEMPLATES[0]]
+            templates += list(referent.get("also_accepted") or [])
+            family["_referent_templates"] = tuple(templates)
         topic = data.get("topic") or {}
         self.topic_pattern = re.compile(topic.get("pattern", r"^xf-project-[a-z0-9-]+$"))
         self.topic_template = topic.get("template", "xf-project-{id}")
@@ -536,6 +599,44 @@ class NamingPolicy:
             )
         return cls(data)
 
+    # -- the data ----------------------------------------------------------
+
+    def family(self, family_id: str) -> dict | None:
+        return next((f for f in self.families if f["id"] == family_id), None)
+
+    def requires_referent(self, family_id: str) -> bool:
+        """Does this family's form only CLAIM membership until something else
+        is declared? Declared in the data, so a fork can read the rule."""
+        family = self.family(family_id)
+        return bool(family and family.get("requires_referent"))
+
+    # -- referents ---------------------------------------------------------
+
+    def descendant_referents(self, name: str) -> tuple[str, ...]:
+        """The neutral products `name` would have to pin to BE a descendant.
+
+        Empty when the name is not in `<Domainx><Product>` form at all. The
+        first entry is canonical and is what a manifest records.
+        """
+        family = self.family("domain-descendant")
+        if family is None or not family["_re"].match(name):
+            return ()
+        match = family["_split_re"].match(name)
+        if not match:
+            return ()
+        product = match.groupdict().get("product")
+        if not product:
+            return ()
+        return tuple(t.format(product=product)
+                     for t in family["_referent_templates"])
+
+    def descendant_referent(self, name: str) -> str | None:
+        """The CANONICAL `open<Product>` a descendant-form name claims."""
+        referents = self.descendant_referents(name)
+        return referents[0] if referents else None
+
+    # -- classification ----------------------------------------------------
+
     def matches(self, name: str) -> list[tuple[str, str | None]]:
         """Every (family_id, role_id) the name satisfies, in precedence order."""
         found: list[tuple[str, str | None]] = []
@@ -550,9 +651,72 @@ class NamingPolicy:
                 found.append((family["id"], None))
         return found
 
-    def classify(self, name: str) -> tuple[str, str | None] | None:
-        found = self.matches(name)
-        return found[0] if found else None
+    def classify(self, name: str, declared_role: str | None = None,
+                 declared_pins=None) -> Classification | None:
+        """Classify `name`, given what the project DECLARES about itself.
+
+        `declared_role` is one of {assembly, spec, code}; `declared_pins` is the
+        set of neutral products the project declares a pin on. Both are
+        optional and both are read from `project.yaml` where one exists.
+
+        The order:
+          1. `neutral-product` and 2. `install` — unambiguous by construction.
+          3. `domain-descendant` — ONLY when a referent is declared.
+          4. `project-leg` in the DECLARED role, when the name satisfies it.
+          5. `project-leg` residual — the widest form, deliberately last.
+        """
+        matched = self.matches(name)
+        if not matched:
+            return None
+        pins = {repo_basename(str(pin)).casefold()
+                for pin in (declared_pins or ()) if pin}
+        by_family: dict[str, list[str | None]] = {}
+        for family_id, role_id in matched:
+            by_family.setdefault(family_id, []).append(role_id)
+
+        def answer(family_id: str, role_id: str | None, reason: str) -> Classification:
+            also = [form_id(f, r) for f, r in matched
+                    if (f, r) != (family_id, role_id)]
+            return Classification(family_id, role_id, also, reason)
+
+        for family_id in ("neutral-product", "install"):
+            if family_id in by_family:
+                return answer(family_id, by_family[family_id][0],
+                              f"the {family_id} form is unambiguous by "
+                              "construction, so it needs nothing declared")
+
+        claimed = "domain-descendant" in by_family
+        referents = self.descendant_referents(name) if claimed else ()
+        declared = next((r for r in referents if r.casefold() in pins), None)
+        if claimed and (declared or not self.requires_referent("domain-descendant")):
+            return answer(
+                "domain-descendant", by_family["domain-descendant"][0],
+                f"descendant form with a declared pin on {declared} → domain "
+                "descendant" if declared else
+                "descendant form (this policy does not require a referent)")
+
+        leg_roles = [r for r in (by_family.get("project-leg") or []) if r]
+        chosen = None
+        if declared_role is not None and declared_role in leg_roles:
+            chosen, how = declared_role, "by declared role"
+        elif leg_roles:
+            chosen, how = leg_roles[0], "by its residual project-leg form"
+        if chosen is not None:
+            if claimed:
+                reason = (f"descendant form, no referent pin declared (it would "
+                          f"need {referents[0]}) → {chosen} root {how}")
+            else:
+                reason = f"project leg, {chosen} {how}"
+            return answer("project-leg", chosen, reason)
+
+        # Unreachable with the shipped patterns — every descendant-form name is
+        # also a bare CamelCase token — but a policy file is data, and data can
+        # be edited. An unresolved claim is reported as one rather than being
+        # promoted to a classification by exhaustion.
+        return answer("domain-descendant", by_family["domain-descendant"][0],
+                      f"descendant form, no referent pin declared (it would need "
+                      f"{referents[0] if referents else 'open<Product>'}) and the "
+                      "name satisfies no other form")
 
     def topic_for(self, project_id: str) -> str:
         return self.topic_template.format(id=project_id)

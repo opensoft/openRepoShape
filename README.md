@@ -69,6 +69,24 @@ hyphenated precisely so they sit in a different visual class from every other
 family, all of which are CamelCase words. Every repository of a project also
 carries the GitHub topic `xf-project-<id>`.
 
+### A descendant form is a claim; a claim needs a referent
+
+`open<Product>` and `<X>-Install` say what they are in their own characters and
+win outright. `<Domainx><Product>` does not. Ruled by **Brett Heap on
+2026-09-02**: *descendant only if it pins `open<Product>`*. `MedxChart` is a
+domain descendant BECAUSE MedxChart pins `openChart`. `MedxScribe` in the same
+organisation descends from nothing — no `openScribe` exists — so its DECLARED
+ROLE wins and it is an ordinary assembly root. Read as a fact instead of a
+claim, the form refused every project in a `<Domainx>` family org on the first
+pilot.
+
+The declaration is `neutral_product_pins:` in `project.yaml`, a fact in the
+project's own tree, so classification stays OFFLINE — it never asks GitHub
+whether `open<Product>` exists. The overlap is not discarded either: each leg's
+`naming:` block records `form`, `role` and `also_matches`, so a resolved
+overlap stays visible to the next reader. `validate-repository-naming.py`
+answers the same question for one name with `--role`, `--pins` and `--explain`.
+
 ## The double pin, and the lockstep invariant
 
 Each leg is pinned TWICE, in the same commit: by the **gitlink** git records
