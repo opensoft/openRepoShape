@@ -1,0 +1,154 @@
+schema_version: 1
+kind: repository-naming-policy
+
+# ===========================================================================
+# repository-naming.yaml — the four live naming families, as DATA.
+#
+# WHY DATA AND NOT PROSE. A convention written only in a README is checked by
+# whoever remembers it. This file is read by `scripts/validate-repository-naming.py`,
+# which the scaffold runs BEFORE it creates anything and which a scaffolded
+# project's own pull-request gate runs over its manifest, so the convention is
+# refused rather than regretted.
+#
+# THE FAMILIES CONFER NOTHING. A name is a name. Nothing in this file grants
+# review authority, clearance eligibility, gate standing or lifecycle state
+# over the repository it classifies — that is the ratified doctrine of
+# `add-wallet-carried-review-authority` ("electing the schema changes no gate,
+# no floor, no grant, and no clearance eligibility") and this file is bound by
+# it. A consumer deriving a permission from a family id is defective.
+#
+# PRECEDENCE IS SEMANTIC, NOT COSMETIC. Some names satisfy two forms:
+#   `openxFactory`  is `open` + a product AND a `x`-terminated stem + a product
+#   `MedxChart`     is a domain descendant AND a bare assembly-root token
+# Classification is therefore FIRST MATCH WINS in `precedence` order, and
+# `--explain` prints every family a name satisfies so an overlap stays visible
+# instead of being silently resolved.
+#
+# THE ASSEMBLY-ROOT FORM IS THE RESIDUAL CLASS, deliberately. A bare CamelCase
+# token is the widest form here and sits last on purpose: the staged fragment
+# records that two live repositories (`xFactory-Installer`, `AgentTower`) fit
+# no suffix rule at all, so this is a FORWARD rule and the residual class is
+# where an unsuffixed name lands. What it does NOT admit is a name with a
+# hyphen, an underscore, a dot or a space — those match nothing and are
+# refused, which is the check that actually earns its keep.
+# ===========================================================================
+
+families:
+  - id: neutral-product
+    precedence: 1
+    title: Neutral product
+    pattern: "^open(?:[A-Z]|x[A-Z])[A-Za-z0-9]*$"
+    description: >-
+      A domain-neutral product repository: `open` followed by the product
+      name. The character after `open` is uppercase, or the lowercase `x` of
+      an x-stem followed by an uppercase letter — which is what keeps the
+      organisation login `opensoft` from reading as a product.
+    examples:
+      - openxFactory
+      - openXwallet
+      - openChart
+    counter_examples:
+      - opensoft
+      - OpenChart
+
+  - id: install
+    precedence: 2
+    title: Install
+    pattern: "^[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*-Install$"
+    description: >-
+      A deployable install or runtime repository, ending in the CamelCase
+      suffix `-Install`. The stem may itself be hyphenated, which is how one
+      product's install is qualified by the layer that owns it.
+    examples:
+      - xFactory-Hermes-Install
+      - Hermes-Install
+      - Keycloak-Install
+    counter_examples:
+      - hermes-install
+      - Keycloak-Installer
+
+  - id: domain-descendant
+    precedence: 3
+    title: Domain descendant
+    pattern: "^[A-Za-z][A-Za-z0-9]*x[A-Z][A-Za-z0-9]*$"
+    description: >-
+      A domain's descendant of a live product: an `x`-terminated domain stem
+      immediately in front of the product name. The stem's own first letter
+      may be lowercase, which `codexFactory` already spends.
+    examples:
+      - MedxChart
+      - LedgerxWallet
+      - codexFactory
+    counter_examples:
+      - MedChart
+      - Medx
+
+  - id: project-leg
+    precedence: 4
+    title: Project leg
+    pattern: "^[A-Za-z][A-Za-z0-9]*(?:-spec|-code)?$"
+    description: >-
+      One repository of a project that has elected the three-repository shape.
+      The suffixes are fixed LOWERCASE and hyphenated precisely so they sit in
+      a different visual class from every family above, all of which are
+      CamelCase words; the assembly root is bare, following the precedent the
+      aggregation root already sets — the thing you clone has no suffix.
+    roles:
+      - id: assembly
+        pattern: "^[A-Za-z][A-Za-z0-9]*$"
+        description: >-
+          The per-project ROOT repository, the one an engineer clones. It
+          carries `project.yaml`, the two legs as submodules, and the pins.
+        examples:
+          - Atlas
+          - Northwind
+      - id: spec
+        pattern: "^[A-Za-z][A-Za-z0-9]*-spec$"
+        description: The project's specification leg, mounted at `spec/`.
+        examples:
+          - Atlas-spec
+          - Northwind-spec
+      - id: code
+        pattern: "^[A-Za-z][A-Za-z0-9]*-code$"
+        description: The project's implementation leg, mounted at `code/`.
+        examples:
+          - Atlas-code
+          - Northwind-code
+    examples:
+      - Atlas
+      - Atlas-spec
+      - Atlas-code
+    counter_examples:
+      - Atlas-SPEC
+      - Atlas_spec
+      - Atlas-tests
+
+# The GitHub topic every repository of a project carries, so the organisation's
+# own search surfaces the group without a checkout. It is the SECOND of the
+# three agreeing layers of grouping (names, topics, register); where they
+# disagree the register wins and the others are reported as drift, because the
+# register is the only one of the three that is reviewed.
+topic:
+  template: "xf-project-{id}"
+  pattern: "^xf-project-[a-z0-9][a-z0-9-]*$"
+  id_pattern: "^[a-z0-9][a-z0-9-]*$"
+  description: >-
+    `xf-project-<id>` where `<id>` is the project's lowercase id, which is the
+    same id an aggregation's `project-register.yaml` row uses.
+  examples:
+    - xf-project-atlas
+    - xf-project-northwind
+
+# The NEGATIVE half of the policy, as data rather than as an assumption.
+# `counter_examples` above say "not THIS family" — several of them still land
+# in the residual assembly-root class, which is the honest reading. These names
+# match NO family at all and are what `validate-repository-naming.py` exits
+# non-zero on.
+unclassified_examples:
+  - Atlas_spec
+  - Atlas-tests
+  - hermes-install
+  - Keycloak-Installer
+  - xFactory-Installer
+  - 9Lives
+  - "Atlas spec"
