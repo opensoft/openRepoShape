@@ -1,0 +1,42 @@
+schema_version: 1
+kind: pinned_contract_manifest
+
+# ===========================================================================
+# spec-pin.yaml — the SPEC leg, pinned by commit and digest.
+#
+# `kind: pinned_contract_manifest` is REUSED unchanged from the family's
+# ratified pin grammar; only the consumer is new. The trusted referent is
+# `commit` plus `digests.tree_sha256`. A tag MAY be recorded beside the commit
+# as a human-readable label, never as the thing being trusted, and a pin never
+# expresses a version range: the moment a pin trusts a range the fail-closed
+# property is gone.
+#
+# THIS FILE IS HALF OF ONE INVARIANT. The other halves are the GITLINK this
+# repository records at `submodule_path` and every `.github/workflows/*.yml`
+# reference of the form `<org>/<leg>/...@<sha>`. All three move in ONE commit.
+# `scripts/validate-pins.py` is the running code that says so.
+# ===========================================================================
+
+leg_role: spec
+source_repository: {{SPEC_REPOSITORY}}
+submodule_path: {{SPEC_PATH}}
+
+commit: "{{SPEC_COMMIT}}"
+revision_kind: commit
+
+digest_algorithm: sha256
+
+# WHAT IS DIGESTED, exactly. `sorted-ls-tree-r-v1`:
+#   records = `git ls-tree -r -z <commit>` split on NUL, empties dropped
+#   each record is `<mode> SP <type> SP <oid> TAB <path>`, path UNQUOTED
+#   sort the records bytewise ascending
+#   digest  = sha256(b"".join(record + b"\n" for record in records))
+# Mode is included, so a permission change is drift; the oid is included, so
+# any content change is drift; a nested submodule appears as `160000 commit
+# <oid>`, so a leg's own pin moving is drift too.
+digest_definition: {{DIGEST_DEFINITION}}
+digests:
+  tree_sha256: "{{SPEC_TREE_SHA256}}"
+
+verify_pin: scripts/validate-pins.py
+resync_runbook: "README.md#the-lockstep-invariant"

@@ -1,0 +1,42 @@
+name: validate
+
+# The NEUTRAL gate: naming, manifest, lockstep pins. Nothing here needs a
+# review lane, a wallet register or any overlay — a project with no overlays is
+# fully conformant, and overlays attach to an existing shape rather than the
+# reverse.
+#
+# It runs on PULL REQUESTS. So does the aggregation's, which is how seven
+# consecutive pin-syncs that moved a gitlink alone went a day unnoticed:
+# `main` never reports this check, and the breakage surfaces on somebody
+# else's change. Read a green run here as "this pull request is in lockstep",
+# never as "main is".
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      # `submodules: true` is load-bearing: without the leg checkouts the pin
+      # validator REFUSES rather than passing, because an unreadable surface
+      # must fail rather than degrade.
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      # Standard library only. If this ever needs a `pip install`, the change
+      # is wrong: the shape must run in an org that cannot install anything.
+      - name: naming policy
+        run: python3 scripts/validate-repository-naming.py --project project.yaml
+
+      - name: project manifest
+        run: python3 scripts/validate-manifest.py
+
+      - name: lockstep pins
+        run: python3 scripts/validate-pins.py

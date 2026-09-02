@@ -1,0 +1,35 @@
+name: tests
+
+# The suite scaffolds into BARE REPOSITORIES IN A TEMPORARY DIRECTORY and
+# clones them over the filesystem. It never calls `gh`, never touches the
+# network, and must never create a real repository.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      # pytest is the TEST RUNNER and is the only thing installed here.
+      # Nothing this repository SHIPS may import anything outside the standard
+      # library — `tests/test_repo_hygiene.py::test_shipped_code_imports_only_
+      # the_standard_library` is what enforces that, and it would fail if a
+      # validator or the scaffold ever grew a dependency.
+      - name: install the test runner
+        run: python3 -m pip install --disable-pip-version-check pytest
+
+      - name: git identity for the scaffolded commits
+        run: |
+          git config --global user.name  'openRepoShape CI'
+          git config --global user.email 'ci@openreposhape.invalid'
+
+      - name: tests
+        run: python3 -m pytest tests -q
