@@ -9,10 +9,13 @@ that is what `--local-remote-dir` is for.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 
 import pytest
+
+from pathlib import Path
 
 from conftest import REPO, git
 
@@ -164,10 +167,17 @@ def test_no_confirmation_and_no_terminal_refuses_after_showing_the_plan(tmp_path
     assert not (tmp_path / "remotes").exists()
 
 
-def test_no_project_and_no_terminal_refuses():
-    result = run_setup("--org", "demoorg")
+def test_no_project_and_no_terminal_refuses(tmp_path):
+    # `--local-remote-dir` is what keeps this offline. Without it the run
+    # reaches the real `gh auth status` preflight and refuses for THAT reason
+    # instead — which is how this test passed on an authenticated laptop and
+    # failed in CI. Every test here must be independent of `gh` being logged in.
+    result = run_setup("--org", "demoorg",
+                       "--local-remote-dir", str(tmp_path / "remotes"),
+                       "--into", str(tmp_path / "work"))
     assert result.returncode == 2
     assert "no --project given" in result.stderr
+    assert not (tmp_path / "remotes").exists()
 
 
 def test_passthrough_reaches_the_scaffold(tmp_path):
@@ -178,3 +188,32 @@ def test_passthrough_reaches_the_scaffold(tmp_path):
     assert result.returncode == 0, result.stderr
     manifest = (tmp_path / "work" / "Sample" / "project.yaml").read_text()
     assert 'reference: "a-staged-fragment.md"' in manifest
+
+
+def test_no_test_here_depends_on_gh_being_authenticated():
+    """Every invocation either stops before the preflight or runs offline.
+
+    The three that stop early are argument-parsing refusals (`--help`, an
+    unknown flag, a bad `--visibility`), which the script answers before it
+    looks at the machine. Everything else must pass `--local-remote-dir`, or it
+    reaches `gh auth status` and passes only on a laptop that happens to be
+    logged in — which is exactly how the first version of this file went green
+    locally and red in CI.
+    """
+    source = Path(__file__).read_text(encoding="utf-8")
+    early = ("--help", "--wat", '"secret"')
+    for match in re.finditer(r"(?<!def )run_setup\(", source):
+        start = match.end()
+        depth, index = 1, start
+        while depth:
+            if source[index] == "(":
+                depth += 1
+            elif source[index] == ")":
+                depth -= 1
+            index += 1
+        call = source[start:index - 1]
+        if any(marker in call for marker in early):
+            continue
+        assert "--local-remote-dir" in call, (
+            "this run_setup call reaches the gh preflight and will fail "
+            f"wherever gh is not authenticated:\n    {' '.join(call.split())}")
