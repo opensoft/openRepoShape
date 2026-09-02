@@ -1,0 +1,43 @@
+schema_version: 1
+kind: pinned_contract_manifest
+
+# ===========================================================================
+# shape-pin.yaml — the openRepoShape revision this project was cut from.
+#
+# A COPY PIN, NOT A SUBMODULE PIN, and the difference is deliberate.
+# openRepoShape is not mounted here: the scaffold COPIED a small set of files
+# out of it — the naming policy, the shared library, the three validators, the
+# bootstrap, the Makefile and the pull-request workflow — so that a project in
+# an organisation that never obtains the upstream is still self-contained and
+# still runs its own gate. There is therefore no gitlink to compare, and the
+# identity of what was copied is carried by the per-file `sha256` rows below.
+# That is exactly the half of the family's pin grammar that exists for
+# artifacts a consumer HOLDS rather than MOUNTS; `commit` and
+# `digests.tree_sha256` record the upstream revision those bytes came from, so
+# a later reader can say which openRepoShape this project is a copy of.
+#
+# EDITING A COPIED FILE IS DRIFT AND IS REPORTED AS SUCH.
+# `scripts/validate-pins.py` recomputes every `sha256` below on every pull
+# request. The exit from a drift finding is to carry the change UPSTREAM to
+# openRepoShape and re-scaffold or re-pin — not to update the digest in place,
+# which would record the fork as the standard.
+# ===========================================================================
+
+pin_role: shape
+source_repository: {{SHAPE_REPOSITORY}}
+materialization: copied
+
+commit: "{{SHAPE_COMMIT}}"
+revision_kind: commit
+
+digest_algorithm: sha256
+digest_definition: {{DIGEST_DEFINITION}}
+digests:
+  tree_sha256: "{{SHAPE_TREE_SHA256}}"
+
+verify_pin: scripts/validate-pins.py
+
+# The copies that live in THIS repository, each with the sha256 of its bytes
+# as written by the scaffold. Written by `scaffold-project.py`; do not hand-edit.
+files:
+{{SHAPE_FILES}}

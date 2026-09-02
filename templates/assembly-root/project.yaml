@@ -1,0 +1,73 @@
+schema_version: 1
+kind: project-manifest
+
+# ===========================================================================
+# project.yaml — this project's SELF-DESCRIBING MANIFEST, and the SOURCE.
+#
+# Where an aggregation exists, its `project-register.yaml` row is DERIVED from
+# this file; this file is never derived from the register. That direction is
+# what lets an organisation with no aggregation, no register and no
+# openxFactory still be conformant — a file inside the project is readable by
+# anyone who cloned it, which is exactly the population that needs it.
+#
+# IT CONFERS NOTHING. `schema`, `legs[].role` and `topic` are descriptive
+# navigation. No field here grants review authority, clearance eligibility,
+# gate standing or lifecycle state over any repository it names. A project
+# that declines this schema is reviewed identically to this one, because the
+# authority travels in the grants rather than in the layout. A consumer
+# deriving a permission from `role:` is defective.
+# ===========================================================================
+
+id: {{PROJECT_ID}}
+name: "{{PROJECT_NAME}}"
+
+# The elected schema, and the document the election followed. Before the
+# openxFactory change ratifies the doctrine this points at the STAGED
+# fragment; after ratification it points at the ratified document. Recording
+# it is what makes a project started ahead of ratification legible rather than
+# undeclared.
+schema: project-repo-schema
+reference: "{{REFERENCE}}"
+
+# Electing the shape is a human's act (a `PA` decision, `CA`-constrained and
+# `PM`-sequenced), so the manifest records whose act it was and when.
+elected_by: "{{ELECTED_BY}}"
+elected_on: {{ELECTED_ON}}
+
+# The GitHub topic every one of this project's repositories carries. Names
+# carry the human eye, topics carry the organisation's search, and the
+# register — where one exists — is the only one of the three that is reviewed.
+topic: {{TOPIC}}
+
+# The branch `scripts/bootstrap.py` places each leg on, AT its pinned commit.
+# The pin stays exact: `.gitmodules` carries no `branch=`, so there is exactly
+# one authoritative answer to "what commit is this project".
+tracking_branch: {{TRACKING_BRANCH}}
+
+# The openRepoShape revision this project was scaffolded from, pinned by
+# commit and digest under the same rule the family's neutral products use: a
+# tag can be moved and a commit cannot. `contracts/shape-pin.yaml` carries the
+# same commit plus a per-file sha256 for every file the scaffold COPIED out of
+# openRepoShape, which is how an edit to a copied validator is detected.
+shape:
+  repository: {{SHAPE_REPOSITORY}}
+  revision_kind: commit
+  commit: "{{SHAPE_COMMIT}}"
+  digest_algorithm: sha256
+  digest_definition: {{DIGEST_DEFINITION}}
+  digests:
+    tree_sha256: "{{SHAPE_TREE_SHA256}}"
+
+# The three legs. `assembly` is THIS repository — the one an engineer clones —
+# and its path is `.`; `spec` and `code` are submodules mounted at the paths
+# below. Roles are exactly {assembly, spec, code}, once each.
+legs:
+  - role: assembly
+    repository: {{ASSEMBLY_REPOSITORY}}
+    path: "."
+  - role: spec
+    repository: {{SPEC_REPOSITORY}}
+    path: {{SPEC_PATH}}
+  - role: code
+    repository: {{CODE_REPOSITORY}}
+    path: {{CODE_PATH}}
