@@ -29,16 +29,30 @@ overlays is fully conformant.
 ```sh
 gh repo fork opensoft/openRepoShape --org <your-org> --clone   # a FORK, not a
 cd openRepoShape                                               # template copy
+./setup.sh --project Atlas
+```
+
+`setup.sh` checks your machine, detects your fork's organisation, checks the
+three names, shows the plan and asks once — then creates the three
+repositories, clones the assembly root beside the fork and bootstraps it.
+`--yes` skips the question, `--org` overrides the detection, and it REFUSES to
+scaffold into `opensoft` without `--allow-upstream-org`, because cloning the
+upstream instead of forking it looks identical from inside the directory. A
+fork rather than a template keeps the upstream link, so shape updates pull and
+`contracts/shape-pin.yaml` names a commit that still means something.
+
+### What setup.sh does
+
+The same commands, in order, with no behaviour of its own:
+
+```sh
+python3 scripts/validate-repository-naming.py --explain Atlas Atlas-spec Atlas-code
 python3 scaffold-project.py --org <your-org> --project Atlas --dry-run
 python3 scaffold-project.py --org <your-org> --project Atlas \
     --visibility private --elected-by 'Your Name'
 git clone --recurse-submodules https://github.com/<your-org>/Atlas.git
 cd Atlas && make bootstrap
 ```
-
-A fork rather than a GitHub template, so the upstream link is kept and shape
-updates can be pulled — and so `contracts/shape-pin.yaml` in a scaffolded
-project names an upstream commit that still means something.
 
 ## The three legs
 
@@ -117,9 +131,9 @@ only: a required check in the repository that owns the object is what confers.
 contracts/repository-naming.yaml  the four naming families, as data
 scripts/repo_shape.py             shared helpers: YAML subset reader, digests
 scripts/validate-repository-naming.py
+setup.sh                          fork, clone, run one command
 scaffold-project.py               creates the three repositories and the pins
-bootstrap                         run the bootstrap against a project that was
-                                  not scaffolded (a one-repository project)
+bootstrap                         bootstrap a project that was never scaffolded
 templates/assembly-root/          the skeleton materialized for <Project>
 templates/spec-root/              the skeleton for <Project>-spec
 templates/code-root/              the skeleton for <Project>-code

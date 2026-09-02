@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 import ast
+import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -83,3 +86,30 @@ def test_claude_md_points_at_agents_md():
 def test_readme_is_short_enough_to_be_read():
     lines = (REPO / "README.md").read_text().splitlines()
     assert len(lines) <= 150, f"README.md is {len(lines)} lines; the cap is 150"
+
+
+def test_setup_sh_is_executable_and_fails_loudly():
+    setup = REPO / "setup.sh"
+    assert setup.is_file()
+    assert os.access(setup, os.X_OK), "setup.sh must be executable: chmod +x"
+    text = setup.read_text(encoding="utf-8")
+    assert text.startswith("#!/usr/bin/env bash\n")
+    assert "set -euo pipefail" in text, (
+        "the first script a person runs in a fork must stop on the first "
+        "failure, not carry on with an unset variable")
+
+
+def test_setup_sh_parses_under_bash():
+    if shutil.which("bash") is None:
+        pytest.skip("bash is not installed")
+    proc = subprocess.run(["bash", "-n", str(REPO / "setup.sh")],
+                          capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_setup_sh_is_the_documented_front_door():
+    assert "./setup.sh --project" in (REPO / "README.md").read_text()
+    assert "What setup.sh does" in (REPO / "README.md").read_text()
+    agents = (REPO / "AGENTS.md").read_text()
+    assert "without `--yes`" in agents
+    assert "--allow-upstream-org" in agents
