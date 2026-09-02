@@ -89,6 +89,47 @@ EXECUTABLE = ("scripts/validate-pins.py", "scripts/validate-manifest.py",
 PLACEHOLDER_RE = re.compile(r"\{\{[A-Z_]+\}\}")
 
 
+def naming_block(policy: NamingPolicy, name: str, role: str,
+                 pins: set[str], indent: str = "    ") -> str:
+    """The `naming:` block `project.yaml` records for one leg.
+
+    It records the classification AND what was not chosen. A name in
+    `<Domainx><Product>` form is a CLAIM of descent that needs a REFERENT
+    (2026-09-02): with no declared pin on `open<Product>` the declared role
+    wins, and the descendant form survives in `also_matches` so the next reader
+    sees the overlap that was resolved rather than wondering whether anyone
+    noticed it. Nothing here confers anything; it is a record.
+    """
+    found = policy.classify(name, role, pins)
+    lines = [
+        f"{indent}naming:",
+        f"{indent}  form: {found.family}",
+        f"{indent}  role: {found.role or '~'}",
+        f"{indent}  also_matches: [{', '.join(found.also_matches)}]",
+    ]
+    referents = policy.descendant_referents(name)
+    if referents:
+        declared_pins = {str(pin).casefold() for pin in pins}
+        declared = any(r.casefold() in declared_pins for r in referents)
+        # The CANONICAL spelling is what is recorded, whichever one is pinned.
+        lines.append(f"{indent}  descendant_referent: {referents[0]}")
+        lines.append(f"{indent}  referent_declared: "
+                     + ("true" if declared else "false"))
+    return "\n".join(lines)
+
+
+def descendant_note(policy: NamingPolicy, name: str, role: str,
+                    pins: set[str]) -> str | None:
+    """The one line the plan prints when a name also matches the claim form."""
+    found = policy.classify(name, role, pins)
+    if "domain-descendant" not in found.also_matches:
+        return None
+    referent = policy.descendant_referent(name)
+    return (f"NOTE {name} also matches the descendant form; it is not a "
+            f"descendant because no pin on {referent} is declared — declare "
+            f"`contracts/{referent.lower()}-pin.yaml` later if it becomes one")
+
+
 def run(args: list[str], cwd: Path | None = None, capture: bool = True) -> str:
     proc = subprocess.run(args, cwd=str(cwd) if cwd else None,
                           capture_output=capture, text=True, check=False)
@@ -253,8 +294,15 @@ def _scaffold(args) -> int:  # noqa: C901 - a linear procedure, read top to bott
         raise Refusal("scaffold-bad-id",
                       f"--id {project_id!r} must match {PROJECT_ID_RE.pattern}",
                       "Remediation: pass an explicit lowercase --id.")
+    # A FRESH project declares no neutral-product pins, so a descendant-form
+    # name here is a claim with no referent and the DECLARED ROLE wins. What is
+    # still refused is a real mismatch: a `-spec` name offered as the assembly
+    # root, or a `open<Product>` / `<X>-Install` form used as any leg — those
+    # forms are unambiguous by construction and declaring a role cannot make
+    # them into a leg.
+    declared_pins: set[str] = set()
     for role, name in names.items():
-        found = policy.classify(name)
+        found = policy.classify(name, role, declared_pins)
         if found is None:
             raise Refusal(
                 "naming-unclassified",
@@ -268,7 +316,8 @@ def _scaffold(args) -> int:  # noqa: C901 - a linear procedure, read top to bott
                 "naming-role-mismatch",
                 f"{name!r} classifies as {found[0]}"
                 + (f"/{found[1]}" if found[1] else "")
-                + f", not as the {role!r} form of a project leg",
+                + f", not as the {role!r} form of a project leg"
+                + f" ({found.reason})",
                 "Remediation: re-run with a --project value that is one "
                 "CamelCase token.",
             )
@@ -318,6 +367,10 @@ def _scaffold(args) -> int:  # noqa: C901 - a linear procedure, read top to bott
         "DIGEST_DEFINITION": TREE_DIGEST_DEFINITION,
         "CLONE_URL": urls["assembly"],
         "ASSEMBLY_CLONE_URL": urls["assembly"],
+        "ASSEMBLY_NAMING": naming_block(policy, names["assembly"], "assembly",
+                                        declared_pins),
+        "SPEC_NAMING": naming_block(policy, names["spec"], "spec", declared_pins),
+        "CODE_NAMING": naming_block(policy, names["code"], "code", declared_pins),
     }
 
     # ---- the plan ----------------------------------------------------------
@@ -328,6 +381,10 @@ def _scaffold(args) -> int:  # noqa: C901 - a linear procedure, read top to bott
     print(f"reference    {args.reference}")
     for role in ("assembly", "spec", "code"):
         print(f"  {role:<9} {repositories[role]:<28} -> {urls[role]}")
+    for role in ("assembly", "spec", "code"):
+        note = descendant_note(policy, names[role], role, declared_pins)
+        if note:
+            print(note)
     print(f"legs mounted at {args.spec_path}/ and {args.code_path}/ inside "
           f"{names['assembly']}")
     print("remotes      " + ("bare repositories on disk (no network)" if local

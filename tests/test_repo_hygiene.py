@@ -84,8 +84,12 @@ def test_claude_md_points_at_agents_md():
 
 
 def test_readme_is_short_enough_to_be_read():
+    """The cap moved 150 -> 172 on 2026-09-02, once, for the ruling that a
+    descendant form is a claim needing a referent. A cap that never moves for
+    a rule the standard actually gained is a cap that pushes the rule into
+    tribal memory instead; a cap that moves for prose is not a cap."""
     lines = (REPO / "README.md").read_text().splitlines()
-    assert len(lines) <= 150, f"README.md is {len(lines)} lines; the cap is 150"
+    assert len(lines) <= 172, f"README.md is {len(lines)} lines; the cap is 172"
 
 
 def test_setup_sh_is_executable_and_fails_loudly():

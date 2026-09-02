@@ -17,12 +17,39 @@ kind: repository-naming-policy
 # no floor, no grant, and no clearance eligibility") and this file is bound by
 # it. A consumer deriving a permission from a family id is defective.
 #
-# PRECEDENCE IS SEMANTIC, NOT COSMETIC. Some names satisfy two forms:
-#   `openxFactory`  is `open` + a product AND a `x`-terminated stem + a product
-#   `MedxChart`     is a domain descendant AND a bare assembly-root token
-# Classification is therefore FIRST MATCH WINS in `precedence` order, and
-# `--explain` prints every family a name satisfies so an overlap stays visible
-# instead of being silently resolved.
+# PRECEDENCE IS SEMANTIC, NOT COSMETIC — AND TWO KINDS OF FORM LIVE HERE.
+#
+# `neutral-product` and `install` are UNAMBIGUOUS BY CONSTRUCTION: `open` in
+# front, `-Install` behind. Nothing else spells them, so they win outright and
+# need nothing declared. Their precedence is unchanged.
+#
+# `domain-descendant` is not like that. `<Domainx><Product>` is a CLAIM OF
+# DESCENT, and a claim needs a REFERENT. Ruled by Brett Heap on 2026-09-02:
+#
+#     "Descendant only if it pins open<Product>."
+#
+# A name is classified as a domain descendant ONLY when the project declares a
+# pin on the matching `open<Product>` (see `referent:` in that family below).
+# Without that pin the project's DECLARED ROLE wins: the name is a valid
+# assembly root, and the fact that it ALSO matches the descendant form is
+# RECORDED in the manifest's `naming.also_matches` rather than thrown away.
+# With no declared role at all the name is reported as `project-leg/assembly`
+# with `also_matches: [domain-descendant]`.
+#
+# WHY. Every project in a `<Domainx>` family organisation hits the overlap.
+# `MedxSoft` holds `MedxEHR`, `MedxGlass`, `MedxScribe`; on the first real
+# pilot the scaffold refused `MedxScribe` as "domain-descendant, not the
+# assembly form of a project leg" — for a name that descends from nothing,
+# because no `opensoft/openScribe` exists. Reading a claim as a fact made an
+# ordinary project unscaffoldable in the one organisation shaped to have many.
+#
+# THE CHECK STAYS OFFLINE. The referent is a PIN THE PROJECT DECLARES, which is
+# a fact in its own tree; classification never asks GitHub whether
+# `open<Product>` exists. A rule that needed the network would be unrunnable
+# in the fork-and-run case this whole standard is built for.
+#
+# `matches()` and `--explain` still report every form a name satisfies, so an
+# overlap stays visible instead of being silently resolved.
 #
 # THE ASSEMBLY-ROOT FORM IS THE RESIDUAL CLASS, deliberately. A bare CamelCase
 # token is the widest form here and sits last on purpose: the staged fragment
@@ -71,17 +98,54 @@ families:
     precedence: 3
     title: Domain descendant
     pattern: "^[A-Za-z][A-Za-z0-9]*x[A-Z][A-Za-z0-9]*$"
+    # THE FORM IS A CLAIM; THE PIN IS THE REFERENT. Matching the pattern is
+    # necessary and NOT sufficient: the classifier returns this family only
+    # when the project declares a pin on the neutral product below. This is
+    # the one family here whose membership is not decided by the characters
+    # alone, which is why it is the one family that carries `referent:`.
+    requires_referent: true
+    referent:
+      # `MedxChart` -> product `Chart` -> `openChart`. The stem is greedy, so
+      # a name with two `x<Upper>` splits is read at the rightmost one.
+      split_pattern: "^(?P<stem>[A-Za-z][A-Za-z0-9]*)x(?P<product>[A-Z][A-Za-z0-9]*)$"
+      canonical_template: "open{product}"
+      # The neutral family admits an x-stem of its own (`openxFactory`), and
+      # `codexFactory` descends from exactly that, so the x-stem spelling of
+      # the referent counts too. Refusing it would be a spelling rule wearing
+      # the costume of a semantic one.
+      also_accepted:
+        - "openx{product}"
+      declared_by: >-
+        A pin the project declares on the neutral product — in a scaffolded
+        project, `contracts/<referent lowercased>-pin.yaml`, listed in
+        `project.yaml`'s `neutral_product_pins:`. It is a fact in the
+        project's own tree, so the check needs no network.
     description: >-
       A domain's descendant of a live product: an `x`-terminated domain stem
-      immediately in front of the product name. The stem's own first letter
-      may be lowercase, which `codexFactory` already spends.
+      immediately in front of the product name, AND a declared pin on that
+      product. The stem's own first letter may be lowercase, which
+      `codexFactory` already spends.
+    # Each example is a descendant BECAUSE of the referent beside it, not
+    # because of how it is spelled. `MedxChart` is a descendant because
+    # MedxChart pins `openChart`; strip that pin and the same name is an
+    # ordinary assembly root that also matches this form.
+    example_referents:
+      MedxChart: openChart
+      LedgerxWallet: openWallet
+      codexFactory: openxFactory
     examples:
       - MedxChart
       - LedgerxWallet
       - codexFactory
+    # These do not even reach the referent question: they fail the pattern.
     counter_examples:
       - MedChart
       - Medx
+    # And this one passes the pattern and is still NOT a descendant, because
+    # nothing named `openScribe` is pinned. It is the pilot case, kept in the
+    # data so the rule is testable from the contract rather than from memory.
+    claim_without_referent_examples:
+      - MedxScribe
 
   - id: project-leg
     precedence: 4

@@ -7,10 +7,21 @@ USAGE
     validate-repository-naming.py --project project.yaml
     printf '%s\\n' openChart MedxChart | validate-repository-naming.py
     validate-repository-naming.py --explain openxFactory
+    validate-repository-naming.py --explain --role assembly MedxScribe
+    validate-repository-naming.py --pins openChart --explain MedxChart
 
 A NAME may be given bare (`openChart`) or fully qualified (`opensoft/openChart`);
 only the part after the last `/` is classified, because the organisation login
 is not part of any family.
+
+WHAT `--role` AND `--pins` ARE FOR. A name in `<Domainx><Product>` form is a
+CLAIM of descent, and since the 2026-09-02 ruling a claim needs a REFERENT: it
+classifies as a domain descendant only when the project declares a pin on the
+matching `open<Product>`. `--pins` supplies those declarations for a one-off
+check and `--role` supplies the role the project would declare, so a name can
+be classified here on exactly the facts `project.yaml` would carry. With
+`--project` both are READ from the manifest instead — the legs' roles, and
+`neutral_product_pins:` — which is what the scaffolded project's own gate runs.
 
 EXIT CODES, the same three in every validator this standard ships:
     0  every name classified (and, with `--project`, every declared role and
@@ -39,7 +50,8 @@ from repo_shape import (  # noqa: E402
 DEFAULT_POLICY = Path(__file__).resolve().parents[1] / "contracts" / "repository-naming.yaml"
 
 
-def _describe(policy: NamingPolicy, name: str) -> list[str]:
+def _describe(policy: NamingPolicy, name: str, role: str | None,
+              pins: set[str]) -> list[str]:
     lines = []
     matches = policy.matches(name)
     if not matches:
@@ -49,34 +61,55 @@ def _describe(policy: NamingPolicy, name: str) -> list[str]:
         for family in policy.families:
             lines.append(f"    {family['id']:<18} {family['pattern']}")
         return lines
-    winner = matches[0]
-    lines.append(f"  {name}: {winner[0]}" + (f" / {winner[1]}" if winner[1] else ""))
+    found = policy.classify(name, role, pins)
+    lines.append(f"  {name}: {found[0]}" + (f" / {found[1]}" if found[1] else ""))
     for family in policy.families:
         hits = [m for m in matches if m[0] == family["id"]]
         mark = "MATCH " if hits else "      "
-        role = f" (role {hits[0][1]})" if hits and hits[0][1] else ""
-        lines.append(f"    {mark}{family['id']:<18} {family['pattern']}{role}")
+        role_note = f" (role {hits[0][1]})" if hits and hits[0][1] else ""
+        claim = ""
+        if hits and policy.requires_referent(family["id"]):
+            claim = " [a CLAIM: needs a declared pin on " + " or ".join(
+                policy.descendant_referents(name)) + "]"
+        lines.append(
+            f"    {mark}{family['id']:<18} {family['pattern']}{role_note}{claim}")
     if len(matches) > 1:
-        lines.append("    OVERLAP resolved by precedence: " + " > ".join(
-            f"{m[0]}" + (f"/{m[1]}" if m[1] else "") for m in matches))
+        lines.append("    OVERLAP " + found.reason)
+        lines.append("    also_matches: " + ", ".join(found.also_matches))
     return lines
 
 
-def _names_from_project(policy: NamingPolicy, path: Path) -> tuple[list[str], list[str]]:
-    """Return (names, findings) for a `project.yaml` manifest."""
+def _pins_from_project(data: dict) -> set[str]:
+    """The neutral products the manifest DECLARES a pin on.
+
+    `neutral_product_pins:` and nothing else. A leg's
+    `naming.referent_declared:` is a RECORD of a declaration, checked by
+    `validate-manifest.py` against this list; reading it as a declaration here
+    would let a claim vouch for itself.
+    """
+    return {str(pin) for pin in (data.get("neutral_product_pins") or []) if pin}
+
+
+def _targets_from_project(policy: NamingPolicy, path: Path) -> tuple[list, list[str]]:
+    """Return ([(name, role, pins)], findings) for a `project.yaml` manifest."""
     data = load_yaml(path)
     if not isinstance(data, dict):
         raise Refusal("manifest-unreadable", f"{path}: not a mapping")
     findings: list[str] = []
-    names: list[str] = []
+    pins = _pins_from_project(data)
+    targets: list[tuple[str, str | None, set[str]]] = []
     for leg in data.get("legs") or []:
         if not isinstance(leg, dict) or "repository" not in leg:
             findings.append(f"{path}: a leg has no `repository:`")
             continue
         name = repo_basename(str(leg["repository"]))
-        names.append(name)
         declared = leg.get("role")
-        found = policy.classify(name)
+        declared = str(declared) if declared else None
+        targets.append((name, declared, pins))
+        found = policy.classify(name, declared, pins)
+        # `declared_role` only wins where the NAME satisfies it, so a role that
+        # disagrees with its own name still lands here rather than being made
+        # true by declaring it.
         if found and found[0] == "project-leg" and declared and found[1] != declared:
             findings.append(
                 f"{name}: declared role {declared!r} but the name is the "
@@ -90,7 +123,7 @@ def _names_from_project(policy: NamingPolicy, path: Path) -> tuple[list[str], li
             findings.append(
                 f"topic {topic!r} != {expected!r} derived from id {project_id!r}"
             )
-    return names, findings
+    return targets, findings
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -98,9 +131,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("names", nargs="*", help="repository names to classify")
     parser.add_argument("--policy", type=Path, default=DEFAULT_POLICY)
     parser.add_argument("--project", type=Path, default=None,
-                        help="read the leg names from a project.yaml manifest")
+                        help="read the leg names, their roles and the declared "
+                             "neutral-product pins from a project.yaml manifest")
+    parser.add_argument("--role", default=None,
+                        choices=("assembly", "spec", "code"),
+                        help="the role the NAMES on the command line are "
+                             "offered as; a descendant-form name with no "
+                             "referent pin is classified by this")
+    parser.add_argument("--pins", default="",
+                        help="comma-separated neutral products the project "
+                             "declares a pin on, e.g. --pins openChart. A "
+                             "`<Domainx><Product>` name is a domain descendant "
+                             "only when its `open<Product>` is in this list.")
     parser.add_argument("--explain", action="store_true",
-                        help="print every family each name satisfies")
+                        help="print every family each name satisfies, why one "
+                             "of them won, and what the others are recorded as")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
 
@@ -110,31 +155,36 @@ def main(argv: list[str] | None = None) -> int:
         print(str(exc), file=sys.stderr)
         return 2
 
-    names = [repo_basename(n) for n in args.names]
+    cli_pins = {p.strip() for p in args.pins.split(",") if p.strip()}
+    targets: list[tuple[str, str | None, set[str]]] = [
+        (repo_basename(n), args.role, cli_pins) for n in args.names]
     findings: list[str] = []
     if args.project is not None:
         try:
-            extra, findings = _names_from_project(policy, args.project)
+            extra, findings = _targets_from_project(policy, args.project)
         except Refusal as exc:
             print(str(exc), file=sys.stderr)
             return 2
-        names.extend(extra)
-    if not names and not sys.stdin.isatty():
-        names = [repo_basename(line.strip()) for line in sys.stdin if line.strip()]
-    if not names:
+        targets.extend(extra)
+    if not targets and not sys.stdin.isatty():
+        targets = [(repo_basename(line.strip()), args.role, cli_pins)
+                   for line in sys.stdin if line.strip()]
+    if not targets:
         print("REFUSED naming-no-target: no names given. Pass names, "
               "`--project project.yaml`, or names on stdin.", file=sys.stderr)
         return 2
 
     unclassified = []
-    for name in names:
-        found = policy.classify(name)
+    for name, role, pins in targets:
+        found = policy.classify(name, role, pins)
         if args.explain:
-            print("\n".join(_describe(policy, name)))
+            print("\n".join(_describe(policy, name, role, pins)))
         elif not args.quiet:
             label = "NO FAMILY" if not found else (
                 found[0] + (f"/{found[1]}" if found[1] else ""))
-            print(f"  {name:<32} {label}")
+            also = f"   also_matches {','.join(found.also_matches)}" \
+                if found and found.also_matches else ""
+            print(f"  {name:<32} {label}{also}")
         if not found:
             unclassified.append(name)
 

@@ -25,6 +25,14 @@ WHAT IS CHECKED
     organisation, at distinct relative paths, with the assembly leg at `.`
   - every leg's repository name against `contracts/repository-naming.yaml`,
     and the classified form against the declared role
+  - each leg's OPTIONAL `naming:` record — that `form` and `role` are the
+    classification the policy actually returns for that name given what this
+    manifest declares, that `also_matches` lists every other form the name
+    satisfies, and that `referent_declared: true` has the pin file to show for
+    it. A `<Domainx><Product>` name is a domain descendant only when the
+    matching `open<Product>` is in `neutral_product_pins:` and
+    `contracts/<referent>-pin.yaml` exists (2026-09-02: a claim needs a
+    referent). The whole check is OFFLINE.
 
 EXIT CODES: 0 valid · 1 findings · 2 refusal (the file is missing or unreadable)
 """
@@ -47,7 +55,102 @@ QUALIFIED_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-
 REQUIRED_ROLES = {"assembly", "spec", "code"}
 
 
-def _findings(manifest: dict, policy: NamingPolicy) -> list[str]:
+def _declared_pins(manifest: dict) -> set[str]:
+    """The neutral products this manifest DECLARES a pin on.
+
+    `neutral_product_pins:` is the declaration and the ONLY declaration. A
+    leg's `naming.referent_declared:` is a RECORD of one, checked against this
+    set — never folded into it. Reading the record as a declaration would let
+    a `naming:` block assert its own descent, which is a claim promoting
+    itself to a referent: exactly the move the 2026-09-02 ruling forbids.
+    """
+    return {str(pin) for pin in (manifest.get("neutral_product_pins") or []) if pin}
+
+
+def _naming_findings(leg_role, name: str, naming, policy: NamingPolicy,
+                     pins: set[str], root: Path | None) -> list[str]:
+    """Check one leg's OPTIONAL `naming:` record against the policy.
+
+    Absent is fine: the block is a record, not a requirement, and a manifest
+    written before this field existed is not thereby wrong. Present and
+    disagreeing with the classifier is a FINDING, because a record that can
+    drift from the thing it records is worse than no record.
+    """
+    out: list[str] = []
+    if naming is None:
+        return out
+    if not isinstance(naming, dict):
+        return [f"FINDING manifest-naming: leg {leg_role!r}: naming is "
+                f"{naming!r}, expected a mapping"]
+    found = policy.classify(name, str(leg_role) if leg_role else None, pins)
+    if found is None:
+        return out  # already reported as naming-unclassified
+    if naming.get("form") != found.family:
+        out.append(f"FINDING naming-form: leg {leg_role!r}: naming.form is "
+                   f"{naming.get('form')!r}, but {name!r} classifies as "
+                   f"{found.family!r}")
+    recorded_role = naming.get("role")
+    if (recorded_role or None) != found.role:
+        out.append(f"FINDING naming-role: leg {leg_role!r}: naming.role is "
+                   f"{recorded_role!r}, but {name!r} classifies as "
+                   f"{found.role!r}")
+    also = naming.get("also_matches")
+    if also is None:
+        also = []
+    if not isinstance(also, list):
+        out.append(f"FINDING naming-also-matches: leg {leg_role!r}: "
+                   f"also_matches is {also!r}, expected a list")
+    elif sorted(str(a) for a in also) != sorted(found.also_matches):
+        out.append(
+            f"FINDING naming-also-matches: leg {leg_role!r}: also_matches is "
+            f"{sorted(str(a) for a in also)}, but {name!r} also satisfies "
+            f"{sorted(found.also_matches)}. `also_matches` records the forms "
+            "that were NOT chosen; it is not a place to add or drop one.")
+
+    # The referent. `descendant_referents()` returns every spelling that would
+    # serve — `open<Product>` canonically, and the x-stem `openx<Product>` the
+    # neutral family also admits — so the record and the pins are checked
+    # against the same set the classifier consulted, not against one spelling.
+    referents = policy.descendant_referents(name)
+    recorded_referent = naming.get("descendant_referent")
+    if not referents:
+        if recorded_referent is not None:
+            out.append(
+                f"FINDING naming-referent: leg {leg_role!r}: "
+                f"descendant_referent is {recorded_referent!r}, but {name!r} "
+                "is not in `<Domainx><Product>` form and claims descent from "
+                "nothing")
+        return out
+
+    if recorded_referent is not None and str(recorded_referent) not in referents:
+        out.append(
+            f"FINDING naming-referent: leg {leg_role!r}: descendant_referent "
+            f"is {recorded_referent!r}, but {name!r} would need "
+            + " or ".join(referents))
+    declared_pins = {pin.casefold() for pin in pins}
+    satisfied = next((r for r in referents if r.casefold() in declared_pins), None)
+    declared = naming.get("referent_declared")
+    if declared is not None and bool(declared) != (satisfied is not None):
+        out.append(
+            f"FINDING naming-referent-declared: leg {leg_role!r}: "
+            f"referent_declared is {declared!r}, but " + " / ".join(referents)
+            + (" is" if len(referents) == 1 else " are")
+            + (" in" if satisfied else " not in")
+            + " this manifest's `neutral_product_pins:`. A descendant form is "
+            "a claim; the pin is the referent.")
+    if declared is True and satisfied and root is not None:
+        pin_path = root / "contracts" / f"{satisfied.lower()}-pin.yaml"
+        if not pin_path.is_file():
+            out.append(
+                f"FINDING naming-referent-missing: leg {leg_role!r}: "
+                f"{satisfied} is declared as this leg's referent, but "
+                f"{pin_path.relative_to(root)} does not exist. A declared pin "
+                "that is not in the tree is a claim wearing the costume of a "
+                "referent.")
+    return out
+
+
+def _findings(manifest: dict, policy: NamingPolicy, root=None) -> list[str]:
     out: list[str] = []
 
     def bad(code: str, detail: str) -> None:
@@ -125,6 +228,13 @@ def _findings(manifest: dict, policy: NamingPolicy) -> list[str]:
         bad("manifest-legs", "legs is missing or empty")
         return out
 
+    pins = _declared_pins(manifest)
+    declared_pins = manifest.get("neutral_product_pins")
+    if declared_pins is not None and not isinstance(declared_pins, list):
+        bad("manifest-neutral-product-pins",
+            f"neutral_product_pins is {declared_pins!r}, expected a list of "
+            "neutral product names")
+
     roles = [leg.get("role") for leg in legs if isinstance(leg, dict)]
     if sorted(r for r in roles if r) != sorted(REQUIRED_ROLES):
         bad("manifest-roles",
@@ -147,18 +257,24 @@ def _findings(manifest: dict, policy: NamingPolicy) -> list[str]:
             continue
         owners.add(repository.split("/", 1)[0])
         name = repo_basename(repository)
-        found = policy.classify(name)
+        # The DECLARED role and the declared pins are what the classifier is
+        # given, because that is what the project says about itself. A role
+        # only wins where the NAME satisfies it, so declaring `assembly` over
+        # `<Project>-spec` still lands in naming-role-mismatch below.
+        found = policy.classify(name, str(role) if role else None, pins)
         if found is None:
             bad("naming-unclassified",
                 f"leg {role!r}: {name!r} matches no family in the naming policy")
         elif found[0] != "project-leg":
             bad("naming-not-a-leg",
                 f"leg {role!r}: {name!r} classifies as {found[0]!r}, not as a "
-                "project leg")
+                f"project leg ({found.reason})")
         elif found[1] != role:
             bad("naming-role-mismatch",
                 f"leg {role!r}: {name!r} is the {found[1]!r} form of the "
                 "project-leg family")
+        out.extend(_naming_findings(role, name, leg.get("naming"), policy,
+                                    pins, root))
         if not isinstance(path, str) or not path:
             bad("manifest-leg-path", f"leg {role!r}: path is {path!r}")
             continue
@@ -207,7 +323,7 @@ def main(argv: list[str] | None = None) -> int:
         print(str(exc), file=sys.stderr)
         return 2
 
-    findings = _findings(manifest, policy)
+    findings = _findings(manifest, policy, root)
     for finding in findings:
         print(finding, file=sys.stderr)
     if findings:
