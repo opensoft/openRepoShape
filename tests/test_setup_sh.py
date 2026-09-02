@@ -26,7 +26,8 @@ pytestmark = pytest.mark.skipif(shutil.which("bash") is None,
                                 reason="setup.sh needs bash")
 
 
-def run_setup(*args: str, stdin: str = "") -> subprocess.CompletedProcess:
+def run_setup(*args: str, stdin: str = "",
+             cwd: Path | None = None) -> subprocess.CompletedProcess:
     env = dict(os.environ)
     env.setdefault("GIT_AUTHOR_NAME", "openRepoShape tests")
     env.setdefault("GIT_AUTHOR_EMAIL", "tests@openreposhape.invalid")
@@ -34,14 +35,38 @@ def run_setup(*args: str, stdin: str = "") -> subprocess.CompletedProcess:
     env.setdefault("GIT_COMMITTER_EMAIL", "tests@openreposhape.invalid")
     return subprocess.run(["bash", str(SETUP), *args], capture_output=True,
                           text=True, check=False, input=stdin, env=env,
-                          cwd=str(REPO))
+                          cwd=str(cwd) if cwd is not None else str(REPO))
+
+
+def make_fork_dir(tmp_path: Path, origin_url: str, upstream_url: str) -> Path:
+    """A directory that IS a git repo (so setup.sh's origin/upstream remote
+    reads have something to find) but is not itself an openRepoShape checkout.
+
+    setup.sh reads its `origin`/`upstream` remotes from the directory it was
+    RUN FROM ($INVOCATION_DIR), not from $SCRIPT_DIR (where setup.sh itself
+    lives, still this REPO) — the two are the same for a real fork clone, and
+    deliberately different here so this test does not depend on this
+    checkout's own `origin`, whatever that happens to be.
+    """
+    fork = tmp_path / "fork"
+    fork.mkdir()
+    git("init", "-q", cwd=fork)
+    git("remote", "add", "origin", origin_url, cwd=fork)
+    git("remote", "add", "upstream", upstream_url, cwd=fork)
+    return fork
 
 
 @pytest.fixture(scope="module")
 def setup_run(tmp_path_factory) -> dict:
-    """One real `setup.sh` run, end to end, with no network."""
+    """One real `setup.sh` run, end to end, with no network.
+
+    `--org` is explicit here (not what this fixture is testing) because
+    local mode now reads the real `origin` remote of the directory it runs
+    in — see `make_fork_dir` — and this suite must pass identically whether
+    that directory happens to be a fork or, as in CI, opensoft's own clone.
+    """
     base = tmp_path_factory.mktemp("setup")
-    result = run_setup("--project", "Sample", "--yes",
+    result = run_setup("--project", "Sample", "--yes", "--org", "demoorg",
                        "--local-remote-dir", str(base / "remotes"),
                        "--into", str(base / "work"))
     return {"base": base, "result": result, "clone": base / "work" / "Sample"}
@@ -126,7 +151,7 @@ def test_a_bad_visibility_refuses():
 
 
 def test_a_name_outside_the_naming_policy_stops_before_the_scaffold(tmp_path):
-    result = run_setup("--project", "Sample_One", "--yes",
+    result = run_setup("--project", "Sample_One", "--yes", "--org", "demoorg",
                        "--local-remote-dir", str(tmp_path / "remotes"),
                        "--into", str(tmp_path / "work"))
     assert result.returncode == 1
@@ -155,6 +180,48 @@ def test_allow_upstream_org_lets_it_through(tmp_path):
     assert result.returncode == 0, result.stderr
     manifest = (tmp_path / "work" / "Sample" / "project.yaml").read_text()
     assert "repository: opensoft/Sample" in manifest
+
+
+def test_org_is_detected_from_the_origin_remote_ssh_url(tmp_path):
+    """The real-world defect: `gh repo fork opensoft/openRepoShape --org
+    ExampleOrg --clone` leaves a clone with an `origin` (the fork) AND an
+    `upstream` (opensoft) remote. `gh repo view` with no argument resolves
+    the current repository by ITS OWN preference between the two, which can
+    pick `upstream` and report `opensoft` for a perfectly correct fork — the
+    upstream-org guard then refuses a clone that was never wrong. `origin`
+    is unambiguous, so it is what gets read."""
+    fork = make_fork_dir(tmp_path,
+                         origin_url="git@github.com:ExampleOrg/openRepoShape.git",
+                         upstream_url="git@github.com:opensoft/openRepoShape.git")
+    result = run_setup("--project", "Sample", "--yes",
+                       "--local-remote-dir", str(tmp_path / "remotes"),
+                       "--into", str(tmp_path / "work"), cwd=fork)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "which is the UPSTREAM" not in result.stderr
+    assert "organisation ExampleOrg" in result.stdout
+    assert "upstream is opensoft; scaffolding into ExampleOrg" in result.stdout
+    manifest = (tmp_path / "work" / "Sample" / "project.yaml").read_text()
+    assert "repository: ExampleOrg/Sample" in manifest
+    assert "repository: ExampleOrg/Sample-spec" in manifest
+    assert "repository: ExampleOrg/Sample-code" in manifest
+
+
+def test_org_is_detected_from_the_origin_remote_https_url(tmp_path):
+    """Same defect, HTTPS remotes instead of SSH."""
+    fork = make_fork_dir(tmp_path,
+                         origin_url="https://github.com/ExampleOrg/openRepoShape.git",
+                         upstream_url="https://github.com/opensoft/openRepoShape.git")
+    result = run_setup("--project", "Sample", "--yes",
+                       "--local-remote-dir", str(tmp_path / "remotes"),
+                       "--into", str(tmp_path / "work"), cwd=fork)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "which is the UPSTREAM" not in result.stderr
+    assert "organisation ExampleOrg" in result.stdout
+    assert "upstream is opensoft; scaffolding into ExampleOrg" in result.stdout
+    manifest = (tmp_path / "work" / "Sample" / "project.yaml").read_text()
+    assert "repository: ExampleOrg/Sample" in manifest
+    assert "repository: ExampleOrg/Sample-spec" in manifest
+    assert "repository: ExampleOrg/Sample-code" in manifest
 
 
 def test_no_confirmation_and_no_terminal_refuses_after_showing_the_plan(tmp_path):

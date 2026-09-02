@@ -181,24 +181,51 @@ detect_org_from_url() {
 	printf '%s' "${rest%%/*}"
 }
 
+# `gh repo view` with no argument resolves the CURRENT repository by its own
+# rules, and on a fork clone (two remotes: `origin` is the fork, `upstream` is
+# opensoft/openRepoShape) it can prefer `upstream` over `origin` — reporting
+# `opensoft` for a perfectly correct fork and tripping the upstream-org guard
+# below on a clone that was never wrong. `origin` is the remote that means
+# "this clone", in every mode, so it is read directly and parsed by hand;
+# `gh repo view` is consulted only as a fallback, and only ON THE ORIGIN URL
+# itself (never bare), so it cannot go pick `upstream` either.
+#
+# Read against $INVOCATION_DIR, not the current directory — by the time we
+# are here that is $SCRIPT_DIR (the `cd` a few lines up), which is wherever
+# this FILE lives rather than the clone the person is standing in. The two
+# are the same for the README's own `cd openRepoShape && ./setup.sh` usage;
+# they differ only when setup.sh is invoked by a path from elsewhere, and
+# then the clone you are IN is the one whose organisation you mean.
+ORIGIN_URL="$(git -C "$INVOCATION_DIR" remote get-url origin 2>/dev/null || true)"
+ORIGIN_ORG=""
+if [ -n "$ORIGIN_URL" ]; then
+	ORIGIN_ORG="$(detect_org_from_url "$ORIGIN_URL")"
+fi
+
 if [ -n "$ORG" ]; then
 	ok "organisation $ORG (from --org)"
+elif [ -n "$ORIGIN_ORG" ]; then
+	ORG="$ORIGIN_ORG"
+	ok "organisation $ORG (from the \`origin\` remote: $ORIGIN_URL)"
+elif [ -n "$ORIGIN_URL" ] && [ "$LOCAL_MODE" -ne 1 ] \
+	&& ORG="$(gh repo view "$ORIGIN_URL" --json owner --jq .owner.login 2>/dev/null)" \
+	&& [ -n "$ORG" ]; then
+	ok "organisation $ORG (from \`gh repo view\` on the origin URL: $ORIGIN_URL; could not parse it by hand)"
 elif [ "$LOCAL_MODE" -eq 1 ]; then
 	ORG="localorg"
-	ok "organisation $ORG (placeholder; --local-remote-dir creates nothing on GitHub)"
+	ok "organisation $ORG (placeholder; no \`origin\` remote to read, and --local-remote-dir creates nothing on GitHub)"
 else
-	if ORG="$(gh repo view --json owner --jq .owner.login 2>/dev/null)" && [ -n "$ORG" ]; then
-		ok "organisation $ORG (from \`gh repo view\` on this clone's origin)"
-	else
-		REMOTE_URL="$(git remote get-url origin 2>/dev/null || true)"
-		if [ -z "$REMOTE_URL" ]; then
-			die "cannot work out which organisation to scaffold into: this clone has no \`origin\` remote and no --org was given. Re-run with --org <your-org>."
-		fi
-		ORG="$(detect_org_from_url "$REMOTE_URL")"
-		if [ -z "$ORG" ]; then
-			die "cannot parse an owner out of the origin remote '$REMOTE_URL'. Re-run with --org <your-org>."
-		fi
-		ok "organisation $ORG (parsed from the origin remote; \`gh repo view\` was unavailable)"
+	die "cannot work out which organisation to scaffold into: this clone has no \`origin\` remote and no --org was given. Re-run with --org <your-org>."
+fi
+
+# The normal fork shape: `origin` is the fork, `upstream` is opensoft's. Name
+# it so a person who did not expect an `upstream` remote at all is not left
+# guessing why the detected organisation is not opensoft's.
+UPSTREAM_REMOTE_URL="$(git -C "$INVOCATION_DIR" remote get-url upstream 2>/dev/null || true)"
+if [ -n "$UPSTREAM_REMOTE_URL" ]; then
+	UPSTREAM_REMOTE_ORG="$(detect_org_from_url "$UPSTREAM_REMOTE_URL")"
+	if [ -n "$UPSTREAM_REMOTE_ORG" ] && [ -n "$ORIGIN_ORG" ] && [ "$UPSTREAM_REMOTE_ORG" != "$ORIGIN_ORG" ]; then
+		say "  upstream is $UPSTREAM_REMOTE_ORG; scaffolding into $ORG"
 	fi
 fi
 
@@ -208,11 +235,12 @@ fi
 # repositories.
 #
 # It applies in EVERY mode, --local-remote-dir included. What is skipped for a
-# local run is org DETECTION, not this refusal: `--org` is what a scaffolded
-# `project.yaml` records as the owner of all three legs, so a manifest reading
-# `opensoft/Sample` written from an upstream clone is exactly as wrong as three
-# repositories in the wrong place. A local run that names no --org gets the
-# `localorg` placeholder, so the guard never fires by surprise.
+# local run is the `gh` call, not the origin-remote read: `--org` is what a
+# scaffolded `project.yaml` records as the owner of all three legs, so a
+# manifest reading `opensoft/Sample` written from an upstream clone is exactly
+# as wrong as three repositories in the wrong place. A local run with no
+# `origin` remote and no --org gets the `localorg` placeholder, so the guard
+# never fires by surprise.
 if [ "$ORG" = "$UPSTREAM_ORG" ] && [ "$ALLOW_UPSTREAM_ORG" -ne 1 ]; then
 	die "the detected organisation is '$UPSTREAM_ORG', which is the UPSTREAM. You have almost certainly cloned opensoft/openRepoShape instead of a fork of it, and scaffolding here would create three repositories in the wrong organisation.
 
