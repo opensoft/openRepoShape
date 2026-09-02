@@ -1,0 +1,31 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+"""Run this standard's bootstrap against a project that was not scaffolded.
+
+    cd /path/to/any/project
+    /path/to/openRepoShape/bootstrap
+
+A SCAFFOLDED project does not need this: `scaffold-project.py` COPIES
+`templates/assembly-root/scripts/bootstrap.py` into the assembly root, so the
+project is self-contained and `make bootstrap` runs its own copy at the pinned
+revision. That is the recommended arrangement and the one the README documents.
+
+This shim exists for the other case the doctrine requires to work: a project
+that has NOT elected the schema — one repository, no manifest, no submodules —
+still gets the same command, because a bootstrap that existed only for electing
+projects would make the election worth something operationally. It runs the
+canonical copy against the current directory.
+"""
+
+from __future__ import annotations
+
+import runpy
+import sys
+from pathlib import Path
+
+SHAPE = Path(__file__).resolve().parent
+TARGET = SHAPE / "templates" / "assembly-root" / "scripts" / "bootstrap.py"
+
+sys.path.insert(0, str(SHAPE / "scripts"))
+sys.argv = ["bootstrap", "--root", str(Path.cwd()), *sys.argv[1:]]
+runpy.run_path(str(TARGET), run_name="__main__")
