@@ -64,7 +64,12 @@ VALIDATORS = (
 
 
 def _run(root: Path, args: list[str]) -> int:
+    # Flush first: this process's own stdout is block-buffered when it is a
+    # pipe, and a child writing straight to the fd would otherwise appear
+    # BEFORE the heading that introduces it.
+    sys.stdout.flush()
     proc = subprocess.run([sys.executable, *args], cwd=str(root), check=False)
+    sys.stdout.flush()
     return proc.returncode
 
 
@@ -85,7 +90,7 @@ def checkout_tracking_branch(root: Path, leg: dict, branch: str) -> None:
     role = leg.get("role")
     sub = root / path
     if not (sub / ".git").exists():
-        print(f"  {role:<8} {path}: NOT INITIALIZED. Run "
+        print(f"  [{role}] {path}: NOT INITIALIZED. Run "
               f"`git submodule update --init {path}` — the validators below "
               f"will refuse until you do.")
         return
@@ -97,10 +102,10 @@ def checkout_tracking_branch(root: Path, leg: dict, branch: str) -> None:
 
     if local is None:
         if pin is None:
-            print(f"  {role:<8} {path}: no gitlink recorded; leaving as is")
+            print(f"  [{role}] {path}: no gitlink recorded; leaving as is")
             return
         if _try_git(["checkout", "-q", "-b", branch, pin], sub) is None:
-            print(f"  {role:<8} {path}: could not create branch {branch!r} at "
+            print(f"  [{role}] {path}: could not create branch {branch!r} at "
                   f"the pin {_short(pin)}; leaving detached")
             return
         if remote is not None:
@@ -110,19 +115,19 @@ def checkout_tracking_branch(root: Path, leg: dict, branch: str) -> None:
         if remote is not None and remote != pin:
             state = (f"at the pin; origin/{branch} is {_short(remote)}, which "
                      f"the pin deliberately does NOT follow")
-        print(f"  {role:<8} {path}: branch {branch} created at "
+        print(f"  [{role}] {path}: branch {branch} created at "
               f"{_short(pin)} — {state}")
         return
 
     if local == pin:
         _try_git(["checkout", "-q", branch], sub)
-        print(f"  {role:<8} {path}: on {branch} at {_short(pin)} "
+        print(f"  [{role}] {path}: on {branch} at {_short(pin)} "
               f"(branch tip == pin)")
         return
 
-    print(f"  {role:<8} {path}: PIN {_short(pin)} != branch {branch} tip "
+    print(f"  [{role}] {path}: PIN {_short(pin)} != branch {branch} tip "
           f"{_short(local)}")
-    print(f"           not moving an existing branch. The checkout stays at "
+    print(f"          not moving an existing branch. The checkout stays at "
           f"the pin; the recorded pin is authoritative and advancing it is an "
           f"explicit commit in this repository.")
 
