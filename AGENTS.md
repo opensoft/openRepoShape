@@ -1,10 +1,11 @@
-# AGENTS.md — scaffolding, adopting, and declaring descent
+# AGENTS.md — scaffolding, adopting, updating, and declaring descent
 
 You are an AI assistant in a checkout (usually a FORK) of `openRepoShape` and a
 human has said "scaffold a new project with this shape", or "convert this
 repository to it". This is the whole procedure; `README.md` says what the shape
-is. Sections 1-3 scaffold a NEW project; the two after them cover an EXISTING
-repository and a project that declares descent from a neutral product.
+is. Sections 1-3 scaffold a NEW project; the three after them cover an
+EXISTING repository, a project that declares descent from a neutral product,
+and a project whose copied shape files have fallen behind the upstream.
 
 ## The rules that outrank the rest
 
@@ -121,6 +122,40 @@ With no pin, `MedxGlass` is an ordinary assembly root and the manifest records
 the overlap. If the repository they name already exists and is EMPTY, add
 `--reuse-empty-repo`; if it has commits, it is a live repository and adopt is
 the tool, not scaffold.
+
+## Updating a project's shape
+
+An upstream fix to a COPIED file — the three validators, `bootstrap.py`, the
+Makefile, `validate.yml` — reaches no project by itself, because the project
+holds copies rather than a mount. `update-shape.py` re-copies and re-pins. It
+never merges, and every refusal below is deliberate.
+
+```sh
+./update-shape.py check --root <path-to-the-project>
+# 2. show the human the per-file verdicts and get an explicit yes
+./update-shape.py apply --root <path> --at <commit> --yes \
+    --branch shape/update-<sha>
+git -C <path> push -u origin shape/update-<sha>   # then open a pull request
+```
+
+1. **`check` first, always.** It writes nothing and prints one verdict per
+   PINNED file: `unchanged`, `upstream-changed`, `locally-modified` (the
+   project edited its own copy) or `both`. A file with no row in
+   `contracts/shape-pin.yaml` is not a shape copy and is none of your business
+   — an adopted project merged some of them away on purpose.
+2. **Show the human the verdicts and let them say yes.** Re-pinning records
+   which openRepoShape this project is a copy of. Do not pass `--yes` on your
+   own initiative.
+3. **Never pass `--accept-local` to make a refusal go away.** It re-pins a
+   locally edited file FROM THE PROJECT'S OWN BYTES, which makes the drift
+   `validate-pins.py` reports today invisible. Whether the project keeps its
+   edit is the human's decision; the other two exits are to revert it or to
+   carry it upstream.
+4. **`both` is a merge, and the tool refuses it.** Merge by hand, commit, then
+   re-run with `--accept-local <path>` on the file you merged.
+5. `apply` runs the project's own `validate-pins.py` and `validate-manifest.py`
+   and rolls every byte back if either goes red. Land it as a pull request;
+   never suggest a push to the default branch.
 
 ## What you must not tell them
 
