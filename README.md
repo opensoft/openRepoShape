@@ -80,12 +80,85 @@ ROLE wins and it is an ordinary assembly root. Read as a fact instead of a
 claim, the form refused every project in a `<Domainx>` family org on the first
 pilot.
 
+A descendant MAY CARRY LEGS — the second half of the same day's ruling.
+Descent and the three-repository shape are independent facts: `MedxGlass` pins
+`openGlass` AND is the assembly root mounting `MedxGlass-spec` and
+`MedxGlass-code`, so `form: domain-descendant, role: assembly,
+referent_declared: true` is a valid classification for a root.
+`scaffold-project.py --pin openGlass@<40 hex>` writes the pin and the manifest
+entry together. The legs are not descendants of anything: `MedxGlass-spec`
+carries the lowercase suffix and says so.
+
 The declaration is `neutral_product_pins:` in `project.yaml`, a fact in the
 project's own tree, so classification stays OFFLINE — it never asks GitHub
 whether `open<Product>` exists. The overlap is not discarded either: each leg's
 `naming:` block records `form`, `role` and `also_matches`, so a resolved
 overlap stays visible to the next reader. `validate-repository-naming.py`
 answers the same question for one name with `--role`, `--pins` and `--explain`.
+
+## Adopting an existing repository
+
+A repository that already exists is converted **in place**, by
+`adopt-project.py`, and this is a ruling (**Brett Heap, 2026-09-02**): it KEEPS
+ITS NAME, ITS IDENTITY AND ITS FULL HISTORY and becomes the assembly root, while
+`<Project>-spec` and `<Project>-code` are NEW repositories extracted with
+history-preserving filters. The source is never deleted, never renamed and
+never force-pushed; the only change to it is ONE split commit, arriving on a
+branch by pull request — the organisations this serves are pull-request only,
+and a tool needing a bypass cannot be used where it is needed.
+
+```sh
+./adopt-project.py plan --source MedxSoft/MedxEHR --project MedxEHR
+#   ... a human or an AI answers every `review_required` entry in the plan
+./adopt-project.py check   --plan adoption-plan.yaml
+./adopt-project.py execute --plan adoption-plan.yaml --yes
+```
+
+`git filter-repo` is a **hard dependency** — `pip install git-filter-repo`, or
+the same name from apt or brew. It is deliberately not vendored: history
+extraction has one correct implementation, and a copy is a second one that
+drifts.
+
+### The worked example: MedxEHR — 167 files, 25 commits, three arguments
+
+| what | where | why |
+|---|---|---|
+| `contracts/*.yaml` | **spec** | the code READS them and still does not own them; from `code/` they are `../spec/contracts` |
+| `medx_ehr/`, `tests/`, `scripts/`, `docker/`, `.github/workflows/` | **code** | the implementation, its tests, its build and its CI |
+| `openspec/`, `specs/` | **spec** | what the project has decided |
+| `.specify/`, `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, … , `.cursor/`, `.roo/` | **root** | project-level workflow tooling spanning both legs |
+| `examples/golden-run/` | **asked** | acceptance evidence the spec cites, or a test fixture? |
+
+The contracts decision costs something, and the plan says so instead of
+letting it be discovered later: `scripts/validate.py` reads `contracts/*.yaml`
+from beside it and must now read ACROSS the root. `plan` finds every such file
+with `git grep` and writes it into `follow_ups:`; the root Makefile it
+materializes exports `CONTRACTS_DIR ?= $(CURDIR)/spec/contracts`. The tool
+does not make the edit — naming it is the honest half, making it silently
+would be the dangerous one. And `.specify/` and the ten identical assistant
+stubs stay at the root because an assistant reading `CLAUDE.md` from inside
+the code leg would be told about specifications it cannot see.
+
+### Ambiguous is an answer, and nothing is overwritten
+
+`contracts/path-classification.yaml` maps path globs to `spec | code | root |
+ambiguous`, first match wins, each with a reason. The fourth class is not a
+failure: a classifier that guessed at `examples/golden-run/` would be wrong
+about half the time and silent about it. Those entries get `leg: null`,
+`review_required: true` and the QUESTION; `execute` refuses while any remain,
+because an unanswered question is never an implicit `root`.
+
+A shape file whose name the source already holds — `README.md`, `Makefile`,
+`.gitignore` — is written under `shape/` and the collision becomes a follow-up
+for a human to merge. Then `execute` VERIFIES: every source path at the source
+commit is in exactly one of {spec leg, code leg, root tree after the split}
+**by blob sha**, or listed as `drop`. Counting paths would pass a split that
+truncated a file; blob shas cannot, and a path in two places is as much a
+finding as a path in none.
+
+An empty repository is not a live one: `scaffold-project.py --reuse-empty-repo`
+uses a zero-commit `<org>/<Project>` as the assembly root, and refuses one with
+commits by naming `adopt-project.py` instead.
 
 ## The double pin, and the lockstep invariant
 
@@ -147,10 +220,14 @@ only: a required check in the repository that owns the object is what confers.
 
 ```
 contracts/repository-naming.yaml  the four naming families, as data
+contracts/path-classification.yaml  which leg a path belongs in, as data
 scripts/repo_shape.py             shared helpers: YAML subset reader, digests
+scripts/path_classify.py          the classifier over the path policy
+scripts/shape_materialize.py      the ONE materializer, used by both tools
 scripts/validate-repository-naming.py
 setup.sh                          fork, clone, run one command
 scaffold-project.py               creates the three repositories and the pins
+adopt-project.py                  converts an EXISTING repository in place
 bootstrap                         bootstrap a project that was never scaffolded
 templates/assembly-root/          the skeleton materialized for <Project>
 templates/spec-root/              the skeleton for <Project>-spec

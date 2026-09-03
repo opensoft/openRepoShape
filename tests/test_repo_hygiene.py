@@ -88,8 +88,15 @@ def test_the_shape_pin_template_carries_a_files_block():
 
 
 def test_agents_md_is_short_enough_to_be_read():
+    """The cap moved 80 -> 140 on 2026-09-02, once, because the file now
+    carries THREE procedures rather than one: scaffold, adopt an existing
+    repository, and scaffold a declared descendant. An adopt procedure that
+    lived outside the file an assistant is told to read is an adopt procedure
+    performed from memory, which is the failure this file exists to prevent.
+    The cap still bites: it is what stops the third procedure from growing
+    into an essay."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 80, f"AGENTS.md is {len(lines)} lines; the cap is 80"
+    assert len(lines) <= 140, f"AGENTS.md is {len(lines)} lines; the cap is 140"
 
 
 def test_claude_md_points_at_agents_md():
@@ -97,12 +104,14 @@ def test_claude_md_points_at_agents_md():
 
 
 def test_readme_is_short_enough_to_be_read():
-    """The cap moved 150 -> 172 on 2026-09-02, once, for the ruling that a
-    descendant form is a claim needing a referent. A cap that never moves for
-    a rule the standard actually gained is a cap that pushes the rule into
+    """The cap moved 150 -> 172 -> 245 on 2026-09-02, twice in one day and
+    both times for a rule the standard actually gained: first the referent
+    ruling, then adoption in place — a second tool, a second policy file and
+    the MedxEHR worked example that makes the three decisions arguable rather
+    than folkloric. A cap that never moves for a rule pushes the rule into
     tribal memory instead; a cap that moves for prose is not a cap."""
     lines = (REPO / "README.md").read_text().splitlines()
-    assert len(lines) <= 172, f"README.md is {len(lines)} lines; the cap is 172"
+    assert len(lines) <= 245, f"README.md is {len(lines)} lines; the cap is 245"
 
 
 def test_setup_sh_is_executable_and_fails_loudly():
