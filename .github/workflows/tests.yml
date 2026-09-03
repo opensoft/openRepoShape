@@ -60,7 +60,7 @@ jobs:
           version=1.7.12
           archive="actionlint_${version}_linux_amd64.tar.gz"
           sha256=8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
-          curl -sSL -o "$archive" \
+          curl --proto '=https' --tlsv1.2 -sSL -o "$archive" \
             "https://github.com/rhysd/actionlint/releases/download/v${version}/${archive}"
           echo "${sha256}  ${archive}" | sha256sum -c -
           tar -xzf "$archive" actionlint
