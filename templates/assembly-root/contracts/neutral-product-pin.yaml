@@ -1,0 +1,47 @@
+schema_version: 1
+kind: pinned_contract_manifest
+
+# ===========================================================================
+# neutral-product-pin.yaml — THE TEMPLATE for a pin on a neutral product.
+#
+# This file is not copied into a project under this name. It is RENDERED once
+# per declared pin as `contracts/<product lowercased>-pin.yaml` — so a project
+# declaring `openGlass` carries `contracts/openglass-pin.yaml` — by
+# `scaffold-project.py --pin <openProduct>@<commit>`.
+#
+# WHAT IT IS FOR. `<Domainx><Product>` is a CLAIM of descent and a claim needs
+# a REFERENT (Brett Heap, 2026-09-02). The referent is a pin the project
+# DECLARES: `neutral_product_pins:` in `project.yaml` names the product and
+# this file carries the commit and digest that make the declaration a fact in
+# the project's own tree. That is what keeps the check OFFLINE — classifying
+# `MedxGlass` never asks GitHub whether `openGlass` exists.
+#
+# IT CONFERS NOTHING, like every other file here. Declaring descent grants no
+# review authority over the product, no clearance, and no gate standing; it
+# records which neutral product this project's name descends from and at which
+# commit that reading was taken.
+#
+# A COMMIT, NEVER A TAG. A tag can be moved and a commit cannot; a pin never
+# expresses a range. The digest is `sorted-ls-tree-r-v1`, the same definition
+# every other pin here uses, computed over the product's tree at that commit.
+# ===========================================================================
+
+pin_role: neutral-product
+product: {{PIN_PRODUCT}}
+source_repository: {{PIN_REPOSITORY}}
+materialization: referenced
+
+commit: "{{PIN_COMMIT}}"
+revision_kind: commit
+
+digest_algorithm: sha256
+digest_definition: {{DIGEST_DEFINITION}}
+digests:
+  tree_sha256: "{{PIN_TREE_SHA256}}"
+
+# How the digest above was read, so a later reader knows whether it came from
+# a clone on this machine or from the forge's own tree listing.
+digest_source: {{PIN_DIGEST_SOURCE}}
+
+declared_in: project.yaml
+verify_pin: scripts/validate-manifest.py
