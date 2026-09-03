@@ -25,6 +25,14 @@ from repo_shape import load_yaml  # noqa: E402
 PROJECT = "Northwind"
 ANSWERS = (("examples/", "spec"), (".claude/", "root"), ("release.yaml", "root"))
 
+#: `execute` REQUIRES `git filter-repo` and says so with an install hint. A
+#: machine without it skips this file rather than failing it — the refusal
+#: itself is tested in `test_adopt_plan.py`, which needs no such tool — while
+#: CI installs it, so the end-to-end path never quietly stops running.
+pytestmark = pytest.mark.skipif(
+    shutil.which("git-filter-repo") is None,
+    reason="git filter-repo is not installed: `pip install git-filter-repo`")
+
 
 @pytest.fixture(scope="module")
 def adopted(tmp_path_factory) -> dict:

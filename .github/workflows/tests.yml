@@ -26,6 +26,15 @@ jobs:
       - name: install the test runner
         run: python3 -m pip install --disable-pip-version-check pytest
 
+      # `git filter-repo` is what `adopt-project.py` extracts a leg's history
+      # with, and it is a REQUIREMENT rather than a vendored copy: history
+      # extraction has one correct implementation. It is a test-environment
+      # dependency here in exactly the way it is a runtime dependency there —
+      # the adoption suite SKIPS without it, so this step is what stops the
+      # end-to-end tests from quietly not running.
+      - name: install git-filter-repo
+        run: python3 -m pip install --disable-pip-version-check git-filter-repo
+
       - name: git identity for the scaffolded commits
         run: |
           git config --global user.name  'openRepoShape CI'
