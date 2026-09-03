@@ -269,7 +269,9 @@ if [ -z "$ELECTED_BY" ] && [ "$LOCAL_MODE" -ne 1 ]; then
 	ELECTED_BY="$(gh api user --jq .login 2>/dev/null || true)"
 fi
 if [ -z "$ELECTED_BY" ]; then
-	ELECTED_BY="$(git config user.name 2>/dev/null || true)"
+	# Per-invocation identity first (GIT_AUTHOR_NAME), then the repo/global
+	# config, then the gh login — never a global config WRITE.
+	ELECTED_BY="${GIT_AUTHOR_NAME:-$(git config user.name 2>/dev/null || true)}"
 fi
 if [ -z "$ELECTED_BY" ]; then
 	die "cannot work out who is electing this shape. Re-run with --elected-by 'Your Name' — the manifest records whose act it was."

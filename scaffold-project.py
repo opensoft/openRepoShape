@@ -35,6 +35,7 @@ EXIT CODES: 0 done · 1 nothing (dry run prints and exits 0) · 2 refusal.
 
 from __future__ import annotations
 
+import os
 import argparse
 import datetime as _dt
 import json
@@ -389,13 +390,15 @@ def _scaffold(args) -> int:  # noqa: C901
     elected_by = args.elected_by
     if not elected_by:
         try:
-            elected_by = git_out(["config", "user.name"], cwd=SHAPE_ROOT)
+            # Per-invocation identity first, then the config — never a global
+            # config write (see the CI workflow note, 2026-09-03).
+            elected_by = (os.environ.get("GIT_AUTHOR_NAME") or "").strip() or git_out(["config", "user.name"], cwd=SHAPE_ROOT)
         except Refusal:
             elected_by = ""
     if not elected_by:
         raise Refusal(
             "scaffold-no-elector",
-            "no --elected-by and no `git config user.name`. Electing this "
+            "no --elected-by, no GIT_AUTHOR_NAME and no `git config user.name`. Electing this "
             "shape is a human's act and the manifest records whose.",
             "Remediation: re-run with --elected-by 'Your Name'.",
         )

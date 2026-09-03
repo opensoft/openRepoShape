@@ -41,10 +41,18 @@ jobs:
           python3 -m pip install --disable-pip-version-check \
               git-filter-repo==2.47.0
 
-      - name: git identity for the scaffolded commits
+      # Per-invocation identity, never `git config --global`: a lane that
+      # mirrors this step on a workstation must not be able to rewrite the
+      # operator's ~/.gitconfig (it happened on 2026-09-03). The scaffold,
+      # adopt, update-shape and the test fixtures all honour these variables.
+      - name: git identity for the scaffolded commits (env, not global config)
         run: |
-          git config --global user.name  'openRepoShape CI'
-          git config --global user.email 'ci@openreposhape.invalid'
+          {
+            echo "GIT_AUTHOR_NAME=openRepoShape CI"
+            echo "GIT_AUTHOR_EMAIL=ci@openreposhape.invalid"
+            echo "GIT_COMMITTER_NAME=openRepoShape CI"
+            echo "GIT_COMMITTER_EMAIL=ci@openreposhape.invalid"
+          } >> "$GITHUB_ENV"
 
       - name: tests
         run: python3 -m pytest tests -q
