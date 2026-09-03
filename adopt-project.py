@@ -73,6 +73,11 @@ from shape_materialize import (  # noqa: E402
     CommandFailed, env_commit, materialize_assembly_root, naming_block, run,
 )
 
+#: The naming policy this tool classifies leg names against. One constant,
+#: because three spellings of the same path is how the second one goes stale.
+NAMING_POLICY = SHAPE_ROOT / "contracts" / "repository-naming.yaml"
+PATH_POLICY = SHAPE_ROOT / "contracts" / "path-classification.yaml"
+
 PLAN_KIND = "adoption-plan"
 ADOPT_BRANCH = "adopt/three-repo-shape"
 COLLISION_DIR = "shape"
@@ -431,9 +436,8 @@ def render_plan(args, source: Source, entries: list[Entry], names: dict,
 def cmd_plan(args) -> int:
     work_root = _work_root(args)
     source = Source.open(args.source, work_root)
-    policy = PathPolicy.load(args.path_policy or
-                             SHAPE_ROOT / "contracts" / "path-classification.yaml")
-    naming = NamingPolicy.load(SHAPE_ROOT / "contracts" / "repository-naming.yaml")
+    policy = PathPolicy.load(args.path_policy or PATH_POLICY)
+    naming = NamingPolicy.load(NAMING_POLICY)
 
     args.id = args.id or args.project.lower()
     if not PROJECT_ID_RE.match(args.id):
@@ -580,28 +584,18 @@ def _covering(entry_paths: list[str], path: str) -> list[str]:
             if p == path or (p.endswith("/") and path.startswith(p))]
 
 
-def cmd_check(args) -> int:
-    plan = Plan.load(Path(args.plan))
-    work_root = _work_root(args)
-    source = plan.open_source(args.source, work_root)
-    naming = NamingPolicy.load(SHAPE_ROOT / "contracts" / "repository-naming.yaml")
+def _coverage_findings(entry_paths: list[str], tree_paths: list[str]) -> list[str]:
+    """Every source path covered EXACTLY once, and every entry covering something.
+
+    Both halves matter and they fail differently: an uncovered path is a file
+    the split would silently drop, and an entry covering nothing is a plan
+    describing a tree that no longer exists.
+    """
     findings: list[str] = []
-
-    if plan.source_commit and source.commit != plan.source_commit:
-        findings.append(
-            f"FINDING plan-stale: the plan was written against "
-            f"{plan.source_commit[:12]} but {source.branch} is now at "
-            f"{source.commit[:12]}. Re-run `plan`: a coverage check against a "
-            "tree that has moved proves nothing about the tree that will be "
-            "split.")
-
-    entry_paths = [str(e.get("path")) for e in plan.entries]
     duplicates = sorted({p for p in entry_paths if entry_paths.count(p) > 1})
     for path in duplicates:
         findings.append(f"FINDING plan-duplicate-path: {path} appears "
                         f"{entry_paths.count(path)} times")
-
-    tree_paths = [path for path, _, _, _ in source.tree()]
     uncovered, multiple = [], []
     for path in tree_paths:
         covering = _covering(entry_paths, path)
@@ -622,7 +616,12 @@ def cmd_check(args) -> int:
     for path in sorted(set(entry_paths) - used):
         findings.append(f"FINDING plan-empty-entry: {path} covers nothing in "
                         "the source tree at this commit")
+    return findings
 
+
+def _leg_findings(plan: Plan) -> list[str]:
+    """`leg:` is answered, and answered with one of the four words."""
+    findings: list[str] = []
     for entry in plan.entries:
         leg = entry.get("leg")
         if leg is None:
@@ -633,18 +632,10 @@ def cmd_check(args) -> int:
             findings.append(
                 f"FINDING plan-bad-leg: {entry.get('path')} declares leg "
                 f"{leg!r}; it is one of {list(LEG_VALUES)}")
+    return findings
 
-    names = plan.names()
-    pins = set(plan.pins)
-    try:
-        _check_names(naming, names, pins)
-        for role, name in names.items():
-            found = naming.classify(name, role, pins)
-            print(f"  {role:<9} {name:<28} {found.family}"
-                  + (f"/{found.role}" if found.role else ""))
-    except Refusal as exc:
-        findings.append(f"FINDING {exc.code}: {exc.detail}")
 
+def _print_what_will_happen(plan: Plan, source: Source, names: dict) -> None:
     moved = [e for e in plan.entries if str(e.get("leg")) in ("spec", "code")]
     stays = [e for e in plan.entries if str(e.get("leg")) == "root"]
     drops = [e for e in plan.entries if str(e.get("leg")) == "drop"]
@@ -659,9 +650,43 @@ def cmd_check(args) -> int:
           f"{plan.legs.get('spec_path')}/ and {plan.legs.get('code_path')}/")
     print(f"  {len(stays)} path(s) stay in the assembly root; "
           f"{len(drops)} dropped")
-    print(f"  the source is never deleted, never renamed, never force-pushed")
+    print("  the source is never deleted, never renamed, never force-pushed")
     for item in plan.get("follow_ups", []):
         print(f"  follow-up: {item}")
+
+
+def cmd_check(args) -> int:
+    plan = Plan.load(Path(args.plan))
+    work_root = _work_root(args)
+    source = plan.open_source(args.source, work_root)
+    naming = NamingPolicy.load(NAMING_POLICY)
+    findings: list[str] = []
+
+    if plan.source_commit and source.commit != plan.source_commit:
+        findings.append(
+            f"FINDING plan-stale: the plan was written against "
+            f"{plan.source_commit[:12]} but {source.branch} is now at "
+            f"{source.commit[:12]}. Re-run `plan`: a coverage check against a "
+            "tree that has moved proves nothing about the tree that will be "
+            "split.")
+
+    entry_paths = [str(e.get("path")) for e in plan.entries]
+    tree_paths = [path for path, _, _, _ in source.tree()]
+    findings.extend(_coverage_findings(entry_paths, tree_paths))
+    findings.extend(_leg_findings(plan))
+
+    names = plan.names()
+    pins = set(plan.pins)
+    try:
+        _check_names(naming, names, pins)
+        for role, name in names.items():
+            found = naming.classify(name, role, pins)
+            print(f"  {role:<9} {name:<28} {found.family}"
+                  + (f"/{found.role}" if found.role else ""))
+    except Refusal as exc:
+        findings.append(f"FINDING {exc.code}: {exc.detail}")
+
+    _print_what_will_happen(plan, source, names)
 
     for finding in findings:
         print(finding, file=sys.stderr)
@@ -709,16 +734,13 @@ def _confirm(args, plan: Plan, names: dict) -> None:
                       "Remediation: nothing was created. Re-run when ready.")
 
 
-def cmd_execute(args) -> int:  # noqa: C901 - a linear procedure, top to bottom
-    plan = Plan.load(Path(args.plan))
-    work_root = _work_root(args)
-    source = plan.open_source(args.source, work_root)
-    naming = NamingPolicy.load(SHAPE_ROOT / "contracts" / "repository-naming.yaml")
-    _require_filter_repo()
+def _refuse_an_unrunnable_plan(plan: Plan, source: Source) -> None:
+    """The two states a plan can be in that must not be executed.
 
-    names = plan.names()
-    pins = set(plan.pins)
-    _check_names(naming, names, pins)
+    An unanswered question is never an implicit `root`, and a plan written
+    against a tree that has since moved proves nothing about the tree that
+    would be split — which is how a path goes missing.
+    """
     unresolved = [e for e in plan.entries if e.get("leg") is None]
     if unresolved:
         raise Refusal(
@@ -736,6 +758,92 @@ def cmd_execute(args) -> int:  # noqa: C901 - a linear procedure, top to bottom
             "Remediation: re-run `plan`, re-answer anything new, then "
             "`check`. Splitting a tree the plan has not seen is how a path "
             "goes missing.")
+
+
+def _create_leg_remotes(plan: Plan, names: dict, repositories: dict,
+                        urls: dict, tracking: str, local: bool) -> None:
+    """(a) The two NEW repositories. The assembly root is never created here."""
+    print("\ncreating the leg repositories")
+    if local:
+        Path(urls["spec"]).parent.mkdir(parents=True, exist_ok=True)
+    for role in ("spec", "code"):
+        if not local:
+            run(["gh", "repo", "create", repositories[role],
+                 f"--{plan.get('visibility', 'private')}", "--description",
+                 f"{names['assembly']} — {role} leg, extracted from "
+                 f"{repositories['assembly']} with history"])
+            print(f"  gh    {repositories[role]}")
+            continue
+        bare = Path(urls[role])
+        if bare.exists():
+            raise Refusal(
+                "leg-remote-exists", f"{bare} already exists",
+                "Remediation: choose an empty --local-remote-dir. There is no "
+                "--force: re-running over a live leg is not an adoption.")
+        run(["git", "init", "-q", "--bare", "-b", tracking, str(bare)])
+        print(f"  bare  {bare}")
+
+
+def _extract_leg(role: str, source: Source, work: Path, paths: list[str],
+                 listing: Path, branch: str, url: str, tracking: str,
+                 repository: str) -> tuple[str, str]:
+    """(b) One leg, with its history: clone, filter, push. Returns commit+digest.
+
+    A FRESH clone every time, because `git filter-repo` rewrites the whole
+    object graph and is documented to want one; the branch is reset to the
+    PLAN's commit rather than to whatever the default branch is now, so the
+    extraction and the coverage check are about the same tree.
+    """
+    run(["git", *FILE_PROTOCOL, "clone", "-q", str(source.path), str(work)])
+    run(["git", "checkout", "-q", "-B", branch, source.commit], cwd=work)
+    listing.write_text("\n".join(paths) + "\n", encoding="utf-8")
+    run(["git", "filter-repo", "--paths-from-file", str(listing), "--force"],
+        cwd=work)
+    head = git_out(["rev-parse", "HEAD"], cwd=work).lower()
+    try:
+        run(["git", "push", "-q", url, f"HEAD:refs/heads/{tracking}"], cwd=work)
+    except CommandFailed as exc:
+        print(exc.loudly(f"pushing the {role} leg"), file=sys.stderr)
+        print(RULESET_HINT.format(work=work, repo=repository, role=role),
+              file=sys.stderr)
+        raise
+    count = git_out(["rev-list", "--count", "HEAD"], cwd=work)
+    print(f"  {role:<5} {len(paths):>3} path(s) -> {head[:12]} "
+          f"({count} commits kept) -> {url}")
+    return head, tree_digest(work, head)
+
+
+def _mount_the_legs(assembly: Path, work_root: Path, names: dict, urls: dict,
+                    paths_for: dict, spec_path: str, code_path: str) -> None:
+    """(c, first half) `git rm` what moved, then mount the two legs.
+
+    The submodule is added from the LEG'S WORKING TREE and its recorded URL is
+    then rewritten to the canonical remote, exactly as the scaffold does: the
+    adoption never depends on a push having propagated.
+    """
+    for path in sorted(paths_for["spec"] + paths_for["code"] + paths_for["drop"]):
+        run(["git", "rm", "-r", "-q", "--", path.rstrip("/")], cwd=assembly)
+    for role, path in (("spec", spec_path), ("code", code_path)):
+        run(["git", *FILE_PROTOCOL, "submodule", "add", "-q",
+             str(work_root / names[role]), path], cwd=assembly)
+        run(["git", "config", "-f", ".gitmodules", f"submodule.{path}.url",
+             urls[role]], cwd=assembly)
+        run(["git", "remote", "set-url", "origin", urls[role]],
+            cwd=assembly / path)
+    run(["git", "submodule", "sync", "-q"], cwd=assembly)
+
+
+def cmd_execute(args) -> int:  # noqa: C901
+    plan = Plan.load(Path(args.plan))
+    work_root = _work_root(args)
+    source = plan.open_source(args.source, work_root)
+    naming = NamingPolicy.load(NAMING_POLICY)
+    _require_filter_repo()
+
+    names = plan.names()
+    pins = set(plan.pins)
+    _check_names(naming, names, pins)
+    _refuse_an_unrunnable_plan(plan, source)
 
     local = args.local_remote_dir is not None
     spec_path = str(plan.legs.get("spec_path") or "spec")
@@ -762,68 +870,26 @@ def cmd_execute(args) -> int:  # noqa: C901 - a linear procedure, top to bottom
     _confirm(args, plan, names)
 
     # ---- (a) the two legs' remotes ----------------------------------------
-    print("\ncreating the leg repositories")
-    if local:
-        remote_dir.mkdir(parents=True, exist_ok=True)
-    for role in ("spec", "code"):
-        if local:
-            bare = Path(urls[role])
-            if bare.exists():
-                raise Refusal(
-                    "leg-remote-exists", f"{bare} already exists",
-                    "Remediation: choose an empty --local-remote-dir. There "
-                    "is no --force: re-running over a live leg is not an "
-                    "adoption.")
-            run(["git", "init", "-q", "--bare", "-b", tracking, str(bare)])
-            print(f"  bare  {bare}")
-        else:
-            run(["gh", "repo", "create", repositories[role],
-                 f"--{plan.get('visibility', 'private')}", "--description",
-                 f"{names['assembly']} — {role} leg, extracted from "
-                 f"{repositories['assembly']} with history"])
-            print(f"  gh    {repositories[role]}")
+    _create_leg_remotes(plan, names, repositories, urls, tracking, local)
 
     # ---- (b) history-preserving extraction --------------------------------
     leg_commits: dict[str, str] = {}
     leg_digests: dict[str, str] = {}
     for role in ("spec", "code"):
-        work = work_root / names[role]
-        run(["git", *FILE_PROTOCOL, "clone", "-q", str(source.path), str(work)])
-        run(["git", "checkout", "-q", "-B", branch, source.commit], cwd=work)
-        listing = work_root / f"{role}-paths.txt"
-        listing.write_text("\n".join(paths_for[role]) + "\n", encoding="utf-8")
-        run(["git", "filter-repo", "--paths-from-file", str(listing), "--force"],
-            cwd=work)
-        head = git_out(["rev-parse", "HEAD"], cwd=work).lower()
-        leg_commits[role] = head
-        leg_digests[role] = tree_digest(work, head)
         try:
-            run(["git", "push", "-q", urls[role],
-                 f"HEAD:refs/heads/{tracking}"], cwd=work)
-        except CommandFailed as exc:
-            print(exc.loudly(f"pushing the {role} leg"), file=sys.stderr)
-            print(RULESET_HINT.format(work=work, repo=repositories[role],
-                                      role=role), file=sys.stderr)
+            leg_commits[role], leg_digests[role] = _extract_leg(
+                role, source, work_root / names[role], paths_for[role],
+                work_root / f"{role}-paths.txt", branch, urls[role], tracking,
+                repositories[role])
+        except CommandFailed:
             return 2
-        count = git_out(["rev-list", "--count", "HEAD"], cwd=work)
-        print(f"  {role:<5} {len(paths_for[role]):>3} path(s) -> "
-              f"{head[:12]} ({count} commits kept) -> {urls[role]}")
 
     # ---- (c) ONE split commit on a branch of the source -------------------
     assembly = work_root / names["assembly"]
     run(["git", *FILE_PROTOCOL, "clone", "-q", str(source.path), str(assembly)])
     run(["git", "checkout", "-q", "-B", branch, source.commit], cwd=assembly)
-    removed = sorted(paths_for["spec"] + paths_for["code"] + paths_for["drop"])
-    for path in removed:
-        run(["git", "rm", "-r", "-q", "--", path.rstrip("/")], cwd=assembly)
-    for role, path in (("spec", spec_path), ("code", code_path)):
-        run(["git", *FILE_PROTOCOL, "submodule", "add", "-q",
-             str(work_root / names[role]), path], cwd=assembly)
-        run(["git", "config", "-f", ".gitmodules", f"submodule.{path}.url",
-             urls[role]], cwd=assembly)
-        run(["git", "remote", "set-url", "origin", urls[role]],
-            cwd=assembly / path)
-    run(["git", "submodule", "sync", "-q"], cwd=assembly)
+    _mount_the_legs(assembly, work_root, names, urls, paths_for, spec_path,
+                    code_path)
 
     shape_commit = git_out(["rev-parse", "HEAD"], cwd=SHAPE_ROOT).lower()
     values = _template_values(plan, names, repositories, urls, spec_path,
@@ -966,27 +1032,10 @@ def _verify(source: Source, assembly: Path, work_root: Path, names,
             continue
         after.setdefault(path, []).append(f"root:{oid}")
 
-    dropped = {p.rstrip("/") for p in paths_for["drop"]}
-    rows, findings = [], []
-    counts = {"spec": 0, "code": 0, "root": 0, "drop": 0}
-    for path, oid in sorted(before.items()):
-        landings = [where for where in after.get(path, [])
-                    if where.split(":", 1)[1] == oid]
-        is_dropped = any(path == d or path.startswith(d + "/") for d in dropped)
-        if len(landings) == 1:
-            counts[landings[0].split(":", 1)[0]] += 1
-        elif not landings and is_dropped:
-            counts["drop"] += 1
-        elif not landings:
-            findings.append(f"FINDING adopt-lost: {path} ({oid[:12]}) is in no "
-                            "leg, not in the root tree, and not listed as drop")
-        else:
-            findings.append(f"FINDING adopt-duplicated: {path} is in "
-                            + ", ".join(landings))
+    counts, findings = _account_for(before, after, paths_for["drop"])
     added = sorted(set(after) - set(before))
     for leg in ("spec", "code", "root", "drop"):
-        rows.append(f"  {leg:<6} {counts[leg]:>5} of {len(before)} source paths")
-    print("\n".join(rows))
+        print(f"  {leg:<6} {counts[leg]:>5} of {len(before)} source paths")
     print(f"  added  {len(added):>5} new paths in the assembly root "
           "(manifest, pins, shape files)")
     for finding in findings:
@@ -1002,6 +1051,31 @@ def _verify(source: Source, assembly: Path, work_root: Path, names,
           f"    git clone --recurse-submodules <{names['assembly']} url>\n"
           "    make bootstrap")
     return 0
+
+
+def _account_for(before: dict, after: dict, drops: list[str]) -> tuple[dict, list]:
+    """Where each source blob landed: exactly one place, or a finding.
+
+    A path in TWO places is as much a finding as a path in none — the second
+    is data loss and the first is two repositories owning one file.
+    """
+    dropped = {p.rstrip("/") for p in drops}
+    counts = {"spec": 0, "code": 0, "root": 0, "drop": 0}
+    findings: list[str] = []
+    for path, oid in sorted(before.items()):
+        landings = [where for where in after.get(path, [])
+                    if where.split(":", 1)[1] == oid]
+        if len(landings) == 1:
+            counts[landings[0].split(":", 1)[0]] += 1
+        elif landings:
+            findings.append(f"FINDING adopt-duplicated: {path} is in "
+                            + ", ".join(landings))
+        elif any(path == d or path.startswith(d + "/") for d in dropped):
+            counts["drop"] += 1
+        else:
+            findings.append(f"FINDING adopt-lost: {path} ({oid[:12]}) is in no "
+                            "leg, not in the root tree, and not listed as drop")
+    return counts, findings
 
 
 def _tree_of(repo: Path, rev: str) -> list[tuple[str, str, str, int]]:

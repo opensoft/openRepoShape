@@ -151,7 +151,8 @@ def test_the_plan_records_the_follow_ups_the_split_makes_necessary(source_repo,
     assert write_plan(source_repo, out).returncode == 0
     follow_ups = " ".join(load_yaml(out)["follow_ups"])
     assert "CONTRACTS_DIR" in follow_ups
-    assert "shape/Makefile" in follow_ups and "shape/README.md" in follow_ups
+    assert "shape/Makefile" in follow_ups
+    assert "shape/README.md" in follow_ups
     assert "pull request" in follow_ups
 
 

@@ -42,11 +42,16 @@ DEFAULT_REFERENCE = (
     "openxFactory ideation/staging/project-repo-schema/project-repo-schema.md"
 )
 
+#: One name, used in three places below: the source path, the target path and
+#: the chmod list. Spelling it three times is how the chmod list starts naming
+#: a file the copy list no longer writes.
+VALIDATE_NAMING = "scripts/validate-repository-naming.py"
+
 #: Copied out of openRepoShape's OWN tree, so the project carries the standard
 #: it was cut from rather than a link to it.
 COPIED_FROM_SHAPE = (
     ("scripts/repo_shape.py", "scripts/repo_shape.py"),
-    ("scripts/validate-repository-naming.py", "scripts/validate-repository-naming.py"),
+    (VALIDATE_NAMING, VALIDATE_NAMING),
     ("contracts/repository-naming.yaml", "contracts/repository-naming.yaml"),
 )
 #: Copied VERBATIM out of the assembly-root template (no substitution).
@@ -72,7 +77,7 @@ TEMPLATED = (
 #: once per declared pin as `contracts/<product lowercased>-pin.yaml`.
 NEUTRAL_PIN_TEMPLATE = "contracts/neutral-product-pin.yaml"
 EXECUTABLE = ("scripts/validate-pins.py", "scripts/validate-manifest.py",
-              "scripts/bootstrap.py", "scripts/validate-repository-naming.py")
+              "scripts/bootstrap.py", VALIDATE_NAMING)
 
 PLACEHOLDER_RE = re.compile(r"\{\{[A-Z_]+\}\}")
 
@@ -130,7 +135,37 @@ by hand if you want a clean re-run.
 """
 
 
+#: The ONLY programs anything here will execute. Every call is a fixed verb
+#: with values from the command line as ARGUMENTS — never a shell string, so
+#: `shell=False` keeps the arguments out of a shell — and this list keeps the
+#: PROGRAM out of the caller's hands as well. The tools take a repository
+#: name, a path and a commit from whoever runs them, including from an AI
+#: assistant reading a plan file; the pair of constraints is what stops a
+#: crafted value from becoming a command.
+ALLOWED_PROGRAMS = ("git", "gh")
+
+
+def check_program(args: list[str]) -> None:
+    """Refuse to execute anything but the two tools this standard drives."""
+    program = Path(args[0]).name if args else ""
+    if program not in ALLOWED_PROGRAMS:
+        raise Refusal(
+            "program-not-allowed",
+            f"refusing to execute {program!r}: this module runs only "
+            + " and ".join(ALLOWED_PROGRAMS),
+            "Remediation: this is a defect in the tool that built the command "
+            "line, not in your invocation.")
+    for argument in args:
+        if not isinstance(argument, str):
+            raise Refusal(
+                "argument-not-a-string",
+                f"a command argument is {argument!r}, not a string",
+                "Remediation: this is a defect in the tool that built the "
+                "command line.")
+
+
 def run(args: list[str], cwd: Path | None = None, capture: bool = True) -> str:
+    check_program(args)
     proc = subprocess.run(args, cwd=str(cwd) if cwd else None,
                           capture_output=capture, text=True, check=False)
     if proc.returncode != 0:
@@ -154,7 +189,9 @@ def env_commit(work: Path, message: str) -> None:
         env.setdefault(key, fallback)
         if not env.get(key):
             env[key] = fallback
-    proc = subprocess.run(["git", "commit", "-q", "-m", message], cwd=str(work),
+    command = ["git", "commit", "-q", "-m", message]
+    check_program(command)
+    proc = subprocess.run(command, cwd=str(work),
                           capture_output=True, text=True, check=False, env=env)
     if proc.returncode != 0:
         raise CommandFailed(["git", "commit", "-m", message], work,

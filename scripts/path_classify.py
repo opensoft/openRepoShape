@@ -99,6 +99,29 @@ def glob_to_regex(pattern: str) -> re.Pattern:
     return re.compile("".join(out))
 
 
+def _compiled_rule(rule) -> tuple[dict, list[tuple[str, re.Pattern]]]:
+    """One rule, validated and with its globs compiled — or a refusal.
+
+    Fail-closed on the DATA, at load time: a rule with no id, an unknown leg
+    or no paths cannot classify anything, and a policy that starts anyway
+    would answer every question with its default and look like it worked.
+    """
+    if not isinstance(rule, dict) or not rule.get("id"):
+        raise Refusal("path-policy-rule",
+                      f"a rule is not a mapping with an id: {rule!r}")
+    if rule.get("leg") not in LEGS:
+        raise Refusal(
+            "path-policy-leg",
+            f"rule {rule['id']!r} declares leg {rule.get('leg')!r}; the "
+            f"classes are {list(LEGS)}")
+    compiled = [(str(p), glob_to_regex(str(p)))
+                for p in (rule.get("paths") or [])]
+    if not compiled:
+        raise Refusal("path-policy-rule",
+                      f"rule {rule['id']!r} matches no paths")
+    return rule, compiled
+
+
 class PathPolicy:
     """The ordered rules, the extension classes and the default, as loaded."""
 
@@ -108,23 +131,7 @@ class PathPolicy:
         if not rules:
             raise Refusal("path-policy-empty",
                           "the path classification policy declares no rules")
-        self.rules = []
-        for rule in rules:
-            if not isinstance(rule, dict) or not rule.get("id"):
-                raise Refusal("path-policy-rule",
-                              f"a rule is not a mapping with an id: {rule!r}")
-            leg = rule.get("leg")
-            if leg not in LEGS:
-                raise Refusal(
-                    "path-policy-leg",
-                    f"rule {rule['id']!r} declares leg {leg!r}; the classes "
-                    f"are {list(LEGS)}")
-            compiled = [(p, glob_to_regex(str(p)))
-                        for p in (rule.get("paths") or [])]
-            if not compiled:
-                raise Refusal("path-policy-rule",
-                              f"rule {rule['id']!r} matches no paths")
-            self.rules.append((rule, compiled))
+        self.rules = [_compiled_rule(rule) for rule in rules]
         self.extension_classes: dict[str, str] = {}
         for leg, extensions in (data.get("extension_classes") or {}).items():
             for extension in extensions or []:
@@ -155,9 +162,7 @@ class PathPolicy:
         """
         for rule, compiled in self.rules:
             for pattern, regex in compiled:
-                if regex.match(path):
-                    return rule
-                if pattern.endswith("/**") and path == pattern[:-3]:
+                if regex.match(path) or pattern == f"{path}/**":
                     return rule
         return None
 
