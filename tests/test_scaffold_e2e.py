@@ -153,12 +153,13 @@ def test_the_scaffold_refuses_with_no_elector(tmp_path):
     config are suppressed to make the no-elector path reachable at all.
     """
     remotes = tmp_path / "remotes"
-    env = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
-    # The per-invocation identity is an elector too (setup.sh and the
-    # scaffold fall back to GIT_AUTHOR_NAME before the config), so the
-    # no-elector path is reachable only with BOTH suppressed.
-    for _k in ('GIT_AUTHOR_NAME', 'GIT_COMMITTER_NAME'):
-        env.pop(_k, None)
+    # `env` is an OVERRIDE map merged over the process environment by
+    # run_script, and the fixtures set GIT_AUTHOR_NAME there; the scaffold
+    # takes that per-invocation identity as an elector before the config, so
+    # the no-elector path is reachable only with BOTH blanked (empty string
+    # falls through to the config, which is /dev/null here).
+    env = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull,
+           "GIT_AUTHOR_NAME": "", "GIT_COMMITTER_NAME": ""}
     result = run_script(SCAFFOLD, "--org", ORG, "--project", "Northwind",
                         "--elected-by", "", "--dry-run",
                         "--local-remote-dir", str(remotes),
