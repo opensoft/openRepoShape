@@ -174,8 +174,19 @@ def run(args: list[str], cwd: Path | None = None, capture: bool = True) -> str:
     return (proc.stdout or "").strip()
 
 
+#: `-F -` reads the message from STDIN. Every argument is then a literal, and
+#: the one value a caller controls — the message, which carries a project's
+#: display name and, in an adoption, every moved path out of a plan file —
+#: never reaches the command line at all. `-m <message>` was safe too (there
+#: is no shell, and the value sits after `-m`), but "safe because of where it
+#: sits in argv" is an argument somebody has to re-derive every time they read
+#: it, and not putting it there is one fewer thing to be right about.
+COMMIT_COMMAND = ["git", "commit", "-q", "-F", "-"]
+
+
 def env_commit(work: Path, message: str) -> None:
-    """Commit with an identity that always resolves.
+    """Commit with an identity that always resolves, reading the message
+    from stdin.
 
     A scaffold that fails on a machine with no `user.email` configured fails
     for a reason that has nothing to do with the project being scaffolded, so
@@ -189,13 +200,12 @@ def env_commit(work: Path, message: str) -> None:
         env.setdefault(key, fallback)
         if not env.get(key):
             env[key] = fallback
-    command = ["git", "commit", "-q", "-m", message]
-    check_program(command)
-    proc = subprocess.run(command, cwd=str(work),
+    check_program(COMMIT_COMMAND)
+    proc = subprocess.run(COMMIT_COMMAND, cwd=str(work), input=message,
                           capture_output=True, text=True, check=False, env=env)
     if proc.returncode != 0:
-        raise CommandFailed(["git", "commit", "-m", message], work,
-                            proc.returncode, proc.stderr + proc.stdout)
+        raise CommandFailed(COMMIT_COMMAND, work, proc.returncode,
+                            proc.stderr + proc.stdout)
 
 
 def git_init_commit(work: Path, message: str, branch: str) -> str:
