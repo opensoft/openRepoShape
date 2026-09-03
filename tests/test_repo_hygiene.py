@@ -17,14 +17,17 @@ from conftest import REPO, SCAFFOLD
 SHIPPED = [
     REPO / "scaffold-project.py",
     REPO / "bootstrap",
+    REPO / "adopt-project.py",
     REPO / "scripts" / "repo_shape.py",
     REPO / "scripts" / "shape_materialize.py",
+    REPO / "scripts" / "path_classify.py",
     REPO / "scripts" / "validate-repository-naming.py",
     REPO / "templates" / "assembly-root" / "scripts" / "validate-pins.py",
     REPO / "templates" / "assembly-root" / "scripts" / "validate-manifest.py",
     REPO / "templates" / "assembly-root" / "scripts" / "bootstrap.py",
 ]
-LOCAL_MODULES = {"repo_shape", "shape_materialize", "conftest"}
+LOCAL_MODULES = {"repo_shape", "shape_materialize", "path_classify",
+                 "conftest"}
 
 
 @pytest.mark.parametrize("path", SHIPPED, ids=lambda p: p.name)
@@ -62,7 +65,8 @@ def test_the_scaffold_accounts_for_every_template_file():
     module does".
     """
     source = "\n".join(path.read_text(encoding="utf-8") for path in (
-        SCAFFOLD, REPO / "scripts" / "shape_materialize.py"))
+        SCAFFOLD, REPO / "scripts" / "shape_materialize.py",
+        REPO / "adopt-project.py"))
     template_root = REPO / "templates" / "assembly-root"
     for path in sorted(template_root.rglob("*")):
         if path.is_dir() or "__pycache__" in path.parts:

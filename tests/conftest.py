@@ -88,3 +88,111 @@ def project(scaffolded, tmp_path) -> Path:
     target = tmp_path / PROJECT
     shutil.copytree(scaffolded["clone"], target, symlinks=True)
     return target
+
+
+ADOPT = REPO / "adopt-project.py"
+
+#: A repository shaped like the ones this standard is asked to adopt: a
+#: specification side, an implementation side, project-level workflow tooling
+#: that belongs to neither, and two genuinely ambiguous corners. Small enough
+#: to assert every row of the plan against, which is the point.
+SYNTHETIC_TREE = {
+    # spec
+    "specs/001-feature/spec.md": "# The feature\n",
+    "specs/001-feature/tasks.md": "- [ ] one\n",
+    "openspec/changes/add-thing/proposal.md": "## Why\n",
+    "contracts/policy.yaml": "schema_version: 1\nkind: policy\n",
+    "docs/architecture.md": "# Architecture\n",
+    # code
+    "src/app/main.py": "import contracts_reader\n",
+    "src/app/util.py": "VALUE = 1\n",
+    "tests/test_main.py": "def test_ok():\n    assert True\n",
+    ".github/workflows/ci.yml": "on: [push]\n",
+    "pyproject.toml": "[project]\nname = 'thing'\n",
+    "sonar-project.properties": "sonar.projectKey=thing\n",
+    "docker/Dockerfile": "FROM python:3.12\n",
+    # code, by extension majority alone: no rule names this directory
+    "pkg_core/__init__.py": "",
+    "pkg_core/engine.py": "def run():\n    return 1\n",
+    "pkg_core/table.json": "{}\n",
+    # root
+    "README.md": "# Thing\n",
+    "LICENSE": "Apache-2.0\n",
+    ".gitignore": "__pycache__/\n",
+    "Makefile": "test:\n\tpytest\n",
+    "AGENTS.md": "Follow the procedure.\n",
+    "CLAUDE.md": "Follow the procedure.\n",
+    ".specify/scripts/plan.sh": "#!/bin/sh\necho plan\n",
+    ".specify/templates/spec.md": "# template\n",
+    ".github/CODEOWNERS": "* @team\n",
+    # ambiguous
+    "examples/golden-run/expected.yaml": "result: ok\n",
+    ".claude/commands/ship.md": "ship it\n",
+    "release.yaml": "channel: stable\n",
+}
+
+
+def make_source_repo(path: Path, tree: dict | None = None,
+                     branch: str = "main") -> Path:
+    """A local repository with SEVERAL commits, so history can be verified.
+
+    Three commits, each touching a different side of the tree: an extraction
+    that kept only the tip would still pass a file-count check, and would fail
+    this one.
+    """
+    tree = dict(tree or SYNTHETIC_TREE)
+    path.mkdir(parents=True, exist_ok=True)
+    git("init", "-q", "-b", branch, ".", cwd=path)
+    env = {"GIT_AUTHOR_NAME": "Source Human",
+           "GIT_AUTHOR_EMAIL": "human@source.invalid",
+           "GIT_COMMITTER_NAME": "Source Human",
+           "GIT_COMMITTER_EMAIL": "human@source.invalid"}
+
+    def commit(message: str) -> None:
+        proc = subprocess.run(["git", "add", "-A", "--", "."], cwd=str(path),
+                              capture_output=True, text=True, check=False)
+        assert proc.returncode == 0, proc.stderr
+        proc = subprocess.run(["git", "commit", "-q", "-m", message],
+                              cwd=str(path), capture_output=True, text=True,
+                              check=False, env={**os.environ, **env})
+        assert proc.returncode == 0, proc.stderr + proc.stdout
+
+    for name, body in tree.items():
+        target = path / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(body, encoding="utf-8")
+    commit("Initial import")
+    (path / "specs" / "001-feature" / "spec.md").write_text(
+        "# The feature\n\nA second paragraph.\n", encoding="utf-8")
+    commit("Extend the specification")
+    (path / "src" / "app" / "main.py").write_text(
+        "import contracts_reader\n\n\ndef main():\n    return 0\n",
+        encoding="utf-8")
+    commit("Implement main")
+    return path
+
+
+@pytest.fixture
+def source_repo(tmp_path) -> Path:
+    return make_source_repo(tmp_path / "Thing")
+
+
+def write_plan(source: Path, out: Path, project: str = "Northwind",
+               org: str = "testorg", extra: tuple = ()) -> subprocess.CompletedProcess:
+    return run_script(ADOPT, "plan", "--source", str(source),
+                      "--project", project, "--org", org,
+                      "--elected-by", "Test Human",
+                      "--elected-on", "2026-09-02",
+                      "--out", str(out), *extra)
+
+
+def resolve(plan_path: Path, path: str, leg: str,
+            why: str = "answered by the test") -> None:
+    """Answer one `review_required` entry the way a human or an AI would."""
+    text = plan_path.read_text(encoding="utf-8")
+    needle = f"  - path: {path}\n    leg: null\n"
+    assert needle in text, f"{path} is not an unresolved entry in the plan"
+    plan_path.write_text(
+        text.replace(needle, f"  - path: {path}\n    leg: {leg}\n"
+                             f"    resolution: \"{why}\"\n", 1),
+        encoding="utf-8")

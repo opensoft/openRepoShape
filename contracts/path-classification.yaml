@@ -1,0 +1,418 @@
+schema_version: 1
+kind: path-classification-policy
+
+# ===========================================================================
+# path-classification.yaml — which leg a path belongs in, as DATA.
+#
+# Read by `scripts/path_classify.py` for `adopt-project.py plan`, which walks
+# an existing repository and proposes a split. THE POLICY PROPOSES; A HUMAN
+# DISPOSES. Every entry the plan writes carries the rule id and the reason
+# that produced it, so a reader disagrees with a NAMED rule rather than with
+# an opaque verdict, and `leg:` in the plan is editable by hand precisely
+# because this file cannot know every repository.
+#
+# IT CONFERS NOTHING. Landing in the spec leg grants no authority over specs
+# and no gate standing; the legs are a layout and the authority travels in the
+# grants. A consumer deriving a permission from `leg:` is defective, exactly
+# as in `repository-naming.yaml`.
+#
+# FIRST MATCH WINS, and the order is therefore semantic. `docs/api/**` sits
+# ABOVE `docs/**` because generated API documentation is an artifact of the
+# code that emitted it, and an "except" clause that lived only in prose is an
+# except clause nobody runs.
+#
+# FOUR CLASSES, AND THE FOURTH IS NOT A FAILURE.
+#   spec       requirements, decisions, contracts, governance prose
+#   code       the implementation, its tests, its build and its CI
+#   root       what spans BOTH legs and stays in the assembly root
+#   ambiguous  the honest answer, carrying the QUESTION to ask
+#
+# `ambiguous` is a first-class outcome. A classifier that guessed at
+# `examples/` would be wrong roughly half the time and silent about it; one
+# that says "this is a golden-run corpus — is it the spec's acceptance
+# evidence or the code's test fixture?" is right every time and costs one
+# sentence of human attention. The plan marks those `review_required: true`
+# with `leg: null`, and `adopt-project.py execute` REFUSES while any remain.
+#
+# THE ROOT CLASS IS THE ONE PEOPLE GET WRONG. Ruled by Brett Heap on
+# 2026-09-02 for the MedxEHR conversion: `.specify/` (vendored Spec-Kit
+# tooling) and the ten AI-assistant instruction files stay in the ASSEMBLY
+# ROOT, because they are project-level workflow tooling that spans both legs.
+# An assistant reading `CLAUDE.md` from inside the code leg would be told
+# about specs it cannot see; one reading it from the root sees both.
+# ===========================================================================
+
+legs:
+  - spec
+  - code
+  - root
+  - ambiguous
+
+rules:
+
+  # -- ambiguous, and asked FIRST where the name is a known coin-flip -------
+
+  - id: ambiguous-assistant-project-memory
+    paths:
+      - ".claude/**"
+      - ".agents/**"
+    leg: ambiguous
+    reason: >-
+      An assistant's project memory and slash commands. Some of it is
+      project-level workflow that belongs beside `.specify/` in the root; some
+      of it drives one leg's tooling only.
+    question: >-
+      Do these commands and memory files drive work in BOTH legs (root), or
+      only the implementation (code)? Split the directory if it is both.
+
+  - id: ambiguous-examples
+    paths:
+      - "examples/**"
+      - "example/**"
+      - "samples/**"
+      - "golden/**"
+    leg: ambiguous
+    reason: >-
+      An examples or golden-run corpus is read two ways: as the acceptance
+      evidence a specification cites, or as the fixture the implementation
+      tests against. Both are common and the directory name does not say.
+    question: >-
+      Is this corpus cited BY the specification as acceptance evidence (spec),
+      or consumed by the tests as a fixture (code)? If both cite it, it is
+      spec and the code reads it across the root mount.
+
+  - id: ambiguous-notebooks
+    paths:
+      - "notebooks/**"
+      - "**/*.ipynb"
+    leg: ambiguous
+    reason: >-
+      A notebook is analysis, documentation and code at once, and which one it
+      is here is a fact about this repository rather than about notebooks.
+    question: >-
+      Is this notebook an executable part of the implementation (code) or a
+      worked argument supporting a decision (spec)?
+
+  # -- the assembly root ----------------------------------------------------
+
+  - id: root-spec-kit
+    paths:
+      - ".specify/**"
+      - ".speckit/**"
+    leg: root
+    reason: >-
+      Vendored Spec-Kit tooling drives a workflow that STARTS in the
+      specification and LANDS in the implementation, so it belongs to neither
+      leg and to the project. Ruled for the MedxEHR conversion, 2026-09-02.
+
+  - id: root-assistant-instructions
+    paths:
+      - "AGENTS.md"
+      - "CLAUDE.md"
+      - "GEMINI.md"
+      - "QWEN.md"
+      - "KIMI.md"
+      - "IFLOW.md"
+      - "QODER.md"
+      - "SHAI.md"
+      - "TABNINE.md"
+      - "CODEBUDDY.md"
+      - "COPILOT.md"
+      - "WARP.md"
+      - "CONVENTIONS.md"
+      - ".github/copilot-instructions.md"
+      - ".cursor/**"
+      - ".cursorrules"
+      - ".roo/**"
+      - ".junie/**"
+      - ".kilocode/**"
+      - ".trae/**"
+      - ".vibe/**"
+      - ".windsurf/**"
+      - ".augment/**"
+      - ".continue/**"
+      - ".opencode/**"
+      - ".codex/**"
+      - ".gemini/**"
+      - ".zed/**"
+      - ".aider.conf.yml"
+    leg: root
+    reason: >-
+      The AI-assistant instruction files and their one-file directories are
+      the same document ten times over, and it addresses the whole project. An
+      assistant that read it from inside the code leg would be told about
+      specifications it cannot see. Root, ruled 2026-09-02.
+
+  - id: root-front-door
+    paths:
+      - "README.md"
+      - "README"
+      - "README.rst"
+      - "LICENSE"
+      - "LICENSE.*"
+      - "LICENCE"
+      - "NOTICE"
+      - "COPYING"
+      - "CONTRIBUTING.md"
+      - "CODE_OF_CONDUCT.md"
+      - "SECURITY.md"
+      - "SUPPORT.md"
+      - "CHANGELOG.md"
+      - ".gitignore"
+      - ".gitattributes"
+      - ".editorconfig"
+      - ".mailmap"
+      - "CODEOWNERS"
+      - ".github/CODEOWNERS"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/PULL_REQUEST_TEMPLATE.md"
+      - ".github/dependabot.yml"
+    leg: root
+    reason: >-
+      What a person or a forge reads BEFORE deciding which leg to open. The
+      licence and the code of conduct govern all three repositories; the
+      README is the front door of the thing an engineer clones.
+
+  - id: root-project-makefile
+    paths:
+      - "Makefile"
+      - "makefile"
+      - "GNUmakefile"
+      - "Justfile"
+      - "justfile"
+      - "Taskfile.yml"
+    leg: root
+    review: false
+    reason: >-
+      The command surface of the project as a whole, which is where `make
+      bootstrap`, `make validate` and (for an adopted project) `CONTRACTS_DIR`
+      live. A JUDGMENT CALL: a Makefile that only builds and tests the
+      implementation belongs in the code leg, and moving it there is a
+      one-line edit of the plan. This rule chooses root because the assembly
+      root is where a person types `make` after cloning.
+
+  # -- the specification leg ------------------------------------------------
+
+  - id: spec-generated-api-docs
+    paths:
+      - "docs/api/**"
+      - "docs/_build/**"
+      - "docs/generated/**"
+      - "docs/reference/generated/**"
+      - "site/**"
+      - "_site/**"
+    leg: code
+    reason: >-
+      Generated API documentation is an ARTIFACT of the code that emitted it:
+      it is regenerated by the build, and a specification leg that carried it
+      would carry a file nobody edits. This rule sits above `docs/**` because
+      "except generated API docs" is only real if something runs it.
+
+  - id: spec-governance
+    paths:
+      - "openspec/**"
+      - "specs/**"
+      - "spec/**"
+      - "contracts/**"
+      - "requirements/**"
+      - "decisions/**"
+      - "docs/decisions/**"
+      - "adr/**"
+      - "adrs/**"
+      - "docs/adr/**"
+      - "governance/**"
+      - "policy/**"
+      - "policies/**"
+      - "rfcs/**"
+      - "docs/**"
+    leg: spec
+    reason: >-
+      Requirements, decisions, contracts and governance prose — what the
+      project has DECIDED, as opposed to what it currently runs. `contracts/`
+      is here by the 2026-09-02 ruling even where the code reads it: the code
+      reads across the assembly-root mount (`spec/contracts` from the root,
+      `../spec/contracts` from `code/`), which is what the legs are mounted
+      for.
+
+  # -- the implementation leg ----------------------------------------------
+
+  - id: code-ci-workflows
+    paths:
+      - ".github/workflows/**"
+      - ".gitlab-ci.yml"
+      - ".circleci/**"
+      - "azure-pipelines.yml"
+      - "Jenkinsfile"
+    leg: code
+    reason: >-
+      CI runs the implementation's own gate — build, test, analysis. The
+      assembly root gets its own `validate.yml` from the shape, so a workflow
+      moved here is not a workflow lost.
+
+  - id: code-source-and-tests
+    paths:
+      - "src/**"
+      - "lib/**"
+      - "libs/**"
+      - "app/**"
+      - "apps/**"
+      - "pkg/**"
+      - "cmd/**"
+      - "internal/**"
+      - "tests/**"
+      - "test/**"
+      - "scripts/**"
+      - "tools/**"
+      - "bin/**"
+      - "docker/**"
+      - "deploy/**"
+      - "migrations/**"
+    leg: code
+    reason: >-
+      The implementation, the tests that hold it, and the scripts and images
+      that build and run it. `scripts/` moves whole: a harness that reads
+      `contracts/` from beside it reads them across the root mount afterwards,
+      which is a code change the plan records as a follow-up rather than a
+      reason to split the directory.
+
+  - id: code-build-manifests
+    paths:
+      - "pyproject.toml"
+      - "setup.py"
+      - "setup.cfg"
+      - "requirements*.txt"
+      - "Pipfile"
+      - "Pipfile.lock"
+      - "poetry.lock"
+      - "uv.lock"
+      - "tox.ini"
+      - "pytest.ini"
+      - "conftest.py"
+      - ".coveragerc"
+      - ".flake8"
+      - "ruff.toml"
+      - "mypy.ini"
+      - "package.json"
+      - "package-lock.json"
+      - "yarn.lock"
+      - "pnpm-lock.yaml"
+      - "tsconfig*.json"
+      - ".eslintrc*"
+      - ".prettierrc*"
+      - "go.mod"
+      - "go.sum"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "pom.xml"
+      - "build.gradle*"
+      - "settings.gradle*"
+      - "Gemfile"
+      - "Gemfile.lock"
+      - "composer.json"
+      - "Dockerfile"
+      - "Dockerfile.*"
+      - "docker-compose*.yml"
+      - "docker-compose*.yaml"
+      - "compose.yaml"
+      - "sonar-project.properties"
+      - "codecov.yml"
+      - ".pre-commit-config.yaml"
+    leg: code
+    reason: >-
+      A build, package, lint or analysis manifest describes how the
+      implementation is built and measured. `sonar-project.properties` names
+      source and coverage paths, so it follows the sources it names.
+
+  # -- the honest residue ---------------------------------------------------
+
+  - id: ambiguous-top-level-yaml
+    paths:
+      - "*.yaml"
+      - "*.yml"
+      - "*.json"
+      - "*.toml"
+    leg: ambiguous
+    reason: >-
+      A top-level data file that is not a build manifest and not under
+      `contracts/`. It is as likely to be a declared policy as a runtime
+      configuration, and the extension does not say which.
+    question: >-
+      Is this file a declaration the project has DECIDED (spec), configuration
+      the implementation reads at run time (code), or project-level wiring for
+      both (root)?
+
+# WHEN NO RULE MATCHES: the extension majority of the files under the path,
+# which is how an unrecognised SOURCE PACKAGE — `medx_ehr/`, `atlas_core/` —
+# is read as code without this file having to know the project's own nouns.
+# The confidence is `medium` and the rule id says so, because a majority is
+# evidence and not a decision.
+extension_classes:
+  code:
+    - .py
+    - .pyi
+    - .js
+    - .mjs
+    - .cjs
+    - .ts
+    - .tsx
+    - .jsx
+    - .vue
+    - .go
+    - .rs
+    - .rb
+    - .php
+    - .java
+    - .kt
+    - .swift
+    - .c
+    - .h
+    - .cc
+    - .cpp
+    - .hpp
+    - .cs
+    - .sh
+    - .bash
+    - .zsh
+    - .sql
+    - .css
+    - .scss
+    - .less
+    - .html
+    - .lua
+    - .pl
+    - .r
+    - .json
+    - .cfg
+    - .ini
+    - .lock
+    - .txt
+  spec:
+    - .md
+    - .rst
+    - .adoc
+    - .org
+  ambiguous:
+    - .yaml
+    - .yml
+    - .csv
+    - .ipynb
+    - .png
+    - .jpg
+    - .svg
+    - .pdf
+
+#: How much of a directory must agree before the majority is reported as an
+#: answer rather than as a question. Below it the path is `ambiguous`, which
+#: is the honest reading of a directory that is half implementation and half
+#: prose.
+extension_majority: 0.75
+
+default:
+  leg: ambiguous
+  reason: >-
+    No rule matched and the file extensions did not agree. This is the honest
+    answer, not a failure: the tool has said what it does not know, at the
+    exact path where it does not know it.
+  question: >-
+    Which leg owns this path — spec, code, or the assembly root? Answer by
+    editing `leg:` and writing one line into `resolution:` beside it.
