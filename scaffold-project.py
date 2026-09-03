@@ -245,6 +245,64 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
 
+def declared_pin_values(args) -> dict[str, dict[str, str]]:
+    """The template values for every `--pin`, with its digest resolved.
+
+    The digest is the same `sorted-ls-tree-r-v1` number every other pin here
+    carries, read either from a clone on this machine (`--pin-source`, and no
+    network at all) or from the forge's own recursive tree listing.
+    """
+    pins: dict[str, dict[str, str]] = {}
+    for raw in args.pin:
+        product, repository, commit = parse_pin(raw, args.org)
+        if args.pin_source is not None:
+            digest = pin_digest_from_source(args.pin_source.resolve(), commit,
+                                            repository)
+            digest_source = f"local-clone ({args.pin_source})"
+        else:
+            digest = pin_digest_from_gh(repository, commit)
+            digest_source = "gh-api-tree-recursive"
+        pins[product] = {
+            "PIN_PRODUCT": product,
+            "PIN_REPOSITORY": repository,
+            "PIN_COMMIT": commit,
+            "PIN_TREE_SHA256": digest,
+            "PIN_DIGEST_SOURCE": digest_source,
+        }
+    return pins
+
+
+def _reusable_remotes(names: dict, urls: dict, repositories: dict,
+                      local: bool, reuse_flag: bool) -> set[str]:
+    """Which remotes already exist, and whether that is allowed.
+
+    THE ONE REPOSITORY THAT MAY ALREADY EXIST is the assembly root, and only
+    with `--reuse-empty-repo`, and only with ZERO commits. An organisation
+    that creates the repository first and asks for the shape second is the
+    ordinary case, not a mistake; an EMPTY repository is a name that has been
+    reserved, and reserving a name is not starting a project. A repository
+    with commits is refused: that is a live project, and `adopt-project.py`
+    is the tool for one of those.
+    """
+    reused: set[str] = set()
+    for role in names:
+        target = Path(urls[role]) if local else repositories[role]
+        empty = (local_remote_is_empty(target) if local
+                 else remote_is_empty(target))
+        if empty is None:
+            continue
+        if role == "assembly" and reuse_flag and empty:
+            reused.add(role)
+            print(f"  reuse {target} (zero commits)")
+            continue
+        raise Refusal(
+            "scaffold-remote-exists",
+            f"{target} already exists" + ("" if local else " on GitHub")
+            + ("" if empty else " and has commits"),
+            _exists_remedy(role, empty, reuse_flag))
+    return reused
+
+
 def _exists_remedy(role: str, empty: bool, reuse_flag: bool) -> str:
     """The remedy line for a remote that is already there.
 
@@ -311,23 +369,7 @@ def _scaffold(args) -> int:  # noqa: C901
     # `-spec` name offered as the assembly root, or a `open<Product>` /
     # `<X>-Install` form used as any leg — those forms are unambiguous by
     # construction and declaring a role cannot make them into a leg.
-    pins: dict[str, dict[str, str]] = {}
-    for raw in args.pin:
-        product, pin_repository, pin_commit = parse_pin(raw, args.org)
-        if args.pin_source is not None:
-            digest = pin_digest_from_source(args.pin_source.resolve(),
-                                            pin_commit, pin_repository)
-            digest_source = f"local-clone ({args.pin_source})"
-        else:
-            digest = pin_digest_from_gh(pin_repository, pin_commit)
-            digest_source = "gh-api-tree-recursive"
-        pins[product] = {
-            "PIN_PRODUCT": product,
-            "PIN_REPOSITORY": pin_repository,
-            "PIN_COMMIT": pin_commit,
-            "PIN_TREE_SHA256": digest,
-            "PIN_DIGEST_SOURCE": digest_source,
-        }
+    pins = declared_pin_values(args)
     declared_pins: set[str] = set(pins)
     for role, name in names.items():
         found = policy.classify(name, role, declared_pins)
@@ -459,36 +501,10 @@ def _scaffold(args) -> int:  # noqa: C901
     # reserved, and reserving a name is not starting a project. A repository
     # with commits is refused exactly as before: that is a live project, and
     # `adopt-project.py` is the tool for one of those.
-    reused: set[str] = set()
     if local:
         remote_dir.mkdir(parents=True, exist_ok=True)
-        for role, name in names.items():
-            bare = Path(urls[role])
-            empty = local_remote_is_empty(bare)
-            if empty is None:
-                continue
-            if role == "assembly" and args.reuse_empty_repo and empty:
-                reused.add(role)
-                print(f"  reuse {bare} (zero commits)")
-                continue
-            raise Refusal(
-                "scaffold-remote-exists",
-                f"{bare} already exists" + ("" if empty else " and has commits"),
-                _exists_remedy(role, empty, args.reuse_empty_repo))
-    else:
-        for role, repo in repositories.items():
-            empty = remote_is_empty(repo)
-            if empty is None:
-                continue
-            if role == "assembly" and args.reuse_empty_repo and empty:
-                reused.add(role)
-                print(f"  reuse {repo} (zero commits)")
-                continue
-            raise Refusal(
-                "scaffold-remote-exists",
-                f"{repo} already exists on GitHub"
-                + ("" if empty else " and has commits"),
-                _exists_remedy(role, empty, args.reuse_empty_repo))
+    reused = _reusable_remotes(names, urls, repositories, local,
+                               args.reuse_empty_repo)
 
     # ---- create the remotes ------------------------------------------------
     print("\ncreating remotes")
