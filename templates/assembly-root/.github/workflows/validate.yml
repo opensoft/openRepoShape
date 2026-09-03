@@ -19,12 +19,42 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
-      # `submodules: true` is load-bearing: without the leg checkouts the pin
-      # validator REFUSES rather than passing, because an unreadable surface
-      # must fail rather than degrade.
+      # The default `GITHUB_TOKEN` cannot read a leg that is a PRIVATE or
+      # internal sibling repository, so this NEVER checks out submodules
+      # itself and never authenticates with the bare default token alone:
+      # `SHAPE_LEGS_TOKEN` — a fine-grained PAT or GitHub App installation
+      # token with `contents:read` on the legs — is tried first, and
+      # `github.token` is the fallback for a public-legs project that has
+      # not set one. `actions/checkout` persists whichever token this
+      # resolves to into the local git config, so the manual submodule
+      # fetch below reuses it without repeating it.
       - uses: actions/checkout@v4
         with:
-          submodules: true
+          token: ${{ secrets.SHAPE_LEGS_TOKEN || github.token }}
+          submodules: false
+
+      # Best-effort, and its failure is CAPTURED rather than let through as a
+      # step failure: a private leg with no `SHAPE_LEGS_TOKEN` configured is a
+      # DEGRADE (see the two guarded steps below), never a red
+      # `actions/checkout`. That was the defect: `submodules: true` on
+      # checkout hard-fails the whole job the moment a leg cannot be cloned,
+      # with no route to run the checks that do not need the legs at all.
+      - name: fetch the legs (submodules)
+        id: submodules
+        run: |
+          set +e
+          git submodule update --init --recursive
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "legs_available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "legs_available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::submodule checkout failed (git exit $status). If the legs are PRIVATE or internal sibling repositories, the default GITHUB_TOKEN cannot read them. Set SHAPE_LEGS_TOKEN — a fine-grained PAT or GitHub App installation token with contents:read on the legs — as a repository or organisation secret. Leg URLs:"
+            git config --file .gitmodules --get-regexp '\.url$' | while read -r _ url; do
+              echo "::warning::  $url"
+            done
+          fi
 
       - uses: actions/setup-python@v5
         with:
@@ -32,11 +62,37 @@ jobs:
 
       # Standard library only. If this ever needs a `pip install`, the change
       # is wrong: the shape must run in an org that cannot install anything.
+      # Neither of these two reads a leg's working tree, so both run
+      # regardless of whether the legs were fetched above.
       - name: naming policy
         run: python3 scripts/validate-repository-naming.py --project project.yaml
 
       - name: project manifest
         run: python3 scripts/validate-manifest.py
 
+      # The pin validator recomputes each leg's tree digest FROM the leg's own
+      # object store, so it needs the leg actually checked out — it REFUSES
+      # rather than passing on an uninitialized submodule, because an
+      # unreadable surface must fail rather than degrade. Running it only
+      # when the fetch above succeeded turns that refusal into a clean,
+      # explained skip instead of a job failure with no route around it.
       - name: lockstep pins
+        if: steps.submodules.outputs.legs_available == 'true'
         run: python3 scripts/validate-pins.py
+
+      - name: lockstep pins (skipped — legs unavailable)
+        if: steps.submodules.outputs.legs_available != 'true'
+        run: |
+          echo "::warning::lockstep pin check SKIPPED: the legs could not be checked out, so their trees are not available to recompute the digests in contracts/*-pin.yaml against. See the 'fetch the legs (submodules)' step above for why."
+
+      # Misconfiguration must not be silent. An absent SHAPE_LEGS_TOKEN
+      # degrading a project with private legs is expected and reported above;
+      # a PRESENT SHAPE_LEGS_TOKEN that still could not check out the legs
+      # (wrong scope, missing contents:read grant, a leg URL problem) is a
+      # finding a human must act on, so this fails the job — the only case
+      # that does.
+      - name: fail — SHAPE_LEGS_TOKEN is set but the legs still could not be fetched
+        if: steps.submodules.outputs.legs_available != 'true' && secrets.SHAPE_LEGS_TOKEN != ''
+        run: |
+          echo "::error::SHAPE_LEGS_TOKEN is configured but 'git submodule update --init --recursive' still failed. That is a misconfiguration — wrong token scope, a missing contents:read grant on the leg repositories, or a leg URL problem — not an absent-secret degrade, and it must not pass silently."
+          exit 1

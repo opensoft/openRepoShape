@@ -597,6 +597,16 @@ def _scaffold(args) -> int:  # noqa: C901
                  f"--{args.visibility}", "--description", description])
             print(f"  gh    {repositories[role]} ({args.visibility})")
 
+    # A private or internal leg is unreadable to the `validate` workflow's
+    # default GITHUB_TOKEN — the defect on the first real adoption
+    # (MedxSoft/MedxEHR #7). Printed once, after both legs are known to have
+    # been created at this visibility, rather than per-leg.
+    if not local and args.visibility in ("private", "internal"):
+        print(f"NOTE {repositories['spec']} and {repositories['code']} are "
+              f"{args.visibility}: add a SHAPE_LEGS_TOKEN secret (contents:read "
+              f"on the legs) to {repositories['assembly']}, or the `validate` "
+              "check cannot check them out.")
+
     # ---- the two legs ------------------------------------------------------
     leg_commits: dict[str, str] = {}
     leg_digests: dict[str, str] = {}

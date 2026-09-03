@@ -34,6 +34,22 @@ here, and continues.
 All three carry the GitHub topic `{{TOPIC}}`, so the organisation's own search
 surfaces the group without a checkout.
 
+## Private legs need `SHAPE_LEGS_TOKEN`
+
+If `{{SPEC_REPOSITORY}}` or `{{CODE_REPOSITORY}}` is **private or internal**,
+the `validate` workflow's default `GITHUB_TOKEN` cannot clone it as a
+submodule. Add a **`SHAPE_LEGS_TOKEN`** repository or organisation secret — a
+fine-grained PAT or GitHub App installation token with `contents:read` on the
+legs — and `.github/workflows/validate.yml` picks it up automatically via
+`token: ${{ secrets.SHAPE_LEGS_TOKEN || github.token }}`.
+
+Without the secret the workflow does not go red on that account: it checks
+out without submodules, tries `git submodule update --init --recursive`
+best-effort, and — if that fails — still runs the naming and manifest
+checks, skips `validate-pins.py` with a warning explaining why, and only
+fails outright if `SHAPE_LEGS_TOKEN` **is** set and the fetch still failed
+(a misconfigured secret, not an absent one).
+
 ## The lockstep invariant
 
 For each leg, THREE things name the same commit and they move in ONE commit:
