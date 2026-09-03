@@ -54,6 +54,24 @@ TOPIC_PREFIX = "xf-project-"
 #: else than it did when it was written.
 TREE_DIGEST_DEFINITION = "sorted-ls-tree-r-v1"
 
+#: Every neutral `open<Product>` repository lives under THIS organisation.
+#: Domain repositories never author a neutral product, only pin the opensoft
+#: original (README, "Working rules"), so an UNQUALIFIED `--pin
+#: openGlass@<sha>` always resolves here — never under the pinning project's
+#: own `--org`, which owns no neutral product at all. `--pin-owner` overrides
+#: it for the rare pin on a fork of the neutral original.
+NEUTRAL_PRODUCT_OWNER = "opensoft"
+
+#: The GitHub repository-visibility values this standard accepts, everywhere
+#: it accepts one: `scaffold-project.py --visibility`, `setup.sh
+#: --visibility`, `adopt-project.py plan --visibility`, and the `visibility:`
+#: field `validate-manifest.py` checks. ONE tuple, so a fourth value never has
+#: to be added in four places and inevitably missed in a fifth. `internal` is
+#: an enterprise org-internal repository (`gh repo create --internal`,
+#: `gh repo view --json visibility` -> `INTERNAL`) — the same population as
+#: PRIVATE and PUBLIC, not a narrower or wider one.
+VISIBILITY_CHOICES = ("private", "public", "internal")
+
 #: Every value this family lets a caller put on a `git` or `gh` command line.
 #: Deliberately narrow: letters, digits, and the punctuation that real branch
 #: names, paths, repository names and commits are spelled with.

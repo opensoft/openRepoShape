@@ -51,7 +51,7 @@ usage: ./setup.sh --project <Project> [options] [-- <extra scaffold flags>]
                           omitted and a terminal is attached.
   --id <id>               lowercase project id      (default: project lowercased)
   --name "<Display>"      display name              (default: the project name)
-  --visibility private|public                       (default: private)
+  --visibility private|public|internal              (default: private)
   --elected-by "<Name>"   who is electing the shape (default: your gh login)
   --into <dir>            PARENT directory for the clone (default: ..), so the
                           clone lands at <dir>/<Project>
@@ -102,8 +102,8 @@ while [ $# -gt 0 ]; do
 done
 
 case "$VISIBILITY" in
-private | public) ;;
-*) die "--visibility is $VISIBILITY; it must be 'private' or 'public'" ;;
+private | public | internal) ;;
+*) die "--visibility is $VISIBILITY; it must be 'private', 'public' or 'internal'" ;;
 esac
 
 LOCAL_MODE=0

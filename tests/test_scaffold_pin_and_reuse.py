@@ -161,6 +161,10 @@ def test_a_declared_descendant_scaffolds_with_legs(tmp_path):
     assert pin["pin_role"] == "neutral-product"
     assert pin["revision_kind"] == "commit"
     assert pin["commit"] == commit
+    assert pin["source_repository"] == "opensoft/openGlass", (
+        "an unqualified --pin resolves under opensoft — the family's neutral-"
+        "product owner — and NEVER under --org (MedxSoft here); MedxSoft owns "
+        "no neutral product and a lookup there is a 404 waiting to happen")
     assert pin["digests"]["tree_sha256"] == tree_digest(product, commit), (
         "the pin's digest must be the `sorted-ls-tree-r-v1` digest of the "
         "product's tree at that commit")
@@ -216,6 +220,93 @@ def test_an_undeclared_descendant_form_is_unchanged(tmp_path):
     assert assembly["naming"]["form"] == "project-leg"
     assert assembly["naming"]["referent_declared"] is False
     assert manifest["neutral_product_pins"] == []
+
+
+# --- --pin-owner: an unqualified --pin resolves under opensoft, never --org -
+
+def test_pin_owner_can_be_overridden_explicitly(tmp_path):
+    """`--pin-owner` re-points the DEFAULT for an unqualified --pin name —
+    still never the project's own --org, which is the defect this exists
+    to fix (`--org MedxSoft --pin openGlass@<sha>` must not go looking for
+    `MedxSoft/openGlass`)."""
+    product, commit = product_repo(tmp_path)
+    work = tmp_path / "work"
+    result = run_script(SCAFFOLD, "--org", "MedxSoft", "--project", "MedxGlass",
+                        "--elected-by", "Brett Heap",
+                        "--pin", f"openGlass@{commit}",
+                        "--pin-owner", "MedxCorp",
+                        "--pin-source", str(product),
+                        "--local-remote-dir", str(tmp_path / "remotes"),
+                        "--work-dir", str(work))
+    assert result.returncode == 0, result.stderr + result.stdout
+    pin = load_yaml(work / "MedxGlass" / "contracts" / "openglass-pin.yaml")
+    assert pin["source_repository"] == "MedxCorp/openGlass"
+
+
+def test_pin_owner_named_in_the_pin_itself_wins_over_the_flag(tmp_path):
+    """`--pin owner/openProduct@<sha>` always wins over `--pin-owner` and over
+    the opensoft default — naming the owner in the value itself is the most
+    specific spelling."""
+    product, commit = product_repo(tmp_path)
+    work = tmp_path / "work"
+    result = run_script(SCAFFOLD, "--org", "MedxSoft", "--project", "MedxGlass",
+                        "--elected-by", "Brett Heap",
+                        "--pin", f"ExplicitOwner/openGlass@{commit}",
+                        "--pin-owner", "MedxCorp",
+                        "--pin-source", str(product),
+                        "--local-remote-dir", str(tmp_path / "remotes"),
+                        "--work-dir", str(work))
+    assert result.returncode == 0, result.stderr + result.stdout
+    pin = load_yaml(work / "MedxGlass" / "contracts" / "openglass-pin.yaml")
+    assert pin["source_repository"] == "ExplicitOwner/openGlass"
+
+
+def test_pin_owner_is_checked_like_any_other_command_line_value(tmp_path):
+    """`--pin-owner` reaches a `gh api repos/<owner>/<product>/...` command
+    line, so it is checked the same way `--org` and the rest are."""
+    result = run_script(SCAFFOLD, "--org", "MedxSoft", "--project", "MedxGlass",
+                        "--elected-by", "Brett Heap",
+                        "--pin", "openGlass@" + "0" * 40,
+                        "--pin-owner", "--upload-pack=touch /tmp/pwned",
+                        "--local-remote-dir", str(tmp_path / "remotes"),
+                        "--work-dir", str(tmp_path / "work"))
+    assert result.returncode == 2
+    assert "unsafe-value" in result.stderr
+    assert not (tmp_path / "remotes").exists()
+
+
+def test_an_unreadable_pin_names_the_exact_owner_repo_and_commit(tmp_path):
+    """The refusal names the OWNER/REPO@COMMIT it actually tried (opensoft by
+    default) and suggests the --pin owner/openProduct or --pin-owner form —
+    the real-world defect this fixes was silent about both."""
+    import os
+    import stat
+    import textwrap
+    bin_dir = tmp_path / "fakebin"
+    bin_dir.mkdir()
+    gh = bin_dir / "gh"
+    gh.write_text(textwrap.dedent("""\
+        #!/usr/bin/env python3
+        import sys
+        print("HTTP 404: Not Found (https://api.github.com/...)",
+              file=sys.stderr)
+        sys.exit(1)
+        """), encoding="utf-8")
+    gh.chmod(gh.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    env = {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
+    commit = "1" * 40
+    result = run_script(SCAFFOLD, "--org", "MedxSoft", "--project", "MedxGlass",
+                        "--elected-by", "Brett Heap",
+                        "--pin", f"openGlass@{commit}",
+                        "--dry-run", "--work-dir", str(tmp_path / "work"),
+                        env=env)
+    assert result.returncode == 2
+    assert "pin-unreadable" in result.stderr
+    assert f"opensoft/openGlass @ {commit}" in result.stderr
+    assert "MedxSoft/openGlass" not in result.stderr, (
+        "the tool must never have gone looking under the project's own --org")
+    assert "--pin <owner>/<openProduct>@<sha>" in result.stderr
+    assert "--pin-owner" in result.stderr
 
 
 # --- what may become an argument to git ------------------------------------

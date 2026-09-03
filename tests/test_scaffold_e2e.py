@@ -321,3 +321,50 @@ def test_the_shape_pin_records_the_openreposhape_commit(project):
     assert len(pin["files"]) >= 9
     manifest = load_yaml(project / "project.yaml")
     assert manifest["shape"]["commit"] == pin["commit"]
+
+
+# --- visibility --------------------------------------------------------
+
+def test_the_default_visibility_is_private(project):
+    """No `--visibility` was passed for this fixture's scaffold."""
+    sys.path.insert(0, str(REPO / "scripts"))
+    from repo_shape import load_yaml
+    manifest = load_yaml(project / "project.yaml")
+    assert manifest["visibility"] == "private"
+
+
+def test_internal_visibility_is_accepted(tmp_path):
+    """`internal` is a real GitHub visibility (an enterprise org-internal
+    repository: `gh repo create --internal`, `gh repo view --json visibility`
+    -> `INTERNAL`) — not a typo of `private`/`public`, and this standard must
+    accept it. Local bare repositories have no visibility of their own, so
+    what is checked is the printed plan and what the manifest records."""
+    remotes = tmp_path / "remotes"
+    # NOT --local-remote-dir here: `--dry-run` returns before any `gh` or
+    # `git` command runs, so this prints the REAL (non-local) plan line —
+    # `gh repo create --internal` — with no network involved at all.
+    dry = run_script(SCAFFOLD, "--org", ORG, "--project", "Fernwood",
+                     "--elected-by", "Test Human", "--visibility", "internal",
+                     "--dry-run", "--work-dir", str(tmp_path / "work"))
+    assert dry.returncode == 0, dry.stderr
+    assert "gh repo create --internal" in dry.stdout
+
+    result = run_script(SCAFFOLD, "--org", ORG, "--project", "Fernwood",
+                        "--elected-by", "Test Human", "--visibility", "internal",
+                        "--local-remote-dir", str(remotes),
+                        "--work-dir", str(tmp_path / "work2"))
+    assert result.returncode == 0, result.stderr + result.stdout
+    sys.path.insert(0, str(REPO / "scripts"))
+    from repo_shape import load_yaml
+    manifest = load_yaml(tmp_path / "work2" / "Fernwood" / "project.yaml")
+    assert manifest["visibility"] == "internal"
+
+
+def test_a_bad_visibility_is_refused_by_argparse(tmp_path):
+    result = run_script(SCAFFOLD, "--org", ORG, "--project", "Fernwood",
+                        "--elected-by", "Test Human", "--visibility", "secret",
+                        "--local-remote-dir", str(tmp_path / "remotes"),
+                        "--work-dir", str(tmp_path / "work"))
+    assert result.returncode != 0
+    assert "invalid choice: 'secret'" in result.stderr
+    assert "'internal'" in result.stderr

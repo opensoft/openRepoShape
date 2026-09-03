@@ -51,8 +51,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from repo_shape import (  # noqa: E402
-    COMMIT_RE, PROJECT_ID_RE, SHA256_RE, TREE_DIGEST_DEFINITION, NamingPolicy,
-    Refusal, accepts_role, find_repo_root, load_yaml, repo_basename,
+    COMMIT_RE, PROJECT_ID_RE, SHA256_RE, TREE_DIGEST_DEFINITION,
+    VISIBILITY_CHOICES, NamingPolicy, Refusal, accepts_role, find_repo_root,
+    load_yaml, repo_basename,
 )
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -201,6 +202,15 @@ def _findings(manifest: dict, policy: NamingPolicy, root=None) -> list[str]:
     if reference is not None and (not isinstance(reference, str) or not reference.strip()):
         bad("manifest-reference", f"reference is {reference!r}; drop the key or "
                                   "name the document the election followed")
+
+    # OPTIONAL, like `reference:` — a manifest scaffolded before this field
+    # existed is not thereby wrong. Present and not one of the three real
+    # GitHub visibilities is a finding.
+    visibility = manifest.get("visibility")
+    if visibility is not None and visibility not in VISIBILITY_CHOICES:
+        bad("manifest-visibility",
+            f"visibility is {visibility!r}, expected one of "
+            f"{sorted(VISIBILITY_CHOICES)} or no field at all")
 
     shape = manifest.get("shape")
     if not isinstance(shape, dict):

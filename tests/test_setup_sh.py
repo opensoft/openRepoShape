@@ -147,7 +147,20 @@ def test_an_unknown_argument_refuses():
 def test_a_bad_visibility_refuses():
     result = run_setup("--project", "Sample", "--visibility", "secret")
     assert result.returncode == 2
-    assert "must be 'private' or 'public'" in result.stderr
+    assert "must be 'private', 'public' or 'internal'" in result.stderr
+
+
+def test_an_internal_visibility_is_accepted(tmp_path):
+    """`internal` is a real GitHub visibility (an enterprise org-internal
+    repository, `gh repo view --json visibility` -> `INTERNAL`), not a typo."""
+    result = run_setup("--project", "Sample", "--yes", "--org", "demoorg",
+                       "--visibility", "internal",
+                       "--local-remote-dir", str(tmp_path / "remotes"),
+                       "--into", str(tmp_path / "work"))
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "visibility   internal" in result.stdout
+    manifest = (tmp_path / "work" / "Sample" / "project.yaml").read_text()
+    assert "visibility: internal" in manifest
 
 
 def test_a_name_outside_the_naming_policy_stops_before_the_scaffold(tmp_path):

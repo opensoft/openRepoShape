@@ -204,6 +204,10 @@ def test_the_manifest_and_pins_describe_the_legs_that_were_created(adopted,
     assert manifest["kind"] == "project-manifest"
     assert [leg["repository"] for leg in manifest["legs"]] == [
         f"testorg/{PROJECT}", f"testorg/{PROJECT}-spec", f"testorg/{PROJECT}-code"]
+    assert manifest["visibility"] == "private", (
+        "the fixture passed no --visibility; the two new legs default to "
+        "private, and the assembly root's OWN visibility is whatever the "
+        "adopted source already was on GitHub — unrelated to this field")
     for role in ("spec", "code"):
         pin = load_yaml(adopted_clone / "contracts" / f"{role}-pin.yaml")
         assert pin["revision_kind"] == "commit"
