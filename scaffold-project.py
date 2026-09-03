@@ -48,8 +48,8 @@ from pathlib import Path
 SHAPE_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
 from repo_shape import (  # noqa: E402
-    PROJECT_ID_RE, TREE_DIGEST_DEFINITION, NamingPolicy, Refusal, file_sha256,
-    git_out, tree_digest,
+    PROJECT_ID_RE, TREE_DIGEST_DEFINITION, NamingPolicy, Refusal, accepts_role,
+    file_sha256, git_out, tree_digest,
 )
 
 SHAPE_REPOSITORY = "opensoft/openRepoShape"
@@ -311,7 +311,7 @@ def _scaffold(args) -> int:  # noqa: C901 - a linear procedure, read top to bott
                 "underscore, dot or space.",
                 "Remediation: re-run with a --project value of that form.",
             )
-        if found != ("project-leg", role):
+        if not accepts_role(found, role):
             raise Refusal(
                 "naming-role-mismatch",
                 f"{name!r} classifies as {found[0]}"

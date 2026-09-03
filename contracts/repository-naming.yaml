@@ -51,6 +51,17 @@ kind: repository-naming-policy
 # `matches()` and `--explain` still report every form a name satisfies, so an
 # overlap stays visible instead of being silently resolved.
 #
+# A DESCENDANT MAY CARRY LEGS. Ruled by Brett Heap on 2026-09-02, in the same
+# breath as the referent rule: being a descendant and being a three-repository
+# project are INDEPENDENT facts. `MedxGlass` descends from `openGlass` AND is
+# the assembly root that mounts `MedxGlass-spec` and `MedxGlass-code`. The
+# descendant family therefore declares no roles of its own but ADMITS the
+# declared `assembly` role (`admits_declared_role:` below), so
+# `form: domain-descendant, role: assembly, referent_declared: true` is a
+# VALID classification for an assembly root. Reading the two rulings as
+# exclusive would have forced every declared descendant into a one-repository
+# project, which neither ruling says.
+#
 # THE ASSEMBLY-ROOT FORM IS THE RESIDUAL CLASS, deliberately. A bare CamelCase
 # token is the widest form here and sits last on purpose: the staged fragment
 # records that two live repositories (`xFactory-Installer`, `AgentTower`) fit
@@ -104,6 +115,15 @@ families:
     # the one family here whose membership is not decided by the characters
     # alone, which is why it is the one family that carries `referent:`.
     requires_referent: true
+    # The roles a DECLARED descendant may additionally answer in. The family
+    # has no `roles:` of its own — `MedxGlass` and `MedxGlass-spec` are not
+    # the same form — but a descendant that IS the repository an engineer
+    # clones answers as the assembly root, which is what lets a descendant
+    # carry legs. `spec` and `code` are absent on purpose: those names carry
+    # the lowercase suffix and are ordinary project legs, descendants of
+    # nothing.
+    admits_declared_role:
+      - assembly
     referent:
       # `MedxChart` -> product `Chart` -> `openChart`. The stem is greedy, so
       # a name with two `x<Upper>` splits is read at the rightmost one.
@@ -133,10 +153,14 @@ families:
       MedxChart: openChart
       LedgerxWallet: openWallet
       codexFactory: openxFactory
+      # A descendant that is ALSO an assembly root with two legs. Both facts
+      # at once is the case `admits_declared_role:` above exists for.
+      MedxGlass: openGlass
     examples:
       - MedxChart
       - LedgerxWallet
       - codexFactory
+      - MedxGlass
     # These do not even reach the referent question: they fail the pattern.
     counter_examples:
       - MedChart

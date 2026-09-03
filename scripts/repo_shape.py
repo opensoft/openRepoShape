@@ -674,9 +674,16 @@ class NamingPolicy:
         for family_id, role_id in matched:
             by_family.setdefault(family_id, []).append(role_id)
 
-        def answer(family_id: str, role_id: str | None, reason: str) -> Classification:
-            also = [form_id(f, r) for f, r in matched
-                    if (f, r) != (family_id, role_id)]
+        def answer(family_id: str, role_id: str | None, reason: str,
+                   matched_key: tuple | None = None) -> Classification:
+            # `matched_key` is the entry of `matched` this answer CONSUMES. It
+            # differs from the answer itself in exactly one case: a descendant
+            # that takes its role from the declared one, where the consumed
+            # entry is `("domain-descendant", None)`. Without it the family a
+            # name was classified INTO would also be listed among the forms it
+            # was not, which is a record contradicting itself.
+            key = matched_key if matched_key is not None else (family_id, role_id)
+            also = [form_id(f, r) for f, r in matched if (f, r) != key]
             return Classification(family_id, role_id, also, reason)
 
         for family_id in ("neutral-product", "install"):
@@ -688,14 +695,35 @@ class NamingPolicy:
         claimed = "domain-descendant" in by_family
         referents = self.descendant_referents(name) if claimed else ()
         declared = next((r for r in referents if r.casefold() in pins), None)
-        if claimed and (declared or not self.requires_referent("domain-descendant")):
-            return answer(
-                "domain-descendant", by_family["domain-descendant"][0],
-                f"descendant form with a declared pin on {declared} → domain "
-                "descendant" if declared else
-                "descendant form (this policy does not require a referent)")
-
         leg_roles = [r for r in (by_family.get("project-leg") or []) if r]
+        if claimed and (declared or not self.requires_referent("domain-descendant")):
+            # A DESCENDANT MAY CARRY LEGS (Brett Heap, 2026-09-02). The
+            # descendant family declares no roles of its own, so the role a
+            # descendant answers with is the one the project DECLARES, and
+            # only where the name also satisfies that leg form. `MedxGlass`
+            # pins `openGlass` AND mounts `MedxGlass-spec` and
+            # `MedxGlass-code`: it is a descendant AND the assembly root.
+            # Refusing that pair would have made the descendant ruling and the
+            # three-repository shape mutually exclusive, which neither ruling
+            # says and both organisations that have one need both of.
+            family = self.family("domain-descendant") or {}
+            admitted = family.get("admits_declared_role") or ("assembly",)
+            role = by_family["domain-descendant"][0]
+            if role is None and declared_role is not None \
+                    and declared_role in leg_roles \
+                    and declared_role in admitted:
+                role = declared_role
+            if declared:
+                reason = (f"descendant form with a declared pin on {declared} "
+                          "→ domain descendant")
+                if role:
+                    reason += (f", carrying the {role} role it declares (a "
+                               "descendant may carry legs)")
+            else:
+                reason = "descendant form (this policy does not require a referent)"
+            return answer("domain-descendant", role, reason,
+                          ("domain-descendant", by_family["domain-descendant"][0]))
+
         chosen = None
         if declared_role is not None and declared_role in leg_roles:
             chosen, how = declared_role, "by declared role"
@@ -720,6 +748,28 @@ class NamingPolicy:
 
     def topic_for(self, project_id: str) -> str:
         return self.topic_template.format(id=project_id)
+
+
+def accepts_role(found, role: str) -> bool:
+    """Is `found` an acceptable classification for a leg DECLARED as `role`?
+
+    ONE definition, consulted by the scaffold, by `adopt-project.py` and by a
+    project's own `validate-manifest.py`, because three copies of "which forms
+    may be an assembly root" is how the second one starts disagreeing with the
+    first.
+
+    Two forms pass. The ordinary one is the project-leg family in exactly the
+    declared role. The second is the 2026-09-02 ruling that a DECLARED domain
+    descendant may be an assembly root carrying legs: `MedxGlass` pins
+    `openGlass` and still mounts `MedxGlass-spec` and `MedxGlass-code`. The
+    descendant classification is only ever returned when the pin is DECLARED
+    (see `NamingPolicy.classify`), so this admits a fact, never a claim.
+    """
+    if found is None:
+        return False
+    if tuple(found) == ("project-leg", role):
+        return True
+    return role == "assembly" and tuple(found) == ("domain-descendant", "assembly")
 
 
 def repo_basename(repository: str) -> str:
