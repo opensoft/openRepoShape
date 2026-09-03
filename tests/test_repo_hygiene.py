@@ -109,9 +109,13 @@ def test_readme_is_short_enough_to_be_read():
     ruling, then adoption in place — a second tool, a second policy file and
     the MedxEHR worked example that makes the three decisions arguable rather
     than folkloric. A cap that never moves for a rule pushes the rule into
-    tribal memory instead; a cap that moves for prose is not a cap."""
+    tribal memory instead; a cap that moves for prose is not a cap.
+
+    It moved again, 245 -> 265, on 2026-09-03: the `SHAPE_LEGS_TOKEN` rule
+    that fixed the first real adoption's red `validate` check on private
+    legs (MedxSoft/MedxEHR #7)."""
     lines = (REPO / "README.md").read_text().splitlines()
-    assert len(lines) <= 245, f"README.md is {len(lines)} lines; the cap is 245"
+    assert len(lines) <= 265, f"README.md is {len(lines)} lines; the cap is 265"
 
 
 def test_setup_sh_is_executable_and_fails_loudly():

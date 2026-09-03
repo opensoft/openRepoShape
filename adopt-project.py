@@ -820,6 +820,16 @@ def _create_leg_remotes(plan: Plan, names: dict, repositories: dict,
         run(["git", "init", "-q", "--bare", "-b", tracking, str(bare)])
         print(f"  bare  {bare}")
 
+    # A private or internal leg is unreadable to the `validate` workflow's
+    # default GITHUB_TOKEN — the defect on the first real adoption
+    # (MedxSoft/MedxEHR #7).
+    visibility = plan.get("visibility", "private")
+    if not local and visibility in ("private", "internal"):
+        print(f"NOTE {repositories['spec']} and {repositories['code']} are "
+              f"{visibility}: add a SHAPE_LEGS_TOKEN secret (contents:read "
+              f"on the legs) to {repositories['assembly']}, or the `validate` "
+              "check cannot check them out.")
+
 
 def _extract_leg(role: str, source: Source, work: Path, paths: list[str],
                  listing: Path, branch: str, url: str, tracking: str,

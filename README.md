@@ -69,6 +69,26 @@ hyphenated precisely so they sit in a different visual class from every other
 family, all of which are CamelCase words. Every repository of a project also
 carries the GitHub topic `xf-project-<id>`.
 
+### Private legs need `SHAPE_LEGS_TOKEN`
+
+The `validate` workflow's default `GITHUB_TOKEN` cannot clone a **private or
+internal** leg as a submodule — this was the defect on the first real
+adoption (MedxSoft/MedxEHR #7): `<Project>-spec`/`<Project>-code` were
+private, and the required check was red on every pull request. Add a
+**`SHAPE_LEGS_TOKEN`** repository or organisation secret — a fine-grained PAT
+or GitHub App installation token with `contents:read` on the legs — on the
+assembly root, and `.github/workflows/validate.yml` picks it up automatically
+via `token: ${{ secrets.SHAPE_LEGS_TOKEN || github.token }}`. Both
+`scaffold-project.py` and `adopt-project.py execute` print a one-line
+reminder when they create a private or internal leg.
+
+Without the secret the workflow degrades instead of failing: it checks out
+without submodules, attempts `git submodule update --init --recursive`
+best-effort, and if that fails it still runs the naming and manifest checks,
+skips `validate-pins.py` with a warning explaining why, and fails outright
+only if `SHAPE_LEGS_TOKEN` **is** set and the fetch still failed — a
+misconfigured secret must not pass silently.
+
 ### A descendant form is a claim; a claim needs a referent
 
 `open<Product>` and `<X>-Install` say what they are in their own characters and

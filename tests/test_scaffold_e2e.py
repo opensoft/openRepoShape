@@ -304,11 +304,81 @@ def test_make_targets_exist(project):
 
 def test_the_ci_workflow_checks_out_submodules(project):
     workflow = (project / ".github" / "workflows" / "validate.yml").read_text()
-    assert "submodules: true" in workflow
+    # `submodules: true` directly on `actions/checkout` is the reverted
+    # defect: it hard-fails the whole job the instant a private leg cannot
+    # be cloned. The fetch is now a separate, failure-capturing step; only
+    # the checkout step itself must not carry the old setting.
+    assert "with:\n          submodules: true" not in workflow
+    assert "submodules: false" in workflow
+    assert "git submodule update --init --recursive" in workflow
     assert "on:\n  pull_request:" in workflow
     for validator in ("validate-repository-naming.py", "validate-manifest.py",
                       "validate-pins.py"):
         assert validator in workflow
+
+
+def _step_block(workflow: str, marker: str) -> str:
+    """The text of one `- ` step block, from its `marker` line to the next
+    top-level (six-space-indented) `- ` step or end of file.
+
+    String/structural, not a real YAML parse — deliberately, so this test
+    depends on nothing outside the standard library, like everything this
+    repository ships. `marker` should be unique enough to find one step
+    (a `name:`, `id:` or `uses:` line makes a good one).
+    """
+    lines = workflow.splitlines()
+    start = next(i for i, line in enumerate(lines) if marker in line)
+    # walk back to the start of this step (`      - ` at 6-space indent)
+    while not lines[start].startswith("      - "):
+        start -= 1
+    end = start + 1
+    while end < len(lines) and not lines[end].startswith("      - "):
+        end += 1
+    return "\n".join(lines[start:end])
+
+
+def test_the_ci_workflow_checkout_uses_shape_legs_token(project):
+    """The exact token expression the fix specifies, and the guarded steps
+    that let the job degrade instead of hard-failing when a private leg's
+    submodule fetch fails without `SHAPE_LEGS_TOKEN` configured.
+
+    String/YAML-structure assertions only, no live run: this workflow never
+    executes in the test suite (no network, no GitHub Actions runner here).
+    """
+    workflow = (project / ".github" / "workflows" / "validate.yml").read_text()
+
+    checkout = _step_block(workflow, "uses: actions/checkout@")
+    assert "token: ${{ secrets.SHAPE_LEGS_TOKEN || github.token }}" in checkout
+    assert "submodules: false" in checkout
+
+    fetch = _step_block(workflow, "id: submodules")
+    assert "git submodule update --init --recursive" in fetch
+    assert "legs_available=true" in fetch
+    assert "legs_available=false" in fetch
+    assert "SHAPE_LEGS_TOKEN" in fetch
+    assert "::warning::" in fetch
+
+    pins_step = _step_block(workflow, "name: lockstep pins")
+    assert "if: steps.submodules.outputs.legs_available == 'true'" in pins_step
+    assert "validate-pins.py" in pins_step
+
+    skipped = _step_block(
+        workflow, "name: lockstep pins (skipped — legs unavailable)")
+    assert "if: steps.submodules.outputs.legs_available != 'true'" in skipped
+    assert "::warning::" in skipped
+
+    fail_step = _step_block(
+        workflow, "fail — SHAPE_LEGS_TOKEN is set but the legs still")
+    assert ("if: steps.submodules.outputs.legs_available != 'true' && "
+            "secrets.SHAPE_LEGS_TOKEN != ''") in fail_step
+    assert "exit 1" in fail_step
+
+    # Naming and manifest checks read no leg working tree, so neither is
+    # conditioned on `legs_available`.
+    naming_step = _step_block(workflow, "name: naming policy")
+    assert "if:" not in naming_step
+    manifest_step = _step_block(workflow, "name: project manifest")
+    assert "if:" not in manifest_step
 
 
 def test_the_shape_pin_records_the_openreposhape_commit(project):
