@@ -370,7 +370,7 @@ def test_the_ci_workflow_checkout_uses_shape_legs_token(project):
     fail_step = _step_block(
         workflow, "fail — SHAPE_LEGS_TOKEN is set but the legs still")
     assert ("if: steps.submodules.outputs.legs_available != 'true' && "
-            "secrets.SHAPE_LEGS_TOKEN != ''") in fail_step
+            "env.SHAPE_LEGS_TOKEN_SET == 'true'") in fail_step
     assert "exit 1" in fail_step
 
     # Naming and manifest checks read no leg working tree, so neither is
@@ -379,6 +379,38 @@ def test_the_ci_workflow_checkout_uses_shape_legs_token(project):
     assert "if:" not in naming_step
     manifest_step = _step_block(workflow, "name: project manifest")
     assert "if:" not in manifest_step
+
+
+def test_no_if_expression_reads_the_secrets_context(project):
+    """The `secrets` context is not available in a step-level `if:`
+    expression — GitHub rejects the whole workflow file as unparseable
+    ("unrecognized named-value 'secrets'") rather than failing just that
+    step, and the observed symptom is a push-event run with ZERO jobs. This
+    was the defect on the first real projects (MedxSoft/MedxEHR PR #8,
+    MedxSoft/MedxGlass PR #1).
+
+    The fix moves the presence check into a job-level `env:` value (`secrets`
+    IS allowed there, and in `with:` — see the checkout step's `token:`,
+    still asserted above) and has every `if:` read `env.*`/`steps.*` instead.
+    This test guards the class of defect, not just the one instance: it
+    walks every `if:` line in the rendered workflow, not only the step named
+    above.
+    """
+    workflow = (project / ".github" / "workflows" / "validate.yml").read_text()
+
+    if_lines = [line for line in workflow.splitlines()
+                if line.lstrip().startswith("if:")]
+    assert if_lines, "expected at least one `if:` step condition"
+    for line in if_lines:
+        assert "secrets." not in line, (
+            f"step-level `if:` must not read the `secrets` context: {line!r}")
+
+    assert "SHAPE_LEGS_TOKEN_SET" in workflow
+    # The job-level `env:` sits above `steps:` in the job block.
+    env_block = workflow.split("steps:", 1)[0]
+    assert "env:" in env_block
+    assert ("SHAPE_LEGS_TOKEN_SET: ${{ secrets.SHAPE_LEGS_TOKEN != '' }}"
+            in env_block)
 
 
 def test_the_shape_pin_records_the_openreposhape_commit(project):

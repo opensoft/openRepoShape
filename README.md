@@ -87,7 +87,9 @@ without submodules, attempts `git submodule update --init --recursive`
 best-effort, and if that fails it still runs the naming and manifest checks,
 skips `validate-pins.py` with a warning explaining why, and fails outright
 only if `SHAPE_LEGS_TOKEN` **is** set and the fetch still failed — a
-misconfigured secret must not pass silently.
+misconfigured secret must not pass silently — checked via a job-level `env:
+SHAPE_LEGS_TOKEN_SET`, not `secrets` in the step `if:` (disallowed there;
+MedxEHR PR #8, MedxGlass PR #1: zero-job push runs).
 
 ### A descendant form is a claim; a claim needs a referent
 

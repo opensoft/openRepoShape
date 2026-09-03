@@ -123,14 +123,22 @@ def test_readme_is_short_enough_to_be_read():
     that fixed the first real adoption's red `validate` check on private
     legs (MedxSoft/MedxEHR #7).
 
-    265 -> 322 on 2026-09-03, for "Keeping a project's shape current". The
-    copies are the standard's central trade — a project that runs its own gate
-    offline is a project an upstream fix reaches never — and until that day the
-    other half of the trade was two projects updated by hand and no command at
-    all. What the tool REFUSES is most of the section, because a re-pin that
-    hid drift would have been worse than the hand edit it replaced."""
+    And again, 265 -> 267, later the same day: the `SHAPE_LEGS_TOKEN`
+    paragraph now also notes that its presence check is a job-level `env:`
+    value rather than the `secrets` context in a step `if:` — the fix for
+    the next real-adoption defect (MedxSoft/MedxEHR PR #8, MedxSoft/MedxGlass
+    PR #1: `secrets` in a step `if:` makes GitHub reject the whole workflow
+    file, a push-event run with zero jobs).
+
+    267 -> 324, the same day again, for "Keeping a project's shape current".
+    The copies are the standard's central trade — a project that runs its own
+    gate offline is a project an upstream fix reaches never — and until that
+    day the other half of the trade was two projects updated by hand and no
+    command at all. What the tool REFUSES is most of the section, because a
+    re-pin that hid drift would have been worse than the hand edit it
+    replaced."""
     lines = (REPO / "README.md").read_text().splitlines()
-    assert len(lines) <= 322, f"README.md is {len(lines)} lines; the cap is 322"
+    assert len(lines) <= 324, f"README.md is {len(lines)} lines; the cap is 324"
 
 
 def test_setup_sh_is_executable_and_fails_loudly():

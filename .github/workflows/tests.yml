@@ -48,3 +48,25 @@ jobs:
 
       - name: tests
         run: python3 -m pytest tests -q
+
+      # PINNED, checksum-verified, no `go install`/`pip` package exists for
+      # this: a static release binary downloaded straight from the tag this
+      # repository pins. This is what would have caught the `secrets`-in-a-
+      # step-`if:` defect (a rendered workflow file GitHub itself rejects as
+      # unparseable) before it ever reached a real project's pull request.
+      - name: install actionlint
+        run: |
+          set -euo pipefail
+          version=1.7.12
+          archive="actionlint_${version}_linux_amd64.tar.gz"
+          sha256=8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+          curl --proto '=https' --tlsv1.2 -sSL -o "$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v${version}/${archive}"
+          echo "${sha256}  ${archive}" | sha256sum -c -
+          tar -xzf "$archive" actionlint
+          chmod +x actionlint
+
+      - name: actionlint — templates/assembly-root/.github/workflows/validate.yml
+        run: >-
+          ./actionlint
+          templates/assembly-root/.github/workflows/validate.yml

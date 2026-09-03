@@ -18,6 +18,17 @@ on:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    # The `secrets` context is NOT allowed in a step-level `if:` expression —
+    # GitHub rejects the whole workflow file as unparseable the moment one
+    # appears there ("unrecognized named-value 'secrets'"), and the failure
+    # mode is not a red step but a push-event run with ZERO jobs: this was
+    # the defect on the first real projects (MedxSoft/MedxEHR #8,
+    # MedxSoft/MedxGlass #1). `secrets` IS allowed in `env:` (and in `with:`,
+    # see the checkout step below), so the presence check is done here, once,
+    # and the guarded step below reads the resulting `env.*` boolean instead
+    # of `secrets.*` directly.
+    env:
+      SHAPE_LEGS_TOKEN_SET: ${{ secrets.SHAPE_LEGS_TOKEN != '' }}
     steps:
       # The default `GITHUB_TOKEN` cannot read a leg that is a PRIVATE or
       # internal sibling repository, so this NEVER checks out submodules
@@ -92,7 +103,7 @@ jobs:
       # finding a human must act on, so this fails the job — the only case
       # that does.
       - name: fail — SHAPE_LEGS_TOKEN is set but the legs still could not be fetched
-        if: steps.submodules.outputs.legs_available != 'true' && secrets.SHAPE_LEGS_TOKEN != ''
+        if: steps.submodules.outputs.legs_available != 'true' && env.SHAPE_LEGS_TOKEN_SET == 'true'
         run: |
           echo "::error::SHAPE_LEGS_TOKEN is configured but 'git submodule update --init --recursive' still failed. That is a misconfiguration — wrong token scope, a missing contents:read grant on the leg repositories, or a leg URL problem — not an absent-secret degrade, and it must not pass silently."
           exit 1
