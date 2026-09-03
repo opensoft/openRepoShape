@@ -65,8 +65,9 @@ SHAPE_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
 from path_classify import PathPolicy, Verdict  # noqa: E402
 from repo_shape import (  # noqa: E402
-    COMMIT_RE, PROJECT_ID_RE, TREE_DIGEST_DEFINITION, NamingPolicy, Refusal,
-    accepts_role, checked_value, git_out, load_yaml, tree_digest,
+    COMMIT_RE, NEUTRAL_PRODUCT_OWNER, PROJECT_ID_RE, TREE_DIGEST_DEFINITION,
+    VISIBILITY_CHOICES, NamingPolicy, Refusal, accepts_role, checked_value,
+    git_out, load_yaml, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
     ADOPT_MAKEFILE_BLOCK, DEFAULT_REFERENCE, RULESET_HINT, SHAPE_REPOSITORY,
@@ -77,6 +78,31 @@ from shape_materialize import (  # noqa: E402
 #: because three spellings of the same path is how the second one goes stale.
 NAMING_POLICY = SHAPE_ROOT / "contracts" / "repository-naming.yaml"
 PATH_POLICY = SHAPE_ROOT / "contracts" / "path-classification.yaml"
+
+#: A declared pin here is a NAME, `[owner/]openProduct` — never `@<commit>`.
+#: Adopting a project records no commit for a neutral-product pin at plan
+#: time (there is no `contracts/<product>-pin.yaml` for one, unlike
+#: `scaffold-project.py --pin`), so a value carrying `@` is almost always
+#: that OTHER tool's syntax pasted in by habit, and is refused rather than
+#: silently written into `neutral_product_pins:` as a name nothing matches.
+PIN_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?$")
+
+
+def _checked_pin_name(raw: str) -> str:
+    name = raw.strip()
+    if not PIN_NAME_RE.match(name):
+        raise Refusal(
+            "adopt-pin-malformed",
+            f"--pin {raw!r} is not `[owner/]openProduct`",
+            "Remediation: pass --pin openGlass, or name the owner explicitly "
+            f"with --pin {NEUTRAL_PRODUCT_OWNER}/openGlass — every neutral "
+            f"open<Product> lives under {NEUTRAL_PRODUCT_OWNER} by the "
+            "family's rule. Adopting a project declares no commit for a "
+            "neutral-product pin at plan time, so drop `@<commit>` if you "
+            "copied it from `scaffold-project.py --pin`.",
+        )
+    return name
+
 
 PLAN_KIND = "adoption-plan"
 ADOPT_BRANCH = "adopt/three-repo-shape"
@@ -458,7 +484,7 @@ def cmd_plan(args) -> int:
     args.elected_on = args.elected_on or _dt.date.today().isoformat()
     args.elected_by = args.elected_by or _elector()
     names = _names(args.project)
-    pins = [p.strip() for p in (args.pin or []) if p.strip()]
+    pins = [_checked_pin_name(p) for p in (args.pin or []) if p.strip()]
     _check_names(naming, names, set(pins))
 
     tree = source.tree()
@@ -963,6 +989,7 @@ def _template_values(plan: Plan, names, repositories, urls, spec_path,
         "PROJECT_NAME": project,
         "ORG": str(plan.get("org")),
         "TOPIC": naming.topic_for(project_id),
+        "VISIBILITY": str(plan.get("visibility", "private")),
         "REFERENCE": str(plan.get("reference", DEFAULT_REFERENCE)),
         "ELECTED_BY": str(plan.get("elected_by", "")),
         "ELECTED_ON": str(plan.get("elected_on",
@@ -1169,7 +1196,7 @@ def main(argv: list[str] | None = None) -> int:
                            "it is the source repository's own name")
     plan.add_argument("--org", default=None)
     plan.add_argument("--id", default=None)
-    plan.add_argument("--visibility", choices=("private", "public"),
+    plan.add_argument("--visibility", choices=VISIBILITY_CHOICES,
                       default="private")
     plan.add_argument("--elected-by", default=None)
     plan.add_argument("--elected-on", default=None)
@@ -1178,7 +1205,12 @@ def main(argv: list[str] | None = None) -> int:
     plan.add_argument("--spec-path", default="spec")
     plan.add_argument("--code-path", default="code")
     plan.add_argument("--pin", action="append", default=[],
-                      help="a neutral product this project declares a pin on")
+                      help="a neutral product this project declares a pin on "
+                           "— a NAME only, e.g. --pin openGlass or --pin "
+                           f"{NEUTRAL_PRODUCT_OWNER}/openGlass to name the "
+                           "owner explicitly. Adopting a project pins no "
+                           "commit at plan time, so a trailing @<commit> "
+                           "(scaffold-project.py's syntax) is refused.")
     plan.add_argument("--path-policy", type=Path, default=None)
     plan.add_argument("--out", default="adoption-plan.yaml")
     plan.add_argument("--work-dir", type=Path, default=None)

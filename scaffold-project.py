@@ -47,8 +47,9 @@ from pathlib import Path
 SHAPE_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
 from repo_shape import (  # noqa: E402
-    COMMIT_RE, PROJECT_ID_RE, TREE_DIGEST_DEFINITION, NamingPolicy, Refusal,
-    accepts_role, checked_value, git_out, tree_digest,
+    COMMIT_RE, NEUTRAL_PRODUCT_OWNER, PROJECT_ID_RE, TREE_DIGEST_DEFINITION,
+    VISIBILITY_CHOICES, NamingPolicy, Refusal, accepts_role, checked_value,
+    git_out, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
     DEFAULT_REFERENCE, RULESET_HINT, SHAPE_REPOSITORY, CommandFailed,
@@ -64,25 +65,34 @@ PIN_ARG_RE = re.compile(r"^(?P<name>[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?)@(?P<co
 GH_TREE_API = "repos/{repo}/git/trees/{commit}?recursive=1"
 
 
-def parse_pin(raw: str, org: str) -> tuple[str, str, str]:
-    """`openGlass@<sha>` -> (product, `<org>/openGlass`, commit).
+def parse_pin(raw: str, owner: str = NEUTRAL_PRODUCT_OWNER) -> tuple[str, str, str]:
+    """`openGlass@<sha>` -> (product, `<owner>/openGlass`, commit).
 
     THE COMMIT IS 40 HEX OR IT IS NOT A PIN. An abbreviated oid, a branch name
     or a tag cannot pass here for the same reason `contracts/<leg>-pin.yaml`
     refuses them: a tag can be moved and a commit cannot.
+
+    AN UNQUALIFIED NAME RESOLVES UNDER `owner` (opensoft, unless `--pin-owner`
+    said otherwise) — NEVER under the pinning project's own `--org`. Domain
+    repositories never author a neutral product; they only pin the opensoft
+    original, so `--org MedxSoft --pin openGlass@<sha>` must not go looking
+    for `MedxSoft/openGlass`, which does not exist and was never the claim.
     """
     match = PIN_ARG_RE.match(raw.strip())
     if not match:
         raise Refusal(
             "pin-malformed",
-            f"--pin {raw!r} is not `<openProduct>@<40 hex commit>`",
+            f"--pin {raw!r} is not `[owner/]<openProduct>@<40 hex commit>`",
             "Remediation: pass the full 40-character commit, e.g. "
-            "--pin openGlass@0123456789abcdef0123456789abcdef01234567. A tag "
-            "or an abbreviated oid is refused: a tag can be moved.",
+            "--pin openGlass@0123456789abcdef0123456789abcdef01234567 "
+            f"(resolved under {NEUTRAL_PRODUCT_OWNER}/openGlass by default), "
+            "or name the owner explicitly with --pin MedxSoft/openGlass@<sha> "
+            "or --pin-owner MedxSoft. A tag or an abbreviated oid is refused: "
+            "a tag can be moved.",
         )
     name = match.group("name")
     product = name.rsplit("/", 1)[-1]
-    repository = name if "/" in name else f"{org}/{product}"
+    repository = name if "/" in name else f"{owner}/{product}"
     return product, repository, match.group("commit").lower()
 
 
@@ -120,8 +130,12 @@ def pin_digest_from_gh(repository: str, commit: str) -> str:
             f"`gh api` could not read {repository} @ {commit}: "
             f"{proc.stderr.strip()}",
             "Remediation: check the commit exists in that repository and that "
-            "`gh auth status` can see it, or pass --pin-source <local clone> "
-            "to compute the digest with no network at all.",
+            "`gh auth status` can see it. An unqualified --pin resolves under "
+            f"{NEUTRAL_PRODUCT_OWNER} by default (never the project's own "
+            "--org) — if this product actually lives under a different "
+            "owner, name it explicitly with --pin <owner>/<openProduct>@<sha> "
+            "or --pin-owner <owner>. You can also pass --pin-source <local "
+            "clone> to compute the digest with no network at all.",
         )
     try:
         payload = json.loads(proc.stdout)
@@ -179,6 +193,24 @@ def remote_is_empty(repository: str) -> bool | None:
         return False
 
 
+def remote_visibility(repository: str) -> str | None:
+    """`<org>/<repo>`'s GitHub visibility (`private`, `public`, `internal`),
+    lowercased, or None if it cannot be read — the repository does not exist,
+    or `gh` cannot see it. Never called for a `--local-remote-dir` repository:
+    a bare repository on disk has no visibility at all.
+    """
+    proc = subprocess.run(
+        ["gh", "repo", "view", repository, "--json", "visibility"],
+        capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        return None
+    try:
+        value = json.loads(proc.stdout).get("visibility")
+    except json.JSONDecodeError:
+        return None
+    return str(value).lower() if value else None
+
+
 def local_remote_is_empty(bare: Path) -> bool | None:
     """The same question for a bare repository on disk (the test path)."""
     if not bare.exists():
@@ -200,8 +232,21 @@ def main(argv: list[str] | None = None) -> int:
                         help="the assembly-root name, e.g. Atlas")
     parser.add_argument("--id", default=None, help="lowercase project id")
     parser.add_argument("--name", default=None, help="display name")
-    parser.add_argument("--visibility", choices=("private", "public"),
-                        default="private")
+    parser.add_argument("--visibility", choices=VISIBILITY_CHOICES,
+                        default=None,
+                        help="default: private for a fresh scaffold; with "
+                             "--reuse-empty-repo and an existing assembly "
+                             "root, the two new legs INHERIT that root's own "
+                             "visibility instead (a mismatch with an explicit "
+                             "--visibility is a warning, not a refusal)")
+    parser.add_argument("--pin-owner", default=NEUTRAL_PRODUCT_OWNER,
+                        help="the organisation an UNQUALIFIED --pin name "
+                             f"resolves under (default: {NEUTRAL_PRODUCT_OWNER}, "
+                             "where every neutral open<Product> lives — never "
+                             "this scaffold's own --org). Name the owner in "
+                             "--pin itself (owner/openProduct@<sha>) to "
+                             "override it for one pin without changing this "
+                             "default for the others.")
     parser.add_argument("--elected-by", default=None)
     parser.add_argument("--elected-on", default=None, help="YYYY-MM-DD")
     parser.add_argument("--reference", default=DEFAULT_REFERENCE)
@@ -254,7 +299,7 @@ def declared_pin_values(args) -> dict[str, dict[str, str]]:
     """
     pins: dict[str, dict[str, str]] = {}
     for raw in args.pin:
-        product, repository, commit = parse_pin(raw, args.org)
+        product, repository, commit = parse_pin(raw, args.pin_owner)
         if args.pin_source is not None:
             digest = pin_digest_from_source(args.pin_source.resolve(), commit,
                                             repository)
@@ -335,6 +380,7 @@ def _scaffold(args) -> int:  # noqa: C901
     args.spec_path = checked_value("--spec-path", args.spec_path)
     args.code_path = checked_value("--code-path", args.code_path)
     args.org = checked_value("--org", args.org)
+    args.pin_owner = checked_value("--pin-owner", args.pin_owner)
     project_id = checked_value("--id", args.id or project.lower())
     display = args.name or project
     elected_on = args.elected_on or _dt.date.today().isoformat()
@@ -416,12 +462,36 @@ def _scaffold(args) -> int:  # noqa: C901
                 for role, name in names.items()}
     repositories = {role: f"{args.org}/{name}" for role, name in names.items()}
 
+    # ---- visibility: explicit, or inherited from a reused empty root ------
+    # An organisation that created the assembly root first (--reuse-empty-repo)
+    # generally wants the two NEW legs to match what it already is, not the
+    # tool's own idea of a default. Reading it costs one `gh repo view`, is
+    # skipped entirely for --local-remote-dir (a bare repository on disk has
+    # no visibility at all) and for a fresh scaffold with nothing to reuse.
+    reused_visibility = None
+    if args.reuse_empty_repo and not local:
+        reused_visibility = remote_visibility(repositories["assembly"])
+    if args.visibility is None:
+        args.visibility = reused_visibility or "private"
+        if reused_visibility:
+            print(f"NOTE {repositories['assembly']} is already {reused_visibility} "
+                  "on GitHub; the two new legs inherit that visibility (pass "
+                  "--visibility to choose one explicitly).")
+    elif reused_visibility and reused_visibility != args.visibility:
+        print(f"WARNING --visibility {args.visibility} disagrees with the "
+              f"reused {repositories['assembly']}, which is {reused_visibility} "
+              "on GitHub. The two new legs are created "
+              f"{args.visibility} because that is what you asked for, not "
+              "because it is what the assembly root already is.",
+              file=sys.stderr)
+
     values = {
         "PROJECT": project,
         "PROJECT_ID": project_id,
         "PROJECT_NAME": display,
         "ORG": args.org,
         "TOPIC": topic,
+        "VISIBILITY": args.visibility,
         "REFERENCE": args.reference,
         "ELECTED_BY": elected_by,
         "ELECTED_ON": elected_on,

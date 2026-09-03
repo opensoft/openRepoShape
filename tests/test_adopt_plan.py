@@ -255,6 +255,57 @@ def test_a_project_name_that_is_not_a_lowercase_id_is_refused(source_repo,
     assert "adopt-bad-id" in result.stderr
 
 
+# --- --pin, and --visibility internal ---------------------------------------
+
+def test_a_bare_pin_name_is_declared(source_repo, tmp_path):
+    plan_path = tmp_path / "plan.yaml"
+    result = write_plan(source_repo, plan_path, extra=("--pin", "openGlass"))
+    assert result.returncode == 0, result.stderr
+    plan = load_yaml(plan_path)
+    assert plan["pins"] == ["openGlass"]
+
+
+def test_an_owner_qualified_pin_name_is_declared(source_repo, tmp_path):
+    plan_path = tmp_path / "plan.yaml"
+    result = write_plan(source_repo, plan_path,
+                        extra=("--pin", "opensoft/openGlass"))
+    assert result.returncode == 0, result.stderr
+    plan = load_yaml(plan_path)
+    assert plan["pins"] == ["opensoft/openGlass"]
+
+
+def test_a_pin_carrying_a_commit_is_refused(source_repo, tmp_path):
+    """`scaffold-project.py --pin openProduct@<commit>` syntax pasted here by
+    habit: adopting a project declares no commit for a neutral-product pin at
+    plan time, so this is refused rather than silently written into
+    `neutral_product_pins:` as a name nothing will ever match."""
+    commit = "0" * 40
+    result = write_plan(source_repo, tmp_path / "plan.yaml",
+                        extra=("--pin", f"openGlass@{commit}"))
+    assert result.returncode == 2
+    assert "adopt-pin-malformed" in result.stderr
+    assert "openGlass" in result.stderr
+    assert "opensoft" in result.stderr
+    assert not (tmp_path / "plan.yaml").exists()
+
+
+def test_visibility_internal_is_accepted(source_repo, tmp_path):
+    plan_path = tmp_path / "plan.yaml"
+    result = write_plan(source_repo, plan_path,
+                        extra=("--visibility", "internal"))
+    assert result.returncode == 0, result.stderr
+    plan = load_yaml(plan_path)
+    assert plan["visibility"] == "internal"
+
+
+def test_a_bad_visibility_is_refused_by_argparse(source_repo, tmp_path):
+    result = write_plan(source_repo, tmp_path / "plan.yaml",
+                        extra=("--visibility", "secret"))
+    assert result.returncode != 0
+    assert "invalid choice: 'secret'" in result.stderr
+    assert "'internal'" in result.stderr
+
+
 # --- the MedxEHR shape, which is what the rulings were made about ----------
 
 @pytest.mark.skipif(not MEDXEHR.exists(),

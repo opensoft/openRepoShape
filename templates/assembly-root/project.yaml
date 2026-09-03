@@ -39,6 +39,16 @@ elected_on: {{ELECTED_ON}}
 # register — where one exists — is the only one of the three that is reviewed.
 topic: {{TOPIC}}
 
+# `private`, `public` or `internal` (an enterprise org-internal repository).
+# NOT ENFORCED HERE — GitHub is the source of truth for what a repository's
+# visibility actually is — but recording it is what lets a reader tell,
+# without three `gh repo view` calls, why the legs are internal. For a
+# scaffolded project this is all three repositories' visibility; for an
+# in-place adoption it is the value the two NEW legs were created with — the
+# assembly root IS the adopted source and keeps whatever visibility it
+# already had on GitHub, unchanged by this tool.
+visibility: {{VISIBILITY}}
+
 # The branch `scripts/bootstrap.py` places each leg on, AT its pinned commit.
 # The pin stays exact: `.gitmodules` carries no `branch=`, so there is exactly
 # one authoritative answer to "what commit is this project".

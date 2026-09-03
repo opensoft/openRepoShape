@@ -30,7 +30,7 @@ not a remedy.
 | org | detected from the fork's `origin` | `--org` overrides |
 | `--project` | the assembly-root name, ONE CamelCase token | e.g. `Atlas` |
 | `--id` | the lowercase project id | defaults to the project lowercased |
-| `--visibility` | `private` or `public` | defaults to `private` |
+| `--visibility` | `private`, `public` or `internal` | defaults to `private` |
 | `--elected-by` | the human electing the shape | defaults to the `gh` login |
 
 Electing this shape is a human's decision. If they have not said which
@@ -39,7 +39,7 @@ visibility they want, ask — do not assume. `elected_by` records whose act it w
 ## 2. Run setup.sh, without `--yes`
 
 ```sh
-./setup.sh --project <Project> --visibility <private|public> \
+./setup.sh --project <Project> --visibility <private|public|internal> \
     --elected-by '<Name>'
 ```
 

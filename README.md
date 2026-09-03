@@ -49,7 +49,7 @@ The same commands, in order, with no behaviour of its own:
 python3 scripts/validate-repository-naming.py --explain Atlas Atlas-spec Atlas-code
 python3 scaffold-project.py --org <your-org> --project Atlas --dry-run
 python3 scaffold-project.py --org <your-org> --project Atlas \
-    --visibility private --elected-by 'Your Name'
+    --visibility private --elected-by 'Your Name'   # or public / internal
 git clone --recurse-submodules https://github.com/<your-org>/Atlas.git
 cd Atlas && make bootstrap
 ```
