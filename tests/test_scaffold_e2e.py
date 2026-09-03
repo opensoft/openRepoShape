@@ -154,6 +154,11 @@ def test_the_scaffold_refuses_with_no_elector(tmp_path):
     """
     remotes = tmp_path / "remotes"
     env = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
+    # The per-invocation identity is an elector too (setup.sh and the
+    # scaffold fall back to GIT_AUTHOR_NAME before the config), so the
+    # no-elector path is reachable only with BOTH suppressed.
+    for _k in ('GIT_AUTHOR_NAME', 'GIT_COMMITTER_NAME'):
+        env.pop(_k, None)
     result = run_script(SCAFFOLD, "--org", ORG, "--project", "Northwind",
                         "--elected-by", "", "--dry-run",
                         "--local-remote-dir", str(remotes),
