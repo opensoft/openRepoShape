@@ -48,7 +48,12 @@ out without submodules, tries `git submodule update --init --recursive`
 best-effort, and — if that fails — still runs the naming and manifest
 checks, skips `validate-pins.py` with a warning explaining why, and only
 fails outright if `SHAPE_LEGS_TOKEN` **is** set and the fetch still failed
-(a misconfigured secret, not an absent one).
+(a misconfigured secret, not an absent one). That presence check reads a
+job-level `env: SHAPE_LEGS_TOKEN_SET: ${{ secrets.SHAPE_LEGS_TOKEN != '' }}`
+rather than the `secrets` context directly in the step's `if:` — the
+`secrets` context is not allowed in a step-level `if:` expression, and
+using it there makes GitHub reject the whole workflow file instead of just
+that step.
 
 ## The lockstep invariant
 
