@@ -23,7 +23,10 @@ WHAT IT DOES, in order:
 
   (b) RUNS THE NEUTRAL VALIDATORS — naming, manifest, lockstep pins. These are
       the only ones a fork with no review lane and no wallet register has, and
-      they are enough: a project with no overlays is fully conformant.
+      they are enough: a project with no overlays is fully conformant. It then
+      prints ONE line if this machine can tell OFFLINE that the upstream shape
+      has moved past the pinned commit — see `shape_upstream_notice`, which
+      adds no network call and is silent when it cannot answer.
 
   (c) READS A WALLET REVIEW-AUTHORITY REGISTER IF ONE EXISTS, and prints the
       grants whose objects name this project. If none is found it prints
@@ -44,6 +47,8 @@ doctrine forbids.
 from __future__ import annotations
 
 import argparse
+import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -54,6 +59,18 @@ from repo_shape import (  # noqa: E402
 )
 
 DEGRADE_LINE = "authority is not wallet-carried in this org"
+
+#: The two OFFLINE ways this command can learn where the upstream shape is.
+#: Both are opt-in and neither is consulted unless it is already there:
+#: `SHAPE_UPSTREAM_PATH` points at a clone of openRepoShape on this machine,
+#: and `.shape-upstream-tip` is a 40-hex commit a nightly job or a human wrote
+#: into the root. NO NETWORK CALL IS ADDED HERE, deliberately — `make
+#: bootstrap` runs in organisations that cannot reach the upstream at all, and
+#: a bootstrap that paused to ask GitHub a question would have made the shape
+#: a dependency again, which is the whole thing the copies exist to avoid.
+SHAPE_UPSTREAM_ENV = "SHAPE_UPSTREAM_PATH"
+SHAPE_UPSTREAM_CACHE = ".shape-upstream-tip"
+COMMIT_40 = re.compile(r"^[0-9a-fA-F]{40}$")
 REGISTER_RELPATH = Path("governance") / "review-authority" / "register.yaml"
 VALIDATORS = (
     ("naming", ["scripts/validate-repository-naming.py", "--project",
@@ -130,6 +147,44 @@ def checkout_tracking_branch(root: Path, leg: dict, branch: str) -> None:
     print(f"          not moving an existing branch. The checkout stays at "
           f"the pin; the recorded pin is authoritative and advancing it is an "
           f"explicit commit in this repository.")
+
+
+def shape_upstream_notice(root: Path) -> None:
+    """ONE LINE, and only when this machine can already answer offline.
+
+    The pin says which openRepoShape the copied files came from; it cannot say
+    whether that revision is still the current one. Where the answer happens to
+    be on this machine — a clone at `SHAPE_UPSTREAM_PATH`, or a tip somebody
+    cached at `.shape-upstream-tip` — saying so costs nothing and closes the
+    gap that had two projects updated by hand. Where it is not, this is silent:
+    an absent answer is not a finding, and it never fails the bootstrap.
+    """
+    pin_path = root / "contracts" / "shape-pin.yaml"
+    if not pin_path.is_file():
+        return
+    try:
+        pin = load_yaml(pin_path)
+    except Refusal:
+        return
+    pinned = str((pin or {}).get("commit") or "").lower()
+    if not COMMIT_40.match(pinned):
+        return
+    tip = None
+    upstream = os.environ.get(SHAPE_UPSTREAM_ENV)
+    if upstream and Path(upstream).is_dir():
+        tip = _try_git(["rev-parse", "HEAD"], Path(upstream))
+    if tip is None:
+        cache = root / SHAPE_UPSTREAM_CACHE
+        if cache.is_file():
+            tip = cache.read_text(encoding="utf-8").strip()
+    if not tip or not COMMIT_40.match(tip):
+        return
+    if tip.lower() == pinned:
+        return
+    print(f"  shape: the upstream is at {tip[:12]} and this project is pinned "
+          f"at {pinned[:12]}. Run openRepoShape's "
+          f"`update-shape.py check --root .` to see what moved; nothing here "
+          f"is wrong until you have.")
 
 
 def _register_paths(root: Path, legs: list[dict]) -> list[Path]:
@@ -277,6 +332,7 @@ def main(argv: list[str] | None = None) -> int:
             code = _run(root, argv_)
             if code != 0:
                 failed.append(f"{label} (exit {code})")
+        shape_upstream_notice(root)
 
     print("\n(c) review authority")
     read_authority(root, manifest, legs)

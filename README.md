@@ -222,6 +222,59 @@ openRepoShape is this?" and "has anyone edited it since?" both have answers,
 and editing a copy in place is reported as drift with the exit named (carry it
 upstream; do not update the digest).
 
+## Keeping a project's shape current
+
+The copies are the trade: a project runs its own gate offline, and an upstream
+FIX to a copied file reaches it never. On 2026-09-03 that bill came due — one
+change to the assembly-root `validate.yml`, and both projects carrying the
+shape were updated BY HAND: re-copy, recompute the file's `sha256` row, move
+`commit` and `digests.tree_sha256`, mirror both into `project.yaml`, re-run the
+validators. `update-shape.py` is that, as one command:
+
+```sh
+./update-shape.py check --root ../MedxEHR          # writes nothing
+./update-shape.py apply --root ../MedxEHR --at <commit> --yes \
+    --branch shape/update-<sha>                    # then open a pull request
+```
+
+`check` prints one verdict per file the pin names, and the verdict is the
+product: **`unchanged`**, **`upstream-changed`** (the bytes differ between the
+pinned commit and the target), **`locally-modified`** (the project's bytes
+differ from the pinned digest — drift it introduced) or **`both`**. It exits 1
+when there is anything to do, so it can be a scheduled job.
+
+`apply` copies the `upstream-changed` files, rewrites `contracts/shape-pin.yaml`
+(`commit`, `digests.tree_sha256` recomputed over the upstream tree under the
+same `sorted-ls-tree-r-v1` definition, and every per-file row) and mirrors the
+two fields into `project.yaml`. Then it runs the project's OWN
+`validate-pins.py` and `validate-manifest.py`, and rolls every byte back if
+either goes red.
+
+**What it refuses, and why the refusals are the feature.** A `locally-modified`
+file keeps its bytes and is named in a refusal unless the human passes
+`--accept-local <path>` — recomputing that row silently would turn a drift
+finding into a digest that agrees with the fork, which is the standard
+recording the fork. A file changed on **both** sides is refused outright: two
+edits to one file is a merge, and a merge is a human's judgement. So is a copy
+that was never verbatim — `adopt-project.py` appends a `CONTRACTS_DIR` block to
+an adopted Makefile, and copying the upstream bytes over that would delete it
+without saying so.
+
+**Only the pin's own rows are considered.** The file list is read from
+`contracts/shape-pin.yaml` and never re-derived from this repository's copy
+lists. An in-place adoption collides on `Makefile`, `README.md` and
+`.gitignore`; the shape's copies land under `shape/`, a human merges them and
+usually drops the rows. A file with no row is not a shape copy, and re-deriving
+the list would resurrect one the project deliberately merged away.
+
+`--upstream` takes a path to a clone (offline, and what the tests use) or an
+`owner/repo` it bare-clones itself; it defaults to the repository the pin
+names. `make bootstrap` prints one line when the upstream has moved past the
+pin AND this machine can already tell offline — `SHAPE_UPSTREAM_PATH` points at
+a clone, or a `.shape-upstream-tip` file carries a commit. It adds no network
+call: a bootstrap that paused to ask GitHub a question would have made the
+shape a dependency again.
+
 ## The degrade rule
 
 `make bootstrap` looks for a wallet review-authority register at
@@ -248,6 +301,7 @@ scripts/validate-repository-naming.py
 setup.sh                          fork, clone, run one command
 scaffold-project.py               creates the three repositories and the pins
 adopt-project.py                  converts an EXISTING repository in place
+update-shape.py                   re-syncs a project's copies and re-pins
 bootstrap                         bootstrap a project that was never scaffolded
 templates/assembly-root/          the skeleton materialized for <Project>
 templates/spec-root/              the skeleton for <Project>-spec

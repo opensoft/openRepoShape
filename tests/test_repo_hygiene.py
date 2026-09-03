@@ -18,6 +18,7 @@ SHIPPED = [
     REPO / "scaffold-project.py",
     REPO / "bootstrap",
     REPO / "adopt-project.py",
+    REPO / "update-shape.py",
     REPO / "scripts" / "repo_shape.py",
     REPO / "scripts" / "shape_materialize.py",
     REPO / "scripts" / "path_classify.py",
@@ -94,9 +95,16 @@ def test_agents_md_is_short_enough_to_be_read():
     lived outside the file an assistant is told to read is an adopt procedure
     performed from memory, which is the failure this file exists to prevent.
     The cap still bites: it is what stops the third procedure from growing
-    into an essay."""
+    into an essay.
+
+    140 -> 175 on 2026-09-03, for the FOURTH procedure: updating a project
+    whose copied shape files have fallen behind. It earns its lines the same
+    way adopt did — the copies are what make a project self-contained, and
+    before this there was no command to move them, so both projects carrying
+    the shape were updated by hand. A procedure performed from memory is the
+    failure this file exists to prevent."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 140, f"AGENTS.md is {len(lines)} lines; the cap is 140"
+    assert len(lines) <= 175, f"AGENTS.md is {len(lines)} lines; the cap is 175"
 
 
 def test_claude_md_points_at_agents_md():
@@ -113,9 +121,16 @@ def test_readme_is_short_enough_to_be_read():
 
     It moved again, 245 -> 265, on 2026-09-03: the `SHAPE_LEGS_TOKEN` rule
     that fixed the first real adoption's red `validate` check on private
-    legs (MedxSoft/MedxEHR #7)."""
+    legs (MedxSoft/MedxEHR #7).
+
+    265 -> 322 on 2026-09-03, for "Keeping a project's shape current". The
+    copies are the standard's central trade — a project that runs its own gate
+    offline is a project an upstream fix reaches never — and until that day the
+    other half of the trade was two projects updated by hand and no command at
+    all. What the tool REFUSES is most of the section, because a re-pin that
+    hid drift would have been worse than the hand edit it replaced."""
     lines = (REPO / "README.md").read_text().splitlines()
-    assert len(lines) <= 265, f"README.md is {len(lines)} lines; the cap is 265"
+    assert len(lines) <= 322, f"README.md is {len(lines)} lines; the cap is 322"
 
 
 def test_setup_sh_is_executable_and_fails_loudly():
