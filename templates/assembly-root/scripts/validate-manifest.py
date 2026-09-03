@@ -24,7 +24,12 @@ WHAT IS CHECKED
   - `legs`: EXACTLY the roles {assembly, spec, code}, once each, all in one
     organisation, at distinct relative paths, with the assembly leg at `.`
   - every leg's repository name against `contracts/repository-naming.yaml`,
-    and the classified form against the declared role
+    and the classified form against the declared role. TWO forms may be an
+    assembly root: the bare project-leg form, and — since 2026-09-02 — a
+    DECLARED domain descendant, because a descendant may carry legs
+    (`MedxGlass` pins `openGlass` and still mounts `MedxGlass-spec` and
+    `MedxGlass-code`). The pin is what admits the second, so the refusal for
+    `referent_declared: true` with no pin file beside it stands unchanged.
   - each leg's OPTIONAL `naming:` record — that `form` and `role` are the
     classification the policy actually returns for that name given what this
     manifest declares, that `also_matches` lists every other form the name
@@ -47,7 +52,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from repo_shape import (  # noqa: E402
     COMMIT_RE, PROJECT_ID_RE, SHA256_RE, TREE_DIGEST_DEFINITION, NamingPolicy,
-    Refusal, find_repo_root, load_yaml, repo_basename,
+    Refusal, accepts_role, find_repo_root, load_yaml, repo_basename,
 )
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -265,11 +270,17 @@ def _findings(manifest: dict, policy: NamingPolicy, root=None) -> list[str]:
         if found is None:
             bad("naming-unclassified",
                 f"leg {role!r}: {name!r} matches no family in the naming policy")
+        elif accepts_role(found, str(role or "")):
+            # Either the project-leg family in exactly the declared role, or a
+            # DECLARED domain descendant serving as the assembly root, which
+            # the 2026-09-02 ruling admits: a descendant may carry legs.
+            # `accepts_role` is the one definition; see `repo_shape`.
+            pass
         elif found[0] != "project-leg":
             bad("naming-not-a-leg",
                 f"leg {role!r}: {name!r} classifies as {found[0]!r}, not as a "
                 f"project leg ({found.reason})")
-        elif found[1] != role:
+        else:
             bad("naming-role-mismatch",
                 f"leg {role!r}: {name!r} is the {found[1]!r} form of the "
                 "project-leg family")

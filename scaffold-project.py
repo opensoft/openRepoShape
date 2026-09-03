@@ -37,9 +37,8 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
-import os
+import json
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -48,185 +47,148 @@ from pathlib import Path
 SHAPE_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
 from repo_shape import (  # noqa: E402
-    PROJECT_ID_RE, TREE_DIGEST_DEFINITION, NamingPolicy, Refusal, file_sha256,
-    git_out, tree_digest,
+    COMMIT_RE, PROJECT_ID_RE, TREE_DIGEST_DEFINITION, NamingPolicy, Refusal,
+    accepts_role, checked_value, git_out, tree_digest,
+)
+from shape_materialize import (  # noqa: E402
+    DEFAULT_REFERENCE, RULESET_HINT, SHAPE_REPOSITORY, CommandFailed,
+    copy_tree, descendant_note, env_commit, git_init_commit,
+    materialize_assembly_root, naming_block, run,
 )
 
-SHAPE_REPOSITORY = "opensoft/openRepoShape"
-DEFAULT_REFERENCE = (
-    "openxFactory ideation/staging/project-repo-schema/project-repo-schema.md"
-)
+#: The pin argument: `openGlass@<40 hex>`, optionally organisation-qualified.
+PIN_ARG_RE = re.compile(r"^(?P<name>[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?)@(?P<commit>[0-9a-fA-F]{40})$")
 
-#: Copied out of openRepoShape's OWN tree, so the project carries the standard
-#: it was cut from rather than a link to it.
-COPIED_FROM_SHAPE = (
-    ("scripts/repo_shape.py", "scripts/repo_shape.py"),
-    ("scripts/validate-repository-naming.py", "scripts/validate-repository-naming.py"),
-    ("contracts/repository-naming.yaml", "contracts/repository-naming.yaml"),
-)
-#: Copied VERBATIM out of the assembly-root template (no substitution).
-COPIED_VERBATIM = (
-    "scripts/validate-pins.py",
-    "scripts/validate-manifest.py",
-    "scripts/bootstrap.py",
-    "Makefile",
-    ".gitignore",
-    ".github/workflows/validate.yml",
-)
-#: Rendered from the template with `{{PLACEHOLDER}}` substitution. These are
-#: NOT digest-pinned in the shape pin: they are this project's own content.
-TEMPLATED = (
-    "README.md",
-    "project.yaml",
-    "contracts/spec-pin.yaml",
-    "contracts/code-pin.yaml",
-    # shape-pin.yaml is rendered LAST, because its `files:` block digests the
-    # copies above after they have been written.
-)
-EXECUTABLE = ("scripts/validate-pins.py", "scripts/validate-manifest.py",
-              "scripts/bootstrap.py", "scripts/validate-repository-naming.py")
-
-PLACEHOLDER_RE = re.compile(r"\{\{[A-Z_]+\}\}")
+#: How a neutral product's tree is read when the pin is taken from the forge
+#: rather than from a clone on this machine.
+GH_TREE_API = "repos/{repo}/git/trees/{commit}?recursive=1"
 
 
-def naming_block(policy: NamingPolicy, name: str, role: str,
-                 pins: set[str], indent: str = "    ") -> str:
-    """The `naming:` block `project.yaml` records for one leg.
+def parse_pin(raw: str, org: str) -> tuple[str, str, str]:
+    """`openGlass@<sha>` -> (product, `<org>/openGlass`, commit).
 
-    It records the classification AND what was not chosen. A name in
-    `<Domainx><Product>` form is a CLAIM of descent that needs a REFERENT
-    (2026-09-02): with no declared pin on `open<Product>` the declared role
-    wins, and the descendant form survives in `also_matches` so the next reader
-    sees the overlap that was resolved rather than wondering whether anyone
-    noticed it. Nothing here confers anything; it is a record.
+    THE COMMIT IS 40 HEX OR IT IS NOT A PIN. An abbreviated oid, a branch name
+    or a tag cannot pass here for the same reason `contracts/<leg>-pin.yaml`
+    refuses them: a tag can be moved and a commit cannot.
     """
-    found = policy.classify(name, role, pins)
-    lines = [
-        f"{indent}naming:",
-        f"{indent}  form: {found.family}",
-        f"{indent}  role: {found.role or '~'}",
-        f"{indent}  also_matches: [{', '.join(found.also_matches)}]",
-    ]
-    referents = policy.descendant_referents(name)
-    if referents:
-        declared_pins = {str(pin).casefold() for pin in pins}
-        declared = any(r.casefold() in declared_pins for r in referents)
-        # The CANONICAL spelling is what is recorded, whichever one is pinned.
-        lines.append(f"{indent}  descendant_referent: {referents[0]}")
-        lines.append(f"{indent}  referent_declared: "
-                     + ("true" if declared else "false"))
-    return "\n".join(lines)
+    match = PIN_ARG_RE.match(raw.strip())
+    if not match:
+        raise Refusal(
+            "pin-malformed",
+            f"--pin {raw!r} is not `<openProduct>@<40 hex commit>`",
+            "Remediation: pass the full 40-character commit, e.g. "
+            "--pin openGlass@0123456789abcdef0123456789abcdef01234567. A tag "
+            "or an abbreviated oid is refused: a tag can be moved.",
+        )
+    name = match.group("name")
+    product = name.rsplit("/", 1)[-1]
+    repository = name if "/" in name else f"{org}/{product}"
+    return product, repository, match.group("commit").lower()
 
 
-def descendant_note(policy: NamingPolicy, name: str, role: str,
-                    pins: set[str]) -> str | None:
-    """The one line the plan prints when a name also matches the claim form."""
-    found = policy.classify(name, role, pins)
-    if "domain-descendant" not in found.also_matches:
+def pin_digest_from_source(source: Path, commit: str, repository: str) -> str:
+    """The `sorted-ls-tree-r-v1` digest, read from a clone on this machine."""
+    try:
+        return tree_digest(source, commit)
+    except Refusal as exc:
+        raise Refusal(
+            "pin-source-unreadable",
+            f"{source} could not answer for {repository} @ {commit}: "
+            f"{exc.detail}",
+            "Remediation: point --pin-source at a clone of that repository "
+            "that HAS the pinned commit (`git fetch --all` first), or drop "
+            "--pin-source and let `gh api` read the forge.",
+        ) from exc
+
+
+def pin_digest_from_gh(repository: str, commit: str) -> str:
+    """The same digest, computed from the forge's own recursive tree listing.
+
+    A SHALLOW READ, not a clone: `git/trees/<commit>?recursive=1` returns one
+    row per object with `mode`, `type`, `sha` and `path` — exactly the four
+    columns `git ls-tree -r -z` emits, which is what makes the two readings
+    the same number. Tree rows are dropped because `-r` emits none; a
+    submodule arrives as `type: commit` with mode `160000` and is kept, as
+    `ls-tree` keeps it.
+    """
+    proc = subprocess.run(
+        ["gh", "api", GH_TREE_API.format(repo=repository, commit=commit)],
+        capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        raise Refusal(
+            "pin-unreadable",
+            f"`gh api` could not read {repository} @ {commit}: "
+            f"{proc.stderr.strip()}",
+            "Remediation: check the commit exists in that repository and that "
+            "`gh auth status` can see it, or pass --pin-source <local clone> "
+            "to compute the digest with no network at all.",
+        )
+    try:
+        payload = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise Refusal("pin-unreadable",
+                      f"{repository} @ {commit}: {exc}") from exc
+    if payload.get("truncated"):
+        raise Refusal(
+            "pin-tree-truncated",
+            f"the forge truncated its tree listing for {repository} @ "
+            f"{commit}, so the digest would be computed over a PARTIAL tree",
+            "Remediation: clone that repository and pass --pin-source <path>. "
+            "A digest over a partial tree is a wrong answer with a confident "
+            "tone.",
+        )
+    import hashlib
+    records = sorted(
+        f"{row['mode']} {row['type']} {row['sha']}\t{row['path']}".encode()
+        for row in payload.get("tree") or [] if row.get("type") != "tree")
+    digest = hashlib.sha256()
+    for record in records:
+        digest.update(record)
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def remote_is_empty(repository: str) -> bool | None:
+    """Does `<org>/<repo>` exist on GitHub with ZERO commits?
+
+    True: it exists and is empty. False: it exists and has commits. None: it
+    does not exist. GitHub answers a commit listing for an empty repository
+    with 409 and the words "Git Repository is empty", which is the only
+    reliable signal — `size: 0` is also what a repository of small files says.
+    """
+    probe = subprocess.run(["gh", "repo", "view", repository, "--json", "name"],
+                           capture_output=True, text=True, check=False)
+    if probe.returncode != 0:
         return None
-    referent = policy.descendant_referent(name)
-    return (f"NOTE {name} also matches the descendant form; it is not a "
-            f"descendant because no pin on {referent} is declared — declare "
-            f"`contracts/{referent.lower()}-pin.yaml` later if it becomes one")
-
-
-def run(args: list[str], cwd: Path | None = None, capture: bool = True) -> str:
-    proc = subprocess.run(args, cwd=str(cwd) if cwd else None,
-                          capture_output=capture, text=True, check=False)
-    if proc.returncode != 0:
-        raise CommandFailed(args, cwd, proc.returncode,
-                            (proc.stderr or "") + (proc.stdout or ""))
-    return (proc.stdout or "").strip()
-
-
-class CommandFailed(Exception):
-    def __init__(self, args, cwd, code, output):
-        super().__init__(" ".join(args))
-        self.args_list = args
-        self.cwd = cwd
-        self.code = code
-        self.output = output.strip()
-
-    def loudly(self, what: str) -> str:
-        where = f"    (in {self.cwd})\n" if self.cwd else ""
-        return (
-            f"REFUSED {what}. THE EXACT COMMAND WAS:\n"
-            f"    {' '.join(self.args_list)}\n{where}"
-            f"    exit {self.code}\n"
-            f"--- output ---\n{self.output}\n--- end output ---"
+    commits = subprocess.run(
+        ["gh", "api", f"repos/{repository}/commits?per_page=1"],
+        capture_output=True, text=True, check=False)
+    if commits.returncode != 0:
+        blob = (commits.stderr + commits.stdout).lower()
+        if "empty" in blob:
+            return True
+        raise Refusal(
+            "remote-unreadable",
+            f"{repository} exists but its commit listing could not be read: "
+            f"{commits.stderr.strip()}",
+            "Remediation: check `gh auth status`, then re-run.",
         )
+    try:
+        return not json.loads(commits.stdout)
+    except json.JSONDecodeError:
+        return False
 
 
-RULESET_HINT = """
-If the organisation applies a ruleset requiring changes to arrive by pull
-request, a direct push to the default branch is refused BY DESIGN and must not
-be worked around. Two legitimate exits:
-
-  (1) have an operator holding the bypass right seed the default branch once,
-      then re-run this scaffold; or
-  (2) push a seed BRANCH and open a pull request:
-          git -C {work} push -u origin main:seed/scaffold
-          gh pr create --repo {repo} --base main --head seed/scaffold \\
-              --title 'Seed the {role} leg' --body 'Scaffolded shape.'
-
-NOTHING has been rolled back. What already exists is listed above; delete it
-by hand if you want a clean re-run.
-"""
-
-
-def render(text: str, values: dict[str, str], source: str) -> str:
-    out = text
-    for key, value in values.items():
-        out = out.replace("{{" + key + "}}", str(value))
-    left = PLACEHOLDER_RE.findall(out)
-    if left:
-        raise Refusal("template-unsubstituted",
-                      f"{source}: no value for {sorted(set(left))}",
-                      "Remediation: this is a defect in scaffold-project.py's "
-                      "substitution table, not in your invocation.")
-    return out
-
-
-def copy_tree(src: Path, dst: Path, values: dict[str, str]) -> None:
-    """Copy a template tree, substituting placeholders in every text file."""
-    for path in sorted(src.rglob("*")):
-        if path.is_dir():
-            continue
-        target = dst / path.relative_to(src)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(
-            render(path.read_text(encoding="utf-8"), values, str(path)),
-            encoding="utf-8",
-        )
-
-
-def git_init_commit(work: Path, message: str, branch: str) -> str:
-    run(["git", "init", "-q", "-b", branch, str(work)])
-    run(["git", "add", "-A", "--", "."], cwd=work)
-    env_commit(work, message)
-    return run(["git", "rev-parse", "HEAD"], cwd=work)
-
-
-def env_commit(work: Path, message: str) -> None:
-    """Commit with an identity that always resolves.
-
-    A scaffold that fails on a machine with no `user.email` configured fails
-    for a reason that has nothing to do with the project being scaffolded, so
-    a fallback identity is supplied rather than assumed.
-    """
-    env = dict(os.environ)
-    for key, fallback in (("GIT_AUTHOR_NAME", "openRepoShape scaffold"),
-                          ("GIT_COMMITTER_NAME", "openRepoShape scaffold"),
-                          ("GIT_AUTHOR_EMAIL", "scaffold@openreposhape.invalid"),
-                          ("GIT_COMMITTER_EMAIL", "scaffold@openreposhape.invalid")):
-        env.setdefault(key, fallback)
-        if not env.get(key):
-            env[key] = fallback
-    proc = subprocess.run(["git", "commit", "-q", "-m", message], cwd=str(work),
-                          capture_output=True, text=True, check=False, env=env)
-    if proc.returncode != 0:
-        raise CommandFailed(["git", "commit", "-m", message], work,
-                            proc.returncode, proc.stderr + proc.stdout)
+def local_remote_is_empty(bare: Path) -> bool | None:
+    """The same question for a bare repository on disk (the test path)."""
+    if not bare.exists():
+        return None
+    out = subprocess.run(["git", "-C", str(bare), "rev-list", "--count", "--all"],
+                         capture_output=True, text=True, check=False)
+    if out.returncode != 0:
+        raise Refusal("remote-unreadable",
+                      f"{bare} exists but is not a git repository")
+    return out.stdout.strip() in ("", "0")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -251,6 +213,23 @@ def main(argv: list[str] | None = None) -> int:
                         help="create bare repositories here instead of calling "
                              "`gh repo create` (the TEST path; no network)")
     parser.add_argument("--no-push", action="store_true")
+    parser.add_argument("--reuse-empty-repo", action="store_true",
+                        help="if <org>/<Project> already exists and has ZERO "
+                             "commits, use it as the assembly root instead of "
+                             "refusing. A repository with commits is still "
+                             "refused: that is a live project, not a slot.")
+    parser.add_argument("--pin", action="append", default=[],
+                        metavar="openProduct@COMMIT",
+                        help="declare a neutral-product pin, e.g. "
+                             "--pin openGlass@<40 hex>. It writes "
+                             "contracts/<openproduct>-pin.yaml and lists the "
+                             "product in the manifest, which is what makes a "
+                             "`<Domainx><Product>` name a DESCENDANT rather "
+                             "than a name shaped like one. Repeatable.")
+    parser.add_argument("--pin-source", type=Path, default=None,
+                        help="a local clone to compute --pin digests from, "
+                             "instead of reading the forge with `gh api` (the "
+                             "TEST path; no network)")
     parser.add_argument("--work-dir", type=Path, default=None,
                         help="where the working trees are built "
                              "(default: a temporary directory)")
@@ -266,9 +245,97 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
 
-def _scaffold(args) -> int:  # noqa: C901 - a linear procedure, read top to bottom
-    project = args.project
-    project_id = args.id or project.lower()
+def declared_pin_values(args) -> dict[str, dict[str, str]]:
+    """The template values for every `--pin`, with its digest resolved.
+
+    The digest is the same `sorted-ls-tree-r-v1` number every other pin here
+    carries, read either from a clone on this machine (`--pin-source`, and no
+    network at all) or from the forge's own recursive tree listing.
+    """
+    pins: dict[str, dict[str, str]] = {}
+    for raw in args.pin:
+        product, repository, commit = parse_pin(raw, args.org)
+        if args.pin_source is not None:
+            digest = pin_digest_from_source(args.pin_source.resolve(), commit,
+                                            repository)
+            digest_source = f"local-clone ({args.pin_source})"
+        else:
+            digest = pin_digest_from_gh(repository, commit)
+            digest_source = "gh-api-tree-recursive"
+        pins[product] = {
+            "PIN_PRODUCT": product,
+            "PIN_REPOSITORY": repository,
+            "PIN_COMMIT": commit,
+            "PIN_TREE_SHA256": digest,
+            "PIN_DIGEST_SOURCE": digest_source,
+        }
+    return pins
+
+
+def _reusable_remotes(names: dict, urls: dict, repositories: dict,
+                      local: bool, reuse_flag: bool) -> set[str]:
+    """Which remotes already exist, and whether that is allowed.
+
+    THE ONE REPOSITORY THAT MAY ALREADY EXIST is the assembly root, and only
+    with `--reuse-empty-repo`, and only with ZERO commits. An organisation
+    that creates the repository first and asks for the shape second is the
+    ordinary case, not a mistake; an EMPTY repository is a name that has been
+    reserved, and reserving a name is not starting a project. A repository
+    with commits is refused: that is a live project, and `adopt-project.py`
+    is the tool for one of those.
+    """
+    reused: set[str] = set()
+    for role in names:
+        target = Path(urls[role]) if local else repositories[role]
+        empty = (local_remote_is_empty(target) if local
+                 else remote_is_empty(target))
+        if empty is None:
+            continue
+        if role == "assembly" and reuse_flag and empty:
+            reused.add(role)
+            print(f"  reuse {target} (zero commits)")
+            continue
+        raise Refusal(
+            "scaffold-remote-exists",
+            f"{target} already exists" + ("" if local else " on GitHub")
+            + ("" if empty else " and has commits"),
+            _exists_remedy(role, empty, reuse_flag))
+    return reused
+
+
+def _exists_remedy(role: str, empty: bool, reuse_flag: bool) -> str:
+    """The remedy line for a remote that is already there.
+
+    Three different situations answer to three different exits, and a refusal
+    that named only one of them would send a human to the wrong one.
+    """
+    if role != "assembly":
+        return ("Remediation: the two legs must not exist yet — they are "
+                "created and seeded here. Delete them, or scaffold under a "
+                "different --project. There is no --force.")
+    if empty and not reuse_flag:
+        return ("Remediation: it has ZERO commits, so it is a reserved name "
+                "rather than a live project — re-run with --reuse-empty-repo "
+                "to use it as the assembly root.")
+    return ("Remediation: it HAS commits, so it is a live repository and this "
+            "is not a scaffold. Use `adopt-project.py plan --source "
+            "<org>/<repo> --project <Project>` to convert it in place, which "
+            "keeps its name, its identity and its history. There is no "
+            "--force.")
+
+
+def _scaffold(args) -> int:  # noqa: C901
+    # VALIDATED BEFORE ANYTHING IS BUILT FROM THEM. These five reach a `git`
+    # or `gh` command line, and `checked_value` refuses a leading `-` because
+    # git reads its own arguments. The naming policy checks what a project
+    # name MEANS a few lines below; this checks what it may CONTAIN.
+    project = checked_value("--project", args.project)
+    args.tracking_branch = checked_value("--tracking-branch",
+                                         args.tracking_branch)
+    args.spec_path = checked_value("--spec-path", args.spec_path)
+    args.code_path = checked_value("--code-path", args.code_path)
+    args.org = checked_value("--org", args.org)
+    project_id = checked_value("--id", args.id or project.lower())
     display = args.name or project
     elected_on = args.elected_on or _dt.date.today().isoformat()
     local = args.local_remote_dir is not None
@@ -294,13 +361,16 @@ def _scaffold(args) -> int:  # noqa: C901 - a linear procedure, read top to bott
         raise Refusal("scaffold-bad-id",
                       f"--id {project_id!r} must match {PROJECT_ID_RE.pattern}",
                       "Remediation: pass an explicit lowercase --id.")
-    # A FRESH project declares no neutral-product pins, so a descendant-form
-    # name here is a claim with no referent and the DECLARED ROLE wins. What is
-    # still refused is a real mismatch: a `-spec` name offered as the assembly
-    # root, or a `open<Product>` / `<X>-Install` form used as any leg — those
-    # forms are unambiguous by construction and declaring a role cannot make
-    # them into a leg.
-    declared_pins: set[str] = set()
+    # WHAT THE PROJECT DECLARES ABOUT ITSELF, before any name is judged.
+    # With no `--pin`, a descendant-form name is a claim with no referent and
+    # the DECLARED ROLE wins. With `--pin openGlass@<sha>`, `MedxGlass` IS a
+    # descendant — and, since 2026-09-02, may still be the assembly root that
+    # carries the two legs. What is still refused is a real mismatch: a
+    # `-spec` name offered as the assembly root, or a `open<Product>` /
+    # `<X>-Install` form used as any leg — those forms are unambiguous by
+    # construction and declaring a role cannot make them into a leg.
+    pins = declared_pin_values(args)
+    declared_pins: set[str] = set(pins)
     for role, name in names.items():
         found = policy.classify(name, role, declared_pins)
         if found is None:
@@ -311,7 +381,7 @@ def _scaffold(args) -> int:  # noqa: C901 - a linear procedure, read top to bott
                 "underscore, dot or space.",
                 "Remediation: re-run with a --project value of that form.",
             )
-        if found != ("project-leg", role):
+        if not accepts_role(found, role):
             raise Refusal(
                 "naming-role-mismatch",
                 f"{name!r} classifies as {found[0]}"
@@ -367,6 +437,8 @@ def _scaffold(args) -> int:  # noqa: C901 - a linear procedure, read top to bott
         "DIGEST_DEFINITION": TREE_DIGEST_DEFINITION,
         "CLONE_URL": urls["assembly"],
         "ASSEMBLY_CLONE_URL": urls["assembly"],
+        "NEUTRAL_PRODUCT_PINS": ("[]" if not pins else
+                                 "\n" + "\n".join(f"  - {p}" for p in pins)),
         "ASSEMBLY_NAMING": naming_block(policy, names["assembly"], "assembly",
                                         declared_pins),
         "SPEC_NAMING": naming_block(policy, names["spec"], "spec", declared_pins),
@@ -387,8 +459,21 @@ def _scaffold(args) -> int:  # noqa: C901 - a linear procedure, read top to bott
             print(note)
     print(f"legs mounted at {args.spec_path}/ and {args.code_path}/ inside "
           f"{names['assembly']}")
+    for product, pin_values in pins.items():
+        print(f"pin          {pin_values['PIN_REPOSITORY']} @ "
+              f"{pin_values['PIN_COMMIT'][:12]} tree "
+              f"{pin_values['PIN_TREE_SHA256'][:12]}… -> "
+              f"contracts/{product.lower()}-pin.yaml ({pin_values['PIN_DIGEST_SOURCE']})")
+    if pins:
+        found = policy.classify(names["assembly"], "assembly", declared_pins)
+        print(f"declared     {names['assembly']} classifies as {found.family}"
+              + (f" / {found.role}" if found.role else "")
+              + f" — {found.reason}")
     print("remotes      " + ("bare repositories on disk (no network)" if local
                              else f"gh repo create --{args.visibility}"))
+    if args.reuse_empty_repo:
+        print("reuse        an EXISTING <Project> with zero commits is used as "
+              "the assembly root")
     print("push         " + ("SKIPPED (--no-push)" if args.no_push else "yes"))
     print("topics       " + ("skipped for local remotes" if local
                              else f"gh repo edit --add-topic {topic}"))
@@ -409,31 +494,25 @@ def _scaffold(args) -> int:  # noqa: C901 - a linear procedure, read top to bott
                 "Remediation: choose an empty --work-dir. There is no --force: "
                 "re-running over a live tree is not a scaffold.",
             )
+    # THE ONE REPOSITORY THAT MAY ALREADY EXIST is the assembly root, and only
+    # with `--reuse-empty-repo`, and only with ZERO commits. An organisation
+    # that creates the repository first and asks for the shape second is the
+    # ordinary case, not a mistake; an EMPTY repository is a name that has been
+    # reserved, and reserving a name is not starting a project. A repository
+    # with commits is refused exactly as before: that is a live project, and
+    # `adopt-project.py` is the tool for one of those.
     if local:
         remote_dir.mkdir(parents=True, exist_ok=True)
-        for role, name in names.items():
-            bare = Path(urls[role])
-            if bare.exists():
-                raise Refusal(
-                    "scaffold-remote-exists", f"{bare} already exists",
-                    "Remediation: choose an empty --local-remote-dir. There is "
-                    "no --force: re-running over a live project is not a "
-                    "scaffold.")
-    else:
-        for role, repo in repositories.items():
-            probe = subprocess.run(["gh", "repo", "view", repo, "--json", "name"],
-                                   capture_output=True, text=True, check=False)
-            if probe.returncode == 0:
-                raise Refusal(
-                    "scaffold-remote-exists",
-                    f"{repo} already exists on GitHub",
-                    "Remediation: delete it, or scaffold under a different "
-                    "--project. There is no --force.",
-                )
+    reused = _reusable_remotes(names, urls, repositories, local,
+                               args.reuse_empty_repo)
 
     # ---- create the remotes ------------------------------------------------
     print("\ncreating remotes")
     for role in ("spec", "code", "assembly"):
+        if role in reused:
+            print(f"  reused {repositories[role]} (created by somebody else, "
+                  "zero commits)")
+            continue
         if local:
             run(["git", "init", "-q", "--bare", "-b", args.tracking_branch,
                  urls[role]])
@@ -482,36 +561,11 @@ def _scaffold(args) -> int:  # noqa: C901 - a linear procedure, read top to bott
 
     # ---- the assembly root -------------------------------------------------
     assembly = work_root / names["assembly"]
-    template_root = SHAPE_ROOT / "templates" / "assembly-root"
     assembly.mkdir(parents=True, exist_ok=True)
-    for name in TEMPLATED:
-        target = assembly / name
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(
-            render((template_root / name).read_text(encoding="utf-8"), values,
-                   name),
-            encoding="utf-8")
-    for name in COPIED_VERBATIM:
-        target = assembly / name
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(template_root / name, target)
-    for src, dst in COPIED_FROM_SHAPE:
-        target = assembly / dst
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(SHAPE_ROOT / src, target)
-    for name in EXECUTABLE:
-        (assembly / name).chmod(0o755)
-
-    # The shape pin's `files:` block digests the copies just written. Rendered
-    # last, for that reason.
-    rows = []
-    for path in [dst for _, dst in COPIED_FROM_SHAPE] + list(COPIED_VERBATIM):
-        rows.append(f"  - path: {path}\n    sha256: \"{file_sha256(assembly / path)}\"")
-    values["SHAPE_FILES"] = "\n".join(rows)
-    (assembly / "contracts" / "shape-pin.yaml").write_text(
-        render((template_root / "contracts" / "shape-pin.yaml")
-               .read_text(encoding="utf-8"), values, "contracts/shape-pin.yaml"),
-        encoding="utf-8")
+    # ONE materializer, shared with `adopt-project.py`. The scaffold builds
+    # into a directory it made itself, so a collision here is a defect and
+    # `collision_dir=None` says so by raising.
+    materialize_assembly_root(SHAPE_ROOT, assembly, values, neutral_pins=pins)
 
     run(["git", "init", "-q", "-b", args.tracking_branch, str(assembly)])
     # `git submodule add` from the LEG WORKING TREE, then the recorded URL is

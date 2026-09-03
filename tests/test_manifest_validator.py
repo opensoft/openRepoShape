@@ -183,15 +183,39 @@ def test_a_referent_declared_without_the_pin_file_is_a_finding(project):
          "neutral_product_pins:\n  - openChart")
     edit(project, "      form: project-leg\n      role: assembly\n"
                   "      also_matches: []",
-         "      form: domain-descendant\n      role: ~\n"
+         "      form: domain-descendant\n      role: assembly\n"
          "      also_matches: [project-leg/assembly]\n"
          "      descendant_referent: openChart\n"
          "      referent_declared: true")
     result = validate(project)
     assert result.returncode == 1
     assert "naming-referent-missing" in result.stderr
-    # and the leg is no longer a project leg at all, which is also reported
-    assert "naming-not-a-leg" in result.stderr
+    # The FORM is not the finding. Since 2026-09-02 a declared descendant may
+    # be an assembly root carrying legs, so `domain-descendant / assembly` is
+    # a valid classification here and the only complaint is the missing pin
+    # FILE — which is the refusal the ruling explicitly kept.
+    assert "naming-not-a-leg" not in result.stderr
+
+
+def test_a_declared_descendant_may_be_the_assembly_root(project):
+    """THE MedxGlass CASE. A descendant may carry legs: `MedxGlass` pins
+    `openGlass` and still mounts `MedxGlass-spec` and `MedxGlass-code`. With
+    the pin declared AND the pin file in the tree, the manifest is valid."""
+    edit(project, "repository: testorg/Atlas\n    path: \".\"",
+         "repository: testorg/MedxChart\n    path: \".\"")
+    edit(project, "neutral_product_pins: []",
+         "neutral_product_pins:\n  - openChart")
+    edit(project, "      form: project-leg\n      role: assembly\n"
+                  "      also_matches: []",
+         "      form: domain-descendant\n      role: assembly\n"
+         "      also_matches: [project-leg/assembly]\n"
+         "      descendant_referent: openChart\n"
+         "      referent_declared: true")
+    (project / "contracts" / "openchart-pin.yaml").write_text(
+        "schema_version: 1\nkind: pinned_contract_manifest\n")
+    result = validate(project)
+    assert result.returncode == 0, result.stderr
+    assert "manifest ok" in result.stdout
 
 
 def test_the_pin_file_makes_the_referent_real(project):

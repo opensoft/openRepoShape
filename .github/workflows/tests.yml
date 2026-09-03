@@ -12,9 +12,10 @@ jobs:
   tests:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
+      # PINNED BY COMMIT, not by tag — the rule this repository spends a
+      # whole README section on. A tag can be moved and a commit cannot.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: '3.x'
 
@@ -23,8 +24,22 @@ jobs:
       # library — `tests/test_repo_hygiene.py::test_shipped_code_imports_only_
       # the_standard_library` is what enforces that, and it would fail if a
       # validator or the scaffold ever grew a dependency.
+      # PINNED, both of them. A CI job that resolves "latest" on every run
+      # is a job whose result depends on the day it ran, which is the same
+      # objection this standard makes to pinning a tag instead of a commit.
       - name: install the test runner
-        run: python3 -m pip install --disable-pip-version-check pytest
+        run: python3 -m pip install --disable-pip-version-check pytest==8.3.4
+
+      # `git filter-repo` is what `adopt-project.py` extracts a leg's history
+      # with, and it is a REQUIREMENT rather than a vendored copy: history
+      # extraction has one correct implementation. It is a test-environment
+      # dependency here in exactly the way it is a runtime dependency there —
+      # the adoption suite SKIPS without it, so this step is what stops the
+      # end-to-end tests from quietly not running.
+      - name: install git-filter-repo
+        run: |
+          python3 -m pip install --disable-pip-version-check \
+              git-filter-repo==2.47.0
 
       - name: git identity for the scaffolded commits
         run: |

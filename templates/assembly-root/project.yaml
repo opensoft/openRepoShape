@@ -66,7 +66,7 @@ shape:
 # one commit, and the classification changes with the pin — never before it.
 # The check is OFFLINE: this list is a fact in this tree, so no lookup of any
 # organisation's repositories is involved.
-neutral_product_pins: []
+neutral_product_pins: {{NEUTRAL_PRODUCT_PINS}}
 
 # The three legs. `assembly` is THIS repository — the one an engineer clones —
 # and its path is `.`; `spec` and `code` are submodules mounted at the paths

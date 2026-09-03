@@ -11,7 +11,7 @@ import pytest
 from conftest import REPO, run_script
 
 sys.path.insert(0, str(REPO / "scripts"))
-from repo_shape import NamingPolicy, Refusal  # noqa: E402
+from repo_shape import NamingPolicy, Refusal, accepts_role  # noqa: E402
 
 POLICY_PATH = REPO / "contracts" / "repository-naming.yaml"
 VALIDATOR = REPO / "scripts" / "validate-repository-naming.py"
@@ -300,3 +300,47 @@ def test_topic_is_derived_from_the_id(policy):
 def test_the_policy_file_refuses_to_load_when_absent():
     with pytest.raises(Refusal):
         NamingPolicy.load(REPO / "contracts" / "no-such-policy.yaml")
+
+
+# --- the ruling: a DESCENDANT MAY CARRY LEGS -------------------------------
+
+def test_a_declared_descendant_answers_as_the_assembly_root(policy):
+    """THE MedxGlass CASE (2026-09-02). Descent and the three-repository shape
+    are independent facts, so a name may hold both at once."""
+    found = policy.classify("MedxGlass", "assembly", {"openGlass"})
+    assert found == ("domain-descendant", "assembly")
+    assert found.also_matches == ("project-leg/assembly",)
+    assert "a descendant may carry legs" in found.reason
+    assert accepts_role(found, "assembly")
+
+
+def test_a_descendant_root_with_no_declared_role_is_unchanged(policy):
+    """The role is the one the project DECLARES; asked without one, the answer
+    is the same 2-tuple every existing caller already compares against."""
+    found = policy.classify("MedxGlass", declared_pins={"openGlass"})
+    assert found == ("domain-descendant", None)
+
+
+def test_the_legs_of_a_descendant_root_are_ordinary_project_legs(policy):
+    """`MedxGlass-spec` carries the lowercase suffix, so it does not even
+    match the descendant pattern: it descends from nothing and says so."""
+    for role in ("spec", "code"):
+        found = policy.classify(f"MedxGlass-{role}", role, {"openGlass"})
+        assert found == ("project-leg", role)
+        assert found.also_matches == ()
+
+
+def test_a_descendant_is_not_admitted_into_a_spec_or_code_role(policy):
+    """`admits_declared_role:` is data and lists `assembly` alone. A bare
+    CamelCase name offered as the code leg is still the assembly form."""
+    found = policy.classify("MedxGlass", "code", {"openGlass"})
+    assert found == ("domain-descendant", None)
+    assert not accepts_role(found, "code")
+
+
+def test_the_policy_data_declares_which_role_a_descendant_may_answer_in(policy):
+    family = _family(policy, "domain-descendant")
+    assert family["admits_declared_role"] == ["assembly"]
+    assert "roles" not in family, (
+        "the descendant family must declare no roles of its own: "
+        "`MedxGlass` and `MedxGlass-spec` are not the same form")
