@@ -66,7 +66,7 @@ sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
 from path_classify import PathPolicy, Verdict  # noqa: E402
 from repo_shape import (  # noqa: E402
     COMMIT_RE, PROJECT_ID_RE, TREE_DIGEST_DEFINITION, NamingPolicy, Refusal,
-    accepts_role, git_out, load_yaml, tree_digest,
+    accepts_role, checked_value, git_out, load_yaml, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
     ADOPT_MAKEFILE_BLOCK, DEFAULT_REFERENCE, RULESET_HINT, SHAPE_REPOSITORY,
@@ -439,12 +439,18 @@ def cmd_plan(args) -> int:
     policy = PathPolicy.load(args.path_policy or PATH_POLICY)
     naming = NamingPolicy.load(NAMING_POLICY)
 
+    args.project = checked_value("--project", args.project)
+    args.tracking_branch = checked_value("--tracking-branch",
+                                         args.tracking_branch)
+    args.spec_path = checked_value("--spec-path", args.spec_path)
+    args.code_path = checked_value("--code-path", args.code_path)
     args.id = args.id or args.project.lower()
     if not PROJECT_ID_RE.match(args.id):
         raise Refusal("adopt-bad-id",
                       f"--id {args.id!r} must match {PROJECT_ID_RE.pattern}",
                       "Remediation: pass an explicit lowercase --id.")
-    args.org = args.org or (source.repository or "/").split("/")[0]
+    args.org = checked_value(
+        "--org", args.org or (source.repository or "/").split("/")[0] or "-")
     if not args.org:
         raise Refusal(
             "adopt-no-org", "the source has no `origin` to read an "
@@ -569,9 +575,14 @@ class Plan:
         return Source.open(str(spec), work_root)
 
     def names(self) -> dict[str, str]:
-        return {"assembly": str(self.legs.get("assembly")),
-                "spec": str(self.legs.get("spec")),
-                "code": str(self.legs.get("code"))}
+        """The three repository names the plan declares, validated as values.
+
+        They reach `gh repo create` and a push URL, so they are checked here
+        rather than trusted because they came out of a file this tool wrote:
+        the file is edited between `plan` and `execute`, on purpose.
+        """
+        return {role: checked_value(f"legs.{role}", self.legs.get(role))
+                for role in ("assembly", "spec", "code")}
 
     def get(self, key, default=None):
         value = self.data.get(key)
@@ -845,12 +856,19 @@ def cmd_execute(args) -> int:  # noqa: C901
     _check_names(naming, names, pins)
     _refuse_an_unrunnable_plan(plan, source)
 
+    # THE PLAN IS UNTRUSTED INPUT. It is a file a human or an AI edited, and
+    # every value below becomes an argument to `git` or `gh`, so each one is
+    # validated before it is used rather than after something has gone wrong.
     local = args.local_remote_dir is not None
-    spec_path = str(plan.legs.get("spec_path") or "spec")
-    code_path = str(plan.legs.get("code_path") or "code")
-    branch = str(plan.get("adopt_branch", ADOPT_BRANCH))
-    tracking = str(plan.get("tracking_branch", "main"))
-    org = str(plan.get("org"))
+    spec_path = checked_value("legs.spec_path", plan.legs.get("spec_path")
+                              or "spec")
+    code_path = checked_value("legs.code_path", plan.legs.get("code_path")
+                              or "code")
+    branch = checked_value("adopt_branch", plan.get("adopt_branch",
+                                                    ADOPT_BRANCH))
+    tracking = checked_value("tracking_branch",
+                             plan.get("tracking_branch", "main"))
+    org = checked_value("org", plan.get("org"))
     repositories = {role: f"{org}/{name}" for role, name in names.items()}
     if local:
         # NOT created yet: nothing exists on disk until the human has said
@@ -864,8 +882,8 @@ def cmd_execute(args) -> int:  # noqa: C901
         urls = {role: f"https://github.com/{org}/{name}.git"
                 for role, name in names.items()}
 
-    paths_for = {leg: [str(e.get("path")) for e in plan.entries
-                       if str(e.get("leg")) == leg]
+    paths_for = {leg: [checked_value("a plan path", e.get("path"))
+                       for e in plan.entries if str(e.get("leg")) == leg]
                  for leg in LEG_VALUES}
     _confirm(args, plan, names)
 

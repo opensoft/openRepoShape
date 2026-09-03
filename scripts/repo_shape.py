@@ -54,6 +54,11 @@ TOPIC_PREFIX = "xf-project-"
 #: else than it did when it was written.
 TREE_DIGEST_DEFINITION = "sorted-ls-tree-r-v1"
 
+#: Every value this family lets a caller put on a `git` or `gh` command line.
+#: Deliberately narrow: letters, digits, and the punctuation that real branch
+#: names, paths, repository names and commits are spelled with.
+SAFE_ARG_RE = re.compile(r"^[A-Za-z0-9._/@+~-]{1,255}$")
+
 REMEDIATION = (
     "Remediation: run `git submodule update --init --recursive`, then "
     "`python3 scripts/validate-pins.py`. If the PIN itself is stale, advance "
@@ -748,6 +753,33 @@ class NamingPolicy:
 
     def topic_for(self, project_id: str) -> str:
         return self.topic_template.format(id=project_id)
+
+
+def checked_value(what: str, value, pattern: re.Pattern = SAFE_ARG_RE) -> str:
+    """Validate one caller-supplied value BEFORE it becomes a command argument.
+
+    ARGUMENT INJECTION IS THE THREAT, not shell injection: every command here
+    is a list with `shell=False`, so there is no shell to inject into — but
+    `git` reads its own arguments, and a `--tracking-branch` of
+    `--upload-pack=…` is a command, not a branch. A value that begins with `-`
+    is therefore refused outright, and the rest must be spellable as a branch
+    name, a path, a repository name or a commit.
+
+    The values that reach here come from a command line, from `project.yaml`
+    and — in `adopt-project.py` — from an adoption plan that an AI assistant
+    may have written. The last of those is exactly why this is a check in the
+    code rather than a note in the README.
+    """
+    text = str(value)
+    if text.startswith("-") or not pattern.fullmatch(text):
+        raise Refusal(
+            "unsafe-value",
+            f"{what} is {text!r}, which is not a value this tool will put on "
+            "a `git` or `gh` command line",
+            "Remediation: a leading `-` is refused because git reads its own "
+            "arguments (`--upload-pack=…` is a command, not a branch); the "
+            f"rest must match {pattern.pattern}.")
+    return text
 
 
 def accepts_role(found, role: str) -> bool:

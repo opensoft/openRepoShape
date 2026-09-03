@@ -259,3 +259,20 @@ def test_the_tool_never_touches_the_source_working_tree(adopted):
     """`plan` and `check` READ. Nothing here dirties the repository it reads."""
     status = git("status", "--porcelain", cwd=adopted["source"]).stdout
     assert status.strip() == "", f"the source was modified: {status}"
+
+
+def test_a_plan_path_that_is_a_git_option_is_refused(source_repo, tmp_path):
+    """THE PLAN IS UNTRUSTED INPUT: it is edited between `plan` and `execute`,
+    by a human or by an AI, and every path in it becomes a git argument."""
+    plan = tmp_path / "plan.yaml"
+    assert write_plan(source_repo, plan, project=PROJECT).returncode == 0
+    for path, leg in ANSWERS:
+        resolve(plan, path, leg)
+    plan.write_text(plan.read_text().replace(
+        "  - path: specs/\n", "  - path: --output=/tmp/pwned\n", 1))
+    result = run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
+                        "--local-remote-dir", str(tmp_path / "remotes"),
+                        "--work-dir", str(tmp_path / "work"))
+    assert result.returncode == 2
+    assert "unsafe-value" in result.stderr
+    assert not (tmp_path / "remotes").exists()

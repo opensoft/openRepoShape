@@ -216,3 +216,30 @@ def test_an_undeclared_descendant_form_is_unchanged(tmp_path):
     assert assembly["naming"]["form"] == "project-leg"
     assert assembly["naming"]["referent_declared"] is False
     assert manifest["neutral_product_pins"] == []
+
+
+# --- what may become an argument to git ------------------------------------
+
+def test_a_branch_name_that_is_a_git_option_is_refused(tmp_path):
+    """ARGUMENT injection, not shell injection: every command here is a list
+    with `shell=False`, so there is no shell — but git reads its own
+    arguments, and `--upload-pack=…` is a command rather than a branch."""
+    result = run_script(SCAFFOLD, "--org", ORG, "--project", PROJECT,
+                        "--elected-by", "Test Human",
+                        "--tracking-branch=--upload-pack=touch /tmp/pwned",
+                        "--local-remote-dir", str(tmp_path / "remotes"),
+                        "--work-dir", str(tmp_path / "work"))
+    assert result.returncode == 2
+    assert "unsafe-value" in result.stderr
+    assert "git reads its own arguments" in result.stderr
+    assert not (tmp_path / "remotes").exists()
+
+
+def test_a_leg_path_with_a_shell_metacharacter_is_refused(tmp_path):
+    result = run_script(SCAFFOLD, "--org", ORG, "--project", PROJECT,
+                        "--elected-by", "Test Human",
+                        "--spec-path", "spec; rm -rf ~",
+                        "--local-remote-dir", str(tmp_path / "remotes"),
+                        "--work-dir", str(tmp_path / "work"))
+    assert result.returncode == 2
+    assert "unsafe-value" in result.stderr

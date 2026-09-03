@@ -48,7 +48,7 @@ SHAPE_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
 from repo_shape import (  # noqa: E402
     COMMIT_RE, PROJECT_ID_RE, TREE_DIGEST_DEFINITION, NamingPolicy, Refusal,
-    accepts_role, git_out, tree_digest,
+    accepts_role, checked_value, git_out, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
     DEFAULT_REFERENCE, RULESET_HINT, SHAPE_REPOSITORY, CommandFailed,
@@ -266,9 +266,18 @@ def _exists_remedy(role: str, empty: bool, reuse_flag: bool) -> str:
             "--force.")
 
 
-def _scaffold(args) -> int:  # noqa: C901 - a linear procedure, read top to bottom
-    project = args.project
-    project_id = args.id or project.lower()
+def _scaffold(args) -> int:  # noqa: C901
+    # VALIDATED BEFORE ANYTHING IS BUILT FROM THEM. These five reach a `git`
+    # or `gh` command line, and `checked_value` refuses a leading `-` because
+    # git reads its own arguments. The naming policy checks what a project
+    # name MEANS a few lines below; this checks what it may CONTAIN.
+    project = checked_value("--project", args.project)
+    args.tracking_branch = checked_value("--tracking-branch",
+                                         args.tracking_branch)
+    args.spec_path = checked_value("--spec-path", args.spec_path)
+    args.code_path = checked_value("--code-path", args.code_path)
+    args.org = checked_value("--org", args.org)
+    project_id = checked_value("--id", args.id or project.lower())
     display = args.name or project
     elected_on = args.elected_on or _dt.date.today().isoformat()
     local = args.local_remote_dir is not None
