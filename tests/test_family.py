@@ -361,6 +361,32 @@ def test_validate_finds_a_pin_that_disagrees_with_the_gitlink(holder):
     assert "THE LOCKSTEP RULE" in result.stderr
 
 
+def test_validate_accepts_a_member_bump_that_is_staged_but_not_committed(holder):
+    """The family's half of the same reading: `recorded_gitlink` asks the
+    INDEX first, so a bump whose gitlink is staged and whose row moved with it
+    validates BEFORE it is committed, rather than reporting the commit it is
+    about to replace. That is when a person runs `make validate` — after
+    staging, to find out whether the commit they are about to make is in
+    lockstep.
+
+    The member's new commit is EMPTY, so `pin.tree_sha256` still recomputes
+    and the gitlink is the only fact that moved.
+    """
+    member = holder / "members" / "IRRS"
+    before = git("rev-parse", "HEAD:members/IRRS", cwd=holder).stdout.strip()
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
+        "--allow-empty", "-m", "The member moved again", cwd=member)
+    after = git("rev-parse", "HEAD", cwd=member).stdout.strip()
+    git("add", "--", "members/IRRS", cwd=holder)  # staged, NOT committed
+    manifest_path = holder / "family.yaml"
+    text = manifest_path.read_text()
+    assert text.count(before) == 1, "fixture drift: IRRS's pin is not unique"
+    manifest_path.write_text(text.replace(before, after, 1))
+    result = validate(holder)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "gitlink == pin" in result.stdout
+
+
 def test_validate_finds_a_digest_that_does_not_recompute(holder):
     text = (holder / "family.yaml").read_text()
     row = {r["project"]: r for r in manifest(holder)["members"]}["IRSS"]
