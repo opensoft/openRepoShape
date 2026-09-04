@@ -1245,6 +1245,7 @@ def cmd_execute(args) -> int:  # noqa: C901
         print(exc.loudly("pushing the split branch"), file=sys.stderr)
         return 2
     print(f"\n  split {split_commit[:12]} on {branch} -> {urls['assembly']}")
+    topics_failed = False
     if not local:
         try:
             url = run(["gh", "pr", "create", "--repo", repositories["assembly"],
@@ -1264,14 +1265,35 @@ def cmd_execute(args) -> int:  # noqa: C901
         # The assembly root pre-existed and is still a repository OF THIS
         # PROJECT: `project.yaml` claims `topic: <topic>` either way, and a
         # claim the organisation cannot see is the defect being fixed here.
-        for role in ("assembly", "spec", "code"):
-            run(["gh", "repo", "edit", repositories[role], "--add-topic",
-                 topic])
-        print(f"  topic     {topic} set on all three")
+        #
+        # A TOPIC THAT WILL NOT SET DOES NOT SUPPRESS THE VERIFICATION TABLE.
+        # The split is pushed and the pull request is open by now, and the
+        # blob-sha accounting for every source path is the report a human is
+        # told to read back (AGENTS.md step 7); losing it to a permission or a
+        # rate limit would be the more expensive failure. It is still a
+        # non-zero exit, reported after the table, with the commands to
+        # finish by hand.
+        try:
+            for role in ("assembly", "spec", "code"):
+                run(["gh", "repo", "edit", repositories[role], "--add-topic",
+                     topic])
+            print(f"  topic     {topic} set on all three")
+        except CommandFailed as exc:
+            topics_failed = True
+            print(exc.loudly("setting the project topic"), file=sys.stderr)
+            print("The split IS pushed and the pull request IS open. Set the "
+                  "topic by hand:\n"
+                  + "\n".join(f"    gh repo edit {repositories[role]} "
+                              f"--add-topic {topic}"
+                              for role in ("assembly", "spec", "code")),
+                  file=sys.stderr)
 
     # ---- (d) verification, by blob sha ------------------------------------
-    return _verify(source, assembly, work_root, names, paths_for, split_commit,
-                   seeded)
+    verified = _verify(source, assembly, work_root, names, paths_for,
+                       split_commit, seeded)
+    if verified:
+        return verified   # a verification mismatch outranks a missing topic
+    return 2 if topics_failed else 0
 
 
 def _template_values(plan: Plan, names, repositories, urls, spec_path,
