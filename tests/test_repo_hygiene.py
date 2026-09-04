@@ -165,9 +165,19 @@ def test_readme_is_short_enough_to_be_read():
     dropping an instruction, not adding one, is still a cap earning its
     lines: the one-liner and its self-bootstrap explanation replace a
     fork-and-clone paragraph with a longer one, because "how to run this
-    safely with no fork" takes more words than "fork it first"."""
+    safely with no fork" takes more words than "fork it first".
+
+    388 -> 401, on 2026-09-04 again: `validate-pins.py` now RECHECKS a
+    declared `neutral_product_pins:` referent, not merely trusts the
+    declaration — the pin's commit, `revision_kind` and digest are
+    recomputed the way `scaffold-project.py --pin` computed them the first
+    time, from a local checkout (`--pin-source`, an env var, or a sibling
+    checkout) or `gh api`, and a named SKIP rather than a failure when
+    neither can answer. A rule that only the tool WRITING a pin ever checked
+    it again was a gap the standard's own claim-needs-a-referent ruling had
+    not closed."""
     lines = (REPO / "README.md").read_text().splitlines()
-    assert len(lines) <= 388, f"README.md is {len(lines)} lines; the cap is 388"
+    assert len(lines) <= 401, f"README.md is {len(lines)} lines; the cap is 401"
 
 
 def test_setup_sh_is_executable_and_fails_loudly():
