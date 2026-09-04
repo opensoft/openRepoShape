@@ -554,6 +554,53 @@ def tree_digest_from_gh(repository: str, commit: str) -> str:
     return digest.hexdigest()
 
 
+FREE_PLAN_HINT = """\
+NOTE {org} is on the GitHub FREE plan, where ORGANISATION Actions secrets are
+     delivered only to PUBLIC repositories. {what} private, so org-level
+     SHAPE_LEGS_APP_ID / SHAPE_LEGS_APP_PRIVATE_KEY resolve to EMPTY inside
+     the workflow and the `validate` check degrades to `credential source:
+     none` — green, because it skips the pin check rather than failing, which
+     is the worst way to be wrong. Set them as REPOSITORY secrets instead:
+
+         gh secret set SHAPE_LEGS_APP_ID --repo {repo} --body '<app id>'
+         gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --repo {repo} < key.pem
+
+     or upgrade the organisation to Team, where the org secrets work as
+     written. Measured on InkRouter, 2026-09-04: the App was installed and
+     the org secrets existed at `visibility: all`, and both split pull
+     requests still fetched no legs."""
+
+
+def free_plan_secret_hint(org: str, repo: str, what: str) -> str | None:
+    """The Free-plan repository-secret hint, or None if it does not apply.
+
+    THE FAILURE THIS EXISTS FOR IS SILENT. On the Free plan an organisation
+    secret is simply not delivered to a private repository — no error, no
+    warning, `secrets.SHAPE_LEGS_APP_ID` is the empty string — so the App
+    steps skip, the legs go unfetched, and `validate` reports SUCCESS with
+    the lockstep pin check quietly skipped. Somebody who set the org secrets
+    correctly, on an org where the App is correctly installed, gets a green
+    check that verified nothing. That is worth one `gh api` call at create
+    time.
+
+    Returns None whenever the answer is not a confident "free": no `gh` on
+    PATH, an unreadable or unparseable response, a plan the API did not name.
+    A tool running offline or against a local remote must print nothing
+    rather than guess — a wrong hint about credentials is worse than none.
+    """
+    try:
+        proc = subprocess.run(
+            ["gh", "api", f"orgs/{org}", "--jq", ".plan.name"],
+            capture_output=True, text=True, check=False)
+    except (FileNotFoundError, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    if proc.stdout.strip().lower() != "free":
+        return None
+    return FREE_PLAN_HINT.format(org=org, repo=repo, what=what)
+
+
 def file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with open(path, "rb") as handle:

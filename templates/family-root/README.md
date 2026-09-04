@@ -72,6 +72,14 @@ preferred, minted per run) then a fine-grained `SHAPE_LEGS_TOKEN` PAT with
 `contents:read`. With neither, the workflow degrades: it still runs the checks
 that do not need the members checked out.
 
+**On the GitHub Free plan, set these as REPOSITORY secrets.** GitHub delivers
+an ORGANISATION secret only to PUBLIC repositories on Free, so on a private
+repository `secrets.SHAPE_LEGS_APP_ID` is the empty string — silently — the
+App steps skip, and `validate` goes GREEN with the lockstep pin check degraded
+away rather than red. Use `--repo <org>/<Repo>` in place of `--org <your-org>`
+above, or upgrade the organisation to Team. (Measured on InkRouter,
+2026-09-04.)
+
 `scripts/bootstrap.py` reads the same two variables from the environment when
 they are there and works without them when they are not.
 

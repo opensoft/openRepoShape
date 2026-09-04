@@ -59,6 +59,7 @@ from pathlib import Path
 SHAPE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
 from repo_shape import (  # noqa: E402
+    free_plan_secret_hint,
     COMMIT_RE, PROJECT_ID_RE, TREE_DIGEST_DEFINITION, VISIBILITY_CHOICES,
     NamingPolicy, Refusal, checked_value, git_out, load_yaml, recorded_gitlink,
     repo_basename, tree_digest,
@@ -505,6 +506,10 @@ def cmd_init(args) -> int:  # noqa: C901
               "(SHAPE_LEGS_APP_ID + SHAPE_LEGS_APP_PRIVATE_KEY, preferred) or "
               "a SHAPE_LEGS_TOKEN PAT with contents:read on the members AND "
               "their legs — or the `validate` check cannot check them out.")
+        hint = free_plan_secret_hint(
+            args.org, repository, f"{repository} and its members are")
+        if hint:
+            print(hint)
     print(f"""
 NEXT STEPS
 
