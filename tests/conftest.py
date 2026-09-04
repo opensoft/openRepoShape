@@ -132,8 +132,21 @@ SYNTHETIC_TREE = {
 }
 
 
+#: The second and third commits of `make_source_repo`: `(path, new body,
+#: message)`. They are DATA rather than statements so that a caller passing
+#: its own `tree` can say which of ITS files the later commits touch — a
+#: spec-only repository has no `src/app/main.py` to implement.
+DEFAULT_EDITS = (
+    ("specs/001-feature/spec.md", "# The feature\n\nA second paragraph.\n",
+     "Extend the specification"),
+    ("src/app/main.py",
+     "import contracts_reader\n\n\ndef main():\n    return 0\n",
+     "Implement main"),
+)
+
+
 def make_source_repo(path: Path, tree: dict | None = None,
-                     branch: str = "main") -> Path:
+                     branch: str = "main", edits: tuple | None = None) -> Path:
     """A local repository with SEVERAL commits, so history can be verified.
 
     Three commits, each touching a different side of the tree: an extraction
@@ -141,6 +154,7 @@ def make_source_repo(path: Path, tree: dict | None = None,
     this one.
     """
     tree = dict(tree or SYNTHETIC_TREE)
+    edits = DEFAULT_EDITS if edits is None else edits
     path.mkdir(parents=True, exist_ok=True)
     git("init", "-q", "-b", branch, ".", cwd=path)
     env = {"GIT_AUTHOR_NAME": "Source Human",
@@ -162,13 +176,11 @@ def make_source_repo(path: Path, tree: dict | None = None,
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(body, encoding="utf-8")
     commit("Initial import")
-    (path / "specs" / "001-feature" / "spec.md").write_text(
-        "# The feature\n\nA second paragraph.\n", encoding="utf-8")
-    commit("Extend the specification")
-    (path / "src" / "app" / "main.py").write_text(
-        "import contracts_reader\n\n\ndef main():\n    return 0\n",
-        encoding="utf-8")
-    commit("Implement main")
+    for name, body, message in edits:
+        target = path / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(body, encoding="utf-8")
+        commit(message)
     return path
 
 

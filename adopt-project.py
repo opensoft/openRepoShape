@@ -41,6 +41,17 @@ preflighted with an exact install hint; the alternative — `git subtree` or a
 hand-rolled `filter-branch` — is slower, rewrites author dates, and is exactly
 the kind of thing that is discovered to have been wrong a year later.
 
+A LEG WITH NOTHING IN IT IS SEEDED, NOT EXTRACTED. A repository can honestly
+have no code yet — InkRouter's IRRS and IRSS are specifications (Brett Heap,
+2026-09-04) — and `git filter-repo` over an empty path list yields an empty
+HISTORY rather than an empty repository. So a leg no entry assigns a path to
+is seeded from `templates/<role>-root/` as one initial commit, the plan
+records `seeded_from_template: true` for it, the split still mounts and pins
+it, and the verification table reads `code: 0 of N source paths (seeded from
+template)`. `check` WARNS; `execute` refuses without `--allow-empty-leg
+<leg>`, in the plan or on its command line, because a plan that lost its code
+paths to a bad edit looks identical from here.
+
 MODE. `in-place` is the only mode in v0.2. A future `new-root` mode would
 create a NEW assembly root and reduce the source to one leg; it is recorded in
 the plan's `mode:` field so a plan written today says which posture it took,
@@ -71,7 +82,8 @@ from repo_shape import (  # noqa: E402
 )
 from shape_materialize import (  # noqa: E402
     ADOPT_MAKEFILE_BLOCK, DEFAULT_REFERENCE, RULESET_HINT, SHAPE_REPOSITORY,
-    CommandFailed, env_commit, materialize_assembly_root, naming_block, run,
+    CommandFailed, copy_tree, env_commit, git_init_commit,
+    materialize_assembly_root, naming_block, run,
 )
 
 #: The naming policy this tool classifies leg names against. One constant,
@@ -109,6 +121,21 @@ ADOPT_BRANCH = "adopt/three-repo-shape"
 COLLISION_DIR = "shape"
 LEG_VALUES = ("spec", "code", "root", "drop")
 FILE_PROTOCOL = ["-c", "protocol.file.allow=always"]
+
+#: THE SPEC-ONLY CASE. A repository can honestly have nothing for one leg —
+#: InkRouter's IRRS and IRSS are specifications with no implementation yet
+#: (Brett Heap, 2026-09-04: "We do not have any code yet for either service").
+#: A leg that no plan entry assigns a path to CANNOT be extracted: `git
+#: filter-repo` over an empty path list rewrites every commit to nothing and
+#: leaves an empty history, which is not the same thing as an empty
+#: repository and is not something to push at a project. Such a leg is SEEDED
+#: from the shape's own leg template as ONE initial commit — the same bytes
+#: `scaffold-project.py` would have written for a new project — and the split
+#: commit mounts it exactly like an extracted one. It carries no history from
+#: the adopted repository because there was none to carry, and the
+#: verification table says so rather than reporting a hole.
+SEED_TEMPLATE = {"spec": "templates/spec-root", "code": "templates/code-root"}
+EXTRACTED_LEGS = ("spec", "code")
 
 FILTER_REPO_HINT = (
     "Remediation: install it — `pip install git-filter-repo`, or "
@@ -396,6 +423,30 @@ def summary_of(entries: list[Entry]) -> dict[str, dict[str, float]]:
     return out
 
 
+def seeded_legs(assigned: dict) -> list[str]:
+    """The legs no path is assigned to, in the order the tool reports them.
+
+    ONE DEFINITION, consulted by `plan`, `check` and `execute`, because three
+    answers to "is this leg empty?" is how the plan starts describing a split
+    the tool does not perform. `assigned` maps a leg to the paths the entries
+    give it; a leg with none is seeded.
+    """
+    return [role for role in EXTRACTED_LEGS if not assigned.get(role)]
+
+
+def assigned_paths(entries) -> dict[str, list[str]]:
+    """`{leg: [path, ...]}` from plan `Entry` objects OR from loaded rows."""
+    out: dict[str, list[str]] = {leg: [] for leg in LEG_VALUES}
+    for entry in entries:
+        if isinstance(entry, dict):
+            leg, path = entry.get("leg"), entry.get("path")
+        else:
+            leg, path = entry.leg, entry.path
+        if leg is not None and str(leg) in out:
+            out[str(leg)].append(str(path))
+    return out
+
+
 def render_plan(args, source: Source, entries: list[Entry], names: dict,
                 pins: list[str], follow_ups: list[str]) -> str:
     lines = [
@@ -445,7 +496,37 @@ def render_plan(args, source: Source, entries: list[Entry], names: dict,
               "# Neutral products this project declares a pin on. A",
               "# `<Domainx><Product>` assembly root is a DESCENDANT only when",
               "# its `open<Product>` is listed here (2026-09-02).",
-              "pins: [" + ", ".join(pins) + "]", "", "paths:"]
+              "pins: [" + ", ".join(pins) + "]", ""]
+
+    seeded = seeded_legs(assigned_paths(entries))
+    lines += [
+        "# A leg that NO entry below assigns a path to is SEEDED from the",
+        "# shape's own leg template as one initial commit, instead of being",
+        "# extracted: `git filter-repo` over an empty path list yields an",
+        "# empty HISTORY, which is not an empty repository. The split still",
+        "# mounts it. This block RECORDS what the entries said when the plan",
+        "# was written; `check` and `execute` re-derive it from the entries,",
+        "# which are edited afterwards, and the entries always win.",
+        "seeding:",
+    ]
+    for role in EXTRACTED_LEGS:
+        lines.append(f"  {role}:")
+        emit(lines, "seeded_from_template", role in seeded, 4)
+        if role in seeded:
+            emit(lines, "template", SEED_TEMPLATE[role], 4)
+            emit(lines, "reason",
+                 f"no entry assigns a path to the {role} leg", 4)
+    lines += [
+        "",
+        "# Seeding a leg is EXPLICIT HUMAN INTENT, so `execute` refuses to do",
+        "# it unless the leg is named here (or on its own command line) with",
+        "# `--allow-empty-leg <leg>`. A repository that turns out to have no",
+        "# code is a fact worth confirming; a plan that lost every code path",
+        "# to a bad edit looks exactly the same from here.",
+        "allow_empty_legs: ["
+        + ", ".join(sorted(getattr(args, "allow_empty_leg", None) or []))
+        + "]",
+        "", "paths:"]
     for entry in entries:
         entry.write(lines)
     lines += ["", "follow_ups:"]
@@ -505,6 +586,9 @@ def cmd_plan(args) -> int:
     print(f"\nfollow-ups ({len(follow_ups)}):")
     for item in follow_ups:
         print(f"  - {item}")
+    for line in seeding_warnings(seeded_legs(assigned_paths(entries)),
+                                 set(args.allow_empty_leg or [])):
+        print(line)
     unresolved = [e for e in entries if e.leg is None]
     print(f"\nplan written to {out}")
     if unresolved:
@@ -513,6 +597,38 @@ def cmd_plan(args) -> int:
         for entry in unresolved:
             print(f"  {entry.path}\n      {entry.question}")
     return 0
+
+
+def seeding_warnings(seeded: list[str], allowed: set) -> list[str]:
+    """What `plan` and `check` say about a leg that will be seeded.
+
+    A WARNING AND NOT A FINDING. A repository with no implementation yet is a
+    legitimate thing to adopt — the InkRouter services are specifications with
+    no code (2026-09-04) — so `check` must be able to pass on one. What it
+    must never do is let the seeding happen unremarked: the same empty leg is
+    also what a plan looks like after somebody deletes the entries that fed
+    it, and only a human can tell those two apart. Hence the consent flag,
+    named here rather than discovered when `execute` refuses.
+    """
+    out: list[str] = []
+    for role in seeded:
+        out.append(
+            f"\nWARNING the {role} leg will be SEEDED from "
+            f"{SEED_TEMPLATE[role]}/, not extracted:\n"
+            f"        no entry assigns a path to it, and `git filter-repo` "
+            f"over an empty\n        path list yields an empty history rather "
+            f"than an empty repository.\n        The leg is created, mounted "
+            f"and pinned like any other; it simply\n        carries no history "
+            f"from the adopted repository, because there is none.")
+        if role not in allowed:
+            out.append(
+                f"        `execute` REFUSES until a human says so: re-run "
+                f"`plan` with\n        --allow-empty-leg {role}, or pass it to "
+                f"`execute` itself.")
+        else:
+            out.append(f"        --allow-empty-leg {role} is declared, so "
+                       "`execute` will proceed.")
+    return out
 
 
 def _print_entries(entries: list[Entry]) -> None:
@@ -614,6 +730,41 @@ class Plan:
         value = self.data.get(key)
         return default if value is None else value
 
+    def allowed_empty_legs(self) -> set[str]:
+        """The legs this PLAN consents to having seeded. `execute` unions it
+        with its own `--allow-empty-leg`, so consent can be given at either
+        end — but it is never inferred from the entries being empty, which is
+        the state the consent exists to be deliberate about."""
+        return {str(role) for role in (self.data.get("allow_empty_legs") or [])
+                if role}
+
+    def seeding_record_disagreements(self, seeded: list[str]) -> list[str]:
+        """Where the plan's `seeding:` record and its own entries disagree.
+
+        A NOTE, NOT A FINDING, and the entries win. The record is written by
+        `plan`; the entries are edited afterwards, and resolving an ambiguous
+        path INTO the code leg is exactly the edit that makes a recorded
+        `seeded_from_template: true` stale. Refusing there would punish the
+        human for answering the question the plan asked them.
+        """
+        record = self.data.get("seeding")
+        if not isinstance(record, dict):
+            return []
+        out: list[str] = []
+        for role in EXTRACTED_LEGS:
+            row = record.get(role)
+            if not isinstance(row, dict) or "seeded_from_template" not in row:
+                continue
+            recorded = bool(row.get("seeded_from_template"))
+            if recorded != (role in seeded):
+                out.append(
+                    f"NOTE the `seeding:` record says the {role} leg would be "
+                    f"{'seeded' if recorded else 'extracted'}, but the entries "
+                    f"now say {'seeded' if role in seeded else 'extracted'}. "
+                    "The entries win; the record is stale because the plan was "
+                    "edited after it was written, which is what a plan is for.")
+        return out
+
 
 def _covering(entry_paths: list[str], path: str) -> list[str]:
     """Every plan entry that covers `path` — a file entry or an ancestor."""
@@ -676,12 +827,16 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict) -> None:
     moved = [e for e in plan.entries if str(e.get("leg")) in ("spec", "code")]
     stays = [e for e in plan.entries if str(e.get("leg")) == "root"]
     drops = [e for e in plan.entries if str(e.get("leg")) == "drop"]
+    seeded = seeded_legs(assigned_paths(plan.entries))
     print(f"\nWHAT WILL HAPPEN, against {source.repository or source.path} @ "
           f"{source.commit[:12]}:")
     print(f"  create {names['spec']} and {names['code']} "
           f"({plan.get('visibility', 'private')})")
     print(f"  extract {len(moved)} path(s) with `git filter-repo`, history "
           "preserved")
+    for role in seeded:
+        print(f"  SEED the {role} leg from {SEED_TEMPLATE[role]}/ — no path is "
+              "assigned to it")
     print(f"  ONE split commit on branch {plan.get('adopt_branch', ADOPT_BRANCH)} "
           f"of {names['assembly']}: `git rm -r` those paths, mount the legs at "
           f"{plan.legs.get('spec_path')}/ and {plan.legs.get('code_path')}/")
@@ -724,6 +879,12 @@ def cmd_check(args) -> int:
         findings.append(f"FINDING {exc.code}: {exc.detail}")
 
     _print_what_will_happen(plan, source, names)
+
+    seeded = seeded_legs(assigned_paths(plan.entries))
+    for line in seeding_warnings(seeded, plan.allowed_empty_legs()):
+        print(line)
+    for line in plan.seeding_record_disagreements(seeded):
+        print(line)
 
     for finding in findings:
         print(finding, file=sys.stderr)
@@ -862,6 +1023,45 @@ def _extract_leg(role: str, source: Source, work: Path, paths: list[str],
     return head, tree_digest(work, head)
 
 
+def _seed_leg(role: str, work: Path, values: dict, branch: str, url: str,
+              tracking: str, repository: str, display: str) -> tuple[str, str]:
+    """(b′) A leg with NO extracted path: seeded from the shape's template.
+
+    The same bytes `scaffold-project.py` writes for a new project's leg, as
+    ONE initial commit with the identity this invocation carries. It is not an
+    extraction and does not pretend to be: the commit message says the leg was
+    seeded and why, so a reader of that repository's own history is never left
+    wondering which commits of the adopted repository went missing.
+
+    `branch` is accepted and ignored on purpose — a seeded leg has no branch of
+    the source to reset to. `tracking` is the branch it is pushed to, exactly
+    as an extracted leg is.
+    """
+    del branch
+    copy_tree(SHAPE_ROOT / SEED_TEMPLATE[role], work, values)
+    commit = git_init_commit(
+        work,
+        f"Seed the {role} leg of {display}\n\n"
+        f"No path of {display} was assigned to the {role} leg by the adoption "
+        f"plan, so this leg is SEEDED from {SHAPE_REPOSITORY}'s "
+        f"{SEED_TEMPLATE[role]}/ rather than extracted with `git filter-repo`: "
+        "a filter over an empty path list yields an empty HISTORY, which is "
+        "not an empty repository.\n\nIt carries no history from the adopted "
+        "repository because there was none to carry. The assembly root mounts "
+        "and pins it exactly as it does the extracted leg.\n",
+        tracking).lower()
+    try:
+        run(["git", "push", "-q", url, f"HEAD:refs/heads/{tracking}"], cwd=work)
+    except CommandFailed as exc:
+        print(exc.loudly(f"pushing the seeded {role} leg"), file=sys.stderr)
+        print(RULESET_HINT.format(work=work, repo=repository, role=role),
+              file=sys.stderr)
+        raise
+    print(f"  {role:<5}   0 path(s) -> {commit[:12]} (SEEDED from "
+          f"{SEED_TEMPLATE[role]}/) -> {url}")
+    return commit, tree_digest(work, commit)
+
+
 def _mount_the_legs(assembly: Path, work_root: Path, names: dict, urls: dict,
                     paths_for: dict, spec_path: str, code_path: str) -> None:
     """(c, first half) `git rm` what moved, then mount the two legs.
@@ -923,22 +1123,68 @@ def cmd_execute(args) -> int:  # noqa: C901
     paths_for = {leg: [checked_value("a plan path", e.get("path"))
                        for e in plan.entries if str(e.get("leg")) == leg]
                  for leg in LEG_VALUES}
+
+    # A leg with no path is SEEDED, and seeding takes a human's word. Derived
+    # from the ENTRIES, never from the plan's own `seeding:` record: the
+    # entries are what the split is actually made of.
+    seeded = seeded_legs(paths_for)
+    allowed = plan.allowed_empty_legs() | set(args.allow_empty_leg or [])
+    unconsented = [role for role in seeded if role not in allowed]
+    if unconsented:
+        raise Refusal(
+            "adopt-empty-leg-unconsented",
+            "no path is assigned to the "
+            + " and ".join(f"{role} leg" for role in unconsented)
+            + ", so it would be SEEDED from "
+            + " and ".join(f"{SEED_TEMPLATE[role]}/" for role in unconsented)
+            + " instead of extracted, and no `--allow-empty-leg` says that is "
+            "intended",
+            "Remediation: a repository that genuinely has no "
+            + "/".join(unconsented) + " yet is adopted with "
+            + " ".join(f"--allow-empty-leg {role}" for role in unconsented)
+            + " — on this command, or recorded in the plan by re-running "
+            "`plan` with the same flag. A plan that lost its "
+            + "/".join(unconsented) + " paths to a bad edit looks identical "
+            "from here, which is why this is a human's word and not an "
+            "inference.")
+    for line in plan.seeding_record_disagreements(seeded):
+        print(line)
     _confirm(args, plan, names)
 
     # ---- (a) the two legs' remotes ----------------------------------------
     _create_leg_remotes(plan, names, repositories, urls, tracking, local)
 
-    # ---- (b) history-preserving extraction --------------------------------
+    # The substitution table is built BEFORE the legs, because a SEEDED leg is
+    # rendered from `templates/<role>-root/` and needs it. The four leg
+    # commit/digest values are the only ones that cannot be known yet; they
+    # are filled in below, before the assembly root is materialized.
+    shape_commit = git_out(["rev-parse", "HEAD"], cwd=SHAPE_ROOT).lower()
+    values = _template_values(plan, names, repositories, urls, spec_path,
+                              code_path, tracking, {}, {},
+                              shape_commit, pins, naming)
+
+    # ---- (b) history-preserving extraction, or a seeded leg ---------------
     leg_commits: dict[str, str] = {}
     leg_digests: dict[str, str] = {}
-    for role in ("spec", "code"):
+    for role in EXTRACTED_LEGS:
         try:
-            leg_commits[role], leg_digests[role] = _extract_leg(
-                role, source, work_root / names[role], paths_for[role],
-                work_root / f"{role}-paths.txt", branch, urls[role], tracking,
-                repositories[role])
+            if role in seeded:
+                leg_commits[role], leg_digests[role] = _seed_leg(
+                    role, work_root / names[role], values, branch, urls[role],
+                    tracking, repositories[role], names["assembly"])
+            else:
+                leg_commits[role], leg_digests[role] = _extract_leg(
+                    role, source, work_root / names[role], paths_for[role],
+                    work_root / f"{role}-paths.txt", branch, urls[role],
+                    tracking, repositories[role])
         except CommandFailed:
             return 2
+    values.update({
+        "SPEC_COMMIT": leg_commits["spec"],
+        "CODE_COMMIT": leg_commits["code"],
+        "SPEC_TREE_SHA256": leg_digests["spec"],
+        "CODE_TREE_SHA256": leg_digests["code"],
+    })
 
     # ---- (c) ONE split commit on a branch of the source -------------------
     assembly = work_root / names["assembly"]
@@ -947,10 +1193,6 @@ def cmd_execute(args) -> int:  # noqa: C901
     _mount_the_legs(assembly, work_root, names, urls, paths_for, spec_path,
                     code_path)
 
-    shape_commit = git_out(["rev-parse", "HEAD"], cwd=SHAPE_ROOT).lower()
-    values = _template_values(plan, names, repositories, urls, spec_path,
-                              code_path, tracking, leg_commits, leg_digests,
-                              shape_commit, pins, naming)
     materialized = materialize_assembly_root(
         SHAPE_ROOT, assembly, values, collision_dir=COLLISION_DIR,
         append={"Makefile": ADOPT_MAKEFILE_BLOCK})
@@ -960,7 +1202,8 @@ def cmd_execute(args) -> int:  # noqa: C901
 
     follow_ups = [str(f) for f in plan.get("follow_ups", [])]
     message = _split_message(names, paths_for, leg_commits, spec_path,
-                             code_path, follow_ups, materialized.collisions)
+                             code_path, follow_ups, materialized.collisions,
+                             seeded)
     run(["git", "add", "-A", "--", "."], cwd=assembly)
     env_commit(assembly, message)
     split_commit = git_out(["rev-parse", "HEAD"], cwd=assembly).lower()
@@ -987,7 +1230,8 @@ def cmd_execute(args) -> int:  # noqa: C901
             return 2
 
     # ---- (d) verification, by blob sha ------------------------------------
-    return _verify(source, assembly, work_root, names, paths_for, split_commit)
+    return _verify(source, assembly, work_root, names, paths_for, split_commit,
+                   seeded)
 
 
 def _template_values(plan: Plan, names, repositories, urls, spec_path,
@@ -995,6 +1239,11 @@ def _template_values(plan: Plan, names, repositories, urls, spec_path,
                      shape_commit, pins, naming) -> dict[str, str]:
     project = names["assembly"]
     project_id = str(plan.get("id", project.lower()))
+    # `.get(role, "")` because this table is built BEFORE the legs exist, so
+    # that a SEEDED leg's template can be rendered from it. The four values
+    # are filled in by the caller as soon as each leg has a commit, and the
+    # assembly root — the only tree whose templates name them — is
+    # materialized after that.
     return {
         "PROJECT": project,
         "PROJECT_ID": project_id,
@@ -1018,10 +1267,10 @@ def _template_values(plan: Plan, names, repositories, urls, spec_path,
         "DIGEST_DEFINITION": TREE_DIGEST_DEFINITION,
         "CLONE_URL": urls["assembly"],
         "ASSEMBLY_CLONE_URL": urls["assembly"],
-        "SPEC_COMMIT": leg_commits["spec"],
-        "CODE_COMMIT": leg_commits["code"],
-        "SPEC_TREE_SHA256": leg_digests["spec"],
-        "CODE_TREE_SHA256": leg_digests["code"],
+        "SPEC_COMMIT": leg_commits.get("spec", ""),
+        "CODE_COMMIT": leg_commits.get("code", ""),
+        "SPEC_TREE_SHA256": leg_digests.get("spec", ""),
+        "CODE_TREE_SHA256": leg_digests.get("code", ""),
         "NEUTRAL_PRODUCT_PINS": ("[]" if not pins else
                                  "\n" + "\n".join(f"  - {p}"
                                                   for p in sorted(pins))),
@@ -1033,7 +1282,15 @@ def _template_values(plan: Plan, names, repositories, urls, spec_path,
 
 
 def _split_message(names, paths_for, leg_commits, spec_path, code_path,
-                   follow_ups, collisions) -> str:
+                   follow_ups, collisions, seeded=()) -> str:
+    def none_line(role: str) -> list[str]:
+        if role not in seeded:
+            return ["  (none)"]
+        return [f"  (none — this leg was SEEDED from {SHAPE_REPOSITORY}'s "
+                f"{SEED_TEMPLATE[role]}/, because no path of this repository "
+                f"was assigned to it. It is mounted and pinned like the other "
+                f"leg and carries no history from here, there being none.)"]
+
     lines = [
         f"Adopt the three-repository shape: {names['spec']} and "
         f"{names['code']}",
@@ -1047,11 +1304,13 @@ def _split_message(names, paths_for, leg_commits, spec_path, code_path,
         "",
         f"MOVED TO THE SPEC LEG ({names['spec']} @ {leg_commits['spec'][:12]}):",
     ]
-    lines += [f"  {path}" for path in sorted(paths_for["spec"])] or ["  (none)"]
+    lines += [f"  {path}" for path in sorted(paths_for["spec"])] \
+        or none_line("spec")
     lines += ["",
               f"MOVED TO THE CODE LEG ({names['code']} @ "
               f"{leg_commits['code'][:12]}):"]
-    lines += [f"  {path}" for path in sorted(paths_for["code"])] or ["  (none)"]
+    lines += [f"  {path}" for path in sorted(paths_for["code"])] \
+        or none_line("code")
     if paths_for["drop"]:
         lines += ["", "DROPPED (in no leg and no longer here):"]
         lines += [f"  {path}" for path in sorted(paths_for["drop"])]
@@ -1069,13 +1328,19 @@ def _split_message(names, paths_for, leg_commits, spec_path, code_path,
 
 
 def _verify(source: Source, assembly: Path, work_root: Path, names,
-            paths_for, split_commit: str) -> int:
+            paths_for, split_commit: str, seeded=()) -> int:
     """Every source blob is in exactly one place afterwards, or this fails.
 
     THE ONE CHECK THAT MAKES THE REST TRUSTWORTHY. Counting paths would pass a
     split that silently truncated a file; comparing BLOB SHAs cannot. A path
     that is in two places is as much a finding as a path that is in none —
     the second is data loss and the first is two owners for one file.
+
+    A SEEDED LEG DOES NOT WEAKEN IT. Its files are template bytes that were
+    never in the source, so they cannot match a source blob and are counted as
+    added, exactly like the manifest and the pins. The leg's row therefore
+    reads `0 of N source paths (seeded from template)` — which is the honest
+    number, and still leaves every source path to be accounted for somewhere.
     """
     print("\nVERIFICATION — every source path at "
           f"{source.commit[:12]}, by blob sha")
@@ -1092,9 +1357,11 @@ def _verify(source: Source, assembly: Path, work_root: Path, names,
     counts, findings = _account_for(before, after, paths_for["drop"])
     added = sorted(set(after) - set(before))
     for leg in ("spec", "code", "root", "drop"):
-        print(f"  {leg:<6} {counts[leg]:>5} of {len(before)} source paths")
-    print(f"  added  {len(added):>5} new paths in the assembly root "
-          "(manifest, pins, shape files)")
+        note = " (seeded from template)" if leg in seeded else ""
+        print(f"  {leg:<6} {counts[leg]:>5} of {len(before)} source "
+              f"paths{note}")
+    print(f"  added  {len(added):>5} new paths (manifest, pins, shape files"
+          + (", seeded leg" if seeded else "") + ")")
     for finding in findings:
         print(finding, file=sys.stderr)
     if findings:
@@ -1223,6 +1490,14 @@ def main(argv: list[str] | None = None) -> int:
                            "owner explicitly. Adopting a project pins no "
                            "commit at plan time, so a trailing @<commit> "
                            "(scaffold-project.py's syntax) is refused.")
+    plan.add_argument("--allow-empty-leg", action="append", default=[],
+                      choices=EXTRACTED_LEGS,
+                      help="record in the plan that this leg having NO path "
+                           "is intended, so it may be SEEDED from the shape's "
+                           "template instead of extracted. The InkRouter "
+                           "services are specifications with no code yet "
+                           "(2026-09-04): `--allow-empty-leg code`. "
+                           "Repeatable.")
     plan.add_argument("--path-policy", type=Path, default=None)
     plan.add_argument("--out", default="adoption-plan.yaml")
     plan.add_argument("--work-dir", type=Path, default=None)
@@ -1241,6 +1516,12 @@ def main(argv: list[str] | None = None) -> int:
     execute.add_argument("--local-remote-dir", type=Path, default=None,
                          help="create the legs as bare repositories here "
                               "instead of calling `gh` (the TEST path)")
+    execute.add_argument("--allow-empty-leg", action="append", default=[],
+                         choices=EXTRACTED_LEGS,
+                         help="proceed even though NO path is assigned to this "
+                              "leg, seeding it from the shape's template. "
+                              "Unioned with the plan's own `allow_empty_legs:`; "
+                              "without one of the two, execute refuses.")
     execute.add_argument("--yes", action="store_true",
                          help="the human has read the plan and the follow-ups")
     execute.add_argument("--work-dir", type=Path, default=None)
