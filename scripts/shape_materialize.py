@@ -79,6 +79,37 @@ NEUTRAL_PIN_TEMPLATE = "contracts/neutral-product-pin.yaml"
 EXECUTABLE = ("scripts/validate-pins.py", "scripts/validate-manifest.py",
               "scripts/bootstrap.py", VALIDATE_NAMING)
 
+# ---------------------------------------------------------------------------
+# The FAMILY root's own lists (2026-09-04)
+# ---------------------------------------------------------------------------
+#
+# A family is a HOLDER, not a project: no legs, no leg pins, no manifest
+# validator, and no naming CLI — `validate-family.py` asks the naming policy
+# the one question a family has. So it gets its own four lists rather than
+# reusing the assembly root's with exceptions, because "the same list minus
+# three entries" is a list that starts agreeing with neither.
+
+FAMILY_TEMPLATED = (
+    "README.md",
+    "family.yaml",
+    # shape-pin.yaml is rendered LAST by the materializer, over the copies.
+)
+FAMILY_COPIED_VERBATIM = (
+    "scripts/validate-family.py",
+    "scripts/bootstrap.py",
+    "Makefile",
+    ".gitignore",
+    ".github/workflows/validate.yml",
+)
+#: The family validator reads the naming policy through `repo_shape`, so those
+#: two travel with it. It does NOT copy `validate-repository-naming.py`: the
+#: family has one name to classify and asks the library directly.
+FAMILY_COPIED_FROM_SHAPE = (
+    ("scripts/repo_shape.py", "scripts/repo_shape.py"),
+    ("contracts/repository-naming.yaml", "contracts/repository-naming.yaml"),
+)
+FAMILY_EXECUTABLE = ("scripts/validate-family.py", "scripts/bootstrap.py")
+
 PLACEHOLDER_RE = re.compile(r"\{\{[A-Z_]+\}\}")
 
 #: Appended to the assembly root's Makefile by `adopt-project.py` ONLY. A
@@ -324,7 +355,48 @@ def materialize_assembly_root(shape_root: Path, target: Path,
     `neutral_pins` maps a neutral product name to the values for its pin file,
     each rendered from `contracts/neutral-product-pin.yaml`.
     """
-    template_root = shape_root / "templates" / "assembly-root"
+    return _materialize(
+        shape_root, shape_root / "templates" / "assembly-root", target, values,
+        templated=TEMPLATED, verbatim=COPIED_VERBATIM,
+        from_shape=COPIED_FROM_SHAPE, executable=EXECUTABLE,
+        collision_dir=collision_dir, append=append, neutral_pins=neutral_pins)
+
+
+def materialize_family_root(shape_root: Path, target: Path,
+                            values: dict[str, str]) -> Materialized:
+    """Write the FAMILY-root skeleton into `target`.
+
+    A THIRD CALLER OF THE ONE MATERIALIZER, and the reason it was worth
+    generalising rather than copying: a family root carries the same copy pin
+    an assembly root does — `contracts/shape-pin.yaml`, per-file sha256 rows
+    over the copies, `commit` and `tree_sha256` for the revision they came
+    from — so `update-shape.py` re-syncs one exactly as it re-syncs the other.
+    A second implementation of the digest-writing loop is how the two would
+    start disagreeing about which files are pinned.
+
+    No collision directory: `family.py init` builds the directory itself (or
+    reuses an EMPTY repository, which by definition collides with nothing).
+    """
+    return _materialize(
+        shape_root, shape_root / "templates" / "family-root", target, values,
+        templated=FAMILY_TEMPLATED, verbatim=FAMILY_COPIED_VERBATIM,
+        from_shape=FAMILY_COPIED_FROM_SHAPE, executable=FAMILY_EXECUTABLE)
+
+
+def _materialize(shape_root: Path, template_root: Path, target: Path,
+                 values: dict[str, str], *, templated, verbatim, from_shape,
+                 executable, collision_dir: str | None = None,
+                 append: dict[str, str] | None = None,
+                 neutral_pins: dict[str, dict] | None = None) -> Materialized:
+    """The shared body. Four lists in, one `Materialized` out.
+
+    The order is load-bearing and is the same for every root: templated files
+    first, then the verbatim copies and the copies out of openRepoShape's own
+    tree (those two are what the shape pin digests), then any neutral-product
+    pins, then the executable bits, and LAST `contracts/shape-pin.yaml` —
+    rendered over the paths the copies actually landed on, because a pin that
+    names a path nothing is at is a refusal in the validator, and rightly.
+    """
     result = Materialized()
 
     def place(rel: str, write) -> str:
@@ -347,17 +419,17 @@ def materialize_assembly_root(shape_root: Path, target: Path,
         result.written.append(rel_written)
         return rel_written
 
-    for rel in TEMPLATED:
+    for rel in templated:
         text = render((template_root / rel).read_text(encoding="utf-8"),
                       values, rel)
         text += (append or {}).get(rel, "")
         place(rel, lambda p, t=text: p.write_text(t, encoding="utf-8"))
-    for rel in COPIED_VERBATIM:
+    for rel in verbatim:
         text = (template_root / rel).read_text(encoding="utf-8")
         text += (append or {}).get(rel, "")
         result.shape_files.append(
             place(rel, lambda p, t=text: p.write_text(t, encoding="utf-8")))
-    for src, rel in COPIED_FROM_SHAPE:
+    for src, rel in from_shape:
         text = (shape_root / src).read_text(encoding="utf-8")
         result.shape_files.append(
             place(rel, lambda p, t=text: p.write_text(t, encoding="utf-8")))
@@ -366,7 +438,7 @@ def materialize_assembly_root(shape_root: Path, target: Path,
         text = render((template_root / NEUTRAL_PIN_TEMPLATE)
                       .read_text(encoding="utf-8"), {**values, **pin_values}, rel)
         place(rel, lambda p, t=text: p.write_text(t, encoding="utf-8"))
-    for rel in EXECUTABLE:
+    for rel in executable:
         actual = next((w for w in result.written if w.endswith(rel)), None)
         if actual:
             (target / actual).chmod(0o755)

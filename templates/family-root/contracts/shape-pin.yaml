@@ -1,0 +1,46 @@
+schema_version: 1
+kind: pinned_contract_manifest
+
+# ===========================================================================
+# shape-pin.yaml — the openRepoShape revision this FAMILY ROOT was cut from.
+#
+# A COPY PIN, NOT A SUBMODULE PIN, for the same reason an assembly root's is.
+# openRepoShape is not mounted here: `scripts/family.py init` COPIED a small
+# set of files out of it — the naming policy, the shared library, the family
+# validator, the bootstrap, the Makefile and the pull-request workflow — so
+# that a family in an organisation which never obtains the upstream is still
+# self-contained and still runs its own gate. There is therefore no gitlink to
+# compare, and the identity of what was copied is carried by the per-file
+# `sha256` rows below.
+#
+# THE FAMILY'S MEMBERS ARE PINNED ELSEWHERE, and differently: they ARE
+# mounted, so `family.yaml`'s `members[].pin` carries a commit and a tree
+# digest to compare against a gitlink. Copies and mounts are two halves of the
+# family's pin grammar and this file is only the first.
+#
+# EDITING A COPIED FILE IS DRIFT AND IS REPORTED AS SUCH.
+# `scripts/validate-family.py` recomputes every `sha256` below on every pull
+# request. The exit from a drift finding is to carry the change UPSTREAM to
+# openRepoShape and re-pin with `update-shape.py` — not to update the digest
+# in place, which would record the fork as the standard.
+# ===========================================================================
+
+pin_role: shape
+source_repository: {{SHAPE_REPOSITORY}}
+materialization: copied
+
+commit: "{{SHAPE_COMMIT}}"
+revision_kind: commit
+
+digest_algorithm: sha256
+digest_definition: {{DIGEST_DEFINITION}}
+digests:
+  tree_sha256: "{{SHAPE_TREE_SHA256}}"
+
+verify_pin: scripts/validate-family.py
+
+# The copies that live in THIS repository, each with the sha256 of its bytes
+# as written by `family.py init`. Do not hand-edit; `update-shape.py` moves
+# these rows and the two fields above together.
+files:
+{{SHAPE_FILES}}

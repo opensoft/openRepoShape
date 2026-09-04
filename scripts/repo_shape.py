@@ -583,6 +583,16 @@ class NamingPolicy:
     thrown away. The check stays OFFLINE: a declared pin is a fact in the
     project's own tree, so no GitHub lookup is ever needed to classify a name.
 
+    A DECLARED-ONLY FORM IS REPORTED ONLY WHEN IT IS ASKED FOR. The `family`
+    holder form (2026-09-04) is spelled exactly like an assembly root — one
+    CamelCase token — and what makes a repository a family is `family.yaml` in
+    its own tree, not its characters. A family carrying `declared_only: true`
+    is therefore skipped by `matches()` unless the caller passes that family's
+    id as `declared_role`. That is not a convenience: without it, adding the
+    form would have widened `also_matches` for every bare CamelCase name in
+    every manifest already in the wild, and `validate-manifest.py` compares
+    that list exactly.
+
     `matches()` still reports every form a name satisfies, in the data's
     precedence order, so an overlap stays visible instead of being resolved in
     silence.
@@ -660,10 +670,27 @@ class NamingPolicy:
 
     # -- classification ----------------------------------------------------
 
-    def matches(self, name: str) -> list[tuple[str, str | None]]:
-        """Every (family_id, role_id) the name satisfies, in precedence order."""
+    def declared_only(self, family_id: str) -> bool:
+        """Is this form reported ONLY when the reader declares it?
+
+        Declared in the data, like `requires_referent`, so a fork can read the
+        rule rather than infer it from the classifier's behaviour.
+        """
+        family = self.family(family_id)
+        return bool(family and family.get("declared_only"))
+
+    def matches(self, name: str,
+                declared_role: str | None = None) -> list[tuple[str, str | None]]:
+        """Every (family_id, role_id) the name satisfies, in precedence order.
+
+        A `declared_only` family is included only when `declared_role` is that
+        family's own id — `matches("InkRouter")` is unchanged by the family
+        form existing, and `matches("InkRouter", "family")` reports it.
+        """
         found: list[tuple[str, str | None]] = []
         for family in self.families:
+            if family.get("declared_only") and declared_role != family["id"]:
+                continue
             roles = family.get("roles") or []
             hit = False
             for role in roles:
@@ -684,11 +711,12 @@ class NamingPolicy:
 
         The order:
           1. `neutral-product` and 2. `install` — unambiguous by construction.
-          3. `domain-descendant` — ONLY when a referent is declared.
-          4. `project-leg` in the DECLARED role, when the name satisfies it.
-          5. `project-leg` residual — the widest form, deliberately last.
+          3. a DECLARED-ONLY form the caller asked for by name (`family`).
+          4. `domain-descendant` — ONLY when a referent is declared.
+          5. `project-leg` in the DECLARED role, when the name satisfies it.
+          6. `project-leg` residual — the widest form, deliberately last.
         """
-        matched = self.matches(name)
+        matched = self.matches(name, declared_role)
         if not matched:
             return None
         pins = {repo_basename(str(pin)).casefold()
@@ -714,6 +742,18 @@ class NamingPolicy:
                 return answer(family_id, by_family[family_id][0],
                               f"the {family_id} form is unambiguous by "
                               "construction, so it needs nothing declared")
+
+        # A declared-only form the caller ASKED for. It sits above the leg
+        # forms in the decision even though its precedence is below them: the
+        # precedence orders the residual reading of a bare name, and this is
+        # not a residual reading — somebody said which question they were
+        # asking, and `family.yaml` in that tree is what let them.
+        if declared_role and self.declared_only(declared_role) \
+                and declared_role in by_family:
+            return answer(declared_role, by_family[declared_role][0],
+                          f"the {declared_role} form, DECLARED — the name is "
+                          "spelled like an assembly root and only the "
+                          "declaration tells them apart")
 
         claimed = "domain-descendant" in by_family
         referents = self.descendant_referents(name) if claimed else ()

@@ -1,0 +1,83 @@
+schema_version: 1
+kind: family-manifest
+
+# ===========================================================================
+# family.yaml — this FAMILY's self-describing manifest.
+#
+# A FAMILY IS A HOLDER, NOT A PROJECT. Ruled by Brett Heap on 2026-09-04, for
+# InkRouter:
+#
+#     "InkRouter is a set of microservices and they deploy separately as
+#      api's. so maybe they each need their own assembly repo. So probably
+#      InkRouter is only something that can download all the others easily?
+#      like a holder folder and some utilities for the family of services."
+#
+# So this repository has NO spec leg and NO code leg of its own. It pins other
+# projects' ASSEMBLY ROOTS as submodules under `members/`, and it carries the
+# utilities to fetch and bootstrap them together. Each member is a whole
+# project in its own right — its own three repositories, its own gate, its own
+# release — and remains one whether or not this file names it.
+#
+# IT CONFERS NOTHING, exactly as `project.yaml` confers nothing. Membership is
+# navigation. No field here grants review authority, clearance eligibility,
+# gate standing or lifecycle state over any repository it names; a project
+# that belongs to no family is reviewed identically to one that belongs to
+# this one. A consumer deriving a permission from membership is defective.
+#
+# THE MEMBERSHIP IS NOT THE PROJECT'S SOURCE. `project.yaml` inside each
+# member is the source of what that project is; the row here is a PIN of it,
+# and `scripts/validate-family.py` checks the two agree rather than letting
+# this file assert anything about a tree it does not own.
+# ===========================================================================
+
+id: {{FAMILY_ID}}
+name: "{{FAMILY_NAME}}"
+org: {{ORG}}
+repository: {{FAMILY_REPOSITORY}}
+
+# Creating a family is a human's act, like electing the shape, so the manifest
+# records whose act it was and when.
+created_by: "{{CREATED_BY}}"
+created_on: {{CREATED_ON}}
+
+# `private`, `public` or `internal`. NOT ENFORCED HERE — GitHub is the source
+# of truth for what a repository's visibility actually is — but recording it
+# is what lets a reader tell why the members need a credential in CI.
+visibility: {{VISIBILITY}}
+
+# The branch `scripts/bootstrap.py` places each member on, AT its pinned
+# commit. `.gitmodules` carries no `branch=`: there is exactly one
+# authoritative answer to "what commit of this member is this family".
+tracking_branch: {{TRACKING_BRANCH}}
+
+# The directory every member is mounted under. One name, so a reader and a
+# validator cannot disagree about where to look.
+members_dir: members
+
+# The openRepoShape revision this family root was cut from, pinned by commit
+# and digest under the same rule everything else here uses: a tag can be moved
+# and a commit cannot. `contracts/shape-pin.yaml` carries the same commit plus
+# a per-file sha256 for every file COPIED out of openRepoShape, which is how
+# an edit to a copied validator is detected — and what makes this root
+# re-syncable with `update-shape.py`, exactly like an assembly root.
+shape:
+  repository: {{SHAPE_REPOSITORY}}
+  revision_kind: commit
+  commit: "{{SHAPE_COMMIT}}"
+  digest_algorithm: sha256
+  digest_definition: {{DIGEST_DEFINITION}}
+  digests:
+    tree_sha256: "{{SHAPE_TREE_SHA256}}"
+
+# The members, each pinned TWICE in the same commit — by the gitlink git
+# records for the submodule at `path`, and by `pin.commit` plus
+# `pin.tree_sha256` below. `scripts/validate-family.py` refuses if they
+# disagree; `scripts/family.py bump` is what moves them together.
+#
+# `id:` is the member's OWN `project.yaml` id, recorded here so the validator
+# can check that the tree mounted at `path` is the project this row claims,
+# rather than merely a repository at the right commit.
+#
+# Written by `scripts/family.py`; do not hand-edit. Anything below the
+# `members:` line is rewritten wholesale by `add`, `remove` and `bump`.
+members: []

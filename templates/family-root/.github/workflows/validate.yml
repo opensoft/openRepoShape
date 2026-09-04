@@ -1,0 +1,212 @@
+name: validate
+
+# The NEUTRAL gate for a FAMILY holder: the manifest, the member lockstep
+# pins, and the copied shape files. Nothing here needs a review lane, a wallet
+# register or any overlay — a family with no overlays is fully conformant, and
+# membership confers nothing either way.
+#
+# It runs on PULL REQUESTS. Read a green run here as "this pull request is in
+# lockstep", never as "main is": `main` never reports this check, which is how
+# seven consecutive pin-syncs that moved a gitlink alone went a day unnoticed
+# in the xFactory aggregation.
+#
+# THE MEMBER CREDENTIAL IS THE LEG CREDENTIAL. A member is a private assembly
+# root for most organisations, and it mounts two private legs of its own, so
+# `--recursive` needs the same secrets an assembly root's own workflow uses:
+# SHAPE_LEGS_APP_ID + SHAPE_LEGS_APP_PRIVATE_KEY (preferred), else
+# SHAPE_LEGS_TOKEN. The step shapes below are the assembly root's, unchanged,
+# because two spellings of one authentication dance is how the second one goes
+# stale.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    # The `secrets` context is NOT allowed in a step-level `if:` expression —
+    # GitHub rejects the whole workflow file as unparseable the moment one
+    # appears there, and the failure mode is not a red step but a push-event
+    # run with ZERO jobs (MedxSoft/MedxEHR #8, MedxSoft/MedxGlass #1).
+    # `secrets` IS allowed in `env:`, so the presence check is done here,
+    # once, and the guarded steps below read the resulting `env.*` booleans.
+    env:
+      SHAPE_LEGS_TOKEN_SET: ${{ secrets.SHAPE_LEGS_TOKEN != '' }}
+      SHAPE_LEGS_APP_SET: ${{ secrets.SHAPE_LEGS_APP_ID != '' && secrets.SHAPE_LEGS_APP_PRIVATE_KEY != '' }}
+    steps:
+      # The family root itself is always readable by the workflow's own
+      # default token, so this checkout never carries `token:` — putting a
+      # members-scoped credential on it is what made `actions/checkout` fail
+      # with a 403 before any check ran (runs 33821509948, 33821512605).
+      # `persist-credentials: false` keeps it out of the local git config, so
+      # the submodule step below authenticates on its own terms.
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+          persist-credentials: false
+
+      # An installation token is minted PER OWNER, so the members it can name
+      # are only those this repository's own owner also owns. This reads
+      # `.gitmodules` once, offline, turns each member URL (HTTPS or SSH) into
+      # an `owner/name` pair, keeps the names whose owner matches
+      # `github.repository_owner`, and warns — excluding, not failing — on any
+      # that do not, since those can only be reached by SHAPE_LEGS_TOKEN.
+      - name: member repository names from .gitmodules
+        id: member-names
+        if: env.SHAPE_LEGS_APP_SET == 'true'
+        env:
+          REPO_OWNER: ${{ github.repository_owner }}
+        run: |
+          set -e
+          members=""
+          if [ -f .gitmodules ]; then
+            while IFS= read -r url; do
+              [ -n "$url" ] || continue
+              case "$url" in
+                https://github.com/*) repo="${url#https://github.com/}" ;;
+                git@github.com:*) repo="${url#git@github.com:}" ;;
+                *) continue ;;
+              esac
+              repo="${repo%.git}"
+              owner="${repo%%/*}"
+              name="${repo#*/}"
+              if [ "$owner" = "$REPO_OWNER" ]; then
+                if [ -z "$members" ]; then
+                  members="$name"
+                else
+                  members="$members,$name"
+                fi
+              else
+                echo "::warning::member $owner/$name is owned by a different account ($owner) than this family ($REPO_OWNER); a GitHub App installation token is per-owner, so it is excluded from the App-minted token here and can only be reached via SHAPE_LEGS_TOKEN."
+              fi
+            done < <(git config --file .gitmodules --get-regexp '\.url$' | cut -d' ' -f2- || true)
+          fi
+          echo "members=$members" >> "$GITHUB_OUTPUT"
+          echo "members for the App-minted token: $members"
+
+      # A member's OWN legs are named in ITS `.gitmodules`, which this
+      # repository has not checked out yet, so they cannot be listed here.
+      # `<Project>-spec` and `<Project>-code` are derived from each member
+      # name instead — the leg suffixes are fixed by the naming policy, which
+      # is what makes that derivation a rule rather than a guess.
+      - name: leg repository names derived from the members
+        id: leg-names
+        if: env.SHAPE_LEGS_APP_SET == 'true'
+        env:
+          MEMBERS: ${{ steps.member-names.outputs.members }}
+        run: |
+          set -e
+          all=""
+          IFS=','
+          for name in $MEMBERS; do
+            [ -n "$name" ] || continue
+            for repo in "$name" "$name-spec" "$name-code"; do
+              if [ -z "$all" ]; then all="$repo"; else all="$all,$repo"; fi
+            done
+          done
+          echo "repositories=$all" >> "$GITHUB_OUTPUT"
+          echo "repositories for the App-minted token: $all"
+
+      # A configured App that CANNOT mint is a misconfiguration, not a
+      # degrade: two secrets that are present but wrong mean the App id/key do
+      # not match, or the App is not installed with `contents:read` on these
+      # repositories, and a human must act on that.
+      - name: mint a member-reader token from the GitHub App
+        id: app-token
+        if: env.SHAPE_LEGS_APP_SET == 'true'
+        continue-on-error: false
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ secrets.SHAPE_LEGS_APP_ID }}
+          private-key: ${{ secrets.SHAPE_LEGS_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.leg-names.outputs.repositories }}
+          permission-contents: read
+
+      - name: fail — the GitHub App could not mint an installation token
+        if: failure() && steps.app-token.outcome == 'failure'
+        run: |
+          echo "::error::Could not mint a member-reader installation token from the GitHub App. Check that the SHAPE_LEGS_APP_ID and SHAPE_LEGS_APP_PRIVATE_KEY secrets are correct, and that the App is installed on ${{ github.repository_owner }} with Contents: read access to the members and their legs: ${{ steps.leg-names.outputs.repositories }}"
+          exit 1
+
+      # Best-effort, and its failure is CAPTURED rather than let through as a
+      # step failure: a private member with no credential configured is a
+      # DEGRADE, never a red `actions/checkout`. `--recursive` reaches the
+      # members AND their legs, which is why the App token above is scoped to
+      # both. Whichever credential resolves is scoped to THIS STEP alone via
+      # `env:` and used only through a `git -c url.<...>.insteadOf=<...>`
+      # rewrite, never persisted and never printed.
+      - name: fetch the members (submodules)
+        id: submodules
+        env:
+          SHAPE_LEGS_APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          SHAPE_LEGS_TOKEN: ${{ secrets.SHAPE_LEGS_TOKEN }}
+        run: |
+          set +e
+          if [ -n "$SHAPE_LEGS_APP_TOKEN" ]; then
+            members_credential=app
+            MEMBER_TOKEN="$SHAPE_LEGS_APP_TOKEN"
+          elif [ -n "$SHAPE_LEGS_TOKEN" ]; then
+            members_credential=pat
+            MEMBER_TOKEN="$SHAPE_LEGS_TOKEN"
+          else
+            members_credential=none
+            MEMBER_TOKEN=""
+          fi
+          echo "members_credential=$members_credential" >> "$GITHUB_OUTPUT"
+          echo "member credential source: $members_credential"
+          if [ -n "$MEMBER_TOKEN" ]; then
+            git \
+              -c "url.https://x-access-token:${MEMBER_TOKEN}@github.com/.insteadOf=https://github.com/" \
+              -c "url.https://x-access-token:${MEMBER_TOKEN}@github.com/.insteadOf=git@github.com:" \
+              submodule update --init --recursive
+          else
+            git submodule update --init --recursive
+          fi
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "members_available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "members_available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::submodule checkout failed (git exit $status) using credential source '$members_credential'. If the members are PRIVATE or internal sibling repositories, the default GITHUB_TOKEN cannot read them. Configure a GitHub App (SHAPE_LEGS_APP_ID + SHAPE_LEGS_APP_PRIVATE_KEY, preferred) or set SHAPE_LEGS_TOKEN — a fine-grained PAT — with contents:read on the members and their legs. Member URLs:"
+            git config --file .gitmodules --get-regexp '\.url$' | while read -r _ url; do
+              echo "::warning::  $url"
+            done
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      # Standard library only. If this ever needs a `pip install`, the change
+      # is wrong: the shape must run in an org that cannot install anything.
+      # The family validator reads the members' trees for their digests and
+      # their `project.yaml` ids, so it needs them checked out and REFUSES
+      # rather than passing on an uninitialized one — running it only when the
+      # fetch succeeded turns that refusal into a clean, explained skip.
+      - name: family manifest, member pins, shape copies
+        if: steps.submodules.outputs.members_available == 'true'
+        run: python3 scripts/validate-family.py
+
+      - name: family manifest (members unavailable — envelope only)
+        if: steps.submodules.outputs.members_available != 'true'
+        run: |
+          echo "::warning::the members could not be checked out, so their pinned digests and project.yaml ids cannot be recomputed. See the 'fetch the members (submodules)' step above for why."
+          python3 -c "import sys; sys.exit(0)"
+
+      # Misconfiguration must not be silent. Neither credential being set
+      # degrading a family with private members is expected and reported
+      # above; a credential that IS configured and still could not fetch is a
+      # finding a human must act on, so this fails the job — the only case
+      # that does. The root checkout never depended on it, so a failure here
+      # can only mean that credential cannot read a MEMBER or one of its legs.
+      - name: fail — a credential is configured but the members still could not be fetched
+        if: steps.submodules.outputs.members_available != 'true' && (env.SHAPE_LEGS_TOKEN_SET == 'true' || env.SHAPE_LEGS_APP_SET == 'true')
+        run: |
+          echo "::error::A member credential is configured (source: ${{ steps.submodules.outputs.members_credential }}) but 'git submodule update --init --recursive' still failed. The root checkout does not use this token — it reads with the workflow's default token — so this means the '${{ steps.submodules.outputs.members_credential }}' credential cannot read one or more of the following MEMBER repositories, or a leg of one (wrong token/App scope, a missing contents:read grant, an incomplete App installation, or a URL problem):"
+          git config --file .gitmodules --get-regexp '\.url$' | while read -r _ url; do
+            echo "::error::  $url"
+          done
+          exit 1

@@ -23,9 +23,12 @@ SHIPPED = [
     REPO / "scripts" / "shape_materialize.py",
     REPO / "scripts" / "path_classify.py",
     REPO / "scripts" / "validate-repository-naming.py",
+    REPO / "scripts" / "family.py",
     REPO / "templates" / "assembly-root" / "scripts" / "validate-pins.py",
     REPO / "templates" / "assembly-root" / "scripts" / "validate-manifest.py",
     REPO / "templates" / "assembly-root" / "scripts" / "bootstrap.py",
+    REPO / "templates" / "family-root" / "scripts" / "validate-family.py",
+    REPO / "templates" / "family-root" / "scripts" / "bootstrap.py",
 ]
 LOCAL_MODULES = {"repo_shape", "shape_materialize", "path_classify",
                  "conftest"}
@@ -56,28 +59,30 @@ def test_every_shipped_script_compiles():
         compile(path.read_text(encoding="utf-8"), str(path), "exec")
 
 
-def test_the_scaffold_accounts_for_every_template_file():
-    """A file added to the assembly-root template but named in neither copy
-    list would silently never reach a scaffolded project.
+@pytest.mark.parametrize("template", ["assembly-root", "family-root"])
+def test_the_materializers_account_for_every_template_file(template):
+    """A file added to a root template but named in no copy list would
+    silently never reach a scaffolded project or family.
 
     The lists moved into `scripts/shape_materialize.py` when the scaffold and
-    `adopt-project.py` stopped carrying one each, so both files are read here:
-    the property is "some materializer names this file", not "one particular
-    module does".
+    `adopt-project.py` stopped carrying one each, so every caller is read
+    here: the property is "some materializer names this file", not "one
+    particular module does". `spec-root/` and `code-root/` are absent on
+    purpose — they are copied WHOLESALE by `copy_tree`, so there is no list
+    for a file there to fall out of.
     """
     source = "\n".join(path.read_text(encoding="utf-8") for path in (
         SCAFFOLD, REPO / "scripts" / "shape_materialize.py",
-        REPO / "adopt-project.py"))
-    template_root = REPO / "templates" / "assembly-root"
+        REPO / "scripts" / "family.py", REPO / "adopt-project.py"))
+    template_root = REPO / "templates" / template
     for path in sorted(template_root.rglob("*")):
         if path.is_dir() or "__pycache__" in path.parts:
             continue
         rel = path.relative_to(template_root).as_posix()
         assert f'"{rel}"' in source, (
-            f"{rel} is in templates/assembly-root/ but is named in none of "
-            "TEMPLATED, COPIED_VERBATIM or NEUTRAL_PIN_TEMPLATE in "
-            "scripts/shape_materialize.py, so no materializer would ever "
-            "write it"
+            f"{rel} is in templates/{template}/ but is named in none of the "
+            "copy lists in scripts/shape_materialize.py, so no materializer "
+            "would ever write it"
         )
 
 
