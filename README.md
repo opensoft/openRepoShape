@@ -26,26 +26,54 @@ overlays is fully conformant.
 
 ## Starting a project in a new organisation
 
+No fork, no manual clone — one command:
+
 ```sh
-gh repo fork opensoft/openRepoShape --org <your-org> --clone   # a FORK, not a
-cd openRepoShape                                               # template copy
-./setup.sh --project Atlas
+curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup.sh \
+    | bash -s -- --org <your-org> --project Atlas
 ```
 
-`setup.sh` checks your machine, detects your fork's organisation, checks the
-three names, shows the plan and asks once — then creates the three
-repositories, clones the assembly root beside the fork and bootstraps it.
-`--yes` skips the question, `--org` overrides the detection, and it REFUSES to
-scaffold into `opensoft` without `--allow-upstream-org`, because cloning the
-upstream instead of forking it looks identical from inside the directory. A
-fork rather than a template keeps the upstream link, so shape updates pull and
-`contracts/shape-pin.yaml` names a commit that still means something.
+An organisation whose policy blocks raw GitHub downloads can fetch the same
+bytes through the API instead:
+
+```sh
+gh api repos/opensoft/openRepoShape/contents/setup.sh --jq .content \
+    | base64 -d | bash -s -- --org <your-org> --project Atlas
+```
+
+The script clones this standard into a temporary directory (self-bootstrap:
+see below), checks your machine, checks the three names, shows the plan and
+asks once — then creates the three repositories, clones the assembly root and
+bootstraps it, and removes the temporary directory. `--yes` skips the
+question, and it REFUSES `--org opensoft` without `--allow-upstream-org`,
+because that would scaffold three repositories into opensoft's own namespace.
+
+Every scaffolded project pins `opensoft/openRepoShape` directly — the
+**shape pin**, `contracts/shape-pin.yaml` — and `update-shape.py` reads
+straight from upstream, so no per-organisation fork is needed to run this or
+to stay current: a fork is only for contributing changes to the standard
+itself.
+
+### From a checkout (the developer path)
+
+```sh
+git clone https://github.com/opensoft/openRepoShape.git
+cd openRepoShape
+./setup.sh --project Atlas --org <your-org>
+```
+
+`setup.sh` behaves identically from here: preflight, naming, plan, one yes.
+Run this way it also detects the organisation from a fork's `origin` remote,
+if you have one; a plain clone of `opensoft/openRepoShape` itself is its own
+`origin`, so that still needs an explicit `--org`.
 
 ### What setup.sh does
 
-The same commands, in order, with no behaviour of its own:
+The same commands, in order, with no behaviour of its own (the first line
+only runs in self-bootstrap mode, from the one-liner above):
 
 ```sh
+git clone --depth 1 https://github.com/opensoft/openRepoShape.git <tmp-dir>
 python3 scripts/validate-repository-naming.py --explain Atlas Atlas-spec Atlas-code
 python3 scaffold-project.py --org <your-org> --project Atlas --dry-run
 python3 scaffold-project.py --org <your-org> --project Atlas \
@@ -255,12 +283,12 @@ nothing but git's plumbing.
 
 `scripts/bootstrap.py` and the validators are copied into the assembly root by
 the scaffold, so a scaffolded project is **self-contained**: it runs its own
-gate in an organisation that forked this repository once and may never speak to
-the upstream again. `contracts/shape-pin.yaml` records the openRepoShape commit
-those copies came from AND a per-file sha256 of each copy, so "which
-openRepoShape is this?" and "has anyone edited it since?" both have answers,
-and editing a copy in place is reported as drift with the exit named (carry it
-upstream; do not update the digest).
+gate even though `setup.sh` only ever touched this standard through a
+temporary directory it has since deleted. `contracts/shape-pin.yaml` records
+the openRepoShape commit those copies came from AND a per-file sha256 of each
+copy, so "which openRepoShape is this?" and "has anyone edited it since?"
+both have answers, and editing a copy in place is reported as drift with the
+exit named (carry it upstream; do not update the digest).
 
 ## Keeping a project's shape current
 
@@ -293,8 +321,9 @@ either goes red.
 **What it refuses, and why the refusals are the feature.** A `locally-modified`
 file keeps its bytes and is named in a refusal unless the human passes
 `--accept-local <path>` — recomputing that row silently would turn a drift
-finding into a digest that agrees with the fork, which is the standard
-recording the fork. A file changed on **both** sides is refused outright: two
+finding into a digest that agrees with the project's own edited bytes, which
+is the standard quietly recording someone's edit as if it were upstream's. A
+file changed on **both** sides is refused outright: two
 edits to one file is a merge, and a merge is a human's judgement. So is a copy
 that was never verbatim — `adopt-project.py` appends a `CONTRACTS_DIR` block to
 an adopted Makefile, and copying the upstream bytes over that would delete it
@@ -338,7 +367,7 @@ scripts/repo_shape.py             shared helpers: YAML subset reader, digests
 scripts/path_classify.py          the classifier over the path policy
 scripts/shape_materialize.py      the ONE materializer, used by both tools
 scripts/validate-repository-naming.py
-setup.sh                          fork, clone, run one command
+setup.sh                          self-bootstrap, scaffold, one command
 scaffold-project.py               creates the three repositories and the pins
 adopt-project.py                  converts an EXISTING repository in place
 update-shape.py                   re-syncs a project's copies and re-pins
