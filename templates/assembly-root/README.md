@@ -34,26 +34,34 @@ here, and continues.
 All three carry the GitHub topic `{{TOPIC}}`, so the organisation's own search
 surfaces the group without a checkout.
 
-## Private legs need `SHAPE_LEGS_TOKEN`
+## Private legs need `SHAPE_LEGS_TOKEN`; the root checkout never does
 
 If `{{SPEC_REPOSITORY}}` or `{{CODE_REPOSITORY}}` is **private or internal**,
 the `validate` workflow's default `GITHUB_TOKEN` cannot clone it as a
 submodule. Add a **`SHAPE_LEGS_TOKEN`** repository or organisation secret — a
 fine-grained PAT or GitHub App installation token with `contents:read` on the
-legs — and `.github/workflows/validate.yml` picks it up automatically via
-`token: ${{ secrets.SHAPE_LEGS_TOKEN || github.token }}`.
+LEGS ONLY.
+
+The root repository itself is always readable by the workflow's own default
+token, so `actions/checkout` never carries a `token:` override — putting a
+legs-scoped token there instead is what broke the ROOT checkout with a 403
+the first time this was tried for real. `SHAPE_LEGS_TOKEN` is read only
+inside the guarded "fetch the legs (submodules)" step, scoped to that
+step's `env:`, and used through a `git -c url.<...>.insteadOf=<...>`
+rewrite covering both HTTPS and SSH leg URLs — it never touches the root
+checkout.
 
 Without the secret the workflow does not go red on that account: it checks
-out without submodules, tries `git submodule update --init --recursive`
-best-effort, and — if that fails — still runs the naming and manifest
-checks, skips `validate-pins.py` with a warning explaining why, and only
-fails outright if `SHAPE_LEGS_TOKEN` **is** set and the fetch still failed
-(a misconfigured secret, not an absent one). That presence check reads a
-job-level `env: SHAPE_LEGS_TOKEN_SET: ${{ secrets.SHAPE_LEGS_TOKEN != '' }}`
-rather than the `secrets` context directly in the step's `if:` — the
-`secrets` context is not allowed in a step-level `if:` expression, and
-using it there makes GitHub reject the whole workflow file instead of just
-that step.
+out the root without submodules, tries `git submodule update --init
+--recursive` best-effort, and — if that fails — still runs the naming and
+manifest checks, skips `validate-pins.py` with a warning explaining why, and
+only fails outright if `SHAPE_LEGS_TOKEN` **is** set and the fetch still
+failed — meaning the token cannot read one of the LEG repositories, never
+the root. That presence check reads a job-level `env:
+SHAPE_LEGS_TOKEN_SET: ${{ secrets.SHAPE_LEGS_TOKEN != '' }}` rather than the
+`secrets` context directly in the step's `if:` — the `secrets` context is
+not allowed in a step-level `if:` expression, and using it there makes
+GitHub reject the whole workflow file instead of just that step.
 
 ## The lockstep invariant
 

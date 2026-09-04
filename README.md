@@ -69,25 +69,35 @@ hyphenated precisely so they sit in a different visual class from every other
 family, all of which are CamelCase words. Every repository of a project also
 carries the GitHub topic `xf-project-<id>`.
 
-### Private legs need `SHAPE_LEGS_TOKEN`
+### Private legs need `SHAPE_LEGS_TOKEN`; the root checkout never does
 
 The `validate` workflow's default `GITHUB_TOKEN` cannot clone a **private or
 internal** leg as a submodule — this was the defect on the first real
 adoption (MedxSoft/MedxEHR #7): `<Project>-spec`/`<Project>-code` were
 private, and the required check was red on every pull request. Add a
 **`SHAPE_LEGS_TOKEN`** repository or organisation secret — a fine-grained PAT
-or GitHub App installation token with `contents:read` on the legs — on the
-assembly root, and `.github/workflows/validate.yml` picks it up automatically
-via `token: ${{ secrets.SHAPE_LEGS_TOKEN || github.token }}`. Both
-`scaffold-project.py` and `adopt-project.py execute` print a one-line
-reminder when they create a private or internal leg.
+or GitHub App installation token with `contents:read` on the LEGS ONLY — on
+the assembly root. Both `scaffold-project.py` and `adopt-project.py execute`
+print a one-line reminder when they create a private or internal leg.
+
+The root repository is always readable by the workflow's own default token,
+so `actions/checkout` never carries a `token:` override. Putting the legs
+token there was itself the next defect, on the first real use of the secret
+(MedxSoft/MedxEHR and MedxSoft/MedxGlass, runs 33821509948 and 33821512605):
+a token correctly scoped to `contents:read` on the legs alone cannot read
+the root, so `actions/checkout` itself failed with a 403 before any check
+ran. `SHAPE_LEGS_TOKEN` is now read only inside the guarded "fetch the legs
+(submodules)" step, scoped to that step's `env:`, and used through a
+`git -c url.<...>.insteadOf=<...>` rewrite covering both HTTPS and SSH leg
+URLs — never persisted onto the root checkout.
 
 Without the secret the workflow degrades instead of failing: it checks out
-without submodules, attempts `git submodule update --init --recursive`
-best-effort, and if that fails it still runs the naming and manifest checks,
-skips `validate-pins.py` with a warning explaining why, and fails outright
-only if `SHAPE_LEGS_TOKEN` **is** set and the fetch still failed — a
-misconfigured secret must not pass silently — checked via a job-level `env:
+the root without submodules, attempts `git submodule update --init
+--recursive` best-effort, and if that fails it still runs the naming and
+manifest checks, skips `validate-pins.py` with a warning explaining why, and
+fails outright only if `SHAPE_LEGS_TOKEN` **is** set and the fetch still
+failed — meaning the token cannot read one of the LEG repositories, never
+the root, which no longer depends on it — checked via a job-level `env:
 SHAPE_LEGS_TOKEN_SET`, not `secrets` in the step `if:` (disallowed there;
 MedxEHR PR #8, MedxGlass PR #1: zero-job push runs).
 

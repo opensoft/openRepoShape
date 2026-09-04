@@ -136,9 +136,18 @@ def test_readme_is_short_enough_to_be_read():
     day the other half of the trade was two projects updated by hand and no
     command at all. What the tool REFUSES is most of the section, because a
     re-pin that hid drift would have been worse than the hand edit it
-    replaced."""
+    replaced.
+
+    324 -> 331, the next day: the `SHAPE_LEGS_TOKEN` paragraph now also
+    explains why the ROOT checkout never carries `token:` at all — the
+    first real use of the secret put a legs-scoped token onto the root
+    checkout and `actions/checkout` itself failed with a 403
+    (MedxSoft/MedxEHR and MedxSoft/MedxGlass, runs 33821509948 and
+    33821512605) — and that the token is now read only inside the guarded
+    submodule-fetch step, via a `git -c url.<...>.insteadOf=<...>` rewrite
+    covering both HTTPS and SSH leg URLs."""
     lines = (REPO / "README.md").read_text().splitlines()
-    assert len(lines) <= 324, f"README.md is {len(lines)} lines; the cap is 324"
+    assert len(lines) <= 331, f"README.md is {len(lines)} lines; the cap is 331"
 
 
 def test_setup_sh_is_executable_and_fails_loudly():
