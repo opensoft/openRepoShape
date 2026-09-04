@@ -145,9 +145,16 @@ def test_readme_is_short_enough_to_be_read():
     (MedxSoft/MedxEHR and MedxSoft/MedxGlass, runs 33821509948 and
     33821512605) — and that the token is now read only inside the guarded
     submodule-fetch step, via a `git -c url.<...>.insteadOf=<...>` rewrite
-    covering both HTTPS and SSH leg URLs."""
+    covering both HTTPS and SSH leg URLs.
+
+    331 -> 359, the next day again: Brett Heap ruled *move this to a GitHub
+    App*. The `SHAPE_LEGS_TOKEN` section became "Reading private legs in
+    CI" — a GitHub App (minted at run time, scoped to the legs the owner
+    itself owns) tried first, the PAT kept as fallback — because a standing
+    PAT is a credential that sits in a secret indefinitely and a per-run
+    installation token is not."""
     lines = (REPO / "README.md").read_text().splitlines()
-    assert len(lines) <= 331, f"README.md is {len(lines)} lines; the cap is 331"
+    assert len(lines) <= 359, f"README.md is {len(lines)} lines; the cap is 359"
 
 
 def test_setup_sh_is_executable_and_fails_loudly():
