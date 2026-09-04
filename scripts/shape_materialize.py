@@ -38,9 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from repo_shape import NamingPolicy, Refusal, file_sha256  # noqa: E402
 
 SHAPE_REPOSITORY = "opensoft/openRepoShape"
-DEFAULT_REFERENCE = (
-    "openxFactory ideation/staging/project-repo-schema/project-repo-schema.md"
-)
+DEFAULT_REFERENCE = "openxFactory docs/project-repo-schema.md"
 
 #: One name, used in three places below: the source path, the target path and
 #: the chmod list. Spelling it three times is how the chmod list starts naming

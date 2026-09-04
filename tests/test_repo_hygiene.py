@@ -200,7 +200,10 @@ def test_readme_is_short_enough_to_be_read():
     because "what a holder does NOT confer" is the half that keeps it from
     becoming a governance boundary."""
     lines = (REPO / "README.md").read_text().splitlines()
-    assert len(lines) <= 508, f"README.md is {len(lines)} lines; the cap is 508"
+    # 2026-09-04: 508 -> 509 — the election reference paragraph now names the
+    #   ratified docs/project-repo-schema.md and keeps the staged path valid for
+    #   projects elected before ratification (Brett Heap's edit, PR #19).
+    assert len(lines) <= 509, f"README.md is {len(lines)} lines; the cap is 509"
 
 
 def test_setup_sh_is_executable_and_fails_loudly():
