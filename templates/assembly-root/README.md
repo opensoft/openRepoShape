@@ -56,6 +56,14 @@ LEGS ONLY:
 gh secret set SHAPE_LEGS_TOKEN --org <your-org> --body '<token>'
 ```
 
+**On the GitHub Free plan, set these as REPOSITORY secrets.** GitHub delivers
+an ORGANISATION secret only to PUBLIC repositories on Free, so on a private
+repository `secrets.SHAPE_LEGS_APP_ID` is the empty string — silently — the
+App steps skip, and `validate` goes GREEN with the lockstep pin check degraded
+away rather than red. Use `--repo <org>/<Repo>` in place of `--org <your-org>`
+above, or upgrade the organisation to Team. (Measured on InkRouter,
+2026-09-04.)
+
 The root repository itself is always readable by the workflow's own default
 token, so `actions/checkout` never carries a `token:` override — putting a
 legs-scoped credential there instead is what broke the ROOT checkout with a

@@ -76,6 +76,7 @@ SHAPE_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
 from path_classify import PathPolicy, Verdict  # noqa: E402
 from repo_shape import (  # noqa: E402
+    free_plan_secret_hint,
     COMMIT_RE, NEUTRAL_PRODUCT_OWNER, PROJECT_ID_RE, TREE_DIGEST_DEFINITION,
     VISIBILITY_CHOICES, NamingPolicy, Refusal, accepts_role, checked_value,
     git_out, load_yaml, tree_digest,
@@ -992,6 +993,11 @@ def _create_leg_remotes(plan: Plan, names: dict, repositories: dict,
               "SHAPE_LEGS_APP_PRIVATE_KEY, preferred) or a SHAPE_LEGS_TOKEN "
               "PAT (contents:read on the legs, fallback) — or the `validate` "
               "check cannot check them out.")
+        hint = free_plan_secret_hint(
+            plan.get("org", ""), repositories["assembly"],
+            f"{repositories['spec']} and {repositories['code']} are")
+        if hint:
+            print(hint)
 
 
 def _extract_leg(role: str, source: Source, work: Path, paths: list[str],
