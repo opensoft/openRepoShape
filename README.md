@@ -125,6 +125,11 @@ gh secret set SHAPE_LEGS_TOKEN --org <your-org> --body '<token>'
 Both `scaffold-project.py` and `adopt-project.py execute` print a one-line
 reminder — App first — when they create a private or internal leg.
 
+**On the Free plan, use `--repo`, not `--org`.** GitHub delivers org secrets
+only to PUBLIC repositories, so on a private one `secrets.SHAPE_LEGS_APP_ID`
+is silently empty and `validate` goes GREEN with the pin check skipped. Set
+both per repository, or upgrade to Team; the creating tools check and say so.
+
 The root repository is always readable by the workflow's own default token,
 so `actions/checkout` never carries a `token:` override. Putting a legs
 credential there was itself the next defect, on the first real use of the PAT

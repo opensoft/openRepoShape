@@ -48,6 +48,7 @@ from pathlib import Path
 SHAPE_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
 from repo_shape import (  # noqa: E402
+    free_plan_secret_hint,
     COMMIT_RE, NEUTRAL_PRODUCT_OWNER, PROJECT_ID_RE, TREE_DIGEST_DEFINITION,
     VISIBILITY_CHOICES, NamingPolicy, Refusal, accepts_role, checked_value,
     git_out, tree_digest,
@@ -611,6 +612,11 @@ def _scaffold(args) -> int:  # noqa: C901
               "SHAPE_LEGS_APP_PRIVATE_KEY, preferred) or a SHAPE_LEGS_TOKEN "
               "PAT (contents:read on the legs, fallback) — or the `validate` "
               "check cannot check them out.")
+        hint = free_plan_secret_hint(
+            args.org, repositories["assembly"],
+            f"{repositories['spec']} and {repositories['code']} are")
+        if hint:
+            print(hint)
 
     # ---- the two legs ------------------------------------------------------
     leg_commits: dict[str, str] = {}
