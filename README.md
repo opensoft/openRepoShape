@@ -1,6 +1,6 @@
 # openRepoShape
 
-**Status: staged standard.** The mechanics of a project that spans several
+**Status: ratified standard.** The mechanics of a project that spans several
 repositories: what they are called, how they are pinned to each other, how one
 clone brings the whole project down, and what an AI assistant does when a human
 says "scaffold a new project with this shape".
