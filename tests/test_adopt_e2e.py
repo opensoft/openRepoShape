@@ -99,6 +99,15 @@ def test_execute_refuses_without_yes_when_nobody_can_be_asked(source_repo,
     assert not (tmp_path / "remotes").exists()
 
 
+def test_execute_plans_the_topic_and_skips_it_against_local_remotes(adopted):
+    """`gh repo edit --add-topic` is what the scaffold does and what adopt now
+    does too; the offline path prints the plan line and calls nothing, which
+    is what keeps this suite free of the network."""
+    assert "topics skipped for local remotes" in adopted["stdout"]
+    assert "gh repo edit" not in adopted["stdout"]
+    assert "set on all three" not in adopted["stdout"]
+
+
 # --- the legs --------------------------------------------------------------
 
 def test_both_legs_exist_with_more_than_one_commit(adopted):

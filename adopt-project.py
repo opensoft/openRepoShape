@@ -25,8 +25,10 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            once, no unresolved legs, leg names conforming to the naming
            policy. It prints what will happen and changes nothing.
   execute  creates the two legs, extracts them with `git filter-repo`, makes
-           the one split commit on a branch of the source, and then VERIFIES
-           by blob sha that every source path landed in exactly one place.
+           the one split commit on a branch of the source, sets the
+           `xf-project-<id>` topic on all three (skipped for local remotes),
+           and then VERIFIES by blob sha that every source path landed in
+           exactly one place.
 
 THE PLAN IS AN ARTIFACT A HUMAN OR AN AI EDITS. That is why it is YAML with
 reasons in it rather than a pipe between two processes: the classifier is
@@ -727,6 +729,13 @@ class Plan:
         return {role: checked_value(f"legs.{role}", self.legs.get(role))
                 for role in ("assembly", "spec", "code")}
 
+    @property
+    def project_id(self) -> str:
+        """The lowercase machine name. The GitHub topic is derived from it,
+        both for the manifest's `TOPIC` and for `gh repo edit --add-topic`,
+        so it is read in ONE place rather than spelled out at each."""
+        return str(self.get("id", self.names()["assembly"].lower()))
+
     def get(self, key, default=None):
         value = self.data.get(key)
         return default if value is None else value
@@ -824,7 +833,19 @@ def _leg_findings(plan: Plan) -> list[str]:
     return findings
 
 
-def _print_what_will_happen(plan: Plan, source: Source, names: dict) -> None:
+def _topics_line(topic: str, local: bool) -> str:
+    """The `topics` plan line, the one `scaffold-project.py` also prints.
+
+    A project's repositories carry `xf-project-<id>` so the organisation can
+    be listed by project; the adopted assembly root is the project's own root
+    and gets it exactly as the two new legs do.
+    """
+    return "  topics " + ("skipped for local remotes" if local else
+                          f"gh repo edit --add-topic {topic} on all three")
+
+
+def _print_what_will_happen(plan: Plan, source: Source, names: dict,
+                            topic: str, local: bool = False) -> None:
     moved = [e for e in plan.entries if str(e.get("leg")) in ("spec", "code")]
     stays = [e for e in plan.entries if str(e.get("leg")) == "root"]
     drops = [e for e in plan.entries if str(e.get("leg")) == "drop"]
@@ -844,6 +865,7 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict) -> None:
     print(f"  {len(stays)} path(s) stay in the assembly root; "
           f"{len(drops)} dropped")
     print("  the source is never deleted, never renamed, never force-pushed")
+    print(_topics_line(topic, local))
     for item in plan.get("follow_ups", []):
         print(f"  follow-up: {item}")
 
@@ -879,7 +901,8 @@ def cmd_check(args) -> int:
     except Refusal as exc:
         findings.append(f"FINDING {exc.code}: {exc.detail}")
 
-    _print_what_will_happen(plan, source, names)
+    _print_what_will_happen(plan, source, names,
+                            naming.topic_for(plan.project_id))
 
     seeded = seeded_legs(assigned_paths(plan.entries))
     for line in seeding_warnings(seeded, plan.allowed_empty_legs()):
@@ -1155,6 +1178,8 @@ def cmd_execute(args) -> int:  # noqa: C901
             "inference.")
     for line in plan.seeding_record_disagreements(seeded):
         print(line)
+    topic = naming.topic_for(plan.project_id)
+    print(_topics_line(topic, local))
     _confirm(args, plan, names)
 
     # ---- (a) the two legs' remotes ----------------------------------------
@@ -1235,6 +1260,15 @@ def cmd_execute(args) -> int:  # noqa: C901
                   f"--base {tracking} --head {branch}", file=sys.stderr)
             return 2
 
+        # ---- the topic, on all three --------------------------------------
+        # The assembly root pre-existed and is still a repository OF THIS
+        # PROJECT: `project.yaml` claims `topic: <topic>` either way, and a
+        # claim the organisation cannot see is the defect being fixed here.
+        for role in ("assembly", "spec", "code"):
+            run(["gh", "repo", "edit", repositories[role], "--add-topic",
+                 topic])
+        print(f"  topic     {topic} set on all three")
+
     # ---- (d) verification, by blob sha ------------------------------------
     return _verify(source, assembly, work_root, names, paths_for, split_commit,
                    seeded)
@@ -1244,7 +1278,7 @@ def _template_values(plan: Plan, names, repositories, urls, spec_path,
                      code_path, tracking, leg_commits, leg_digests,
                      shape_commit, pins, naming) -> dict[str, str]:
     project = names["assembly"]
-    project_id = str(plan.get("id", project.lower()))
+    project_id = plan.project_id
     # `.get(role, "")` because this table is built BEFORE the legs exist, so
     # that a SEEDED leg's template can be rendered from it. The four values
     # are filled in by the caller as soon as each leg has a commit, and the

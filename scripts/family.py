@@ -371,6 +371,7 @@ def cmd_init(args) -> int:  # noqa: C901
                       "Remediation: pass an explicit lowercase --id.")
     policy = NamingPolicy.load(NAMING_POLICY)
     _classify_family_name(policy, family)
+    topic = policy.topic_for(family_id)
 
     created_by = args.created_by or (os.environ.get("GIT_AUTHOR_NAME") or "").strip()
     if not created_by:
@@ -429,6 +430,8 @@ def cmd_init(args) -> int:  # noqa: C901
     if args.reuse_empty_repo:
         print("reuse        an EXISTING <Family> with zero commits is used as "
               "the holder")
+    print("topics       " + ("skipped for local remotes" if local
+                             else f"gh repo edit --add-topic {topic}"))
     if args.dry_run:
         print("\n--dry-run: nothing was created.")
         return 0
@@ -500,6 +503,9 @@ def cmd_init(args) -> int:  # noqa: C901
             return 2
     head = git_out(["rev-parse", "HEAD"], cwd=work)[:12]
     print(f"  holder    {head} -> {url}")
+    if not local:
+        run(["gh", "repo", "edit", repository, "--add-topic", topic])
+        print(f"  topic     {topic} set on the holder")
     if not local and args.visibility in ("private", "internal"):
         print(f"NOTE {repository} is {args.visibility} and its members will "
               "be too: give it a way to read them — a GitHub App "
