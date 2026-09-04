@@ -184,6 +184,19 @@ whether `open<Product>` exists. The overlap is not discarded either: each leg's
 overlap stays visible to the next reader. `validate-repository-naming.py`
 answers the same question for one name with `--role`, `--pins` and `--explain`.
 
+**`validate-pins.py` rechecks the referent too, not only the declaration.**
+Every `neutral_product_pins:` entry's `contracts/<product lowercased>-pin.yaml`
+has its `commit`, `revision_kind` and `sorted-ls-tree-r-v1` digest recomputed
+exactly the way `scaffold-project.py --pin` computed them: OFFLINE from a
+local checkout when one can be found — `--pin-source [PRODUCT=]<path>`,
+`SHAPE_PIN_SOURCE_<PRODUCT>` in the environment, or a checkout sitting beside
+the assembly root and named for the pinned repository — else from `gh api`
+when `gh` can read it. Neither answering is a named SKIP, never a finding and
+never a failure: a project with no local checkout of its referent and no
+network is not thereby lying about its descent. A digest that recomputes
+differently, or a pin file the declaration names but that is not there, is
+reported as drift like every other pin in this file.
+
 ## Adopting an existing repository
 
 A repository that already exists is converted **in place**, by
