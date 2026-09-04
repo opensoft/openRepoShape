@@ -180,17 +180,27 @@ def test_readme_is_short_enough_to_be_read():
     fork-and-clone paragraph with a longer one, because "how to run this
     safely with no fork" takes more words than "fork it first".
 
-    388 -> 495, on 2026-09-04, for two additions the standard gained rather
-    than for prose. A leg with NOTHING IN IT is seeded from its template
-    instead of extracted (InkRouter's services are specifications with no
-    code), which is a paragraph because the consent flag and the verification
-    row both need explaining. And the FAMILY shape is a whole section,
-    because the first question anyone asks about it — family or one project?
-    — is answered by a table and an example rather than by a definition, and
+    388 -> 401, on 2026-09-04 again: `validate-pins.py` now RECHECKS a
+    declared `neutral_product_pins:` referent, not merely trusts the
+    declaration — the pin's commit, `revision_kind` and digest are
+    recomputed the way `scaffold-project.py --pin` computed them the first
+    time, from a local checkout (`--pin-source`, an env var, or a sibling
+    checkout) or `gh api`, and a named SKIP rather than a failure when
+    neither can answer. A rule that only the tool WRITING a pin ever checked
+    it again was a gap the standard's own claim-needs-a-referent ruling had
+    not closed.
+
+    401 -> 508, the same day: two additions the standard gained rather than
+    prose. A leg with NOTHING IN IT is seeded from its template instead of
+    extracted (InkRouter's services are specifications with no code), which
+    is a paragraph because the consent flag and the verification row both
+    need explaining. And the FAMILY shape is a whole section, because the
+    first question anyone asks about it — family or one project? — is
+    answered by a table and an example rather than by a definition, and
     because "what a holder does NOT confer" is the half that keeps it from
     becoming a governance boundary."""
     lines = (REPO / "README.md").read_text().splitlines()
-    assert len(lines) <= 495, f"README.md is {len(lines)} lines; the cap is 495"
+    assert len(lines) <= 508, f"README.md is {len(lines)} lines; the cap is 508"
 
 
 def test_setup_sh_is_executable_and_fails_loudly():

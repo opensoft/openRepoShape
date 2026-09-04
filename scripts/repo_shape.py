@@ -14,6 +14,9 @@ WHAT THIS MODULE OWNS
     the YAML subset this standard's own files are written in.
   - `tree_digest` — the ONE definition of what "the digest of a commit" means
     here (see `TREE_DIGEST_DEFINITION` below; the choice is argued in README).
+  - `tree_digest_from_gh` — the SAME definition, read from the forge's
+    recursive tree listing instead of a local clone; how a `validate-pins.py`
+    re-check answers for a neutral-product pin with no local checkout.
   - `file_sha256` — the per-file digest used by the shape pin's `files:` block,
     mirroring `neutral-product-pin`'s per-file `sha256` rows.
   - `NamingPolicy` — the classifier over `contracts/repository-naming.yaml`.
@@ -29,6 +32,7 @@ edit to the copy is drift the project's own `validate-pins.py` reports.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import subprocess
 import sys
@@ -61,6 +65,13 @@ TREE_DIGEST_DEFINITION = "sorted-ls-tree-r-v1"
 #: own `--org`, which owns no neutral product at all. `--pin-owner` overrides
 #: it for the rare pin on a fork of the neutral original.
 NEUTRAL_PRODUCT_OWNER = "opensoft"
+
+#: How a neutral product's tree is read when no local checkout answers for
+#: it. `scaffold-project.py`'s own `pin_digest_from_gh` reads this exact
+#: endpoint when it FIRST computes a `neutral-product-pin`'s digest;
+#: `tree_digest_from_gh` below reads it again so a later re-check recomputes
+#: the same number from the same shape of data.
+GH_TREE_API = "repos/{repo}/git/trees/{commit}?recursive=1"
 
 #: The GitHub repository-visibility values this standard accepts, everywhere
 #: it accepts one: `scaffold-project.py --visibility`, `setup.sh
@@ -481,6 +492,61 @@ def tree_digest(repo: Path, rev: str) -> str:
     """
     raw = git_out(["ls-tree", "-r", "-z", rev], cwd=repo, binary=True)
     records = sorted(r for r in raw.split(b"\x00") if r)
+    digest = hashlib.sha256()
+    for record in records:
+        digest.update(record)
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def tree_digest_from_gh(repository: str, commit: str) -> str:
+    """The same `sorted-ls-tree-r-v1` digest, read from the forge's own
+    recursive tree listing — no clone, no working tree, just `gh api`.
+
+    A SHALLOW READ, not a clone: `git/trees/<commit>?recursive=1` returns one
+    row per object with `mode`, `type`, `sha` and `path` — exactly the four
+    columns `git ls-tree -r -z` emits, which is what makes the two readings
+    the same number. Tree rows are dropped because `-r` emits none; a
+    submodule arrives as `type: commit` with mode `160000` and is kept, as
+    `ls-tree` keeps it. This mirrors `scaffold-project.py`'s own
+    `pin_digest_from_gh`, which computes a `neutral-product-pin`'s digest
+    this exact way the first time a project declares one; a validator that
+    reads it back must agree with the tool that wrote it.
+
+    Raises `Refusal` — `gh-not-found`, `gh-unreadable`, `gh-response-
+    unreadable` or `gh-tree-truncated` — naming exactly what went wrong. A
+    caller with an offline story to try first, and a SKIP to report if this
+    also fails, always catches this rather than letting it reach a user
+    directly: an unanswerable neutral-product pin is a gap in the check, not
+    a reason to fail a project that only lacks a `gh` login.
+    """
+    try:
+        proc = subprocess.run(
+            ["gh", "api", GH_TREE_API.format(repo=repository, commit=commit)],
+            capture_output=True, text=True, check=False)
+    except FileNotFoundError as exc:
+        raise Refusal("gh-not-found",
+                      f"the `gh` CLI is not on PATH: {exc}") from exc
+    if proc.returncode != 0:
+        raise Refusal(
+            "gh-unreadable",
+            f"`gh api` could not read {repository} @ {commit}: "
+            f"{proc.stderr.strip()}",
+        )
+    try:
+        payload = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise Refusal("gh-response-unreadable",
+                      f"{repository} @ {commit}: {exc}") from exc
+    if payload.get("truncated"):
+        raise Refusal(
+            "gh-tree-truncated",
+            f"the forge truncated its tree listing for {repository} @ "
+            f"{commit}, so the digest would be computed over a PARTIAL tree",
+        )
+    records = sorted(
+        f"{row['mode']} {row['type']} {row['sha']}\t{row['path']}".encode()
+        for row in payload.get("tree") or [] if row.get("type") != "tree")
     digest = hashlib.sha256()
     for record in records:
         digest.update(record)
