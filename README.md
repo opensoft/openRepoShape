@@ -16,7 +16,11 @@ by Brett Heap on 2026-09-02 and lives in `opensoft/openxFactory` at
 `docs/project-repo-schema.md`, which is what a project's `project.yaml`
 records as the `reference:` the election followed; a project elected before
 that date recorded the staged fragment's path, and that is a valid reference
-for it.
+for it. `scaffold-project.py` and `adopt-project.py` pick that default FROM
+`--elected-on` — the staged path for an election dated before 2026-09-02, the
+ratified one from that day on — so a back-dated project does not claim its
+election followed a document that did not yet exist; `--reference` overrides
+both.
 
 **The shape is elective and confers nothing.** Electing it changes no gate, no
 floor, no grant and no clearance eligibility. A one-repository project and a

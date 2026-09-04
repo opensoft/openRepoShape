@@ -84,9 +84,9 @@ from repo_shape import (  # noqa: E402
     git_out, load_yaml, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
-    ADOPT_MAKEFILE_BLOCK, DEFAULT_REFERENCE, RULESET_HINT, SHAPE_REPOSITORY,
-    CommandFailed, copy_tree, env_commit, git_init_commit,
-    materialize_assembly_root, naming_block, run,
+    ADOPT_MAKEFILE_BLOCK, RULESET_HINT, SHAPE_REPOSITORY,
+    CommandFailed, copy_tree, default_reference, election_date, env_commit,
+    git_init_commit, materialize_assembly_root, naming_block, run,
 )
 
 #: The naming policy this tool classifies leg names against. One constant,
@@ -566,6 +566,11 @@ def cmd_plan(args) -> int:
             "adopt-no-org", "the source has no `origin` to read an "
             "organisation from", "Remediation: pass --org <org>.")
     args.elected_on = args.elected_on or _dt.date.today().isoformat()
+    # Read before the plan is written, whether or not it is what chooses the
+    # reference: a date the tools cannot parse would reach `execute` as a
+    # manifest field instead of as a question.
+    election_date(args.elected_on)
+    args.reference = args.reference or default_reference(args.elected_on)
     args.elected_by = args.elected_by or _elector()
     names = _names(args.project)
     pins = [_checked_pin_name(p) for p in (args.pin or []) if p.strip()]
@@ -1317,6 +1322,7 @@ def _template_values(plan: Plan, names, repositories, urls, spec_path,
                      shape_commit, pins, naming) -> dict[str, str]:
     project = names["assembly"]
     project_id = plan.project_id
+    elected_on = str(plan.get("elected_on", _dt.date.today().isoformat()))
     # `.get(role, "")` because this table is built BEFORE the legs exist, so
     # that a SEEDED leg's template can be rendered from it. The four values
     # are filled in by the caller as soon as each leg has a commit, and the
@@ -1329,10 +1335,14 @@ def _template_values(plan: Plan, names, repositories, urls, spec_path,
         "ORG": str(plan.get("org")),
         "TOPIC": naming.topic_for(project_id),
         "VISIBILITY": str(plan.get("visibility", "private")),
-        "REFERENCE": str(plan.get("reference", DEFAULT_REFERENCE)),
+        # A plan that omits `reference:` — one written by hand, or by a tool
+        # older than this rule — is resolved from ITS OWN `elected_on`, not
+        # from the day `execute` happens to run. The plan carries the human's
+        # act; the calendar of the machine running the split does not.
+        "REFERENCE": str(plan.get("reference")
+                         or default_reference(elected_on)),
         "ELECTED_BY": str(plan.get("elected_by", "")),
-        "ELECTED_ON": str(plan.get("elected_on",
-                                   _dt.date.today().isoformat())),
+        "ELECTED_ON": elected_on,
         "TRACKING_BRANCH": tracking,
         "SPEC_PATH": spec_path,
         "CODE_PATH": code_path,
@@ -1556,8 +1566,14 @@ def main(argv: list[str] | None = None) -> int:
     plan.add_argument("--visibility", choices=VISIBILITY_CHOICES,
                       default="private")
     plan.add_argument("--elected-by", default=None)
-    plan.add_argument("--elected-on", default=None)
-    plan.add_argument("--reference", default=DEFAULT_REFERENCE)
+    plan.add_argument("--elected-on", default=None, help="YYYY-MM-DD")
+    plan.add_argument("--reference", default=None,
+                      help="the document the election followed. Default: "
+                           "openxFactory's ratified "
+                           "docs/project-repo-schema.md for an election on or "
+                           "after 2026-09-02, and the staged fragment it was "
+                           "ratified from for one dated earlier — so "
+                           "--elected-on chooses it.")
     plan.add_argument("--tracking-branch", default="main")
     plan.add_argument("--spec-path", default="spec")
     plan.add_argument("--code-path", default="code")

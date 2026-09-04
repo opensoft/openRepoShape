@@ -27,6 +27,7 @@ So a colliding template file is written BESIDE the original under
 
 from __future__ import annotations
 
+import datetime as _dt
 import os
 import re
 import shutil
@@ -38,7 +39,62 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from repo_shape import NamingPolicy, Refusal, file_sha256  # noqa: E402
 
 SHAPE_REPOSITORY = "opensoft/openRepoShape"
+
+# ---------------------------------------------------------------------------
+# The `reference:` an election followed, and why one default cannot serve
+# ---------------------------------------------------------------------------
+#
+# The doctrine was ratified on 2026-09-02 and lives at openxFactory
+# `docs/project-repo-schema.md`. Before that day it existed ONLY as the staged
+# fragment, so the standard's own sentence is that "a project elected before
+# that date recorded the staged fragment's path, and that is a valid reference
+# for it". A single default therefore cannot be right for both: writing the
+# ratified path into a project dated 2026-08-30 makes the manifest claim its
+# election followed a document that did not yet exist on the day a human
+# elected the shape — and the `reference:` is precisely the claim about which
+# document that human read.
+#
+# So the DATE chooses, `--reference` still overrides, and neither tool has to
+# remember the rule. `DEFAULT_REFERENCE` keeps its name and its value because
+# it is what other modules import and what the ratified path is called; only
+# the CHOOSING is new.
+
 DEFAULT_REFERENCE = "openxFactory docs/project-repo-schema.md"
+STAGED_REFERENCE = (
+    "openxFactory ideation/staging/project-repo-schema/project-repo-schema.md"
+)
+#: The day `add-project-repo-schema` ratified. An election ON it followed the
+#: ratified document; one strictly BEFORE it followed the staged fragment.
+RATIFICATION_DATE = _dt.date(2026, 9, 2)
+
+
+def election_date(elected_on: str) -> _dt.date:
+    """`elected_on` as a date, or a refusal that names the flag.
+
+    A date this cannot read is not one it will guess at: the guess would pick
+    the reference, and the reference is a claim about a human's act.
+    """
+    try:
+        return _dt.date.fromisoformat(str(elected_on))
+    except ValueError as exc:
+        raise Refusal(
+            "election-date-malformed",
+            f"--elected-on {elected_on!r} is not a date; it takes YYYY-MM-DD "
+            "(and a plan file's `elected_on:` carries the same form)",
+            "Remediation: re-run with a zero-padded ISO date, e.g. "
+            "--elected-on 2026-09-02 — not 2026-9-2 and not a word like "
+            "'yesterday'. The `reference:` the manifest records is chosen BY "
+            "that date, so it has to be readable before anything is written.",
+        ) from exc
+
+
+def default_reference(elected_on: str) -> str:
+    """The document an election on `elected_on` followed, absent an explicit
+    `--reference`: the staged fragment before ratification, the ratified
+    document on that day or after."""
+    if election_date(elected_on) < RATIFICATION_DATE:
+        return STAGED_REFERENCE
+    return DEFAULT_REFERENCE
 
 #: One name, used in three places below: the source path, the target path and
 #: the chmod list. Spelling it three times is how the chmod list starts naming

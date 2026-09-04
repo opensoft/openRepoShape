@@ -203,7 +203,13 @@ def test_readme_is_short_enough_to_be_read():
     # 2026-09-04: 508 -> 509 — the election reference paragraph now names the
     #   ratified docs/project-repo-schema.md and keeps the staged path valid for
     #   projects elected before ratification (Brett Heap's edit, PR #19).
-    assert len(lines) <= 509, f"README.md is {len(lines)} lines; the cap is 509"
+    # 2026-09-04: 509 -> 513 — the same paragraph now says WHICH of the two the
+    #   tools write by default, because PR #19 left one default for two eras
+    #   and a project dated before ratification recorded the ratified path.
+    #   Four lines for a rule the reader would otherwise have to read the
+    #   scaffold's source to learn.
+    assert len(lines) <= 513, (
+        f"README.md is {len(lines)} lines; the cap is 513")
 
 
 def test_setup_sh_is_executable_and_fails_loudly():
