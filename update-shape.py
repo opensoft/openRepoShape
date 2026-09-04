@@ -4,7 +4,7 @@
 
     ./update-shape.py check --root <assembly-root|family-root>
     ./update-shape.py apply --root <root> --at <commit> --yes \\
-        [--accept-local <path>] [--branch shape/update-<sha>]
+        [--accept-local <path>] [--add <path>] [--branch shape/update-<sha>]
 
 TWO KINDS OF ROOT, ONE COMMAND. An assembly root mirrors the pin into
 `project.yaml` and must leave `validate-pins.py` and `validate-manifest.py`
@@ -54,6 +54,24 @@ usually deleting the `shape/` copy and its pin row (MedxEHR did exactly that).
 A file with no row is not a shape copy and is invisible here; re-deriving the
 list would resurrect a file the project deliberately merged away.
 
+WHAT A PIN CANNOT NAME IS THE FILE THE STANDARD ADDED AFTERWARDS (2026-09-04),
+and "only the pin's own rows are RE-SYNCED" is a different claim from "only the
+pin's own rows are LOOKED AT". A pin records what existed on the day it was
+written, so `AGENTS-shape.md` — added to the assembly root and the family
+holder after MedxEHR, MedxGlass, MedxScribe and the InkRouter members were cut
+— reached none of them. `check` therefore also reports `upstream-added`: a path
+the UPSTREAM's copy lists name AT THE TARGET COMMIT that this pin has no row
+for AND THE ROOT HAS NO FILE AT. Both halves are load-bearing. The lists are
+read out of the upstream's OWN `scripts/shape_materialize.py` at that commit
+with `ast` — never this checkout's imports, which describe the openRepoShape
+running the command rather than the one being updated to, and never an `exec`
+of code out of somebody's git history. And the second half is what keeps a
+merged-away `Makefile` invisible: a root that already has a file at that path
+is the in-place adoption case, and nothing here may overwrite bytes no row
+records. `apply` writes NONE of them unless `--add <path>` names it, one path
+at a time, so nothing lands in a project's tree because a tool decided it
+should.
+
 EXIT CODES
     check   0  the pin names the target and no copied file differs
             1  updates are available, or drift a human must resolve
@@ -67,6 +85,7 @@ STANDARD LIBRARY ONLY, like everything else shipped here.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import os
 import re
@@ -122,28 +141,40 @@ FAMILY_COPY_SOURCE.update({rel: src for src, rel in FAMILY_COPIED_FROM_SHAPE})
 class Kind:
     """Which shape of root this is, and everything that differs because of it.
 
-    ONE OBJECT, so the four places that differ cannot get out of step: the
+    ONE OBJECT, so the five places that differ cannot get out of step: the
     manifest that mirrors the pin, the upstream template directory a copy came
-    from, the copy-source table, and the validators that must pass after a
-    rewrite. A family root and an assembly root are re-synced by the same
-    command because they carry the SAME copy pin — per-file sha256 rows,
-    `commit`, `tree_sha256` — and differ only in what was copied.
+    from, the copy-source table, the NAMES THE UPSTREAM'S COPY LISTS GO BY
+    (read at the target commit to find what the standard has since added), and
+    the validators that must pass after a rewrite. A family root and an
+    assembly root are re-synced by the same command because they carry the
+    SAME copy pin — per-file sha256 rows, `commit`, `tree_sha256` — and differ
+    only in what was copied.
     """
 
     def __init__(self, name: str, manifest: str, template_dir: str,
-                 copy_source: dict, validators: tuple):
+                 copy_source: dict, lists: tuple, validators: tuple):
         self.name = name
         self.manifest = manifest
         self.template_dir = template_dir
         self.copy_source = copy_source
+        #: `(verbatim, from_shape, executable)`, as those three lists are
+        #: SPELLED in `scripts/shape_materialize.py` for this kind of root.
+        #: Names rather than the imported tuples, because the tuples that
+        #: matter are the TARGET COMMIT's, not this checkout's.
+        self.lists = lists
         self.validators = validators
 
 
 PROJECT_KIND = Kind("project", "project.yaml", "templates/assembly-root",
-                    COPY_SOURCE, ("scripts/validate-pins.py",
-                                  "scripts/validate-manifest.py"))
+                    COPY_SOURCE,
+                    ("COPIED_VERBATIM", "COPIED_FROM_SHAPE", "EXECUTABLE"),
+                    ("scripts/validate-pins.py",
+                     "scripts/validate-manifest.py"))
 FAMILY_KIND = Kind("family", "family.yaml", "templates/family-root",
-                   FAMILY_COPY_SOURCE, ("scripts/validate-family.py",))
+                   FAMILY_COPY_SOURCE,
+                   ("FAMILY_COPIED_VERBATIM", "FAMILY_COPIED_FROM_SHAPE",
+                    "FAMILY_EXECUTABLE"),
+                   ("scripts/validate-family.py",))
 
 
 def root_kind(root: Path) -> Kind:
@@ -164,6 +195,11 @@ def root_kind(root: Path) -> Kind:
 #: question cannot be asked, and each of them refuses rather than guessing.
 UNCHANGED = "unchanged"
 UPSTREAM_CHANGED = "upstream-changed"
+#: Not a state a pinned ROW can be in: a path the upstream's copy lists name at
+#: the target commit that the pin carries no row for. It is reported beside the
+#: rows because it answers the same question a human is asking — what does this
+#: project owe the standard — and `apply` still refuses to act on it unasked.
+UPSTREAM_ADDED = "upstream-added"
 LOCALLY_MODIFIED = "locally-modified"
 BOTH = "both"
 ALREADY_AT_TARGET = "already-at-target"
@@ -173,8 +209,9 @@ COPY_MISSING = "copy-missing"
 
 #: Anything here is a merge or a decision, never a byte copy.
 CONFLICTS = (BOTH, UPSTREAM_REMOVED, UNMAPPED, COPY_MISSING)
-ORDER = (UPSTREAM_CHANGED, BOTH, LOCALLY_MODIFIED, ALREADY_AT_TARGET,
-         UPSTREAM_REMOVED, UNMAPPED, COPY_MISSING, UNCHANGED)
+ORDER = (UPSTREAM_CHANGED, UPSTREAM_ADDED, BOTH, LOCALLY_MODIFIED,
+         ALREADY_AT_TARGET, UPSTREAM_REMOVED, UNMAPPED, COPY_MISSING,
+         UNCHANGED)
 
 
 # ---------------------------------------------------------------------------
@@ -462,6 +499,223 @@ def file_bytes_sha256(data: bytes) -> str:
 
 
 # ---------------------------------------------------------------------------
+# What the UPSTREAM's copy lists name at the target commit (2026-09-04)
+# ---------------------------------------------------------------------------
+#
+# READ FROM THE UPSTREAM'S BYTES, NOT FROM THIS MODULE'S IMPORTS. The
+# `COPIED_VERBATIM` imported at the top of this file is what the openRepoShape
+# RUNNING this command copies; the question a project asks is what the
+# openRepoShape it is updating TO copies. Those two differ by exactly the file
+# the standard has just added, which is the whole point — so answering from the
+# imports would report an addition a target commit does not have, or miss one
+# it does, whenever the checkout and the target are not the same revision.
+#
+# `ast` READS THE MODULE AND NOTHING IS EXECUTED. An `exec` of a file taken out
+# of a git history is arbitrary code, written by whoever wrote that history,
+# run with this process's authority, to learn a dozen strings. So the lists are
+# parsed as literals, with the module's own top-level string constants resolved
+# BY NAME because `COPIED_FROM_SHAPE` names `VALIDATE_NAMING` rather than
+# repeating the path. An entry that is not a string or a pair of them is
+# skipped rather than guessed at: a guess about where a file comes from is the
+# thing `unmapped` exists to refuse.
+
+#: The one upstream file this reads, and the reason a target commit that has no
+#: such file yields no additions rather than a refusal: it is an older
+#: openRepoShape, and an older standard has added nothing.
+MATERIALIZER = "scripts/shape_materialize.py"
+
+
+class Copy:
+    """One file a root's copy lists write, at one upstream commit.
+
+    `path` is where it lands in the root, `source` is where the upstream keeps
+    it, and `executable` is the bit the materializer's chmod pass would set.
+    """
+
+    def __init__(self, path: str, source: str, executable: bool):
+        self.path = path
+        self.source = source
+        self.executable = executable
+
+
+def as_literal(node, constants: dict[str, str]):
+    """A string, a tuple of them, or None for anything this will not guess at."""
+    if isinstance(node, ast.Constant):
+        return node.value if isinstance(node.value, str) else None
+    if isinstance(node, ast.Name):
+        return constants.get(node.id)
+    if isinstance(node, (ast.Tuple, ast.List)):
+        return tuple(as_literal(element, constants) for element in node.elts)
+    return None
+
+
+def inside_a_root(rel: str) -> bool:
+    """Is `rel` a path a root can actually hold?
+
+    An absolute path or one with a `..` segment would put a copy OUTSIDE the
+    root this command was pointed at. Nothing in openRepoShape's lists has ever
+    looked like that, and this is not a defence against the standard — it is
+    that these strings arrive from a file read out of a git history, and a
+    write that leaves the directory a human named is the one mistake that
+    cannot be rolled back by putting the tree as it was.
+    """
+    parts = Path(rel).parts
+    return bool(parts) and not Path(rel).is_absolute() and ".." not in parts
+
+
+def upstream_copies(upstream: Upstream, rev: str, kind: Kind) -> dict[str, Copy]:
+    """`{path in the root: Copy}` for `kind`, as of `rev` in the upstream.
+
+    THE MAPPING MIRRORS `_materialize`, because a second definition of where a
+    copy comes from is how the two start disagreeing. A VERBATIM entry is one
+    path that is both the template-relative source and the destination, so its
+    source is `templates/<root>/<path>`; a `..._FROM_SHAPE` entry is
+    `(source, path)` with the source read out of openRepoShape's own tree; and
+    the executable bit is the `..._EXECUTABLE` list, which is keyed by the path
+    in the root.
+    """
+    data = upstream.blob(rev, MATERIALIZER)
+    if data is None:
+        return {}
+    try:
+        module = ast.parse(data.decode("utf-8"))
+    except (SyntaxError, ValueError, UnicodeDecodeError):
+        return {}
+    constants: dict[str, str] = {}
+    tuples: dict[str, tuple] = {}
+    for node in module.body:
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if not isinstance(target, ast.Name):
+            continue
+        value = as_literal(node.value, constants)
+        if isinstance(value, str):
+            constants[target.id] = value
+        elif isinstance(value, tuple):
+            tuples[target.id] = value
+    verbatim, from_shape, executable = kind.lists
+    executables = {entry for entry in tuples.get(executable, ())
+                   if isinstance(entry, str)}
+    copies: dict[str, Copy] = {}
+    for rel in tuples.get(verbatim, ()):
+        if isinstance(rel, str) and inside_a_root(rel):
+            copies[rel] = Copy(rel, f"{kind.template_dir}/{rel}",
+                               rel in executables)
+    for entry in tuples.get(from_shape, ()):
+        if (isinstance(entry, tuple) and len(entry) == 2
+                and all(isinstance(part, str) for part in entry)
+                and inside_a_root(entry[1])):
+            source, rel = entry
+            copies[rel] = Copy(rel, source, rel in executables)
+    return copies
+
+
+class Addition(Row):
+    """A path the upstream's copy lists name at the target that has NO PIN ROW.
+
+    NOT A ROW'S QUESTION, AND NOT ANSWERED LIKE ONE. There is no recorded
+    digest to compare against, so `classify`'s four byte-strings collapse to
+    two states: the standard added this file, or the root ALREADY HAS ONE AT
+    THAT PATH and this is silent. The second case is the in-place adoption —
+    MedxEHR's `Makefile` collided, was merged by hand and had its row dropped —
+    and telling that project on every `check` that the standard has a
+    `Makefile` would be noise about a file it knows it has, ahead of an
+    overwrite nothing here is allowed to perform. So `present` is remembered
+    rather than filtered away: `--add` on such a path must refuse BY NAME, and
+    a refusal that cannot say which of three things went wrong sends a human to
+    read this file's source.
+    """
+
+    def __init__(self, copy: Copy, present: bool, target_bytes: bytes):
+        super().__init__(copy.path, "")
+        self.source = copy.source
+        self.executable = copy.executable
+        self.present = present
+        self.target_bytes = target_bytes
+        self.digest = file_bytes_sha256(target_bytes)
+        self.state = UPSTREAM_ADDED
+        self.detail = ("the standard added this file after this pin; `apply` "
+                       "writes it only when --add names that path")
+
+
+def find_additions(root: Path, rows: list[Row], upstream: Upstream,
+                   target: str, kind: Kind) -> list[Addition]:
+    """Everything the upstream's lists name at `target` that the pin does not.
+
+    A path is skipped when the pin names it UNDER `shape/` as well as under
+    its own name: that is where an in-place adoption's collision landed, so a
+    root whose pin carries `shape/Makefile` has a row for the shape's Makefile
+    and is not owed another one.
+    """
+    pinned = {row.path for row in rows}
+    additions: list[Addition] = []
+    for copy in upstream_copies(upstream, target, kind).values():
+        if copy.path in pinned or f"{COLLISION_DIR}/{copy.path}" in pinned:
+            continue
+        data = upstream.blob(target, copy.source)
+        if data is None:
+            # Named by a list but not in the tree at that commit. There is
+            # nothing to copy, and inventing a row for absent bytes is the one
+            # thing a pin may never do.
+            continue
+        additions.append(Addition(copy, (root / copy.path).exists(), data))
+    return additions
+
+
+def resolve_additions(rows: list[Row], additions: list[Addition],
+                      asked: list[str], target: str) -> list[Addition]:
+    """The `--add` paths as additions, or a refusal that names the path.
+
+    THREE WAYS TO BE WRONG AND THREE SEPARATE ANSWERS. A path the pin already
+    carries is not an addition at all — `apply` re-syncs it like every other
+    row. A path the upstream's copy lists do not name at the target commit is
+    not a shape copy there, so there are no bytes to copy and no row to write.
+    And a path the ROOT ALREADY HAS A FILE AT is a merge: that is the
+    `--accept-local` posture, taken for the same reason, because overwriting
+    bytes no row records would delete somebody's work without saying so.
+    """
+    by_path = {add.path: add for add in additions}
+    pinned = {row.path for row in rows}
+    taking: list[Addition] = []
+    for path in asked:
+        if path in pinned:
+            raise Refusal(
+                "update-add-already-pinned",
+                f"--add {path} is already a `files:` row in "
+                "contracts/shape-pin.yaml, so it is not an addition",
+                "Remediation: drop the flag. A pinned copy is re-synced "
+                "anyway, and its verdict is in `check`'s report under its own "
+                "name.")
+        add = by_path.get(path)
+        if add is None:
+            raise Refusal(
+                "update-add-not-upstream",
+                f"--add {path} is not named by the upstream's copy lists at "
+                f"{target[:12]}, so there are no bytes to copy and no row to "
+                "write",
+                "Remediation: `check --at <commit>` prints every "
+                f"`{UPSTREAM_ADDED}` path at that commit; a path in none of "
+                "them is not a shape copy there. Check the spelling, and the "
+                "commit.")
+        if add.present:
+            raise Refusal(
+                "update-add-would-overwrite",
+                f"--add {path} names a file the upstream's lists add, but this "
+                f"root already HAS a file at {path} and no pin row records it. "
+                "Two files with one name is a merge, and this command copies "
+                "bytes rather than merging them",
+                "Remediation: the same posture as --accept-local — a human "
+                "merges. The upstream's bytes are `git show <commit>:"
+                f"{add.source}` in a shape clone. Once a file the project owns "
+                f"sits at {path}, `check` stops reporting it: a path the root "
+                "has and the pin does not record is the in-place adoption "
+                "state, which this tool leaves alone by design.")
+        taking.append(add)
+    return taking
+
+
+# ---------------------------------------------------------------------------
 # Rewriting the two files that carry the pin
 # ---------------------------------------------------------------------------
 
@@ -591,7 +845,8 @@ def counted(rows: list[Row]) -> dict[str, int]:
 # ---------------------------------------------------------------------------
 
 
-def prepare(args) -> tuple[Path, dict, list[Row], Upstream, str, str, Kind]:
+def prepare(args) -> tuple[Path, dict, list[Row], list[Addition], Upstream,
+                           str, str, Kind]:
     root = Path(args.root).expanduser().resolve()
     if not root.is_dir():
         raise Refusal("update-root-missing", f"{root} is not a directory")
@@ -607,20 +862,27 @@ def prepare(args) -> tuple[Path, dict, list[Row], Upstream, str, str, Kind]:
         # The pinned revision must be READABLE or the comparison is a guess.
         upstream.resolve(pinned)
         classify(root, rows, upstream, pinned, target, kind)
+        additions = find_additions(root, rows, upstream, target, kind)
     except Refusal:
         upstream.close()
         raise
-    return root, pin, rows, upstream, pinned, target, kind
+    return root, pin, rows, additions, upstream, pinned, target, kind
 
 
 def cmd_check(args) -> int:
-    root, pin, rows, upstream, pinned, target, kind = prepare(args)
+    root, pin, rows, additions, upstream, pinned, target, kind = prepare(args)
     try:
         pin_tree = upstream.tree_sha256(pinned)
         target_tree = upstream.tree_sha256(target)
-        report(root, upstream, pinned, target, pin_tree, target_tree, rows)
-        counts = counted(rows)
-        moved = [row for row in rows if row.state != UNCHANGED]
+        # Reported TOGETHER, because "what does this project owe the standard"
+        # is one question, and an addition is as much of an answer as a changed
+        # copy is. An addition the root already has a file at is reported by
+        # nobody; see `Addition`.
+        added = [add for add in additions if not add.present]
+        reported = rows + added
+        report(root, upstream, pinned, target, pin_tree, target_tree, reported)
+        counts = counted(reported)
+        moved = [row for row in reported if row.state != UNCHANGED]
         print()
         print("  ".join(f"{state} {counts[state]}" for state in ORDER
                         if counts.get(state)))
@@ -634,6 +896,15 @@ def cmd_check(args) -> int:
         if conflicts:
             print("REFUSAL AHEAD: `apply` will refuse while these are "
                   "unresolved — " + ", ".join(row.path for row in conflicts))
+        if added:
+            # Spelled out, but deliberately NOT folded into the NEXT command:
+            # a file the standard has added lands in a project because a human
+            # named it, and a command line that names it for them is the tool
+            # deciding.
+            print("ADDED UPSTREAM: the standard has gained these since this "
+                  "pin, and `apply` writes none of them unless it is told to, "
+                  "one path at a time — "
+                  + " ".join(f"--add {add.path}" for add in added))
         accept = "".join(f" --accept-local {row.path}" for row in local)
         print(f"NEXT  python3 {Path(__file__).name} apply --root {root} "
               f"--upstream {upstream.label} --at {target} --yes{accept} "
@@ -648,7 +919,8 @@ def cmd_check(args) -> int:
 # ---------------------------------------------------------------------------
 
 
-def confirm(args, rows: list[Row], target: str) -> None:
+def confirm(args, rows: list[Row], taking: list[Addition],
+            target: str) -> None:
     if args.yes:
         return
     if not sys.stdin.isatty():
@@ -661,8 +933,9 @@ def confirm(args, rows: list[Row], target: str) -> None:
             "Remediation: run it where a human can answer, or pass --yes once "
             "they have read `check`.")
     changed = [row.path for row in rows if row.state == UPSTREAM_CHANGED]
-    print(f"\nThis re-copies {len(changed)} file(s) from {target[:12]} and "
-          f"re-pins this project onto it.")
+    adding = (f", adds the {len(taking)} file(s) --add named" if taking else "")
+    print(f"\nThis re-copies {len(changed)} file(s) from {target[:12]}"
+          f"{adding} and re-pins this project onto it.")
     if input("Type yes to proceed: ").strip().lower() != "yes":
         raise Refusal("update-declined", "not answered 'yes'",
                       "Remediation: nothing was written. Re-run when ready.")
@@ -679,7 +952,8 @@ def run_validator(root: Path, script: str) -> int:
 
 
 def commit_on_branch(root: Path, branch: str, paths: list[str], target: str,
-                     upstream: Upstream, count: int) -> None:
+                     upstream: Upstream, count: int,
+                     added: list[str] = ()) -> None:
     """A branch and ONE commit, with EXPLICIT PATHSPECS.
 
     `git commit -- <paths>` commits the working-tree state of exactly those
@@ -687,12 +961,22 @@ def commit_on_branch(root: Path, branch: str, paths: list[str], target: str,
     more than one session shares a checkout: a bare `git commit` takes whatever
     anyone staged, which is how a one-line bookkeeping commit swept nine
     unrelated renames into itself in the xFactory aggregation on 2026-07-29.
+
+    A FILE `--add` JUST WROTE IS UNKNOWN TO GIT, and `git commit -- <path>`
+    refuses a pathspec it has never heard of ("did not match any file(s) known
+    to git"). So the additions — and ONLY the additions, by name — are staged
+    first. `git add -A` here would sweep in whatever else is in the tree, which
+    is the very thing the explicit pathspecs exist to prevent.
     """
     checked_value("--branch", branch)
     run(["git", "checkout", "-q", "-b", branch], cwd=root)
+    if added:
+        run(["git", "add", "--", *added], cwd=root)
+    gained = (f"; {len(added)} new upstream file(s) added because --add named "
+              "them" if added else "")
     message = (
         f"Re-sync the shape copies to {upstream.repository} @ {target[:12]}\n\n"
-        f"{count} copied file(s) re-copied from the upstream; "
+        f"{count} copied file(s) re-copied from the upstream{gained}; "
         f"contracts/shape-pin.yaml and project.yaml's `shape:` block now "
         f"record {target}.\n\nWritten by update-shape.py; the copies are not "
         f"hand-edited and the digests are recomputed, not adjusted.\n")
@@ -713,8 +997,9 @@ def commit_on_branch(root: Path, branch: str, paths: list[str], target: str,
 
 
 def cmd_apply(args) -> int:
-    root, pin, rows, upstream, pinned, target, kind = prepare(args)
+    root, pin, rows, additions, upstream, pinned, target, kind = prepare(args)
     written: dict[Path, bytes] = {}
+    created: list[Path] = []
     try:
         accepted = {str(path) for path in (args.accept_local or [])}
         stray = accepted - {row.path for row in rows}
@@ -726,7 +1011,15 @@ def cmd_apply(args) -> int:
                 "Remediation: only a pinned copy can be accepted; a file with "
                 "no row is not a shape copy. Checked FIRST, before the drift "
                 "refusal, so a mistyped path is reported as a mistyped path.")
-        if all(row.state == UNCHANGED for row in rows) and pinned == target:
+        taking = resolve_additions(rows, additions,
+                                   [str(path) for path in (args.add or [])],
+                                   target)
+        for add in additions:
+            if not add.present and add not in taking:
+                print(f"  note     {add.path} is new upstream; not added; "
+                      f"pass --add {add.path}")
+        if all(row.state == UNCHANGED for row in rows) and pinned == target \
+                and not taking:
             print(f"nothing to do: every copied file matches "
                   f"{upstream.repository} @ {target[:12]}, which the pin "
                   "already names")
@@ -756,7 +1049,7 @@ def cmd_apply(args) -> int:
                 "Remediation: revert each edit, or carry it upstream, or — "
                 "having decided the project keeps it — re-run with "
                 + " ".join(f"--accept-local {row.path}" for row in unaccepted))
-        confirm(args, rows, target)
+        confirm(args, rows, taking, target)
         target_tree = upstream.tree_sha256(target)
         pin_path = root / "contracts" / "shape-pin.yaml"
         manifest_path = root / kind.manifest
@@ -764,6 +1057,23 @@ def cmd_apply(args) -> int:
         def write(path: Path, data: bytes) -> None:
             written.setdefault(path, path.read_bytes())
             path.write_bytes(data)
+
+        def write_added(path: Path, data: bytes, executable: bool) -> None:
+            """A file the root does not have yet, remembered for the rollback.
+
+            `write` cannot serve it: there are no original bytes to keep, so
+            the rollback has to DELETE what this made — including any directory
+            it had to create to put the file in. The mode is set the way
+            `_materialize` sets it, which is to chmod the executables and leave
+            everything else to the umask.
+            """
+            for parent in reversed([p for p in path.parents if not p.exists()]):
+                parent.mkdir()
+                created.append(parent)
+            created.append(path)
+            path.write_bytes(data)
+            if executable:
+                path.chmod(0o755)
 
         copied = [row for row in rows if row.state == UPSTREAM_CHANGED]
         for row in copied:
@@ -776,6 +1086,15 @@ def cmd_apply(args) -> int:
             elif row.state == ALREADY_AT_TARGET:
                 print(f"  kept     {row.path} (already the target's bytes; "
                       "the row was stale)")
+        for add in taking:
+            write_added(root / add.path, add.target_bytes or b"",
+                        add.executable)
+            # Appended, so the pin's existing rows keep the order the scaffold
+            # wrote them in and the new one reads as what it is: a file this
+            # project took later, by name.
+            rows.append(add)
+            print(f"  added    {add.path} (new upstream file, copied from "
+                  f"{add.source}; its row is appended to the pin)")
         write(pin_path, rewrite_shape_pin(
             pin_path.read_text(encoding="utf-8"), target, target_tree, rows
         ).encode("utf-8"))
@@ -799,10 +1118,11 @@ def cmd_apply(args) -> int:
                 "somebody else's pull request.")
 
         paths = sorted({row.path for row in copied}
+                       | {add.path for add in taking}
                        | {"contracts/shape-pin.yaml", kind.manifest})
         if args.branch:
             commit_on_branch(root, args.branch, paths, target, upstream,
-                             len(copied))
+                             len(copied), [add.path for add in taking])
             print(f"\n  committed on {args.branch}: " + ", ".join(paths))
             if args.push:
                 run(["git", "push", "-q", "-u", "origin", args.branch], cwd=root)
@@ -810,11 +1130,17 @@ def cmd_apply(args) -> int:
             if args.pr:
                 open_pull_request(root, args.branch, target, upstream, kind)
         print()
-        next_line(root, args, paths, target)
+        next_line(root, args, paths, target, [add.path for add in taking])
         return 0
     except Refusal:
         for path, original in written.items():
             path.write_bytes(original)
+        for path in reversed(created):
+            if path.is_dir():
+                if not any(path.iterdir()):
+                    path.rmdir()
+            elif path.exists():
+                path.unlink()
         raise
     except CommandFailed as exc:
         print(exc.loudly("committing the re-synced shape"), file=sys.stderr)
@@ -858,7 +1184,8 @@ def open_pull_request(root: Path, branch: str, target: str,
     print(f"  pull request {url}")
 
 
-def next_line(root: Path, args, paths: list[str], target: str) -> None:
+def next_line(root: Path, args, paths: list[str], target: str,
+              added: list[str] = ()) -> None:
     if args.branch and args.pr:
         print("NEXT  the pull request is open; ask a human to review and merge it")
         return
@@ -870,8 +1197,12 @@ def next_line(root: Path, args, paths: list[str], target: str) -> None:
         print(f"NEXT  git -C {root} push -u origin {args.branch} && gh pr "
               f"create --base main --head {args.branch}")
         return
+    # A `git add` for the ADDITIONS only. A hint that a human pastes has to
+    # work when they paste it, and `git commit -- <path>` refuses a path git
+    # has never heard of — which every file `--add` just wrote is.
+    stage = f"add -- {' '.join(added)} && git -C {root} " if added else ""
     print(f"NEXT  git -C {root} checkout -b shape/update-{target[:12]} && git "
-          f"-C {root} commit -m 'Re-sync the shape @ {target[:12]}' -- "
+          f"-C {root} {stage}commit -m 'Re-sync the shape @ {target[:12]}' -- "
           + " ".join(paths))
 
 
@@ -903,6 +1234,12 @@ def build_parser() -> argparse.ArgumentParser:
                               default=[],
                               help="re-pin this locally-modified file FROM THE "
                                    "ROOT'S OWN BYTES; repeatable")
+    apply_parser.add_argument("--add", action="append", metavar="PATH",
+                              default=[],
+                              help="copy this `upstream-added` file into the "
+                                   "root and append its pin row; repeatable, "
+                                   "and never passed for a file a human has "
+                                   "not said to take")
     apply_parser.add_argument("--branch", default=None,
                               help="create this branch and commit the change "
                                    "to it, with explicit pathspecs")

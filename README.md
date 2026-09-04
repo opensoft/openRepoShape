@@ -452,12 +452,31 @@ that was never verbatim — `adopt-project.py` appends a `CONTRACTS_DIR` block t
 an adopted Makefile, and copying the upstream bytes over that would delete it
 without saying so.
 
-**Only the pin's own rows are considered.** The file list is read from
+**Only the pin's own rows are RE-SYNCED.** The file list is read from
 `contracts/shape-pin.yaml` and never re-derived from this repository's copy
 lists. An in-place adoption collides on `Makefile`, `README.md` and
 `.gitignore`; the shape's copies land under `shape/`, a human merges them and
 usually drops the rows. A file with no row is not a shape copy, and re-deriving
 the list would resurrect one the project deliberately merged away.
+
+**A file the standard ADDS later is the other half, and it is named, never
+assumed.** A pin can only record what existed the day it was written, so
+`AGENTS-shape.md` — added to both root templates after MedxEHR, MedxGlass,
+MedxScribe and the InkRouter members were cut — reached none of them. `check`
+therefore also reports **`upstream-added`**: a path the UPSTREAM's copy lists
+name AT THE TARGET COMMIT (read out of that commit's own
+`shape_materialize.py`, so the answer is the target's lists and not this
+checkout's) that the pin has no row for and the root has no file at. It counts
+as something to do, so `check` still exits 1. `apply` writes NONE of them
+unless `--add <path>` names one, per file: `apply --at <commit> --yes --add
+AGENTS-shape.md` copies it, chmods it if the materializer would, appends its
+`sha256` row and moves the pin, all inside the same transaction and rolled back
+whole if a validator goes red. Without `--add` it says `not added; pass --add
+<path>` and re-pins the rest. `--add` refuses a path that is already pinned,
+one the target's lists do not name — and one the root ALREADY has a file at,
+because two files with one name is a merge and this command copies bytes. A
+project that declines an addition has no way to say so yet: it will be reported
+by every `check` until it is taken or a file arrives at that path.
 
 `--upstream` takes a path to a clone (offline, and what the tests use) or an
 `owner/repo` it bare-clones itself; it defaults to the repository the pin
