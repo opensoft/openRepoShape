@@ -23,10 +23,11 @@ name: "{{PROJECT_NAME}}"
 
 # The elected schema, and the document the election followed. For a project
 # elected on or after 2026-09-02 this is openxFactory's ratified
-# `docs/project-repo-schema.md` (the default the scaffold writes); a project
-# elected earlier recorded the staged fragment's path and keeps it. Recording
-# it is what makes a project started ahead of ratification legible rather than
-# undeclared.
+# `docs/project-repo-schema.md`; a project elected earlier recorded the staged
+# fragment's path and keeps it. The default the scaffold writes FOLLOWS
+# `elected_on` below, for that reason, and `--reference` overrides it.
+# Recording it is what makes a project started ahead of ratification legible
+# rather than undeclared.
 schema: project-repo-schema
 reference: "{{REFERENCE}}"
 

@@ -54,9 +54,9 @@ from repo_shape import (  # noqa: E402
     git_out, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
-    DEFAULT_REFERENCE, RULESET_HINT, SHAPE_REPOSITORY, CommandFailed,
-    copy_tree, descendant_note, env_commit, git_init_commit,
-    materialize_assembly_root, naming_block, run,
+    RULESET_HINT, SHAPE_REPOSITORY, CommandFailed,
+    copy_tree, default_reference, descendant_note, election_date, env_commit,
+    git_init_commit, materialize_assembly_root, naming_block, run,
 )
 
 #: The pin argument: `openGlass@<40 hex>`, optionally organisation-qualified.
@@ -251,7 +251,15 @@ def main(argv: list[str] | None = None) -> int:
                              "default for the others.")
     parser.add_argument("--elected-by", default=None)
     parser.add_argument("--elected-on", default=None, help="YYYY-MM-DD")
-    parser.add_argument("--reference", default=DEFAULT_REFERENCE)
+    parser.add_argument("--reference", default=None,
+                        help="the document the election followed. Default: "
+                             "openxFactory's ratified "
+                             "docs/project-repo-schema.md for an election on "
+                             "or after 2026-09-02, and the staged fragment it "
+                             "was ratified from for one dated earlier — so "
+                             "--elected-on chooses it, and a back-dated "
+                             "project does not claim it followed a document "
+                             "that did not exist yet.")
     parser.add_argument("--tracking-branch", default="main")
     parser.add_argument("--spec-path", default="spec")
     parser.add_argument("--code-path", default="code")
@@ -386,6 +394,11 @@ def _scaffold(args) -> int:  # noqa: C901
     project_id = checked_value("--id", args.id or project.lower())
     display = args.name or project
     elected_on = args.elected_on or _dt.date.today().isoformat()
+    # PARSED HERE, BEFORE ANYTHING IS CREATED, whether or not it is the value
+    # that chooses the reference: an explicit --reference must not let a
+    # malformed --elected-on through into a manifest field no reader can use.
+    election_date(elected_on)
+    reference = args.reference or default_reference(elected_on)
     local = args.local_remote_dir is not None
 
     elected_by = args.elected_by
@@ -496,7 +509,7 @@ def _scaffold(args) -> int:  # noqa: C901
         "ORG": args.org,
         "TOPIC": topic,
         "VISIBILITY": args.visibility,
-        "REFERENCE": args.reference,
+        "REFERENCE": reference,
         "ELECTED_BY": elected_by,
         "ELECTED_ON": elected_on,
         "TRACKING_BRANCH": args.tracking_branch,
@@ -524,7 +537,8 @@ def _scaffold(args) -> int:  # noqa: C901
     print(f"shape        {SHAPE_REPOSITORY} @ {shape_commit[:12]} "
           f"(tree {shape_tree[:12]}…)")
     print(f"elected by   {elected_by} on {elected_on}")
-    print(f"reference    {args.reference}")
+    print(f"reference    {reference}"
+          + ("" if args.reference else "   (chosen by the election date)"))
     for role in ("assembly", "spec", "code"):
         print(f"  {role:<9} {repositories[role]:<28} -> {urls[role]}")
     for role in ("assembly", "spec", "code"):
