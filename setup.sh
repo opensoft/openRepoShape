@@ -1,20 +1,29 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
 #
-# setup.sh — fork, clone, run one command.
+# setup.sh — clone the standard into a temp dir, scaffold, clean up.
 #
-#   gh repo fork opensoft/openRepoShape --org <your-org> --clone
-#   cd openRepoShape
-#   ./setup.sh --project Atlas
+#   curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup.sh \
+#       | bash -s -- --org <your-org> --project Atlas
 #
-# It checks your machine, works out which organisation you are in, checks the
-# three repository names against the naming policy, shows you the plan, asks
-# once, creates the three repositories, clones the assembly root beside this
-# fork and bootstraps it. Nothing is created before you have said yes.
+# Run from wherever: if this is not already a checkout of openRepoShape it
+# self-bootstraps — clones `opensoft/openRepoShape` (or `$OPENREPOSHAPE_REPO`,
+# for a fork or mirror) into a temporary directory with `mktemp -d`, re-runs
+# itself from there with the same arguments, and removes the temporary
+# checkout on exit (`--keep-shape-checkout` keeps it and prints the path).
+# `--org` is then REQUIRED: there is no fork origin left to read it from. Run
+# it from inside an existing checkout instead (the developer path) and it
+# behaves exactly as before, still detecting the organisation from `origin`.
 #
-# WHY A SHELL SCRIPT AND NOT MORE PYTHON. This is the FIRST thing a person runs
-# in a fork, before they know anything about the repository, and it must work
-# with what is already on the machine. It shells out to the same
+# Either way it checks your machine, works out which organisation you are
+# scaffolding into, checks the three repository names against the naming
+# policy, shows you the plan, asks once, creates the three repositories,
+# clones the assembly root and bootstraps it. Nothing is created before you
+# have said yes.
+#
+# WHY A SHELL SCRIPT AND NOT MORE PYTHON. This is the FIRST thing a person
+# runs, before they know anything about the repository, and it must work with
+# what is already on the machine. It shells out to the same
 # `scripts/validate-repository-naming.py`, `scaffold-project.py` and
 # `make bootstrap` that the README documents — it adds no behaviour of its own
 # and skips no step, so a person who prefers to run those three by hand gets
@@ -37,7 +46,14 @@ INTO=""
 LOCAL_REMOTE_DIR=""
 ASSUME_YES=0
 ALLOW_UPSTREAM_ORG=0
+SHAPE_REF=""
+KEEP_SHAPE_CHECKOUT=0
 PASSTHROUGH=()
+
+# Captured before argument parsing consumes "$@" below, so a self-bootstrap
+# re-exec (section 0) can hand the temporary checkout's setup.sh the exact
+# same invocation.
+ORIGINAL_ARGS=("$@")
 
 TICK="✓"
 CROSS="✗"
@@ -55,14 +71,25 @@ usage: ./setup.sh --project <Project> [options] [-- <extra scaffold flags>]
   --elected-by "<Name>"   who is electing the shape (default: your gh login)
   --into <dir>            PARENT directory for the clone (default: ..), so the
                           clone lands at <dir>/<Project>
-  --org <org>             override the detected organisation
-  --allow-upstream-org    permit scaffolding into `opensoft`. You almost
-                          certainly cloned the upstream instead of your fork.
+  --org <org>             override the detected organisation. REQUIRED when
+                          run outside a checkout of openRepoShape
+                          (self-bootstrap mode): there is no origin to read it
+                          from.
+  --allow-upstream-org    permit `--org opensoft` itself: opensoft is the
+                          upstream owner of openRepoShape, and almost never
+                          what you meant to scaffold into.
+  --shape-ref <ref>       self-bootstrap mode only: clone this commit or tag
+                          of the standard instead of its default branch.
+  --keep-shape-checkout   self-bootstrap mode only: do not delete the
+                          temporary checkout on exit; print its path instead.
   --yes                   skip the confirmation prompt
   --local-remote-dir <d>  TEST PATH: create three BARE repositories in <d> and
                           use them as origins. No network, no `gh`, and no real
                           repository is created.
   -h, --help              this text
+
+Set $OPENREPOSHAPE_REPO to clone a fork or mirror in self-bootstrap mode
+instead of opensoft/openRepoShape.
 
 Anything after `--` is passed straight through to scaffold-project.py.
 USAGE
@@ -95,6 +122,8 @@ while [ $# -gt 0 ]; do
 	--local-remote-dir) LOCAL_REMOTE_DIR="$(abspath "${2:?--local-remote-dir needs a value}")"; shift 2 ;;
 	--yes | -y) ASSUME_YES=1; shift ;;
 	--allow-upstream-org) ALLOW_UPSTREAM_ORG=1; shift ;;
+	--shape-ref) SHAPE_REF="${2:?--shape-ref needs a value}"; shift 2 ;;
+	--keep-shape-checkout) KEEP_SHAPE_CHECKOUT=1; shift ;;
 	-h | --help) usage; exit 0 ;;
 	--) shift; PASSTHROUGH=("$@"); break ;;
 	*) usage >&2; die "unknown argument: $1" ;;
@@ -109,10 +138,64 @@ esac
 LOCAL_MODE=0
 if [ -n "$LOCAL_REMOTE_DIR" ]; then LOCAL_MODE=1; fi
 
-cd "$SCRIPT_DIR"
-if [ ! -f scaffold-project.py ] || [ ! -f contracts/repository-naming.yaml ]; then
-	die "$SCRIPT_DIR is not an openRepoShape checkout (no scaffold-project.py). Run setup.sh from inside your fork."
+# --------------------------------------------------------------------------
+# 0. self-bootstrap: run from wherever a checkout of openRepoShape is not
+# --------------------------------------------------------------------------
+# `curl | bash -s --` has no file on disk at all: $SCRIPT_DIR then resolves to
+# $PWD (see the BASH_SOURCE fallback above), which is an openRepoShape
+# checkout only by coincidence. Detect the real thing by asking git, not by
+# trusting the directory a person happened to be standing in.
+SHAPE_REPO="${OPENREPOSHAPE_REPO:-https://github.com/opensoft/openRepoShape.git}"
+
+is_shape_checkout() {
+	local dir="$1" toplevel
+	toplevel="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)" || return 1
+	[ -n "$toplevel" ] && [ -f "$toplevel/scaffold-project.py" ] \
+		&& [ -f "$toplevel/contracts/repository-naming.yaml" ]
+}
+
+if ! is_shape_checkout "$SCRIPT_DIR"; then
+	[ -n "$ORG" ] || die "running outside a checkout of openRepoShape (self-bootstrap mode): there is no fork origin to read the organisation from. Re-run with --org <your-org>."
+
+	say "openRepoShape setup"
+	say ""
+	say "(0) self-bootstrap"
+	SHAPE_CHECKOUT="$(mktemp -d)"
+	self_bootstrap_cleanup() {
+		if [ "$KEEP_SHAPE_CHECKOUT" -eq 1 ]; then
+			say ""
+			say "kept the shape checkout: $SHAPE_CHECKOUT"
+		else
+			rm -rf -- "$SHAPE_CHECKOUT"
+		fi
+	}
+	trap self_bootstrap_cleanup EXIT
+
+	CLONE_SHAPE_CMD=(git clone --quiet)
+	# `--depth 1` only means something over a real transport; git warns and
+	# ignores it for a bare local path (what the tests use via
+	# $OPENREPOSHAPE_REPO), so skip it there rather than clone shallow noise.
+	case "$SHAPE_REPO" in
+	*://*) [ -n "$SHAPE_REF" ] || CLONE_SHAPE_CMD+=(--depth 1) ;;
+	esac
+	CLONE_SHAPE_CMD+=("$SHAPE_REPO" "$SHAPE_CHECKOUT")
+	say "  ${CLONE_SHAPE_CMD[*]}"
+	"${CLONE_SHAPE_CMD[@]}"
+	if [ -n "$SHAPE_REF" ]; then
+		say "  git -C $SHAPE_CHECKOUT checkout --quiet $SHAPE_REF"
+		git -C "$SHAPE_CHECKOUT" checkout --quiet "$SHAPE_REF"
+	fi
+	say "  checkout: $SHAPE_CHECKOUT"
+	say ""
+
+	set +e
+	bash "$SHAPE_CHECKOUT/setup.sh" "${ORIGINAL_ARGS[@]}"
+	STATUS=$?
+	set -e
+	exit "$STATUS"
 fi
+
+cd "$SCRIPT_DIR"
 
 # --------------------------------------------------------------------------
 # 1. preflight
@@ -182,13 +265,13 @@ detect_org_from_url() {
 }
 
 # `gh repo view` with no argument resolves the CURRENT repository by its own
-# rules, and on a fork clone (two remotes: `origin` is the fork, `upstream` is
-# opensoft/openRepoShape) it can prefer `upstream` over `origin` — reporting
-# `opensoft` for a perfectly correct fork and tripping the upstream-org guard
-# below on a clone that was never wrong. `origin` is the remote that means
-# "this clone", in every mode, so it is read directly and parsed by hand;
-# `gh repo view` is consulted only as a fallback, and only ON THE ORIGIN URL
-# itself (never bare), so it cannot go pick `upstream` either.
+# rules, and on a checkout with two remotes (`origin` plus an `upstream`
+# pointing at opensoft/openRepoShape — kept only by someone contributing back
+# to the standard itself) it can prefer `upstream` over `origin`. `origin` is
+# the remote that means "this clone", in every mode, so it is read directly
+# and parsed by hand; `gh repo view` is consulted only as a fallback, and only
+# ON THE ORIGIN URL itself (never bare), so it cannot go pick `upstream`
+# either.
 #
 # Read against $INVOCATION_DIR, not the current directory — by the time we
 # are here that is $SCRIPT_DIR (the `cd` a few lines up), which is wherever
@@ -202,6 +285,16 @@ if [ -n "$ORIGIN_URL" ]; then
 	ORIGIN_ORG="$(detect_org_from_url "$ORIGIN_URL")"
 fi
 
+# `origin` pointing at opensoft itself means this checkout IS the upstream —
+# there is no fork to inherit an organisation from, exactly like self-bootstrap
+# mode above, so the fix is the same: pass --org. This is a narrower ask than
+# the old "you almost certainly cloned the wrong thing" refusal, because
+# running setup.sh from a plain `git clone opensoft/openRepoShape` with an
+# explicit --org is now a legitimate developer path, not a mistake.
+if [ -z "$ORG" ] && [ "$ORIGIN_ORG" = "$UPSTREAM_ORG" ]; then
+	die "you are running from the upstream checkout ($ORIGIN_URL); pass --org <your-org>."
+fi
+
 if [ -n "$ORG" ]; then
 	ok "organisation $ORG (from --org)"
 elif [ -n "$ORIGIN_ORG" ]; then
@@ -210,6 +303,9 @@ elif [ -n "$ORIGIN_ORG" ]; then
 elif [ -n "$ORIGIN_URL" ] && [ "$LOCAL_MODE" -ne 1 ] \
 	&& ORG="$(gh repo view "$ORIGIN_URL" --json owner --jq .owner.login 2>/dev/null)" \
 	&& [ -n "$ORG" ]; then
+	if [ "$ORG" = "$UPSTREAM_ORG" ]; then
+		die "you are running from the upstream checkout ($ORIGIN_URL); pass --org <your-org>."
+	fi
 	ok "organisation $ORG (from \`gh repo view\` on the origin URL: $ORIGIN_URL; could not parse it by hand)"
 elif [ "$LOCAL_MODE" -eq 1 ]; then
 	ORG="localorg"
@@ -218,9 +314,10 @@ else
 	die "cannot work out which organisation to scaffold into: this clone has no \`origin\` remote and no --org was given. Re-run with --org <your-org>."
 fi
 
-# The normal fork shape: `origin` is the fork, `upstream` is opensoft's. Name
-# it so a person who did not expect an `upstream` remote at all is not left
-# guessing why the detected organisation is not opensoft's.
+# A checkout kept for contributing to the standard itself may still carry an
+# `upstream` remote pointing at opensoft. Name it so a person who did not
+# expect one at all is not left guessing why the detected organisation is not
+# opensoft's.
 UPSTREAM_REMOTE_URL="$(git -C "$INVOCATION_DIR" remote get-url upstream 2>/dev/null || true)"
 if [ -n "$UPSTREAM_REMOTE_URL" ]; then
 	UPSTREAM_REMOTE_ORG="$(detect_org_from_url "$UPSTREAM_REMOTE_URL")"
@@ -229,22 +326,18 @@ if [ -n "$UPSTREAM_REMOTE_URL" ]; then
 	fi
 fi
 
-# The guard that matters. `gh repo fork ... --clone` leaves you in YOUR fork;
-# `git clone opensoft/openRepoShape` leaves you in the upstream. Both look
-# identical from inside the directory, and only one of them should be creating
-# repositories.
-#
-# It applies in EVERY mode, --local-remote-dir included. What is skipped for a
-# local run is the `gh` call, not the origin-remote read: `--org` is what a
-# scaffolded `project.yaml` records as the owner of all three legs, so a
-# manifest reading `opensoft/Sample` written from an upstream clone is exactly
-# as wrong as three repositories in the wrong place. A local run with no
-# `origin` remote and no --org gets the `localorg` placeholder, so the guard
-# never fires by surprise.
+# The guard that matters now that ORG is never silently set to opensoft by
+# detection (see the die above): the only way to reach this point with
+# ORG=opensoft is an explicit `--org opensoft`, which is almost never what
+# anyone means — it would create three repositories in opensoft's own
+# namespace. It applies in EVERY mode, --local-remote-dir included: `--org` is
+# what a scaffolded `project.yaml` records as the owner of all three legs, so
+# a manifest reading `opensoft/Sample` is wrong regardless of whether any
+# network call happened. A local run with no `origin` remote and no --org
+# gets the `localorg` placeholder, so the guard never fires by surprise.
 if [ "$ORG" = "$UPSTREAM_ORG" ] && [ "$ALLOW_UPSTREAM_ORG" -ne 1 ]; then
-	die "the detected organisation is '$UPSTREAM_ORG', which is the UPSTREAM. You have almost certainly cloned opensoft/openRepoShape instead of a fork of it, and scaffolding here would create three repositories in the wrong organisation.
+	die "the organisation is '$UPSTREAM_ORG', which is the UPSTREAM owner of openRepoShape itself, and scaffolding here would create three repositories in opensoft's own namespace.
 
-  To fork:      gh repo fork $UPSTREAM_ORG/openRepoShape --org <your-org> --clone
   Wrong guess?  re-run with --org <your-org>
   You meant it? re-run with --allow-upstream-org"
 fi
