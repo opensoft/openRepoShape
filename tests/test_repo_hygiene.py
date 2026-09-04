@@ -152,9 +152,22 @@ def test_readme_is_short_enough_to_be_read():
     CI" — a GitHub App (minted at run time, scoped to the legs the owner
     itself owns) tried first, the PAT kept as fallback — because a standing
     PAT is a credential that sits in a secret indefinitely and a per-run
-    installation token is not."""
+    installation token is not.
+
+    359 -> 388, on 2026-09-04: Brett Heap ruled *drop the fork*. Every
+    scaffolded project already pins `opensoft/openRepoShape` directly and
+    `update-shape.py` reads straight from upstream, so a per-organisation
+    fork never did anything but host `setup.sh` — and its origin-based org
+    detection was itself a defect. The Quick start is now one `curl | bash`
+    line (plus the `gh api` form for orgs that block raw downloads) that
+    self-bootstraps a temporary checkout, scaffolds, and cleans up; the "from
+    a checkout" form survives as the developer path. A cap that grew for
+    dropping an instruction, not adding one, is still a cap earning its
+    lines: the one-liner and its self-bootstrap explanation replace a
+    fork-and-clone paragraph with a longer one, because "how to run this
+    safely with no fork" takes more words than "fork it first"."""
     lines = (REPO / "README.md").read_text().splitlines()
-    assert len(lines) <= 359, f"README.md is {len(lines)} lines; the cap is 359"
+    assert len(lines) <= 388, f"README.md is {len(lines)} lines; the cap is 388"
 
 
 def test_setup_sh_is_executable_and_fails_loudly():
