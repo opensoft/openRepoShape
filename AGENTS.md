@@ -182,7 +182,11 @@ git -C <path> push -u origin shape/update-<sha>   # then open a pull request
    carry it upstream.
 4. **`both` is a merge, and the tool refuses it.** Merge by hand, commit, then
    re-run with `--accept-local <path>` on the file you merged.
-5. `apply` runs the project's own `validate-pins.py` and `validate-manifest.py`
+5. **`upstream-added` is a file the STANDARD gained since the pin, and `--add`
+   is per file.** Report the paths `check` names; pass `--add <path>` only for
+   a file the human has said to take, and never to quiet the report. Without
+   it `apply` writes none of them and says so.
+6. `apply` runs the project's own `validate-pins.py` and `validate-manifest.py`
    and rolls every byte back if either goes red. Land it as a pull request;
    never suggest a push to the default branch.
 

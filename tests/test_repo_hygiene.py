@@ -208,7 +208,15 @@ def test_readme_is_short_enough_to_be_read():
     #   and a project dated before ratification recorded the ratified path.
     #   Four lines for a rule the reader would otherwise have to read the
     #   scaffold's source to learn.
-    # 2026-09-04: 513 -> 525 — a scaffolded project now carries an AGENT FILE.
+    # 2026-09-04: 513 -> 532 — `upstream-added` and `--add`. The section said
+    #   the file list is never re-derived from the copy lists, which is right
+    #   about what is RE-SYNCED and was silently also true of what is LOOKED
+    #   AT: a file the standard added after a project was cut reached that
+    #   project never, and `AGENTS-shape.md` was the first one to prove it.
+    #   The paragraph is long because the verdict is only half of it — the
+    #   three refusals and the open question (a project cannot yet decline an
+    #   addition) are the half a reader would otherwise learn from a surprise.
+    # 2026-09-04: 532 -> 544 — a scaffolded project now carries an AGENT FILE.
     #   One line names `AGENTS-shape.md` among the copies and one names it in
     #   the layout; the other ten are the paragraph saying WHY the shape's own
     #   text is pinned (a rule against editing pinned files is worthless if
@@ -216,8 +224,8 @@ def test_readme_is_short_enough_to_be_read():
     #   rendered project detail) while the project's `AGENTS.md` and
     #   `CLAUDE.md` are rendered and are not. That trade is the same one the
     #   copies themselves are, and it was nowhere in this file.
-    assert len(lines) <= 525, (
-        f"README.md is {len(lines)} lines; the cap is 525")
+    assert len(lines) <= 544, (
+        f"README.md is {len(lines)} lines; the cap is 544")
 
 
 def test_setup_sh_is_executable_and_fails_loudly():
