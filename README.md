@@ -90,9 +90,9 @@ cd Atlas && make bootstrap
 | spec | `<Project>-spec` | requirements, decisions, acceptance criteria |
 | code | `<Project>-code` | the implementation and its tests |
 
-The four naming families live in `contracts/repository-naming.yaml`: neutral
+The five naming families live in `contracts/repository-naming.yaml`: neutral
 products `open<Product>`, domain descendants `<Domainx><Product>`, installs
-`<X>-Install`, and project legs as above. The leg suffixes are lowercase and
+`<X>-Install`, project legs as above, and family holders (below). The leg suffixes are lowercase and
 hyphenated precisely so they sit in a different visual class from every other
 family, all of which are CamelCase words. Every repository of a project also
 carries the GitHub topic `xf-project-<id>`.
@@ -261,6 +261,106 @@ An empty repository is not a live one: `scaffold-project.py --reuse-empty-repo`
 uses a zero-commit `<org>/<Project>` as the assembly root, and refuses one with
 commits by naming `adopt-project.py` instead.
 
+### A leg with nothing in it is SEEDED, not extracted
+
+A repository can honestly have nothing for one leg. Ruled by **Brett Heap on
+2026-09-04**, of InkRouter's IRRS and IRSS: *"We do not have any code yet for
+either service."* `git filter-repo` over an empty path list rewrites every
+commit to nothing and leaves an empty HISTORY, which is not the same thing as
+an empty repository, so a leg no plan entry assigns a path to is **seeded**
+from `templates/<role>-root/` as one initial commit — the same bytes a fresh
+scaffold writes — and the split mounts and pins it like an extracted one.
+
+```sh
+./adopt-project.py plan --source InkRouter/IRRS --project IRRS     --allow-empty-leg code
+./adopt-project.py execute --plan adoption-plan.yaml --yes
+```
+
+The plan records `seeding.code.seeded_from_template: true` and the template it
+would use; `check` WARNS and still passes, because a spec-only repository is a
+legitimate thing to adopt; the verification table reads `code: 0 of N source
+paths (seeded from template)` and still accounts for every source path by blob
+sha. `execute` refuses without `--allow-empty-leg code`, in the plan or on its
+own command line: a plan that lost its code paths to a bad edit looks
+identical from here, so the consent is a human's word rather than an
+inference. Where the recorded block and the entries disagree — somebody
+answered an ambiguous path INTO the empty leg, which is the plan working — the
+entries win and it is a note, not a refusal.
+
+## Families: a holder for projects that ship separately
+
+Ruled by **Brett Heap on 2026-09-04**, about InkRouter: *"InkRouter is a set of
+microservices and they deploy separately as api's. so maybe they each need
+their own assembly repo. So probably InkRouter is only something that can
+download all the others easily? like a holder folder and some utilities for
+the family of services. Then IRRS would be assembly and IRRS-spec and
+IRRS-code."*
+
+A **family** is a repository that pins other projects' **assembly roots** as
+submodules under `members/` and carries the utilities to fetch and bootstrap
+them all. It is **not a project**: no spec leg, no code leg, no `project.yaml`.
+And, like everything else here, **it confers nothing** — a project in no family
+is reviewed identically to one in this family.
+
+| | one project | a family |
+|---|---|---|
+| ships as | one thing | several, separately |
+| gate | one `validate` | one per member, plus the family's own |
+| release | one | one per member |
+| what the holder owns | the legs | nothing but pins and utilities |
+
+**Use a family when the parts deploy separately.** Eight services that are
+eight APIs are eight projects: folding them into one assembly root would give
+them one gate, one release and one pin, which is the opposite of what "deploy
+separately" means. **Use one project when the parts ship together** — that is
+what the spec and code legs already are.
+
+### The InkRouter example
+
+Eight services, each its own project, one holder:
+
+```
+InkRouter/                      the family holder — family.yaml, members/, utilities
+  members/IRRS   -> InkRouter/IRRS    assembly root, mounting IRRS-spec and IRRS-code
+  members/IRSS   -> InkRouter/IRSS    assembly root, mounting IRSS-spec and IRSS-code
+  …six more, added as they arrive
+```
+
+```sh
+python3 scripts/family.py init --org InkRouter --family InkRouter     --reuse-empty-repo
+python3 scripts/family.py add  --family-root ../InkRouter     --member InkRouter/IRRS
+python3 scripts/family.py bump --family-root ../InkRouter     --member IRRS --to <40 hex>
+python3 scripts/family.py remove --family-root ../InkRouter --member IRRS
+```
+
+`add`, `bump` and `remove` each write ONE commit, with explicit pathspecs,
+moving the gitlink and `members[].pin` together — the same lockstep rule an
+assembly root applies to its legs, and `scripts/validate-family.py` refuses
+when they disagree. Each row also records the member's own `project.yaml`
+`id`, so the validator can check the tree mounted at `members/<Project>` is
+the project the row claims rather than merely a repository at the right
+commit. **A family pins assembly roots, never legs**: adding `<Project>-spec`
+is refused, because a leg has no `project.yaml` and belongs to its own root.
+
+`make bootstrap` in the holder fetches every member and its legs — resolving
+the same GitHub App or `SHAPE_LEGS_TOKEN` credential the workflow does,
+because a member is a private assembly root that mounts two private legs of
+its own — and then runs each member's own `make bootstrap`. `make validate`
+runs the family validator and then each member's `make validate`. A member
+that could not be fetched is reported and skipped, never a failure.
+
+The holder carries the same COPY pin an assembly root does, so
+`update-shape.py` re-syncs it the same way; it mirrors into `family.yaml`
+instead of `project.yaml` and must leave `validate-family.py` green.
+
+The name is the `family` form in `contracts/repository-naming.yaml`: one
+CamelCase token, exactly an assembly root's rule, with **precedence below**
+it, and DECLARED-ONLY. `InkRouter` is spelled like an assembly root and
+`family.yaml` is the only thing that tells them apart, so the classifier
+reports the holder form only when it is asked for (`--role family`). That is
+what let a fifth family be added to a policy two live projects already carry a
+copy of without changing any existing name's answer.
+
 ## The double pin, and the lockstep invariant
 
 Each leg is pinned TWICE, in the same commit: by the **gitlink** git records
@@ -383,9 +483,11 @@ scripts/validate-repository-naming.py
 setup.sh                          self-bootstrap, scaffold, one command
 scaffold-project.py               creates the three repositories and the pins
 adopt-project.py                  converts an EXISTING repository in place
-update-shape.py                   re-syncs a project's copies and re-pins
+update-shape.py                   re-syncs a root's copies and re-pins
+scripts/family.py                 creates a FAMILY holder and maintains its pins
 bootstrap                         bootstrap a project that was never scaffolded
 templates/assembly-root/          the skeleton materialized for <Project>
+templates/family-root/            the skeleton for a FAMILY holder
 templates/spec-root/              the skeleton for <Project>-spec
 templates/code-root/              the skeleton for <Project>-code
 AGENTS.md                         the procedure an AI assistant follows

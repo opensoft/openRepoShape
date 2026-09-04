@@ -23,9 +23,12 @@ SHIPPED = [
     REPO / "scripts" / "shape_materialize.py",
     REPO / "scripts" / "path_classify.py",
     REPO / "scripts" / "validate-repository-naming.py",
+    REPO / "scripts" / "family.py",
     REPO / "templates" / "assembly-root" / "scripts" / "validate-pins.py",
     REPO / "templates" / "assembly-root" / "scripts" / "validate-manifest.py",
     REPO / "templates" / "assembly-root" / "scripts" / "bootstrap.py",
+    REPO / "templates" / "family-root" / "scripts" / "validate-family.py",
+    REPO / "templates" / "family-root" / "scripts" / "bootstrap.py",
 ]
 LOCAL_MODULES = {"repo_shape", "shape_materialize", "path_classify",
                  "conftest"}
@@ -56,28 +59,30 @@ def test_every_shipped_script_compiles():
         compile(path.read_text(encoding="utf-8"), str(path), "exec")
 
 
-def test_the_scaffold_accounts_for_every_template_file():
-    """A file added to the assembly-root template but named in neither copy
-    list would silently never reach a scaffolded project.
+@pytest.mark.parametrize("template", ["assembly-root", "family-root"])
+def test_the_materializers_account_for_every_template_file(template):
+    """A file added to a root template but named in no copy list would
+    silently never reach a scaffolded project or family.
 
     The lists moved into `scripts/shape_materialize.py` when the scaffold and
-    `adopt-project.py` stopped carrying one each, so both files are read here:
-    the property is "some materializer names this file", not "one particular
-    module does".
+    `adopt-project.py` stopped carrying one each, so every caller is read
+    here: the property is "some materializer names this file", not "one
+    particular module does". `spec-root/` and `code-root/` are absent on
+    purpose — they are copied WHOLESALE by `copy_tree`, so there is no list
+    for a file there to fall out of.
     """
     source = "\n".join(path.read_text(encoding="utf-8") for path in (
         SCAFFOLD, REPO / "scripts" / "shape_materialize.py",
-        REPO / "adopt-project.py"))
-    template_root = REPO / "templates" / "assembly-root"
+        REPO / "scripts" / "family.py", REPO / "adopt-project.py"))
+    template_root = REPO / "templates" / template
     for path in sorted(template_root.rglob("*")):
         if path.is_dir() or "__pycache__" in path.parts:
             continue
         rel = path.relative_to(template_root).as_posix()
         assert f'"{rel}"' in source, (
-            f"{rel} is in templates/assembly-root/ but is named in none of "
-            "TEMPLATED, COPIED_VERBATIM or NEUTRAL_PIN_TEMPLATE in "
-            "scripts/shape_materialize.py, so no materializer would ever "
-            "write it"
+            f"{rel} is in templates/{template}/ but is named in none of the "
+            "copy lists in scripts/shape_materialize.py, so no materializer "
+            "would ever write it"
         )
 
 
@@ -102,9 +107,17 @@ def test_agents_md_is_short_enough_to_be_read():
     way adopt did — the copies are what make a project self-contained, and
     before this there was no command to move them, so both projects carrying
     the shape were updated by hand. A procedure performed from memory is the
-    failure this file exists to prevent."""
+    failure this file exists to prevent.
+
+    175 -> 235 on 2026-09-04, for two more of them, both from the same
+    ruling. Adopting a repository with NO CODE YET seeds the empty leg and
+    takes `--allow-empty-leg`, which an assistant must get a human's word for
+    rather than pass because the tool asked; and a FAMILY holder is created
+    and grown by a tool that has no prompt of its own, which makes getting
+    the yes the assistant's job and is exactly the kind of thing that must be
+    written down rather than remembered."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 175, f"AGENTS.md is {len(lines)} lines; the cap is 175"
+    assert len(lines) <= 235, f"AGENTS.md is {len(lines)} lines; the cap is 235"
 
 
 def test_claude_md_points_at_agents_md():
@@ -175,9 +188,19 @@ def test_readme_is_short_enough_to_be_read():
     checkout) or `gh api`, and a named SKIP rather than a failure when
     neither can answer. A rule that only the tool WRITING a pin ever checked
     it again was a gap the standard's own claim-needs-a-referent ruling had
-    not closed."""
+    not closed.
+
+    401 -> 508, the same day: two additions the standard gained rather than
+    prose. A leg with NOTHING IN IT is seeded from its template instead of
+    extracted (InkRouter's services are specifications with no code), which
+    is a paragraph because the consent flag and the verification row both
+    need explaining. And the FAMILY shape is a whole section, because the
+    first question anyone asks about it — family or one project? — is
+    answered by a table and an example rather than by a definition, and
+    because "what a holder does NOT confer" is the half that keeps it from
+    becoming a governance boundary."""
     lines = (REPO / "README.md").read_text().splitlines()
-    assert len(lines) <= 401, f"README.md is {len(lines)} lines; the cap is 401"
+    assert len(lines) <= 508, f"README.md is {len(lines)} lines; the cap is 508"
 
 
 def test_setup_sh_is_executable_and_fails_loudly():

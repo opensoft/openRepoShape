@@ -16,6 +16,12 @@ from repo_shape import NamingPolicy, Refusal, accepts_role  # noqa: E402
 POLICY_PATH = REPO / "contracts" / "repository-naming.yaml"
 VALIDATOR = REPO / "scripts" / "validate-repository-naming.py"
 
+#: Every family the policy declares. Read from the DATA rather than listed
+#: here, so a family added to the contract cannot be added without the two
+#: parametrized properties below being asserted about it.
+FAMILY_IDS = [f["id"] for f in
+              NamingPolicy.load(POLICY_PATH).families]
+
 
 @pytest.fixture(scope="module")
 def policy() -> NamingPolicy:
@@ -26,21 +32,24 @@ def _family(policy: NamingPolicy, family_id: str) -> dict:
     return next(f for f in policy.families if f["id"] == family_id)
 
 
-@pytest.mark.parametrize("family_id", ["neutral-product", "install",
-                                       "domain-descendant", "project-leg"])
+@pytest.mark.parametrize("family_id", FAMILY_IDS)
 def test_family_examples_classify_to_their_own_family(policy, family_id):
     """Every example in the DATA classifies to the family that declares it.
 
     A family that `requires_referent` is given the referent its own data
     records for the example — which is the whole point of the 2026-09-02
     ruling: `MedxChart` is a descendant BECAUSE MedxChart pins `openChart`,
-    not because of how it is spelled.
+    not because of how it is spelled. A `declared_only` family is given the
+    declaration, for the same reason: `InkRouter` is a family BECAUSE it
+    carries `family.yaml`, not because of how it is spelled.
     """
     family = _family(policy, family_id)
     referents = family.get("example_referents") or {}
+    declared = family_id if family.get("declared_only") else None
     for example in family["examples"]:
         pins = {referents[example]} if example in referents else None
-        found = policy.classify(example, declared_pins=pins)
+        found = policy.classify(example, declared_role=declared,
+                                declared_pins=pins)
         assert found is not None, f"{example} classified as nothing"
         assert found[0] == family_id, f"{example} -> {found}, wanted {family_id}"
 
@@ -154,8 +163,7 @@ def test_project_leg_roles_are_distinguished(policy):
             assert policy.classify(example) == ("project-leg", role["id"])
 
 
-@pytest.mark.parametrize("family_id", ["neutral-product", "install",
-                                       "domain-descendant", "project-leg"])
+@pytest.mark.parametrize("family_id", FAMILY_IDS)
 def test_counter_examples_do_not_match_their_family(policy, family_id):
     """A counter-example says 'not THIS family'.
 
@@ -165,8 +173,9 @@ def test_counter_examples_do_not_match_their_family(policy, family_id):
     is filed against.
     """
     family = _family(policy, family_id)
+    declared = family_id if family.get("declared_only") else None
     for name in family.get("counter_examples") or []:
-        hits = [m for m in policy.matches(name) if m[0] == family_id]
+        hits = [m for m in policy.matches(name, declared) if m[0] == family_id]
         assert not hits, f"{name} unexpectedly matched {family_id}"
 
 
@@ -344,3 +353,62 @@ def test_the_policy_data_declares_which_role_a_descendant_may_answer_in(policy):
     assert "roles" not in family, (
         "the descendant family must declare no roles of its own: "
         "`MedxGlass` and `MedxGlass-spec` are not the same form")
+
+
+# --- the ruling: a FAMILY is a holder, and the form is declared-only -------
+
+def test_a_family_name_is_the_holder_form_when_it_is_declared(policy):
+    """THE INKROUTER CASE (2026-09-04). `InkRouter` holds IRRS and IRSS; it is
+    spelled exactly like an assembly root, and `family.yaml` is what tells
+    them apart — so the form answers only when it is asked for."""
+    found = policy.classify("InkRouter", declared_role="family")
+    assert found == ("family", None)
+    assert found.also_matches == ("project-leg/assembly",)
+    assert "DECLARED" in found.reason
+
+
+def test_the_same_name_undeclared_is_an_ordinary_assembly_root(policy):
+    found = policy.classify("InkRouter")
+    assert found == ("project-leg", "assembly")
+    assert found.also_matches == (), (
+        "a declared-only form must not widen `also_matches`: "
+        "`validate-manifest.py` compares that list exactly, and every "
+        "manifest already in the wild records it")
+
+
+def test_the_family_form_is_declared_only_in_the_data(policy):
+    family = _family(policy, "family")
+    assert family["declared_only"] is True
+    assert family["precedence"] > _family(policy, "project-leg")["precedence"], (
+        "the holder form sits BELOW the leg forms: a bare CamelCase token is "
+        "an assembly root unless something says otherwise")
+    assert policy.declared_only("family")
+    assert not policy.declared_only("project-leg")
+
+
+def test_a_hyphenated_name_is_not_a_family_even_when_declared(policy):
+    assert policy.classify("Ink-Router", declared_role="family") is None
+    found = policy.classify("InkRouter-spec", declared_role="family")
+    assert found == ("project-leg", "spec")
+
+
+def test_a_neutral_product_declared_as_a_family_is_still_a_neutral_product(policy):
+    """Unambiguous by construction still wins: `open` in front says what it
+    is, and a declaration cannot make it a holder."""
+    assert policy.classify("openChart", declared_role="family") \
+        == ("neutral-product", None)
+
+
+def test_cli_role_family_names_the_holder_form():
+    result = run_script(VALIDATOR, "--explain", "--role", "family", "InkRouter")
+    assert result.returncode == 0, result.stderr
+    assert "InkRouter: family" in result.stdout
+    assert "DECLARED-ONLY" in result.stdout
+    assert "family.yaml" in result.stdout
+
+
+def test_cli_without_the_role_reports_the_assembly_form():
+    result = run_script(VALIDATOR, "InkRouter")
+    assert result.returncode == 0
+    assert "project-leg/assembly" in result.stdout
+    assert "also_matches" not in result.stdout

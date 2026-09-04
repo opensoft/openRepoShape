@@ -1,10 +1,18 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Re-sync a project's COPIED shape files with openRepoShape, and re-pin.
+"""Re-sync a root's COPIED shape files with openRepoShape, and re-pin.
 
-    ./update-shape.py check --root <assembly-root>
-    ./update-shape.py apply --root <assembly-root> --at <commit> --yes \\
+    ./update-shape.py check --root <assembly-root|family-root>
+    ./update-shape.py apply --root <root> --at <commit> --yes \\
         [--accept-local <path>] [--branch shape/update-<sha>]
+
+TWO KINDS OF ROOT, ONE COMMAND. An assembly root mirrors the pin into
+`project.yaml` and must leave `validate-pins.py` and `validate-manifest.py`
+green; a FAMILY holder (2026-09-04) mirrors it into `family.yaml` and must
+leave `validate-family.py` green. Everything else is identical, because both
+carry the same COPY pin — per-file sha256 rows over what was copied, plus the
+`commit` and `tree_sha256` of the revision it came from. Which one this is, is
+read from the tree (`root_kind`), never taken as a flag.
 
 THE GAP THIS CLOSES, as observed on 2026-09-03. `scaffold-project.py` COPIES a
 small set of files out of openRepoShape so a project runs its own gate in an
@@ -75,8 +83,9 @@ from repo_shape import (  # noqa: E402
     file_sha256, git_out, load_yaml, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
-    COPIED_FROM_SHAPE, COPIED_VERBATIM, SHAPE_REPOSITORY, CommandFailed,
-    check_program, run,
+    COPIED_FROM_SHAPE, COPIED_VERBATIM, FAMILY_COPIED_FROM_SHAPE,
+    FAMILY_COPIED_VERBATIM, SHAPE_REPOSITORY, CommandFailed, check_program,
+    run,
 )
 
 #: `owner/repo`, the only remote spelling `--upstream` accepts.
@@ -97,6 +106,58 @@ COPY_SOURCE: dict[str, str] = {
     rel: f"templates/assembly-root/{rel}" for rel in COPIED_VERBATIM
 }
 COPY_SOURCE.update({rel: src for src, rel in COPIED_FROM_SHAPE})
+
+#: The same table for a FAMILY holder, and it is a SEPARATE one rather than a
+#: merge, for one concrete reason: both roots hold a `scripts/bootstrap.py`
+#: and they are DIFFERENT FILES — one puts a project's legs on their tracking
+#: branches, the other fetches members and delegates to theirs. A single dict
+#: keyed by the path in the root would map a family's copy back to the
+#: assembly root's template and re-sync it into the wrong file, silently.
+FAMILY_COPY_SOURCE: dict[str, str] = {
+    rel: f"templates/family-root/{rel}" for rel in FAMILY_COPIED_VERBATIM
+}
+FAMILY_COPY_SOURCE.update({rel: src for src, rel in FAMILY_COPIED_FROM_SHAPE})
+
+
+class Kind:
+    """Which shape of root this is, and everything that differs because of it.
+
+    ONE OBJECT, so the four places that differ cannot get out of step: the
+    manifest that mirrors the pin, the upstream template directory a copy came
+    from, the copy-source table, and the validators that must pass after a
+    rewrite. A family root and an assembly root are re-synced by the same
+    command because they carry the SAME copy pin — per-file sha256 rows,
+    `commit`, `tree_sha256` — and differ only in what was copied.
+    """
+
+    def __init__(self, name: str, manifest: str, template_dir: str,
+                 copy_source: dict, validators: tuple):
+        self.name = name
+        self.manifest = manifest
+        self.template_dir = template_dir
+        self.copy_source = copy_source
+        self.validators = validators
+
+
+PROJECT_KIND = Kind("project", "project.yaml", "templates/assembly-root",
+                    COPY_SOURCE, ("scripts/validate-pins.py",
+                                  "scripts/validate-manifest.py"))
+FAMILY_KIND = Kind("family", "family.yaml", "templates/family-root",
+                   FAMILY_COPY_SOURCE, ("scripts/validate-family.py",))
+
+
+def root_kind(root: Path) -> Kind:
+    """A root carrying `family.yaml` and no `project.yaml` is a family.
+
+    Read from the tree rather than taken as a flag: a human updating a
+    checkout should not have to tell the tool what they are standing in, and
+    the two manifests are mutually exclusive by construction — a family has no
+    legs, so it has no `project.yaml` to mirror a pin into.
+    """
+    if (root / "family.yaml").is_file() and not (root / "project.yaml").is_file():
+        return FAMILY_KIND
+    return PROJECT_KIND
+
 
 #: States a pinned row can be in. The first four are the vocabulary the task
 #: of updating a project is actually about; the last three are the ways the
@@ -294,23 +355,26 @@ def read_pin(root: Path) -> tuple[dict, list[Row]]:
     return pin, rows
 
 
-def source_for(rel: str, upstream: Upstream, rev: str) -> str | None:
+def source_for(rel: str, upstream: Upstream, rev: str,
+               kind: Kind = PROJECT_KIND) -> str | None:
     """Where a pinned root path came from in the upstream tree.
 
-    The materializer's own tables answer first. The two fallbacks exist for a
-    pin written by a DIFFERENT openRepoShape than the one running this: the
-    tables here describe today's copy lists, and a project pinned three
-    revisions back may name a file those lists have since renamed. Each
-    fallback is confirmed against the target tree before it is used, so a
-    guess that is not there is reported as `unmapped` rather than acted on.
+    The materializer's own tables answer first, for the KIND of root this is —
+    a family holder and an assembly root both carry a `scripts/bootstrap.py`
+    and they are different files. The two fallbacks exist for a pin written by
+    a DIFFERENT openRepoShape than the one running this: the tables here
+    describe today's copy lists, and a project pinned three revisions back may
+    name a file those lists have since renamed. Each fallback is confirmed
+    against the target tree before it is used, so a guess that is not there is
+    reported as `unmapped` rather than acted on.
     """
     stripped = rel
     prefix = f"{COLLISION_DIR}/"
     if stripped.startswith(prefix):
         stripped = stripped[len(prefix):]
-    known = COPY_SOURCE.get(stripped)
+    known = kind.copy_source.get(stripped)
     candidates = [known] if known else []
-    candidates += [f"templates/assembly-root/{stripped}", stripped]
+    candidates += [f"{kind.template_dir}/{stripped}", stripped]
     for candidate in candidates:
         if candidate and upstream.blob(rev, candidate) is not None:
             return candidate
@@ -318,7 +382,7 @@ def source_for(rel: str, upstream: Upstream, rev: str) -> str | None:
 
 
 def classify(root: Path, rows: list[Row], upstream: Upstream, pinned: str,
-             target: str) -> None:
+             target: str, kind: Kind = PROJECT_KIND) -> None:
     """Fill in every row's verdict. Four byte-strings decide it:
 
         D  the sha256 the pin RECORDS for this file
@@ -339,7 +403,7 @@ def classify(root: Path, rows: list[Row], upstream: Upstream, pinned: str,
             row.detail = ("pinned but absent from the root; a human decides "
                           "whether it was deleted on purpose")
             continue
-        source = source_for(row.path, upstream, target)
+        source = source_for(row.path, upstream, target, kind)
         row.source = source
         if source is None:
             row.state = UNMAPPED
@@ -527,10 +591,11 @@ def counted(rows: list[Row]) -> dict[str, int]:
 # ---------------------------------------------------------------------------
 
 
-def prepare(args) -> tuple[Path, dict, list[Row], Upstream, str, str]:
+def prepare(args) -> tuple[Path, dict, list[Row], Upstream, str, str, Kind]:
     root = Path(args.root).expanduser().resolve()
     if not root.is_dir():
         raise Refusal("update-root-missing", f"{root} is not a directory")
+    kind = root_kind(root)
     pin, rows = read_pin(root)
     pinned = str(pin["commit"]).lower()
     declared = str(pin.get("source_repository") or SHAPE_REPOSITORY)
@@ -541,15 +606,15 @@ def prepare(args) -> tuple[Path, dict, list[Row], Upstream, str, str]:
                                   if args.at else None)
         # The pinned revision must be READABLE or the comparison is a guess.
         upstream.resolve(pinned)
-        classify(root, rows, upstream, pinned, target)
+        classify(root, rows, upstream, pinned, target, kind)
     except Refusal:
         upstream.close()
         raise
-    return root, pin, rows, upstream, pinned, target
+    return root, pin, rows, upstream, pinned, target, kind
 
 
 def cmd_check(args) -> int:
-    root, pin, rows, upstream, pinned, target = prepare(args)
+    root, pin, rows, upstream, pinned, target, kind = prepare(args)
     try:
         pin_tree = upstream.tree_sha256(pinned)
         target_tree = upstream.tree_sha256(target)
@@ -648,7 +713,7 @@ def commit_on_branch(root: Path, branch: str, paths: list[str], target: str,
 
 
 def cmd_apply(args) -> int:
-    root, pin, rows, upstream, pinned, target = prepare(args)
+    root, pin, rows, upstream, pinned, target, kind = prepare(args)
     written: dict[Path, bytes] = {}
     try:
         accepted = {str(path) for path in (args.accept_local or [])}
@@ -694,7 +759,7 @@ def cmd_apply(args) -> int:
         confirm(args, rows, target)
         target_tree = upstream.tree_sha256(target)
         pin_path = root / "contracts" / "shape-pin.yaml"
-        manifest_path = root / "project.yaml"
+        manifest_path = root / kind.manifest
 
         def write(path: Path, data: bytes) -> None:
             written.setdefault(path, path.read_bytes())
@@ -717,12 +782,11 @@ def cmd_apply(args) -> int:
         write(manifest_path, rewrite_manifest(
             manifest_path.read_text(encoding="utf-8"), target, target_tree
         ).encode("utf-8"))
-        print(f"  re-pinned contracts/shape-pin.yaml and project.yaml "
+        print(f"  re-pinned contracts/shape-pin.yaml and {kind.manifest} "
               f"{pinned[:12]} -> {target[:12]}")
 
-        print("\nthe project's own validators")
-        failed = [name for name in ("scripts/validate-pins.py",
-                                    "scripts/validate-manifest.py")
+        print(f"\nthe {kind.name}'s own validators")
+        failed = [name for name in kind.validators
                   if run_validator(root, name) != 0]
         if failed:
             raise Refusal(
@@ -735,7 +799,7 @@ def cmd_apply(args) -> int:
                 "somebody else's pull request.")
 
         paths = sorted({row.path for row in copied}
-                       | {"contracts/shape-pin.yaml", "project.yaml"})
+                       | {"contracts/shape-pin.yaml", kind.manifest})
         if args.branch:
             commit_on_branch(root, args.branch, paths, target, upstream,
                              len(copied))
@@ -744,7 +808,7 @@ def cmd_apply(args) -> int:
                 run(["git", "push", "-q", "-u", "origin", args.branch], cwd=root)
                 print(f"  pushed {args.branch} to origin")
             if args.pr:
-                open_pull_request(root, args.branch, target, upstream)
+                open_pull_request(root, args.branch, target, upstream, kind)
         print()
         next_line(root, args, paths, target)
         return 0
@@ -760,16 +824,27 @@ def cmd_apply(args) -> int:
 
 
 def open_pull_request(root: Path, branch: str, target: str,
-                      upstream: Upstream) -> None:
-    manifest = load_yaml(root / "project.yaml")
-    legs = [leg for leg in (manifest or {}).get("legs") or []
-            if isinstance(leg, dict) and leg.get("role") == "assembly"]
-    repository = str(legs[0].get("repository")) if legs else ""
+                      upstream: Upstream, kind: Kind = PROJECT_KIND) -> None:
+    manifest = load_yaml(root / kind.manifest)
     base = str((manifest or {}).get("tracking_branch") or "main")
+    if kind is FAMILY_KIND:
+        # A family declares its own repository: it has no legs to read one
+        # from, being a holder rather than a project.
+        repository = str((manifest or {}).get("repository") or "")
+        if not repository and (manifest or {}).get("org") and \
+                (manifest or {}).get("name"):
+            repository = f"{manifest['org']}/{manifest['name']}"
+        missing = (f"{kind.manifest} declares neither `repository:` nor an "
+                   "`org:`/`name:` pair, so there is no repository to open a "
+                   "pull request against")
+    else:
+        legs = [leg for leg in (manifest or {}).get("legs") or []
+                if isinstance(leg, dict) and leg.get("role") == "assembly"]
+        repository = str(legs[0].get("repository")) if legs else ""
+        missing = ("project.yaml declares no assembly leg, so there is no "
+                   "repository to open a pull request against")
     if not repository:
-        raise Refusal("update-pr-no-repository",
-                      "project.yaml declares no assembly leg, so there is no "
-                      "repository to open a pull request against")
+        raise Refusal("update-pr-no-repository", missing)
     url = run(["gh", "pr", "create", "--repo", repository, "--base", base,
                "--head", branch, "--title",
                f"Re-sync the shape copies to {upstream.repository} @ "

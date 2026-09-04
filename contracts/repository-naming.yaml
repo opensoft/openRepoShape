@@ -2,7 +2,7 @@ schema_version: 1
 kind: repository-naming-policy
 
 # ===========================================================================
-# repository-naming.yaml — the four live naming families, as DATA.
+# repository-naming.yaml — the five live naming families, as DATA.
 #
 # WHY DATA AND NOT PROSE. A convention written only in a README is checked by
 # whoever remembers it. This file is read by `scripts/validate-repository-naming.py`,
@@ -61,6 +61,13 @@ kind: repository-naming-policy
 # VALID classification for an assembly root. Reading the two rulings as
 # exclusive would have forced every declared descendant into a one-repository
 # project, which neither ruling says.
+#
+# A FIFTH FORM ARRIVED THE SAME WAY, ON 2026-09-04: `family`, a HOLDER that
+# pins other projects' assembly roots. It is spelled exactly like an assembly
+# root and is therefore DECLARED-ONLY (`declared_only: true`): the classifier
+# reports it only when the reader says which question is being asked, so
+# adding it changed no existing name's answer and no existing manifest's
+# `also_matches`. See that family's own block for the ruling.
 #
 # THE ASSEMBLY-ROOT FORM IS THE RESIDUAL CLASS, deliberately. A bare CamelCase
 # token is the widest form here and sits last on purpose: the staged fragment
@@ -210,6 +217,42 @@ families:
       - Atlas-SPEC
       - Atlas_spec
       - Atlas-tests
+
+  - id: family
+    precedence: 5
+    title: Family holder
+    pattern: "^[A-Za-z][A-Za-z0-9]*$"
+    # DECLARED-ONLY, and for the same reason the descendant form is: the
+    # characters cannot tell you. `InkRouter` is spelled exactly like an
+    # assembly root, because it IS one CamelCase token — what makes it a
+    # family is `family.yaml` in its own tree, which is a fact, not a
+    # spelling. So this form is reported only when the reader DECLARES it
+    # (`--role family`, or `validate-family.py`, which reads the manifest that
+    # settles it). Left undeclared, `InkRouter` classifies as the assembly
+    # root it also looks like, and nothing about any existing project's
+    # `also_matches` changes — which is the property that let this form be
+    # added to a policy two live projects already carry a copy of.
+    declared_only: true
+    declared_by: >-
+      `family.yaml` at the root of the repository — `kind: family-manifest`,
+      naming the members it pins. A holder with no manifest is not a family.
+    description: >-
+      A HOLDER, not a project: a repository that pins other projects' assembly
+      roots as submodules under `members/` and carries the utilities to fetch
+      and bootstrap them together. Ruled by Brett Heap on 2026-09-04, for
+      InkRouter: "InkRouter is only something that can download all the others
+      easily? like a holder folder and some utilities for the family of
+      services." It has no spec or code leg of its own and confers nothing —
+      membership is navigation, exactly as the three legs are.
+    # Below the leg forms on purpose. A bare CamelCase token is an assembly
+    # root unless something says otherwise, because that is the overwhelmingly
+    # commoner case and the residual class should be the common one.
+    examples:
+      - InkRouter
+      - Northwind
+    counter_examples:
+      - InkRouter-spec
+      - ink-router
 
 # The GitHub topic every repository of a project carries, so the organisation's
 # own search surfaces the group without a checkout. It is the SECOND of the

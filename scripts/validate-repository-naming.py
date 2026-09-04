@@ -53,10 +53,10 @@ DEFAULT_POLICY = Path(__file__).resolve().parents[1] / "contracts" / "repository
 def _describe(policy: NamingPolicy, name: str, role: str | None,
               pins: set[str]) -> list[str]:
     lines = []
-    matches = policy.matches(name)
+    matches = policy.matches(name, role)
     if not matches:
         lines.append(f"  {name}: NO FAMILY")
-        lines.append("    the four families are: " + ", ".join(
+        lines.append(f"    the {len(policy.families)} families are: " + ", ".join(
             f["id"] for f in policy.families))
         for family in policy.families:
             lines.append(f"    {family['id']:<18} {family['pattern']}")
@@ -71,6 +71,10 @@ def _describe(policy: NamingPolicy, name: str, role: str | None,
         if hits and policy.requires_referent(family["id"]):
             claim = " [a CLAIM: needs a declared pin on " + " or ".join(
                 policy.descendant_referents(name)) + "]"
+        elif policy.declared_only(family["id"]):
+            claim = (" [DECLARED-ONLY: reported only with --role "
+                     + family["id"] + "; " + str(family.get("declared_by") or
+                                                 "a declaration").strip() + "]")
         lines.append(
             f"    {mark}{family['id']:<18} {family['pattern']}{role_note}{claim}")
     if len(matches) > 1:
@@ -134,10 +138,13 @@ def main(argv: list[str] | None = None) -> int:
                         help="read the leg names, their roles and the declared "
                              "neutral-product pins from a project.yaml manifest")
     parser.add_argument("--role", default=None,
-                        choices=("assembly", "spec", "code"),
+                        choices=("assembly", "spec", "code", "family"),
                         help="the role the NAMES on the command line are "
                              "offered as; a descendant-form name with no "
-                             "referent pin is classified by this")
+                             "referent pin is classified by this, and "
+                             "`family` is what asks whether a name is a valid "
+                             "HOLDER — a form spelled exactly like an assembly "
+                             "root, so it is reported only when declared")
     parser.add_argument("--pins", default="",
                         help="comma-separated neutral products the project "
                              "declares a pin on, e.g. --pins openChart. A "
@@ -194,7 +201,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             "FINDING naming-unclassified: "
             + ", ".join(unclassified)
-            + "\n  These names match none of the four families in "
+            + "\n  These names match none of the families in "
             + str(args.policy)
             + ".\n  A project's three repositories are `<Project>`, "
             "`<Project>-spec` and `<Project>-code`; `<Project>` is one "
