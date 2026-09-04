@@ -24,14 +24,15 @@ jobs:
     # mode is not a red step but a push-event run with ZERO jobs: this was
     # the defect on the first real projects (MedxSoft/MedxEHR #8,
     # MedxSoft/MedxGlass #1). `secrets` IS allowed in `env:`, so the presence
-    # check is done here, once, and the guarded step below reads the
-    # resulting `env.*` boolean instead of `secrets.*` directly.
+    # check is done here, once, and the guarded steps below read the
+    # resulting `env.*` booleans instead of `secrets.*` directly.
     env:
       SHAPE_LEGS_TOKEN_SET: ${{ secrets.SHAPE_LEGS_TOKEN != '' }}
+      SHAPE_LEGS_APP_SET: ${{ secrets.SHAPE_LEGS_APP_ID != '' && secrets.SHAPE_LEGS_APP_PRIVATE_KEY != '' }}
     steps:
       # The ROOT repository is always readable by the workflow's own default
       # token, so this checkout never carries `token:` — no override, no
-      # dependency on SHAPE_LEGS_TOKEN at all. That was the defect (first
+      # dependency on either leg credential at all. That was the defect (first
       # real use, MedxSoft/MedxEHR and MedxSoft/MedxGlass, runs 33821509948
       # and 33821512605): `token: ${{ secrets.SHAPE_LEGS_TOKEN ||
       # github.token }}` put a legs-scoped token onto the ROOT checkout, so a
@@ -46,33 +47,118 @@ jobs:
           submodules: false
           persist-credentials: false
 
+      # Ruled by Brett Heap on 2026-09-04: move the legs credential to a
+      # GitHub App. An installation token is minted PER OWNER, so the legs it
+      # can name are only those this repository's own owner also owns — this
+      # step reads `.gitmodules` once, offline, and turns each leg URL (HTTPS
+      # or SSH) into an `owner/name` pair, keeping the names whose owner
+      # matches `github.repository_owner` and warning (excluding, not
+      # failing) on any that don't, since those can only ever be reached by
+      # `SHAPE_LEGS_TOKEN`. Runs only when the App secrets are present — its
+      # only consumer is the mint step below, which is guarded the same way.
+      - name: leg repository names from .gitmodules
+        id: leg-names
+        if: env.SHAPE_LEGS_APP_SET == 'true'
+        env:
+          REPO_OWNER: ${{ github.repository_owner }}
+        run: |
+          set -e
+          legs=""
+          if [ -f .gitmodules ]; then
+            while IFS= read -r url; do
+              [ -n "$url" ] || continue
+              case "$url" in
+                https://github.com/*) repo="${url#https://github.com/}" ;;
+                git@github.com:*) repo="${url#git@github.com:}" ;;
+                *) continue ;;
+              esac
+              repo="${repo%.git}"
+              owner="${repo%%/*}"
+              name="${repo#*/}"
+              if [ "$owner" = "$REPO_OWNER" ]; then
+                if [ -z "$legs" ]; then
+                  legs="$name"
+                else
+                  legs="$legs,$name"
+                fi
+              else
+                echo "::warning::leg $owner/$name is owned by a different account ($owner) than this repository ($REPO_OWNER); a GitHub App installation token is per-owner, so it is excluded from the App-minted token here and can only be reached via SHAPE_LEGS_TOKEN."
+              fi
+            done < <(git config --file .gitmodules --get-regexp '\.url$' | cut -d' ' -f2- || true)
+          fi
+          echo "legs=$legs" >> "$GITHUB_OUTPUT"
+          echo "legs for the App-minted token: $legs"
+
+      # A configured App that CANNOT mint is a misconfiguration, not a
+      # degrade: unlike a missing SHAPE_LEGS_TOKEN (handled below by letting
+      # the fetch fall back and degrade), two secrets that are present but
+      # wrong mean the App id/key don't match, or the App is not installed
+      # with `contents:read` on these legs, and a human must act on that —
+      # so `continue-on-error: false` (the default, spelled out) lets this
+      # fail the job outright, and the step below turns the action's own
+      # error into one that names the two secrets and the installation.
+      - name: mint a leg-reader token from the GitHub App
+        id: app-token
+        if: env.SHAPE_LEGS_APP_SET == 'true'
+        continue-on-error: false
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ secrets.SHAPE_LEGS_APP_ID }}
+          private-key: ${{ secrets.SHAPE_LEGS_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.leg-names.outputs.legs }}
+          permission-contents: read
+
+      - name: fail — the GitHub App could not mint an installation token
+        if: failure() && steps.app-token.outcome == 'failure'
+        run: |
+          echo "::error::Could not mint a leg-reader installation token from the GitHub App. Check that the SHAPE_LEGS_APP_ID and SHAPE_LEGS_APP_PRIVATE_KEY secrets are correct, and that the App is installed on ${{ github.repository_owner }} with Contents: read access to the leg repositories: ${{ steps.leg-names.outputs.legs }}"
+          exit 1
+
       # Best-effort, and its failure is CAPTURED rather than let through as a
-      # step failure: a private leg with no `SHAPE_LEGS_TOKEN` configured is a
+      # step failure: a private leg with no leg credential configured is a
       # DEGRADE (see the two guarded steps below), never a red
       # `actions/checkout`. That was the earlier defect: `submodules: true`
       # on checkout hard-fails the whole job the moment a leg cannot be
       # cloned, with no route to run the checks that do not need the legs at
       # all.
       #
-      # `SHAPE_LEGS_TOKEN` is scoped to THIS STEP alone via `env:` — never to
-      # the job, never onto the root checkout above — and is used only
-      # through a scoped `git -c url.<...>.insteadOf=<...>` rewrite, never
-      # echoed or interpolated into a URL that gets printed. Two rewrites
-      # cover both submodule URL forms an adopted repository may carry:
-      # `https://github.com/...` and SSH `git@github.com:...`. With no
-      # secret configured this falls back to a plain, unauthenticated
+      # Resolution order: the App-minted token (`steps.app-token.outputs.
+      # token`) first, then the `SHAPE_LEGS_TOKEN` PAT, then no credential at
+      # all — the first one present wins, and which one won is recorded as
+      # `legs_credential` for both the operator (printed below) and the fail
+      # step further down. Whichever it is, it is scoped to THIS STEP alone
+      # via `env:` — never to the job, never onto the root checkout above —
+      # and used only through a scoped `git -c url.<...>.insteadOf=<...>`
+      # rewrite, never echoed or interpolated into a URL that gets printed.
+      # Two rewrites cover both submodule URL forms an adopted repository may
+      # carry: `https://github.com/...` and SSH `git@github.com:...`. With no
+      # credential configured this falls back to a plain, unauthenticated
       # `git submodule update --init --recursive` — the same command that
       # already ran here, unchanged, for a project whose legs are public.
       - name: fetch the legs (submodules)
         id: submodules
         env:
+          SHAPE_LEGS_APP_TOKEN: ${{ steps.app-token.outputs.token }}
           SHAPE_LEGS_TOKEN: ${{ secrets.SHAPE_LEGS_TOKEN }}
         run: |
           set +e
-          if [ -n "$SHAPE_LEGS_TOKEN" ]; then
+          if [ -n "$SHAPE_LEGS_APP_TOKEN" ]; then
+            legs_credential=app
+            LEG_TOKEN="$SHAPE_LEGS_APP_TOKEN"
+          elif [ -n "$SHAPE_LEGS_TOKEN" ]; then
+            legs_credential=pat
+            LEG_TOKEN="$SHAPE_LEGS_TOKEN"
+          else
+            legs_credential=none
+            LEG_TOKEN=""
+          fi
+          echo "legs_credential=$legs_credential" >> "$GITHUB_OUTPUT"
+          echo "leg credential source: $legs_credential"
+          if [ -n "$LEG_TOKEN" ]; then
             git \
-              -c "url.https://x-access-token:${SHAPE_LEGS_TOKEN}@github.com/.insteadOf=https://github.com/" \
-              -c "url.https://x-access-token:${SHAPE_LEGS_TOKEN}@github.com/.insteadOf=git@github.com:" \
+              -c "url.https://x-access-token:${LEG_TOKEN}@github.com/.insteadOf=https://github.com/" \
+              -c "url.https://x-access-token:${LEG_TOKEN}@github.com/.insteadOf=git@github.com:" \
               submodule update --init --recursive
           else
             git submodule update --init --recursive
@@ -83,7 +169,7 @@ jobs:
             echo "legs_available=true" >> "$GITHUB_OUTPUT"
           else
             echo "legs_available=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::submodule checkout failed (git exit $status). If the legs are PRIVATE or internal sibling repositories, the default GITHUB_TOKEN cannot read them. Set SHAPE_LEGS_TOKEN — a fine-grained PAT or GitHub App installation token with contents:read on the legs — as a repository or organisation secret. Leg URLs:"
+            echo "::warning::submodule checkout failed (git exit $status) using credential source '$legs_credential'. If the legs are PRIVATE or internal sibling repositories, the default GITHUB_TOKEN cannot read them. Configure a GitHub App (SHAPE_LEGS_APP_ID + SHAPE_LEGS_APP_PRIVATE_KEY, preferred) or set SHAPE_LEGS_TOKEN — a fine-grained PAT — with contents:read on the legs, as a repository or organisation secret. Leg URLs:"
             git config --file .gitmodules --get-regexp '\.url$' | while read -r _ url; do
               echo "::warning::  $url"
             done
@@ -118,18 +204,19 @@ jobs:
         run: |
           echo "::warning::lockstep pin check SKIPPED: the legs could not be checked out, so their trees are not available to recompute the digests in contracts/*-pin.yaml against. See the 'fetch the legs (submodules)' step above for why."
 
-      # Misconfiguration must not be silent. An absent SHAPE_LEGS_TOKEN
+      # Misconfiguration must not be silent. Neither leg credential being set
       # degrading a project with private legs is expected and reported above;
-      # a PRESENT SHAPE_LEGS_TOKEN that still could not check out the legs
-      # (wrong scope, missing contents:read grant, a leg URL problem) is a
-      # finding a human must act on, so this fails the job — the only case
-      # that does. The root checkout above never depended on this token, so
-      # a failure here can only mean the token cannot read one of the LEG
-      # repositories named below.
-      - name: fail — SHAPE_LEGS_TOKEN is set but the legs still could not be fetched
-        if: steps.submodules.outputs.legs_available != 'true' && env.SHAPE_LEGS_TOKEN_SET == 'true'
+      # a credential that IS configured (App or PAT) that still could not
+      # check out the legs (wrong scope, missing contents:read grant, an
+      # incomplete App installation, a leg URL problem) is a finding a human
+      # must act on, so this fails the job — the only case that does. The
+      # root checkout above never depended on either credential, so a
+      # failure here can only mean the credential named below cannot read one
+      # of the LEG repositories.
+      - name: fail — a leg credential is configured but the legs still could not be fetched
+        if: steps.submodules.outputs.legs_available != 'true' && (env.SHAPE_LEGS_TOKEN_SET == 'true' || env.SHAPE_LEGS_APP_SET == 'true')
         run: |
-          echo "::error::SHAPE_LEGS_TOKEN is configured but 'git submodule update --init --recursive' still failed. The root checkout does not use this token — it reads with the workflow's default token — so this means SHAPE_LEGS_TOKEN cannot read one or more of the following LEG repositories (wrong token scope, a missing contents:read grant, or a leg URL problem):"
+          echo "::error::A leg credential is configured (source: ${{ steps.submodules.outputs.legs_credential }}) but 'git submodule update --init --recursive' still failed. The root checkout does not use this token — it reads with the workflow's default token — so this means the '${{ steps.submodules.outputs.legs_credential }}' credential cannot read one or more of the following LEG repositories (wrong token/App scope, a missing contents:read grant, an incomplete App installation, or a leg URL problem):"
           git config --file .gitmodules --get-regexp '\.url$' | while read -r _ url; do
             echo "::error::  $url"
           done
