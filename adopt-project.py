@@ -731,10 +731,26 @@ class Plan:
 
     @property
     def project_id(self) -> str:
-        """The lowercase machine name. The GitHub topic is derived from it,
-        both for the manifest's `TOPIC` and for `gh repo edit --add-topic`,
-        so it is read in ONE place rather than spelled out at each."""
-        return str(self.get("id", self.names()["assembly"].lower()))
+        """The lowercase machine name, RE-VALIDATED here.
+
+        The GitHub topic is derived from it, both for the manifest's `TOPIC`
+        and for `gh repo edit --add-topic`, so it is read in ONE place rather
+        than spelled out at each. `plan` refuses an `--id` that is not this
+        shape, but the plan is edited between `plan` and `execute` on purpose,
+        so the check is repeated where the value is USED: it reaches a `gh`
+        command line and a written manifest, and a topic that does not match
+        `contracts/repository-naming.yaml` is one `validate-repository-naming.py`
+        will refuse in the project's own gate, long after the run that set it.
+        """
+        project_id = str(self.get("id", self.names()["assembly"].lower()))
+        if not PROJECT_ID_RE.match(project_id):
+            raise Refusal(
+                "plan-bad-id",
+                f"{self.path}: `id:` is {project_id!r} and must match "
+                f"{PROJECT_ID_RE.pattern}",
+                "Remediation: fix `id:` in the plan, or re-run `plan` with an "
+                "explicit lowercase --id. The GitHub topic is derived from it.")
+        return project_id
 
     def get(self, key, default=None):
         value = self.data.get(key)
