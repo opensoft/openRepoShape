@@ -641,3 +641,34 @@ def test_update_shape_does_not_resync_a_family_bootstrap_from_the_project_one(
     assert verdicts.get("scripts/bootstrap.py") == "unchanged", (
         "the family's bootstrap must be compared against "
         "templates/family-root/scripts/bootstrap.py, not the assembly root's")
+
+
+def test_no_members_checks_the_envelope_and_the_copies_alone(holder):
+    """What CI runs when the members could not be checked out: the checks
+    that do not need them still run, and the ones that do are skipped OUT
+    LOUD rather than passing on an unreadable surface."""
+    shutil.rmtree(holder / "members" / "IRRS")
+    (holder / "members" / "IRRS").mkdir()
+    refused = validate(holder)
+    assert refused.returncode == 2
+    assert "member-uninitialized" in refused.stderr
+
+    result = validate(holder, "--no-members")
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "2 member(s) SKIPPED (--no-members)" in result.stdout
+    assert "copied shape file(s) match their digests" in result.stdout
+    assert "InkRouter: family" in result.stdout
+
+
+def test_no_members_still_finds_an_edited_copy(holder):
+    copy = holder / "Makefile"
+    copy.write_text(copy.read_text() + "\n# edited in place\n")
+    result = validate(holder, "--no-members")
+    assert result.returncode == 1
+    assert "shape-copy-drift" in result.stderr
+
+
+def test_pins_and_no_members_together_ask_for_nothing(holder):
+    result = validate(holder, "--pins", "--no-members")
+    assert result.returncode == 2
+    assert "family-nothing-to-check" in result.stderr

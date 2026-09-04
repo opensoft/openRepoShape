@@ -190,11 +190,16 @@ jobs:
         if: steps.submodules.outputs.members_available == 'true'
         run: python3 scripts/validate-family.py
 
-      - name: family manifest (members unavailable — envelope only)
+      # The checks that do NOT need the members still run: the manifest
+      # envelope, the family name against the naming policy, and the copied
+      # shape files against their digests. Only the member half is skipped,
+      # and it is skipped OUT LOUD rather than passing on an unreadable
+      # surface.
+      - name: family manifest and shape copies (members unavailable)
         if: steps.submodules.outputs.members_available != 'true'
         run: |
-          echo "::warning::the members could not be checked out, so their pinned digests and project.yaml ids cannot be recomputed. See the 'fetch the members (submodules)' step above for why."
-          python3 -c "import sys; sys.exit(0)"
+          echo "::warning::the members could not be checked out, so their pinned digests and project.yaml ids cannot be recomputed. The envelope and the copied shape files are still checked. See the 'fetch the members (submodules)' step above for why."
+          python3 scripts/validate-family.py --no-members
 
       # Misconfiguration must not be silent. Neither credential being set
       # degrading a family with private members is expected and reported

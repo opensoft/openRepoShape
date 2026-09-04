@@ -1,11 +1,12 @@
-# AGENTS.md — scaffolding, adopting, updating, and declaring descent
+# AGENTS.md — scaffolding, adopting, updating, declaring descent, families
 
 You are an AI assistant a human has asked to "scaffold a new project with
-this shape", or "convert this repository to it". This is the whole procedure;
-`README.md` says what the shape is. Sections 1-3 scaffold a NEW project; the
-three after them cover an EXISTING repository, a project that declares
-descent from a neutral product, and a project whose copied shape files have
-fallen behind the upstream.
+this shape", or "convert this repository to it", or "put these services in a
+family". This is the whole procedure; `README.md` says what the shape is.
+Sections 1-3 scaffold a NEW project; the ones after them cover an EXISTING
+repository (including one with no code yet), a project that declares descent
+from a neutral product, a project whose copied shape files have fallen behind
+the upstream, and a FAMILY holder.
 
 ## The rules that outrank the rest
 
@@ -108,6 +109,28 @@ order, and step 4 is the one you must not skip.
 `execute` opens a pull request, because these organisations are pull-request
 only. Never suggest a direct push to the default branch, and never `--admin`.
 
+### Adopting a repository that has NO code yet (or no spec)
+
+A leg no plan entry assigns a path to is SEEDED from
+`templates/<role>-root/`, not extracted — `git filter-repo` over an empty
+path list yields an empty history, not an empty repository. `plan` and
+`check` both WARN; `check` still passes, because a spec-only repository is a
+legitimate thing to adopt.
+
+```sh
+./adopt-project.py plan --source <org>/<Repo> --project <Project> \
+    --allow-empty-leg code
+```
+
+1. **Read the warning back to the human and get their word for the flag.**
+   `execute` refuses without `--allow-empty-leg <leg>` and it is right to: a
+   plan that lost its code paths to a bad edit is indistinguishable from a
+   repository that has no code. Do not pass it because the tool asked for it;
+   pass it because the human confirmed the repository genuinely has none.
+2. Everything else is unchanged, step 7 included: the verification table
+   reads `code: 0 of N source paths (seeded from template)` and still
+   accounts for every source path by blob sha.
+
 ## Scaffolding a project that DECLARES descent
 
 `MedxGlass` descends from `openGlass` only if it PINS it (2026-09-02). Pass
@@ -161,11 +184,41 @@ git -C <path> push -u origin shape/update-<sha>   # then open a pull request
    and rolls every byte back if either goes red. Land it as a pull request;
    never suggest a push to the default branch.
 
+## Creating a family, and adding a member
+
+A FAMILY is a holder that pins other projects' ASSEMBLY ROOTS as submodules
+under `members/`. It is not a project — no legs — and membership confers
+nothing. Use one when the parts DEPLOY SEPARATELY; one project is what parts
+that ship together already are.
+
+```sh
+python3 scripts/family.py init --org <org> --family <Name> [--reuse-empty-repo]
+python3 scripts/family.py add  --family-root <path> --member <org>/<Project>
+python3 scripts/family.py bump --family-root <path> --member <Project> --to <sha>
+```
+
+1. **`init` creates a repository, so the human must say so first.** There is
+   no prompt here — `family.py` is not `setup.sh` — which makes it your job
+   to get an explicit yes before you run it, and to run `--dry-run` first and
+   show them the plan. If `<org>/<Name>` already exists and is EMPTY, add
+   `--reuse-empty-repo`; if it has commits, stop and ask.
+2. **A family pins ASSEMBLY ROOTS, never legs.** `--member <org>/<Project>`,
+   never `<Project>-spec`. The tool refuses a leg, and the refusal is
+   correct: a leg has no `project.yaml` and belongs to its own root.
+3. **Each of `add`, `bump` and `remove` writes ONE commit** moving the
+   gitlink and the pin together. Land it as a pull request; never suggest a
+   push to the default branch. Do not hand-edit `family.yaml`'s `members:`
+   block — the tool rewrites it wholesale.
+4. **The member must be scaffolded or adopted FIRST.** A family cannot make a
+   project out of a repository; it can only pin one that already is.
+5. `update-shape.py` updates a family root exactly as it updates a project,
+   and the same four refusals apply. It mirrors into `family.yaml`.
+
 ## What you must not tell them
 
-That the shape confers anything. Electing it changes no gate, no floor, no
-grant and no clearance eligibility; a one-repository project is reviewed
-identically. If you are asked to make `role: spec` mean "spec authority lives
+That the shape confers anything — or that membership of a family does.
+Electing either changes no gate, no floor, no grant and no clearance
+eligibility; a one-repository project in no family is reviewed identically. If you are asked to make `role: spec` mean "spec authority lives
 here", say no: that turns a layout into a governance boundary, which is the
 one thing this standard exists to prevent.
 

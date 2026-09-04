@@ -107,9 +107,17 @@ def test_agents_md_is_short_enough_to_be_read():
     way adopt did — the copies are what make a project self-contained, and
     before this there was no command to move them, so both projects carrying
     the shape were updated by hand. A procedure performed from memory is the
-    failure this file exists to prevent."""
+    failure this file exists to prevent.
+
+    175 -> 235 on 2026-09-04, for two more of them, both from the same
+    ruling. Adopting a repository with NO CODE YET seeds the empty leg and
+    takes `--allow-empty-leg`, which an assistant must get a human's word for
+    rather than pass because the tool asked; and a FAMILY holder is created
+    and grown by a tool that has no prompt of its own, which makes getting
+    the yes the assistant's job and is exactly the kind of thing that must be
+    written down rather than remembered."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 175, f"AGENTS.md is {len(lines)} lines; the cap is 175"
+    assert len(lines) <= 235, f"AGENTS.md is {len(lines)} lines; the cap is 235"
 
 
 def test_claude_md_points_at_agents_md():
@@ -170,9 +178,19 @@ def test_readme_is_short_enough_to_be_read():
     dropping an instruction, not adding one, is still a cap earning its
     lines: the one-liner and its self-bootstrap explanation replace a
     fork-and-clone paragraph with a longer one, because "how to run this
-    safely with no fork" takes more words than "fork it first"."""
+    safely with no fork" takes more words than "fork it first".
+
+    388 -> 495, on 2026-09-04, for two additions the standard gained rather
+    than for prose. A leg with NOTHING IN IT is seeded from its template
+    instead of extracted (InkRouter's services are specifications with no
+    code), which is a paragraph because the consent flag and the verification
+    row both need explaining. And the FAMILY shape is a whole section,
+    because the first question anyone asks about it — family or one project?
+    — is answered by a table and an example rather than by a definition, and
+    because "what a holder does NOT confer" is the half that keeps it from
+    becoming a governance boundary."""
     lines = (REPO / "README.md").read_text().splitlines()
-    assert len(lines) <= 388, f"README.md is {len(lines)} lines; the cap is 388"
+    assert len(lines) <= 495, f"README.md is {len(lines)} lines; the cap is 495"
 
 
 def test_setup_sh_is_executable_and_fails_loudly():

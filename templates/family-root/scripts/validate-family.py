@@ -398,8 +398,21 @@ def main(argv: list[str] | None = None) -> int:
                         help="the member lockstep check alone: gitlink, "
                              "digest and identity, with no envelope and no "
                              "shape-copy check (what `make pins` runs)")
+    parser.add_argument("--no-members", action="store_true",
+                        help="the envelope and the shape copies alone, "
+                             "skipping every member. The complement of "
+                             "--pins, and what CI runs when the members could "
+                             "not be checked out: the checks that do not need "
+                             "them still run, and the ones that do are "
+                             "skipped out loud rather than passing on an "
+                             "unreadable surface.")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
+    if args.pins and args.no_members:
+        print("REFUSED family-nothing-to-check: --pins and --no-members are "
+              "complements; together they ask for nothing.\n"
+              "Remediation: pass one, or neither.", file=sys.stderr)
+        return 2
 
     report = Report()
     try:
@@ -432,15 +445,20 @@ def main(argv: list[str] | None = None) -> int:
                           f"{manifest_path}: `members:` is {members!r}, "
                           "expected a list")
         seen: dict[str, bool] = {}
-        for row in members:
-            if not isinstance(row, dict):
-                report.finding("member-row",
-                               f"a member is not a mapping: {row!r}")
-                continue
-            _check_member(root, row, seen, report)
-        if not members:
-            report.note("no members yet: a family with none is empty, not "
-                        "wrong")
+        if args.no_members:
+            print(f"  --  {len(members)} member(s) SKIPPED (--no-members): "
+                  "their gitlinks, digests and project ids are not checked "
+                  "here")
+        else:
+            for row in members:
+                if not isinstance(row, dict):
+                    report.finding("member-row",
+                                   f"a member is not a mapping: {row!r}")
+                    continue
+                _check_member(root, row, seen, report)
+            if not members:
+                report.note("no members yet: a family with none is empty, not "
+                            "wrong")
         if not args.pins:
             _check_shape_pin(root, manifest, report)
     except Refusal as exc:
