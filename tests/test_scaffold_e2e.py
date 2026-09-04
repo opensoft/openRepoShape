@@ -353,10 +353,6 @@ def test_the_ci_workflow_checkout_uses_shape_legs_token(project):
     """
     workflow = (project / ".github" / "workflows" / "validate.yml").read_text()
 
-    checkout = _step_block(workflow, "uses: actions/checkout@")
-    assert "token: ${{ secrets.SHAPE_LEGS_TOKEN || github.token }}" in checkout
-    assert "submodules: false" in checkout
-
     fetch = _step_block(workflow, "id: submodules")
     assert "git submodule update --init --recursive" in fetch
     assert "legs_available=true" in fetch
@@ -378,6 +374,10 @@ def test_the_ci_workflow_checkout_uses_shape_legs_token(project):
     assert ("if: steps.submodules.outputs.legs_available != 'true' && "
             "env.SHAPE_LEGS_TOKEN_SET == 'true'") in fail_step
     assert "exit 1" in fail_step
+    # The root checkout no longer depends on this token, so the failure
+    # message must say the token cannot read a LEG repository, not the root.
+    assert "does not use this token" in fail_step
+    assert "LEG repositories" in fail_step
 
     # Naming and manifest checks read no leg working tree, so neither is
     # conditioned on `legs_available`.
@@ -385,6 +385,49 @@ def test_the_ci_workflow_checkout_uses_shape_legs_token(project):
     assert "if:" not in naming_step
     manifest_step = _step_block(workflow, "name: project manifest")
     assert "if:" not in manifest_step
+
+
+def test_the_ci_workflow_root_checkout_uses_the_default_token(project):
+    """The design flaw this fixes: `token: ${{ secrets.SHAPE_LEGS_TOKEN ||
+    github.token }}` on the ROOT checkout meant a token correctly scoped to
+    `contents:read` on the LEGS only (or a mis-scoped/unapproved one) broke
+    `actions/checkout` itself with a 403 — before any check ran — on the
+    first real use of the secret (MedxSoft/MedxEHR and MedxSoft/MedxGlass,
+    runs 33821509948 and 33821512605). The root repository is always
+    readable by the workflow's own default token, so the checkout step must
+    carry no `token:` override at all, and must not persist whatever
+    credential it does use into the local git config, since the submodule
+    step authenticates the legs on its own terms.
+    """
+    workflow = (project / ".github" / "workflows" / "validate.yml").read_text()
+
+    checkout = _step_block(workflow, "uses: actions/checkout@")
+    assert "token:" not in checkout, (
+        "the root checkout must use the default github.token — no `token:` "
+        f"override of any kind: {checkout!r}")
+    assert "submodules: false" in checkout
+    assert "persist-credentials: false" in checkout
+
+
+def test_the_submodule_fetch_step_scopes_the_token_to_itself(project):
+    """`SHAPE_LEGS_TOKEN` is read only by the guarded submodule-fetch step,
+    via that step's own `env:` — never the job's, never the checkout step's
+    `with:` — and used through a `git -c url.<...>.insteadOf=<...>` rewrite
+    rather than a bare `token:` field, so it authenticates the legs alone
+    and never the root. Both submodule URL forms an adopted repository may
+    carry are covered: `https://github.com/...` and SSH `git@github.com:`.
+    """
+    workflow = (project / ".github" / "workflows" / "validate.yml").read_text()
+    fetch = _step_block(workflow, "id: submodules")
+
+    assert "env:" in fetch
+    assert "SHAPE_LEGS_TOKEN: ${{ secrets.SHAPE_LEGS_TOKEN }}" in fetch
+    assert "insteadOf=https://github.com/" in fetch
+    assert "insteadOf=git@github.com:" in fetch
+    assert "x-access-token:${SHAPE_LEGS_TOKEN}@github.com" in fetch
+    # Falls back to a plain, unauthenticated fetch when no secret is set.
+    assert "else" in fetch
+    assert "git submodule update --init --recursive" in fetch
 
 
 def test_no_if_expression_reads_the_secrets_context(project):
@@ -396,11 +439,11 @@ def test_no_if_expression_reads_the_secrets_context(project):
     MedxSoft/MedxGlass PR #1).
 
     The fix moves the presence check into a job-level `env:` value (`secrets`
-    IS allowed there, and in `with:` — see the checkout step's `token:`,
-    still asserted above) and has every `if:` read `env.*`/`steps.*` instead.
-    This test guards the class of defect, not just the one instance: it
-    walks every `if:` line in the rendered workflow, not only the step named
-    above.
+    IS allowed there — see the submodule-fetch step's own `env:`, asserted
+    in `test_the_submodule_fetch_step_scopes_the_token_to_itself` above) and
+    has every `if:` read `env.*`/`steps.*` instead. This test guards the
+    class of defect, not just the one instance: it walks every `if:` line in
+    the rendered workflow, not only the step named above.
     """
     workflow = (project / ".github" / "workflows" / "validate.yml").read_text()
 

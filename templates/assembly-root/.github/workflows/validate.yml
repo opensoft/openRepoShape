@@ -23,38 +23,60 @@ jobs:
     # appears there ("unrecognized named-value 'secrets'"), and the failure
     # mode is not a red step but a push-event run with ZERO jobs: this was
     # the defect on the first real projects (MedxSoft/MedxEHR #8,
-    # MedxSoft/MedxGlass #1). `secrets` IS allowed in `env:` (and in `with:`,
-    # see the checkout step below), so the presence check is done here, once,
-    # and the guarded step below reads the resulting `env.*` boolean instead
-    # of `secrets.*` directly.
+    # MedxSoft/MedxGlass #1). `secrets` IS allowed in `env:`, so the presence
+    # check is done here, once, and the guarded step below reads the
+    # resulting `env.*` boolean instead of `secrets.*` directly.
     env:
       SHAPE_LEGS_TOKEN_SET: ${{ secrets.SHAPE_LEGS_TOKEN != '' }}
     steps:
-      # The default `GITHUB_TOKEN` cannot read a leg that is a PRIVATE or
-      # internal sibling repository, so this NEVER checks out submodules
-      # itself and never authenticates with the bare default token alone:
-      # `SHAPE_LEGS_TOKEN` — a fine-grained PAT or GitHub App installation
-      # token with `contents:read` on the legs — is tried first, and
-      # `github.token` is the fallback for a public-legs project that has
-      # not set one. `actions/checkout` persists whichever token this
-      # resolves to into the local git config, so the manual submodule
-      # fetch below reuses it without repeating it.
+      # The ROOT repository is always readable by the workflow's own default
+      # token, so this checkout never carries `token:` — no override, no
+      # dependency on SHAPE_LEGS_TOKEN at all. That was the defect (first
+      # real use, MedxSoft/MedxEHR and MedxSoft/MedxGlass, runs 33821509948
+      # and 33821512605): `token: ${{ secrets.SHAPE_LEGS_TOKEN ||
+      # github.token }}` put a legs-scoped token onto the ROOT checkout, so a
+      # token correctly scoped to `contents:read` on the legs alone (or a
+      # mis-scoped/unapproved one) made `actions/checkout` itself fail with a
+      # 403 before any check ran. `persist-credentials: false` keeps that
+      # token out of the local git config entirely, so the submodule step
+      # below authenticates the legs on its own terms instead of inheriting
+      # anything from this step.
       - uses: actions/checkout@v4
         with:
-          token: ${{ secrets.SHAPE_LEGS_TOKEN || github.token }}
           submodules: false
+          persist-credentials: false
 
       # Best-effort, and its failure is CAPTURED rather than let through as a
       # step failure: a private leg with no `SHAPE_LEGS_TOKEN` configured is a
       # DEGRADE (see the two guarded steps below), never a red
-      # `actions/checkout`. That was the defect: `submodules: true` on
-      # checkout hard-fails the whole job the moment a leg cannot be cloned,
-      # with no route to run the checks that do not need the legs at all.
+      # `actions/checkout`. That was the earlier defect: `submodules: true`
+      # on checkout hard-fails the whole job the moment a leg cannot be
+      # cloned, with no route to run the checks that do not need the legs at
+      # all.
+      #
+      # `SHAPE_LEGS_TOKEN` is scoped to THIS STEP alone via `env:` — never to
+      # the job, never onto the root checkout above — and is used only
+      # through a scoped `git -c url.<...>.insteadOf=<...>` rewrite, never
+      # echoed or interpolated into a URL that gets printed. Two rewrites
+      # cover both submodule URL forms an adopted repository may carry:
+      # `https://github.com/...` and SSH `git@github.com:...`. With no
+      # secret configured this falls back to a plain, unauthenticated
+      # `git submodule update --init --recursive` — the same command that
+      # already ran here, unchanged, for a project whose legs are public.
       - name: fetch the legs (submodules)
         id: submodules
+        env:
+          SHAPE_LEGS_TOKEN: ${{ secrets.SHAPE_LEGS_TOKEN }}
         run: |
           set +e
-          git submodule update --init --recursive
+          if [ -n "$SHAPE_LEGS_TOKEN" ]; then
+            git \
+              -c "url.https://x-access-token:${SHAPE_LEGS_TOKEN}@github.com/.insteadOf=https://github.com/" \
+              -c "url.https://x-access-token:${SHAPE_LEGS_TOKEN}@github.com/.insteadOf=git@github.com:" \
+              submodule update --init --recursive
+          else
+            git submodule update --init --recursive
+          fi
           status=$?
           set -e
           if [ "$status" -eq 0 ]; then
@@ -101,9 +123,14 @@ jobs:
       # a PRESENT SHAPE_LEGS_TOKEN that still could not check out the legs
       # (wrong scope, missing contents:read grant, a leg URL problem) is a
       # finding a human must act on, so this fails the job — the only case
-      # that does.
+      # that does. The root checkout above never depended on this token, so
+      # a failure here can only mean the token cannot read one of the LEG
+      # repositories named below.
       - name: fail — SHAPE_LEGS_TOKEN is set but the legs still could not be fetched
         if: steps.submodules.outputs.legs_available != 'true' && env.SHAPE_LEGS_TOKEN_SET == 'true'
         run: |
-          echo "::error::SHAPE_LEGS_TOKEN is configured but 'git submodule update --init --recursive' still failed. That is a misconfiguration — wrong token scope, a missing contents:read grant on the leg repositories, or a leg URL problem — not an absent-secret degrade, and it must not pass silently."
+          echo "::error::SHAPE_LEGS_TOKEN is configured but 'git submodule update --init --recursive' still failed. The root checkout does not use this token — it reads with the workflow's default token — so this means SHAPE_LEGS_TOKEN cannot read one or more of the following LEG repositories (wrong token scope, a missing contents:read grant, or a leg URL problem):"
+          git config --file .gitmodules --get-regexp '\.url$' | while read -r _ url; do
+            echo "::error::  $url"
+          done
           exit 1
