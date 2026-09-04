@@ -51,6 +51,14 @@ def test_the_path_policy_loads_and_declares_four_classes():
     ("contracts/policy.yaml", "spec"),
     ("docs/decisions/0001-thing.md", "spec"),
     ("docs/api/generated.html", "code"),          # the "except" that runs
+    # API contracts are governance content (Brett, 2026-09-04). Each of these
+    # would otherwise fall to `extension-majority`, which counts `.yaml` and
+    # `.json` as code and proposed exactly that for InkRouter/IRSS `openapi/`.
+    ("openapi/v1/ingest.yaml", "spec"),
+    ("openapi/README.md", "spec"),
+    ("asyncapi/events.yaml", "spec"),
+    ("schemas/job-envelope.schema.json", "spec"),
+    ("proto/router/v1/router.proto", "spec"),
     ("src/app/main.py", "code"),
     ("tests/test_main.py", "code"),
     ("scripts/harness.py", "code"),

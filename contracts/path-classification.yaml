@@ -208,6 +208,29 @@ rules:
       would carry a file nobody edits. This rule sits above `docs/**` because
       "except generated API docs" is only real if something runs it.
 
+  - id: spec-api-contracts
+    paths:
+      - "openapi/**"
+      - "asyncapi/**"
+      - "schemas/**"
+      - "proto/**"
+      - "protos/**"
+    leg: spec
+    reason: >-
+      API contracts are governance content (Brett, 2026-09-04). An OpenAPI or
+      AsyncAPI document, a JSON Schema or a `.proto` is what the service has
+      DECIDED it will honour — the same class of thing as `contracts/`, and
+      the interface other services are entitled to hold it to. It is not what
+      the service currently runs, which is the code leg's subject.
+    # Ruled on InkRouter/IRSS, the second organisation to adopt. `openapi/`
+    # there is 23 files, 20 of them `.yaml`/`.json`, so `extension-majority`
+    # cleared its 75% bar and proposed CODE — a majority vote on file
+    # extensions, which is exactly the guess a named rule exists to replace.
+    # This rule sits ABOVE `spec-governance` only for tidiness (the two agree);
+    # it sits above the extension fallback because that is the one it corrects.
+    # `schemas/` is deliberately the plural directory: a lone `schema.sql` is a
+    # migration and stays code.
+
   - id: spec-governance
     paths:
       - "openspec/**"
