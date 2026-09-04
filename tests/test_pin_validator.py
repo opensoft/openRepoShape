@@ -47,6 +47,48 @@ def test_gitlink_ahead_of_the_pin_is_a_finding(project):
     assert "THE LOCKSTEP RULE" in result.stderr
 
 
+def test_a_staged_bump_with_the_pin_moved_to_match_passes(project):
+    """THE MOMENT THE VALIDATOR IS ACTUALLY RUN. An operator bumps a leg —
+    `git add <leg>` moves the gitlink in the INDEX — edits the pin file to
+    match, and runs `make validate` before committing, which is the whole
+    point of running it. Reading HEAD first answered about the commit being
+    REPLACED, so a correct bump was reported as `pin-gitlink-mismatch` until
+    it had been committed: a false finding at exactly the moment somebody is
+    obeying the rule, and the one way to clear it was to commit the thing the
+    validator had just called wrong.
+
+    The leg's new commit is EMPTY on purpose. The tree is unchanged, so the
+    pin's `tree_sha256` still recomputes and the gitlink is the only fact that
+    moved — which is what makes this a test of the gitlink reading rather than
+    of the digest one.
+    """
+    before = git("rev-parse", "HEAD:spec", cwd=project).stdout.strip()
+    git("commit", "-q", "--allow-empty", "-m", "advance the spec leg",
+        cwd=project / "spec")
+    after = git("rev-parse", "HEAD", cwd=project / "spec").stdout.strip()
+    git("add", "--", "spec", cwd=project)  # staged, DELIBERATELY not committed
+    edit_pin(project, "spec-pin.yaml", before, after)
+    result = validate(project)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "pins ok" in result.stdout
+
+
+def test_a_staged_bump_the_pin_did_not_follow_is_still_a_finding(project):
+    """Index first is not "whichever of the two answers passes".
+
+    Here the gitlink is staged at the new commit and the pin still names the
+    one HEAD records — so the pin describes the tree being replaced, and the
+    finding stands. This is the same drift as the case above it, caught one
+    commit earlier.
+    """
+    git("commit", "-q", "--allow-empty", "-m", "advance the spec leg",
+        cwd=project / "spec")
+    git("add", "--", "spec", cwd=project)  # staged, DELIBERATELY not committed
+    result = validate(project)
+    assert result.returncode == 1
+    assert "pin-gitlink-mismatch" in result.stderr
+
+
 def test_a_commit_that_is_not_40_hex_refuses(project):
     edit_pin(project, "spec-pin.yaml", "commit: \"", "commit: \"x")
     result = validate(project)
