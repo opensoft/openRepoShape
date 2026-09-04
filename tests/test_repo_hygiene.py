@@ -208,8 +208,16 @@ def test_readme_is_short_enough_to_be_read():
     #   and a project dated before ratification recorded the ratified path.
     #   Four lines for a rule the reader would otherwise have to read the
     #   scaffold's source to learn.
-    assert len(lines) <= 513, (
-        f"README.md is {len(lines)} lines; the cap is 513")
+    # 2026-09-04: 513 -> 532 — `upstream-added` and `--add`. The section said
+    #   the file list is never re-derived from the copy lists, which is right
+    #   about what is RE-SYNCED and was silently also true of what is LOOKED
+    #   AT: a file the standard added after a project was cut reached that
+    #   project never, and `AGENTS-shape.md` was the first one to prove it.
+    #   The paragraph is long because the verdict is only half of it — the
+    #   three refusals and the open question (a project cannot yet decline an
+    #   addition) are the half a reader would otherwise learn from a surprise.
+    assert len(lines) <= 532, (
+        f"README.md is {len(lines)} lines; the cap is 532")
 
 
 def test_setup_sh_is_executable_and_fails_loudly():
