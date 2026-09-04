@@ -162,6 +162,12 @@ def test_the_plan_records_the_follow_ups_the_split_makes_necessary(source_repo,
     assert "shape/Makefile" in follow_ups
     assert "shape/README.md" in follow_ups
     assert "pull request" in follow_ups
+    # PREDICTED, so the human reads it in the plan they approve rather than in
+    # output they may never scroll back to — and in the same words `execute`
+    # will use, because both callers share one function.
+    assert ("add the line `Read AGENTS-shape.md first — the rules of this "
+            "repository's shape.` to the existing AGENTS.md") in follow_ups
+    assert "root-assistant-instructions" in follow_ups
 
 
 def test_every_source_file_is_covered_exactly_once(source_repo, tmp_path):

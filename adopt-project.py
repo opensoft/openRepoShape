@@ -85,8 +85,9 @@ from repo_shape import (  # noqa: E402
 )
 from shape_materialize import (  # noqa: E402
     ADOPT_MAKEFILE_BLOCK, RULESET_HINT, SHAPE_REPOSITORY,
-    CommandFailed, copy_tree, default_reference, election_date, env_commit,
-    git_init_commit, materialize_assembly_root, naming_block, run,
+    CommandFailed, collision_follow_up, copy_tree, default_reference,
+    election_date, env_commit, git_init_commit, materialize_assembly_root,
+    naming_block, run,
 )
 
 #: The naming policy this tool classifies leg names against. One constant,
@@ -661,6 +662,11 @@ def _predict_collisions(entries: list[Entry]) -> list[str]:
     Known BEFORE `execute` runs, because the plan says which paths survive in
     the root, so the follow-up is in the plan the human reads rather than in
     output they may never scroll back to.
+
+    The WORDING comes from `shape_materialize.collision_follow_up`, the same
+    function `execute` reports its actual collisions through — including the
+    one collision whose answer is not "merge": an `AGENTS.md` or `CLAUDE.md`
+    the source already holds needs ONE LINE ADDED, not a merge.
     """
     surviving = {e.path for e in entries if e.leg == "root"}
     from shape_materialize import COPIED_FROM_SHAPE, COPIED_VERBATIM, TEMPLATED
@@ -669,10 +675,7 @@ def _predict_collisions(entries: list[Entry]) -> list[str]:
     out = []
     for path in sorted(set(shape_paths)):
         if path in surviving or f"{path.split('/')[0]}/" in surviving:
-            out.append(
-                f"merge {COLLISION_DIR}/{path} into {path}: the source "
-                "repository already has that name, so the shape's copy was "
-                "written beside it and NOTHING was overwritten")
+            out.append(collision_follow_up(path, f"{COLLISION_DIR}/{path}"))
     return out
 
 

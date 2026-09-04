@@ -208,8 +208,16 @@ def test_readme_is_short_enough_to_be_read():
     #   and a project dated before ratification recorded the ratified path.
     #   Four lines for a rule the reader would otherwise have to read the
     #   scaffold's source to learn.
-    assert len(lines) <= 513, (
-        f"README.md is {len(lines)} lines; the cap is 513")
+    # 2026-09-04: 513 -> 525 — a scaffolded project now carries an AGENT FILE.
+    #   One line names `AGENTS-shape.md` among the copies and one names it in
+    #   the layout; the other ten are the paragraph saying WHY the shape's own
+    #   text is pinned (a rule against editing pinned files is worthless if
+    #   the file carrying it can be edited, which is also why it holds no
+    #   rendered project detail) while the project's `AGENTS.md` and
+    #   `CLAUDE.md` are rendered and are not. That trade is the same one the
+    #   copies themselves are, and it was nowhere in this file.
+    assert len(lines) <= 525, (
+        f"README.md is {len(lines)} lines; the cap is 525")
 
 
 def test_setup_sh_is_executable_and_fails_loudly():

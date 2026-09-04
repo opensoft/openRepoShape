@@ -142,12 +142,53 @@ def test_init_carries_the_shape_pin_over_its_own_copies(family):
     assert pin["digests"]["tree_sha256"] == \
         data["shape"]["digests"]["tree_sha256"]
     rows = {row["path"] for row in pin["files"]}
+    # 2026-09-04: `AGENTS-shape.md` joined the copies. The set is an EQUALITY
+    # rather than a floor here on purpose — a holder carries a deliberately
+    # smaller set than an assembly root does, and this is the assertion that
+    # notices if the assembly root's list ever leaks into it — so a file added
+    # to `FAMILY_COPIED_VERBATIM` is expected to move this line.
     assert rows == {"scripts/validate-family.py", "scripts/bootstrap.py",
                     "Makefile", ".gitignore",
-                    ".github/workflows/validate.yml", "scripts/repo_shape.py",
+                    ".github/workflows/validate.yml", "AGENTS-shape.md",
+                    "scripts/repo_shape.py",
                     "contracts/repository-naming.yaml"}
     assert "scripts/validate-pins.py" not in rows, (
         "a family has no legs, so it does not carry the leg validator")
+
+
+def test_init_writes_the_holders_agent_files(family):
+    """The holder gets its OWN pinned rules — a family has no legs, no leg
+    pins and no lockstep workflow refs, so half of the assembly root's file
+    would be instructions about things that are not here."""
+    sys.path.insert(0, str(REPO / "scripts"))
+    from repo_shape import file_sha256
+    root = family["root"]
+    template = REPO / "templates" / "family-root" / "AGENTS-shape.md"
+    copied = root / "AGENTS-shape.md"
+    assert copied.read_bytes() == template.read_bytes()
+    assert "{{" not in copied.read_text()
+
+    rows = {row["path"]: row["sha256"].lower()
+            for row in load_yaml(root / "contracts" / "shape-pin.yaml")["files"]}
+    assert rows["AGENTS-shape.md"] == file_sha256(copied)
+
+    flat = " ".join(copied.read_text().split())
+    assert "a consumer deriving permission from them is defective" in flat
+    for rule in ("members/<Project>", "family.py add", "family.py bump",
+                 "family.py remove", "make bootstrap", "make validate",
+                 "make pins", "update-shape.py", "--admin",
+                 "--accept-local", "pull request"):
+        assert rule in flat, f"the holder's rules say nothing about {rule}"
+    assert "no spec leg, no code leg and no `project.yaml`" in flat
+
+    agents = (root / "AGENTS.md").read_text()
+    assert agents.splitlines()[0] == (
+        "Read AGENTS-shape.md first — the rules of this repository's shape.")
+    assert NAME in agents and "inkrouter" in agents and ORG in agents
+    assert "{{" not in agents
+    assert (root / "CLAUDE.md").read_text() == "Read AGENTS.md.\n"
+    assert "AGENTS.md" not in rows and "CLAUDE.md" not in rows, (
+        "the holder's own instructions are the holder's, not the shape's")
 
 
 def test_init_is_one_commit_and_the_remote_has_it(family):
@@ -622,15 +663,37 @@ def test_make_validate_runs_the_family_then_every_member(bootstrapped):
 
 # --- update-shape knows a family root when it sees one ----------------------
 
+
+def upstream_clone(path):
+    """A clone of openRepoShape at the revision THIS HOLDER WAS CUT FROM.
+
+    That revision is the WORKING TREE, not `HEAD`. `family.py init`
+    materialized the holder from the templates on disk and recorded `HEAD` as
+    the pin — printing its own DIRTY warning as it did — so a clone at `HEAD`
+    is a different tree from the one the copies came from whenever anything is
+    uncommitted. It is uncommitted precisely in the pull request that ADDS a
+    file to `templates/family-root/`, and `update-shape.py` then correctly
+    reports the new copy as `upstream-removed`: absent from a tree it was
+    never in. Committing the working tree into the clone keeps this fixture's
+    premise — "the upstream this holder came from" — true either way, and
+    changes nothing when the checkout is clean.
+    """
+    subprocess.run(["git", "clone", "-q", str(REPO), str(path)], check=True)
+    shutil.copytree(REPO, path, dirs_exist_ok=True, symlinks=True,
+                    ignore=shutil.ignore_patterns(".git", "__pycache__",
+                                                  ".pytest_cache"))
+    if git("status", "--porcelain", cwd=path).stdout.strip():
+        git("add", "-A", cwd=path)
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m",
+            "The working tree this holder was materialized from", cwd=path)
+    return path
+
 def test_update_shape_reads_a_family_root_and_mirrors_into_family_yaml(
         family, tmp_path):
     """The holder carries the same COPY pin an assembly root does, so the same
     command re-syncs it — into `family.yaml`, and green against
     `validate-family.py` rather than the leg validators."""
-    upstream = tmp_path / "openRepoShape"
-    proc = subprocess.run(["git", "clone", "-q", str(REPO), str(upstream)],
-                          capture_output=True, text=True, check=False)
-    assert proc.returncode == 0, proc.stderr
+    upstream = upstream_clone(tmp_path / "openRepoShape")
 
     holder = tmp_path / NAME
     shutil.copytree(family["root"], holder, symlinks=True)
@@ -670,10 +733,7 @@ def test_update_shape_does_not_resync_a_family_bootstrap_from_the_project_one(
     """BOTH ROOTS HOLD A `scripts/bootstrap.py` AND THEY ARE DIFFERENT FILES.
     One copy-source table keyed by the path in the root would have re-synced
     the family's from `templates/assembly-root/`, silently."""
-    upstream = tmp_path / "openRepoShape"
-    proc = subprocess.run(["git", "clone", "-q", str(REPO), str(upstream)],
-                          capture_output=True, text=True, check=False)
-    assert proc.returncode == 0, proc.stderr
+    upstream = upstream_clone(tmp_path / "openRepoShape")
     holder = tmp_path / NAME
     shutil.copytree(family["root"], holder, symlinks=True)
 

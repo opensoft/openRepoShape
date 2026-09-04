@@ -194,6 +194,47 @@ def test_the_shape_files_land_beside_what_the_source_already_had(adopted_clone):
     assert "export CONTRACTS_DIR" in shape_makefile
 
 
+def test_the_sources_own_agent_files_are_untouched(adopted, adopted_clone):
+    """`root-assistant-instructions` keeps a source's `AGENTS.md` and
+    `CLAUDE.md` AT THE ROOT because they address the whole project — which is
+    the same reason the shape must not replace one. They are also what the
+    project's agents already read, so the shape's stubs go beside them."""
+    for name in ("AGENTS.md", "CLAUDE.md"):
+        assert (adopted_clone / name).read_text() == "Follow the procedure.\n"
+        assert (adopted_clone / "shape" / name).is_file()
+        # ...and the source's own tree, on its own default branch, is exactly
+        # what it was: nothing here edited it, in place or otherwise.
+        assert (adopted["source"] / name).read_text() == \
+            "Follow the procedure.\n"
+
+    # The shape's OWN rules took their own name: the source had no such file.
+    assert (adopted_clone / "AGENTS-shape.md").is_file()
+    assert not (adopted_clone / "shape" / "AGENTS-shape.md").exists()
+    rows = {row["path"] for row in
+            load_yaml(adopted_clone / "contracts" / "shape-pin.yaml")["files"]}
+    assert "AGENTS-shape.md" in rows
+
+
+def test_the_agent_file_collision_says_add_a_line_not_merge(adopted):
+    """A merge is the wrong instruction for an instruction file: it is how a
+    project's own agent instructions end up inside the shape's. The follow-up
+    names the one line to add, and the reason it is not a replacement."""
+    follow_ups = " ".join(load_yaml(adopted["plan"])["follow_ups"])
+    message = git("log", "-1", "--format=%B", "adopt/three-repo-shape",
+                  cwd=adopted["source"]).stdout
+    for text in (follow_ups, message):
+        flat = " ".join(text.split())
+        assert ("add the line `Read AGENTS-shape.md first — the rules of this "
+                "repository's shape.` to the existing AGENTS.md") in flat
+        assert "rather than replacing it with shape/AGENTS.md" in flat
+        assert "root-assistant-instructions" in flat
+        assert "ALREADY read" in flat
+        assert "to the existing CLAUDE.md" in flat
+    # The ordinary collisions still say merge.
+    assert "merge shape/Makefile into Makefile" in follow_ups
+    assert "merge shape/AGENTS.md" not in follow_ups
+
+
 def test_the_adopted_root_passes_its_own_gate(adopted_clone):
     """The whole point of the shape: the converted project runs its own
     validators, with no openRepoShape anywhere near it."""
