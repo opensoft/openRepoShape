@@ -25,8 +25,10 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            once, no unresolved legs, leg names conforming to the naming
            policy. It prints what will happen and changes nothing.
   execute  creates the two legs, extracts them with `git filter-repo`, makes
-           the one split commit on a branch of the source, and then VERIFIES
-           by blob sha that every source path landed in exactly one place.
+           the one split commit on a branch of the source, sets the
+           `xf-project-<id>` topic on all three (skipped for local remotes),
+           and then VERIFIES by blob sha that every source path landed in
+           exactly one place.
 
 THE PLAN IS AN ARTIFACT A HUMAN OR AN AI EDITS. That is why it is YAML with
 reasons in it rather than a pipe between two processes: the classifier is
@@ -732,6 +734,29 @@ class Plan:
         return {role: checked_value(f"legs.{role}", self.legs.get(role))
                 for role in ("assembly", "spec", "code")}
 
+    @property
+    def project_id(self) -> str:
+        """The lowercase machine name, RE-VALIDATED here.
+
+        The GitHub topic is derived from it, both for the manifest's `TOPIC`
+        and for `gh repo edit --add-topic`, so it is read in ONE place rather
+        than spelled out at each. `plan` refuses an `--id` that is not this
+        shape, but the plan is edited between `plan` and `execute` on purpose,
+        so the check is repeated where the value is USED: it reaches a `gh`
+        command line and a written manifest, and a topic that does not match
+        `contracts/repository-naming.yaml` is one `validate-repository-naming.py`
+        will refuse in the project's own gate, long after the run that set it.
+        """
+        project_id = str(self.get("id", self.names()["assembly"].lower()))
+        if not PROJECT_ID_RE.match(project_id):
+            raise Refusal(
+                "plan-bad-id",
+                f"{self.path}: `id:` is {project_id!r} and must match "
+                f"{PROJECT_ID_RE.pattern}",
+                "Remediation: fix `id:` in the plan, or re-run `plan` with an "
+                "explicit lowercase --id. The GitHub topic is derived from it.")
+        return project_id
+
     def get(self, key, default=None):
         value = self.data.get(key)
         return default if value is None else value
@@ -829,7 +854,19 @@ def _leg_findings(plan: Plan) -> list[str]:
     return findings
 
 
-def _print_what_will_happen(plan: Plan, source: Source, names: dict) -> None:
+def _topics_line(topic: str, local: bool) -> str:
+    """The `topics` plan line, the one `scaffold-project.py` also prints.
+
+    A project's repositories carry `xf-project-<id>` so the organisation can
+    be listed by project; the adopted assembly root is the project's own root
+    and gets it exactly as the two new legs do.
+    """
+    return "  topics " + ("skipped for local remotes" if local else
+                          f"gh repo edit --add-topic {topic} on all three")
+
+
+def _print_what_will_happen(plan: Plan, source: Source, names: dict,
+                            topic: str, local: bool = False) -> None:
     moved = [e for e in plan.entries if str(e.get("leg")) in ("spec", "code")]
     stays = [e for e in plan.entries if str(e.get("leg")) == "root"]
     drops = [e for e in plan.entries if str(e.get("leg")) == "drop"]
@@ -849,6 +886,7 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict) -> None:
     print(f"  {len(stays)} path(s) stay in the assembly root; "
           f"{len(drops)} dropped")
     print("  the source is never deleted, never renamed, never force-pushed")
+    print(_topics_line(topic, local))
     for item in plan.get("follow_ups", []):
         print(f"  follow-up: {item}")
 
@@ -884,7 +922,8 @@ def cmd_check(args) -> int:
     except Refusal as exc:
         findings.append(f"FINDING {exc.code}: {exc.detail}")
 
-    _print_what_will_happen(plan, source, names)
+    _print_what_will_happen(plan, source, names,
+                            naming.topic_for(plan.project_id))
 
     seeded = seeded_legs(assigned_paths(plan.entries))
     for line in seeding_warnings(seeded, plan.allowed_empty_legs()):
@@ -1160,6 +1199,8 @@ def cmd_execute(args) -> int:  # noqa: C901
             "inference.")
     for line in plan.seeding_record_disagreements(seeded):
         print(line)
+    topic = naming.topic_for(plan.project_id)
+    print(_topics_line(topic, local))
     _confirm(args, plan, names)
 
     # ---- (a) the two legs' remotes ----------------------------------------
@@ -1225,6 +1266,7 @@ def cmd_execute(args) -> int:  # noqa: C901
         print(exc.loudly("pushing the split branch"), file=sys.stderr)
         return 2
     print(f"\n  split {split_commit[:12]} on {branch} -> {urls['assembly']}")
+    topics_failed = False
     if not local:
         try:
             url = run(["gh", "pr", "create", "--repo", repositories["assembly"],
@@ -1240,16 +1282,46 @@ def cmd_execute(args) -> int:  # noqa: C901
                   f"--base {tracking} --head {branch}", file=sys.stderr)
             return 2
 
+        # ---- the topic, on all three --------------------------------------
+        # The assembly root pre-existed and is still a repository OF THIS
+        # PROJECT: `project.yaml` claims `topic: <topic>` either way, and a
+        # claim the organisation cannot see is the defect being fixed here.
+        #
+        # A TOPIC THAT WILL NOT SET DOES NOT SUPPRESS THE VERIFICATION TABLE.
+        # The split is pushed and the pull request is open by now, and the
+        # blob-sha accounting for every source path is the report a human is
+        # told to read back (AGENTS.md step 7); losing it to a permission or a
+        # rate limit would be the more expensive failure. It is still a
+        # non-zero exit, reported after the table, with the commands to
+        # finish by hand.
+        try:
+            for role in ("assembly", "spec", "code"):
+                run(["gh", "repo", "edit", repositories[role], "--add-topic",
+                     topic])
+            print(f"  topic     {topic} set on all three")
+        except CommandFailed as exc:
+            topics_failed = True
+            print(exc.loudly("setting the project topic"), file=sys.stderr)
+            print("The split IS pushed and the pull request IS open. Set the "
+                  "topic by hand:\n"
+                  + "\n".join(f"    gh repo edit {repositories[role]} "
+                              f"--add-topic {topic}"
+                              for role in ("assembly", "spec", "code")),
+                  file=sys.stderr)
+
     # ---- (d) verification, by blob sha ------------------------------------
-    return _verify(source, assembly, work_root, names, paths_for, split_commit,
-                   seeded)
+    verified = _verify(source, assembly, work_root, names, paths_for,
+                       split_commit, seeded)
+    if verified:
+        return verified   # a verification mismatch outranks a missing topic
+    return 2 if topics_failed else 0
 
 
 def _template_values(plan: Plan, names, repositories, urls, spec_path,
                      code_path, tracking, leg_commits, leg_digests,
                      shape_commit, pins, naming) -> dict[str, str]:
     project = names["assembly"]
-    project_id = str(plan.get("id", project.lower()))
+    project_id = plan.project_id
     elected_on = str(plan.get("elected_on", _dt.date.today().isoformat()))
     # `.get(role, "")` because this table is built BEFORE the legs exist, so
     # that a SEEDED leg's template can be rendered from it. The four values
