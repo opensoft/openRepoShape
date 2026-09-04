@@ -11,11 +11,12 @@ convention, as data and as running code.
 
 Ruled by **Brett Heap on 2026-09-02**: the name `openRepoShape`, PUBLIC
 visibility, Apache-2.0; and that the ASSEMBLY leg **is** the per-project root
-repository — the one an engineer clones. The doctrine it serves is staged, not
-yet ratified, in `opensoft/openxFactory` at
-`ideation/staging/project-repo-schema/project-repo-schema.md`; a project may
-elect the shape now, provided its `project.yaml` records that staged fragment
-as the `reference:` the election followed.
+repository — the one an engineer clones. The doctrine it serves was ratified
+by Brett Heap on 2026-09-02 and lives in `opensoft/openxFactory` at
+`docs/project-repo-schema.md`, which is what a project's `project.yaml`
+records as the `reference:` the election followed; a project elected before
+that date recorded the staged fragment's path, and that is a valid reference
+for it.
 
 **The shape is elective and confers nothing.** Electing it changes no gate, no
 floor, no grant and no clearance eligibility. A one-repository project and a

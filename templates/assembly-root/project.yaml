@@ -21,9 +21,10 @@ kind: project-manifest
 id: {{PROJECT_ID}}
 name: "{{PROJECT_NAME}}"
 
-# The elected schema, and the document the election followed. Before the
-# openxFactory change ratifies the doctrine this points at the STAGED
-# fragment; after ratification it points at the ratified document. Recording
+# The elected schema, and the document the election followed. For a project
+# elected on or after 2026-09-02 this is openxFactory's ratified
+# `docs/project-repo-schema.md` (the default the scaffold writes); a project
+# elected earlier recorded the staged fragment's path and keeps it. Recording
 # it is what makes a project started ahead of ratification legible rather than
 # undeclared.
 schema: project-repo-schema
