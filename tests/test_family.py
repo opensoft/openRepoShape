@@ -171,6 +171,26 @@ def test_init_dry_run_creates_nothing(tmp_path):
     assert not (tmp_path / "work").exists()
 
 
+def test_init_plans_the_topic_and_skips_it_against_local_remotes(family):
+    """The holder carries `xf-project-<family-id>` exactly as a scaffolded
+    project's three repositories do — and `gh` is never called offline, which
+    is what keeps this suite free of the network."""
+    assert "topics       skipped for local remotes" in family["init"].stdout
+    assert "gh repo edit" not in family["init"].stdout
+
+
+def test_init_dry_run_plans_the_gh_topic_command_for_a_real_org(tmp_path):
+    """No `--local-remote-dir`, so the plan is the REAL one — and a dry run
+    prints it before anything is created, so this needs no network either."""
+    result = run_script(FAMILY, "init", "--org", ORG, "--family", "Contoso",
+                        "--created-by", "Test Human",
+                        "--work-dir", str(tmp_path / "work"), "--dry-run")
+    assert result.returncode == 0, result.stderr
+    assert "topics       gh repo edit --add-topic xf-project-contoso" \
+        in result.stdout
+    assert not (tmp_path / "work").exists()
+
+
 def test_init_refuses_a_name_that_is_not_a_holder_form(tmp_path):
     result = run_script(FAMILY, "init", "--org", ORG, "--family", "Ink-Router",
                         "--created-by", "Test Human",

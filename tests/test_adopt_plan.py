@@ -203,6 +203,36 @@ def test_check_passes_once_every_question_is_answered(source_repo, tmp_path):
         in result.stdout
 
 
+def test_check_plans_the_topic_on_all_three(source_repo, tmp_path):
+    """`check` is where the human reads what will happen, and setting
+    `xf-project-<id>` on the adopted root and both legs is part of it. It runs
+    against a local source and calls nothing, so the REAL plan line — the `gh`
+    one — is assertable without a network."""
+    out = tmp_path / "plan.yaml"
+    assert write_plan(source_repo, out).returncode == 0
+    for path, leg in (("examples/", "spec"), (".claude/", "root"),
+                      ("release.yaml", "root")):
+        resolve(out, path, leg)
+    result = run_script(ADOPT, "check", "--plan", str(out))
+    assert result.returncode == 0, result.stderr
+    assert "topics gh repo edit --add-topic xf-project-northwind on all three" \
+        in result.stdout
+
+
+def test_an_id_edited_into_the_plan_is_re_validated_where_it_is_used(
+        source_repo, tmp_path):
+    """`plan` refuses a bad `--id`, and the plan is edited afterwards ON
+    PURPOSE — so the check is made again where the value is USED: the topic
+    is derived from it, and reaches a `gh` command line and the manifest."""
+    out = tmp_path / "plan.yaml"
+    assert write_plan(source_repo, out).returncode == 0
+    out.write_text(out.read_text().replace("id: northwind", "id: Northwind"))
+    result = run_script(ADOPT, "check", "--plan", str(out))
+    assert result.returncode == 2
+    assert "plan-bad-id" in result.stderr
+    assert "topic is derived from it" in result.stderr
+
+
 def test_check_reports_a_path_that_no_entry_covers(source_repo, tmp_path):
     out = tmp_path / "plan.yaml"
     assert write_plan(source_repo, out).returncode == 0
