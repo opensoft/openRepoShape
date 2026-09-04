@@ -609,12 +609,16 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-#: How to read the gitlink out of each listing, INDEX FIRST: the argv, and
-#: which column holds the oid once the tab is folded into the spaces.
-#: `ls-files -s` emits `<mode> SP <oid> SP <stage> TAB <path>` and `ls-tree`
-#: emits `<mode> SP <type> SP <oid> TAB <path>` — the same shape with a
-#: DIFFERENT third column, so the two cannot share one index.
-GITLINK_LISTINGS = ((["ls-files", "-s", "--"], 1), (["ls-tree", "HEAD", "--"], 2))
+#: How to read the gitlink out of each listing, INDEX FIRST: the argv, which
+#: column holds the oid once the tab is folded into the spaces, and which
+#: holds the merge STAGE, if the listing has one. `ls-files -s` emits
+#: `<mode> SP <oid> SP <stage> TAB <path>` and `ls-tree` emits
+#: `<mode> SP <type> SP <oid> TAB <path>` — the same shape with a DIFFERENT
+#: third column, so the two cannot share one index.
+GITLINK_LISTINGS = (
+    (["ls-files", "-s", "--"], 1, 2),
+    (["ls-tree", "HEAD", "--"], 2, None),
+)
 
 
 def recorded_gitlink(repo: Path, path: str) -> str | None:
@@ -628,17 +632,26 @@ def recorded_gitlink(repo: Path, path: str) -> str | None:
     out whether the commit they are about to make is in lockstep. Answering
     from HEAD there reports the commit being REPLACED, which fails a correct
     bump and passes a stale pin. HEAD remains the fallback, for a path the
-    commit records and the index does not.
+    commit records and the index does not hold at stage 0 — one the index
+    never had, and one a conflicted merge holds only at stages 1, 2 and 3.
     """
-    for args, oid_at in GITLINK_LISTINGS:
+    for args, oid_at, stage_at in GITLINK_LISTINGS:
         try:
             out = git_out([*args, path], cwd=repo)
         except Refusal:
             continue
         for line in out.splitlines():
             fields = line.replace("\t", " ").split()
-            if len(fields) > oid_at and fields[0] == "160000":
-                return fields[oid_at].lower()
+            if len(fields) <= oid_at or fields[0] != "160000":
+                continue
+            # STAGE 0 OR NOTHING. A conflicted merge leaves the index holding
+            # stages 1, 2 and 3 for the same path — base, ours and theirs —
+            # and none of them is a commit anybody is about to make. Taking
+            # whichever came first would answer with the merge base as often
+            # as not, so an unmerged path falls through to HEAD instead.
+            if stage_at is not None and fields[stage_at] != "0":
+                continue
+            return fields[oid_at].lower()
     return None
 
 

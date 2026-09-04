@@ -9,6 +9,8 @@ aggregation because the check runs on pull requests only.
 
 from __future__ import annotations
 
+import subprocess
+
 from conftest import git, run_script
 
 OTHER_SHA = "0123456789abcdef0123456789abcdef01234567"
@@ -87,6 +89,29 @@ def test_a_staged_bump_the_pin_did_not_follow_is_still_a_finding(project):
     result = validate(project)
     assert result.returncode == 1
     assert "pin-gitlink-mismatch" in result.stderr
+
+
+def test_an_unmerged_index_falls_back_to_head(project):
+    """A conflicted merge over a leg holds `spec` at stages 1, 2 and 3 and at
+    no stage 0. None of the three is a commit anybody is about to make, so the
+    index has no answer and HEAD gives it — rather than whichever stage git
+    lists first, which is stage 1, the MERGE BASE.
+
+    The stages are written straight into the index with `update-index
+    --index-info`, which is what a conflicted `git merge` leaves behind,
+    without needing two branches that disagree about a submodule.
+    """
+    head = git("rev-parse", "HEAD:spec", cwd=project).stdout.strip()
+    git("rm", "--cached", "-q", "--", "spec", cwd=project)
+    stages = "".join(f"160000 {sha} {stage}\tspec\n" for stage, sha in
+                     ((1, OTHER_SHA), (2, head), (3, OTHER_SHA)))
+    written = subprocess.run(["git", "update-index", "--index-info"],
+                             cwd=str(project), input=stages, text=True,
+                             capture_output=True, check=False)
+    assert written.returncode == 0, written.stderr
+    result = validate(project)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "pins ok" in result.stdout
 
 
 def test_a_commit_that_is_not_40_hex_refuses(project):

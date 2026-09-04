@@ -379,7 +379,9 @@ def test_validate_accepts_a_member_bump_that_is_staged_but_not_committed(holder)
     after = git("rev-parse", "HEAD", cwd=member).stdout.strip()
     git("add", "--", "members/IRRS", cwd=holder)  # staged, NOT committed
     manifest_path = holder / "family.yaml"
-    manifest_path.write_text(manifest_path.read_text().replace(before, after))
+    text = manifest_path.read_text()
+    assert text.count(before) == 1, "fixture drift: IRRS's pin is not unique"
+    manifest_path.write_text(text.replace(before, after, 1))
     result = validate(holder)
     assert result.returncode == 0, result.stderr + result.stdout
     assert "gitlink == pin" in result.stdout
