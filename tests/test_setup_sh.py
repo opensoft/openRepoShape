@@ -1,9 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
-"""`setup.sh` — fork, clone, run one command.
+"""`setup.sh` — self-bootstrap from a temp checkout, or run from one, then
+scaffold and clean up.
 
 The end-to-end test drives the real script against BARE REPOSITORIES IN A
 TEMPORARY DIRECTORY. `gh` is never invoked and no real repository is created;
-that is what `--local-remote-dir` is for.
+that is what `--local-remote-dir` is for. The self-bootstrap tests point
+`OPENREPOSHAPE_REPO` at THIS checkout (a local path, so `git clone` stays
+offline) instead of the real `opensoft/openRepoShape` on GitHub.
 """
 
 from __future__ import annotations
@@ -54,6 +57,36 @@ def make_fork_dir(tmp_path: Path, origin_url: str, upstream_url: str) -> Path:
     git("remote", "add", "origin", origin_url, cwd=fork)
     git("remote", "add", "upstream", upstream_url, cwd=fork)
     return fork
+
+
+def make_outside_checkout(tmp_path: Path) -> Path:
+    """A directory holding a standalone COPY of setup.sh that is not inside
+    any git checkout at all — no `.git`, no `scaffold-project.py`, no
+    `contracts/`. This is what `curl -fsSL ... | bash -s --` looks like on
+    disk: a script with nothing beside it, run from wherever the person
+    happened to be standing.
+    """
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    copy = outside / "setup.sh"
+    shutil.copy(SETUP, copy)
+    copy.chmod(0o755)
+    return outside
+
+
+def run_bare_setup(script: Path, *args: str, cwd: Path,
+                   extra_env: dict | None = None) -> subprocess.CompletedProcess:
+    """Like `run_setup`, but against an arbitrary script path and cwd — what
+    the self-bootstrap tests need since `run_setup` always drives THIS
+    checkout's own `setup.sh` from THIS checkout's own directory."""
+    env = dict(os.environ)
+    env.setdefault("GIT_AUTHOR_NAME", "openRepoShape tests")
+    env.setdefault("GIT_AUTHOR_EMAIL", "tests@openreposhape.invalid")
+    env.setdefault("GIT_COMMITTER_NAME", "openRepoShape tests")
+    env.setdefault("GIT_COMMITTER_EMAIL", "tests@openreposhape.invalid")
+    env.update(extra_env or {})
+    return subprocess.run(["bash", str(script), *args], capture_output=True,
+                          text=True, check=False, cwd=str(cwd), env=env)
 
 
 @pytest.fixture(scope="module")
@@ -174,8 +207,9 @@ def test_a_name_outside_the_naming_policy_stops_before_the_scaffold(tmp_path):
 
 
 def test_scaffolding_into_the_upstream_org_refuses(tmp_path):
-    """Cloning the upstream instead of forking it looks identical from inside
-    the directory. Only one of the two should be creating repositories."""
+    """`--org opensoft` is almost never what anyone means: opensoft is the
+    UPSTREAM owner of openRepoShape itself, not a place to scaffold three
+    fresh repositories into."""
     result = run_setup("--project", "Sample", "--yes", "--org", "opensoft",
                        "--local-remote-dir", str(tmp_path / "remotes"),
                        "--into", str(tmp_path / "work"))
@@ -297,3 +331,87 @@ def test_no_test_here_depends_on_gh_being_authenticated():
         assert "--local-remote-dir" in call, (
             "this run_setup call reaches the gh preflight and will fail "
             f"wherever gh is not authenticated:\n    {' '.join(call.split())}")
+
+
+# --- self-bootstrap ---------------------------------------------------------
+#
+# `curl -fsSL .../setup.sh | bash -s -- --org <org> --project <Project>` has
+# no checkout on disk at all. These tests reproduce that shape: a lone COPY of
+# setup.sh in a directory with no `.git`, no `scaffold-project.py`, run with
+# $OPENREPOSHAPE_REPO pointed at THIS checkout so the clone it does is local
+# and offline.
+
+def test_self_bootstrap_scaffolds_from_a_temporary_checkout(tmp_path):
+    outside = make_outside_checkout(tmp_path)
+    base = tmp_path / "run"
+    result = run_bare_setup(outside / "setup.sh",
+                            "--org", "demoorg", "--project", "Sample", "--yes",
+                            "--local-remote-dir", str(base / "remotes"),
+                            "--into", str(base / "work"),
+                            cwd=outside, extra_env={"OPENREPOSHAPE_REPO": str(REPO)})
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "(0) self-bootstrap" in result.stdout
+    assert DEGRADE_LINE in result.stdout
+    clone = base / "work" / "Sample"
+    assert clone.is_dir()
+    assert (clone / "project.yaml").is_file()
+
+    match = re.search(r"checkout: (\S+)", result.stdout)
+    assert match, f"setup.sh never printed the shape checkout path:\n{result.stdout}"
+    assert not Path(match.group(1)).exists(), (
+        "the temporary shape checkout should have been removed on exit")
+
+
+def test_self_bootstrap_keeps_the_checkout_when_asked(tmp_path):
+    outside = make_outside_checkout(tmp_path)
+    base = tmp_path / "run"
+    result = run_bare_setup(outside / "setup.sh",
+                            "--org", "demoorg", "--project", "Sample", "--yes",
+                            "--keep-shape-checkout",
+                            "--local-remote-dir", str(base / "remotes"),
+                            "--into", str(base / "work"),
+                            cwd=outside, extra_env={"OPENREPOSHAPE_REPO": str(REPO)})
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "kept the shape checkout:" in result.stdout
+
+    match = re.search(r"checkout: (\S+)", result.stdout)
+    assert match, f"setup.sh never printed the shape checkout path:\n{result.stdout}"
+    kept = Path(match.group(1))
+    try:
+        assert kept.is_dir(), "--keep-shape-checkout should have kept the clone"
+        assert (kept / "scaffold-project.py").is_file()
+    finally:
+        shutil.rmtree(kept, ignore_errors=True)
+
+
+def test_running_from_the_upstream_checkout_without_org_refuses(tmp_path):
+    """`origin` pointing at opensoft/openRepoShape itself means this checkout
+    IS the upstream: there is no fork to inherit an organisation from, so the
+    ask is the same as self-bootstrap's — pass --org — not the old blanket
+    refusal."""
+    checkout = tmp_path / "upstream-checkout"
+    checkout.mkdir()
+    git("init", "-q", cwd=checkout)
+    git("remote", "add", "origin",
+       "git@github.com:opensoft/openRepoShape.git", cwd=checkout)
+    result = run_setup("--project", "Sample", "--yes",
+                       "--local-remote-dir", str(tmp_path / "remotes"),
+                       "--into", str(tmp_path / "work"), cwd=checkout)
+    assert result.returncode == 2
+    assert "upstream checkout" in result.stderr
+    assert "--org" in result.stderr
+    assert not (tmp_path / "remotes").exists()
+
+
+def test_self_bootstrap_without_org_refuses(tmp_path):
+    """There is no fork `origin` to read an organisation from outside a
+    checkout, so `--org` cannot be optional the way it is from inside one."""
+    outside = make_outside_checkout(tmp_path)
+    result = run_bare_setup(outside / "setup.sh",
+                            "--project", "Sample", "--yes",
+                            "--local-remote-dir", str(tmp_path / "remotes"),
+                            "--into", str(tmp_path / "work"),
+                            cwd=outside)
+    assert result.returncode == 2
+    assert "--org" in result.stderr
+    assert not (tmp_path / "remotes").exists()
