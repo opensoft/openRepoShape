@@ -34,34 +34,55 @@ here, and continues.
 All three carry the GitHub topic `{{TOPIC}}`, so the organisation's own search
 surfaces the group without a checkout.
 
-## Private legs need `SHAPE_LEGS_TOKEN`; the root checkout never does
+## Reading private legs in CI: a GitHub App first, `SHAPE_LEGS_TOKEN` as fallback
 
 If `{{SPEC_REPOSITORY}}` or `{{CODE_REPOSITORY}}` is **private or internal**,
 the `validate` workflow's default `GITHUB_TOKEN` cannot clone it as a
-submodule. Add a **`SHAPE_LEGS_TOKEN`** repository or organisation secret — a
-fine-grained PAT or GitHub App installation token with `contents:read` on the
-LEGS ONLY.
+submodule.
+
+Preferred: a dedicated GitHub App — permissions **Contents: Read-only** and
+**Metadata: Read**, installed on this organisation with access to the legs —
+mints a short-lived token at run time:
+
+```sh
+gh secret set SHAPE_LEGS_APP_ID --org <your-org> --body '<app id>'
+gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org <your-org> < app-private-key.pem
+```
+
+Fallback: a fine-grained **`SHAPE_LEGS_TOKEN`** PAT, `contents:read` on the
+LEGS ONLY:
+
+```sh
+gh secret set SHAPE_LEGS_TOKEN --org <your-org> --body '<token>'
+```
 
 The root repository itself is always readable by the workflow's own default
 token, so `actions/checkout` never carries a `token:` override — putting a
-legs-scoped token there instead is what broke the ROOT checkout with a 403
-the first time this was tried for real. `SHAPE_LEGS_TOKEN` is read only
-inside the guarded "fetch the legs (submodules)" step, scoped to that
-step's `env:`, and used through a `git -c url.<...>.insteadOf=<...>`
+legs-scoped credential there instead is what broke the ROOT checkout with a
+403 the first time a PAT was tried for real. Whichever credential resolves is
+read only inside the guarded "fetch the legs (submodules)" step, scoped to
+that step's `env:`, and used through a `git -c url.<...>.insteadOf=<...>`
 rewrite covering both HTTPS and SSH leg URLs — it never touches the root
 checkout.
 
-Without the secret the workflow does not go red on that account: it checks
-out the root without submodules, tries `git submodule update --init
+`validate` tries the App first — a `mint a leg-reader token from the GitHub
+App` step, scoped by `repositories:` to the legs this organisation itself
+owns (a leg under a different owner is excluded with a warning, since an
+installation token is per-owner) — and falls back to `SHAPE_LEGS_TOKEN` when
+the App is not configured. A configured App that fails to mint fails the job
+outright, naming both secrets and the required installation, rather than
+degrading.
+
+Without either credential the workflow does not go red on that account: it
+checks out the root without submodules, tries `git submodule update --init
 --recursive` best-effort, and — if that fails — still runs the naming and
 manifest checks, skips `validate-pins.py` with a warning explaining why, and
-only fails outright if `SHAPE_LEGS_TOKEN` **is** set and the fetch still
-failed — meaning the token cannot read one of the LEG repositories, never
-the root. That presence check reads a job-level `env:
-SHAPE_LEGS_TOKEN_SET: ${{ secrets.SHAPE_LEGS_TOKEN != '' }}` rather than the
-`secrets` context directly in the step's `if:` — the `secrets` context is
-not allowed in a step-level `if:` expression, and using it there makes
-GitHub reject the whole workflow file instead of just that step.
+only fails outright if a credential (App or PAT) **is** configured and the
+fetch still failed — naming which source it used. That presence check reads
+job-level `env: SHAPE_LEGS_APP_SET` / `SHAPE_LEGS_TOKEN_SET` booleans rather
+than the `secrets` context directly in the step's `if:` — the `secrets`
+context is not allowed in a step-level `if:` expression, and using it there
+makes GitHub reject the whole workflow file instead of just that step.
 
 ## The lockstep invariant
 

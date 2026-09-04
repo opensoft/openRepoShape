@@ -826,8 +826,10 @@ def _create_leg_remotes(plan: Plan, names: dict, repositories: dict,
     visibility = plan.get("visibility", "private")
     if not local and visibility in ("private", "internal"):
         print(f"NOTE {repositories['spec']} and {repositories['code']} are "
-              f"{visibility}: add a SHAPE_LEGS_TOKEN secret (contents:read "
-              f"on the legs) to {repositories['assembly']}, or the `validate` "
+              f"{visibility}: give {repositories['assembly']} a way to "
+              "read them — a GitHub App (SHAPE_LEGS_APP_ID + "
+              "SHAPE_LEGS_APP_PRIVATE_KEY, preferred) or a SHAPE_LEGS_TOKEN "
+              "PAT (contents:read on the legs, fallback) — or the `validate` "
               "check cannot check them out.")
 
 
