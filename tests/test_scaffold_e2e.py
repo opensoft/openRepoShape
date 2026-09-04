@@ -8,6 +8,7 @@ repositories on disk and uses them as origins; `gh` is never invoked.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 
@@ -346,7 +347,8 @@ def _step_block(workflow: str, marker: str) -> str:
 def test_the_ci_workflow_checkout_uses_shape_legs_token(project):
     """The exact token expression the fix specifies, and the guarded steps
     that let the job degrade instead of hard-failing when a private leg's
-    submodule fetch fails without `SHAPE_LEGS_TOKEN` configured.
+    submodule fetch fails without a leg credential (App token or
+    `SHAPE_LEGS_TOKEN`) configured.
 
     String/YAML-structure assertions only, no live run: this workflow never
     executes in the test suite (no network, no GitHub Actions runner here).
@@ -370,9 +372,11 @@ def test_the_ci_workflow_checkout_uses_shape_legs_token(project):
     assert "::warning::" in skipped
 
     fail_step = _step_block(
-        workflow, "fail — SHAPE_LEGS_TOKEN is set but the legs still")
+        workflow, "fail — a leg credential is configured but the legs "
+        "still")
     assert ("if: steps.submodules.outputs.legs_available != 'true' && "
-            "env.SHAPE_LEGS_TOKEN_SET == 'true'") in fail_step
+            "(env.SHAPE_LEGS_TOKEN_SET == 'true' || "
+            "env.SHAPE_LEGS_APP_SET == 'true')") in fail_step
     assert "exit 1" in fail_step
     # The root checkout no longer depends on this token, so the failure
     # message must say the token cannot read a LEG repository, not the root.
@@ -410,24 +414,154 @@ def test_the_ci_workflow_root_checkout_uses_the_default_token(project):
 
 
 def test_the_submodule_fetch_step_scopes_the_token_to_itself(project):
-    """`SHAPE_LEGS_TOKEN` is read only by the guarded submodule-fetch step,
-    via that step's own `env:` — never the job's, never the checkout step's
-    `with:` — and used through a `git -c url.<...>.insteadOf=<...>` rewrite
-    rather than a bare `token:` field, so it authenticates the legs alone
-    and never the root. Both submodule URL forms an adopted repository may
-    carry are covered: `https://github.com/...` and SSH `git@github.com:`.
+    """The leg credential — whichever one resolved — is read only by the
+    guarded submodule-fetch step, via that step's own `env:` — never the
+    job's, never the checkout step's `with:` — and used through a
+    `git -c url.<...>.insteadOf=<...>` rewrite rather than a bare `token:`
+    field, so it authenticates the legs alone and never the root. Both
+    submodule URL forms an adopted repository may carry are covered:
+    `https://github.com/...` and SSH `git@github.com:`.
     """
     workflow = (project / ".github" / "workflows" / "validate.yml").read_text()
     fetch = _step_block(workflow, "id: submodules")
 
     assert "env:" in fetch
+    assert "SHAPE_LEGS_APP_TOKEN: ${{ steps.app-token.outputs.token }}" in fetch
     assert "SHAPE_LEGS_TOKEN: ${{ secrets.SHAPE_LEGS_TOKEN }}" in fetch
     assert "insteadOf=https://github.com/" in fetch
     assert "insteadOf=git@github.com:" in fetch
-    assert "x-access-token:${SHAPE_LEGS_TOKEN}@github.com" in fetch
-    # Falls back to a plain, unauthenticated fetch when no secret is set.
+    assert "x-access-token:${LEG_TOKEN}@github.com" in fetch
+    # Falls back to a plain, unauthenticated fetch when neither is set.
     assert "else" in fetch
     assert "git submodule update --init --recursive" in fetch
+
+
+def test_the_ci_workflow_mints_an_app_token_before_falling_back(project):
+    """Ruled by Brett Heap on 2026-09-04: move the legs credential to a
+    GitHub App installation token minted at run time, with the existing
+    `SHAPE_LEGS_TOKEN` PAT staying as fallback. The mint step must be pinned
+    by a 40-hex commit (this repository's own pinning rule — see
+    `.github/workflows/tests.yml`), scoped to `contents: read`, guarded by a
+    job-level env boolean rather than `secrets` in its `if:`, and the
+    leg-fetch step must prefer the minted token over the PAT.
+    """
+    workflow = (project / ".github" / "workflows" / "validate.yml").read_text()
+
+    mint_step = _step_block(workflow, "id: app-token")
+    sha_line = next(line for line in mint_step.splitlines()
+                     if "actions/create-github-app-token@" in line)
+    sha = sha_line.split("@", 1)[1].split()[0]
+    assert re.fullmatch(r"[0-9a-f]{40}", sha), (
+        "actions/create-github-app-token must be pinned by a 40-hex commit "
+        f"sha, not a tag: {sha_line!r}")
+    assert "# v2." in sha_line, "keep the version as a trailing comment"
+    assert "permission-contents: read" in mint_step
+    assert "app-id: ${{ secrets.SHAPE_LEGS_APP_ID }}" in mint_step
+    assert "private-key: ${{ secrets.SHAPE_LEGS_APP_PRIVATE_KEY }}" in mint_step
+    assert "owner: ${{ github.repository_owner }}" in mint_step
+    assert "repositories: ${{ steps.leg-names.outputs.legs }}" in mint_step
+    assert "continue-on-error: false" in mint_step
+    if_lines = [line for line in mint_step.splitlines()
+                if line.lstrip().startswith("if:")]
+    assert if_lines
+    assert all("secrets." not in line for line in if_lines)
+
+    env_block = workflow.split("steps:", 1)[0]
+    assert "SHAPE_LEGS_APP_SET" in env_block
+    assert ("SHAPE_LEGS_APP_SET: ${{ secrets.SHAPE_LEGS_APP_ID != '' && "
+            "secrets.SHAPE_LEGS_APP_PRIVATE_KEY != '' }}") in env_block
+    assert "SHAPE_LEGS_TOKEN_SET" in env_block
+
+    # The fetch step must reference the App-minted token's output BEFORE
+    # SHAPE_LEGS_TOKEN, so the App wins the resolution order when both are
+    # configured.
+    fetch = _step_block(workflow, "id: submodules")
+    app_ref = fetch.index("steps.app-token.outputs.token")
+    pat_ref = fetch.index("SHAPE_LEGS_TOKEN:")
+    assert app_ref < pat_ref, (
+        "the leg-fetch step must reference steps.app-token.outputs.token "
+        "before SHAPE_LEGS_TOKEN")
+    assert "legs_credential=app" in fetch
+    assert "legs_credential=pat" in fetch
+    assert "legs_credential=none" in fetch
+    assert "legs_credential" in fetch and "GITHUB_OUTPUT" in fetch
+
+    # A misconfigured App must fail loudly, naming both secrets and the
+    # required installation, rather than silently degrading like a missing
+    # SHAPE_LEGS_TOKEN does.
+    explain_step = _step_block(
+        workflow, "fail — the GitHub App could not mint an installation "
+        "token")
+    assert "if: failure() && steps.app-token.outcome == 'failure'" in \
+        explain_step
+    assert "SHAPE_LEGS_APP_ID" in explain_step
+    assert "SHAPE_LEGS_APP_PRIVATE_KEY" in explain_step
+    assert "Contents: read" in explain_step
+    assert "exit 1" in explain_step
+
+
+def _step_run_script(workflow: str, marker: str) -> str:
+    """The dedented `run: |` body of the step block containing `marker`.
+
+    Mirrors YAML block-scalar semantics rather than just taking the rest of
+    `_step_block`'s window: the block ends at the first non-blank line whose
+    indentation is LESS than the body's own (the comment block introducing
+    the next step sits exactly there, at the step's 6-space indent, which is
+    less than the `run:` body's 10), not at `_step_block`'s end-of-window.
+    """
+    block = _step_block(workflow, marker)
+    lines = block.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.strip() == "run: |")
+    body = lines[start + 1:]
+    indent = len(body[0]) - len(body[0].lstrip(" "))
+    end = len(body)
+    for i, line in enumerate(body):
+        if line.strip() and len(line) - len(line.lstrip(" ")) < indent:
+            end = i
+            break
+    return "\n".join(line[indent:] for line in body[:end])
+
+
+def test_the_leg_name_extraction_reads_gitmodules_https_ssh_and_excludes_foreign_owners(project, tmp_path):
+    """The `.gitmodules` -> `legs` extraction is tested as the REAL shell it
+    is, not a Python reimplementation asserted "equal" to it (which could
+    silently drift): this pulls the exact `run:` body of the "leg
+    repository names from .gitmodules" step out of the rendered workflow and
+    runs it, unmodified, against a crafted `.gitmodules` covering both URL
+    forms and a leg owned by a different account.
+    """
+    workflow = (project / ".github" / "workflows" / "validate.yml").read_text()
+    script = _step_run_script(workflow, "id: leg-names")
+
+    work = tmp_path / "leg-names-fixture"
+    work.mkdir()
+    (work / ".gitmodules").write_text(
+        '[submodule "spec"]\n'
+        "\tpath = spec\n"
+        "\turl = https://github.com/acme/Widget-spec\n"
+        '[submodule "code"]\n'
+        "\tpath = code\n"
+        "\turl = git@github.com:acme/Widget-code.git\n"
+        '[submodule "vendor"]\n'
+        "\tpath = vendor\n"
+        "\turl = https://github.com/other-org/Vendor-thing\n")
+    output_file = tmp_path / "github_output"
+    output_file.write_text("")
+
+    result = subprocess.run(
+        ["bash", "-c", script], cwd=work, capture_output=True, text=True,
+        env={**os.environ, "REPO_OWNER": "acme",
+             "GITHUB_OUTPUT": str(output_file)})
+    assert result.returncode == 0, result.stderr
+
+    [legs_line] = [line for line in output_file.read_text().splitlines()
+                   if line.startswith("legs=")]
+    legs = set(legs_line.split("=", 1)[1].split(","))
+    # The foreign-owned leg is excluded from `legs` (an installation token
+    # is per-owner) and reported instead as a warning naming it by name.
+    assert legs == {"Widget-spec", "Widget-code"}
+    assert "other-org/Vendor-thing" in result.stdout
+    assert "::warning::" in result.stdout
 
 
 def test_no_if_expression_reads_the_secrets_context(project):
