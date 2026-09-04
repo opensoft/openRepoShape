@@ -1,23 +1,24 @@
 # AGENTS.md — scaffolding, adopting, updating, and declaring descent
 
-You are an AI assistant in a checkout (usually a FORK) of `openRepoShape` and a
-human has said "scaffold a new project with this shape", or "convert this
-repository to it". This is the whole procedure; `README.md` says what the shape
-is. Sections 1-3 scaffold a NEW project; the three after them cover an
-EXISTING repository, a project that declares descent from a neutral product,
-and a project whose copied shape files have fallen behind the upstream.
+You are an AI assistant a human has asked to "scaffold a new project with
+this shape", or "convert this repository to it". This is the whole procedure;
+`README.md` says what the shape is. Sections 1-3 scaffold a NEW project; the
+three after them cover an EXISTING repository, a project that declares
+descent from a neutral product, and a project whose copied shape files have
+fallen behind the upstream.
 
 ## The rules that outrank the rest
 
 **Never create a repository without the human's explicit confirmation.** Run
-`./setup.sh` WITHOUT `--yes` and let it ask. The human types `yes` at its
-prompt; you never answer it for them.
+`./setup.sh` (or the one-liner) WITHOUT `--yes` and let it ask. The human
+types `yes` at its prompt; you never answer it for them.
 
-**Never pass `--allow-upstream-org` on your own initiative.** It exists because
-cloning `opensoft/openRepoShape` instead of forking it looks identical from
-inside the directory. If setup.sh refuses on it, STOP and relay what it said —
-the answer is almost always that they should fork, or pass `--org <their-org>`.
-Pass it only if the human asks for it in those words.
+**Never pass `--allow-upstream-org` on your own initiative.** It guards only
+`--org opensoft` itself — scaffolding into opensoft's own namespace, the
+upstream owner of openRepoShape. If setup.sh refuses because the organisation
+you were given resolves to opensoft, STOP and relay what it said; the fix is
+almost always an explicit `--org <their-org>`. Pass `--allow-upstream-org`
+only if the human asks for it in those words.
 
 **Never bypass an organisation ruleset.** A ruleset that refuses a direct push
 to `main` is doing its job; the exits are in the scaffold's own failure message
@@ -28,7 +29,7 @@ not a remedy.
 
 | | | |
 |---|---|---|
-| org | detected from the fork's `origin` | `--org` overrides |
+| `--org` | the organisation to scaffold into | REQUIRED — there is no fork `origin` to read it from |
 | `--project` | the assembly-root name, ONE CamelCase token | e.g. `Atlas` |
 | `--id` | the lowercase project id | defaults to the project lowercased |
 | `--visibility` | `private`, `public` or `internal` | defaults to `private` |
@@ -37,28 +38,31 @@ not a remedy.
 Electing this shape is a human's decision. If they have not said which
 visibility they want, ask — do not assume. `elected_by` records whose act it was.
 
-## 2. Run setup.sh, without `--yes`
+## 2. Run the one-liner, without `--yes`
 
 ```sh
-./setup.sh --project <Project> --visibility <private|public|internal> \
-    --elected-by '<Name>'
+curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup.sh \
+    | bash -s -- --org <org> --project <Project> \
+      --visibility <private|public|internal> --elected-by '<Name>'
 ```
 
-It runs the preflight, detects the organisation, checks the three names against
-the naming policy, prints the scaffold plan, and then asks. Show the human its
-output verbatim — the plan especially — and let them answer its prompt. "Go
-ahead" about something else is not a yes about this.
+Already standing in a checkout of openRepoShape? Run `./setup.sh` the same
+way, still with the explicit `--org` — there is no fork to detect one from.
+Either form runs the preflight, checks the three names against the naming
+policy, prints the scaffold plan, and then asks. Show the human its output
+verbatim — the plan especially — and let them answer its prompt. "Go ahead"
+about something else is not a yes about this.
 
 If it refuses, read the refusal: each one names what to run instead. Do not
 retry with `--force`; there is none, deliberately.
 
 ## 3. It finishes the job
 
-setup.sh clones the new assembly root beside the fork, runs `make bootstrap` in
-it, and prints the clone path, the three repository URLs and the next commands.
-Relay that block. Say that bootstrap put each leg on its tracking branch AT the
-pinned commit, and that the line `authority is not wallet-carried in this org`
-is a report and not a fault.
+It clones the new assembly root, runs `make bootstrap` in it, and prints the
+clone path, the three repository URLs and the next commands. Relay that
+block. Say that bootstrap put each leg on its tracking branch AT the pinned
+commit, and that the line `authority is not wallet-carried in this org` is a
+report and not a fault.
 
 ## If setup.sh cannot be used
 
