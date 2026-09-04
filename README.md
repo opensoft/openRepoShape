@@ -404,14 +404,25 @@ nothing but git's plumbing.
 
 ## Bootstrap is COPIED into the project, not fetched
 
-`scripts/bootstrap.py` and the validators are copied into the assembly root by
-the scaffold, so a scaffolded project is **self-contained**: it runs its own
-gate even though `setup.sh` only ever touched this standard through a
-temporary directory it has since deleted. `contracts/shape-pin.yaml` records
-the openRepoShape commit those copies came from AND a per-file sha256 of each
-copy, so "which openRepoShape is this?" and "has anyone edited it since?"
-both have answers, and editing a copy in place is reported as drift with the
-exit named (carry it upstream; do not update the digest).
+`scripts/bootstrap.py`, the validators and `AGENTS-shape.md` are copied into the
+assembly root by the scaffold, so a scaffolded project is **self-contained**:
+it runs its own gate even though `setup.sh` only ever touched this standard
+through a temporary directory it has since deleted. `contracts/shape-pin.yaml`
+records the openRepoShape commit those copies came from AND a per-file sha256
+of each copy, so "which openRepoShape is this?" and "has anyone edited it
+since?" both have answers, and editing a copy in place is reported as drift
+with the exit named (carry it upstream; do not update the digest).
+
+**Why an agent file is one of the copies.** An agent working in a project
+learns the shape's rules — advance a leg in ONE commit, never edit a pinned
+file, never `--admin` — from a file that travels WITH the shape rather than
+from whoever last remembered them. `AGENTS-shape.md` is therefore pinned like
+the validators: "never edit a file with a row in `shape-pin.yaml`" is worthless
+if the file carrying that rule can itself be edited. Being pinned is also why
+it carries no project detail at all — one rendered byte and every project's
+copy would digest differently. The project's own `AGENTS.md` and `CLAUDE.md`
+are rendered and NOT pinned: the first line points at `AGENTS-shape.md`, and
+the rest is the project's own, which an upstream fix must never overwrite.
 
 ## Keeping a project's shape current
 
@@ -519,6 +530,7 @@ templates/assembly-root/          the skeleton materialized for <Project>
 templates/family-root/            the skeleton for a FAMILY holder
 templates/spec-root/              the skeleton for <Project>-spec
 templates/code-root/              the skeleton for <Project>-code
+templates/*/AGENTS-shape.md       the rules of the shape, for an agent (PINNED)
 AGENTS.md                         the procedure an AI assistant follows
 tests/                            pytest; scaffolds into bare repos in /tmp
 ```

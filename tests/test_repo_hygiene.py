@@ -216,8 +216,16 @@ def test_readme_is_short_enough_to_be_read():
     #   The paragraph is long because the verdict is only half of it — the
     #   three refusals and the open question (a project cannot yet decline an
     #   addition) are the half a reader would otherwise learn from a surprise.
-    assert len(lines) <= 532, (
-        f"README.md is {len(lines)} lines; the cap is 532")
+    # 2026-09-04: 532 -> 544 — a scaffolded project now carries an AGENT FILE.
+    #   One line names `AGENTS-shape.md` among the copies and one names it in
+    #   the layout; the other ten are the paragraph saying WHY the shape's own
+    #   text is pinned (a rule against editing pinned files is worthless if
+    #   the file carrying it can be edited, which is also why it holds no
+    #   rendered project detail) while the project's `AGENTS.md` and
+    #   `CLAUDE.md` are rendered and are not. That trade is the same one the
+    #   copies themselves are, and it was nowhere in this file.
+    assert len(lines) <= 544, (
+        f"README.md is {len(lines)} lines; the cap is 544")
 
 
 def test_setup_sh_is_executable_and_fails_loudly():

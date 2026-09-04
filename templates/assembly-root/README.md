@@ -123,6 +123,9 @@ boundary, and is defective.
 ## Layout
 
 ```
+AGENTS-shape.md                  the RULES OF THE SHAPE, for an agent (copied)
+AGENTS.md                        this project's own instructions (yours)
+CLAUDE.md                        one line, pointing at AGENTS.md
 project.yaml                     the manifest — the SOURCE of this group
 contracts/repository-naming.yaml the four naming families (copied from the shape)
 contracts/spec-pin.yaml          the spec leg's commit + tree digest
@@ -136,6 +139,8 @@ scripts/repo_shape.py            shared helpers, standard library only
 .github/workflows/validate.yml   the neutral gate, on pull_request
 ```
 
-Everything under `scripts/` and `contracts/repository-naming.yaml` is a COPY
-from `{{SHAPE_REPOSITORY}}`, digest-pinned in `contracts/shape-pin.yaml`. Edit
-them upstream, not here — a local edit is reported as drift.
+Everything under `scripts/`, plus `contracts/repository-naming.yaml` and
+`AGENTS-shape.md`, is a COPY from `{{SHAPE_REPOSITORY}}`, digest-pinned in
+`contracts/shape-pin.yaml`. Edit them upstream, not here — a local edit is
+reported as drift. `AGENTS.md` and `CLAUDE.md` have no row and are this
+project's own.

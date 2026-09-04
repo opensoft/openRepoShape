@@ -603,9 +603,120 @@ def test_the_shape_pin_records_the_openreposhape_commit(project):
     assert pin["revision_kind"] == "commit"
     assert pin["materialization"] == "copied"
     assert pin["source_repository"] == "opensoft/openRepoShape"
-    assert len(pin["files"]) >= 9
+    # 2026-09-04: 9 -> 10, deliberately. `AGENTS-shape.md` is the tenth copy,
+    # and the row count is a floor rather than an equality precisely so that
+    # the file naming the copies stays `scripts/shape_materialize.py`.
+    assert len(pin["files"]) >= 10
     manifest = load_yaml(project / "project.yaml")
     assert manifest["shape"]["commit"] == pin["commit"]
+
+
+# --- the agent files -------------------------------------------------------
+#
+# A project that carries the shape carries the shape's RULES for an agent, and
+# the split between the two files is the whole point: `AGENTS-shape.md` is the
+# shape's text and is PINNED, `AGENTS.md` is the project's and is not.
+
+POINTER = "Read AGENTS-shape.md first — the rules of this repository's shape."
+
+
+def test_the_pinned_agent_file_is_byte_identical_to_the_template(project):
+    """VERBATIM means verbatim: no substitution, and a digest row that a
+    validator can recompute. A rendered byte here would make every project's
+    copy digest differently, and `update-shape.py` could not then say whether
+    one had drifted or merely been scaffolded for a different project."""
+    sys.path.insert(0, str(REPO / "scripts"))
+    from repo_shape import file_sha256, load_yaml
+    copied = project / "AGENTS-shape.md"
+    template = REPO / "templates" / "assembly-root" / "AGENTS-shape.md"
+    assert copied.read_bytes() == template.read_bytes()
+    assert "{{" not in copied.read_text(), (
+        "a pinned file carries no placeholders; it names the paths "
+        "`project.yaml` names instead")
+
+    pin = load_yaml(project / "contracts" / "shape-pin.yaml")
+    rows = {row["path"]: row["sha256"].lower() for row in pin["files"]}
+    assert "AGENTS-shape.md" in rows, (
+        "the shape's own rules must be digest-pinned, or the rule they carry "
+        "— never edit a file with a row in shape-pin.yaml — is unenforceable "
+        "against the file carrying it")
+    assert rows["AGENTS-shape.md"] == file_sha256(copied)
+    assert "AGENTS.md" not in rows and "CLAUDE.md" not in rows, (
+        "the project's own instructions are the project's; pinning them would "
+        "make an upstream fix overwrite what its agents are told")
+
+
+def test_the_pinned_agent_file_carries_the_rules_it_exists_for(project):
+    text = (project / "AGENTS-shape.md").read_text()
+    for rule in (
+        "contracts/shape-pin.yaml",           # never edit a pinned file
+        "update-shape.py",                    # the exit is upstream
+        "git submodule update",               # never bare, then commit
+        "make pins",
+        "make bootstrap",
+        "--admin",
+        "--allow-upstream-org",
+        "--accept-local",
+        "neutral_product_pins:",
+        "members/<Project>",
+    ):
+        assert rule in text, f"AGENTS-shape.md says nothing about {rule}"
+    # The prose is hard-wrapped, so the sentences are matched against the
+    # text with its line breaks flattened rather than against the bytes.
+    flat = " ".join(text.split())
+    assert ("`role:` and every other manifest field confer NOTHING" in flat
+            and "a consumer deriving permission from them is defective"
+            in flat)
+    assert "the paths `project.yaml` names, `spec/` and `code/` by default" \
+        in flat, ("a verbatim file cannot name a project's real paths, so it "
+                  "names where they are declared")
+
+
+def test_the_projects_own_agent_file_points_at_the_shapes_first(project):
+    lines = (project / "AGENTS.md").read_text().splitlines()
+    assert lines[0] == POINTER, (
+        "the pointer is the FIRST line because an agent that stops reading "
+        "after one line has still been told where the rules are")
+    body = "\n".join(lines)
+    assert "{{" not in body, "the project's file is RENDERED, not verbatim"
+    for fact in (f"{ORG}/{PROJECT}", f"{ORG}/{PROJECT}-spec",
+                 f"{ORG}/{PROJECT}-code", PROJECT, "atlas"):
+        assert fact in body, f"{fact} is missing from the rendered AGENTS.md"
+    assert "`spec/`" in body and "`code/`" in body
+
+
+def test_claude_md_is_one_line_pointing_at_agents_md(project):
+    assert (project / "CLAUDE.md").read_text() == "Read AGENTS.md.\n"
+
+
+def test_each_leg_points_at_the_root_and_says_what_advancing_it_is_not(project):
+    """A leg clone can see neither the manifest nor the other leg, so the
+    pointer at the root is the only thing that can get an agent to the rules."""
+    for role, other, path, other_path in (("spec", "code", "spec", "code"),
+                                          ("code", "spec", "code", "spec")):
+        leg = project / path / "AGENTS.md"
+        text = leg.read_text()
+        assert f"**{role} leg**" in text
+        assert f"{ORG}/{PROJECT}" in text and "AGENTS-shape.md" in text
+        assert f"{ORG}/{PROJECT}-{other}" in text, (
+            "the other leg is named, because reading half a project is the "
+            "failure mode")
+        assert f"`../{other_path}/`" in text
+        assert f"contracts/{role}-pin.yaml" in text
+        assert "does NOT do is advance the project" in text
+        assert "{{" not in text
+        assert (project / path / "CLAUDE.md").read_text() == "Read AGENTS.md.\n"
+
+
+def test_the_agent_files_leave_the_gate_green(project):
+    """They are new files in a pinned tree, so the two validators that read
+    that tree are what says the rows and the manifest still agree."""
+    for validator, args in (("validate-pins.py", []),
+                            ("validate-manifest.py", [])):
+        result = run_script(project / "scripts" / validator, *args,
+                            cwd=project)
+        assert result.returncode == 0, \
+            f"{validator}: {result.stderr}{result.stdout}"
 
 
 # --- visibility --------------------------------------------------------

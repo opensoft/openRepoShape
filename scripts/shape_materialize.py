@@ -116,6 +116,14 @@ COPIED_VERBATIM = (
     "Makefile",
     ".gitignore",
     ".github/workflows/validate.yml",
+    # The AGENT-FACING rules of the shape (2026-09-04). PINNED, and verbatim
+    # for the same reason the validators are: the sentence "never edit a file
+    # with a row in shape-pin.yaml" is worthless if the file saying it can be
+    # edited. Verbatim also means it carries no `{{placeholders}}` — it names
+    # "the paths `project.yaml` names" instead — because one byte of rendered
+    # project detail would make every project's copy digest differently and
+    # `update-shape.py` unable to say whether it had drifted.
+    "AGENTS-shape.md",
 )
 #: Rendered from the template with `{{PLACEHOLDER}}` substitution. These are
 #: NOT digest-pinned in the shape pin: they are this project's own content.
@@ -124,6 +132,12 @@ TEMPLATED = (
     "project.yaml",
     "contracts/spec-pin.yaml",
     "contracts/code-pin.yaml",
+    # The project's OWN assistant instructions: a one-line pointer at
+    # `AGENTS-shape.md`, the three repositories, and then the project's own
+    # text. Rendered rather than pinned on purpose — an upstream fix must
+    # never overwrite what a project's agents are told about the project.
+    "AGENTS.md",
+    "CLAUDE.md",
     # shape-pin.yaml is rendered LAST, because its `files:` block digests the
     # copies above after they have been written.
 )
@@ -146,6 +160,8 @@ EXECUTABLE = ("scripts/validate-pins.py", "scripts/validate-manifest.py",
 FAMILY_TEMPLATED = (
     "README.md",
     "family.yaml",
+    "AGENTS.md",
+    "CLAUDE.md",
     # shape-pin.yaml is rendered LAST by the materializer, over the copies.
 )
 FAMILY_COPIED_VERBATIM = (
@@ -154,6 +170,13 @@ FAMILY_COPIED_VERBATIM = (
     "Makefile",
     ".gitignore",
     ".github/workflows/validate.yml",
+    # The holder's own agent-facing rules, pinned like the assembly root's and
+    # for the same reason. It is a SEPARATE document rather than the same one:
+    # a holder has no legs, no leg pins and no lockstep workflow refs, so half
+    # of the assembly root's file would be instructions about things that are
+    # not here — and a file that is right about the wrong repository is read
+    # once and then not at all.
+    "AGENTS-shape.md",
 )
 #: The family validator reads the naming policy through `repo_shape`, so those
 #: two travel with it. It does NOT copy `validate-repository-naming.py`: the
@@ -165,6 +188,42 @@ FAMILY_COPIED_FROM_SHAPE = (
 FAMILY_EXECUTABLE = ("scripts/validate-family.py", "scripts/bootstrap.py")
 
 PLACEHOLDER_RE = re.compile(r"\{\{[A-Z_]+\}\}")
+
+#: The one line an existing assistant-instruction file needs, and the exact
+#: bytes of the pointer the templated `AGENTS.md` opens with.
+SHAPE_POINTER_LINE = ("Read AGENTS-shape.md first — the rules of this "
+                      "repository's shape.")
+#: The shape files whose collision follow-up is ADD A LINE, not MERGE
+#: (2026-09-04). `contracts/path-classification.yaml`'s
+#: `root-assistant-instructions` keeps a source's own `AGENTS.md`/`CLAUDE.md`
+#: at the root because "it addresses the whole project", which is the same
+#: reason the shape must not replace one: that file is what this project's
+#: agents ALREADY read, and telling a human to "merge" two agent instruction
+#: files is how the project's own instructions get lost inside the shape's.
+ASSISTANT_INSTRUCTIONS = ("AGENTS.md", "CLAUDE.md")
+
+
+def collision_follow_up(intended: str, actual: str) -> str:
+    """The follow-up for ONE collision, in one place.
+
+    Both callers say it: `adopt-project.py plan` PREDICTS the collisions from
+    the plan's surviving root paths, and `execute` reports the ones that
+    actually happened. Two spellings of the same instruction is how the plan a
+    human approves stops matching the commit message they read afterwards.
+    """
+    if intended in ASSISTANT_INSTRUCTIONS:
+        return (
+            f"add the line `{SHAPE_POINTER_LINE}` to the existing {intended} "
+            f"rather than replacing it with {actual}: {intended} is what this "
+            "project's agents ALREADY read, and "
+            "`contracts/path-classification.yaml` keeps it at the root "
+            "(`root-assistant-instructions`) because it addresses the whole "
+            f"project. Then delete {actual}. Nothing was overwritten.")
+    return (
+        f"merge {actual} into {intended}: the source repository already has "
+        "that name, so the shape's copy was written beside it and NOTHING was "
+        "overwritten")
+
 
 #: Appended to the assembly root's Makefile by `adopt-project.py` ONLY. A
 #: scaffolded project's legs are empty, so nothing reads across them yet; an
@@ -383,12 +442,8 @@ class Materialized:
         self.shape_files: list[str] = []
 
     def follow_ups(self) -> list[str]:
-        return [
-            f"merge {actual} into {intended}: the shape's copy could not take "
-            f"that name because the source repository already has one, and "
-            f"nothing was overwritten"
-            for intended, actual in self.collisions
-        ]
+        return [collision_follow_up(intended, actual)
+                for intended, actual in self.collisions]
 
 
 def materialize_assembly_root(shape_root: Path, target: Path,
