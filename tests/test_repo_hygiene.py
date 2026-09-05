@@ -302,8 +302,23 @@ def test_readme_is_short_enough_to_be_read():
     #   whose edge nobody states is read as a general one. It is its own `###`
     #   subsection, not a paragraph tacked onto the descendant-form one above
     #   it, so a reader scanning headings finds the rule.
-    assert len(lines) <= 743, (
-        f"README.md is {len(lines)} lines; the cap is 743")
+    # 2026-09-05: 743 -> 821 — "Quick start for a first-time user" (#43). A
+    #   first-time user could not find how to install `gh` at all, and the
+    #   simplest way in — install the `openRepoShape` command, then
+    #   `openRepoShape <Project> --org <org>` — sat inside the worked example,
+    #   after the `curl | bash` one-liner and its `gh api` variant, where a
+    #   newcomer reading top to bottom met it last instead of first. The new
+    #   section is four numbered steps ahead of both: install `gh` (with the
+    #   official Debian/Ubuntu and Fedora package commands, copied from
+    #   cli.github.com's own install page, and a platform paragraph for
+    #   Windows, which has no native path today and needs WSL2), log in and
+    #   configure the credential helper, install the command, then run it.
+    #   The existing one-liner is relabelled as the alternative it is
+    #   ("without installing anything") rather than deleted, and the
+    #   Requirements line in the worked example now points at the install page
+    #   instead of assuming the reader already has `gh`.
+    assert len(lines) <= 821, (
+        f"README.md is {len(lines)} lines; the cap is 821")
 
 
 @pytest.mark.parametrize("name", SHIPPED_BASH)
