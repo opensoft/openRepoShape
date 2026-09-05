@@ -1,0 +1,204 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+#
+# openRepoShape — the short way in: `openRepoShape Atlas --org <your-org>`.
+#
+# Install it once, from anywhere, with no checkout and no clone:
+#
+#   gh api repos/opensoft/openRepoShape/contents/openRepoShape \
+#       -H 'Accept: application/vnd.github.raw' | bash -s -- --install
+#
+# (or the raw-URL twin, `curl -fsSL …/main/openRepoShape | bash -s -- --install`).
+#
+# IT ADDS NO BEHAVIOUR: it fetches `setup.sh` from opensoft/openRepoShape and
+# runs it, turning the positional <Project> into `--project <Project>` and
+# passing every other argument through untouched. The README's long
+# `curl … | bash -s -- --org … --project …` line and this do the same thing.
+
+set -euo pipefail
+
+# $OPENREPOSHAPE_REPO is an owner/name slug here (it is an API path), while
+# setup.sh reads the same variable as something to `git clone` — see
+# shape_clone_url below: one name, both uses.
+REPO="${OPENREPOSHAPE_REPO:-opensoft/openRepoShape}"
+REF="${OPENREPOSHAPE_REF:-main}"
+SELF="${BASH_SOURCE[0]:-$0}"
+
+PROJECT=""
+ORG=""
+MODE="run"
+PASSTHROUGH=()
+WORKDIR=""
+
+say() { printf '%s\n' "$*"; }
+die() { printf '\nREFUSED: %s\n' "$1" >&2; exit "${2:-2}"; }
+
+usage() {
+	cat <<'USAGE'
+openRepoShape <Project> [--org <org>] [setup.sh options] [-- <scaffold flags>]
+openRepoShape --install            install (or update) this command into ~/.local/bin
+openRepoShape --help | --version
+
+<Project> is the assembly-root name, ONE CamelCase token (e.g. Atlas); omit it
+and setup.sh asks, if a terminal is attached. `--org` comes from that flag,
+else $OPENREPOSHAPE_ORG, else a prompt — it is NEVER defaulted. Every other
+argument reaches setup.sh unchanged: --visibility, --elected-by, --into,
+--yes, --local-remote-dir, and anything after `--`, which setup.sh hands on to
+scaffold-project.py. `setup.sh --help` lists them all.
+
+  $OPENREPOSHAPE_REPO       owner/name to fetch from (default opensoft/openRepoShape)
+  $OPENREPOSHAPE_REF        the ref to fetch it at   (default main)
+  $OPENREPOSHAPE_ORG        the organisation, when --org is not given
+  $OPENREPOSHAPE_BIN_DIR    where --install puts it  (default ~/.local/bin)
+  $OPENREPOSHAPE_SETUP_SH   run this setup.sh on disk instead of fetching one
+USAGE
+}
+
+workdir() {
+	if [ -z "$WORKDIR" ]; then
+		WORKDIR="$(mktemp -d)"
+		trap 'rm -rf -- "$WORKDIR"' EXIT
+	fi
+	printf '%s' "$WORKDIR"
+}
+
+# THE API FIRST, the raw URL second. `gh api` is authenticated, so it still
+# works inside an organisation whose policy blocks raw.githubusercontent.com;
+# curl is the fallback for a machine with no `gh`. Each attempt writes to a
+# file and is checked before its bytes are used, so a half-written first
+# attempt is never mistaken for a fetch.
+fetch_from_repo() {
+	local path="$1" dest="$2"
+	if command -v gh >/dev/null 2>&1 &&
+		gh api "repos/$REPO/contents/$path?ref=$REF" \
+			-H 'Accept: application/vnd.github.raw' >"$dest" 2>/dev/null &&
+		[ -s "$dest" ]; then
+		return 0
+	fi
+	if command -v curl >/dev/null 2>&1 &&
+		curl -fsSL "https://raw.githubusercontent.com/$REPO/$REF/$path" \
+			>"$dest" 2>/dev/null && [ -s "$dest" ]; then
+		return 0
+	fi
+	die "could not fetch $path from $REPO at $REF. Both ways failed:
+    gh api repos/$REPO/contents/$path?ref=$REF
+    curl -fsSL https://raw.githubusercontent.com/$REPO/$REF/$path"
+}
+
+# setup.sh CLONES $OPENREPOSHAPE_REPO when it self-bootstraps, so the child is
+# handed the clone URL of the very repository these bytes came from: name a
+# fork or mirror once and it is used for the fetch AND the clone. A URL or a
+# path on disk (what the tests point it at) goes through untouched.
+shape_clone_url() {
+	case "$REPO" in
+	*://* | *@*:* | /* | .*) printf '%s' "$REPO" ;;
+	*) printf 'https://github.com/%s.git' "$REPO" ;;
+	esac
+}
+
+install_self() {
+	local dir="${OPENREPOSHAPE_BIN_DIR:-$HOME/.local/bin}"
+	local target="$dir/openRepoShape" source verb
+	# Run from a file, install THOSE bytes: `--install` then needs no network
+	# and no `gh` at all. Run from stdin (`curl … | bash -s -- --install`)
+	# there is no file to copy from, so fetch this path at this same ref.
+	if [ -f "$SELF" ]; then
+		source="$SELF"
+	else
+		source="$(workdir)/openRepoShape"
+		fetch_from_repo openRepoShape "$source"
+	fi
+	mkdir -p "$dir"
+	if [ -e "$target" ] && cmp -s "$source" "$target"; then
+		verb="already installed at $target (unchanged)"
+	else
+		if [ -e "$target" ]; then verb="updated at $target"; else verb="installed at $target"; fi
+		cp -- "$source" "$target"
+	fi
+	# Stamped every time: a copy that is not executable is not a command.
+	chmod 755 "$target"
+	say "openRepoShape: $verb"
+	case ":${PATH:-}:" in
+	*":$dir:"*) ;;
+	*)
+		say "  $dir is not on \$PATH. Add it:"
+		say "    export PATH=\"$dir:\$PATH\""
+		;;
+	esac
+}
+
+# --- arguments ------------------------------------------------------------
+while [ $# -gt 0 ]; do
+	case "$1" in
+	-h | --help) usage; exit 0 ;;
+	--version) say "openRepoShape ($REPO @ $REF)"; exit 0 ;;
+	--install) MODE="install"; shift ;;
+	--org) ORG="${2:?--org needs a value}"; shift 2 ;;
+	--project) PROJECT="${2:?--project needs a value}"; shift 2 ;;
+	# setup.sh's value-taking flags, named so their VALUE is never mistaken
+	# for the positional <Project>. Anything else beginning with a dash is a
+	# lone flag and travels as-is: setup.sh refuses what it does not know, so
+	# a flag is never learned twice.
+	--id | --name | --visibility | --elected-by | --into | --local-remote-dir | --shape-ref)
+		PASSTHROUGH+=("$1" "${2:?$1 needs a value}"); shift 2 ;;
+	--) shift; PASSTHROUGH+=(-- "$@"); break ;;
+	-*) PASSTHROUGH+=("$1"); shift ;;
+	*)
+		[ -z "$PROJECT" ] || die "two project names, '$PROJECT' and '$1'. One positional <Project>, then flags."
+		PROJECT="$1"; shift ;;
+	esac
+done
+
+if [ "$MODE" = "install" ]; then
+	[ -z "$PROJECT" ] && [ ${#PASSTHROUGH[@]} -eq 0 ] ||
+		die "--install takes no other arguments; it only installs this command."
+	install_self
+	exit 0
+fi
+
+# NEVER a default organisation. setup.sh refuses `--org opensoft` without
+# --allow-upstream-org for the same reason a guess is refused here: a wrong
+# answer creates three repositories in somebody else's namespace. So: no
+# guess, and --allow-upstream-org passed for nobody.
+[ -n "$ORG" ] || ORG="${OPENREPOSHAPE_ORG:-}"
+if [ -z "$ORG" ] && [ -t 0 ]; then
+	printf 'organisation to scaffold into: '
+	read -r ORG || true
+fi
+[ -n "$ORG" ] || die "no organisation to scaffold into. Re-run with --org <your-org>, or set \$OPENREPOSHAPE_ORG."
+
+# setup.sh prompts for a missing project when a terminal is attached; with no
+# terminal it cannot, so say so before fetching a script to be refused by.
+if [ -z "$PROJECT" ] && [ ! -t 0 ]; then
+	usage >&2
+	die "no <Project> given, and no terminal to ask on."
+fi
+
+ARGS=(--org "$ORG")
+[ -z "$PROJECT" ] || ARGS+=(--project "$PROJECT")
+# Fetched at $REF, so setup.sh self-bootstraps its checkout at $REF too:
+# otherwise the script that runs and the standard it clones are two commits.
+[ -z "${OPENREPOSHAPE_REF:-}" ] || ARGS+=(--shape-ref "$REF")
+ARGS+=(${PASSTHROUGH[@]+"${PASSTHROUGH[@]}"})
+
+# $OPENREPOSHAPE_SETUP_SH is the OFFLINE TEST PATH: a setup.sh already on disk
+# instead of a fetched one. It runs where it lies, so setup.sh finds its own
+# checkout around it and clones nothing.
+if [ -n "${OPENREPOSHAPE_SETUP_SH:-}" ]; then
+	SETUP="$OPENREPOSHAPE_SETUP_SH"
+	[ -f "$SETUP" ] || die "\$OPENREPOSHAPE_SETUP_SH is '$SETUP', which is not a file."
+else
+	SETUP="$(workdir)/setup.sh"
+	fetch_from_repo setup.sh "$SETUP"
+fi
+
+# Run the script as a FILE rather than `bash -s --` from a pipe: setup.sh ASKS
+# — for the project name when it was not given, and for the one `yes` before
+# three repositories exist — and a script arriving on stdin is a script whose
+# stdin is not the terminal the person is typing at.
+export OPENREPOSHAPE_REPO="$(shape_clone_url)"
+set +e
+bash "$SETUP" "${ARGS[@]}"
+STATUS=$?
+set -e
+exit "$STATUS"

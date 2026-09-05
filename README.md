@@ -46,6 +46,9 @@ gh api repos/opensoft/openRepoShape/contents/setup.sh --jq .content \
     | base64 -d | bash -s -- --org <your-org> --project Atlas
 ```
 
+Shorter still, once: install the `openRepoShape` command and this becomes
+`openRepoShape Atlas --org <your-org>` — see the worked example below.
+
 The script clones this standard into a temporary directory (self-bootstrap:
 see below), checks your machine, checks the three names, shows the plan and
 asks once — then creates the three repositories, clones the assembly root and
@@ -71,6 +74,129 @@ cd openRepoShape
 Run this way it also detects the organisation from a fork's `origin` remote,
 if you have one; a plain clone of `opensoft/openRepoShape` itself is its own
 `origin`, so that still needs an explicit `--org`.
+
+### A worked example: Northwind starts Atlas
+
+A new user — call them Dana — has created a GitHub organisation `Northwind`
+and wants a project `Atlas`.
+
+#### Prerequisites
+
+**1. Requirements.** `git`; Python 3.9 or newer; `gh`, the GitHub CLI; and an
+organisation on GitHub you can create repositories in. `make` is optional —
+bootstrap falls back to `python3 scripts/bootstrap.py`.
+
+**2. Login.** `gh auth login`, as the account that will own the act: a member
+of `Northwind` with permission to create repositories there, or an owner —
+`scaffold-project.py` creates the three with `gh repo create` under whatever
+account `gh auth status` shows. Accept the offer to configure git's credential
+helper, or run `gh auth setup-git`: the first commits go up with a plain
+`git push` over HTTPS, and without it the three repositories are created and
+the push fails. `--elected-by` authenticates nothing — it is only the name
+`project.yaml` records as whose act the election was, and it defaults to the
+`gh` login.
+
+#### Install the command
+
+Two ways in, the short one first. Install `openRepoShape` as a command:
+
+```sh
+gh api repos/opensoft/openRepoShape/contents/openRepoShape \
+    -H 'Accept: application/vnd.github.raw' | bash -s -- --install
+```
+
+or, where raw downloads are not blocked, the same bytes over HTTPS:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/openRepoShape \
+    | bash -s -- --install
+```
+
+It installs itself into `~/.local/bin`, idempotently — a second run prints
+`unchanged` — and prints the `export PATH=…` line if that directory is not on
+`PATH`. It is one file,
+[`openRepoShape`](https://github.com/opensoft/openRepoShape/blob/main/openRepoShape),
+and all it does is fetch `setup.sh` (API first, raw URL second) and run it.
+
+Or type the long line, on a machine you would rather install nothing on:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup.sh \
+    | bash -s -- --org Northwind --project Atlas \
+      --visibility private --elected-by 'Dana Okafor'
+```
+
+#### Run
+
+```sh
+openRepoShape Atlas --org Northwind --visibility private --elected-by 'Dana Okafor'
+```
+
+The project is the one positional argument and everything after it reaches
+`setup.sh` unchanged, so this and the long line do the same thing. `--org` may
+come from `$OPENREPOSHAPE_ORG` or from the command's own prompt instead of the
+flag, and is never defaulted. `--visibility private` is spelled out because the
+human says it rather than lets it default.
+
+**What Dana sees, in order.** (1) The preflight: git, python3, make, and that
+`gh` is authenticated. (2) The three names checked against the naming policy
+— `Atlas`, `Atlas-spec`, `Atlas-code`; a hyphenated or lowercase project name
+is refused here with the rule printed. (3) The scaffold plan, a dry run of
+everything about to be created. (4) `This will create THREE repositories in
+'Northwind'.` and `Type yes to continue:` — Dana types `yes`. If an AI agent
+is driving, the agent runs the command WITHOUT `--yes` and Dana types the
+answer; the agent never does (AGENTS.md's first rule). Then it creates the
+three repositories, writes the pins and the manifest, sets the topic
+`xf-project-atlas` on all three, clones the root into the directory you ran
+the command from, as `./Atlas` (or where `--into <dir>` says), and runs
+`make bootstrap`.
+
+**What Dana has afterwards:**
+
+```text
+Atlas/                      Northwind/Atlas — the repository people clone
+├── project.yaml            the manifest: who elected the shape, when, against which document
+├── AGENTS.md  CLAUDE.md    "Read AGENTS-shape.md first", then Atlas's own instructions
+├── AGENTS-shape.md         the shape's rules for agents — COPIED and digest-pinned
+├── contracts/              spec-pin.yaml, code-pin.yaml, shape-pin.yaml, repository-naming.yaml
+├── scripts/  Makefile      bootstrap and the three validators — copied and pinned
+├── .github/workflows/      validate.yml, the neutral gate on every pull request
+├── spec/                   Northwind/Atlas-spec AT its pinned commit, with its own AGENTS.md pointer
+└── code/                   Northwind/Atlas-code AT its pinned commit, with its own AGENTS.md pointer
+```
+
+`make validate` runs what CI runs. Both legs sit on `main` at their pinned
+commits, not on a detached HEAD.
+
+**If the legs are private**, CI needs a credential to fetch them: a GitHub
+App with Contents read on the legs, registered as `SHAPE_LEGS_APP_ID` and
+`SHAPE_LEGS_APP_PRIVATE_KEY`, or the `SHAPE_LEGS_TOKEN` fallback — as
+REPOSITORY secrets on the GitHub Free plan, where organisation secrets do not
+reach private repositories (see "Reading private legs in CI" below). Without
+either, `validate` degrades with a warning instead of failing.
+
+**Daily work.** Dana works in `spec/` and `code/` as ordinary repositories:
+branches, commits, pull requests in `Atlas-spec` and `Atlas-code`. Committing
+there does not advance the project. Advancing it is one lockstep commit in
+the root, written by the tool from a checkout of this standard:
+
+```sh
+python3 scripts/bump-leg.py --root ../Atlas --leg code --to <40-hex commit>
+git -C ../Atlas push -u origin <branch>      # then open a pull request
+```
+
+Editing the pin file by hand to make the validator agree is what the
+validator exists to refuse.
+
+**Variants.** An existing repository becomes the root in place with
+`adopt-project.py plan`, then `check`, then `execute`, the human answering
+every question the plan raises. Several services that deploy separately get
+a family: `scripts/family.py init` for the holder, `setup.sh` per service,
+`scripts/family.py add` to pin each root under `members/`. Staying current
+with the standard is `update-shape.py check`, then `apply`, as a pull
+request. Whatever workflow overlay Northwind uses — specification tooling,
+review lanes, domain CI — attaches afterwards and is its own; the shape
+confers nothing and stays neutral.
 
 ### What setup.sh does
 
@@ -548,6 +674,7 @@ scripts/repo_shape.py             shared helpers: YAML subset reader, digests
 scripts/path_classify.py          the classifier over the path policy
 scripts/shape_materialize.py      the ONE materializer, used by both tools
 scripts/validate-repository-naming.py
+openRepoShape                     installs itself as a command; runs setup.sh
 setup.sh                          self-bootstrap, scaffold, one command
 scaffold-project.py               creates the three repositories and the pins
 adopt-project.py                  converts an EXISTING repository in place
