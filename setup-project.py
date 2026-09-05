@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """setup-project.py - clone the standard into a temp dir, scaffold, clean up.
 
-The NATIVE WINDOWS way in, and the exact twin of `setup.sh` everywhere else:
+The NATIVE WINDOWS way in, and what `setup.sh` runs everywhere else:
 
     Invoke-WebRequest https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup-project.py -OutFile setup-project.py
     py setup-project.py <Project> --org <your-org>
@@ -13,29 +13,36 @@ for a fork or mirror) into a temporary directory, re-runs itself from there
 with the same arguments, and removes the temporary checkout on exit
 (`--keep-shape-checkout` keeps it and prints the path). `--org` is then
 REQUIRED: there is no fork origin left to read it from. Run it from inside an
-existing checkout instead (the developer path) and it behaves exactly as
-`setup.sh` does, still detecting the organisation from `origin`.
+existing checkout instead (the developer path) and it detects the organisation
+from that checkout's `origin` remote.
 
 Either way it checks your machine, works out which organisation you are
 scaffolding into, checks the three repository names against the naming policy,
 shows you the plan, asks once, creates the three repositories, clones the
 assembly root and bootstraps it. Nothing is created before you have said yes.
 
-WHY A SECOND ENTRY POINT AND NOT A REWRITE OF setup.sh. `setup.sh` is bash and
-calls a literal `python3`; Windows has neither. The python.org installer puts
-`python.exe` and the `py` launcher on PATH and no `python3` at all, and there
-is no `make` either. So this file runs the RUNNING interpreter (`sys.executable`)
-for every child process and `scripts/bootstrap.py` directly instead of
-`make bootstrap`. It adds no behaviour of its own and skips no step: the same
-`scripts/validate-repository-naming.py`, the same `scaffold-project.py`, the
-same plan and the same one yes, in the same order, with the same exit codes.
-RATIFIED AS AN IMPROVEMENT, not a divergence to fix: where `set -e` ends
-setup.sh silently on a failed child, this file prints a `REFUSED:` line naming
-which one failed - the plan, the scaffold, the clone or the bootstrap - and
-what was already created, then exits with that child's status. Four lines
-setup.sh does not print, about the four moments a person most needs told.
-`tests/test_setup_project_py.py` mirrors `tests/test_setup_sh.py` case for
-case, and a parity test holds the two flag lists together.
+WHY THIS FILE IS THE FLOW AND `setup.sh` IS NOT. It arrived as the second
+entry point, for Windows: bash is not there, and neither is the `python3` a
+shell script has to name - the python.org installer puts `python.exe` and the
+`py` launcher on PATH and no `python3` at all, and there is no `make` either.
+So this file runs the RUNNING interpreter (`sys.executable`) for every child
+process and `scripts/bootstrap.py` directly instead of `make bootstrap`, and
+it prints a `REFUSED:` line naming which child failed - the plan, the
+scaffold, the clone or the bootstrap - and what was already created, where
+`set -e` in a shell script would end the run silently.
+
+Two entry points that refuse different things in different words are two
+standards, so #50 settled which of them is the flow. `setup.sh` is a shim now:
+about seventy lines that find an interpreter, clone this standard when the
+person has no checkout of it, and hand over here. There is ONE parser, one
+usage banner and one set of refusal wordings, and `tests/test_setup_sh.py`
+drives them through bash where `tests/test_setup_project_py.py` drives them
+through an interpreter alone.
+
+THE `setup.sh:NNN` CITATIONS BELOW NAME setup.sh AS IT STOOD BEFORE #50, the
+500-line implementation this file was transcribed from. They are kept because
+they say where each rule came from; the shim that replaced it holds only what
+became its section 0.
 
 PURE ASCII IN THE SOURCE, AND IN EVERY FIXED MARKER AND MESSAGE THIS FILE
 WRITES ITSELF. Windows PowerShell 5.1 - still the default shell on a stock
@@ -99,7 +106,7 @@ QUERY = "[??]"
 #: The interpreter that is running THIS file, for every child process it
 #: starts. Never a probe for an interpreter on PATH: the one that got here is
 #: the one that works, and on Windows the name it answers to is `python.exe`
-#: or `py`, not the name setup.sh hard-codes.
+#: or `py`, not a name a shell script could have hard-coded.
 PYTHON = sys.executable
 
 #: THE PLATFORM'S CONVENTIONAL COMMAND, spelled for a HUMAN TO RETYPE - never
@@ -597,9 +604,7 @@ def is_shape_checkout(directory) -> bool:
 def self_bootstrap(opts: Options, original_argv, invocation_dir: str) -> int:
     """setup.sh:157-206, in Python: clone, re-run from there, clean up."""
     if not opts.org:
-        die("running outside a checkout of openRepoShape (self-bootstrap "
-            "mode): there is no fork origin to read the organisation from. "
-            "Re-run with --org <your-org>.")
+        die(ORG_REQUIRED)
 
     # `$OPENREPOSHAPE_REPO` NAMES A REPOSITORY, CHECKED LIKE ANY OTHER VALUE
     # THIS TOOL PUTS ON A `git` COMMAND LINE - unset it is silently
@@ -681,6 +686,17 @@ def self_bootstrap(opts: Options, original_argv, invocation_dir: str) -> int:
 GIT_MISSING = "git is not installed. Install it: https://git-scm.com/downloads"
 PREREQ_MISSING = "one or more prerequisites are missing (see above)."
 
+#: THE MISSING-`--org` REFUSAL, SAID ONCE BECAUSE IT IS REACHED FROM TWO
+#: PLACES. `self_bootstrap` refuses before it clones anything: this file was
+#: run from outside a checkout and there is no fork `origin` behind the
+#: person. `_main` refuses after `setup.sh` has already done that clone and
+#: handed over (`OPENREPOSHAPE_SELF_BOOTSTRAP`, below), where the checkout is
+#: real but the person behind it is in exactly the same position. One fault,
+#: one wording, one exit code, whichever entry point was typed.
+ORG_REQUIRED = ("running outside a checkout of openRepoShape (self-bootstrap "
+                "mode): there is no fork origin to read the organisation "
+                "from. Re-run with --org <your-org>.")
+
 
 def _check_git() -> bool:
     if not shutil.which("git"):
@@ -691,9 +707,9 @@ def _check_git() -> bool:
 
 
 def _check_python() -> bool:
-    # THE RUNNING INTERPRETER, never a probe for one on PATH. The name
-    # setup.sh hard-codes does not exist on a stock Windows install and
-    # `python` may be a Store stub that opens a web page; the interpreter that
+    # THE RUNNING INTERPRETER, never a probe for one on PATH. The names the
+    # shim probes for do not exist on a stock Windows install, and `python`
+    # there may be a Store stub that opens a web page; the interpreter that
     # reached this line is the one that will run every child process, so it is
     # the one reported and the one whose version is checked. A COMMENT and not
     # a docstring, deliberately: a docstring is a string constant, and
@@ -711,10 +727,10 @@ def _check_python() -> bool:
 def _check_bootstrap() -> bool:
     """`make` is NOT checked, here or anywhere below.
 
-    setup.sh probes for it and falls back; this file has no fallback to make
-    because it never uses make - one command, on every platform, and Windows
-    has no make at all. Nothing can be missing, so this never fails; it is a
-    check because it is a line in the preflight a person reads.
+    setup.sh probed for it and fell back before #50; there is no fallback to
+    make now because make is never used - one command, on every platform, and
+    Windows has no make at all. Nothing can be missing, so this never fails;
+    it is a check because it is a line in the preflight a person reads.
     """
     ok("bootstrap runs as `%s %s` (make is not required)"
        % (PYTHON_CMD, BOOTSTRAP))
@@ -1125,7 +1141,7 @@ def clone_and_bootstrap(opts: Options, shape_root: Path, org: str) -> dict:
             "bytes)")
 
     # ALWAYS the interpreter, never `make`. This is the whole reason this file
-    # exists beside setup.sh: `make bootstrap` is one line in a Makefile that
+    # is the one that runs: `make bootstrap` is one line in a Makefile that
     # runs exactly this, and Windows has no make to run it with.
     bootstrapped = run([PYTHON, BOOTSTRAP],
                        cwd=clone)
@@ -1195,6 +1211,15 @@ def _main(argv, invocation_dir: str) -> int:
     if not is_shape_checkout(script_dir):
         return self_bootstrap(opts, original_argv, invocation_dir)
     shape_root = script_dir
+
+    # setup.sh CLONED this checkout (its section 0) and ran this file from it.
+    # The checkout is real, so the developer path is right in every respect but
+    # one: there is no fork `origin` behind the person, exactly as in
+    # `self_bootstrap` above, so `--org` is required rather than detected --
+    # otherwise a `curl | bash` run started inside an unrelated repository
+    # would scaffold into THAT repository's organisation.
+    if os.environ.get("OPENREPOSHAPE_SELF_BOOTSTRAP") == "1" and not opts.org:
+        die(ORG_REQUIRED)
 
     preflight(opts)
     org = resolve_org(opts, invocation_dir)

@@ -350,8 +350,17 @@ def test_readme_is_short_enough_to_be_read():
     #   `py` at all. WSL2 stays, demoted to what it actually is: how to run
     #   the BASH entry points. Two more lines name the file under "What
     #   setup.sh does" and in the Layout block.
-    assert len(lines) <= 872, (
-        f"README.md is {len(lines)} lines; the cap is 872")
+    # 2026-09-05: 872 -> 875 — three lines under "What setup.sh does" (#50).
+    #   `setup.sh` is a SHIM over `setup-project.py` now, not a second
+    #   implementation of the same flow, and the section that lists the
+    #   commands has to say so before it lists them. A reader who took the old
+    #   opening sentence at face value would go into `setup.sh` looking for
+    #   the preflight, the naming check and the plan, and find a clone and a
+    #   hand-over. The three lines are that sentence, and the paragraph that
+    #   follows the block now says what `setup-project.py` is by the same
+    #   measure rather than repeating the list of substitutions.
+    assert len(lines) <= 875, (
+        f"README.md is {len(lines)} lines; the cap is 875")
 
 
 @pytest.mark.parametrize("name", SHIPPED_BASH)

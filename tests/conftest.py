@@ -41,9 +41,9 @@ FILE_PROTOCOL = ["-c", "protocol.file.allow=always"]
 #: this: one that runs `bash`, and one that puts a `#!`-shebang script named
 #: `gh` on PATH and expects the operating system to execute it. Windows has
 #: neither — `bash.exe` IS on the GitHub runner, so a `shutil.which("bash")`
-#: guard does not fire, but `setup.sh` shells out to a literal `python3` that
-#: is not there, and a shebang means nothing to CreateProcess. Skipping is
-#: honest because Windows has its OWN entry point with its OWN suite:
+#: guard does not fire, but `setup.sh` is a POSIX shell script that probes
+#: `python3` then `python`, and a shebang means nothing to CreateProcess.
+#: Skipping is honest because Windows has its OWN entry point and OWN suite:
 #: `setup-project.py`, covered case for case in `test_setup_project_py.py`.
 #: A shared `skipif` object rather than a named marker because there is no
 #: pytest.ini to register one in, and an unregistered marker is a warning.

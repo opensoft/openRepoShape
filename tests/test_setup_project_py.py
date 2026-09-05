@@ -6,8 +6,8 @@ that refuse different things in different words are two standards, so every
 assertion there has a twin here: the same end-to-end run, the same refusals,
 the same self-bootstrap properties, the same exit codes. What is NEW is what
 `setup.sh` cannot have - a positional `<Project>`, a piped-on-stdin run, and
-the parity test at the bottom that fails the moment a flag is added to one
-banner and not the other.
+the two tests at the bottom that hold `setup.sh` to being a SHIM over this
+file (#50) rather than a second implementation of it.
 
 NO NETWORK AND NO GITHUB, exactly as everywhere else in this suite: every run
 that reaches the preflight passes `--local-remote-dir`, which creates three
@@ -495,9 +495,12 @@ def test_an_empty_argument_refuses():
 def test_a_flag_with_no_value_refuses():
     """A flag at the end of the line has no value, and 2 is the code.
 
-    Pinned deliberately: this is the ONE exit code the two entry points do not
-    share - see `test_the_two_entry_points_offer_the_same_flags` - so it is
-    held by a test rather than left to be discovered.
+    Pinned deliberately. This USED to be the one exit code the two entry
+    points did not share: `setup.sh` spelled the same case
+    `${2:?--visibility needs a value}`, and a bash parameter expansion that
+    fails exits 1 where every other refusal in either file exits 2. #50
+    settled it by deleting the second parser - `setup.sh` execs this file, so
+    this line is the only one that answers, under either name.
     """
     result = run_entry("--project", "Novalue", "--visibility")
     assert result.returncode == 2
@@ -810,6 +813,36 @@ def test_self_bootstrap_without_org_refuses(tmp_path):
     assert not (tmp_path / "remotes").exists()
 
 
+def test_the_shim_handshake_requires_an_org(tmp_path):
+    """#50: `setup.sh` clones a checkout and hands over, so the refusal above
+    has to survive the hand-over.
+
+    From inside a checkout `--org` is optional because `origin` is the
+    person's fork and the organisation is read off it. The checkout
+    `setup.sh` makes in its section 0 is a real one, but its `origin` is
+    opensoft's own and the person's fork is nowhere in it - so a run arriving
+    here under `OPENREPOSHAPE_SELF_BOOTSTRAP=1` is the self-bootstrap case
+    wearing the developer path's clothes, and it is refused in the
+    self-bootstrap case's own words. Without this, `curl ... | bash` started
+    inside an unrelated repository would scaffold into THAT repository's
+    organisation.
+    """
+    fork = make_fork_dir(tmp_path,
+                         origin_url="git@github.com:ExampleOrg/openRepoShape.git",
+                         upstream_url="git@github.com:opensoft/openRepoShape.git")
+    result = run_entry("--project", "Sample", "--yes",
+                       "--local-remote-dir", str(tmp_path / "remotes"),
+                       "--into", str(tmp_path / "work"), cwd=fork,
+                       extra_env={"OPENREPOSHAPE_SELF_BOOTSTRAP": "1"})
+    assert result.returncode == 2
+    assert "self-bootstrap" in result.stderr, (
+        "the refusal must be the self-bootstrap one, in its own words - "
+        f"not whatever else this checkout's `origin` happens to say:\n"
+        f"{result.stderr}")
+    assert "--org" in result.stderr
+    assert not (tmp_path / "remotes").exists()
+
+
 def test_a_hostile_openreposhape_repo_refuses(tmp_path):
     """`OPENREPOSHAPE_REPO` reaches `git clone` as the repository argument,
     which is exactly the argument git itself will never refuse for us: a
@@ -847,56 +880,60 @@ def test_self_bootstrap_clone_guards_the_repository_argument(tmp_path):
         f"{match.group(0)!r}")
 
 
-# --- the two banners are one flag list --------------------------------------
+# --- setup.sh is a shim, not a second flag list -----------------------------
 
-#: The ONE difference the two entry points are allowed to have: an optional
-#: positional `<Project>`, which `setup-project.py` takes and `setup.sh` does
-#: not. It is the `openRepoShape` command's shape, and it lives in the file
-#: here because there is no command to install on Windows.
-ALLOWED_DIFFERENCE = {"[<Project>]"}
+#: The only flags `setup.sh` may still NAME, and why each of them is about the
+#: checkout the SHIM ITSELF makes rather than about the run: it clones
+#: (`--quiet`, `--depth`), it may pin a ref (`--shape-ref`), it owns the
+#: directory it cloned into (`--keep-shape-checkout`), it asks git one
+#: question (`--show-toplevel`), and it tells the child where the person was
+#: standing (`--into`).
+SHIM_FLAGS = {"--quiet", "--depth", "--show-toplevel", "--into", "--shape-ref",
+              "--keep-shape-checkout"}
 
-
-def usage_surface(text: str) -> set:
-    """Every `--flag` a usage banner offers, plus the optional positional."""
-    surface = set(re.findall(r"--[a-z][a-z0-9-]*", text))
-    if "[<Project>]" in text:
-        surface.add("[<Project>]")
-    return surface
-
-
-def setup_sh_usage() -> str:
-    text = SETUP_SH.read_text(encoding="utf-8")
-    opener = "cat <<'USAGE'\n"
-    start = text.index(opener) + len(opener)
-    return text[start:text.index("\nUSAGE\n", start)]
+#: The three lines a person READS during a self-bootstrap: printed by
+#: `setup.sh` when the shim makes the checkout, and by this file when it makes
+#: its own. Same run, same words, whichever entry point was typed.
+SELF_BOOTSTRAP_LINES = ("(0) self-bootstrap", "  checkout: ",
+                        "kept the shape checkout: ")
 
 
-def test_the_two_entry_points_offer_the_same_flags():
-    """One flag list, two files.
+def test_setup_sh_parses_no_flags_of_its_own():
+    """#50: there is ONE flag list, and `setup.sh` is not a second one.
 
-    The README documents ONE set of options and says the two entry points are
-    twins. A flag added to one and not the other makes that sentence false
-    silently - the person on the other platform simply cannot do the thing the
-    README says they can - and nothing else in this suite would notice.
+    What this replaces held the two usage BANNERS together and asserted they
+    agreed. They can no longer disagree: there is one banner, in this file,
+    and `setup.sh` execs this file to print it. What can still go wrong is the
+    other direction - a `--project`, a `--visibility`, a `--yes` reappearing
+    in the shim is a second implementation growing back one argument at a
+    time, and the person who found out would be whoever typed the flag into
+    one entry point and not the other.
 
-    ONE EXIT CODE DIVERGES, deliberately. A value-taking flag at the end of
-    the line is `${2:?--visibility needs a value}` in setup.sh, and a bash
-    parameter expansion that fails exits 1; here it is `die()`, whose declared
-    default refusal code is 2, the code every other refusal in both files
-    uses. Held by `test_a_flag_with_no_value_refuses`. Chasing bash's 1 would
-    mean a second refusal code in this file for the one case where bash cannot
-    choose its own, which trades a real inconsistency for a cosmetic one.
-
-    THIS IS THE STAND-IN FOR ONE DEFINITION, not a substitute for it. Folding
-    `setup.sh` into a shim over this file - so there is one flag list rather
-    than two that agree - is issue #50, deliberately not this change: a
-    rewrite of the entry point every existing reader uses does not belong in
-    the change that adds a second one.
+    COMMENT LINES ARE STRIPPED FIRST. The shim's header quotes the `curl ...
+    | bash -s -- --org <your-org> --project Atlas` one-liner, which is the
+    README's line and not a flag this file's subject parses.
     """
-    difference = usage_surface(setup_sh_usage()) ^ usage_surface(
-        entry_point_module().USAGE)
-    assert difference == ALLOWED_DIFFERENCE, (
-        "a flag was added to one entry point and not the other; the README's "
-        "flag list is true of both or of neither.\n"
-        f"  difference:        {sorted(difference)}\n"
-        f"  allowed:           {sorted(ALLOWED_DIFFERENCE)}")
+    code = "\n".join(line for line in
+                     SETUP_SH.read_text(encoding="utf-8").splitlines()
+                     if not line.lstrip().startswith("#"))
+    named = set(re.findall(r"--[a-z][a-z0-9-]*", code)) - SHIM_FLAGS
+    assert not named, (
+        "setup.sh names flags of its own; it delegates to setup-project.py "
+        f"and parses nothing: {sorted(named)}")
+
+
+def test_the_two_entry_points_say_self_bootstrap_the_same_way():
+    """One flag list is not enough on its own: the shim still PRINTS.
+
+    Section 0 is the one part of the run that exists twice - transcribed into
+    bash in `setup.sh` and written in Python here - because it is what happens
+    before there is a checkout to run Python from. A person reading the output
+    of a `curl | bash` run and a person reading the output of
+    `py setup-project.py` are reading a report of the same three moments, and
+    a wording that drifted in one file would make two standards out of one.
+    """
+    shim = SETUP_SH.read_text(encoding="utf-8")
+    entry = SETUP_PROJECT.read_text(encoding="utf-8")
+    for line in SELF_BOOTSTRAP_LINES:
+        assert line in shim, f"setup.sh no longer prints {line!r}"
+        assert line in entry, f"setup-project.py no longer prints {line!r}"

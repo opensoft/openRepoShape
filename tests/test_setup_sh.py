@@ -26,9 +26,9 @@ SETUP = REPO / "setup.sh"
 DEGRADE_LINE = "authority is not wallet-carried in this org"
 
 #: `bash.exe` IS on the GitHub Windows runner, so the `which` guard alone
-#: does not fire there — and `setup.sh` still cannot run, because it shells
-#: out to a literal `python3` that the python.org installer never puts on
-#: PATH. The Windows entry point is `setup-project.py`, and
+#: does not fire there — and `setup.sh` still cannot run: it is a POSIX shell
+#: script, and it probes `python3` then `python` for the interpreter it hands
+#: over to. The Windows entry point is `setup-project.py`, run directly, and
 #: `tests/test_setup_project_py.py` mirrors this file case for case.
 pytestmark = [pytest.mark.skipif(shutil.which("bash") is None,
                                  reason="setup.sh needs bash"),
@@ -156,7 +156,14 @@ def test_the_final_block_names_the_path_and_the_three_urls(setup_run):
 def test_preflight_reports_each_prerequisite(setup_run):
     out = setup_run["result"].stdout
     assert "(1) preflight" in out
-    assert "git " in out and "python3 " in out
+    # #50 — the preflight moved into `setup-project.py`, which reports the
+    # RUNNING interpreter (`[ok] python 3.12.3 (/usr/bin/python3)`) rather
+    # than the literal `python3` the old bash preflight shelled out to. The
+    # shim picks `python3` off PATH and hands over, so what is named here is a
+    # version and a path, not a constant. The old spelling would still pass —
+    # off the `bootstrap runs as \`python3 scripts/bootstrap.py\`` line, which
+    # is a different fact about a different program.
+    assert "git " in out and re.search(r"python 3\.\d+\.\d+ \(", out), out
     assert "gh not required" in out, "local mode must skip the gh preflight"
 
 
@@ -174,7 +181,10 @@ def test_the_naming_policy_runs_before_anything_is_created(setup_run):
 def test_help_exits_zero():
     result = run_setup("--help")
     assert result.returncode == 0
-    assert "usage: ./setup.sh" in result.stdout
+    # #50 — one usage banner, printed by the one implementation. `setup.sh`
+    # execs `setup-project.py`, so `--help` is the Python's text, reached
+    # under either of the two names a person can type.
+    assert "usage: setup-project.py" in result.stdout
 
 
 def test_an_unknown_argument_refuses():
@@ -456,13 +466,22 @@ def test_running_from_the_upstream_checkout_without_org_refuses(tmp_path):
 
 def test_self_bootstrap_without_org_refuses(tmp_path):
     """There is no fork `origin` to read an organisation from outside a
-    checkout, so `--org` cannot be optional the way it is from inside one."""
+    checkout, so `--org` cannot be optional the way it is from inside one.
+
+    `OPENREPOSHAPE_REPO` is set here where it once was not, for the same
+    reason every other self-bootstrap test sets it: since #50 the refusal is
+    the CLONED standard's, printed by `setup-project.py` under the
+    `OPENREPOSHAPE_SELF_BOOTSTRAP` handshake rather than by the shim, so this
+    run reaches a clone — and a test that reached GitHub for it would be the
+    one test in this suite that needs a network.
+    """
     outside = make_outside_checkout(tmp_path)
     result = run_bare_setup(outside / "setup.sh",
                             "--project", "Sample", "--yes",
                             "--local-remote-dir", str(tmp_path / "remotes"),
                             "--into", str(tmp_path / "work"),
-                            cwd=outside)
+                            cwd=outside,
+                            extra_env={"OPENREPOSHAPE_REPO": str(REPO)})
     assert result.returncode == 2
     assert "--org" in result.stderr
     assert not (tmp_path / "remotes").exists()

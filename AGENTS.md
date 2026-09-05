@@ -66,13 +66,13 @@ retry with `--force`; there is none, deliberately.
 
 ## 3. It finishes the job
 
-It clones the new assembly root, runs `make bootstrap` in it, and prints the
-clone path, the three repository URLs and the next commands. Relay that
-block. Say that bootstrap put each leg on its tracking branch AT the pinned
-commit, and that the line `authority is not wallet-carried in this org` is a
-report and not a fault. The new project carries `AGENTS-shape.md` at its
-assembly root — the rules of its shape, copied and digest-pinned — and you
-read that before touching the project.
+It clones the new assembly root, runs `scripts/bootstrap.py` in it (what
+`make bootstrap` runs), and prints the clone path, the three repository URLs
+and the next commands. Relay that block. Say that bootstrap put each leg on
+its tracking branch AT the pinned commit, and that the line `authority is not
+wallet-carried in this org` is a report and not a fault. The new project
+carries `AGENTS-shape.md` at its assembly root — the rules of its shape,
+copied and digest-pinned — and you read that before touching the project.
 
 ## If setup.sh cannot be used
 
