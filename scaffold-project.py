@@ -439,10 +439,20 @@ def _scaffold(args) -> int:  # noqa: C901
     # With no `--pin`, a descendant-form name is a claim with no referent and
     # the DECLARED ROLE wins. With `--pin openGlass@<sha>`, `MedxGlass` IS a
     # descendant — and, since 2026-09-02, may still be the assembly root that
-    # carries the two legs. What is still refused is a real mismatch: a
-    # `-spec` name offered as the assembly root, or a `open<Product>` /
-    # `<X>-Install` form used as any leg — those forms are unambiguous by
-    # construction and declaring a role cannot make them into a leg.
+    # carries the two legs. Since 2026-09-05 an `open<Product>` MAY be that
+    # root too: a neutral product may ELECT the shape (Brett Heap, "elect the
+    # shape for both, follow the pin chain, no family yet"), and because
+    # electing confers nothing, `openDox` mounting `openDox-spec` and
+    # `openDox-code` is a fact about layout rather than a claim about
+    # neutrality. The form still wins the classification — the manifest records
+    # `form: neutral-product, role: assembly` with the leg form in
+    # `also_matches` — so nothing here reads a neutral product as a leg.
+    #
+    # What is still refused is a real mismatch: a `-spec` name offered as the
+    # assembly root; an `<X>-Install`, which carries a hyphen and therefore
+    # satisfies no leg form at all, offered as ANY leg; and either of the two
+    # CamelCase forms offered as the `spec` or `code` leg, because those names
+    # carry the lowercase suffix and are ordinary project legs.
     pins = declared_pin_values(args)
     declared_pins: set[str] = set(pins)
     # THE RECORDED CHAIN (2026-09-05). `codexDox` pins `openXdox` and reaches
@@ -587,9 +597,15 @@ def _scaffold(args) -> int:  # noqa: C901
               f"{pin_values['PIN_COMMIT'][:12]} tree "
               f"{pin_values['PIN_TREE_SHA256'][:12]}… -> "
               f"contracts/{product.lower()}-pin.yaml ({pin_values['PIN_DIGEST_SOURCE']})")
-    if pins:
-        found = policy.classify(names["assembly"], "assembly", declared_pins,
-                                chain, link_pins)
+    # PRINT THE CLASSIFICATION whenever the root is not an ordinary
+    # project-leg — a neutral-product or descendant root, pinned or not — so
+    # the human reading the plan before typing yes sees `neutral-product /
+    # assembly` even with no `--pin` on the command line (2026-09-05). A
+    # pinned root always printed this line; what is new is that `openDox`
+    # needs no pin to earn one.
+    found = policy.classify(names["assembly"], "assembly", declared_pins,
+                            chain, link_pins)
+    if pins or found.family != "project-leg":
         print(f"declared     {names['assembly']} classifies as {found.family}"
               + (f" / {found.role}" if found.role else "")
               + f" — {found.reason}")

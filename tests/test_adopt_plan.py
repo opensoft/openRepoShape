@@ -291,6 +291,34 @@ def test_a_project_name_that_is_not_a_leg_form_is_refused(source_repo, tmp_path)
     assert not (tmp_path / "plan.yaml").exists()
 
 
+def test_a_neutral_product_may_be_adopted_as_its_own_assembly_root(source_repo,
+                                                                   tmp_path):
+    """The 2026-09-05 ruling reaches `adopt` through the same `accepts_role`
+    the scaffold uses, because there is one definition of which forms may be a
+    root. A live `open<Product>` electing the shape is the case the ruling was
+    made for, and it is planned rather than refused."""
+    plan_path = tmp_path / "plan.yaml"
+    result = write_plan(source_repo, plan_path, project="openDox",
+                        org="opensoft")
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "naming-role-mismatch" not in result.stderr
+    plan = load_yaml(plan_path)
+    assert plan["project"] == "openDox"
+    assert plan["id"] == "opendox"
+
+
+def test_an_install_form_is_still_refused_by_adopt(source_repo, tmp_path):
+    """The edge, on this path too: `<X>-Install` satisfies no leg form, so
+    the remediation names what MAY be a root rather than leaving the reader to
+    infer that nothing else can."""
+    result = write_plan(source_repo, tmp_path / "plan.yaml",
+                        project="Widget-Install")
+    assert result.returncode == 2
+    assert "naming-role-mismatch" in result.stderr
+    assert "may elect the shape" in result.stderr
+    assert not (tmp_path / "plan.yaml").exists()
+
+
 def test_a_project_name_that_is_not_a_lowercase_id_is_refused(source_repo,
                                                               tmp_path):
     result = write_plan(source_repo, tmp_path / "plan.yaml",

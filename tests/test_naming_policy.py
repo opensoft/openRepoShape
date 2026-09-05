@@ -14,6 +14,7 @@ sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import (  # noqa: E402
     NamingPolicy, Refusal, accepts_role, link_pins_from_trees,
 )
+from shape_materialize import naming_block  # noqa: E402
 
 POLICY_PATH = REPO / "contracts" / "repository-naming.yaml"
 VALIDATOR = REPO / "scripts" / "validate-repository-naming.py"
@@ -145,12 +146,21 @@ def test_a_qualified_pin_is_accepted(policy):
 
 
 def test_a_neutral_product_is_unambiguous_by_construction(policy):
-    """No pin and no declared role can move it: `open` in front says what it
-    is, so offering it as an assembly root is still a neutral product."""
+    """No pin can move the FORM: `open` in front says what it is, so a name
+    offered as the assembly root is still classified as a neutral product.
+
+    Since 2026-09-05 that root ALSO carries the `assembly` role it declares
+    (below), which is an addition to the answer and not a change to it — the
+    family is `neutral-product` in every one of these readings, and the
+    project-leg form it also satisfies stays in `also_matches`.
+    """
     for pins in (None, {"openScribe"}, {"openxScribe"}):
         found = policy.classify("openScribe", declared_role="assembly",
                                 declared_pins=pins)
-        assert found == ("neutral-product", None)
+        assert found.family == "neutral-product"
+        assert found.also_matches == ("project-leg/assembly",)
+        assert policy.classify("openScribe", declared_pins=pins) \
+            == ("neutral-product", None)
 
 
 def test_an_install_is_unambiguous_by_construction(policy):
@@ -270,11 +280,26 @@ def test_cli_without_pins_reports_the_overlap_in_the_plain_listing():
     assert "also_matches domain-descendant" in result.stdout
 
 
-def test_cli_role_does_not_rescue_a_neutral_product_form():
-    """`--role assembly` is a declaration, not an override."""
+def test_cli_role_does_not_override_a_neutral_product_form():
+    """`--role assembly` is a declaration, not an override. It ADDS the role
+    the form admits (2026-09-05); it never turns the form into a leg."""
     result = run_script(VALIDATOR, "--role", "assembly", "openScribe")
     assert result.returncode == 0
-    assert "neutral-product" in result.stdout
+    assert "neutral-product/assembly" in result.stdout
+    assert "project-leg/assembly" in result.stdout, (
+        "the leg form it also satisfies belongs in also_matches, not lost")
+
+
+def test_cli_role_spec_does_not_move_a_neutral_product_at_all():
+    """The admission is `assembly` alone, so a role the name cannot spell
+    leaves the answer exactly where it was before the ruling."""
+    result = run_script(VALIDATOR, "--role", "spec", "openScribe")
+    assert result.returncode == 0
+    # The leg form it also satisfies still gets RECORDED, even though `spec`
+    # is not a role this family admits — the refusal is of the role, not of
+    # the overlap.
+    assert "also_matches project-leg/assembly" in result.stdout
+    assert "neutral-product/assembly" not in result.stdout
 
 
 def test_cli_refuses_with_no_target():
@@ -732,3 +757,166 @@ def test_cli_finds_a_recorded_chain_that_does_not_hold(project, tmp_path):
     result = run_script(VALIDATOR, "--project", str(manifest))
     assert result.returncode == 1
     assert "openInk declares openQuill, not openDox" in result.stderr
+
+
+# --- the ruling: a NEUTRAL PRODUCT MAY ELECT THE SHAPE ---------------------
+#
+# Brett Heap, 2026-09-05, on opensoft/openxFactory#656, verbatim: "elect the
+# shape for both, follow the pin chain, no family yet". The chain is the half
+# tested above; this is the other half. `both` is `openDox` and `openXdox`,
+# each becoming an assembly root that carries `-spec` and `-code`.
+
+def test_a_neutral_product_answers_as_its_own_assembly_root(policy):
+    """THE openDox CASE. Being a neutral product and being a three-repository
+    project are INDEPENDENT facts, so a name may hold both at once — the same
+    reasoning that let a declared descendant carry legs on 2026-09-02."""
+    found = policy.classify("openDox", "assembly")
+    assert found == ("neutral-product", "assembly")
+    assert found.also_matches == ("project-leg/assembly",)
+    assert "may elect the shape" in found.reason
+    assert "Brett Heap, 2026-09-05" in found.reason
+    assert accepts_role(found, "assembly")
+
+
+def test_the_form_still_wins_so_the_overlap_is_recorded_not_resolved(policy):
+    """What is CONSUMED is `(neutral-product, None)`, which is why the leg form
+    survives in `also_matches`. An overlap computed and then discarded is the
+    defect this change fixes, not the fix."""
+    found = policy.classify("openDox", "assembly")
+    assert found.family == "neutral-product", (
+        "the declaration adds a role; it does not override the form")
+    assert "project-leg/assembly" in found.also_matches
+    assert "neutral-product" not in found.also_matches, (
+        "the family a name was classified INTO must not be listed among the "
+        "forms it was not")
+
+
+def test_a_neutral_product_with_no_declared_role_is_unchanged(policy):
+    """Nothing about a name that declares nothing moved on 2026-09-05: the
+    2-tuple every existing caller compares against is the one it always was."""
+    found = policy.classify("openDox")
+    assert found == ("neutral-product", None)
+    assert found.also_matches == ("project-leg/assembly",)
+    assert not accepts_role(found, "assembly")
+
+
+def test_a_neutral_product_is_not_admitted_into_a_spec_or_code_role(policy):
+    """`admits_declared_role:` is data and lists `assembly` alone, for the same
+    reason it does in the descendant family: `openDox-spec` carries the
+    lowercase suffix and is an ordinary project leg."""
+    for role in ("spec", "code"):
+        found = policy.classify("openDox", role)
+        assert found == ("neutral-product", None)
+        assert not accepts_role(found, role)
+
+
+def test_the_legs_of_a_neutral_product_root_are_ordinary_project_legs(policy):
+    for role in ("spec", "code"):
+        found = policy.classify(f"openDox-{role}", role)
+        assert found == ("project-leg", role)
+        assert found.also_matches == ()
+
+
+def test_a_neutral_product_leg_offered_as_the_root_is_still_refused(policy):
+    """The refusal that must survive: a declared role wins only where the NAME
+    satisfies it, and `openDox-spec` satisfies the spec form alone."""
+    found = policy.classify("openDox-spec", "assembly")
+    assert found == ("project-leg", "spec")
+    assert not accepts_role(found, "assembly")
+
+
+@pytest.mark.parametrize("name", ["Widget-Install", "xFactory-Hermes-Install"])
+def test_an_install_is_admitted_into_no_role_at_all(policy, name):
+    """`<X>-Install` carries a hyphen, so it satisfies no `project-leg` form to
+    be admitted into. The data says so too, by declaring no admission."""
+    found = policy.classify(name, "assembly")
+    assert found == ("install", None)
+    assert not accepts_role(found, "assembly")
+    assert "admits_declared_role" not in _family(policy, "install")
+
+
+def test_the_policy_data_declares_which_role_a_neutral_product_may_answer_in(policy):
+    family = _family(policy, "neutral-product")
+    assert family["admits_declared_role"] == ["assembly"]
+    assert "roles" not in family, (
+        "the neutral-product family must declare no roles of its own: "
+        "`openDox` and `openDox-spec` are not the same form")
+
+
+def test_the_second_elected_product_is_openxdox(policy):
+    """The other half of "both". `openXdox` is a neutral product in its own
+    right and a root in its own right."""
+    found = policy.classify("openXdox", "assembly")
+    assert found == ("neutral-product", "assembly")
+    assert found.also_matches == ("project-leg/assembly",)
+    assert accepts_role(found, "assembly")
+
+
+def test_a_neutral_product_that_also_claims_descent_records_both_overlaps(policy):
+    """`openXwallet` is the worked second case, and `openxFactory` is the one
+    neutral product that ALSO matches the descendant form: electing the shape
+    must not swallow either overlap."""
+    wallet = policy.classify("openXwallet", "assembly")
+    assert wallet == ("neutral-product", "assembly")
+    assert wallet.also_matches == ("project-leg/assembly",)
+    factory = policy.classify("openxFactory", "assembly")
+    assert factory == ("neutral-product", "assembly")
+    assert factory.also_matches == ("domain-descendant",
+                                    "project-leg/assembly")
+
+
+def test_the_naming_block_records_the_spelling_overlap_by_form_not_family(
+        policy):
+    """`naming_block()` records `descendant_referent:` and
+    `referent_declared:` by the NAME'S form, not by the family that won —
+    `openxFactory` elects the shape and classifies as `neutral-product`, and
+    still shows the descent claim its spelling also makes, undeclared until a
+    pin on `openFactory` is added."""
+    block = naming_block(policy, "openxFactory", "assembly", set())
+    assert "form: neutral-product" in block
+    assert "role: assembly" in block
+    assert "also_matches: [domain-descendant, project-leg/assembly]" in block
+    assert "descendant_referent: openFactory" in block
+    assert "referent_declared: false" in block
+
+    pinned = naming_block(policy, "openxFactory", "assembly", {"openFactory"})
+    assert "form: neutral-product" in pinned, (
+        "a pin on the referent does not turn the elected form into a "
+        "descendant: electing the shape and reaching a referent are "
+        "different facts")
+    assert "referent_declared: true" in pinned
+
+
+def test_a_declared_descendant_root_is_untouched_by_the_new_rule(policy):
+    """The 2026-09-02 answer is unchanged, pin chain and all: this ruling ADDS
+    a form that may be a root and takes nothing away from the ones that were."""
+    found = policy.classify("MedxGlass", "assembly", {"openGlass"})
+    assert found == ("domain-descendant", "assembly")
+    assert found.also_matches == ("project-leg/assembly",)
+    assert found.referent.status == "direct"
+    assert accepts_role(found, "assembly")
+
+
+def test_cli_explain_names_the_admission():
+    """A reader who sees `neutral-product / assembly` and no explanation has to
+    read the classifier to learn that the form won and the role was added."""
+    result = run_script(VALIDATOR, "--explain", "--role", "assembly", "openDox")
+    assert result.returncode == 0, result.stderr
+    assert "openDox: neutral-product / assembly" in result.stdout
+    assert "ADMITS a declared role of assembly" in result.stdout
+    assert "may elect the shape (Brett Heap, 2026-09-05)" in result.stdout
+    assert "also_matches: project-leg/assembly" in result.stdout
+
+
+def test_cli_explain_without_a_role_is_the_answer_it_always_was():
+    result = run_script(VALIDATOR, "--explain", "openDox")
+    assert result.returncode == 0, result.stderr
+    header = next(line for line in result.stdout.splitlines()
+                 if line.strip().startswith("openDox:"))
+    # Asserted on the HEADER line, not the whole transcript: `/ assembly`
+    # legitimately appears further down, in the `admits_declared_role:`
+    # explanation prose, so a blanket `not in result.stdout` would break the
+    # day that prose is reworded rather than the day the classification does.
+    assert header.strip() == "openDox: neutral-product"
+    assert not header.strip().endswith("/ assembly")
+    assert "ADMITTED" not in result.stdout

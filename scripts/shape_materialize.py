@@ -399,6 +399,12 @@ def naming_block(policy: NamingPolicy, name: str, role: str,
     noticed it. WITH the pin the answer is `domain-descendant` in the declared
     `assembly` role, because a descendant may carry legs.
 
+    An `open<Product>` root records the same shape for the same reason
+    (2026-09-05): `form: neutral-product`, `role: assembly`,
+    `also_matches: [project-leg/assembly]`. The form won and the role was
+    ADDED to it, because a neutral product may elect the shape — and electing
+    confers nothing, so the record is a layout, not a claim about neutrality.
+
     `chain` is the pin chain the project declares it reaches its referent
     through (2026-09-05) and is RECORDED here, under `referent_chain:`,
     because a chain that were re-derived on each read would be an inference
@@ -414,6 +420,17 @@ def naming_block(policy: NamingPolicy, name: str, role: str,
     ]
     referents = policy.descendant_referents(name)
     if referents:
+        # THESE TWO LINES FOLLOW THE FORM, not the family that won. They
+        # record that the NAME also spells a claim of descent, and whether
+        # that claim's referent is declared in this tree — regardless of
+        # whether the classification actually asserts descent. So a neutral
+        # product in `openx<Product>` form (`openxFactory`, `openxDox`) shows
+        # the overlap here instead of hiding it, even though it classifies as
+        # `neutral-product` and elects its own shape. The classification
+        # itself is `form:` above, and only `form: domain-descendant` asserts
+        # descent; these two lines are the record of what the SPELLING also
+        # claims, not of what won.
+        #
         # The CANONICAL spelling is what is recorded, whichever one is pinned.
         lines.append(f"{indent}  descendant_referent: {referents[0]}")
         lines.append(f"{indent}  referent_declared: "

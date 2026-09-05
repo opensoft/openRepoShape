@@ -25,6 +25,14 @@ be classified here on exactly the facts `project.yaml` would carry. With
 `--project` both are READ from the manifest instead — the legs' roles, and
 `neutral_product_pins:` — which is what the scaffolded project's own gate runs.
 
+`--role` IS ALSO WHAT ASKS WHETHER AN ELECTED FORM CARRIES ITS ROLE. Since
+2026-09-05 a neutral product may ELECT the shape and be its own assembly root,
+so `--explain --role assembly openDox` answers `neutral-product / assembly`
+and names the admission, while `--explain openDox` — nothing declared — answers
+`neutral-product` as it always did. The form is never overridden by the
+declaration; the role is ADDED to it, and the leg form it also satisfies stays
+in `also_matches`.
+
 WHAT `--referent-chain` AND `--link-source` ARE FOR. Since 2026-09-05 the
 referent may be reached through a CHAIN of neutral-product pins: `codexDox`
 pins `openXdox`, and `openXdox` pins `openDox`. The chain is RECORDED, in the
@@ -128,6 +136,32 @@ def _describe(policy: NamingPolicy, target: Target, link_pins: dict) -> list[str
             claim = (" [DECLARED-ONLY: reported only with --role "
                      + family["id"] + "; " + str(family.get("declared_by") or
                                                  "a declaration").strip() + "]")
+        elif hits and family.get("admits_declared_role"):
+            # NAME THE ADMISSION, not just its effect. A reader who sees
+            # `openDox: neutral-product / assembly` and no explanation has to
+            # go and read the classifier to learn that the form still won and
+            # the role was ADDED to it (2026-09-05).
+            admits = ", ".join(str(r) for r in family["admits_declared_role"])
+            carried = (found.role if found.family == family["id"]
+                       and found.role else None)
+            # THREE ANSWERS, not two: nothing declared, a role declared and
+            # ADMITTED, or a role declared and REFUSED (`--role spec openDox`
+            # declares a role this family does not admit). Collapsing the
+            # last two into "none is declared here" told the reader a
+            # declaration was absent when it was in fact refused (2026-09-05).
+            if role is None:
+                admission = "; none is declared here"
+            elif carried:
+                admission = f" — this name carries {carried}"
+            else:
+                admission = f"; {role} is declared here and is not admitted"
+            claim = (f" [ADMITS a declared role of {admits}: the form still "
+                     "wins and carries the role the project declares, where "
+                     "the name also satisfies that leg form"
+                     + admission
+                     + "]")
+            if carried:
+                role_note = f" (role {carried}, ADMITTED)"
         lines.append(
             f"    {mark}{family['id']:<18} {family['pattern']}{role_note}{claim}")
     if target.chain:

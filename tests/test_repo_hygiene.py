@@ -289,8 +289,21 @@ def test_readme_is_short_enough_to_be_read():
     #   broken only where a readable tree says otherwise. A reader who learnt
     #   only the first half would read the warning as a failure, which is the
     #   offline principle inverted.
-    assert len(lines) <= 725, (
-        f"README.md is {len(lines)} lines; the cap is 725")
+    # 2026-09-05: 725 -> 743 — a NEUTRAL PRODUCT may elect the shape and be its
+    #   own assembly root (the second half of "elect the shape for both",
+    #   Brett Heap, openxFactory#656; issue #41). One paragraph, and it is a
+    #   paragraph rather than a sentence because the rule has two halves a
+    #   reader gets wrong separately: the form still WINS the classification
+    #   (`form: neutral-product, role: assembly`, the leg form recorded in
+    #   `also_matches`), and electing confers NOTHING, which is the only
+    #   reason a neutral product carrying two legs is a layout fact instead of
+    #   a claim about its neutrality. The last two lines say what is still
+    #   refused — `<X>-Install` is admitted into no role — because a relaxation
+    #   whose edge nobody states is read as a general one. It is its own `###`
+    #   subsection, not a paragraph tacked onto the descendant-form one above
+    #   it, so a reader scanning headings finds the rule.
+    assert len(lines) <= 743, (
+        f"README.md is {len(lines)} lines; the cap is 743")
 
 
 @pytest.mark.parametrize("name", SHIPPED_BASH)
