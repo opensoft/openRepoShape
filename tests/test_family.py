@@ -148,8 +148,14 @@ def test_init_carries_the_shape_pin_over_its_own_copies(family):
     # smaller set than an assembly root does, and this is the assertion that
     # notices if the assembly root's list ever leaks into it — so a file added
     # to `FAMILY_COPIED_VERBATIM` is expected to move this line.
+    #
+    # 2026-09-05: `.gitattributes` joined them (#51). A holder's copies are
+    # digest-pinned the same way a project's are, so it needs the same
+    # statement about its own bytes — and the file is pinned rather than
+    # merely shipped, because one that can be edited without the pin noticing
+    # says nothing.
     assert rows == {"scripts/validate-family.py", "scripts/bootstrap.py",
-                    "Makefile", ".gitignore",
+                    "Makefile", ".gitignore", ".gitattributes",
                     ".github/workflows/validate.yml", "AGENTS-shape.md",
                     "scripts/repo_shape.py",
                     "contracts/repository-naming.yaml"}
@@ -190,6 +196,25 @@ def test_init_writes_the_holders_agent_files(family):
     assert (root / "CLAUDE.md").read_text() == "Read AGENTS.md.\n"
     assert "AGENTS.md" not in rows and "CLAUDE.md" not in rows, (
         "the holder's own instructions are the holder's, not the shape's")
+
+
+def test_the_holder_says_what_its_bytes_are(family):
+    """A holder carries a digest pin over copies, so it carries the same
+    statement about line endings an assembly root does (#51, 2026-09-05).
+    Without it a clone under `core.autocrlf=true` digests CRLF against an LF
+    row and `make validate` is red on files nobody touched."""
+    sys.path.insert(0, str(REPO / "scripts"))
+    from repo_shape import file_sha256
+    root = family["root"]
+    copied = root / ".gitattributes"
+    template = REPO / "templates" / "family-root" / ".gitattributes"
+    assert copied.read_bytes() == template.read_bytes(), "verbatim, like the rest"
+    assert b"\r" not in copied.read_bytes(), (
+        "the file that says LF is itself written LF, on every platform")
+    assert "* text=auto eol=lf" in copied.read_text()
+    rows = {row["path"]: row["sha256"].lower()
+            for row in load_yaml(root / "contracts" / "shape-pin.yaml")["files"]}
+    assert rows[".gitattributes"] == file_sha256(copied)
 
 
 def test_init_is_one_commit_and_the_remote_has_it(family):
