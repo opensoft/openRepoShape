@@ -50,6 +50,7 @@ mojibake, as a question mark, or raises an encoding error on the way out.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -60,6 +61,21 @@ from pathlib import Path
 UPSTREAM_ORG = "opensoft"
 DEFAULT_SHAPE_REPO = "https://github.com/opensoft/openRepoShape.git"
 VISIBILITY_CHOICES = ("private", "public", "internal")
+
+#: The files of the standard this entry point runs or looks for, each named
+#: ONCE. `SCAFFOLD` is both what `is_shape_checkout` recognises a checkout by
+#: and what steps (5) and (6) execute, so a rename that reached two of the
+#: three uses and not the third would leave this file looking for a checkout
+#: it then could not scaffold from.
+SCAFFOLD = "scaffold-project.py"
+NAMING_VALIDATOR = "validate-repository-naming.py"
+
+#: A FORWARD SLASH, on every platform, because this string is both run and
+#: PRINTED - in the preflight line and in the recovery command a person is
+#: told to retype. Windows opens `scripts/bootstrap.py` as readily as
+#: `scripts\bootstrap.py`, and one spelling means the command in the message
+#: is the command that ran.
+BOOTSTRAP = "scripts/bootstrap.py"
 
 #: `[ok]` and `[!!]` where setup.sh prints a tick and a cross. See the
 #: PURE ASCII paragraph above: the characters, not the meaning, are the
@@ -215,6 +231,11 @@ def run(argv, cwd=None, capture: bool = False) -> subprocess.CompletedProcess:
     preflight. Output is INHERITED unless `capture` asks otherwise, so
     `scaffold-project.py` and the validators print straight to the terminal
     the way they do under setup.sh.
+
+    EVERY ARGV THAT CARRIES A VALUE FROM THE COMMAND LINE WAS CHECKED AT PARSE
+    TIME. `argv` is a list and `shell=False`, so there is no shell to inject
+    into - but git reads its own arguments, which is the injection that is
+    real. `checked_value` is where that is refused, and why.
     """
     sys.stdout.flush()
     sys.stderr.flush()
@@ -235,16 +256,124 @@ def run(argv, cwd=None, capture: bool = False) -> subprocess.CompletedProcess:
 
 
 def program_version(argv, field: int) -> str:
-    """`git --version` -> `2.43.0`; the awk in setup.sh:219 and :246."""
+    """`git --version` -> `2.43.0`; the awk in setup.sh:219 and :246.
+
+    SLICES, NEVER INDEXES. Every one of these reads can come up short: a
+    program that is not installed at all returns the 127 and the empty stdout
+    `run` invents for it, and a program that answers `--version` with fewer
+    words than expected is a program, not an exception. An out-of-range SLICE
+    is empty where an index raises, so `join` gives back either the word or
+    the empty string the words below stand in for - which is what awk does
+    with `$3` of a line that has two fields, and what setup.sh therefore does.
+    """
     proc = run(argv, capture=True)
-    line = (proc.stdout or "").splitlines()
-    parts = line[0].split() if line else []
-    return parts[field] if len(parts) > field else "(unknown version)"
+    lines = (proc.stdout or "").splitlines()
+    parts = " ".join(lines[:1]).split()
+    return " ".join(parts[field:field + 1]) or "(unknown version)"
 
 
 # ---------------------------------------------------------------------------
 # arguments
 # ---------------------------------------------------------------------------
+
+#: What a NAME may contain - a project, an organisation, an id, a display
+#: name, the person electing the shape. Deliberately PERMISSIVE: CamelCase,
+#: kebab-case, snake_case and `Display Name` are all legitimate spellings
+#: here, and which of them this standard actually accepts is the naming
+#: POLICY's ruling, made at step (4) by `scripts/validate-repository-naming.py
+#: --explain` and never re-implemented here. This says only what may become an
+#: argument at all.
+NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._'()&,+@-]{0,254}$")
+
+#: What a git REF may contain, conservatively: `--shape-ref` becomes
+#: `git checkout <ref>` in the temporary checkout. `git check-ref-format` is
+#: the authority; this is the subset of it that a person types.
+REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$")
+
+#: What a PATH may contain: whatever the filesystem it names accepts - a drive
+#: letter, a UNC prefix, a space, a `~`, a directory somebody else created in
+#: a language of their own. Only the two things that are never a path are
+#: refused: a control character here, and a leading `-` in `checked_value`.
+PATH_RE = re.compile(r"^[^\x00-\x1f\x7f]+$")
+
+#: A control character or a DEL, in any value at all. The newline is the one
+#: that matters: it ends a line in every terminal, prompt and log this output
+#: reaches, so a value carrying one can print a sentence that reads as this
+#: tool's own - a `REFUSED:` line nobody refused.
+CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def refuse_value(what: str, text: str) -> None:
+    """ONE wording for every value this tool will not pass on.
+
+    `ascii()`, never `%r`: `repr` leaves a printable non-ASCII character as
+    itself, and this file's output is ASCII to the byte (see the module
+    docstring). `ascii()` escapes it, so the refusal can quote back exactly
+    what arrived - a newline included - without becoming the mojibake the
+    PURE ASCII rule exists to prevent.
+    """
+    die("%s is %s, which is not a value this tool will put on a `git` or `gh` "
+        "command line. git reads its own arguments: a value that starts with "
+        "`-` is an option to git, not a name to us; the rest must be spellable "
+        "as a name, a ref or a path." % (what, ascii(text)))
+
+
+def checked_value(flag: str, value: str, pattern=NAME_RE) -> str:
+    """Check one value from the command line BEFORE it can become an argument.
+
+    ARGUMENT INJECTION IS THE THREAT, NOT SHELL INJECTION. Every command here
+    is a list run with `shell=False`, so there is no shell to inject into -
+    but git reads its own arguments, and a value that starts with `-` is an
+    option to git, not a name to us: `--upload-pack=...` is a command rather
+    than a ref. An empty value is refused with it (a name nobody typed), and
+    so is a control character (a newline prints a line this tool did not
+    write).
+
+    THE HOUSE PATTERN, COPIED RATHER THAN IMPORTED. `scripts/repo_shape.py`'s
+    `checked_value` is the same check in the same words for the same reason,
+    and `scaffold-project.py` calls it on the values this file forwards. This
+    entry point cannot import it: it runs BEFORE there is a checkout to import
+    it from, which is the whole of self-bootstrap mode.
+    """
+    text = str(value)
+    if (not text or text.startswith("-") or CONTROL_RE.search(text)
+            or not pattern.fullmatch(text)):
+        refuse_value(flag, text)
+    return text
+
+
+def checked_ref(flag: str, value: str) -> str:
+    """`--shape-ref`: narrower than a name, because git reads more into one.
+
+    `..` is a revision RANGE rather than a ref, and a ref ending in `.lock` is
+    the name git gives the lock file it writes beside one - neither is a thing
+    to check out, and both are refused here rather than discovered as a
+    confusing failure inside the temporary checkout.
+    """
+    text = checked_value(flag, value, REF_RE)
+    if ".." in text or text.endswith(".lock"):
+        refuse_value(flag, text)
+    return text
+
+
+def checked_path(flag: str, value: str) -> str:
+    """`--into` and `--local-remote-dir`: a directory, not a name."""
+    return checked_value(flag, value, PATH_RE)
+
+
+def checked_passthrough(rest: list) -> list:
+    """Everything after `--`, which is documented as extra scaffold flags.
+
+    A leading `-` is the POINT here and is not refused - these ARE flags, and
+    `scaffold-project.py` is the program that decides whether it has them. A
+    control character still is: a newline in an argument prints a line this
+    tool did not write, whichever program the argument was meant for.
+    """
+    for item in rest:
+        if CONTROL_RE.search(item):
+            refuse_value("a passthrough argument after `--`", item)
+    return rest
+
 
 class Options:
     """The parsed command line. One attribute per setup.sh variable."""
@@ -270,6 +399,101 @@ class Options:
         return bool(self.local_remote_dir)
 
 
+#: Every flag that takes a value: the `Options` attribute it fills, and the
+#: check its value passes on the way in. `None` is `--visibility`, an enum
+#: whose value is checked against VISIBILITY_CHOICES at the end of the parse -
+#: a fixed set of three needs no shape.
+VALUE_FLAGS = {
+    "--project": ("project", checked_value),
+    "--org": ("org", checked_value),
+    "--id": ("project_id", checked_value),
+    "--name": ("display_name", checked_value),
+    "--visibility": ("visibility", None),
+    "--elected-by": ("elected_by", checked_value),
+    "--into": ("into", checked_path),
+    "--local-remote-dir": ("local_remote_dir", checked_path),
+    "--shape-ref": ("shape_ref", checked_ref),
+}
+
+#: The value-taking flags that name a DIRECTORY, whose value hangs off the
+#: invocation directory when it is relative (setup.sh:103-108, `abspath`).
+PATH_FLAGS = ("--into", "--local-remote-dir")
+
+#: Every flag that takes no value: the `Options` attribute it sets True.
+BOOLEAN_FLAGS = {
+    "--yes": "assume_yes",
+    "-y": "assume_yes",
+    "--allow-upstream-org": "allow_upstream_org",
+    "--keep-shape-checkout": "keep_shape_checkout",
+}
+
+
+class Parsing:
+    """The parse's own state: the Options being filled, and two things that
+    are not on it.
+
+    `positional` is WHICH SPELLING set the project, because the two do not
+    compose the same way. `--project A --project B` is B, exactly as setup.sh's
+    last-wins `case` is. But a positional and a `--project` are two different
+    names for one thing, and silently taking either is how a person scaffolds
+    a project they did not name - so that pair is refused in BOTH orders, and
+    each half of it has to be able to see what the other one did.
+    """
+
+    __slots__ = ("opts", "invocation_dir", "positional")
+
+    def __init__(self, invocation_dir: str):
+        self.opts = Options()
+        self.invocation_dir = invocation_dir
+        self.positional = ""
+
+
+def two_names(first: str, second: str) -> None:
+    # The `openRepoShape` command's own refusal (openRepoShape:147), word
+    # for word, whichever order the two names arrived in.
+    die("two project names, '%s' and '%s'. One positional "
+        "<Project>, then flags." % (first, second))
+
+
+def take_value(state: Parsing, flag: str, rest: list) -> None:
+    """One value-taking flag: pull its value off the line, check it, keep it."""
+    if not rest:
+        die("%s needs a value" % flag)
+    attribute, check = VALUE_FLAGS[flag]
+    value = rest.pop(0)
+    if check is not None:
+        value = check(flag, value)
+    if flag in PATH_FLAGS:
+        value = abspath(value, state.invocation_dir)
+    if flag == "--project" and state.positional:
+        two_names(state.positional, value)
+    setattr(state.opts, attribute, value)
+
+
+def take_positional(state: Parsing, arg: str) -> None:
+    """A bare `<Project>`.
+
+    The `openRepoShape` command's shape, folded in here so the Windows way in
+    is one file instead of two: a bare <Project> is --project.
+    """
+    if state.opts.project:
+        two_names(state.opts.project, arg)
+    state.positional = checked_value("<Project>", arg)
+    state.opts.project = state.positional
+
+
+def unknown_argument(arg: str) -> None:
+    """Anything that looks like a flag and is not one - and the empty string.
+
+    `arg == ""` arrives here rather than at the positional: an empty argument
+    is not a project name. setup.sh's `case` falls through to `*)` on one and
+    refuses `unknown argument: ` with an empty tail, so this does too - the
+    same words, including the space that ends them.
+    """
+    usage(sys.stderr)
+    die("unknown argument: %s" % arg)
+
+
 def parse_args(argv, invocation_dir: str) -> Options:
     """A while loop over the list, mirroring setup.sh:113-131.
 
@@ -277,79 +501,32 @@ def parse_args(argv, invocation_dir: str) -> Options:
     things in the same words with the same exit codes, and argparse owns its
     own usage text, its own `--flag=value` spelling and its own exit code 2 on
     a message nobody wrote. A loop is what keeps the parity test honest.
+
+    THE FLAGS THEMSELVES ARE TABLES (`VALUE_FLAGS`, `BOOLEAN_FLAGS`) rather
+    than a chain of `elif`s, so this loop is the five shapes an argument can
+    have - a flag with a value, a flag without one, the help, `--`, or a bare
+    word - and adding a flag is a row rather than a branch.
     """
-    opts = Options()
+    state = Parsing(invocation_dir)
     rest = list(argv)
-    # WHICH SPELLING set the project, because the two do not compose the same
-    # way. `--project A --project B` is B, exactly as setup.sh's last-wins
-    # `case` is. But a positional and a `--project` are two different names
-    # for one thing, and silently taking either is how a person scaffolds a
-    # project they did not name - so that pair is refused in BOTH orders.
-    positional = ""
-
-    def value(flag: str) -> str:
-        if not rest:
-            die("%s needs a value" % flag)
-        return rest.pop(0)
-
-    def two_names(first: str, second: str) -> None:
-        # The `openRepoShape` command's own refusal (openRepoShape:147), word
-        # for word, whichever order the two names arrived in.
-        die("two project names, '%s' and '%s'. One positional "
-            "<Project>, then flags." % (first, second))
-
     while rest:
         arg = rest.pop(0)
-        if arg == "--project":
-            named = value("--project")
-            if positional:
-                two_names(positional, named)
-            opts.project = named
-        elif arg == "--org":
-            opts.org = value("--org")
-        elif arg == "--id":
-            opts.project_id = value("--id")
-        elif arg == "--name":
-            opts.display_name = value("--name")
-        elif arg == "--visibility":
-            opts.visibility = value("--visibility")
-        elif arg == "--elected-by":
-            opts.elected_by = value("--elected-by")
-        elif arg == "--into":
-            opts.into = abspath(value("--into"), invocation_dir)
-        elif arg == "--local-remote-dir":
-            opts.local_remote_dir = abspath(value("--local-remote-dir"),
-                                            invocation_dir)
-        elif arg in ("--yes", "-y"):
-            opts.assume_yes = True
-        elif arg == "--allow-upstream-org":
-            opts.allow_upstream_org = True
-        elif arg == "--shape-ref":
-            opts.shape_ref = value("--shape-ref")
-        elif arg == "--keep-shape-checkout":
-            opts.keep_shape_checkout = True
+        if arg in VALUE_FLAGS:
+            take_value(state, arg, rest)
+        elif arg in BOOLEAN_FLAGS:
+            setattr(state.opts, BOOLEAN_FLAGS[arg], True)
         elif arg in ("-h", "--help"):
-            opts.help = True
-            return opts
+            state.opts.help = True
+            return state.opts
         elif arg == "--":
-            opts.passthrough = rest
+            state.opts.passthrough = checked_passthrough(rest)
             break
         elif arg.startswith("-") or arg == "":
-            # `arg == ""` before the positional branch: an empty argument is
-            # not a project name. setup.sh's `case` falls through to `*)` on
-            # one and refuses `unknown argument: ` with an empty tail, so this
-            # does too - the same words, including the space that ends them.
-            usage(sys.stderr)
-            die("unknown argument: %s" % arg)
+            unknown_argument(arg)
         else:
-            # The `openRepoShape` command's shape, folded in here so the
-            # Windows way in is one file instead of two: a bare <Project> is
-            # --project.
-            if opts.project:
-                two_names(opts.project, arg)
-            positional = arg
-            opts.project = arg
+            take_positional(state, arg)
 
+    opts = state.opts
     if opts.visibility not in VISIBILITY_CHOICES:
         die("--visibility is %s; it must be 'private', 'public' or 'internal'"
             % opts.visibility)
@@ -400,7 +577,7 @@ def is_shape_checkout(directory) -> bool:
     if not toplevel:
         return False
     root = Path(toplevel)
-    return ((root / "scaffold-project.py").is_file()
+    return ((root / SCAFFOLD).is_file()
             and (root / "contracts" / "repository-naming.yaml").is_file())
 
 
@@ -470,84 +647,121 @@ def self_bootstrap(opts: Options, original_argv, invocation_dir: str) -> int:
 # 1. preflight
 # ---------------------------------------------------------------------------
 
+#: The two lines the preflight and `_main` must say identically. `_main` looks
+#: for git BEFORE the preflight (see the comment there), and the same fact
+#: reported in two wordings would read as two different faults.
+GIT_MISSING = "git is not installed. Install it: https://git-scm.com/downloads"
+PREREQ_MISSING = "one or more prerequisites are missing (see above)."
+
+
+def _check_git() -> bool:
+    if not shutil.which("git"):
+        bad(GIT_MISSING)
+        return False
+    ok("git %s" % program_version(["git", "--version"], 2))
+    return True
+
+
+def _check_python() -> bool:
+    # THE RUNNING INTERPRETER, never a probe for one on PATH. The name
+    # setup.sh hard-codes does not exist on a stock Windows install and
+    # `python` may be a Store stub that opens a web page; the interpreter that
+    # reached this line is the one that will run every child process, so it is
+    # the one reported and the one whose version is checked. A COMMENT and not
+    # a docstring, deliberately: a docstring is a string constant, and
+    # `test_the_entry_point_never_names_python3` reads every one of them.
+    version = sys.version_info
+    if version < (3, 9):
+        bad("this interpreter is %d.%d, and 3.9 or newer is required. Install "
+            "a newer Python and re-run: https://www.python.org/downloads/"
+            % (version[0], version[1]))
+        return False
+    ok("python %d.%d.%d (%s)" % (version[0], version[1], version[2], PYTHON))
+    return True
+
+
+def _check_bootstrap() -> bool:
+    """`make` is NOT checked, here or anywhere below.
+
+    setup.sh probes for it and falls back; this file has no fallback to make
+    because it never uses make - one command, on every platform, and Windows
+    has no make at all. Nothing can be missing, so this never fails; it is a
+    check because it is a line in the preflight a person reads.
+    """
+    ok("bootstrap runs as `%s %s` (make is not required)"
+       % (PYTHON_CMD, BOOTSTRAP))
+    return True
+
+
+def _gh_login_suffix() -> str:
+    """` as <login>` when gh will say who is logged in, and nothing when it
+    will not: a name is a courtesy here, not the fact being checked."""
+    login = run(["gh", "api", "user", "--jq", ".login"], capture=True)
+    if login.returncode == 0 and (login.stdout or "").strip():
+        return " as " + login.stdout.strip()
+    return ""
+
+
+def _check_gh(opts: Options) -> bool:
+    if opts.local_mode:
+        ok("gh not required (--local-remote-dir: bare repositories on disk, "
+           "no network)")
+        return True
+    if not shutil.which("gh"):
+        bad("gh is not installed. Install it: https://cli.github.com - or "
+            "re-run with --local-remote-dir <dir> to try this offline against "
+            "bare repositories on disk.")
+        return False
+    ok("gh %s" % program_version(["gh", "--version"], 2))
+    if run(["gh", "auth", "status"], capture=True).returncode != 0:
+        bad("gh is not authenticated. Run: gh auth login")
+        return False
+    ok("gh is authenticated%s" % _gh_login_suffix())
+    return True
+
+
+def _warn_autocrlf() -> None:
+    """WARN, DO NOT REFUSE (Brett Heap, 2026-09-05).
+
+    `core.autocrlf=true` is what the git-for-Windows installer offers by
+    default, and it rewrites every checked-out file's line endings - which
+    makes a scaffolded project's copies differ from the sha256 rows its own
+    shape pin records, so its first `validate` reports drift nobody
+    introduced. It is a machine setting, not a fault in this run, and the
+    clone this tool makes is configured correctly regardless (see
+    clone_and_bootstrap), so the run continues.
+    """
+    if os.name != "nt":
+        return
+    # `--global`, because the message below tells the person to fix the
+    # GLOBAL setting and a warning about a value it did not read would
+    # send them to change something that was already right.
+    # `--type=bool` so `1`, `yes`, `on` and `true` are one answer; unset
+    # is exit 1 and empty stdout, which is silence, not a warning.
+    configured = run(["git", "config", "--global", "--type=bool", "--get",
+                      "core.autocrlf"], capture=True)
+    if (configured.stdout or "").strip() != "true":
+        return
+    warn("git core.autocrlf is true. Every file git checks out gets "
+         "CRLF line endings, and a project's shape pin digests the "
+         "bytes it was written with - so `validate` will report drift "
+         "in files nobody edited. Fix it once, for this machine: "
+         "git config --global core.autocrlf false")
+
+
 def preflight(opts: Options) -> None:
     say("openRepoShape setup")
     say("")
     say("(1) preflight")
-    failed = False
-
-    if shutil.which("git"):
-        ok("git %s" % program_version(["git", "--version"], 2))
-    else:
-        bad("git is not installed. Install it: https://git-scm.com/downloads")
-        failed = True
-
-    # THE RUNNING INTERPRETER, never a probe for one on PATH. `python3` does
-    # not exist on a stock Windows install and `python` may be a Store stub
-    # that opens a web page; the interpreter that reached this line is the one
-    # that will run every child process, so it is the one reported and the one
-    # whose version is checked.
-    version = sys.version_info
-    if version >= (3, 9):
-        ok("python %d.%d.%d (%s)" % (version[0], version[1], version[2], PYTHON))
-    else:
-        bad("this interpreter is %d.%d, and 3.9 or newer is required. Install "
-            "a newer Python and re-run: https://www.python.org/downloads/"
-            % (version[0], version[1]))
-        failed = True
-
-    # `make` is NOT checked, here or anywhere below. setup.sh probes for it
-    # and falls back; this file has no fallback to make because it never uses
-    # make - one command, on every platform, and Windows has no make at all.
-    ok("bootstrap runs as `%s scripts/bootstrap.py` (make is not required)"
-       % PYTHON_CMD)
-
-    if opts.local_mode:
-        ok("gh not required (--local-remote-dir: bare repositories on disk, "
-           "no network)")
-    elif shutil.which("gh"):
-        ok("gh %s" % program_version(["gh", "--version"], 2))
-        if run(["gh", "auth", "status"], capture=True).returncode == 0:
-            login = run(["gh", "api", "user", "--jq", ".login"],
-                        capture=True)
-            suffix = ""
-            if login.returncode == 0 and (login.stdout or "").strip():
-                suffix = " as " + login.stdout.strip()
-            ok("gh is authenticated%s" % suffix)
-        else:
-            bad("gh is not authenticated. Run: gh auth login")
-            failed = True
-    else:
-        bad("gh is not installed. Install it: https://cli.github.com - or "
-            "re-run with --local-remote-dir <dir> to try this offline against "
-            "bare repositories on disk.")
-        failed = True
-
-    # WARN, DO NOT REFUSE (Brett Heap, 2026-09-05). `core.autocrlf=true` is
-    # what the git-for-Windows installer offers by default, and it rewrites
-    # every checked-out file's line endings - which makes a scaffolded
-    # project's copies differ from the sha256 rows its own shape pin records,
-    # so its first `validate` reports drift nobody introduced. It is a machine
-    # setting, not a fault in this run, and the clone this tool makes is
-    # configured correctly regardless (see clone_and_bootstrap), so the run
-    # continues.
-    if os.name == "nt":
-        # `--global`, because the message below tells the person to fix the
-        # GLOBAL setting and a warning about a value it did not read would
-        # send them to change something that was already right.
-        # `--type=bool` so `1`, `yes`, `on` and `true` are one answer; unset
-        # is exit 1 and empty stdout, which is silence, not a warning.
-        configured = run(["git", "config", "--global", "--type=bool", "--get",
-                          "core.autocrlf"], capture=True)
-        if (configured.stdout or "").strip() == "true":
-            warn("git core.autocrlf is true. Every file git checks out gets "
-                 "CRLF line endings, and a project's shape pin digests the "
-                 "bytes it was written with - so `validate` will report drift "
-                 "in files nobody edited. Fix it once, for this machine: "
-                 "git config --global core.autocrlf false")
-
-    if failed:
-        die("one or more prerequisites are missing (see above).")
+    # EVERY CHECK RUNS, THEN THE RUN REFUSES ONCE. A person on a fresh machine
+    # is told about git AND gh in one go rather than one missing thing per
+    # re-run, which is what the original `failed = True` accumulator bought.
+    # The list is complete before `all` reads it, so nothing short-circuits.
+    checked = [_check_git(), _check_python(), _check_bootstrap(),
+               _check_gh(opts)]
+    _warn_autocrlf()
+    if not all(checked):
+        die(PREREQ_MISSING)
 
 
 # ---------------------------------------------------------------------------
@@ -575,80 +789,96 @@ def remote_url(directory: str, remote: str) -> str:
     return (proc.stdout or "").strip() if proc.returncode == 0 else ""
 
 
-def resolve_org(opts: Options, invocation_dir: str) -> str:
-    """setup.sh:262-353, transcribed."""
-    say("")
-    say("(2) organisation")
+def _origin_org(invocation_dir: str):
+    """The `origin` remote and the organisation read out of it.
 
-    # `gh repo view` with no argument resolves the CURRENT repository by its
-    # own rules, and on a checkout with two remotes (`origin` plus an
-    # `upstream` pointing at opensoft/openRepoShape - kept only by someone
-    # contributing back to the standard itself) it can prefer `upstream` over
-    # `origin`. `origin` is the remote that means "this clone", in every mode,
-    # so it is read directly and parsed by hand; `gh repo view` is consulted
-    # only as a fallback, and only ON THE ORIGIN URL itself (never bare), so
-    # it cannot go pick `upstream` either.
-    #
-    # Read against the INVOCATION directory, not the directory this file lives
-    # in. The two are the same for the README's own `cd openRepoShape` usage;
-    # they differ only when this file is invoked by a path from elsewhere, and
-    # then the clone you are IN is the one whose organisation you mean.
+    `gh repo view` with no argument resolves the CURRENT repository by its
+    own rules, and on a checkout with two remotes (`origin` plus an
+    `upstream` pointing at opensoft/openRepoShape - kept only by someone
+    contributing back to the standard itself) it can prefer `upstream` over
+    `origin`. `origin` is the remote that means "this clone", in every mode,
+    so it is read directly and parsed by hand; `gh repo view` is consulted
+    only as a fallback (`_org_from_gh`), and only ON THE ORIGIN URL itself
+    (never bare), so it cannot go pick `upstream` either.
+
+    Read against the INVOCATION directory, not the directory this file lives
+    in. The two are the same for the README's own `cd openRepoShape` usage;
+    they differ only when this file is invoked by a path from elsewhere, and
+    then the clone you are IN is the one whose organisation you mean.
+    """
     origin_url = remote_url(invocation_dir, "origin")
-    origin_org = detect_org_from_url(origin_url) if origin_url else ""
+    return origin_url, detect_org_from_url(origin_url) if origin_url else ""
 
+
+def _org_from_gh(opts: Options, origin_url: str) -> str:
+    """The fallback: gh's own answer for the ORIGIN URL, or nothing."""
+    if not origin_url or opts.local_mode:
+        return ""
+    proc = run(["gh", "repo", "view", origin_url, "--json", "owner",
+                "--jq", ".owner.login"], capture=True)
+    return (proc.stdout or "").strip() if proc.returncode == 0 else ""
+
+
+def _org_without_origin(opts: Options, origin_url: str) -> str:
+    """No --org and no organisation parsed out of `origin`: ask, or refuse."""
+    viewed = _org_from_gh(opts, origin_url)
+    if viewed:
+        if viewed == UPSTREAM_ORG:
+            die("you are running from the upstream checkout (%s); pass "
+                "--org <your-org>." % origin_url)
+        ok("organisation %s (from `gh repo view` on the origin URL: %s; "
+           "could not parse it by hand)" % (viewed, origin_url))
+        return viewed
+    if opts.local_mode:
+        ok("organisation localorg (placeholder; no `origin` remote to read, "
+           "and --local-remote-dir creates nothing on GitHub)")
+        return "localorg"
+    die("cannot work out which organisation to scaffold into: this "
+        "clone has no `origin` remote and no --org was given. Re-run "
+        "with --org <your-org>.")
+
+
+def _choose_org(opts: Options, origin_url: str, origin_org: str) -> str:
     # `origin` pointing at opensoft itself means this checkout IS the upstream
     # - there is no fork to inherit an organisation from, exactly like
     # self-bootstrap mode, so the fix is the same: pass --org.
     if not opts.org and origin_org == UPSTREAM_ORG:
         die("you are running from the upstream checkout (%s); pass --org "
             "<your-org>." % origin_url)
+    if opts.org:
+        ok("organisation %s (from --org)" % opts.org)
+        return opts.org
+    if origin_org:
+        ok("organisation %s (from the `origin` remote: %s)"
+           % (origin_org, origin_url))
+        return origin_org
+    return _org_without_origin(opts, origin_url)
 
-    org = opts.org
-    if org:
-        ok("organisation %s (from --org)" % org)
-    elif origin_org:
-        org = origin_org
-        ok("organisation %s (from the `origin` remote: %s)" % (org, origin_url))
-    else:
-        viewed = ""
-        if origin_url and not opts.local_mode:
-            proc = run(["gh", "repo", "view", origin_url, "--json", "owner",
-                        "--jq", ".owner.login"], capture=True)
-            if proc.returncode == 0:
-                viewed = (proc.stdout or "").strip()
-        if viewed:
-            org = viewed
-            if org == UPSTREAM_ORG:
-                die("you are running from the upstream checkout (%s); pass "
-                    "--org <your-org>." % origin_url)
-            ok("organisation %s (from `gh repo view` on the origin URL: %s; "
-               "could not parse it by hand)" % (org, origin_url))
-        elif opts.local_mode:
-            org = "localorg"
-            ok("organisation %s (placeholder; no `origin` remote to read, and "
-               "--local-remote-dir creates nothing on GitHub)" % org)
-        else:
-            die("cannot work out which organisation to scaffold into: this "
-                "clone has no `origin` remote and no --org was given. Re-run "
-                "with --org <your-org>.")
 
-    # A checkout kept for contributing to the standard itself may still carry
-    # an `upstream` remote pointing at opensoft. Name it so a person who did
-    # not expect one at all is not left guessing why the detected organisation
-    # is not opensoft's.
+def _note_upstream(invocation_dir: str, origin_org: str, org: str) -> None:
+    """A checkout kept for contributing to the standard itself may still carry
+    an `upstream` remote pointing at opensoft. Name it so a person who did not
+    expect one at all is not left guessing why the detected organisation is
+    not opensoft's.
+    """
     upstream_url = remote_url(invocation_dir, "upstream")
-    if upstream_url:
-        upstream_org = detect_org_from_url(upstream_url)
-        if upstream_org and origin_org and upstream_org != origin_org:
-            say("  upstream is %s; scaffolding into %s" % (upstream_org, org))
+    if not upstream_url:
+        return
+    upstream_org = detect_org_from_url(upstream_url)
+    if upstream_org and origin_org and upstream_org != origin_org:
+        say("  upstream is %s; scaffolding into %s" % (upstream_org, org))
 
-    # The guard that matters now that the organisation is never silently set
-    # to opensoft by detection (see the die above): the only way to reach this
-    # point with opensoft is an explicit `--org opensoft`, which is almost
-    # never what anyone means. It applies in EVERY mode, --local-remote-dir
-    # included: `--org` is what a scaffolded `project.yaml` records as the
-    # owner of all three legs, so a manifest reading `opensoft/Sample` is
-    # wrong regardless of whether any network call happened.
+
+def _guard_upstream_org(opts: Options, org: str) -> None:
+    """The guard that matters now that the organisation is never silently set
+    to opensoft by detection (see the die in `_choose_org`): the only way to
+    reach this point with opensoft is an explicit `--org opensoft`, which is
+    almost never what anyone means. It applies in EVERY mode,
+    --local-remote-dir included: `--org` is what a scaffolded `project.yaml`
+    records as the owner of all three legs, so a manifest reading
+    `opensoft/Sample` is wrong regardless of whether any network call
+    happened.
+    """
     if org == UPSTREAM_ORG and not opts.allow_upstream_org:
         die("the organisation is '%s', which is the UPSTREAM owner of "
             "openRepoShape itself, and scaffolding here would create three "
@@ -656,6 +886,16 @@ def resolve_org(opts: Options, invocation_dir: str) -> str:
             "\n"
             "  Wrong guess?  re-run with --org <your-org>\n"
             "  You meant it? re-run with --allow-upstream-org" % UPSTREAM_ORG)
+
+
+def resolve_org(opts: Options, invocation_dir: str) -> str:
+    """setup.sh:262-353, transcribed."""
+    say("")
+    say("(2) organisation")
+    origin_url, origin_org = _origin_org(invocation_dir)
+    org = _choose_org(opts, origin_url, origin_org)
+    _note_upstream(invocation_dir, origin_org, org)
+    _guard_upstream_org(opts, org)
     return org
 
 
@@ -717,7 +957,7 @@ def check_names(shape_root: Path, project: str) -> None:
     say("")
     say("(4) naming policy")
     proc = run([PYTHON,
-                str(shape_root / "scripts" / "validate-repository-naming.py"),
+                str(shape_root / "scripts" / NAMING_VALIDATOR),
                 "--explain", project, project + "-spec", project + "-code"],
                cwd=shape_root)
     if proc.returncode != 0:
@@ -746,7 +986,7 @@ def plan_and_confirm(opts: Options, shape_root: Path, org: str,
                      args: list) -> None:
     say("")
     say("(5) the plan")
-    planned = run([PYTHON, str(shape_root / "scaffold-project.py"), *args,
+    planned = run([PYTHON, str(shape_root / SCAFFOLD), *args,
                    "--dry-run"], cwd=shape_root)
     if planned.returncode != 0:
         raise Refusal("the plan could not be produced (see above).",
@@ -775,7 +1015,7 @@ def plan_and_confirm(opts: Options, shape_root: Path, org: str,
 def scaffold(shape_root: Path, args: list) -> None:
     say("")
     say("(6) scaffold")
-    proc = run([PYTHON, str(shape_root / "scaffold-project.py"), *args],
+    proc = run([PYTHON, str(shape_root / SCAFFOLD), *args],
                cwd=shape_root)
     if proc.returncode != 0:
         raise Refusal("the scaffold failed (see above).",
@@ -815,8 +1055,9 @@ def clone_and_bootstrap(opts: Options, shape_root: Path, org: str) -> dict:
         die("%s already exists, so there is nowhere to clone into. The three "
             "repositories WERE created. Finish by hand:\n"
             "    git clone --recurse-submodules %s\n"
-            "    cd %s && %s scripts/bootstrap.py"
-            % (clone, urls["assembly"], opts.project, PYTHON_CMD))
+            "    cd %s && %s %s"
+            % (clone, urls["assembly"], opts.project, PYTHON_CMD,
+               BOOTSTRAP))
 
     say("")
     say("(7) clone and bootstrap")
@@ -858,7 +1099,7 @@ def clone_and_bootstrap(opts: Options, shape_root: Path, org: str) -> dict:
     # ALWAYS the interpreter, never `make`. This is the whole reason this file
     # exists beside setup.sh: `make bootstrap` is one line in a Makefile that
     # runs exactly this, and Windows has no make to run it with.
-    bootstrapped = run([PYTHON, os.path.join("scripts", "bootstrap.py")],
+    bootstrapped = run([PYTHON, BOOTSTRAP],
                        cwd=clone)
     if bootstrapped.returncode != 0:
         raise Refusal("bootstrap failed (see above). The clone is at %s."

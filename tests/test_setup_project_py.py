@@ -485,6 +485,100 @@ def test_a_flag_with_no_value_refuses():
     assert "--visibility needs a value" in result.stderr
 
 
+# --- what may become an argument to git -------------------------------------
+#
+# ARGUMENT injection, not shell injection: every command this entry point runs
+# is a list with `shell=False`, so there is no shell - but git reads its own
+# arguments, and a value that starts with `-` is an option to git rather than
+# a name. `scaffold-project.py` refuses the same shape in the same words
+# (`tests/test_scaffold_pin_and_reuse.py`), through `repo_shape.checked_value`;
+# this file's subject carries its own copy because it runs BEFORE there is a
+# checkout to import that from, which is the whole of self-bootstrap mode.
+#
+# Every run here passes `--local-remote-dir` even though none of them reaches
+# it: the refusal is a parse-time one, and the flag is what keeps
+# `test_no_test_here_depends_on_gh_being_authenticated` true if it ever stops
+# being.
+
+def test_an_org_that_is_a_git_option_is_refused(tmp_path):
+    result = run_entry("--project", "Sample", "--org", "-evil",
+                       "--local-remote-dir", str(tmp_path / "remotes"),
+                       "--into", str(tmp_path / "work"))
+    assert result.returncode == 2
+    assert "--org is '-evil'" in result.stderr
+    assert "git reads its own arguments" in result.stderr
+    assert not (tmp_path / "remotes").exists()
+
+
+@pytest.mark.parametrize("ref", ["a b", "a..b", "topic.lock", "-x"])
+def test_a_shape_ref_that_is_not_a_ref_is_refused(tmp_path, ref):
+    """`--shape-ref` becomes `git checkout <ref>` in the temporary checkout.
+
+    A space is not in any ref name; `..` is a revision RANGE rather than a
+    ref; `.lock` is what git calls the lock file it writes beside one; and a
+    leading `-` is an option to git.
+    """
+    result = run_entry("--project", "Sample", "--shape-ref", ref,
+                       "--local-remote-dir", str(tmp_path / "remotes"),
+                       "--into", str(tmp_path / "work"))
+    assert result.returncode == 2
+    assert f"--shape-ref is '{ref}'" in result.stderr
+    assert not (tmp_path / "remotes").exists()
+
+
+def test_a_value_carrying_a_newline_is_refused(tmp_path):
+    """A newline ends a line in every terminal, prompt and log this output
+    reaches, so a value carrying one could print a `REFUSED:` line nobody
+    refused. It is refused, and quoted back ESCAPED - `ascii()`, not `%r`,
+    which is also what keeps this file's output pure ASCII.
+    """
+    result = run_entry("--project", "Sample", "--name", "Atlas\nREFUSED: nope",
+                       "--local-remote-dir", str(tmp_path / "remotes"),
+                       "--into", str(tmp_path / "work"))
+    assert result.returncode == 2
+    assert "--name is 'Atlas\\nREFUSED: nope'" in result.stderr
+    assert "\nREFUSED: nope" not in result.stderr, (
+        "the newline reached the terminal and printed a line nobody wrote")
+
+
+def test_the_ordinary_values_still_parse(tmp_path):
+    """The check must not become the naming policy.
+
+    `Display Name` with a space, a CamelCase project, a kebab-case id and a
+    person's name are all legitimate here; which of them this standard accepts
+    is `scripts/validate-repository-naming.py --explain`'s ruling at step (4),
+    and it is not re-implemented at parse time.
+    """
+    module = entry_point_module()
+    opts = module.parse_args(["Atlas", "--org", "ExampleOrg",
+                              "--id", "atlas-one", "--name", "Atlas Display",
+                              "--elected-by", "Brett Heap",
+                              "--shape-ref", "refs/tags/v1.0"], str(tmp_path))
+    assert opts.project == "Atlas"
+    assert opts.org == "ExampleOrg"
+    assert opts.project_id == "atlas-one"
+    assert opts.display_name == "Atlas Display"
+    assert opts.elected_by == "Brett Heap"
+    assert opts.shape_ref == "refs/tags/v1.0"
+
+
+def test_a_version_line_shorter_than_the_field_is_not_an_index_error():
+    """`git --version` is `git version 2.43.0` and the field wanted is the
+    third. A program that answers with fewer words - or with nothing, which is
+    what `run` returns for a program that is not installed at all - is a
+    program, not an IndexError out of the preflight.
+    """
+    module = entry_point_module()
+    assert module.program_version([sys.executable, "-c", "print('a b c')"],
+                                  2) == "c"
+    assert module.program_version([sys.executable, "-c", "print('one')"],
+                                  2) == "(unknown version)"
+    assert module.program_version([sys.executable, "-c", "pass"],
+                                  2) == "(unknown version)"
+    assert module.program_version(["openreposhape-no-such-program"],
+                                  2) == "(unknown version)"
+
+
 # --- piped on stdin ---------------------------------------------------------
 
 def run_piped(*args: str, cwd: Path) -> subprocess.CompletedProcess:
