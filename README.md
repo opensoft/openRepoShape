@@ -35,21 +35,24 @@ overlays is fully conformant.
 
 **Linux:** run the four steps below in your own shell.
 
-**macOS:** the same four steps, once the machine has what they need. The
-Xcode Command Line Tools supply `git`, `make` and a `python3` — install them
-with `xcode-select --install`, or type `git` once on a fresh Mac and the
-installer offers itself; step 4 opens with a preflight that prints the
-`python3` it found and refuses anything below 3.9. `gh` comes from Homebrew,
-which is its own install if `brew` is absent (<https://brew.sh>): on Apple
-Silicon Homebrew lives in `/opt/homebrew`, which is on no `PATH` by default,
-and its installer finishes by printing the line that puts it there — run that
-line, or the next shell cannot find `brew`. Then `brew install gh`, and
-`brew install git-filter-repo` only if you are ADOPTING an existing repository
-rather than scaffolding a new one. The stock `/bin/bash` is 3.2 and is enough:
-`setup.sh` and the `openRepoShape` command use no syntax newer than that, and
-CI runs the whole suite on `macos-latest`, parsing both there with `/bin/bash`
-itself. That the login shell is zsh changes nothing — both entry points are
-run under `bash` explicitly.
+**macOS:** the same four steps, once the machine has what they need. The Xcode
+Command Line Tools supply `git`, `make` and a `python3` — install them with
+`xcode-select --install`, or type `git` once on a fresh Mac and the installer
+offers itself; step 4 opens with a preflight that prints the `python3` it found
+and refuses anything below 3.9. If it refuses the one the Tools supplied —
+older macOS shipped 3.8 — install a newer one from
+<https://www.python.org/downloads/> or with `brew install python`, and the
+preflight will find it first on `PATH`. `gh` comes from Homebrew, which is its
+own install if `brew` is absent (<https://brew.sh>): on Apple Silicon Homebrew
+lives in `/opt/homebrew`, which is on no `PATH` by default, and its installer
+finishes by printing the line that puts it there — run that line, or the next
+shell cannot find `brew`. Then `brew install gh`, and `brew install
+git-filter-repo` only if you are ADOPTING an existing repository rather than
+scaffolding a new one. The stock `/bin/bash` is 3.2 and is enough: `setup.sh`
+and the `openRepoShape` command use no syntax newer than that, and CI runs the
+whole suite on `macos-latest`, parsing both there with `/bin/bash` itself. That
+the login shell is zsh changes nothing — both entry points are run under `bash`
+explicitly.
 
 **Windows, natively.** No WSL2. Install Python 3.9 or newer from
 <https://www.python.org/downloads/>, ticking *Add python.exe to PATH* — its

@@ -350,7 +350,7 @@ def test_readme_is_short_enough_to_be_read():
     #   `py` at all. WSL2 stays, demoted to what it actually is: how to run
     #   the BASH entry points. Two more lines name the file under "What
     #   setup.sh does" and in the Layout block.
-    # 2026-09-05: 872 -> 933 — the MAC path, a rehearsal that creates nothing,
+    # 2026-09-05: 872 -> 936 — the MAC path, a rehearsal that creates nothing,
     #   and what a failed scaffold leaves (#54), on Brett Heap's words: "we
     #   have the case for windows only and wsl/linux users and mac users. we
     #   need to make sure it is explained for all." The Quick start's one line
@@ -384,8 +384,11 @@ def test_readme_is_short_enough_to_be_read():
     #   with the `delete_repo` scope, or a different name). Both are
     #   paragraphs rather than sentences because a reader who learns half of
     #   either acts on the half.
-    assert len(lines) <= 933, (
-        f"README.md is {len(lines)} lines; the cap is 933")
+    #   Three more lines close a gap Copilot flagged in PR #57: the paragraph
+    #   also names the exit when the Tools' python3 is too old, because the
+    #   original read as claiming the Tools' python3 always suffices.
+    assert len(lines) <= 936, (
+        f"README.md is {len(lines)} lines; the cap is 936")
 
 
 @pytest.mark.parametrize("name", SHIPPED_BASH)
