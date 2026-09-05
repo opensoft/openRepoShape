@@ -349,6 +349,7 @@ Atlas/                      Northwind/Atlas — the repository people clone
 ├── contracts/              spec-pin.yaml, code-pin.yaml, shape-pin.yaml, repository-naming.yaml
 ├── scripts/  Makefile      bootstrap and the three validators — copied and pinned
 ├── .github/workflows/      validate.yml, the neutral gate on every pull request
+├── .gitattributes          LF in every worktree, so the copies digest as the pin says
 ├── spec/                   Northwind/Atlas-spec AT its pinned commit, with its own AGENTS.md pointer
 └── code/                   Northwind/Atlas-code AT its pinned commit, with its own AGENTS.md pointer
 ```
@@ -802,6 +803,13 @@ of each copy, so "which openRepoShape is this?" and "has anyone edited it
 since?" both have answers, and editing a copy in place is reported as drift
 with the exit named (carry it upstream; do not update the digest).
 
+**Why `.gitattributes` is one of the copies.** The pin digests the bytes ON
+DISK, and Git for Windows' installer default is `core.autocrlf=true` — so
+without this file a colleague who did nothing but clone the finished project
+gets CRLF in the worktree, and every pinned row is false for them alone.
+`* text=auto eol=lf` puts the answer in the project, where the digests are, so
+no clone-time setting is needed on any machine (#51, 2026-09-05).
+
 **Why an agent file is one of the copies.** An agent working in a project
 learns the shape's rules — advance a leg in ONE commit, never edit a pinned
 file, never `--admin` — from a file that travels WITH the shape rather than
@@ -923,6 +931,7 @@ templates/family-root/            the skeleton for a FAMILY holder
 templates/spec-root/              the skeleton for <Project>-spec
 templates/code-root/              the skeleton for <Project>-code
 templates/*/AGENTS-shape.md       the rules of the shape, for an agent (PINNED)
+templates/*/.gitattributes        LF in every clone, so a copy digests as pinned
 AGENTS.md                         the procedure an AI assistant follows
 tests/                            pytest; scaffolds into bare repos in /tmp
 ```

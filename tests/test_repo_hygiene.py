@@ -100,6 +100,48 @@ def test_the_materializers_account_for_every_template_file(template):
         )
 
 
+#: The one line that makes a digest pin survive a clone on a machine set up
+#: the way Git for Windows sets one up (#51, 2026-09-05). Spelled here so a
+#: rewrite of the comment block above it cannot quietly drop the rule.
+EOL_RULE = "* text=auto eol=lf"
+
+
+@pytest.mark.parametrize("template", ["assembly-root", "family-root"])
+def test_a_root_template_says_what_its_bytes_are(template):
+    """Both roots pin copies by sha256, so both must state their line endings.
+
+    `scripts/validate-pins.py` digests the bytes ON DISK. Git for Windows'
+    installer default is `core.autocrlf=true`, so without this file a clone
+    there writes CRLF and every pinned row is false — for a colleague who did
+    nothing but clone. `setup-project.py` covers the run the tool controls;
+    only a file IN the project covers the next person.
+    """
+    path = REPO / "templates" / template / ".gitattributes"
+    assert path.is_file(), (
+        f"templates/{template}/ pins its copies by digest and must say what "
+        "their line endings are")
+    data = path.read_bytes()
+    assert b"\r" not in data, "the file that says LF is itself LF"
+    text = data.decode("utf-8")
+    assert EOL_RULE in text, (
+        f"templates/{template}/.gitattributes must carry `{EOL_RULE}`; an "
+        "`eol` attribute is what overrides a cloner's core.autocrlf")
+    assert "#51" in text and "2026-09-05" in text, (
+        "the rule is cited by issue and date, like every other ruling here")
+
+
+def test_the_two_root_templates_agree_about_line_endings():
+    """BYTE-IDENTICAL, because the two are one rule.
+
+    A family holder and an assembly root carry the same kind of copy pin, so a
+    fix to the reasoning in one that never reached the other would leave half
+    the standard explaining itself and the other half asserting it.
+    """
+    assembly = REPO / "templates" / "assembly-root" / ".gitattributes"
+    family = REPO / "templates" / "family-root" / ".gitattributes"
+    assert assembly.read_bytes() == family.read_bytes()
+
+
 def test_the_shape_pin_template_carries_a_files_block():
     text = (REPO / "templates" / "assembly-root" / "contracts" /
             "shape-pin.yaml").read_text()
@@ -350,7 +392,17 @@ def test_readme_is_short_enough_to_be_read():
     #   `py` at all. WSL2 stays, demoted to what it actually is: how to run
     #   the BASH entry points. Two more lines name the file under "What
     #   setup.sh does" and in the Layout block.
-    # 2026-09-05: 872 -> 936 — the MAC path, a rehearsal that creates nothing,
+    # 2026-09-05: 872 -> 881 — `.gitattributes` (#51). Six lines are the
+    #   paragraph under "Bootstrap is COPIED into the project", and they are a
+    #   paragraph rather than a clause because the reader has to be told the
+    #   mechanism to believe the file: the pin digests the bytes ON DISK, Git
+    #   for Windows installs `core.autocrlf=true`, and the failure therefore
+    #   lands on a colleague who did nothing but clone — the one person with
+    #   no reason to suspect a line-ending setting. #49 fixed the clone the
+    #   TOOL performs; only a file in the project reaches the next one. The
+    #   other three lines name it in the worked example's tree, in the Layout
+    #   block, and nowhere else.
+    # 2026-09-05: 881 -> 945 — the MAC path, a rehearsal that creates nothing,
     #   and what a failed scaffold leaves (#54), on Brett Heap's words: "we
     #   have the case for windows only and wsl/linux users and mac users. we
     #   need to make sure it is explained for all." The Quick start's one line
@@ -387,8 +439,8 @@ def test_readme_is_short_enough_to_be_read():
     #   Three more lines close a gap Copilot flagged in PR #57: the paragraph
     #   also names the exit when the Tools' python3 is too old, because the
     #   original read as claiming the Tools' python3 always suffices.
-    assert len(lines) <= 936, (
-        f"README.md is {len(lines)} lines; the cap is 936")
+    assert len(lines) <= 945, (
+        f"README.md is {len(lines)} lines; the cap is 945")
 
 
 @pytest.mark.parametrize("name", SHIPPED_BASH)

@@ -9,15 +9,23 @@ lists and by no project's pin reaches nobody, because the file list is read
 from the pin and a pin records the day it was written.
 
 THE UPSTREAM IS A CLONE OF THIS REPOSITORY AND THE ADDITION IS A REAL COMMIT
-IN IT. C1 is the clone's HEAD, the revision the project and the family holder
-are scaffolded from; C2 adds two files to `templates/assembly-root/` and one to
-`templates/family-root/` and names them in the copy lists, by editing the
-clone's `scripts/shape_materialize.py` textually — which is exactly what a
-pull request adding a template file does. Nothing here touches a network, and
-the assertion that matters most is the one about C1: an older upstream that
-never named these files must report NO addition at all, because the lists have
-to be read at the TARGET commit rather than out of the checkout running the
-command.
+IN IT. C1 is the standard as it stood BEFORE `.gitattributes` (#51), the
+revision the project and the family holder are scaffolded from; C2 adds two
+files to `templates/assembly-root/` and one to `templates/family-root/` and
+names them in the copy lists, by editing the clone's
+`scripts/shape_materialize.py` textually — which is exactly what a pull
+request adding a template file does. Nothing here touches a network, and the
+assertion that matters most is the one about C1: an older upstream that never
+named these files must report NO addition at all, because the lists have to be
+read at the TARGET commit rather than out of the checkout running the command.
+
+C2 ALSO CARRIES THE REAL ADDITION, `.gitattributes` (2026-09-05, #51), and C1
+is made to lack it — the file is deleted out of the CLONE and its two copy-list
+entries stripped, which is this change inverted. Three synthetic files prove
+the machinery; one real one proves the machinery is pointed at the standard.
+The strip is a no-op on a checkout that has not landed #51 yet, so the fixture
+tells the same story on both sides of that commit, and nothing here writes to
+the checkout it was cloned from.
 """
 
 from __future__ import annotations
@@ -48,6 +56,12 @@ ADDED_SCRIPT = "scripts/new-check.py"
 #: offered a family's addition, nor a family a project's.
 FAMILY_ADDED = "FAMILY-shape-test.md"
 
+#: THE REAL ADDITION (#51). Both roots gain it, out of the same list each
+#: synthetic file uses, so every project and every holder cut before
+#: 2026-09-05 is owed it — which is the case this module exists to cover and
+#: the only one anybody will actually run.
+ATTRIBUTES = ".gitattributes"
+
 MATERIALIZER = "scripts/shape_materialize.py"
 #: An existing row, for the "--add what is already pinned" refusal.
 PINNED = "scripts/bootstrap.py"
@@ -72,6 +86,39 @@ def name_in_list(text: str, list_name: str, entry: str) -> str:
     return text.replace(opening, f'{opening}\n    "{entry}",', 1)
 
 
+def unname_everywhere(text: str, entry: str) -> str:
+    """`name_in_list` inverted, for every list at once.
+
+    How the copy lists read BEFORE a file joined them. The entry is matched as
+    a whole line so a comment mentioning the same name is left where it is: a
+    comment names nothing, and `upstream_copies` reads the tuples.
+    """
+    return text.replace(f'    "{entry}",\n', "")
+
+
+def strip_the_real_addition(upstream) -> list:
+    """Undo #51 in the CLONE, so C1 is the standard as it was before it.
+
+    Returns the paths it changed, empty when the checkout under test predates
+    #51 — in which case C1 already lacks the file and there is nothing to undo.
+    """
+    touched = []
+    for template in ("assembly-root", "family-root"):
+        rel = f"templates/{template}/{ATTRIBUTES}"
+        if (upstream / rel).is_file():
+            (upstream / rel).unlink()
+            touched.append(rel)
+    source = upstream / MATERIALIZER
+    text = source.read_text(encoding="utf-8")
+    stripped = unname_everywhere(text, ATTRIBUTES)
+    if stripped != text:
+        source.write_text(stripped, encoding="utf-8")
+        touched.append(MATERIALIZER)
+    assert f'"{ATTRIBUTES}"' not in stripped, (
+        "the copy lists still name the file this fixture just removed")
+    return touched
+
+
 @pytest.fixture(scope="module")
 def standard(tmp_path_factory) -> dict:
     """A clone at C1, a project and a family cut from it, and C2 above them."""
@@ -80,7 +127,11 @@ def standard(tmp_path_factory) -> dict:
     proc = subprocess.run(["git", "clone", "-q", str(REPO), str(upstream)],
                           capture_output=True, text=True, check=False)
     assert proc.returncode == 0, proc.stderr
-    c1 = git("rev-parse", "HEAD", cwd=upstream).stdout.strip()
+
+    # ---- C1: the standard as it stood before #51 --------------------------
+    undone = strip_the_real_addition(upstream)
+    c1 = (commit_all(upstream, "The standard before .gitattributes", undone)
+          if undone else git("rev-parse", "HEAD", cwd=upstream).stdout.strip())
 
     result = run_script(
         upstream / "scaffold-project.py", "--org", ORG, "--project", PROJECT,
@@ -102,7 +153,7 @@ def standard(tmp_path_factory) -> dict:
         "--work-dir", str(base / "fam"))
     assert created.returncode == 0, created.stderr + created.stdout
 
-    # ---- C2: the standard gains three files -------------------------------
+    # ---- C2: the standard gains three files, and #51's real one -----------
     (upstream / "templates" / "assembly-root" / ADDED).write_text(
         "# The shape's own AGENTS file, added after these projects were cut.\n",
         encoding="utf-8")
@@ -110,18 +161,29 @@ def standard(tmp_path_factory) -> dict:
         "#!/usr/bin/env python3\nprint('a new check')\n", encoding="utf-8")
     (upstream / "templates" / "family-root" / FAMILY_ADDED).write_text(
         "# The holder's copy of the same idea.\n", encoding="utf-8")
+    # The REAL file, byte for byte out of this checkout: a test that invented
+    # its own `.gitattributes` would prove the machinery and say nothing about
+    # what a project actually receives.
+    attributes = []
+    for template in ("assembly-root", "family-root"):
+        rel = f"templates/{template}/{ATTRIBUTES}"
+        (upstream / rel).write_bytes((REPO / rel).read_bytes())
+        attributes.append(rel)
     source = upstream / MATERIALIZER
     text = source.read_text(encoding="utf-8")
     text = name_in_list(text, "COPIED_VERBATIM", ADDED)
     text = name_in_list(text, "COPIED_VERBATIM", ADDED_SCRIPT)
     text = name_in_list(text, "EXECUTABLE", ADDED_SCRIPT)
     text = name_in_list(text, "FAMILY_COPIED_VERBATIM", FAMILY_ADDED)
+    text = name_in_list(text, "COPIED_VERBATIM", ATTRIBUTES)
+    text = name_in_list(text, "FAMILY_COPIED_VERBATIM", ATTRIBUTES)
     source.write_text(text, encoding="utf-8")
-    c2 = commit_all(upstream, "Add AGENTS-shape to both roots", [
+    c2 = commit_all(upstream, "Add AGENTS-shape and .gitattributes to both roots", [
         MATERIALIZER,
         f"templates/assembly-root/{ADDED}",
         f"templates/assembly-root/{ADDED_SCRIPT}",
         f"templates/family-root/{FAMILY_ADDED}",
+        *attributes,
     ])
     assert c1 != c2
     return {"upstream": upstream, "clone": clone, "family": base / "fam" / FAMILY,
@@ -369,6 +431,56 @@ def test_a_family_holder_takes_its_own_addition(holder, standard):
     message = git("log", "-1", "--format=%B", cwd=holder).stdout
     assert "family.yaml" in message
     assert "project.yaml" not in message
+
+
+# --- the real addition: `.gitattributes` (#51, 2026-09-05) -------------------
+#
+# Everything above is synthetic on purpose. These three are the change itself,
+# and they are the ones that say what every project already carrying the shape
+# will see the next time somebody runs `check`.
+
+def test_every_existing_project_is_owed_the_attributes_file(root, standard):
+    """The drift #51 creates deliberately, and the report that names it.
+
+    A project cut before 2026-09-05 has no `.gitattributes` and no row for
+    one, so its next `check` reports it and exits 1. That is not a regression:
+    it is the machinery #29 built doing the one thing it was built for, and
+    nothing lands in the project until a human names the path.
+    """
+    result = check(root, standard, "--at", standard["c2"])
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert verdicts(result.stdout)[ATTRIBUTES] == "upstream-added"
+    assert f"--add {ATTRIBUTES}" in result.stdout
+    assert not (root / ATTRIBUTES).exists(), "`check` writes nothing"
+
+
+def test_a_family_holder_is_owed_it_as_well(holder, standard):
+    """It is in BOTH lists, so it is owed to both kinds of root — a holder
+    carries the same digest pin and is broken by CRLF the same way."""
+    result = run_script(UPDATE, "check", "--root", str(holder), "--upstream",
+                        str(standard["upstream"]), "--at", standard["c2"])
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert verdicts(result.stdout)[ATTRIBUTES] == "upstream-added"
+
+
+def test_add_copies_the_real_attributes_file_and_stays_green(root, standard):
+    """The whole route, on the actual bytes: an existing project takes the
+    file by name, gets a row for it, and its own validators still pass."""
+    result = apply(root, standard, "--add", ATTRIBUTES)
+    assert result.returncode == 0, result.stdout + result.stderr
+    copied = root / ATTRIBUTES
+    assert copied.read_bytes() == (
+        REPO / "templates" / "assembly-root" / ATTRIBUTES).read_bytes(), (
+        "the project receives the standard's file, not a paraphrase of it")
+    assert b"\r" not in copied.read_bytes()
+    assert "* text=auto eol=lf" in copied.read_text(encoding="utf-8")
+    assert pin_rows(root)[ATTRIBUTES] == file_sha256(copied)
+    assert pin_paths(root)[-1] == ATTRIBUTES, (
+        "an addition is appended, so the rows the scaffold wrote keep theirs")
+    assert not copied.stat().st_mode & 0o111, (
+        "`EXECUTABLE` does not name it, so nothing chmods it")
+    assert pin(root)["commit"].lower() == standard["c2"]
+    validators_are_green(root)
 
 
 def validators_are_green(root) -> None:
