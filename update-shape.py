@@ -945,7 +945,22 @@ def confirm(args, rows: list[Row], taking: list[Addition],
     adding = (f", adds the {len(taking)} file(s) --add named" if taking else "")
     print(f"\nThis re-copies {len(changed)} file(s) from {target[:12]}"
           f"{adding} and re-pins this project onto it.")
-    if input("Type yes to proceed: ").strip().lower() != "yes":
+    try:
+        answered = input("Type yes to proceed: ").strip().lower()
+    except EOFError:
+        # A stream that claims to be a terminal and then ends is a place
+        # nobody can be asked either: on Windows an inherited console handle
+        # reports isatty() True even under CI, where the isatty() check above
+        # cannot catch it. Same refusal, same wording, same exit code.
+        raise Refusal(
+            "update-unconfirmed",
+            "this is not an interactive terminal and --yes was not passed, so "
+            "there is nobody to ask. Overwriting a project's copies of the "
+            "shape and re-recording what revision it is a copy of is not "
+            "something to do on an assumption.",
+            "Remediation: run it where a human can answer, or pass --yes once "
+            "they have read `check`.")
+    if answered != "yes":
         raise Refusal("update-declined", "not answered 'yes'",
                       "Remediation: nothing was written. Re-run when ready.")
 

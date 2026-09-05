@@ -984,7 +984,21 @@ def _confirm(args, plan: Plan, names: dict) -> None:
             "they have read the plan and the follow-ups.")
     print(f"\nThis creates {names['spec']} and {names['code']} and pushes a "
           f"split branch to {names['assembly']}.")
-    answer = input("Type yes to proceed: ").strip().lower()
+    try:
+        answer = input("Type yes to proceed: ").strip().lower()
+    except EOFError:
+        # A stream that claims to be a terminal and then ends is a place
+        # nobody can be asked either: on Windows an inherited console handle
+        # reports isatty() True even under CI, where the isatty() check above
+        # cannot catch it. Same refusal, same wording, same exit code.
+        raise Refusal(
+            "adopt-unconfirmed",
+            "this is not an interactive terminal and --yes was not passed, so "
+            "there is nobody to ask. Creating two repositories and rewriting a "
+            "third's default branch by pull request is not something to do on "
+            "an assumption.",
+            "Remediation: run it where a human can answer, or pass --yes once "
+            "they have read the plan and the follow-ups.")
     if answer != "yes":
         raise Refusal("adopt-declined", f"answered {answer!r}, not 'yes'",
                       "Remediation: nothing was created. Re-run when ready.")

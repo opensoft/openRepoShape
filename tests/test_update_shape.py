@@ -15,19 +15,38 @@ adoption case where a file the human merged away has no pin row at all.
 
 from __future__ import annotations
 
+import importlib.util
 import shutil
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
 from conftest import FILE_PROTOCOL, ORG, REPO, git, run_script
 
 sys.path.insert(0, str(REPO / "scripts"))
-from repo_shape import file_sha256, load_yaml, tree_digest  # noqa: E402
+from repo_shape import Refusal, file_sha256, load_yaml, tree_digest  # noqa: E402
 
 UPDATE = REPO / "update-shape.py"
 PROJECT = "Atlas"
+
+
+@pytest.fixture(scope="module")
+def update_shape():
+    """`update-shape.py` as a module, so `confirm` can be called in-process.
+
+    A hyphenated filename is not importable the ordinary way; this is the
+    same `spec_from_file_location` load `test_windows_paths.py` uses for
+    `adopt-project.py`. Loading it here executes its own
+    `from repo_shape import Refusal`, which resolves to the SAME class object
+    imported above — `repo_shape` is cached in `sys.modules` by name, not
+    reloaded — so `pytest.raises(Refusal)` catches what this module raises.
+    """
+    spec = importlib.util.spec_from_file_location("update_shape_entry", UPDATE)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 #: The file commit B changes upstream. A COPIED file (`COPIED_VERBATIM`), so
 #: it carries a `files:` row in the shape pin; the whole point is that an
@@ -217,6 +236,37 @@ def test_apply_without_yes_refuses_where_nobody_can_be_asked(
     assert "update-unconfirmed" in result.stderr
     assert load_yaml(root / "contracts" / "shape-pin.yaml")["commit"].lower() \
         == upstream_and_project["a"]
+
+
+def test_apply_without_yes_refuses_on_an_empty_stdin_pipe(
+        root, upstream_and_project):
+    """The non-tty branch, exercised over a REAL pipe rather than the
+    default closed stdin `run_script` now supplies — a Windows-runnable
+    caller can pipe an already-closed stream in rather than inheriting a
+    console handle, and `confirm` must refuse the same way either way."""
+    result = run_script(UPDATE, "apply", "--root", str(root), "--upstream",
+                        str(upstream_and_project["upstream"]),
+                        "--at", upstream_and_project["b"], input="")
+    assert result.returncode == 2
+    assert "update-unconfirmed" in result.stderr
+    assert load_yaml(root / "contracts" / "shape-pin.yaml")["commit"].lower() \
+        == upstream_and_project["a"]
+
+
+def test_confirm_treats_eof_as_nobody_to_ask(update_shape, monkeypatch):
+    """THE WINDOWS REGRESSION ITSELF, reproduced in-process rather than over
+    a subprocess: an inherited console handle can report `isatty()` as True
+    with nobody actually there to answer, so `confirm` must catch the
+    EOFError `input()` raises on a stream that ends immediately — not only
+    refuse when `isatty()` is already False. Same code, same exit meaning,
+    reached from the branch the non-tty tests above cannot reach."""
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input",
+                        lambda prompt="": (_ for _ in ()).throw(EOFError()))
+    args = SimpleNamespace(yes=False)
+    with pytest.raises(Refusal) as excinfo:
+        update_shape.confirm(args, [], [], "0" * 40)
+    assert excinfo.value.code == "update-unconfirmed"
 
 
 def strip_shape_block(manifest_path) -> None:

@@ -79,15 +79,35 @@ def git(*args: str, cwd: Path, check: bool = True) -> subprocess.CompletedProces
 
 
 def run_script(script: Path, *args: str, cwd: Path | None = None,
-               env: dict | None = None) -> subprocess.CompletedProcess:
+               env: dict | None = None, input: str | None = None,
+               stdin: int | None = None) -> subprocess.CompletedProcess:
+    """Run one tool under test, with stdin closed by default.
+
+    A test in this suite is often asserting what a tool does when nobody is
+    there to answer a prompt — the whole point is that the run is
+    unattended. Leaving stdin unset would inherit the pytest process's own
+    console handle, and on Windows an inherited console reports isatty() as
+    True even under CI, where the test runner has no real terminal either —
+    the same assertion would then pass or fail depending on the OS, not on
+    the tool. `subprocess.DEVNULL` makes every run non-interactive by
+    default so the behaviour under test does not depend on how the test
+    process itself was launched. A caller that DOES want to exercise the
+    non-tty-but-readable path passes `input=` (a pipe), and one that wants
+    something else entirely — a real pty, say — passes `stdin=` explicitly;
+    `subprocess.run` itself refuses to accept `input` together with `stdin`,
+    so there is nothing to reconcile between the two here.
+    """
     env = {**os.environ, **(env or {})}
     env.setdefault("GIT_AUTHOR_NAME", "openRepoShape tests")
     env.setdefault("GIT_AUTHOR_EMAIL", "tests@openreposhape.invalid")
     env.setdefault("GIT_COMMITTER_NAME", "openRepoShape tests")
     env.setdefault("GIT_COMMITTER_EMAIL", "tests@openreposhape.invalid")
+    if input is None and stdin is None:
+        stdin = subprocess.DEVNULL
     return subprocess.run([sys.executable, str(script), *args],
                           cwd=str(cwd) if cwd else None, capture_output=True,
-                          text=True, check=False, env=env)
+                          text=True, check=False, env=env, input=input,
+                          stdin=stdin)
 
 
 @pytest.fixture(scope="session")
