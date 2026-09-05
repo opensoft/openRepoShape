@@ -192,6 +192,16 @@ def test_preflight_reports_each_prerequisite(setup_run):
     assert "gh not required" in out, "local mode must skip the gh preflight"
 
 
+def test_bootstrap_runs_as_names_the_platform_python(setup_run):
+    """`PYTHON_CMD` is the platform's own word for a message a person
+    retypes - `python3` on POSIX, `python` on Windows (`os.name == "nt"`) -
+    exactly like `scripts/repo_shape.py`'s `PYTHON` constant, never a
+    basename derived from `sys.executable`."""
+    out = setup_run["result"].stdout
+    expected = "python" if os.name == "nt" else "python3"
+    assert ("bootstrap runs as `%s scripts/bootstrap.py`" % expected) in out
+
+
 def test_the_naming_policy_runs_before_anything_is_created(setup_run):
     out = setup_run["result"].stdout
     assert out.index("(4) naming policy") < out.index("(6) scaffold")
@@ -202,19 +212,28 @@ def test_the_naming_policy_runs_before_anything_is_created(setup_run):
 
 
 def test_the_entry_point_never_names_python3():
-    """It runs `sys.executable` and nothing else, in every string it writes.
+    """It runs `sys.executable` for every child process, never a probe for
+    one on PATH.
 
-    A `python3` in a command, a message or a PATH probe is the one defect this
+    `PYTHON_CMD` is the one deliberate exception, and is exempted below by
+    the line it is assigned on: exactly like `scripts/repo_shape.py`'s
+    `PYTHON` constant, it spells the platform's own word - `python3` on
+    POSIX, `python` on Windows - for a MESSAGE a person retypes, never for an
+    argv (`PYTHON`, i.e. `sys.executable`, still runs every child process
+    regardless of platform). Anywhere else, `python3` is the one defect this
     file cannot have: it is what `setup.sh` does and what makes `setup.sh`
-    unrunnable on Windows. The module docstring is exempt because it is the
-    paragraph EXPLAINING that, and prose in a comment cannot be executed.
+    unrunnable on Windows. The module docstring is exempt too, because it is
+    the paragraph EXPLAINING that, and prose in a comment cannot be executed.
     """
     source = SETUP_PROJECT.read_text(encoding="utf-8")
+    exempt_lines = {i for i, line in enumerate(source.splitlines(), 1)
+                    if line.startswith("PYTHON_CMD = ")}
     tree = ast.parse(source)
     docstring = ast.get_docstring(tree, clean=False)
     named = [node.value for node in ast.walk(tree)
              if isinstance(node, ast.Constant) and isinstance(node.value, str)
-             and node.value is not docstring and "python3" in node.value]
+             and node.value is not docstring and "python3" in node.value
+             and node.lineno not in exempt_lines]
     assert not named, f"these strings name python3: {named}"
     assert 'which("python3")' not in source
     assert source.splitlines()[0] == "#!/usr/bin/env python3", (
@@ -789,6 +808,43 @@ def test_self_bootstrap_without_org_refuses(tmp_path):
     assert result.returncode == 2
     assert "--org" in result.stderr
     assert not (tmp_path / "remotes").exists()
+
+
+def test_a_hostile_openreposhape_repo_refuses(tmp_path):
+    """`OPENREPOSHAPE_REPO` reaches `git clone` as the repository argument,
+    which is exactly the argument git itself will never refuse for us: a
+    leading `-` there is an OPTION to git, not a name. `-c core.x=y` is the
+    shape of a value that would turn the clone into a config injection, and
+    it is refused before `git` ever sees it - by the same `checked_value`
+    rule as every flag on the command line - naming the environment
+    variable so the person fixing this knows what to change."""
+    outside = make_outside_checkout(tmp_path)
+    result = run_entry("--org", "demoorg", "--project", "Sample", "--yes",
+                       "--local-remote-dir", str(tmp_path / "remotes"),
+                       cwd=outside, script=outside / "setup-project.py",
+                       extra_env={"OPENREPOSHAPE_REPO": "-c core.x=y"})
+    assert result.returncode == 2
+    assert "OPENREPOSHAPE_REPO" in result.stderr
+    assert not (tmp_path / "remotes").exists()
+
+
+def test_self_bootstrap_clone_guards_the_repository_argument(tmp_path):
+    """Defense in depth for the same value: even a repository that passed
+    the `checked_value` guard is clone'd after a `--`, so git never reads it
+    as an option regardless of what reaches this line."""
+    outside = make_outside_checkout(tmp_path)
+    base = tmp_path / "run"
+    result = run_entry("--org", "demoorg", "--project", "Sample", "--yes",
+                       "--local-remote-dir", str(base / "remotes"),
+                       "--into", str(base / "work"),
+                       cwd=outside, script=outside / "setup-project.py",
+                       extra_env={"OPENREPOSHAPE_REPO": str(REPO)})
+    assert result.returncode == 0, result.stderr + result.stdout
+    match = re.search(r"^  git clone .*$", result.stdout, re.MULTILINE)
+    assert match, f"the clone command was never echoed:\n{result.stdout}"
+    assert " -- %s " % str(REPO) in match.group(0), (
+        f"the clone command has no `--` before the repository: "
+        f"{match.group(0)!r}")
 
 
 # --- the two banners are one flag list --------------------------------------
