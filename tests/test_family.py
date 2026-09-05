@@ -28,6 +28,7 @@ import sys
 import pytest
 
 from conftest import FILE_PROTOCOL, REPO, git, run_script
+from test_update_shape import strip_shape_block
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import load_yaml, tree_digest  # noqa: E402
@@ -726,6 +727,37 @@ def test_update_shape_reads_a_family_root_and_mirrors_into_family_yaml(
     assert "must reach every family" in \
         (holder / "scripts" / "validate-family.py").read_text()
     assert validate(holder).returncode == 0
+
+
+def test_update_shape_with_no_shape_block_names_the_family_validator(
+        family, tmp_path):
+    """A FAMILY root's remediation must send the operator to
+    `validate-family.py` — the validator this root actually carries, not
+    `validate-manifest.py`, which a family root does not have. See the twin
+    of this test on a project root in `test_update_shape.py`."""
+    upstream = upstream_clone(tmp_path / "openRepoShape")
+    changed = "templates/family-root/scripts/validate-family.py"
+    source = upstream / changed
+    source.write_text(source.read_text()
+                      + "\n# forces a target commit past the family's pin.\n")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m",
+        "Force a target commit past the family's pin", "--", changed,
+        cwd=upstream)
+    target_commit = git("rev-parse", "HEAD", cwd=upstream).stdout.strip()
+
+    holder = tmp_path / NAME
+    shutil.copytree(family["root"], holder, symlinks=True)
+    before = load_yaml(holder / "contracts" / "shape-pin.yaml")["commit"]
+    strip_shape_block(holder / "family.yaml")
+
+    applied = run_script(UPDATE, "apply", "--root", str(holder), "--yes",
+                         "--upstream", str(upstream), "--at", target_commit)
+    assert applied.returncode == 2
+    assert "update-manifest-no-shape" in applied.stderr
+    assert "validate-family.py" in applied.stderr
+    assert "validate-manifest.py" not in applied.stderr
+    assert load_yaml(holder / "contracts" / "shape-pin.yaml")["commit"] \
+        == before, "a refused apply writes nothing at all"
 
 
 def test_update_shape_does_not_resync_a_family_bootstrap_from_the_project_one(
