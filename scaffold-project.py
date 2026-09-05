@@ -51,7 +51,7 @@ from repo_shape import (  # noqa: E402
     free_plan_secret_hint,
     COMMIT_RE, NEUTRAL_PRODUCT_OWNER, PROJECT_ID_RE, TREE_DIGEST_DEFINITION,
     VISIBILITY_CHOICES, NamingPolicy, Refusal, accepts_role, checked_value,
-    git_out, tree_digest,
+    git_out, link_pins_from_trees, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
     RULESET_HINT, SHAPE_REPOSITORY, CommandFailed,
@@ -281,6 +281,17 @@ def main(argv: list[str] | None = None) -> int:
                              "product in the manifest, which is what makes a "
                              "`<Domainx><Product>` name a DESCENDANT rather "
                              "than a name shaped like one. Repeatable.")
+    parser.add_argument("--referent-chain", default="",
+                        metavar="openLayer,openProduct",
+                        help="the CHAIN of neutral-product pins this project "
+                             "reaches its referent through, e.g. "
+                             "--referent-chain openXdox,openDox. Its first "
+                             "entry must be one of the --pin products (the "
+                             "pin this project actually holds) and its last "
+                             "must be the `open<Product>` the name claims; "
+                             "the manifest RECORDS it, which is what makes a "
+                             "descendant that pins a LAYER a descendant "
+                             "(2026-09-05).")
     parser.add_argument("--pin-source", type=Path, default=None,
                         help="a local clone to compute --pin digests from, "
                              "instead of reading the forge with `gh api` (the "
@@ -434,8 +445,31 @@ def _scaffold(args) -> int:  # noqa: C901
     # construction and declaring a role cannot make them into a leg.
     pins = declared_pin_values(args)
     declared_pins: set[str] = set(pins)
+    # THE RECORDED CHAIN (2026-09-05). `codexDox` pins `openXdox` and reaches
+    # `openDox` through it; the chain is a DECLARATION, so it is checked here
+    # and written into the manifest rather than re-derived by every reader. A
+    # link is verified against its own tree when `--pin-source` (or
+    # `SHAPE_PIN_SOURCE_<PRODUCT>`) points at one, and is declared-unverified
+    # otherwise — a warning, never a refusal, because the check is offline.
+    chain = tuple(c.strip() for c in args.referent_chain.split(",") if c.strip())
+    link_pins = link_pins_from_trees(chain, None, {}, args.pin_source) \
+        if chain else {}
+    if chain:
+        resolution = policy.resolve_referent(names["assembly"], declared_pins,
+                                             chain, link_pins)
+        if resolution.status == "broken":
+            raise Refusal(
+                "chain-not-declared",
+                f"--referent-chain {','.join(chain)}: {resolution.reason}",
+                "Remediation: the first entry is the product this project "
+                "PINS (pass it as --pin <product>@<40 hex>) and the last is "
+                "the `open<Product>` the name claims; every link between them "
+                "is declared by that link's own project.yaml.")
+        for warning in resolution.warnings:
+            print(f"WARNING {warning}", file=sys.stderr)
     for role, name in names.items():
-        found = policy.classify(name, role, declared_pins)
+        found = policy.classify(name, role, declared_pins,
+                                chain if role == "assembly" else (), link_pins)
         if found is None:
             raise Refusal(
                 "naming-unclassified",
@@ -527,7 +561,7 @@ def _scaffold(args) -> int:  # noqa: C901
         "NEUTRAL_PRODUCT_PINS": ("[]" if not pins else
                                  "\n" + "\n".join(f"  - {p}" for p in pins)),
         "ASSEMBLY_NAMING": naming_block(policy, names["assembly"], "assembly",
-                                        declared_pins),
+                                        declared_pins, chain=chain),
         "SPEC_NAMING": naming_block(policy, names["spec"], "spec", declared_pins),
         "CODE_NAMING": naming_block(policy, names["code"], "code", declared_pins),
     }
@@ -542,7 +576,8 @@ def _scaffold(args) -> int:  # noqa: C901
     for role in ("assembly", "spec", "code"):
         print(f"  {role:<9} {repositories[role]:<28} -> {urls[role]}")
     for role in ("assembly", "spec", "code"):
-        note = descendant_note(policy, names[role], role, declared_pins)
+        note = descendant_note(policy, names[role], role, declared_pins,
+                               chain if role == "assembly" else ())
         if note:
             print(note)
     print(f"legs mounted at {args.spec_path}/ and {args.code_path}/ inside "
@@ -553,7 +588,8 @@ def _scaffold(args) -> int:  # noqa: C901
               f"{pin_values['PIN_TREE_SHA256'][:12]}… -> "
               f"contracts/{product.lower()}-pin.yaml ({pin_values['PIN_DIGEST_SOURCE']})")
     if pins:
-        found = policy.classify(names["assembly"], "assembly", declared_pins)
+        found = policy.classify(names["assembly"], "assembly", declared_pins,
+                                chain, link_pins)
         print(f"declared     {names['assembly']} classifies as {found.family}"
               + (f" / {found.role}" if found.role else "")
               + f" — {found.reason}")

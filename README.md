@@ -320,6 +320,31 @@ whether `open<Product>` exists. The overlap is not discarded either: each leg's
 overlap stays visible to the next reader. `validate-repository-naming.py`
 answers the same question for one name with `--role`, `--pins` and `--explain`.
 
+**The referent may be reached through a CHAIN of pins.** Ruled by **Brett Heap
+on 2026-09-05**: *"elect the shape for both, follow the pin chain, no family
+yet"* — recorded on opensoft/openxFactory#656. A product split into two layers
+is pinned by its descendants at the LAYER: `codexDox` pins `openXdox`, and
+`openXdox` pins `openDox`, so the direct pin on `openDox` is the one pin that
+family deliberately does not hold. The chain is RECORDED, never inferred — the
+descendant's own `naming.referent_chain: [openXdox, openDox]` names the pin it
+holds first and the referent its name claims last, and
+`validate-repository-naming.py --referent-chain openXdox,openDox` asks the same
+question for one name. A DIRECT PIN STAYS SUFFICIENT: this is an addition, and
+`MedxChart` answers exactly as it did on 2026-09-02.
+
+Each link past the first is a declaration in ANOTHER tree — `openXdox`
+declaring `neutral_product_pins: [openDox]` — and it is read where that tree
+happens to be on the disk: `--link-source [PRODUCT=]<path>`,
+`SHAPE_PIN_SOURCE_<PRODUCT>`, or a checkout beside the root, the same lookup
+order `validate-pins.py` uses below for the same checkout. A link no tree
+answers for is reported `declared-unverified` — a warning, never a finding,
+and the name still classifies — because the recorded declaration is the
+offline fact and the tree is the stronger check, available or not. A link that
+IS readable and declares something else BREAKS the chain: the residual
+assembly-root reading wins, the overlap is recorded, and the message names the
+link that broke. `LedgerxWallet` -> `openXwallet` -> `openWallet` is the same
+shape, and `openWallet` need not exist anywhere for that to be the answer.
+
 **`validate-pins.py` rechecks the referent too, not only the declaration.**
 Every `neutral_product_pins:` entry's `contracts/<product lowercased>-pin.yaml`
 has its `commit`, `revision_kind` and `sorted-ls-tree-r-v1` digest recomputed

@@ -57,9 +57,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from repo_shape import (  # noqa: E402
     COMMIT_RE, SHA256_RE, TREE_DIGEST_DEFINITION, Refusal, file_sha256,
-    find_repo_root, git_out, load_yaml, recorded_gitlink, repo_basename,
-    tree_digest, tree_digest_from_gh,
+    find_repo_root, git_out, load_yaml, pin_source_env_name, recorded_gitlink,
+    repo_basename, tree_digest, tree_digest_from_gh,
 )
+
+# `PIN_SOURCE_ENV_PREFIX` / `pin_source_env_name` live in `repo_shape` because
+# the SAME checkout answers two questions about a neutral product: the digest
+# recomputed here, and the chain-link declaration `NamingPolicy` verifies
+# (2026-09-05). Two definitions of one variable name is how the second one
+# starts disagreeing with the first.
 
 #: `owner/repo[/path]@<40 hex>` as it appears in a `uses:` line.
 WORKFLOW_REF_RE = re.compile(
@@ -282,17 +288,6 @@ def _check_shape_pin(root: Path, manifest: dict, report: Report) -> None:
             )
     if len(report.findings) == before:
         report.note(f"{rel}: {len(files)} copied shape file(s) match their digests")
-
-
-#: The env var a `--pin-source PRODUCT=PATH` cannot always reach, e.g. a CI
-#: job that pre-seeds one checkout per pinned product. `<PRODUCT>` is the
-#: declared name, upper-cased, with every character outside `[A-Z0-9_]`
-#: turned into `_` — `openGlass` -> `SHAPE_PIN_SOURCE_OPENGLASS`.
-PIN_SOURCE_ENV_PREFIX = "SHAPE_PIN_SOURCE_"
-
-
-def pin_source_env_name(product: str) -> str:
-    return PIN_SOURCE_ENV_PREFIX + re.sub(r"[^A-Z0-9_]", "_", product.upper())
 
 
 def resolve_neutral_pin_source(root: Path, product: str, repository: str,
