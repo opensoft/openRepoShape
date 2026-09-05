@@ -33,10 +33,49 @@ overlays is fully conformant.
 
 ### Quick start for a first-time user
 
-**macOS and Linux:** run the four steps below in your own shell. **Windows:**
-install WSL2 first and run every step INSIDE the WSL shell — `wsl --install`
-from an administrator PowerShell, reboot, open the Ubuntu app; the tools here
-are bash and Python 3 scripts, and there is no native PowerShell path today.
+**macOS and Linux:** run the four steps below in your own shell.
+
+**Windows, natively.** No WSL2. Install Python 3.9 or newer from
+<https://www.python.org/downloads/>, ticking *Add python.exe to PATH* — that
+also installs the `py` launcher; `git` from <https://git-scm.com/downloads>;
+and `gh` with `winget install --id GitHub.cli`. Then `gh auth login`, exactly
+as in step 2 below. Make one machine setting first:
+
+```powershell
+git config --global core.autocrlf false
+```
+
+The git-for-Windows installer offers `true`, which rewrites every checked-out
+file's line endings. A scaffolded project records a sha256 per copied file in
+its own `contracts/shape-pin.yaml`, so a CRLF checkout reports drift in files
+nobody edited. The clone `setup-project.py` makes is configured correctly
+whatever the machine says; the global setting is for every clone after it.
+
+Then two commands, run in the directory the new project should land in:
+
+```powershell
+Invoke-WebRequest https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup-project.py -OutFile setup-project.py
+py setup-project.py <Project> --org <your-org>
+```
+
+Two commands rather than one pipe, on purpose. Windows PowerShell 5.1 — still
+the default shell on a stock install — re-encodes piped text as UTF-16, so a
+script sent down a pipe is not the script that arrives; and a script arriving
+on stdin has an exhausted stdin, so it cannot ask for the one `yes` before
+three repositories exist — it refuses instead. Downloading the file first
+leaves stdin attached to the terminal you are typing at.
+
+`setup-project.py` is `setup.sh`'s twin: the same preflight, the same naming
+check, the same plan, the same one `yes`, and the same self-bootstrap when it
+is run outside a checkout. It never needs `make`, and never looks for a
+`python3` — it runs the interpreter that started it. That two-liner IS the
+Windows way in; the `openRepoShape` command in step 3 below is a macOS, Linux
+and WSL2 convenience with no Windows twin, because on Windows there is nothing
+to install.
+
+**Windows via WSL2** is still how you run the bash entry points: `wsl
+--install` from an administrator PowerShell, reboot, open the Ubuntu app, and
+run the four steps below INSIDE the WSL shell.
 
 **1. Install the GitHub CLI**, `gh`. The official instructions are at
 <https://cli.github.com/> (and <https://github.com/cli/cli#installation>):
@@ -290,6 +329,10 @@ python3 scaffold-project.py --org <your-org> --project Atlas \
 git clone --recurse-submodules https://github.com/<your-org>/Atlas.git
 cd Atlas && make bootstrap
 ```
+
+`setup-project.py` runs those same commands in the same order, substituting
+the interpreter that started it for `python3` and `python scripts/bootstrap.py`
+for `make bootstrap` — neither of which exists on a stock Windows install.
 
 ## The three legs
 
@@ -797,6 +840,7 @@ scripts/shape_materialize.py      the ONE materializer, used by both tools
 scripts/validate-repository-naming.py
 openRepoShape                     installs itself as a command; runs setup.sh
 setup.sh                          self-bootstrap, scaffold, one command
+setup-project.py                  the same run on an interpreter alone (Windows)
 scaffold-project.py               creates the three repositories and the pins
 adopt-project.py                  converts an EXISTING repository in place
 update-shape.py                   re-syncs a root's copies and re-pins

@@ -12,8 +12,8 @@ import re
 import subprocess
 import sys
 
-from conftest import (FILE_PROTOCOL, ORG, PROJECT, REPO, SCAFFOLD, git,
-                      run_script)
+from conftest import (FILE_PROTOCOL, ORG, PROJECT, REPO, SCAFFOLD,
+                      WINDOWS_SKIP, git, run_script)
 
 DEGRADE_LINE = "authority is not wallet-carried in this org"
 
@@ -605,6 +605,7 @@ def _step_run_script(workflow: str, marker: str) -> str:
     return "\n".join(line[indent:] for line in body[:end])
 
 
+@WINDOWS_SKIP  # it runs the step's `run:` body as the REAL bash it is
 def test_the_leg_name_extraction_reads_gitmodules_https_ssh_and_excludes_foreign_owners(project, tmp_path):
     """The `.gitmodules` -> `legs` extraction is tested as the REAL shell it
     is, not a Python reimplementation asserted "equal" to it (which could

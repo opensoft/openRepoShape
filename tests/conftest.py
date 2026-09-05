@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -35,6 +36,37 @@ ORG = "testorg"
 #: using bare repositories on disk as origins, not something a real project
 #: ever needs.
 FILE_PROTOCOL = ["-c", "protocol.file.allow=always"]
+
+#: THE ENTRY-POINT TESTS THAT CANNOT RUN ON WINDOWS. Two shapes of test wear
+#: this: one that runs `bash`, and one that puts a `#!`-shebang script named
+#: `gh` on PATH and expects the operating system to execute it. Windows has
+#: neither — `bash.exe` IS on the GitHub runner, so a `shutil.which("bash")`
+#: guard does not fire, but `setup.sh` shells out to a literal `python3` that
+#: is not there, and a shebang means nothing to CreateProcess. Skipping is
+#: honest because Windows has its OWN entry point with its OWN suite:
+#: `setup-project.py`, covered case for case in `test_setup_project_py.py`.
+#: A shared `skipif` object rather than a named marker because there is no
+#: pytest.ini to register one in, and an unregistered marker is a warning.
+WINDOWS_SKIP = pytest.mark.skipif(
+    os.name == "nt",
+    reason="needs a POSIX shell and shebang execution; on Windows the entry "
+           "point is setup-project.py (tests/test_setup_project_py.py)")
+
+
+def rmtree(path: Path) -> None:
+    """`shutil.rmtree` that also works over a git object store on Windows.
+
+    Git writes loose objects and packs READ-ONLY, and Windows refuses to
+    unlink a read-only file — so a plain `rmtree` over a checkout raises
+    PermissionError there and succeeds everywhere else. The handler clears the
+    read-only bit and retries the one call that failed. `onerror` rather than
+    `onexc`: the newer spelling is 3.12+, and this standard runs on 3.9.
+    """
+    def clear_readonly(func, target, _exc):
+        os.chmod(target, stat.S_IWRITE)
+        func(target)
+
+    shutil.rmtree(path, onerror=clear_readonly)
 
 
 def git(*args: str, cwd: Path, check: bool = True) -> subprocess.CompletedProcess:

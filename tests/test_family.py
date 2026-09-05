@@ -27,7 +27,7 @@ import sys
 
 import pytest
 
-from conftest import FILE_PROTOCOL, REPO, git, run_script
+from conftest import FILE_PROTOCOL, REPO, git, rmtree, run_script
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import load_yaml, tree_digest  # noqa: E402
@@ -585,7 +585,9 @@ def test_remove_leaves_the_object_store_and_says_so(family, tmp_path):
     assert "member-git-dir-cached" in again.stderr
     assert "rm -rf" in again.stderr
 
-    shutil.rmtree(holder / ".git" / "modules" / "members" / "IRSS")
+    # `conftest.rmtree`, not `shutil`: this is a git object store, and
+    # git writes its objects read-only — which Windows refuses to unlink.
+    rmtree(holder / ".git" / "modules" / "members" / "IRSS")
     back = run_script(FAMILY, "add", "--family-root", str(holder),
                       "--member", f"{ORG}/IRSS",
                       "--local-remote-dir", str(family["remotes"]))

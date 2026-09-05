@@ -50,6 +50,10 @@ curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup.s
 `openRepoShape <Project> --org <org> --visibility <…> --elected-by '<Name>'`
 is the same run through the installed command, still without `--yes`.
 
+On Windows without WSL2, `Invoke-WebRequest https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup-project.py -OutFile setup-project.py`
+then `py setup-project.py <Project> --org <org> --visibility <…> --elected-by '<Name>'`
+is the same run again — two commands because a piped script cannot ask — still without `--yes`.
+
 Already standing in a checkout of openRepoShape? Run `./setup.sh` the same
 way, still with the explicit `--org` — there is no fork to detect one from.
 Either form runs the preflight, checks the three names against the naming

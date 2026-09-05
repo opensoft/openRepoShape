@@ -87,7 +87,7 @@ from shape_materialize import (  # noqa: E402
     ADOPT_MAKEFILE_BLOCK, RULESET_HINT, SHAPE_REPOSITORY,
     CommandFailed, collision_follow_up, copy_tree, default_reference,
     election_date, env_commit, git_init_commit, materialize_assembly_root,
-    naming_block, run,
+    naming_block, run, write_lf,
 )
 
 #: The naming policy this tool classifies leg names against. One constant,
@@ -583,8 +583,7 @@ def cmd_plan(args) -> int:
     follow_ups = follow_ups_for(source, entries, names, args.spec_path,
                                 args.code_path, materialized)
     out = Path(args.out)
-    out.write_text(render_plan(args, source, entries, names, pins, follow_ups),
-                   encoding="utf-8")
+    write_lf(out, render_plan(args, source, entries, names, pins, follow_ups))
 
     print(f"source     {source.repository or source.path} @ "
           f"{source.commit[:12]} ({source.branch}), "

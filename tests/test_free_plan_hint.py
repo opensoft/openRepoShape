@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO
+from conftest import REPO, WINDOWS_SKIP
 
 sys.path.insert(0, str(REPO / "scripts"))
 
@@ -32,7 +32,14 @@ from repo_shape import free_plan_secret_hint  # noqa: E402
 
 
 def stub_gh(tmp_path: Path, body: str) -> dict:
-    """A `gh` on PATH that is a shell script, returning `body` verbatim."""
+    """A `gh` on PATH that is a shell script, returning `body` verbatim.
+
+    A `#!` line is a POSIX kernel convention, so every test that installs one
+    of these carries `WINDOWS_SKIP`: on Windows CreateProcess reads no
+    shebang and the stub is not a program at all. `free_plan_secret_hint`
+    itself is exercised on both platforms by the no-`gh`-on-PATH case below,
+    which needs no stub.
+    """
     binary = tmp_path / "bin"
     binary.mkdir(exist_ok=True)
     script = binary / "gh"
@@ -51,6 +58,7 @@ def gh(tmp_path, monkeypatch):
     return install
 
 
+@WINDOWS_SKIP
 def test_a_free_org_gets_the_repository_secret_hint(gh):
     gh("#!/bin/sh\necho free\n")
     hint = free_plan_secret_hint("InkRouter", "InkRouter/IRRS", "the legs are")
@@ -61,6 +69,7 @@ def test_a_free_org_gets_the_repository_secret_hint(gh):
     assert "the legs are" in hint, "the caller's subject is interpolated"
 
 
+@WINDOWS_SKIP
 @pytest.mark.parametrize("plan", ["team", "enterprise", "business", "Free "])
 def test_a_paid_org_gets_nothing(gh, plan):
     """`Free ` with a trailing space is still free; the others are not.
@@ -77,12 +86,14 @@ def test_a_paid_org_gets_nothing(gh, plan):
         assert hint is None
 
 
+@WINDOWS_SKIP
 def test_a_failed_gh_call_is_silent(gh):
     """An org the token cannot read is not evidence of anything."""
     gh("#!/bin/sh\necho 'HTTP 404' >&2\nexit 1\n")
     assert free_plan_secret_hint("Nope", "Nope/Thing", "the legs are") is None
 
 
+@WINDOWS_SKIP
 def test_an_empty_answer_is_silent(gh):
     """`--jq .plan.name` prints nothing when the field is absent."""
     gh("#!/bin/sh\nexit 0\n")

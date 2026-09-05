@@ -21,7 +21,7 @@ import os
 import stat
 import textwrap
 
-from conftest import SCAFFOLD, run_script
+from conftest import SCAFFOLD, WINDOWS_SKIP, run_script
 from test_scaffold_pin_and_reuse import product_repo
 
 PROJECT = "MedxGlass"
@@ -161,6 +161,7 @@ def test_a_missing_neutral_pin_file_refuses(tmp_path):
 
 # --- no way to answer: a SKIP, never a failure ------------------------------
 
+@WINDOWS_SKIP  # the stub `gh` is a `#!` script; Windows executes none
 def test_a_neutral_pin_with_no_reachable_source_is_skipped(tmp_path):
     """No --pin-source, no env var, no sibling checkout, and `gh` itself
     cannot read the forge (stubbed here so this stays fully offline, exactly

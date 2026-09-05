@@ -12,7 +12,7 @@ from __future__ import annotations
 import subprocess
 import sys
 
-from conftest import ORG, REPO, SCAFFOLD, git, run_script
+from conftest import ORG, REPO, SCAFFOLD, WINDOWS_SKIP, git, run_script
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import load_yaml, tree_digest  # noqa: E402
@@ -409,6 +409,7 @@ def test_pin_owner_is_checked_like_any_other_command_line_value(tmp_path):
     assert not (tmp_path / "remotes").exists()
 
 
+@WINDOWS_SKIP  # the stub `gh` is a `#!` script; Windows executes none
 def test_an_unreadable_pin_names_the_exact_owner_repo_and_commit(tmp_path):
     """The refusal names the OWNER/REPO@COMMIT it actually tried (opensoft by
     default) and suggests the --pin owner/openProduct or --pin-owner form —

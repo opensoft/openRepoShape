@@ -98,7 +98,7 @@ from pathlib import Path
 SHAPE_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
 from repo_shape import (  # noqa: E402
-    COMMIT_RE, TREE_DIGEST_DEFINITION, Refusal, checked_value, die,
+    COMMIT_RE, PYTHON, TREE_DIGEST_DEFINITION, Refusal, checked_value, die,
     file_sha256, git_out, load_yaml, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
@@ -906,7 +906,7 @@ def cmd_check(args) -> int:
                   "one path at a time — "
                   + " ".join(f"--add {add.path}" for add in added))
         accept = "".join(f" --accept-local {row.path}" for row in local)
-        print(f"NEXT  python3 {Path(__file__).name} apply --root {root} "
+        print(f"NEXT  {PYTHON} {Path(__file__).name} apply --root {root} "
               f"--upstream {upstream.label} --at {target} --yes{accept} "
               f"--branch shape/update-{target[:12]}")
         return 1

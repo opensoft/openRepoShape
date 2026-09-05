@@ -78,3 +78,80 @@ jobs:
         run: >-
           ./actionlint
           templates/assembly-root/.github/workflows/validate.yml
+
+  # THE SAME SUITE ON WINDOWS, because `setup-project.py` exists for a machine
+  # nobody here runs. A SECOND JOB rather than a matrix on the first one: that
+  # job also installs `git-filter-repo` and downloads a linux-amd64 actionlint
+  # binary, and neither belongs on a Windows runner.
+  tests-windows:
+    runs-on: windows-latest
+    env:
+      # PER-INVOCATION GIT CONFIG, never `git config --global` — the same rule
+      # the identity step below follows, and the reason a lane mirroring these
+      # steps on a workstation cannot rewrite the operator's ~/.gitconfig.
+      #
+      # core.autocrlf=false: the shape's whole claim is that a scaffolded
+      # project's copies hash to the sha256 rows in its own
+      # `contracts/shape-pin.yaml`. Line-ending translation on checkout makes
+      # that false on this platform and only this platform, so the digests
+      # would stop meaning anything precisely where they are hardest to debug.
+      #
+      # core.longpaths=true: MAX_PATH is 260 characters, and the suite nests a
+      # temp directory, a clone, a submodule and that submodule's own git dir.
+      #
+      # PYTHONUTF8=1 (PEP 540): the ~70 `read_text()` calls in this suite pass
+      # no `encoding=`, so they take the locale's — cp1252 here — and the
+      # scaffolded files they read are full of the arrows and em dashes this
+      # repository is written in. UTF-8 mode is one variable instead of
+      # seventy edits.
+      PYTHONUTF8: '1'
+      GIT_CONFIG_COUNT: '2'
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: 'false'
+      GIT_CONFIG_KEY_1: core.longpaths
+      GIT_CONFIG_VALUE_1: 'true'
+    steps:
+      # The SAME two commits the ubuntu job pins. Two jobs resolving two
+      # versions of the same action is the drift this repository spends a
+      # README section on.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: '3.x'
+
+      # `python`, not `python3`. There is no `python3` on a Windows install —
+      # which is the entire fact `setup-project.py` exists for, and the reason
+      # a job that quietly said `python3` here would fail before it could
+      # prove anything.
+      - name: install the test runner
+        run: python -m pip install --disable-pip-version-check pytest==8.3.4
+
+      # NO git-filter-repo, on purpose. It is what `adopt-project.py` extracts
+      # a leg's history with, and the adoption suites SKIP without it — which
+      # is the honest outcome here: what this job is for is the entry point and
+      # the materializer on Windows, not a second platform's worth of history
+      # rewriting. The ubuntu job installs it and runs those tests.
+
+      # Per-invocation identity, never `git config --global`. PowerShell is the
+      # default shell on this runner, so the append is `>> $env:GITHUB_ENV`
+      # rather than the `{ echo ... } >> "$GITHUB_ENV"` block above.
+      - name: git identity for the scaffolded commits (env, not global config)
+        run: |
+          "GIT_AUTHOR_NAME=openRepoShape CI" >> $env:GITHUB_ENV
+          "GIT_AUTHOR_EMAIL=ci@openreposhape.invalid" >> $env:GITHUB_ENV
+          "GIT_COMMITTER_NAME=openRepoShape CI" >> $env:GITHUB_ENV
+          "GIT_COMMITTER_EMAIL=ci@openreposhape.invalid" >> $env:GITHUB_ENV
+
+      # THE WHOLE SUITE, not a Windows-shaped subset. A subset is a claim
+      # about which tests are platform-dependent, made by whoever wrote the
+      # subset; the suite itself already carries that claim, as the
+      # `WINDOWS_SKIP` marks in `tests/conftest.py`, next to the code they are
+      # about. Running everything is what keeps those marks honest — a test
+      # that starts needing bash gets noticed here.
+      #
+      # `--basetemp` puts pytest's temp root two characters from the drive
+      # root. The runner's default (a profile path under
+      # `C:\Users\runneradmin\AppData\Local\Temp\`) is ~50 characters before
+      # the suite's own nesting starts, and MAX_PATH is 260.
+      - name: tests
+        run: python -m pytest tests -q --basetemp=D:\t

@@ -55,7 +55,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from repo_shape import (  # noqa: E402
-    COMMIT_RE, PROJECT_ID_RE, SHA256_RE, TREE_DIGEST_DEFINITION,
+    COMMIT_RE, PROJECT_ID_RE, PYTHON, SHA256_RE, TREE_DIGEST_DEFINITION,
     VISIBILITY_CHOICES, NamingPolicy, Refusal, file_sha256, find_repo_root,
     git_out, load_yaml, recorded_gitlink, repo_basename, tree_digest,
 )
@@ -229,7 +229,7 @@ def _check_member(root: Path, row: dict, seen: dict, report: Report) -> None:
             f"no gitlink (mode 160000) recorded at {path!r}. {project} is "
             f"named in {MANIFEST} but this repository does not record it as a "
             "submodule.",
-            "Remediation: `python3 scripts/family.py add --family-root . "
+            f"Remediation: `{PYTHON} scripts/family.py add --family-root . "
             f"--member <org>/{project}` mounts and pins it in one commit; a "
             "row with no submodule is a claim about a tree that is not here.")
     if gitlink != commit:
@@ -424,7 +424,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"{manifest_path} does not exist. A family holder declares "
                 f"itself in `{MANIFEST}`; a repository without one is not a "
                 "family and does not run this validator.",
-                "Remediation: `python3 scripts/family.py init --org <org> "
+                f"Remediation: `{PYTHON} scripts/family.py init --org <org> "
                 "--family <Name>` creates one. An ordinary project runs "
                 "`validate-manifest.py` instead.")
         manifest = load_yaml(manifest_path)

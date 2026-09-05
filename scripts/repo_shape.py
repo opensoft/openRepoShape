@@ -89,9 +89,17 @@ VISIBILITY_CHOICES = ("private", "public", "internal")
 #: names, paths, repository names and commits are spelled with.
 SAFE_ARG_RE = re.compile(r"^[A-Za-z0-9._/@+~-]{1,255}$")
 
+#: How to spell "run Python" in a message a person is meant to retype. On
+#: Windows there is usually no `python3` on PATH at all — the python.org
+#: installer ships `python.exe` and the `py` launcher — so a remediation
+#: naming `python3` is a command that fails on the machine reading it. The
+#: RUNNING interpreter's own name is the one that just worked, which is why it
+#: is read from `sys.executable` rather than guessed.
+PYTHON = Path(sys.executable).name or ("python" if os.name == "nt" else "python3")
+
 REMEDIATION = (
     "Remediation: run `git submodule update --init --recursive`, then "
-    "`python3 scripts/validate-pins.py`. If the PIN itself is stale, advance "
+    f"`{PYTHON} scripts/validate-pins.py`. If the PIN itself is stale, advance "
     "the gitlink, `contracts/<leg>-pin.yaml` and every workflow `@<sha>` that "
     "names the leg in ONE commit (see README, 'The lockstep invariant')."
 )

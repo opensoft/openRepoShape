@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO
+from conftest import REPO, WINDOWS_SKIP
 
 COMMAND = REPO / "openRepoShape"
 SETUP = REPO / "setup.sh"
@@ -37,8 +37,14 @@ USAGE_LINES = (
     "openRepoShape --help | --version",
 )
 
-pytestmark = pytest.mark.skipif(shutil.which("bash") is None,
-                                reason="openRepoShape is a bash script")
+#: Same two reasons as `test_setup_sh.py`: no bash, or a Windows runner where
+#: bash.exe exists and the `python3` the fetched `setup.sh` calls does not.
+#: The command is a macOS/Linux/WSL2 convenience and has no Windows twin —
+#: there the way in is `py setup-project.py`, which needs no command to fetch
+#: it because it IS the file you downloaded.
+pytestmark = [pytest.mark.skipif(shutil.which("bash") is None,
+                                 reason="openRepoShape is a bash script"),
+              WINDOWS_SKIP]
 
 
 def run_cmd(*args: str, home: Path | None = None,

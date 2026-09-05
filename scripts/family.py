@@ -60,9 +60,9 @@ SHAPE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
 from repo_shape import (  # noqa: E402
     free_plan_secret_hint,
-    COMMIT_RE, PROJECT_ID_RE, TREE_DIGEST_DEFINITION, VISIBILITY_CHOICES,
-    NamingPolicy, Refusal, checked_value, git_out, load_yaml, recorded_gitlink,
-    repo_basename, tree_digest,
+    COMMIT_RE, PROJECT_ID_RE, PYTHON, TREE_DIGEST_DEFINITION,
+    VISIBILITY_CHOICES, NamingPolicy, Refusal, checked_value, git_out,
+    load_yaml, recorded_gitlink, repo_basename, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
     RULESET_HINT, SHAPE_REPOSITORY, CommandFailed, check_program, env_commit,
@@ -519,7 +519,7 @@ def cmd_init(args) -> int:  # noqa: C901
     print(f"""
 NEXT STEPS
 
-    python3 {Path(__file__).name} add --family-root {work} \\
+    {PYTHON} {Path(__file__).name} add --family-root {work} \\
         --member {args.org}/<Project>
     git -C {work} push
 
