@@ -91,9 +91,9 @@ exhausted stdin, so it cannot ask for the one `yes` before three repositories
 exist — it refuses instead. Downloading the file first leaves stdin attached
 to the terminal you are typing at.
 
-`setup-project.py` is `setup.sh`'s twin: the same preflight, the same naming
-check, the same plan, the same one `yes`, and the same self-bootstrap when it
-is run outside a checkout. It never needs `make`, and never looks for a
+`setup-project.py` is the flow itself, and `setup.sh` a shim over it: the same
+preflight, the same naming check, the same plan, the same one `yes`, the same
+self-bootstrap outside a checkout. It never needs `make` and never looks for a
 `python3` — it runs the interpreter that started it. That two-liner IS the
 Windows way in; the `openRepoShape` command in step 3 below is a macOS, Linux
 and WSL2 convenience with no Windows twin, because on Windows there is nothing
@@ -176,7 +176,7 @@ prompt by prompt.
 **Rehearse first, creating nothing.** `--local-remote-dir <dir>` runs the
 whole of that against three BARE repositories in `<dir>`: the same preflight
 (where `gh` is neither required nor checked), the same naming check, the same
-plan, the same `Type yes to continue:`, the same clone and `make bootstrap`.
+plan, the same `Type yes to continue:`, the same clone and `scripts/bootstrap.py`.
 `gh` is never called and nothing is created on GitHub. `--org` is still
 required — it is what the manifest records as the owner of all three legs —
 but here it is only a string: it is never checked against GitHub, so the
@@ -248,8 +248,8 @@ and wants a project `Atlas`.
 
 **1. Requirements.** `git`; Python 3.9 or newer; `gh`, the GitHub CLI
 (install: https://cli.github.com/); and an organisation on GitHub you can
-create repositories in. `make` is optional — bootstrap falls back to
-`python3 scripts/bootstrap.py`.
+create repositories in. `make` is not used by the entry point — it runs
+`python3 scripts/bootstrap.py` — and stays a convenience for `make validate`.
 
 **2. Login.** `gh auth login`, as the account that will own the act: a member
 of `Northwind` with permission to create repositories there, or an owner —
@@ -303,18 +303,18 @@ come from `$OPENREPOSHAPE_ORG` or from the command's own prompt instead of the
 flag, and is never defaulted. `--visibility private` is spelled out because the
 human says it rather than lets it default.
 
-**What Dana sees, in order.** (1) The preflight: git, python3, make, and that
-`gh` is authenticated. (2) The three names checked against the naming policy
-— `Atlas`, `Atlas-spec`, `Atlas-code`; a hyphenated or lowercase project name
-is refused here with the rule printed. (3) The scaffold plan, a dry run of
-everything about to be created. (4) `This will create THREE repositories in
-'Northwind'.` and `Type yes to continue:` — Dana types `yes`. If an AI agent
-is driving, the agent runs the command WITHOUT `--yes` and Dana types the
-answer; the agent never does (AGENTS.md's first rule). Then it creates the
-three repositories, writes the pins and the manifest, sets the topic
-`xf-project-atlas` on all three, clones the root into the directory you ran
-the command from, as `./Atlas` (or where `--into <dir>` says), and runs
-`make bootstrap`.
+**What Dana sees, in order.** (1) The preflight: git, the running interpreter,
+how bootstrap will run, and that `gh` is authenticated. (2) The three names
+checked against the naming policy — `Atlas`, `Atlas-spec`, `Atlas-code`; a
+hyphenated or lowercase name is refused here with the rule printed. (3) The
+scaffold plan, a dry run of everything about to be created. (4) `This will
+create THREE repositories in 'Northwind'.` and `Type yes to continue:` — Dana
+types `yes`. If an AI agent is driving, the agent runs the command WITHOUT
+`--yes` and Dana types the answer; the agent never does (AGENTS.md's first
+rule). Then it creates the three repositories, writes the pins and the
+manifest, sets the topic `xf-project-atlas` on all three, clones the root into
+the directory you ran the command from, as `./Atlas` (or where `--into <dir>`
+says), and runs `scripts/bootstrap.py` (what `make bootstrap` runs).
 
 **If it fails part-way.** Nothing is created before the typed `yes` in (4):
 the preflight, the naming check and the plan only read and print, and the
@@ -389,8 +389,11 @@ confers nothing and stays neutral.
 
 ### What setup.sh does
 
-The same commands, in order, with no behaviour of its own (the first line
-only runs in self-bootstrap mode, from the one-liner above):
+`setup.sh` is a shim — about seventy lines of code (twice that with its comments)
+that find a Python 3.9 or newer, clone this standard into a temporary directory when
+you are not already in a checkout of it, and hand over to `setup-project.py`, which
+IS the flow. These are the commands that flow runs, in order, with no behaviour of
+its own (the first only in self-bootstrap mode, from the one-liner above):
 
 ```sh
 git clone --depth 1 https://github.com/opensoft/openRepoShape.git <tmp-dir>
@@ -399,12 +402,12 @@ python3 scaffold-project.py --org <your-org> --project Atlas --dry-run
 python3 scaffold-project.py --org <your-org> --project Atlas \
     --visibility private --elected-by 'Your Name'   # or public / internal
 git clone --recurse-submodules https://github.com/<your-org>/Atlas.git
-cd Atlas && make bootstrap
+cd Atlas && python3 scripts/bootstrap.py   # what `make bootstrap` runs
 ```
 
-`setup-project.py` runs those same commands in the same order, substituting
-the interpreter that started it for `python3` and `python scripts/bootstrap.py`
-for `make bootstrap` — neither of which exists on a stock Windows install.
+`setup-project.py` is that same flow with the shim taken off the front — the
+way in on Windows, where there is no bash — substituting the interpreter that
+started it for `python3` above, since a stock Windows install has neither.
 
 ## The three legs
 
@@ -918,8 +921,8 @@ scripts/path_classify.py          the classifier over the path policy
 scripts/shape_materialize.py      the ONE materializer, used by both tools
 scripts/validate-repository-naming.py
 openRepoShape                     installs itself as a command; runs setup.sh
-setup.sh                          self-bootstrap, scaffold, one command
-setup-project.py                  the same run on an interpreter alone (Windows)
+setup.sh                          the shim: find an interpreter, hand over
+setup-project.py                  THE FLOW, and the Windows way in (no bash there)
 scaffold-project.py               creates the three repositories and the pins
 adopt-project.py                  converts an EXISTING repository in place
 update-shape.py                   re-syncs a root's copies and re-pins

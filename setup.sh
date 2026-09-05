@@ -1,500 +1,183 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
 #
-# setup.sh — clone the standard into a temp dir, scaffold, clean up.
+# setup.sh — the front door, and a SHIM over `setup-project.py`.
 #
 #   curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup.sh \
 #       | bash -s -- --org <your-org> --project Atlas
 #
-# Run from wherever: if this is not already a checkout of openRepoShape it
-# self-bootstraps — clones `opensoft/openRepoShape` (or `$OPENREPOSHAPE_REPO`,
-# for a fork or mirror) into a temporary directory with `mktemp -d`, re-runs
-# itself from there with the same arguments, and removes the temporary
-# checkout on exit (`--keep-shape-checkout` keeps it and prints the path).
-# `--org` is then REQUIRED: there is no fork origin left to read it from. Run
-# it from inside an existing checkout instead (the developer path) and it
-# behaves exactly as before, still detecting the organisation from `origin`.
+# THIS FILE IS NOT THE FLOW; `setup-project.py` is. The preflight, the
+# organisation, the naming policy, the plan, the one yes, the scaffold, the
+# clone and the bootstrap all live there — one implementation, one flag list,
+# one set of refusal wordings, one `--help`. This script parses nothing, and
+# owns exactly four things, each of them something Python cannot do for
+# itself before it is running: an INTERPRETER (3.9 or newer, under whichever
+# name this machine has one); GIT itself, because the checkout probe below
+# asks git a question before Python is ever started; a CHECKOUT when the
+# person has none, because `curl … | bash` leaves no file on disk at all and
+# this script is then the whole of what they have; and the INVOCATION
+# DIRECTORY, which that checkout would otherwise lose — handed over as
+# `--into`, so the new project lands where the person was standing and not
+# beside a temporary checkout in /tmp (#39).
 #
-# Either way it checks your machine, works out which organisation you are
-# scaffolding into, checks the three repository names against the naming
-# policy, shows you the plan, asks once, creates the three repositories,
-# clones the assembly root and bootstraps it. Nothing is created before you
-# have said yes.
-#
-# WHY A SHELL SCRIPT AND NOT MORE PYTHON. This is the FIRST thing a person
-# runs, before they know anything about the repository, and it must work with
-# what is already on the machine. It shells out to the same
-# `scripts/validate-repository-naming.py`, `scaffold-project.py` and
-# `make bootstrap` that the README documents — it adds no behaviour of its own
-# and skips no step, so a person who prefers to run those three by hand gets
-# exactly the same result. The README's "What setup.sh does" section is the
-# same commands, in the same order.
+# What follows is a bash transcription of `setup-project.py`'s section 0
+# (`self_bootstrap`), and nothing else. Every flag named below is about the
+# checkout THIS FILE makes, never about the run.
 
 set -euo pipefail
 
 INVOCATION_DIR="$PWD"
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-UPSTREAM_ORG="opensoft"
-
-PROJECT=""
-ORG=""
-PROJECT_ID=""
-DISPLAY_NAME=""
-VISIBILITY="private"
-ELECTED_BY=""
-INTO=""
-LOCAL_REMOTE_DIR=""
-ASSUME_YES=0
-ALLOW_UPSTREAM_ORG=0
-SHAPE_REF=""
-KEEP_SHAPE_CHECKOUT=0
-PASSTHROUGH=()
-
-# Captured before argument parsing consumes "$@" below, so a self-bootstrap
-# re-exec (section 0) can hand the temporary checkout's setup.sh the exact
-# same invocation.
-ORIGINAL_ARGS=("$@")
-
-TICK="✓"
-CROSS="✗"
-
-usage() {
-	cat <<'USAGE'
-usage: ./setup.sh --project <Project> [options] [-- <extra scaffold flags>]
-
-  --project <Project>     the assembly-root name: ONE CamelCase token, no
-                          hyphen, underscore, dot or space. Prompted for when
-                          omitted and a terminal is attached.
-  --id <id>               lowercase project id      (default: project lowercased)
-  --name "<Display>"      display name              (default: the project name)
-  --visibility private|public|internal              (default: private)
-  --elected-by "<Name>"   who is electing the shape (default: your gh login)
-  --into <dir>            PARENT directory for the clone (default: ..), so the
-                          clone lands at <dir>/<Project>
-  --org <org>             override the detected organisation. REQUIRED when
-                          run outside a checkout of openRepoShape
-                          (self-bootstrap mode): there is no origin to read it
-                          from.
-  --allow-upstream-org    permit `--org opensoft` itself: opensoft is the
-                          upstream owner of openRepoShape, and almost never
-                          what you meant to scaffold into.
-  --shape-ref <ref>       self-bootstrap mode only: clone this commit or tag
-                          of the standard instead of its default branch.
-  --keep-shape-checkout   self-bootstrap mode only: do not delete the
-                          temporary checkout on exit; print its path instead.
-  --yes                   skip the confirmation prompt
-  --local-remote-dir <d>  TEST PATH: create three BARE repositories in <d> and
-                          use them as origins. No network, no `gh`, and no real
-                          repository is created.
-  -h, --help              this text
-
-Set $OPENREPOSHAPE_REPO to clone a fork or mirror in self-bootstrap mode
-instead of opensoft/openRepoShape.
-
-Anything after `--` is passed straight through to scaffold-project.py.
-USAGE
-}
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]:-$0}")" && pwd)"
+SHAPE_REPO="${OPENREPOSHAPE_REPO:-https://github.com/opensoft/openRepoShape.git}"
+ENTRY="setup-project.py"
 
 say() { printf '%s\n' "$*"; }
-ok() { printf '  %s %s\n' "$TICK" "$*"; }
-bad() { printf '  %s %s\n' "$CROSS" "$*" >&2; }
 die() { printf '\nREFUSED: %s\n' "$1" >&2; exit "${2:-2}"; }
 
-abspath() {
-	case "$1" in
-	/*) printf '%s' "$1" ;;
-	*) printf '%s/%s' "$INVOCATION_DIR" "$1" ;;
-	esac
+# THE INTERPRETER FIRST, BEFORE ANY CLONE. A machine with no Python cannot run
+# the flow whatever we fetch for it, and one sentence is a better answer than a
+# temporary checkout made and thrown away. `python3` is the name every POSIX
+# install answers to; `python` is for the machines that have only that one.
+find_python() {
+	for candidate in python3 python; do
+		if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c \
+			'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' \
+			>/dev/null 2>&1; then
+			printf '%s' "$candidate"
+			return 0
+		fi
+	done
+	return 1
 }
+PY="$(find_python)" || die "no Python 3.9 or newer on this machine (tried python3, python). Install Python 3.9 or newer and re-run: https://www.python.org/downloads/"
 
-# --------------------------------------------------------------------------
-# arguments
-# --------------------------------------------------------------------------
-while [ $# -gt 0 ]; do
-	case "$1" in
-	--project) PROJECT="${2:?--project needs a value}"; shift 2 ;;
-	--org) ORG="${2:?--org needs a value}"; shift 2 ;;
-	--id) PROJECT_ID="${2:?--id needs a value}"; shift 2 ;;
-	--name) DISPLAY_NAME="${2:?--name needs a value}"; shift 2 ;;
-	--visibility) VISIBILITY="${2:?--visibility needs a value}"; shift 2 ;;
-	--elected-by) ELECTED_BY="${2:?--elected-by needs a value}"; shift 2 ;;
-	--into) INTO="$(abspath "${2:?--into needs a value}")"; shift 2 ;;
-	--local-remote-dir) LOCAL_REMOTE_DIR="$(abspath "${2:?--local-remote-dir needs a value}")"; shift 2 ;;
-	--yes | -y) ASSUME_YES=1; shift ;;
-	--allow-upstream-org) ALLOW_UPSTREAM_ORG=1; shift ;;
-	--shape-ref) SHAPE_REF="${2:?--shape-ref needs a value}"; shift 2 ;;
-	--keep-shape-checkout) KEEP_SHAPE_CHECKOUT=1; shift ;;
-	-h | --help) usage; exit 0 ;;
-	--) shift; PASSTHROUGH=("$@"); break ;;
-	*) usage >&2; die "unknown argument: $1" ;;
-	esac
-done
+# GIT ITSELF, BEFORE THE CHECKOUT PROBE. `is_shape_checkout` below redirects
+# git's own stderr to /dev/null, so a MISSING git reads identically to "not a
+# checkout" — and section 0 would then die on a bare `git: command not found`,
+# exit 127, where `setup-project.py` prints its own named refusal. The Python
+# is not running yet, so the shim owns this fourth thing; the wording is
+# `setup-project.py`'s own `GIT_MISSING`, said once here for the same reason
+# it is said once there.
+command -v git >/dev/null 2>&1 || die "git is not installed. Install it: https://git-scm.com/downloads"
 
-case "$VISIBILITY" in
-private | public | internal) ;;
-*) die "--visibility is $VISIBILITY; it must be 'private', 'public' or 'internal'" ;;
-esac
-
-LOCAL_MODE=0
-if [ -n "$LOCAL_REMOTE_DIR" ]; then LOCAL_MODE=1; fi
-
-# --------------------------------------------------------------------------
-# 0. self-bootstrap: run from wherever a checkout of openRepoShape is not
-# --------------------------------------------------------------------------
-# `curl | bash -s --` has no file on disk at all: $SCRIPT_DIR then resolves to
-# $PWD (see the BASH_SOURCE fallback above), which is an openRepoShape
-# checkout only by coincidence. Detect the real thing by asking git, not by
-# trusting the directory a person happened to be standing in.
-SHAPE_REPO="${OPENREPOSHAPE_REPO:-https://github.com/opensoft/openRepoShape.git}"
-
+# `curl | bash -s --` has no file on disk either: $SCRIPT_DIR then falls back
+# to $PWD, which is an openRepoShape checkout only by coincidence. Ask git,
+# rather than trust the directory a person happened to be standing in. Sets
+# $SHAPE_ROOT to git's own answer when the probe passes — see the exec below.
 is_shape_checkout() {
 	local dir="$1" toplevel
 	toplevel="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)" || return 1
 	[ -n "$toplevel" ] && [ -f "$toplevel/scaffold-project.py" ] \
-		&& [ -f "$toplevel/contracts/repository-naming.yaml" ]
+		&& [ -f "$toplevel/contracts/repository-naming.yaml" ] || return 1
+	SHAPE_ROOT="$toplevel"
 }
 
-if ! is_shape_checkout "$SCRIPT_DIR"; then
-	[ -n "$ORG" ] || die "running outside a checkout of openRepoShape (self-bootstrap mode): there is no fork origin to read the organisation from. Re-run with --org <your-org>."
-
-	say "openRepoShape setup"
-	say ""
-	say "(0) self-bootstrap"
-	SHAPE_CHECKOUT="$(mktemp -d)"
-	self_bootstrap_cleanup() {
-		if [ "$KEEP_SHAPE_CHECKOUT" -eq 1 ]; then
-			say ""
-			say "kept the shape checkout: $SHAPE_CHECKOUT"
-		else
-			rm -rf -- "$SHAPE_CHECKOUT"
-		fi
-	}
-	trap self_bootstrap_cleanup EXIT
-
-	CLONE_SHAPE_CMD=(git clone --quiet)
-	# `--depth 1` only means something over a real transport; git warns and
-	# ignores it for a bare local path (what the tests use via
-	# $OPENREPOSHAPE_REPO), so skip it there rather than clone shallow noise.
-	case "$SHAPE_REPO" in
-	*://*) [ -n "$SHAPE_REF" ] || CLONE_SHAPE_CMD+=(--depth 1) ;;
-	esac
-	CLONE_SHAPE_CMD+=("$SHAPE_REPO" "$SHAPE_CHECKOUT")
-	say "  ${CLONE_SHAPE_CMD[*]}"
-	"${CLONE_SHAPE_CMD[@]}"
-	if [ -n "$SHAPE_REF" ]; then
-		say "  git -C $SHAPE_CHECKOUT checkout --quiet $SHAPE_REF"
-		git -C "$SHAPE_CHECKOUT" checkout --quiet "$SHAPE_REF"
-	fi
-	say "  checkout: $SHAPE_CHECKOUT"
-	say ""
-
-	# WHERE THE NEW PROJECT LANDS (#39). The re-exec runs from the TEMPORARY
-	# checkout, so the child's own default parent — `..` of the directory
-	# setup.sh lives in — is /tmp, and the project was cloned there and left
-	# behind when the checkout beside it was deleted. It belongs where the
-	# person was standing, so the invocation directory is passed as --into.
-	# FIRST, before their own arguments: an explicit --into of theirs is
-	# parsed after this one and wins, which is what keeps --into the override
-	# it is documented as. Passing it rather than teaching the child a new
-	# variable also means the clone lands correctly even when --shape-ref
-	# pins a version of the standard that predates this fix.
-	set +e
-	bash "$SHAPE_CHECKOUT/setup.sh" --into "$INVOCATION_DIR" "${ORIGINAL_ARGS[@]}"
-	STATUS=$?
-	set -e
-	exit "$STATUS"
+# THE DEVELOPER PATH, AND NO `cd`. `setup-project.py` reads the `origin` remote
+# of `os.getcwd()` to work out which organisation you are scaffolding into, so
+# the directory the person ran this from is a value and not a detail; a `cd`
+# here would hand it $SCRIPT_DIR — wherever this FILE lives — instead, and
+# three tests in `tests/test_setup_sh.py` say so. `exec`, because this process
+# has nothing left to clean up.
+#
+# EXEC FROM $SHAPE_ROOT, NOT $SCRIPT_DIR. `${BASH_SOURCE[0]:-$0}` falls back to
+# $PWD under `bash -s` (a piped-stdin invocation has no source file), so a
+# person standing in a SUBDIRECTORY of a checkout passes the probe above —
+# `is_shape_checkout` asks git, and git answers from anywhere inside the work
+# tree — while $SCRIPT_DIR would still name that subdirectory, and
+# `$SCRIPT_DIR/$ENTRY` would then name a file that is not there. The probe
+# already asked git for the toplevel; $SHAPE_ROOT is that answer, kept
+# rather than rediscovered.
+if is_shape_checkout "$SCRIPT_DIR"; then
+	# A value leaked from an outer shell would make setup-project.py refuse a
+	# real fork checkout with the self-bootstrap sentence.
+	unset OPENREPOSHAPE_SELF_BOOTSTRAP
+	exec "$PY" "$SHAPE_ROOT/$ENTRY" ${1+"$@"}
 fi
 
-cd "$SCRIPT_DIR"
+# --------------------------------------------------------------------------
+# 0. self-bootstrap: there is no checkout, so make one
+# --------------------------------------------------------------------------
+# $OPENREPOSHAPE_REPO reaches `git clone`, which reads its own arguments: a
+# value starting with `-` is an option to git rather than a repository. A
+# CONTROL CHARACTER is refused too — a newline in this value could put a
+# forged line on stdout or stderr before this script has said a word of its
+# own, which is why the refusal below does not echo the value back. The `--`
+# below guards the argv too; this is what names the fault instead of leaving
+# a confusing git error.
+case "$SHAPE_REPO" in
+-*|*[![:print:]]*) die "OPENREPOSHAPE_REPO is not a value this tool will put on a \`git clone\` command line: it starts with '-' or carries a control character. Set it to a URL or a path." ;;
+esac
 
-# --------------------------------------------------------------------------
-# 1. preflight
-# --------------------------------------------------------------------------
+# THE ONLY READ OF THE COMMAND LINE, AND IT CONSUMES NOTHING. Both flags are
+# about the checkout made here, and every argument is passed on to Python
+# unchanged whatever this scan concludes — which is what keeps one parser.
+# TWO KNOWN FALSE POSITIVES, both harmless: a VALUE spelled
+# `--keep-shape-checkout` sets that flag, and a VALUE spelled `--shape-ref`
+# makes the WORD AFTER IT become $SHAPE_REF. Both runs are refused anyway by
+# Python's `checked_value`, which rejects that leading `-` before anything is
+# created — this scan only decides whether a temporary directory is removed
+# and whether a ref gets checked out, never what the run itself does.
+KEEP_SHAPE_CHECKOUT=0
+SHAPE_REF=""
+prev=""
+for arg in ${1+"$@"}; do
+	case "$arg" in --) break ;; esac
+	case "$prev" in --shape-ref) SHAPE_REF="$arg" ;; esac
+	case "$arg" in --keep-shape-checkout) KEEP_SHAPE_CHECKOUT=1 ;; esac
+	prev="$arg"
+done
+# Mirrors `setup-project.py`'s REF_RE: a ref starts with a letter or digit,
+# holds only letters, digits, '.', '_', '/', '-', is never a `..` range and
+# never ends in `.lock` (git's own lock-file name for one). Only reached when
+# $SHAPE_REF is non-empty — every alternative below requires at least one
+# character to match.
+case "$SHAPE_REF" in
+[!A-Za-z0-9]*|*..*|*.lock|*[!A-Za-z0-9._/-]*) die "--shape-ref is '$SHAPE_REF', which is not a branch, tag or commit this tool will pass to \`git checkout\`: a ref starts with a letter or digit, uses only letters, digits, '.', '_', '/', '-', has no '..' and does not end in '.lock'." ;;
+esac
+
 say "openRepoShape setup"
 say ""
-say "(1) preflight"
-FAILED=0
-
-if command -v git >/dev/null 2>&1; then
-	ok "git $(git --version | awk '{print $3}')"
-else
-	bad "git is not installed. Install it: https://git-scm.com/downloads"
-	FAILED=1
-fi
-
-if command -v python3 >/dev/null 2>&1; then
-	if python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' 2>/dev/null; then
-		ok "python3 $(python3 -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])')"
+say "(0) self-bootstrap"
+# An explicit template, because BSD `mktemp` (macOS) requires one.
+SHAPE_CHECKOUT="$(mktemp -d "${TMPDIR:-/tmp}/openreposhape-shape-XXXXXX")"
+self_bootstrap_cleanup() {
+	if [ "$KEEP_SHAPE_CHECKOUT" -eq 1 ]; then
+		say ""
+		say "kept the shape checkout: $SHAPE_CHECKOUT"
 	else
-		bad "python3 is $(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || echo unknown), and 3.9 or newer is required. Install a newer python3 and re-run."
-		FAILED=1
+		rm -rf -- "$SHAPE_CHECKOUT"
 	fi
-else
-	bad "python3 is not installed. Install Python 3.9 or newer: https://www.python.org/downloads/"
-	FAILED=1
-fi
-
-if command -v make >/dev/null 2>&1; then
-	ok "make $(make --version 2>/dev/null | head -1 | awk '{print $NF}')"
-else
-	ok "make is absent — bootstrap will run as \`python3 scripts/bootstrap.py\` instead"
-fi
-
-if [ "$LOCAL_MODE" -eq 1 ]; then
-	ok "gh not required (--local-remote-dir: bare repositories on disk, no network)"
-elif command -v gh >/dev/null 2>&1; then
-	ok "gh $(gh --version | head -1 | awk '{print $3}')"
-	if gh auth status >/dev/null 2>&1; then
-		ok "gh is authenticated$(gh api user --jq '" as " + .login' 2>/dev/null || true)"
-	else
-		bad "gh is not authenticated. Run: gh auth login"
-		FAILED=1
-	fi
-else
-	bad "gh is not installed. Install it: https://cli.github.com — or re-run with --local-remote-dir <dir> to try this offline against bare repositories on disk."
-	FAILED=1
-fi
-
-if [ "$FAILED" -ne 0 ]; then
-	die "one or more prerequisites are missing (see above)."
-fi
-
-# --------------------------------------------------------------------------
-# 2. which organisation
-# --------------------------------------------------------------------------
-say ""
-say "(2) organisation"
-detect_org_from_url() {
-	local url="$1" rest
-	case "$url" in
-	*://*) rest="${url#*://}"; rest="${rest#*@}"; rest="${rest#*/}" ;;
-	*:*) rest="${url#*@}"; rest="${rest#*:}" ;;
-	*) rest="$url" ;;
-	esac
-	printf '%s' "${rest%%/*}"
 }
+trap self_bootstrap_cleanup EXIT
 
-# `gh repo view` with no argument resolves the CURRENT repository by its own
-# rules, and on a checkout with two remotes (`origin` plus an `upstream`
-# pointing at opensoft/openRepoShape — kept only by someone contributing back
-# to the standard itself) it can prefer `upstream` over `origin`. `origin` is
-# the remote that means "this clone", in every mode, so it is read directly
-# and parsed by hand; `gh repo view` is consulted only as a fallback, and only
-# ON THE ORIGIN URL itself (never bare), so it cannot go pick `upstream`
-# either.
-#
-# Read against $INVOCATION_DIR, not the current directory — by the time we
-# are here that is $SCRIPT_DIR (the `cd` a few lines up), which is wherever
-# this FILE lives rather than the clone the person is standing in. The two
-# are the same for the README's own `cd openRepoShape && ./setup.sh` usage;
-# they differ only when setup.sh is invoked by a path from elsewhere, and
-# then the clone you are IN is the one whose organisation you mean.
-ORIGIN_URL="$(git -C "$INVOCATION_DIR" remote get-url origin 2>/dev/null || true)"
-ORIGIN_ORG=""
-if [ -n "$ORIGIN_URL" ]; then
-	ORIGIN_ORG="$(detect_org_from_url "$ORIGIN_URL")"
+CLONE_SHAPE_CMD=(git clone --quiet)
+# `--depth 1` only means something over a real transport; git warns and
+# ignores it for a bare local path (what the tests use via
+# $OPENREPOSHAPE_REPO), so skip it there rather than clone shallow noise.
+case "$SHAPE_REPO" in
+*://*) [ -n "$SHAPE_REF" ] || CLONE_SHAPE_CMD+=(--depth 1) ;;
+esac
+CLONE_SHAPE_CMD+=(-- "$SHAPE_REPO" "$SHAPE_CHECKOUT")
+say "  ${CLONE_SHAPE_CMD[*]}"
+"${CLONE_SHAPE_CMD[@]}"
+if [ -n "$SHAPE_REF" ]; then
+	say "  git -C $SHAPE_CHECKOUT checkout --quiet $SHAPE_REF"
+	git -C "$SHAPE_CHECKOUT" checkout --quiet "$SHAPE_REF"
 fi
-
-# `origin` pointing at opensoft itself means this checkout IS the upstream —
-# there is no fork to inherit an organisation from, exactly like self-bootstrap
-# mode above, so the fix is the same: pass --org. This is a narrower ask than
-# the old "you almost certainly cloned the wrong thing" refusal, because
-# running setup.sh from a plain `git clone opensoft/openRepoShape` with an
-# explicit --org is now a legitimate developer path, not a mistake.
-if [ -z "$ORG" ] && [ "$ORIGIN_ORG" = "$UPSTREAM_ORG" ]; then
-	die "you are running from the upstream checkout ($ORIGIN_URL); pass --org <your-org>."
-fi
-
-if [ -n "$ORG" ]; then
-	ok "organisation $ORG (from --org)"
-elif [ -n "$ORIGIN_ORG" ]; then
-	ORG="$ORIGIN_ORG"
-	ok "organisation $ORG (from the \`origin\` remote: $ORIGIN_URL)"
-elif [ -n "$ORIGIN_URL" ] && [ "$LOCAL_MODE" -ne 1 ] \
-	&& ORG="$(gh repo view "$ORIGIN_URL" --json owner --jq .owner.login 2>/dev/null)" \
-	&& [ -n "$ORG" ]; then
-	if [ "$ORG" = "$UPSTREAM_ORG" ]; then
-		die "you are running from the upstream checkout ($ORIGIN_URL); pass --org <your-org>."
-	fi
-	ok "organisation $ORG (from \`gh repo view\` on the origin URL: $ORIGIN_URL; could not parse it by hand)"
-elif [ "$LOCAL_MODE" -eq 1 ]; then
-	ORG="localorg"
-	ok "organisation $ORG (placeholder; no \`origin\` remote to read, and --local-remote-dir creates nothing on GitHub)"
-else
-	die "cannot work out which organisation to scaffold into: this clone has no \`origin\` remote and no --org was given. Re-run with --org <your-org>."
-fi
-
-# A checkout kept for contributing to the standard itself may still carry an
-# `upstream` remote pointing at opensoft. Name it so a person who did not
-# expect one at all is not left guessing why the detected organisation is not
-# opensoft's.
-UPSTREAM_REMOTE_URL="$(git -C "$INVOCATION_DIR" remote get-url upstream 2>/dev/null || true)"
-if [ -n "$UPSTREAM_REMOTE_URL" ]; then
-	UPSTREAM_REMOTE_ORG="$(detect_org_from_url "$UPSTREAM_REMOTE_URL")"
-	if [ -n "$UPSTREAM_REMOTE_ORG" ] && [ -n "$ORIGIN_ORG" ] && [ "$UPSTREAM_REMOTE_ORG" != "$ORIGIN_ORG" ]; then
-		say "  upstream is $UPSTREAM_REMOTE_ORG; scaffolding into $ORG"
-	fi
-fi
-
-# The guard that matters now that ORG is never silently set to opensoft by
-# detection (see the die above): the only way to reach this point with
-# ORG=opensoft is an explicit `--org opensoft`, which is almost never what
-# anyone means — it would create three repositories in opensoft's own
-# namespace. It applies in EVERY mode, --local-remote-dir included: `--org` is
-# what a scaffolded `project.yaml` records as the owner of all three legs, so
-# a manifest reading `opensoft/Sample` is wrong regardless of whether any
-# network call happened. A local run with no `origin` remote and no --org
-# gets the `localorg` placeholder, so the guard never fires by surprise.
-if [ "$ORG" = "$UPSTREAM_ORG" ] && [ "$ALLOW_UPSTREAM_ORG" -ne 1 ]; then
-	die "the organisation is '$UPSTREAM_ORG', which is the UPSTREAM owner of openRepoShape itself, and scaffolding here would create three repositories in opensoft's own namespace.
-
-  Wrong guess?  re-run with --org <your-org>
-  You meant it? re-run with --allow-upstream-org"
-fi
-
-# --------------------------------------------------------------------------
-# 3. the project
-# --------------------------------------------------------------------------
+say "  checkout: $SHAPE_CHECKOUT"
 say ""
-say "(3) project"
-if [ -z "$PROJECT" ]; then
-	if [ -t 0 ]; then
-		printf '  project name (ONE CamelCase token, e.g. Atlas): '
-		read -r PROJECT || true
-	fi
-fi
-if [ -z "$PROJECT" ]; then
-	usage >&2
-	die "no --project given, and no terminal to ask on."
-fi
 
-if [ -z "$ELECTED_BY" ] && [ "$LOCAL_MODE" -ne 1 ]; then
-	ELECTED_BY="$(gh api user --jq .login 2>/dev/null || true)"
-fi
-if [ -z "$ELECTED_BY" ]; then
-	# Per-invocation identity first (GIT_AUTHOR_NAME), then the repo/global
-	# config, then the gh login — never a global config WRITE.
-	ELECTED_BY="${GIT_AUTHOR_NAME:-$(git config user.name 2>/dev/null || true)}"
-fi
-if [ -z "$ELECTED_BY" ]; then
-	die "cannot work out who is electing this shape. Re-run with --elected-by 'Your Name' — the manifest records whose act it was."
-fi
-
-ok "project      $PROJECT"
-ok "legs         $PROJECT-spec, $PROJECT-code"
-ok "visibility   $VISIBILITY"
-ok "elected by   $ELECTED_BY"
-
-# --------------------------------------------------------------------------
-# 4. the names, before anything exists
-# --------------------------------------------------------------------------
-say ""
-say "(4) naming policy"
-if ! python3 scripts/validate-repository-naming.py --explain \
-	"$PROJECT" "$PROJECT-spec" "$PROJECT-code"; then
-	die "the names do not satisfy the naming policy (see above). A naming mistake caught here costs a message; caught later it costs three repositories and a rename." 1
-fi
-
-# --------------------------------------------------------------------------
-# 5. the plan, and one explicit yes
-# --------------------------------------------------------------------------
-SCAFFOLD_ARGS=(--org "$ORG" --project "$PROJECT" --visibility "$VISIBILITY"
-	--elected-by "$ELECTED_BY")
-if [ -n "$PROJECT_ID" ]; then SCAFFOLD_ARGS+=(--id "$PROJECT_ID"); fi
-if [ -n "$DISPLAY_NAME" ]; then SCAFFOLD_ARGS+=(--name "$DISPLAY_NAME"); fi
-if [ "$LOCAL_MODE" -eq 1 ]; then SCAFFOLD_ARGS+=(--local-remote-dir "$LOCAL_REMOTE_DIR"); fi
-SCAFFOLD_ARGS+=(${PASSTHROUGH[@]+"${PASSTHROUGH[@]}"})
-
-say ""
-say "(5) the plan"
-python3 scaffold-project.py "${SCAFFOLD_ARGS[@]}" --dry-run
-
-if [ "$ASSUME_YES" -ne 1 ]; then
-	if [ ! -t 0 ]; then
-		die "this will create THREE repositories and there is no terminal to confirm on. Re-run with --yes if you mean it."
-	fi
-	say ""
-	say "This will create THREE repositories in '$ORG'."
-	printf 'Type yes to continue: '
-	CONFIRM=""
-	read -r CONFIRM || true
-	if [ "$CONFIRM" != "yes" ]; then
-		die "not confirmed; nothing was created." 1
-	fi
-fi
-
-# --------------------------------------------------------------------------
-# 6. create
-# --------------------------------------------------------------------------
-say ""
-say "(6) scaffold"
-python3 scaffold-project.py "${SCAFFOLD_ARGS[@]}"
-
-# --------------------------------------------------------------------------
-# 7. clone and bootstrap
-# --------------------------------------------------------------------------
-# `..` is the DEVELOPER PATH's answer: a checkout's parent is where the person
-# cloned it, so the new project lands beside it. Self-bootstrap mode has no
-# such neighbour to land beside and passes --into instead (see section 0).
-PARENT="${INTO:-$(cd .. && pwd)}"
-mkdir -p "$PARENT"
-CLONE="$PARENT/$PROJECT"
-
-if [ "$LOCAL_MODE" -eq 1 ]; then
-	ASSEMBLY_URL="$LOCAL_REMOTE_DIR/$PROJECT.git"
-	SPEC_URL="$LOCAL_REMOTE_DIR/$PROJECT-spec.git"
-	CODE_URL="$LOCAL_REMOTE_DIR/$PROJECT-code.git"
-	# A local bare repository is a `file://` origin, which git refuses to
-	# recurse into by default since the 2022 advisories. This concession is
-	# specific to the test path; a real clone from GitHub needs none of it.
-	CLONE_CMD=(git -c protocol.file.allow=always clone -q --recurse-submodules "$ASSEMBLY_URL" "$CLONE")
-else
-	ASSEMBLY_URL="https://github.com/$ORG/$PROJECT.git"
-	SPEC_URL="https://github.com/$ORG/$PROJECT-spec.git"
-	CODE_URL="https://github.com/$ORG/$PROJECT-code.git"
-	CLONE_CMD=(git clone -q --recurse-submodules "$ASSEMBLY_URL" "$CLONE")
-fi
-
-# The three repositories now EXIST. Everything from here is recoverable by
-# hand, so a failure names the command that finishes the job rather than
-# leaving the person wondering what was created.
-if [ -e "$CLONE" ]; then
-	die "$CLONE already exists, so there is nowhere to clone into. The three repositories WERE created. Finish by hand:
-    git clone --recurse-submodules $ASSEMBLY_URL
-    cd $PROJECT && make bootstrap"
-fi
-
-say ""
-say "(7) clone and bootstrap"
-say "  ${CLONE_CMD[*]}"
-"${CLONE_CMD[@]}"
-
-if command -v make >/dev/null 2>&1; then
-	(cd "$CLONE" && make bootstrap)
-else
-	(cd "$CLONE" && python3 scripts/bootstrap.py)
-fi
-
-# --------------------------------------------------------------------------
-# 8. hand over
-# --------------------------------------------------------------------------
-cat <<DONE
-
-DONE. $PROJECT is scaffolded and bootstrapped.
-
-  clone       $CLONE
-  assembly    $ASSEMBLY_URL
-  spec        $SPEC_URL
-  code        $CODE_URL
-
-Next:
-
-    cd $CLONE
-    make validate          # naming, manifest, lockstep pins — what CI runs
-    \$EDITOR project.yaml   # the manifest is the SOURCE of this group
-
-Advancing a leg is ONE commit in the assembly root that moves the gitlink,
-contracts/<role>-pin.yaml and any workflow @<sha> naming that leg together.
-Electing this shape confers nothing: a one-repository project is reviewed
-identically.
-DONE
+# HAND OVER — RUN, never `exec`: the trap above belongs to THIS process, and
+# exec would replace the process that owes the temporary checkout its removal.
+# $OPENREPOSHAPE_SELF_BOOTSTRAP is the handshake, command-scoped rather than
+# exported: it tells the child that the checkout it is standing in is one this
+# script just made, so `--org` is REQUIRED there rather than read off an
+# `origin` that is opensoft's own. `--into` goes FIRST, before the person's own
+# arguments — an explicit `--into` of theirs is parsed after it and wins, which
+# is what keeps `--into` the override it is documented as (#39).
+set +e
+OPENREPOSHAPE_SELF_BOOTSTRAP=1 "$PY" "$SHAPE_CHECKOUT/$ENTRY" \
+	--into "$INVOCATION_DIR" ${1+"$@"}
+STATUS=$?
+set -e
+exit "$STATUS"

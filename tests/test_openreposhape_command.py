@@ -32,7 +32,7 @@ COMMAND = REPO / "openRepoShape"
 SETUP = REPO / "setup.sh"
 
 USAGE_LINES = (
-    "openRepoShape <Project> [--org <org>] [setup.sh options] [-- <scaffold flags>]",
+    "openRepoShape <Project> [--org <org>] [setup-project.py options] [-- <scaffold flags>]",
     "openRepoShape --install            install (or update) this command into ~/.local/bin",
     "openRepoShape --help | --version",
 )

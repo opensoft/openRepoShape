@@ -439,8 +439,17 @@ def test_readme_is_short_enough_to_be_read():
     #   Three more lines close a gap Copilot flagged in PR #57: the paragraph
     #   also names the exit when the Tools' python3 is too old, because the
     #   original read as claiming the Tools' python3 always suffices.
-    assert len(lines) <= 945, (
-        f"README.md is {len(lines)} lines; the cap is 945")
+    # 2026-09-05: 945 -> 948 — three lines under "What setup.sh does" (#50).
+    #   `setup.sh` is a SHIM over `setup-project.py` now, not a second
+    #   implementation of the same flow, and the section that lists the
+    #   commands has to say so before it lists them. A reader who took the old
+    #   opening sentence at face value would go into `setup.sh` looking for
+    #   the preflight, the naming check and the plan, and find a clone and a
+    #   hand-over. The three lines are that sentence, and the paragraph that
+    #   follows the block now says what `setup-project.py` is by the same
+    #   measure rather than repeating the list of substitutions.
+    assert len(lines) <= 948, (
+        f"README.md is {len(lines)} lines; the cap is 948")
 
 
 @pytest.mark.parametrize("name", SHIPPED_BASH)
