@@ -72,6 +72,92 @@ Run this way it also detects the organisation from a fork's `origin` remote,
 if you have one; a plain clone of `opensoft/openRepoShape` itself is its own
 `origin`, so that still needs an explicit `--org`.
 
+### A worked example: Northwind starts Atlas
+
+A new user — call them Dana — has created a GitHub organisation `Northwind`
+and wants a project `Atlas`.
+
+**Before starting.** `gh auth login`, done, under an account that is a member
+of `Northwind` with permission to create repositories there (or an owner) —
+`scaffold-project.py` creates the three repositories with `gh repo create`
+under whatever account `gh auth status` shows. The initial commits go up with
+a plain `git push` over HTTPS, so git itself needs GitHub credentials too: let
+`gh auth login` configure git's credential helper when it offers, or run
+`gh auth setup-git` — skip that and the repositories get created but the
+first push fails. Also needed: `git` and Python 3.9 or newer (`make` is
+optional — bootstrap falls back to `python3 scripts/bootstrap.py`); and a
+decision about visibility — the default is private, and the human says it
+rather than lets it default. `--elected-by` authenticates nothing: it is only
+the name `project.yaml` records as whose act the election was, and it
+defaults to the gh login.
+
+Dana runs the one-liner, filled in for Northwind and Atlas:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup.sh \
+    | bash -s -- --org Northwind --project Atlas \
+      --visibility private --elected-by 'Dana Okafor'
+```
+
+**What Dana sees, in order.** (1) The preflight: git, python3, make, and that
+`gh` is authenticated. (2) The three names checked against the naming policy
+— `Atlas`, `Atlas-spec`, `Atlas-code`; a hyphenated or lowercase project name
+is refused here with the rule printed. (3) The scaffold plan, a dry run of
+everything about to be created. (4) `This will create THREE repositories in
+'Northwind'.` and `Type yes to continue:` — Dana types `yes`. If an AI agent
+is driving, the agent runs the command WITHOUT `--yes` and Dana types the
+answer; the agent never does (AGENTS.md's first rule). Then it creates the
+three repositories, writes the pins and the manifest, sets the topic
+`xf-project-atlas` on all three, clones the root to `../Atlas`, and runs
+`make bootstrap`.
+
+**What Dana has afterwards:**
+
+```text
+Atlas/                      Northwind/Atlas — the repository people clone
+├── project.yaml            the manifest: who elected the shape, when, against which document
+├── AGENTS.md  CLAUDE.md    "Read AGENTS-shape.md first", then Atlas's own instructions
+├── AGENTS-shape.md         the shape's rules for agents — COPIED and digest-pinned
+├── contracts/              spec-pin.yaml, code-pin.yaml, shape-pin.yaml, repository-naming.yaml
+├── scripts/  Makefile      bootstrap and the three validators — copied and pinned
+├── .github/workflows/      validate.yml, the neutral gate on every pull request
+├── spec/                   Northwind/Atlas-spec AT its pinned commit, with its own AGENTS.md pointer
+└── code/                   Northwind/Atlas-code AT its pinned commit, with its own AGENTS.md pointer
+```
+
+`make validate` runs what CI runs. Both legs sit on `main` at their pinned
+commits, not on a detached HEAD.
+
+**If the legs are private**, CI needs a credential to fetch them: a GitHub
+App with Contents read on the legs, registered as `SHAPE_LEGS_APP_ID` and
+`SHAPE_LEGS_APP_PRIVATE_KEY`, or the `SHAPE_LEGS_TOKEN` fallback — as
+REPOSITORY secrets on the GitHub Free plan, where organisation secrets do not
+reach private repositories (see "Reading private legs in CI" below). Without
+either, `validate` degrades with a warning instead of failing.
+
+**Daily work.** Dana works in `spec/` and `code/` as ordinary repositories:
+branches, commits, pull requests in `Atlas-spec` and `Atlas-code`. Committing
+there does not advance the project. Advancing it is one lockstep commit in
+the root, written by the tool from a checkout of this standard:
+
+```sh
+python3 scripts/bump-leg.py --root ../Atlas --leg code --to <40-hex commit>
+git -C ../Atlas push -u origin <branch>      # then open a pull request
+```
+
+Editing the pin file by hand to make the validator agree is what the
+validator exists to refuse.
+
+**Variants.** An existing repository becomes the root in place with
+`adopt-project.py plan`, then `check`, then `execute`, the human answering
+every question the plan raises. Several services that deploy separately get
+a family: `scripts/family.py init` for the holder, `setup.sh` per service,
+`scripts/family.py add` to pin each root under `members/`. Staying current
+with the standard is `update-shape.py check`, then `apply`, as a pull
+request. Whatever workflow overlay Northwind uses — specification tooling,
+review lanes, domain CI — attaches afterwards and is its own; the shape
+confers nothing and stays neutral.
+
 ### What setup.sh does
 
 The same commands, in order, with no behaviour of its own (the first line

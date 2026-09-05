@@ -242,8 +242,19 @@ def test_readme_is_short_enough_to_be_read():
     #   added lines are the refusals, for the same reason the update section's
     #   are: a bump that hid drift would be worse than the hand edit it
     #   replaced. One more line names it in the Layout block.
-    assert len(lines) <= 573, (
-        f"README.md is {len(lines)} lines; the cap is 573")
+    # 2026-09-05: 573 -> 659 — "A worked example: Northwind starts Atlas"
+    #   (#36). The one-liner, the naming policy and the private-legs
+    #   credential were each documented in the abstract already; nothing
+    #   showed what a first run of the whole thing produces. The section adds
+    #   one continuous walk-through instead — who needs to do what before
+    #   starting and why (the `gh` account that creates the repositories is
+    #   not the same fact as the `--elected-by` name), the one-liner filled
+    #   in, what Dana sees at each prompt, the tree a scaffold writes today,
+    #   advancing a leg, and the variants — without repeating the one-liner,
+    #   the `gh api` alternative, the `--org` rule or the no-fork rule
+    #   already said above it.
+    assert len(lines) <= 659, (
+        f"README.md is {len(lines)} lines; the cap is 659")
 
 
 def test_setup_sh_is_executable_and_fails_loudly():
