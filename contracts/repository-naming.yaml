@@ -48,6 +48,16 @@ kind: repository-naming-policy
 # `open<Product>` exists. A rule that needed the network would be unrunnable
 # in the fork-and-run case this whole standard is built for.
 #
+# THE REFERENT MAY BE REACHED THROUGH A CHAIN OF PINS. Ruled by Brett Heap on
+# 2026-09-05: "elect the shape for both, follow the pin chain, no family yet".
+# A product split into two layers is pinned by its descendants at the LAYER —
+# `codexDox` pins `openXdox`, `openXdox` pins `openDox` — so the referent is
+# reached through the chain rather than directly. The chain is RECORDED in the
+# descendant's own manifest (`naming.referent_chain:`), never inferred; a
+# DIRECT pin stays sufficient and is unchanged; and a link whose tree cannot
+# be read is reported as `declared-unverified`, never as a failure, because
+# the check stays offline. The rule is data, in `referent.chain:` below.
+#
 # `matches()` and `--explain` still report every form a name satisfies, so an
 # overlap stays visible instead of being silently resolved.
 #
@@ -147,6 +157,69 @@ families:
         project, `contracts/<referent lowercased>-pin.yaml`, listed in
         `project.yaml`'s `neutral_product_pins:`. It is a fact in the
         project's own tree, so the check needs no network.
+      # THE REFERENT MAY BE REACHED THROUGH A CHAIN OF PINS. Ruled by Brett
+      # Heap on 2026-09-05:
+      #
+      #     "elect the shape for both, follow the pin chain, no family yet"
+      #
+      # recorded on opensoft/openxFactory#656. A neutral product split into
+      # two layers splits the referent with it: `openDox` is the core product
+      # and `openXdox` is the openxFactory-tuned layer, and the descendants
+      # pin `openXdox` ALONE — one pin chain, no direct `openDox` pin inside
+      # the family. Read as a DIRECT pin only, `codexDox`'s route to `openDox`
+      # is declared nowhere: the referent is derived from the NAME, `openXdox`
+      # is a neutral product in its own right, and `--explain codexDox` says
+      # so — *a CLAIM: needs a declared pin on openDox or openxDox*. What
+      # saves the answer today is a CASE-FOLDING COINCIDENCE and nothing else:
+      # `openXdox` casefolds onto the accepted x-stem spelling `openxDox`, so
+      # the classifier accepts a pin on the layer as if it were a pin on a
+      # product nobody has ever named. It holds for this family's spelling and
+      # for no other — a third link, or a layer named anything else, reaches
+      # nothing at all — and an accident is not a rule. `LedgerxWallet ->
+      # openXwallet -> openWallet` is the same shape, and `openWallet` has no
+      # repository at all yet.
+      #
+      # THE CHAIN IS RECORDED, NOT INFERRED. The descendant's own manifest
+      # carries the chain it relies on. Its FIRST entry is what this project
+      # actually pins and must be in its `neutral_product_pins:`; its LAST
+      # must be one of the referents above; each link beyond the first is a
+      # declaration in ANOTHER tree — `openXdox`'s own manifest declaring
+      # `neutral_product_pins: [openDox]`. Inferring the chain would mean
+      # walking repositories nobody named, which is a lookup, not a fact.
+      #
+      # A DIRECT PIN IS STILL SUFFICIENT. This is an ADDITION: `MedxChart`
+      # pinning `openChart` answers exactly as it did on 2026-09-02, and a
+      # project that records no chain is classified exactly as before.
+      #
+      # THE CHECK STAYS OFFLINE (2026-09-02, unchanged). A recorded chain is a
+      # fact in the descendant's own tree, so classification still never asks
+      # a host whether `openDox` — or `openWallet`, which need not exist at
+      # all — is there. A link whose tree IS reachable (a sibling checkout,
+      # `SHAPE_PIN_SOURCE_<PRODUCT>`, or an explicit `--link-source`) is
+      # VERIFIED against that tree's own declaration; a link whose tree is not
+      # reachable is reported as `declared-unverified` and the name STILL
+      # classifies as a descendant. Failing there would make the answer depend
+      # on which trees happen to be on the disk, which is the network
+      # dependency wearing a different coat. A link that is reachable and
+      # declares something else is BROKEN: the residual assembly-root reading
+      # wins, the overlap is recorded, and the message names the link.
+      chain:
+        # Where the chain is recorded, in the descendant's own manifest.
+        record_field: naming.referent_chain
+        # The key read in a LINK's manifest to verify that link.
+        link_declared_by: neutral_product_pins
+        # A recorded chain longer than this is refused as broken rather than
+        # walked: a chain nobody can hold in their head is not a declaration.
+        max_length: 8
+        # What a link whose tree could not be read is reported as. It is a
+        # WARNING, never a finding, and never changes the classification.
+        unverified_status: declared-unverified
+      # The worked cases, as `<descendant>: [<the pin it holds>, …, <the
+      # referent it reaches>]`. Neither row asserts that anything exists: the
+      # chain is a declaration, and `openWallet` has no repository yet.
+      example_chains:
+        codexDox: [openXdox, openDox]
+        LedgerxWallet: [openXwallet, openWallet]
     description: >-
       A domain's descendant of a live product: an `x`-terminated domain stem
       immediately in front of the product name, AND a declared pin on that
@@ -155,7 +228,9 @@ families:
     # Each example is a descendant BECAUSE of the referent beside it, not
     # because of how it is spelled. `MedxChart` is a descendant because
     # MedxChart pins `openChart`; strip that pin and the same name is an
-    # ordinary assembly root that also matches this form.
+    # ordinary assembly root that also matches this form. An example with no
+    # row here has one in `example_chains:` instead — it reaches its referent
+    # through a chain rather than directly, which is the 2026-09-05 addition.
     example_referents:
       MedxChart: openChart
       LedgerxWallet: openWallet
@@ -168,6 +243,9 @@ families:
       - LedgerxWallet
       - codexFactory
       - MedxGlass
+      # Reached through a chain, not a direct pin: `codexDox` pins `openXdox`
+      # and `openXdox` pins `openDox` (2026-09-05).
+      - codexDox
     # These do not even reach the referent question: they fail the pattern.
     counter_examples:
       - MedChart

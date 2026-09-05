@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -673,10 +674,92 @@ DESCENDANT_SPLIT_PATTERN = r"^(?P<stem>[A-Za-z][A-Za-z0-9]*)x(?P<product>[A-Z][A
 #: refusing it would be a spelling rule masquerading as a semantic one.
 DESCENDANT_REFERENT_TEMPLATES = ("open{product}", "openx{product}")
 
+#: Where a descendant RECORDS the pin chain it reaches its referent through
+#: (2026-09-05). It is a key of a leg's `naming:` block in `project.yaml`, and
+#: the policy file names it too (`referent.chain.record_field`) so a fork reads
+#: the rule rather than this constant.
+CHAIN_RECORD_FIELD = "referent_chain"
+
+#: The key read in a LINK's own manifest when a link is verified: `openXdox`
+#: is a link of `codexDox`'s chain because `openXdox`'s `project.yaml` declares
+#: `neutral_product_pins: [openDox]`.
+CHAIN_LINK_DECLARED_BY = "neutral_product_pins"
+
+#: A recorded chain longer than this is BROKEN rather than walked. Overridable
+#: from the policy data (`referent.chain.max_length`).
+CHAIN_MAX_LENGTH = 8
+
+#: The status of a link whose tree could not be read. It is a WARNING and
+#: never changes the classification: the recorded declaration is the offline
+#: fact, and verification is the stronger check available when the other tree
+#: happens to be on the disk.
+CHAIN_UNVERIFIED = "declared-unverified"
+
+#: The env var naming a local checkout of a neutral product, so a CI job that
+#: pre-seeds one checkout per pinned product can be read without a flag.
+#: `<PRODUCT>` is the declared name, upper-cased, with every character outside
+#: `[A-Z0-9_]` turned into `_` — `openGlass` -> `SHAPE_PIN_SOURCE_OPENGLASS`.
+#: ONE variable answers both questions asked of such a checkout: the digest
+#: `validate-pins.py` recomputes from it, and the chain-link declaration
+#: `resolve_referent` verifies against it.
+PIN_SOURCE_ENV_PREFIX = "SHAPE_PIN_SOURCE_"
+
+
+def pin_source_env_name(product: str) -> str:
+    return PIN_SOURCE_ENV_PREFIX + re.sub(r"[^A-Z0-9_]", "_", product.upper())
+
 
 def form_id(family_id: str, role_id: str | None) -> str:
     """`("project-leg", "assembly")` -> `"project-leg/assembly"`."""
     return f"{family_id}/{role_id}" if role_id else family_id
+
+
+class ReferentResolution:
+    """WHETHER, and HOW, a `<Domainx><Product>` name reaches its referent.
+
+    Five answers, and the classification depends on which one:
+
+      `none`                 nothing is declared — the form is a bare claim
+      `direct`               the referent itself is pinned (2026-09-02)
+      `verified`             a recorded chain, every link read and agreeing
+      `declared-unverified`  a recorded chain, at least one link's tree not
+                             reachable. STILL A DESCENDANT: the declaration is
+                             the offline fact and the tree is the stronger
+                             check, available or not
+      `broken`              a recorded chain that does not hold — it does not
+                             start at a pin this project declares, does not
+                             end at a referent this name could have, is longer
+                             than the policy admits, repeats a link, or names
+                             a link whose OWN manifest declares something else
+
+    `warnings` are for a reader, never for an exit code; `reason` is the
+    sentence `--explain` prints, and for `broken` it NAMES the link that broke,
+    because "the chain is invalid" sends the reader to read four manifests.
+    """
+
+    REACHED = ("direct", "verified", CHAIN_UNVERIFIED)
+
+    def __init__(self, status: str = "none", referent: str | None = None,
+                 chain=(), reason: str = "", warnings=(), unverified=()):
+        self.status = status
+        self.referent = referent
+        self.chain = tuple(chain)
+        self.reason = reason
+        self.warnings = tuple(warnings)
+        self.unverified = tuple(unverified)
+
+    @property
+    def reached(self) -> bool:
+        """Is the referent reached — by a direct pin or by a held chain?"""
+        return self.status in self.REACHED
+
+    @property
+    def by_chain(self) -> bool:
+        return self.status in ("verified", CHAIN_UNVERIFIED)
+
+    def __repr__(self) -> str:  # pragma: no cover - diagnostics only
+        return (f"ReferentResolution({self.status!r}, {self.referent!r}, "
+                f"chain={list(self.chain)!r})")
 
 
 class Classification(tuple):
@@ -691,12 +774,20 @@ class Classification(tuple):
     """
 
     def __new__(cls, family: str, role: str | None,
-                also_matches=(), reason: str = ""):
+                also_matches=(), reason: str = "",
+                referent: ReferentResolution | None = None):
         self = super().__new__(cls, (family, role))
         self.family = family
         self.role = role
         self.also_matches = tuple(also_matches)
         self.reason = reason
+        # HOW the referent was reached, when the name claimed one at all —
+        # `None` for a name that is not in `<Domainx><Product>` form. A caller
+        # that only ever compared the 2-tuple is unaffected; a caller that
+        # needs to RECORD the chain (the manifest's `naming:` block) or to
+        # WARN about an unverified link reads it here rather than re-deriving
+        # it, which is how the writer and the checker stay one rule.
+        self.referent = referent or ReferentResolution()
         return self
 
     def __repr__(self) -> str:  # pragma: no cover - diagnostics only
@@ -807,6 +898,122 @@ class NamingPolicy:
         referents = self.descendant_referents(name)
         return referents[0] if referents else None
 
+    def chain_rule(self) -> dict:
+        """The `referent.chain:` block of the descendant family, as data.
+
+        Empty when a fork's policy declares none, which switches the chain off
+        without switching the referent rule off: the direct pin is the older
+        rule and answers on its own.
+        """
+        family = self.family("domain-descendant") or {}
+        return (family.get("referent") or {}).get("chain") or {}
+
+    def resolve_referent(self, name: str, declared_pins=None,
+                         referent_chain=None,
+                         link_pins=None) -> ReferentResolution:
+        """How `name` reaches its referent, given what is DECLARED about it.
+
+        `declared_pins` is `project.yaml`'s `neutral_product_pins:`;
+        `referent_chain` is the chain that manifest RECORDS (2026-09-05);
+        `link_pins` maps a link's name to the pins ITS OWN manifest declares,
+        for the links whose trees were reachable — a link absent from the
+        mapping is `declared-unverified`, which is not a failure.
+
+        A RECORDED CHAIN IS READ FIRST, because it is what the project says it
+        relies on and a record nothing consults is not a record. The direct pin
+        answers when no chain is recorded and whenever a recorded one does not
+        hold, so no name that classified as a descendant on 2026-09-02 stops
+        being one here: the chain only ever ADDS an answer.
+        """
+        referents = self.descendant_referents(name)
+        if not referents:
+            return ReferentResolution()
+        pins = {repo_basename(str(pin)).casefold()
+                for pin in (declared_pins or ()) if pin}
+        direct = next((r for r in referents if r.casefold() in pins), None)
+
+        def directly(extra_warnings=()) -> ReferentResolution:
+            return ReferentResolution(
+                "direct", direct, reason=f"declared pin on {direct}",
+                warnings=extra_warnings)
+
+        chain = [repo_basename(str(link)) for link in (referent_chain or ())
+                 if str(link).strip()]
+        if not chain:
+            if direct is not None:
+                return directly()
+            return ReferentResolution(
+                reason="no referent pin declared (it would need "
+                       + " or ".join(referents) + ")")
+
+        rule = self.chain_rule()
+        rendered = " → ".join(chain)
+        max_length = int(rule.get("max_length") or CHAIN_MAX_LENGTH)
+
+        def broken(detail: str) -> ReferentResolution:
+            said = f"the declared chain {rendered} is broken ({detail})"
+            if direct is not None:
+                # The direct pin was sufficient before any chain was recorded
+                # and stays sufficient now. A broken chain beside it is a
+                # RECORD to repair, reported as a warning, never an answer
+                # taken away.
+                return directly((f"{said}; the direct pin on {direct} is what "
+                                 "classifies this name",))
+            return ReferentResolution("broken", None, chain, reason=said)
+
+        if len(chain) > max_length:
+            return broken(f"it names {len(chain)} links and the policy admits "
+                          f"at most {max_length}")
+        seen = [link.casefold() for link in chain]
+        if len(set(seen)) != len(seen):
+            return broken("it repeats a link, so it is a cycle rather than a "
+                          "chain")
+        if chain[0].casefold() not in pins:
+            return broken(f"it begins at {chain[0]}, which is not in this "
+                          "project's `neutral_product_pins:` — the first "
+                          "entry is the pin this project actually holds")
+        final = next((r for r in referents
+                      if r.casefold() == chain[-1].casefold()), None)
+        if final is None:
+            return broken(f"it ends at {chain[-1]}, but {name} would need "
+                          + " or ".join(referents))
+
+        # The link's pins are kept in the SPELLING ITS MANIFEST USES, so a
+        # broken-link message quotes what the other tree actually says.
+        available = {str(link).casefold():
+                     {repo_basename(str(pin))
+                      for pin in (pins_of or ()) if pin}
+                     for link, pins_of in (link_pins or {}).items()
+                     if pins_of is not None}
+        warnings: list[str] = []
+        unverified: list[str] = []
+        for holder, held in zip(chain, chain[1:]):
+            declared = available.get(holder.casefold())
+            if declared is None:
+                unverified.append(holder)
+                warnings.append(
+                    f"{CHAIN_UNVERIFIED}: {holder} declaring a pin on {held} "
+                    f"is a fact in {holder}'s own tree, which is not "
+                    f"reachable here (a sibling checkout, "
+                    f"{pin_source_env_name(holder)}, or --link-source "
+                    f"{holder}=<path> would let it be read). The recorded "
+                    "chain still classifies.")
+                continue
+            if held.casefold() not in {pin.casefold() for pin in declared}:
+                return broken(
+                    f"{holder} declares "
+                    + (", ".join(sorted(declared)) if declared else "no "
+                       "neutral-product pin at all")
+                    + f", not {held}")
+        status = CHAIN_UNVERIFIED if unverified else "verified"
+        return ReferentResolution(
+            status, final, chain,
+            reason=f"declared pin chain {rendered}"
+                   + (f" ({len(unverified)} link"
+                      + ("" if len(unverified) == 1 else "s")
+                      + " declared-unverified)" if unverified else ""),
+            warnings=warnings, unverified=unverified)
+
     # -- classification ----------------------------------------------------
 
     def declared_only(self, family_id: str) -> bool:
@@ -841,28 +1048,32 @@ class NamingPolicy:
         return found
 
     def classify(self, name: str, declared_role: str | None = None,
-                 declared_pins=None) -> Classification | None:
+                 declared_pins=None, referent_chain=None,
+                 link_pins=None) -> Classification | None:
         """Classify `name`, given what the project DECLARES about itself.
 
         `declared_role` is one of {assembly, spec, code}; `declared_pins` is the
-        set of neutral products the project declares a pin on. Both are
-        optional and both are read from `project.yaml` where one exists.
+        set of neutral products the project declares a pin on; `referent_chain`
+        is the chain of neutral-product pins the manifest RECORDS as reaching
+        its referent, and `link_pins` is what the reachable links declare. All
+        are optional and all are read from `project.yaml` where one exists.
 
         The order:
           1. `neutral-product` and 2. `install` — unambiguous by construction.
           3. a DECLARED-ONLY form the caller asked for by name (`family`).
-          4. `domain-descendant` — ONLY when a referent is declared.
+          4. `domain-descendant` — ONLY when a referent is REACHED, directly
+             (2026-09-02) or through the recorded chain (2026-09-05).
           5. `project-leg` in the DECLARED role, when the name satisfies it.
           6. `project-leg` residual — the widest form, deliberately last.
         """
         matched = self.matches(name, declared_role)
         if not matched:
             return None
-        pins = {repo_basename(str(pin)).casefold()
-                for pin in (declared_pins or ()) if pin}
         by_family: dict[str, list[str | None]] = {}
         for family_id, role_id in matched:
             by_family.setdefault(family_id, []).append(role_id)
+        resolution = self.resolve_referent(name, declared_pins, referent_chain,
+                                           link_pins)
 
         def answer(family_id: str, role_id: str | None, reason: str,
                    matched_key: tuple | None = None) -> Classification:
@@ -874,7 +1085,7 @@ class NamingPolicy:
             # was not, which is a record contradicting itself.
             key = matched_key if matched_key is not None else (family_id, role_id)
             also = [form_id(f, r) for f, r in matched if (f, r) != key]
-            return Classification(family_id, role_id, also, reason)
+            return Classification(family_id, role_id, also, reason, resolution)
 
         for family_id in ("neutral-product", "install"):
             if family_id in by_family:
@@ -896,7 +1107,11 @@ class NamingPolicy:
 
         claimed = "domain-descendant" in by_family
         referents = self.descendant_referents(name) if claimed else ()
-        declared = next((r for r in referents if r.casefold() in pins), None)
+        # REACHED, not merely pinned (2026-09-05). A direct pin answers exactly
+        # as it did before; a RECORDED chain that holds answers too, and a
+        # chain with an unreadable link answers with a warning rather than
+        # falling back — the declaration is the offline fact.
+        declared = resolution.referent if resolution.reached else None
         leg_roles = [r for r in (by_family.get("project-leg") or []) if r]
         if claimed and (declared or not self.requires_referent("domain-descendant")):
             # A DESCENDANT MAY CARRY LEGS (Brett Heap, 2026-09-02). The
@@ -915,7 +1130,13 @@ class NamingPolicy:
                     and declared_role in leg_roles \
                     and declared_role in admitted:
                 role = declared_role
-            if declared:
+            if declared and resolution.by_chain:
+                reason = (f"descendant form reaching {declared} through the "
+                          f"{resolution.reason} → domain descendant")
+                if role:
+                    reason += (f", carrying the {role} role it declares (a "
+                               "descendant may carry legs)")
+            elif declared:
                 reason = (f"descendant form with a declared pin on {declared} "
                           "→ domain descendant")
                 if role:
@@ -932,7 +1153,12 @@ class NamingPolicy:
         elif leg_roles:
             chosen, how = leg_roles[0], "by its residual project-leg form"
         if chosen is not None:
-            if claimed:
+            if claimed and resolution.status == "broken":
+                # NAME THE LINK. "The chain is invalid" sends the reader to
+                # read four manifests; `resolution.reason` says which one.
+                reason = (f"descendant form, {resolution.reason} → {chosen} "
+                          f"root {how}")
+            elif claimed:
                 reason = (f"descendant form, no referent pin declared (it would "
                           f"need {referents[0]}) → {chosen} root {how}")
             else:
@@ -1004,6 +1230,103 @@ def accepts_role(found, role: str) -> bool:
 def repo_basename(repository: str) -> str:
     """`opensoft/openRepoShape` -> `openRepoShape`; a bare name is returned."""
     return repository.rsplit("/", 1)[-1]
+
+
+# ---------------------------------------------------------------------------
+# Reading a CHAIN LINK's own declaration, offline
+# ---------------------------------------------------------------------------
+#
+# A recorded chain (2026-09-05) says `codexDox` pins `openXdox` and `openXdox`
+# pins `openDox`. The first half is a fact in codexDox's tree; the second is a
+# fact in openXdox's, and these three helpers read it WHERE THAT TREE HAPPENS
+# TO BE ON THE DISK and nowhere else. Nothing here fetches, clones or asks a
+# host: a link that cannot be read locally is reported as declared-unverified
+# by the caller, which is not a failure.
+#
+# The lookup order is the one `validate-pins.py` already uses for a neutral
+# product's checkout, down to the same environment variable, because it is the
+# same checkout answering a second question about the same product.
+
+
+def link_manifest_path(path) -> Path | None:
+    """`<dir>` -> `<dir>/project.yaml`; a file is taken as the manifest."""
+    candidate = Path(path)
+    if candidate.is_dir():
+        candidate = candidate / "project.yaml"
+    return candidate if candidate.is_file() else None
+
+
+def declared_neutral_pins(manifest_path,
+                          key: str = CHAIN_LINK_DECLARED_BY) -> set[str] | None:
+    """The neutral products a manifest DECLARES a pin on, or None.
+
+    None means "this tree could not answer" — no manifest, unreadable YAML, or
+    a file that is not a mapping — and is deliberately distinct from the empty
+    set, which means "this tree answered, and declares no pin at all". The
+    first is unverified and the second breaks a chain that runs through it.
+    """
+    path = link_manifest_path(manifest_path)
+    if path is None:
+        return None
+    try:
+        data = load_yaml(path)
+    except (YamlError, Refusal, OSError, UnicodeDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return {repo_basename(str(pin)) for pin in (data.get(key) or []) if pin}
+
+
+def resolve_link_source(product: str, root: Path | None = None,
+                        keyed_sources: dict | None = None,
+                        default_source=None) -> tuple[Path | None, str | None]:
+    """Where `product`'s own manifest can be read, if anywhere at all.
+
+      1. `--link-source <product>=<path>` (case-insensitive on the name)
+      2. `SHAPE_PIN_SOURCE_<PRODUCT>` in the environment
+      3. a checkout sitting BESIDE this project (`../openXdox`)
+      4. a bare `--link-source <path>` with no `product=` prefix
+    """
+    candidates: list[tuple[Path, str]] = []
+    keyed = (keyed_sources or {}).get(product.casefold())
+    if keyed is not None:
+        candidates.append((Path(keyed), f"--link-source {product}=..."))
+    env_name = pin_source_env_name(product)
+    env_value = os.environ.get(env_name)
+    if env_value:
+        candidates.append((Path(env_value), f"${env_name}"))
+    if root is not None:
+        sibling = Path(root).resolve().parent / product
+        candidates.append((sibling, f"sibling checkout ({sibling})"))
+    if default_source is not None:
+        candidates.append((Path(default_source), "--link-source"))
+    for path, how in candidates:
+        if link_manifest_path(path) is not None:
+            return path, how
+    return None, None
+
+
+def link_pins_from_trees(links, root: Path | None = None,
+                         keyed_sources: dict | None = None,
+                         default_source=None,
+                         key: str = CHAIN_LINK_DECLARED_BY) -> dict[str, set]:
+    """`{link: the pins ITS manifest declares}` for the links that answered.
+
+    A link whose tree is not on the disk is simply ABSENT from the mapping,
+    which is what `NamingPolicy.resolve_referent` reads as declared-unverified.
+    """
+    found: dict[str, set] = {}
+    for link in links:
+        name = repo_basename(str(link))
+        path, _how = resolve_link_source(name, root, keyed_sources,
+                                         default_source)
+        if path is None:
+            continue
+        pins = declared_neutral_pins(path, key)
+        if pins is None:
+            continue
+        found[name.casefold()] = pins
+    return found
 
 
 def find_repo_root(start: Path) -> Path:

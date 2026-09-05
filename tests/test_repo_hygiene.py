@@ -279,8 +279,18 @@ def test_readme_is_short_enough_to_be_read():
     #   the clone lands (the directory you ran the command from, as
     #   ./Atlas), because self-bootstrap mode used to leave it in /tmp and
     #   the sentence that said `../Atlas` was true of neither path.
-    assert len(lines) <= 700, (
-        f"README.md is {len(lines)} lines; the cap is 700")
+    # 2026-09-05: 700 -> 725 — the referent may be reached through a CHAIN of
+    #   pins ("follow the pin chain", Brett Heap, openxFactory#656). Two
+    #   paragraphs rather than a sentence because the rule has two halves that
+    #   fail differently: WHAT is recorded (the chain, in the descendant's own
+    #   manifest, first entry the pin it holds and last the referent it
+    #   claims) and WHAT HAPPENS TO A LINK IN ANOTHER TREE — verified where
+    #   that tree is on the disk, `declared-unverified` where it is not, and
+    #   broken only where a readable tree says otherwise. A reader who learnt
+    #   only the first half would read the warning as a failure, which is the
+    #   offline principle inverted.
+    assert len(lines) <= 725, (
+        f"README.md is {len(lines)} lines; the cap is 725")
 
 
 @pytest.mark.parametrize("name", SHIPPED_BASH)

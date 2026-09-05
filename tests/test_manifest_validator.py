@@ -302,3 +302,125 @@ def test_an_unparsable_manifest_refuses(project):
     result = validate(project)
     assert result.returncode == 2
     assert "yaml-unparsable" in result.stderr
+
+
+# --- the ruling: a chain of pins may reach the referent (2026-09-05) --------
+#
+# "elect the shape for both, follow the pin chain, no family yet" — Brett Heap,
+# recorded on opensoft/openxFactory#656. In a manifest that means: the pins
+# this project holds, the chain its `naming:` block records, and the link's own
+# tree where there is one on the disk. Never a network.
+
+
+def as_a_descendant_by_chain(project, first: str = "openXdox",
+                             referent: str = "openDox") -> None:
+    """Rewrite the scaffolded manifest into `codexDox`, pinning the LAYER."""
+    edit(project, "repository: testorg/Atlas\n    path: \".\"",
+         "repository: testorg/codexDox\n    path: \".\"")
+    edit(project, "neutral_product_pins: []",
+         f"neutral_product_pins:\n  - {first}")
+    edit(project, "      form: project-leg\n      role: assembly\n"
+                  "      also_matches: []",
+         "      form: domain-descendant\n      role: assembly\n"
+         "      also_matches: [project-leg/assembly]\n"
+         f"      descendant_referent: {referent}\n"
+         "      referent_declared: true\n"
+         f"      referent_chain: [{first}, {referent}]")
+
+
+def link_tree(path: Path, *pins: str) -> Path:
+    """A checkout of a chain LINK, carrying its own declaration."""
+    path.mkdir(parents=True, exist_ok=True)
+    body = "".join(f"  - {pin}\n" for pin in pins)
+    (path / "project.yaml").write_text(
+        "schema_version: 1\nkind: project-manifest\n"
+        + ("neutral_product_pins:\n" + body if pins
+           else "neutral_product_pins: []\n"),
+        encoding="utf-8")
+    return path
+
+
+def test_a_chain_reaches_the_referent_and_the_manifest_is_valid(project):
+    """THE codexDox CASE in a manifest: the pin this tree holds is on the
+    LAYER, and the referent is reached through the recorded chain."""
+    as_a_descendant_by_chain(project)
+    (project / "contracts" / "openxdox-pin.yaml").write_text(
+        "schema_version: 1\nkind: pinned_contract_manifest\n")
+    link_tree(project.parent / "openXdox", "openDox")
+    result = validate(project)
+    assert result.returncode == 0, result.stderr
+    assert "manifest ok" in result.stdout
+    assert "WARNING" not in result.stderr
+
+
+def test_a_link_that_is_not_checked_out_is_a_warning_not_a_finding(project):
+    """The offline half. Nothing on this disk can confirm what `openXdox`
+    declares, and the manifest is still valid: the record is the fact."""
+    as_a_descendant_by_chain(project)
+    (project / "contracts" / "openxdox-pin.yaml").write_text(
+        "schema_version: 1\nkind: pinned_contract_manifest\n")
+    result = validate(project)
+    assert result.returncode == 0, result.stderr
+    assert "WARNING naming-referent-chain" in result.stderr
+    assert "declared-unverified" in result.stderr
+
+
+def test_a_recorded_chain_the_link_contradicts_is_a_finding(project):
+    """A link whose tree IS readable and declares something else: the record
+    claims a declaration that other tree does not carry, and the finding says
+    which link and what it actually says.
+
+    The link here is `openInk` rather than `openXdox` on purpose. `openXdox`
+    ALSO satisfies the x-stem spelling `openxDox` when the two are compared
+    case-blind, so a DIRECT pin on it keeps the descendant reading whatever
+    the chain says — which is the rule working as ruled ("a direct pin stays
+    sufficient") and would make this test prove nothing.
+    """
+    as_a_descendant_by_chain(project, first="openInk")
+    (project / "contracts" / "openink-pin.yaml").write_text(
+        "schema_version: 1\nkind: pinned_contract_manifest\n")
+    link_tree(project.parent / "openInk", "openQuill")
+    result = validate(project)
+    assert result.returncode == 1
+    assert "FINDING naming-referent-chain" in result.stderr
+    assert "openInk declares openQuill, not openDox" in result.stderr
+    # And the name falls back to the residual reading, overlap recorded.
+    assert "naming-form" in result.stderr
+
+
+def test_the_pin_file_a_chain_demands_is_the_first_links(project):
+    """`referent_declared: true` still has to have a pin file to show for it,
+    and for a chain that file is the FIRST LINK's — `openXdox` is what this
+    project pins; `openDox` it never pins at all, by the ruling."""
+    as_a_descendant_by_chain(project)
+    link_tree(project.parent / "openXdox", "openDox")
+    result = validate(project)
+    assert result.returncode == 1
+    assert "naming-referent-missing" in result.stderr
+    assert "openxdox-pin.yaml" in result.stderr
+    assert "opendox-pin.yaml" not in result.stderr, (
+        "a chain descendant must not be asked for a pin on the product it "
+        "deliberately does not pin"
+    )
+
+
+def test_a_chain_that_starts_where_nothing_is_pinned_is_a_finding(project):
+    """The first entry is the pin this project HOLDS, so a chain beginning
+    anywhere else is a claim about a tree this one does not pin."""
+    as_a_descendant_by_chain(project, first="openInk")
+    edit(project, "      referent_chain: [openInk, openDox]",
+         "      referent_chain: [openQuill, openDox]")
+    result = validate(project)
+    assert result.returncode == 1
+    assert "FINDING naming-referent-chain" in result.stderr
+    assert "begins at openQuill" in result.stderr
+
+
+def test_a_chain_record_that_is_not_a_list_is_a_finding(project):
+    as_a_descendant_by_chain(project, first="openInk")
+    edit(project, "      referent_chain: [openInk, openDox]",
+         "      referent_chain: 7")
+    result = validate(project)
+    assert result.returncode == 1
+    assert "FINDING naming-referent-chain" in result.stderr
+    assert "expected a list" in result.stderr

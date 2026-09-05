@@ -222,6 +222,140 @@ def test_an_undeclared_descendant_form_is_unchanged(tmp_path):
     assert manifest["neutral_product_pins"] == []
 
 
+# --- --referent-chain: a descendant that pins a LAYER (2026-09-05) ---------
+#
+# "elect the shape for both, follow the pin chain, no family yet" — Brett Heap,
+# recorded on opensoft/openxFactory#656. `codexDox` pins `openXdox` and never
+# pins `openDox` at all, so the referent is REACHED rather than pinned, and the
+# manifest the scaffold writes has to be the one the project's own gate
+# accepts: the writer and the checker are meant to be one rule.
+
+
+def layer_repo(tmp_path, name: str = "openXdox", pins: str = "openDox"):
+    """A stand-in for the LAYER, carrying its own declaration.
+
+    `openXdox` is a chain link because openXdox's own `project.yaml` says
+    `neutral_product_pins: [openDox]` — a fact in that tree, read from the
+    disk here and from nowhere else.
+    """
+    path, commit = product_repo(tmp_path, name)
+    (path / "project.yaml").write_text(
+        f"schema_version: 1\nkind: project-manifest\n"
+        f"neutral_product_pins:\n  - {pins}\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=str(path), check=True)
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t",
+                    "commit", "-qm", "declare"], cwd=str(path), check=True)
+    return path, git("rev-parse", "HEAD", cwd=path).stdout.strip()
+
+
+def test_a_descendant_that_pins_a_layer_scaffolds_through_the_chain(tmp_path):
+    """THE codexDox CASE, end to end. The pin this project holds is on the
+    LAYER; the manifest RECORDS the chain that reaches `openDox`; and the pin
+    file in the tree is the layer's, because `openDox` is the pin this family
+    deliberately does not hold."""
+    layer, commit = layer_repo(tmp_path)
+    remotes, work = tmp_path / "remotes", tmp_path / "work"
+    result = run_script(SCAFFOLD, "--org", "codexSoft", "--project", "codexDox",
+                        "--elected-by", "Brett Heap",
+                        "--elected-on", "2026-09-05",
+                        "--pin", f"openXdox@{commit}",
+                        "--referent-chain", "openXdox,openDox",
+                        "--pin-source", str(layer),
+                        "--local-remote-dir", str(remotes),
+                        "--work-dir", str(work))
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "domain-descendant / assembly" in result.stdout
+    assert "openXdox \u2192 openDox" in result.stdout, (
+        "the plan must print the chain it classified on, not merely the "
+        "verdict it reached")
+
+    root = work / "codexDox"
+    manifest = load_yaml(root / "project.yaml")
+    assert manifest["neutral_product_pins"] == ["openXdox"]
+    assembly = next(leg for leg in manifest["legs"]
+                    if leg["role"] == "assembly")
+    assert assembly["naming"]["form"] == "domain-descendant"
+    assert assembly["naming"]["descendant_referent"] == "openDox"
+    assert assembly["naming"]["referent_declared"] is True
+    assert assembly["naming"]["referent_chain"] == ["openXdox", "openDox"]
+    assert (root / "contracts" / "openxdox-pin.yaml").is_file()
+    assert not (root / "contracts" / "opendox-pin.yaml").exists(), (
+        "a chain descendant pins the layer; the referent it reaches is not "
+        "a pin it holds")
+
+    # The gate the project runs on itself agrees with what was written for it.
+    for validator, args in (("validate-repository-naming.py",
+                             ["--project", "project.yaml"]),
+                            ("validate-manifest.py", []),
+                            ("validate-pins.py", [])):
+        check = run_script(root / "scripts" / validator, *args, cwd=root)
+        assert check.returncode == 0, f"{validator}: {check.stderr}{check.stdout}"
+        if validator != "validate-pins.py":
+            assert "declared-unverified" in check.stderr, (
+                "openXdox is not checked out beside this root, so the link is "
+                "unverified — a warning, and exit 0"
+            )
+
+
+# The three refusals below scaffold `MedxScribe` pinning `openInk`, NOT
+# codexDox. `openXdox` casefolds onto the accepted x-stem spelling `openxDox`,
+# so a pin on that layer reads as a DIRECT pin on a referent of `codexDox` —
+# the case-folding coincidence the contract file writes down — and a direct
+# pin stays sufficient by the ruling, which would make a broken chain beside
+# it a warning rather than the refusal these tests are about. `openInk` is a
+# referent of nothing, so the chain is the only thing that could reach one.
+
+
+def test_a_chain_that_starts_where_nothing_is_pinned_is_refused(tmp_path):
+    """The first entry is the pin this project actually HOLDS, so a chain
+    that starts anywhere else is refused before anything is created."""
+    layer, commit = layer_repo(tmp_path, "openInk", pins="openScribe")
+    result = run_script(SCAFFOLD, "--org", "MedxSoft", "--project", "MedxScribe",
+                        "--elected-by", "Brett Heap",
+                        "--pin", f"openInk@{commit}",
+                        "--referent-chain", "openQuill,openScribe",
+                        "--pin-source", str(layer),
+                        "--local-remote-dir", str(tmp_path / "remotes"),
+                        "--work-dir", str(tmp_path / "work"))
+    assert result.returncode == 2
+    assert "chain-not-declared" in result.stderr
+    assert "begins at openQuill" in result.stderr
+    assert not (tmp_path / "remotes").exists()
+
+
+def test_a_chain_that_does_not_end_at_the_referent_is_refused(tmp_path):
+    layer, commit = layer_repo(tmp_path, "openInk", pins="openScribe")
+    result = run_script(SCAFFOLD, "--org", "MedxSoft", "--project", "MedxScribe",
+                        "--elected-by", "Brett Heap",
+                        "--pin", f"openInk@{commit}",
+                        "--referent-chain", "openInk,openLedger",
+                        "--pin-source", str(layer),
+                        "--local-remote-dir", str(tmp_path / "remotes"),
+                        "--work-dir", str(tmp_path / "work"))
+    assert result.returncode == 2
+    assert "chain-not-declared" in result.stderr
+    assert "ends at openLedger" in result.stderr
+    assert not (tmp_path / "remotes").exists()
+
+
+def test_a_link_whose_own_tree_declares_otherwise_is_refused(tmp_path):
+    """The link's tree IS readable here — `--pin-source` is the same checkout
+    the digest was computed from — and it declares something else, so the
+    chain does not hold and the refusal names the link."""
+    layer, commit = layer_repo(tmp_path, "openInk", pins="openQuill")
+    result = run_script(SCAFFOLD, "--org", "MedxSoft", "--project", "MedxScribe",
+                        "--elected-by", "Brett Heap",
+                        "--pin", f"openInk@{commit}",
+                        "--referent-chain", "openInk,openScribe",
+                        "--pin-source", str(layer),
+                        "--local-remote-dir", str(tmp_path / "remotes"),
+                        "--work-dir", str(tmp_path / "work"))
+    assert result.returncode == 2
+    assert "chain-not-declared" in result.stderr
+    assert "openInk declares openQuill, not openScribe" in result.stderr
+    assert not (tmp_path / "remotes").exists()
+
+
 # --- --pin-owner: an unqualified --pin resolves under opensoft, never --org -
 
 def test_pin_owner_can_be_overridden_explicitly(tmp_path):

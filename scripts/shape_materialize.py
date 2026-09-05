@@ -36,7 +36,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from repo_shape import NamingPolicy, Refusal, file_sha256  # noqa: E402
+from repo_shape import (  # noqa: E402
+    CHAIN_RECORD_FIELD, NamingPolicy, Refusal, file_sha256,
+)
 
 SHAPE_REPOSITORY = "opensoft/openRepoShape"
 
@@ -386,7 +388,7 @@ def copy_tree(src: Path, dst: Path, values: dict[str, str]) -> None:
 
 
 def naming_block(policy: NamingPolicy, name: str, role: str,
-                 pins, indent: str = "    ") -> str:
+                 pins, indent: str = "    ", chain=()) -> str:
     """The `naming:` block `project.yaml` records for one leg.
 
     It records the classification AND what was not chosen. A name in
@@ -395,10 +397,15 @@ def naming_block(policy: NamingPolicy, name: str, role: str,
     wins, and the descendant form survives in `also_matches` so the next reader
     sees the overlap that was resolved rather than wondering whether anyone
     noticed it. WITH the pin the answer is `domain-descendant` in the declared
-    `assembly` role, because a descendant may carry legs. Nothing here confers
-    anything; it is a record.
+    `assembly` role, because a descendant may carry legs.
+
+    `chain` is the pin chain the project declares it reaches its referent
+    through (2026-09-05) and is RECORDED here, under `referent_chain:`,
+    because a chain that were re-derived on each read would be an inference
+    rather than the declaration the classifier is meant to consult. Nothing
+    here confers anything; it is a record.
     """
-    found = policy.classify(name, role, pins)
+    found = policy.classify(name, role, pins, chain)
     lines = [
         f"{indent}naming:",
         f"{indent}  form: {found.family}",
@@ -407,25 +414,30 @@ def naming_block(policy: NamingPolicy, name: str, role: str,
     ]
     referents = policy.descendant_referents(name)
     if referents:
-        declared_pins = {str(pin).casefold() for pin in pins}
-        declared = any(r.casefold() in declared_pins for r in referents)
         # The CANONICAL spelling is what is recorded, whichever one is pinned.
         lines.append(f"{indent}  descendant_referent: {referents[0]}")
         lines.append(f"{indent}  referent_declared: "
-                     + ("true" if declared else "false"))
+                     + ("true" if found.referent.reached else "false"))
+        if found.referent.chain:
+            lines.append(f"{indent}  {CHAIN_RECORD_FIELD}: ["
+                         + ", ".join(found.referent.chain) + "]")
     return "\n".join(lines)
 
 
 def descendant_note(policy: NamingPolicy, name: str, role: str,
-                    pins) -> str | None:
+                    pins, chain=()) -> str | None:
     """The one line the plan prints when a name also matches the claim form."""
-    found = policy.classify(name, role, pins)
+    found = policy.classify(name, role, pins, chain)
     if "domain-descendant" not in found.also_matches:
         return None
     referent = policy.descendant_referent(name)
+    if found.referent.status == "broken":
+        return (f"NOTE {name} also matches the descendant form; it is not a "
+                f"descendant because {found.referent.reason}")
     return (f"NOTE {name} also matches the descendant form; it is not a "
             f"descendant because no pin on {referent} is declared — declare "
-            f"`contracts/{referent.lower()}-pin.yaml` later if it becomes one")
+            f"`contracts/{referent.lower()}-pin.yaml` later if it becomes one, "
+            f"or record the chain that reaches it")
 
 
 class Materialized:

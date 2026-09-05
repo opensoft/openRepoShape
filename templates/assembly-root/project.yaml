@@ -78,6 +78,12 @@ shape:
 # one commit, and the classification changes with the pin — never before it.
 # The check is OFFLINE: this list is a fact in this tree, so no lookup of any
 # organisation's repositories is involved.
+#
+# A project may pin a LAYER of the product rather than the product itself —
+# `codexDox` pins `openXdox`, which pins `openDox` — and then the referent is
+# reached through the chain the leg's `naming.referent_chain:` records, below.
+# The first entry of that chain is one of the names in THIS list, because it
+# is the pin this project actually holds.
 neutral_product_pins: {{NEUTRAL_PRODUCT_PINS}}
 
 # The three legs. `assembly` is THIS repository — the one an engineer clones —
@@ -91,6 +97,27 @@ neutral_product_pins: {{NEUTRAL_PRODUCT_PINS}}
 # that was RESOLVED rather than one nobody noticed. It confers nothing, like
 # every other field here; `scripts/validate-manifest.py` checks it agrees with
 # the name, and refuses `referent_declared: true` with no pin file beside it.
+#
+# A descendant that reaches its referent through a CHAIN records that chain
+# too (ruled by Brett Heap on 2026-09-05, "follow the pin chain"):
+#
+#     naming:
+#       form: domain-descendant
+#       role: assembly
+#       also_matches: [project-leg/assembly]
+#       descendant_referent: openDox        # what the NAME claims
+#       referent_declared: true
+#       referent_chain: [openXdox, openDox] # how it is REACHED
+#
+# The FIRST entry is what `neutral_product_pins:` above declares and what
+# `contracts/<it>-pin.yaml` holds; the LAST is the referent the name claims;
+# each link between them is a declaration in THAT link's own `project.yaml`
+# (`openXdox` declaring `neutral_product_pins: [openDox]`). The validator
+# verifies a link when that repository is checked out beside this one — or
+# named by `SHAPE_PIN_SOURCE_<PRODUCT>` — and otherwise reports it as
+# `declared-unverified`, which is a warning and not a finding: the check is
+# offline, and a recorded declaration is the fact it reads. A chain that does
+# NOT hold is a finding, and it names the link that broke.
 legs:
   - role: assembly
     repository: {{ASSEMBLY_REPOSITORY}}

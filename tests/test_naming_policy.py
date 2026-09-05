@@ -11,7 +11,9 @@ import pytest
 from conftest import REPO, run_script
 
 sys.path.insert(0, str(REPO / "scripts"))
-from repo_shape import NamingPolicy, Refusal, accepts_role  # noqa: E402
+from repo_shape import (  # noqa: E402
+    NamingPolicy, Refusal, accepts_role, link_pins_from_trees,
+)
 
 POLICY_PATH = REPO / "contracts" / "repository-naming.yaml"
 VALIDATOR = REPO / "scripts" / "validate-repository-naming.py"
@@ -45,23 +47,45 @@ def test_family_examples_classify_to_their_own_family(policy, family_id):
     """
     family = _family(policy, family_id)
     referents = family.get("example_referents") or {}
+    chains = (family.get("referent") or {}).get("example_chains") or {}
     declared = family_id if family.get("declared_only") else None
     for example in family["examples"]:
-        pins = {referents[example]} if example in referents else None
+        # An example declares EITHER the referent it pins directly or the
+        # chain it reaches one through (2026-09-05). Both are read from the
+        # data, so an example added to the contract without either fails here.
+        chain = tuple(chains.get(example) or ())
+        if example in referents:
+            pins = {referents[example]}
+        elif chain:
+            pins = {chain[0]}
+        else:
+            pins = None
         found = policy.classify(example, declared_role=declared,
-                                declared_pins=pins)
+                                declared_pins=pins,
+                                referent_chain=chain)
         assert found is not None, f"{example} classified as nothing"
         assert found[0] == family_id, f"{example} -> {found}, wanted {family_id}"
 
 
 def test_every_descendant_example_declares_the_referent_it_needs(policy):
-    """The data cannot claim a descendant it has no referent for."""
+    """The data cannot claim a descendant it has no referent for.
+
+    Since 2026-09-05 there are two ways to declare one — a direct pin or a
+    recorded chain that ENDS at a referent — and an example must carry
+    exactly one of them in the data.
+    """
     family = _family(policy, "domain-descendant")
     assert family.get("requires_referent") is True
     referents = family["example_referents"]
+    chains = family["referent"]["example_chains"]
     for example in family["examples"]:
-        assert example in referents, f"{example} has no example_referent"
-        assert referents[example] in policy.descendant_referents(example)
+        assert example in referents or example in chains, (
+            f"{example} declares neither an example_referent nor a chain")
+        if example in referents:
+            assert referents[example] in policy.descendant_referents(example)
+        if example in chains:
+            assert chains[example][-1] in policy.descendant_referents(example), (
+                f"{example}'s chain must END at a referent it could have")
 
 
 # --- the ruling: a descendant form is a CLAIM that needs a PIN --------------
@@ -412,3 +436,299 @@ def test_cli_without_the_role_reports_the_assembly_form():
     assert result.returncode == 0
     assert "project-leg/assembly" in result.stdout
     assert "also_matches" not in result.stdout
+
+
+# --- the ruling: the referent may be reached through a CHAIN of pins --------
+#
+# Brett Heap, 2026-09-05: "elect the shape for both, follow the pin chain, no
+# family yet" (opensoft/openxFactory#656). `codexDox` pins `openXdox` and
+# `openXdox` pins `openDox`, so the referent is REACHED rather than pinned.
+# Every test below states its facts as a manifest would: the pins the project
+# declares, the chain it records, and what the links' own trees say — and
+# nothing here reads a network, because nothing may.
+
+def link(**declarations) -> dict:
+    """`{link name: the pins ITS manifest declares}` — the readable links."""
+    return {name: set(pins) for name, pins in declarations.items()}
+
+
+def test_a_direct_pin_still_answers_alone(policy):
+    """2026-09-02 is untouched: a name that classified as a descendant on the
+    direct pin classifies the same way, and says so the same way."""
+    found = policy.classify("MedxChart", declared_pins={"openChart"})
+    assert found == ("domain-descendant", None)
+    assert found.referent.status == "direct"
+    assert found.referent.chain == ()
+    assert "declared pin on openChart" in found.reason
+
+
+def test_a_two_link_chain_reaches_the_referent(policy):
+    """THE codexDox CASE, with `openXdox`'s own tree readable: every link is
+    VERIFIED against the declaration that link's manifest carries."""
+    found = policy.classify("codexDox", "assembly", {"openXdox"},
+                            ["openXdox", "openDox"],
+                            link(openXdox={"openDox"}))
+    assert found == ("domain-descendant", "assembly")
+    assert found.referent.status == "verified"
+    assert found.referent.referent == "openDox"
+    assert found.referent.chain == ("openXdox", "openDox")
+    assert found.referent.warnings == ()
+    assert "openXdox → openDox" in found.reason
+    assert accepts_role(found, "assembly")
+
+
+def test_an_unreadable_link_is_declared_unverified_and_still_classifies(policy):
+    """The offline half of the ruling. `openXdox` is not checked out here, so
+    its declaration cannot be READ — and the chain codexDox RECORDS is still
+    the fact this classifier was given, so the answer does not change."""
+    found = policy.classify("codexDox", "assembly", {"openXdox"},
+                            ["openXdox", "openDox"])
+    assert found == ("domain-descendant", "assembly")
+    assert found.referent.status == "declared-unverified"
+    assert found.referent.unverified == ("openXdox",)
+    assert len(found.referent.warnings) == 1
+    assert "declared-unverified" in found.referent.warnings[0]
+    assert "SHAPE_PIN_SOURCE_OPENXDOX" in found.referent.warnings[0], (
+        "a warning that does not name what would ANSWER it is a warning the "
+        "reader can do nothing with")
+
+
+def test_a_link_that_declares_something_else_breaks_the_chain(policy):
+    """A link whose tree IS readable and says otherwise is the one case that
+    fails: the record claims a declaration the other tree does not carry."""
+    found = policy.classify("MedxScribe", "assembly", {"openInk"},
+                            ["openInk", "openScribe"],
+                            link(openInk={"openQuill"}))
+    assert found == ("project-leg", "assembly")
+    assert found.also_matches == ("domain-descendant",)
+    assert found.referent.status == "broken"
+    assert "openInk declares openQuill, not openScribe" in found.reason, (
+        "the message must NAME the link that broke; 'the chain is invalid' "
+        "sends the reader to read four manifests")
+
+
+def test_a_chain_that_does_not_begin_at_a_declared_pin_is_broken(policy):
+    """The first entry is the pin this project actually holds, so a chain
+    that starts anywhere else is a claim about somebody else's tree."""
+    found = policy.classify("MedxScribe", "assembly", {"openInk"},
+                            ["openQuill", "openScribe"])
+    assert found == ("project-leg", "assembly")
+    assert found.referent.status == "broken"
+    assert "begins at openQuill" in found.reason
+    assert "neutral_product_pins" in found.reason
+
+
+def test_a_chain_that_does_not_end_at_the_referent_is_broken(policy):
+    found = policy.classify("MedxScribe", "assembly", {"openInk"},
+                            ["openInk", "openLedger"])
+    assert found == ("project-leg", "assembly")
+    assert found.referent.status == "broken"
+    assert "ends at openLedger" in found.reason
+    assert "openScribe" in found.reason
+
+
+def test_a_chain_that_repeats_a_link_is_a_cycle(policy):
+    found = policy.classify("MedxScribe", "assembly", {"openInk"},
+                            ["openInk", "openInk", "openScribe"])
+    assert found[0] == "project-leg"
+    assert "cycle" in found.reason
+
+
+def test_a_chain_longer_than_the_policy_admits_is_broken(policy):
+    """The bound is DATA (`referent.chain.max_length`), like every other rule
+    here, so a fork can widen it without editing a validator."""
+    limit = policy.chain_rule()["max_length"]
+    chain = ["openInk"] + [f"openLink{n}" for n in range(limit)] + ["openScribe"]
+    found = policy.classify("MedxScribe", "assembly", {"openInk"}, chain)
+    assert found[0] == "project-leg"
+    assert f"at most {limit}" in found.reason
+
+
+def test_a_broken_chain_never_takes_away_the_direct_pin(policy):
+    """"A direct pin stays sufficient; the chain is an ADDITION." A record to
+    repair is a WARNING beside an answer, not the loss of the answer."""
+    found = policy.classify("MedxChart", "assembly", {"openChart"},
+                            ["openChart", "openLedger"])
+    assert found == ("domain-descendant", "assembly")
+    assert found.referent.status == "direct"
+    assert any("is broken" in warning for warning in found.referent.warnings)
+
+
+def test_the_second_worked_case_is_ledgerxwallet(policy):
+    """`LedgerxWallet -> openXwallet -> openWallet`, the same shape the split
+    product has — and `openWallet` need not exist anywhere for this to be the
+    right answer, which is what "the check stays offline" means."""
+    found = policy.classify("LedgerxWallet", "assembly", {"openXwallet"},
+                            ["openXwallet", "openWallet"],
+                            link(openXwallet={"openWallet"}))
+    assert found == ("domain-descendant", "assembly")
+    assert found.referent.status == "verified"
+    assert found.referent.referent == "openWallet"
+
+
+def test_a_name_that_is_not_a_claim_at_all_ignores_a_chain(policy):
+    """`Atlas` claims descent from nothing, so there is nothing to reach."""
+    found = policy.classify("Atlas", "assembly", {"openInk"},
+                            ["openInk", "openAtlas"])
+    assert found == ("project-leg", "assembly")
+    assert found.referent.status == "none"
+
+
+def test_the_chain_rule_is_data(policy):
+    """Every knob the classifier reads is declared in the contract file, so a
+    fork reads the rule rather than the implementation."""
+    rule = policy.chain_rule()
+    assert rule["record_field"] == "naming.referent_chain"
+    assert rule["link_declared_by"] == "neutral_product_pins"
+    assert rule["unverified_status"] == "declared-unverified"
+    assert isinstance(rule["max_length"], int)
+
+
+def test_every_example_chain_in_the_data_holds(policy):
+    """The worked cases are testable FROM THE CONTRACT, not from memory."""
+    chains = _family(policy, "domain-descendant")["referent"]["example_chains"]
+    for name, chain in chains.items():
+        found = policy.classify(name, "assembly", {chain[0]}, chain,
+                                {holder: {held} for holder, held
+                                 in zip(chain, chain[1:])})
+        assert found[0] == "domain-descendant", f"{name} -> {found}"
+        assert found.referent.status == "verified"
+
+
+# --- reading a link's own declaration, from whatever tree is on the disk ----
+
+def _tree(path: Path, *pins: str) -> Path:
+    """A stand-in for a link's checkout: a manifest and its declaration."""
+    path.mkdir(parents=True, exist_ok=True)
+    body = "".join(f"  - {pin}\n" for pin in pins) or " []\n"
+    (path / "project.yaml").write_text(
+        "schema_version: 1\nkind: project-manifest\n"
+        "neutral_product_pins:" + ("\n" + body if pins else body),
+        encoding="utf-8")
+    return path
+
+
+def test_a_link_is_read_from_a_checkout_beside_the_project(tmp_path):
+    """The ordinary workspace: the project and the products it pins, cloned
+    side by side. Same lookup order `validate-pins.py` already uses."""
+    _tree(tmp_path / "openXdox", "openDox")
+    found = link_pins_from_trees(("openXdox", "openDox"),
+                                 root=tmp_path / "codexDox")
+    assert found == {"openxdox": {"openDox"}}
+
+
+def test_a_link_source_names_the_tree_explicitly(tmp_path):
+    _tree(tmp_path / "elsewhere", "openDox")
+    found = link_pins_from_trees(
+        ("openXdox",), root=None,
+        keyed_sources={"openxdox": tmp_path / "elsewhere"})
+    assert found == {"openxdox": {"openDox"}}
+
+
+def test_a_tree_with_no_manifest_answers_nothing(tmp_path):
+    """Absent is UNVERIFIED, not empty: a directory that is not a project of
+    this shape has not said that it declares no pins."""
+    (tmp_path / "openXdox").mkdir()
+    assert link_pins_from_trees(("openXdox",), root=tmp_path / "codexDox") == {}
+
+
+def test_a_tree_that_declares_nothing_answers_the_empty_set(tmp_path):
+    """And an EMPTY declaration is an answer, which is why it breaks a chain
+    running through it rather than leaving it unverified."""
+    _tree(tmp_path / "openXdox")
+    assert link_pins_from_trees(("openXdox",),
+                                root=tmp_path / "codexDox") == {"openxdox": set()}
+
+
+# --- the CLI ---------------------------------------------------------------
+
+def test_cli_explain_names_the_chain_as_well_as_the_direct_pin():
+    """THE DEFECT THE RULING NAMES. `--explain codexDox` said only *needs a
+    declared pin on openDox or openxDox* — neither of which this family holds,
+    nor intends to — so the message sent the reader to declare a pin the
+    ruling forbids. It now names BOTH ways a referent may be reached."""
+    result = run_script(VALIDATOR, "--explain", "codexDox")
+    assert result.returncode == 0, result.stderr
+    assert "a CLAIM: needs a declared pin on openDox or openxDox" in result.stdout
+    assert ("or a declared chain (`naming.referent_chain`) of pins ending in "
+            "one of them") in result.stdout
+
+
+def test_cli_classifies_a_chain_given_on_the_command_line(tmp_path):
+    """The one-off form of the manifest question, with the link's tree named
+    so the link is VERIFIED rather than merely declared."""
+    _tree(tmp_path / "openXdox", "openDox")
+    result = run_script(VALIDATOR, "--role", "assembly", "--pins", "openXdox",
+                        "--referent-chain", "openXdox,openDox",
+                        "--link-source", f"openXdox={tmp_path / 'openXdox'}",
+                        "--explain", "codexDox")
+    assert result.returncode == 0, result.stderr
+    assert "codexDox: domain-descendant / assembly" in result.stdout
+    assert "CHAIN openXdox → openDox   [verified]" in result.stdout
+    assert "WARNING" not in result.stdout
+
+
+def test_cli_reports_an_unread_link_as_a_warning_and_still_classifies():
+    """Offline is the ordinary case, so it is a WARNING and exit 0."""
+    result = run_script(VALIDATOR, "--role", "assembly", "--pins", "openXdox",
+                        "--referent-chain", "openXdox,openDox", "codexDox")
+    assert result.returncode == 0, result.stderr
+    assert "domain-descendant/assembly" in result.stdout
+    assert "WARNING codexDox: declared-unverified" in result.stderr
+
+
+def test_cli_reports_a_broken_link_as_a_finding_naming_it(tmp_path):
+    _tree(tmp_path / "openInk", "openQuill")
+    result = run_script(VALIDATOR, "--role", "assembly", "--pins", "openInk",
+                        "--referent-chain", "openInk,openScribe",
+                        "--link-source", f"openInk={tmp_path / 'openInk'}",
+                        "--explain", "MedxScribe")
+    assert result.returncode == 0, "a name given on the command line is not a "\
+        "manifest; the reading is reported, and the manifest gate is where a "\
+        "recorded chain becomes a finding"
+    assert "MedxScribe: project-leg / assembly" in result.stdout
+    assert "openInk declares openQuill, not openScribe" in result.stdout
+
+
+def test_cli_reads_the_chain_out_of_a_project_manifest(project, tmp_path):
+    """What a scaffolded project's own gate runs: the chain is READ from
+    `naming.referent_chain:`, and the link beside the root verifies it."""
+    manifest = project / "project.yaml"
+    text = manifest.read_text().replace(
+        "repository: testorg/Atlas\n    path: \".\"",
+        "repository: testorg/codexDox\n    path: \".\"")
+    text = text.replace("neutral_product_pins: []",
+                        "neutral_product_pins:\n  - openXdox")
+    text = text.replace(
+        "      form: project-leg\n      role: assembly\n"
+        "      also_matches: []",
+        "      form: domain-descendant\n      role: assembly\n"
+        "      also_matches: [project-leg/assembly]\n"
+        "      descendant_referent: openDox\n"
+        "      referent_declared: true\n"
+        "      referent_chain: [openXdox, openDox]")
+    manifest.write_text(text)
+    _tree(project.parent / "openXdox", "openDox")
+    result = run_script(VALIDATOR, "--project", str(manifest))
+    assert result.returncode == 0, result.stderr
+    assert "codexDox                         domain-descendant" in result.stdout
+    assert "WARNING" not in result.stderr
+
+
+def test_cli_finds_a_recorded_chain_that_does_not_hold(project, tmp_path):
+    """A RECORDED chain that the link's own tree contradicts is drift in the
+    record, and the finding names the link."""
+    manifest = project / "project.yaml"
+    text = manifest.read_text().replace(
+        "repository: testorg/Atlas\n    path: \".\"",
+        "repository: testorg/codexDox\n    path: \".\"")
+    text = text.replace("neutral_product_pins: []",
+                        "neutral_product_pins:\n  - openInk")
+    text = text.replace("      also_matches: []",
+                        "      also_matches: [domain-descendant]\n"
+                        "      referent_chain: [openInk, openDox]")
+    manifest.write_text(text)
+    _tree(project.parent / "openInk", "openQuill")
+    result = run_script(VALIDATOR, "--project", str(manifest))
+    assert result.returncode == 1
+    assert "openInk declares openQuill, not openDox" in result.stderr

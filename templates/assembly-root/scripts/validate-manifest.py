@@ -35,9 +35,14 @@ WHAT IS CHECKED
     manifest declares, that `also_matches` lists every other form the name
     satisfies, and that `referent_declared: true` has the pin file to show for
     it. A `<Domainx><Product>` name is a domain descendant only when the
-    matching `open<Product>` is in `neutral_product_pins:` and
-    `contracts/<referent>-pin.yaml` exists (2026-09-02: a claim needs a
-    referent). The whole check is OFFLINE.
+    matching `open<Product>` is REACHED: pinned directly in
+    `neutral_product_pins:` (2026-09-02: a claim needs a referent), or reached
+    through the pin chain this leg records in `naming.referent_chain:`
+    (2026-09-05: `codexDox` pins `openXdox`, `openXdox` pins `openDox`), with
+    `contracts/<the pin this project holds>-pin.yaml` in the tree either way.
+    A link of the chain is VERIFIED against that link's own manifest when its
+    tree is beside this root, and reported as `declared-unverified` — a
+    WARNING, not a finding — when it is not. The whole check is OFFLINE.
 
 EXIT CODES: 0 valid · 1 findings · 2 refusal (the file is missing or unreadable)
 """
@@ -51,9 +56,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from repo_shape import (  # noqa: E402
-    COMMIT_RE, PROJECT_ID_RE, SHA256_RE, TREE_DIGEST_DEFINITION,
-    VISIBILITY_CHOICES, NamingPolicy, Refusal, accepts_role, find_repo_root,
-    load_yaml, repo_basename,
+    CHAIN_RECORD_FIELD, COMMIT_RE, PROJECT_ID_RE, SHA256_RE,
+    TREE_DIGEST_DEFINITION, VISIBILITY_CHOICES, NamingPolicy, Refusal,
+    accepts_role, find_repo_root, link_pins_from_trees, load_yaml,
+    repo_basename,
 )
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -73,14 +79,50 @@ def _declared_pins(manifest: dict) -> set[str]:
     return {str(pin) for pin in (manifest.get("neutral_product_pins") or []) if pin}
 
 
+def _recorded_chain(naming: dict) -> tuple:
+    """The pin chain this leg RECORDS, as a tuple of names.
+
+    A single string is read as a one-link chain rather than as characters, and
+    anything else yields `()` — the caller reports the shape separately, so a
+    malformed record never becomes a silently different question.
+    """
+    recorded = naming.get(CHAIN_RECORD_FIELD)
+    if isinstance(recorded, str):
+        recorded = [recorded]
+    if not isinstance(recorded, list):
+        return ()
+    return tuple(str(link) for link in recorded if str(link).strip())
+
+
+def _chain_and_links(naming, root: Path | None) -> tuple[tuple, dict]:
+    """The chain a leg RECORDS, and what its READABLE links declare.
+
+    Read ONCE and handed to both the leg's own classification and the check of
+    its `naming:` record, because a leg classified two ways in one file is the
+    drift this validator exists to find rather than a thing it may do.
+
+    THE LINKS ARE READ WHERE THEY ARE, OR NOT AT ALL. `openXdox` declaring a
+    pin on `openDox` is a fact in openXdox's tree; a checkout beside this root
+    (or `SHAPE_PIN_SOURCE_<PRODUCT>`) is read when there is one, and its
+    absence is a warning, never a failure. Nothing here goes to a host.
+    """
+    chain = _recorded_chain(naming) if isinstance(naming, dict) else ()
+    return chain, (link_pins_from_trees(chain, root) if chain else {})
+
+
 def _naming_findings(leg_role, name: str, naming, policy: NamingPolicy,
-                     pins: set[str], root: Path | None) -> list[str]:
+                     pins: set[str], root: Path | None,
+                     chain: tuple, link_pins: dict) -> list[str]:
     """Check one leg's OPTIONAL `naming:` record against the policy.
 
     Absent is fine: the block is a record, not a requirement, and a manifest
     written before this field existed is not thereby wrong. Present and
     disagreeing with the classifier is a FINDING, because a record that can
     drift from the thing it records is worse than no record.
+
+    `WARNING`-prefixed lines are returned alongside the findings and are NOT
+    findings: a chain link whose tree is not checked out here is the ordinary
+    case offline, and `main` prints those without changing the exit code.
     """
     out: list[str] = []
     if naming is None:
@@ -88,9 +130,22 @@ def _naming_findings(leg_role, name: str, naming, policy: NamingPolicy,
     if not isinstance(naming, dict):
         return [f"FINDING manifest-naming: leg {leg_role!r}: naming is "
                 f"{naming!r}, expected a mapping"]
-    found = policy.classify(name, str(leg_role) if leg_role else None, pins)
+    recorded = naming.get(CHAIN_RECORD_FIELD)
+    if recorded is not None and not isinstance(recorded, (str, list)):
+        out.append(f"FINDING naming-referent-chain: leg {leg_role!r}: "
+                   f"{CHAIN_RECORD_FIELD} is {recorded!r}, expected a list of "
+                   "neutral-product names")
+    found = policy.classify(name, str(leg_role) if leg_role else None, pins,
+                            chain, link_pins)
     if found is None:
         return out  # already reported as naming-unclassified
+    if found.referent.status == "broken":
+        out.append(f"FINDING naming-referent-chain: leg {leg_role!r}: "
+                   f"{found.referent.reason}. The first entry is what this "
+                   "project pins and the last is the referent the name "
+                   "claims.")
+    out.extend(f"WARNING naming-referent-chain: leg {leg_role!r}: {text}"
+               for text in found.referent.warnings)
     if naming.get("form") != found.family:
         out.append(f"FINDING naming-form: leg {leg_role!r}: naming.form is "
                    f"{naming.get('form')!r}, but {name!r} classifies as "
@@ -133,26 +188,40 @@ def _naming_findings(leg_role, name: str, naming, policy: NamingPolicy,
             f"FINDING naming-referent: leg {leg_role!r}: descendant_referent "
             f"is {recorded_referent!r}, but {name!r} would need "
             + " or ".join(referents))
-    declared_pins = {pin.casefold() for pin in pins}
-    satisfied = next((r for r in referents if r.casefold() in declared_pins), None)
+    # REACHED, not merely pinned (2026-09-05). The referent may be reached by
+    # a DIRECT pin, exactly as on 2026-09-02, or through the chain this leg
+    # records — and what the tree must show for it differs: a direct pin is
+    # the referent's own pin file, a chain's is the FIRST LINK's, because that
+    # is the pin this project actually holds.
+    resolution = found.referent
+    satisfied = resolution.referent if resolution.reached else None
+    held = (resolution.chain[0] if resolution.by_chain and resolution.chain
+            else satisfied)
     declared = naming.get("referent_declared")
     if declared is not None and bool(declared) != (satisfied is not None):
         out.append(
             f"FINDING naming-referent-declared: leg {leg_role!r}: "
             f"referent_declared is {declared!r}, but " + " / ".join(referents)
             + (" is" if len(referents) == 1 else " are")
-            + (" in" if satisfied else " not in")
-            + " this manifest's `neutral_product_pins:`. A descendant form is "
-            "a claim; the pin is the referent.")
-    if declared is True and satisfied and root is not None:
-        pin_path = root / "contracts" / f"{satisfied.lower()}-pin.yaml"
+            + (" not" if satisfied is None else "")
+            + " reached by this manifest's `neutral_product_pins:`"
+            + (f" (directly or through {CHAIN_RECORD_FIELD})"
+               if satisfied is None else
+               (f" through the recorded chain {' → '.join(resolution.chain)}"
+                if resolution.by_chain else " directly"))
+            + ". A descendant form is a claim; the pin is the referent.")
+    if declared is True and held and root is not None:
+        pin_path = root / "contracts" / f"{held.lower()}-pin.yaml"
         if not pin_path.is_file():
             out.append(
                 f"FINDING naming-referent-missing: leg {leg_role!r}: "
-                f"{satisfied} is declared as this leg's referent, but "
-                f"{pin_path.relative_to(root)} does not exist. A declared pin "
-                "that is not in the tree is a claim wearing the costume of a "
-                "referent.")
+                f"{held} is "
+                + (f"the first link of this leg's recorded chain, reaching "
+                   f"{satisfied}" if held != satisfied else
+                   "declared as this leg's referent")
+                + f", but {pin_path.relative_to(root)} does not exist. A "
+                "declared pin that is not in the tree is a claim wearing the "
+                "costume of a referent.")
     return out
 
 
@@ -272,11 +341,15 @@ def _findings(manifest: dict, policy: NamingPolicy, root=None) -> list[str]:
             continue
         owners.add(repository.split("/", 1)[0])
         name = repo_basename(repository)
-        # The DECLARED role and the declared pins are what the classifier is
-        # given, because that is what the project says about itself. A role
-        # only wins where the NAME satisfies it, so declaring `assembly` over
-        # `<Project>-spec` still lands in naming-role-mismatch below.
-        found = policy.classify(name, str(role) if role else None, pins)
+        # The DECLARED role, the declared pins and the RECORDED CHAIN are
+        # what the classifier is given, because that is what the project says
+        # about itself. A role only wins where the NAME satisfies it, so
+        # declaring `assembly` over `<Project>-spec` still lands in
+        # naming-role-mismatch below.
+        naming = leg.get("naming")
+        chain, link_pins = _chain_and_links(naming, root)
+        found = policy.classify(name, str(role) if role else None, pins,
+                                chain, link_pins)
         if found is None:
             bad("naming-unclassified",
                 f"leg {role!r}: {name!r} matches no family in the naming policy")
@@ -294,8 +367,8 @@ def _findings(manifest: dict, policy: NamingPolicy, root=None) -> list[str]:
             bad("naming-role-mismatch",
                 f"leg {role!r}: {name!r} is the {found[1]!r} form of the "
                 "project-leg family")
-        out.extend(_naming_findings(role, name, leg.get("naming"), policy,
-                                    pins, root))
+        out.extend(_naming_findings(role, name, naming, policy, pins, root,
+                                    chain, link_pins))
         if not isinstance(path, str) or not path:
             bad("manifest-leg-path", f"leg {role!r}: path is {path!r}")
             continue
@@ -344,9 +417,13 @@ def main(argv: list[str] | None = None) -> int:
         print(str(exc), file=sys.stderr)
         return 2
 
-    findings = _findings(manifest, policy, root)
-    for finding in findings:
-        print(finding, file=sys.stderr)
+    notes = _findings(manifest, policy, root)
+    # A WARNING is a note about what could not be CHECKED here (a chain link
+    # whose tree is not on this disk), never about what is wrong. It is
+    # printed and then forgotten by the exit code, deliberately.
+    findings = [note for note in notes if not note.startswith("WARNING")]
+    for note in notes:
+        print(note, file=sys.stderr)
     if findings:
         print(f"\n{len(findings)} finding(s) in {manifest_path}", file=sys.stderr)
         return 1
