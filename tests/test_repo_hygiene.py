@@ -402,8 +402,45 @@ def test_readme_is_short_enough_to_be_read():
     #   TOOL performs; only a file in the project reaches the next one. The
     #   other three lines name it in the worked example's tree, in the Layout
     #   block, and nowhere else.
-    assert len(lines) <= 881, (
-        f"README.md is {len(lines)} lines; the cap is 881")
+    # 2026-09-05: 881 -> 945 — the MAC path, a rehearsal that creates nothing,
+    #   and what a failed scaffold leaves (#54), on Brett Heap's words: "we
+    #   have the case for windows only and wsl/linux users and mac users. we
+    #   need to make sure it is explained for all." The Quick start's one line
+    #   for two platforms becomes a Linux line and a macOS paragraph — where
+    #   `git`, `make` and a `python3` come from (the Xcode Command Line
+    #   Tools), that Homebrew is itself an install and prints the `PATH` line
+    #   Apple Silicon needs, that the stock `/bin/bash` 3.2 is enough, and
+    #   that the zsh login shell is beside the point because both entry points
+    #   run under `bash` explicitly. The bash-3.2 half is the one a document
+    #   cannot hold true on its own, so `.github/workflows/tests.yml` gained a
+    #   `macos-latest` job that runs the whole suite there and parses both
+    #   entry points with `/bin/bash` itself. A parse settles SYNTAX and
+    #   nothing else, so SYNTAX is the only word the paragraph claims, and it
+    #   says CI parsed on `macos-latest` rather than asserting which bash
+    #   answered there — the job prints `--version` because a document cannot
+    #   know that either.
+    #   The other two additions are things a novice could not do at all.
+    #   `--local-remote-dir` rehearses the whole run against three bare
+    #   repositories: `gh` is never called, nothing is created on GitHub, and
+    #   `--org` is a string nothing checks, so the organisation need not
+    #   exist. Its paragraph also says what is NOT offline — the
+    #   `openRepoShape` command fetches `setup.sh`, and `setup.sh` then
+    #   self-bootstraps a clone of this standard, both over the network,
+    #   before any of the rest runs — because the first draft said "no
+    #   network" of a route that has two, and only `./setup.sh` from a
+    #   checkout touches none. The failing-part-way paragraph says which
+    #   phases write nothing, that the three are created spec, code, root —
+    #   the root LAST — that there is NO rollback, whose message it is
+    #   quoting when it says so (a failed push's), and which exits are real
+    #   (`--reuse-empty-repo` for a zero-commit ROOT only, `gh repo delete`
+    #   with the `delete_repo` scope, or a different name). Both are
+    #   paragraphs rather than sentences because a reader who learns half of
+    #   either acts on the half.
+    #   Three more lines close a gap Copilot flagged in PR #57: the paragraph
+    #   also names the exit when the Tools' python3 is too old, because the
+    #   original read as claiming the Tools' python3 always suffices.
+    assert len(lines) <= 945, (
+        f"README.md is {len(lines)} lines; the cap is 945")
 
 
 @pytest.mark.parametrize("name", SHIPPED_BASH)
