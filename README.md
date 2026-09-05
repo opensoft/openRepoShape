@@ -31,7 +31,84 @@ overlays is fully conformant.
 
 ## Starting a project in a new organisation
 
-No fork, no manual clone — one command:
+### Quick start for a first-time user
+
+**macOS and Linux:** run the four steps below in your own shell. **Windows:**
+install WSL2 first and run every step INSIDE the WSL shell — `wsl --install`
+from an administrator PowerShell, reboot, open the Ubuntu app; the tools here
+are bash and Python 3 scripts, and there is no native PowerShell path today.
+
+**1. Install the GitHub CLI**, `gh`. The official instructions are at
+<https://cli.github.com/> (and <https://github.com/cli/cli#installation>):
+
+```sh
+brew install gh    # macOS, or Linux with Homebrew
+```
+
+Debian, Ubuntu, or Windows under WSL2 (WSL2's Ubuntu takes the same command):
+
+```sh
+(type -p wget >/dev/null || (sudo apt update && sudo apt install wget -y)) \
+	&& sudo mkdir -p -m 755 /etc/apt/keyrings \
+	&& out=$(mktemp) && wget -nv -O$out https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+	&& cat $out | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
+	&& sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+	&& sudo mkdir -p -m 755 /etc/apt/sources.list.d \
+	&& echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+	&& sudo apt update \
+	&& sudo apt install gh -y
+```
+
+Fedora (DNF5):
+
+```sh
+sudo dnf install dnf5-plugins
+sudo dnf config-manager addrepo --from-repofile=https://cli.github.com/packages/rpm/gh-cli.repo
+sudo dnf install gh
+```
+
+`git` and Python 3.9 or newer are needed too (see Requirements below).
+Ubuntu under WSL2 ships both, so there `gh` is the only install; step 4
+opens with a preflight that names anything missing and where to get it.
+
+**2. Log in.** `gh auth login`, as the account that will own the act — a
+member of the organisation who can create repositories there. Accept the
+offer to configure git's credential helper, or run `gh auth setup-git`: the
+first commits go up with a plain `git push` over HTTPS, and without it the
+three repositories are created and the push fails.
+
+**3. Install the `openRepoShape` command**, once:
+
+```sh
+gh api repos/opensoft/openRepoShape/contents/openRepoShape \
+    -H 'Accept: application/vnd.github.raw' | bash -s -- --install
+```
+
+or, where raw downloads are not blocked, the same bytes over HTTPS:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/openRepoShape \
+    | bash -s -- --install
+```
+
+It installs into `~/.local/bin`, idempotently — a second run prints
+`unchanged` — and prints the `export PATH=…` line if that directory is not
+on `PATH`.
+
+**4. Run it:**
+
+```sh
+openRepoShape <Project> --org <your-org>
+```
+
+`<Project>` is one positional CamelCase name (e.g. `Atlas`); `--org` is
+required — from the flag, `$OPENREPOSHAPE_ORG`, or the command's own prompt
+— and add `--visibility private` if you want that. It shows the plan and
+asks once, `Type yes to continue:`; type `yes`. Afterwards `./<Project>` is
+the cloned root. The worked example below walks through what this produces,
+prompt by prompt.
+
+Without installing anything — no fork, no manual clone — one command:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup.sh \
@@ -82,9 +159,10 @@ and wants a project `Atlas`.
 
 #### Prerequisites
 
-**1. Requirements.** `git`; Python 3.9 or newer; `gh`, the GitHub CLI; and an
-organisation on GitHub you can create repositories in. `make` is optional —
-bootstrap falls back to `python3 scripts/bootstrap.py`.
+**1. Requirements.** `git`; Python 3.9 or newer; `gh`, the GitHub CLI
+(install: https://cli.github.com/); and an organisation on GitHub you can
+create repositories in. `make` is optional — bootstrap falls back to
+`python3 scripts/bootstrap.py`.
 
 **2. Login.** `gh auth login`, as the account that will own the act: a member
 of `Northwind` with permission to create repositories there, or an owner —
