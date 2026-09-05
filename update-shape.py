@@ -762,7 +762,7 @@ def rewrite_shape_pin(text: str, commit: str, tree: str,
     return "\n".join(out) + "\n"
 
 
-def rewrite_manifest(text: str, commit: str, tree: str) -> str:
+def rewrite_manifest(text: str, commit: str, tree: str, kind: Kind) -> str:
     """The two fields `validate-manifest.py` checks, inside `shape:`.
 
     Scoped to the block on purpose: `commit:` and `tree_sha256:` are spelled
@@ -778,7 +778,7 @@ def rewrite_manifest(text: str, commit: str, tree: str) -> str:
     if start is None:
         raise Refusal(
             "update-manifest-no-shape",
-            "project.yaml has no `shape:` block, so there is nothing to "
+            f"{kind.manifest} has no `shape:` block, so there is nothing to "
             "mirror the pin into",
             "Remediation: `validate-manifest.py` requires one; add it, or "
             "re-scaffold.")
@@ -801,7 +801,7 @@ def rewrite_manifest(text: str, commit: str, tree: str) -> str:
         if count != 1:
             raise Refusal(
                 "update-manifest-unrecognised",
-                f"project.yaml's `shape:` block has {count} `{key}` line(s) "
+                f"{kind.manifest}'s `shape:` block has {count} `{key}` line(s) "
                 "where exactly one was expected",
                 "Remediation: fix the block by hand this once; this tool will "
                 "not guess at a manifest it does not recognise.")
@@ -952,7 +952,7 @@ def run_validator(root: Path, script: str) -> int:
 
 
 def commit_on_branch(root: Path, branch: str, paths: list[str], target: str,
-                     upstream: Upstream, count: int,
+                     upstream: Upstream, count: int, kind: Kind,
                      added: list[str] = ()) -> None:
     """A branch and ONE commit, with EXPLICIT PATHSPECS.
 
@@ -977,7 +977,7 @@ def commit_on_branch(root: Path, branch: str, paths: list[str], target: str,
     message = (
         f"Re-sync the shape copies to {upstream.repository} @ {target[:12]}\n\n"
         f"{count} copied file(s) re-copied from the upstream{gained}; "
-        f"contracts/shape-pin.yaml and project.yaml's `shape:` block now "
+        f"contracts/shape-pin.yaml and {kind.manifest}'s `shape:` block now "
         f"record {target}.\n\nWritten by update-shape.py; the copies are not "
         f"hand-edited and the digests are recomputed, not adjusted.\n")
     env = dict(os.environ)
@@ -1099,7 +1099,7 @@ def cmd_apply(args) -> int:
             pin_path.read_text(encoding="utf-8"), target, target_tree, rows
         ).encode("utf-8"))
         write(manifest_path, rewrite_manifest(
-            manifest_path.read_text(encoding="utf-8"), target, target_tree
+            manifest_path.read_text(encoding="utf-8"), target, target_tree, kind
         ).encode("utf-8"))
         print(f"  re-pinned contracts/shape-pin.yaml and {kind.manifest} "
               f"{pinned[:12]} -> {target[:12]}")
@@ -1122,7 +1122,7 @@ def cmd_apply(args) -> int:
                        | {"contracts/shape-pin.yaml", kind.manifest})
         if args.branch:
             commit_on_branch(root, args.branch, paths, target, upstream,
-                             len(copied), [add.path for add in taking])
+                             len(copied), kind, [add.path for add in taking])
             print(f"\n  committed on {args.branch}: " + ", ".join(paths))
             if args.push:
                 run(["git", "push", "-q", "-u", "origin", args.branch], cwd=root)

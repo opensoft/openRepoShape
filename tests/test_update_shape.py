@@ -204,6 +204,8 @@ def test_apply_on_a_branch_commits_only_what_it_wrote(root,
                         cwd=root).stdout.split())
     assert committed == {CHANGED, "contracts/shape-pin.yaml", "project.yaml"}
     assert "unrelated.txt" not in committed
+    assert "project.yaml" in git("log", "-1", "--format=%B",
+                                 cwd=root).stdout
 
 
 def test_apply_without_yes_refuses_where_nobody_can_be_asked(

@@ -350,7 +350,8 @@ def test_a_family_holder_takes_its_own_addition(holder, standard):
 
     result = run_script(UPDATE, "apply", "--root", str(holder), "--yes",
                         "--upstream", str(standard["upstream"]),
-                        "--at", standard["c2"], "--add", FAMILY_ADDED)
+                        "--at", standard["c2"], "--add", FAMILY_ADDED,
+                        "--branch", "shape/add-test")
     assert result.returncode == 0, result.stdout + result.stderr
     expected = subprocess.run(
         ["git", "show",
@@ -363,6 +364,11 @@ def test_a_family_holder_takes_its_own_addition(holder, standard):
         == standard["c2"]
     green = run_script(holder / "scripts" / "validate-family.py", cwd=holder)
     assert green.returncode == 0, green.stdout + green.stderr
+    # A family root has no `project.yaml`; the commit that mirrors the pin
+    # must name the manifest this holder actually carries.
+    message = git("log", "-1", "--format=%B", cwd=holder).stdout
+    assert "family.yaml" in message
+    assert "project.yaml" not in message
 
 
 def validators_are_green(root) -> None:
