@@ -154,6 +154,16 @@ COPIED_VERBATIM = (
     "scripts/bootstrap.py",
     "Makefile",
     ".gitignore",
+    # WHAT THIS PROJECT'S BYTES ARE, said by the project (2026-09-05, #51).
+    # The pin digests these copies as they sit on disk, so a clone that
+    # translated line endings on checkout would make every row false on
+    # exactly one platform — Git for Windows installs `core.autocrlf=true` by
+    # default. `setup-project.py` clones with `core.autocrlf=false` for the
+    # run it controls; this file covers the next person to clone the finished
+    # project, who never ran anything of ours. PINNED like the rest, because a
+    # file that says what the bytes are is worth nothing if it can be edited
+    # without the pin noticing.
+    ".gitattributes",
     ".github/workflows/validate.yml",
     # The AGENT-FACING rules of the shape (2026-09-04). PINNED, and verbatim
     # for the same reason the validators are: the sentence "never edit a file
@@ -208,6 +218,9 @@ FAMILY_COPIED_VERBATIM = (
     "scripts/bootstrap.py",
     "Makefile",
     ".gitignore",
+    # The holder carries the same copy pin, so it carries the same statement
+    # about its bytes, and for the same reason (2026-09-05, #51).
+    ".gitattributes",
     ".github/workflows/validate.yml",
     # The holder's own agent-facing rules, pinned like the assembly root's and
     # for the same reason. It is a SEPARATE document rather than the same one:

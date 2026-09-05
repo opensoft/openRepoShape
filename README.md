@@ -33,7 +33,26 @@ overlays is fully conformant.
 
 ### Quick start for a first-time user
 
-**macOS and Linux:** run the four steps below in your own shell.
+**Linux:** run the four steps below in your own shell.
+
+**macOS:** the same four steps, once the machine has what they need. The Xcode
+Command Line Tools supply `git`, `make` and a `python3` — install them with
+`xcode-select --install`, or type `git` once on a fresh Mac and the installer
+offers itself; step 4 opens with a preflight that prints the `python3` it found
+and refuses anything below 3.9. If it refuses the one the Tools supplied —
+older macOS shipped 3.8 — install a newer one from
+<https://www.python.org/downloads/> or with `brew install python`, and the
+preflight will find it first on `PATH`. `gh` comes from Homebrew, which is its
+own install if `brew` is absent (<https://brew.sh>): on Apple Silicon Homebrew
+lives in `/opt/homebrew`, which is on no `PATH` by default, and its installer
+finishes by printing the line that puts it there — run that line, or the next
+shell cannot find `brew`. Then `brew install gh`, and `brew install
+git-filter-repo` only if you are ADOPTING an existing repository rather than
+scaffolding a new one. The stock `/bin/bash` is 3.2 and is enough: `setup.sh`
+and the `openRepoShape` command use no syntax newer than that, and CI runs the
+whole suite on `macos-latest`, parsing both there with `/bin/bash` itself. That
+the login shell is zsh changes nothing — both entry points are run under `bash`
+explicitly.
 
 **Windows, natively.** No WSL2. Install Python 3.9 or newer from
 <https://www.python.org/downloads/>, ticking *Add python.exe to PATH* — its
@@ -154,6 +173,28 @@ asks once, `Type yes to continue:`; type `yes`. Afterwards `./<Project>` is
 the cloned root. The worked example below walks through what this produces,
 prompt by prompt.
 
+**Rehearse first, creating nothing.** `--local-remote-dir <dir>` runs the
+whole of that against three BARE repositories in `<dir>`: the same preflight
+(where `gh` is neither required nor checked), the same naming check, the same
+plan, the same `Type yes to continue:`, the same clone and `make bootstrap`.
+`gh` is never called and nothing is created on GitHub. `--org` is still
+required — it is what the manifest records as the owner of all three legs —
+but here it is only a string: it is never checked against GitHub, so the
+organisation need not exist yet.
+
+```sh
+openRepoShape Atlas --org <your-org> --local-remote-dir ./rehearsal
+```
+
+The command passes the flag through to `setup.sh` untouched, so that is a
+whole run to read before an organisation is involved. It still reaches GitHub
+before the run starts — to fetch `setup.sh`, then for the self-bootstrap clone
+of this standard into a temporary directory; run the same flag on `./setup.sh`
+from a checkout instead and nothing touches the network at all. What it leaves
+behind is `./Atlas` and three bare repositories in `./rehearsal`, both of which
+you can delete. `openRepoShape --help` and `setup.sh --help` list every flag,
+this one included.
+
 Without installing anything — no fork, no manual clone — one command:
 
 ```sh
@@ -166,7 +207,7 @@ bytes through the API instead:
 
 ```sh
 gh api repos/opensoft/openRepoShape/contents/setup.sh --jq .content \
-    | base64 -d | bash -s -- --org <your-org> --project Atlas
+    | base64 --decode | bash -s -- --org <your-org> --project Atlas
 ```
 
 Shorter still, once: install the `openRepoShape` command and this becomes
@@ -275,6 +316,29 @@ manifest, sets the topic `xf-project-atlas` on all three, clones the root into
 the directory you ran the command from, as `./Atlas` (or where `--into <dir>`
 says), and runs `scripts/bootstrap.py` (what `make bootstrap` runs).
 
+**If it fails part-way.** Nothing is created before the typed `yes` in (4):
+the preflight, the naming check and the plan only read and print, and the
+plan is literally a `--dry-run`. After the `yes`, `scaffold-project.py`
+creates the three repositories with `gh repo create` in the order
+`Atlas-spec`, `Atlas-code`, `Atlas` — the root LAST — then seeds and pushes
+the two legs, then builds the root, pushes it, and sets the topic on all
+three. There is NO rollback: whatever was created before the failure stays
+created. A failed push says so in as many words — *NOTHING has been rolled
+back. What already exists is listed above; delete it by hand if you want a
+clean re-run* — and it is no less true of a failure anywhere else. A second
+run is refused while the legs exist, and there is no `--force`, because
+re-running over a live project is not a scaffold: delete what was created —
+`gh repo delete <org>/<name>`, which needs the `delete_repo` scope, and
+`gh repo delete --help` names `gh auth refresh -s delete_repo` as how to get
+it — or scaffold under a different `--project`. `--reuse-empty-repo` covers
+exactly one case: an assembly ROOT that already exists with ZERO commits,
+which is a reserved name rather than a project. It applies to the root alone
+— an existing leg is refused whatever it holds, and a root that HAS commits
+is a live repository, which `adopt-project.py` converts in place instead.
+`--visibility internal` is the third value every tool here accepts; only a
+GitHub Enterprise Cloud organisation offers it at all, and one that does not
+is refused by GitHub rather than by this tool.
+
 **What Dana has afterwards:**
 
 ```text
@@ -285,6 +349,7 @@ Atlas/                      Northwind/Atlas — the repository people clone
 ├── contracts/              spec-pin.yaml, code-pin.yaml, shape-pin.yaml, repository-naming.yaml
 ├── scripts/  Makefile      bootstrap and the three validators — copied and pinned
 ├── .github/workflows/      validate.yml, the neutral gate on every pull request
+├── .gitattributes          LF in every worktree, so the copies digest as the pin says
 ├── spec/                   Northwind/Atlas-spec AT its pinned commit, with its own AGENTS.md pointer
 └── code/                   Northwind/Atlas-code AT its pinned commit, with its own AGENTS.md pointer
 ```
@@ -741,6 +806,13 @@ of each copy, so "which openRepoShape is this?" and "has anyone edited it
 since?" both have answers, and editing a copy in place is reported as drift
 with the exit named (carry it upstream; do not update the digest).
 
+**Why `.gitattributes` is one of the copies.** The pin digests the bytes ON
+DISK, and Git for Windows' installer default is `core.autocrlf=true` — so
+without this file a colleague who did nothing but clone the finished project
+gets CRLF in the worktree, and every pinned row is false for them alone.
+`* text=auto eol=lf` puts the answer in the project, where the digests are, so
+no clone-time setting is needed on any machine (#51, 2026-09-05).
+
 **Why an agent file is one of the copies.** An agent working in a project
 learns the shape's rules — advance a leg in ONE commit, never edit a pinned
 file, never `--admin` — from a file that travels WITH the shape rather than
@@ -862,6 +934,7 @@ templates/family-root/            the skeleton for a FAMILY holder
 templates/spec-root/              the skeleton for <Project>-spec
 templates/code-root/              the skeleton for <Project>-code
 templates/*/AGENTS-shape.md       the rules of the shape, for an agent (PINNED)
+templates/*/.gitattributes        LF in every clone, so a copy digests as pinned
 AGENTS.md                         the procedure an AI assistant follows
 tests/                            pytest; scaffolds into bare repos in /tmp
 ```

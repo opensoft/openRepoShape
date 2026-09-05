@@ -1,0 +1,25 @@
+# THE BYTES A CLONE SEES ARE THE BYTES THE PIN DESCRIBES.
+#
+# `contracts/shape-pin.yaml` records a sha256 of every copied shape file, and
+# `scripts/validate-pins.py` recomputes each one from the bytes on disk. Git
+# for Windows' installer default is `core.autocrlf=true`, so a clone there
+# writes CRLF into the worktree; the digest of CRLF bytes is not the digest of
+# the LF bytes the pin records, and `make validate` then goes red on EVERY
+# pinned file for a colleague who did nothing but clone the repository.
+#
+# That is fixed here rather than on each machine because the repository is
+# what knows: `* text=auto eol=lf` normalises text to LF in the object store
+# on check-in and checks it out as LF on every platform, whatever
+# `core.autocrlf` is set to. Nobody has to be told a git setting before
+# cloning, and nobody who was never told is punished for it.
+#
+# NO PATH IS LISTED BY NAME, and that is a decision rather than an omission. A
+# file git's heuristic read as binary would not be normalised, so a pinned
+# file it misjudged would need `text eol=lf` spelled out for it. Every pinned
+# file is text — YAML, Python, Markdown, a Makefile, a workflow — so there is
+# nothing for the heuristic to get wrong, and `text=auto` leaves binary
+# detection where it belongs: with git, for the files this project adds later.
+#
+# openRepoShape #51, ruled by Brett Heap on 2026-09-05.
+
+* text=auto eol=lf

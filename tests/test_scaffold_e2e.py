@@ -848,3 +848,109 @@ def test_a_bad_visibility_is_refused_by_argparse(tmp_path):
     assert result.returncode != 0
     assert "invalid choice: 'secret'" in result.stderr
     assert "'internal'" in result.stderr
+
+
+# --- line endings: the bytes a clone sees ----------------------------------
+#
+# The copies are pinned by the sha256 of their BYTES, so the one thing that
+# must not vary between two clones of the same commit is the bytes. Git for
+# Windows' installer default is `core.autocrlf=true` and varies exactly that:
+# without `.gitattributes` in the PROJECT, a colleague who did nothing but
+# clone gets CRLF in the worktree, `validate-pins.py` digests CRLF against an
+# LF row, and `make validate` is red on every pinned file (#51, 2026-09-05).
+# `setup-project.py` clones with `core.autocrlf=false` for the run the tool
+# controls; only a file inside the project covers the next person to clone it.
+
+#: `core.autocrlf=true` is honoured on Linux and macOS too — it is a
+#: conversion rule, not a platform check — so the failure a Windows colleague
+#: would hit is reproducible in this suite on every runner.
+AUTOCRLF = ["-c", "core.autocrlf=true"]
+
+#: The pinned copies whose worktree bytes the proof looks at by name. Enough
+#: kinds to show the rule is not about one extension: a Makefile, a Python
+#: script, a YAML contract and a workflow.
+PINNED_SAMPLE = ("Makefile", "scripts/validate-pins.py",
+                 "contracts/repository-naming.yaml",
+                 ".github/workflows/validate.yml")
+
+
+def clone_with_autocrlf(source, target):
+    """A clone made the way Git for Windows' default makes one."""
+    proc = subprocess.run(
+        ["git", *FILE_PROTOCOL, *AUTOCRLF, "clone", "-q",
+         "--recurse-submodules", str(source), str(target)],
+        capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, proc.stderr
+    return target
+
+
+def test_the_scaffolded_root_says_what_its_bytes_are(project):
+    """`.gitattributes` is a COPY, verbatim and digest-pinned like the rest.
+
+    Pinned rather than merely shipped: a file that says what the bytes are is
+    worth nothing if it can be edited without the pin noticing.
+    """
+    sys.path.insert(0, str(REPO / "scripts"))
+    from repo_shape import file_sha256, load_yaml
+    copied = project / ".gitattributes"
+    template = REPO / "templates" / "assembly-root" / ".gitattributes"
+    assert copied.read_bytes() == template.read_bytes()
+    assert b"\r" not in copied.read_bytes(), (
+        "the file that says LF is itself written LF, on every platform")
+    assert "* text=auto eol=lf" in copied.read_text()
+    rows = {row["path"]: row["sha256"].lower()
+            for row in load_yaml(project / "contracts" / "shape-pin.yaml")["files"]}
+    assert rows[".gitattributes"] == file_sha256(copied)
+
+
+def test_a_clone_made_with_autocrlf_true_is_green(scaffolded, tmp_path):
+    """THE PROOF #51 ASKS FOR, and it is an end-to-end one: the project is
+    cloned from its own remote with the setting a stock Git for Windows
+    installs, and its OWN validators are run inside that clone."""
+    clone = clone_with_autocrlf(scaffolded["remotes"] / f"{PROJECT}.git",
+                                tmp_path / "autocrlf")
+    for rel in PINNED_SAMPLE:
+        assert b"\r\n" not in (clone / rel).read_bytes(), (
+            f"{rel} was checked out with CRLF; `eol=lf` did not hold")
+    eol = git("ls-files", "--eol", "--", *PINNED_SAMPLE, cwd=clone).stdout
+    for line in eol.splitlines():
+        assert "w/lf" in line, f"the worktree column is not lf: {line}"
+
+    for validator in ("validate-pins.py", "validate-manifest.py"):
+        result = run_script(clone / "scripts" / validator, cwd=clone)
+        assert result.returncode == 0, (
+            f"{validator} is red in a core.autocrlf=true clone:\n"
+            f"{result.stdout}{result.stderr}")
+
+
+def test_without_the_attributes_file_the_same_clone_goes_red(scaffolded, tmp_path):
+    """THE CONTROL. The mechanism is real, and this is what it prevents.
+
+    The same project minus `.gitattributes`, cloned the same way, has CRLF in
+    its worktree and `validate-pins.py` reports drift on files nobody edited —
+    which is exactly the bug report a colleague would file, and exactly what
+    the file above stops. Without this assertion the green test could be green
+    because `core.autocrlf` did nothing at all.
+    """
+    plain = tmp_path / "plain"
+    proc = subprocess.run(
+        ["git", *FILE_PROTOCOL, "clone", "-q", "--recurse-submodules",
+         str(scaffolded["remotes"] / f"{PROJECT}.git"), str(plain)],
+        capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, proc.stderr
+    git("rm", "-q", "--", ".gitattributes", cwd=plain)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m",
+        "Drop the attributes file", "--", ".gitattributes", cwd=plain)
+
+    clone = clone_with_autocrlf(plain, tmp_path / "no-attributes")
+    assert b"\r\n" in (clone / "Makefile").read_bytes(), (
+        "fixture: core.autocrlf=true must actually convert here, or this "
+        "control proves nothing")
+
+    result = run_script(clone / "scripts" / "validate-pins.py", cwd=clone)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "shape-copy-drift" in result.stderr
+    for rel in PINNED_SAMPLE:
+        assert rel in result.stderr, (
+            f"{rel} is pinned and was rewritten by the checkout; the validator "
+            "must name it")
