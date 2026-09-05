@@ -219,6 +219,37 @@ def test_apply_without_yes_refuses_where_nobody_can_be_asked(
         == upstream_and_project["a"]
 
 
+def strip_shape_block(manifest_path) -> None:
+    """Remove the `shape:` block from a manifest, as if it had never been
+    elected — the one way `rewrite_manifest` has nothing to mirror the pin
+    into."""
+    lines = manifest_path.read_text(encoding="utf-8").splitlines()
+    start = next(i for i, line in enumerate(lines) if line.rstrip() == "shape:")
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        if lines[index].strip() and not lines[index].startswith((" ", "\t")):
+            end = index
+            break
+    manifest_path.write_text("\n".join(lines[:start] + lines[end:]) + "\n",
+                             encoding="utf-8")
+
+
+def test_apply_with_no_shape_block_names_this_kinds_own_manifest_validator(
+        root, upstream_and_project):
+    """A PROJECT root's remediation must send the operator to
+    `validate-manifest.py`, the validator this root actually carries — see
+    the family-side twin of this test in `test_family.py`, which asserts the
+    opposite name on a root that does not carry this one."""
+    strip_shape_block(root / "project.yaml")
+    result = apply(root, upstream_and_project)
+    assert result.returncode == 2
+    assert "update-manifest-no-shape" in result.stderr
+    assert "validate-manifest.py" in result.stderr
+    assert "validate-family.py" not in result.stderr
+    assert load_yaml(root / "contracts" / "shape-pin.yaml")["commit"].lower() \
+        == upstream_and_project["a"], "a refused apply writes nothing at all"
+
+
 # --- drift the project introduced ------------------------------------------
 
 def edit_locally(root, rel: str) -> None:

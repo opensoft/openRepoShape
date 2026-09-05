@@ -152,7 +152,8 @@ class Kind:
     """
 
     def __init__(self, name: str, manifest: str, template_dir: str,
-                 copy_source: dict, lists: tuple, validators: tuple):
+                 copy_source: dict, lists: tuple, validators: tuple,
+                 manifest_validator: str):
         self.name = name
         self.manifest = manifest
         self.template_dir = template_dir
@@ -163,18 +164,26 @@ class Kind:
         #: matter are the TARGET COMMIT's, not this checkout's.
         self.lists = lists
         self.validators = validators
+        #: Which of `validators` checks the manifest's `shape:` block, named
+        #: explicitly rather than read off `validators[-1]`: a refusal that
+        #: sends the operator to a validator they do not carry is a wrong
+        #: answer with a confident tone, same as the ones `Refusal` itself is
+        #: for.
+        self.manifest_validator = manifest_validator
 
 
 PROJECT_KIND = Kind("project", "project.yaml", "templates/assembly-root",
                     COPY_SOURCE,
                     ("COPIED_VERBATIM", "COPIED_FROM_SHAPE", "EXECUTABLE"),
                     ("scripts/validate-pins.py",
-                     "scripts/validate-manifest.py"))
+                     "scripts/validate-manifest.py"),
+                    "scripts/validate-manifest.py")
 FAMILY_KIND = Kind("family", "family.yaml", "templates/family-root",
                    FAMILY_COPY_SOURCE,
                    ("FAMILY_COPIED_VERBATIM", "FAMILY_COPIED_FROM_SHAPE",
                     "FAMILY_EXECUTABLE"),
-                   ("scripts/validate-family.py",))
+                   ("scripts/validate-family.py",),
+                   "scripts/validate-family.py")
 
 
 def root_kind(root: Path) -> Kind:
@@ -763,7 +772,7 @@ def rewrite_shape_pin(text: str, commit: str, tree: str,
 
 
 def rewrite_manifest(text: str, commit: str, tree: str, kind: Kind) -> str:
-    """The two fields `validate-manifest.py` checks, inside `shape:`.
+    """The two fields the kind's manifest validator checks, inside `shape:`.
 
     Scoped to the block on purpose: `commit:` and `tree_sha256:` are spelled
     the same way in every pin, and a whole-file replacement would move a leg's
@@ -780,8 +789,8 @@ def rewrite_manifest(text: str, commit: str, tree: str, kind: Kind) -> str:
             "update-manifest-no-shape",
             f"{kind.manifest} has no `shape:` block, so there is nothing to "
             "mirror the pin into",
-            "Remediation: `validate-manifest.py` requires one; add it, or "
-            "re-scaffold.")
+            f"Remediation: `{Path(kind.manifest_validator).name}` requires "
+            "one; add it, or re-scaffold.")
     end = len(lines)
     for index in range(start + 1, len(lines)):
         line = lines[index]
