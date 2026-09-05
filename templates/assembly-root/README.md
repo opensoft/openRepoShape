@@ -137,6 +137,7 @@ scripts/validate-pins.py         THE LOCKSTEP VALIDATOR
 scripts/validate-repository-naming.py
 scripts/repo_shape.py            shared helpers, standard library only
 .github/workflows/validate.yml   the neutral gate, on pull_request
+.gitattributes                   LF in every worktree, whatever core.autocrlf says
 ```
 
 Everything under `scripts/`, plus `contracts/repository-naming.yaml` and
