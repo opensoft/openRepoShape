@@ -24,6 +24,7 @@ SHIPPED = [
     REPO / "scripts" / "path_classify.py",
     REPO / "scripts" / "validate-repository-naming.py",
     REPO / "scripts" / "family.py",
+    REPO / "scripts" / "bump-leg.py",
     REPO / "templates" / "assembly-root" / "scripts" / "validate-pins.py",
     REPO / "templates" / "assembly-root" / "scripts" / "validate-manifest.py",
     REPO / "templates" / "assembly-root" / "scripts" / "bootstrap.py",
@@ -115,9 +116,18 @@ def test_agents_md_is_short_enough_to_be_read():
     rather than pass because the tool asked; and a FAMILY holder is created
     and grown by a tool that has no prompt of its own, which makes getting
     the yes the assistant's job and is exactly the kind of thing that must be
-    written down rather than remembered."""
+    written down rather than remembered.
+
+    235 -> 266 on 2026-09-05, for the SEVENTH: advancing a leg. The lockstep
+    rule was written down in three places and performed by hand in every
+    project, which is the arrangement that let seven consecutive pin-syncs in
+    the xFactory aggregation move the gitlink alone. `bump-leg.py` moves the
+    three facts together, so the procedure block is mostly what an assistant
+    must NOT do — hand-edit the pin to satisfy the validator, push to the
+    default branch, or work around a refusal by pinning a commit the leg's
+    remote does not have."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 235, f"AGENTS.md is {len(lines)} lines; the cap is 235"
+    assert len(lines) <= 266, f"AGENTS.md is {len(lines)} lines; the cap is 266"
 
 
 def test_claude_md_points_at_agents_md():
@@ -224,8 +234,16 @@ def test_readme_is_short_enough_to_be_read():
     #   rendered project detail) while the project's `AGENTS.md` and
     #   `CLAUDE.md` are rendered and are not. That trade is the same one the
     #   copies themselves are, and it was nowhere in this file.
-    assert len(lines) <= 544, (
-        f"README.md is {len(lines)} lines; the cap is 544")
+    # 2026-09-05: 544 -> 573 — "Advancing a leg", the command that moves the
+    #   three lockstep facts together. The section defined the invariant and
+    #   named the validator that refuses when it breaks, and said nothing at
+    #   all about how to MOVE it, so every project moved it by hand — which is
+    #   the arrangement the invariant was written down about. Most of the
+    #   added lines are the refusals, for the same reason the update section's
+    #   are: a bump that hid drift would be worse than the hand edit it
+    #   replaced. One more line names it in the Layout block.
+    assert len(lines) <= 573, (
+        f"README.md is {len(lines)} lines; the cap is 573")
 
 
 def test_setup_sh_is_executable_and_fails_loudly():

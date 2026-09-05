@@ -1,4 +1,4 @@
-# AGENTS.md — scaffolding, adopting, updating, declaring descent, families
+# AGENTS.md — scaffolding, adopting, updating, advancing a leg, families
 
 You are an AI assistant a human has asked to "scaffold a new project with
 this shape", or "convert this repository to it", or "put these services in a
@@ -6,7 +6,7 @@ family". This is the whole procedure; `README.md` says what the shape is.
 Sections 1-3 scaffold a NEW project; the ones after them cover an EXISTING
 repository (including one with no code yet), a project that declares descent
 from a neutral product, a project whose copied shape files have fallen behind
-the upstream, and a FAMILY holder.
+the upstream, a leg that has moved on, and a FAMILY holder.
 
 ## The rules that outrank the rest
 
@@ -189,6 +189,38 @@ git -C <path> push -u origin shape/update-<sha>   # then open a pull request
 6. `apply` runs the project's own `validate-pins.py` and `validate-manifest.py`
    and rolls every byte back if either goes red. Land it as a pull request;
    never suggest a push to the default branch.
+
+## Advancing a leg
+
+A leg's gitlink, `contracts/<role>-pin.yaml` and every workflow `@<sha>` that
+names it are ONE invariant, and the project's `validate-pins.py` refuses when
+they disagree. `bump-leg.py` moves all three in one commit; run it from a
+checkout of this standard, pointed at the project.
+
+```sh
+python3 scripts/bump-leg.py --root <path> --leg spec --to <40 hex> --dry-run
+# 1. show the human the printed `old -> new` line
+python3 scripts/bump-leg.py --root <path> --leg spec --to <40 hex>
+git -C <path> push -u origin <branch>   # then open a pull request
+```
+
+1. **`--dry-run` first, and show the human the `old -> new` line it prints.**
+   That line, the digest under it and the workflow files it names are the
+   whole change. A bump nobody read is a pin nobody chose.
+2. **Never edit `contracts/<role>-pin.yaml` by hand to make the validator
+   agree.** The digest is RECOMPUTED from the leg's own objects, never
+   adjusted to fit; a hand-written one turns the check into a formality and
+   hides exactly the drift it exists to find.
+3. **The commit is made on a BRANCH and lands as a pull request.** The tool
+   refuses to commit onto the tracking branch for that reason. Never suggest
+   a direct push to the default branch, and never `--admin`.
+4. **A refusal is not something to work around.** A commit no branch of the
+   leg's remote contains must be PUSHED, not pinned — a pin the rest of the
+   world cannot fetch is a root it cannot bootstrap. A red validator has
+   already been rolled back; the finding above it is the thing to fix.
+5. The leg is left DETACHED at the new commit. `make bootstrap` in the root
+   re-places it on its tracking branch AT the new pin; say so when you relay
+   the result.
 
 ## Creating a family, and adding a member
 
