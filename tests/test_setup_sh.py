@@ -15,6 +15,8 @@ import os
 import re
 import shutil
 import subprocess
+import sys
+import tempfile
 
 import pytest
 
@@ -485,3 +487,82 @@ def test_self_bootstrap_without_org_refuses(tmp_path):
     assert result.returncode == 2
     assert "--org" in result.stderr
     assert not (tmp_path / "remotes").exists()
+
+
+# --- the shim's own bash-side guards -----------------------------------------
+#
+# These three refuse BEFORE section 0's `mktemp -d` / `git clone` ever runs,
+# so none of them touches the network or leaves a checkout behind — they are
+# offline the same way every test above is, just for a different reason: the
+# thing under test never gets far enough to need `--local-remote-dir` at all.
+
+def test_a_hostile_openreposhape_repo_refuses_before_any_clone(tmp_path):
+    """A newline in `$OPENREPOSHAPE_REPO` could forge a line onto stdout or
+    stderr if the shim ever echoed the value back into a `REFUSED:` line or a
+    `say` — which is exactly why the guard's own refusal (setup.sh's
+    `OPENREPOSHAPE_REPO` case) does not quote the value. This drives a
+    forged value all the way from the environment to that refusal, from an
+    EMPTY directory that is not a checkout, and checks that no `mktemp -d`
+    under the real temp directory ever ran either.
+    """
+    outside = make_outside_checkout(tmp_path)
+    forged = "/nope\nREFUSED: forged"
+    before = set(Path(tempfile.gettempdir()).glob("openreposhape-shape-*"))
+    result = run_bare_setup(outside / "setup.sh",
+                            "--org", "demoorg", "--project", "Sample", "--yes",
+                            "--local-remote-dir", str(tmp_path / "remotes"),
+                            cwd=outside, extra_env={"OPENREPOSHAPE_REPO": forged})
+    after = set(Path(tempfile.gettempdir()).glob("openreposhape-shape-*"))
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert "OPENREPOSHAPE_REPO" in result.stderr
+    assert "git clone" not in result.stdout
+    assert not any(line.startswith("REFUSED: forged")
+                  for line in result.stdout.splitlines()), (
+        "the forged value reached stdout as a line of its own:\n"
+        f"{result.stdout}")
+    assert after == before, (
+        f"a temporary shape checkout was left behind: {after - before}")
+
+
+@pytest.mark.parametrize("ref", ["a..b", "topic.lock", "a b", "-x"])
+def test_a_shape_ref_that_is_not_a_ref_is_refused_by_the_shim(tmp_path, ref):
+    """The bash-side mirror of `setup-project.py`'s own `checked_ref` test,
+    reached through the shim's guard rather than the Python parser -
+    `$OPENREPOSHAPE_REPO` points at THIS checkout so the run stays offline
+    whichever of the four bad shapes is tried."""
+    outside = make_outside_checkout(tmp_path)
+    result = run_bare_setup(outside / "setup.sh",
+                            "--org", "demoorg", "--project", "Sample", "--yes",
+                            "--shape-ref", ref,
+                            "--local-remote-dir", str(tmp_path / "remotes"),
+                            cwd=outside, extra_env={"OPENREPOSHAPE_REPO": str(REPO)})
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert "--shape-ref" in result.stderr
+
+
+def test_the_shim_refuses_before_cloning_when_git_is_missing(tmp_path):
+    """A PATH holding only `dirname` (needed to compute `$SCRIPT_DIR` before
+    the probe can run at all) and a `python3` symlink pointing at THIS
+    interpreter (`find_python` must still succeed) — and deliberately no
+    `git`. Run from an EMPTY directory, not a checkout, so the developer path
+    cannot short-circuit past the guard.
+
+    The bash itself is invoked by its OWN absolute path, never the bare name:
+    `subprocess` resolves an argv[0] with no slash against the CHILD's own
+    PATH, and a `PATH` this restricted would fail to find `bash` at all.
+    """
+    outside = make_outside_checkout(tmp_path)
+    only_bin = tmp_path / "only-bin"
+    only_bin.mkdir()
+    (only_bin / "dirname").symlink_to(shutil.which("dirname"))
+    (only_bin / "python3").symlink_to(sys.executable)
+    bash = shutil.which("bash")
+    result = subprocess.run(
+        [bash, str(outside / "setup.sh"),
+         "--org", "demoorg", "--project", "Sample", "--yes",
+         "--local-remote-dir", str(tmp_path / "remotes")],
+        capture_output=True, text=True, check=False,
+        cwd=str(outside), env={"PATH": str(only_bin)})
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert "git is not installed" in result.stderr
+    assert "git clone" not in result.stdout

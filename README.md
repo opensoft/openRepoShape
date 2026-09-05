@@ -176,7 +176,7 @@ prompt by prompt.
 **Rehearse first, creating nothing.** `--local-remote-dir <dir>` runs the
 whole of that against three BARE repositories in `<dir>`: the same preflight
 (where `gh` is neither required nor checked), the same naming check, the same
-plan, the same `Type yes to continue:`, the same clone and `make bootstrap`.
+plan, the same `Type yes to continue:`, the same clone and `scripts/bootstrap.py`.
 `gh` is never called and nothing is created on GitHub. `--org` is still
 required — it is what the manifest records as the owner of all three legs —
 but here it is only a string: it is never checked against GitHub, so the
@@ -389,11 +389,11 @@ confers nothing and stays neutral.
 
 ### What setup.sh does
 
-`setup.sh` is a shim — about seventy lines of shell that find a Python 3.9 or
-newer, clone this standard into a temporary directory when you are not already
-in a checkout of it, and hand over to `setup-project.py`, which IS the flow.
-These are the commands that flow runs, in order, with no behaviour of its own
-(the first only in self-bootstrap mode, from the one-liner above):
+`setup.sh` is a shim — about seventy lines of code (twice that with its comments)
+that find a Python 3.9 or newer, clone this standard into a temporary directory when
+you are not already in a checkout of it, and hand over to `setup-project.py`, which
+IS the flow. These are the commands that flow runs, in order, with no behaviour of
+its own (the first only in self-bootstrap mode, from the one-liner above):
 
 ```sh
 git clone --depth 1 https://github.com/opensoft/openRepoShape.git <tmp-dir>

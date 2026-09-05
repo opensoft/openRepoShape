@@ -33,11 +33,11 @@ scaffold, the clone or the bootstrap - and what was already created, where
 
 Two entry points that refuse different things in different words are two
 standards, so #50 settled which of them is the flow. `setup.sh` is a shim now:
-about seventy lines that find an interpreter, clone this standard when the
-person has no checkout of it, and hand over here. There is ONE parser, one
-usage banner and one set of refusal wordings, and `tests/test_setup_sh.py`
-drives them through bash where `tests/test_setup_project_py.py` drives them
-through an interpreter alone.
+about seventy lines of code (twice that with its comments) that find an
+interpreter, clone this standard when the person has no checkout of it, and
+hand over here. There is ONE parser, one usage banner and one set of refusal
+wordings, and `tests/test_setup_sh.py` drives them through bash where
+`tests/test_setup_project_py.py` drives them through an interpreter alone.
 
 THE `setup.sh:NNN` CITATIONS BELOW NAME setup.sh AS IT STOOD BEFORE #50, the
 500-line implementation this file was transcribed from. They are kept because

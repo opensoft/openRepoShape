@@ -79,7 +79,7 @@ copied and digest-pinned — and you read that before touching the project.
 The same steps by hand, in order: `validate-repository-naming.py --explain` on
 the three names, `scaffold-project.py --dry-run`, an explicit human yes,
 `scaffold-project.py` for real, then `git clone --recurse-submodules` and
-`make bootstrap`. README's "What setup.sh does" carries the exact commands.
+`python3 scripts/bootstrap.py`. README's "What setup.sh does" carries the exact commands.
 
 ## Adopting an existing repository
 

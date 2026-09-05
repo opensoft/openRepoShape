@@ -168,8 +168,9 @@ def test_bootstrap_ran_and_printed_the_degrade_line(setup_run):
 def test_the_final_block_names_the_path_and_the_three_urls(setup_run):
     """`os.path.abspath` on both sides, never `Path.resolve()`.
 
-    The entry point absolutises the way `setup.sh:103-108` does - join onto
-    the invocation directory, normalise, stop. `resolve()` would additionally
+    The entry point absolutises the way `setup.sh:103-108` did (pre-#50 line
+    numbers; the shim has no abspath of its own now) - join onto the
+    invocation directory, normalise, stop. `resolve()` would additionally
     rewrite an 8.3 short component on Windows, and then the path it printed
     and the path the test holds would be two spellings of one directory.
     """
@@ -912,6 +913,15 @@ def test_setup_sh_parses_no_flags_of_its_own():
     COMMENT LINES ARE STRIPPED FIRST. The shim's header quotes the `curl ...
     | bash -s -- --org <your-org> --project Atlas` one-liner, which is the
     README's line and not a flag this file's subject parses.
+
+    A SECOND, NARROWER ASSERTION GUARDS SHORT FLAGS TOO. The regex above only
+    catches a re-grown DOUBLE-dash flag; a single-dash one (`-y` for `--yes`,
+    `-h` for `--help`) is invisible to it. Widening the regex to catch every
+    single-dash token would have to carve out every genuine one the shim
+    already uses - `-c` (the Python version probe), `-C`/`-n`/`-f`/`-d` (git,
+    test and mktemp options about the checkout) - which is more surface than
+    it is worth. Checking for the exact CASE LABEL shapes a re-grown `--yes`
+    or `--help` would need is simpler and just as honest.
     """
     code = "\n".join(line for line in
                      SETUP_SH.read_text(encoding="utf-8").splitlines()
@@ -920,6 +930,10 @@ def test_setup_sh_parses_no_flags_of_its_own():
     assert not named, (
         "setup.sh names flags of its own; it delegates to setup-project.py "
         f"and parses nothing: {sorted(named)}")
+    for label in ("-y)", "-h)", "--yes)", "--help)"):
+        assert label not in code, (
+            f"setup.sh defines a case label {label!r} - a parser growing "
+            "back one flag at a time")
 
 
 def test_the_two_entry_points_say_self_bootstrap_the_same_way():

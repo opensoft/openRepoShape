@@ -35,7 +35,7 @@ die() { printf '\nREFUSED: %s\n' "$1" >&2; exit "${2:-2}"; }
 
 usage() {
 	cat <<'USAGE'
-openRepoShape <Project> [--org <org>] [setup.sh options] [-- <scaffold flags>]
+openRepoShape <Project> [--org <org>] [setup-project.py options] [-- <scaffold flags>]
 openRepoShape --install            install (or update) this command into ~/.local/bin
 openRepoShape --help | --version
 
@@ -44,7 +44,8 @@ and setup.sh asks, if a terminal is attached. `--org` comes from that flag,
 else $OPENREPOSHAPE_ORG, else a prompt — it is NEVER defaulted. Every other
 argument reaches setup.sh unchanged: --visibility, --elected-by, --into,
 --yes, --local-remote-dir, and anything after `--`, which setup.sh hands on to
-scaffold-project.py. `setup.sh --help` lists them all.
+scaffold-project.py. `./setup.sh --help` prints setup-project.py's usage,
+which lists them all.
 
   $OPENREPOSHAPE_REPO       owner/name to fetch from (default opensoft/openRepoShape)
   $OPENREPOSHAPE_REF        the ref to fetch it at   (default main)
