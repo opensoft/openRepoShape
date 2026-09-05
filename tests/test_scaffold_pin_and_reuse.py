@@ -468,3 +468,74 @@ def test_a_leg_path_with_a_shell_metacharacter_is_refused(tmp_path):
                         "--work-dir", str(tmp_path / "work"))
     assert result.returncode == 2
     assert "unsafe-value" in result.stderr
+
+
+# --- --pin: a NEUTRAL PRODUCT root that pins another neutral product -------
+#
+# Brett Heap, 2026-09-05: "elect the shape for both, follow the pin chain, no
+# family yet". `openXdox` is the openxFactory-tuned layer of `openDox`: it is
+# its own assembly root AND it declares a pin on the product below it. Nothing
+# here is a descendant, which is the point — the `--pin` path must not assume
+# the pinning project's name is in `<Domainx><Product>` form.
+
+def test_a_neutral_product_root_may_also_pin_a_neutral_product(tmp_path):
+    product, commit = product_repo(tmp_path, "openDox")
+    remotes, work = tmp_path / "remotes", tmp_path / "work"
+    result = run_script(SCAFFOLD, "--org", "opensoft", "--project", "openXdox",
+                        "--elected-by", "Brett Heap",
+                        "--elected-on", "2026-09-05",
+                        "--pin", f"openDox@{commit}",
+                        "--pin-source", str(product),
+                        "--local-remote-dir", str(remotes),
+                        "--work-dir", str(work))
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "naming-role-mismatch" not in result.stderr
+    assert "neutral-product / assembly" in result.stdout
+    assert "may elect the shape (Brett Heap, 2026-09-05)" in result.stdout
+
+    root = work / "openXdox"
+    manifest = load_yaml(root / "project.yaml")
+    assert manifest["neutral_product_pins"] == ["openDox"]
+    assembly = next(leg for leg in manifest["legs"]
+                    if leg["role"] == "assembly")
+    assert assembly["naming"]["form"] == "neutral-product"
+    assert assembly["naming"]["role"] == "assembly"
+    assert assembly["naming"]["also_matches"] == ["project-leg/assembly"]
+    assert "descendant_referent" not in assembly["naming"], (
+        "`openXdox` is not in `<Domainx><Product>` form: it claims descent "
+        "from nothing and the manifest must record no referent")
+    spec = next(leg for leg in manifest["legs"] if leg["role"] == "spec")
+    assert spec["naming"]["form"] == "project-leg"
+
+    pin = load_yaml(root / "contracts" / "opendox-pin.yaml")
+    assert pin["pin_role"] == "neutral-product"
+    assert pin["commit"] == commit
+    assert pin["source_repository"] == "opensoft/openDox"
+    assert pin["digests"]["tree_sha256"] == tree_digest(product, commit)
+
+    for validator, args in (("validate-repository-naming.py",
+                             ["--project", "project.yaml"]),
+                            ("validate-manifest.py", []),
+                            ("validate-pins.py",
+                             ["--pin-source", f"openDox={product}"])):
+        check = run_script(root / "scripts" / validator, *args, cwd=root)
+        assert check.returncode == 0, f"{validator}: {check.stderr}{check.stdout}"
+
+
+def test_the_dry_run_plans_a_pinned_neutral_product_root(tmp_path):
+    """The refusal was first met on a dry run, so the dry run is asserted:
+    three repositories planned, the pin resolved offline, nothing created."""
+    product, commit = product_repo(tmp_path, "openDox")
+    result = run_script(SCAFFOLD, "--org", "Example", "--project", "openXdox",
+                        "--elected-by", "Brett Heap",
+                        "--elected-on", "2026-09-05", "--dry-run",
+                        "--pin", f"openDox@{commit}",
+                        "--pin-source", str(product),
+                        "--work-dir", str(tmp_path / "work"))
+    assert result.returncode == 0, result.stderr + result.stdout
+    for leg in ("Example/openXdox", "Example/openXdox-spec",
+                "Example/openXdox-code"):
+        assert leg in result.stdout
+    assert "contracts/opendox-pin.yaml" in result.stdout
+    assert "openXdox classifies as neutral-product / assembly" in result.stdout
+    assert "--dry-run: nothing was created." in result.stdout

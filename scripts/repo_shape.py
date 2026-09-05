@@ -798,10 +798,23 @@ class Classification(tuple):
 class NamingPolicy:
     """Ordered classifier over `contracts/repository-naming.yaml`.
 
-    ORDER IS SEMANTIC, AND TWO OF THE FOUR FORMS ARE UNAMBIGUOUS BY
+    ORDER IS SEMANTIC, AND TWO OF THE FIVE FORMS ARE UNAMBIGUOUS BY
     CONSTRUCTION. `open<Product>` and `<X>-Install` say what they are in their
     own characters: nothing else can spell them and nothing else needs to be
     consulted, so they win outright.
+
+    A NEUTRAL PRODUCT MAY ELECT THE SHAPE, and that does not disturb the
+    sentence above. Ruled by Brett Heap on 2026-09-05: "elect the shape for
+    both, follow the pin chain, no family yet", for `openDox` and `openXdox`.
+    The FORM still wins — `openDox` classifies as `neutral-product`, and no
+    declaration turns it into a leg — and it ADDITIONALLY carries the role the
+    project declares, where the family's `admits_declared_role:` lists that
+    role AND the name also satisfies that `project-leg` form. Electing confers
+    nothing, so `openDox` mounting `openDox-spec` and `openDox-code` is a fact
+    about LAYOUT and not a claim about neutrality: the same reasoning that
+    already lets a DECLARED domain descendant be an assembly root (2026-09-02).
+    `<X>-Install` is admitted into no role and could not be — a hyphenated name
+    satisfies no leg form at all — so it stays refused as any leg.
 
     THE DESCENDANT FORM IS DIFFERENT, and this is the ruling of 2026-09-02
     (Brett Heap): `<Domainx><Product>` is a CLAIM OF DESCENT, and a claim needs
@@ -1059,7 +1072,9 @@ class NamingPolicy:
         are optional and all are read from `project.yaml` where one exists.
 
         The order:
-          1. `neutral-product` and 2. `install` — unambiguous by construction.
+          1. `neutral-product` and 2. `install` — unambiguous by construction,
+             carrying a DECLARED role their family ADMITS where the name also
+             satisfies that leg form (2026-09-05).
           3. a DECLARED-ONLY form the caller asked for by name (`family`).
           4. `domain-descendant` — ONLY when a referent is REACHED, directly
              (2026-09-02) or through the recorded chain (2026-09-05).
@@ -1087,11 +1102,45 @@ class NamingPolicy:
             also = [form_id(f, r) for f, r in matched if (f, r) != key]
             return Classification(family_id, role_id, also, reason, resolution)
 
+        # The leg roles the NAME satisfies, read once: the unambiguous forms
+        # consult them too, because a role is only ever admitted where the name
+        # can actually spell it.
+        leg_roles = [r for r in (by_family.get("project-leg") or []) if r]
         for family_id in ("neutral-product", "install"):
-            if family_id in by_family:
-                return answer(family_id, by_family[family_id][0],
-                              f"the {family_id} form is unambiguous by "
-                              "construction, so it needs nothing declared")
+            if family_id not in by_family:
+                continue
+            family = self.family(family_id) or {}
+            # A NEUTRAL PRODUCT MAY ELECT THE SHAPE (Brett Heap, 2026-09-05).
+            # The form is not being overridden — it is still the answer, and
+            # the entry this CONSUMES is `(family_id, None)`, so
+            # `project-leg/assembly` survives in `also_matches` exactly as it
+            # did before. What is added is the ROLE the project declares, and
+            # only where the family's data admits it and the name satisfies
+            # that leg form. Electing confers nothing, so this records a
+            # layout, not a claim; it is the same MECHANISM as the descendant
+            # branch below, both reading `admits_declared_role:` — but this
+            # branch is deliberately STRICTER about what an absent key means.
+            # With no `admits_declared_role:` in the data this branch admits
+            # NOTHING (`or ()`), because the admission itself is the
+            # 2026-09-05 rule and the file must say so or grant nothing. The
+            # descendant branch below falls back to `or ("assembly",)`
+            # instead, because that key predates this ruling: it keeps the
+            # 2026-09-02 behaviour for a policy file that never wrote the key
+            # at all, and changing the fallback would be changing that
+            # ruling's answer out from under a file silent about it.
+            admitted = family.get("admits_declared_role") or ()
+            if by_family[family_id][0] is None and declared_role is not None \
+                    and declared_role in admitted and declared_role in leg_roles:
+                title = str(family.get("title") or family_id).lower()
+                return answer(
+                    family_id, declared_role,
+                    f"the {family_id} form is unambiguous by construction; it "
+                    f"carries the {declared_role} role it declares — a {title} "
+                    "may elect the shape (Brett Heap, 2026-09-05)",
+                    (family_id, None))
+            return answer(family_id, by_family[family_id][0],
+                          f"the {family_id} form is unambiguous by "
+                          "construction, so it needs nothing declared")
 
         # A declared-only form the caller ASKED for. It sits above the leg
         # forms in the decision even though its precedence is below them: the
@@ -1112,7 +1161,6 @@ class NamingPolicy:
         # chain with an unreadable link answers with a warning rather than
         # falling back — the declaration is the offline fact.
         declared = resolution.referent if resolution.reached else None
-        leg_roles = [r for r in (by_family.get("project-leg") or []) if r]
         if claimed and (declared or not self.requires_referent("domain-descendant")):
             # A DESCENDANT MAY CARRY LEGS (Brett Heap, 2026-09-02). The
             # descendant family declares no roles of its own, so the role a
@@ -1213,18 +1261,32 @@ def accepts_role(found, role: str) -> bool:
     may be an assembly root" is how the second one starts disagreeing with the
     first.
 
-    Two forms pass. The ordinary one is the project-leg family in exactly the
+    Three forms pass. The ordinary one is the project-leg family in exactly the
     declared role. The second is the 2026-09-02 ruling that a DECLARED domain
     descendant may be an assembly root carrying legs: `MedxGlass` pins
     `openGlass` and still mounts `MedxGlass-spec` and `MedxGlass-code`. The
-    descendant classification is only ever returned when the pin is DECLARED
-    (see `NamingPolicy.classify`), so this admits a fact, never a claim.
+    third is the 2026-09-05 ruling that a NEUTRAL PRODUCT may elect the shape
+    and be its own assembly root: `openDox` mounts `openDox-spec` and
+    `openDox-code`, and electing confers nothing, so that is a fact about
+    layout and not a claim about neutrality.
+
+    EVERY ONE OF THE THREE ADMITS A FACT, NEVER A CLAIM. `classify` returns
+    `("domain-descendant", "assembly")` only when the pin is DECLARED, and
+    `("neutral-product", "assembly")` only when the policy's
+    `admits_declared_role:` admits the role AND the name satisfies the
+    `project-leg/assembly` form — so by the time a tuple reaches here, the
+    question this function asks has already been answered by the policy.
+
+    `spec` and `code` are unreachable for the two CamelCase forms on purpose:
+    `openDox-spec` and `MedxGlass-spec` carry the lowercase suffix and are
+    ordinary project legs, which is why the check is `role == "assembly"`.
     """
     if found is None:
         return False
     if tuple(found) == ("project-leg", role):
         return True
-    return role == "assembly" and tuple(found) == ("domain-descendant", "assembly")
+    return role == "assembly" and tuple(found) in (
+        ("domain-descendant", "assembly"), ("neutral-product", "assembly"))
 
 
 def repo_basename(repository: str) -> str:

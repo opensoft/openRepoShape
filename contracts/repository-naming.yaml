@@ -23,6 +23,22 @@ kind: repository-naming-policy
 # front, `-Install` behind. Nothing else spells them, so they win outright and
 # need nothing declared. Their precedence is unchanged.
 #
+# THAT STAYS TRUE OF THE CLASSIFICATION, AND A NEUTRAL PRODUCT MAY STILL ELECT
+# THE SHAPE. Ruled by Brett Heap on 2026-09-05:
+#
+#     "elect the shape for both, follow the pin chain, no family yet"
+#
+# recorded on opensoft/openxFactory#656, for `openDox` and `openXdox`. The form
+# still WINS — `openDox` classifies as `neutral-product` and no declaration
+# moves it — and it ADDITIONALLY answers the `assembly` role the project
+# declares, where the name also satisfies the `project-leg/assembly` form
+# (`admits_declared_role:` in that family below). Electing confers nothing, so
+# `openDox` mounting `openDox-spec` and `openDox-code` is a fact about LAYOUT,
+# not a claim about neutrality — exactly the reasoning that already lets a
+# DECLARED domain descendant be an assembly root, further down. `install` is
+# admitted into no role and could not be: `<X>-Install` carries a hyphen, so it
+# satisfies no leg form to begin with, and stays refused as any leg.
+#
 # `domain-descendant` is not like that. `<Domainx><Product>` is a CLAIM OF
 # DESCENT, and a claim needs a REFERENT. Ruled by Brett Heap on 2026-09-02:
 #
@@ -98,10 +114,50 @@ families:
       name. The character after `open` is uppercase, or the lowercase `x` of
       an x-stem followed by an uppercase letter — which is what keeps the
       organisation login `opensoft` from reading as a product.
+    # The roles a neutral product may ADDITIONALLY answer in. The family has
+    # no `roles:` of its own — `openDox` and `openDox-spec` are not the same
+    # form — but a neutral product that has ELECTED the three-repository shape
+    # is the repository an engineer clones, and answers as its own assembly
+    # root. Ruled by Brett Heap on 2026-09-05, "elect the shape for both,
+    # follow the pin chain, no family yet" (opensoft/openxFactory#656), for
+    # `openDox` and `openXdox`.
+    #
+    # WHY THIS TAKES NOTHING AWAY. Electing confers nothing — the doctrine's
+    # first sentence, and the first paragraph of this file — so `openDox`
+    # mounting `openDox-spec` and `openDox-code` is a fact about LAYOUT and
+    # not a claim about neutrality. The form still wins the classification:
+    # `form: neutral-product` with `also_matches: [project-leg/assembly]`, so
+    # the overlap is RECORDED rather than resolved into a leg. It is the same
+    # move `domain-descendant` already makes below, for the same reason: being
+    # a neutral product and being a three-repository project are INDEPENDENT
+    # facts, and reading them as exclusive made `openDox` unscaffoldable.
+    #
+    # `spec` and `code` are absent on purpose, exactly as they are for the
+    # descendant family: `openDox-spec` carries the lowercase suffix, matches
+    # this family's pattern not at all, and is an ordinary project leg.
+    #
+    # ELECTING ALSO MAKES THE NAME AN ID SOURCE, for the first time. The
+    # project id and topic are both derived by LOWERCASING the assembly
+    # root's name (`--id`'s default), so `openXdox` and `openxDox` — two
+    # admitted spellings — derive the SAME id `openxdox` and the same topic
+    # `xf-project-openxdox`. Before 2026-09-05 no id was ever derived from a
+    # neutral-product name at all, so this collision is newly reachable, not
+    # a pre-existing one: pass an explicit `--id` when two such products must
+    # coexist. Where the three agreeing layers of grouping (names, topics,
+    # register) disagree, the register wins and the others are reported as
+    # drift, because the register is the only one of the three that is
+    # reviewed.
+    admits_declared_role:
+      - assembly
     examples:
       - openxFactory
       - openXwallet
       - openChart
+      # Elected the shape on 2026-09-05 and are their own assembly roots. The
+      # names classify here whether or not a role is declared; what the
+      # election adds is the role, never the form.
+      - openDox
+      - openXdox
     counter_examples:
       - opensoft
       - OpenChart
@@ -114,6 +170,10 @@ families:
       A deployable install or runtime repository, ending in the CamelCase
       suffix `-Install`. The stem may itself be hyphenated, which is how one
       product's install is qualified by the layer that owns it.
+    # NO `admits_declared_role:`, and it is not an oversight. `<X>-Install`
+    # carries a hyphen, so it satisfies no `project-leg` form at all — there is
+    # no role for it to be admitted into, and it stays refused as an assembly,
+    # spec or code leg exactly as it was before 2026-09-05.
     examples:
       - xFactory-Hermes-Install
       - Hermes-Install

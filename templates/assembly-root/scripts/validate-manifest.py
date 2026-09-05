@@ -24,12 +24,18 @@ WHAT IS CHECKED
   - `legs`: EXACTLY the roles {assembly, spec, code}, once each, all in one
     organisation, at distinct relative paths, with the assembly leg at `.`
   - every leg's repository name against `contracts/repository-naming.yaml`,
-    and the classified form against the declared role. TWO forms may be an
-    assembly root: the bare project-leg form, and — since 2026-09-02 — a
-    DECLARED domain descendant, because a descendant may carry legs
-    (`MedxGlass` pins `openGlass` and still mounts `MedxGlass-spec` and
-    `MedxGlass-code`). The pin is what admits the second, so the refusal for
-    `referent_declared: true` with no pin file beside it stands unchanged.
+    and the classified form against the declared role. THREE forms may be an
+    assembly root: the bare project-leg form; since 2026-09-02 a DECLARED
+    domain descendant, because a descendant may carry legs (`MedxGlass` pins
+    `openGlass` and still mounts `MedxGlass-spec` and `MedxGlass-code`); and
+    since 2026-09-05 a NEUTRAL PRODUCT that has elected the shape (`openDox`
+    mounts `openDox-spec` and `openDox-code`). The pin is what admits the
+    second, so the refusal for `referent_declared: true` with no pin file
+    beside it stands unchanged; the policy's `admits_declared_role:` is what
+    admits the third, and the form still wins, so such a leg records
+    `form: neutral-product, role: assembly` with the leg form in
+    `also_matches`. None of the three may be the spec or code leg, and an
+    `<X>-Install` may be no leg at all.
   - each leg's OPTIONAL `naming:` record — that `form` and `role` are the
     classification the policy actually returns for that name given what this
     manifest declares, that `also_matches` lists every other form the name
@@ -354,9 +360,12 @@ def _findings(manifest: dict, policy: NamingPolicy, root=None) -> list[str]:
             bad("naming-unclassified",
                 f"leg {role!r}: {name!r} matches no family in the naming policy")
         elif accepts_role(found, str(role or "")):
-            # Either the project-leg family in exactly the declared role, or a
+            # The project-leg family in exactly the declared role; or a
             # DECLARED domain descendant serving as the assembly root, which
-            # the 2026-09-02 ruling admits: a descendant may carry legs.
+            # the 2026-09-02 ruling admits (a descendant may carry legs); or a
+            # NEUTRAL PRODUCT serving as its own assembly root, which the
+            # 2026-09-05 ruling admits (a neutral product may elect the shape,
+            # and electing confers nothing, so the root is a layout fact).
             # `accepts_role` is the one definition; see `repo_shape`.
             pass
         elif found[0] != "project-leg":

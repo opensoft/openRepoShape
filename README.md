@@ -358,6 +358,24 @@ network is not thereby lying about its descent. A digest that recomputes
 differently, or a pin file the declaration names but that is not there, is
 reported as drift like every other pin in this file.
 
+### A neutral product may elect the shape and be its own assembly root
+
+Ruled by **Brett Heap on 2026-09-05**: *"elect the shape for both, follow the
+pin chain, no family yet"* — the same sentence on opensoft/openxFactory#656 that
+settled the chain above, and *both* is `openDox` and `openXdox`. Electing
+confers nothing, so `openDox` mounting `openDox-spec` and `openDox-code` is a
+fact about LAYOUT and not a claim about neutrality: exactly the reasoning that
+already lets a declared descendant be a root. `open` in front still WINS the
+classification — the manifest records `form: neutral-product, role: assembly`
+with `also_matches: [project-leg/assembly]`, so the overlap the scaffold used
+to compute and then throw away is now recorded like every other one, and
+`validate-repository-naming.py --explain --role assembly openDox` names the
+admission. The legs are untouched: `openDox-spec` carries the lowercase suffix
+and is an ordinary project leg, a descendant of nothing and a neutral product
+of nothing. `<X>-Install` is admitted into nothing at all — it carries a
+hyphen, so it satisfies no leg form to be admitted into, and is still refused
+as any leg.
+
 ## Adopting an existing repository
 
 A repository that already exists is converted **in place**, by

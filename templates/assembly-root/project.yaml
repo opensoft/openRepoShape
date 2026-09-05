@@ -98,6 +98,27 @@ neutral_product_pins: {{NEUTRAL_PRODUCT_PINS}}
 # every other field here; `scripts/validate-manifest.py` checks it agrees with
 # the name, and refuses `referent_declared: true` with no pin file beside it.
 #
+# THE ASSEMBLY LEG NEED NOT BE A BARE CamelCase TOKEN. Two other forms may be
+# the root, and both RECORD the overlap here rather than losing it:
+#
+#   - a DECLARED domain descendant (Brett Heap, 2026-09-02) — `MedxGlass` pins
+#     `openGlass` AND mounts `MedxGlass-spec` and `MedxGlass-code`;
+#   - a NEUTRAL PRODUCT that has elected the shape (Brett Heap, 2026-09-05,
+#     "elect the shape for both, follow the pin chain, no family yet") —
+#     `openDox` mounts `openDox-spec` and `openDox-code` and records
+#
+#         naming:
+#           form: neutral-product
+#           role: assembly
+#           also_matches: [project-leg/assembly]
+#
+# In both cases the FORM won the classification and the declared role was
+# ADDED to it; electing confers nothing, so a neutral product that is its own
+# root is a fact about LAYOUT and not a claim about its neutrality. The legs
+# are unaffected either way: `openDox-spec` carries the lowercase suffix and
+# is an ordinary project leg, a descendant of nothing and a neutral product of
+# nothing. An `<X>-Install` is admitted into no role at all.
+#
 # A descendant that reaches its referent through a CHAIN records that chain
 # too (ruled by Brett Heap on 2026-09-05, "follow the pin chain"):
 #

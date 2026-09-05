@@ -97,17 +97,100 @@ def test_a_descendant_form_project_scaffolds_and_records_the_overlap(tmp_path):
         assert check.returncode == 0, f"{validator}: {check.stderr}{check.stdout}"
 
 
-def test_a_neutral_product_form_is_still_refused_as_a_leg(tmp_path):
-    """The overlap that was relaxed is descendant/assembly ONLY. `open` in
-    front says what a name is, and no declared role overrides that."""
+def test_a_neutral_product_elects_the_shape_and_carries_three_repositories(tmp_path):
+    """THE openDox CASE, end to end (Brett Heap, 2026-09-05: "elect the shape
+    for both, follow the pin chain, no family yet").
+
+    The scaffold used to REFUSE this with `naming-role-mismatch`, having
+    computed `also_matches: project-leg/assembly` and then thrown it away.
+    Electing confers nothing, so a neutral product mounting two legs is a fact
+    about layout; the form still wins the classification and the overlap is
+    RECORDED, which is what the manifest below asserts.
+    """
+    remotes, work = tmp_path / "remotes", tmp_path / "work"
+    result = run_script(SCAFFOLD, "--org", ORG, "--project", "openDox",
+                        "--elected-by", "Brett Heap",
+                        "--elected-on", "2026-09-05",
+                        "--local-remote-dir", str(remotes),
+                        "--work-dir", str(work))
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "naming-role-mismatch" not in result.stderr
+    for leg in ("openDox", "openDox-spec", "openDox-code"):
+        assert (remotes / f"{leg}.git").is_dir(), f"{leg} was not created"
+
+    manifest = (work / "openDox" / "project.yaml").read_text()
+    assert ("  - role: assembly\n"
+            "    repository: testorg/openDox\n"
+            '    path: "."\n'
+            "    naming:\n"
+            "      form: neutral-product\n"
+            "      role: assembly\n"
+            "      also_matches: [project-leg/assembly]\n"
+            # The block ENDS there: `openDox` is not in `<Domainx><Product>`
+            # form, so it claims descent from nothing and records no referent.
+            # The legs follow, and they are ordinary project legs claiming
+            # nothing either — `openDox-spec` carries the lowercase suffix and
+            # matches the neutral form not at all.
+            "  - role: spec\n"
+            "    repository: testorg/openDox-spec\n"
+            "    path: spec\n"
+            "    naming:\n"
+            "      form: project-leg\n"
+            "      role: spec\n"
+            "      also_matches: []\n") in manifest
+
+    # and the project's own gate agrees with what was written into it
+    for validator in ("validate-manifest.py", "validate-repository-naming.py"):
+        args = ["--project", "project.yaml"] if "naming" in validator else []
+        check = run_script(work / "openDox" / "scripts" / validator, *args,
+                           cwd=work / "openDox")
+        assert check.returncode == 0, f"{validator}: {check.stderr}{check.stdout}"
+
+
+def test_a_neutral_product_root_is_planned_by_a_dry_run(tmp_path):
+    """`--dry-run` is where the refusal was first seen, so it is where the
+    plan is asserted: three repositories, and the classification named."""
+    result = run_script(SCAFFOLD, "--org", "Example", "--project", "openDox",
+                        "--elected-by", "Brett Heap",
+                        "--elected-on", "2026-09-05", "--dry-run",
+                        "--work-dir", str(tmp_path / "work"))
+    assert result.returncode == 0, result.stderr + result.stdout
+    for leg in ("Example/openDox", "Example/openDox-spec",
+                "Example/openDox-code"):
+        assert leg in result.stdout
+    # The classification is named even with no `--pin` on the command line
+    # (2026-09-05): a neutral product needs no pin to earn the line that a
+    # pinned root always printed.
+    assert "neutral-product / assembly" in result.stdout
+    assert "--dry-run: nothing was created." in result.stdout
+
+
+def test_an_install_form_is_still_refused_as_the_assembly_root(tmp_path):
+    """The relaxation has an EDGE and this is it. `<X>-Install` carries a
+    hyphen, so it satisfies no project-leg form to be admitted into, and the
+    policy gives it no `admits_declared_role:` either."""
     remotes = tmp_path / "remotes"
-    result = run_script(SCAFFOLD, "--org", ORG, "--project", "openScribe",
+    result = run_script(SCAFFOLD, "--org", ORG, "--project", "Widget-Install",
                         "--elected-by", "Test Human",
                         "--local-remote-dir", str(remotes),
                         "--work-dir", str(tmp_path / "work"))
     assert result.returncode == 2
     assert "naming-role-mismatch" in result.stderr
-    assert "neutral-product" in result.stderr
+    assert "install" in result.stderr
+    assert not remotes.exists()
+
+
+def test_a_neutral_product_LEG_name_is_still_refused_as_the_root(tmp_path):
+    """`openDox-spec` offered as the assembly root is the refusal that has to
+    survive: a declared role wins only where the NAME satisfies it."""
+    remotes = tmp_path / "remotes"
+    result = run_script(SCAFFOLD, "--org", ORG, "--project", "openDox-spec",
+                        "--elected-by", "Test Human",
+                        "--local-remote-dir", str(remotes),
+                        "--work-dir", str(tmp_path / "work"))
+    assert result.returncode == 2
+    assert "naming-role-mismatch" in result.stderr
+    assert "project-leg/spec" in result.stderr
     assert not remotes.exists()
 
 

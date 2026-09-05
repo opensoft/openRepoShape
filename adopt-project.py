@@ -1533,9 +1533,13 @@ def _check_names(policy: NamingPolicy, names: dict[str, str],
                 + (f"/{found.role}" if found.role else "")
                 + f", not as the {role!r} form of a project leg "
                 f"({found.reason})",
-                "Remediation: --project takes one CamelCase token. A declared "
-                "descendant MAY be the assembly root — declare the pin with "
-                "`--pin open<Product>` and it classifies as one.")
+                "Remediation: --project takes one CamelCase token. Two forms "
+                "beyond the bare one MAY be the assembly root: a declared "
+                "descendant (declare the pin with `--pin open<Product>` and it "
+                "classifies as one, 2026-09-02), and an `open<Product>` "
+                "neutral product, which may elect the shape and be its own "
+                "root (2026-09-05). Neither may be the spec or code leg, and "
+                "an `<X>-Install` may be no leg at all.")
 
 
 def _elector() -> str:

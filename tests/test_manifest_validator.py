@@ -424,3 +424,65 @@ def test_a_chain_record_that_is_not_a_list_is_a_finding(project):
     assert result.returncode == 1
     assert "FINDING naming-referent-chain" in result.stderr
     assert "expected a list" in result.stderr
+
+
+# --- the ruling: a NEUTRAL PRODUCT MAY ELECT THE SHAPE (2026-09-05) --------
+
+def test_a_neutral_product_may_be_the_assembly_root(project):
+    """THE openDox CASE, in a manifest. `open` in front still wins the form,
+    and the leg form it also satisfies is RECORDED rather than resolved."""
+    edit(project, 'repository: testorg/Atlas\n    path: "."',
+         'repository: testorg/openDox\n    path: "."')
+    edit(project, "      form: project-leg\n      role: assembly\n"
+                  "      also_matches: []",
+         "      form: neutral-product\n      role: assembly\n"
+         "      also_matches: [project-leg/assembly]")
+    result = validate(project)
+    assert result.returncode == 0, result.stderr
+    assert "manifest ok" in result.stdout
+
+
+def test_a_neutral_product_root_that_records_the_leg_form_is_a_finding(project):
+    """The record must be the classification the policy RETURNS. Writing
+    `form: project-leg` for a name `open` wins outright is drift, not a choice
+    the manifest gets to make."""
+    edit(project, 'repository: testorg/Atlas\n    path: "."',
+         'repository: testorg/openDox\n    path: "."')
+    result = validate(project)
+    assert result.returncode == 1
+    assert "naming-form" in result.stderr
+
+
+def test_a_neutral_product_root_that_drops_the_overlap_is_a_finding(project):
+    """`also_matches` records the forms that were NOT chosen; a root that
+    elects the shape and then omits `project-leg/assembly` has thrown away the
+    very overlap this ruling exists to record."""
+    edit(project, 'repository: testorg/Atlas\n    path: "."',
+         'repository: testorg/openDox\n    path: "."')
+    edit(project, "      form: project-leg\n      role: assembly\n"
+                  "      also_matches: []",
+         "      form: neutral-product\n      role: assembly\n"
+         "      also_matches: []")
+    result = validate(project)
+    assert result.returncode == 1
+    assert "naming-also-matches" in result.stderr
+
+
+def test_a_neutral_product_is_still_not_a_spec_or_code_leg(project):
+    """The edge of the relaxation, checked where a manifest can actually
+    express it: the admission is `assembly` alone."""
+    edit(project, "repository: testorg/Atlas-code\n    path: code",
+         "repository: testorg/openDox\n    path: code")
+    result = validate(project)
+    assert result.returncode == 1
+    assert "naming-not-a-leg" in result.stderr
+
+
+def test_an_install_form_is_a_leg_of_nothing(project):
+    """`<X>-Install` is admitted into no role: it carries a hyphen and
+    satisfies no project-leg form at all."""
+    edit(project, 'repository: testorg/Atlas\n    path: "."',
+         'repository: testorg/Widget-Install\n    path: "."')
+    result = validate(project)
+    assert result.returncode == 1
+    assert "naming-not-a-leg" in result.stderr
