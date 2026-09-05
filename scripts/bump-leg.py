@@ -57,11 +57,11 @@ from pathlib import Path
 SHAPE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
 from repo_shape import (  # noqa: E402
-    COMMIT_RE, Refusal, checked_value, git_out, load_yaml, recorded_gitlink,
-    repo_basename, tree_digest,
+    COMMIT_RE, SAFE_PATH_RE, Refusal, checked_value, git_out, load_yaml,
+    recorded_gitlink, repo_basename, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
-    CommandFailed, check_program, run,
+    CommandFailed, check_program, run, write_lf,
 )
 
 MANIFEST = "project.yaml"
@@ -333,10 +333,16 @@ def fetch_leg(submodule: Path, repository: str, commit: str,
     if local_remote_dir is None:
         remote, protocol = "origin", []
     else:
+        # A FILESYSTEM PATH, so it is checked against the path alphabet: this
+        # is an absolute path on the operator's machine, and on Windows that
+        # is `D:\a\_temp\...` — a drive colon and backslashes, which the
+        # branch-and-repository alphabet has no reason to admit and no reason
+        # to refuse a path for lacking. A leading `-` is still refused.
         remote = checked_value(
             "--local-remote-dir",
             str(local_remote_dir.expanduser().resolve()
-                / f"{repo_basename(repository)}.git"))
+                / f"{repo_basename(repository)}.git"),
+            SAFE_PATH_RE)
         protocol = FILE_PROTOCOL
     fetched = True
     try:
@@ -531,7 +537,11 @@ def cmd_bump(args) -> int:  # noqa: C901
         moved = sum(count for _, _, count in plans)
         print(f"workflows    {moved} reference(s) in {len(plans)} file(s):")
         for wf_path, _, count in plans:
-            print(f"  {wf_path.relative_to(root)}  {count} reference(s)")
+            # POSIX, on every platform: this is a path in the repository, and
+            # `str()` of a relative Path on Windows spells it with backslashes
+            # — a path the reader cannot paste back into `git`.
+            print(f"  {wf_path.relative_to(root).as_posix()}  "
+                  f"{count} reference(s)")
     else:
         print("workflows    no `@<sha>` reference names this leg")
 
@@ -552,7 +562,7 @@ def cmd_bump(args) -> int:  # noqa: C901
     written: dict[Path, bytes] = {}
     placement = leg_placement(submodule)
     staged: list[str] = [path, pin_rel] + [
-        str(wf_path.relative_to(root)) for wf_path, _, _ in plans]
+        wf_path.relative_to(root).as_posix() for wf_path, _, _ in plans]
     moved_leg = False
     try:
         # A BUMP LEAVES THE LEG AT THE COMMIT, detached, and does not move any
@@ -564,7 +574,14 @@ def cmd_bump(args) -> int:  # noqa: C901
         for target, data in [(pin_path, rewrite_pin(pin_text, commit, digest))
                              ] + [(wf_path, text) for wf_path, text, _ in plans]:
             written[target] = target.read_bytes()
-            target.write_text(data, encoding="utf-8")
+            # LF, on every platform. `.github/workflows/validate.yml` is
+            # a digest-pinned COPY of the shape's file: `shape-pin.yaml`
+            # records a sha256 of the bytes the materializer wrote - and this
+            # is the lockstep rewrite the README documents: gitlink, pin and
+            # every `@<sha>` in one commit. A CRLF rewrite on Windows would
+            # change every line of the file it just re-pinned and the project's
+            # own `validate-pins.py` would go red on the commit that fixed it.
+            write_lf(target, data)
 
         # STAGED BEFORE THE VALIDATORS RUN, because `recorded_gitlink` asks
         # the INDEX first: the gitlink the next commit will record is the one

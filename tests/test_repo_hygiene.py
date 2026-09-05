@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import ast
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -12,9 +13,10 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO, SCAFFOLD
+from conftest import REPO, SCAFFOLD, WINDOWS_SKIP
 
 SHIPPED = [
+    REPO / "setup-project.py",
     REPO / "scaffold-project.py",
     REPO / "bootstrap",
     REPO / "adopt-project.py",
@@ -38,6 +40,12 @@ LOCAL_MODULES = {"repo_shape", "shape_materialize", "path_classify",
 #: door itself, and the command that fetches it. Both are shipped executables
 #: and are held to the same shebang, mode bit and `set -euo pipefail` rule.
 SHIPPED_BASH = ["setup.sh", "openRepoShape"]
+
+#: The entry point a person runs BEFORE they have a checkout on a machine with
+#: no bash: the same front door, on an interpreter alone. Held to the same
+#: shebang and mode bit, and to one rule the bash pair is not - see
+#: `test_setup_project_py_is_pure_ascii`.
+SHIPPED_PYTHON_ENTRY = ["setup-project.py"]
 
 
 @pytest.mark.parametrize("path", SHIPPED, ids=lambda p: p.name)
@@ -136,9 +144,17 @@ def test_agents_md_is_short_enough_to_be_read():
     lines saying that `openRepoShape <Project> --org <org> ...` is the same
     run as the one-liner, still without `--yes`. A second way in that this
     file does not name is a way in performed from memory, and the rule it
-    must not lose on the way is the one this file opens with."""
+    must not lose on the way is the one this file opens with.
+
+    269 -> 273 on 2026-09-05, for the NATIVE WINDOWS way in (#49): three lines
+    saying that `Invoke-WebRequest ... -OutFile setup-project.py` and then
+    `py setup-project.py <Project> --org <org> ...` is that same run a THIRD
+    time. Same argument as #38's, with one thing added that an assistant
+    cannot work out for itself: it is two commands rather than one pipe
+    because a piped script cannot ask, so an assistant that "helpfully"
+    folds them into a pipe has removed the one `yes` this file opens with."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 269, f"AGENTS.md is {len(lines)} lines; the cap is 269"
+    assert len(lines) <= 273, f"AGENTS.md is {len(lines)} lines; the cap is 273"
 
 
 def test_claude_md_points_at_agents_md():
@@ -317,8 +333,25 @@ def test_readme_is_short_enough_to_be_read():
     #   ("without installing anything") rather than deleted, and the
     #   Requirements line in the worked example now points at the install page
     #   instead of assuming the reader already has `gh`.
-    assert len(lines) <= 821, (
-        f"README.md is {len(lines)} lines; the cap is 821")
+    # 2026-09-05: 821 -> 872 — a NATIVE WINDOWS path (#49). The Quick start
+    #   said Windows had none and to install WSL2 first, which made every
+    #   Windows reader install a second operating system to run two Python
+    #   scripts. `setup-project.py` is `setup.sh`'s twin on an interpreter
+    #   alone, so the platform paragraph becomes the install list (python.org
+    #   with *Add python.exe to PATH*, git-scm.com, `winget`), the one machine
+    #   setting `core.autocrlf false` and WHY a digest-pinned copy makes it
+    #   matter, the two-liner itself, and the paragraph that keeps it two
+    #   commands: PowerShell 5.1 re-encodes piped text as ASCII and writes
+    #   UTF-16 through `>`, and a script arriving on stdin cannot ask for the
+    #   one `yes`. Most of the added lines are those two explanations, and
+    #   they earn them — a reader who does not know either one will "simplify"
+    #   the pair into a pipe. Three more say the same run spells itself
+    #   `python …` on a machine the Store's Python installed, which has no
+    #   `py` at all. WSL2 stays, demoted to what it actually is: how to run
+    #   the BASH entry points. Two more lines name the file under "What
+    #   setup.sh does" and in the Layout block.
+    assert len(lines) <= 872, (
+        f"README.md is {len(lines)} lines; the cap is 872")
 
 
 @pytest.mark.parametrize("name", SHIPPED_BASH)
@@ -333,13 +366,108 @@ def test_shipped_bash_is_executable_and_fails_loudly(name):
         "carry on with an unset variable")
 
 
+@WINDOWS_SKIP
 @pytest.mark.parametrize("name", SHIPPED_BASH)
 def test_shipped_bash_parses_under_bash(name):
+    """`bash -n` on the two shipped bash scripts, everywhere there is a bash.
+
+    SKIPPED ON WINDOWS, AND `shutil.which` IS NOT ENOUGH TO SEE WHY. The
+    `bash` a stock Windows install puts on PATH is
+    `C:\\Windows\\System32\\bash.exe`, the WSL launcher — `which` finds it, it
+    exits 1 with "no installed distributions" in UTF-16, and the failure reads
+    as a syntax error in `setup.sh`. The bash that IS a bash there, Git Bash,
+    is handed `D:\\a\\...\\setup.sh` by this test and converts the path on its
+    way in. Neither one answers the question this test asks, and the question
+    is answered on every other platform in CI. Windows runs the shape through
+    `setup-project.py`, which has its own suite.
+    """
     if shutil.which("bash") is None:
         pytest.skip("bash is not installed")
     proc = subprocess.run(["bash", "-n", str(REPO / name)],
                           capture_output=True, text=True, check=False)
     assert proc.returncode == 0, proc.stderr
+
+
+@pytest.mark.parametrize("name", SHIPPED_PYTHON_ENTRY)
+def test_shipped_python_entry_is_executable_and_has_a_shebang(name):
+    """The Python twin of `test_shipped_bash_is_executable_and_fails_loudly`.
+
+    `python setup-project.py` works with no mode bit at all and is how the
+    README's Windows line runs it, but `./setup-project.py` is how a macOS or
+    Linux reader runs everything else in this repository, and a front door
+    that works one way and not the other is a front door that gets reported
+    as broken.
+    """
+    script = REPO / name
+    assert script.is_file()
+    assert os.access(script, os.X_OK), f"{name} must be executable: chmod +x"
+    text = script.read_text(encoding="utf-8")
+    assert text.startswith("#!/usr/bin/env python3\n")
+
+
+@pytest.mark.parametrize("name", SHIPPED_PYTHON_ENTRY)
+def test_setup_project_py_is_pure_ascii(name):
+    """No character in this file may need more than one byte.
+
+    Windows PowerShell 5.1 is still the default shell on a stock Windows
+    install. It renders a console in the machine's ANSI code page, re-encodes
+    piped text as ASCII by default (its `$OutputEncoding`), and writes UTF-16
+    when `>` redirects to a file, so no byte above 0x7F survives all three
+    routes: a tick, an arrow or an em dash in this file arrives as mojibake,
+    as a question mark, or raises an encoding error on the way out - in the
+    FIRST thing a person runs, before they have any reason to trust it.
+    `[ok]` and `[!!]` cost a reader nothing. Every other file here is free to
+    use the punctuation the rest of this repository is written in; this one
+    is the front door on the platform that cannot render it.
+    """
+    assert (REPO / name).read_bytes().isascii(), (
+        f"{name} must be pure ASCII; find the offending line with "
+        f"`grep -nP '[^\\x00-\\x7F]' {name}`")
+
+
+#: Every file carrying the Windows two-liner. The README is where a person
+#: reads it and AGENTS.md is where an assistant does, and a rename that fixed
+#: one and not the other would leave the broken copy in front of whoever was
+#: not looking.
+WINDOWS_TWO_LINER = ["README.md", "AGENTS.md"]
+
+#: The raw URL the download must use, PINNED AT `main` and not merely at this
+#: repository. A ref that does not exist 404s, and a ref that is somebody's
+#: branch hands a first-time reader a file nobody reviewed - neither of which
+#: a prefix check on the org alone would notice.
+RAW_MAIN = "https://raw.githubusercontent.com/opensoft/openRepoShape/main/"
+
+
+@pytest.mark.parametrize("name", WINDOWS_TWO_LINER)
+def test_the_windows_commands_name_files_that_exist(name):
+    """The two-liner is COPIED AND PASTED by someone who cannot check it.
+
+    A renamed file leaves the download 404ing and the run failing on a machine
+    with nothing else to fall back to, and neither half of the pair would be
+    caught by anything else in this suite: the URL is a string, and the file
+    it names is a file.
+    """
+    text = (REPO / name).read_text(encoding="utf-8")
+
+    [url] = re.findall(r"Invoke-WebRequest\s+(\S+)", text)
+    assert url.startswith(RAW_MAIN), (
+        f"{name} downloads {url}; it must be {RAW_MAIN}<file>")
+    downloaded = url[len(RAW_MAIN):]
+    assert "/" not in downloaded, (
+        f"{name} downloads {url}, which is not a file at the repository root")
+    assert (REPO / downloaded).is_file(), (
+        f"{name} downloads {url}, which names no file in this repository")
+
+    # `[^\s`]+` rather than `\S+`: AGENTS.md writes the pair inside backticks,
+    # so the filename is followed by one.
+    [out_file] = re.findall(r"-OutFile\s+([^\s`]+)", text)
+    assert (REPO / out_file).is_file(), out_file
+    assert out_file == downloaded, (
+        "the file downloaded and the file saved must be the same name")
+
+    [run] = re.findall(r"(?:^|`)py\s+([^\s`]+)", text, re.M)
+    assert run == out_file, (
+        f"{name} saves {out_file} and then runs {run}")
 
 
 def test_setup_sh_is_the_documented_front_door():

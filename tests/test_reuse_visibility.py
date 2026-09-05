@@ -18,13 +18,18 @@ import stat
 import sys
 import textwrap
 
-from conftest import ORG, REPO, SCAFFOLD, run_script
+from conftest import ORG, REPO, SCAFFOLD, WINDOWS_SKIP, run_script
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import load_yaml  # noqa: E402
 
 PROJECT = "Kirkwood"
 ASSEMBLY_REPO = f"{ORG}/{PROJECT}"
+
+#: The whole file, because the fake `gh` below is a `#!`-shebang script and
+#: Windows does not execute one. There is no Windows twin of this test: what
+#: it pins is `scaffold-project.py`'s visibility read, which is platform-blind.
+pytestmark = WINDOWS_SKIP
 
 #: A minimal `gh` that answers exactly the calls a reused-empty-root scaffold
 #: makes: `repo view --json name|visibility` and `api .../commits` for the

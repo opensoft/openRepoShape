@@ -87,7 +87,7 @@ from shape_materialize import (  # noqa: E402
     ADOPT_MAKEFILE_BLOCK, RULESET_HINT, SHAPE_REPOSITORY,
     CommandFailed, collision_follow_up, copy_tree, default_reference,
     election_date, env_commit, git_init_commit, materialize_assembly_root,
-    naming_block, run,
+    naming_block, run, write_lf,
 )
 
 #: The naming policy this tool classifies leg names against. One constant,
@@ -162,6 +162,11 @@ FILTER_REPO_HINT = (
 
 _PLAIN_RE = re.compile(r"^[A-Za-z_.][A-Za-z0-9_./@:+-]*$")
 
+#: `D:\work\Thing` or `D:/work/Thing` — a Windows absolute path, in either
+#: spelling. Recognised so that `--source` can tell a path the operator got
+#: wrong from a repository name; see `Source.open`.
+WINDOWS_ABSOLUTE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
 
 def y(value) -> str:
     if value is None:
@@ -206,7 +211,13 @@ class Source:
             path = candidate.resolve()
             repository = _remote_repository(path)
         else:
-            if "/" not in spec:
+            if "/" not in spec or WINDOWS_ABSOLUTE_RE.match(spec):
+                # A DRIVE-LETTER PATH IS A PATH THAT IS NOT THERE, never an
+                # `org/repo`. `D:/work/Thing` carries a `/` and would
+                # otherwise be handed to `gh repo clone` as an owner named
+                # `D:`; `os.path.isabs` cannot be asked instead, because it
+                # answers False for that string on Linux and macOS and this
+                # refusal must read the same on every platform.
                 raise Refusal(
                     "source-unresolvable",
                     f"--source {spec!r} is neither a path that exists nor an "
@@ -583,8 +594,7 @@ def cmd_plan(args) -> int:
     follow_ups = follow_ups_for(source, entries, names, args.spec_path,
                                 args.code_path, materialized)
     out = Path(args.out)
-    out.write_text(render_plan(args, source, entries, names, pins, follow_ups),
-                   encoding="utf-8")
+    write_lf(out, render_plan(args, source, entries, names, pins, follow_ups))
 
     print(f"source     {source.repository or source.path} @ "
           f"{source.commit[:12]} ({source.branch}), "
@@ -974,7 +984,21 @@ def _confirm(args, plan: Plan, names: dict) -> None:
             "they have read the plan and the follow-ups.")
     print(f"\nThis creates {names['spec']} and {names['code']} and pushes a "
           f"split branch to {names['assembly']}.")
-    answer = input("Type yes to proceed: ").strip().lower()
+    try:
+        answer = input("Type yes to proceed: ").strip().lower()
+    except EOFError:
+        # A stream that claims to be a terminal and then ends is a place
+        # nobody can be asked either: on Windows an inherited console handle
+        # reports isatty() True even under CI, where the isatty() check above
+        # cannot catch it. Same refusal, same wording, same exit code.
+        raise Refusal(
+            "adopt-unconfirmed",
+            "this is not an interactive terminal and --yes was not passed, so "
+            "there is nobody to ask. Creating two repositories and rewriting a "
+            "third's default branch by pull request is not something to do on "
+            "an assumption.",
+            "Remediation: run it where a human can answer, or pass --yes once "
+            "they have read the plan and the follow-ups.")
     if answer != "yes":
         raise Refusal("adopt-declined", f"answered {answer!r}, not 'yes'",
                       "Remediation: nothing was created. Re-run when ready.")
@@ -1059,7 +1083,12 @@ def _extract_leg(role: str, source: Source, work: Path, paths: list[str],
     """
     run(["git", *FILE_PROTOCOL, "clone", "-q", str(source.path), str(work)])
     run(["git", "checkout", "-q", "-B", branch, source.commit], cwd=work)
-    listing.write_text("\n".join(paths) + "\n", encoding="utf-8")
+    # LF, on every platform. `git filter-repo --paths-from-file` matches a
+    # line against a path, and a CRLF-terminated line ends in a character no
+    # path contains - so on Windows every pattern would match nothing, the
+    # filter would succeed, and the leg would be pushed EMPTY. A silent
+    # extraction of nothing is the worst shape this failure could take.
+    write_lf(listing, "\n".join(paths) + "\n")
     run(["git", "filter-repo", "--paths-from-file", str(listing), "--force"],
         cwd=work)
     head = git_out(["rev-parse", "HEAD"], cwd=work).lower()

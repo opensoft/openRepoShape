@@ -89,9 +89,36 @@ VISIBILITY_CHOICES = ("private", "public", "internal")
 #: names, paths, repository names and commits are spelled with.
 SAFE_ARG_RE = re.compile(r"^[A-Za-z0-9._/@+~-]{1,255}$")
 
+#: The same guard for a value that is a FILESYSTEM PATH the operator named,
+#: rather than a branch, a repository or a commit. A Windows path is
+#: `D:\a\_temp\t\remotes\Atlas-spec.git` and a real home directory is
+#: `C:\Users\Jane Doe\...`: a drive letter, a colon, backslashes and a
+#: space, none of which `SAFE_ARG_RE` admits and NONE OF WHICH IS THE THREAT.
+#: The threat is that `git` reads its own arguments, so a leading `-` is
+#: refused by `checked_value` itself; and that a control character reaches a
+#: command line, which this alphabet excludes by naming what it allows. The
+#: colon is admitted only as a drive letter's, so a value cannot become git's
+#: `host:path` scp syntax by accident.
+SAFE_PATH_RE = re.compile(r"^(?:[A-Za-z]:)?[A-Za-z0-9._/@+~ \\-]{1,4096}$")
+
+#: How to spell "run Python" in a message a person is meant to retype. On
+#: Windows there is usually no `python3` on PATH at all — the python.org
+#: installer ships `python.exe` and the `py` launcher — so a remediation
+#: naming `python3` is a command that fails on the machine reading it.
+#:
+#: THE PLATFORM'S CONVENTIONAL COMMAND, not the running interpreter's
+#: basename. A basename need not be on PATH at all: inside a virtualenv
+#: `sys.executable` is `…/venv/bin/python`, and on a Debian box without
+#: `python-is-python3` there is no `python` to type. `python3` is the command
+#: every POSIX install of a supported Python answers to, and `python` is what
+#: both python.org and the Microsoft Store put on PATH on Windows. A
+#: remediation names the command its reader can type, not the binary that
+#: happened to run.
+PYTHON = "python" if os.name == "nt" else "python3"
+
 REMEDIATION = (
     "Remediation: run `git submodule update --init --recursive`, then "
-    "`python3 scripts/validate-pins.py`. If the PIN itself is stale, advance "
+    f"`{PYTHON} scripts/validate-pins.py`. If the PIN itself is stale, advance "
     "the gitlink, `contracts/<leg>-pin.yaml` and every workflow `@<sha>` that "
     "names the leg in ONE commit (see README, 'The lockstep invariant')."
 )
@@ -206,6 +233,39 @@ def _unquote_key(key: str) -> str:
     return key
 
 
+#: The escape sequences a double-quoted scalar may carry, and the only ones
+#: this reader resolves. Anything else keeps its backslash, because inventing
+#: a meaning for `\q` is how a reader starts disagreeing with the writer.
+DOUBLE_QUOTED_ESCAPES = {"n": "\n", "t": "\t", '"': '"', "\\": "\\"}
+
+
+def _unescape(body: str) -> str:
+    """A double-quoted scalar's body, ONE PASS, LEFT TO RIGHT.
+
+    NOT A CHAIN OF `str.replace` CALLS, and the reason is a Windows path. An
+    adoption plan escapes each backslash it writes, so the source directory
+    `D:\\a\\_temp\\t` reaches here doubled. Replacing the two-character `\\t`
+    before the two-character `\\\\` matches the SECOND backslash of that pair
+    and turns a directory named `t` into a TAB — the path then does not
+    exist, and `adopt-project.py check` refuses a plan it wrote itself.
+    Consuming the backslash and the character it escapes together is the only
+    spelling that cannot read one escape's output as another escape's input.
+    """
+    out: list[str] = []
+    index = 0
+    while index < len(body):
+        char = body[index]
+        replacement = (DOUBLE_QUOTED_ESCAPES.get(body[index + 1])
+                       if char == "\\" and index + 1 < len(body) else None)
+        if replacement is None:
+            out.append(char)
+            index += 1
+        else:
+            out.append(replacement)
+            index += 2
+    return "".join(out)
+
+
 def _scalar(raw: str) -> Any:
     text = raw.strip()
     if text == "" or text in ("null", "~", "Null", "NULL"):
@@ -213,10 +273,7 @@ def _scalar(raw: str) -> Any:
     if text[0] == "'" and text[-1] == "'" and len(text) >= 2:
         return text[1:-1].replace("''", "'")
     if text[0] == '"' and text[-1] == '"' and len(text) >= 2:
-        body = text[1:-1]
-        for a, b in (("\\n", "\n"), ("\\t", "\t"), ('\\"', '"'), ("\\\\", "\\")):
-            body = body.replace(a, b)
-        return body
+        return _unescape(text[1:-1])
     if text[0] in "&*!":
         raise YamlError(f"anchors, aliases and tags are not supported: {text!r}")
     if text in ("true", "True", "TRUE"):
@@ -1240,9 +1297,15 @@ def checked_value(what: str, value, pattern: re.Pattern = SAFE_ARG_RE) -> str:
     and — in `adopt-project.py` — from an adoption plan that an AI assistant
     may have written. The last of those is exactly why this is a check in the
     code rather than a note in the README.
+
+    `pattern` is `SAFE_PATH_RE` for a value that is a FILESYSTEM PATH the
+    operator named: a Windows path carries a drive colon and backslashes, and
+    refusing those would refuse the platform rather than the threat. Whichever
+    pattern is passed, a leading `-` and a value that is nothing but
+    whitespace are refused here, before it is consulted.
     """
     text = str(value)
-    if text.startswith("-") or not pattern.fullmatch(text):
+    if text.startswith("-") or not text.strip() or not pattern.fullmatch(text):
         raise Refusal(
             "unsafe-value",
             f"{what} is {text!r}, which is not a value this tool will put on "

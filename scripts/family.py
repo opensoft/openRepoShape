@@ -60,13 +60,13 @@ SHAPE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
 from repo_shape import (  # noqa: E402
     free_plan_secret_hint,
-    COMMIT_RE, PROJECT_ID_RE, TREE_DIGEST_DEFINITION, VISIBILITY_CHOICES,
-    NamingPolicy, Refusal, checked_value, git_out, load_yaml, recorded_gitlink,
-    repo_basename, tree_digest,
+    COMMIT_RE, PROJECT_ID_RE, PYTHON, TREE_DIGEST_DEFINITION,
+    VISIBILITY_CHOICES, NamingPolicy, Refusal, checked_value, git_out,
+    load_yaml, recorded_gitlink, repo_basename, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
     RULESET_HINT, SHAPE_REPOSITORY, CommandFailed, check_program, env_commit,
-    materialize_family_root, run,
+    materialize_family_root, run, write_lf,
 )
 
 NAMING_POLICY = SHAPE_ROOT / "contracts" / "repository-naming.yaml"
@@ -159,7 +159,11 @@ class Family:
                 "tool does not recognise. `members:` is the LAST block in the "
                 "file and everything below it belongs to this tool; fix it by "
                 "hand this once.")
-        self.path.write_text("\n".join(out) + "\n", encoding="utf-8")
+        # LF, on every platform, like every other write this standard makes.
+        # `family.yaml` is not digest-pinned, so nothing would go red - which
+        # is exactly why it is worth saying: one tool rewriting a manifest
+        # with CRLF on Windows makes every `members:` edit a whole-file diff.
+        write_lf(self.path, "\n".join(out) + "\n")
         self.data["members"] = rows
 
 
@@ -519,7 +523,7 @@ def cmd_init(args) -> int:  # noqa: C901
     print(f"""
 NEXT STEPS
 
-    python3 {Path(__file__).name} add --family-root {work} \\
+    {PYTHON} {Path(__file__).name} add --family-root {work} \\
         --member {args.org}/<Project>
     git -C {work} push
 
@@ -561,16 +565,20 @@ def cmd_add(args) -> int:
     # cache is not this tool's to delete — it may hold commits somebody made
     # inside the mount and never pushed — so the exit is named instead of
     # taken.
+    # NAMED IN POSIX: git spells this `.git/modules/<path>`, and so does the
+    # human who retypes the remediation below.
     cached = family.root / ".git" / "modules" / path
     if cached.exists():
         raise Refusal(
             "member-git-dir-cached",
-            f"{cached} still holds the object store of a previously removed "
-            f"{project}, and `git submodule add` will not write over it",
+            f"{cached.as_posix()} still holds the object store of a "
+            f"previously removed {project}, and `git submodule add` will not "
+            "write over it",
             "Remediation: if nothing unpushed lives in it — and nothing does "
             "unless somebody committed inside the mount — delete it and "
-            f"re-run:\n    rm -rf {cached}\nIt is left behind by `git rm` on "
-            "purpose, which is why this tool will not remove it for you.")
+            f"re-run:\n    rm -rf {cached.as_posix()}\nIt is left behind by "
+            "`git rm` on purpose, which is why this tool will not remove it "
+            "for you.")
 
     url = _member_url(repository, args.local_remote_dir)
     protocol = FILE_PROTOCOL if args.local_remote_dir is not None else []
@@ -725,12 +733,14 @@ def cmd_remove(args) -> int:
         [".gitmodules", path, MANIFEST], add=[".gitmodules", MANIFEST])
     print(f"  removed {project} ({row.get('repository')}) from {path}")
     print(f"  committed {head[:12]}: .gitmodules, {path}, {MANIFEST}")
+    # POSIX for the same reason it is POSIX in `add`: git spells this path
+    # `.git/modules/<path>`, and so does the human who deletes it.
     cached = family.root / ".git" / "modules" / path
     if cached.exists():
-        print(f"  NOTE {cached} still holds that member's object store. `git "
-              "rm` leaves it on purpose, in case somebody committed inside "
-              "the mount; delete it (`rm -rf`) before adding this member "
-              "back.")
+        print(f"  NOTE {cached.as_posix()} still holds that member's object "
+              "store. `git rm` leaves it on purpose, in case somebody "
+              "committed inside the mount; delete it (`rm -rf`) before adding "
+              "this member back.")
     return 0
 
 

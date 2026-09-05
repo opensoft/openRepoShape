@@ -122,13 +122,16 @@ def _check_leg(root: Path, leg: dict, report: Report, refs) -> None:
         raise Refusal(
             "pin-missing",
             f"leg {role!r} declares {repository} at {path!r} but "
-            f"{pin_path.relative_to(root)} does not exist",
+            f"{pin_path.relative_to(root).as_posix()} does not exist",
         )
     pin = load_yaml(pin_path)
     if not isinstance(pin, dict):
         raise Refusal("pin-unreadable", f"{pin_path}: not a mapping")
 
-    rel = pin_path.relative_to(root)
+    # POSIX, on every platform: a finding names a path in THIS repository,
+    # and `str()` of a relative Path on Windows spells it with backslashes —
+    # a path the reader cannot paste back into git.
+    rel = pin_path.relative_to(root).as_posix()
     if pin.get("kind") != "pinned_contract_manifest":
         report.finding("pin-wrong-kind",
                        f"{rel}: kind is {pin.get('kind')!r}, expected "
@@ -247,7 +250,7 @@ def _check_shape_pin(root: Path, manifest: dict, report: Report) -> None:
     if not pin_path.is_file():
         raise Refusal("shape-pin-missing", f"{pin_path} does not exist")
     pin = load_yaml(pin_path)
-    rel = pin_path.relative_to(root)
+    rel = pin_path.relative_to(root).as_posix()
     if not isinstance(pin, dict):
         raise Refusal("shape-pin-unreadable", f"{pin_path}: not a mapping")
     if pin.get("revision_kind") != "commit":
@@ -353,7 +356,7 @@ def _check_neutral_product_pins(root: Path, manifest: dict, report: Report,
             raise Refusal(
                 "neutral-pin-missing",
                 f"project.yaml declares a pin on {product!r} but "
-                f"{pin_path.relative_to(root)} does not exist",
+                f"{pin_path.relative_to(root).as_posix()} does not exist",
                 "Remediation: `scaffold-project.py --pin "
                 f"{product}@<commit>` writes that file. A declaration in "
                 "project.yaml with no pin file beside it is a claim with no "
@@ -361,7 +364,7 @@ def _check_neutral_product_pins(root: Path, manifest: dict, report: Report,
                 "declaration.",
             )
         pin = load_yaml(pin_path)
-        rel = pin_path.relative_to(root)
+        rel = pin_path.relative_to(root).as_posix()
         if not isinstance(pin, dict):
             raise Refusal("neutral-pin-unreadable", f"{pin_path}: not a mapping")
 

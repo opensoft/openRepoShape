@@ -33,7 +33,7 @@ import re
 import shutil
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePath
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from repo_shape import (  # noqa: E402
@@ -41,6 +41,43 @@ from repo_shape import (  # noqa: E402
 )
 
 SHAPE_REPOSITORY = "opensoft/openRepoShape"
+
+
+def root_key(path: PurePath, root: PurePath) -> str:
+    """How a file the materializer wrote is NAMED, relative to the root.
+
+    One spelling for both readers of it: the `path:` of a
+    `contracts/shape-pin.yaml` row, and the list of what was written that the
+    chmod pass matches against the copy lists.
+
+    POSIX, ALWAYS, AND ON EVERY PLATFORM. Pin rows are POSIX paths; on Windows
+    `str()` of a relative Path uses backslashes, and a key that does not match
+    its own row reports every file as drift — `update-shape.py` looks the row
+    up in a table keyed by `scripts/bootstrap.py` and finds nothing, so every
+    copy in a directory reads as `unmapped` and `apply` refuses to re-sync a
+    project that has not drifted at all. The row is also what a human reads
+    and what `validate-pins.py` resolves against the root, and `Path(root,
+    row)` opens a forward-slash row on Windows perfectly well — so the one
+    spelling that works everywhere is the POSIX one.
+    """
+    return path.relative_to(root).as_posix()
+
+
+def write_lf(path: Path, text: str) -> None:
+    """Write text with LF line endings, on every platform.
+
+    EVERY materialized file goes through this. `contracts/shape-pin.yaml`
+    digests the bytes these writes land on, so a CRLF translation on Windows
+    would give the same template a different sha256 there — the pin would
+    claim "these are the shape's files" and be false on one platform. The
+    shape's output is byte-identical everywhere, which is what makes the
+    digest mean anything.
+
+    `Path.write_text` grew a `newline=` parameter in 3.10 and this standard
+    runs on 3.9, so the write is spelled with `open` instead.
+    """
+    with path.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(text)
 
 # ---------------------------------------------------------------------------
 # The `reference:` an election followed, and why one default cannot serve
@@ -381,10 +418,8 @@ def copy_tree(src: Path, dst: Path, values: dict[str, str]) -> None:
             continue
         target = dst / path.relative_to(src)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(
-            render(path.read_text(encoding="utf-8"), values, str(path)),
-            encoding="utf-8",
-        )
+        write_lf(target, render(path.read_text(encoding="utf-8"), values,
+                                str(path)))
 
 
 def naming_block(policy: NamingPolicy, name: str, role: str,
@@ -553,7 +588,7 @@ def _materialize(shape_root: Path, template_root: Path, target: Path,
             path = target / actual
         path.parent.mkdir(parents=True, exist_ok=True)
         write(path)
-        rel_written = str(path.relative_to(target))
+        rel_written = root_key(path, target)
         result.written.append(rel_written)
         return rel_written
 
@@ -561,21 +596,21 @@ def _materialize(shape_root: Path, template_root: Path, target: Path,
         text = render((template_root / rel).read_text(encoding="utf-8"),
                       values, rel)
         text += (append or {}).get(rel, "")
-        place(rel, lambda p, t=text: p.write_text(t, encoding="utf-8"))
+        place(rel, lambda p, t=text: write_lf(p, t))
     for rel in verbatim:
         text = (template_root / rel).read_text(encoding="utf-8")
         text += (append or {}).get(rel, "")
         result.shape_files.append(
-            place(rel, lambda p, t=text: p.write_text(t, encoding="utf-8")))
+            place(rel, lambda p, t=text: write_lf(p, t)))
     for src, rel in from_shape:
         text = (shape_root / src).read_text(encoding="utf-8")
         result.shape_files.append(
-            place(rel, lambda p, t=text: p.write_text(t, encoding="utf-8")))
+            place(rel, lambda p, t=text: write_lf(p, t)))
     for product, pin_values in (neutral_pins or {}).items():
         rel = f"contracts/{product.lower()}-pin.yaml"
         text = render((template_root / NEUTRAL_PIN_TEMPLATE)
                       .read_text(encoding="utf-8"), {**values, **pin_values}, rel)
-        place(rel, lambda p, t=text: p.write_text(t, encoding="utf-8"))
+        place(rel, lambda p, t=text: write_lf(p, t))
     for rel in executable:
         actual = next((w for w in result.written if w.endswith(rel)), None)
         if actual:
@@ -589,7 +624,7 @@ def _materialize(shape_root: Path, template_root: Path, target: Path,
                   .read_text(encoding="utf-8"),
                   {**values, "SHAPE_FILES": rows}, "contracts/shape-pin.yaml")
     place("contracts/shape-pin.yaml",
-          lambda p, t=text: p.write_text(t, encoding="utf-8"))
+          lambda p, t=text: write_lf(p, t))
     return result
 
 

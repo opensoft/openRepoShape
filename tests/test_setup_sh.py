@@ -20,13 +20,19 @@ import pytest
 
 from pathlib import Path
 
-from conftest import REPO, git
+from conftest import REPO, WINDOWS_SKIP, git
 
 SETUP = REPO / "setup.sh"
 DEGRADE_LINE = "authority is not wallet-carried in this org"
 
-pytestmark = pytest.mark.skipif(shutil.which("bash") is None,
-                                reason="setup.sh needs bash")
+#: `bash.exe` IS on the GitHub Windows runner, so the `which` guard alone
+#: does not fire there — and `setup.sh` still cannot run, because it shells
+#: out to a literal `python3` that the python.org installer never puts on
+#: PATH. The Windows entry point is `setup-project.py`, and
+#: `tests/test_setup_project_py.py` mirrors this file case for case.
+pytestmark = [pytest.mark.skipif(shutil.which("bash") is None,
+                                 reason="setup.sh needs bash"),
+              WINDOWS_SKIP]
 
 
 def run_setup(*args: str, stdin: str = "",

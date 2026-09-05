@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -36,6 +37,37 @@ ORG = "testorg"
 #: ever needs.
 FILE_PROTOCOL = ["-c", "protocol.file.allow=always"]
 
+#: THE ENTRY-POINT TESTS THAT CANNOT RUN ON WINDOWS. Two shapes of test wear
+#: this: one that runs `bash`, and one that puts a `#!`-shebang script named
+#: `gh` on PATH and expects the operating system to execute it. Windows has
+#: neither — `bash.exe` IS on the GitHub runner, so a `shutil.which("bash")`
+#: guard does not fire, but `setup.sh` shells out to a literal `python3` that
+#: is not there, and a shebang means nothing to CreateProcess. Skipping is
+#: honest because Windows has its OWN entry point with its OWN suite:
+#: `setup-project.py`, covered case for case in `test_setup_project_py.py`.
+#: A shared `skipif` object rather than a named marker because there is no
+#: pytest.ini to register one in, and an unregistered marker is a warning.
+WINDOWS_SKIP = pytest.mark.skipif(
+    os.name == "nt",
+    reason="needs a POSIX shell and shebang execution; on Windows the entry "
+           "point is setup-project.py (tests/test_setup_project_py.py)")
+
+
+def rmtree(path: Path) -> None:
+    """`shutil.rmtree` that also works over a git object store on Windows.
+
+    Git writes loose objects and packs READ-ONLY, and Windows refuses to
+    unlink a read-only file — so a plain `rmtree` over a checkout raises
+    PermissionError there and succeeds everywhere else. The handler clears the
+    read-only bit and retries the one call that failed. `onerror` rather than
+    `onexc`: the newer spelling is 3.12+, and this standard runs on 3.9.
+    """
+    def clear_readonly(func, target, _exc):
+        os.chmod(target, stat.S_IWRITE)
+        func(target)
+
+    shutil.rmtree(path, onerror=clear_readonly)
+
 
 def git(*args: str, cwd: Path, check: bool = True) -> subprocess.CompletedProcess:
     proc = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True,
@@ -47,15 +79,35 @@ def git(*args: str, cwd: Path, check: bool = True) -> subprocess.CompletedProces
 
 
 def run_script(script: Path, *args: str, cwd: Path | None = None,
-               env: dict | None = None) -> subprocess.CompletedProcess:
+               env: dict | None = None, input: str | None = None,
+               stdin: int | None = None) -> subprocess.CompletedProcess:
+    """Run one tool under test, with stdin closed by default.
+
+    A test in this suite is often asserting what a tool does when nobody is
+    there to answer a prompt — the whole point is that the run is
+    unattended. Leaving stdin unset would inherit the pytest process's own
+    console handle, and on Windows an inherited console reports isatty() as
+    True even under CI, where the test runner has no real terminal either —
+    the same assertion would then pass or fail depending on the OS, not on
+    the tool. `subprocess.DEVNULL` makes every run non-interactive by
+    default so the behaviour under test does not depend on how the test
+    process itself was launched. A caller that DOES want to exercise the
+    non-tty-but-readable path passes `input=` (a pipe), and one that wants
+    something else entirely — a real pty, say — passes `stdin=` explicitly;
+    `subprocess.run` itself refuses to accept `input` together with `stdin`,
+    so there is nothing to reconcile between the two here.
+    """
     env = {**os.environ, **(env or {})}
     env.setdefault("GIT_AUTHOR_NAME", "openRepoShape tests")
     env.setdefault("GIT_AUTHOR_EMAIL", "tests@openreposhape.invalid")
     env.setdefault("GIT_COMMITTER_NAME", "openRepoShape tests")
     env.setdefault("GIT_COMMITTER_EMAIL", "tests@openreposhape.invalid")
+    if input is None and stdin is None:
+        stdin = subprocess.DEVNULL
     return subprocess.run([sys.executable, str(script), *args],
                           cwd=str(cwd) if cwd else None, capture_output=True,
-                          text=True, check=False, env=env)
+                          text=True, check=False, env=env, input=input,
+                          stdin=stdin)
 
 
 @pytest.fixture(scope="session")

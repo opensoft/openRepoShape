@@ -4,7 +4,7 @@
 
     git clone --recurse-submodules <family-url>
     cd <Family>
-    make bootstrap          # or: python3 scripts/bootstrap.py
+    make bootstrap          # or: python3 scripts/bootstrap.py (python on Windows)
 
 WHAT IT DOES, in order:
 
