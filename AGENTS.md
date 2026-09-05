@@ -47,6 +47,9 @@ curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup.s
       --visibility <private|public|internal> --elected-by '<Name>'
 ```
 
+`openRepoShape <Project> --org <org> --visibility <…> --elected-by '<Name>'`
+is the same run through the installed command, still without `--yes`.
+
 Already standing in a checkout of openRepoShape? Run `./setup.sh` the same
 way, still with the explicit `--org` — there is no fork to detect one from.
 Either form runs the preflight, checks the three names against the naming

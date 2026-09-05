@@ -188,8 +188,18 @@ if ! is_shape_checkout "$SCRIPT_DIR"; then
 	say "  checkout: $SHAPE_CHECKOUT"
 	say ""
 
+	# WHERE THE NEW PROJECT LANDS (#39). The re-exec runs from the TEMPORARY
+	# checkout, so the child's own default parent — `..` of the directory
+	# setup.sh lives in — is /tmp, and the project was cloned there and left
+	# behind when the checkout beside it was deleted. It belongs where the
+	# person was standing, so the invocation directory is passed as --into.
+	# FIRST, before their own arguments: an explicit --into of theirs is
+	# parsed after this one and wins, which is what keeps --into the override
+	# it is documented as. Passing it rather than teaching the child a new
+	# variable also means the clone lands correctly even when --shape-ref
+	# pins a version of the standard that predates this fix.
 	set +e
-	bash "$SHAPE_CHECKOUT/setup.sh" "${ORIGINAL_ARGS[@]}"
+	bash "$SHAPE_CHECKOUT/setup.sh" --into "$INVOCATION_DIR" "${ORIGINAL_ARGS[@]}"
 	STATUS=$?
 	set -e
 	exit "$STATUS"
@@ -423,6 +433,9 @@ python3 scaffold-project.py "${SCAFFOLD_ARGS[@]}"
 # --------------------------------------------------------------------------
 # 7. clone and bootstrap
 # --------------------------------------------------------------------------
+# `..` is the DEVELOPER PATH's answer: a checkout's parent is where the person
+# cloned it, so the new project lands beside it. Self-bootstrap mode has no
+# such neighbour to land beside and passes --into instead (see section 0).
 PARENT="${INTO:-$(cd .. && pwd)}"
 mkdir -p "$PARENT"
 CLONE="$PARENT/$PROJECT"

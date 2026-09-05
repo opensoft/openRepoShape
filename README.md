@@ -46,6 +46,9 @@ gh api repos/opensoft/openRepoShape/contents/setup.sh --jq .content \
     | base64 -d | bash -s -- --org <your-org> --project Atlas
 ```
 
+Shorter still, once: install the `openRepoShape` command and this becomes
+`openRepoShape Atlas --org <your-org>` — see the worked example below.
+
 The script clones this standard into a temporary directory (self-bootstrap:
 see below), checks your machine, checks the three names, shows the plan and
 asks once — then creates the three repositories, clones the assembly root and
@@ -77,27 +80,63 @@ if you have one; a plain clone of `opensoft/openRepoShape` itself is its own
 A new user — call them Dana — has created a GitHub organisation `Northwind`
 and wants a project `Atlas`.
 
-**Before starting.** `gh auth login`, done, under an account that is a member
-of `Northwind` with permission to create repositories there (or an owner) —
-`scaffold-project.py` creates the three repositories with `gh repo create`
-under whatever account `gh auth status` shows. The initial commits go up with
-a plain `git push` over HTTPS, so git itself needs GitHub credentials too: let
-`gh auth login` configure git's credential helper when it offers, or run
-`gh auth setup-git` — skip that and the repositories get created but the
-first push fails. Also needed: `git` and Python 3.9 or newer (`make` is
-optional — bootstrap falls back to `python3 scripts/bootstrap.py`); and a
-decision about visibility — the default is private, and the human says it
-rather than lets it default. `--elected-by` authenticates nothing: it is only
-the name `project.yaml` records as whose act the election was, and it
-defaults to the gh login.
+#### Prerequisites
 
-Dana runs the one-liner, filled in for Northwind and Atlas:
+**1. Requirements.** `git`; Python 3.9 or newer; `gh`, the GitHub CLI; and an
+organisation on GitHub you can create repositories in. `make` is optional —
+bootstrap falls back to `python3 scripts/bootstrap.py`.
+
+**2. Login.** `gh auth login`, as the account that will own the act: a member
+of `Northwind` with permission to create repositories there, or an owner —
+`scaffold-project.py` creates the three with `gh repo create` under whatever
+account `gh auth status` shows. Accept the offer to configure git's credential
+helper, or run `gh auth setup-git`: the first commits go up with a plain
+`git push` over HTTPS, and without it the three repositories are created and
+the push fails. `--elected-by` authenticates nothing — it is only the name
+`project.yaml` records as whose act the election was, and it defaults to the
+`gh` login.
+
+#### Install the command
+
+Two ways in, the short one first. Install `openRepoShape` as a command:
+
+```sh
+gh api repos/opensoft/openRepoShape/contents/openRepoShape \
+    -H 'Accept: application/vnd.github.raw' | bash -s -- --install
+```
+
+or, where raw downloads are not blocked, the same bytes over HTTPS:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/openRepoShape \
+    | bash -s -- --install
+```
+
+It installs itself into `~/.local/bin`, idempotently — a second run prints
+`unchanged` — and prints the `export PATH=…` line if that directory is not on
+`PATH`. It is one file,
+[`openRepoShape`](https://github.com/opensoft/openRepoShape/blob/main/openRepoShape),
+and all it does is fetch `setup.sh` (API first, raw URL second) and run it.
+
+Or type the long line, on a machine you would rather install nothing on:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup.sh \
     | bash -s -- --org Northwind --project Atlas \
       --visibility private --elected-by 'Dana Okafor'
 ```
+
+#### Run
+
+```sh
+openRepoShape Atlas --org Northwind --visibility private --elected-by 'Dana Okafor'
+```
+
+The project is the one positional argument and everything after it reaches
+`setup.sh` unchanged, so this and the long line do the same thing. `--org` may
+come from `$OPENREPOSHAPE_ORG` or from the command's own prompt instead of the
+flag, and is never defaulted. `--visibility private` is spelled out because the
+human says it rather than lets it default.
 
 **What Dana sees, in order.** (1) The preflight: git, python3, make, and that
 `gh` is authenticated. (2) The three names checked against the naming policy
@@ -108,7 +147,8 @@ everything about to be created. (4) `This will create THREE repositories in
 is driving, the agent runs the command WITHOUT `--yes` and Dana types the
 answer; the agent never does (AGENTS.md's first rule). Then it creates the
 three repositories, writes the pins and the manifest, sets the topic
-`xf-project-atlas` on all three, clones the root to `../Atlas`, and runs
+`xf-project-atlas` on all three, clones the root into the directory you ran
+the command from, as `./Atlas` (or where `--into <dir>` says), and runs
 `make bootstrap`.
 
 **What Dana has afterwards:**
@@ -634,6 +674,7 @@ scripts/repo_shape.py             shared helpers: YAML subset reader, digests
 scripts/path_classify.py          the classifier over the path policy
 scripts/shape_materialize.py      the ONE materializer, used by both tools
 scripts/validate-repository-naming.py
+openRepoShape                     installs itself as a command; runs setup.sh
 setup.sh                          self-bootstrap, scaffold, one command
 scaffold-project.py               creates the three repositories and the pins
 adopt-project.py                  converts an EXISTING repository in place

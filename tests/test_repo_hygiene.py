@@ -34,6 +34,11 @@ SHIPPED = [
 LOCAL_MODULES = {"repo_shape", "shape_materialize", "path_classify",
                  "conftest"}
 
+#: The two bash scripts a person runs BEFORE they have a checkout: the front
+#: door itself, and the command that fetches it. Both are shipped executables
+#: and are held to the same shebang, mode bit and `set -euo pipefail` rule.
+SHIPPED_BASH = ["setup.sh", "openRepoShape"]
+
 
 @pytest.mark.parametrize("path", SHIPPED, ids=lambda p: p.name)
 def test_shipped_code_imports_only_the_standard_library(path):
@@ -125,9 +130,15 @@ def test_agents_md_is_short_enough_to_be_read():
     three facts together, so the procedure block is mostly what an assistant
     must NOT do — hand-edit the pin to satisfy the validator, push to the
     default branch, or work around a refusal by pinning a commit the leg's
-    remote does not have."""
+    remote does not have.
+
+    266 -> 269 on 2026-09-05, for the `openRepoShape` command (#38): three
+    lines saying that `openRepoShape <Project> --org <org> ...` is the same
+    run as the one-liner, still without `--yes`. A second way in that this
+    file does not name is a way in performed from memory, and the rule it
+    must not lose on the way is the one this file opens with."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 266, f"AGENTS.md is {len(lines)} lines; the cap is 266"
+    assert len(lines) <= 269, f"AGENTS.md is {len(lines)} lines; the cap is 269"
 
 
 def test_claude_md_points_at_agents_md():
@@ -253,25 +264,42 @@ def test_readme_is_short_enough_to_be_read():
     #   advancing a leg, and the variants — without repeating the one-liner,
     #   the `gh api` alternative, the `--org` rule or the no-fork rule
     #   already said above it.
-    assert len(lines) <= 659, (
-        f"README.md is {len(lines)} lines; the cap is 659")
+    # 2026-09-05: 659 -> 699 — the way in, restructured around the
+    #   `openRepoShape` command (#38). The example's PREREQUISITES are now two
+    #   parts, the requirements and the login, because the `gh` account that
+    #   creates the three repositories is the half a newcomer gets wrong and
+    #   is not the same fact as the `--elected-by` name. Then the two ways in
+    #   — install the command, or type the long line — and the run itself.
+    #   Most of the added lines are the two install forms and what installing
+    #   does to the machine (idempotent by content, and the PATH line), which
+    #   a reader is owed before piping anything to bash. Two more name the
+    #   short form under the one-liner at the top and one names the file in
+    #   the Layout block.
+    # 2026-09-05: 699 -> 700 — one line, for #39: the example now says WHERE
+    #   the clone lands (the directory you ran the command from, as
+    #   ./Atlas), because self-bootstrap mode used to leave it in /tmp and
+    #   the sentence that said `../Atlas` was true of neither path.
+    assert len(lines) <= 700, (
+        f"README.md is {len(lines)} lines; the cap is 700")
 
 
-def test_setup_sh_is_executable_and_fails_loudly():
-    setup = REPO / "setup.sh"
-    assert setup.is_file()
-    assert os.access(setup, os.X_OK), "setup.sh must be executable: chmod +x"
-    text = setup.read_text(encoding="utf-8")
+@pytest.mark.parametrize("name", SHIPPED_BASH)
+def test_shipped_bash_is_executable_and_fails_loudly(name):
+    script = REPO / name
+    assert script.is_file()
+    assert os.access(script, os.X_OK), f"{name} must be executable: chmod +x"
+    text = script.read_text(encoding="utf-8")
     assert text.startswith("#!/usr/bin/env bash\n")
     assert "set -euo pipefail" in text, (
-        "the first script a person runs in a fork must stop on the first "
-        "failure, not carry on with an unset variable")
+        "the first script a person runs must stop on the first failure, not "
+        "carry on with an unset variable")
 
 
-def test_setup_sh_parses_under_bash():
+@pytest.mark.parametrize("name", SHIPPED_BASH)
+def test_shipped_bash_parses_under_bash(name):
     if shutil.which("bash") is None:
         pytest.skip("bash is not installed")
-    proc = subprocess.run(["bash", "-n", str(REPO / "setup.sh")],
+    proc = subprocess.run(["bash", "-n", str(REPO / name)],
                           capture_output=True, text=True, check=False)
     assert proc.returncode == 0, proc.stderr
 

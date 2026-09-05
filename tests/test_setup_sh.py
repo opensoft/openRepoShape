@@ -384,6 +384,51 @@ def test_self_bootstrap_keeps_the_checkout_when_asked(tmp_path):
         shutil.rmtree(kept, ignore_errors=True)
 
 
+def test_self_bootstrap_clones_into_the_directory_it_was_run_from(tmp_path):
+    """#39: the re-exec runs from a temporary checkout under `mktemp -d`, so
+    the child's own default parent was `..` of THAT — /tmp — and the new
+    project was cloned there, then left behind when the temporary checkout
+    beside it was deleted. It belongs where the person was standing, and no
+    `--into` is passed here: the default is the whole point.
+    """
+    outside = make_outside_checkout(tmp_path)
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    result = run_bare_setup(outside / "setup.sh",
+                            "--org", "demoorg", "--project", "Sample", "--yes",
+                            "--local-remote-dir", str(tmp_path / "remotes"),
+                            cwd=cwd, extra_env={"OPENREPOSHAPE_REPO": str(REPO)})
+    assert result.returncode == 0, result.stderr + result.stdout
+    clone = cwd / "Sample"
+    assert clone.is_dir(), (
+        f"Sample was not cloned into {cwd}, the directory setup.sh ran "
+        f"in:\n{result.stdout}")
+    assert (clone / "project.yaml").is_file()
+    assert f"clone       {clone}" in result.stdout
+
+    match = re.search(r"checkout: (\S+)", result.stdout)
+    assert match, f"setup.sh never printed the shape checkout path:\n{result.stdout}"
+    assert not (Path(match.group(1)).parent / "Sample").exists(), (
+        "the clone landed beside the TEMPORARY checkout (/tmp), which is the "
+        "defect #39 is about")
+
+
+def test_into_still_wins_in_self_bootstrap_mode(tmp_path):
+    """The invocation directory is passed as `--into` BEFORE the person's own
+    arguments, so an explicit `--into` of theirs is parsed after it and wins."""
+    outside = make_outside_checkout(tmp_path)
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    result = run_bare_setup(outside / "setup.sh",
+                            "--org", "demoorg", "--project", "Sample", "--yes",
+                            "--local-remote-dir", str(tmp_path / "remotes"),
+                            "--into", str(tmp_path / "work"),
+                            cwd=cwd, extra_env={"OPENREPOSHAPE_REPO": str(REPO)})
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert (tmp_path / "work" / "Sample" / "project.yaml").is_file()
+    assert not (cwd / "Sample").exists(), "--into was overridden, not honoured"
+
+
 def test_running_from_the_upstream_checkout_without_org_refuses(tmp_path):
     """`origin` pointing at opensoft/openRepoShape itself means this checkout
     IS the upstream: there is no fork to inherit an organisation from, so the
