@@ -37,14 +37,24 @@ setup.sh does not print, about the four moments a person most needs told.
 `tests/test_setup_project_py.py` mirrors `tests/test_setup_sh.py` case for
 case, and a parity test holds the two flag lists together.
 
-PURE ASCII, IN THE SOURCE AND IN THE OUTPUT. Windows PowerShell 5.1 - still
-the default shell on a stock Windows install - renders a console in the
-machine's ANSI code page, re-encodes piped text as ASCII (its default
-`$OutputEncoding`), and writes UTF-16 when `>` redirects to a file. No byte
-above 0x7F survives all three, so a tick, an arrow or an em dash arrives as
-mojibake, as a question mark, or raises an encoding error on the way out.
-`[ok]` and `[!!]` cost a reader nothing and cannot be re-encoded wrongly.
-`tests/test_repo_hygiene.py::test_setup_project_py_is_pure_ascii` holds it.
+PURE ASCII IN THE SOURCE, AND IN EVERY FIXED MARKER AND MESSAGE THIS FILE
+WRITES ITSELF. Windows PowerShell 5.1 - still the default shell on a stock
+Windows install - renders a console in the machine's ANSI code page,
+re-encodes piped text as ASCII (its default `$OutputEncoding`), and writes
+UTF-16 when `>` redirects to a file. No byte above 0x7F survives all three,
+so a tick, an arrow or an em dash in this file's own source would arrive as
+mojibake, as a question mark, or raise an encoding error on the way out -
+which is why `[ok]` and `[!!]` are spelled that way instead of with a real
+tick and cross.
+
+A value the script only ECHOES BACK (`--elected-by`, `git config
+user.name`) and a CHILD PROCESS'S OWN OUTPUT are not this guarantee's to
+keep: they are whatever bytes they already are, and `main()` writes them
+through a UTF-8 `errors="replace"` stream rather than mangling or refusing
+on a byte this file never chose.
+
+`tests/test_repo_hygiene.py::test_setup_project_py_is_pure_ascii` holds the
+source.
 """
 
 from __future__ import annotations
@@ -92,13 +102,15 @@ QUERY = "[??]"
 #: or `py`, not the name setup.sh hard-codes.
 PYTHON = sys.executable
 
-#: The same interpreter, spelled for a HUMAN TO RETYPE. `sys.executable` is an
-#: absolute path, and the python.org default has a space in it
-#: (`C:\Program Files\Python312\python.exe`); pasted unquoted into a command
-#: a person is told to run by hand, it is two arguments and an error. The
-#: basename is the word they typed to get here, and it is on their PATH
-#: because they just used it. argv keeps `PYTHON`; prose gets this.
-PYTHON_CMD = Path(sys.executable).name or PYTHON
+#: THE PLATFORM'S CONVENTIONAL COMMAND, spelled for a HUMAN TO RETYPE - never
+#: the running interpreter's basename. A basename need not be on PATH at
+#: all: inside a virtualenv `sys.executable` is `.../venv/bin/python`, and a
+#: Debian box without `python-is-python3` has no bare `python` to type.
+#: `python3` is the command every POSIX install of a supported Python
+#: answers to, and `python` is what both python.org and the Microsoft Store
+#: put on PATH on Windows - exactly `scripts/repo_shape.py`'s `PYTHON`
+#: constant. argv keeps `PYTHON` (`sys.executable`); prose gets this.
+PYTHON_CMD = "python" if os.name == "nt" else "python3"
 
 
 USAGE = """usage: setup-project.py [<Project>] [options] [-- <extra scaffold flags>]
@@ -112,8 +124,9 @@ USAGE = """usage: setup-project.py [<Project>] [options] [-- <extra scaffold fla
   --name "<Display>"      display name              (default: the project name)
   --visibility private|public|internal              (default: private)
   --elected-by "<Name>"   who is electing the shape (default: your gh login)
-  --into <dir>            PARENT directory for the clone (default: ..), so the
-                          clone lands at <dir>/<Project>
+  --into <dir>            PARENT directory for the clone (default: ..; in
+                          self-bootstrap mode, the directory you ran this
+                          from), so the clone lands at <dir>/<Project>
   --org <org>             override the detected organisation. REQUIRED when
                           run outside a checkout of openRepoShape
                           (self-bootstrap mode): there is no origin to read it
@@ -588,7 +601,18 @@ def self_bootstrap(opts: Options, original_argv, invocation_dir: str) -> int:
             "mode): there is no fork origin to read the organisation from. "
             "Re-run with --org <your-org>.")
 
-    shape_repo = os.environ.get("OPENREPOSHAPE_REPO") or DEFAULT_SHAPE_REPO
+    # `$OPENREPOSHAPE_REPO` NAMES A REPOSITORY, CHECKED LIKE ANY OTHER VALUE
+    # THIS TOOL PUTS ON A `git` COMMAND LINE - unset it is silently
+    # `DEFAULT_SHAPE_REPO`, but a person's or a CI job's environment can set
+    # it to anything, and a leading `-` there is a `git clone` OPTION rather
+    # than a repository. `checked_value` refuses that (and an empty value,
+    # and a control character) by the same rule and in the same words as
+    # every flag on the command line; the `--` below guards the argv too,
+    # so the refusal is not the only thing standing between this value and
+    # `git`'s own argument parser.
+    raw_shape_repo = os.environ.get("OPENREPOSHAPE_REPO")
+    shape_repo = (checked_value("OPENREPOSHAPE_REPO", raw_shape_repo, PATH_RE)
+                  if raw_shape_repo else DEFAULT_SHAPE_REPO)
 
     say("openRepoShape setup")
     say("")
@@ -602,7 +626,11 @@ def self_bootstrap(opts: Options, original_argv, invocation_dir: str) -> int:
         # noise.
         if "://" in shape_repo and not opts.shape_ref:
             clone_cmd += ["--depth", "1"]
-        clone_cmd += [shape_repo, checkout]
+        # `--` BEFORE THE REPOSITORY, so git never reads it as an option
+        # regardless of the check above: defense in depth, not a substitute
+        # for it - `checked_value` is what produces a named refusal instead
+        # of a confusing git error.
+        clone_cmd += ["--", shape_repo, checkout]
         say("  " + " ".join(clone_cmd))
         cloned = run(clone_cmd)
         if cloned.returncode != 0:
@@ -1159,8 +1187,8 @@ def _main(argv, invocation_dir: str) -> int:
     # preflight's own, so a person who fixes this and re-runs sees the same
     # line turn into `[ok] git <version>`.
     if shutil.which("git") is None:
-        bad("git is not installed. Install it: https://git-scm.com/downloads")
-        die("one or more prerequisites are missing (see above).")
+        bad(GIT_MISSING)
+        die(PREREQ_MISSING)
 
     here = source_path()
     script_dir = here.parent if here else Path(invocation_dir)
