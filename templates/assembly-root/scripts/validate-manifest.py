@@ -225,9 +225,9 @@ def _naming_findings(leg_role, name: str, naming, policy: NamingPolicy,
                 + (f"the first link of this leg's recorded chain, reaching "
                    f"{satisfied}" if held != satisfied else
                    "declared as this leg's referent")
-                + f", but {pin_path.relative_to(root)} does not exist. A "
-                "declared pin that is not in the tree is a claim wearing the "
-                "costume of a referent.")
+                + f", but {pin_path.relative_to(root).as_posix()} does not "
+                "exist. A declared pin that is not in the tree is a claim "
+                "wearing the costume of a referent.")
     return out
 
 

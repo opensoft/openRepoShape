@@ -162,6 +162,11 @@ FILTER_REPO_HINT = (
 
 _PLAIN_RE = re.compile(r"^[A-Za-z_.][A-Za-z0-9_./@:+-]*$")
 
+#: `D:\work\Thing` or `D:/work/Thing` — a Windows absolute path, in either
+#: spelling. Recognised so that `--source` can tell a path the operator got
+#: wrong from a repository name; see `Source.open`.
+WINDOWS_ABSOLUTE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
 
 def y(value) -> str:
     if value is None:
@@ -206,7 +211,13 @@ class Source:
             path = candidate.resolve()
             repository = _remote_repository(path)
         else:
-            if "/" not in spec:
+            if "/" not in spec or WINDOWS_ABSOLUTE_RE.match(spec):
+                # A DRIVE-LETTER PATH IS A PATH THAT IS NOT THERE, never an
+                # `org/repo`. `D:/work/Thing` carries a `/` and would
+                # otherwise be handed to `gh repo clone` as an owner named
+                # `D:`; `os.path.isabs` cannot be asked instead, because it
+                # answers False for that string on Linux and macOS and this
+                # refusal must read the same on every platform.
                 raise Refusal(
                     "source-unresolvable",
                     f"--source {spec!r} is neither a path that exists nor an "

@@ -343,7 +343,10 @@ def _check_shape_pin(root: Path, manifest: dict, report: Report) -> None:
     if not pin_path.is_file():
         raise Refusal("shape-pin-missing", f"{pin_path} does not exist")
     pin = load_yaml(pin_path)
-    rel = pin_path.relative_to(root)
+    # POSIX, on every platform: a finding names a path in THIS repository,
+    # and `str()` of a relative Path on Windows spells it with backslashes —
+    # a path the reader cannot paste back into git.
+    rel = pin_path.relative_to(root).as_posix()
     if not isinstance(pin, dict):
         raise Refusal("shape-pin-unreadable", f"{pin_path}: not a mapping")
     if pin.get("revision_kind") != "commit":

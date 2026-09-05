@@ -33,7 +33,7 @@ import re
 import shutil
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePath
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from repo_shape import (  # noqa: E402
@@ -41,6 +41,26 @@ from repo_shape import (  # noqa: E402
 )
 
 SHAPE_REPOSITORY = "opensoft/openRepoShape"
+
+
+def root_key(path: PurePath, root: PurePath) -> str:
+    """How a file the materializer wrote is NAMED, relative to the root.
+
+    One spelling for both readers of it: the `path:` of a
+    `contracts/shape-pin.yaml` row, and the list of what was written that the
+    chmod pass matches against the copy lists.
+
+    POSIX, ALWAYS, AND ON EVERY PLATFORM. Pin rows are POSIX paths; on Windows
+    `str()` of a relative Path uses backslashes, and a key that does not match
+    its own row reports every file as drift — `update-shape.py` looks the row
+    up in a table keyed by `scripts/bootstrap.py` and finds nothing, so every
+    copy in a directory reads as `unmapped` and `apply` refuses to re-sync a
+    project that has not drifted at all. The row is also what a human reads
+    and what `validate-pins.py` resolves against the root, and `Path(root,
+    row)` opens a forward-slash row on Windows perfectly well — so the one
+    spelling that works everywhere is the POSIX one.
+    """
+    return path.relative_to(root).as_posix()
 
 
 def write_lf(path: Path, text: str) -> None:
@@ -568,7 +588,7 @@ def _materialize(shape_root: Path, template_root: Path, target: Path,
             path = target / actual
         path.parent.mkdir(parents=True, exist_ok=True)
         write(path)
-        rel_written = str(path.relative_to(target))
+        rel_written = root_key(path, target)
         result.written.append(rel_written)
         return rel_written
 

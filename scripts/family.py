@@ -565,16 +565,20 @@ def cmd_add(args) -> int:
     # cache is not this tool's to delete — it may hold commits somebody made
     # inside the mount and never pushed — so the exit is named instead of
     # taken.
+    # NAMED IN POSIX: git spells this `.git/modules/<path>`, and so does the
+    # human who retypes the remediation below.
     cached = family.root / ".git" / "modules" / path
     if cached.exists():
         raise Refusal(
             "member-git-dir-cached",
-            f"{cached} still holds the object store of a previously removed "
-            f"{project}, and `git submodule add` will not write over it",
+            f"{cached.as_posix()} still holds the object store of a "
+            f"previously removed {project}, and `git submodule add` will not "
+            "write over it",
             "Remediation: if nothing unpushed lives in it — and nothing does "
             "unless somebody committed inside the mount — delete it and "
-            f"re-run:\n    rm -rf {cached}\nIt is left behind by `git rm` on "
-            "purpose, which is why this tool will not remove it for you.")
+            f"re-run:\n    rm -rf {cached.as_posix()}\nIt is left behind by "
+            "`git rm` on purpose, which is why this tool will not remove it "
+            "for you.")
 
     url = _member_url(repository, args.local_remote_dir)
     protocol = FILE_PROTOCOL if args.local_remote_dir is not None else []
@@ -729,12 +733,14 @@ def cmd_remove(args) -> int:
         [".gitmodules", path, MANIFEST], add=[".gitmodules", MANIFEST])
     print(f"  removed {project} ({row.get('repository')}) from {path}")
     print(f"  committed {head[:12]}: .gitmodules, {path}, {MANIFEST}")
+    # POSIX for the same reason it is POSIX in `add`: git spells this path
+    # `.git/modules/<path>`, and so does the human who deletes it.
     cached = family.root / ".git" / "modules" / path
     if cached.exists():
-        print(f"  NOTE {cached} still holds that member's object store. `git "
-              "rm` leaves it on purpose, in case somebody committed inside "
-              "the mount; delete it (`rm -rf`) before adding this member "
-              "back.")
+        print(f"  NOTE {cached.as_posix()} still holds that member's object "
+              "store. `git rm` leaves it on purpose, in case somebody "
+              "committed inside the mount; delete it (`rm -rf`) before adding "
+              "this member back.")
     return 0
 
 

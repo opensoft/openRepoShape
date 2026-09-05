@@ -240,7 +240,9 @@ def read_authority(root: Path, manifest: dict | None, legs: list[dict]) -> None:
     prefixes = [str(leg.get("path")) for leg in legs
                 if leg.get("path") and leg.get("path") != "."]
     for register_path in found:
-        print(f"  register: {register_path.relative_to(root)}")
+        # POSIX, on every platform: this line names a file in the repository,
+        # and git and the reader both spell it that way.
+        print(f"  register: {register_path.relative_to(root).as_posix()}")
         try:
             data = load_yaml(register_path)
         except Refusal as exc:

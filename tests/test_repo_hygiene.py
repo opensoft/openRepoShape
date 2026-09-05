@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO, SCAFFOLD
+from conftest import REPO, SCAFFOLD, WINDOWS_SKIP
 
 SHIPPED = [
     REPO / "setup-project.py",
@@ -366,8 +366,21 @@ def test_shipped_bash_is_executable_and_fails_loudly(name):
         "carry on with an unset variable")
 
 
+@WINDOWS_SKIP
 @pytest.mark.parametrize("name", SHIPPED_BASH)
 def test_shipped_bash_parses_under_bash(name):
+    """`bash -n` on the two shipped bash scripts, everywhere there is a bash.
+
+    SKIPPED ON WINDOWS, AND `shutil.which` IS NOT ENOUGH TO SEE WHY. The
+    `bash` a stock Windows install puts on PATH is
+    `C:\\Windows\\System32\\bash.exe`, the WSL launcher — `which` finds it, it
+    exits 1 with "no installed distributions" in UTF-16, and the failure reads
+    as a syntax error in `setup.sh`. The bash that IS a bash there, Git Bash,
+    is handed `D:\\a\\...\\setup.sh` by this test and converts the path on its
+    way in. Neither one answers the question this test asks, and the question
+    is answered on every other platform in CI. Windows runs the shape through
+    `setup-project.py`, which has its own suite.
+    """
     if shutil.which("bash") is None:
         pytest.skip("bash is not installed")
     proc = subprocess.run(["bash", "-n", str(REPO / name)],
