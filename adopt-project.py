@@ -1058,7 +1058,12 @@ def _extract_leg(role: str, source: Source, work: Path, paths: list[str],
     """
     run(["git", *FILE_PROTOCOL, "clone", "-q", str(source.path), str(work)])
     run(["git", "checkout", "-q", "-B", branch, source.commit], cwd=work)
-    listing.write_text("\n".join(paths) + "\n", encoding="utf-8")
+    # LF, on every platform. `git filter-repo --paths-from-file` matches a
+    # line against a path, and a CRLF-terminated line ends in a character no
+    # path contains - so on Windows every pattern would match nothing, the
+    # filter would succeed, and the leg would be pushed EMPTY. A silent
+    # extraction of nothing is the worst shape this failure could take.
+    write_lf(listing, "\n".join(paths) + "\n")
     run(["git", "filter-repo", "--paths-from-file", str(listing), "--force"],
         cwd=work)
     head = git_out(["rev-parse", "HEAD"], cwd=work).lower()

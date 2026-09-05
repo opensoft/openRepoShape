@@ -92,10 +92,17 @@ SAFE_ARG_RE = re.compile(r"^[A-Za-z0-9._/@+~-]{1,255}$")
 #: How to spell "run Python" in a message a person is meant to retype. On
 #: Windows there is usually no `python3` on PATH at all — the python.org
 #: installer ships `python.exe` and the `py` launcher — so a remediation
-#: naming `python3` is a command that fails on the machine reading it. The
-#: RUNNING interpreter's own name is the one that just worked, which is why it
-#: is read from `sys.executable` rather than guessed.
-PYTHON = Path(sys.executable).name or ("python" if os.name == "nt" else "python3")
+#: naming `python3` is a command that fails on the machine reading it.
+#:
+#: THE PLATFORM'S CONVENTIONAL COMMAND, not the running interpreter's
+#: basename. A basename need not be on PATH at all: inside a virtualenv
+#: `sys.executable` is `…/venv/bin/python`, and on a Debian box without
+#: `python-is-python3` there is no `python` to type. `python3` is the command
+#: every POSIX install of a supported Python answers to, and `python` is what
+#: both python.org and the Microsoft Store put on PATH on Windows. A
+#: remediation names the command its reader can type, not the binary that
+#: happened to run.
+PYTHON = "python" if os.name == "nt" else "python3"
 
 REMEDIATION = (
     "Remediation: run `git submodule update --init --recursive`, then "

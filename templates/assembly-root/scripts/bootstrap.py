@@ -4,7 +4,7 @@
 
     git clone --recurse-submodules <assembly-root-url>
     cd <Project>
-    make bootstrap          # or: python scripts/bootstrap.py
+    make bootstrap          # or: python3 scripts/bootstrap.py (python on Windows)
 
 WHAT IT DOES, in order:
 

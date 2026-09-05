@@ -333,7 +333,7 @@ def test_readme_is_short_enough_to_be_read():
     #   ("without installing anything") rather than deleted, and the
     #   Requirements line in the worked example now points at the install page
     #   instead of assuming the reader already has `gh`.
-    # 2026-09-05: 821 -> 865 — a NATIVE WINDOWS path (#49). The Quick start
+    # 2026-09-05: 821 -> 872 — a NATIVE WINDOWS path (#49). The Quick start
     #   said Windows had none and to install WSL2 first, which made every
     #   Windows reader install a second operating system to run two Python
     #   scripts. `setup-project.py` is `setup.sh`'s twin on an interpreter
@@ -341,15 +341,17 @@ def test_readme_is_short_enough_to_be_read():
     #   with *Add python.exe to PATH*, git-scm.com, `winget`), the one machine
     #   setting `core.autocrlf false` and WHY a digest-pinned copy makes it
     #   matter, the two-liner itself, and the paragraph that keeps it two
-    #   commands: PowerShell 5.1 re-encodes piped text, and a script arriving
-    #   on stdin cannot ask for the one `yes`. Most of the added lines are
-    #   those two explanations, and they earn them — a reader who does not
-    #   know either one will "simplify" the pair into a pipe. WSL2 stays,
-    #   demoted to what it actually is: how to run the BASH entry points.
-    #   Two more lines name the file under "What setup.sh does" and in the
-    #   Layout block.
-    assert len(lines) <= 865, (
-        f"README.md is {len(lines)} lines; the cap is 865")
+    #   commands: PowerShell 5.1 re-encodes piped text as ASCII and writes
+    #   UTF-16 through `>`, and a script arriving on stdin cannot ask for the
+    #   one `yes`. Most of the added lines are those two explanations, and
+    #   they earn them — a reader who does not know either one will "simplify"
+    #   the pair into a pipe. Three more say the same run spells itself
+    #   `python …` on a machine the Store's Python installed, which has no
+    #   `py` at all. WSL2 stays, demoted to what it actually is: how to run
+    #   the BASH entry points. Two more lines name the file under "What
+    #   setup.sh does" and in the Layout block.
+    assert len(lines) <= 872, (
+        f"README.md is {len(lines)} lines; the cap is 872")
 
 
 @pytest.mark.parametrize("name", SHIPPED_BASH)
@@ -395,10 +397,12 @@ def test_setup_project_py_is_pure_ascii(name):
     """No character in this file may need more than one byte.
 
     Windows PowerShell 5.1 is still the default shell on a stock Windows
-    install. It renders a console in the machine's ANSI code page and
-    re-encodes text as it pipes it, so a tick, an arrow or an em dash in this
-    file arrives as mojibake or raises an encoding error on the way out - in
-    the FIRST thing a person runs, before they have any reason to trust it.
+    install. It renders a console in the machine's ANSI code page, re-encodes
+    piped text as ASCII by default (its `$OutputEncoding`), and writes UTF-16
+    when `>` redirects to a file, so no byte above 0x7F survives all three
+    routes: a tick, an arrow or an em dash in this file arrives as mojibake,
+    as a question mark, or raises an encoding error on the way out - in the
+    FIRST thing a person runs, before they have any reason to trust it.
     `[ok]` and `[!!]` cost a reader nothing. Every other file here is free to
     use the punctuation the rest of this repository is written in; this one
     is the front door on the platform that cannot render it.
@@ -408,7 +412,21 @@ def test_setup_project_py_is_pure_ascii(name):
         f"`grep -nP '[^\\x00-\\x7F]' {name}`")
 
 
-def test_the_readme_windows_commands_name_files_that_exist():
+#: Every file carrying the Windows two-liner. The README is where a person
+#: reads it and AGENTS.md is where an assistant does, and a rename that fixed
+#: one and not the other would leave the broken copy in front of whoever was
+#: not looking.
+WINDOWS_TWO_LINER = ["README.md", "AGENTS.md"]
+
+#: The raw URL the download must use, PINNED AT `main` and not merely at this
+#: repository. A ref that does not exist 404s, and a ref that is somebody's
+#: branch hands a first-time reader a file nobody reviewed - neither of which
+#: a prefix check on the org alone would notice.
+RAW_MAIN = "https://raw.githubusercontent.com/opensoft/openRepoShape/main/"
+
+
+@pytest.mark.parametrize("name", WINDOWS_TWO_LINER)
+def test_the_windows_commands_name_files_that_exist(name):
     """The two-liner is COPIED AND PASTED by someone who cannot check it.
 
     A renamed file leaves the download 404ing and the run failing on a machine
@@ -416,22 +434,27 @@ def test_the_readme_windows_commands_name_files_that_exist():
     caught by anything else in this suite: the URL is a string, and the file
     it names is a file.
     """
-    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    text = (REPO / name).read_text(encoding="utf-8")
 
-    [url] = re.findall(r"Invoke-WebRequest (\S+)", readme)
-    prefix = "https://raw.githubusercontent.com/opensoft/openRepoShape/"
-    assert url.startswith(prefix), url
-    assert (REPO / url.rsplit("/", 1)[1]).is_file(), (
-        f"the README downloads {url}, which names no file in this repository")
+    [url] = re.findall(r"Invoke-WebRequest\s+(\S+)", text)
+    assert url.startswith(RAW_MAIN), (
+        f"{name} downloads {url}; it must be {RAW_MAIN}<file>")
+    downloaded = url[len(RAW_MAIN):]
+    assert "/" not in downloaded, (
+        f"{name} downloads {url}, which is not a file at the repository root")
+    assert (REPO / downloaded).is_file(), (
+        f"{name} downloads {url}, which names no file in this repository")
 
-    [out_file] = re.findall(r"-OutFile (\S+)", readme)
+    # `[^\s`]+` rather than `\S+`: AGENTS.md writes the pair inside backticks,
+    # so the filename is followed by one.
+    [out_file] = re.findall(r"-OutFile\s+([^\s`]+)", text)
     assert (REPO / out_file).is_file(), out_file
-    assert out_file == url.rsplit("/", 1)[1], (
+    assert out_file == downloaded, (
         "the file downloaded and the file saved must be the same name")
 
-    [run] = re.findall(r"^py (\S+)", readme, re.M)
+    [run] = re.findall(r"(?:^|`)py\s+([^\s`]+)", text, re.M)
     assert run == out_file, (
-        f"the README saves {out_file} and then runs {run}")
+        f"{name} saves {out_file} and then runs {run}")
 
 
 def test_setup_sh_is_the_documented_front_door():

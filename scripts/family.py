@@ -66,7 +66,7 @@ from repo_shape import (  # noqa: E402
 )
 from shape_materialize import (  # noqa: E402
     RULESET_HINT, SHAPE_REPOSITORY, CommandFailed, check_program, env_commit,
-    materialize_family_root, run,
+    materialize_family_root, run, write_lf,
 )
 
 NAMING_POLICY = SHAPE_ROOT / "contracts" / "repository-naming.yaml"
@@ -159,7 +159,11 @@ class Family:
                 "tool does not recognise. `members:` is the LAST block in the "
                 "file and everything below it belongs to this tool; fix it by "
                 "hand this once.")
-        self.path.write_text("\n".join(out) + "\n", encoding="utf-8")
+        # LF, on every platform, like every other write this standard makes.
+        # `family.yaml` is not digest-pinned, so nothing would go red - which
+        # is exactly why it is worth saying: one tool rewriting a manifest
+        # with CRLF on Windows makes every `members:` edit a whole-file diff.
+        write_lf(self.path, "\n".join(out) + "\n")
         self.data["members"] = rows
 
 

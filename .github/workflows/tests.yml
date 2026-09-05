@@ -149,9 +149,12 @@ jobs:
       # about. Running everything is what keeps those marks honest — a test
       # that starts needing bash gets noticed here.
       #
-      # `--basetemp` puts pytest's temp root two characters from the drive
-      # root. The runner's default (a profile path under
+      # `--basetemp` puts pytest's temp root as near the drive root as a
+      # path the runner guarantees allows. The default (a profile path under
       # `C:\Users\runneradmin\AppData\Local\Temp\`) is ~50 characters before
-      # the suite's own nesting starts, and MAX_PATH is 260.
+      # the suite's own nesting starts, and MAX_PATH is 260. `runner.temp` is
+      # short — `D:\a\_temp` or `C:\a\_temp`, depending on the image — and it
+      # already exists; a bare drive letter is an assumption about which
+      # drives a future image has, made by a workflow that cannot check.
       - name: tests
-        run: python -m pytest tests -q --basetemp=D:\t
+        run: python -m pytest tests -q --basetemp=${{ runner.temp }}\t

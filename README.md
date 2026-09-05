@@ -36,10 +36,11 @@ overlays is fully conformant.
 **macOS and Linux:** run the four steps below in your own shell.
 
 **Windows, natively.** No WSL2. Install Python 3.9 or newer from
-<https://www.python.org/downloads/>, ticking *Add python.exe to PATH* — that
-also installs the `py` launcher; `git` from <https://git-scm.com/downloads>;
-and `gh` with `winget install --id GitHub.cli`. Then `gh auth login`, exactly
-as in step 2 below. Make one machine setting first:
+<https://www.python.org/downloads/>, ticking *Add python.exe to PATH* — its
+own checkbox, and a different one from *py launcher*, which the installer
+ticks for you; `git` from <https://git-scm.com/downloads>; and `gh` with
+`winget install --id GitHub.cli`. Then `gh auth login`, exactly as in step 2
+below. Make one machine setting first:
 
 ```powershell
 git config --global core.autocrlf false
@@ -58,12 +59,18 @@ Invoke-WebRequest https://raw.githubusercontent.com/opensoft/openRepoShape/main/
 py setup-project.py <Project> --org <your-org>
 ```
 
+`python setup-project.py <Project> --org <your-org>` is the same command on a
+machine with no `py`: Python from the Microsoft Store installs `python` and no
+launcher at all.
+
 Two commands rather than one pipe, on purpose. Windows PowerShell 5.1 — still
-the default shell on a stock install — re-encodes piped text as UTF-16, so a
-script sent down a pipe is not the script that arrives; and a script arriving
-on stdin has an exhausted stdin, so it cannot ask for the one `yes` before
-three repositories exist — it refuses instead. Downloading the file first
-leaves stdin attached to the terminal you are typing at.
+the default shell on a stock install — re-encodes piped text as ASCII by
+default (that is its `$OutputEncoding`), and writes UTF-16 when `>` redirects
+to a file, so no byte above 0x7F survives either route and a script sent down
+one is not the script that arrives; and a script arriving on stdin has an
+exhausted stdin, so it cannot ask for the one `yes` before three repositories
+exist — it refuses instead. Downloading the file first leaves stdin attached
+to the terminal you are typing at.
 
 `setup-project.py` is `setup.sh`'s twin: the same preflight, the same naming
 check, the same plan, the same one `yes`, and the same self-bootstrap when it

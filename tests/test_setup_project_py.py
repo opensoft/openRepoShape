@@ -392,15 +392,21 @@ def test_anything_but_yes_refuses_and_creates_nothing(monkeypatch, tmp_path):
 def test_no_test_here_depends_on_gh_being_authenticated():
     """Every invocation either stops before the preflight or runs offline.
 
-    The four that stop early are argument-parsing refusals (`--help`, an
-    unknown flag, a bad `--visibility`, two positionals), which the entry
-    point answers before it looks at the machine. Everything else must pass
-    `--local-remote-dir`, or it reaches `gh auth status` and passes only on a
-    laptop that happens to be logged in.
+    The ones that stop early are argument-parsing refusals - `--help`, an
+    unknown flag, an empty argument, a flag with no value, a bad
+    `--visibility`, two project names - which the entry point answers before
+    it looks at the machine. Everything else must pass `--local-remote-dir`,
+    or it reaches `gh auth status` and passes only on a laptop that happens to
+    be logged in.
+
+    `run_piped` as well as `run_entry`: it starts the same entry point with
+    the same arguments and reaches the same preflight, so a piped run added
+    without `--local-remote-dir` fails in CI for exactly the reason this test
+    exists to prevent.
     """
     source = Path(__file__).read_text(encoding="utf-8")
-    early = ("--help", "--wat", '"secret"', '"Other"')
-    for match in re.finditer(r"(?<!def )run_entry\(", source):
+    early = ("--help", "--wat", '"secret"', '"Other"', '"Novalue"', '"Empty"')
+    for match in re.finditer(r"(?<!def )run_(entry|piped)\(", source):
         start = match.end()
         depth, index = 1, start
         while depth:
@@ -436,6 +442,47 @@ def test_two_positionals_refuse():
     assert result.returncode == 2
     assert "two project names, 'Sample' and 'Other'" in result.stderr
     assert "One positional <Project>, then flags." in result.stderr
+
+
+def test_a_positional_and_a_project_flag_refuse_in_either_order():
+    """Two names for one thing is two names whichever arrives first.
+
+    `--project Other Sample` is the case above with the arguments swapped and
+    was always refused; `Sample --project Other` reached the same end by
+    silently taking the second one, and the person who typed both got a
+    project they did not name. The refusal is the same sentence, and it names
+    them in the order they were typed.
+    """
+    result = run_entry("Sample", "--project", "Other")
+    assert result.returncode == 2
+    assert "two project names, 'Sample' and 'Other'" in result.stderr
+    assert "One positional <Project>, then flags." in result.stderr
+
+
+def test_an_empty_argument_refuses():
+    """`""` is not a project name.
+
+    `setup.sh`'s `case` falls through to `*)` on an empty argument and refuses
+    `unknown argument: ` with nothing after the colon; taking it as the
+    positional instead would leave this file scaffolding a project called ``,
+    which is the one thing the two entry points must not disagree about.
+    """
+    result = run_entry("--project", "Empty", "")
+    assert result.returncode == 2
+    assert "unknown argument: " in result.stderr
+    assert "usage: setup-project.py" in result.stderr
+
+
+def test_a_flag_with_no_value_refuses():
+    """A flag at the end of the line has no value, and 2 is the code.
+
+    Pinned deliberately: this is the ONE exit code the two entry points do not
+    share - see `test_the_two_entry_points_offer_the_same_flags` - so it is
+    held by a test rather than left to be discovered.
+    """
+    result = run_entry("--project", "Novalue", "--visibility")
+    assert result.returncode == 2
+    assert "--visibility needs a value" in result.stderr
 
 
 # --- piped on stdin ---------------------------------------------------------
@@ -499,11 +546,11 @@ def test_self_bootstrap_scaffolds_from_a_temporary_checkout(tmp_path):
     assert clone.is_dir()
     assert (clone / "project.yaml").is_file()
 
-    match = re.search(r"checkout: (\S+)", result.stdout)
+    match = re.search(r"checkout: (.+)", result.stdout)
     assert match, f"the shape checkout path was never printed:\n{result.stdout}"
     # It is a git object store, and git writes its objects read-only. That the
     # directory is GONE is what proves the removal handles that on Windows.
-    assert not Path(match.group(1)).exists(), (
+    assert not Path(match.group(1).rstrip()).exists(), (
         "the temporary shape checkout should have been removed on exit")
 
 
@@ -519,9 +566,13 @@ def test_self_bootstrap_keeps_the_checkout_when_asked(tmp_path):
     assert result.returncode == 0, result.stderr + result.stdout
     assert "kept the shape checkout:" in result.stdout
 
-    match = re.search(r"checkout: (\S+)", result.stdout)
+    match = re.search(r"checkout: (.+)", result.stdout)
     assert match, f"the shape checkout path was never printed:\n{result.stdout}"
-    kept = Path(match.group(1))
+    # `(.+)` and `.rstrip()`, not `(\S+)`: a temporary directory can sit
+    # under a path with a space in it - `C:\Users\Some One\AppData\...` is
+    # an ordinary Windows profile - and `\S+` would silently keep the first
+    # word of it and assert about a directory that never existed.
+    kept = Path(match.group(1).rstrip())
     try:
         assert kept.is_dir(), "--keep-shape-checkout should have kept the clone"
         assert (kept / "scaffold-project.py").is_file()
@@ -551,11 +602,52 @@ def test_self_bootstrap_clones_into_the_directory_it_was_run_from(tmp_path):
     assert (clone / "project.yaml").is_file()
     assert f"clone       {os.path.abspath(str(clone))}" in result.stdout
 
-    match = re.search(r"checkout: (\S+)", result.stdout)
+    match = re.search(r"checkout: (.+)", result.stdout)
     assert match, f"the shape checkout path was never printed:\n{result.stdout}"
-    assert not (Path(match.group(1)).parent / "Sample").exists(), (
+    assert not (Path(match.group(1).rstrip()).parent / "Sample").exists(), (
         "the clone landed beside the TEMPORARY checkout, which is the defect "
         "#39 is about")
+
+
+def test_a_symlinked_entry_point_self_bootstraps(tmp_path):
+    """`os.path.abspath`, never `Path.resolve()` - the symlink case.
+
+    Putting `setup-project.py` on your PATH means a symlink pointing into a
+    checkout of this standard. `resolve()` follows it, so the file's directory
+    becomes that checkout, the run takes the DEVELOPER path, and the
+    `--into <invocation dir>` that self-bootstrap passes is never passed at
+    all: the new project lands beside the checkout the symlink points at
+    instead of where the person was standing. That is #39, resurrected by a
+    symlink. `abspath` keeps the link's own directory, and a directory holding
+    one symlink is not a checkout of anything.
+    """
+    link_dir = tmp_path / "bin"
+    link_dir.mkdir()
+    link = link_dir / "setup-project.py"
+    try:
+        os.symlink(SETUP_PROJECT, link)
+    except (AttributeError, NotImplementedError, OSError) as exc:
+        # Windows needs Developer Mode or an elevated shell to make one, and a
+        # runner without either is not a reason to fail: the defect this
+        # guards is a POSIX habit, and the POSIX legs of CI do run it.
+        pytest.skip(f"this platform cannot create a symlink here: {exc}")
+
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    result = run_entry("--project", "Sym", "--org", "demoorg", "--yes",
+                       "--local-remote-dir", str(tmp_path / "remotes"),
+                       cwd=cwd, script=link,
+                       extra_env={"OPENREPOSHAPE_REPO": str(REPO)})
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "(0) self-bootstrap" in result.stdout, (
+        "the symlink was followed into a checkout and the developer path "
+        f"taken:\n{result.stdout}")
+    clone = cwd / "Sym"
+    assert clone.is_dir(), (
+        f"Sym was not cloned into {cwd}, the directory the run started in:"
+        f"\n{result.stdout}")
+    assert (clone / "project.yaml").is_file()
+    assert f"clone       {os.path.abspath(str(clone))}" in result.stdout
 
 
 def test_into_still_wins_in_self_bootstrap_mode(tmp_path):
@@ -636,6 +728,14 @@ def test_the_two_entry_points_offer_the_same_flags():
     twins. A flag added to one and not the other makes that sentence false
     silently - the person on the other platform simply cannot do the thing the
     README says they can - and nothing else in this suite would notice.
+
+    ONE EXIT CODE DIVERGES, deliberately. A value-taking flag at the end of
+    the line is `${2:?--visibility needs a value}` in setup.sh, and a bash
+    parameter expansion that fails exits 1; here it is `die()`, whose declared
+    default refusal code is 2, the code every other refusal in both files
+    uses. Held by `test_a_flag_with_no_value_refuses`. Chasing bash's 1 would
+    mean a second refusal code in this file for the one case where bash cannot
+    choose its own, which trades a real inconsistency for a cosmetic one.
 
     THIS IS THE STAND-IN FOR ONE DEFINITION, not a substitute for it. Folding
     `setup.sh` into a shim over this file - so there is one flag list rather

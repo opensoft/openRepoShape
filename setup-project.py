@@ -29,13 +29,20 @@ for every child process and `scripts/bootstrap.py` directly instead of
 `make bootstrap`. It adds no behaviour of its own and skips no step: the same
 `scripts/validate-repository-naming.py`, the same `scaffold-project.py`, the
 same plan and the same one yes, in the same order, with the same exit codes.
+RATIFIED AS AN IMPROVEMENT, not a divergence to fix: where `set -e` ends
+setup.sh silently on a failed child, this file prints a `REFUSED:` line naming
+which one failed - the plan, the scaffold, the clone or the bootstrap - and
+what was already created, then exits with that child's status. Four lines
+setup.sh does not print, about the four moments a person most needs told.
 `tests/test_setup_project_py.py` mirrors `tests/test_setup_sh.py` case for
 case, and a parity test holds the two flag lists together.
 
 PURE ASCII, IN THE SOURCE AND IN THE OUTPUT. Windows PowerShell 5.1 - still
-the default shell on a stock Windows install - re-encodes text as it pipes it
-and renders a console in the machine's ANSI code page, so a tick, an arrow or
-an em dash arrives as mojibake or raises an encoding error on the way out.
+the default shell on a stock Windows install - renders a console in the
+machine's ANSI code page, re-encodes piped text as ASCII (its default
+`$OutputEncoding`), and writes UTF-16 when `>` redirects to a file. No byte
+above 0x7F survives all three, so a tick, an arrow or an em dash arrives as
+mojibake, as a question mark, or raises an encoding error on the way out.
 `[ok]` and `[!!]` cost a reader nothing and cannot be re-encoded wrongly.
 `tests/test_repo_hygiene.py::test_setup_project_py_is_pure_ascii` holds it.
 """
@@ -56,15 +63,26 @@ VISIBILITY_CHOICES = ("private", "public", "internal")
 
 #: `[ok]` and `[!!]` where setup.sh prints a tick and a cross. See the
 #: PURE ASCII paragraph above: the characters, not the meaning, are the
-#: difference.
+#: difference. `[??]` has no twin in setup.sh: it marks a MACHINE SETTING
+#: worth looking at, where `[!!]` marks a missing prerequisite that will
+#: refuse the run.
 TICK = "[ok]"
 CROSS = "[!!]"
+QUERY = "[??]"
 
-#: The interpreter that is running THIS file, for the messages a person is
-#: meant to read and retype. Never a probe for an interpreter on PATH: the one
-#: that got here is the one that works, and on Windows the name it answers to
-#: is `python.exe` or `py`, not the name setup.sh hard-codes.
+#: The interpreter that is running THIS file, for every child process it
+#: starts. Never a probe for an interpreter on PATH: the one that got here is
+#: the one that works, and on Windows the name it answers to is `python.exe`
+#: or `py`, not the name setup.sh hard-codes.
 PYTHON = sys.executable
+
+#: The same interpreter, spelled for a HUMAN TO RETYPE. `sys.executable` is an
+#: absolute path, and the python.org default has a space in it
+#: (`C:\Program Files\Python312\python.exe`); pasted unquoted into a command
+#: a person is told to run by hand, it is two arguments and an error. The
+#: basename is the word they typed to get here, and it is on their PATH
+#: because they just used it. argv keeps `PYTHON`; prose gets this.
+PYTHON_CMD = Path(sys.executable).name or PYTHON
 
 
 USAGE = """usage: setup-project.py [<Project>] [options] [-- <extra scaffold flags>]
@@ -134,8 +152,32 @@ def bad(text: str) -> None:
     print("  %s %s" % (CROSS, text), file=sys.stderr, flush=True)
 
 
+def warn(text: str) -> None:
+    """`[??]`: look at this, but the run continues.
+
+    Distinct from `bad()` on purpose. `[!!]` is a missing prerequisite and the
+    preflight refuses on it; `[??]` is a setting on the machine that will
+    make something later confusing, and refusing on it would be this tool
+    declining to run because it disliked somebody's ~/.gitconfig.
+    """
+    print("  %s %s" % (QUERY, text), file=sys.stderr, flush=True)
+
+
 def die(message: str, code: int = 2) -> None:
     raise Refusal(message, code)
+
+
+def shell_status(code: int) -> int:
+    """A child's returncode as an exit STATUS, the way a shell reports one.
+
+    `subprocess` reports a child killed by a signal as the NEGATIVE signal
+    number: Ctrl-C in a child is -2. An exit status is one byte, and every
+    shell - `setup.sh`'s included, because that is what `set -e` propagates -
+    renders a signalled child as 128 plus the signal, so -2 is 130. Handing
+    -2 to `sys.exit` would exit 254 instead, which is a number nobody can
+    look up.
+    """
+    return code if code >= 0 else 128 - code
 
 
 def abspath(value: str, invocation_dir: str) -> str:
@@ -176,9 +218,20 @@ def run(argv, cwd=None, capture: bool = False) -> subprocess.CompletedProcess:
     """
     sys.stdout.flush()
     sys.stderr.flush()
-    return subprocess.run(argv, cwd=str(cwd) if cwd is not None else None,
-                          capture_output=capture, text=True, encoding="utf-8",
-                          errors="replace", check=False)
+    try:
+        return subprocess.run(argv, cwd=str(cwd) if cwd is not None else None,
+                              capture_output=capture, text=True,
+                              encoding="utf-8", errors="replace", check=False)
+    except OSError:
+        # A PROGRAM THAT IS NOT THERE IS A FAILED RUN, not a traceback.
+        # `is_shape_checkout()` asks git a question before the preflight has
+        # said a word, and the single most likely state a first-run Windows
+        # machine is in is "Python installed, Git for Windows not yet" - the
+        # person downloaded this file with the thing they already had. 127 is
+        # what a shell reports for a command it could not find, so every
+        # caller that already treats a non-zero returncode as failure treats
+        # this one identically.
+        return subprocess.CompletedProcess(argv, 127, "", "")
 
 
 def program_version(argv, field: int) -> str:
@@ -227,16 +280,31 @@ def parse_args(argv, invocation_dir: str) -> Options:
     """
     opts = Options()
     rest = list(argv)
+    # WHICH SPELLING set the project, because the two do not compose the same
+    # way. `--project A --project B` is B, exactly as setup.sh's last-wins
+    # `case` is. But a positional and a `--project` are two different names
+    # for one thing, and silently taking either is how a person scaffolds a
+    # project they did not name - so that pair is refused in BOTH orders.
+    positional = ""
 
     def value(flag: str) -> str:
         if not rest:
             die("%s needs a value" % flag)
         return rest.pop(0)
 
+    def two_names(first: str, second: str) -> None:
+        # The `openRepoShape` command's own refusal (openRepoShape:147), word
+        # for word, whichever order the two names arrived in.
+        die("two project names, '%s' and '%s'. One positional "
+            "<Project>, then flags." % (first, second))
+
     while rest:
         arg = rest.pop(0)
         if arg == "--project":
-            opts.project = value("--project")
+            named = value("--project")
+            if positional:
+                two_names(positional, named)
+            opts.project = named
         elif arg == "--org":
             opts.org = value("--org")
         elif arg == "--id":
@@ -266,16 +334,20 @@ def parse_args(argv, invocation_dir: str) -> Options:
         elif arg == "--":
             opts.passthrough = rest
             break
-        elif arg.startswith("-"):
+        elif arg.startswith("-") or arg == "":
+            # `arg == ""` before the positional branch: an empty argument is
+            # not a project name. setup.sh's `case` falls through to `*)` on
+            # one and refuses `unknown argument: ` with an empty tail, so this
+            # does too - the same words, including the space that ends them.
             usage(sys.stderr)
             die("unknown argument: %s" % arg)
         else:
             # The `openRepoShape` command's shape, folded in here so the
             # Windows way in is one file instead of two: a bare <Project> is
-            # --project. The refusal is that command's own (openRepoShape:147).
+            # --project.
             if opts.project:
-                die("two project names, '%s' and '%s'. One positional "
-                    "<Project>, then flags." % (opts.project, arg))
+                two_names(opts.project, arg)
+            positional = arg
             opts.project = arg
 
     if opts.visibility not in VISIBILITY_CHOICES:
@@ -296,11 +368,20 @@ def source_path():
     `__file__` is then absent or the interpreter's own placeholder. That is
     the same case `curl | bash` is for setup.sh, and it is what makes
     self-bootstrap mode reachable rather than theoretical.
+
+    `os.path.abspath`, never `Path.resolve()` - see `abspath` above, and one
+    reason more. A person who put this file on their PATH as a symlink has an
+    entry point whose `resolve()` lands INSIDE the checkout it points at, so
+    a run from anywhere else looks like the developer path, takes it, and
+    never passes `--into <invocation dir>`: the new project is cloned beside
+    that checkout instead of where they were standing, which is #39 back
+    again. `abspath` keeps the symlink's own directory, and a directory
+    holding one symlink is not a shape checkout.
     """
     name = globals().get("__file__")
     if not name or name in ("<stdin>", "<string>"):
         return None
-    return Path(name).resolve()
+    return Path(os.path.abspath(name))
 
 
 def is_shape_checkout(directory) -> bool:
@@ -348,13 +429,13 @@ def self_bootstrap(opts: Options, original_argv, invocation_dir: str) -> int:
         say("  " + " ".join(clone_cmd))
         cloned = run(clone_cmd)
         if cloned.returncode != 0:
-            return cloned.returncode
+            return shell_status(cloned.returncode)
         if opts.shape_ref:
             say("  git -C %s checkout --quiet %s" % (checkout, opts.shape_ref))
             checked_out = run(["git", "-C", checkout, "checkout", "--quiet",
                                opts.shape_ref])
             if checked_out.returncode != 0:
-                return checked_out.returncode
+                return shell_status(checked_out.returncode)
         say("  checkout: %s" % checkout)
         say("")
 
@@ -366,9 +447,17 @@ def self_bootstrap(opts: Options, original_argv, invocation_dir: str) -> int:
         # the invocation directory is passed as --into FIRST, before their own
         # arguments: an explicit --into of theirs is parsed after this one and
         # wins, which is what keeps --into the override it is documented as.
-        child = run([PYTHON, str(Path(checkout) / "setup-project.py"),
-                     "--into", invocation_dir, *original_argv])
-        return child.returncode
+        try:
+            child = run([PYTHON, str(Path(checkout) / "setup-project.py"),
+                         "--into", invocation_dir, *original_argv])
+        except KeyboardInterrupt:
+            # ONE REFUSAL PER CTRL-C. The child is in this terminal's process
+            # group, so it received the same SIGINT, printed its own
+            # `REFUSED: interrupted` and is gone; a second one from here would
+            # be this process saying it too. 130 is what the child exited
+            # with. The `finally` below still removes the temporary checkout.
+            return 130
+        return shell_status(child.returncode)
     finally:
         if opts.keep_shape_checkout:
             say("")
@@ -411,7 +500,7 @@ def preflight(opts: Options) -> None:
     # and falls back; this file has no fallback to make because it never uses
     # make - one command, on every platform, and Windows has no make at all.
     ok("bootstrap runs as `%s scripts/bootstrap.py` (make is not required)"
-       % PYTHON)
+       % PYTHON_CMD)
 
     if opts.local_mode:
         ok("gh not required (--local-remote-dir: bare repositories on disk, "
@@ -443,14 +532,19 @@ def preflight(opts: Options) -> None:
     # configured correctly regardless (see clone_and_bootstrap), so the run
     # continues.
     if os.name == "nt":
-        configured = run(["git", "config", "--get", "core.autocrlf"],
-                         capture=True)
-        if (configured.stdout or "").strip().lower() == "true":
-            bad("git core.autocrlf is true. Every file git checks out gets "
-                "CRLF line endings, and a project's shape pin digests the "
-                "bytes it was written with - so `validate` will report drift "
-                "in files nobody edited. Fix it once, for this machine: "
-                "git config --global core.autocrlf false")
+        # `--global`, because the message below tells the person to fix the
+        # GLOBAL setting and a warning about a value it did not read would
+        # send them to change something that was already right.
+        # `--type=bool` so `1`, `yes`, `on` and `true` are one answer; unset
+        # is exit 1 and empty stdout, which is silence, not a warning.
+        configured = run(["git", "config", "--global", "--type=bool", "--get",
+                          "core.autocrlf"], capture=True)
+        if (configured.stdout or "").strip() == "true":
+            warn("git core.autocrlf is true. Every file git checks out gets "
+                 "CRLF line endings, and a project's shape pin digests the "
+                 "bytes it was written with - so `validate` will report drift "
+                 "in files nobody edited. Fix it once, for this machine: "
+                 "git config --global core.autocrlf false")
 
     if failed:
         die("one or more prerequisites are missing (see above).")
@@ -576,7 +670,7 @@ def ask(prompt: str) -> str:
         return ""
 
 
-def resolve_project_and_elector(opts: Options) -> None:
+def resolve_project_and_elector(opts: Options, shape_root: Path) -> None:
     """setup.sh:355-386, transcribed."""
     say("")
     say("(3) project")
@@ -595,7 +689,13 @@ def resolve_project_and_elector(opts: Options) -> None:
         # repo/global config, then the gh login - never a global config WRITE.
         opts.elected_by = os.environ.get("GIT_AUTHOR_NAME", "")
     if not opts.elected_by:
-        proc = run(["git", "config", "user.name"], capture=True)
+        # IN THE CHECKOUT, mirroring setup.sh:377 - which runs after the
+        # `cd "$SCRIPT_DIR"` at setup.sh:208. `git config` with no scope reads
+        # the repository's config too, and the repository it must read is the
+        # standard's checkout, not whatever the person happened to be standing
+        # in when they typed the command.
+        proc = run(["git", "config", "user.name"], cwd=shape_root,
+                   capture=True)
         if proc.returncode == 0:
             opts.elected_by = (proc.stdout or "").strip()
     if not opts.elected_by:
@@ -650,7 +750,7 @@ def plan_and_confirm(opts: Options, shape_root: Path, org: str,
                    "--dry-run"], cwd=shape_root)
     if planned.returncode != 0:
         raise Refusal("the plan could not be produced (see above).",
-                      planned.returncode)
+                      shell_status(planned.returncode))
 
     if opts.assume_yes:
         return
@@ -678,7 +778,8 @@ def scaffold(shape_root: Path, args: list) -> None:
     proc = run([PYTHON, str(shape_root / "scaffold-project.py"), *args],
                cwd=shape_root)
     if proc.returncode != 0:
-        raise Refusal("the scaffold failed (see above).", proc.returncode)
+        raise Refusal("the scaffold failed (see above).",
+                      shell_status(proc.returncode))
 
 
 # ---------------------------------------------------------------------------
@@ -715,7 +816,7 @@ def clone_and_bootstrap(opts: Options, shape_root: Path, org: str) -> dict:
             "repositories WERE created. Finish by hand:\n"
             "    git clone --recurse-submodules %s\n"
             "    cd %s && %s scripts/bootstrap.py"
-            % (clone, urls["assembly"], opts.project, PYTHON))
+            % (clone, urls["assembly"], opts.project, PYTHON_CMD))
 
     say("")
     say("(7) clone and bootstrap")
@@ -743,7 +844,7 @@ def clone_and_bootstrap(opts: Options, shape_root: Path, org: str) -> dict:
     cloned = run(clone_cmd)
     if cloned.returncode != 0:
         raise Refusal("the clone failed (see above). The three repositories "
-                      "WERE created.", cloned.returncode)
+                      "WERE created.", shell_status(cloned.returncode))
 
     if os.name == "nt":
         # Written INTO the clone as well, so every later checkout in it - a
@@ -761,7 +862,7 @@ def clone_and_bootstrap(opts: Options, shape_root: Path, org: str) -> dict:
                        cwd=clone)
     if bootstrapped.returncode != 0:
         raise Refusal("bootstrap failed (see above). The clone is at %s."
-                      % clone, bootstrapped.returncode)
+                      % clone, shell_status(bootstrapped.returncode))
     return {"clone": clone, "urls": urls}
 
 
@@ -810,6 +911,16 @@ def _main(argv, invocation_dir: str) -> int:
         usage()
         return 0
 
+    # BEFORE the checkout probe, which is itself a `git` call - and before
+    # self-bootstrap, which is a `git clone`. The preflight is where a missing
+    # prerequisite is meant to be reported, and without this line a machine
+    # with no git reaches it only on the developer path. The words are the
+    # preflight's own, so a person who fixes this and re-runs sees the same
+    # line turn into `[ok] git <version>`.
+    if shutil.which("git") is None:
+        bad("git is not installed. Install it: https://git-scm.com/downloads")
+        die("one or more prerequisites are missing (see above).")
+
     here = source_path()
     script_dir = here.parent if here else Path(invocation_dir)
     if not is_shape_checkout(script_dir):
@@ -818,7 +929,7 @@ def _main(argv, invocation_dir: str) -> int:
 
     preflight(opts)
     org = resolve_org(opts, invocation_dir)
-    resolve_project_and_elector(opts)
+    resolve_project_and_elector(opts, shape_root)
     check_names(shape_root, opts.project)
     args = scaffold_args(opts, org)
     plan_and_confirm(opts, shape_root, org, args)

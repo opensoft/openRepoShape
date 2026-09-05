@@ -61,7 +61,7 @@ from repo_shape import (  # noqa: E402
     repo_basename, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
-    CommandFailed, check_program, run,
+    CommandFailed, check_program, run, write_lf,
 )
 
 MANIFEST = "project.yaml"
@@ -564,7 +564,14 @@ def cmd_bump(args) -> int:  # noqa: C901
         for target, data in [(pin_path, rewrite_pin(pin_text, commit, digest))
                              ] + [(wf_path, text) for wf_path, text, _ in plans]:
             written[target] = target.read_bytes()
-            target.write_text(data, encoding="utf-8")
+            # LF, on every platform. `.github/workflows/validate.yml` is
+            # a digest-pinned COPY of the shape's file: `shape-pin.yaml`
+            # records a sha256 of the bytes the materializer wrote - and this
+            # is the lockstep rewrite the README documents: gitlink, pin and
+            # every `@<sha>` in one commit. A CRLF rewrite on Windows would
+            # change every line of the file it just re-pinned and the project's
+            # own `validate-pins.py` would go red on the commit that fixed it.
+            write_lf(target, data)
 
         # STAGED BEFORE THE VALIDATORS RUN, because `recorded_gitlink` asks
         # the INDEX first: the gitlink the next commit will record is the one
