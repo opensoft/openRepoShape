@@ -535,8 +535,27 @@ def test_readme_is_short_enough_to_be_read():
     #   self-bootstrap clone into a temporary directory when run from a
     #   download, and nothing when run from a checkout, that the paragraph
     #   already said of `./setup.sh`.
-    assert len(lines) <= 971, (
-        f"README.md is {len(lines)} lines; the cap is 971")
+    # 2026-09-06: 971 -> 1014 — issue #72, Brett Heap's ruling in session: "do
+    #   the github-native readme pass and merge on green too". Structure only:
+    #   NO SENTENCE CHANGED, and the pass is provable in reverse — strip these
+    #   43 lines and the file is byte for byte what it was. Twelve are a
+    #   contents list of anchor links, one per `##` section plus the Quick
+    #   start, which is the whole navigation a 971-line front page had none of.
+    #   Three are callout markers on paragraphs that were already there, one
+    #   each by role: `> [!IMPORTANT]` on "the shape confers nothing",
+    #   `> [!NOTE]` on the consent rules ("The tool offers the rest"),
+    #   `> [!WARNING]` on what a failed scaffold leaves behind. Fifteen are
+    #   three `<details>` wrappers — macOS, Windows natively, Windows via WSL2
+    #   — so a first-time reader opens their own machine instead of reading
+    #   four platforms in sequence; the Linux line and the four shared steps
+    #   stay visible. Thirteen are one Mermaid flowchart under § The three
+    #   legs, drawing what the table states: the assembly root mounting both
+    #   legs as submodules, each pinned TWICE (the gitlink and
+    #   `contracts/<role>-pin.yaml`), and the shape pin to
+    #   `opensoft/openRepoShape`. Wrappers cost lines and no prose; a cap that
+    #   refused them would be a cap on legibility rather than on words.
+    assert len(lines) <= 1014, (
+        f"README.md is {len(lines)} lines; the cap is 1014")
 
 
 @pytest.mark.parametrize("name", SHIPPED_BASH)
