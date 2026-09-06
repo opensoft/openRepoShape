@@ -154,7 +154,7 @@ def _only_rule_lines(text: str) -> list:
            if line.strip() and not line.lstrip().startswith("#")]
 
 
-def test_the_repositorys_own_root_carries_the_rule_too():
+def test_the_repository_root_carries_the_rule_too():
     """Copilot's comment on PR #58 (#51's PR), read after the merge and
     acted on at #63: the two TEMPLATES got `.gitattributes` so a SCAFFOLDED
     project's clone would not turn LF into CRLF, but the standard's own

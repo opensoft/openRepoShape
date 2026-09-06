@@ -575,9 +575,9 @@ def test_a_shape_ref_that_is_not_a_ref_is_refused_by_the_shim(tmp_path, ref):
     reached through the shim's guard rather than the Python parser -
     `$OPENREPOSHAPE_REPO` points at THIS checkout so the run stays offline
     whichever of the five bad shapes is tried. The 256-character one is
-    refused by the LENGTH check that runs after the `case`, not by the `case`
-    itself - its alphabet is otherwise entirely legal - which this shares
-    with the dedicated test below rather than repeating."""
+    refused by the LENGTH check that runs BEFORE the `case`, not by the
+    `case` itself - its alphabet is otherwise entirely legal - which this
+    shares with the dedicated test below rather than repeating."""
     outside = make_outside_checkout(tmp_path)
     result = run_bare_setup(outside / "setup.sh",
                             "--org", "demoorg", "--project", "Sample", "--yes",
@@ -588,16 +588,21 @@ def test_a_shape_ref_that_is_not_a_ref_is_refused_by_the_shim(tmp_path, ref):
     assert "--shape-ref" in result.stderr
 
 
-def test_an_overlong_shape_ref_is_refused_by_length_alone(tmp_path):
-    """`REF_RE` bounds a ref at 255 characters; the shim's `case` mirrors its
-    alphabet but not that bound, so a 256th-character-only fault reaches a
-    separate `if` after the `case` - and that refusal names the LENGTH, not
-    the value: echoing 256 characters of `a` back on stderr would be noise
-    nobody could read, unlike the short, meaningful bad shapes the `case`
-    itself refuses.
+@pytest.mark.parametrize("overlong", [
+    pytest.param("a" * 256, id="256-legal-shape"),
+    pytest.param("a" * 299 + " ", id="300-illegal-shape"),
+])
+def test_an_overlong_shape_ref_is_refused_by_length_alone(tmp_path, overlong):
+    """`REF_RE` bounds a ref at 255 characters; the shim's LENGTH check now
+    runs BEFORE the shape `case`, so an over-long ref is refused by length
+    alone and never reaches the `case` at all - whether or not it would ALSO
+    have failed the shape check, which the second parametrisation (a
+    trailing space) proves. Either way the refusal names the LENGTH, not the
+    value: echoing 256+ characters back on stderr would be noise nobody
+    could read, unlike the short, meaningful bad shapes the `case` itself
+    refuses.
     """
     outside = make_outside_checkout(tmp_path)
-    overlong = "a" * 256
     result = run_bare_setup(outside / "setup.sh",
                             "--org", "demoorg", "--project", "Sample", "--yes",
                             "--shape-ref", overlong,
@@ -607,7 +612,33 @@ def test_an_overlong_shape_ref_is_refused_by_length_alone(tmp_path):
     assert "--shape-ref" in result.stderr
     assert "255" in result.stderr
     assert overlong not in result.stderr, (
-        "the refusal echoed the 256-character value back onto stderr")
+        "the refusal echoed the over-long value back onto stderr")
+
+
+def test_a_shape_ref_with_a_control_character_is_refused_without_echo(tmp_path):
+    """Copilot's read of #63, acted on at #65: the shape `case`'s own refusal
+    echoes `$SHAPE_REF` back (`--shape-ref is '$SHAPE_REF', which ...`), so a
+    ref carrying a control character - a newline - could forge an extra line
+    onto stderr the same way `$OPENREPOSHAPE_REPO` could before its own
+    guard. A dedicated control-character check now runs before the shape
+    `case` and refuses without echoing, mirroring that guard exactly.
+
+    `run_bare_setup` hands argv to `subprocess.run` as a LIST, never through
+    a shell, so the newline embedded in this one argv element reaches bash's
+    `$SHAPE_REF` intact rather than being split into two arguments or eaten
+    by a shell that never ran.
+    """
+    outside = make_outside_checkout(tmp_path)
+    forged = "a\nFORGED: this line was never printed by setup.sh"
+    result = run_bare_setup(outside / "setup.sh",
+                            "--org", "demoorg", "--project", "Sample", "--yes",
+                            "--shape-ref", forged,
+                            "--local-remote-dir", str(tmp_path / "remotes"),
+                            cwd=outside, extra_env={"OPENREPOSHAPE_REPO": str(REPO)})
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert "--shape-ref" in result.stderr
+    assert "FORGED" not in result.stderr, (
+        "the newline let a forged line reach stderr:\n" + result.stderr)
 
 
 def test_the_shim_refuses_before_cloning_when_git_is_missing(tmp_path):

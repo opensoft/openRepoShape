@@ -147,18 +147,28 @@ done
 # Mirrors `setup-project.py`'s REF_RE: a ref starts with a letter or digit,
 # holds only letters, digits, '.', '_', '/', '-', is never a `..` range,
 # never ends in `.lock` (git's own lock-file name for one), and is at most
-# 255 characters long. Only reached when $SHAPE_REF is non-empty — every
-# alternative below requires at least one character to match. The LENGTH
-# bound is checked separately, below, rather than folded into this `case`:
-# its refusal names the length rather than the value, because the value
-# itself is 255+ characters of noise on stderr, not a fault a person could
-# read at a glance the way the shapes above are.
-case "$SHAPE_REF" in
-[!A-Za-z0-9]*|*..*|*.lock|*[!A-Za-z0-9._/-]*) die "--shape-ref is '$SHAPE_REF', which is not a branch, tag or commit this tool will pass to \`git checkout\`: a ref starts with a letter or digit, uses only letters, digits, '.', '_', '/', '-', has no '..' and does not end in '.lock'." ;;
-esac
+# 255 characters long. Matches nothing when $SHAPE_REF is empty - every
+# alternative requires at least one character - so an absent --shape-ref
+# passes through untouched.
+#
+# THREE CHECKS, IN THIS ORDER, AND THE ORDER IS THE POINT. The first two
+# refuse WITHOUT echoing $SHAPE_REF back, exactly like $OPENREPOSHAPE_REPO's
+# own guard above: (1) LENGTH first, because an over-long ref would put
+# 255+ characters of noise on stderr if named; (2) a CONTROL CHARACTER next
+# - a newline in the value could forge an extra line onto stdout or stderr
+# the way the comment above OPENREPOSHAPE_REPO's guard explains. Only once
+# a ref has passed both - so it is at most 255 characters and entirely
+# printable - does (3) the shape `case` below echo it back, which is by
+# then safe to read.
 if [ "${#SHAPE_REF}" -gt 255 ]; then
 	die "--shape-ref is ${#SHAPE_REF} characters long; a branch, tag or commit this tool will pass to \`git checkout\` is at most 255 characters."
 fi
+case "$SHAPE_REF" in
+*[![:print:]]*) die "--shape-ref carries a control character, which is not a branch, tag or commit this tool will pass to \`git checkout\`." ;;
+esac
+case "$SHAPE_REF" in
+[!A-Za-z0-9]*|*..*|*.lock|*[!A-Za-z0-9._/-]*) die "--shape-ref is '$SHAPE_REF', which is not a branch, tag or commit this tool will pass to \`git checkout\`: a ref starts with a letter or digit, uses only letters, digits, '.', '_', '/', '-', has no '..' and does not end in '.lock'." ;;
+esac
 
 say "openRepoShape setup"
 say ""
