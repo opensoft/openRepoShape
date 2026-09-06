@@ -31,6 +31,7 @@ the checkout it was cloned from.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -91,9 +92,31 @@ def unname_everywhere(text: str, entry: str) -> str:
 
     How the copy lists read BEFORE a file joined them. The entry is matched as
     a whole line so a comment mentioning the same name is left where it is: a
-    comment names nothing, and `upstream_copies` reads the tuples.
+    comment names nothing, and `upstream_copies` reads the tuples. The line
+    ending is OPTIONAL (`\\r?\\n`) rather than assumed to be `\\n`, because a
+    checkout made under Git for Windows' `core.autocrlf=true` default has
+    `\\r\\n` throughout and was left that way until it is renormalised -
+    `.gitattributes` (#63) fixes new clones, not one already on disk.
     """
-    return text.replace(f'    "{entry}",\n', "")
+    return re.sub(r'^    "%s",\r?\n' % re.escape(entry), "", text,
+                 flags=re.MULTILINE)
+
+
+def test_unname_everywhere_strips_a_crlf_entry_line():
+    """The direct case #58 was about: a CRLF SOURCE (as a `core.autocrlf=true`
+    checkout has, until it is renormalised) still loses its copy-list entry,
+    and nothing ELSE in the text - including its own CRLFs - is touched.
+    """
+    text = ('COPIED_VERBATIM = (\r\n'
+           '    "Makefile",\r\n'
+           f'    "{ATTRIBUTES}",\r\n'
+           '    "AGENTS-shape.md",\r\n'
+           ')\r\n')
+    stripped = unname_everywhere(text, ATTRIBUTES)
+    assert stripped == ('COPIED_VERBATIM = (\r\n'
+                        '    "Makefile",\r\n'
+                        '    "AGENTS-shape.md",\r\n'
+                        ')\r\n')
 
 
 def strip_the_real_addition(upstream) -> list:

@@ -615,14 +615,19 @@ def self_bootstrap(opts: Options, original_argv, invocation_dir: str) -> int:
         die(ORG_REQUIRED)
 
     # `$OPENREPOSHAPE_REPO` NAMES A REPOSITORY, CHECKED LIKE ANY OTHER VALUE
-    # THIS TOOL PUTS ON A `git` COMMAND LINE - unset it is silently
-    # `DEFAULT_SHAPE_REPO`, but a person's or a CI job's environment can set
-    # it to anything, and a leading `-` there is a `git clone` OPTION rather
-    # than a repository. `checked_value` refuses that (and an empty value,
-    # and a control character) by the same rule and in the same words as
-    # every flag on the command line; the `--` below guards the argv too,
-    # so the refusal is not the only thing standing between this value and
-    # `git`'s own argument parser.
+    # THIS TOOL PUTS ON A `git` COMMAND LINE - EXCEPT that unset and
+    # EXPLICITLY EMPTY (`OPENREPOSHAPE_REPO=`) are the same thing here: both
+    # fall to `DEFAULT_SHAPE_REPO`, the shell's own `${VAR:-default}` reading -
+    # `setup.sh` reads this same variable as `${OPENREPOSHAPE_REPO:-<default>}`,
+    # so the two entry points agree on what "unset" means rather than one of
+    # them treating an empty string as a value to check. A NON-empty value
+    # reaches `git clone` and is checked like every other flag on the command
+    # line: a person's or a CI job's environment can set it to anything, and
+    # a leading `-` there is a `git clone` OPTION rather than a repository.
+    # `checked_value` refuses that (and a control character) by the same rule
+    # and in the same words as every flag on the command line; the `--` below
+    # guards the argv too, so the refusal is not the only thing standing
+    # between this value and `git`'s own argument parser.
     raw_shape_repo = os.environ.get("OPENREPOSHAPE_REPO")
     shape_repo = (checked_value("OPENREPOSHAPE_REPO", raw_shape_repo, PATH_RE)
                   if raw_shape_repo else DEFAULT_SHAPE_REPO)

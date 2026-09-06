@@ -533,13 +533,17 @@ def test_an_org_that_is_a_git_option_is_refused(tmp_path):
     assert not (tmp_path / "remotes").exists()
 
 
-@pytest.mark.parametrize("ref", ["a b", "a..b", "topic.lock", "-x"])
+@pytest.mark.parametrize("ref", ["a b", "a..b", "topic.lock", "-x",
+                                 pytest.param("a" * 256, id="256-chars")])
 def test_a_shape_ref_that_is_not_a_ref_is_refused(tmp_path, ref):
     """`--shape-ref` becomes `git checkout <ref>` in the temporary checkout.
 
     A space is not in any ref name; `..` is a revision RANGE rather than a
-    ref; `.lock` is what git calls the lock file it writes beside one; and a
-    leading `-` is an option to git.
+    ref; `.lock` is what git calls the lock file it writes beside one; a
+    leading `-` is an option to git; and 256 characters is one past `REF_RE`'s
+    own bound of 255 - the same bound `setup.sh`'s shim mirrors with a
+    dedicated length check of its own, since a bash `case` cannot count
+    (openRepoShape #63).
     """
     result = run_entry("--project", "Sample", "--shape-ref", ref,
                        "--local-remote-dir", str(tmp_path / "remotes"),
@@ -879,6 +883,53 @@ def test_self_bootstrap_clone_guards_the_repository_argument(tmp_path):
     assert " -- %s " % str(REPO) in match.group(0), (
         f"the clone command has no `--` before the repository: "
         f"{match.group(0)!r}")
+
+
+def test_an_empty_openreposhape_repo_means_unset(tmp_path):
+    """`self_bootstrap` reads `$OPENREPOSHAPE_REPO` with
+    `checked_value(...) if raw_shape_repo else DEFAULT_SHAPE_REPO` - a
+    truthiness test, so `OPENREPOSHAPE_REPO=` (set, explicitly EMPTY) never
+    reaches `checked_value` at all and falls to the default exactly like an
+    unset variable does. `setup.sh` reads the same variable as
+    `${OPENREPOSHAPE_REPO:-<default>}`, the shell's own "unset or empty"
+    reading, so the two entry points already agree - the ruling on
+    openRepoShape #63, after a comment above that line (fixed alongside this
+    test) was found still claiming `checked_value` refuses "an empty value"
+    for this variable, which is never reached for one.
+
+    Offline: `GIT_CONFIG_COUNT`/`_KEY_0`/`_VALUE_0` hand this one process a
+    `url.<file-uri-of-this-checkout>.insteadOf <default>` rewrite, so `git
+    clone` resolves the DEFAULT repository to THIS checkout without a
+    network - which is what makes the echoed clone line naming the default
+    URL proof that the empty value fell through to it, rather than a network
+    call that happened to succeed.
+    """
+    default_repo = "https://github.com/opensoft/openRepoShape.git"
+    source_default = re.search(r'^DEFAULT_SHAPE_REPO = "([^"]+)"',
+                               SETUP_PROJECT.read_text(encoding="utf-8"),
+                               re.MULTILINE)
+    assert source_default, "DEFAULT_SHAPE_REPO not found in setup-project.py"
+    assert source_default.group(1) == default_repo, (
+        "this test's literal has drifted from setup-project.py's own "
+        "DEFAULT_SHAPE_REPO")
+
+    outside = make_outside_checkout(tmp_path)
+    base = tmp_path / "run"
+    result = run_entry("--org", "demoorg", "--project", "Sample", "--yes",
+                       "--local-remote-dir", str(base / "remotes"),
+                       "--into", str(base / "work"),
+                       cwd=outside, script=outside / "setup-project.py",
+                       extra_env={
+                           "OPENREPOSHAPE_REPO": "",
+                           "GIT_CONFIG_COUNT": "1",
+                           "GIT_CONFIG_KEY_0": "url.%s.insteadOf" % REPO.as_uri(),
+                           "GIT_CONFIG_VALUE_0": default_repo,
+                       })
+    assert result.returncode == 0, result.stderr + result.stdout
+    match = re.search(r"^  git clone .*$", result.stdout, re.MULTILINE)
+    assert match, f"the clone command was never echoed:\n{result.stdout}"
+    assert default_repo in match.group(0), (
+        f"the clone did not name the default repository: {match.group(0)!r}")
 
 
 # --- the preflight offers to install what is missing (#59) -----------------

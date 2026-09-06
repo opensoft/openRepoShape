@@ -145,13 +145,20 @@ for arg in ${1+"$@"}; do
 	prev="$arg"
 done
 # Mirrors `setup-project.py`'s REF_RE: a ref starts with a letter or digit,
-# holds only letters, digits, '.', '_', '/', '-', is never a `..` range and
-# never ends in `.lock` (git's own lock-file name for one). Only reached when
-# $SHAPE_REF is non-empty — every alternative below requires at least one
-# character to match.
+# holds only letters, digits, '.', '_', '/', '-', is never a `..` range,
+# never ends in `.lock` (git's own lock-file name for one), and is at most
+# 255 characters long. Only reached when $SHAPE_REF is non-empty — every
+# alternative below requires at least one character to match. The LENGTH
+# bound is checked separately, below, rather than folded into this `case`:
+# its refusal names the length rather than the value, because the value
+# itself is 255+ characters of noise on stderr, not a fault a person could
+# read at a glance the way the shapes above are.
 case "$SHAPE_REF" in
 [!A-Za-z0-9]*|*..*|*.lock|*[!A-Za-z0-9._/-]*) die "--shape-ref is '$SHAPE_REF', which is not a branch, tag or commit this tool will pass to \`git checkout\`: a ref starts with a letter or digit, uses only letters, digits, '.', '_', '/', '-', has no '..' and does not end in '.lock'." ;;
 esac
+if [ "${#SHAPE_REF}" -gt 255 ]; then
+	die "--shape-ref is ${#SHAPE_REF} characters long; a branch, tag or commit this tool will pass to \`git checkout\` is at most 255 characters."
+fi
 
 say "openRepoShape setup"
 say ""

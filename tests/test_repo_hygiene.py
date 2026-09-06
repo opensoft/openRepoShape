@@ -143,6 +143,54 @@ def test_the_two_root_templates_agree_about_line_endings():
     assert assembly.read_bytes() == family.read_bytes()
 
 
+def _only_rule_lines(text: str) -> list:
+    """Every non-comment, non-blank line of a `.gitattributes` file.
+
+    Shared by the root's own test and the agreement test below it, so a
+    header that grows a blank line or an extra `#` paragraph never touches
+    either assertion — only the RULE does.
+    """
+    return [line for line in text.splitlines()
+           if line.strip() and not line.lstrip().startswith("#")]
+
+
+def test_the_repositorys_own_root_carries_the_rule_too():
+    """Copilot's comment on PR #58 (#51's PR), read after the merge and
+    acted on at #63: the two TEMPLATES got `.gitattributes` so a SCAFFOLDED
+    project's clone would not turn LF into CRLF, but the standard's own
+    checkout - the one `tests/` itself runs from - had none.
+    `unname_everywhere()` in `tests/test_update_shape_add.py` strips a
+    copy-list entry by matching it as a WHOLE LINE, so a checkout made under
+    Git for Windows' `core.autocrlf=true` installer default turns this
+    repository's own `\n` into `\r\n` and that match goes blind - CI never
+    saw it because it pins `autocrlf=false`.
+    """
+    path = REPO / ".gitattributes"
+    assert path.is_file(), "the repository's own root has no .gitattributes"
+    data = path.read_bytes()
+    assert b"\r" not in data, "the file that says LF is itself LF"
+    text = data.decode("utf-8")
+    assert _only_rule_lines(text) == [EOL_RULE], (
+        f"the root .gitattributes' only rule line must be `{EOL_RULE}`")
+    assert "#63" in text, "the rule is cited by the issue that added it"
+
+
+def test_the_root_and_both_templates_agree_about_the_rule():
+    """Three copies, one rule: the two templates (for a SCAFFOLDED project's
+    clone) and the repository's own root (for a clone of openRepoShape
+    itself). Their headers differ on purpose - each explains the rule for
+    its own audience - so this compares the RULE LINE alone, not the bytes,
+    which is what `test_the_two_root_templates_agree_about_line_endings`
+    already does for the two templates.
+    """
+    root = _only_rule_lines((REPO / ".gitattributes").read_text(encoding="utf-8"))
+    assembly = _only_rule_lines((REPO / "templates" / "assembly-root" /
+                                ".gitattributes").read_text(encoding="utf-8"))
+    family = _only_rule_lines((REPO / "templates" / "family-root" /
+                              ".gitattributes").read_text(encoding="utf-8"))
+    assert root == [EOL_RULE] == assembly == family
+
+
 def test_the_shape_pin_template_carries_a_files_block():
     text = (REPO / "templates" / "assembly-root" / "contracts" /
             "shape-pin.yaml").read_text()

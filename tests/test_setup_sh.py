@@ -489,6 +489,50 @@ def test_self_bootstrap_without_org_refuses(tmp_path):
     assert not (tmp_path / "remotes").exists()
 
 
+def test_an_empty_openreposhape_repo_means_unset(tmp_path):
+    """`setup.sh` reads `$OPENREPOSHAPE_REPO` as `${OPENREPOSHAPE_REPO:-<default>}`
+    - the shell's own "unset or empty" default, so `OPENREPOSHAPE_REPO=` (set,
+    explicitly EMPTY) falls to the default exactly like an unset variable
+    does. `setup-project.py` reads the same variable with a truthiness test
+    for the same reason, so the two entry points agree - the ruling on
+    openRepoShape #63, made after a comment in `setup-project.py` (fixed
+    alongside this test) was found still claiming the empty case was
+    checked and refused rather than defaulted.
+
+    Offline: `GIT_CONFIG_COUNT`/`_KEY_0`/`_VALUE_0` hand this one process a
+    `url.<file-uri-of-this-checkout>.insteadOf <default>` rewrite, so `git
+    clone` resolves the DEFAULT repository to THIS checkout without a
+    network - which is what makes the echoed clone line naming the default
+    URL proof that the empty value fell through to it, rather than a network
+    call that happened to succeed.
+    """
+    default_repo = "https://github.com/opensoft/openRepoShape.git"
+    source_default = re.search(r'^SHAPE_REPO="\$\{OPENREPOSHAPE_REPO:-([^}]+)\}"',
+                               SETUP.read_text(encoding="utf-8"), re.MULTILINE)
+    assert source_default, "SHAPE_REPO default not found in setup.sh"
+    assert source_default.group(1) == default_repo, (
+        "this test's literal has drifted from setup.sh's own default")
+
+    outside = make_outside_checkout(tmp_path)
+    base = tmp_path / "run"
+    result = run_bare_setup(outside / "setup.sh",
+                            "--org", "demoorg", "--project", "Sample", "--yes",
+                            "--local-remote-dir", str(base / "remotes"),
+                            "--into", str(base / "work"),
+                            cwd=outside,
+                            extra_env={
+                                "OPENREPOSHAPE_REPO": "",
+                                "GIT_CONFIG_COUNT": "1",
+                                "GIT_CONFIG_KEY_0": "url.%s.insteadOf" % REPO.as_uri(),
+                                "GIT_CONFIG_VALUE_0": default_repo,
+                            })
+    assert result.returncode == 0, result.stderr + result.stdout
+    match = re.search(r"^  git clone .*$", result.stdout, re.MULTILINE)
+    assert match, f"the clone command was never echoed:\n{result.stdout}"
+    assert default_repo in match.group(0), (
+        f"the clone did not name the default repository: {match.group(0)!r}")
+
+
 # --- the shim's own bash-side guards -----------------------------------------
 #
 # These three refuse BEFORE section 0's `mktemp -d` / `git clone` ever runs,
@@ -524,12 +568,16 @@ def test_a_hostile_openreposhape_repo_refuses_before_any_clone(tmp_path):
         f"a temporary shape checkout was left behind: {after - before}")
 
 
-@pytest.mark.parametrize("ref", ["a..b", "topic.lock", "a b", "-x"])
+@pytest.mark.parametrize("ref", ["a..b", "topic.lock", "a b", "-x",
+                                 pytest.param("a" * 256, id="256-chars")])
 def test_a_shape_ref_that_is_not_a_ref_is_refused_by_the_shim(tmp_path, ref):
     """The bash-side mirror of `setup-project.py`'s own `checked_ref` test,
     reached through the shim's guard rather than the Python parser -
     `$OPENREPOSHAPE_REPO` points at THIS checkout so the run stays offline
-    whichever of the four bad shapes is tried."""
+    whichever of the five bad shapes is tried. The 256-character one is
+    refused by the LENGTH check that runs after the `case`, not by the `case`
+    itself - its alphabet is otherwise entirely legal - which this shares
+    with the dedicated test below rather than repeating."""
     outside = make_outside_checkout(tmp_path)
     result = run_bare_setup(outside / "setup.sh",
                             "--org", "demoorg", "--project", "Sample", "--yes",
@@ -538,6 +586,28 @@ def test_a_shape_ref_that_is_not_a_ref_is_refused_by_the_shim(tmp_path, ref):
                             cwd=outside, extra_env={"OPENREPOSHAPE_REPO": str(REPO)})
     assert result.returncode == 2, result.stderr + result.stdout
     assert "--shape-ref" in result.stderr
+
+
+def test_an_overlong_shape_ref_is_refused_by_length_alone(tmp_path):
+    """`REF_RE` bounds a ref at 255 characters; the shim's `case` mirrors its
+    alphabet but not that bound, so a 256th-character-only fault reaches a
+    separate `if` after the `case` - and that refusal names the LENGTH, not
+    the value: echoing 256 characters of `a` back on stderr would be noise
+    nobody could read, unlike the short, meaningful bad shapes the `case`
+    itself refuses.
+    """
+    outside = make_outside_checkout(tmp_path)
+    overlong = "a" * 256
+    result = run_bare_setup(outside / "setup.sh",
+                            "--org", "demoorg", "--project", "Sample", "--yes",
+                            "--shape-ref", overlong,
+                            "--local-remote-dir", str(tmp_path / "remotes"),
+                            cwd=outside, extra_env={"OPENREPOSHAPE_REPO": str(REPO)})
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert "--shape-ref" in result.stderr
+    assert "255" in result.stderr
+    assert overlong not in result.stderr, (
+        "the refusal echoed the 256-character value back onto stderr")
 
 
 def test_the_shim_refuses_before_cloning_when_git_is_missing(tmp_path):
