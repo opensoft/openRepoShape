@@ -22,18 +22,34 @@ ratified one from that day on — so a back-dated project does not claim its
 election followed a document that did not yet exist; `--reference` overrides
 both.
 
-**The shape is elective and confers nothing.** Electing it changes no gate, no
-floor, no grant and no clearance eligibility. A one-repository project and a
-three-repository project are reviewed identically, because the authority
-travels in the grants rather than in the layout. Review lanes and
-wallet-carried authority are OVERLAYS an org adds later; a project with no
-overlays is fully conformant.
+> [!IMPORTANT]
+> **The shape is elective and confers nothing.** Electing it changes no gate, no
+> floor, no grant and no clearance eligibility. A one-repository project and a
+> three-repository project are reviewed identically, because the authority
+> travels in the grants rather than in the layout. Review lanes and
+> wallet-carried authority are OVERLAYS an org adds later; a project with no
+> overlays is fully conformant.
+
+- [Starting a project in a new organisation](#starting-a-project-in-a-new-organisation)
+  - [Quick start for a first-time user](#quick-start-for-a-first-time-user)
+- [The three legs](#the-three-legs)
+- [Adopting an existing repository](#adopting-an-existing-repository)
+- [Families: a holder for projects that ship separately](#families-a-holder-for-projects-that-ship-separately)
+- [The double pin, and the lockstep invariant](#the-double-pin-and-the-lockstep-invariant)
+- [Bootstrap is COPIED into the project, not fetched](#bootstrap-is-copied-into-the-project-not-fetched)
+- [Keeping a project's shape current](#keeping-a-projects-shape-current)
+- [The degrade rule](#the-degrade-rule)
+- [Layout of this repository](#layout-of-this-repository)
+- [Licence](#licence)
 
 ## Starting a project in a new organisation
 
 ### Quick start for a first-time user
 
 **Linux:** run the four steps below in your own shell.
+
+<details>
+<summary><b>macOS</b></summary>
 
 **macOS:** the same four steps, once the machine has what they need. The Xcode
 Command Line Tools supply `git`, `make` and a `python3` — install them with
@@ -53,6 +69,11 @@ and the `openRepoShape` command use no syntax newer than that, and CI runs the
 whole suite on `macos-latest`, parsing both there with `/bin/bash` itself. That
 the login shell is zsh changes nothing — both entry points are run under `bash`
 explicitly.
+
+</details>
+
+<details>
+<summary><b>Windows, natively</b></summary>
 
 **Windows, natively.** No WSL2. Install Python 3.9 or newer from
 <https://www.python.org/downloads/>, ticking *Add python.exe to PATH* — its
@@ -99,21 +120,29 @@ Windows way in; the `openRepoShape` command in step 3 below is a macOS, Linux
 and WSL2 convenience with no Windows twin, because on Windows there is nothing
 to install.
 
+</details>
+
+<details>
+<summary><b>Windows via WSL2</b></summary>
+
 **Windows via WSL2** is still how you run the bash entry points: `wsl
 --install` from an administrator PowerShell, reboot, open the Ubuntu app, and
 run the four steps below INSIDE the WSL shell.
 
-**The tool offers the rest.** The four steps below are the reference — what
-each platform needs, and how to install it by hand. You do not have to: step 4
-opens with a preflight that names what is missing, prints the command for THIS
-machine and asks once — `Type yes to continue:`, the same words it asks
-everything else with — then runs it and carries on. Nothing is installed
-without that typed `yes`; `--yes` does not answer it, and with no terminal
-attached there is no offer at all. Homebrew is the one install never run for
-you: on a Mac without `brew` the preflight names <https://brew.sh> and stops
-there. To check a machine and stop, creating nothing, run
-`openRepoShape --doctor` — `py setup-project.py --doctor` on Windows — which
-exits 0 when everything is present and 1 when it is not.
+</details>
+
+> [!NOTE]
+> **The tool offers the rest.** The four steps below are the reference — what
+> each platform needs, and how to install it by hand. You do not have to: step 4
+> opens with a preflight that names what is missing, prints the command for THIS
+> machine and asks once — `Type yes to continue:`, the same words it asks
+> everything else with — then runs it and carries on. Nothing is installed
+> without that typed `yes`; `--yes` does not answer it, and with no terminal
+> attached there is no offer at all. Homebrew is the one install never run for
+> you: on a Mac without `brew` the preflight names <https://brew.sh> and stops
+> there. To check a machine and stop, creating nothing, run
+> `openRepoShape --doctor` — `py setup-project.py --doctor` on Windows — which
+> exits 0 when everything is present and 1 when it is not.
 
 **1. Install the GitHub CLI**, `gh`. The official instructions are at
 <https://cli.github.com/> (and <https://github.com/cli/cli#installation>):
@@ -339,28 +368,29 @@ manifest, sets the topic `xf-project-atlas` on all three, clones the root into
 the directory you ran the command from, as `./Atlas` (or where `--into <dir>`
 says), and runs `scripts/bootstrap.py` (what `make bootstrap` runs).
 
-**If it fails part-way.** Nothing is created before the typed `yes` in (4):
-the preflight, the naming check and the plan only read and print, and the
-plan is literally a `--dry-run`. After the `yes`, `scaffold-project.py`
-creates the three repositories with `gh repo create` in the order
-`Atlas-spec`, `Atlas-code`, `Atlas` — the root LAST — then seeds and pushes
-the two legs, then builds the root, pushes it, and sets the topic on all
-three. There is NO rollback: whatever was created before the failure stays
-created. A failed push says so in as many words — *NOTHING has been rolled
-back. What already exists is listed above; delete it by hand if you want a
-clean re-run* — and it is no less true of a failure anywhere else. A second
-run is refused while the legs exist, and there is no `--force`, because
-re-running over a live project is not a scaffold: delete what was created —
-`gh repo delete <org>/<name>`, which needs the `delete_repo` scope, and
-`gh repo delete --help` names `gh auth refresh -s delete_repo` as how to get
-it — or scaffold under a different `--project`. `--reuse-empty-repo` covers
-exactly one case: an assembly ROOT that already exists with ZERO commits,
-which is a reserved name rather than a project. It applies to the root alone
-— an existing leg is refused whatever it holds, and a root that HAS commits
-is a live repository, which `adopt-project.py` converts in place instead.
-`--visibility internal` is the third value every tool here accepts; only a
-GitHub Enterprise Cloud organisation offers it at all, and one that does not
-is refused by GitHub rather than by this tool.
+> [!WARNING]
+> **If it fails part-way.** Nothing is created before the typed `yes` in (4):
+> the preflight, the naming check and the plan only read and print, and the
+> plan is literally a `--dry-run`. After the `yes`, `scaffold-project.py`
+> creates the three repositories with `gh repo create` in the order
+> `Atlas-spec`, `Atlas-code`, `Atlas` — the root LAST — then seeds and pushes
+> the two legs, then builds the root, pushes it, and sets the topic on all
+> three. There is NO rollback: whatever was created before the failure stays
+> created. A failed push says so in as many words — *NOTHING has been rolled
+> back. What already exists is listed above; delete it by hand if you want a
+> clean re-run* — and it is no less true of a failure anywhere else. A second
+> run is refused while the legs exist, and there is no `--force`, because
+> re-running over a live project is not a scaffold: delete what was created —
+> `gh repo delete <org>/<name>`, which needs the `delete_repo` scope, and
+> `gh repo delete --help` names `gh auth refresh -s delete_repo` as how to get
+> it — or scaffold under a different `--project`. `--reuse-empty-repo` covers
+> exactly one case: an assembly ROOT that already exists with ZERO commits,
+> which is a reserved name rather than a project. It applies to the root alone
+> — an existing leg is refused whatever it holds, and a root that HAS commits
+> is a live repository, which `adopt-project.py` converts in place instead.
+> `--visibility internal` is the third value every tool here accepts; only a
+> GitHub Enterprise Cloud organisation offers it at all, and one that does not
+> is refused by GitHub rather than by this tool.
 
 **What Dana has afterwards:**
 
@@ -439,6 +469,19 @@ started it for `python3` above, since a stock Windows install has neither.
 | assembly | `<Project>` | `project.yaml`, the two legs as submodules, the pins, the gate |
 | spec | `<Project>-spec` | requirements, decisions, acceptance criteria |
 | code | `<Project>-code` | the implementation and its tests |
+
+```mermaid
+flowchart LR
+  assembly["Northwind/Atlas (assembly root)"]
+  specleg["Northwind/Atlas-spec"]
+  codeleg["Northwind/Atlas-code"]
+  shape["opensoft/openRepoShape"]
+  assembly -->|"gitlink at spec/"| specleg
+  assembly -->|"contracts/spec-pin.yaml"| specleg
+  assembly -->|"gitlink at code/"| codeleg
+  assembly -->|"contracts/code-pin.yaml"| codeleg
+  assembly -.->|"contracts/shape-pin.yaml"| shape
+```
 
 The five naming families live in `contracts/repository-naming.yaml`: neutral
 products `open<Product>`, domain descendants `<Domainx><Product>`, installs
