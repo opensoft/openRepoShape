@@ -609,7 +609,7 @@ sudo dnf install gh</code></pre></div>
       </div>
 
       <!-- MACOS -->
-      <div class="panel" role="tabpanel" id="panel-macos" aria-labelledby="tab-macos" tabindex="0" hidden>
+      <div class="panel" role="tabpanel" id="panel-macos" aria-labelledby="tab-macos" tabindex="0">
         <div class="stack">
           <h4>What this machine needs</h4>
           <p>The Xcode Command Line Tools supply <code>git</code>, <code>make</code> and a
@@ -645,7 +645,7 @@ sudo dnf install gh</code></pre></div>
       </div>
 
       <!-- WINDOWS -->
-      <div class="panel" role="tabpanel" id="panel-windows" aria-labelledby="tab-windows" tabindex="0" hidden>
+      <div class="panel" role="tabpanel" id="panel-windows" aria-labelledby="tab-windows" tabindex="0">
         <div class="stack">
           <h4>What this machine needs</h4>
           <p><strong>Python is the one manual install.</strong> Install Python 3.9 or newer from
@@ -667,7 +667,7 @@ sudo dnf install gh</code></pre></div>
       </div>
 
       <!-- WSL2 -->
-      <div class="panel" role="tabpanel" id="panel-wsl" aria-labelledby="tab-wsl" tabindex="0" hidden>
+      <div class="panel" role="tabpanel" id="panel-wsl" aria-labelledby="tab-wsl" tabindex="0">
         <div class="stack">
           <h4>What this machine needs</h4>
           <p>WSL2 is still how you run the bash entry points: <code>wsl --install</code> from an
@@ -695,7 +695,7 @@ sudo dnf install gh</code></pre></div>
       </div>
 
         <ol class="steps">
-          <li data-platform="win" hidden><div>
+          <li data-platform="win"><div>
             <h3>Make one machine setting first</h3>
             <div class="code" data-lang="powershell"><pre><code>git config --global core.autocrlf false</code></pre></div>
             <p>The git-for-Windows installer offers <code>true</code>, which rewrites every
@@ -707,20 +707,20 @@ sudo dnf install gh</code></pre></div>
 
           <li><div>
             <h3 data-platform="linux mac">Install the <code>openRepoShape</code> command, once</h3>
-            <h3 data-platform="wsl" hidden>Install the <code>openRepoShape</code> command, once, inside WSL</h3>
-            <h3 data-platform="win" hidden>Fetch the flow, in the directory the new project should land in</h3>
+            <h3 data-platform="wsl">Install the <code>openRepoShape</code> command, once, inside WSL</h3>
+            <h3 data-platform="win">Fetch the flow, in the directory the new project should land in</h3>
             <div data-platform="linux mac" class="code" data-lang="sh"><pre><code>gh api repos/opensoft/openRepoShape/contents/openRepoShape \
     -H 'Accept: application/vnd.github.raw' | bash -s -- --install</code></pre></div>
             <p data-platform="linux mac" class="sub">Or, where raw downloads are not blocked, the same bytes over HTTPS:</p>
             <div data-platform="linux mac" class="code" data-lang="sh"><pre><code>curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/openRepoShape \
     | bash -s -- --install</code></pre></div>
-            <div data-platform="wsl" hidden class="code" data-lang="sh"><pre><code>curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/openRepoShape \
+            <div data-platform="wsl" class="code" data-lang="sh"><pre><code>curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/openRepoShape \
     | bash -s -- --install</code></pre></div>
-            <p data-platform="wsl" hidden class="sub">Or, where raw downloads are blocked, the same bytes through the API:</p>
-            <div data-platform="wsl" hidden class="code" data-lang="sh"><pre><code>gh api repos/opensoft/openRepoShape/contents/openRepoShape \
+            <p data-platform="wsl" class="sub">Or, where raw downloads are blocked, the same bytes through the API:</p>
+            <div data-platform="wsl" class="code" data-lang="sh"><pre><code>gh api repos/opensoft/openRepoShape/contents/openRepoShape \
     -H 'Accept: application/vnd.github.raw' | bash -s -- --install</code></pre></div>
-            <div data-platform="win" hidden class="code" data-lang="powershell"><pre><code>Invoke-WebRequest https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup-project.py -OutFile setup-project.py</code></pre></div>
-            <p data-platform="win" hidden class="aside">Two commands rather than one pipe, on purpose. Windows PowerShell 5.1
+            <div data-platform="win" class="code" data-lang="powershell"><pre><code>Invoke-WebRequest https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup-project.py -OutFile setup-project.py</code></pre></div>
+            <p data-platform="win" class="aside">Two commands rather than one pipe, on purpose. Windows PowerShell 5.1
             &mdash; still the default shell on a stock install &mdash; re-encodes piped text as
             ASCII by default (that is its <code>$OutputEncoding</code>), and writes UTF-16 when
             <code>&gt;</code> redirects to a file, so no byte above 0x7F survives either route and a
@@ -728,7 +728,7 @@ sudo dnf install gh</code></pre></div>
             an exhausted stdin, so it cannot ask for the one <code>yes</code> before three
             repositories exist &mdash; it refuses instead. Downloading the file first leaves stdin
             attached to the terminal you are typing at.</p>
-            <p data-platform="mac wsl" hidden>It installs into <code>~/.local/bin</code>, idempotently &mdash; a second run prints
+            <p data-platform="mac wsl">It installs into <code>~/.local/bin</code>, idempotently &mdash; a second run prints
             <code>unchanged</code> &mdash; and prints the <code>export PATH=&hellip;</code> line if
             that directory is not on <code>PATH</code>.</p>
             <p data-platform="linux">It installs into <code>~/.local/bin</code>, idempotently &mdash; a second run prints
@@ -740,28 +740,28 @@ sudo dnf install gh</code></pre></div>
           <li><div>
             <h3>Check the machine, creating nothing</h3>
             <div data-platform="linux mac wsl" class="code" data-lang="sh"><pre><code>openRepoShape --doctor</code></pre></div>
-            <div data-platform="win" hidden class="code" data-lang="powershell"><pre><code>py setup-project.py --doctor</code></pre></div>
+            <div data-platform="win" class="code" data-lang="powershell"><pre><code>py setup-project.py --doctor</code></pre></div>
             <p data-platform="linux">It checks this machine, offers what is missing and creates nothing. It exits 0 when
             everything is present and 1 when it is not.</p>
-            <p data-platform="mac" hidden>It exits 0 when everything is present and 1 when it is not, and creates nothing. This
+            <p data-platform="mac">It exits 0 when everything is present and 1 when it is not, and creates nothing. This
             is also where a <code>python3</code> below 3.9 is named.</p>
-            <p data-platform="win" hidden>It exits 0 when everything is present and 1 when it is not.
+            <p data-platform="win">It exits 0 when everything is present and 1 when it is not.
             <code>python setup-project.py --doctor</code> is the same command on a machine with no
             <code>py</code>: Python from the Microsoft Store installs <code>python</code> and no
             launcher at all.</p>
-            <p data-platform="wsl" hidden>It exits 0 when everything is present and 1 when it is not.</p>
+            <p data-platform="wsl">It exits 0 when everything is present and 1 when it is not.</p>
           </div></li>
 
           <li><div>
             <h3>Log in</h3>
             <div data-platform="linux mac wsl" class="code" data-lang="sh"><pre><code>gh auth login</code></pre></div>
-            <div data-platform="win" hidden class="code" data-lang="powershell"><pre><code>gh auth login</code></pre></div>
+            <div data-platform="win" class="code" data-lang="powershell"><pre><code>gh auth login</code></pre></div>
             <p data-platform="linux mac win">As the account that will own the act &mdash; a member of the organisation who can
             create repositories there. Accept the offer to configure git&rsquo;s credential helper,
             or run <code>gh auth setup-git</code>: the first commits go up with a plain
             <code>git push</code> over HTTPS, and without it the three repositories are created and
             the push fails.</p>
-            <p data-platform="wsl" hidden>As the account that will own the act. Accept the offer to configure git&rsquo;s
+            <p data-platform="wsl">As the account that will own the act. Accept the offer to configure git&rsquo;s
             credential helper, or run <code>gh auth setup-git</code>: the first commits go up with a
             plain <code>git push</code> over HTTPS, and without it the three repositories are
             created and the push fails.</p>
@@ -769,7 +769,7 @@ sudo dnf install gh</code></pre></div>
 
           <li><div>
             <h3>Rehearse first, creating nothing</h3>
-            <p data-platform="win" hidden><code>--local-remote-dir &lt;dir&gt;</code> runs the whole flow against three BARE
+            <p data-platform="win"><code>--local-remote-dir &lt;dir&gt;</code> runs the whole flow against three BARE
             repositories in <code>&lt;dir&gt;</code> &mdash; same preflight, same naming check, same
             plan, same <code>Type yes to continue:</code>, same clone and
             <code>scripts/bootstrap.py</code> &mdash; and <code>gh</code> is never called. The
@@ -783,13 +783,13 @@ sudo dnf install gh</code></pre></div>
             created on GitHub. <code>--org</code> is still required &mdash; it is what the manifest
             records as the owner of all three legs &mdash; but here it is only a string: it is never
             checked against GitHub, so the organisation need not exist yet.</p>
-            <p data-platform="mac" hidden>The same preflight (where <code>gh</code> is neither required nor checked), the same
+            <p data-platform="mac">The same preflight (where <code>gh</code> is neither required nor checked), the same
             naming check, the same plan, the same <code>Type yes to continue:</code>, the same clone
             and <code>scripts/bootstrap.py</code> &mdash; against three BARE repositories in
             <code>./rehearsal</code>. <code>gh</code> is never called and nothing is created on
             GitHub; <code>--org</code> is still required but is only a string here, never checked
             against GitHub.</p>
-            <p data-platform="wsl" hidden>Three BARE repositories in <code>./rehearsal</code>, the same preflight (where
+            <p data-platform="wsl">Three BARE repositories in <code>./rehearsal</code>, the same preflight (where
             <code>gh</code> is neither required nor checked), the same naming check, the same plan,
             the same <code>Type yes to continue:</code>, the same clone and
             <code>scripts/bootstrap.py</code>. <code>gh</code> is never called and nothing is
@@ -800,11 +800,11 @@ sudo dnf install gh</code></pre></div>
             instead and nothing touches the network at all. What it leaves behind is
             <code>./Atlas</code> and three bare repositories in <code>./rehearsal</code>, both of
             which you can delete.</p>
-            <p data-platform="mac wsl" hidden class="aside">Honestly: it still reaches GitHub before the run starts &mdash; to
+            <p data-platform="mac wsl" class="aside">Honestly: it still reaches GitHub before the run starts &mdash; to
             fetch <code>setup.sh</code>, then for the self-bootstrap clone of this standard into a
             temporary directory. Run the same flag on <code>./setup.sh</code> from a checkout
             instead and nothing touches the network at all.</p>
-            <p data-platform="win" hidden class="aside"><code>setup-project.py</code> is that same flow with the shim taken off
+            <p data-platform="win" class="aside"><code>setup-project.py</code> is that same flow with the shim taken off
             the front, but the README documents this flag on <code>openRepoShape</code> and
             <code>setup.sh</code> and names <code>openRepoShape --help</code> and
             <code>setup.sh --help</code> as what lists every flag, this one included. Read the help
@@ -814,25 +814,25 @@ sudo dnf install gh</code></pre></div>
           <li><div>
             <h3>Run it</h3>
             <div data-platform="linux mac wsl" class="code" data-lang="sh"><pre><code>openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
-            <div data-platform="win" hidden class="code" data-lang="powershell"><pre><code>py setup-project.py &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
+            <div data-platform="win" class="code" data-lang="powershell"><pre><code>py setup-project.py &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
             <p data-platform="linux"><code>&lt;Project&gt;</code> is one positional CamelCase name (e.g.
             <code>Atlas</code>); <code>--org</code> is required &mdash; from the flag,
             <code>$OPENREPOSHAPE_ORG</code>, or the command&rsquo;s own prompt &mdash; and add
             <code>--visibility private</code> if you want that. It shows the plan and asks once,
             <code>Type yes to continue:</code>; type <code>yes</code>. Afterwards
             <code>./&lt;Project&gt;</code> is the cloned root.</p>
-            <p data-platform="mac" hidden><code>&lt;Project&gt;</code> is one positional CamelCase name (e.g.
+            <p data-platform="mac"><code>&lt;Project&gt;</code> is one positional CamelCase name (e.g.
             <code>Atlas</code>); <code>--org</code> is required &mdash; from the flag,
             <code>$OPENREPOSHAPE_ORG</code>, or the command&rsquo;s own prompt. It shows the plan
             and asks once, <code>Type yes to continue:</code>; type <code>yes</code>. Afterwards
             <code>./&lt;Project&gt;</code> is the cloned root.</p>
-            <p data-platform="win" hidden><code>python setup-project.py &lt;Project&gt; --org &lt;your-org&gt;</code> is the
+            <p data-platform="win"><code>python setup-project.py &lt;Project&gt; --org &lt;your-org&gt;</code> is the
             same command on a machine with no <code>py</code>. <code>setup-project.py</code> is the
             flow itself, and <code>setup.sh</code> a shim over it: the same preflight, the same
             naming check, the same plan, the same one <code>yes</code>, the same self-bootstrap
             outside a checkout. It never needs <code>make</code> and never looks for a
             <code>python3</code> &mdash; it runs the interpreter that started it.</p>
-            <p data-platform="wsl" hidden>One positional CamelCase name; <code>--org</code> required, from the flag,
+            <p data-platform="wsl">One positional CamelCase name; <code>--org</code> required, from the flag,
             <code>$OPENREPOSHAPE_ORG</code>, or the command&rsquo;s own prompt. It shows the plan
             and asks once, <code>Type yes to continue:</code>; type <code>yes</code>.</p>
             <p data-platform="linux"><span class="refuses">Refuses</span> <code>--org opensoft</code> without
@@ -1375,12 +1375,10 @@ python3 scripts/family.py remove --family-root ../InkRouter --member IRRS</code>
     if (platform.includes('mac')) { want = 'panel-macos'; }
     else if (platform.includes('win')) { want = 'panel-windows'; }
 
-    if (want !== 'panel-linux') {
-      var preferred = tabs.find(function (t) {
-        return t.getAttribute('aria-controls') === want;
-      });
-      if (preferred) { select(preferred, false); }
-    }
+    var initial = tabs.find(function (t) {
+      return t.getAttribute('aria-controls') === want;
+    }) || tabs[0];
+    select(initial, false);
   })();
 </script>
 </body>
