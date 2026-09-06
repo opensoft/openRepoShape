@@ -8,6 +8,7 @@ MedxEHR reads a COPY of a read-only clone and never writes to it.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -23,10 +24,12 @@ from repo_shape import load_yaml  # noqa: E402
 
 #: A read-only clone of MedxSoft/MedxEHR, if this machine has one. The test
 #: that uses it COPIES it first and skips when it is absent, because a suite
-#: that only runs on the machine it was written on is not a suite.
-MEDXEHR = Path("/tmp/claude-1000/-home-brett-projects-xFactory/"
-               "12896b36-ff8f-40db-8814-0b19dc4296a7/scratchpad/"
-               "adopt-inventory/MedxEHR")
+#: that only runs on the machine it was written on is not a suite. Read from
+#: SHAPE_MEDXEHR_CLONE (this repository's SHAPE_* env-var convention) —
+#: deliberately NO default path, because a host-absolute path baked into a
+#: committed file is exactly what the estate's Rule 1 forbids (#61).
+MEDXEHR = (Path(os.environ["SHAPE_MEDXEHR_CLONE"])
+          if os.environ.get("SHAPE_MEDXEHR_CLONE") else None)
 
 POLICY = REPO / "contracts" / "path-classification.yaml"
 
@@ -380,8 +383,11 @@ def test_a_bad_visibility_is_refused_by_argparse(source_repo, tmp_path):
 
 # --- the MedxEHR shape, which is what the rulings were made about ----------
 
-@pytest.mark.skipif(not MEDXEHR.exists(),
-                    reason="no read-only MedxEHR clone on this machine")
+@pytest.mark.skipif(
+    MEDXEHR is None or not MEDXEHR.is_dir(),
+    reason="SHAPE_MEDXEHR_CLONE is unset, or names no directory: the "
+           "MedxEHR-backed plan test needs a read-only clone of "
+           "MedxSoft/MedxEHR")
 def test_plan_on_medxehr_matches_the_rulings(tmp_path):
     """THE WORKED EXAMPLE, against the real tree, on a COPY.
 

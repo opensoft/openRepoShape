@@ -654,3 +654,60 @@ def test_setup_sh_is_the_documented_front_door():
     agents = (REPO / "AGENTS.md").read_text()
     assert "without `--yes`" in agents
     assert "--allow-upstream-org" in agents
+
+
+#: A host-absolute path baked into a committed file (the estate's Rule 1):
+#: it names one machine, one user, or one session, and silently breaks the
+#: moment the repository moves to a different machine or a different user's
+#: checkout - which is exactly what #61 found in `tests/test_adopt_plan.py`,
+#: a scratchpad path from one session that no other machine could ever match.
+#:
+#: Each alternative requires a REAL-LOOKING segment rather than matching on
+#: the word alone, checked against what this repository's tracked text
+#: actually carries today:
+#:   - `/opt/homebrew` (README.md) is the only "/home"-adjacent string, and
+#:     it matches none of these.
+#:   - Windows examples in scripts/repo_shape.py, tests/test_setup_project_py
+#:     .py and tests/test_windows_paths.py illustrate a SPACE in a username
+#:     ("Jane Doe", "Some One") to make a quoting point; requiring the
+#:     segment to contain no whitespace excludes them.
+#:   - .github/workflows/tests.yml names the GitHub-hosted Windows runner's
+#:     own fixed account - a shared, nobody's-machine-in-particular login
+#:     the same way `/opt/homebrew` is a shared install location - and it is
+#:     excluded by name rather than matched.
+#:   - This definition would otherwise flag ITSELF: the Claude-scratchpad
+#:     tmp-directory prefix this guard exists to catch is therefore spelled
+#:     as two concatenated pieces, not written out contiguously.
+_CLAUDE_TMP_PREFIX = "/tmp/" + "claude-"
+HOST_ABSOLUTE_PATH = re.compile(
+    r"/home/[a-z][a-z0-9_-]*/"
+    "|" + re.escape(_CLAUDE_TMP_PREFIX) +
+    r"|/Users/[A-Za-z][A-Za-z0-9_-]*/"
+    r"|C:\\Users\\(?!runneradmin\\)[^\s\\]+\\"
+)
+
+
+def test_no_committed_file_names_a_host_absolute_path():
+    """#61: the suite stayed green on every machine but the one the fixed
+    path was written on, because the ONE test that read it SKIPPED when it
+    was absent. Nothing checked the path itself for being the kind of thing
+    that should never have been committed. This is that check.
+
+    Every file `git ls-files` tracks, decoded as UTF-8 - a file that fails to
+    decode is skipped rather than failed, because this test is about paths
+    written in text, not about what counts as text.
+    """
+    tracked = subprocess.run(["git", "ls-files"], cwd=str(REPO),
+                             capture_output=True, text=True,
+                             check=True).stdout.splitlines()
+    offenders = {}
+    for rel in tracked:
+        try:
+            text = (REPO / rel).read_bytes().decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        hits = HOST_ABSOLUTE_PATH.findall(text)
+        if hits:
+            offenders[rel] = hits
+    assert not offenders, (
+        f"committed file(s) name a host-absolute path: {offenders}")
