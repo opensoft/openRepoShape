@@ -92,11 +92,13 @@ def unname_everywhere(text: str, entry: str) -> str:
 
     How the copy lists read BEFORE a file joined them. The entry is matched as
     a whole line so a comment mentioning the same name is left where it is: a
-    comment names nothing, and `upstream_copies` reads the tuples. The line
-    ending is OPTIONAL (`\\r?\\n`) rather than assumed to be `\\n`, because a
-    checkout made under Git for Windows' `core.autocrlf=true` default has
-    `\\r\\n` throughout and was left that way until it is renormalised -
-    `.gitattributes` (#63) fixes new clones, not one already on disk.
+    comment names nothing, and `upstream_copies` reads the tuples. Only the
+    carriage return is optional (`\\r?\\n`): the newline is still required,
+    because the entry is matched as a whole line - but a checkout made under
+    Git for Windows' `core.autocrlf=true` default has `\\r\\n` throughout and
+    stays that way until it is renormalised, and the match must find the
+    entry there too. `.gitattributes` (#63) fixes new clones, not one
+    already on disk.
     """
     return re.sub(r'^    "%s",\r?\n' % re.escape(entry), "", text,
                  flags=re.MULTILINE)
