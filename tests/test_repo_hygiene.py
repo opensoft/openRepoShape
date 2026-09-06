@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
 import os
 import re
 import shutil
@@ -194,9 +195,20 @@ def test_agents_md_is_short_enough_to_be_read():
     time. Same argument as #38's, with one thing added that an assistant
     cannot work out for itself: it is two commands rather than one pipe
     because a piped script cannot ask, so an assistant that "helpfully"
-    folds them into a pipe has removed the one `yes` this file opens with."""
+    folds them into a pipe has removed the one `yes` this file opens with.
+
+    273 -> 277 on 2026-09-05, for the GUIDED PREFLIGHT (#59). Brett Heap, in
+    session: "why not have an install program that will do all this? so the
+    user gets our program and then runs that and we do all this?" — then
+    "yes" to an offer rather than an installer. The preflight now asks `Type
+    yes to continue:` for an INSTALL as well, and this file's first rule
+    covers only the repository-creation prompt. An assistant that reasoned
+    from the first rule to "so I may answer the other one" would be
+    installing software on somebody's machine on its own initiative, which is
+    a bigger act than the one already forbidden — so the rule is written down
+    beside it rather than left to be inferred."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 273, f"AGENTS.md is {len(lines)} lines; the cap is 273"
+    assert len(lines) <= 277, f"AGENTS.md is {len(lines)} lines; the cap is 277"
 
 
 def test_claude_md_points_at_agents_md():
@@ -448,8 +460,23 @@ def test_readme_is_short_enough_to_be_read():
     #   hand-over. The three lines are that sentence, and the paragraph that
     #   follows the block now says what `setup-project.py` is by the same
     #   measure rather than repeating the list of substitutions.
-    assert len(lines) <= 948, (
-        f"README.md is {len(lines)} lines; the cap is 948")
+    # 2026-09-05: 948 -> 967 — the GUIDED PREFLIGHT (#59). Brett Heap, in
+    #   session: "why not have an install program that will do all this? so
+    #   the user gets our program and then runs that and we do all this?" —
+    #   then "yes" to an offer rather than an installer. Twelve lines are the
+    #   lead that says the four steps are the REFERENCE and the tool offers
+    #   the rest, on what terms (a typed `yes` each time, never `--yes`, never
+    #   Homebrew, no terminal no offer), and that `--doctor` checks a machine
+    #   and creates nothing. Four more are the `git` install commands for the
+    #   four platforms: a command this tool would RUN that no document shows
+    #   is exactly what `test_the_offer_commands_are_the_ones_the_readme_
+    #   documents` refuses, and the person who declines an offer reads the
+    #   same line to type by hand. The rest are one clause in the worked
+    #   example's preflight sentence and one naming `--doctor` in its
+    #   requirements, because a reader who meets the offers only in the Quick
+    #   start meets them once.
+    assert len(lines) <= 967, (
+        f"README.md is {len(lines)} lines; the cap is 967")
 
 
 @pytest.mark.parametrize("name", SHIPPED_BASH)
@@ -563,9 +590,62 @@ def test_the_windows_commands_name_files_that_exist(name):
     assert out_file == downloaded, (
         "the file downloaded and the file saved must be the same name")
 
-    [run] = re.findall(r"(?:^|`)py\s+([^\s`]+)", text, re.M)
-    assert run == out_file, (
-        f"{name} saves {out_file} and then runs {run}")
+    # ALL of them, not the only one. The README names a second `py` line
+    # since #59 (`py setup-project.py --doctor`, the Windows spelling of the
+    # preflight-and-stop run), and an unpack of a single match would have
+    # raised a ValueError on a README that is not wrong. The honest rule is
+    # the one asserted here anyway: EVERY `py <file>` in these documents
+    # names the file the two-liner downloads, because there is only one file
+    # on that machine.
+    runs = re.findall(r"(?:^|`)py\s+([^\s`]+)", text, re.M)
+    assert runs and all(run == out_file for run in runs), (
+        f"{name} saves {out_file} and then runs {runs}")
+
+
+def entry_point_module():
+    """`setup-project.py` imported as a module, for the tables in it.
+
+    The filename has a hyphen and cannot be imported by name.
+    `tests/test_setup_project_py.py` has the same helper for the same reason;
+    this copy is here because the parity between an offer table and the
+    README is a property of the REPOSITORY, which is what this file holds.
+    """
+    spec = importlib.util.spec_from_file_location("setup_project_offers",
+                                                  REPO / "setup-project.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_offer_commands_are_the_ones_the_readme_documents():
+    """A command this tool would RUN that no document shows is the defect.
+
+    The preflight offers to install a missing prerequisite and runs the
+    command on a typed `yes` (#59). Those commands are the README's own
+    per-platform steps, and this holds the two together in the direction that
+    matters: table -> README. The README may say more than the table does - a
+    reader on a platform this tool makes no offer for still needs the words -
+    but nothing may be RUN that a reader cannot find written down, both
+    because it is what the person who declines the offer types by hand and
+    because a command nobody documented is a command nobody reviewed.
+
+    WHITESPACE IS COLLAPSED ON BOTH SIDES, so GitHub's tab-indented apt block
+    matches however the README wraps it, and a re-wrap of a one-liner does not
+    fail a test about what runs.
+    """
+    module = entry_point_module()
+    readme = " ".join((REPO / "README.md").read_text(encoding="utf-8").split())
+    for (tool, platform), rows in module.INSTALL_OFFERS.items():
+        for program, command in rows:
+            assert command.strip(), f"{tool}/{platform} has an empty command"
+            assert command.isascii(), (
+                f"{tool}/{platform} is not ASCII: {command!r}")
+            assert "brew.sh" not in command, (
+                "Homebrew's own installer is never run by this tool; the "
+                "darwin/no-brew row is None by construction")
+            assert " ".join(command.split()) in readme, (
+                f"the {tool} offer for {platform} runs a command README.md "
+                f"does not document:\n    {' '.join(command.split())}")
 
 
 def test_setup_sh_is_the_documented_front_door():

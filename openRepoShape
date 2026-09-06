@@ -27,6 +27,7 @@ SELF="${BASH_SOURCE[0]:-$0}"
 PROJECT=""
 ORG=""
 MODE="run"
+DOCTOR=0
 PASSTHROUGH=()
 WORKDIR=""
 
@@ -37,6 +38,7 @@ usage() {
 	cat <<'USAGE'
 openRepoShape <Project> [--org <org>] [setup-project.py options] [-- <scaffold flags>]
 openRepoShape --install            install (or update) this command into ~/.local/bin
+openRepoShape --doctor             check this machine and stop; creates nothing
 openRepoShape --help | --version
 
 <Project> is the assembly-root name, ONE CamelCase token (e.g. Atlas); omit it
@@ -134,6 +136,12 @@ while [ $# -gt 0 ]; do
 	-h | --help) usage; exit 0 ;;
 	--version) say "openRepoShape ($REPO @ $REF)"; exit 0 ;;
 	--install) MODE="install"; shift ;;
+	# NAMED, THOUGH `-*` BELOW WOULD ALREADY PASS IT ON. The case exists
+	# for the VARIABLE, not for the passing on: `--doctor` examines the
+	# machine and stops, so the organisation and the <Project> this command
+	# insists on further down — both of them about a run that would CREATE
+	# something — are skipped rather than asked for.
+	--doctor) DOCTOR=1; PASSTHROUGH+=("$1"); shift ;;
 	--org) ORG="${2:?--org needs a value}"; shift 2 ;;
 	--project) PROJECT="${2:?--project needs a value}"; shift 2 ;;
 	# setup.sh's value-taking flags, named so their VALUE is never mistaken
@@ -161,21 +169,34 @@ fi
 # --allow-upstream-org for the same reason a guess is refused here: a wrong
 # answer creates three repositories in somebody else's namespace. So: no
 # guess, and --allow-upstream-org passed for nobody.
-[ -n "$ORG" ] || ORG="${OPENREPOSHAPE_ORG:-}"
-if [ -z "$ORG" ] && [ -t 0 ]; then
-	printf 'organisation to scaffold into: '
-	read -r ORG || true
-fi
-[ -n "$ORG" ] || die "no organisation to scaffold into. Re-run with --org <your-org>, or set \$OPENREPOSHAPE_ORG."
+#
+# BOTH REFUSALS BELOW ARE ABOUT CREATING SOMETHING, so `--doctor` skips both:
+# it examines the machine and stops, and asking a person which organisation
+# they meant before telling them their machine has no git would be a question
+# with nothing behind it.
+if [ "$DOCTOR" -eq 0 ]; then
+	[ -n "$ORG" ] || ORG="${OPENREPOSHAPE_ORG:-}"
+	if [ -z "$ORG" ] && [ -t 0 ]; then
+		printf 'organisation to scaffold into: '
+		read -r ORG || true
+	fi
+	[ -n "$ORG" ] || die "no organisation to scaffold into. Re-run with --org <your-org>, or set \$OPENREPOSHAPE_ORG."
 
-# setup.sh prompts for a missing project when a terminal is attached; with no
-# terminal it cannot, so say so before fetching a script to be refused by.
-if [ -z "$PROJECT" ] && [ ! -t 0 ]; then
-	usage >&2
-	die "no <Project> given, and no terminal to ask on."
+	# setup.sh prompts for a missing project when a terminal is attached;
+	# with no terminal it cannot, so say so before fetching a script to be
+	# refused by.
+	if [ -z "$PROJECT" ] && [ ! -t 0 ]; then
+		usage >&2
+		die "no <Project> given, and no terminal to ask on."
+	fi
 fi
 
-ARGS=(--org "$ORG")
+# An --org typed alongside --doctor is still forwarded rather than dropped —
+# the doctor ignores it, and a flag this command ATE would be a flag the
+# person has to type twice to find out about. Outside --doctor the block above
+# has already made $ORG non-empty or died, so this is what it always was.
+ARGS=()
+[ -z "$ORG" ] || ARGS+=(--org "$ORG")
 [ -z "$PROJECT" ] || ARGS+=(--project "$PROJECT")
 # Fetched at $REF, so setup.sh self-bootstraps its checkout at $REF too:
 # otherwise the script that runs and the standard it clones are two commits.
@@ -199,7 +220,12 @@ fi
 # stdin is not the terminal the person is typing at.
 export OPENREPOSHAPE_REPO="$(shape_clone_url)"
 set +e
-bash "$SETUP" "${ARGS[@]}"
+# `${ARGS[@]+...}`, the same guard $PASSTHROUGH gets above. $ARGS is no longer
+# seeded with `--org` unconditionally, so an empty array is reachable here in
+# principle — and under `set -u` bash 3.2, the /bin/bash on every Mac, treats
+# an empty array's `"${ARGS[@]}"` as an unbound variable rather than as
+# nothing at all.
+bash "$SETUP" ${ARGS[@]+"${ARGS[@]}"}
 STATUS=$?
 set -e
 exit "$STATUS"

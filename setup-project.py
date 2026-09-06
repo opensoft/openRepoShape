@@ -145,7 +145,13 @@ USAGE = """usage: setup-project.py [<Project>] [options] [-- <extra scaffold fla
                           of the standard instead of its default branch.
   --keep-shape-checkout   self-bootstrap mode only: do not delete the
                           temporary checkout on exit; print its path instead.
-  --yes                   skip the confirmation prompt
+  --yes                   skip the confirmation prompt. It answers the ONE
+                          question about creating three repositories, and
+                          never an offer to install something.
+  --doctor                check this machine and stop: the preflight and the
+                          offers it makes, nothing else. Exit 0 when
+                          everything is there, 1 when it is not. Creates
+                          nothing, and needs no <Project> and no --org.
   --local-remote-dir <d>  TEST PATH: create three BARE repositories in <d> and
                           use them as origins. No network, no `gh`, and no real
                           repository is created.
@@ -408,6 +414,7 @@ class Options:
         self.into = ""
         self.local_remote_dir = ""
         self.assume_yes = False
+        self.doctor = False
         self.allow_upstream_org = False
         self.shape_ref = ""
         self.keep_shape_checkout = False
@@ -443,6 +450,7 @@ PATH_FLAGS = ("--into", "--local-remote-dir")
 BOOLEAN_FLAGS = {
     "--yes": "assume_yes",
     "-y": "assume_yes",
+    "--doctor": "doctor",
     "--allow-upstream-org": "allow_upstream_org",
     "--keep-shape-checkout": "keep_shape_checkout",
 }
@@ -698,10 +706,205 @@ ORG_REQUIRED = ("running outside a checkout of openRepoShape (self-bootstrap "
                 "from. Re-run with --org <your-org>.")
 
 
+#: GITHUB'S OWN INSTRUCTIONS FOR `gh`, WHICH ARE THE README'S OWN BLOCKS -
+#: its "Debian, Ubuntu, or Windows under WSL2" fence and its "Fedora (DNF5)"
+#: one, character for character including the tab-indented continuations. A
+#: block and not a one-liner because that is what cli.github.com publishes: a
+#: keyring, a source list, then the install.
+GH_APT_BLOCK = (
+    "(type -p wget >/dev/null || (sudo apt update && sudo apt install wget"
+    " -y)) \\\n"
+    "\t&& sudo mkdir -p -m 755 /etc/apt/keyrings \\\n"
+    "\t&& out=$(mktemp) && wget -nv -O$out https://cli.github.com/packages/"
+    "githubcli-archive-keyring.gpg \\\n"
+    "\t&& cat $out | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg"
+    " > /dev/null \\\n"
+    "\t&& sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg"
+    " \\\n"
+    "\t&& sudo mkdir -p -m 755 /etc/apt/sources.list.d \\\n"
+    "\t&& echo \"deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/"
+    "keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages"
+    " stable main\" | sudo tee /etc/apt/sources.list.d/github-cli.list"
+    " > /dev/null \\\n"
+    "\t&& sudo apt update \\\n"
+    "\t&& sudo apt install gh -y")
+
+GH_DNF_BLOCK = (
+    "sudo dnf install dnf5-plugins\n"
+    "sudo dnf config-manager addrepo --from-repofile=https://cli.github.com/"
+    "packages/rpm/gh-cli.repo\n"
+    "sudo dnf install gh")
+
+#: APPLE'S COMMAND, SPELLED ONCE. It is a row of the table below, and it is
+#: also the one row that must NOT be re-checked afterwards: `xcode-select
+#: --install` returns as soon as its dialog is on screen, minutes before the
+#: Tools it installs arrive. See `offer_install`.
+TOOLS_INSTALL = "xcode-select --install"
+
+#: WHAT THIS TOOL WILL OFFER TO RUN FOR YOU, and nothing else ever is. Each
+#: row is `(the program that must be on PATH for the row to apply, the
+#: command)`, tried in order, first match wins; `None` as the program means
+#: the command needs no package manager at all.
+#:
+#: EVERY COMMAND HERE IS A LINE README.md ALREADY DOCUMENTS, word for word.
+#: `tests/test_repo_hygiene.py` holds the two together, because a command
+#: this tool would RUN that no document shows is a command nobody reviewed -
+#: and because the person who declines the offer is then reading the same
+#: line to type by hand.
+#:
+#: WHAT IS DELIBERATELY NOT HERE. Homebrew: on a Mac without `brew` the gh
+#: lookup returns None and the machine owner's decision stays theirs (its
+#: installer is never run by us). `make`: not checked, not used. Python: an
+#: install cannot change the interpreter that is ALREADY RUNNING, so
+#: `_check_python` names the commands and stops. An unrecognised platform is
+#: no row at all, which is today's text and nothing more.
+#:
+#: `sys.platform` VALUES, and "linux" covers WSL2 - which is what we want:
+#: its Ubuntu takes the Debian commands, exactly as README.md says.
+INSTALL_OFFERS = {
+    ("git", "darwin"): ((None, TOOLS_INSTALL),),
+    ("git", "linux"): (("apt-get", "sudo apt-get install -y git"),
+                       ("dnf", "sudo dnf install -y git")),
+    ("git", "win32"): (("winget", "winget install --id Git.Git -e"),),
+    ("gh", "darwin"): (("brew", "brew install gh"),),
+    ("gh", "linux"): (("apt-get", GH_APT_BLOCK),
+                      ("dnf", GH_DNF_BLOCK)),
+    ("gh", "win32"): (("winget", "winget install --id GitHub.cli -e"),),
+}
+
+
+def offer_for(tool: str, platform: str, which=None):
+    """The command THIS machine would run to install `tool`, or None.
+
+    A PURE FUNCTION of a `sys.platform` string and a `shutil.which`, both
+    passed in: the Windows rows are then asserted on a Linux runner and the
+    macOS rows on either, with nothing monkeypatched and no import-time
+    capture of the platform this file happens to be running on.
+
+    `None` is not the empty string and does not mean "run nothing": it means
+    there is no command this tool will run for you here - an unrecognised
+    platform, a Mac with no Homebrew, a Linux with neither apt-get nor dnf -
+    and the caller then prints exactly what it printed before any of this
+    existed.
+    """
+    lookup = shutil.which if which is None else which
+    for program, command in INSTALL_OFFERS.get((tool, platform), ()):
+        if program is None or lookup(program):
+            return command
+    return None
+
+
+def run_command_text(text: str) -> int:
+    """Run one row of `INSTALL_OFFERS` through the platform's own shell.
+
+    A SHELL, where `run()`'s doctrine is an argv and `shell=False`, and the
+    apt row is the reason: GitHub's instructions are a pipeline with a
+    `$(dpkg --print-architecture)` and two `sudo tee`s in it, and the only
+    way the command we RUN can also be the command the README SHOWS is to
+    hand that text to a shell. What makes it safe is not quoting but
+    PROVENANCE: every string in that table is a literal in this file with no
+    interpolation of any kind - nothing off the command line, nothing out of
+    the environment, nothing read from disk ever reaches this line - and the
+    parity test is what keeps it so.
+
+    stdin, stdout and stderr are inherited (`run` sets only
+    `capture_output`), so `sudo` asks for the password on the person's own
+    terminal and the package manager's own output is what they read.
+    """
+    argv = ["cmd", "/c", text] if os.name == "nt" else ["bash", "-c", text]
+    return run(argv).returncode
+
+
+def offer(command_text: str) -> bool:
+    """Show one install command and take exactly one typed `yes` for it.
+
+    THE SIGNATURE IS THE GUARANTEE, not the care of whoever edits this next:
+    this function is never handed `Options`, so `--yes` is not in scope and
+    cannot answer for anybody. `--yes` skips ONE question, the one about
+    creating three repositories in an organisation; installing software on
+    somebody's machine is a different question and gets its own answer.
+    AGENTS.md says the same thing to an assistant driving this: the human
+    types this one.
+
+    NO TERMINAL, NO OFFER. `sys.stdin.isatty()` is the only gate, exactly as
+    in `plan_and_confirm`, so a piped or scheduled run prints what it printed
+    before any of this existed and stops where it stopped.
+
+    The `yes` is EXACT and the prompt is the one this file already asks:
+    `y`, `Yes`, an empty line and EOF are all refusals.
+    """
+    if not sys.stdin.isatty():
+        return False
+    say("")
+    if "\n" in command_text:
+        # A BLOCK IS SHOWN BEFORE IT IS OFFERED. GitHub's apt instructions
+        # are nine lines long, and nine lines inside a one-line question is a
+        # question nobody can read before answering it.
+        for line in command_text.splitlines():
+            say("      " + line)
+        prompt = "  Run the commands above now? Type yes to continue: "
+    else:
+        prompt = "  Run `%s` now? Type yes to continue: " % command_text
+    return ask(prompt) == "yes"
+
+
+def offer_install(tool: str, command_text: str, probe,
+                  platform: str = "") -> bool:
+    """One offer, one run, ONE re-check. True when the check now passes.
+
+    Never a loop: a person told twice that the thing is still missing is
+    watching this program guess, and the second guess is no better than the
+    first.
+
+    Three ways this ends with the check still failed, each with its own line
+    and none of them invented:
+
+    * anything but `yes` - nothing runs and nothing more is printed;
+    * the command failed - the package manager (or `sudo`) has just printed
+      its own account of that on this terminal, and a vaguer sentence of ours
+      underneath it would only compete with it;
+    * the command succeeded and the probe still fails, which on Windows is
+      not a failure at all: a running process keeps the PATH it started with,
+      so a `winget install` lands somewhere this terminal cannot see until
+      the next one.
+    """
+    platform = platform or sys.platform
+    if not offer(command_text):
+        return False
+    if run_command_text(command_text) != 0:
+        return False
+    if command_text == TOOLS_INSTALL:
+        # APPLE'S INSTALLER IS A WINDOW OF ITS OWN and `xcode-select
+        # --install` returns as soon as it is on screen. There is nothing to
+        # re-check yet, and waiting for it would be this tool polling a
+        # dialog it did not open and cannot answer.
+        say("  the Command Line Tools installer is running in a window of "
+            "its own; run this again when it has finished.")
+        return False
+    if probe():
+        return True
+    if platform == "win32":
+        say("  %s is installed, but this terminal's PATH has not picked it "
+            "up yet; open a new terminal and run this again." % tool)
+    else:
+        say("  %s is still not there." % tool)
+    return False
+
+
+def offer_missing(tool: str, probe) -> bool:
+    """The offer a failed check makes: look this platform's command up, and
+    make no offer at all when there is none."""
+    command = offer_for(tool, sys.platform)
+    if command is None:
+        return False
+    return offer_install(tool, command, probe, sys.platform)
+
+
 def _check_git() -> bool:
     if not shutil.which("git"):
         bad(GIT_MISSING)
-        return False
+        if not offer_missing("git", lambda: bool(shutil.which("git"))):
+            return False
     ok("git %s" % program_version(["git", "--version"], 2))
     return True
 
@@ -716,9 +919,16 @@ def _check_python() -> bool:
     # `test_the_entry_point_never_names_python3` reads every one of them.
     version = sys.version_info
     if version < (3, 9):
+        # NO OFFER HERE, and the reason is two lines above: the version
+        # being reported is the RUNNING interpreter's, and no install can
+        # change that from inside it. The commands are named for the person
+        # to type, then the run stops - and on POSIX this is nearly
+        # unreachable anyway, because the shim refuses an interpreter below
+        # 3.9 before this file starts.
         bad("this interpreter is %d.%d, and 3.9 or newer is required. Install "
-            "a newer Python and re-run: https://www.python.org/downloads/"
-            % (version[0], version[1]))
+            "a newer Python and re-run it with that one: "
+            "https://www.python.org/downloads/ - or `brew install python` on "
+            "a Mac." % (version[0], version[1]))
         return False
     ok("python %d.%d.%d (%s)" % (version[0], version[1], version[2], PYTHON))
     return True
@@ -755,13 +965,94 @@ def _check_gh(opts: Options) -> bool:
         bad("gh is not installed. Install it: https://cli.github.com - or "
             "re-run with --local-remote-dir <dir> to try this offline against "
             "bare repositories on disk.")
-        return False
+        if sys.platform == "darwin" and offer_for("gh", sys.platform) is None:
+            # THE ONE INSTALL THIS TOOL WILL NOT RUN. Homebrew is how a Mac
+            # gets `gh`, and whether to have Homebrew at all is the machine
+            # owner's decision rather than a question to be asked at the
+            # bottom of somebody else's preflight. So it is named, with the
+            # command that follows it, and that is where we stop.
+            say("      Homebrew installs it with `brew install gh`, and is "
+                "its own install: https://brew.sh")
+        if not offer_missing("gh", lambda: bool(shutil.which("gh"))):
+            return False
     ok("gh %s" % program_version(["gh", "--version"], 2))
     if run(["gh", "auth", "status"], capture=True).returncode != 0:
         bad("gh is not authenticated. Run: gh auth login")
-        return False
+        if not _offer_login():
+            return False
     ok("gh is authenticated%s" % _gh_login_suffix())
     return True
+
+
+def _offer_login() -> bool:
+    """`gh auth login`, offered and then run as a PLAIN ARGV.
+
+    Never through a shell: it is a terminal UI that ends in a browser and
+    there is nothing in it to quote. `run()` sets only `capture_output`, so
+    gh is handed the person's own stdin, stdout and stderr - which is what
+    its prompts and its one-time code need, and what the isatty gate on the
+    offer has already guaranteed is there. The browser half is the human's;
+    this starts the login and asks `gh auth status` once when gh comes back.
+    """
+    if not offer("gh auth login"):
+        return False
+    if run(["gh", "auth", "login"]).returncode != 0:
+        return False
+    if run(["gh", "auth", "status"], capture=True).returncode != 0:
+        say("  gh is still not authenticated.")
+        return False
+    return True
+
+
+def _credential_helper_configured() -> bool:
+    """Will ANYTHING answer git's credential question for github.com?
+
+    The scoped key first, because that is where gh writes its own helper -
+    and it writes an empty line before it, to reset the list, which is why
+    this reads the whole answer and strips it rather than counting lines.
+    The machine-wide key can hold something else entirely at the same time,
+    and either of them answering is enough.
+    """
+    for key in ("credential.https://github.com.helper", "credential.helper"):
+        configured = run(["git", "config", "--get-all", key], capture=True)
+        if (configured.stdout or "").strip():
+            return True
+    return False
+
+
+def _check_credential_helper(opts: Options) -> None:
+    """WARN, DO NOT REFUSE - the class `_warn_autocrlf` belongs to.
+
+    The scaffold clones and pushes over HTTPS (`clone_and_bootstrap`), so a
+    machine with NO credential helper at all creates three repositories and
+    then fails on the first push. That is worth a `[??]` while nothing has
+    been created yet, and an offer of the one command that fixes it.
+
+    A machine that HAS a helper is left alone, whatever it is. `osxkeychain`,
+    Windows' `manager`, `store`, a devcontainer's own: they all answer git's
+    question for github.com without gh being involved, and warning about them
+    would be this tool disliking somebody's ~/.gitconfig - the objection
+    `_warn_autocrlf` records. That is also why gh's own test for ITS helper
+    (`isOurCredentialHelper`: a line starting `!` whose first word's basename
+    is gh) is not transcribed here. A helper that is not gh's still pushes.
+
+    NEVER IN THE `checked` LIST. It cannot fail the run and it cannot fail
+    `--doctor`: a warning that refuses is a refusal, and this one would
+    refuse a machine whose remotes are SSH and whose HTTPS push this tool
+    never makes.
+    """
+    if opts.local_mode:
+        return
+    if _credential_helper_configured():
+        return
+    warn("git has no credential helper for github.com, so the first push "
+         "over HTTPS will fail. Fix it once: gh auth setup-git")
+    if not offer("gh auth setup-git"):
+        return
+    if run(["gh", "auth", "setup-git"]).returncode != 0:
+        return
+    if _credential_helper_configured():
+        ok("git will ask gh for github.com credentials")
 
 
 def _warn_autocrlf() -> None:
@@ -793,7 +1084,14 @@ def _warn_autocrlf() -> None:
          "git config --global core.autocrlf false")
 
 
-def preflight(opts: Options) -> None:
+def preflight_checks(opts: Options) -> bool:
+    """Every check, in order, and whether they all passed.
+
+    SPLIT OUT OF `preflight` FOR `--doctor` (#59), which runs exactly this
+    and then reports instead of refusing. The scaffold path is unchanged: the
+    refusal is still one refusal, still at the end, still naming everything
+    that was missing.
+    """
     say("openRepoShape setup")
     say("")
     say("(1) preflight")
@@ -801,11 +1099,44 @@ def preflight(opts: Options) -> None:
     # is told about git AND gh in one go rather than one missing thing per
     # re-run, which is what the original `failed = True` accumulator bought.
     # The list is complete before `all` reads it, so nothing short-circuits.
-    checked = [_check_git(), _check_python(), _check_bootstrap(),
-               _check_gh(opts)]
+    checked = [_check_git(), _check_python(), _check_bootstrap()]
+    # THE CREDENTIAL HELPER IS ASKED ABOUT ONLY WHEN gh IS READY. With no gh,
+    # or no login, there is nothing to set up as a helper yet and the person
+    # has already been told the thing that has to happen first.
+    gh_ready = _check_gh(opts)
+    checked.append(gh_ready)
+    if gh_ready:
+        _check_credential_helper(opts)
     _warn_autocrlf()
-    if not all(checked):
+    return all(checked)
+
+
+def preflight(opts: Options) -> None:
+    if not preflight_checks(opts):
         die(PREREQ_MISSING)
+
+
+def doctor(opts: Options) -> int:
+    """`--doctor`: the preflight, the offers it makes, and then stop.
+
+    Exit 0 when every check passed and 1 when any did not - the 0/1 vocabulary
+    a person can put in a script, where the scaffold's own refusal stays exit
+    2 whatever fails. A `[??]` warning never changes the code: it is a setting
+    worth looking at, not a missing prerequisite.
+
+    It says in as many words that nothing was created, because `--doctor` can
+    be typed alongside a project name by somebody who has just read about
+    both, and a run that printed a preflight and then stopped must not be
+    read as a scaffold that failed silently.
+    """
+    ready = preflight_checks(opts)
+    say("")
+    if ready:
+        ok("this machine is ready.")
+    else:
+        bad("this machine is not ready yet (see above).")
+    say("  nothing was created; this checked the machine only.")
+    return 0 if ready else 1
 
 
 # ---------------------------------------------------------------------------
@@ -1195,6 +1526,17 @@ def _main(argv, invocation_dir: str) -> int:
     if opts.help:
         usage()
         return 0
+
+    # `--doctor` EXAMINES THE MACHINE AND STOPS, so it returns HERE: before
+    # the git probe below (a missing git is one of the things the doctor is
+    # for, and refusing on it would report one fault where the doctor exists
+    # to report them all), before the checkout probe, and before the clone and
+    # the `--org` handshake that follow it. That POSITION is the whole
+    # mechanism: `--doctor` needs no organisation and creates nothing because
+    # the code that would ask for one is never reached, not because any of it
+    # was taught about a flag.
+    if opts.doctor:
+        return doctor(opts)
 
     # BEFORE the checkout probe, which is itself a `git` call - and before
     # self-bootstrap, which is a `git clone`. The preflight is where a missing

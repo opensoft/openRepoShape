@@ -34,6 +34,24 @@ ENTRY="setup-project.py"
 say() { printf '%s\n' "$*"; }
 die() { printf '\nREFUSED: %s\n' "$1" >&2; exit "${2:-2}"; }
 
+# APPLE'S COMMAND LINE TOOLS, NAMED IN BOTH REFUSALS BELOW AND ONLY ON A MAC.
+# Since macOS 12.3 both /usr/bin/python3 and /usr/bin/git are Command Line
+# Tools STUBS: `command -v python3` succeeds and the version probe below
+# fails, so a bare Mac is refused by the INTERPRETER check and never reaches
+# the git one — and the single answer to both is Apple's own command, which
+# supplies git, make and a python3 at once. TEXT ONLY, NEVER RUN AND NEVER
+# PROMPTED FOR: it opens a dialog this script could not answer anyway, and one
+# sentence buys the same outcome. The install OFFERS live in
+# `setup-project.py` (#59), which is the flow; an offer table transcribed into
+# bash here would be the duplication #50 removed, growing back. `2>/dev/null`
+# because a machine can be missing `uname` too — the git-missing test runs
+# this script with almost nothing on $PATH — and a `case` whose word came from
+# a failed substitution simply matches nothing.
+MAC_TOOLS=""
+case "$(uname -s 2>/dev/null)" in
+Darwin) MAC_TOOLS=" On a Mac, install Apple's Command Line Tools with \`xcode-select --install\` (a dialog opens; run this again when it has finished), which supplies git, make and a python3." ;;
+esac
+
 # THE INTERPRETER FIRST, BEFORE ANY CLONE. A machine with no Python cannot run
 # the flow whatever we fetch for it, and one sentence is a better answer than a
 # temporary checkout made and thrown away. `python3` is the name every POSIX
@@ -49,7 +67,7 @@ find_python() {
 	done
 	return 1
 }
-PY="$(find_python)" || die "no Python 3.9 or newer on this machine (tried python3, python). Install Python 3.9 or newer and re-run: https://www.python.org/downloads/"
+PY="$(find_python)" || die "no Python 3.9 or newer on this machine (tried python3, python). Install Python 3.9 or newer and re-run: https://www.python.org/downloads/$MAC_TOOLS"
 
 # GIT ITSELF, BEFORE THE CHECKOUT PROBE. `is_shape_checkout` below redirects
 # git's own stderr to /dev/null, so a MISSING git reads identically to "not a
@@ -58,7 +76,7 @@ PY="$(find_python)" || die "no Python 3.9 or newer on this machine (tried python
 # is not running yet, so the shim owns this fourth thing; the wording is
 # `setup-project.py`'s own `GIT_MISSING`, said once here for the same reason
 # it is said once there.
-command -v git >/dev/null 2>&1 || die "git is not installed. Install it: https://git-scm.com/downloads"
+command -v git >/dev/null 2>&1 || die "git is not installed. Install it: https://git-scm.com/downloads$MAC_TOOLS"
 
 # `curl | bash -s --` has no file on disk either: $SCRIPT_DIR then falls back
 # to $PWD, which is an openRepoShape checkout only by coincidence. Ask git,

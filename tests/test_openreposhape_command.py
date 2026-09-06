@@ -34,6 +34,7 @@ SETUP = REPO / "setup.sh"
 USAGE_LINES = (
     "openRepoShape <Project> [--org <org>] [setup-project.py options] [-- <scaffold flags>]",
     "openRepoShape --install            install (or update) this command into ~/.local/bin",
+    "openRepoShape --doctor             check this machine and stop; creates nothing",
     "openRepoShape --help | --version",
 )
 
@@ -75,7 +76,10 @@ def run_cmd(*args: str, home: Path | None = None,
 
 # --- what it says about itself ---------------------------------------------
 
-def test_help_prints_the_three_usage_lines():
+def test_help_prints_every_usage_line():
+    """Every line `--help` promises, including the `--doctor` one #59
+    added: a usage line nobody asserts on is a usage line that can go
+    stale without anything noticing."""
     result = run_cmd("--help")
     assert result.returncode == 0, result.stderr
     lines = result.stdout.splitlines()
@@ -195,6 +199,40 @@ def test_scaffold_flags_after_a_double_dash_still_reach_the_scaffold(tmp_path):
     assert result.returncode == 0, result.stderr + result.stdout
     manifest = (tmp_path / "Atlas" / "project.yaml").read_text(encoding="utf-8")
     assert 'reference: "a-staged-fragment.md"' in manifest
+
+
+# --- --doctor ---------------------------------------------------------------
+
+def test_doctor_passes_through_without_an_org(tmp_path):
+    """`openRepoShape --doctor` is the "install program" without a second
+    program: the preflight, the offers it makes, and stop.
+
+    This command insists on an organisation and on a `<Project>` because a
+    run that gets past it CREATES three repositories. A doctor run creates
+    nothing, so both refusals are skipped rather than answered - and with
+    `input=""` there is no terminal here either, so the preflight makes no
+    offer and installs nothing, which is the rule this whole suite runs
+    under.
+    """
+    remotes = tmp_path / "remotes"
+    result = run_cmd("--doctor", "--local-remote-dir", str(remotes))
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "(1) preflight" in result.stdout
+    assert "this machine is ready." in result.stdout
+    assert "organisation to scaffold into" not in result.stdout, (
+        "--doctor prompted for an organisation it has no use for")
+    assert "no organisation to scaffold into" not in result.stderr
+    assert "no <Project> given" not in result.stderr
+    assert not remotes.exists()
+
+
+def test_doctor_forwards_an_org_it_was_given(tmp_path):
+    """A flag this command ATE would be a flag the person has to type twice
+    to find out about. The doctor ignores it; it still travels."""
+    result = run_cmd("--doctor", "--org", "TestOrg",
+                     "--local-remote-dir", str(tmp_path / "remotes"))
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "(2) organisation" not in result.stdout
 
 
 # --- the refusals -----------------------------------------------------------

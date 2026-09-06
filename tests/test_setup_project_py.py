@@ -881,6 +881,386 @@ def test_self_bootstrap_clone_guards_the_repository_argument(tmp_path):
         f"{match.group(0)!r}")
 
 
+# --- the preflight offers to install what is missing (#59) -----------------
+
+#: NOTHING IN THIS SECTION EVER INSTALLS ANYTHING, on any platform, in CI or
+#: on a laptop, and that is STRUCTURAL rather than a promise. An offer needs
+#: `sys.stdin.isatty()`, and no run in this suite has a terminal: `run_entry`
+#: passes `input=`, `conftest.run_script` forces `stdin=DEVNULL`, and
+#: `test_openreposhape_command.run_cmd` passes `input=""`. The tests that DO
+#: exercise an offer are in-process with a fake terminal and with `module.run`
+#: replaced by a recorder that executes nothing at all - so `brew`, `apt-get`,
+#: `dnf`, `winget`, `xcode-select` and `gh auth login` are named here and run
+#: nowhere.
+
+
+class _Terminal:
+    """A stdin that says it is a terminal. It is asked nothing else."""
+
+    def isatty(self):
+        return True
+
+
+class _NoTerminal:
+    def isatty(self):
+        return False
+
+
+class _Runs:
+    """A stand-in for `module.run` that RECORDS an argv and executes none.
+
+    `answers` maps a substring of the joined argv to `(returncode, stdout)`;
+    anything unmatched gets `returncode` and no output, which is what the
+    version probes and `gh auth status` want in the ordinary case.
+    """
+
+    def __init__(self, answers=None, returncode=0):
+        self.calls = []
+        self.answers = answers or {}
+        self.returncode = returncode
+
+    def __call__(self, argv, cwd=None, capture=False):
+        self.calls.append(list(argv))
+        line = " ".join(argv)
+        for marker, (code, out) in self.answers.items():
+            if marker in line:
+                return subprocess.CompletedProcess(argv, code, out, "")
+        return subprocess.CompletedProcess(argv, self.returncode, "", "")
+
+
+def _which(*present):
+    """A `shutil.which` that finds exactly these programs and nothing else."""
+    found = set(present)
+    return lambda name: ("/usr/bin/" + name) if name in found else None
+
+
+#: Every package manager at once, for the tests that care about a MISSING
+#: prerequisite rather than about which platform is running them: with all
+#: four present there is an offer to make on macOS, Linux and Windows alike.
+EVERY_MANAGER = ("brew", "apt-get", "dnf", "winget")
+
+
+def _shell_argv(command_text: str) -> list:
+    """The argv one offered command is run through on THIS platform."""
+    return (["cmd", "/c", command_text] if os.name == "nt"
+            else ["bash", "-c", command_text])
+
+
+def _answers(monkeypatch, module, answer: str) -> list:
+    """A terminal that types `answer` at every prompt, and the prompts it
+    was shown."""
+    prompts = []
+    monkeypatch.setattr(sys, "stdin", _Terminal())
+    monkeypatch.setattr(module, "ask",
+                        lambda prompt: (prompts.append(prompt), answer)[1])
+    return prompts
+
+
+def test_the_offer_table_names_a_command_for_every_platform():
+    """The table of #59, row for row, whatever platform this is running on.
+
+    `offer_for` takes the platform and the `which` as ARGUMENTS, so the
+    Windows rows are asserted on Linux and the macOS rows on Windows: the
+    table is a fact about the tool, not about the runner, and there is
+    nothing to monkeypatch to see it.
+    """
+    module = entry_point_module()
+    every = _which(*EVERY_MANAGER)
+    offer_for = module.offer_for
+
+    assert offer_for("git", "darwin", _which()) == "xcode-select --install"
+    assert offer_for("git", "linux", _which("apt-get")) == \
+        "sudo apt-get install -y git"
+    assert offer_for("git", "linux", _which("dnf")) == "sudo dnf install -y git"
+    assert offer_for("git", "linux", _which()) is None
+    assert offer_for("git", "win32", _which("winget")) == \
+        "winget install --id Git.Git -e"
+    assert offer_for("git", "win32", _which()) is None
+
+    assert offer_for("gh", "darwin", _which("brew")) == "brew install gh"
+    # HOMEBREW IS NEVER INSTALLED BY US: no brew, no offer, and the machine
+    # owner's decision stays theirs.
+    assert offer_for("gh", "darwin", _which()) is None
+    assert offer_for("gh", "linux", _which("apt-get")) is module.GH_APT_BLOCK
+    assert offer_for("gh", "linux", _which("dnf")) is module.GH_DNF_BLOCK
+    assert offer_for("gh", "linux", _which()) is None
+    assert offer_for("gh", "win32", _which("winget")) == \
+        "winget install --id GitHub.cli -e"
+
+    # First row wins: a machine with both is a Debian that installed dnf.
+    assert offer_for("gh", "linux", every) is module.GH_APT_BLOCK
+
+    # An unrecognised platform, and the three prerequisites with no row at
+    # all - `make` is never used, and no install can replace the interpreter
+    # that is already running.
+    assert offer_for("git", "aix7", every) is None
+    assert offer_for("gh", "sunos5", every) is None
+    assert offer_for("make", "linux", every) is None
+    assert offer_for("python", "darwin", every) is None
+
+    for rows in module.INSTALL_OFFERS.values():
+        for _, command in rows:
+            assert command.strip() and command.isascii()
+            assert "brew.sh" not in command
+
+
+def test_an_offer_runs_the_command_on_yes(monkeypatch):
+    """The typed `yes` runs the platform's own command, through the
+    platform's own shell, and re-checks EXACTLY once."""
+    module = entry_point_module()
+    prompts = _answers(monkeypatch, module, "yes")
+    runs = _Runs()
+    monkeypatch.setattr(module, "run", runs)
+    probes = []
+    installed = module.offer_install(
+        "gh", "brew install gh", lambda: (probes.append(1), True)[1], "darwin")
+    assert installed is True
+    assert runs.calls == [_shell_argv("brew install gh")]
+    assert len(probes) == 1, "the re-check happens once, never in a loop"
+    assert prompts == ["  Run `brew install gh` now? Type yes to continue: "]
+
+
+def test_a_block_of_commands_is_shown_before_it_is_offered(monkeypatch,
+                                                           capsys):
+    """GitHub's apt instructions are nine lines. Nine lines inside a one-line
+    question is a question nobody can read before answering it."""
+    module = entry_point_module()
+    prompts = _answers(monkeypatch, module, "yes")
+    runs = _Runs()
+    monkeypatch.setattr(module, "run", runs)
+    assert module.offer_install("gh", module.GH_APT_BLOCK, lambda: True,
+                                "linux") is True
+    shown = capsys.readouterr().out
+    assert "sudo apt install gh -y" in shown
+    assert prompts == ["  Run the commands above now? Type yes to continue: "]
+    assert runs.calls == [_shell_argv(module.GH_APT_BLOCK)]
+
+
+def test_a_refused_offer_is_todays_text_and_todays_exit(monkeypatch, capsys,
+                                                        tmp_path):
+    """`no` leaves the screen and the exit code exactly as they were before
+    the offers existed: today's `[!!]` line, then one refusal, exit 2."""
+    module = entry_point_module()
+    monkeypatch.setattr(module.shutil, "which", _which("git", *EVERY_MANAGER))
+    runs = _Runs()
+    monkeypatch.setattr(module, "run", runs)
+    asked = _answers(monkeypatch, module, "no")
+    opts = module.parse_args([], str(tmp_path))
+    with pytest.raises(module.Refusal) as refused:
+        module.preflight(opts)
+    assert refused.value.code == 2
+    assert "one or more prerequisites are missing" in str(refused.value)
+    assert ("gh is not installed. Install it: https://cli.github.com"
+            in capsys.readouterr().err)
+    assert asked, "the offer was never made"
+    for call in runs.calls:
+        assert call[:2] not in (["bash", "-c"], ["cmd", "/c"]), (
+            "a refused offer ran a command: %r" % (call,))
+
+
+def test_no_terminal_makes_no_offer(monkeypatch, capsys, tmp_path):
+    """The only gate is `sys.stdin.isatty()`, so a piped or scheduled run is
+    byte for byte what it was before any of this existed."""
+    module = entry_point_module()
+    monkeypatch.setattr(sys, "stdin", _NoTerminal())
+    monkeypatch.setattr(module.shutil, "which", _which("git", *EVERY_MANAGER))
+    monkeypatch.setattr(module, "run", _Runs())
+
+    def _never(prompt):
+        raise AssertionError("asked with no terminal: %r" % prompt)
+
+    monkeypatch.setattr(module, "ask", _never)
+    opts = module.parse_args([], str(tmp_path))
+    with pytest.raises(module.Refusal) as refused:
+        module.preflight(opts)
+    assert refused.value.code == 2
+    assert "gh is not installed" in capsys.readouterr().err
+
+
+def test_yes_does_not_answer_an_install_prompt(monkeypatch, capsys, tmp_path):
+    """`--yes` skips ONE question - the one about creating three
+    repositories. An install is a different question and is still asked."""
+    module = entry_point_module()
+    monkeypatch.setattr(module.shutil, "which", _which("git", *EVERY_MANAGER))
+    monkeypatch.setattr(module, "run", _Runs())
+    asked = _answers(monkeypatch, module, "no")
+    opts = module.parse_args(["--yes"], str(tmp_path))
+    assert opts.assume_yes is True
+    with pytest.raises(module.Refusal):
+        module.preflight(opts)
+    capsys.readouterr()
+    assert asked, "--yes answered an install prompt for the human"
+
+
+def test_the_offer_helpers_cannot_see_the_yes_flag():
+    """Structural, not careful: the offer helpers are never handed `Options`,
+    so `assume_yes` is not in scope and cannot be consulted by a future edit
+    however well meant."""
+    source = SETUP_PROJECT.read_text(encoding="utf-8")
+    helpers = {"offer", "offer_install", "offer_missing", "run_command_text"}
+    seen = set()
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.FunctionDef) and node.name in helpers:
+            seen.add(node.name)
+            body = ast.get_source_segment(source, node)
+            assert "assume_yes" not in body, (
+                f"{node.name} consults --yes; an install is not the question "
+                "that flag answers")
+            names = [argument.arg for argument in node.args.args]
+            assert "opts" not in names, (
+                f"{node.name} takes the parsed options; it must not be able "
+                "to see --yes at all")
+    assert seen == helpers, f"these helpers have been renamed: {helpers - seen}"
+
+
+def test_an_install_that_fails_says_nothing_extra(monkeypatch, capsys):
+    """The package manager (or sudo) has just printed its own account of the
+    failure on this terminal; a vaguer sentence of ours would compete with
+    it."""
+    module = entry_point_module()
+    _answers(monkeypatch, module, "yes")
+    monkeypatch.setattr(module, "run", _Runs(returncode=1))
+    probes = []
+    assert module.offer_install("gh", "brew install gh",
+                                lambda: (probes.append(1), True)[1],
+                                "darwin") is False
+    printed = capsys.readouterr()
+    assert probes == [], "a command that failed is not re-checked"
+    for invented in ("still not there", "new terminal", "installer is running"):
+        assert invented not in printed.out + printed.err
+
+
+def test_a_command_that_needs_a_new_terminal_says_so(monkeypatch, capsys):
+    """A running process keeps the PATH it started with, so `winget install`
+    lands somewhere this terminal cannot see. That is not a failure and is
+    not reported as one."""
+    module = entry_point_module()
+    _answers(monkeypatch, module, "yes")
+    monkeypatch.setattr(module, "run", _Runs())
+    assert module.offer_install("git", "winget install --id Git.Git -e",
+                                lambda: False, "win32") is False
+    assert "open a new terminal and run this again." in capsys.readouterr().out
+    assert module.offer_install("git", "sudo apt-get install -y git",
+                                lambda: False, "linux") is False
+    assert "git is still not there." in capsys.readouterr().out
+
+
+def test_the_command_line_tools_are_never_re_checked(monkeypatch, capsys):
+    """`xcode-select --install` returns as soon as Apple's dialog is on
+    screen, minutes before the Tools arrive. There is nothing to re-check
+    yet, and waiting would be this tool polling a window it cannot answer."""
+    module = entry_point_module()
+    _answers(monkeypatch, module, "yes")
+    monkeypatch.setattr(module, "run", _Runs())
+    probes = []
+    assert module.offer_install("git", module.TOOLS_INSTALL,
+                                lambda: (probes.append(1), True)[1],
+                                "darwin") is False
+    assert probes == []
+    assert "run this again when it has finished." in capsys.readouterr().out
+
+
+def test_gh_login_is_offered_as_an_argv_and_never_through_a_shell(monkeypatch):
+    """It is a terminal UI that ends in a browser: gh needs the person's own
+    stdin, stdout and terminal, and there is nothing in it to quote."""
+    module = entry_point_module()
+    prompts = _answers(monkeypatch, module, "yes")
+    runs = _Runs({"auth status": (1, "")})
+    monkeypatch.setattr(module, "run", runs)
+    monkeypatch.setattr(module.shutil, "which", _which("gh"))
+    opts = module.parse_args([], "/")
+    assert module._check_gh(opts) is False, (
+        "gh still says it is not authenticated, so the check still fails")
+    assert ["gh", "auth", "login"] in runs.calls
+    assert prompts == ["  Run `gh auth login` now? Type yes to continue: "]
+
+
+def test_the_credential_helper_is_a_warning_not_a_refusal(monkeypatch, capsys,
+                                                          tmp_path):
+    """A machine with NO helper creates three repositories and then fails on
+    the first push over HTTPS, which is worth saying before any of them
+    exists - and is worth saying with `[??]`, because an SSH remote and every
+    system helper make a refusal wrong."""
+    module = entry_point_module()
+    monkeypatch.setattr(sys, "stdin", _NoTerminal())
+    monkeypatch.setattr(module.shutil, "which", _which("git", "gh"))
+    monkeypatch.setattr(module, "run", _Runs({"config --get-all": (1, "")}))
+    opts = module.parse_args([], str(tmp_path))
+    assert module.preflight_checks(opts) is True, (
+        "a missing credential helper must not fail the preflight")
+    printed = capsys.readouterr()
+    assert "[??]" in printed.err
+    assert "no credential helper for github.com" in printed.err
+    assert "gh auth setup-git" in printed.err
+
+
+def test_a_credential_helper_that_is_not_ghs_is_left_alone(monkeypatch,
+                                                           capsys, tmp_path):
+    """osxkeychain, Windows' `manager`, `store`, a devcontainer's own: they
+    all answer git's question for github.com without gh being involved, and
+    warning about them would be this tool disliking somebody's
+    ~/.gitconfig."""
+    module = entry_point_module()
+    monkeypatch.setattr(sys, "stdin", _NoTerminal())
+    monkeypatch.setattr(module.shutil, "which", _which("git", "gh"))
+    monkeypatch.setattr(module, "run",
+                        _Runs({"credential.helper": (0, "osxkeychain\n"),
+                               "github.com.helper": (1, "")}))
+    opts = module.parse_args([], str(tmp_path))
+    assert module.preflight_checks(opts) is True
+    assert "credential helper" not in capsys.readouterr().err
+
+
+# --- --doctor ---------------------------------------------------------------
+
+def test_doctor_exits_zero_when_the_machine_is_ready(tmp_path):
+    """`--local-remote-dir` so `gh` is neither required nor asked about (the
+    rule the whole suite runs under), and the directory it names is NOT
+    created: the doctor examines the machine and nothing else."""
+    remotes = tmp_path / "remotes"
+    result = run_entry("--doctor", "--local-remote-dir", str(remotes))
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "(1) preflight" in result.stdout
+    assert "this machine is ready." in result.stdout
+    assert "nothing was created" in result.stdout
+    for later in ("(2) organisation", "(3) project", "(4) naming policy",
+                  "(5) the plan", "(6) scaffold"):
+        assert later not in result.stdout, f"--doctor reached {later}"
+    assert not remotes.exists()
+
+
+def test_doctor_exits_one_when_a_prerequisite_is_missing(monkeypatch, capsys,
+                                                         tmp_path):
+    """In-process on purpose: a PATH-stripped subprocess is a POSIX trick and
+    this file carries no Windows skip."""
+    module = entry_point_module()
+    monkeypatch.setattr(sys, "stdin", _NoTerminal())
+    monkeypatch.setattr(module.shutil, "which", _which())
+    monkeypatch.setattr(module, "run", _Runs())
+    opts = module.parse_args([], str(tmp_path))
+    assert module.doctor(opts) == 1
+    printed = capsys.readouterr()
+    assert "this machine is not ready yet" in printed.err
+    assert "nothing was created" in printed.out
+
+
+def test_doctor_needs_no_org_and_clones_nothing(tmp_path):
+    """It returns before the checkout probe, before self-bootstrap and before
+    the `--org` handshake - so the organisation those need is never asked
+    for. The mechanism is POSITION in `_main`, not a rule about `--doctor`
+    written into any of them."""
+    outside = make_outside_checkout(tmp_path)
+    result = run_entry("--doctor",
+                       "--local-remote-dir", str(tmp_path / "remotes"),
+                       cwd=outside, script=outside / "setup-project.py",
+                       extra_env={"OPENREPOSHAPE_SELF_BOOTSTRAP": "1"})
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "(1) preflight" in result.stdout
+    assert "there is no fork origin" not in result.stderr
+    assert "(0) self-bootstrap" not in result.stdout
+    assert not (tmp_path / "remotes").exists()
+
+
 # --- setup.sh is a shim, not a second flag list -----------------------------
 
 #: The only flags `setup.sh` may still NAME, and why each of them is about the
@@ -891,6 +1271,14 @@ def test_self_bootstrap_clone_guards_the_repository_argument(tmp_path):
 #: standing (`--into`).
 SHIM_FLAGS = {"--quiet", "--depth", "--show-toplevel", "--into", "--shape-ref",
               "--keep-shape-checkout"}
+
+#: THE ONE SPELLING IN `setup.sh` THAT LOOKS LIKE A FLAG AND IS NOT ONE.
+#: `xcode-select --install` is APPLE'S command, inside the Darwin sentence
+#: both of the shim's refusals carry since #59, and the regex below cannot
+#: tell a command quoted in a message from a flag a parser reads. Named here
+#: rather than dropped from the regex, so a `--install` that ever DID mean
+#: something to this shim would still have to be argued for.
+SHIM_TEXT_ONLY = {"--install"}
 
 #: The three lines a person READS during a self-bootstrap: printed by
 #: `setup.sh` when the shim makes the checkout, and by this file when it makes
@@ -926,14 +1314,54 @@ def test_setup_sh_parses_no_flags_of_its_own():
     code = "\n".join(line for line in
                      SETUP_SH.read_text(encoding="utf-8").splitlines()
                      if not line.lstrip().startswith("#"))
-    named = set(re.findall(r"--[a-z][a-z0-9-]*", code)) - SHIM_FLAGS
+    named = (set(re.findall(r"--[a-z][a-z0-9-]*", code))
+             - SHIM_FLAGS - SHIM_TEXT_ONLY)
     assert not named, (
         "setup.sh names flags of its own; it delegates to setup-project.py "
         f"and parses nothing: {sorted(named)}")
+    # SHIM_TEXT_ONLY EXCUSES A SPELLING, NOT A LOCATION. `--install` is
+    # excused because it is Apple's command quoted inside a refusal string;
+    # excusing it as a bare token would excuse a real `--install)` case
+    # equally, which is the one thing this test exists to catch. So the
+    # excuse is tied to the two words it was granted for: every `--install`
+    # in this file must be the one in `xcode-select --install`.
+    assert (len(re.findall(r"--install\b", code))
+            == len(re.findall(r"xcode-select --install\b", code))), (
+        "setup.sh names --install somewhere other than inside "
+        "`xcode-select --install`; SHIM_TEXT_ONLY excuses that spelling only "
+        "as Apple's command quoted in a message")
     for label in ("-y)", "-h)", "--yes)", "--help)"):
         assert label not in code, (
             f"setup.sh defines a case label {label!r} - a parser growing "
             "back one flag at a time")
+
+
+def test_the_shim_names_the_command_line_tools_on_a_mac():
+    """#59: both of the shim's refusals carry a Darwin-only sentence.
+
+    A bare Mac dies in `find_python`, NOT on the git probe: since macOS 12.3
+    `/usr/bin/git` and the interpreter beside it are Command Line Tools
+    stubs, so the name is found, the version probe fails, and the interpreter
+    refusal fires first. One Apple command answers both, so both refusals
+    name it - and only name it. It opens a dialog no script can answer, and
+    printing one sentence buys the same outcome as running it.
+
+    The OFFERS stay in `setup-project.py`. An offer table transcribed into
+    bash here would be the duplication #50 removed, growing back.
+    """
+    shim = SETUP_SH.read_text(encoding="utf-8")
+    assert 'case "$(uname -s' in shim, "the sentence is not Darwin-only"
+    assert "xcode-select --install" in shim
+    carriers = [line for line in shim.splitlines() if "$MAC_TOOLS" in line]
+    assert len(carriers) == 2, (
+        "the Command Line Tools sentence must reach BOTH refusals and "
+        f"nothing else: {carriers}")
+    assert any("git is not installed" in line for line in carriers)
+    assert any("no Python 3.9 or newer" in line for line in carriers)
+    for offered in ("brew install", "apt-get", "winget", "read -r"):
+        assert offered not in shim, (
+            "the offer table has grown back into the shim; it lives in "
+            "setup-project.py, which is the flow")
 
 
 def test_the_two_entry_points_say_self_bootstrap_the_same_way():
