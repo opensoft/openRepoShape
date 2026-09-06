@@ -49,7 +49,7 @@ die() { printf '\nREFUSED: %s\n' "$1" >&2; exit "${2:-2}"; }
 # a failed substitution simply matches nothing.
 MAC_TOOLS=""
 case "$(uname -s 2>/dev/null)" in
-Darwin) MAC_TOOLS=" On a Mac, install Apple's Command Line Tools with \`xcode-select --install\` (a dialog opens; run this again when it has finished), which supplies git, make and a python3." ;;
+Darwin) MAC_TOOLS=$'\n  On a Mac, install Apple\'s Command Line Tools with `xcode-select --install` (a dialog opens; run this again when it has finished), which supplies git, make and a python3.' ;;
 esac
 
 # THE INTERPRETER FIRST, BEFORE ANY CLONE. A machine with no Python cannot run
