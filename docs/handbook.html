@@ -1,0 +1,1471 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>openRepoShape Handbook</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@700;800&family=Source+Serif+4:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0; }
+  img { max-width: 100%; }
+  [hidden] { display: none !important; }
+</style>
+<style>
+  :root {
+    --bg: #F3F5F2;
+    --surface: #FFFFFF;
+    --ink: #1B2A2F;
+    --muted: #6B7A80;
+    --rule: #D5DBD8;
+    --accent: #0F6E56;
+    --accent-ink: #FFFFFF;
+    --warn: #B5541C;
+    --code-bg: #E9EEEB;
+    --display: "Bricolage Grotesque", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    --body: "Source Serif 4", Georgia, "Times New Roman", Times, serif;
+    --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0F1618;
+      --surface: #172023;
+      --ink: #E6EBE8;
+      --muted: #9AA8AD;
+      --rule: #2A3539;
+      --accent: #4DBB9A;
+      --accent-ink: #0F1618;
+      --warn: #E08A5B;
+      --code-bg: #1D282C;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --bg: #0F1618;
+    --surface: #172023;
+    --ink: #E6EBE8;
+    --muted: #9AA8AD;
+    --rule: #2A3539;
+    --accent: #4DBB9A;
+    --accent-ink: #0F1618;
+    --warn: #E08A5B;
+    --code-bg: #1D282C;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 15px;
+    line-height: 1.6;
+    -webkit-text-size-adjust: 100%;
+    overflow-x: hidden;
+  }
+
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:focus-visible,
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .shell {
+    max-width: 1120px;
+    margin: 0 auto;
+    padding: 24px 20px 72px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 28px;
+  }
+
+  /* ---------- contents rail ---------- */
+
+  .rail { min-width: 0; }
+  .rail-title {
+    font: 500 10.5px/1 var(--mono);
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 10px;
+  }
+  .rail-list {
+    list-style: none;
+    margin: 0;
+    padding: 0 0 8px;
+    display: flex;
+    flex-direction: row;
+    gap: 18px;
+    overflow-x: auto;
+    border-bottom: 1px solid var(--rule);
+  }
+  .rail-list a {
+    font: 400 11.5px/1.3 var(--mono);
+    color: var(--muted);
+    text-decoration: none;
+    white-space: nowrap;
+    display: block;
+    padding-bottom: 6px;
+  }
+  .rail-list a:hover { color: var(--ink); }
+
+  @media (min-width: 960px) {
+    .shell { grid-template-columns: 196px minmax(0, 1fr); gap: 40px; align-items: start; }
+    .rail { position: sticky; top: 20px; }
+    .rail-list {
+      flex-direction: column;
+      gap: 9px;
+      overflow-x: visible;
+      border-bottom: none;
+      border-left: 1px solid var(--rule);
+      padding: 2px 0 2px 14px;
+    }
+    .rail-list a { white-space: normal; padding-bottom: 0; }
+  }
+
+  main { min-width: 0; max-width: 100%; display: flex; flex-direction: column; gap: 52px; }
+
+  /* ---------- typography ---------- */
+
+  h1, h2, h3, h4 {
+    font-family: var(--display);
+    font-weight: 700;
+    text-wrap: balance;
+    margin: 0;
+    line-height: 1.15;
+  }
+  h1 { font-size: clamp(34px, 6vw, 48px); font-weight: 800; letter-spacing: -0.02em; }
+  h2 { font-size: clamp(23px, 3.2vw, 28px); letter-spacing: -0.01em; }
+  h3 { font-size: 17.5px; letter-spacing: -0.005em; }
+  h4 {
+    font-family: var(--mono);
+    font-weight: 500;
+    font-size: 11px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  p, li, dd, .measure { max-width: 68ch; }
+  p { margin: 0; }
+  strong { font-weight: 600; }
+
+  .eyebrow {
+    font: 500 10.5px/1.4 var(--mono);
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0;
+  }
+  .eyebrow .on { color: var(--accent); }
+
+  section { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  section > h2 {
+    border-top: 1px solid var(--rule);
+    padding-top: 16px;
+    max-width: none;
+  }
+  .sub { color: var(--muted); }
+  .lede { font-size: 17px; }
+
+  .stack { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  .stack-tight { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+
+  ul.plain, ul.bul { margin: 0; }
+  ul.plain { list-style: none; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+  ul.bul { padding-left: 20px; display: flex; flex-direction: column; gap: 8px; }
+  ul.plain > li { padding-left: 14px; border-left: 1px solid var(--rule); }
+
+  .src {
+    font: 500 10.5px/1.4 var(--mono);
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--accent);
+    text-decoration: none;
+    border-bottom: 1px solid var(--rule);
+    padding-bottom: 3px;
+    align-self: start;
+    max-width: none;
+  }
+  .src:hover { border-bottom-color: var(--accent); }
+
+  .aside {
+    border-left: 2px solid var(--rule);
+    padding-left: 14px;
+    font-size: 13.5px;
+    color: var(--muted);
+    max-width: 62ch;
+  }
+  .aside em { font-style: italic; }
+
+  .refuses {
+    font: 500 10.5px/1.4 var(--mono);
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--warn);
+  }
+
+  /* ---------- code ---------- */
+
+  code {
+    font-family: var(--mono);
+    font-size: 0.87em;
+    background: var(--code-bg);
+    padding: 1px 4px;
+    border-radius: 2px;
+    overflow-wrap: break-word;
+  }
+
+  .code {
+    position: relative;
+    background: var(--code-bg);
+    border: 1px solid var(--rule);
+    max-width: 100%;
+    min-width: 0;
+  }
+  .code::after {
+    content: attr(data-lang);
+    position: absolute;
+    top: 0;
+    right: 0;
+    font: 500 9.5px/1 var(--mono);
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    background: var(--code-bg);
+    padding: 7px 10px 7px 14px;
+    border-left: 1px solid var(--rule);
+    border-bottom: 1px solid var(--rule);
+  }
+  .code pre {
+    margin: 0;
+    padding: 26px 16px 14px;
+    overflow-x: auto;
+  }
+  .code code, .out code {
+    background: none;
+    padding: 0;
+    font-size: 12.5px;
+    line-height: 1.65;
+    white-space: pre;
+    tab-size: 4;
+    font-variant-numeric: tabular-nums;
+    display: block;
+  }
+  .out {
+    border-left: 2px solid var(--accent);
+    background: var(--code-bg);
+    max-width: none;
+  }
+  .out pre { margin: 0; padding: 14px 16px; overflow-x: auto; }
+
+  /* ---------- cards (two places only) ---------- */
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    padding: 22px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-width: 0;
+  }
+  .card.confers { border-top: 3px solid var(--accent); }
+  .card.confers p { max-width: 66ch; }
+
+  /* ---------- header ---------- */
+
+  header.masthead { display: flex; flex-direction: column; gap: 26px; }
+  .masthead-top { display: flex; flex-direction: column; gap: 14px; }
+  .masthead-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 28px;
+    align-items: start;
+  }
+  .masthead-grid > * { min-width: 0; }
+  @media (min-width: 820px) {
+    .masthead-grid { grid-template-columns: minmax(0, 1.3fr) minmax(0, 0.9fr); gap: 34px; }
+  }
+  .path { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+
+  figure.diagram {
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+    max-width: 440px;
+    min-width: 0;
+  }
+  .diagram svg { width: 100%; max-width: 100%; height: auto; display: block; }
+  figcaption { font-size: 12.5px; color: var(--muted); max-width: 46ch; }
+
+  .dg-box { fill: var(--surface); stroke: var(--rule); stroke-width: 1; }
+  .dg-box-root { fill: var(--surface); stroke: var(--accent); stroke-width: 1.5; }
+  .dg-line { fill: none; stroke: var(--rule); stroke-width: 1.25; }
+  .dg-line-pin { fill: none; stroke: var(--accent); stroke-width: 1.25; stroke-dasharray: 4 3; }
+  .dg-dot { fill: var(--accent); }
+  .dg-name { fill: var(--ink); font: 500 13px var(--mono); }
+  .dg-sub { fill: var(--muted); font: 400 10px var(--mono); }
+  .dg-pin { fill: var(--accent); font: 500 10px var(--mono); }
+  .dg-mount { fill: var(--muted); font: 500 10px var(--mono); }
+
+  /* ---------- platform switcher ---------- */
+
+  .switcher { display: flex; flex-direction: column; gap: 0; min-width: 0; }
+  .tabs {
+    display: flex;
+    flex-wrap: wrap;
+    border-bottom: 1px solid var(--rule);
+    max-width: none;
+  }
+  .tab {
+    appearance: none;
+    -webkit-appearance: none;
+    background: transparent;
+    border: 1px solid transparent;
+    border-bottom: none;
+    font: 500 11px/1 var(--mono);
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding: 12px 14px;
+    margin-bottom: -1px;
+    cursor: pointer;
+  }
+  .tab:hover { color: var(--ink); }
+  .tab[aria-selected="true"] {
+    color: var(--ink);
+    background: var(--surface);
+    border-color: var(--rule);
+    box-shadow: inset 0 2px 0 0 var(--accent);
+  }
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-top: none;
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+    min-width: 0;
+  }
+
+  /* ---------- numbered sequence ---------- */
+
+  ol.steps {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    counter-reset: step;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+    max-width: none;
+  }
+  ol.steps > li {
+    counter-increment: step;
+    display: grid;
+    grid-template-columns: 26px minmax(0, 1fr);
+    gap: 16px;
+    max-width: none;
+  }
+  ol.steps > li::before {
+    content: counter(step);
+    font: 500 12px/1.2 var(--mono);
+    color: var(--accent);
+    border-top: 2px solid var(--accent);
+    padding-top: 6px;
+    font-variant-numeric: tabular-nums;
+  }
+  ol.steps > li > div { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+  ol.steps h3 { font-family: var(--body); font-weight: 600; font-size: 15.5px; line-height: 1.4; }
+
+  /* ---------- tables ---------- */
+
+  .tw { overflow-x: auto; max-width: 100%; min-width: 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    min-width: 420px;
+    font-size: 14px;
+    font-variant-numeric: tabular-nums;
+  }
+  th {
+    font: 500 10.5px/1.4 var(--mono);
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    text-align: left;
+    padding: 0 16px 9px 0;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: bottom;
+  }
+  td {
+    padding: 11px 16px 11px 0;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+  tbody th { padding: 11px 16px 11px 0; border-bottom: 1px solid var(--rule); vertical-align: top; }
+
+  /* ---------- definition list ---------- */
+
+  dl.files {
+    display: grid;
+    grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+    gap: 9px 24px;
+    margin: 0;
+    max-width: none;
+    align-items: baseline;
+  }
+  dl.files dt { font: 400 12.5px/1.5 var(--mono); color: var(--ink); overflow-wrap: anywhere; }
+  dl.files dd { margin: 0; font-size: 13.5px; color: var(--muted); max-width: 56ch; }
+  @media (max-width: 620px) {
+    dl.files { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+    dl.files dd { padding-bottom: 10px; }
+  }
+
+  /* ---------- footer ---------- */
+
+  footer {
+    border-top: 1px solid var(--rule);
+    padding-top: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  footer .meta { font: 400 11.5px/1.6 var(--mono); }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<div class="shell">
+  <nav class="rail" aria-label="Contents">
+    <p class="rail-title">Contents</p>
+    <ul class="rail-list">
+      <li><a href="#confers">Confers nothing</a></li>
+      <li><a href="#start">Start here</a></li>
+      <li><a href="#partway">If it fails part-way</a></li>
+      <li><a href="#ci">Private legs in CI</a></li>
+      <li><a href="#legs">The three legs</a></li>
+      <li><a href="#adopt">Adopting a repository</a></li>
+      <li><a href="#families">Families</a></li>
+      <li><a href="#doublepin">The double pin</a></li>
+      <li><a href="#copied">Copied, not fetched</a></li>
+      <li><a href="#current">Keeping shape current</a></li>
+      <li><a href="#degrade">The degrade rule</a></li>
+      <li><a href="#layout">Repository layout</a></li>
+      <li><a href="#agents">For AI assistants</a></li>
+    </ul>
+  </nav>
+
+  <main>
+    <header class="masthead">
+      <div class="masthead-top">
+        <p class="eyebrow"><span class="on">Ratified standard</span> &middot; Apache-2.0</p>
+        <h1>openRepoShape</h1>
+      </div>
+
+      <div class="masthead-grid">
+        <div class="path">
+          <p class="lede">The mechanics of a project that spans several repositories: what they
+          are called, how they are pinned to each other, how one clone brings the whole project
+          down, and what an AI assistant does when a human says &ldquo;scaffold a new project with
+          this shape&rdquo;.</p>
+          <p class="sub">GitHub has no folder that groups repositories, so a project spanning
+          several of them is held together by convention or by nothing. This repository is the
+          convention, as data and as running code.</p>
+
+          <h4>The fastest path &mdash; macOS, Linux, WSL2</h4>
+          <div class="code" data-lang="sh"><pre><code>curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/openRepoShape \
+    | bash -s -- --install
+openRepoShape --doctor
+openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
+          <p class="sub">On Windows without WSL2 the way in is two PowerShell commands instead,
+          because on Windows there is nothing to install &mdash; see <a href="#start">Start
+          here</a>.</p>
+        </div>
+
+        <figure class="diagram">
+          <svg viewBox="0 0 340 414" role="img" aria-labelledby="dg-title dg-desc">
+            <title id="dg-title">The three legs and the three pins</title>
+            <desc id="dg-desc">The assembly root is the per-project root repository. It mounts
+            the spec leg and the code leg as submodules, each pinned twice — once by the gitlink
+            git records and once by contracts/&lt;role&gt;-pin.yaml — and it pins
+            opensoft/openRepoShape through contracts/shape-pin.yaml.</desc>
+
+            <rect class="dg-box" x="110" y="6" width="224" height="48"></rect>
+            <text class="dg-name" x="124" y="28">opensoft/openRepoShape</text>
+            <text class="dg-sub" x="124" y="44">the standard, pinned by commit</text>
+
+            <path class="dg-line-pin" d="M 170 54 V 120"></path>
+            <text class="dg-pin" x="178" y="92">contracts/shape-pin.yaml</text>
+            <circle class="dg-dot" cx="170" cy="120" r="2.5"></circle>
+
+            <rect class="dg-box-root" x="6" y="120" width="328" height="60"></rect>
+            <text class="dg-name" x="20" y="146">&lt;Project&gt;</text>
+            <text class="dg-sub" x="20" y="165">assembly root &mdash; the repository people clone</text>
+
+            <path class="dg-line" d="M 30 180 V 378"></path>
+            <path class="dg-line" d="M 30 278 H 42"></path>
+            <path class="dg-line" d="M 30 378 H 42"></path>
+            <circle class="dg-dot" cx="42" cy="278" r="2.5"></circle>
+            <circle class="dg-dot" cx="42" cy="378" r="2.5"></circle>
+
+            <text class="dg-sub" x="46" y="206">gitlink, plus</text>
+            <text class="dg-pin" x="46" y="222">contracts/spec-pin.yaml</text>
+
+            <rect class="dg-box" x="42" y="250" width="292" height="56"></rect>
+            <text class="dg-name" x="56" y="274">&lt;Project&gt;-spec</text>
+            <text class="dg-mount" x="320" y="274" text-anchor="end">spec/</text>
+            <text class="dg-sub" x="56" y="293">requirements, decisions, acceptance criteria</text>
+
+            <text class="dg-sub" x="46" y="326">gitlink, plus</text>
+            <text class="dg-pin" x="46" y="342">contracts/code-pin.yaml</text>
+
+            <rect class="dg-box" x="42" y="350" width="292" height="56"></rect>
+            <text class="dg-name" x="56" y="374">&lt;Project&gt;-code</text>
+            <text class="dg-mount" x="320" y="374" text-anchor="end">code/</text>
+            <text class="dg-sub" x="56" y="393">the implementation and its tests</text>
+          </svg>
+          <figcaption>Each leg is pinned twice, in the same commit: by the gitlink git records for
+          the submodule, and by <code>contracts/&lt;role&gt;-pin.yaml</code>.</figcaption>
+        </figure>
+      </div>
+    </header>
+
+    <section id="confers">
+      <div class="card confers">
+        <h4>The one thing to read before electing it</h4>
+        <p><strong>The shape is elective and confers nothing.</strong> Electing it changes no gate,
+        no floor, no grant and no clearance eligibility. A one-repository project and a
+        three-repository project are reviewed identically, because the authority travels in the
+        grants rather than in the layout. Review lanes and wallet-carried authority are OVERLAYS an
+        org adds later; a project with no overlays is fully conformant.</p>
+      </div>
+      <p class="aside">Ruled by <strong>Brett Heap on 2026-09-02</strong>: the name
+      <code>openRepoShape</code>, PUBLIC visibility, Apache-2.0; and that the ASSEMBLY leg
+      <strong>is</strong> the per-project root repository &mdash; the one an engineer clones. The
+      doctrine it serves lives in <code>opensoft/openxFactory</code> at
+      <code>docs/project-repo-schema.md</code>, which is what a project&rsquo;s
+      <code>project.yaml</code> records as the <code>reference:</code> the election followed.</p>
+    </section>
+
+    <section id="start">
+      <p class="eyebrow">Setup</p>
+      <h2>Start here</h2>
+      <p>Pick your machine. Each panel says what the machine needs, how the tool offers to supply
+      it, and the sequence to run. The steps below are the reference &mdash; what each platform
+      needs, and how to install it by hand. You do not have to.</p>
+
+      <div class="switcher">
+      <div class="tabs" role="tablist" aria-label="Platform">
+        <button class="tab" type="button" role="tab" id="tab-linux" aria-controls="panel-linux" aria-selected="true" tabindex="0">Linux</button>
+        <button class="tab" type="button" role="tab" id="tab-macos" aria-controls="panel-macos" aria-selected="false" tabindex="-1">macOS</button>
+        <button class="tab" type="button" role="tab" id="tab-windows" aria-controls="panel-windows" aria-selected="false" tabindex="-1">Windows (natively)</button>
+        <button class="tab" type="button" role="tab" id="tab-wsl" aria-controls="panel-wsl" aria-selected="false" tabindex="-1">Windows via WSL2</button>
+      </div>
+
+      <!-- LINUX -->
+      <div class="panel" role="tabpanel" id="panel-linux" aria-labelledby="tab-linux" tabindex="0">
+        <div class="stack">
+          <h4>What this machine needs</h4>
+          <p><code>git</code>; Python 3.9 or newer; <code>gh</code>, the GitHub CLI; and an
+          organisation on GitHub you can create repositories in. <code>make</code> is not used by
+          the entry point &mdash; it runs <code>python3 scripts/bootstrap.py</code> &mdash; and
+          stays a convenience for <code>make validate</code>.</p>
+          <p>The official <code>gh</code> instructions are at <a href="https://cli.github.com/">cli.github.com</a>.
+          On Linux with Homebrew:</p>
+          <div class="code" data-lang="sh"><pre><code>brew install gh    # macOS, or Linux with Homebrew</code></pre></div>
+          <p>Debian, Ubuntu, or Windows under WSL2 (WSL2&rsquo;s Ubuntu takes the same command):</p>
+          <div class="code" data-lang="sh"><pre><code>(type -p wget &gt;/dev/null || (sudo apt update &amp;&amp; sudo apt install wget -y)) \
+	&amp;&amp; sudo mkdir -p -m 755 /etc/apt/keyrings \
+	&amp;&amp; out=$(mktemp) &amp;&amp; wget -nv -O$out https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+	&amp;&amp; cat $out | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg &gt; /dev/null \
+	&amp;&amp; sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+	&amp;&amp; sudo mkdir -p -m 755 /etc/apt/sources.list.d \
+	&amp;&amp; echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list &gt; /dev/null \
+	&amp;&amp; sudo apt update \
+	&amp;&amp; sudo apt install gh -y</code></pre></div>
+          <p>Fedora (DNF5):</p>
+          <div class="code" data-lang="sh"><pre><code>sudo dnf install dnf5-plugins
+sudo dnf config-manager addrepo --from-repofile=https://cli.github.com/packages/rpm/gh-cli.repo
+sudo dnf install gh</code></pre></div>
+          <p><code>git</code> itself comes from <code>sudo apt-get install -y git</code> on Debian
+          and Ubuntu and <code>sudo dnf install -y git</code> on Fedora &mdash; the same commands
+          that preflight offers to run for you.</p>
+          <h4>The tool offers the rest</h4>
+          <p>The run opens with a preflight that names what is missing, prints the command for THIS
+          machine and asks once &mdash; <code>Type yes to continue:</code>, the same words it asks
+          everything else with &mdash; then runs it and carries on.</p>
+        </div>
+
+        <ol class="steps">
+          <li><div>
+            <h3>Install the <code>openRepoShape</code> command, once</h3>
+            <div class="code" data-lang="sh"><pre><code>gh api repos/opensoft/openRepoShape/contents/openRepoShape \
+    -H 'Accept: application/vnd.github.raw' | bash -s -- --install</code></pre></div>
+            <p class="sub">Or, where raw downloads are not blocked, the same bytes over HTTPS:</p>
+            <div class="code" data-lang="sh"><pre><code>curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/openRepoShape \
+    | bash -s -- --install</code></pre></div>
+            <p>It installs into <code>~/.local/bin</code>, idempotently &mdash; a second run prints
+            <code>unchanged</code> &mdash; and prints the <code>export PATH=&hellip;</code> line if
+            that directory is not on <code>PATH</code>. It is one file, and all it does is fetch
+            <code>setup.sh</code> (API first, raw URL second) and run it.</p>
+          </div></li>
+
+          <li><div>
+            <h3>Check the machine, creating nothing</h3>
+            <div class="code" data-lang="sh"><pre><code>openRepoShape --doctor</code></pre></div>
+            <p>It checks this machine, offers what is missing and creates nothing. It exits 0 when
+            everything is present and 1 when it is not.</p>
+          </div></li>
+
+          <li><div>
+            <h3>Log in</h3>
+            <div class="code" data-lang="sh"><pre><code>gh auth login</code></pre></div>
+            <p>As the account that will own the act &mdash; a member of the organisation who can
+            create repositories there. Accept the offer to configure git&rsquo;s credential helper,
+            or run <code>gh auth setup-git</code>: the first commits go up with a plain
+            <code>git push</code> over HTTPS, and without it the three repositories are created and
+            the push fails.</p>
+          </div></li>
+
+          <li><div>
+            <h3>Rehearse first, creating nothing</h3>
+            <div class="code" data-lang="sh"><pre><code>openRepoShape Atlas --org &lt;your-org&gt; --local-remote-dir ./rehearsal</code></pre></div>
+            <p><code>--local-remote-dir &lt;dir&gt;</code> runs the whole of the real thing against
+            three BARE repositories in <code>&lt;dir&gt;</code>: the same preflight (where
+            <code>gh</code> is neither required nor checked), the same naming check, the same plan,
+            the same <code>Type yes to continue:</code>, the same clone and
+            <code>scripts/bootstrap.py</code>. <code>gh</code> is never called and nothing is
+            created on GitHub. <code>--org</code> is still required &mdash; it is what the manifest
+            records as the owner of all three legs &mdash; but here it is only a string: it is never
+            checked against GitHub, so the organisation need not exist yet.</p>
+            <p class="aside">Honestly: it still reaches GitHub before the run starts &mdash; to
+            fetch <code>setup.sh</code>, then for the self-bootstrap clone of this standard into a
+            temporary directory. Run the same flag on <code>./setup.sh</code> from a checkout
+            instead and nothing touches the network at all. What it leaves behind is
+            <code>./Atlas</code> and three bare repositories in <code>./rehearsal</code>, both of
+            which you can delete.</p>
+          </div></li>
+
+          <li><div>
+            <h3>Run it</h3>
+            <div class="code" data-lang="sh"><pre><code>openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
+            <p><code>&lt;Project&gt;</code> is one positional CamelCase name (e.g.
+            <code>Atlas</code>); <code>--org</code> is required &mdash; from the flag,
+            <code>$OPENREPOSHAPE_ORG</code>, or the command&rsquo;s own prompt &mdash; and add
+            <code>--visibility private</code> if you want that. It shows the plan and asks once,
+            <code>Type yes to continue:</code>; type <code>yes</code>. Afterwards
+            <code>./&lt;Project&gt;</code> is the cloned root.</p>
+            <p><span class="refuses">Refuses</span> <code>--org opensoft</code> without
+            <code>--allow-upstream-org</code>, because that would scaffold three repositories into
+            opensoft&rsquo;s own namespace.</p>
+          </div></li>
+        </ol>
+      </div>
+
+      <!-- MACOS -->
+      <div class="panel" role="tabpanel" id="panel-macos" aria-labelledby="tab-macos" tabindex="0" hidden>
+        <div class="stack">
+          <h4>What this machine needs</h4>
+          <p>The Xcode Command Line Tools supply <code>git</code>, <code>make</code> and a
+          <code>python3</code> &mdash; install them with <code>xcode-select --install</code>, or
+          type <code>git</code> once on a fresh Mac and the installer offers itself.</p>
+          <p>The run opens with a preflight that prints the <code>python3</code> it found and
+          refuses anything below 3.9. If it refuses the one the Tools supplied &mdash; older macOS
+          shipped 3.8 &mdash; install a newer one from
+          <a href="https://www.python.org/downloads/">python.org/downloads</a> or with
+          <code>brew install python</code>, and the preflight will find it first on
+          <code>PATH</code>.</p>
+          <p><code>gh</code> comes from Homebrew, which is its own install if <code>brew</code> is
+          absent (<a href="https://brew.sh">brew.sh</a>): on Apple Silicon Homebrew lives in
+          <code>/opt/homebrew</code>, which is on no <code>PATH</code> by default, and its installer
+          finishes by printing the line that puts it there &mdash; run that line, or the next shell
+          cannot find <code>brew</code>.</p>
+          <div class="code" data-lang="sh"><pre><code>brew install gh    # macOS, or Linux with Homebrew</code></pre></div>
+          <p>Then <code>brew install git-filter-repo</code> only if you are ADOPTING an existing
+          repository rather than scaffolding a new one.</p>
+          <p>The stock <code>/bin/bash</code> is 3.2 and is enough: <code>setup.sh</code> and the
+          <code>openRepoShape</code> command use no syntax newer than that, and CI runs the whole
+          suite on <code>macos-latest</code>, parsing both there with <code>/bin/bash</code> itself.
+          That the login shell is zsh changes nothing &mdash; both entry points are run under
+          <code>bash</code> explicitly.</p>
+          <h4>The tool offers the rest</h4>
+          <p>The preflight names what is missing, prints the command for THIS machine and asks once
+          &mdash; <code>Type yes to continue:</code> &mdash; then runs it and carries on.
+          <strong>Homebrew is the one install never run for you</strong>: on a Mac without
+          <code>brew</code> the preflight names <a href="https://brew.sh">brew.sh</a> and stops
+          there.</p>
+        </div>
+
+        <ol class="steps">
+          <li><div>
+            <h3>Install the <code>openRepoShape</code> command, once</h3>
+            <div class="code" data-lang="sh"><pre><code>gh api repos/opensoft/openRepoShape/contents/openRepoShape \
+    -H 'Accept: application/vnd.github.raw' | bash -s -- --install</code></pre></div>
+            <p class="sub">Or, where raw downloads are not blocked, the same bytes over HTTPS:</p>
+            <div class="code" data-lang="sh"><pre><code>curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/openRepoShape \
+    | bash -s -- --install</code></pre></div>
+            <p>It installs into <code>~/.local/bin</code>, idempotently &mdash; a second run prints
+            <code>unchanged</code> &mdash; and prints the <code>export PATH=&hellip;</code> line if
+            that directory is not on <code>PATH</code>.</p>
+          </div></li>
+
+          <li><div>
+            <h3>Check the machine, creating nothing</h3>
+            <div class="code" data-lang="sh"><pre><code>openRepoShape --doctor</code></pre></div>
+            <p>It exits 0 when everything is present and 1 when it is not, and creates nothing. This
+            is also where a <code>python3</code> below 3.9 is named.</p>
+          </div></li>
+
+          <li><div>
+            <h3>Log in</h3>
+            <div class="code" data-lang="sh"><pre><code>gh auth login</code></pre></div>
+            <p>As the account that will own the act &mdash; a member of the organisation who can
+            create repositories there. Accept the offer to configure git&rsquo;s credential helper,
+            or run <code>gh auth setup-git</code>: the first commits go up with a plain
+            <code>git push</code> over HTTPS, and without it the three repositories are created and
+            the push fails.</p>
+          </div></li>
+
+          <li><div>
+            <h3>Rehearse first, creating nothing</h3>
+            <div class="code" data-lang="sh"><pre><code>openRepoShape Atlas --org &lt;your-org&gt; --local-remote-dir ./rehearsal</code></pre></div>
+            <p>The same preflight (where <code>gh</code> is neither required nor checked), the same
+            naming check, the same plan, the same <code>Type yes to continue:</code>, the same clone
+            and <code>scripts/bootstrap.py</code> &mdash; against three BARE repositories in
+            <code>./rehearsal</code>. <code>gh</code> is never called and nothing is created on
+            GitHub; <code>--org</code> is still required but is only a string here, never checked
+            against GitHub.</p>
+            <p class="aside">Honestly: it still reaches GitHub before the run starts &mdash; to
+            fetch <code>setup.sh</code>, then for the self-bootstrap clone of this standard into a
+            temporary directory. Run the same flag on <code>./setup.sh</code> from a checkout
+            instead and nothing touches the network at all.</p>
+          </div></li>
+
+          <li><div>
+            <h3>Run it</h3>
+            <div class="code" data-lang="sh"><pre><code>openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
+            <p><code>&lt;Project&gt;</code> is one positional CamelCase name (e.g.
+            <code>Atlas</code>); <code>--org</code> is required &mdash; from the flag,
+            <code>$OPENREPOSHAPE_ORG</code>, or the command&rsquo;s own prompt. It shows the plan
+            and asks once, <code>Type yes to continue:</code>; type <code>yes</code>. Afterwards
+            <code>./&lt;Project&gt;</code> is the cloned root.</p>
+          </div></li>
+        </ol>
+      </div>
+
+      <!-- WINDOWS -->
+      <div class="panel" role="tabpanel" id="panel-windows" aria-labelledby="tab-windows" tabindex="0" hidden>
+        <div class="stack">
+          <h4>What this machine needs</h4>
+          <p><strong>Python is the one manual install.</strong> Install Python 3.9 or newer from
+          <a href="https://www.python.org/downloads/">python.org/downloads</a>, ticking <em>Add
+          python.exe to PATH</em> &mdash; its own checkbox, and a different one from <em>py
+          launcher</em>, which the installer ticks for you. Then <code>git</code> from
+          <a href="https://git-scm.com/downloads">git-scm.com/downloads</a>, and <code>gh</code>
+          with <code>winget install --id GitHub.cli -e</code>.</p>
+          <h4>The tool offers the rest</h4>
+          <p>The preflight names anything missing, prints the command for THIS machine and asks once
+          &mdash; <code>Type yes to continue:</code> &mdash; then runs it and carries on. On Windows
+          those offers are the winget ones: <code>winget install --id Git.Git -e</code> for
+          <code>git</code> and <code>winget install --id GitHub.cli -e</code> for <code>gh</code>.
+          There is no <code>openRepoShape</code> command to install here: that two-liner IS the
+          Windows way in, and the <code>openRepoShape</code> command is a macOS, Linux and WSL2
+          convenience with no Windows twin, because on Windows there is nothing to install.</p>
+        </div>
+
+        <ol class="steps">
+          <li><div>
+            <h3>Make one machine setting first</h3>
+            <div class="code" data-lang="powershell"><pre><code>git config --global core.autocrlf false</code></pre></div>
+            <p>The git-for-Windows installer offers <code>true</code>, which rewrites every
+            checked-out file&rsquo;s line endings. A scaffolded project records a sha256 per copied
+            file in its own <code>contracts/shape-pin.yaml</code>, so a CRLF checkout reports drift
+            in files nobody edited. The clone <code>setup-project.py</code> makes is configured
+            correctly whatever the machine says; the global setting is for every clone after it.</p>
+          </div></li>
+
+          <li><div>
+            <h3>Fetch the flow, in the directory the new project should land in</h3>
+            <div class="code" data-lang="powershell"><pre><code>Invoke-WebRequest https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup-project.py -OutFile setup-project.py</code></pre></div>
+            <p class="aside">Two commands rather than one pipe, on purpose. Windows PowerShell 5.1
+            &mdash; still the default shell on a stock install &mdash; re-encodes piped text as
+            ASCII by default (that is its <code>$OutputEncoding</code>), and writes UTF-16 when
+            <code>&gt;</code> redirects to a file, so no byte above 0x7F survives either route and a
+            script sent down one is not the script that arrives; and a script arriving on stdin has
+            an exhausted stdin, so it cannot ask for the one <code>yes</code> before three
+            repositories exist &mdash; it refuses instead. Downloading the file first leaves stdin
+            attached to the terminal you are typing at.</p>
+          </div></li>
+
+          <li><div>
+            <h3>Check the machine, creating nothing</h3>
+            <div class="code" data-lang="powershell"><pre><code>py setup-project.py --doctor</code></pre></div>
+            <p>It exits 0 when everything is present and 1 when it is not.
+            <code>python setup-project.py --doctor</code> is the same command on a machine with no
+            <code>py</code>: Python from the Microsoft Store installs <code>python</code> and no
+            launcher at all.</p>
+          </div></li>
+
+          <li><div>
+            <h3>Log in</h3>
+            <div class="code" data-lang="powershell"><pre><code>gh auth login</code></pre></div>
+            <p>As the account that will own the act &mdash; a member of the organisation who can
+            create repositories there. Accept the offer to configure git&rsquo;s credential helper,
+            or run <code>gh auth setup-git</code>: the first commits go up with a plain
+            <code>git push</code> over HTTPS, and without it the three repositories are created and
+            the push fails.</p>
+          </div></li>
+
+          <li><div>
+            <h3>Rehearse first, creating nothing</h3>
+            <p><code>--local-remote-dir &lt;dir&gt;</code> runs the whole flow against three BARE
+            repositories in <code>&lt;dir&gt;</code> &mdash; same preflight, same naming check, same
+            plan, same <code>Type yes to continue:</code>, same clone and
+            <code>scripts/bootstrap.py</code> &mdash; and <code>gh</code> is never called. The
+            README spells the rehearsal on the bash entry points:</p>
+            <div class="code" data-lang="sh"><pre><code>openRepoShape Atlas --org &lt;your-org&gt; --local-remote-dir ./rehearsal</code></pre></div>
+            <p class="aside"><code>setup-project.py</code> is that same flow with the shim taken off
+            the front, but the README documents this flag on <code>openRepoShape</code> and
+            <code>setup.sh</code> and names <code>openRepoShape --help</code> and
+            <code>setup.sh --help</code> as what lists every flag, this one included. Read the help
+            output on the machine rather than assuming the spelling.</p>
+          </div></li>
+
+          <li><div>
+            <h3>Run it</h3>
+            <div class="code" data-lang="powershell"><pre><code>py setup-project.py &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
+            <p><code>python setup-project.py &lt;Project&gt; --org &lt;your-org&gt;</code> is the
+            same command on a machine with no <code>py</code>. <code>setup-project.py</code> is the
+            flow itself, and <code>setup.sh</code> a shim over it: the same preflight, the same
+            naming check, the same plan, the same one <code>yes</code>, the same self-bootstrap
+            outside a checkout. It never needs <code>make</code> and never looks for a
+            <code>python3</code> &mdash; it runs the interpreter that started it.</p>
+          </div></li>
+        </ol>
+      </div>
+
+      <!-- WSL2 -->
+      <div class="panel" role="tabpanel" id="panel-wsl" aria-labelledby="tab-wsl" tabindex="0" hidden>
+        <div class="stack">
+          <h4>What this machine needs</h4>
+          <p>WSL2 is still how you run the bash entry points: <code>wsl --install</code> from an
+          administrator PowerShell, reboot, open the Ubuntu app, and run the steps INSIDE the WSL
+          shell.</p>
+          <div class="code" data-lang="powershell"><pre><code>wsl --install</code></pre></div>
+          <p>Ubuntu under WSL2 ships <code>git</code> and Python, so there <code>gh</code> is the
+          only install &mdash; and WSL2&rsquo;s Ubuntu takes the same Debian/Ubuntu command:</p>
+          <div class="code" data-lang="sh"><pre><code>(type -p wget &gt;/dev/null || (sudo apt update &amp;&amp; sudo apt install wget -y)) \
+	&amp;&amp; sudo mkdir -p -m 755 /etc/apt/keyrings \
+	&amp;&amp; out=$(mktemp) &amp;&amp; wget -nv -O$out https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+	&amp;&amp; cat $out | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg &gt; /dev/null \
+	&amp;&amp; sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+	&amp;&amp; sudo mkdir -p -m 755 /etc/apt/sources.list.d \
+	&amp;&amp; echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list &gt; /dev/null \
+	&amp;&amp; sudo apt update \
+	&amp;&amp; sudo apt install gh -y</code></pre></div>
+          <h4>The tool offers the rest</h4>
+          <p>The preflight names anything missing and where to get it, prints the command for THIS
+          machine and asks once &mdash; <code>Type yes to continue:</code> &mdash; then runs it and
+          carries on.</p>
+        </div>
+
+        <ol class="steps">
+          <li><div>
+            <h3>Install the <code>openRepoShape</code> command, once, inside WSL</h3>
+            <div class="code" data-lang="sh"><pre><code>curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/openRepoShape \
+    | bash -s -- --install</code></pre></div>
+            <p class="sub">Or, where raw downloads are blocked, the same bytes through the API:</p>
+            <div class="code" data-lang="sh"><pre><code>gh api repos/opensoft/openRepoShape/contents/openRepoShape \
+    -H 'Accept: application/vnd.github.raw' | bash -s -- --install</code></pre></div>
+            <p>It installs into <code>~/.local/bin</code>, idempotently &mdash; a second run prints
+            <code>unchanged</code> &mdash; and prints the <code>export PATH=&hellip;</code> line if
+            that directory is not on <code>PATH</code>.</p>
+          </div></li>
+
+          <li><div>
+            <h3>Check the machine, creating nothing</h3>
+            <div class="code" data-lang="sh"><pre><code>openRepoShape --doctor</code></pre></div>
+            <p>It exits 0 when everything is present and 1 when it is not.</p>
+          </div></li>
+
+          <li><div>
+            <h3>Log in</h3>
+            <div class="code" data-lang="sh"><pre><code>gh auth login</code></pre></div>
+            <p>As the account that will own the act. Accept the offer to configure git&rsquo;s
+            credential helper, or run <code>gh auth setup-git</code>: the first commits go up with a
+            plain <code>git push</code> over HTTPS, and without it the three repositories are
+            created and the push fails.</p>
+          </div></li>
+
+          <li><div>
+            <h3>Rehearse first, creating nothing</h3>
+            <div class="code" data-lang="sh"><pre><code>openRepoShape Atlas --org &lt;your-org&gt; --local-remote-dir ./rehearsal</code></pre></div>
+            <p>Three BARE repositories in <code>./rehearsal</code>, the same preflight (where
+            <code>gh</code> is neither required nor checked), the same naming check, the same plan,
+            the same <code>Type yes to continue:</code>, the same clone and
+            <code>scripts/bootstrap.py</code>. <code>gh</code> is never called and nothing is
+            created on GitHub.</p>
+            <p class="aside">Honestly: it still reaches GitHub before the run starts &mdash; to
+            fetch <code>setup.sh</code>, then for the self-bootstrap clone of this standard into a
+            temporary directory. Run the same flag on <code>./setup.sh</code> from a checkout
+            instead and nothing touches the network at all.</p>
+          </div></li>
+
+          <li><div>
+            <h3>Run it</h3>
+            <div class="code" data-lang="sh"><pre><code>openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
+            <p>One positional CamelCase name; <code>--org</code> required, from the flag,
+            <code>$OPENREPOSHAPE_ORG</code>, or the command&rsquo;s own prompt. It shows the plan
+            and asks once, <code>Type yes to continue:</code>; type <code>yes</code>.</p>
+          </div></li>
+        </ol>
+      </div>
+      </div>
+
+      <div class="stack">
+        <h4>Consent rules, on every platform</h4>
+        <ul class="plain">
+          <li>Every action that changes the machine or the account is a typed <code>yes</code>, at
+          the same prompt: <code>Type yes to continue:</code>.</li>
+          <li><code>--yes</code> skips the scaffold question only. It does not answer an install
+          offer, <code>gh auth login</code> or <code>gh auth setup-git</code>.</li>
+          <li>With no terminal attached there is no offer at all.</li>
+          <li>Homebrew is never run for you: on a Mac without <code>brew</code> the preflight names
+          <a href="https://brew.sh">brew.sh</a> and stops there.</li>
+        </ul>
+      </div>
+
+      <div class="stack">
+        <h4>What you have afterwards &mdash; the same on every platform</h4>
+        <p>Dana at <code>Northwind</code> ran <code>openRepoShape Atlas --org Northwind
+        --visibility private --elected-by 'Dana Okafor'</code>. The preflight, the three names
+        checked against the naming policy, the plan, then
+        <code>This will create THREE repositories in 'Northwind'.</code> and the typed
+        <code>yes</code>. What is left on disk:</p>
+        <div class="code" data-lang="tree"><pre><code>Atlas/                      Northwind/Atlas — the repository people clone
+├── project.yaml            the manifest: who elected the shape, when, against which document
+├── AGENTS.md  CLAUDE.md    "Read AGENTS-shape.md first", then Atlas's own instructions
+├── AGENTS-shape.md         the shape's rules for agents — COPIED and digest-pinned
+├── contracts/              spec-pin.yaml, code-pin.yaml, shape-pin.yaml, repository-naming.yaml
+├── scripts/  Makefile      bootstrap and the three validators — copied and pinned
+├── .github/workflows/      validate.yml, the neutral gate on every pull request
+├── .gitattributes          LF in every worktree, so the copies digest as the pin says
+├── spec/                   Northwind/Atlas-spec AT its pinned commit, with its own AGENTS.md pointer
+└── code/                   Northwind/Atlas-code AT its pinned commit, with its own AGENTS.md pointer</code></pre></div>
+        <p><code>make validate</code> runs what CI runs. Both legs sit on <code>main</code> at their
+        pinned commits, not on a detached HEAD. The topic <code>xf-project-atlas</code> is set on
+        all three repositories.</p>
+        <p><strong>Daily work</strong> is ordinary work in <code>spec/</code> and <code>code/</code>
+        &mdash; branches, commits, pull requests in <code>Atlas-spec</code> and
+        <code>Atlas-code</code>. Committing there does not advance the project;
+        <a href="#doublepin">one lockstep commit in the root</a> does.</p>
+        <a class="src" href="https://github.com/opensoft/openRepoShape#quick-start-for-a-first-time-user">Full text &mdash; quick start</a>
+      </div>
+    </section>
+
+    <section id="partway">
+      <p class="eyebrow">Setup</p>
+      <h2>If it fails part-way</h2>
+      <p>Nothing is created before the typed <code>yes</code>: the preflight, the naming check and
+      the plan only read and print, and the plan is literally a <code>--dry-run</code>.</p>
+      <p>After the <code>yes</code>, <code>scaffold-project.py</code> creates the three
+      repositories with <code>gh repo create</code> in the order <code>Atlas-spec</code>,
+      <code>Atlas-code</code>, <code>Atlas</code> &mdash; the root LAST &mdash; then seeds and
+      pushes the two legs, then builds the root, pushes it, and sets the topic on all three.</p>
+      <p><strong>There is NO rollback: whatever was created before the failure stays created.</strong>
+      A failed push says so in as many words &mdash;</p>
+      <div class="out"><pre><code>NOTHING has been rolled back. What already exists is listed above; delete it by hand if you want a clean re-run</code></pre></div>
+      <p>&mdash; and it is no less true of a failure anywhere else.</p>
+      <ul class="plain">
+        <li>A second run is refused while the legs exist, and there is no <code>--force</code>,
+        because re-running over a live project is not a scaffold.</li>
+        <li>Delete what was created with <code>gh repo delete &lt;org&gt;/&lt;name&gt;</code>, which
+        needs the <code>delete_repo</code> scope; <code>gh repo delete --help</code> names
+        <code>gh auth refresh -s delete_repo</code> as how to get it. Or scaffold under a different
+        <code>--project</code>.</li>
+        <li><code>--reuse-empty-repo</code> covers exactly one case: an assembly ROOT that already
+        exists with ZERO commits, which is a reserved name rather than a project. It applies to the
+        root alone &mdash; an existing leg is refused whatever it holds, and a root that HAS commits
+        is a live repository, which <a href="#adopt"><code>adopt-project.py</code></a> converts in
+        place instead.</li>
+        <li><code>--visibility internal</code> is the third value every tool here accepts; only a
+        GitHub Enterprise Cloud organisation offers it at all, and one that does not is refused by
+        GitHub rather than by this tool.</li>
+      </ul>
+      <a class="src" href="https://github.com/opensoft/openRepoShape#a-worked-example-northwind-starts-atlas">Full text &mdash; the worked example</a>
+    </section>
+
+    <section id="ci">
+      <p class="eyebrow">Setup</p>
+      <h2>Reading private legs in CI</h2>
+      <p>The <code>validate</code> workflow&rsquo;s default <code>GITHUB_TOKEN</code> cannot clone a
+      <strong>private or internal</strong> leg as a submodule &mdash; this was the defect on the
+      first real adoption (MedxSoft/MedxEHR #7): the legs were private, and the required check was
+      red on every pull request.</p>
+      <p class="aside">Ruled by <strong>Brett Heap on 2026-09-04</strong>: <em>move this to a GitHub
+      App.</em></p>
+      <p><strong>Preferred: a GitHub App.</strong> A dedicated App &mdash; owned by the
+      estate&rsquo;s neutral organisation, permissions <strong>Contents: Read-only</strong> and
+      <strong>Metadata: Read</strong>, installed on each consuming org with access to the leg
+      repositories &mdash; mints a short-lived installation token at run time instead of a standing
+      PAT. Register it as two secrets:</p>
+      <div class="code" data-lang="sh"><pre><code>gh secret set SHAPE_LEGS_APP_ID --org &lt;your-org&gt; --body '&lt;app id&gt;'
+gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private-key.pem</code></pre></div>
+      <p><strong>Fallback, for an org without the App yet:</strong> a fine-grained
+      <code>SHAPE_LEGS_TOKEN</code> PAT, <code>contents:read</code> on the LEGS ONLY.</p>
+      <div class="code" data-lang="sh"><pre><code>gh secret set SHAPE_LEGS_TOKEN --org &lt;your-org&gt; --body '&lt;token&gt;'</code></pre></div>
+      <p><strong>On the Free plan, use <code>--repo</code>, not <code>--org</code>.</strong> GitHub
+      delivers org secrets only to PUBLIC repositories, so on a private one
+      <code>secrets.SHAPE_LEGS_APP_ID</code> is silently empty and <code>validate</code> goes GREEN
+      with the pin check skipped. Set both per repository, or upgrade to Team; the creating tools
+      check and say so. Both <code>scaffold-project.py</code> and
+      <code>adopt-project.py execute</code> print a one-line reminder &mdash; App first &mdash; when
+      they create a private or internal leg.</p>
+      <ul class="plain">
+        <li><code>validate</code> tries the App first and falls back to the PAT. A configured App
+        that fails to mint is a misconfiguration, not a degrade, and fails the job outright, naming
+        both secrets and the required installation.</li>
+        <li>An installation token is per-owner, so a leg under a different owner is excluded with a
+        warning and can only be reached via <code>SHAPE_LEGS_TOKEN</code>.</li>
+        <li>The root repository is always readable by the workflow&rsquo;s own default token, so
+        <code>actions/checkout</code> never carries a <code>token:</code> override &mdash; putting a
+        legs credential there was itself the next defect, because a token scoped to the legs alone
+        cannot read the root and <code>actions/checkout</code> failed with a 403 before any check
+        ran.</li>
+        <li>Whichever credential resolves is read only inside the guarded &ldquo;fetch the legs
+        (submodules)&rdquo; step, scoped to that step&rsquo;s <code>env:</code>, and used through a
+        <code>git -c url.&lt;...&gt;.insteadOf=&lt;...&gt;</code> rewrite covering both HTTPS and SSH
+        leg URLs &mdash; never persisted onto the root checkout.</li>
+        <li>Without either credential the workflow degrades instead of failing: it still runs the
+        naming and manifest checks and skips <code>validate-pins.py</code> with a warning explaining
+        why. It fails outright only if a credential <strong>is</strong> configured and the fetch
+        still failed &mdash; meaning that credential cannot read one of the LEG repositories, never
+        the root.</li>
+      </ul>
+      <a class="src" href="https://github.com/opensoft/openRepoShape#reading-private-legs-in-ci-a-github-app-first-shape_legs_token-as-fallback">Full text &mdash; private legs in CI</a>
+    </section>
+
+    <section id="legs">
+      <p class="eyebrow">Reference</p>
+      <h2>The three legs, and naming</h2>
+      <div class="tw">
+        <table>
+          <thead>
+            <tr><th scope="col">role</th><th scope="col">repository</th><th scope="col">holds</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row"><code>assembly</code></th>
+              <td><code>&lt;Project&gt;</code></td>
+              <td><code>project.yaml</code>, the two legs as submodules, the pins, the gate</td>
+            </tr>
+            <tr>
+              <th scope="row"><code>spec</code></th>
+              <td><code>&lt;Project&gt;-spec</code></td>
+              <td>requirements, decisions, acceptance criteria</td>
+            </tr>
+            <tr>
+              <th scope="row"><code>code</code></th>
+              <td><code>&lt;Project&gt;-code</code></td>
+              <td>the implementation and its tests</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p>The five naming families live in <code>contracts/repository-naming.yaml</code>: neutral
+      products <code>open&lt;Product&gt;</code>, domain descendants
+      <code>&lt;Domainx&gt;&lt;Product&gt;</code>, installs <code>&lt;X&gt;-Install</code>, project
+      legs as above, and family holders. The leg suffixes are lowercase and hyphenated precisely so
+      they sit in a different visual class from every other family, all of which are CamelCase
+      words. Every repository of a project also carries the GitHub topic
+      <code>xf-project-&lt;id&gt;</code>.</p>
+      <p>A descendant form is a claim, and a claim needs a referent:
+      <code>&lt;Domainx&gt;&lt;Product&gt;</code> counts as a descendant only if it PINS
+      <code>open&lt;Product&gt;</code>, declared as <code>neutral_product_pins:</code> in the
+      project&rsquo;s own <code>project.yaml</code>, so classification stays OFFLINE and never asks
+      GitHub whether <code>open&lt;Product&gt;</code> exists. The referent may also be reached
+      through a RECORDED chain of pins.</p>
+      <div class="code" data-lang="sh"><pre><code>python3 scripts/validate-repository-naming.py --explain Atlas Atlas-spec Atlas-code</code></pre></div>
+      <p class="aside">Ruled by <strong>Brett Heap on 2026-09-02</strong>: <em>descendant only if it
+      pins <code>open&lt;Product&gt;</code></em> &mdash; and a descendant MAY carry legs, so
+      <code>form: domain-descendant, role: assembly</code> is a valid classification for a root.</p>
+      <a class="src" href="https://github.com/opensoft/openRepoShape#the-three-legs">Full text &mdash; the three legs</a>
+    </section>
+
+    <section id="adopt">
+      <p class="eyebrow">Reference</p>
+      <h2>Adopting an existing repository</h2>
+      <p>A repository that already exists is converted <strong>in place</strong>. It KEEPS ITS NAME,
+      ITS IDENTITY AND ITS FULL HISTORY and becomes the assembly root, while
+      <code>&lt;Project&gt;-spec</code> and <code>&lt;Project&gt;-code</code> are NEW repositories
+      extracted with history-preserving filters. The source is never deleted, never renamed and
+      never force-pushed; the only change to it is ONE split commit, arriving on a branch by pull
+      request.</p>
+      <div class="code" data-lang="sh"><pre><code>./adopt-project.py plan --source MedxSoft/MedxEHR --project MedxEHR
+#   ... a human or an AI answers every `review_required` entry in the plan
+./adopt-project.py check   --plan adoption-plan.yaml
+./adopt-project.py execute --plan adoption-plan.yaml --yes</code></pre></div>
+      <p><code>git filter-repo</code> is a <strong>hard dependency</strong> &mdash;
+      <code>pip install git-filter-repo</code>, or the same name from apt or brew. It is
+      deliberately not vendored: history extraction has one correct implementation, and a copy is a
+      second one that drifts.</p>
+      <p><strong>Ambiguous is an answer, and nothing is overwritten.</strong>
+      <code>contracts/path-classification.yaml</code> maps path globs to
+      <code>spec | code | root | ambiguous</code>, first match wins, each with a reason. The fourth
+      class is not a failure: those entries get <code>leg: null</code>,
+      <code>review_required: true</code> and the QUESTION, and <code>execute</code> refuses while
+      any remain, because an unanswered question is never an implicit <code>root</code>. A shape
+      file whose name the source already holds &mdash; <code>README.md</code>,
+      <code>Makefile</code>, <code>.gitignore</code> &mdash; is written under <code>shape/</code> and
+      the collision becomes a follow-up for a human to merge. Then <code>execute</code> VERIFIES:
+      every source path at the source commit is in exactly one of {spec leg, code leg, root tree
+      after the split} <strong>by blob sha</strong>, or listed as <code>drop</code>.</p>
+      <p><strong>A leg with nothing in it is SEEDED, not extracted.</strong>
+      <code>git filter-repo</code> over an empty path list rewrites every commit to nothing and
+      leaves an empty HISTORY, which is not the same thing as an empty repository &mdash; so a leg
+      no plan entry assigns a path to is seeded from <code>templates/&lt;role&gt;-root/</code> as one
+      initial commit, the same bytes a fresh scaffold writes, and the split mounts and pins it like
+      an extracted one. <code>execute</code> refuses without <code>--allow-empty-leg</code>: the
+      consent is a human&rsquo;s word rather than an inference.</p>
+      <div class="code" data-lang="sh"><pre><code>./adopt-project.py plan --source InkRouter/IRRS --project IRRS     --allow-empty-leg code
+./adopt-project.py execute --plan adoption-plan.yaml --yes</code></pre></div>
+      <p class="aside">Ruled by <strong>Brett Heap on 2026-09-02</strong>: an adopted repository
+      keeps its name, its identity and its full history. And on <strong>2026-09-04</strong>, of
+      InkRouter&rsquo;s IRRS and IRSS: <em>&ldquo;We do not have any code yet for either
+      service.&rdquo;</em></p>
+      <a class="src" href="https://github.com/opensoft/openRepoShape#adopting-an-existing-repository">Full text &mdash; adopting a repository</a>
+    </section>
+
+    <section id="families">
+      <p class="eyebrow">Reference</p>
+      <h2>Families: a holder for projects that ship separately</h2>
+      <p>A <strong>family</strong> is a repository that pins other projects&rsquo; <strong>assembly
+      roots</strong> as submodules under <code>members/</code> and carries the utilities to fetch
+      and bootstrap them all. It is <strong>not a project</strong>: no spec leg, no code leg, no
+      <code>project.yaml</code>. And, like everything else here, <strong>it confers
+      nothing</strong>.</p>
+      <div class="tw">
+        <table>
+          <thead>
+            <tr><th scope="col"></th><th scope="col">one project</th><th scope="col">a family</th></tr>
+          </thead>
+          <tbody>
+            <tr><th scope="row">ships as</th><td>one thing</td><td>several, separately</td></tr>
+            <tr><th scope="row">gate</th><td>one <code>validate</code></td><td>one per member, plus the family&rsquo;s own</td></tr>
+            <tr><th scope="row">release</th><td>one</td><td>one per member</td></tr>
+            <tr><th scope="row">what the holder owns</th><td>the legs</td><td>nothing but pins and utilities</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p><strong>Use a family when the parts deploy separately.</strong> Eight services that are
+      eight APIs are eight projects: folding them into one assembly root would give them one gate,
+      one release and one pin, which is the opposite of what &ldquo;deploy separately&rdquo; means.
+      <strong>Use one project when the parts ship together</strong> &mdash; that is what the spec and
+      code legs already are.</p>
+      <div class="code" data-lang="sh"><pre><code>python3 scripts/family.py init --org InkRouter --family InkRouter     --reuse-empty-repo
+python3 scripts/family.py add  --family-root ../InkRouter     --member InkRouter/IRRS
+python3 scripts/family.py bump --family-root ../InkRouter     --member IRRS --to &lt;40 hex&gt;
+python3 scripts/family.py remove --family-root ../InkRouter --member IRRS</code></pre></div>
+      <p><code>add</code>, <code>bump</code> and <code>remove</code> each write ONE commit, with
+      explicit pathspecs, moving the gitlink and <code>members[].pin</code> together &mdash; the
+      same lockstep rule an assembly root applies to its legs, and
+      <code>scripts/validate-family.py</code> refuses when they disagree. Each row also records the
+      member&rsquo;s own <code>project.yaml</code> <code>id</code>, so the validator can check the
+      tree mounted at <code>members/&lt;Project&gt;</code> is the project the row claims.</p>
+      <p><span class="refuses">Refuses</span> <strong>A family pins assembly roots, never legs</strong>:
+      adding <code>&lt;Project&gt;-spec</code> is refused, because a leg has no
+      <code>project.yaml</code> and belongs to its own root.</p>
+      <p><code>make bootstrap</code> in the holder fetches every member and its legs &mdash;
+      resolving the same GitHub App or <code>SHAPE_LEGS_TOKEN</code> credential the workflow does
+      &mdash; and then runs each member&rsquo;s own <code>make bootstrap</code>. A member that could
+      not be fetched is reported and skipped, never a failure.</p>
+      <p class="aside">Ruled by <strong>Brett Heap on 2026-09-04</strong>, about InkRouter:
+      <em>&ldquo;InkRouter is a set of microservices and they deploy separately as api&rsquo;s. so
+      maybe they each need their own assembly repo.&rdquo;</em></p>
+      <a class="src" href="https://github.com/opensoft/openRepoShape#families-a-holder-for-projects-that-ship-separately">Full text &mdash; families</a>
+    </section>
+
+    <section id="doublepin">
+      <p class="eyebrow">Reference</p>
+      <h2>The double pin, and the lockstep invariant</h2>
+      <p>Each leg is pinned TWICE, in the same commit: by the <strong>gitlink</strong> git records
+      for the submodule, and by <strong><code>contracts/&lt;role&gt;-pin.yaml</code></strong>
+      carrying <code>revision_kind: commit</code>, the 40-hex commit, and a sha256 digest. A tag is
+      never the referent &mdash; a tag can be moved and a commit cannot &mdash; and a pin never
+      expresses a range.</p>
+      <p>Three things therefore move together, in ONE commit:</p>
+      <ul class="bul">
+        <li>the gitlink,</li>
+        <li><code>commit:</code> in <code>contracts/&lt;role&gt;-pin.yaml</code>,</li>
+        <li>every <code>.github/workflows/*.yml</code>
+        <code>&lt;org&gt;/&lt;leg&gt;/&hellip;@&lt;sha&gt;</code> reference to that leg.</li>
+      </ul>
+      <p><code>scripts/validate-pins.py</code> refuses if they disagree. This is a measured cost,
+      not a hypothesis: in the xFactory aggregation the same invariant went unwritten for months,
+      seven consecutive pin-syncs from 2026-08-25 moved the gitlink alone, and <code>validate</code>
+      was red on every pull request for a day &mdash; unnoticed because the check runs on pull
+      requests only, so <code>main</code> never reports it.</p>
+      <p><strong>What is digested.</strong> <code>sorted-ls-tree-r-v1</code>: the sha256 of the
+      sorted <code>git ls-tree -r -z &lt;commit&gt;</code> listing &mdash; each record
+      <code>&lt;mode&gt; SP &lt;type&gt; SP &lt;oid&gt; TAB &lt;path&gt;</code> with the path
+      unquoted, sorted bytewise, joined with LF. Not <code>git archive</code>: its tar bytes carry a
+      pax header naming the commit, uname/gname, an mtime, and <code>export-ignore</code> handling
+      from <code>.gitattributes</code>, so the same commit can digest differently across git
+      versions and platforms &mdash; disqualifying for a number two machines must agree on.</p>
+      <h3>Advancing a leg</h3>
+      <p>Moving those three facts by hand is how they come apart, so one command moves them
+      together, run from a checkout of this standard:</p>
+      <div class="code" data-lang="sh"><pre><code>python3 scripts/bump-leg.py --root &lt;path-to-the-project&gt; --leg spec \
+    --to &lt;40 hex commit&gt;       # --dry-run prints the move and writes nothing</code></pre></div>
+      <p>It fetches the commit into the leg, checks the leg out AT it, recomputes the
+      <code>sorted-ls-tree-r-v1</code> digest from the leg&rsquo;s own objects, rewrites
+      <code>commit:</code> and <code>digests.tree_sha256</code>, rewrites every workflow
+      <code>@&lt;sha&gt;</code> naming THAT leg&rsquo;s repository &mdash; and none naming anything
+      else, <code>actions/checkout@&lt;sha&gt;</code> and the sibling leg included &mdash; then runs
+      the project&rsquo;s own <code>validate-pins.py</code> and <code>validate-manifest.py</code> and
+      commits ONCE with explicit pathspecs.</p>
+      <p><span class="refuses">Refuses</span> a <code>--to</code> that is not exactly 40 hex; a
+      commit no branch of the leg&rsquo;s remote contains (a pin the rest of the world cannot fetch
+      is a root it cannot bootstrap); a dirty root; a root standing on its own tracking branch (the
+      next step is a pull request, never a push to the default branch); and a validator that goes
+      red &mdash; rolling the pin, the workflow files, the leg&rsquo;s checkout and the index back
+      first, so a refusal leaves the tree exactly as it was found.</p>
+      <p>The leg is left DETACHED at the new commit; <code>make bootstrap</code> re-places it on its
+      tracking branch AT the new pin. Editing the pin file by hand to make the validator agree is
+      what the validator exists to refuse.</p>
+      <a class="src" href="https://github.com/opensoft/openRepoShape#the-double-pin-and-the-lockstep-invariant">Full text &mdash; the double pin</a>
+    </section>
+
+    <section id="copied">
+      <p class="eyebrow">Reference</p>
+      <h2>Bootstrap is COPIED into the project, not fetched</h2>
+      <p><code>scripts/bootstrap.py</code>, the validators and <code>AGENTS-shape.md</code> are
+      copied into the assembly root by the scaffold, so a scaffolded project is
+      <strong>self-contained</strong>: it runs its own gate even though <code>setup.sh</code> only
+      ever touched this standard through a temporary directory it has since deleted.
+      <code>contracts/shape-pin.yaml</code> records the openRepoShape commit those copies came from
+      AND a per-file sha256 of each copy, so &ldquo;which openRepoShape is this?&rdquo; and &ldquo;has
+      anyone edited it since?&rdquo; both have answers, and editing a copy in place is reported as
+      drift with the exit named &mdash; carry it upstream; do not update the digest.</p>
+      <p><strong>Why <code>.gitattributes</code> is one of the copies.</strong> The pin digests the
+      bytes ON DISK, and Git for Windows&rsquo; installer default is
+      <code>core.autocrlf=true</code> &mdash; so without this file a colleague who did nothing but
+      clone the finished project gets CRLF in the worktree, and every pinned row is false for them
+      alone. <code>* text=auto eol=lf</code> puts the answer in the project, where the digests are,
+      so no clone-time setting is needed on any machine.</p>
+      <p><strong>Why an agent file is one of the copies.</strong> An agent working in a project
+      learns the shape&rsquo;s rules &mdash; advance a leg in ONE commit, never edit a pinned file,
+      never <code>--admin</code> &mdash; from a file that travels WITH the shape rather than from
+      whoever last remembered them. <code>AGENTS-shape.md</code> is therefore pinned like the
+      validators: &ldquo;never edit a file with a row in <code>shape-pin.yaml</code>&rdquo; is
+      worthless if the file carrying that rule can itself be edited. Being pinned is also why it
+      carries no project detail at all &mdash; one rendered byte and every project&rsquo;s copy would
+      digest differently. The project&rsquo;s own <code>AGENTS.md</code> and <code>CLAUDE.md</code>
+      are rendered and NOT pinned: the first line points at <code>AGENTS-shape.md</code>, and the
+      rest is the project&rsquo;s own, which an upstream fix must never overwrite.</p>
+      <a class="src" href="https://github.com/opensoft/openRepoShape#bootstrap-is-copied-into-the-project-not-fetched">Full text &mdash; copied, not fetched</a>
+    </section>
+
+    <section id="current">
+      <p class="eyebrow">Reference</p>
+      <h2>Keeping a project&rsquo;s shape current</h2>
+      <p>The copies are the trade: a project runs its own gate offline, and an upstream FIX to a
+      copied file reaches it never. <code>update-shape.py</code> is the re-sync, as one
+      command.</p>
+      <div class="code" data-lang="sh"><pre><code>./update-shape.py check --root ../MedxEHR          # writes nothing
+./update-shape.py apply --root ../MedxEHR --at &lt;commit&gt; --yes \
+    --branch shape/update-&lt;sha&gt;                    # then open a pull request</code></pre></div>
+      <p><code>check</code> prints one verdict per file the pin names, and the verdict is the
+      product: <code>unchanged</code>, <code>upstream-changed</code> (the bytes differ between the
+      pinned commit and the target), <code>locally-modified</code> (the project&rsquo;s bytes differ
+      from the pinned digest &mdash; drift it introduced) or <code>both</code>. It exits 1 when there
+      is anything to do, so it can be a scheduled job.</p>
+      <p><code>apply</code> copies the <code>upstream-changed</code> files, rewrites
+      <code>contracts/shape-pin.yaml</code> and mirrors the two fields into
+      <code>project.yaml</code>. Then it runs the project&rsquo;s OWN <code>validate-pins.py</code>
+      and <code>validate-manifest.py</code>, and rolls every byte back if either goes red.</p>
+      <p><span class="refuses">What it refuses, and why the refusals are the feature</span></p>
+      <ul class="plain">
+        <li>A <code>locally-modified</code> file keeps its bytes and is named in a refusal unless the
+        human passes <code>--accept-local &lt;path&gt;</code> &mdash; recomputing that row silently
+        would turn a drift finding into a digest that agrees with the project&rsquo;s own edited
+        bytes.</li>
+        <li>A file changed on <strong>both</strong> sides is refused outright: two edits to one file
+        is a merge, and a merge is a human&rsquo;s judgement. So is a copy that was never
+        verbatim.</li>
+        <li><strong>Only the pin&rsquo;s own rows are RE-SYNCED.</strong> The file list is read from
+        <code>contracts/shape-pin.yaml</code> and never re-derived from this repository&rsquo;s copy
+        lists &mdash; re-deriving it would resurrect a file the project deliberately merged
+        away.</li>
+        <li>A file the standard ADDS later is reported as <code>upstream-added</code> and counts as
+        something to do. <code>apply</code> writes NONE of them unless <code>--add &lt;path&gt;</code>
+        names one, per file; <code>--add</code> refuses a path that is already pinned, one the
+        target&rsquo;s lists do not name, and one the root ALREADY has a file at.</li>
+      </ul>
+      <p><code>--upstream</code> takes a path to a clone (offline) or an <code>owner/repo</code> it
+      bare-clones itself; it defaults to the repository the pin names. <code>make bootstrap</code>
+      prints one line when the upstream has moved past the pin AND this machine can already tell
+      offline &mdash; <code>SHAPE_UPSTREAM_PATH</code> points at a clone, or a
+      <code>.shape-upstream-tip</code> file carries a commit. It adds no network call: a bootstrap
+      that paused to ask GitHub a question would have made the shape a dependency again.</p>
+      <a class="src" href="https://github.com/opensoft/openRepoShape#keeping-a-projects-shape-current">Full text &mdash; keeping the shape current</a>
+    </section>
+
+    <section id="degrade">
+      <p class="eyebrow">Reference</p>
+      <h2>The degrade rule</h2>
+      <p><code>make bootstrap</code> looks for a wallet review-authority register at
+      <code>governance/review-authority/register.yaml</code> in the assembly root or any leg. If it
+      finds one it prints the grants naming this project. If it finds none it prints exactly</p>
+      <div class="out"><pre><code>authority is not wallet-carried in this org</code></pre></div>
+      <p>and continues. It never fails on that. An organisation that has not adopted wallet-carried
+      authority is not misconfigured, and a bootstrap that refused there would have made the layout
+      load-bearing again. The readout is reporting only: a required check in the repository that
+      owns the object is what confers.</p>
+      <a class="src" href="https://github.com/opensoft/openRepoShape#the-degrade-rule">Full text &mdash; the degrade rule</a>
+    </section>
+
+    <section id="layout">
+      <p class="eyebrow">Reference</p>
+      <h2>Layout of this repository</h2>
+      <dl class="files">
+        <dt>contracts/repository-naming.yaml</dt><dd>the four naming families, as data</dd>
+        <dt>contracts/path-classification.yaml</dt><dd>which leg a path belongs in, as data</dd>
+        <dt>scripts/repo_shape.py</dt><dd>shared helpers: YAML subset reader, digests</dd>
+        <dt>scripts/path_classify.py</dt><dd>the classifier over the path policy</dd>
+        <dt>scripts/shape_materialize.py</dt><dd>the ONE materializer, used by both tools</dd>
+        <dt>scripts/validate-repository-naming.py</dt><dd>answers the naming question for one name</dd>
+        <dt>openRepoShape</dt><dd>installs itself as a command; runs setup.sh</dd>
+        <dt>setup.sh</dt><dd>the shim: find an interpreter, hand over</dd>
+        <dt>setup-project.py</dt><dd>THE FLOW, and the Windows way in (no bash there)</dd>
+        <dt>scaffold-project.py</dt><dd>creates the three repositories and the pins</dd>
+        <dt>adopt-project.py</dt><dd>converts an EXISTING repository in place</dd>
+        <dt>update-shape.py</dt><dd>re-syncs a root&rsquo;s copies and re-pins</dd>
+        <dt>scripts/family.py</dt><dd>creates a FAMILY holder and maintains its pins</dd>
+        <dt>scripts/bump-leg.py</dt><dd>advances ONE leg&rsquo;s pin, in one lockstep commit</dd>
+        <dt>bootstrap</dt><dd>bootstrap a project that was never scaffolded</dd>
+        <dt>templates/assembly-root/</dt><dd>the skeleton materialized for &lt;Project&gt;</dd>
+        <dt>templates/family-root/</dt><dd>the skeleton for a FAMILY holder</dd>
+        <dt>templates/spec-root/</dt><dd>the skeleton for &lt;Project&gt;-spec</dd>
+        <dt>templates/code-root/</dt><dd>the skeleton for &lt;Project&gt;-code</dd>
+        <dt>templates/*/AGENTS-shape.md</dt><dd>the rules of the shape, for an agent (PINNED)</dd>
+        <dt>templates/*/.gitattributes</dt><dd>LF in every clone, so a copy digests as pinned</dd>
+        <dt>AGENTS.md</dt><dd>the procedure an AI assistant follows</dd>
+        <dt>tests/</dt><dd>pytest; scaffolds into bare repos in /tmp</dd>
+      </dl>
+      <p><strong>Python 3 standard library only.</strong> No <code>pip</code>, no packaging, no
+      engineering-domain dependency &mdash; the shape must run where nothing can be installed.
+      <code>tests/test_repo_hygiene.py</code> enforces it. Changes to this repository are tested with
+      <code>python3 -m pytest tests -q</code>, which scaffolds into bare repositories in a temporary
+      directory; never by creating a real GitHub repository.</p>
+      <p class="aside">The line in the README reads &ldquo;the four naming families&rdquo; against a
+      naming section that counts five, the family holder being the fifth &mdash; kept verbatim
+      here.</p>
+      <a class="src" href="https://github.com/opensoft/openRepoShape#layout-of-this-repository">Full text &mdash; repository layout</a>
+    </section>
+
+    <section id="agents">
+      <p class="eyebrow">Reference</p>
+      <h2>For AI assistants</h2>
+      <p>An assistant asked to &ldquo;scaffold a new project with this shape&rdquo; follows
+      <code>AGENTS.md</code>, which carries the whole procedure. These are the rules that outrank the
+      rest.</p>
+      <ul class="plain">
+        <li><strong>Never create a repository without the human&rsquo;s explicit confirmation.</strong>
+        Run <code>./setup.sh</code> (or the one-liner) WITHOUT <code>--yes</code> and let it ask. The
+        human types <code>yes</code> at its prompt; you never answer it for them.</li>
+        <li><strong>Never answer an install prompt.</strong> The preflight asks
+        <code>Type yes to continue:</code> for each thing it offers to run &mdash; an install,
+        <code>gh auth login</code>, <code>gh auth setup-git</code>. The human types it; you never
+        install software or log in for them.</li>
+        <li><strong>Never pass <code>--allow-upstream-org</code> on your own initiative.</strong> If
+        setup.sh refuses because the organisation you were given resolves to opensoft, STOP and relay
+        what it said; the fix is almost always an explicit <code>--org &lt;their-org&gt;</code>.</li>
+        <li><strong>Never bypass an organisation ruleset.</strong> A ruleset that refuses a direct
+        push to <code>main</code> is doing its job; the exits are in the scaffold&rsquo;s own failure
+        message. <code>--admin</code> is not a remedy.</li>
+      </ul>
+      <p>Beyond those: show the human the tool&rsquo;s output verbatim &mdash; the plan especially
+      &mdash; and let them answer its prompt; &ldquo;go ahead&rdquo; about something else is not a
+      yes about this. Read a refusal rather than retrying: each one names what to run instead, and
+      there is no <code>--force</code>, deliberately. Relay the finished block &mdash; the clone
+      path, the three repository URLs and the next commands &mdash; and say that the line
+      <code>authority is not wallet-carried in this org</code> is a report and not a fault. The new
+      project carries <code>AGENTS-shape.md</code> at its assembly root, and you read that before
+      touching the project.</p>
+      <p><strong>What you must not tell them:</strong> that the shape confers anything &mdash; or
+      that membership of a family does. Electing either changes no gate, no floor, no grant and no
+      clearance eligibility; a one-repository project in no family is reviewed identically. If you
+      are asked to make <code>role: spec</code> mean &ldquo;spec authority lives here&rdquo;, say no:
+      that turns a layout into a governance boundary, which is the one thing this standard exists to
+      prevent.</p>
+      <a class="src" href="https://github.com/opensoft/openRepoShape/blob/main/AGENTS.md">Full text &mdash; AGENTS.md</a>
+    </section>
+
+    <footer>
+      <p>Licence <strong>Apache-2.0</strong>. See <code>LICENSE</code> in the repository.</p>
+      <p><a href="https://github.com/opensoft/openRepoShape#readme">github.com/opensoft/openRepoShape</a></p>
+      <p class="meta">Generated from README.md at c093813 on 2026-09-06. Every command, flag, exit
+      code and file name on this page is quoted from that README and from AGENTS.md.</p>
+    </footer>
+  </main>
+</div>
+
+<script>
+  (function () {
+    var tabs = Array.prototype.slice.call(document.querySelectorAll('[role="tab"]'));
+    if (!tabs.length) { return; }
+
+    function select(tab, moveFocus) {
+      tabs.forEach(function (t) {
+        var on = (t === tab);
+        t.setAttribute('aria-selected', on ? 'true' : 'false');
+        t.tabIndex = on ? 0 : -1;
+        var panel = document.getElementById(t.getAttribute('aria-controls'));
+        if (panel) { panel.hidden = !on; }
+      });
+      if (moveFocus) { tab.focus(); }
+    }
+
+    tabs.forEach(function (tab, i) {
+      tab.addEventListener('click', function () { select(tab, false); });
+      tab.addEventListener('keydown', function (e) {
+        var next = null;
+        if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { next = tabs[(i + 1) % tabs.length]; }
+        else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { next = tabs[(i - 1 + tabs.length) % tabs.length]; }
+        else if (e.key === 'Home') { next = tabs[0]; }
+        else if (e.key === 'End') { next = tabs[tabs.length - 1]; }
+        if (next) { e.preventDefault(); select(next, true); }
+      });
+    });
+
+    var platform = '';
+    try {
+      platform = ((navigator.userAgentData && navigator.userAgentData.platform) ||
+                  navigator.platform || '').toLowerCase();
+    } catch (e) { platform = ''; }
+
+    var want = 'panel-linux';
+    if (platform.indexOf('mac') !== -1) { want = 'panel-macos'; }
+    else if (platform.indexOf('win') !== -1) { want = 'panel-windows'; }
+
+    if (want !== 'panel-linux') {
+      var preferred = tabs.filter(function (t) {
+        return t.getAttribute('aria-controls') === want;
+      })[0];
+      if (preferred) { select(preferred, false); }
+    }
+  })();
+</script>
+</body>
+</html>
