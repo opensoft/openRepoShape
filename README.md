@@ -58,8 +58,8 @@ explicitly.
 <https://www.python.org/downloads/>, ticking *Add python.exe to PATH* — its
 own checkbox, and a different one from *py launcher*, which the installer
 ticks for you; `git` from <https://git-scm.com/downloads>; and `gh` with
-`winget install --id GitHub.cli`. Then `gh auth login`, exactly as in step 2
-below. Make one machine setting first:
+`winget install --id GitHub.cli -e`. Then `gh auth login`, exactly as in
+step 2 below. Make one machine setting first:
 
 ```powershell
 git config --global core.autocrlf false
@@ -103,6 +103,18 @@ to install.
 --install` from an administrator PowerShell, reboot, open the Ubuntu app, and
 run the four steps below INSIDE the WSL shell.
 
+**The tool offers the rest.** The four steps below are the reference — what
+each platform needs, and how to install it by hand. You do not have to: step 4
+opens with a preflight that names what is missing, prints the command for THIS
+machine and asks once — `Type yes to continue:`, the same words it asks
+everything else with — then runs it and carries on. Nothing is installed
+without that typed `yes`; `--yes` does not answer it, and with no terminal
+attached there is no offer at all. Homebrew is the one install never run for
+you: on a Mac without `brew` the preflight names <https://brew.sh> and stops
+there. To check a machine and stop, creating nothing, run
+`openRepoShape --doctor` — `py setup-project.py --doctor` on Windows — which
+exits 0 when everything is present and 1 when it is not.
+
 **1. Install the GitHub CLI**, `gh`. The official instructions are at
 <https://cli.github.com/> (and <https://github.com/cli/cli#installation>):
 
@@ -135,6 +147,10 @@ sudo dnf install gh
 `git` and Python 3.9 or newer are needed too (see Requirements below).
 Ubuntu under WSL2 ships both, so there `gh` is the only install; step 4
 opens with a preflight that names anything missing and where to get it.
+`git` itself comes from `xcode-select --install` on macOS, `sudo apt-get
+install -y git` on Debian and Ubuntu, `sudo dnf install -y git` on Fedora and
+`winget install --id Git.Git -e` on Windows — the same commands that preflight
+offers to run for you.
 
 **2. Log in.** `gh auth login`, as the account that will own the act — a
 member of the organisation who can create repositories there. Accept the
@@ -250,6 +266,8 @@ and wants a project `Atlas`.
 (install: https://cli.github.com/); and an organisation on GitHub you can
 create repositories in. `make` is not used by the entry point — it runs
 `python3 scripts/bootstrap.py` — and stays a convenience for `make validate`.
+Or run `openRepoShape --doctor`, which checks this machine, offers what is
+missing and creates nothing.
 
 **2. Login.** `gh auth login`, as the account that will own the act: a member
 of `Northwind` with permission to create repositories there, or an owner —
@@ -304,7 +322,8 @@ flag, and is never defaulted. `--visibility private` is spelled out because the
 human says it rather than lets it default.
 
 **What Dana sees, in order.** (1) The preflight: git, the running interpreter,
-how bootstrap will run, and that `gh` is authenticated. (2) The three names
+how bootstrap will run, and that `gh` is authenticated — and, for anything
+missing, an offer to install it that Dana answers `yes` to. (2) The three names
 checked against the naming policy — `Atlas`, `Atlas-spec`, `Atlas-code`; a
 hyphenated or lowercase name is refused here with the rule printed. (3) The
 scaffold plan, a dry run of everything about to be created. (4) `This will

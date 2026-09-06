@@ -14,6 +14,10 @@ the upstream, a leg that has moved on, and a FAMILY holder.
 `./setup.sh` (or the one-liner) WITHOUT `--yes` and let it ask. The human
 types `yes` at its prompt; you never answer it for them.
 
+**Never answer an install prompt.** The preflight asks `Type yes to continue:`
+for each thing it offers to run — an install, `gh auth login`, `gh auth
+setup-git`. The human types it; you never install software or log in for them.
+
 **Never pass `--allow-upstream-org` on your own initiative.** It guards only
 `--org opensoft` itself — scaffolding into opensoft's own namespace, the
 upstream owner of openRepoShape. If setup.sh refuses because the organisation
