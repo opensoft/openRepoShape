@@ -207,12 +207,13 @@ run to read before an organisation is involved. It still reaches GitHub before
 the run starts — to fetch `setup.sh`, then for the self-bootstrap clone of this
 standard into a temporary directory; run the same flag on `./setup.sh` from a
 checkout instead and nothing touches the network at all. On Windows the same
-flag goes on the Python entry point — `py setup-project.py Atlas --org
-<your-org> --local-remote-dir .\rehearsal` — which, run from a download, still
-clones the standard into a temporary directory first, and from a checkout
-clones nothing. What it leaves behind is `./Atlas` and three bare repositories
-in `./rehearsal`, both of which you can delete. `openRepoShape --help` and
-`setup.sh --help` list every flag, this one included.
+flag goes on the Python entry point —
+`py setup-project.py Atlas --org <your-org> --local-remote-dir .\rehearsal` —
+which, run from a download, still clones the standard into a temporary
+directory first, and from a checkout clones nothing. What it leaves behind is
+`./Atlas` and three bare repositories in `./rehearsal`, both of which you can
+delete. `openRepoShape --help` and `setup.sh --help` list every flag, this one
+included.
 
 Without installing anything — no fork, no manual clone — one command:
 
