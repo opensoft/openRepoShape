@@ -384,7 +384,7 @@ def test_a_bad_visibility_is_refused_by_argparse(source_repo, tmp_path):
 # --- the MedxEHR shape, which is what the rulings were made about ----------
 
 @pytest.mark.skipif(
-    MEDXEHR is None or not MEDXEHR.exists(),
+    MEDXEHR is None or not MEDXEHR.is_dir(),
     reason="SHAPE_MEDXEHR_CLONE is unset, or names no directory: the "
            "MedxEHR-backed plan test needs a read-only clone of "
            "MedxSoft/MedxEHR")
