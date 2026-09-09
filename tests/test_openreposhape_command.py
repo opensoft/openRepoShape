@@ -8,16 +8,21 @@ repository is created. The end-to-end test drives the real thing against BARE
 REPOSITORIES IN A TEMPORARY DIRECTORY through setup.sh's `--local-remote-dir`,
 exactly as `tests/test_setup_sh.py` does.
 
-The fetch itself cannot be exercised here (both attempts need the network), so
-the rule that MATTERS about it — the authenticated `gh api` call first, the raw
-URL second, because an organisation can block raw.githubusercontent.com and
-still have a working `gh` — is asserted against the script's text, the way this
+The FETCHING path is exercised too, and still offline: the last two tests put
+a fake `gh` first on `$PATH` — `fetch_from_repo` tries the API before the raw
+URL, so answering that one call is the whole of the server they need — and
+shadow `curl` with a script that refuses, so a run cannot fall through to the
+network even if the fake `gh` stops matching. What a fake `gh` cannot show is
+which way round the real two are tried, so THAT rule — the authenticated call
+first, because an organisation can block raw.githubusercontent.com and still
+have a working `gh` — stays asserted against the script's text, the way this
 suite guards other things it cannot run.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -48,21 +53,24 @@ pytestmark = [pytest.mark.skipif(shutil.which("bash") is None,
               WINDOWS_SKIP]
 
 
-def run_cmd(*args: str, home: Path | None = None,
-            env: dict | None = None) -> subprocess.CompletedProcess:
-    """The command, with an environment this suite controls.
+def command_env(home: Path | None = None, env: dict | None = None,
+                setup_sh: Path | None = SETUP) -> dict:
+    """The environment this suite controls, for a run of the command.
 
     Every `$OPENREPOSHAPE_*` variable the command reads is cleared first, so a
     developer's own shell cannot change what these tests assert, and
     `$OPENREPOSHAPE_SETUP_SH` is then pointed at this checkout: no test can
-    reach the network even by mistake. `input=""` means stdin is a pipe rather
-    than a terminal, which is what the no-tty refusals are about.
+    reach the network even by mistake. `setup_sh=None` leaves it unset, which
+    is the FETCHING path — taken only by the tests that hold the
+    `offline_github` fixture, whose fake `gh` and refusing `curl` are what
+    keeps that path offline too.
     """
     environ = dict(os.environ)
     for name in ("OPENREPOSHAPE_ORG", "OPENREPOSHAPE_REF", "OPENREPOSHAPE_REPO",
                  "OPENREPOSHAPE_BIN_DIR", "OPENREPOSHAPE_SETUP_SH"):
         environ.pop(name, None)
-    environ["OPENREPOSHAPE_SETUP_SH"] = str(SETUP)
+    if setup_sh is not None:
+        environ["OPENREPOSHAPE_SETUP_SH"] = str(setup_sh)
     environ.setdefault("GIT_AUTHOR_NAME", "openRepoShape tests")
     environ.setdefault("GIT_AUTHOR_EMAIL", "tests@openreposhape.invalid")
     environ.setdefault("GIT_COMMITTER_NAME", "openRepoShape tests")
@@ -70,8 +78,19 @@ def run_cmd(*args: str, home: Path | None = None,
     if home is not None:
         environ["HOME"] = str(home)
     environ.update(env or {})
+    return environ
+
+
+def run_cmd(*args: str, home: Path | None = None, env: dict | None = None,
+            setup_sh: Path | None = SETUP) -> subprocess.CompletedProcess:
+    """The command, run from its file, with that environment.
+
+    `input=""` means stdin is a pipe rather than a terminal, which is what the
+    no-tty refusals are about.
+    """
     return subprocess.run(["bash", str(COMMAND), *args], capture_output=True,
-                          text=True, check=False, input="", env=environ)
+                          text=True, check=False, input="",
+                          env=command_env(home, env, setup_sh))
 
 
 # --- what it says about itself ---------------------------------------------
@@ -299,3 +318,106 @@ def test_it_forwards_the_ref_so_setup_sh_clones_the_same_commit():
     two different commits."""
     text = COMMAND.read_text(encoding="utf-8")
     assert '--shape-ref "$REF"' in text
+
+
+# --- the fetch path, offline, through a fake `gh` ---------------------------
+
+#: What the stub `setup.sh` prints. It says WHERE it ran from, because the
+#: defect #74 is about that directory: `openRepoShape` fetched into a
+#: temporary directory it had already deleted.
+STUB_MARKER = "STUB-SETUP-RAN"
+
+STUB_SETUP_SH = """#!/usr/bin/env bash
+printf '%s in %s args: %s\\n' '{marker}' "$(cd "$(dirname "$0")" && pwd)" "$*"
+""".format(marker=STUB_MARKER)
+
+
+@pytest.fixture
+def offline_github(tmp_path):
+    """A fake `gh` first on `$PATH`, and a `curl` that refuses.
+
+    `fetch_from_repo` tries `gh api` before the raw URL, so a `gh` that
+    answers the one call the command makes is the whole of the server these
+    tests need: `contents/setup.sh` comes back as a stub that says where it
+    was run from, `contents/openRepoShape` as this checkout's own bytes.
+    `curl` is shadowed by a script that exits 1 — belt and braces, so that a
+    fake `gh` which stopped matching could never quietly become a real
+    request to raw.githubusercontent.com.
+    """
+    served = tmp_path / "served"
+    served.mkdir()
+    (served / "setup.sh").write_text(STUB_SETUP_SH, encoding="utf-8")
+    (served / "openRepoShape").write_bytes(COMMAND.read_bytes())
+
+    fake = tmp_path / "fake-path"
+    fake.mkdir()
+    (fake / "gh").write_text(
+        "#!/bin/sh\n"
+        'case "$*" in\n'
+        f"*/contents/setup.sh\\?*) exec cat '{served / 'setup.sh'}' ;;\n"
+        f"*/contents/openRepoShape\\?*) exec cat '{served / 'openRepoShape'}' ;;\n"
+        "esac\n"
+        'printf \'fake gh: unexpected call: %s\\n\' "$*" >&2\n'
+        "exit 1\n", encoding="utf-8")
+    (fake / "gh").chmod(0o755)
+    (fake / "curl").write_text(
+        "#!/bin/sh\n"
+        "printf 'fake curl: no test here may reach the network\\n' >&2\n"
+        "exit 1\n", encoding="utf-8")
+    (fake / "curl").chmod(0o755)
+    return {"PATH": f"{fake}{os.pathsep}{os.environ['PATH']}"}
+
+
+def test_the_fetched_setup_sh_lands_in_a_workdir_that_still_exists(offline_github):
+    """#74: `workdir()` set its EXIT trap inside a `$(...)` SUBSHELL.
+
+    The trap therefore fired the instant the substitution closed, `rm -rf`
+    took the directory away before `fetch_from_repo` could write into it, and
+    every run WITHOUT `$OPENREPOSHAPE_SETUP_SH` — which is every real run —
+    died with `No such file or directory` and then the misleading `could not
+    fetch setup.sh`. Two halves of one fact are asserted here: the fetched
+    script RAN, and the directory it ran from is gone AFTERWARDS — the trap
+    belongs to the main shell, so it fires at the end and not in the middle.
+    """
+    result = run_cmd("--doctor", setup_sh=None, env=offline_github)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "No such file or directory" not in result.stdout + result.stderr
+    assert "could not fetch" not in result.stderr
+    match = re.search(rf"{STUB_MARKER} in (.+) args: (.*)", result.stdout)
+    assert match, ("the fetched setup.sh never ran:\n"
+                   + result.stdout + result.stderr)
+    ran_in, forwarded = match.group(1), match.group(2).split()
+    assert "--doctor" in forwarded, forwarded
+    assert not Path(ran_in).exists(), (
+        f"{ran_in} outlived the command; the EXIT trap did not fire")
+
+
+def test_install_from_stdin_fetches_itself_into_a_live_workdir(offline_github,
+                                                               tmp_path):
+    """The other caller of `workdir()`, and the documented install line:
+    `gh api …/contents/openRepoShape … | bash -s -- --install`.
+
+    Run from stdin there is no file to copy from, so `install_self` fetches
+    this path at this ref into the temporary directory — the same directory
+    #74 had already deleted, which made the one-line install impossible on
+    every machine.
+    """
+    bin_dir = tmp_path / "bin"
+    result = subprocess.run(
+        ["bash", "-s", "--", "--install"], capture_output=True, text=True,
+        check=False, input=COMMAND.read_text(encoding="utf-8"),
+        # cwd: `bash -s` leaves $BASH_SOURCE unset, so the command's $SELF is
+        # the literal `bash`, and `[ -f "$SELF" ]` must be false for the
+        # fetching branch to be the one under test. A directory holding
+        # nothing of that name is what guarantees it.
+        cwd=str(tmp_path),
+        env=command_env(home=tmp_path, setup_sh=None,
+                        env={**offline_github,
+                             "OPENREPOSHAPE_BIN_DIR": str(bin_dir)}))
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "No such file or directory" not in result.stdout + result.stderr
+    target = bin_dir / "openRepoShape"
+    assert target.is_file(), result.stdout + result.stderr
+    assert stat.S_IMODE(target.stat().st_mode) == 0o755
+    assert target.read_bytes() == COMMAND.read_bytes()
+    assert "installed at" in result.stdout

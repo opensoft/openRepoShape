@@ -57,12 +57,18 @@ which lists them all.
 USAGE
 }
 
+# THE TRAP BELONGS TO THE SHELL THAT DOES THE WRITING, so this makes the
+# directory and takes no output. It used to `printf` the path and every
+# caller read it as `$(workdir)` — a command substitution, which is a
+# SUBSHELL: `trap … EXIT` set in there is the SUBSHELL's trap and fires the
+# instant the substitution closes, so `rm -rf` ran before a single fetched
+# byte had landed in the directory, and $WORKDIR out here was still empty.
+# A trap only ever fires in the shell that set it. Callers read $WORKDIR.
 workdir() {
 	if [ -z "$WORKDIR" ]; then
 		WORKDIR="$(mktemp -d)"
 		trap 'rm -rf -- "$WORKDIR"' EXIT
 	fi
-	printf '%s' "$WORKDIR"
 }
 
 # THE API FIRST, the raw URL second. `gh api` is authenticated, so it still
@@ -108,7 +114,8 @@ install_self() {
 	if [ -f "$SELF" ]; then
 		source="$SELF"
 	else
-		source="$(workdir)/openRepoShape"
+		workdir
+		source="$WORKDIR/openRepoShape"
 		fetch_from_repo openRepoShape "$source"
 	fi
 	mkdir -p "$dir"
@@ -210,7 +217,8 @@ if [ -n "${OPENREPOSHAPE_SETUP_SH:-}" ]; then
 	SETUP="$OPENREPOSHAPE_SETUP_SH"
 	[ -f "$SETUP" ] || die "\$OPENREPOSHAPE_SETUP_SH is '$SETUP', which is not a file."
 else
-	SETUP="$(workdir)/setup.sh"
+	workdir
+	SETUP="$WORKDIR/setup.sh"
 	fetch_from_repo setup.sh "$SETUP"
 fi
 
