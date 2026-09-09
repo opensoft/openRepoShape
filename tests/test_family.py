@@ -1216,21 +1216,45 @@ def test_family_py_siblings_refuses_a_path_that_is_not_a_holder(project):
     assert "family.py init" in result.stderr
 
 
-def test_siblings_accepts_a_clone_whose_remote_is_spelled_differently(estate):
-    """`git@github.com:Org/Repo.git` and this family's mounted url are ONE
-    repository, and a utility that refused to fetch somebody's clone over a
-    punctuation difference would send them to delete it."""
+#: SPELLINGS OF ONE REPOSITORY. `{remotes}` is this family's own mounted url,
+#: which is a bare repository on disk here and a GitHub url in the world;
+#: `{org}` reaches the same member through `family.yaml`'s `repository:`, the
+#: way a person's own clone of a PRIVATE member is usually spelled. Every
+#: scheme is dropped by pattern rather than by a list, which is why
+#: `file://<path>` and `<path>` are one answer as well (#79's S5332: a list of
+#: schemes is also a list of literals, and one of them read as a transport
+#: choice).
+SPELLINGS = (
+    "git@github.com:{org}/IRRS.git",
+    "https://github.com/{org}/IRRS.git",
+    "ssh://git@github.com/{org}/IRRS.git",
+    "git+ssh://git@github.com/{org}/IRRS.git",
+    "file://{remotes}/IRRS.git",
+    "{remotes}/IRRS.git/",
+)
+
+
+@pytest.mark.parametrize("spelling", SPELLINGS)
+def test_siblings_accepts_a_clone_whose_remote_is_spelled_differently(
+        estate, spelling):
+    """One repository, six spellings, and a utility that refused to fetch
+    somebody's clone over a punctuation difference would send them to delete
+    it.
+
+    `--dry-run` for the second run, so the IDENTITY is what is under test and
+    nothing reaches for a network: `place` verifies the origin and the
+    `project.yaml` id BEFORE the dry run decides not to fetch, and this suite
+    creates nothing and contacts nothing.
+    """
     assert siblings(estate["holder"]).returncode == 0
     sibling = estate["folder"] / "IRRS"
     git("remote", "set-url", "origin",
-        f"git@github.com:{ORG}/IRRS.git", cwd=sibling)
-    result = siblings(estate["holder"])
-    # The fetch itself cannot succeed against a remote that is not there —
-    # that is a network fact, not an identity one — but the clone is
-    # RECOGNISED, left alone, and never reported as another repository.
+        spelling.format(org=ORG, remotes=estate["remotes"]), cwd=sibling)
+
+    result = siblings(estate["holder"], "--dry-run")
     assert result.returncode == 0, result.stderr + result.stdout
     assert "WRONG ORIGIN" not in result.stdout
-    assert "present" in " ".join(layout(result.stdout))
+    assert "sibling IRRS present, would fetch main" in layout(result.stdout)
 
 
 def test_siblings_skips_a_clone_whose_project_id_is_not_the_rows(estate):

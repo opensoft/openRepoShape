@@ -64,6 +64,7 @@ EXIT CODES
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -82,6 +83,16 @@ from bootstrap import (  # noqa: E402
 )
 
 MANIFEST = "family.yaml"
+
+#: ANY `<scheme>://` prefix, by PATTERN rather than by a list of the schemes
+#: git happens to speak. Two reasons, in that order: a list has to be kept in
+#: step with git's transports — `ssh`, `git`, `file`, `https`, `git+ssh` and
+#: whatever an estate's own helper registers — and a list is also a list of
+#: LITERALS, one of them the clear-text HTTP scheme, which a scanner reads as
+#: a transport this file chose rather than as a string it strips (SonarCloud
+#: python:S5332, on PR #79). Nothing here fetches anything at all: the prefix
+#: is removed from both sides before two urls are compared.
+SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 
 
 # ---------------------------------------------------------------------------
@@ -164,14 +175,11 @@ def same_repository(one: str, two: str) -> bool:
     punctuation difference would send them to delete it. So the comparison is
     on the normalised `host/owner/repo`, and on the trailing `owner/repo`
     where the hosts are spelled differently (a mirror, an enterprise host).
+    Any scheme at all is dropped by `SCHEME_RE`, which is what makes
+    `file:///srv/mirrors/Repo.git` and `/srv/mirrors/Repo.git` one answer too.
     """
     def normalise(url: str) -> str:
-        text = url.strip().replace("\\", "/").rstrip("/")
-        for prefix in ("git+ssh://", "ssh://", "https://", "http://",
-                       "git://"):
-            if text.lower().startswith(prefix):
-                text = text[len(prefix):]
-                break
+        text = SCHEME_RE.sub("", url.strip().replace("\\", "/").rstrip("/"))
         head = text.split("/", 1)[0]
         if "@" in head:                      # git@github.com:Org/Repo.git
             text = text.split("@", 1)[1]
