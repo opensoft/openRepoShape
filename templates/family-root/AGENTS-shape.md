@@ -37,18 +37,42 @@ not hand-edit the `members:` block — the tool rewrites it wholesale. Land the
 commit as a pull request; the member must already be scaffolded or adopted,
 because a family cannot make a project out of a repository.
 
-## The four commands
+## The six commands
 
 ```
 make bootstrap   every member and its legs, then each member's own bootstrap
 make siblings    each member cloned BESIDE this holder, on its tracking branch
 make validate    the family validator, then each member's `make validate`
 make pins        the family's lockstep check alone
+make park        each WORKING CLONE beside the holder runs its own park
+make resume      the same, with `make resume`
 ```
 
 `make bootstrap` puts each member's legs on their tracking branch AT their
 pinned commits, by running the member's own bootstrap rather than
 reimplementing it.
+
+`make park` and `make resume` carry the ESTATE'S IN-FLIGHT WORK to another
+workstation, one member at a time and through each member's own verb — the
+holder implements neither, exactly as it implements no member's bootstrap.
+**They run in the members' WORKING CLONES BESIDE THIS HOLDER, never in
+`members/<Project>`**: the pinned copy is detached and holds nobody's
+features, so a verb run there would report an estate that is not the one
+anybody is working in. `scripts/siblings.py --make <target>` is the dispatch,
+and it clones nothing and fetches nothing.
+
+`ARGS` reaches every member that runs, so `make park ARGS=--dry-run`
+rehearses the whole family. A member with NO working clone beside the holder
+is reported and SKIPPED, naming `make siblings` — the command that places
+one; a member whose own verb refuses (no Speckit worktree overlay: exit 2,
+naming `setup-openspeckit`) has that refusal printed where it happened. Every
+member is tried either way, and the holder exits non-zero if any was skipped
+or refused. **A SKIP IS NOT A PASS.** Read the per-member lines rather than
+the exit code alone, never treat a refusal as parked, and never tell anybody
+the estate is parked because the command finished. **Nothing under a member's
+`worktrees/` is ever committed, pushed or synced** — a linked worktree's
+`.git` file carries an absolute path, which is machine plumbing and not the
+family's business.
 
 `make siblings` places the WORKSTATION layout: a plain folder named after the
 family, this holder inside it, and each member's working clone beside the

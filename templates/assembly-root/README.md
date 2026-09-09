@@ -23,6 +23,26 @@ neutral validators, and prints whatever review authority a wallet register
 names for this project — or says plainly that authority is not wallet-carried
 here, and continues.
 
+### Parking work for another workstation
+
+Unfinished work moves between machines as a RECORD, not as a folder:
+
+```sh
+make park                  # before you leave this workstation
+# on the next one:
+git clone --recurse-submodules {{CLONE_URL}}
+cd {{PROJECT}} && make bootstrap && make resume
+```
+
+`make park` commits and pushes every open feature worktree and records what
+it parked; `make resume` recreates those worktrees here and un-commits the
+work, leaving it in your tree as you left it. `ARGS=--dry-run` rehearses
+either one and writes nothing. The mechanics are the Speckit git extension's
+— `setup-openspeckit` installs it, and both targets refuse by name when it is
+missing — and `resume` REFUSES a feature whose branch has moved since the
+park rather than resetting over somebody else's commit. Nothing under
+`worktrees/` is ever committed, pushed or synced, on either side.
+
 ## The three legs
 
 | role | repository | path | holds |

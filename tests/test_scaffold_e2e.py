@@ -388,7 +388,11 @@ def test_bootstrap_is_schema_neutral(project, tmp_path):
 
 def test_make_targets_exist(project):
     makefile = (project / "Makefile").read_text()
-    for target in ("bootstrap:", "validate:", "pins:"):
+    # `park:` and `resume:` are the two THIN ones (#77, 2026-09-09): the
+    # mechanics belong to the Speckit git extension, and what a scaffolded
+    # project must carry is the two names and the refusal that says what to
+    # install. Their behaviour is `tests/test_park_resume_targets.py`.
+    for target in ("bootstrap:", "validate:", "pins:", "park:", "resume:"):
         assert target in makefile
 
 

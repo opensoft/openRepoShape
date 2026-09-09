@@ -64,18 +64,37 @@ leg, and the code leg's tooling now takes `CONTRACTS_DIR` from the environment
 — the root Makefile exports `$(CURDIR)/spec/contracts` once — rather than each
 script guessing at `../`.
 
-## The three commands
+## The five commands
 
 ```
 make bootstrap   the legs onto their tracking branch AT the pinned commit,
                  then the validators, then the review-authority readout
 make validate    naming + manifest + lockstep pins (what CI runs)
 make pins        the lockstep pin validator alone
+make park        commit, push and RECORD every open feature, so another
+                 workstation can take the work up
+make resume      recreate the parked features here, from that record
 ```
 
 `make bootstrap` places each leg on the tracking branch AT its pinned commit —
 not a detached HEAD, and not somebody's newer tip. The line `authority is not
 wallet-carried in this org` is a report, not a fault.
+
+**`make park` BEFORE the human leaves a workstation; on the next one, clone,
+`make bootstrap`, then `make resume`** — that order, because `resume`
+recreates worktrees under a root whose legs are already at their pins. Both
+are THIN: the mechanics belong to the Speckit git extension, and when it is
+not installed the target refuses with `install it with: setup-openspeckit`
+rather than doing half of the job. `resume` REFUSES a feature whose branch
+moved since the park — it names the parked commit, the current tip and the
+commands to reconcile, and resets over nothing; that refusal is the point of
+it and not a thing to work around.
+
+**Never commit anything under `worktrees/`.** A linked worktree is machine
+plumbing — its `.git` file carries an ABSOLUTE path — so nothing there is
+committed, pushed or synced. `park` commits INSIDE the feature legs, on the
+feature branch; this root carries no feature branch and is never committed to
+by either verb.
 
 ## The refusals to respect
 

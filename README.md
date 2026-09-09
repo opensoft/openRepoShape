@@ -38,6 +38,7 @@ both.
 - [The double pin, and the lockstep invariant](#the-double-pin-and-the-lockstep-invariant)
 - [Bootstrap is COPIED into the project, not fetched](#bootstrap-is-copied-into-the-project-not-fetched)
 - [Keeping a project's shape current](#keeping-a-projects-shape-current)
+- [Carrying in-flight work to another workstation](#carrying-in-flight-work-to-another-workstation)
 - [The degrade rule](#the-degrade-rule)
 - [Layout of this repository](#layout-of-this-repository)
 - [Licence](#licence)
@@ -1021,6 +1022,73 @@ pin AND this machine can already tell offline — `SHAPE_UPSTREAM_PATH` points a
 a clone, or a `.shape-upstream-tip` file carries a commit. It adds no network
 call: a bootstrap that paused to ask GitHub a question would have made the
 shape a dependency again.
+
+## Carrying in-flight work to another workstation
+
+Two verbs on the assembly root, for the day the machine your half-finished
+work is on is not the machine you are at:
+
+```sh
+make park                       # here: commit, push, RECORD
+# on the other workstation:
+git clone --recurse-submodules https://github.com/<org>/<Project>.git
+cd <Project> && make bootstrap && make resume
+```
+
+`park` commits and pushes every open feature worktree and writes down what it
+parked; `resume` recreates those worktrees on this machine and un-commits the
+work, so what you get back is your tree rather than a commit to unpick.
+`ARGS=--dry-run` rehearses either one and writes nothing.
+
+**This repository implements neither, deliberately** (ruled by Brett Heap,
+2026-09-09, #77). The WIP commit, the push, the `git worktree add`, the
+`.specify/feature.json` rewrite and the soft reset are the **Speckit git
+extension's**, which `setup-openspeckit` installs — one implementation. The
+two targets are three lines each and refuse BY NAME when the overlay is not
+there:
+
+    make park needs the Speckit worktree overlay; install it with: setup-openspeckit
+
+A Makefile that reimplemented half of the mechanics would be a second
+implementation with no tests of its own, and the two would start disagreeing
+the first time either was fixed.
+
+**The record is the PERSON'S, and lives in a repository they own.** One
+manifest file per family or standalone project, in a private repository whose
+path is named ONCE in `~/.agents/workspace.yaml` — not in `project.yaml`, not
+in the assembly root, not in `family.yaml`. Where somebody's unfinished work
+sits is theirs, and a shared tree is the wrong home for per-user state.
+
+**Nothing is synced, and nothing under `worktrees/` is ever committed.** A
+linked worktree records an ABSOLUTE path into its owning repository, which is
+machine plumbing; so the record carries branches and commits and no path at
+all, and `resume` RECREATES at this machine's own worktree root. `park`
+commits inside the feature legs, on the feature branch — never at the root,
+which carries no feature branch at all.
+
+> [!IMPORTANT]
+> `resume` REFUSES a feature whose branch has moved since the park. It names
+> the parked commit, the current tip and the commands to reconcile by hand,
+> and it resets over nothing. That refusal is the feature: the alternative is
+> a tool that discards somebody's pushed commit to make its own record fit.
+
+A FAMILY holder carries both verbs too and runs each member's own — **in the
+members' WORKING CLONES BESIDE THE HOLDER**, through `scripts/siblings.py
+--make park`, and never in `members/<Project>`. That is the layout's own
+rule: the pinned copy is detached, for `bootstrap` and `validate`, and the
+sibling is where a person works, so the sibling is where the features and the
+worktrees are. A holder that parked the pinned copies would report "nothing
+to park" for every member while the work sat untouched next door. The
+dispatch clones nothing and fetches nothing; a member with no working clone is
+reported and SKIPPED naming `make siblings`, a member whose verb refuses has
+that refusal printed where it happened, and the holder exits non-zero if any
+member was skipped or refused. A skip is not a pass, and a refusal is never
+hidden.
+
+> [!WARNING]
+> **Native Windows parks nothing.** The extension's `park` and `resume` are
+> bash; its PowerShell mirror has neither, and porting them is a separate
+> object. On Windows the way in is WSL2, exactly as it is for `setup.sh`.
 
 ## The degrade rule
 

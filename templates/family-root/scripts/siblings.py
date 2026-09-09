@@ -51,20 +51,57 @@ WHAT IT DOES, per member row in `family.yaml`:
 IDEMPOTENT. A second run is every member `present`, one `git fetch` each, and
 exit 0. That is what makes it safe to put in a handoff document.
 
+DISPATCHING A VERB INTO THE SIBLINGS: `--make <target>`
+
+    make park                 # = scripts/siblings.py --make park
+    python3 scripts/siblings.py --make park --make-arg ARGS=--dry-run
+
+`--make <target>` runs `make <target>` in each member's WORKING CLONE beside
+the holder — the estate half of #77's ruling 5 (2026-09-09) and what the
+holder's `park` and `resume` targets use. It CLONES NOTHING AND FETCHES
+NOTHING: dispatching is all it does, so a `make park` cannot move a member
+under somebody's hand. The sibling is the same path this command places and
+is verified the same way (its `origin`, and its own `project.yaml` id), for
+the reason the whole file exists: a verb run in a directory that is not this
+member is worse than a verb not run at all.
+
+WHY THE SIBLING AND NOT `members/<Project>`. The pinned copy in the holder is
+DETACHED and exists for `bootstrap` and `validate`; the sibling is where a
+human works, so it is where the features, the worktrees and the in-flight
+work are. A `make park` walking `members/` would report "nothing to park" for
+every member while the person's work sat untouched beside it — the wrong
+question, answered confidently.
+
+Per member: a verified clone gets `make <target>` with every `--make-arg`
+appended verbatim to its command line (that is how the holder's `make park
+ARGS=--dry-run` reaches every member), its own output streamed where it
+happens under a `--- <Project>: make <target> ---` header; a member with NO
+working clone is reported and SKIPPED, naming `make siblings`; one that is
+not this member is reported and skipped exactly as it is above. Every member
+is tried — a refusal never stops the ones after it — and the summary names
+each outcome. `--dry-run` prints what would run and runs nothing.
+
 IT CONFERS NOTHING, and neither does the layout. A folder is navigation.
 
 EXIT CODES
-    0  every member is beside the holder; nothing to report
+    0  every member is beside the holder; nothing to report. With `--make`:
+       every member RAN and exited 0
     1  a FINDING a human can act on: a sibling that is a DIFFERENT repository,
-       a clone that failed, a member's own bootstrap that went red
+       a clone that failed, a member's own bootstrap that went red. With
+       `--make`: any member that was skipped or whose verb exited non-zero —
+       a `make resume` that skipped every member because nobody had run `make
+       siblings` must never read as success
     2  a REFUSAL: the question could not be asked — no `family.yaml`, no
-       `git`. An unanswerable question is never an implicit pass.
+       `git`, no `make` for a `--make` run. An unanswerable question is never
+       an implicit pass.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -347,6 +384,41 @@ def project_id(path: Path) -> str | None:
     return str(data.get("id")) if isinstance(data, dict) else None
 
 
+def verify_sibling(row: dict, target: Path, url: str, repository: str,
+                   sibling: Sibling) -> bool:
+    """Is the clone at `target` the member this row names?
+
+    ONE definition of "is this the right clone", used by the placement half
+    and by the `--make` dispatch: both of them are about to act on somebody
+    else's checkout, and two readings of that question is how one of them
+    starts acting on the wrong one. It sets `state` and `finding` and returns
+    False when the answer is no, and touches nothing either way.
+    """
+    origin = git_text(["remote", "get-url", "origin"], target) or ""
+    identity = project_id(target)
+    project = str(row.get("project") or "?")
+    if not same_repository(origin, url) and not (
+            repository and same_repository(origin, repository)):
+        sibling.state = "WRONG ORIGIN"
+        sibling.branch = branch_of(target)
+        sibling.finding = (
+            f"{project}: {target} is a clone of {origin or '(no origin)'}, "
+            f"not of {repository or url}, so it is not this member and is "
+            "left exactly as it is. Rename it, or move it aside and re-run; "
+            "this command never fetches into a repository it cannot identify.")
+        return False
+    if identity is not None and str(row.get("id")) != identity:
+        sibling.state = "WRONG PROJECT"
+        sibling.branch = branch_of(target)
+        sibling.finding = (
+            f"{project}: {target}/project.yaml declares id {identity!r} where "
+            f"the family's row records {str(row.get('id'))!r}. A repository at "
+            "the right url is not by itself the project the row claims, so "
+            "this is reported and skipped rather than fetched.")
+        return False
+    return True
+
+
 def run_member_bootstrap(path: Path, sibling: Sibling) -> None:
     """The member's OWN bootstrap, which is what puts its legs on branches.
 
@@ -427,26 +499,7 @@ def place(root: Path, row: dict, urls: dict[str, str], prefix: list[str],
         return sibling
 
     # PRESENT. Verify it is this member, then FETCH ONLY.
-    origin = git_text(["remote", "get-url", "origin"], target) or ""
-    identity = project_id(target)
-    if not same_repository(origin, url) and not (
-            repository and same_repository(origin, repository)):
-        sibling.state = "WRONG ORIGIN"
-        sibling.branch = branch_of(target)
-        sibling.finding = (
-            f"{project}: {target} is a clone of {origin or '(no origin)'}, "
-            f"not of {repository or url}, so it is not this member and is "
-            "left exactly as it is. Rename it, or move it aside and re-run; "
-            "this command never fetches into a repository it cannot identify.")
-        return sibling
-    if identity is not None and str(row.get("id")) != identity:
-        sibling.state = "WRONG PROJECT"
-        sibling.branch = branch_of(target)
-        sibling.finding = (
-            f"{project}: {target}/project.yaml declares id {identity!r} where "
-            f"the family's row records {str(row.get('id'))!r}. A repository at "
-            "the right url is not by itself the project the row claims, so "
-            "this is reported and skipped rather than fetched.")
+    if not verify_sibling(row, target, url, repository, sibling):
         return sibling
 
     if dry_run:
@@ -468,6 +521,144 @@ def place(root: Path, row: dict, urls: dict[str, str], prefix: list[str],
               file=sys.stderr)
     sibling.branch = branch_of(target)
     return sibling
+
+
+# ---------------------------------------------------------------------------
+# dispatching a verb into the WORKING CLONES (--make)
+# ---------------------------------------------------------------------------
+
+
+def make_program() -> str | None:
+    """`make`, resolved the way the family's `bootstrap.py` resolves it."""
+    return os.environ.get("MAKE") or shutil.which("make")
+
+
+def dispatch(root: Path, row: dict, urls: dict[str, str], target: str,
+             make_args: list[str], make: str, dry_run: bool) -> Sibling:
+    """`make <target>` in ONE member's working clone. Clones and fetches NOT.
+
+    The path and the identity check are `place()`'s, deliberately: the verb
+    goes to the clone this command would have placed there, or nowhere.
+    """
+    project = str(row.get("project") or "?")
+    repository = str(row.get("repository") or "")
+    path = root.parent / project
+    sibling = Sibling(project, path)
+    url, _ = clone_url(root, row, urls)
+    spelling = " ".join([f"make {target}", *make_args])
+
+    if path == root:
+        sibling.state = "IS THE HOLDER"
+        sibling.branch = branch_of(root)
+        sibling.finding = (
+            f"{project}: its working clone would be {path}, which is this "
+            "holder itself — the member is named after its own family. "
+            f"`{spelling}` was not run for it; rename the family FOLDER (the "
+            "holder keeps its name) so the two are not the same path.")
+        return sibling
+
+    if not (path / ".git").exists():
+        sibling.state = "SKIPPED no clone"
+        sibling.finding = (
+            f"{project}: skipped: no working clone at {path}; run `make "
+            "siblings` first. The verb runs in the clone BESIDE the holder "
+            "and never in the pinned copy under members/, which is detached "
+            "and is not where anybody's work is.")
+        return sibling
+
+    sibling.branch = branch_of(path)
+    if not verify_sibling(row, path, url, repository, sibling):
+        return sibling
+
+    if not (path / "Makefile").is_file():
+        sibling.state = "SKIPPED no Makefile"
+        sibling.finding = (
+            f"{project}: {path} has no Makefile, so there is no `{spelling}` "
+            "to run in it. A member that carries the shape has one; this is "
+            "reported rather than passed over silently, because a member "
+            "nothing ran in is not a member that succeeded.")
+        return sibling
+
+    if dry_run:
+        sibling.state = f"would make {target}"
+        print(f"  [{project}] would run `{spelling}` in {path}")
+        return sibling
+
+    print(f"  --- {project}: make {target} ---")
+    sys.stdout.flush()
+    proc = subprocess.run([make, target, *make_args], cwd=str(path),
+                          check=False)
+    sys.stdout.flush()
+    if proc.returncode != 0:
+        sibling.state = f"make {target} exited {proc.returncode}"
+        sibling.finding = (
+            f"{project}: `{spelling}` in {path} exited {proc.returncode}; "
+            "its own output above says what it refused and what to run. "
+            "Nothing else was stopped by it.")
+    else:
+        sibling.state = f"make {target} ok"
+    return sibling
+
+
+def dispatch_all(root: Path, name: str, rows: list[dict],
+                 target: str, make_args: list[str], dry_run: bool) -> int:
+    """`--make <target>` across every member, reporting each and continuing.
+
+    EXIT 0 ONLY IF EVERY MEMBER RAN AND EXITED 0. A skip is not a pass: a
+    `make resume` on a fresh machine where nobody has run `make siblings`
+    skips every member, and reading that as success is how somebody concludes
+    their work came back when none of it did.
+    """
+    make = make_program()
+    if make is None:
+        print(str(Refusal(
+            "make-not-found",
+            f"`make` is not on PATH, so `make {target}` cannot be run in any "
+            "member's working clone",
+            "Remediation: install make (or set MAKE to it) and re-run. The "
+            "estate's verbs are POSIX shell and make; on Windows they run "
+            "under WSL2.")), file=sys.stderr)
+        return 2
+
+    print(f"siblings: {name} ({root}) — {len(rows)} member(s)")
+    print(f"  family folder   {root.parent}")
+    print(f"  `make {target}` runs in each member's WORKING CLONE beside the "
+          "holder. This")
+    print("  command clones nothing and fetches nothing: it only dispatches.")
+
+    urls = submodule_urls(root)
+    print(f"\n(a) make {target}, one member at a time")
+    dispatched: list[Sibling] = []
+    if not rows:
+        print("  no members declared. A family with none is empty, not wrong: "
+              "`family.py add` is what puts one here.")
+    for row in rows:
+        dispatched.append(dispatch(root, row, urls, target, make_args, make,
+                                   dry_run))
+
+    print("\n(b) what ran")
+    print(f"  {'what':<9} {'name':<18} {'state':<22} branch")
+    for sibling in dispatched:
+        print(sibling.row())
+
+    findings = [s.finding for s in dispatched if s.finding]
+    print()
+    sys.stdout.flush()
+    if findings:
+        for finding in findings:
+            print(f"FINDING {finding}", file=sys.stderr)
+        print(f"siblings: `make {target}` did not run everywhere — "
+              f"{len(dispatched) - len(findings)} of {len(dispatched)} "
+              "member(s) ran and exited 0. Nothing was cloned or fetched.",
+              file=sys.stderr)
+        return 1
+    if dry_run:
+        print(f"--dry-run: nothing was run. `make {target}` would run in "
+              f"{len(dispatched)} member(s).")
+        return 0
+    print(f"siblings ok: `make {target}` ran in {len(dispatched)} member(s) "
+          f"beside the holder in {root.parent}")
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -545,9 +736,22 @@ def main(argv: list[str] | None = None) -> int:
                         help="the family holder (default: the enclosing "
                              "repository)")
     parser.add_argument("--dry-run", action="store_true",
-                        help="say what would be cloned and fetched; clone "
-                             "nothing, fetch nothing, move nothing")
+                        help="say what would be cloned and fetched (or, with "
+                             "--make, what would be run); clone nothing, "
+                             "fetch nothing, run nothing, move nothing")
+    parser.add_argument("--make", metavar="TARGET", default=None,
+                        help="run `make TARGET` in each member's WORKING "
+                             "CLONE beside the holder instead of placing "
+                             "them; clones nothing and fetches nothing. What "
+                             "the holder's `make park` / `make resume` use")
+    parser.add_argument("--make-arg", action="append", default=[],
+                        metavar="ARG",
+                        help="appended verbatim to each member's `make` "
+                             "command line (the holder passes `ARGS=...` "
+                             "through this way); repeatable, --make only")
     args = parser.parse_args(argv)
+    if args.make_arg and not args.make:
+        parser.error("--make-arg is only meaningful with --make <target>")
 
     try:
         root = find_repo_root(args.root or Path(__file__).resolve().parents[1])
@@ -562,6 +766,13 @@ def main(argv: list[str] | None = None) -> int:
     except Refusal as exc:
         print(str(exc), file=sys.stderr)
         return 2
+
+    if args.make:
+        # THE DISPATCH IS NOT THE PLACEMENT, and it does not borrow half of
+        # it: no credential is resolved, nothing is cloned, nothing is
+        # fetched and the parent-folder check is the placement's business.
+        return dispatch_all(root, name, rows, args.make, args.make_arg,
+                            args.dry_run)
 
     family = family_folder_name(manifest, root)
     print(f"siblings: {name} ({root}) — {len(rows)} member(s)")
