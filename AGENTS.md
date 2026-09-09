@@ -294,6 +294,40 @@ python3 scripts/family.py siblings --family-root <path>
    it as `upstream-added` and `apply --add scripts/siblings.py` takes it, on
    the human's word, per file.
 
+## Parking and resuming
+
+`make park` in an assembly root commits, pushes and RECORDS every open feature
+worktree; `make resume` recreates them on the next workstation. The mechanics
+are the Speckit git extension's, and nothing in this standard reimplements
+them. A family holder has both verbs and runs each member's own IN THE
+WORKING CLONES BESIDE IT, never in the pinned `members/<Project>`.
+
+```sh
+make park ARGS=--dry-run          # rehearse; writes nothing
+make park                         # then leave
+make bootstrap && make resume     # on the other machine, after a clone
+```
+
+1. **The overlay is a PREREQUISITE and the refusal names it.** Both targets
+   exit 2 with `install it with: setup-openspeckit` when
+   `.specify/extensions/git/` is not there. Relay that line; never hand-roll
+   the WIP commit, the `git worktree add` or the soft reset yourself because
+   a target refused.
+2. **`resume` refusing on DIVERGENCE is not something to work around.** The
+   remote tip is not the commit that was parked, which means somebody's work
+   is on that branch; the refusal names both commits and the commands to
+   reconcile by hand. Never reset over it and never re-park on top of it.
+3. **Never force-push a parked branch on a person's behalf.** A parked WIP
+   commit is a real pushed commit. `park` prints the exact
+   `--force-with-lease=<branch>:<parked commit>` when retiring one is what
+   they want, and running it is their act.
+4. **Never commit anything under `worktrees/`**, and never put the person's
+   workspace manifest in the project: it is theirs, in a repository they own,
+   named once in `~/.agents/workspace.yaml`. A holder's report is per member
+   — read those lines before telling anybody the estate is parked, because a
+   member that REFUSED is not parked and one SKIPPED for want of a working
+   clone (`make siblings` places one) was never asked.
+
 ## What you must not tell them
 
 That the shape confers anything — or that membership of a family does.

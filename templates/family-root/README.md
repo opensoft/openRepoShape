@@ -22,6 +22,8 @@ pinned commits and runs its validators.
 | `make siblings` | clone every member BESIDE this holder, on its tracking branch; fetch the ones already there |
 | `make validate` | the family validator, then each member's `make validate` |
 | `make pins` | the family's own lockstep check alone: gitlink == `members[].pin.commit` |
+| `make park` | each member's own `make park`, in its WORKING CLONE beside this holder: the estate's in-flight work, committed, pushed and RECORDED for another workstation |
+| `make resume` | the same with `make resume`: those records, recreated here. A member with no working clone is reported and SKIPPED (`make siblings` places one); the holder exits non-zero if any member was skipped or refused |
 
 ## Workstation layout
 

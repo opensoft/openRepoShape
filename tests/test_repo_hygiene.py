@@ -284,9 +284,28 @@ def test_agents_md_is_short_enough_to_be_read():
     warning prints one — and they touch no existing clone beyond a fetch. A
     rule about not moving somebody's checkout is the one an assistant cannot
     infer from the others, which is why it is written down beside them rather
-    than left to the tool to enforce."""
+    than left to the tool to enforce.
+
+    308 -> 342 the same day, for `make park` and `make resume` (#77, RULING
+    2026-09-09, rulings 1 and 5). Six lines and a command block are the
+    procedure — the two verbs, the rehearsal, and the clone-then-bootstrap-
+    then-resume order on the far machine. The four numbered rules are the
+    part an assistant gets WRONG, and each one costs somebody's work if it
+    is inferred instead of read: the overlay is a PREREQUISITE and the
+    refusal names `setup-openspeckit`, so a refused target is never a cue to
+    hand-roll the WIP commit or the soft reset; `resume` refusing on
+    DIVERGENCE means somebody else's commit is on that branch, so it is not
+    a thing to reset over or re-park on top of; a parked WIP commit is a real
+    pushed commit, so the `--force-with-lease` the tool prints is the
+    person's to run and never the assistant's; and nothing under
+    `worktrees/` is ever committed, the workspace manifest is the person's in
+    a repository they own, and a holder's per-member lines have to be read
+    before anyone is told the estate is parked — a member SKIPPED for want of
+    a working clone beside the holder was never asked at all, which is the
+    one outcome an assistant reads as success. The mechanics themselves are
+    the Speckit git extension's and are deliberately NOT described here."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 308, f"AGENTS.md is {len(lines)} lines; the cap is 308"
+    assert len(lines) <= 342, f"AGENTS.md is {len(lines)} lines; the cap is 342"
 
 
 def test_claude_md_points_at_agents_md():
@@ -612,8 +631,35 @@ def test_readme_is_short_enough_to_be_read():
     #   proposed mover would have broken (linked worktrees carry absolute
     #   paths). Six more lines extend the InkRouter tree to show the folder
     #   and name `family.py siblings` in the command block.
-    assert len(lines) <= 1073, (
-        f"README.md is {len(lines)} lines; the cap is 1073")
+    # 2026-09-09: 1073 -> 1141 — `make park` / `make resume` (#77, RULING
+    #   2026-09-09). A whole `##` section plus its row in the contents list,
+    #   because carrying half-finished work to another workstation was a thing
+    #   people were doing BY HAND — folder copies, and a stash somebody hoped
+    #   was still there — and this file said nothing about it at all. Sixteen
+    #   lines are the two verbs and the four-command sequence they sit in.
+    #   The rest is the four facts a reader who learns only the commands then
+    #   gets wrong: that this repository implements NEITHER (the mechanics are
+    #   the Speckit git extension's, one implementation, and the targets refuse
+    #   by name — the refusal is quoted, because a person who has not installed
+    #   it meets that line first); that the record is the PERSON'S, one file
+    #   per family or project in a repository they own and named once in
+    #   `~/.agents/workspace.yaml`, not in `project.yaml` and not in the
+    #   assembly root; that nothing is synced and nothing under `worktrees/` is
+    #   ever committed, because a linked worktree's path is absolute and
+    #   machine-local, so the record carries commits and no path; and that
+    #   `resume` REFUSES on divergence, in an `> [!IMPORTANT]` callout, since a
+    #   reader who thinks that refusal is a bug will go looking for the flag
+    #   that overrides it. Eleven more give the family holder's half (ruling
+    #   5) and WHERE it runs — the members' WORKING CLONES beside the holder,
+    #   never the pinned `members/<Project>`, because that copy is detached
+    #   and a holder that parked it would report "nothing to park" for every
+    #   member while the work sat next door; and that a member with no
+    #   working clone is SKIPPED naming `make siblings`, since a skip that
+    #   read as success is how somebody concludes their work came back when
+    #   none of it did. Five are a `> [!WARNING]` that native Windows parks
+    #   nothing: the extension's mirror has neither script, WSL2 is the way.
+    assert len(lines) <= 1141, (
+        f"README.md is {len(lines)} lines; the cap is 1141")
 
 
 @pytest.mark.parametrize("name", SHIPPED_BASH)
