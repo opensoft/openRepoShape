@@ -401,6 +401,74 @@ def test_the_dispatch_clones_and_fetches_nothing(estate):
                cwd=estate["siblings"]["Bravo"]).stdout == before
 
 
+# --- what may reach make's argv (SonarCloud pythonsecurity:S8705, PR #80) ---
+#
+# `--make` and `--make-arg` come off a command line and end up in a
+# subprocess's argv. Nothing is injectable — the call is a list with no shell,
+# so `park; rm -rf /` is ONE argument make has no rule for — but the values
+# are validated by pattern anyway, at parse time, BEFORE any member runs: a
+# bad value found after the first member's verb has committed and pushed
+# somebody's work would be a refusal that came too late to be one.
+
+
+def dispatch_directly(estate, *args) -> subprocess.CompletedProcess:
+    return run_script(estate["holder"] / "scripts" / "siblings.py", *args,
+                      cwd=estate["holder"])
+
+
+# `-park` is not in this list: argparse refuses a value that looks like an
+# option before this file's own check ever sees it, which is its business and
+# not this pattern's.
+@pytest.mark.parametrize("bad", ["park; rm -rf /", "", "../park", "park park",
+                                 "park\nrm -rf /", "park$(id)"])
+def test_a_make_target_that_is_not_one_is_refused_by_name(estate, bad):
+    for name, sibling in estate["siblings"].items():
+        write_stub(sibling, "park", label=name)
+    proc = dispatch_directly(estate, "--make", bad)
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "REFUSED make-target-invalid" in proc.stderr
+    assert repr(bad) in proc.stderr, "the refusal names the offending value"
+    assert "ran with:" not in proc.stdout, "nothing may run"
+    assert "Nothing was run." in proc.stderr
+
+
+@pytest.mark.parametrize("bad", ["ARGS=x\ny", "not an assignment", "=x",
+                                 "9ARGS=x", "ARGS"])
+def test_a_make_arg_that_is_not_an_assignment_is_refused_by_name(estate, bad):
+    for name, sibling in estate["siblings"].items():
+        write_stub(sibling, "park", label=name)
+    proc = dispatch_directly(estate, "--make", "park", "--make-arg", bad)
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "REFUSED make-arg-invalid" in proc.stderr
+    assert repr(bad) in proc.stderr
+    assert "ran with:" not in proc.stdout, "nothing may run"
+
+
+@pytest.mark.parametrize("good", ["ARGS=--dry-run", "ARGS=", "ARGS=--feature "
+                                  "001-a --dry-run", "SPECKIT_LANE=xfactory-2"])
+def test_a_real_make_assignment_is_accepted(estate, good):
+    """The shape the holder actually passes, and nothing narrower: `ARGS=`
+    (empty, which is what `make park` with no ARGS produces) must pass too."""
+    for name, sibling in estate["siblings"].items():
+        write_stub(sibling, "park", label=name)
+    proc = dispatch_directly(estate, "--make", "park", "--make-arg", good)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    for name in MEMBERS:
+        assert f"{name}.sh ran with:" in proc.stdout
+
+
+def test_make_set_to_something_unexecutable_is_refused(estate):
+    """`$MAKE` is resolved through `shutil.which` like the PATH lookup, so
+    what reaches the subprocess is a program this file resolved."""
+    write_stub(estate["siblings"]["Alpha"], "park", label="Alpha")
+    proc = run_script(estate["holder"] / "scripts" / "siblings.py",
+                      "--make", "park", cwd=estate["holder"],
+                      env={"MAKE": str(estate["holder"] / "family.yaml")})
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "REFUSED make-not-executable" in proc.stderr
+    assert "ran with:" not in proc.stdout
+
+
 def test_make_arg_alone_is_refused(estate):
     """`--make-arg` with no `--make` is a person expecting a dispatch that is
     not happening; argparse refuses it by name rather than ignoring it."""

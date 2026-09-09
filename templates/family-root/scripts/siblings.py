@@ -138,6 +138,24 @@ SCHEME_ONLY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:/*$")
 #: it, `D:\remotes\Repo.git` reads as git's `host:path` scp syntax.
 DRIVE_RE = re.compile(r"^[A-Za-z]:$")
 
+#: A `make` TARGET NAME, and the whole of what `--make` may be: a letter, then
+#: letters, digits, `_`, `.` and `-`. `--make-arg` is narrower still — a make
+#: `NAME=value` ASSIGNMENT whose value carries no control character, the
+#: newline especially.
+#:
+#: WHY THEY EXIST. Both values arrive on this command's own command line and
+#: both end up in the argv of a subprocess, so they are checked by pattern
+#: before anything runs — and checked again at the `subprocess.run` itself, so
+#: the check and the call are one screen apart for the next reader and for a
+#: scanner (SonarCloud `pythonsecurity:S8705` on PR #80). Nothing was
+#: injectable to begin with: the call is a LIST with no shell, so `park; rm
+#: -rf /` would be ONE argument make has no rule for, never a second command.
+#: They are narrow because the holder only ever passes one shape of either —
+#: `make park` and `ARGS=<flags>` — so anything else is a mistake worth
+#: refusing by name rather than a case worth carrying.
+MAKE_TARGET_RE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]*")
+MAKE_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=[^\x00-\x1f\x7f]*")
+
 
 # ---------------------------------------------------------------------------
 # where a member comes from
@@ -528,9 +546,78 @@ def place(root: Path, row: dict, urls: dict[str, str], prefix: list[str],
 # ---------------------------------------------------------------------------
 
 
-def make_program() -> str | None:
-    """`make`, resolved the way the family's `bootstrap.py` resolves it."""
-    return os.environ.get("MAKE") or shutil.which("make")
+def make_program() -> str:
+    """`make`, resolved to an EXECUTABLE PATH, or a named refusal.
+
+    `$MAKE` first — make itself exports it, so a run started from a Makefile
+    uses the same binary — then `make` on PATH, and BOTH go through
+    `shutil.which`, which answers with an absolute path to something
+    executable or with nothing at all. What reaches `subprocess.run` is
+    therefore a program this function resolved, never a string somebody left
+    in an environment variable.
+    """
+    named = (os.environ.get("MAKE") or "").strip()
+    if named:
+        resolved = shutil.which(named)
+        if not resolved:
+            raise Refusal(
+                "make-not-executable",
+                f"$MAKE is {named!r}, which is not an executable this "
+                "machine can run, so no member's verb was started",
+                "Remediation: point $MAKE at the make binary, or unset it "
+                "and let PATH answer.")
+        return resolved
+    resolved = shutil.which("make")
+    if not resolved:
+        raise Refusal(
+            "make-not-found",
+            "`make` is not on PATH, so a member's verb cannot be run in any "
+            "working clone",
+            "Remediation: install make (or set $MAKE to it) and re-run. The "
+            "estate's verbs are POSIX shell and make; on Windows they run "
+            "under WSL2.")
+    return resolved
+
+
+def is_a_make_call(target: str, assignments: list[str]) -> bool:
+    """Is this a make TARGET plus nothing but `NAME=value` ASSIGNMENTS?
+
+    The predicate both the parse-time refusal and the call site use, so there
+    is ONE definition of what may reach `make`'s argv.
+    """
+    return bool(MAKE_TARGET_RE.fullmatch(target)) and all(
+        MAKE_ASSIGNMENT_RE.fullmatch(one) for one in assignments)
+
+
+def validated_make_call(target: str,
+                        assignments: list[str]) -> tuple[str, list[str]]:
+    """`--make` and its `--make-arg`s, CHECKED, or a refusal naming which.
+
+    Called at parse time and BEFORE ANYTHING RUNS: a bad value must refuse
+    the whole run rather than be discovered after the first member's verb has
+    already committed and pushed somebody's work. `MAKE_TARGET_RE` and
+    `MAKE_ASSIGNMENT_RE` carry why the patterns are what they are.
+    """
+    if not MAKE_TARGET_RE.fullmatch(target):
+        raise Refusal(
+            "make-target-invalid",
+            f"--make {target!r} is not a make target name: it must match "
+            f"{MAKE_TARGET_RE.pattern} (a letter, then letters, digits, "
+            "'_', '.' or '-')",
+            "Remediation: pass the target itself — `--make park`, `--make "
+            "resume` — with its flags in `--make-arg 'ARGS=<flags>'`. "
+            "Nothing was run.")
+    for one in assignments:
+        if not MAKE_ASSIGNMENT_RE.fullmatch(one):
+            raise Refusal(
+                "make-arg-invalid",
+                f"--make-arg {one!r} is not a make assignment: it must match "
+                f"{MAKE_ASSIGNMENT_RE.pattern} — `NAME=value`, and the value "
+                "carries no control character (a newline especially)",
+                "Remediation: pass one `NAME=value` per --make-arg, as the "
+                "holder's Makefile does with `ARGS=$(ARGS)`. Nothing was "
+                "run.")
+    return target, list(assignments)
 
 
 def dispatch(root: Path, row: dict, urls: dict[str, str], target: str,
@@ -584,10 +671,31 @@ def dispatch(root: Path, row: dict, urls: dict[str, str], target: str,
         print(f"  [{project}] would run `{spelling}` in {path}")
         return sibling
 
-    print(f"  --- {project}: make {target} ---")
+    # THE CHECK, BESIDE THE CALL. `validated_make_call` already refused a
+    # target or an assignment that is not one at parse time, so this cannot
+    # fire — and it is restated here anyway, because a reader (or a scanner)
+    # looking at a `subprocess.run` should find what constrains its argv on
+    # the same screen rather than three hundred lines up.
+    if not is_a_make_call(target, make_args):
+        sibling.state = "REFUSED not a make call"
+        sibling.finding = (
+            f"{project}: refused: `make {target}` with {make_args!r} is not a "
+            "make target plus `NAME=value` assignments, so nothing was run "
+            "in this member. This is a BUG if you see it — the same check "
+            "refuses at parse time, before any member runs.")
+        return sibling
+
+    # THE SANITIZED VALUES, one screen from the sink: `make` is an absolute
+    # executable `shutil.which` resolved, `checked_target` matched
+    # MAKE_TARGET_RE, and every entry of `checked_assignments` matched
+    # MAKE_ASSIGNMENT_RE. No shell: this is a list, and make gets exactly
+    # these words.
+    checked_target = target
+    checked_assignments = list(make_args)
+    print(f"  --- {project}: make {checked_target} ---")
     sys.stdout.flush()
-    proc = subprocess.run([make, target, *make_args], cwd=str(path),
-                          check=False)
+    proc = subprocess.run([make, checked_target, *checked_assignments],
+                          cwd=str(path), check=False)
     sys.stdout.flush()
     if proc.returncode != 0:
         sibling.state = f"make {target} exited {proc.returncode}"
@@ -609,15 +717,10 @@ def dispatch_all(root: Path, name: str, rows: list[dict],
     skips every member, and reading that as success is how somebody concludes
     their work came back when none of it did.
     """
-    make = make_program()
-    if make is None:
-        print(str(Refusal(
-            "make-not-found",
-            f"`make` is not on PATH, so `make {target}` cannot be run in any "
-            "member's working clone",
-            "Remediation: install make (or set MAKE to it) and re-run. The "
-            "estate's verbs are POSIX shell and make; on Windows they run "
-            "under WSL2.")), file=sys.stderr)
+    try:
+        make = make_program()
+    except Refusal as exc:
+        print(str(exc), file=sys.stderr)
         return 2
 
     print(f"siblings: {name} ({root}) — {len(rows)} member(s)")
@@ -750,8 +853,19 @@ def main(argv: list[str] | None = None) -> int:
                              "command line (the holder passes `ARGS=...` "
                              "through this way); repeatable, --make only")
     args = parser.parse_args(argv)
-    if args.make_arg and not args.make:
+    if args.make_arg and args.make is None:
         parser.error("--make-arg is only meaningful with --make <target>")
+    # VALIDATED HERE, BEFORE ANYTHING RUNS. Not at the first member: a bad
+    # value must refuse the whole run rather than be found after one member
+    # has already committed and pushed somebody's work.
+    make_target, make_assignments = args.make, list(args.make_arg)
+    if args.make is not None:
+        try:
+            make_target, make_assignments = validated_make_call(
+                args.make, args.make_arg)
+        except Refusal as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
 
     try:
         root = find_repo_root(args.root or Path(__file__).resolve().parents[1])
@@ -767,11 +881,13 @@ def main(argv: list[str] | None = None) -> int:
         print(str(exc), file=sys.stderr)
         return 2
 
-    if args.make:
+    if make_target is not None:
         # THE DISPATCH IS NOT THE PLACEMENT, and it does not borrow half of
         # it: no credential is resolved, nothing is cloned, nothing is
         # fetched and the parent-folder check is the placement's business.
-        return dispatch_all(root, name, rows, args.make, args.make_arg,
+        # `is not None` rather than truthiness, so `--make ''` reaches the
+        # refusal above instead of quietly becoming a placement run.
+        return dispatch_all(root, name, rows, make_target, make_assignments,
                             args.dry_run)
 
     family = family_folder_name(manifest, root)
