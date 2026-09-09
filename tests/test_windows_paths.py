@@ -16,6 +16,14 @@ the three that the first `windows-latest` run found:
   * a backslash eaten by the YAML reader's escape handling, which turned the
     `\\t` of a directory named `t` into a TAB and made a plan's own `source:`
     a path that does not exist.
+
+A FOURTH joined them on 2026-09-09 (PR #79's `windows-latest` run): a
+relative submodule url resolved against the holder's remote by dropping one
+`/`-separated component per `..`, where the remote was
+`D:\\a\\_temp\\t\\family0\\remotes\\InkRouter.git` and had no `/` in it at all — so
+nothing was dropped, the name was appended to the whole string, and `git
+clone` refused `…\\InkRouter.git/IRRS.git`. Same shape as the three above: a
+separator assumed, on the one platform that spells it differently.
 """
 
 from __future__ import annotations
@@ -55,6 +63,38 @@ def entry():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.fixture(scope="module")
+def siblings():
+    """The HOLDER's `scripts/siblings.py`, for its url arithmetic.
+
+    Loaded by path, under its own module name, with the family's
+    `bootstrap.py` pre-registered as `bootstrap` — that import is the one
+    `siblings.py` makes for the credential resolution and the member rows, and
+    in a materialized holder the two files sit side by side. `sys.path` and
+    `sys.modules` are put back afterwards, so nothing here leaves a module
+    named `bootstrap` importable for the rest of the session.
+    """
+    scripts = REPO / "templates" / "family-root" / "scripts"
+    saved_path, saved_module = list(sys.path), sys.modules.get("bootstrap")
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "family_root_bootstrap", scripts / "bootstrap.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        sys.modules["bootstrap"] = module
+        spec = importlib.util.spec_from_file_location(
+            "family_root_siblings", scripts / "siblings.py")
+        loaded = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(loaded)
+        yield loaded
+    finally:
+        sys.path[:] = saved_path
+        if saved_module is None:
+            sys.modules.pop("bootstrap", None)
+        else:
+            sys.modules["bootstrap"] = saved_module
 
 
 @pytest.fixture(scope="module")
@@ -151,6 +191,103 @@ def test_no_family_leaves_the_landing_exactly_where_it_was(entry):
     for parent in (PureWindowsPath(r"D:\a\_temp\t\work"),
                    PurePosixPath("/tmp/t/work")):
         assert entry.family_landing(parent, "") == parent
+
+
+# ---------------------------------------------------------------------------
+# A relative submodule url, against a remote spelled the Windows way
+# ---------------------------------------------------------------------------
+
+#: The runner's own remote in the `windows-latest` run of PR #79, verbatim,
+#: and the `..` that was resolved against it. `\` throughout and not one `/`:
+#: that is the whole of the bug, so the fixture is the string rather than a
+#: paraphrase of it.
+WINDOWS_HOLDER_REMOTE = r"D:\a\_temp\t\family0\remotes\InkRouter.git"
+
+
+@pytest.mark.parametrize("base,expected", [
+    # THE FAILURE ITSELF. The result comes back in the spelling the remote
+    # used — git on Windows accepts either, and a human comparing this
+    # against `git remote -v` or `.gitmodules` should not have to translate.
+    (WINDOWS_HOLDER_REMOTE, r"D:\a\_temp\t\family0\remotes\IRRS.git"),
+    # A Windows path a person typed with forward slashes: git accepts it, so
+    # it comes back the way it went in.
+    ("D:/x/remotes/InkRouter.git", "D:/x/remotes/IRRS.git"),
+    # A UNC share, where the leading `\\` must survive the walk.
+    (r"\\server\share\remotes\InkRouter.git",
+     r"\\server\share\remotes\IRRS.git"),
+    # POSIX, which is what every green run had been asserting.
+    ("/srv/mirrors/InkRouter.git", "/srv/mirrors/IRRS.git"),
+    # A URL keeps git's own rule: one component of the URL dropped.
+    ("https://host/org/InkRouter.git", "https://host/org/IRRS.git"),
+    ("file:///srv/mirrors/InkRouter.git", "file:///srv/mirrors/IRRS.git"),
+    ("ssh://git@host/org/InkRouter.git", "ssh://git@host/org/IRRS.git"),
+    # The scp spelling, whose colon is NOT a drive letter: the separator is
+    # still `/` and the host is not a component a `..` may eat.
+    ("git@host:org/InkRouter.git", "git@host:org/IRRS.git"),
+])
+def test_a_relative_member_url_resolves_against_any_remote_spelling(
+        siblings, base, expected):
+    r"""`../IRRS.git` against the holder's own remote, on every spelling.
+
+    `join_relative` is PURE STRING ARITHMETIC over the two strings, which is
+    what lets the Windows answer be asserted from Linux — the same trick
+    `root_key` and `family_landing` above are held to. The end-to-end test in
+    `tests/test_family.py` is what caught this on the runner; this is what
+    keeps it caught between Windows runs.
+    """
+    assert siblings.join_relative(base, "../IRRS.git") == expected
+
+
+def test_a_windows_remote_is_a_path_and_an_scp_url_is_not(siblings):
+    r"""Only a FILESYSTEM PATH may be walked with a backslash in it.
+
+    `D:\...` is a path whose colon is a drive letter; `git@host:org/Repo.git`
+    and `host:path/Repo.git` are urls in git's scp spelling, and a url's
+    separator is `/` on every platform. Getting this backwards would rewrite
+    an scp url's slashes into backslashes on a Windows workstation.
+    """
+    assert siblings.base_is_a_path(WINDOWS_HOLDER_REMOTE)
+    assert siblings.base_is_a_path("D:/x/remotes/InkRouter.git")
+    assert siblings.base_is_a_path("/srv/mirrors/InkRouter.git")
+    assert not siblings.base_is_a_path("git@host:org/InkRouter.git")
+    assert not siblings.base_is_a_path("host:path/InkRouter.git")
+    assert not siblings.base_is_a_path("https://host/org/InkRouter.git")
+    assert not siblings.base_is_a_path("file:///srv/mirrors/InkRouter.git")
+
+
+@pytest.mark.parametrize("base,url,expected", [
+    # A drive is a component of its own, and is the one colon that is not scp
+    # syntax: `D:` is also what a one-letter SCHEME looks like.
+    (r"D:\InkRouter.git", "../IRRS.git", r"D:\IRRS.git"),
+    # The parent of a repository at the POSIX root is the root.
+    ("/InkRouter.git", "../IRRS.git", "/IRRS.git"),
+    # `..` TOO MANY CONSUMES NOTHING: not the scheme, not the scp host.
+    ("https://host/InkRouter.git", "../../IRRS.git", "https://host/IRRS.git"),
+    ("git@host:InkRouter.git", "../IRRS.git",
+     "git@host:InkRouter.git/IRRS.git"),
+    # Several levels, and a `./` that means this directory.
+    ("/srv/a/b/InkRouter.git", "../../mirrors/IRRS.git",
+     "/srv/a/mirrors/IRRS.git"),
+    (r"D:\a\remotes\InkRouter.git", "./sub/IRRS.git",
+     r"D:\a\remotes\InkRouter.git\sub\IRRS.git"),
+])
+def test_the_walk_stops_where_there_is_nothing_left_to_consume(
+        siblings, base, url, expected):
+    """The edges of the same arithmetic, each one a shape a hand-mounted
+    member can carry. A url with a `..` too many is wrong wherever it is
+    read; what this must not do is invent `https:/` out of a scheme."""
+    assert siblings.join_relative(base, url) == expected
+
+
+def test_an_absolute_member_url_is_returned_untouched(siblings):
+    """Only `./` and `../` are relative. Everything `family.py add` writes —
+    every url in every family this standard has made — goes through
+    unchanged, and without asking git anything: the guard is the first line
+    of `resolve_relative`, which is why the root passed here does not exist.
+    """
+    for url in (WINDOWS_HOLDER_REMOTE, "https://github.com/InkRouter/IRRS.git",
+                "git@github.com:InkRouter/IRRS.git", "/srv/mirrors/IRRS.git"):
+        assert siblings.resolve_relative(url, Path("/nonexistent")) == url
 
 
 # ---------------------------------------------------------------------------
