@@ -44,10 +44,10 @@ openRepoShape --help | --version
 <Project> is the assembly-root name, ONE CamelCase token (e.g. Atlas); omit it
 and setup.sh asks, if a terminal is attached. `--org` comes from that flag,
 else $OPENREPOSHAPE_ORG, else a prompt — it is NEVER defaulted. Every other
-argument reaches setup.sh unchanged: --visibility, --elected-by, --into,
---yes, --local-remote-dir, and anything after `--`, which setup.sh hands on to
-scaffold-project.py. `./setup.sh --help` prints setup-project.py's usage,
-which lists them all.
+argument reaches setup.sh unchanged: --visibility, --elected-by, --family,
+--into, --yes, --local-remote-dir, and anything after `--`, which setup.sh
+hands on to scaffold-project.py. `./setup.sh --help` prints setup-project.py's
+usage, which lists them all.
 
   $OPENREPOSHAPE_REPO       owner/name to fetch from (default opensoft/openRepoShape)
   $OPENREPOSHAPE_REF        the ref to fetch it at   (default main)
@@ -155,7 +155,7 @@ while [ $# -gt 0 ]; do
 	# for the positional <Project>. Anything else beginning with a dash is a
 	# lone flag and travels as-is: setup.sh refuses what it does not know, so
 	# a flag is never learned twice.
-	--id | --name | --visibility | --elected-by | --into | --local-remote-dir | --shape-ref)
+	--id | --name | --visibility | --elected-by | --family | --into | --local-remote-dir | --shape-ref)
 		PASSTHROUGH+=("$1" "${2:?$1 needs a value}"); shift 2 ;;
 	--) shift; PASSTHROUGH+=(-- "$@"); break ;;
 	-*) PASSTHROUGH+=("$1"); shift ;;

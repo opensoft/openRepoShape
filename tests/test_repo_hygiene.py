@@ -261,18 +261,32 @@ def test_agents_md_is_short_enough_to_be_read():
     from the first rule to "so I may answer the other one" would be
     installing software on somebody's machine on its own initiative, which is
     a bigger act than the one already forbidden — so the rule is written down
-    beside it rather than left to be inferred."""
+    beside it rather than left to be inferred.
+
+    277 -> 282 on 2026-09-09, for `--family` and the family FOLDER (#76,
+    RULING ruling 2). One line is the flag's row in section 1's table; four
+    are the sentence in section 2 saying that standing in a family folder is
+    DETECTED and said in the plan with no flag. An assistant cannot work
+    either out: the row has to say that the flag lands the clone one level
+    deeper AND records nothing in the project — membership lives in the
+    holder's `family.yaml` and nowhere else — and the sentence has to say
+    that a plan line about a family is a REPORT rather than a thing the
+    assistant asked for, or the next assistant "corrects" it by adding the
+    flag.
+
+    282 -> 308 the same day, for the other half of the same ruling (#76, and
+    the family side of it): the procedure gained the WORKSTATION LAYOUT.
+    Seven lines say where `family.py init` LANDS, because the doubled
+    `<Family>/<Family>` reads like a mistake until somebody explains it and
+    an assistant that "fixed" it would move a checkout. The rest is `make
+    siblings` / `family.py siblings` and, mostly, what they NEVER do: they
+    move nothing — and neither may the assistant, `mv` in hand, because the
+    warning prints one — and they touch no existing clone beyond a fetch. A
+    rule about not moving somebody's checkout is the one an assistant cannot
+    infer from the others, which is why it is written down beside them rather
+    than left to the tool to enforce."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    # 2026-09-09: 277 -> 303 — the family procedure gained the WORKSTATION
-    #   layout (#76). Seven lines say where `init` LANDS, because the doubled
-    #   `<Family>/<Family>` reads like a mistake until somebody explains it and
-    #   an assistant that "fixed" it would move a checkout. The rest is `make
-    #   siblings` / `family.py siblings` and, mostly, what it NEVER does: it
-    #   moves nothing (and neither may the assistant, `mv` in hand), and it
-    #   touches no existing clone beyond a fetch. A rule about not moving
-    #   somebody's checkout is the one an assistant cannot infer from the
-    #   others, so it is written down beside them.
-    assert len(lines) <= 303, f"AGENTS.md is {len(lines)} lines; the cap is 303"
+    assert len(lines) <= 308, f"AGENTS.md is {len(lines)} lines; the cap is 308"
 
 
 def test_claude_md_points_at_agents_md():
@@ -570,12 +584,26 @@ def test_readme_is_short_enough_to_be_read():
     #   `contracts/<role>-pin.yaml`), and the shape pin to
     #   `opensoft/openRepoShape`. Wrappers cost lines and no prose; a cap that
     #   refused them would be a cap on legibility rather than on words.
-    # 2026-09-09: 1014 -> 1059 — the family WORKSTATION layout (#76), ruled by
-    #   Brett Heap the same day. The Families section described a holder and
-    #   said nothing about the folder around it, so the first question anyone
-    #   asked — "is `InkRouter/InkRouter` the family, and what is the parent
-    #   folder?" — had no answer in this file, and the layout existed anyway,
-    #   arranged by hand. Its own `###` subsection, not a paragraph, because
+    # 2026-09-09: 1014 -> 1028 — `--family` on the scaffold (#76, RULING
+    #   ruling 2). Eight lines are a "Joining a family" paragraph in the Quick
+    #   start: the landing rule (`<Family>/<Project>`, the folder created if
+    #   absent), the no-double-nesting rule (already standing in `<Family>/`
+    #   lands at `<Project>`, because a family is never nested inside a
+    #   family), and that the flag records NOTHING in the project — membership
+    #   is the holder's `family.yaml` and the run's last next-command is the
+    #   `family.py add` that writes it. Four are the same fact under "What
+    #   setup.sh does": one command line in the block (`mkdir -p
+    #   <into>/<Family>`) and the sentence that it is the ONLY step the flag
+    #   changes. A reader who learns half of the landing rule files the first
+    #   member of a family one level too deep, and a reader who learns none of
+    #   the last sentence goes looking in `project.yaml` for a family field
+    #   that is deliberately not there.
+    # 2026-09-09: 1028 -> 1073 — the family WORKSTATION layout, the other half
+    #   of the same day's ruling (#76). The Families section described a holder
+    #   and said nothing about the folder around it, so the first question
+    #   anyone asked — "is `InkRouter/InkRouter` the family, and what is the
+    #   parent folder?" — had no answer in this file, and the layout existed
+    #   anyway, arranged by hand. Its own `###` subsection, not a paragraph, because
     #   three of its four halves are things a reader gets wrong separately:
     #   where `init` LANDS (`<into>/<Family>/<Family>`, and why the doubled
     #   name is kept), that there are TWO COPIES of every member on purpose
@@ -584,8 +612,8 @@ def test_readme_is_short_enough_to_be_read():
     #   proposed mover would have broken (linked worktrees carry absolute
     #   paths). Six more lines extend the InkRouter tree to show the folder
     #   and name `family.py siblings` in the command block.
-    assert len(lines) <= 1059, (
-        f"README.md is {len(lines)} lines; the cap is 1059")
+    assert len(lines) <= 1073, (
+        f"README.md is {len(lines)} lines; the cap is 1073")
 
 
 @pytest.mark.parametrize("name", SHIPPED_BASH)
