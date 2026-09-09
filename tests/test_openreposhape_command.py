@@ -220,6 +220,31 @@ def test_scaffold_flags_after_a_double_dash_still_reach_the_scaffold(tmp_path):
     assert 'reference: "a-staged-fragment.md"' in manifest
 
 
+def test_a_family_value_is_never_taken_as_the_project(tmp_path):
+    """`--family` joins the value-taking case list, and that is the point.
+
+    Anything beginning with a dash that the list does NOT name travels as a
+    lone flag, so `openRepoShape Atlas --family InkRouter --org Northwind`
+    would have handed `InkRouter` to the `*)` branch as a second positional
+    and been refused as "two project names" - a person who typed one project
+    name being told they typed two. The same defect `--into`, `--visibility`
+    and the rest are on the list for.
+
+    No `--yes`: the run reaches setup-project.py's confirmation with no
+    terminal to answer it and stops there, which is what proves both values
+    were parsed as values without creating anything.
+    """
+    result = run_cmd("Atlas", "--family", "InkRouter", "--org", "Northwind",
+                     "--local-remote-dir", str(tmp_path / "remotes"),
+                     "--into", str(tmp_path))
+    assert result.returncode == 2
+    assert "two project names" not in result.stderr, (
+        "--family's value was read as a second <Project>")
+    assert "[ok] family       InkRouter" in result.stdout
+    assert "no terminal to confirm on" in result.stderr
+    assert not (tmp_path / "remotes").exists()
+
+
 # --- --doctor ---------------------------------------------------------------
 
 def test_doctor_passes_through_without_an_org(tmp_path):

@@ -87,6 +87,12 @@ VISIBILITY_CHOICES = ("private", "public", "internal")
 SCAFFOLD = "scaffold-project.py"
 NAMING_VALIDATOR = "validate-repository-naming.py"
 
+#: A FAMILY HOLDER'S MANIFEST, and the `kind:` that makes a directory a
+#: family FOLDER rather than a directory with a family's name on it. Both are
+#: written by `scripts/family.py init`; nothing here writes either.
+FAMILY_MANIFEST = "family.yaml"
+FAMILY_KIND = "family-manifest"
+
 #: A FORWARD SLASH, on every platform, because this string is both run and
 #: PRINTED - in the preflight line and in the recovery command a person is
 #: told to retype. Windows opens `scripts/bootstrap.py` as readily as
@@ -131,6 +137,16 @@ USAGE = """usage: setup-project.py [<Project>] [options] [-- <extra scaffold fla
   --name "<Display>"      display name              (default: the project name)
   --visibility private|public|internal              (default: private)
   --elected-by "<Name>"   who is electing the shape (default: your gh login)
+  --family <Family>       the FAMILY HOLDER this project joins: one CamelCase
+                          token, the holder's own name. The clone lands at
+                          <into>/<Family>/<Project> instead of
+                          <into>/<Project>, and <into>/<Family>/ is created if
+                          it is not there. Already standing IN the family
+                          folder? Then it lands at <into>/<Project>: a family
+                          is never nested inside a family. It records NOTHING
+                          in the project - membership is recorded only in the
+                          holder's family.yaml, and the next commands name the
+                          `family.py add` that writes it.
   --into <dir>            PARENT directory for the clone (default: ..; in
                           self-bootstrap mode, the directory you ran this
                           from), so the clone lands at <dir>/<Project>
@@ -411,6 +427,7 @@ class Options:
         self.display_name = ""
         self.visibility = "private"
         self.elected_by = ""
+        self.family = ""
         self.into = ""
         self.local_remote_dir = ""
         self.assume_yes = False
@@ -437,6 +454,7 @@ VALUE_FLAGS = {
     "--name": ("display_name", checked_value),
     "--visibility": ("visibility", None),
     "--elected-by": ("elected_by", checked_value),
+    "--family": ("family", checked_value),
     "--into": ("into", checked_path),
     "--local-remote-dir": ("local_remote_dir", checked_path),
     "--shape-ref": ("shape_ref", checked_ref),
@@ -1330,10 +1348,181 @@ def resolve_project_and_elector(opts: Options, shape_root: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 3b. the family: where the clone lands, and who records the membership
+# ---------------------------------------------------------------------------
+
+def shape_scripts(shape_root: Path):
+    """`scripts/repo_shape.py` out of the checkout this run is using.
+
+    THE ONE IMPORT FROM THE CHECKOUT, AND WHY IT IS LEGITIMATE HERE. The
+    module docstring's rule stands: the PARSE-TIME checks above cannot import
+    `repo_shape.checked_value`, because at parse time there may be no
+    checkout to import it from at all - that is the whole of self-bootstrap
+    mode, and it is why `checked_value` is the house pattern COPIED rather
+    than imported. By the time this is called there IS one: `_main` has
+    either confirmed a checkout with `is_shape_checkout` or re-run this file
+    FROM the temporary clone it made. So the naming classifier and the YAML
+    reader here are the standard's own - the same two `scaffold-project.py`,
+    `adopt-project.py`, `scripts/family.py` and `scripts/bump-leg.py` use -
+    rather than a second reading of a policy file that would then have two
+    readers to keep in step.
+
+    DEFERRED, NOT LAZY-FOR-SPEED. A module-level import would run at the top
+    of a lone downloaded file and fail there, which is exactly the run this
+    entry point exists for.
+    """
+    directory = str(shape_root / "scripts")
+    if directory not in sys.path:
+        sys.path.insert(0, directory)
+    import repo_shape  # noqa: E402  (deferred on purpose; see above)
+    return repo_shape
+
+
+def family_landing(parent, family: str):
+    """The clone's PARENT once `--family` has had its say. A PURE path.
+
+    THE WHOLE LANDING RULE, over `PurePath` operations only - no `os.path`,
+    no filesystem - so `tests/test_windows_paths.py` can ask it the Windows
+    question from Linux, the way it asks `root_key` and the argument guard.
+
+    `<into>/<Family>/<Project>` is the layout the RULING of 2026-09-09 (#76)
+    placed: a plain folder named after the family, holding the holder clone
+    and the members' working clones as siblings.
+
+    NO DOUBLE NESTING. A person already standing in `.../InkRouter` who types
+    `--family InkRouter` means the folder they are IN, not a second one
+    inside it. The BASENAME decides that, not the manifest: a family folder
+    with no holder cloned into it yet is still the folder they are standing
+    in, and a rule that read the manifest would land the first member of a
+    brand-new family one level too deep.
+    """
+    if not family or parent.name == family:
+        return parent
+    return parent / family
+
+
+def family_folder_here(shape_root: Path, parent: Path) -> str:
+    """The family whose FOLDER `parent` is, or "" for a plain directory.
+
+    ADVISORY, AND NEVER A FLAG (#76). One file answers it -
+    `<parent>/<basename>/family.yaml` - because that is where the holder
+    clone sits: the doubled `<Family>/<Family>` the ruling kept, so the
+    repository keeps its own name inside the family folder and the manifest
+    disambiguates.
+
+    IT IS READ, NOT GUESSED FROM THE NAME. A directory called `Northwind` is
+    a directory called `Northwind`; what makes it a family folder is a
+    `kind: family-manifest` inside it that NAMES that same family. All three
+    have to agree, or this says nothing at all and the run is what it was.
+
+    ANY read failure means "not a family folder". This is advice printed in a
+    plan, so a manifest that is half-written, unreadable, or a YAML shape
+    nobody expected must not refuse a scaffold that never needed it.
+    """
+    name = parent.name
+    if not name:
+        return ""
+    manifest = parent / name / FAMILY_MANIFEST
+    if not manifest.is_file():
+        return ""
+    try:
+        data = shape_scripts(shape_root).load_yaml(manifest)
+    except Exception:  # noqa: BLE001 - advice, not a gate; see above
+        return ""
+    if not isinstance(data, dict) or data.get("kind") != FAMILY_KIND:
+        return ""
+    return name if str(data.get("name") or "") == name else ""
+
+
+class Landing:
+    """WHERE THE CLONE LANDS, decided ONCE in step (3).
+
+    `directory` is the clone's PARENT after the landing rule has been
+    applied: `--into` (or the developer path's `..`), with one level added
+    when `--family` named a family this directory is not already the folder
+    of. Step (7) reads it rather than working the same thing out again, so
+    the path the person read in the plan and the path the clone goes to
+    cannot drift apart.
+
+    `holder` is where `scripts/family.py add` is pointed: `<directory>/
+    <Family>`, doubled by the RULING of 2026-09-09 (ruling 3) so the holder
+    repository keeps its own name inside the family folder. It is a path this
+    tool never creates and never reads a commit out of - it only says it.
+    `family` is "" and `holder` is None when no family is in play at all.
+    """
+
+    __slots__ = ("directory", "family", "holder")
+
+    def __init__(self, directory, family: str, holder):
+        self.directory = directory
+        self.family = family
+        self.holder = holder
+
+    def clone_path(self, project: str) -> str:
+        return str(self.directory / project)
+
+
+def resolve_family(opts: Options, shape_root: Path) -> Landing:
+    """The family, the landing path, and the two lines the plan says about it.
+
+    PRINTS INTO THE `(3) project` BLOCK ABOVE rather than under a heading of
+    its own: which family this project joins is a fact about the run in
+    exactly the way the visibility and the elector are, and a step number for
+    one or two lines would put a section break in the middle of one list.
+
+    THE PROJECT RECORDS NOTHING. `scaffold_args` is deliberately never given
+    `--family`: no `project.yaml` field, no file in the tree. Membership is
+    recorded in the HOLDER's `family.yaml` by `scripts/family.py add`, which
+    `hand_over` names - "the shape confers nothing", and membership confers
+    nothing either, so a project that carried its family in its own manifest
+    would be asserting a fact about a tree it does not own.
+    """
+    # The `..` of the DEVELOPER PATH, computed here rather than at clone time
+    # so the plan and the clone cannot disagree about where the project goes.
+    # `os.path.abspath`, never `resolve()` - see `abspath` above.
+    parent = Path(opts.into) if opts.into else Path(
+        os.path.abspath(os.path.join(str(shape_root), "..")))
+    standing = family_folder_here(shape_root, parent)
+    family = opts.family or standing
+
+    # NEVER A FAMILY INSIDE A FAMILY. `<into>` is one family's folder and
+    # --family names a different one, so the clone would land at
+    # `Northwind/InkRouter/IRTS`: a member of one family filed inside
+    # another, which is a layout no `family.yaml` can describe. Both names,
+    # and both ways out - this tool moves nothing and asks for no --force.
+    if opts.family and standing and standing != opts.family:
+        die("--family %s, but %s is the %s family folder (%s says so, with "
+            "kind: %s). A family is never nested inside a family. Either "
+            "`cd` out of %s first and re-run, or drop --family and let %s "
+            "land beside %s's holder."
+            % (opts.family, parent, standing,
+               parent / standing / FAMILY_MANIFEST, FAMILY_KIND,
+               standing, opts.project, standing))
+
+    landing = family_landing(parent, family)
+    if not family:
+        return Landing(landing, "", None)
+
+    if opts.family:
+        # A person standing in the folder they named gets told so, because
+        # the landing path they are about to read has one level fewer than
+        # the flag they typed reads like.
+        note = ("" if parent.name != opts.family else
+                " (you are standing in the %s folder, so nothing is nested "
+                "twice)" % opts.family)
+        ok("family       %s%s" % (opts.family, note))
+        ok("lands at     %s" % landing.joinpath(opts.project))
+    else:
+        ok("family       standing in the %s family folder; the project lands "
+           "beside its holder" % family)
+    return Landing(landing, family, landing / family)
+
+
+# ---------------------------------------------------------------------------
 # 4. the names, before anything exists
 # ---------------------------------------------------------------------------
 
-def check_names(shape_root: Path, project: str) -> None:
+def check_names(shape_root: Path, project: str, family: str = "") -> None:
     say("")
     say("(4) naming policy")
     proc = run([PYTHON,
@@ -1344,6 +1533,51 @@ def check_names(shape_root: Path, project: str) -> None:
         die("the names do not satisfy the naming policy (see above). A naming "
             "mistake caught here costs a message; caught later it costs three "
             "repositories and a rename.", 1)
+    if family:
+        # The validator above explains the three REPOSITORY names it was
+        # given. `--family` names no repository this run creates, so it is
+        # asked separately - and said out loud, because a check whose only
+        # visible outcome is a refusal is a check a reader cannot tell ran.
+        check_family_name(shape_root, family)
+        ok("holder       %s satisfies the declared-only family form" % family)
+
+
+def check_family_name(shape_root: Path, family: str) -> None:
+    """`--family` against the naming policy's `family` form.
+
+    THE SAME CHECK `scripts/family.py init` MAKES OF ITS OWN `--family` -
+    `_classify_family_name` there - through the same classifier over the same
+    `contracts/repository-naming.yaml`. A holder name this tool accepted and
+    `family.py add` then refused would be a name that is a family here and
+    not there, which is two standards.
+
+    THE FORM IS DECLARED-ONLY, WHICH IS WHY THE ROLE IS PASSED. `InkRouter`
+    is spelled exactly like an assembly root - one CamelCase token - and what
+    makes a repository a family is `family.yaml` in its own tree, not its
+    characters, so the classifier reports this form only when it is ASKED
+    for. `openGlass` and `Atlas-Install`, which say what they are in their
+    own characters, cannot be declared into a holder and are refused here
+    rather than three repositories later.
+
+    Exit 1, not 2, exactly as the three-name check above: this is a FINDING
+    about a name, not a refusal to ask the question.
+    """
+    policy = shape_scripts(shape_root).NamingPolicy.load(
+        shape_root / "contracts" / "repository-naming.yaml")
+    found = policy.classify(family, "family")
+    if found is None:
+        die("--family %s matches no family in the naming policy. --family "
+            "takes one CamelCase token with no hyphen, underscore, dot or "
+            "space - the same rule an assembly root's name follows, because "
+            "a holder is spelled like one." % family, 1)
+    if found.family != "family":
+        die("--family %s classifies as %s, not as a family holder (%s). "
+            "--family takes one CamelCase token. An `open<Product>` or "
+            "`<X>-Install` name is unambiguous by construction and cannot be "
+            "declared into a holder."
+            % (family,
+               found.family + ("/" + found.role if found.role else ""),
+               found.reason), 1)
 
 
 # ---------------------------------------------------------------------------
@@ -1406,13 +1640,22 @@ def scaffold(shape_root: Path, args: list) -> None:
 # 7. clone and bootstrap
 # ---------------------------------------------------------------------------
 
-def clone_and_bootstrap(opts: Options, shape_root: Path, org: str) -> dict:
-    # `..` is the DEVELOPER PATH's answer: a checkout's parent is where the
-    # person cloned it, so the new project lands beside it. Self-bootstrap
-    # mode has no such neighbour to land beside and passes --into instead.
-    parent = opts.into or os.path.abspath(os.path.join(str(shape_root), ".."))
+def clone_and_bootstrap(opts: Options, shape_root: Path, org: str,
+                        landing: Landing) -> dict:
+    # WHERE IT LANDS WAS DECIDED IN STEP (3), by `resolve_family`: `--into`
+    # or, on the DEVELOPER PATH, the `..` of this checkout - a checkout's
+    # parent is where the person cloned it, so the new project lands beside
+    # it, and self-bootstrap mode has no such neighbour and passes --into
+    # instead. `--family` adds one level to it there and not here, so the
+    # plan the person read and the clone that happens cannot disagree.
+    #
+    # `<into>/<Family>/` IS CREATED HERE AND NOWHERE EARLIER. A rehearsal
+    # that stops at the plan (no `--yes`, no terminal) must leave the disk
+    # exactly as it found it - a family folder made by a run that created
+    # nothing else would be litter the person did not ask for.
+    parent = str(landing.directory)
     os.makedirs(parent, exist_ok=True)
-    clone = os.path.join(parent, opts.project)
+    clone = landing.clone_path(opts.project)
 
     if opts.local_mode:
         base = opts.local_remote_dir
@@ -1491,7 +1734,40 @@ def clone_and_bootstrap(opts: Options, shape_root: Path, org: str) -> dict:
 # 8. hand over
 # ---------------------------------------------------------------------------
 
-def hand_over(project: str, clone: str, urls: dict) -> None:
+def family_next_command(project: str, org: str, landing: Landing) -> None:
+    """The LAST line of the next commands: who records the membership.
+
+    ONLY THE HOLDER RECORDS IT. Nothing in the tree this run just created
+    says which family it joined, and that is doctrine rather than an
+    omission: the shape confers nothing and membership confers nothing, so
+    the fact lives in the holder's `family.yaml` - written by
+    `scripts/family.py add`, in one commit that moves the gitlink and the pin
+    together - and in no second place that could disagree with it.
+
+    RUN FROM A CHECKOUT OF openRepoShape, which is why the command is spelled
+    with the standard's own relative path: `family.py` needs the standard
+    beside it, and it works before a holder is on disk at all (RULING of
+    2026-09-09, ruling 1b).
+    """
+    say("    %s scripts/family.py add --family-root %s --member %s/%s"
+        % (PYTHON_CMD, landing.holder, org, project))
+    say("                           # from a checkout of openRepoShape. The")
+    say("                           #   HOLDER records the membership; this")
+    say("                           #   project's manifest says nothing "
+        "about")
+    say("                           #   a family, and that is deliberate.")
+    if not (landing.holder / FAMILY_MANIFEST).is_file():
+        # NAMED, NOT REFUSED. The member can exist before the holder does,
+        # and a scaffold that had already succeeded is no place to start
+        # refusing things about another repository's tree.
+        say("                           # no %s there yet: clone the holder"
+            % FAMILY_MANIFEST)
+        say("                           #   there first, or run "
+            "`family.py init`.")
+
+
+def hand_over(project: str, clone: str, urls: dict, org: str,
+              landing: Landing) -> None:
     say("")
     say("DONE. %s is scaffolded and bootstrapped." % project)
     say("")
@@ -1511,6 +1787,8 @@ def hand_over(project: str, clone: str, urls: dict) -> None:
     say("                           #   no make? the three scripts/validate-"
         "*.py")
     say("    $EDITOR project.yaml   # the manifest is the SOURCE of this group")
+    if landing.family:
+        family_next_command(project, org, landing)
     say("")
     say("Advancing a leg is ONE commit in the assembly root that moves the "
         "gitlink,")
@@ -1571,12 +1849,13 @@ def _main(argv, invocation_dir: str) -> int:
     preflight(opts)
     org = resolve_org(opts, invocation_dir)
     resolve_project_and_elector(opts, shape_root)
-    check_names(shape_root, opts.project)
+    landing = resolve_family(opts, shape_root)
+    check_names(shape_root, opts.project, opts.family)
     args = scaffold_args(opts, org)
     plan_and_confirm(opts, shape_root, org, args)
     scaffold(shape_root, args)
-    created = clone_and_bootstrap(opts, shape_root, org)
-    hand_over(opts.project, created["clone"], created["urls"])
+    created = clone_and_bootstrap(opts, shape_root, org, landing)
+    hand_over(opts.project, created["clone"], created["urls"], org, landing)
     return 0
 
 

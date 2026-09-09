@@ -39,6 +39,7 @@ not a remedy.
 | `--id` | the lowercase project id | defaults to the project lowercased |
 | `--visibility` | `private`, `public` or `internal` | defaults to `private` |
 | `--elected-by` | the human electing the shape | defaults to the `gh` login |
+| `--family` | the family HOLDER's name, when the project joins one | optional; lands the clone at `<into>/<Family>/<Project>` and records NOTHING in the project |
 
 Electing this shape is a human's decision. If they have not said which
 visibility they want, ask — do not assume. `elected_by` records whose act it was.
@@ -63,7 +64,11 @@ way, still with the explicit `--org` — there is no fork to detect one from.
 Either form runs the preflight, checks the three names against the naming
 policy, prints the scaffold plan, and then asks. Show the human its output
 verbatim — the plan especially — and let them answer its prompt. "Go ahead"
-about something else is not a yes about this.
+about something else is not a yes about this. Standing in a family FOLDER —
+`<Family>/`, with the holder cloned at `<Family>/<Family>` — is DETECTED and
+said in the plan with no flag at all: the project lands beside the holder
+exactly as it would have, and the last next-command names the `family.py add`
+that records the membership in the holder and nowhere else.
 
 If it refuses, read the refusal: each one names what to run instead. Do not
 retry with `--force`; there is none, deliberately.
