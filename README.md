@@ -218,6 +218,15 @@ asks once, `Type yes to continue:`; type `yes`. Afterwards `./<Project>` is
 the cloned root. The worked example below walks through what this produces,
 prompt by prompt.
 
+**Joining a family.** `--family <Family>` lands the clone at
+`<Family>/<Project>` instead of `<Project>` — the plain folder that holds a
+family's holder clone and its members' working clones as siblings — creating
+`<Family>/` if it is not there, and landing at `<Project>` when you are
+ALREADY standing in that folder, because a family is never nested inside a
+family. It records nothing in the project: membership is recorded only in the
+holder's `family.yaml`, so the run's last next-command is the
+`scripts/family.py add` that writes it there.
+
 **Rehearse first, creating nothing.** `--local-remote-dir <dir>` runs the
 whole of that against three BARE repositories in `<dir>`: the same preflight
 (where `gh` is neither required nor checked), the same naming check, the same
@@ -454,9 +463,14 @@ python3 scripts/validate-repository-naming.py --explain Atlas Atlas-spec Atlas-c
 python3 scaffold-project.py --org <your-org> --project Atlas --dry-run
 python3 scaffold-project.py --org <your-org> --project Atlas \
     --visibility private --elected-by 'Your Name'   # or public / internal
+mkdir -p <into>/<Family>   # --family only, and skipped when <into> IS <Family>
 git clone --recurse-submodules https://github.com/<your-org>/Atlas.git
 cd Atlas && python3 scripts/bootstrap.py   # what `make bootstrap` runs
 ```
+
+`--family <Family>` changes exactly one of those steps: the clone's parent
+becomes `<into>/<Family>` instead of `<into>`, created if absent. Nothing else
+in the flow moves, and nothing about the family is written into the project.
 
 `setup-project.py` is that same flow with the shim taken off the front — the
 way in on Windows, where there is no bash — substituting the interpreter that

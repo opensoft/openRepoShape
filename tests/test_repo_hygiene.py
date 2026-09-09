@@ -254,9 +254,20 @@ def test_agents_md_is_short_enough_to_be_read():
     from the first rule to "so I may answer the other one" would be
     installing software on somebody's machine on its own initiative, which is
     a bigger act than the one already forbidden — so the rule is written down
-    beside it rather than left to be inferred."""
+    beside it rather than left to be inferred.
+
+    277 -> 282 on 2026-09-09, for `--family` and the family FOLDER (#76,
+    RULING ruling 2). One line is the flag's row in section 1's table; four
+    are the sentence in section 2 saying that standing in a family folder is
+    DETECTED and said in the plan with no flag. An assistant cannot work
+    either out: the row has to say that the flag lands the clone one level
+    deeper AND records nothing in the project — membership lives in the
+    holder's `family.yaml` and nowhere else — and the sentence has to say
+    that a plan line about a family is a REPORT rather than a thing the
+    assistant asked for, or the next assistant "corrects" it by adding the
+    flag."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 277, f"AGENTS.md is {len(lines)} lines; the cap is 277"
+    assert len(lines) <= 282, f"AGENTS.md is {len(lines)} lines; the cap is 282"
 
 
 def test_claude_md_points_at_agents_md():
@@ -554,8 +565,22 @@ def test_readme_is_short_enough_to_be_read():
     #   `contracts/<role>-pin.yaml`), and the shape pin to
     #   `opensoft/openRepoShape`. Wrappers cost lines and no prose; a cap that
     #   refused them would be a cap on legibility rather than on words.
-    assert len(lines) <= 1014, (
-        f"README.md is {len(lines)} lines; the cap is 1014")
+    # 2026-09-09: 1014 -> 1028 — `--family` on the scaffold (#76, RULING
+    #   ruling 2). Eight lines are a "Joining a family" paragraph in the Quick
+    #   start: the landing rule (`<Family>/<Project>`, the folder created if
+    #   absent), the no-double-nesting rule (already standing in `<Family>/`
+    #   lands at `<Project>`, because a family is never nested inside a
+    #   family), and that the flag records NOTHING in the project — membership
+    #   is the holder's `family.yaml` and the run's last next-command is the
+    #   `family.py add` that writes it. Four are the same fact under "What
+    #   setup.sh does": one command line in the block (`mkdir -p
+    #   <into>/<Family>`) and the sentence that it is the ONLY step the flag
+    #   changes. A reader who learns half of the landing rule files the first
+    #   member of a family one level too deep, and a reader who learns none of
+    #   the last sentence goes looking in `project.yaml` for a family field
+    #   that is deliberately not there.
+    assert len(lines) <= 1028, (
+        f"README.md is {len(lines)} lines; the cap is 1028")
 
 
 @pytest.mark.parametrize("name", SHIPPED_BASH)

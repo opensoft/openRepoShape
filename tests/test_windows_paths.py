@@ -41,6 +41,23 @@ WINDOWS_REMOTE = r"D:\a\_temp\t\shape0\remotes\Atlas-spec.git"
 
 
 @pytest.fixture(scope="module")
+def entry():
+    """`setup-project.py` as a module, for its landing rule.
+
+    The NATIVE WINDOWS entry point, which is why its path arithmetic is
+    asked the Windows question here rather than left to the rare
+    `windows-latest` run: `--family` adds a level to where the clone lands
+    (#76), and a level added with a POSIX assumption in it is a project
+    cloned somewhere nobody named.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "setup_project_landing", REPO / "setup-project.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture(scope="module")
 def adopt():
     """`adopt-project.py` as a module, for its YAML writer."""
     spec = importlib.util.spec_from_file_location(
@@ -93,6 +110,47 @@ def test_every_row_a_scaffolded_pin_carries_is_a_forward_slash_key(project):
             f"{row['path']!r} is a key no lookup in the copy tables can find")
         assert (project / row["path"]).is_file(), (
             f"{row['path']!r} does not resolve to a file in the root")
+
+
+# ---------------------------------------------------------------------------
+# Where --family lands the clone
+# ---------------------------------------------------------------------------
+
+
+def test_the_family_landing_adds_a_level_the_windows_way(entry):
+    """`<into>/<Family>/<Project>`, spelled with backslashes on Windows.
+
+    `family_landing` takes and returns a PURE path and touches no
+    filesystem, which is what lets the Windows answer be asserted from
+    Linux - the same trick `root_key` above is held to.
+    """
+    parent = PureWindowsPath(r"D:\a\_temp\t\work")
+    assert entry.family_landing(parent, "InkRouter") == \
+        PureWindowsPath(r"D:\a\_temp\t\work\InkRouter")
+    assert entry.family_landing(parent, "InkRouter") / "IRTS" == \
+        PureWindowsPath(r"D:\a\_temp\t\work\InkRouter\IRTS")
+
+
+def test_the_family_landing_does_not_nest_a_second_level(entry):
+    r"""Standing in `D:\...\InkRouter` already: the folder is the answer.
+
+    `PureWindowsPath.name` is what decides it, so a drive letter, a UNC
+    prefix and a trailing separator are the pure path class's problem and
+    not this rule's.
+    """
+    folder = PureWindowsPath(r"D:\a\_temp\t\work\InkRouter")
+    assert entry.family_landing(folder, "InkRouter") == folder
+    assert entry.family_landing(PureWindowsPath("\\\\server\\share\\InkRouter"),
+                                "InkRouter") == \
+        PureWindowsPath("\\\\server\\share\\InkRouter")
+
+
+def test_no_family_leaves_the_landing_exactly_where_it_was(entry):
+    """The overwhelmingly commonest run: no flag, no level, no change -
+    and the POSIX side of the same function, because the rule is one."""
+    for parent in (PureWindowsPath(r"D:\a\_temp\t\work"),
+                   PurePosixPath("/tmp/t/work")):
+        assert entry.family_landing(parent, "") == parent
 
 
 # ---------------------------------------------------------------------------

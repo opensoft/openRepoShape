@@ -1312,6 +1312,256 @@ def test_doctor_needs_no_org_and_clones_nothing(tmp_path):
     assert not (tmp_path / "remotes").exists()
 
 
+# --- --family, and the family FOLDER ----------------------------------------
+
+#: A holder name that appears NOWHERE else in this standard, so a test can
+#: assert the new project's tree does not mention it and mean it.
+FAMILY = "Zephyr"
+
+#: `family.yaml` as `scripts/family.py init` renders it, cut down to the three
+#: facts the scaffold reads: the kind that makes a directory a family FOLDER,
+#: and a `name:` that has to agree with the folder it sits in. Written by hand
+#: rather than by `family.py init` on purpose - the detection contract is
+#: those three lines, and a test that materialized a whole holder would also
+#: be asserting how `init` lands, which is a different issue's subject.
+FAMILY_YAML = ('schema_version: 1\nkind: family-manifest\n'
+               'id: {id}\nname: "{name}"\norg: demoorg\n')
+
+
+def make_family_folder(root: Path, family: str = FAMILY,
+                       name: str | None = None) -> Path:
+    """`<root>/<family>/<family>/family.yaml` - the layout #76 placed.
+
+    Returns the FAMILY FOLDER (`<root>/<family>`), which is what a person
+    stands in and what `--into` is pointed at. The holder clone is the
+    directory inside it that carries the manifest: the doubled
+    `<Family>/<Family>` the RULING of 2026-09-09 kept, so the holder
+    repository keeps its own name and `family.yaml` disambiguates.
+
+    `name` overrides what the manifest CALLS the family, for the one test
+    that needs a manifest which does not agree with its folder.
+    """
+    folder = root / family
+    holder = folder / family
+    holder.mkdir(parents=True)
+    (holder / "family.yaml").write_text(
+        FAMILY_YAML.format(id=family.lower(), name=name or family),
+        encoding="utf-8")
+    return folder
+
+
+def test_family_lands_the_clone_inside_the_family_folder(tmp_path):
+    """The landing rule: `<into>/<Family>/<Project>`, folder created.
+
+    `<into>` here does not exist at all when the run starts, which is the
+    ordinary case for a first member: the flag has to make both levels.
+    """
+    work = tmp_path / "work"
+    result = run_entry("Sample", "--yes", "--org", "demoorg",
+                       "--family", FAMILY,
+                       "--local-remote-dir", str(tmp_path / "remotes"),
+                       "--into", str(work))
+    assert result.returncode == 0, result.stderr + result.stdout
+    clone = work / FAMILY / "Sample"
+    assert clone.is_dir(), f"{clone} does not exist"
+    assert (clone / "project.yaml").is_file()
+    assert "family       %s" % FAMILY in result.stdout
+    assert "lands at     %s" % clone in result.stdout
+
+
+def test_the_family_is_recorded_in_no_file_of_the_new_project(tmp_path):
+    """DOCTRINE, not an omission: the shape confers nothing and membership
+    confers nothing, so the holder's `family.yaml` is the only record.
+
+    A project that carried its family in `project.yaml` would be asserting a
+    fact about a tree it does not own, and the two could then disagree.
+    """
+    work = tmp_path / "work"
+    result = run_entry("Sample", "--yes", "--org", "demoorg",
+                       "--family", FAMILY,
+                       "--local-remote-dir", str(tmp_path / "remotes"),
+                       "--into", str(work))
+    assert result.returncode == 0, result.stderr + result.stdout
+    clone = work / FAMILY / "Sample"
+    named = []
+    for path in clone.rglob("*"):
+        if not path.is_file() or ".git" in path.parts or path.name == ".git":
+            continue
+        try:
+            body = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        if FAMILY in body:
+            named.append(str(path.relative_to(clone)))
+    assert not named, f"these files in the new project name the family: {named}"
+
+
+def test_standing_in_the_family_folder_does_not_nest_a_second_level(tmp_path):
+    """`--family Zephyr` from inside `.../Zephyr` means THIS folder.
+
+    Without this the first member of a family scaffolded from inside its own
+    folder lands at `Zephyr/Zephyr/Sample` - inside the holder clone.
+    """
+    folder = make_family_folder(tmp_path / "work")
+    result = run_entry("Sample", "--yes", "--org", "demoorg",
+                       "--family", FAMILY,
+                       "--local-remote-dir", str(tmp_path / "remotes"),
+                       "--into", str(folder))
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert (folder / "Sample" / "project.yaml").is_file()
+    assert not (folder / FAMILY / "Sample").exists(), (
+        "the project was nested inside the holder clone")
+    assert "you are standing in the %s folder" % FAMILY in result.stdout
+
+
+def test_standing_in_the_family_folder_needs_no_flag_at_all(tmp_path):
+    """Detection, ADVISORY: one plan line, and the landing is what it was.
+
+    The person did not ask for a family here, so nothing about the run
+    changes - the line is a report, and the next-commands block names the
+    `family.py add` they will want.
+    """
+    folder = make_family_folder(tmp_path / "work")
+    result = run_entry("Sample", "--yes", "--org", "demoorg",
+                       "--local-remote-dir", str(tmp_path / "remotes"),
+                       "--into", str(folder))
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert ("family       standing in the %s family folder; the project "
+            "lands beside its holder" % FAMILY) in result.stdout
+    assert (folder / "Sample" / "project.yaml").is_file()
+    assert "scripts/family.py add --family-root %s" % (folder / FAMILY) \
+        in result.stdout
+
+
+@pytest.mark.parametrize("manifest_name", [None, "Other"])
+def test_a_directory_named_after_a_family_is_only_a_directory(tmp_path,
+                                                              manifest_name):
+    """`manifest_name=None`: no `family.yaml` at all - a plain folder that
+    happens to be called `Zephyr`. `"Other"`: a manifest that names a
+    DIFFERENT family from the folder it sits in.
+
+    All three facts have to agree - the folder's name, `kind:
+    family-manifest`, and a `name:` equal to that folder - or the detection
+    says nothing and the run is exactly what it was. A folder's name alone
+    would have made every directory in an estate a family folder.
+    """
+    folder = tmp_path / "work" / FAMILY
+    if manifest_name is None:
+        folder.mkdir(parents=True)
+    else:
+        make_family_folder(tmp_path / "work", name=manifest_name)
+    result = run_entry("Sample", "--yes", "--org", "demoorg",
+                       "--local-remote-dir", str(tmp_path / "remotes"),
+                       "--into", str(folder))
+    assert result.returncode == 0, result.stderr + result.stdout
+    # `[ok] family` - the plan's own line. A bare `family` would match the
+    # naming validator's `--explain` table, which names every form.
+    assert "[ok] family" not in result.stdout
+    assert "scripts/family.py add" not in result.stdout
+    assert (folder / "Sample" / "project.yaml").is_file()
+
+
+def test_nesting_a_family_inside_a_different_family_refuses(tmp_path):
+    """Both names, and both ways out. Nothing is moved and there is no
+    --force: `Northwind/Zephyr/Sample` is a member of one family filed
+    inside another, which no `family.yaml` can describe."""
+    folder = make_family_folder(tmp_path / "work", family="Northwind")
+    result = run_entry("Sample", "--yes", "--org", "demoorg",
+                       "--family", FAMILY,
+                       "--local-remote-dir", str(tmp_path / "remotes"),
+                       "--into", str(folder))
+    assert result.returncode == 2
+    assert "--family %s" % FAMILY in result.stderr
+    assert "Northwind family folder" in result.stderr
+    assert "never nested inside a family" in result.stderr
+    assert "`cd` out of Northwind" in result.stderr
+    assert "drop --family" in result.stderr
+    assert not (tmp_path / "remotes").exists()
+    assert not (folder / FAMILY).exists()
+
+
+def test_the_next_commands_name_the_add_that_records_the_membership(tmp_path):
+    """The last line of the hand-over, and the note when the holder is not
+    there yet.
+
+    The member can exist before the holder does, so an absent
+    `family.yaml` is NAMED rather than refused - the scaffold has already
+    succeeded, and refusing something about another repository's tree at
+    that point would be refusing after the fact.
+    """
+    work = tmp_path / "work"
+    result = run_entry("Sample", "--yes", "--org", "demoorg",
+                       "--family", FAMILY,
+                       "--local-remote-dir", str(tmp_path / "remotes"),
+                       "--into", str(work))
+    assert result.returncode == 0, result.stderr + result.stdout
+    holder = work / FAMILY / FAMILY
+    assert ("scripts/family.py add --family-root %s --member demoorg/Sample"
+            % holder) in result.stdout
+    assert "from a checkout of openRepoShape" in result.stdout
+    assert "no family.yaml there yet" in result.stdout
+    assert "run `family.py init`" in result.stdout
+
+
+def test_the_holder_note_is_absent_once_the_holder_is_on_disk(tmp_path):
+    """The other half of the pair above: the note is about a FILE, so a
+    holder already cloned there gets the command and no note."""
+    folder = make_family_folder(tmp_path / "work")
+    result = run_entry("Sample", "--yes", "--org", "demoorg",
+                       "--family", FAMILY,
+                       "--local-remote-dir", str(tmp_path / "remotes"),
+                       "--into", str(folder))
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "scripts/family.py add --family-root %s" % (folder / FAMILY) \
+        in result.stdout
+    assert "no family.yaml there yet" not in result.stdout
+
+
+@pytest.mark.parametrize("family,expected", [
+    ("zephyr-holder", "matches no family in the naming policy"),
+    ("Zephyr_Holder", "matches no family in the naming policy"),
+    ("openGlass", "not as a family holder"),
+    ("Zephyr-Install", "not as a family holder"),
+])
+def test_a_family_name_outside_the_holder_form_refuses(tmp_path, family,
+                                                       expected):
+    """The naming policy's own reading, through the same classifier
+    `scripts/family.py init` asks - a name that is a holder here and not
+    there would be two standards.
+
+    Exit 1, like the three-name check: a FINDING about a name, not a
+    refusal to ask the question.
+    """
+    result = run_entry("Sample", "--yes", "--org", "demoorg",
+                       "--family", family,
+                       "--local-remote-dir", str(tmp_path / "remotes"),
+                       "--into", str(tmp_path / "work"))
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert expected in result.stderr
+    assert "one CamelCase token" in result.stderr
+    assert "(6) scaffold" not in result.stdout
+    assert not (tmp_path / "remotes").exists()
+
+
+def test_a_rehearsal_that_stops_at_the_plan_makes_no_family_folder(tmp_path):
+    """A run that creates nothing must leave the disk as it found it.
+
+    No `--yes` and no terminal, so the plan prints and the confirm refuses -
+    and `<into>/<Family>/` is made in step (7) and nowhere earlier, or the
+    rehearsal would leave a folder the person never asked for.
+    """
+    work = tmp_path / "work"
+    result = run_entry("Sample", "--org", "demoorg", "--family", FAMILY,
+                       "--local-remote-dir", str(tmp_path / "remotes"),
+                       "--into", str(work))
+    assert result.returncode == 2
+    assert "no terminal to confirm on" in result.stderr
+    assert "lands at     %s" % (work / FAMILY / "Sample") in result.stdout
+    assert "--dry-run: nothing was created." in result.stdout
+    assert not work.exists(), f"{work} was created by a run that created nothing"
+    assert not (tmp_path / "remotes").exists()
+
+
 # --- setup.sh is a shim, not a second flag list -----------------------------
 
 #: The only flags `setup.sh` may still NAME, and why each of them is about the
