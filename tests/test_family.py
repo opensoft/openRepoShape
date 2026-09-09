@@ -21,6 +21,7 @@ a real family ever needs.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -154,13 +155,49 @@ def test_init_carries_the_shape_pin_over_its_own_copies(family):
     # statement about its own bytes — and the file is pinned rather than
     # merely shipped, because one that can be edited without the pin noticing
     # says nothing.
+    #
+    # 2026-09-09: `scripts/siblings.py` joined them (#76). The holder's
+    # WORKSTATION utility is a copy like the validator and the bootstrap, and
+    # it is PINNED for the same reason: it is the file `update-shape.py` then
+    # offers to an existing holder as `upstream-added`, and a copy nothing
+    # digests is a copy nobody can tell has been edited.
     assert rows == {"scripts/validate-family.py", "scripts/bootstrap.py",
+                    "scripts/siblings.py",
                     "Makefile", ".gitignore", ".gitattributes",
                     ".github/workflows/validate.yml", "AGENTS-shape.md",
                     "scripts/repo_shape.py",
                     "contracts/repository-naming.yaml"}
     assert "scripts/validate-pins.py" not in rows, (
         "a family has no legs, so it does not carry the leg validator")
+
+
+def test_init_copies_the_siblings_utility_and_the_makefile_target(family):
+    """THE HOLDER CARRIES THE UTILITY, not a second implementation of it.
+
+    `make siblings` runs the copy; `family.py siblings` runs the very same
+    file out of the standard (ruling 1b, 2026-09-09: one implementation, two
+    entry points). So the copy must be byte-identical to the template, pinned
+    by digest, executable like the other two scripts, and named by the
+    Makefile the holder ships.
+    """
+    sys.path.insert(0, str(REPO / "scripts"))
+    from repo_shape import file_sha256
+    root = family["root"]
+    copied = root / "scripts" / "siblings.py"
+    template = (REPO / "templates" / "family-root" / "scripts" /
+                "siblings.py")
+    assert copied.read_bytes() == template.read_bytes()
+    rows = {row["path"]: row["sha256"].lower()
+            for row in load_yaml(root / "contracts" / "shape-pin.yaml")["files"]}
+    assert rows["scripts/siblings.py"] == file_sha256(copied)
+    if os.name != "nt":
+        assert copied.stat().st_mode & 0o111, (
+            "`FAMILY_EXECUTABLE` names it, so the materializer chmods it")
+    makefile = (root / "Makefile").read_text()
+    assert "siblings:" in makefile
+    assert "$(PYTHON) scripts/siblings.py" in makefile
+    assert "make siblings" in (root / "README.md").read_text()
+    assert "make siblings" in (root / "AGENTS-shape.md").read_text()
 
 
 def test_init_writes_the_holders_agent_files(family):
@@ -837,3 +874,415 @@ def test_pins_and_no_members_together_ask_for_nothing(holder):
     result = validate(holder, "--pins", "--no-members")
     assert result.returncode == 2
     assert "family-nothing-to-check" in result.stderr
+
+
+# --- init lands in a family FOLDER (#76, 2026-09-09) ------------------------
+#
+# THE LAYOUT IS PLACED, NEVER MOVED. `init` used to materialize the holder in
+# a TEMP directory unless `--work-dir` said otherwise, so every family folder
+# on every workstation was arranged by hand afterwards — which is why the
+# doubled `<Family>/<Family>` had to be explained to each person who met it.
+# The default now lands where the person is standing, in a plain folder named
+# after the family, and `--work-dir` keeps exactly its old meaning.
+
+
+def init_local(tmp_path, *extra, family: str = "Contoso", cwd=None):
+    return run_script(FAMILY, "init", "--org", ORG, "--family", family,
+                      "--created-by", "Test Human", "--created-on",
+                      "2026-09-09", "--local-remote-dir",
+                      str(tmp_path / "remotes"), *extra, cwd=cwd)
+
+
+def test_init_lands_the_holder_in_a_family_folder_where_you_are_standing(
+        tmp_path):
+    """`<into>/<Family>/<Family>`, with `<into>` the invocation directory.
+
+    The same "lands where you were standing" rule #39 gave projects. The
+    folder is a PLAIN DIRECTORY — not a repository, not a submodule — and the
+    holder keeps its own repository name inside it.
+    """
+    stand = tmp_path / "projects"
+    stand.mkdir()
+    result = init_local(tmp_path, cwd=stand)
+    assert result.returncode == 0, result.stderr + result.stdout
+    folder, holder = stand / "Contoso", stand / "Contoso" / "Contoso"
+    assert folder.is_dir() and not (folder / ".git").exists(), (
+        "the family folder is a plain directory and never a repository")
+    assert (holder / "family.yaml").is_file()
+    assert (holder / ".git").is_dir()
+    assert f"folder       {folder}" in result.stdout
+    assert f"landing      {holder}" in result.stdout
+    # The next block names the folder, the holder and BOTH next commands, and
+    # says which of the two copies of a member you work in.
+    assert f"family folder  {folder}" in result.stdout
+    assert f"holder         {holder}" in result.stdout
+    assert "add --family-root" in result.stdout
+    assert "make siblings" in result.stdout
+    assert "TWO COPIES OF EVERY MEMBER" in result.stdout
+    assert "BESIDE the holder" in result.stdout
+
+
+def test_init_into_names_the_parent_directory(tmp_path):
+    """`--into` is the PARENT, not the landing spot: the folder goes in it."""
+    into = tmp_path / "elsewhere"
+    result = init_local(tmp_path, "--into", str(into))
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert (into / "Contoso" / "Contoso" / "family.yaml").is_file()
+
+
+def test_init_standing_in_the_family_folder_does_not_nest_another(tmp_path):
+    """A person standing in `Contoso/` means THAT folder, not one inside it.
+
+    Otherwise the first thing anybody does — `mkdir Contoso && cd Contoso` —
+    produces `Contoso/Contoso/Contoso`, and the layout that has to be
+    explained once has to be explained twice.
+    """
+    stand = tmp_path / "Contoso"
+    stand.mkdir()
+    result = init_local(tmp_path, cwd=stand)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert (stand / "Contoso" / "family.yaml").is_file()
+    assert not (stand / "Contoso" / "Contoso").exists()
+
+
+def test_init_refuses_when_that_folder_already_holds_its_holder(tmp_path):
+    """The second run in the same place is not an init of anything."""
+    stand = tmp_path / "Contoso"
+    stand.mkdir()
+    assert init_local(tmp_path, cwd=stand).returncode == 0
+    again = init_local(tmp_path, "--reuse-empty-repo", cwd=stand)
+    assert again.returncode == 2
+    assert "family-holder-already-here" in again.stderr
+    assert "family.py add" in again.stderr
+    assert "make siblings" in again.stderr
+    assert "There is no --force" in again.stderr
+
+
+def test_init_work_dir_keeps_its_old_meaning_and_makes_no_folder(tmp_path):
+    """`<work-dir>/<Family>`, exactly as before — every rehearsal in this
+    suite passes it, and a flag that quietly changed meaning is worse than a
+    second flag."""
+    work = tmp_path / "work"
+    result = init_local(tmp_path, "--work-dir", str(work))
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert (work / "Contoso" / "family.yaml").is_file()
+    assert not (work / "Contoso" / "Contoso").exists()
+    assert "--work-dir: no family folder" in result.stdout
+
+
+def test_init_refuses_into_and_work_dir_together(tmp_path):
+    result = init_local(tmp_path, "--into", str(tmp_path / "a"),
+                        "--work-dir", str(tmp_path / "b"))
+    assert result.returncode == 2
+    assert "family-two-landings" in result.stderr
+    assert not (tmp_path / "a").exists() and not (tmp_path / "b").exists()
+
+
+def test_init_refuses_a_landing_that_exists_and_is_not_empty(tmp_path):
+    """As before, and with no --force: the holder target is somebody's
+    directory and nothing here writes into one."""
+    stand = tmp_path / "projects"
+    (stand / "Contoso" / "Contoso").mkdir(parents=True)
+    (stand / "Contoso" / "Contoso" / "MINE.md").write_text("not yours\n")
+    result = init_local(tmp_path, cwd=stand)
+    assert result.returncode == 2
+    assert "family-target-exists" in result.stderr
+    assert "There is no --force" in result.stderr
+    assert (stand / "Contoso" / "Contoso" / "MINE.md").is_file()
+
+
+def test_init_dry_run_prints_the_landing_and_creates_nothing(tmp_path):
+    stand = tmp_path / "projects"
+    stand.mkdir()
+    result = init_local(tmp_path, "--dry-run", cwd=stand)
+    assert result.returncode == 0, result.stderr
+    assert f"landing      {stand / 'Contoso' / 'Contoso'}" in result.stdout
+    assert "--dry-run: nothing was created." in result.stdout
+    assert not (stand / "Contoso").exists()
+    assert not (tmp_path / "remotes").exists()
+
+
+# --- make siblings: the members, beside the holder ---------------------------
+
+
+SIBLINGS = REPO / "templates" / "family-root" / "scripts" / "siblings.py"
+
+
+@pytest.fixture
+def estate(family, tmp_path):
+    """A CORRECT workstation layout: `<tmp>/InkRouter/InkRouter` and nothing
+    beside it yet. Function-scoped, because these tests write clones."""
+    folder = tmp_path / NAME
+    folder.mkdir()
+    holder = folder / NAME
+    shutil.copytree(family["root"], holder, symlinks=True)
+    return {"folder": folder, "holder": holder, "remotes": family["remotes"]}
+
+
+def siblings(holder, *extra, env=None):
+    return run_script(holder / "scripts" / "siblings.py", *extra, cwd=holder,
+                      env={**ALLOW_FILE_PROTOCOL, **(env or {})})
+
+
+def layout(stdout: str) -> list[str]:
+    """The layout table alone — the part with no absolute path in it, so two
+    runs in two directories can be compared line for line."""
+    lines = stdout.splitlines()
+    start = lines.index("(b) the layout")
+    rows = []
+    for line in lines[start + 1:]:
+        if not line.startswith("  "):
+            break
+        rows.append(" ".join(line.split()))
+    return rows
+
+
+def test_siblings_clones_each_member_beside_the_holder_on_its_branch(estate):
+    """Through `make siblings`, which is the entry point a holder ships.
+
+    The sibling is a WORKING clone: on its tracking branch, with its own
+    bootstrap already run, so its legs are on their branches at their pins.
+    """
+    proc = subprocess.run(["make", "siblings"], cwd=str(estate["holder"]),
+                           capture_output=True, text=True, check=False,
+                           env={**os.environ, **ALLOW_FILE_PROTOCOL})
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    for project in MEMBERS:
+        sibling = estate["folder"] / project
+        assert (sibling / ".git").is_dir(), f"{project} was not cloned"
+        assert git("rev-parse", "--abbrev-ref", "HEAD",
+                   cwd=sibling).stdout.strip() == "main", (
+            "a sibling is a working clone on its tracking branch, not a "
+            "detached checkout like the pinned copy")
+        assert (sibling / "spec" / ".git").exists(), (
+            "the member's own bootstrap placed its legs")
+        assert git("rev-parse", "--abbrev-ref", "HEAD",
+                   cwd=sibling / "spec").stdout.strip() == "main"
+    assert "siblings ok: 2 member(s)" in proc.stdout
+    assert layout(proc.stdout) == [
+        "what name state branch",
+        f"holder {NAME} the holder main",
+        "sibling IRRS cloned main",
+        "sibling IRSS cloned main",
+        "pinned members/IRRS pinned in the holder main",
+        "pinned members/IRSS pinned in the holder main",
+    ]
+
+
+def test_a_second_run_is_all_present_and_exits_zero(estate):
+    """IDEMPOTENT, which is what makes it safe to put in a handoff."""
+    first = siblings(estate["holder"])
+    assert first.returncode == 0, first.stderr + first.stdout
+    second = siblings(estate["holder"])
+    assert second.returncode == 0, second.stderr + second.stdout
+    assert "cloned" not in " ".join(layout(second.stdout))
+    assert second.stdout.count("present, fetched") == len(MEMBERS)
+    assert "fetching only" in second.stdout
+
+
+def test_siblings_touches_nothing_in_a_clone_somebody_is_working_in(estate):
+    """FETCH ONLY: no checkout, no reset, no pull, no branch switch.
+
+    A utility that "helpfully" moved somebody's HEAD would be the most
+    destructive thing in this standard, so the branch a person is on and the
+    file they have not committed are both still there afterwards.
+    """
+    assert siblings(estate["holder"]).returncode == 0
+    sibling = estate["folder"] / "IRRS"
+    git("checkout", "-q", "-b", "wip", cwd=sibling)
+    (sibling / "SCRATCH.md").write_text("uncommitted work\n")
+    was = git("rev-parse", "HEAD", cwd=sibling).stdout.strip()
+
+    result = siblings(estate["holder"])
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert git("rev-parse", "--abbrev-ref", "HEAD",
+               cwd=sibling).stdout.strip() == "wip"
+    assert git("rev-parse", "HEAD", cwd=sibling).stdout.strip() == was
+    assert (sibling / "SCRATCH.md").read_text() == "uncommitted work\n"
+    assert "sibling IRRS present, fetched wip" in layout(result.stdout)
+
+
+def test_siblings_reports_a_clone_of_another_repository_and_skips_it(estate):
+    """A directory at the right NAME is not by itself the member.
+
+    Reported, skipped, left exactly as it is, and the run exits non-zero — the
+    exit is the human's hand, never an overwrite.
+    """
+    wrong = estate["folder"] / "IRSS"
+    wrong.mkdir()
+    git("init", "-q", "-b", "main", ".", cwd=wrong)
+    git("remote", "add", "origin", "https://github.com/Somebody/Else.git",
+        cwd=wrong)
+    (wrong / "MINE.md").write_text("somebody else's work\n")
+
+    result = siblings(estate["holder"])
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "WRONG ORIGIN" in result.stdout
+    assert "FINDING IRSS:" in result.stderr
+    assert "Somebody/Else" in result.stderr
+    assert "no existing clone was touched" in result.stderr
+    assert (wrong / "MINE.md").read_text() == "somebody else's work\n"
+    assert not (wrong / "project.yaml").exists(), "nothing was written into it"
+    # The other member is still placed: one bad directory is not a reason to
+    # do nothing for the rest of the family.
+    assert (estate["folder"] / "IRRS" / ".git").is_dir()
+
+
+def test_siblings_reports_a_directory_that_is_not_a_clone_at_all(estate):
+    result = siblings(estate["holder"])
+    assert result.returncode == 0
+    rmtree(estate["folder"] / "IRRS")
+    (estate["folder"] / "IRRS").mkdir()
+    (estate["folder"] / "IRRS" / "notes.md").write_text("mine\n")
+    again = siblings(estate["holder"])
+    assert again.returncode == 1
+    assert "NOT A CLONE" in again.stdout
+    assert (estate["folder"] / "IRRS" / "notes.md").read_text() == "mine\n"
+
+
+def test_siblings_warns_about_the_parent_folder_and_moves_nothing(family,
+                                                                  tmp_path):
+    """THE DOCTOR PATTERN, NOT A MOVER (#76). The holder here sits under a
+    folder that is not named after the family, which is what a hand-arranged
+    workstation looks like — and the answer is a warning, the exact `mv`, and
+    nothing moved."""
+    wrong = tmp_path / "somewhere-else"
+    wrong.mkdir()
+    holder = wrong / NAME
+    shutil.copytree(family["root"], holder, symlinks=True)
+
+    result = siblings(holder, "--dry-run")
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "WARNING the holder's parent folder is 'somewhere-else', not " \
+        "'InkRouter'." in result.stderr
+    assert "NOTHING WAS MOVED" in result.stderr
+    assert "LINKED WORKTREE" in result.stderr
+    # The exact commands, and the staging name the one-step `mv A A/A` cannot
+    # be spelled without.
+    assert f"mv {holder} {tmp_path / 'InkRouter.holder'}" in result.stderr
+    assert f"mkdir -p {tmp_path / 'InkRouter'}" in result.stderr
+    assert f"mv {tmp_path / 'InkRouter.holder'} " \
+           f"{tmp_path / 'InkRouter' / 'InkRouter'}" in result.stderr
+    assert holder.is_dir() and (holder / "family.yaml").is_file(), (
+        "it moves nothing, and that is the whole point")
+    assert not (tmp_path / "InkRouter").exists()
+
+
+def test_siblings_dry_run_clones_nothing(estate):
+    result = siblings(estate["holder"], "--dry-run")
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "would clone" in result.stdout
+    assert "--dry-run: nothing was cloned, fetched or moved." in result.stdout
+    for project in MEMBERS:
+        assert not (estate["folder"] / project).exists()
+
+
+def test_family_py_siblings_runs_the_holders_own_file(family, tmp_path):
+    """ONE IMPLEMENTATION, TWO ENTRY POINTS (ruling 1b, 2026-09-09).
+
+    `family.py siblings` runs `templates/family-root/scripts/siblings.py`
+    through `runpy`, the way the root `bootstrap` shim runs the assembly
+    root's bootstrap — so a person with a checkout of the standard and a
+    holder on disk gets the same run, and its exit code, without a second
+    code path to keep in step. The proof is the layout table: byte for byte
+    the same as `make siblings`, which is the part of the output that carries
+    no absolute path.
+    """
+    def one(name: str, runner) -> dict:
+        folder = tmp_path / name / NAME
+        folder.mkdir(parents=True)
+        holder = folder / NAME
+        shutil.copytree(family["root"], holder, symlinks=True)
+        result = runner(holder)
+        assert result.returncode == 0, result.stderr + result.stdout
+        return {"folder": folder, "result": result}
+
+    theirs = one("target", lambda holder: siblings(holder))
+    ours = one("shim", lambda holder: run_script(
+        FAMILY, "siblings", "--family-root", str(holder),
+        env=ALLOW_FILE_PROTOCOL))
+
+    assert layout(ours["result"].stdout) == layout(theirs["result"].stdout)
+    for project in MEMBERS:
+        assert (ours["folder"] / project / ".git").is_dir()
+        assert git("rev-parse", "--abbrev-ref", "HEAD",
+                   cwd=ours["folder"] / project).stdout.strip() == "main"
+
+
+def test_family_py_siblings_refuses_a_path_that_is_not_a_holder(project):
+    result = run_script(FAMILY, "siblings", "--family-root", str(project))
+    assert result.returncode == 2
+    assert "family-root-missing" in result.stderr
+    assert "family.py init" in result.stderr
+
+
+#: SPELLINGS OF ONE REPOSITORY. `{remotes}` is this family's own mounted url,
+#: which is a bare repository on disk here and a GitHub url in the world;
+#: `{org}` reaches the same member through `family.yaml`'s `repository:`, the
+#: way a person's own clone of a PRIVATE member is usually spelled. Every
+#: scheme is dropped by pattern rather than by a list, which is why
+#: `file://<path>` and `<path>` are one answer as well (#79's S5332: a list of
+#: schemes is also a list of literals, and one of them read as a transport
+#: choice).
+SPELLINGS = (
+    "git@github.com:{org}/IRRS.git",
+    "https://github.com/{org}/IRRS.git",
+    "ssh://git@github.com/{org}/IRRS.git",
+    "git+ssh://git@github.com/{org}/IRRS.git",
+    "file://{remotes}/IRRS.git",
+    "{remotes}/IRRS.git/",
+)
+
+
+@pytest.mark.parametrize("spelling", SPELLINGS)
+def test_siblings_accepts_a_clone_whose_remote_is_spelled_differently(
+        estate, spelling):
+    """One repository, six spellings, and a utility that refused to fetch
+    somebody's clone over a punctuation difference would send them to delete
+    it.
+
+    `--dry-run` for the second run, so the IDENTITY is what is under test and
+    nothing reaches for a network: `place` verifies the origin and the
+    `project.yaml` id BEFORE the dry run decides not to fetch, and this suite
+    creates nothing and contacts nothing.
+    """
+    assert siblings(estate["holder"]).returncode == 0
+    sibling = estate["folder"] / "IRRS"
+    git("remote", "set-url", "origin",
+        spelling.format(org=ORG, remotes=estate["remotes"]), cwd=sibling)
+
+    result = siblings(estate["holder"], "--dry-run")
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "WRONG ORIGIN" not in result.stdout
+    assert "sibling IRRS present, would fetch main" in layout(result.stdout)
+
+
+def test_siblings_skips_a_clone_whose_project_id_is_not_the_rows(estate):
+    """A repository at the right url is not by itself the project the row
+    claims: `project.yaml` inside the clone is the source."""
+    assert siblings(estate["holder"]).returncode == 0
+    sibling = estate["folder"] / "IRSS"
+    manifest_path = sibling / "project.yaml"
+    manifest_path.write_text(
+        manifest_path.read_text().replace("id: irss", "id: something-else", 1))
+    result = siblings(estate["holder"])
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "WRONG PROJECT" in result.stdout
+    assert "something-else" in result.stderr
+
+
+def test_siblings_resolves_a_relative_submodule_url(estate):
+    """A `../<Repo>.git` in `.gitmodules` is relative to THIS repository's
+    REMOTE, which is git's own rule — a clone that took the string literally
+    would fetch from wherever the process happened to be standing."""
+    modules = estate["holder"] / ".gitmodules"
+    modules.write_text(
+        "\n".join(f'[submodule "members/{p}"]\n\tpath = members/{p}\n'
+                  f"\turl = ../{p}.git" for p in MEMBERS) + "\n")
+    result = siblings(estate["holder"])
+    assert result.returncode == 0, result.stderr + result.stdout
+    for project in MEMBERS:
+        sibling = estate["folder"] / project
+        assert (sibling / ".git").is_dir()
+        assert git("remote", "get-url", "origin", cwd=sibling).stdout.strip() \
+            == str(estate["remotes"] / f"{project}.git")

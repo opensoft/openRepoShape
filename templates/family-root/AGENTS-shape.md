@@ -37,10 +37,11 @@ not hand-edit the `members:` block — the tool rewrites it wholesale. Land the
 commit as a pull request; the member must already be scaffolded or adopted,
 because a family cannot make a project out of a repository.
 
-## The three commands
+## The four commands
 
 ```
 make bootstrap   every member and its legs, then each member's own bootstrap
+make siblings    each member cloned BESIDE this holder, on its tracking branch
 make validate    the family validator, then each member's `make validate`
 make pins        the family's lockstep check alone
 ```
@@ -48,6 +49,25 @@ make pins        the family's lockstep check alone
 `make bootstrap` puts each member's legs on their tracking branch AT their
 pinned commits, by running the member's own bootstrap rather than
 reimplementing it.
+
+`make siblings` places the WORKSTATION layout: a plain folder named after the
+family, this holder inside it, and each member's working clone beside the
+holder (`../<Project>`). Two copies of every member is correct and intended —
+`members/<Project>` here is pinned and DETACHED, for `bootstrap` and
+`validate`; the sibling is where a human works, and `family.py bump` is how
+this family follows it. What it will NOT do, and you must not do either:
+
+* **It moves nothing.** When the parent folder is not named after the family
+  it WARNS and prints the exact `mv` for a human to run. Do not run that `mv`
+  on your own initiative: relocating a checkout breaks an open shell, an
+  editor and any LINKED WORKTREE, whose `.git` file carries an absolute path.
+* **It never touches an existing clone beyond `git fetch`.** No checkout, no
+  reset, no pull, no stash, no branch switch — somebody is working in there.
+  A directory that is a clone of a different repository is reported and
+  SKIPPED, and the exit is to move it aside by hand, never to overwrite it.
+* Run from a checkout of openRepoShape instead, when this holder is not yet
+  on the machine twice: `python3 scripts/family.py siblings --family-root
+  <path>` runs the very same file — one implementation, two entry points.
 
 ## Never edit a file that has a row in `contracts/shape-pin.yaml`
 

@@ -19,13 +19,17 @@ assertion that matters most is the one about C1: an older upstream that never
 named these files must report NO addition at all, because the lists have to be
 read at the TARGET commit rather than out of the checkout running the command.
 
-C2 ALSO CARRIES THE REAL ADDITION, `.gitattributes` (2026-09-05, #51), and C1
-is made to lack it — the file is deleted out of the CLONE and its two copy-list
-entries stripped, which is this change inverted. Three synthetic files prove
-the machinery; one real one proves the machinery is pointed at the standard.
-The strip is a no-op on a checkout that has not landed #51 yet, so the fixture
-tells the same story on both sides of that commit, and nothing here writes to
-the checkout it was cloned from.
+C2 ALSO CARRIES THE REAL ADDITIONS — `.gitattributes` (2026-09-05, #51) for
+both roots and `scripts/siblings.py` (2026-09-09, #76) for the FAMILY holder
+alone — and C1 is made to lack them: each file is deleted out of the CLONE and
+its copy-list entries stripped, which is those changes inverted. Three
+synthetic files prove the machinery; the real ones prove the machinery is
+pointed at the standard, and `siblings.py` proves it a second way — a holder
+that already exists is owed the new utility and a project is offered nothing,
+because only the family's list names it. Each strip is a no-op on a checkout
+that has not landed its change yet, so the fixture tells the same story on
+both sides of either commit, and nothing here writes to the checkout it was
+cloned from.
 """
 
 from __future__ import annotations
@@ -57,11 +61,18 @@ ADDED_SCRIPT = "scripts/new-check.py"
 #: offered a family's addition, nor a family a project's.
 FAMILY_ADDED = "FAMILY-shape-test.md"
 
-#: THE REAL ADDITION (#51). Both roots gain it, out of the same list each
-#: synthetic file uses, so every project and every holder cut before
-#: 2026-09-05 is owed it — which is the case this module exists to cover and
-#: the only one anybody will actually run.
+#: THE REAL ADDITIONS, out of the same lists each synthetic file uses, so
+#: every root cut before them is owed them — which is the case this module
+#: exists to cover and the only one anybody will actually run.
+#:
+#: `.gitattributes` (#51, 2026-09-05) is in BOTH roots' lists.
 ATTRIBUTES = ".gitattributes"
+#: `scripts/siblings.py` (#76, 2026-09-09) is in the FAMILY's alone: it is the
+#: holder's workstation utility, and a project has no members to place.
+SIBLINGS = "scripts/siblings.py"
+#: `(path inside the root, the template roots whose lists name it)`.
+REAL_ADDITIONS = ((ATTRIBUTES, ("assembly-root", "family-root")),
+                  (SIBLINGS, ("family-root",)))
 
 MATERIALIZER = "scripts/shape_materialize.py"
 #: An existing row, for the "--add what is already pinned" refusal.
@@ -121,26 +132,31 @@ def test_unname_everywhere_strips_a_crlf_entry_line():
                         ')\r\n')
 
 
-def strip_the_real_addition(upstream) -> list:
-    """Undo #51 in the CLONE, so C1 is the standard as it was before it.
+def strip_the_real_additions(upstream) -> list:
+    """Undo #51 and #76 in the CLONE, so C1 is the standard before them.
 
     Returns the paths it changed, empty when the checkout under test predates
-    #51 — in which case C1 already lacks the file and there is nothing to undo.
+    both — in which case C1 already lacks the files and there is nothing to
+    undo. The copy-list entries go together with the files: a list that names
+    a path the tree does not have reports nothing (`upstream.blob` is None),
+    so leaving one behind would make the fixture silently prove less.
     """
     touched = []
-    for template in ("assembly-root", "family-root"):
-        rel = f"templates/{template}/{ATTRIBUTES}"
-        if (upstream / rel).is_file():
-            (upstream / rel).unlink()
-            touched.append(rel)
     source = upstream / MATERIALIZER
     text = source.read_text(encoding="utf-8")
-    stripped = unname_everywhere(text, ATTRIBUTES)
-    if stripped != text:
-        source.write_text(stripped, encoding="utf-8")
+    for entry, templates in REAL_ADDITIONS:
+        for template in templates:
+            rel = f"templates/{template}/{entry}"
+            if (upstream / rel).is_file():
+                (upstream / rel).unlink()
+                touched.append(rel)
+        text = unname_everywhere(text, entry)
+        assert f'"{entry}"' not in text, (
+            f"the copy lists still name {entry}, which this fixture just "
+            "removed")
+    if text != source.read_text(encoding="utf-8"):
+        source.write_text(text, encoding="utf-8")
         touched.append(MATERIALIZER)
-    assert f'"{ATTRIBUTES}"' not in stripped, (
-        "the copy lists still name the file this fixture just removed")
     return touched
 
 
@@ -153,9 +169,10 @@ def standard(tmp_path_factory) -> dict:
                           capture_output=True, text=True, check=False)
     assert proc.returncode == 0, proc.stderr
 
-    # ---- C1: the standard as it stood before #51 --------------------------
-    undone = strip_the_real_addition(upstream)
-    c1 = (commit_all(upstream, "The standard before .gitattributes", undone)
+    # ---- C1: the standard before #51 and #76 ------------------------------
+    undone = strip_the_real_additions(upstream)
+    c1 = (commit_all(upstream, "The standard before .gitattributes and "
+                     "siblings.py", undone)
           if undone else git("rev-parse", "HEAD", cwd=upstream).stdout.strip())
 
     result = run_script(
@@ -186,14 +203,16 @@ def standard(tmp_path_factory) -> dict:
         "#!/usr/bin/env python3\nprint('a new check')\n", encoding="utf-8")
     (upstream / "templates" / "family-root" / FAMILY_ADDED).write_text(
         "# The holder's copy of the same idea.\n", encoding="utf-8")
-    # The REAL file, byte for byte out of this checkout: a test that invented
+    # The REAL files, byte for byte out of this checkout: a test that invented
     # its own `.gitattributes` would prove the machinery and say nothing about
     # what a project actually receives.
-    attributes = []
-    for template in ("assembly-root", "family-root"):
-        rel = f"templates/{template}/{ATTRIBUTES}"
-        (upstream / rel).write_bytes((REPO / rel).read_bytes())
-        attributes.append(rel)
+    real = []
+    for entry, templates in REAL_ADDITIONS:
+        for template in templates:
+            rel = f"templates/{template}/{entry}"
+            (upstream / rel).parent.mkdir(parents=True, exist_ok=True)
+            (upstream / rel).write_bytes((REPO / rel).read_bytes())
+            real.append(rel)
     source = upstream / MATERIALIZER
     text = source.read_text(encoding="utf-8")
     text = name_in_list(text, "COPIED_VERBATIM", ADDED)
@@ -202,13 +221,17 @@ def standard(tmp_path_factory) -> dict:
     text = name_in_list(text, "FAMILY_COPIED_VERBATIM", FAMILY_ADDED)
     text = name_in_list(text, "COPIED_VERBATIM", ATTRIBUTES)
     text = name_in_list(text, "FAMILY_COPIED_VERBATIM", ATTRIBUTES)
+    # The family's alone, and executable there like the two scripts beside it.
+    text = name_in_list(text, "FAMILY_COPIED_VERBATIM", SIBLINGS)
+    text = name_in_list(text, "FAMILY_EXECUTABLE", SIBLINGS)
     source.write_text(text, encoding="utf-8")
-    c2 = commit_all(upstream, "Add AGENTS-shape and .gitattributes to both roots", [
+    c2 = commit_all(upstream, "Add AGENTS-shape, .gitattributes and the "
+                    "holder's siblings utility", [
         MATERIALIZER,
         f"templates/assembly-root/{ADDED}",
         f"templates/assembly-root/{ADDED_SCRIPT}",
         f"templates/family-root/{FAMILY_ADDED}",
-        *attributes,
+        *real,
     ])
     assert c1 != c2
     return {"upstream": upstream, "clone": clone, "family": base / "fam" / FAMILY,
@@ -477,6 +500,50 @@ def test_every_existing_project_is_owed_the_attributes_file(root, standard):
     assert verdicts(result.stdout)[ATTRIBUTES] == "upstream-added"
     assert f"--add {ATTRIBUTES}" in result.stdout
     assert not (root / ATTRIBUTES).exists(), "`check` writes nothing"
+
+
+def test_an_existing_holder_is_owed_the_siblings_utility(holder, standard):
+    """THE REAL ADDITION #76 MAKES, and the route it reaches a holder by.
+
+    InkRouter/InkRouter exists today and was cut before `make siblings`
+    existed. `check` reports the file by name and exits 1; `apply --add
+    scripts/siblings.py` copies the standard's own bytes, writes the row,
+    chmods it because `FAMILY_EXECUTABLE` names it, and leaves the holder
+    green against its own validator. Nothing lands until a human names the
+    path, which is the whole of the `--add` rule.
+    """
+    checked = run_script(UPDATE, "check", "--root", str(holder), "--upstream",
+                         str(standard["upstream"]), "--at", standard["c2"])
+    assert checked.returncode == 1, checked.stdout + checked.stderr
+    assert verdicts(checked.stdout)[SIBLINGS] == "upstream-added"
+    assert f"--add {SIBLINGS}" in checked.stdout
+    assert not (holder / SIBLINGS).exists(), "`check` writes nothing"
+
+    result = run_script(UPDATE, "apply", "--root", str(holder), "--yes",
+                        "--upstream", str(standard["upstream"]),
+                        "--at", standard["c2"], "--add", SIBLINGS,
+                        "--branch", "shape/add-siblings")
+    assert result.returncode == 0, result.stdout + result.stderr
+    copied = holder / SIBLINGS
+    assert copied.read_bytes() == (
+        REPO / "templates" / "family-root" / SIBLINGS).read_bytes(), (
+        "the holder receives the standard's file, not a paraphrase of it")
+    assert pin_rows(holder)[SIBLINGS] == file_sha256(copied)
+    if os.name != "nt":
+        assert copied.stat().st_mode & 0o111, (
+            "`FAMILY_EXECUTABLE` names it, so `--add` chmods it too")
+    green = run_script(holder / "scripts" / "validate-family.py", cwd=holder)
+    assert green.returncode == 0, green.stdout + green.stderr
+
+
+def test_a_project_is_not_offered_the_siblings_utility(root, standard):
+    """It is in the FAMILY's list alone. A project has no members to place,
+    and offering it one root's addition out of another root's list is how the
+    two tables would start disagreeing."""
+    result = check(root, standard, "--at", standard["c2"])
+    assert result.returncode == 1
+    assert SIBLINGS not in result.stdout
+    assert not (root / SIBLINGS).exists()
 
 
 def test_a_family_holder_is_owed_it_as_well(holder, standard):

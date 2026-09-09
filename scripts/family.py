@@ -2,10 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """Create and maintain a FAMILY: a holder that pins member assembly roots.
 
-    ./scripts/family.py init   --org <org> --family <Name> [--dry-run]
-    ./scripts/family.py add    --family-root <path> --member <org>/<Project>
-    ./scripts/family.py bump   --family-root <path> --member <Project> --to <sha>
-    ./scripts/family.py remove --family-root <path> --member <Project>
+    ./scripts/family.py init     --org <org> --family <Name> [--into <dir>]
+    ./scripts/family.py add      --family-root <path> --member <org>/<Project>
+    ./scripts/family.py bump     --family-root <path> --member <Project> --to <sha>
+    ./scripts/family.py remove   --family-root <path> --member <Project>
+    ./scripts/family.py siblings --family-root <path>
 
 A FAMILY IS NOT A PROJECT, and this is a ruling (Brett Heap, 2026-09-04), made
 about InkRouter:
@@ -41,7 +42,18 @@ them one gate, one release and one pin — which is the opposite of what
 "deploy separately" means. The family is the cheapest thing that answers the
 only question the estate actually had: how does somebody clone all of them.
 
+THE WORKSTATION LAYOUT (Brett Heap, 2026-09-09, issue #76). `init` lands the
+holder at `<into>/<Family>/<Family>`: a PLAIN FOLDER named after the family,
+holding the holder clone and — once `siblings` has run — the members' working
+clones beside it. The doubled name is kept on purpose: the holder is a
+repository and keeps its own name, and `family.yaml` is what tells the two
+apart. `siblings` is the holder's own `make siblings`, run from a checkout of
+this standard so it works before the holder is anywhere else; there is ONE
+implementation of it, `templates/family-root/scripts/siblings.py`, and this
+subcommand runs that file rather than a second copy of its logic.
+
 EXIT CODES: 0 done · 1 nothing (a dry run prints and exits 0) · 2 a refusal.
+`siblings` exits with the template script's own code, unchanged.
 """
 
 from __future__ import annotations
@@ -51,9 +63,9 @@ import datetime as _dt
 import json
 import os
 import re
+import runpy
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 SHAPE_ROOT = Path(__file__).resolve().parents[1]
@@ -363,6 +375,48 @@ def _local_remote_is_empty(bare: Path) -> bool | None:
 # ---------------------------------------------------------------------------
 
 
+SIBLINGS_SCRIPT = (SHAPE_ROOT / "templates" / "family-root" / "scripts" /
+                   "siblings.py")
+
+
+def _landing(args, family: str) -> tuple[Path | None, Path]:
+    """`(the family folder, the holder)` — WHERE `init` PUTS THINGS.
+
+    THE DEFAULT LANDS WHERE YOU ARE STANDING, which is the rule #39 gave
+    projects and the ruling of 2026-09-09 gives families: `--into` is the
+    PARENT directory (the invocation directory by default), the family FOLDER
+    `<Family>/` is created in it, and the holder is cloned INSIDE that at
+    `<into>/<Family>/<Family>`. The folder is a plain directory and never a
+    repository; the doubled name is the holder keeping its own repository
+    name, and `family.yaml` is what tells the two apart.
+
+    STANDING IN THE FAMILY FOLDER ALREADY is the one exception: when the
+    directory is itself named `<Family>` and holds no `<Family>/family.yaml`,
+    a second `<Family>/` would nest a folder inside the folder the person is
+    already in, so the holder lands at `<dir>/<Family>`. When it DOES hold
+    one, the family exists and this is not an init — refused by name below.
+
+    `--work-dir` keeps today's semantics untouched (`<work-dir>/<Family>`, no
+    folder made) because every test and every rehearsal in this suite passes
+    it, and a flag that quietly changed meaning is worse than a second flag.
+    """
+    if args.work_dir is not None:
+        return None, args.work_dir.expanduser().resolve() / family
+    into = (args.into or Path.cwd()).expanduser().resolve()
+    if into.name == family:
+        if (into / family / MANIFEST).is_file():
+            raise Refusal(
+                "family-holder-already-here",
+                f"{into} is already the {family} family folder and its holder "
+                f"is at {into / family}, so there is nothing to init",
+                "Remediation: `family.py add --family-root "
+                f"{into / family} --member <org>/<Project>` grows it, and "
+                "`make siblings` in the holder puts each member's working "
+                "clone beside it. There is no --force.")
+        return into, into / family
+    return into / family, into / family / family
+
+
 def cmd_init(args) -> int:  # noqa: C901
     family = checked_value("--family", args.family)
     args.org = checked_value("--org", args.org)
@@ -422,11 +476,26 @@ def cmd_init(args) -> int:  # noqa: C901
         "DIGEST_DEFINITION": TREE_DIGEST_DEFINITION,
     }
 
+    if args.into is not None and args.work_dir is not None:
+        raise Refusal(
+            "family-two-landings",
+            "--into and --work-dir both name where the holder goes, and they "
+            "do not mean the same thing",
+            "Remediation: pass --into <parent> for the workstation layout "
+            f"(<parent>/{family}/{family}), or --work-dir <dir> for the bare "
+            f"override (<dir>/{family}, no family folder). Not both.")
+    folder, holder = _landing(args, family)
+
     print(f"family       {values['FAMILY_NAME']} ({family_id})")
     print(f"shape        {SHAPE_REPOSITORY} @ {shape_commit[:12]} "
           f"(tree {shape_tree[:12]}…)")
     print(f"created by   {values['CREATED_BY']} on {values['CREATED_ON']}")
     print(f"  holder     {repository:<28} -> {url}")
+    if folder is None:
+        print(f"landing      {holder}   (--work-dir: no family folder)")
+    else:
+        print(f"folder       {folder}   a plain folder, NOT a repository")
+        print(f"landing      {holder}   the holder clone, inside it")
     print(f"members      mounted under {MEMBERS_DIR}/; none yet — "
           "`family.py add` puts one there")
     print("remotes      " + ("a bare repository on disk (no network)" if local
@@ -440,14 +509,17 @@ def cmd_init(args) -> int:  # noqa: C901
         print("\n--dry-run: nothing was created.")
         return 0
 
-    work_root = (args.work_dir.resolve() if args.work_dir
-                 else Path(tempfile.mkdtemp(prefix="openreposhape-family-")))
-    work_root.mkdir(parents=True, exist_ok=True)
-    work = work_root / family
+    # `mkdir -p` on the FOLDER, which is fine if it is already there — a
+    # family folder somebody made by hand, or one a scaffolded member already
+    # landed in, is exactly the case this is supposed to join.
+    work = holder
+    (folder or work.parent).mkdir(parents=True, exist_ok=True)
     if work.exists() and any(work.iterdir()):
         raise Refusal(
             "family-target-exists", f"{work} already exists and is not empty",
-            "Remediation: choose an empty --work-dir. There is no --force.")
+            "Remediation: choose another --into (or an empty --work-dir); if "
+            "that IS the holder, it is already a family and `family.py add` "
+            "is what grows it. There is no --force.")
 
     # THE ONE REPOSITORY THAT MAY ALREADY EXIST is the holder, and only with
     # --reuse-empty-repo, and only with ZERO commits. `InkRouter` in the
@@ -525,13 +597,20 @@ NEXT STEPS
 
     {PYTHON} {Path(__file__).name} add --family-root {work} \\
         --member {args.org}/<Project>
-    git -C {work} push
+    cd {work} && make siblings
 
 `add` mounts the member at {MEMBERS_DIR}/<Project>, records its pin, and
-writes ONE commit. Then `make bootstrap` in the holder fetches every member
-and its legs and runs each member's own bootstrap.
+writes ONE commit; land it as a pull request. `make siblings` then puts each
+member's WORKING clone beside the holder, in the family folder, on its
+tracking branch.
 
-Working tree at {work}
+TWO COPIES OF EVERY MEMBER, on purpose: pinned and DETACHED inside the holder
+under {MEMBERS_DIR}/ (what `make bootstrap` and `make validate` read), and a
+working clone BESIDE the holder — that second one is where you work, and
+`family.py bump` is how the family follows it.
+
+family folder  {folder if folder is not None else work.parent}
+holder         {work}
 """)
     return 0
 
@@ -745,6 +824,49 @@ def cmd_remove(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# siblings
+# ---------------------------------------------------------------------------
+
+
+def cmd_siblings(args) -> int:
+    """The holder's `make siblings`, run from a checkout of the standard.
+
+    ONE IMPLEMENTATION, TWO ENTRY POINTS (Brett Heap, 2026-09-09, ruling 1b:
+    *"One implementation, two entry points… No second code path."*). The
+    implementation is `templates/family-root/scripts/siblings.py`, the file a
+    holder CARRIES and its Makefile calls; this subcommand runs that same file
+    against `--family-root`, exactly as the root `bootstrap` shim runs the
+    assembly root's `scripts/bootstrap.py`. That is what makes it work before
+    the holder is cloned anywhere else — the standard has the utility, the
+    holder is only where it usually lives.
+
+    `runpy` rather than an import: the script is a `__main__` program that
+    ends in `sys.exit(main())`, so its exit code is the one this process
+    exits with, unchanged and unrewritten.
+    """
+    root = Path(args.family_root).expanduser().resolve()
+    if not (root / MANIFEST).is_file():
+        raise Refusal(
+            "family-root-missing",
+            f"{root / MANIFEST} does not exist, so this is not a family root",
+            "Remediation: `family.py init --org <org> --family <Name>` creates "
+            "one; point --family-root at the HOLDER (the `<Family>/<Family>` "
+            "clone), not at the family folder around it.")
+    if not SIBLINGS_SCRIPT.is_file():
+        raise Refusal(
+            "siblings-script-missing",
+            f"{SIBLINGS_SCRIPT} is missing from this checkout of the standard",
+            "Remediation: this subcommand runs the holder's own copy of that "
+            "file and has no second implementation to fall back on. Re-clone "
+            "openRepoShape, or run `make siblings` in the holder, which uses "
+            "its own copy.")
+    sys.argv = ["siblings", "--root", str(root),
+                *(["--dry-run"] if args.dry_run else [])]
+    runpy.run_path(str(SIBLINGS_SCRIPT), run_name="__main__")
+    return 0  # pragma: no cover - the script exits before returning here
+
+
+# ---------------------------------------------------------------------------
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -773,7 +895,15 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--local-remote-dir", type=Path, default=None,
                       help="create a bare repository here instead of calling "
                            "`gh repo create` (the TEST path; no network)")
-    init.add_argument("--work-dir", type=Path, default=None)
+    init.add_argument("--into", type=Path, default=None, metavar="DIR",
+                      help="the PARENT directory the family folder is made "
+                           "in (default: the directory you are standing in). "
+                           "The holder lands at <into>/<Family>/<Family>, "
+                           "beside where `make siblings` clones the members.")
+    init.add_argument("--work-dir", type=Path, default=None,
+                      help="THE OVERRIDE: land the holder at "
+                           "<work-dir>/<Family> and make no family folder at "
+                           "all. Mutually exclusive with --into.")
     init.add_argument("--no-push", action="store_true")
     init.add_argument("--dry-run", action="store_true")
     init.set_defaults(func=cmd_init)
@@ -803,6 +933,17 @@ def build_parser() -> argparse.ArgumentParser:
     remove.add_argument("--family-root", required=True)
     remove.add_argument("--member", required=True, metavar="PROJECT")
     remove.set_defaults(func=cmd_remove)
+
+    siblings = subparsers.add_parser(
+        "siblings",
+        help="clone every member BESIDE the holder, on its tracking branch")
+    siblings.add_argument("--family-root", required=True,
+                          help="the HOLDER (`<Family>/<Family>`); the "
+                               "siblings are placed in the folder around it")
+    siblings.add_argument("--dry-run", action="store_true",
+                          help="say what would be cloned and fetched; clone "
+                               "nothing, fetch nothing, move nothing")
+    siblings.set_defaults(func=cmd_siblings)
     return parser
 
 
