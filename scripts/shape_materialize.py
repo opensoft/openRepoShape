@@ -216,6 +216,12 @@ FAMILY_TEMPLATED = (
 FAMILY_COPIED_VERBATIM = (
     "scripts/validate-family.py",
     "scripts/bootstrap.py",
+    # The workstation utility (2026-09-09, #76): it clones each member BESIDE
+    # the holder, on its tracking branch, and warns about the parent folder
+    # without moving anything. Copied and pinned like the other two, which is
+    # what carries it to an existing holder through `update-shape.py check` ->
+    # `upstream-added` -> `apply --add scripts/siblings.py`.
+    "scripts/siblings.py",
     "Makefile",
     ".gitignore",
     # The holder carries the same copy pin, so it carries the same statement
@@ -237,7 +243,11 @@ FAMILY_COPIED_FROM_SHAPE = (
     ("scripts/repo_shape.py", "scripts/repo_shape.py"),
     ("contracts/repository-naming.yaml", "contracts/repository-naming.yaml"),
 )
-FAMILY_EXECUTABLE = ("scripts/validate-family.py", "scripts/bootstrap.py")
+FAMILY_EXECUTABLE = (
+    "scripts/validate-family.py",
+    "scripts/bootstrap.py",
+    "scripts/siblings.py",
+)
 
 PLACEHOLDER_RE = re.compile(r"\{\{[A-Z_]+\}\}")
 

@@ -244,6 +244,7 @@ that ship together already are.
 python3 scripts/family.py init --org <org> --family <Name> [--reuse-empty-repo]
 python3 scripts/family.py add  --family-root <path> --member <org>/<Project>
 python3 scripts/family.py bump --family-root <path> --member <Project> --to <sha>
+python3 scripts/family.py siblings --family-root <path>
 ```
 
 1. **`init` creates a repository, so the human must say so first.** There is
@@ -251,6 +252,13 @@ python3 scripts/family.py bump --family-root <path> --member <Project> --to <sha
    to get an explicit yes before you run it, and to run `--dry-run` first and
    show them the plan. If `<org>/<Name>` already exists and is EMPTY, add
    `--reuse-empty-repo`; if it has commits, stop and ask.
+   **It lands at `<into>/<Family>/<Family>`** — `--into` is the PARENT
+   directory and defaults to where you are standing, the folder `<Family>/`
+   is created in it, and the holder goes inside that. Standing in the family
+   folder already, it does not nest a second one. `--work-dir <dir>` is the
+   override (`<dir>/<Family>`, no folder) and the two are refused together.
+   Say the landing path back to the human: the doubled `<Family>/<Family>` is
+   deliberate and reads like a mistake until somebody explains it.
 2. **A family pins ASSEMBLY ROOTS, never legs.** `--member <org>/<Project>`,
    never `<Project>-spec`. The tool refuses a leg, and the refusal is
    correct: a leg has no `project.yaml` and belongs to its own root.
@@ -260,8 +268,26 @@ python3 scripts/family.py bump --family-root <path> --member <Project> --to <sha
    block — the tool rewrites it wholesale.
 4. **The member must be scaffolded or adopted FIRST.** A family cannot make a
    project out of a repository; it can only pin one that already is.
-5. `update-shape.py` updates a family root exactly as it updates a project,
-   and the same four refusals apply. It mirrors into `family.yaml`.
+5. **`make siblings` in the holder — or `family.py siblings --family-root
+   <path>`, the same file — places the WORKSTATION layout**: each member
+   cloned BESIDE the holder, in the family folder, on its tracking branch,
+   with its own bootstrap run. Two copies of every member is intended:
+   `members/<Project>` inside the holder is pinned and DETACHED, for
+   `bootstrap` and `validate`; the sibling is where the human works.
+   **What it never does, and neither do you:** it MOVES NOTHING — when the
+   parent folder is not named after the family it warns and prints an `mv`,
+   and running that `mv` yourself relocates a checkout out from under a
+   shell, an editor and every agent lane, and breaks any linked worktree
+   (its `.git` file carries an absolute path). It also never touches an
+   existing clone beyond `git fetch`: no checkout, no reset, no pull,
+   because somebody is working in there. A directory that is a clone of a
+   different repository is reported and skipped; the exit is the human's
+   hand, not an overwrite.
+6. `update-shape.py` updates a family root exactly as it updates a project,
+   and the same four refusals apply. It mirrors into `family.yaml`. An
+   existing holder receives `scripts/siblings.py` that way: `check` reports
+   it as `upstream-added` and `apply --add scripts/siblings.py` takes it, on
+   the human's word, per file.
 
 ## What you must not tell them
 

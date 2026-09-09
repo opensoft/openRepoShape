@@ -1,5 +1,9 @@
-# The three targets a family holder ships. Copied verbatim from
+# The four targets a family holder ships. Copied verbatim from
 # openRepoShape and digest-pinned in `contracts/shape-pin.yaml`.
+#
+# `siblings` is the WORKSTATION half and the only target that writes outside
+# this repository: it clones each member BESIDE the holder, in the family
+# folder, and it never touches a clone that is already there beyond a fetch.
 #
 # `bootstrap` and the member half of `validate` are done by
 # `scripts/bootstrap.py` rather than by a shell loop here: it must resolve a
@@ -9,16 +13,21 @@
 PYTHON ?= python3
 .DEFAULT_GOAL := help
 
-.PHONY: help bootstrap validate pins
+.PHONY: help bootstrap siblings validate pins
 
 help:
 	@echo 'make bootstrap   fetch every member and its legs, then run each'
 	@echo '                 member'\''s own make bootstrap'
+	@echo 'make siblings    clone every member BESIDE the holder, on its'
+	@echo '                 tracking branch; fetch the ones already there'
 	@echo 'make validate    the family validator, then each member'\''s make validate'
 	@echo 'make pins        the family lockstep check alone (gitlink == pin)'
 
 bootstrap:
 	$(PYTHON) scripts/bootstrap.py
+
+siblings:
+	$(PYTHON) scripts/siblings.py
 
 validate:
 	$(PYTHON) scripts/validate-family.py

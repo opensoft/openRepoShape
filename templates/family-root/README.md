@@ -19,8 +19,60 @@ pinned commits and runs its validators.
 | target | what it does |
 |---|---|
 | `make bootstrap` | fetch every member and its legs, then each member's `make bootstrap` |
+| `make siblings` | clone every member BESIDE this holder, on its tracking branch; fetch the ones already there |
 | `make validate` | the family validator, then each member's `make validate` |
 | `make pins` | the family's own lockstep check alone: gitlink == `members[].pin.commit` |
+
+## Workstation layout
+
+This holder lives inside a **plain folder named after the family** — not a
+repository, not a submodule, just a directory — with the members' working
+clones beside it:
+
+```
+{{FAMILY_NAME}}/                    a PLAIN FOLDER, not a git repository
+  {{FAMILY_NAME}}/                  THE HOLDER (this repository)
+    family.yaml                     the members and their pins
+    members/<Project>               each member, PINNED and DETACHED
+  <Project>/                        a WORKING clone, on its tracking branch
+  <Project>/                        …one per row in family.yaml
+  <Project>-worktrees/…             whatever the member's own work needs
+  session-handoff-*.md              the estate's own files live in the folder
+```
+
+`make siblings` is what places it: for each row in `family.yaml` it clones the
+member at `../<Project>` from the same url `make bootstrap` uses, then runs
+that member's own `scripts/bootstrap.py` so its legs are on their tracking
+branches at their pins. A member that is already there is **fetched and
+nothing else** — no checkout, no reset, no pull — because somebody is working
+in it. A directory that is a clone of a DIFFERENT repository is reported and
+skipped, never written into. It is idempotent: a second run is all `present`.
+
+**TWO COPIES OF EVERY MEMBER, on purpose.** `members/<Project>` inside this
+holder is a pinned, detached checkout, and it is what `make bootstrap` and
+`make validate` read — detached because a pin is a commit and not a branch.
+The clone BESIDE the holder is **where you work**: its own tracking branch,
+its own worktrees, its own pull requests. The family follows it afterwards
+with `family.py bump`, which is the only thing that moves a pin.
+
+**The doubled `{{FAMILY_NAME}}/{{FAMILY_NAME}}` is deliberate** (ruled
+2026-09-09). The holder is a repository and keeps its own name; the folder is
+named after the family because that is what the folder holds. `family.yaml`
+is the only thing that tells the two apart, and it is inside the holder.
+
+**Nothing ever moves a checkout.** When this holder's parent folder is not
+named after the family, `make siblings` WARNS and prints the exact `mv` for a
+human to run — it moves nothing itself. Relocating a directory out from under
+a shell, an editor or an agent lane breaks linked worktrees, whose `.git`
+files carry absolute paths, and this standard does not act by surprise.
+
+From a checkout of `{{SHAPE_REPOSITORY}}` the same utility runs against a
+holder anywhere on disk, which is what to use before this repository is
+cloned twice:
+
+```sh
+python3 scripts/family.py siblings --family-root <path-to-this-holder>
+```
 
 ## What a family is, and what it is not
 

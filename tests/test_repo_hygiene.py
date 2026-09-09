@@ -33,9 +33,16 @@ SHIPPED = [
     REPO / "templates" / "assembly-root" / "scripts" / "bootstrap.py",
     REPO / "templates" / "family-root" / "scripts" / "validate-family.py",
     REPO / "templates" / "family-root" / "scripts" / "bootstrap.py",
+    REPO / "templates" / "family-root" / "scripts" / "siblings.py",
 ]
+#: `bootstrap` joins them on 2026-09-09 (#76): the holder's `siblings.py`
+#: imports the credential resolution and the member rows from the
+#: `bootstrap.py` beside it rather than defining either a second time, and the
+#: two files travel together in `contracts/shape-pin.yaml`. It is a local
+#: module in exactly the sense the other four are — a file this standard
+#: ships, never a package anybody installs.
 LOCAL_MODULES = {"repo_shape", "shape_materialize", "path_classify",
-                 "conftest"}
+                 "conftest", "bootstrap"}
 
 #: The two bash scripts a person runs BEFORE they have a checkout: the front
 #: door itself, and the command that fetches it. Both are shipped executables
@@ -256,7 +263,16 @@ def test_agents_md_is_short_enough_to_be_read():
     a bigger act than the one already forbidden — so the rule is written down
     beside it rather than left to be inferred."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 277, f"AGENTS.md is {len(lines)} lines; the cap is 277"
+    # 2026-09-09: 277 -> 303 — the family procedure gained the WORKSTATION
+    #   layout (#76). Seven lines say where `init` LANDS, because the doubled
+    #   `<Family>/<Family>` reads like a mistake until somebody explains it and
+    #   an assistant that "fixed" it would move a checkout. The rest is `make
+    #   siblings` / `family.py siblings` and, mostly, what it NEVER does: it
+    #   moves nothing (and neither may the assistant, `mv` in hand), and it
+    #   touches no existing clone beyond a fetch. A rule about not moving
+    #   somebody's checkout is the one an assistant cannot infer from the
+    #   others, so it is written down beside them.
+    assert len(lines) <= 303, f"AGENTS.md is {len(lines)} lines; the cap is 303"
 
 
 def test_claude_md_points_at_agents_md():
@@ -554,8 +570,22 @@ def test_readme_is_short_enough_to_be_read():
     #   `contracts/<role>-pin.yaml`), and the shape pin to
     #   `opensoft/openRepoShape`. Wrappers cost lines and no prose; a cap that
     #   refused them would be a cap on legibility rather than on words.
-    assert len(lines) <= 1014, (
-        f"README.md is {len(lines)} lines; the cap is 1014")
+    # 2026-09-09: 1014 -> 1059 — the family WORKSTATION layout (#76), ruled by
+    #   Brett Heap the same day. The Families section described a holder and
+    #   said nothing about the folder around it, so the first question anyone
+    #   asked — "is `InkRouter/InkRouter` the family, and what is the parent
+    #   folder?" — had no answer in this file, and the layout existed anyway,
+    #   arranged by hand. Its own `###` subsection, not a paragraph, because
+    #   three of its four halves are things a reader gets wrong separately:
+    #   where `init` LANDS (`<into>/<Family>/<Family>`, and why the doubled
+    #   name is kept), that there are TWO COPIES of every member on purpose
+    #   and which one you work in, and that nothing ever MOVES a checkout —
+    #   the warning-plus-`mv` instead, for the reason the deliberately-not-
+    #   proposed mover would have broken (linked worktrees carry absolute
+    #   paths). Six more lines extend the InkRouter tree to show the folder
+    #   and name `family.py siblings` in the command block.
+    assert len(lines) <= 1059, (
+        f"README.md is {len(lines)} lines; the cap is 1059")
 
 
 @pytest.mark.parametrize("name", SHIPPED_BASH)

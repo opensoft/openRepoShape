@@ -756,22 +756,67 @@ them one gate, one release and one pin, which is the opposite of what "deploy
 separately" means. **Use one project when the parts ship together** — that is
 what the spec and code legs already are.
 
+### The workstation layout: a plain folder, and two copies of every member
+
+Ruled by **Brett Heap on 2026-09-09** (issue #76). The holder is a repository;
+the thing AROUND it is a **plain folder named after the family**, and the
+members' working clones sit beside the holder in it:
+
+```
+InkRouter/                      a PLAIN FOLDER, not a git repository
+  InkRouter/                    the holder: family.yaml, members/ (pinned, detached)
+  IRRS/                         a WORKING clone of InkRouter/IRRS, on main
+  IRSS/                         a WORKING clone of InkRouter/IRSS, on main
+  IRRS-worktrees/…              whatever the member's own work needs
+  session-handoff-*.md          the estate's own files live in the folder
+```
+
+`scripts/family.py init` lands the holder there: `--into <dir>` is the PARENT
+directory (the directory you are standing in, by default), the folder
+`<Family>/` is created in it, and the holder is cloned INSIDE that at
+`<into>/<Family>/<Family>` — the same "lands where you were standing" rule
+projects have. Standing in the family folder already, it does not nest a
+second one. `--work-dir` remains the override that lands `<work-dir>/<Family>`
+and makes no folder. The doubled name is kept on purpose: the holder keeps its
+own repository name and `family.yaml` is what tells the two apart.
+
+`make siblings` in the holder — or `python3 scripts/family.py siblings
+--family-root <path>`, the same file through the other entry point — clones
+each member at `../<Project>` from the same url `make bootstrap` uses, then
+runs the member's own bootstrap so its legs are on their tracking branches.
+**TWO COPIES OF EVERY MEMBER is correct and intended:** `members/<Project>`
+inside the holder is pinned and DETACHED, and is what `bootstrap` and
+`validate` read; the sibling beside the holder is where a human works, and
+`family.py bump` is how the family follows it. An existing clone is
+**fetched and nothing else** — no checkout, no reset, no pull — and one that
+is a different repository is reported and skipped. It is idempotent.
+
+**Nothing ever moves a checkout.** When the holder's parent folder is not
+named after the family, `make siblings` WARNS and prints the exact `mv` for a
+human to run. A tool that relocated the directory would do it out from under
+the shell, the editor and every agent lane standing in it, and would break
+linked worktrees, whose `.git` files carry absolute paths — an act by
+surprise, which is the one thing every refusal here exists to avoid.
+
 ### The InkRouter example
 
 Eight services, each its own project, one holder:
 
 ```
-InkRouter/                      the family holder — family.yaml, members/, utilities
-  members/IRRS   -> InkRouter/IRRS    assembly root, mounting IRRS-spec and IRRS-code
-  members/IRSS   -> InkRouter/IRSS    assembly root, mounting IRSS-spec and IRSS-code
-  …six more, added as they arrive
+InkRouter/                      the family FOLDER (see the layout above)
+  InkRouter/                    the family holder — family.yaml, members/, utilities
+    members/IRRS -> InkRouter/IRRS    assembly root, mounting IRRS-spec and IRRS-code
+    members/IRSS -> InkRouter/IRSS    assembly root, mounting IRSS-spec and IRSS-code
+    …six more, added as they arrive
+  IRRS/  IRSS/  …               the same members as WORKING clones, on main
 ```
 
 ```sh
-python3 scripts/family.py init --org InkRouter --family InkRouter     --reuse-empty-repo
-python3 scripts/family.py add  --family-root ../InkRouter     --member InkRouter/IRRS
-python3 scripts/family.py bump --family-root ../InkRouter     --member IRRS --to <40 hex>
-python3 scripts/family.py remove --family-root ../InkRouter --member IRRS
+python3 scripts/family.py init --org InkRouter --family InkRouter --into .. --reuse-empty-repo
+python3 scripts/family.py add  --family-root ../InkRouter/InkRouter --member InkRouter/IRRS
+python3 scripts/family.py bump --family-root ../InkRouter/InkRouter --member IRRS --to <40 hex>
+python3 scripts/family.py remove --family-root ../InkRouter/InkRouter --member IRRS
+python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter
 ```
 
 `add`, `bump` and `remove` each write ONE commit, with explicit pathspecs,
