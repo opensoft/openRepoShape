@@ -1262,21 +1262,21 @@ def test_a_credential_helper_that_is_not_ghs_is_left_alone(monkeypatch,
     assert "credential helper" not in capsys.readouterr().err
 
 
-# --- --doctor ---------------------------------------------------------------
+# --- --preflight ------------------------------------------------------------
 
 def test_doctor_exits_zero_when_the_machine_is_ready(tmp_path):
     """`--local-remote-dir` so `gh` is neither required nor asked about (the
     rule the whole suite runs under), and the directory it names is NOT
     created: the doctor examines the machine and nothing else."""
     remotes = tmp_path / "remotes"
-    result = run_entry("--doctor", "--local-remote-dir", str(remotes))
+    result = run_entry("--preflight", "--local-remote-dir", str(remotes))
     assert result.returncode == 0, result.stderr + result.stdout
     assert "(1) preflight" in result.stdout
     assert "this machine is ready." in result.stdout
     assert "nothing was created" in result.stdout
     for later in ("(2) organisation", "(3) project", "(4) naming policy",
                   "(5) the plan", "(6) scaffold"):
-        assert later not in result.stdout, f"--doctor reached {later}"
+        assert later not in result.stdout, f"--preflight reached {later}"
     assert not remotes.exists()
 
 
@@ -1298,10 +1298,10 @@ def test_doctor_exits_one_when_a_prerequisite_is_missing(monkeypatch, capsys,
 def test_doctor_needs_no_org_and_clones_nothing(tmp_path):
     """It returns before the checkout probe, before self-bootstrap and before
     the `--org` handshake - so the organisation those need is never asked
-    for. The mechanism is POSITION in `_main`, not a rule about `--doctor`
+    for. The mechanism is POSITION in `_main`, not a rule about `--preflight`
     written into any of them."""
     outside = make_outside_checkout(tmp_path)
-    result = run_entry("--doctor",
+    result = run_entry("--preflight",
                        "--local-remote-dir", str(tmp_path / "remotes"),
                        cwd=outside, script=outside / "setup-project.py",
                        extra_env={"OPENREPOSHAPE_SELF_BOOTSTRAP": "1"})

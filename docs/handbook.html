@@ -486,7 +486,7 @@
           <h4>The fastest path &mdash; macOS, Linux, WSL2</h4>
           <div class="code" data-lang="sh"><pre><code>curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/openRepoShape \
     | bash -s -- --install
-openRepoShape --doctor
+openRepoShape --preflight
 openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
           <p class="sub">That first line installs ONE command into <code>~/.local/bin</code>. The
           estate verbs <code>park</code> and <code>resume</code>, for <a href="#park">carrying
@@ -753,14 +753,14 @@ sudo dnf install gh</code></pre></div>
 
           <li><div>
             <h3>Check the machine, creating nothing</h3>
-            <div data-platform="linux mac wsl" class="code" data-lang="sh"><pre><code>openRepoShape --doctor</code></pre></div>
-            <div data-platform="win" class="code" data-lang="powershell"><pre><code>py setup-project.py --doctor</code></pre></div>
+            <div data-platform="linux mac wsl" class="code" data-lang="sh"><pre><code>openRepoShape --preflight</code></pre></div>
+            <div data-platform="win" class="code" data-lang="powershell"><pre><code>py setup-project.py --preflight</code></pre></div>
             <p data-platform="linux">It checks this machine, offers what is missing and creates nothing. It exits 0 when
             everything is present and 1 when it is not.</p>
             <p data-platform="mac">It exits 0 when everything is present and 1 when it is not, and creates nothing. This
             is also where a <code>python3</code> below 3.9 is named.</p>
             <p data-platform="win">It exits 0 when everything is present and 1 when it is not.
-            <code>python setup-project.py --doctor</code> is the same command on a machine with no
+            <code>python setup-project.py --preflight</code> is the same command on a machine with no
             <code>py</code>: Python from the Microsoft Store installs <code>python</code> and no
             launcher at all.</p>
             <p data-platform="wsl">It exits 0 when everything is present and 1 when it is not.</p>
@@ -1581,7 +1581,7 @@ resume InkRouter                # on workstation B, and the estate is back</code
       <p>Licence <strong>Apache-2.0</strong>. See <code>LICENSE</code> in the repository.</p>
       <p><a href="https://github.com/opensoft/openRepoShape#readme">github.com/opensoft/openRepoShape</a></p>
       <p class="meta">First cut from README.md at c093813 (#71); regenerated at cbca5b4 (#89).
-      README.md blob f7a81dd3027c91c6c8789c592d425df3be52c22b. Every command, flag, exit code and
+      README.md blob f997945ae020e8c8498baaa73b62e781f1897fa0. Every command, flag, exit code and
       file name on this page is quoted from that README and from AGENTS.md.</p>
     </footer>
   </main>

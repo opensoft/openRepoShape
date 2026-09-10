@@ -144,8 +144,8 @@ run the four steps below INSIDE the WSL shell.
 > attached there is no offer at all. Homebrew is the one install never run for
 > you: on a Mac without `brew` the preflight names <https://brew.sh> and stops
 > there. To check a machine and stop, creating nothing, run
-> `openRepoShape --doctor` — `py setup-project.py --doctor` on Windows — which
-> exits 0 when everything is present and 1 when it is not.
+> `openRepoShape --preflight` — `py setup-project.py --preflight` on Windows —
+> which exits 0 when everything is present and 1 when it is not.
 
 **1. Install the GitHub CLI**, `gh`. The official instructions are at
 <https://cli.github.com/> (and <https://github.com/cli/cli#installation>):
@@ -313,7 +313,7 @@ and wants a project `Atlas`.
 (install: https://cli.github.com/); and an organisation on GitHub you can
 create repositories in. `make` is not used by the entry point — it runs
 `python3 scripts/bootstrap.py` — and stays a convenience for `make validate`.
-Or run `openRepoShape --doctor`, which checks this machine, offers what is
+Or run `openRepoShape --preflight`, which checks this machine, offers what is
 missing and creates nothing.
 
 **2. Login.** `gh auth login`, as the account that will own the act: a member

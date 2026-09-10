@@ -59,7 +59,7 @@ OPENREPOTOOLS_INSTALL = (
 USAGE_LINES = (
     "openRepoShape <Project> [--org <org>] [setup-project.py options] [-- <scaffold flags>]",
     "openRepoShape --install            install (or update) this command into ~/.local/bin",
-    "openRepoShape --doctor             check this machine and stop; creates nothing",
+    "openRepoShape --preflight          check this machine and stop; creates nothing",
     "openRepoShape --help | --version",
 )
 
@@ -116,7 +116,7 @@ def run_cmd(*args: str, home: Path | None = None, env: dict | None = None,
 # --- what it says about itself ---------------------------------------------
 
 def test_help_prints_every_usage_line():
-    """Every line `--help` promises, including the `--doctor` one #59
+    """Every line `--help` promises, including the `--preflight` one #59
     added: a usage line nobody asserts on is a usage line that can go
     stale without anything noticing."""
     result = run_cmd("--help")
@@ -357,10 +357,10 @@ def test_a_family_value_is_never_taken_as_the_project(tmp_path):
     assert not (tmp_path / "remotes").exists()
 
 
-# --- --doctor ---------------------------------------------------------------
+# --- --preflight ------------------------------------------------------------
 
 def test_doctor_passes_through_without_an_org(tmp_path):
-    """`openRepoShape --doctor` is the "install program" without a second
+    """`openRepoShape --preflight` is the "install program" without a second
     program: the preflight, the offers it makes, and stop.
 
     This command insists on an organisation and on a `<Project>` because a
@@ -371,12 +371,12 @@ def test_doctor_passes_through_without_an_org(tmp_path):
     under.
     """
     remotes = tmp_path / "remotes"
-    result = run_cmd("--doctor", "--local-remote-dir", str(remotes))
+    result = run_cmd("--preflight", "--local-remote-dir", str(remotes))
     assert result.returncode == 0, result.stderr + result.stdout
     assert "(1) preflight" in result.stdout
     assert "this machine is ready." in result.stdout
     assert "organisation to scaffold into" not in result.stdout, (
-        "--doctor prompted for an organisation it has no use for")
+        "--preflight prompted for an organisation it has no use for")
     assert "no organisation to scaffold into" not in result.stderr
     assert "no <Project> given" not in result.stderr
     assert not remotes.exists()
@@ -385,7 +385,7 @@ def test_doctor_passes_through_without_an_org(tmp_path):
 def test_doctor_forwards_an_org_it_was_given(tmp_path):
     """A flag this command ATE would be a flag the person has to type twice
     to find out about. The doctor ignores it; it still travels."""
-    result = run_cmd("--doctor", "--org", "TestOrg",
+    result = run_cmd("--preflight", "--org", "TestOrg",
                      "--local-remote-dir", str(tmp_path / "remotes"))
     assert result.returncode == 0, result.stderr + result.stdout
     assert "(2) organisation" not in result.stdout
@@ -547,7 +547,7 @@ def test_the_fetched_setup_sh_lands_in_a_workdir_that_still_exists(offline_githu
     script RAN, and the directory it ran from is gone AFTERWARDS — the trap
     belongs to the main shell, so it fires at the end and not in the middle.
     """
-    result = run_cmd("--doctor", setup_sh=None, env=offline_github)
+    result = run_cmd("--preflight", setup_sh=None, env=offline_github)
     assert result.returncode == 0, result.stderr + result.stdout
     assert "No such file or directory" not in result.stdout + result.stderr
     assert "could not fetch" not in result.stderr
@@ -555,7 +555,7 @@ def test_the_fetched_setup_sh_lands_in_a_workdir_that_still_exists(offline_githu
     assert match, ("the fetched setup.sh never ran:\n"
                    + result.stdout + result.stderr)
     ran_in, forwarded = match.group(1), match.group(2).split()
-    assert "--doctor" in forwarded, forwarded
+    assert "--preflight" in forwarded, forwarded
     assert not Path(ran_in).exists(), (
         f"{ran_in} outlived the command; the EXIT trap did not fire")
 

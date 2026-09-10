@@ -641,13 +641,13 @@ def test_readme_is_short_enough_to_be_read():
     #   then "yes" to an offer rather than an installer. Twelve lines are the
     #   lead that says the four steps are the REFERENCE and the tool offers
     #   the rest, on what terms (a typed `yes` each time, never `--yes`, never
-    #   Homebrew, no terminal no offer), and that `--doctor` checks a machine
+    #   Homebrew, no terminal no offer), and that `--preflight` checks a
     #   and creates nothing. Four more are the `git` install commands for the
     #   four platforms: a command this tool would RUN that no document shows
     #   is exactly what `test_the_offer_commands_are_the_ones_the_readme_
     #   documents` refuses, and the person who declines an offer reads the
     #   same line to type by hand. The rest are one clause in the worked
-    #   example's preflight sentence and one naming `--doctor` in its
+    #   example's preflight sentence and one naming `--preflight` in its
     #   requirements, because a reader who meets the offers only in the Quick
     #   start meets them once.
     # 2026-09-06: 967 -> 971 — issue #68, Brett Heap's ruling in session: "fix
@@ -995,7 +995,7 @@ def test_the_windows_commands_name_files_that_exist(name):
         "the file downloaded and the file saved must be the same name")
 
     # ALL of them, not the only one. The README names a second `py` line
-    # since #59 (`py setup-project.py --doctor`, the Windows spelling of the
+    # since #59 (`py setup-project.py --preflight`, the Windows spelling of
     # preflight-and-stop run), and an unpack of a single match would have
     # raised a ValueError on a README that is not wrong. The honest rule is
     # the one asserted here anyway: EVERY `py <file>` in these documents
