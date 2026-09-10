@@ -1201,14 +1201,17 @@ def test_the_handbook_follows_the_readmes_outline():
     agree, which is the thing this repository spends a whole section
     refusing.
 
-    Check (4) is SKIPPED, and only check (4), when the named commit is not in
-    this clone — a `fetch-depth: 1` CI checkout has exactly one commit, so
-    the object is absent there and `git diff` would fail on the object rather
-    than on the drift. The first three checks are tree-only and run
-    everywhere, which is deliberate: the failure #89 was written for (a
-    README section the page never gained) is caught by check 1 in CI, and
-    check 4 bites on every developer machine, where the regeneration would
-    actually be done.
+    Check (4) is SKIPPED, and only check (4), when the named commit is not
+    in this clone: `git diff` would fail on the missing object rather than on
+    the drift, which is a failure about the clone and not about the page. A
+    SHALLOW clone is the case that hits it — `git clone --depth 1` has
+    exactly one commit — and CI IS NO LONGER ONE. Ruled by Brett Heap on
+    2026-09-10: *set fetch-depth 0 so the staleness check bites in CI*, so
+    all three jobs in `.github/workflows/tests.yml` now check out with
+    `fetch-depth: 0` and name this test as the reason. Before that it was the
+    wrong way round — green in CI, red only on the machine where the page
+    would be regenerated. The first three checks are tree-only and run in any
+    clone, shallow or not.
     """
     readme_h2s = _readme_h2s(REPO / "README.md")
     page = (REPO / "docs" / "handbook.html").read_bytes().decode("utf-8")
