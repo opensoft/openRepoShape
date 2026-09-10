@@ -303,9 +303,20 @@ def test_agents_md_is_short_enough_to_be_read():
     before anyone is told the estate is parked — a member SKIPPED for want of
     a working clone beside the holder was never asked at all, which is the
     one outcome an assistant reads as success. The mechanics themselves are
-    the Speckit git extension's and are deliberately NOT described here."""
+    the Speckit git extension's and are deliberately NOT described here.
+
+    342 -> 344 on 2026-09-10, for point 4's exception (#84). `apply` had
+    refused every `both` row before it ever consulted `--accept-local`, so
+    the exit this file already documented — merge by hand, commit, re-run
+    with `--accept-local <path>` — could never actually be taken; the tool
+    was fixed to match the file rather than the other way around. The one
+    sentence added says where that commit goes: on the branch `apply` is
+    then pointed at with `--branch`, because that is the checkout the
+    documented exit leaves behind, and an assistant that recreated the
+    branch instead of committing onto the one already there would be
+    re-running the tool at the wrong git state."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 342, f"AGENTS.md is {len(lines)} lines; the cap is 342"
+    assert len(lines) <= 344, f"AGENTS.md is {len(lines)} lines; the cap is 344"
 
 
 def test_claude_md_points_at_agents_md():
