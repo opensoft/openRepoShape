@@ -280,7 +280,10 @@ def test_install_from_a_file_never_calls_gh(tmp_path):
     shim = tmp_path / "bin"
     shim.mkdir()
     marker = tmp_path / "gh-was-called"
-    (shim / "gh").write_text(f"#!/bin/sh\ntouch {marker}\nexit 1\n",
+    # QUOTED for the reason `fake_github`'s log is: an unquoted path with a
+    # space in it makes `touch` create two files, neither of them $marker, and
+    # a witness nobody can find is a test that passes without guarding.
+    (shim / "gh").write_text(f"#!/bin/sh\ntouch '{marker}'\nexit 1\n",
                              encoding="utf-8")
     (shim / "gh").chmod(0o755)
     result = run_cmd("--install", home=tmp_path,
@@ -492,9 +495,13 @@ def fake_github(tmp_path, served_names, log: Path | None = None) -> dict:
         f"*/contents/{name}\\?*) exec cat '{served / name}' ;;\n"
         for name in ("setup.sh", *served_names))
 
+    #: QUOTED, like the `exec cat` route above it: `tmp_path` is pytest's and
+    #: a `--basetemp` (or a $TMPDIR) with a space in it would otherwise split
+    #: the redirection target, so the log would land in the wrong place and
+    #: the assertion that reads it would pass on an empty file.
     def logging(program):
         return "" if log is None else \
-            f'printf \'{program} %s\\n\' "$*" >> {log}\n'
+            f'printf \'{program} %s\\n\' "$*" >> \'{log}\'\n'
 
     (fake / "gh").write_text(
         "#!/bin/sh\n"
