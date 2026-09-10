@@ -399,9 +399,19 @@ def test_agents_md_is_short_enough_to_be_read():
     human's. Reading the `machine` row as a fault in the repository, when it
     is `n/a` and about the workstation. And `--json`, one line, because an
     agent acting on a row should not be parsing a table. The clause is one
-    more item in the opening paragraph's list of what the sections cover."""
+    more item in the opening paragraph's list of what the sections cover.
+
+    2026-09-10: 390 -> 395 — the two shim behaviours (#95, on Brett Heap's
+    "add the two shim behaviours too"). Five lines under section 2, where an
+    assistant already reads what the installed command does: that a BARE run
+    prints usage and exits 1 rather than refusing about an organisation
+    nobody asked about, that `--install` ends with a read-only `machine:`
+    block, and — the half an assistant gets wrong — that NEITHER installs
+    anything, so the block is relayed and `--preflight` is the human's to
+    run. An assistant who read only the first half would answer the block by
+    installing something."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 390, f"AGENTS.md is {len(lines)} lines; the cap is 390"
+    assert len(lines) <= 395, f"AGENTS.md is {len(lines)} lines; the cap is 395"
 
 
 def test_claude_md_points_at_agents_md():
@@ -860,8 +870,22 @@ def test_readme_is_short_enough_to_be_read():
     #   being wrong. The registry paragraph is three lines and is the only
     #   forward-looking one: it says a repair mode hangs off an empty slot,
     #   so nobody proposes the rewrite it exists to avoid.
-    assert len(lines) <= 1298, (
-        f"README.md is {len(lines)} lines; the cap is 1298")
+    # 2026-09-10: 1298 -> 1313 — the two shim behaviours (#95). Brett Heap:
+    #   "add the two shim behaviours too". Eight lines are the read-only
+    #   `machine:` block `--install` now ends with, and they are eight rather
+    #   than one because the useful half is what it does NOT do: it installs
+    #   nothing, asks nothing and changes no exit code, so a reader who meets
+    #   it as "the installer checked my machine" would wait for a prompt that
+    #   is not coming. `--preflight` is named as where the offers live, which
+    #   is the same "a refusal names its fix" rule the rest of this file is
+    #   built on. Seven are the bare run: it prints usage and exits 1 now
+    #   instead of refusing about an organisation nobody named, and the
+    #   sentence says both what the four lines are and that ANY scaffold
+    #   argument brings today's behaviour and today's refusals back — a
+    #   reader who learns only the first half will file the refusal they
+    #   earned as the new usage page misfiring.
+    assert len(lines) <= 1313, (
+        f"README.md is {len(lines)} lines; the cap is 1313")
 
 
 @pytest.mark.parametrize("name", SHIPPED_BASH)

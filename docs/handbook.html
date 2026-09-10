@@ -750,6 +750,17 @@ sudo dnf install gh</code></pre></div>
             <a href="#park">carrying in-flight work</a>, are
             <a href="https://github.com/opensoft/openRepoTools">opensoft/openRepoTools</a>&rsquo; and have an install line of
             their own.</p>
+            <p data-platform="linux mac wsl">It then prints a read-only <code>machine:</code> block
+            &mdash; <code>git</code>, <code>gh</code> and whether it is logged in,
+            <code>python3</code>, and <code>git-filter-repo</code>, which only
+            <a href="#adopt"><code>adopt-project.py</code></a> needs &mdash; each
+            <code>present</code> or <code>MISSING</code>, and one line pointing at
+            <code>openRepoShape --preflight</code> when something is. It installs nothing, asks
+            nothing, and changes no exit code: an offer belongs behind a typed <code>yes</code>,
+            which is what the next step is. <strong>Run with no arguments at all the command prints
+            its usage and exits 1</strong> &mdash; the four things it does, one line each: install
+            it, check the machine, <a href="#doctor">diagnose a repository</a>, scaffold a
+            project.</p>
           </div></li>
 
           <li><div>
@@ -1642,7 +1653,7 @@ resume InkRouter                # on workstation B, and the estate is back</code
       <p><a href="https://github.com/opensoft/openRepoShape#readme">github.com/opensoft/openRepoShape</a></p>
       <p class="meta">First cut from README.md at c093813 (#71); regenerated at cbca5b4 (#89);
       the repository doctor added at 2986031 (#95).
-      README.md blob 97fdfc866080e4913a8ce3c8ccd9d245676b8ee3. Every command, flag, exit code and
+      README.md blob 3d7b9534394ac9c4c9ec7b194731ffdc902163e5. Every command, flag, exit code and
       file name on this page is quoted from that README and from AGENTS.md.</p>
     </footer>
   </main>

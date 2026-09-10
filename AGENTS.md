@@ -54,7 +54,12 @@ curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup.s
 ```
 
 `openRepoShape <Project> --org <org> --visibility <…> --elected-by '<Name>'`
-is the same run through the installed command, still without `--yes`.
+is the same run through the installed command, still without `--yes`. The
+command with NO arguments prints its usage and exits 1 — install, check the
+machine (`--preflight`), diagnose a repository (`--doctor`), scaffold — and
+`--install` ends with a read-only `machine:` block naming anything missing.
+Neither installs anything; relay the block, and let the human run
+`--preflight` if they want the offers.
 
 On Windows without WSL2, `Invoke-WebRequest https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup-project.py -OutFile setup-project.py`
 then `py setup-project.py <Project> --org <org> --visibility <…> --elected-by '<Name>'`

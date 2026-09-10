@@ -211,6 +211,21 @@ not on `PATH`. The estate verbs `park` and `resume`, for [carrying in-flight
 work](#carrying-in-flight-work-to-another-workstation), are
 [opensoft/openRepoTools](https://github.com/opensoft/openRepoTools)' now.
 
+It then prints a **read-only `machine:` block** — `git`, `gh` and whether it
+is logged in, `python3`, and `git-filter-repo` (which only
+[`adopt-project.py`](#adopting-an-existing-repository) needs) — each `present`
+or `MISSING`, and one line pointing at `openRepoShape --preflight` when
+something is. It installs nothing, asks nothing and changes no exit code: the
+copy that was just placed is placed either way, and an offer belongs behind a
+typed `yes`, which is what `--preflight` is.
+
+**Run with no arguments at all, it prints its usage and exits 1** — the four
+things it does, one line each: install it, check the machine
+(`--preflight`), diagnose a repository
+([`--doctor`](#is-this-repository-compliant-openreposhape---doctor)),
+scaffold a project. Type any scaffold argument and you get the run you asked
+for, refusals and all.
+
 **4. Run it:**
 
 ```sh
