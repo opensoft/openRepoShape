@@ -16,6 +16,9 @@ import pytest
 
 from conftest import REPO, SCAFFOLD, WINDOWS_SKIP
 
+sys.path.insert(0, str(REPO / "scripts"))
+from repo_shape import NamingPolicy  # noqa: E402
+
 SHIPPED = [
     REPO / "setup-project.py",
     REPO / "scaffold-project.py",
@@ -1004,3 +1007,77 @@ def test_no_committed_file_names_a_host_absolute_path():
             offenders[rel] = hits
     assert not offenders, (
         f"committed file(s) name a host-absolute path: {offenders}")
+
+
+#: Spelled counts, not numerals: no sentence in this repository writes "6
+#: naming families", so a numeral would be exactly as wrong as the wrong
+#: word. Carried a little past the current six so the mapping does not need
+#: to grow again the next time a form is added.
+NAMING_FAMILIES_NUMBER_WORDS = {
+    1: "one", 2: "two", 3: "three", 4: "four", 5: "five",
+    6: "six", 7: "seven", 8: "eight", 9: "nine", 10: "ten",
+}
+
+#: The two words every prose count of the policy's top-level forms shares,
+#: whichever number spells it: "five naming families", "the four naming
+#: families", "six naming families, as data".
+NAMING_FAMILIES_COUNT_RE = re.compile(r"(\w+) naming families")
+
+
+def test_every_naming_families_count_matches_the_policy():
+    """#87: three files disagreed with `contracts/repository-naming.yaml`,
+    and with each other. `docs/handbook.html` said "five naming families" in
+    "The three legs" and "four naming families" in the Layout table, plus an
+    aside quoting the README's own now-stale "four naming families" - the
+    README itself had already moved to six. `templates/assembly-root/
+    README.md`, a TEMPLATED file whose bytes are copied into every newly
+    scaffolded project, had said "the four naming families" since #1.
+    Nothing tied any of the three sentences to the DATA, so the sixth form
+    landing in #86 (`workspace`, `<user>-wip`) moved the count and none of
+    the prose that quotes it.
+
+    The expected word comes from the policy itself, never written here as a
+    literal: `NamingPolicy.load(...).families` is the same top-level list
+    `scripts/validate-repository-naming.py --explain` reports the length of,
+    and that `tests/test_naming_policy.py` parametrizes over as
+    `FAMILY_IDS`. `project-leg`'s three `roles:` (assembly/spec/code) nest
+    one level deeper, under THAT family's own `roles:` key, and are not
+    counted again - `NamingPolicy.__init__` reads only the top-level
+    `families:` list. A SEVENTH form added to the data moves what this test
+    requires without anybody having to remember to update it too, which is
+    the point: the drift #87 found cannot recur silently.
+
+    The search is tree-wide, in the style of the host-absolute-path test
+    just above: every file `git ls-files` tracks whose name ends `.md` or
+    `.html`, decoded as UTF-8 (a decode failure is skipped, not failed -
+    this test is about prose, not encoding). Grepping the tree once by hand
+    while writing this test found the phrase in exactly three of the
+    repository's eighteen tracked `.md`/`.html` files: `README.md`,
+    `docs/handbook.html` and `templates/assembly-root/README.md`, all three
+    fixed above. `templates/family-root/README.md` - named in #87 as a file
+    carrying the same risk - has no "naming families" sentence at all
+    today, so it contributes no match; the dynamic scan still walks it, so
+    a copy of the sentence landing there later is caught the same way, with
+    no change to this test required.
+    """
+    policy = NamingPolicy.load(REPO / "contracts" / "repository-naming.yaml")
+    expected = NAMING_FAMILIES_NUMBER_WORDS[len(policy.families)]
+    tracked = subprocess.run(["git", "ls-files"], cwd=str(REPO),
+                             capture_output=True, text=True,
+                             check=True).stdout.splitlines()
+    offenders = {}
+    for rel in tracked:
+        if not rel.lower().endswith((".md", ".html")):
+            continue
+        try:
+            text = (REPO / rel).read_bytes().decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        wrong = [w for w in NAMING_FAMILIES_COUNT_RE.findall(text)
+                 if w.lower() != expected]
+        if wrong:
+            offenders[rel] = wrong
+    assert not offenders, (
+        f"'<word> naming families' should say {expected!r} "
+        f"(contracts/repository-naming.yaml declares {len(policy.families)} "
+        f"top-level families) but found: {offenders}")
