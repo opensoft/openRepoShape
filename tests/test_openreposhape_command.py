@@ -360,12 +360,12 @@ def test_a_family_value_is_never_taken_as_the_project(tmp_path):
 
 # --- --preflight ------------------------------------------------------------
 
-def test_doctor_passes_through_without_an_org(tmp_path):
+def test_preflight_passes_through_without_an_org(tmp_path):
     """`openRepoShape --preflight` is the "install program" without a second
     program: the preflight, the offers it makes, and stop.
 
     This command insists on an organisation and on a `<Project>` because a
-    run that gets past it CREATES three repositories. A doctor run creates
+    run that gets past it CREATES three repositories. A preflight run creates
     nothing, so both refusals are skipped rather than answered - and with
     `input=""` there is no terminal here either, so the preflight makes no
     offer and installs nothing, which is the rule this whole suite runs
@@ -383,9 +383,9 @@ def test_doctor_passes_through_without_an_org(tmp_path):
     assert not remotes.exists()
 
 
-def test_doctor_forwards_an_org_it_was_given(tmp_path):
+def test_preflight_forwards_an_org_it_was_given(tmp_path):
     """A flag this command ATE would be a flag the person has to type twice
-    to find out about. The doctor ignores it; it still travels."""
+    to find out about. The preflight ignores it; it still travels."""
     result = run_cmd("--preflight", "--org", "TestOrg",
                      "--local-remote-dir", str(tmp_path / "remotes"))
     assert result.returncode == 0, result.stderr + result.stdout

@@ -346,6 +346,15 @@ def run_validator(ctx: Context, script: Path, args: list[str]) -> tuple:
     # UTF-8 whatever the console is: these validators print this repository's
     # own prose, and `ascii_text` flattens it for the report afterwards.
     env["PYTHONIOENCODING"] = "utf-8"
+    # AND NOT ONE BYTE INTO THE TREE. Running a project's own
+    # `scripts/validate-pins.py` as a subprocess makes CPython write
+    # `scripts/__pycache__/` beside it -- in somebody else's repository, from
+    # a command whose first promise is that it writes nothing. A `.pyc` is
+    # the interpreter's cache and not this tool's output, which is exactly
+    # why it must not be left behind: nobody would look for it here.
+    # `tests/test_shape_doctor.py::test_the_doctor_writes_nothing` is what
+    # holds the promise, and it found this.
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
     proc = subprocess.run([sys.executable, str(script), *args],
                           cwd=str(ctx.root), capture_output=True, text=True,
                           encoding="utf-8", errors="replace", check=False,

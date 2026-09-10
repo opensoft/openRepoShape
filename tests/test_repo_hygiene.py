@@ -25,6 +25,7 @@ SHIPPED = [
     REPO / "bootstrap",
     REPO / "adopt-project.py",
     REPO / "update-shape.py",
+    REPO / "shape-doctor.py",
     REPO / "scripts" / "repo_shape.py",
     REPO / "scripts" / "shape_materialize.py",
     REPO / "scripts" / "path_classify.py",

@@ -1264,10 +1264,10 @@ def test_a_credential_helper_that_is_not_ghs_is_left_alone(monkeypatch,
 
 # --- --preflight ------------------------------------------------------------
 
-def test_doctor_exits_zero_when_the_machine_is_ready(tmp_path):
+def test_preflight_exits_zero_when_the_machine_is_ready(tmp_path):
     """`--local-remote-dir` so `gh` is neither required nor asked about (the
     rule the whole suite runs under), and the directory it names is NOT
-    created: the doctor examines the machine and nothing else."""
+    created: the preflight examines the machine and nothing else."""
     remotes = tmp_path / "remotes"
     result = run_entry("--preflight", "--local-remote-dir", str(remotes))
     assert result.returncode == 0, result.stderr + result.stdout
@@ -1280,7 +1280,7 @@ def test_doctor_exits_zero_when_the_machine_is_ready(tmp_path):
     assert not remotes.exists()
 
 
-def test_doctor_exits_one_when_a_prerequisite_is_missing(monkeypatch, capsys,
+def test_preflight_exits_one_when_a_prerequisite_is_missing(monkeypatch, capsys,
                                                          tmp_path):
     """In-process on purpose: a PATH-stripped subprocess is a POSIX trick and
     this file carries no Windows skip."""
@@ -1289,13 +1289,13 @@ def test_doctor_exits_one_when_a_prerequisite_is_missing(monkeypatch, capsys,
     monkeypatch.setattr(module.shutil, "which", _which())
     monkeypatch.setattr(module, "run", _Runs())
     opts = module.parse_args([], str(tmp_path))
-    assert module.doctor(opts) == 1
+    assert module.preflight_only(opts) == 1
     printed = capsys.readouterr()
     assert "this machine is not ready yet" in printed.err
     assert "nothing was created" in printed.out
 
 
-def test_doctor_needs_no_org_and_clones_nothing(tmp_path):
+def test_preflight_needs_no_org_and_clones_nothing(tmp_path):
     """It returns before the checkout probe, before self-bootstrap and before
     the `--org` handshake - so the organisation those need is never asked
     for. The mechanism is POSITION in `_main`, not a rule about `--preflight`
