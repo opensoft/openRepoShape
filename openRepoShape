@@ -15,11 +15,12 @@
 # passing every other argument through untouched. The README's long
 # `curl … | bash -s -- --org … --project …` line and this do the same thing.
 #
-# `--install` PLACES THREE COMMANDS, not one: this file, `park` and `resume`
-# (#82). One install line for the whole standard, so a second engineer gets
-# the estate verbs from the README's one line and nothing depends on anyone's
-# dotfiles. The two of them add no behaviour either — they find the estate and
-# run its own `make park` / `make resume`.
+# `--install` PLACES ONE COMMAND: this file. `park` and `resume` were placed
+# beside it until 2026-09-10 and are opensoft/openRepoTools' now (#92), with an
+# installer of their own — which this one PRINTS and never runs. A command that
+# reached into another repository to finish its own install would make the
+# standard depend on its tools at runtime, and that is the direction the carve
+# exists to forbid: tools depend on the shape, the shape depends on nothing.
 
 set -euo pipefail
 
@@ -56,23 +57,20 @@ argument reaches setup.sh unchanged: --visibility, --elected-by, --family,
 hands on to scaffold-project.py. `./setup.sh --help` prints setup-project.py's
 usage, which lists them all.
 
-`--install` places THREE commands, and each is one file:
+`--install` places ONE command, and it is this one file:
 
   openRepoShape <Project> --org <org>    scaffold a project
-  park [<Name>]                          commit, push and RECORD an estate's
-                                         open features, so another workstation
-                                         can take the work up
-  resume [<Name>]                        clone or fast-forward that estate here
-                                         and recreate those features
 
-`park --help` and `resume --help` say the rest. Neither implements any of the
-mechanics: they find the estate under your projects directory and run its own
-`make park` / `make resume`, which run the Speckit git extension's scripts.
+The estate verbs are not here. `park` and `resume` — commit, push and RECORD an
+estate's open features, then rebuild them on the next workstation — are
+opensoft/openRepoTools', and its own installer places them:
+
+  curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoTools/main/openRepoTools | bash -s -- --install
 
   $OPENREPOSHAPE_REPO       owner/name to fetch from (default opensoft/openRepoShape)
   $OPENREPOSHAPE_REF        the ref to fetch it at   (default main)
   $OPENREPOSHAPE_ORG        the organisation, when --org is not given
-  $OPENREPOSHAPE_BIN_DIR    where --install puts them (default ~/.local/bin)
+  $OPENREPOSHAPE_BIN_DIR    where --install puts it  (default ~/.local/bin)
   $OPENREPOSHAPE_SETUP_SH   run this setup.sh on disk instead of fetching one
 USAGE
 }
@@ -132,27 +130,31 @@ shape_clone_url() {
 	esac
 }
 
-# THE THREE COMMANDS `--install` PLACES (#82). One list, so the installer, the
-# fetch fallback and the tests cannot disagree about what a complete install
-# is. `openRepoShape` is first because it is the one a person types to get the
-# other two.
-INSTALLABLES=(openRepoShape park resume)
+# WHAT `--install` PLACES. One list, so the installer, the fetch fallback and
+# the tests cannot disagree about what a complete install is. It held three
+# names from #82 until 2026-09-10 and holds one again (#92): `park` and
+# `resume` are opensoft/openRepoTools'.
+INSTALLABLES=(openRepoShape)
 
-# ALL THREE IN HAND BEFORE ANY OF THEM IS PLACED (#82, F10 of the review on
+# EVERY ONE IN HAND BEFORE ANY OF THEM IS PLACED (#82, F10 of the review on
 # #83). One file at a time, dying on the first fetch that failed, left a
 # person with a NEW `openRepoShape` and no `park` — a half-install that says
 # `installed at` and is not one — and there was nothing on screen to say which
-# of the three were missing. Now every one is collected into the temporary
-# directory first: a failure there replaces NOTHING, names what was not
-# fetched, and exits.
+# files were missing. Now every one is collected into the temporary directory
+# first: a failure there replaces NOTHING, names what was not fetched, and
+# exits.
+#
+# KEPT WHOLE AT ONE INSTALLABLE (#92). The guarantee is a property of the
+# STRUCTURE and not of the count, and an installer that holds it only while
+# the list is long is an installer that loses it the next time somebody
+# shortens the list — which is this commit.
 collect_commands() {
 	local name selfdir="" missing=""
 	# Run from a file, install THOSE bytes: `--install` then needs no network
-	# and no `gh` at all — and `park` and `resume` sit BESIDE this file, in the
-	# checkout and in the repository alike, so the siblings that are there are
-	# copied and only a missing one is fetched. Run from stdin (`curl … | bash
-	# -s -- --install`) there is no file to copy from at all, so each of the
-	# three is fetched at this same ref.
+	# and no `gh` at all, and a name in $INSTALLABLES that is not beside this
+	# file is fetched instead. Run from stdin (`curl … | bash -s -- --install`)
+	# there is no file to copy from at all, so every one of them is fetched at
+	# this same ref.
 	if [ -f "$SELF" ]; then
 		selfdir="$(cd -- "$(dirname -- "$SELF")" && pwd)"
 	fi
@@ -168,9 +170,9 @@ collect_commands() {
 			missing="${missing:+$missing }$name"
 	done
 	[ -z "$missing" ] || die "could not fetch $missing from $REPO at $REF, so NOTHING was installed
-    and nothing already installed was replaced. \`--install\` places all
-    ${#INSTALLABLES[@]} commands or none: a new openRepoShape beside a missing park is
-    a half-install that reads like a whole one. Both ways were tried:
+    and nothing already installed was replaced. \`--install\` places every one
+    of the ${#INSTALLABLES[@]} it collects or none of them: a new command beside a missing
+    one is a half-install that reads like a whole one. Both ways were tried:
     gh api repos/$REPO/contents/<file>?ref=$REF
     curl -fsSL https://raw.githubusercontent.com/$REPO/$REF/<file>"
 }
@@ -194,11 +196,23 @@ install_commands() {
 		placed=$((placed + 1))
 		say "$name: $verb"
 	done
-	# THE COUNT, out loud: a person reading three lines cannot tell whether a
-	# fourth was meant to be there, and this object is the one that made
-	# `--install` plural.
+	# THE COUNT, out loud, and kept at one installable (#92): it costs a line
+	# and is what keeps $INSTALLABLES honest — a person reading N lines cannot
+	# tell whether an N+1th was meant to be there. The sentence that made
+	# `--install` plural is the pointer's job now.
 	say "openRepoShape: $placed of ${#INSTALLABLES[@]} placed in $dir"
-	# ONE PATH NOTE for the three of them: the directory is the same one.
+	# THE POINTER, unconditional and TEXT ONLY (#92). Nothing here is fetched
+	# from opensoft/openRepoTools and nothing checks whether its installer has
+	# been run: this command reports where the estate verbs come from and stops
+	# there. The `curl` line is byte-identical to the one README.md carries,
+	# and `tests/test_repo_hygiene.py` is what holds the copies together.
+	say "  park and resume are installed by openRepoTools, not by this command:"
+	say "    curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoTools/main/openRepoTools | bash -s -- --install"
+	# THE PATH NOTE, last, and it is about the directory THIS command just
+	# wrote to — `$OPENREPOSHAPE_BIN_DIR`, nothing else. openRepoTools reads
+	# its own `$OPENREPOTOOLS_BIN_DIR` and defaults to the same
+	# `~/.local/bin`, so the two land together on a machine that sets
+	# neither and in two places on a machine that sets one.
 	case ":${PATH:-}:" in
 	*":$dir:"*) ;;
 	*)

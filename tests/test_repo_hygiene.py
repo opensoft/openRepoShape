@@ -48,11 +48,12 @@ LOCAL_MODULES = {"repo_shape", "shape_materialize", "path_classify",
                  "conftest", "bootstrap"}
 
 #: The bash scripts a person runs BEFORE they have a checkout, or with no
-#: checkout in sight at all: the front door itself, the command that fetches
-#: it, and — since #82 — the two estate verbs `openRepoShape --install` places
-#: beside it. Every one is a shipped executable and is held to the same
-#: shebang, mode bit and `set -euo pipefail` rule.
-SHIPPED_BASH = ["setup.sh", "openRepoShape", "park", "resume"]
+#: checkout in sight at all: the front door itself and the command that
+#: fetches it. `park` and `resume` were here from #82 until the carve (#92)
+#: and are opensoft/openRepoTools' now, held to these same rules by that
+#: repository's own copy of this test. Every one is a shipped executable and
+#: is held to the same shebang, mode bit and `set -euo pipefail` rule.
+SHIPPED_BASH = ["setup.sh", "openRepoShape"]
 
 #: The entry point a person runs BEFORE they have a checkout on a machine with
 #: no bash: the same front door, on an interpreter alone. Held to the same
@@ -369,9 +370,20 @@ def test_agents_md_is_short_enough_to_be_read():
     refusal: `resume`'s own bare form keeps ruling 3 deliberately, because
     rebuilding every estate on a fresh machine by accident is the opposite
     risk, and an assistant is never to name one estate on the person's behalf
-    to route around it."""
+    to route around it.
+
+    381 -> 351 on 2026-09-10, DOWNWARD, for the carve (#92): `park` and
+    `resume` are opensoft/openRepoTools' commands now, so the
+    installed-commands paragraph and points 5 and 6 left this file for that
+    repository's AGENTS.md, and two lines pointing at it replace them. The
+    cap follows the file down rather than banking thirty lines nobody argued
+    for — the two entries above it earn their headroom with rules that are no
+    longer here, and a cap left at 381 would let the next procedure spend
+    them without anybody making the case. Points 1-4 stay: they are about
+    `make park` and `make resume`, which this standard still ships in both
+    root templates."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 381, f"AGENTS.md is {len(lines)} lines; the cap is 381"
+    assert len(lines) <= 351, f"AGENTS.md is {len(lines)} lines; the cap is 351"
 
 
 def test_claude_md_points_at_agents_md():
@@ -791,8 +803,24 @@ def test_readme_is_short_enough_to_be_read():
     #   sentence now says `resume` deliberately keeps the old refusal, so a
     #   reader of one paragraph gets both halves rather than one turning
     #   stale next to the other.
-    assert len(lines) <= 1225, (
-        f"README.md is {len(lines)} lines; the cap is 1225")
+    # 2026-09-10: 1225 -> 1230 — `park` and `resume` carve out into
+    #   opensoft/openRepoTools (#92). The two install paragraphs go from THREE
+    #   commands to one, which is a saving; the five lines are what a reader
+    #   cannot work out from the shorter text. WHERE THE VERBS WENT, in both
+    #   places somebody reads an install line, because a person who ran the
+    #   old one-liner has `park` on PATH and no way to learn from this file
+    #   why it stopped being replaced. And openRepoTools' OWN one-liner, in a
+    #   `sh` block, because it is the thing they now have to type and a
+    #   sentence naming a repository is not a command — the same argument the
+    #   `openRepoShape` install block itself won over "fetch the file and run
+    #   it" (#38). It is byte-identical to the line `openRepoShape --install`
+    #   prints, which `test_the_openrepotools_install_line_is_the_same_
+    #   everywhere` is what keeps true. What did NOT cost a line: the whole of
+    #   "Carrying in-flight work to another workstation", which documents two
+    #   commands that still exist and still work exactly as it says — they are
+    #   installed from somewhere else, which is one clause of one sentence.
+    assert len(lines) <= 1230, (
+        f"README.md is {len(lines)} lines; the cap is 1230")
 
 
 @pytest.mark.parametrize("name", SHIPPED_BASH)
@@ -864,6 +892,66 @@ def test_setup_project_py_is_pure_ascii(name):
     assert (REPO / name).read_bytes().isascii(), (
         f"{name} must be pure ASCII; find the offending line with "
         f"`grep -nP '[^\\x00-\\x7F]' {name}`")
+
+
+#: THE ONE LINE THAT INSTALLS THE COMMANDS THIS REPOSITORY NO LONGER SHIPS
+#: (#92). `park` and `resume` moved to opensoft/openRepoTools, and what is
+#: left here is a pointer at its installer: printed by `openRepoShape
+#: --install`, written down in README.md, quoted on the handbook page. It is
+#: COPIED AND PASTED by somebody who cannot check it, which is the argument
+#: `test_the_windows_commands_name_files_that_exist` already makes about the
+#: Windows two-liner - and a copy that drifted would send them at a URL that
+#: 404s or at a repository that installs something else. Held here rather than
+#: in `tests/test_openreposhape_command.py` because the property is a parity
+#: between three files of this REPOSITORY, which is what this file holds.
+#:
+#: THE STRING IS SPLIT ACROSS TWO SOURCE LINES AND JOINED, so this file can be
+#: read at 79 columns; the assertion is on the joined line.
+OPENREPOTOOLS_INSTALL = (
+    "curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoTools/"
+    "main/openRepoTools | bash -s -- --install")
+
+#: Every file that carries it. The shim is where a person meets it, README.md
+#: is where they look it up, and `docs/handbook.html` is the README's designed
+#: reading - a page a reader copies from as readily as either.
+OPENREPOTOOLS_INSTALL_IN = ["openRepoShape", "README.md", "docs/handbook.html"]
+
+
+@pytest.mark.parametrize("name", OPENREPOTOOLS_INSTALL_IN)
+def test_the_openrepotools_install_line_is_the_same_everywhere(name):
+    """One line, byte for byte, wherever it appears.
+
+    Two copies that disagree is one wrong copy in front of whoever was not
+    looking, and neither half of the pair would be caught by anything else:
+    the shim's copy is a `say` string and the other two sit inside a fenced
+    or a `<pre>` block, so nothing runs any of them.
+    """
+    text = (REPO / name).read_text(encoding="utf-8")
+    assert OPENREPOTOOLS_INSTALL in text, (
+        f"{name} must carry openRepoTools' install line byte for byte:\n"
+        f"    {OPENREPOTOOLS_INSTALL}")
+
+
+def test_nothing_here_installs_park_or_resume():
+    """The carve, asserted rather than remembered (#92).
+
+    `park` and `resume` are opensoft/openRepoTools' commands. This repository
+    keeps the two MAKE TARGETS of the same name — `templates/*/Makefile`, and
+    `tests/test_park_resume_targets.py` is their suite — so the words stay in
+    the tree and a grep is not the check. What must not come back is a file at
+    this root called either, or a name in the shim's `INSTALLABLES`: the first
+    is the carve undone by a copy, the second is `--install` reaching for a
+    file that is not here.
+    """
+    for name in ("park", "resume"):
+        assert not (REPO / name).exists(), (
+            f"{name} is back at the repository root; it is "
+            "opensoft/openRepoTools' file since #92")
+    shim = (REPO / "openRepoShape").read_text(encoding="utf-8")
+    [installables] = re.findall(r"^INSTALLABLES=\((.*)\)$", shim, re.M)
+    assert installables.split() == ["openRepoShape"], (
+        f"the shim installs {installables.split()}; `--install` places this "
+        "command and prints openRepoTools' one-liner for the other two")
 
 
 #: Every file carrying the Windows two-liner. The README is where a person
