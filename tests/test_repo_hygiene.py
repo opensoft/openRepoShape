@@ -381,9 +381,26 @@ def test_agents_md_is_short_enough_to_be_read():
     longer here, and a cap left at 381 would let the next procedure spend
     them without anybody making the case. Points 1-4 stay: they are about
     `make park` and `make resume`, which this standard still ships in both
-    root templates."""
+    root templates.
+
+
+    2026-09-10: 351 -> 390 — `## Checking a repository's compliance` (#95).
+    Thirty-eight lines and one clause, for a command that did not exist: the
+    procedures above each describe ONE act, and nothing here told an
+    assistant how to find out which of them a repository needs. The five
+    numbered points are the five ways an agent gets a doctor's report wrong.
+    Reading the VERDICT and not the rows, because the verdict names the most
+    specific finding and the table names every one. Improvising a repair
+    instead of running the command the row NAMES — the same hand-edited-pin
+    failure `update-shape.py`'s own points are about, arriving through a new
+    door. Treating `NOT A SHAPE ROOT` as a task, when adopting and
+    scaffolding are two different acts and choosing between them is the
+    human's. Reading the `machine` row as a fault in the repository, when it
+    is `n/a` and about the workstation. And `--json`, one line, because an
+    agent acting on a row should not be parsing a table. The clause is one
+    more item in the opening paragraph's list of what the sections cover."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 351, f"AGENTS.md is {len(lines)} lines; the cap is 351"
+    assert len(lines) <= 390, f"AGENTS.md is {len(lines)} lines; the cap is 390"
 
 
 def test_claude_md_points_at_agents_md():
@@ -819,8 +836,31 @@ def test_readme_is_short_enough_to_be_read():
     #   "Carrying in-flight work to another workstation", which documents two
     #   commands that still exist and still work exactly as it says — they are
     #   installed from somewhere else, which is one clause of one sentence.
-    assert len(lines) <= 1230, (
-        f"README.md is {len(lines)} lines; the cap is 1230")
+    # 2026-09-10: 1230 -> 1298 — the repository doctor (#95). Brett Heap:
+    #   "what tools do we have to check a repo to make sure it is compliant
+    #   with openRepoShape?" -> "add that". Sixty-six lines are its `###`
+    #   subsection under "Keeping a project's shape current", one is its row
+    #   in the contents list, and one names `shape-doctor.py` in the Layout
+    #   block. It is a subsection rather than a paragraph because five of its
+    #   parts are things a reader gets wrong separately, and each of them
+    #   would otherwise be learnt from a surprise. WHAT IT COMPARES AGAINST
+    #   — the checkout the script is run from, which is the whole of why the
+    #   run is offline and is not guessable from the command line. THE ROWS,
+    #   because "it checks the repo" does not say that the project's OWN
+    #   validators run in preference to this standard's, which is the point
+    #   of a pinned copy. THE VERDICT TABLE WITH ITS EXIT CODES, because the
+    #   codes are what a scheduled job reads. WHY DRIFT OUTRANKS A RED
+    #   VALIDATOR on that one line, since a reader who does not know that an
+    #   edited copy is what makes `validate-pins.py` red will read `DRIFTED`
+    #   as the tool having missed the validator. And that `machine` is `n/a`
+    #   and cannot move the verdict — the one row that reaches a network, on
+    #   a page that has just promised none — because a reader who takes it
+    #   for a compliance row will read a missing `gh` as their repository
+    #   being wrong. The registry paragraph is three lines and is the only
+    #   forward-looking one: it says a repair mode hangs off an empty slot,
+    #   so nobody proposes the rewrite it exists to avoid.
+    assert len(lines) <= 1298, (
+        f"README.md is {len(lines)} lines; the cap is 1298")
 
 
 @pytest.mark.parametrize("name", SHIPPED_BASH)
@@ -1242,6 +1282,14 @@ HANDBOOK_SECTION_WITHOUT_A_README_H2 = {
     "ci": "`### Reading private legs in CI: a GitHub App first, "
           "SHAPE_LEGS_TOKEN as fallback`",
     "agents": "AGENTS.md — the rules that outrank the rest, not README.md",
+    #: `### Is this repository compliant? openRepoShape --doctor`, which sits
+    #: under § Keeping a project's shape current in the README (#95). Its own
+    #: page section rather than a block inside `current`, because a reader
+    #: looking for "how do I check a repository" scans the section list, and
+    #: a doctor folded into a section about re-syncing copies is a doctor
+    #: they do not find.
+    "doctor": "`### Is this repository compliant? openRepoShape --doctor`, "
+              "inside § Keeping a project's shape current",
 }
 
 #: The footer carries the page's history as PROSE — "first cut from README.md

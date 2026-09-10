@@ -38,6 +38,7 @@ both.
 - [The double pin, and the lockstep invariant](#the-double-pin-and-the-lockstep-invariant)
 - [Bootstrap is COPIED into the project, not fetched](#bootstrap-is-copied-into-the-project-not-fetched)
 - [Keeping a project's shape current](#keeping-a-projects-shape-current)
+  - [Is this repository compliant? `openRepoShape --doctor`](#is-this-repository-compliant-openreposhape---doctor)
 - [Carrying in-flight work to another workstation](#carrying-in-flight-work-to-another-workstation)
   - [`park <Name>` and `resume <Name>`, from anywhere](#park-name-and-resume-name-from-anywhere)
   - [Who implements it, and what the record is](#who-implements-it-and-what-the-record-is)
@@ -1039,6 +1040,72 @@ a clone, or a `.shape-upstream-tip` file carries a commit. It adds no network
 call: a bootstrap that paused to ask GitHub a question would have made the
 shape a dependency again.
 
+### Is this repository compliant? `openRepoShape --doctor`
+
+Five commands answered that question and the order of them was tribal
+knowledge. `shape-doctor.py` is that order, as one command: it runs the checks
+above over a repository, prints one row each, and prints ONE verdict.
+
+```sh
+openRepoShape --doctor ../MedxEHR      # or: ./shape-doctor.py --root ../MedxEHR
+openRepoShape --doctor                 # the repository you are standing in
+./shape-doctor.py --root ../MedxEHR --json
+```
+
+It **writes nothing and fetches nothing**, and it reimplements nothing: every
+row is one of the checks this file already documents. The standard a project's
+copies are compared against is the checkout the script is RUN FROM — beside
+one it uses that one, installed it clones the standard into a temporary
+directory first — which is what makes the verdict offline.
+
+For an assembly root the rows are **naming** (this standard's own
+`contracts/repository-naming.yaml`), **manifest** and **pins** (the project's
+OWN `scripts/validate-manifest.py` and `scripts/validate-pins.py` when it
+carries them — they are the pinned copies, which is the point — else the
+template copies, and the row says which answered), **manifest kinds** (every
+`kind:`-bearing manifest in the root against a registry, so a `contracts/*.yaml`
+nothing validates is a finding by name rather than a silence), **shape
+currency** (`update-shape.py check`'s per-file verdicts, summarised),
+**legs** (each one mounted, and its checked-out commit against the pin, with
+no fetch), **leg shape files** (each leg's `AGENTS.md`, `CLAUDE.md` and
+`.gitignore` against `templates/<role>-root/` — a comparison and not a gate,
+because no leg file is pinned anywhere), **agent files**, and **machine**. A
+FAMILY holder gets **family**, **manifest kinds**, **shape currency**,
+**members** and **machine**; a directory that is neither gets what it is
+CALLED under the naming policy, what IS in it, and the way in.
+
+Every row is `ok`, `FINDING` or `n/a`, and every FINDING names the exact
+command that fixes it. Then one verdict, and its exit code:
+
+| verdict | exit | when |
+|---|---|---|
+| `COMPLIANT` | 0 | every row ok, and the pin names this standard's commit |
+| `COMPLIANT, SHAPE BEHIND (n upstream-changed, m upstream-added)` | 1 | valid, and the standard has moved on |
+| `DRIFTED (…)` | 1 | a copy was edited here, or a leg is off its pin |
+| `INVALID (<rows>)` | 1 | a validator went red |
+| `NOT A SHAPE ROOT` | 2 | neither manifest is there — adopt, or scaffold |
+
+Exit 3 is usage or environment: no such path, or a `shape-doctor.py` that is
+not sitting in a checkout of the standard. **Drift outranks a red validator**
+on the verdict line, deliberately — an edited shape copy is exactly what makes
+`validate-pins.py` red, so answering `INVALID (pins)` would send the reader at
+the symptom while the fix is `update-shape.py`. The pins row is printed either
+way, with its own next command. `--json` is the same report as one object,
+each row carrying its `id`.
+
+**`machine` is the one row that is not about the repository**, so it is `n/a`
+by status and can never move the verdict: a workstation with no `gh` is not
+this repository being non-compliant. It runs `setup-project.py --preflight`
+with stdin closed — no terminal, no offer, nothing installed — and adds
+`git-filter-repo`, which `adopt-project.py` needs and the preflight does not
+ask about. Asking `gh` whether it is logged in is the only question in the
+whole report that leaves this disk.
+
+The checks are a REGISTRY — an `id`, the root kinds it applies to, a `run`,
+and a `fix` slot that is empty in every one of them today. A repair mode hangs
+off that slot instead of a rewrite, and it will print its plan and ask before
+it writes a byte.
+
 ## Carrying in-flight work to another workstation
 
 Two verbs on the assembly root, for the day the machine your half-finished
@@ -1208,6 +1275,7 @@ setup-project.py                  THE FLOW, and the Windows way in (no bash ther
 scaffold-project.py               creates the three repositories and the pins
 adopt-project.py                  converts an EXISTING repository in place
 update-shape.py                   re-syncs a root's copies and re-pins
+shape-doctor.py                   diagnoses ONE repository: rows, then one verdict
 scripts/family.py                 creates a FAMILY holder and maintains its pins
 scripts/bump-leg.py               advances ONE leg's pin, in one lockstep commit
 bootstrap                         bootstrap a project that was never scaffolded

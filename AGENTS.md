@@ -5,8 +5,9 @@ this shape", or "convert this repository to it", or "put these services in a
 family". This is the whole procedure; `README.md` says what the shape is.
 Sections 1-3 scaffold a NEW project; the ones after them cover an EXISTING
 repository (including one with no code yet), a project that declares descent
-from a neutral product, a project whose copied shape files have fallen behind
-the upstream, a leg that has moved on, and a FAMILY holder.
+from a neutral product, a repository nobody is sure about, a project whose
+copied shape files have fallen behind the upstream, a leg that has moved on,
+and a FAMILY holder.
 
 ## The rules that outrank the rest
 
@@ -167,6 +168,44 @@ With no pin, `MedxGlass` is an ordinary assembly root and the manifest records
 the overlap. If the repository they name already exists and is EMPTY, add
 `--reuse-empty-repo`; if it has commits, it is a live repository and adopt is
 the tool, not scaffold.
+
+## Checking a repository's compliance
+
+`openRepoShape --doctor [<path>]` — or `./shape-doctor.py --root <path>` from
+a checkout — answers ONE question about ONE repository: is it compliant with
+this shape, and what is missing. Run it before you propose a change to a
+repository you did not scaffold, and again after any procedure above. It
+writes nothing and fetches nothing, so there is no confirmation to get and no
+`--dry-run` to do first. The checks are a REGISTRY with an empty `fix` slot
+in each of them, which is where a repair mode will hang; nothing in it writes
+today.
+
+1. **Read the verdict, then read the rows.** `COMPLIANT`, `COMPLIANT, SHAPE
+   BEHIND`, `DRIFTED`, `INVALID`, `NOT A SHAPE ROOT` — exits 0, 1, 1, 1, 2,
+   and 3 for usage. The verdict names the MOST SPECIFIC finding and the TABLE
+   names every one, so a report summarised from the verdict line alone is a
+   report you did not read. Relay the rows.
+2. **A FINDING names its fix, and you run THAT.** Every one carries the exact
+   next command — `update-shape.py apply …`, `make bootstrap`, `bump-leg.py
+   …`, the project's own validator. Run the one the row names. Do not
+   improvise a repair, and never edit a pinned file, a digest or a manifest
+   to make a row go green: that is the hand-edited pin this standard spends a
+   section refusing. Each of those commands has its own section above and its
+   own refusals, and they all still apply.
+3. **`NOT A SHAPE ROOT` is a question for the human, not a task.** There is
+   no `project.yaml` and no `family.yaml`. The two ways in are
+   `adopt-project.py plan` (a repository that already exists, converted in
+   place) and `setup.sh` (a new one, three repositories, one typed yes), and
+   which of them is wanted is a fact about their repository. Report the
+   verdict and both commands; adopt or scaffold nothing on your own
+   initiative. There is no `--force`, deliberately.
+4. **The `machine` row is not about the repository.** It is `n/a` by status
+   and never changes the verdict: it says whether THIS workstation can run
+   the fixes the other rows named. Relay a missing prerequisite;
+   `openRepoShape --preflight` is what offers to install one, and the human
+   types that yes.
+5. `--json` is the same report as one object, each row carrying its `id`, for
+   when you have to act on a row rather than quote it.
 
 ## Updating a project's shape
 

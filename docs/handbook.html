@@ -459,6 +459,7 @@
       <li><a href="#doublepin">The double pin</a></li>
       <li><a href="#copied">Copied, not fetched</a></li>
       <li><a href="#current">Keeping shape current</a></li>
+      <li><a href="#doctor">Is it compliant?</a></li>
       <li><a href="#park">Park and resume</a></li>
       <li><a href="#degrade">The degrade rule</a></li>
       <li><a href="#layout">Repository layout</a></li>
@@ -1352,6 +1353,65 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
       <a class="src" href="https://github.com/opensoft/openRepoShape#keeping-a-projects-shape-current">Full text &mdash; keeping the shape current</a>
     </section>
 
+    <section id="doctor">
+      <p class="eyebrow">Reference</p>
+      <h2>Is this repository compliant? <code>openRepoShape --doctor</code></h2>
+      <p>Five commands answered that question and the order of them was tribal knowledge.
+      <code>shape-doctor.py</code> is that order, as one command: it runs the checks this page
+      already describes over a repository, prints one row each, and prints ONE verdict.</p>
+      <div class="code" data-lang="sh"><pre><code>openRepoShape --doctor ../MedxEHR      # or: ./shape-doctor.py --root ../MedxEHR
+openRepoShape --doctor                 # the repository you are standing in
+./shape-doctor.py --root ../MedxEHR --json</code></pre></div>
+      <p>It <strong>writes nothing and fetches nothing</strong>, and it reimplements nothing. The
+      standard a project&rsquo;s copies are compared against is the checkout the script is RUN FROM
+      &mdash; beside one it uses that one, installed it clones the standard into a temporary
+      directory first &mdash; which is what makes the verdict offline.</p>
+      <p>For an assembly root the rows are <strong>naming</strong>, <strong>manifest</strong> and
+      <strong>pins</strong> (the project&rsquo;s OWN validators when it carries them &mdash; they
+      are the pinned copies, which is the point &mdash; else the template copies, and the row says
+      which answered), <strong>manifest kinds</strong> (every <code>kind:</code>-bearing manifest
+      against a registry, so a <code>contracts/*.yaml</code> nothing validates is a finding by name
+      rather than a silence), <strong>shape currency</strong>
+      (<a href="#current"><code>update-shape.py check</code></a>, summarised), <strong>legs</strong>
+      (each mounted, and its checked-out commit against the pin, with no fetch), <strong>leg shape
+      files</strong>, <strong>agent files</strong> and <strong>machine</strong>. A
+      <a href="#families">family holder</a> gets <strong>family</strong>, <strong>manifest
+      kinds</strong>, <strong>shape currency</strong>, <strong>members</strong> and
+      <strong>machine</strong>; a directory that is neither gets what it is CALLED under the naming
+      policy, what IS in it, and the way in.</p>
+      <p>Every row is <code>ok</code>, <code>FINDING</code> or <code>n/a</code>, and every FINDING
+      names the exact command that fixes it. Then one verdict, and its exit code:</p>
+      <table>
+        <thead><tr><th>verdict</th><th>exit</th><th>when</th></tr></thead>
+        <tbody>
+          <tr><td><code>COMPLIANT</code></td><td>0</td><td>every row ok, and the pin names this standard&rsquo;s commit</td></tr>
+          <tr><td><code>COMPLIANT, SHAPE BEHIND (n upstream-changed, m upstream-added)</code></td><td>1</td><td>valid, and the standard has moved on</td></tr>
+          <tr><td><code>DRIFTED (&hellip;)</code></td><td>1</td><td>a copy was edited here, or a leg is off its pin</td></tr>
+          <tr><td><code>INVALID (&lt;rows&gt;)</code></td><td>1</td><td>a validator went red</td></tr>
+          <tr><td><code>NOT A SHAPE ROOT</code></td><td>2</td><td>neither manifest is there &mdash; adopt, or scaffold</td></tr>
+        </tbody>
+      </table>
+      <p>Exit 3 is usage or environment. <strong>Drift outranks a red validator</strong> on the
+      verdict line, deliberately: an edited shape copy is exactly what makes
+      <code>validate-pins.py</code> red, so answering <code>INVALID (pins)</code> would send the
+      reader at the symptom while the fix is <code>update-shape.py</code>. The pins row is printed
+      either way, with its own next command. <code>--json</code> is the same report as one object,
+      each row carrying its <code>id</code>.</p>
+      <p><strong><code>machine</code> is the one row that is not about the repository</strong>, so
+      it is <code>n/a</code> by status and can never move the verdict: a workstation with no
+      <code>gh</code> is not this repository being non-compliant. It runs
+      <code>setup-project.py --preflight</code> with stdin closed &mdash; no terminal, no offer,
+      nothing installed &mdash; and adds <code>git-filter-repo</code>, which
+      <a href="#adopt"><code>adopt-project.py</code></a> needs and the preflight does not ask about.
+      Asking <code>gh</code> whether it is logged in is the only question in the whole report that
+      leaves the disk.</p>
+      <p>The checks are a REGISTRY &mdash; an <code>id</code>, the root kinds it applies to, a
+      <code>run</code>, and a <code>fix</code> slot that is empty in every one of them today. A
+      repair mode hangs off that slot instead of a rewrite, and it will print its plan and ask
+      before it writes a byte.</p>
+      <a class="src" href="https://github.com/opensoft/openRepoShape#is-this-repository-compliant-openreposhape---doctor">Full text &mdash; the repository doctor</a>
+    </section>
+
     <section id="park">
       <p class="eyebrow">Reference</p>
       <h2>Carrying in-flight work to another workstation</h2>
@@ -1580,8 +1640,9 @@ resume InkRouter                # on workstation B, and the estate is back</code
     <footer id="licence">
       <p>Licence <strong>Apache-2.0</strong>. See <code>LICENSE</code> in the repository.</p>
       <p><a href="https://github.com/opensoft/openRepoShape#readme">github.com/opensoft/openRepoShape</a></p>
-      <p class="meta">First cut from README.md at c093813 (#71); regenerated at cbca5b4 (#89).
-      README.md blob f997945ae020e8c8498baaa73b62e781f1897fa0. Every command, flag, exit code and
+      <p class="meta">First cut from README.md at c093813 (#71); regenerated at cbca5b4 (#89);
+      the repository doctor added at 2986031 (#95).
+      README.md blob 97fdfc866080e4913a8ce3c8ccd9d245676b8ee3. Every command, flag, exit code and
       file name on this page is quoted from that README and from AGENTS.md.</p>
     </footer>
   </main>
