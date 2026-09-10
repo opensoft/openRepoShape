@@ -344,9 +344,19 @@ def test_agents_md_is_short_enough_to_be_read():
     was spurious, and run `git checkout main` in the leg — which is the exact
     loss the guard exists to prevent, performed by hand. The other half-line
     says a refused clone is not given the verb either, so nobody reports the
-    estate resumed because the verb ran somewhere."""
+    estate resumed because the verb ran somewhere.
+
+    370 -> 374 on 2026-09-10, for the sixth naming form (#81). Three lines,
+    and all three are one sentence in "What you must not tell them": that a
+    `<user>-wip` workspace repository confers nothing either. That section
+    already refuses the shape and family membership, and an assistant
+    reasoning from those two to a third kind of name would be reasoning about
+    the one repository in this standard that holds somebody's unfinished work
+    — an index of what a person has not finished reads like standing unless
+    somebody says it is not one, and it is also the one name here that no tool
+    here creates."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 370, f"AGENTS.md is {len(lines)} lines; the cap is 370"
+    assert len(lines) <= 374, f"AGENTS.md is {len(lines)} lines; the cap is 374"
 
 
 def test_claude_md_points_at_agents_md():
@@ -738,8 +748,28 @@ def test_readme_is_short_enough_to_be_read():
     #   which of the two to read — plus the half-sentence that a refused clone
     #   is not given the verb either, which is what the fix to that finding
     #   made true.
-    assert len(lines) <= 1203, (
-        f"README.md is {len(lines)} lines; the cap is 1203")
+    # 2026-09-10: 1203 -> 1219 — the sixth naming form, `<user>-wip` (#81).
+    #   Three lines widen the naming-families sentence in "The three legs":
+    #   the count, the form itself, and a link to the section that says where
+    #   such a repository lives — a family listed by name and explained
+    #   nowhere is the "checked by whoever remembers it" failure the contract
+    #   file opens by refusing. Twelve are the paragraph in "Who implements
+    #   it, and what the record is", and each fact in it is one a reader
+    #   cannot get from "a repository they own". WHAT IT IS CALLED, because
+    #   two engineers need two of them and the name is now a classified form
+    #   rather than a habit. That ONE of them, in the home organisation,
+    #   indexes work in EVERY organisation, which is the ruling and not the
+    #   obvious reading — the obvious reading is one per org. That an
+    #   organisation whose work must not be indexed outside it gets its own
+    #   under an `orgs:` map that is opt-in, and therefore invisible unless it
+    #   is written down. The `--workspace <owner>/<user>-wip` spelling,
+    #   because the subsection above says `<owner>/<your-wip-repo>` and a
+    #   reader left to guess the `-wip` half will guess wrong on the one
+    #   command that writes a file outside a repository. And that nothing here
+    #   CREATES one, which is what stops somebody waiting for a tool that is
+    #   never coming.
+    assert len(lines) <= 1219, (
+        f"README.md is {len(lines)} lines; the cap is 1219")
 
 
 @pytest.mark.parametrize("name", SHIPPED_BASH)

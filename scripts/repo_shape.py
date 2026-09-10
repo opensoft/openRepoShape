@@ -718,6 +718,22 @@ def recorded_gitlink(repo: Path, path: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+#: The forms decided by the CHARACTERS ALONE: `open` in front, `-Install`
+#: behind, `-wip` behind (2026-09-10, openRepoShape#81). They need nothing
+#: declared — no role, no pin, no manifest — so `classify()` answers them
+#: BEFORE the forms that do. The order WITHIN this tuple is inert, because no
+#: name can satisfy two of them.
+#:
+#: IN CODE RATHER THAN IN THE POLICY DATA, deliberately, and it is the one
+#: rule here that is. A `unambiguous_by_construction:` key read out of the
+#: file would mean a NEW classifier reading an OLD copied policy — the two are
+#: separate rows of a project's `shape-pin.yaml` and `update-shape.py` can
+#: move one without the other — classifying every `open<Product>` as a project
+#: leg, because a file silent about the key would grant nothing. So the list
+#: lives with the code that consults it, and a fork that adds a form of its
+#: own adds it here beside its pattern.
+UNAMBIGUOUS_FORMS = ("neutral-product", "install", "workspace")
+
 #: How a `<Domainx><Product>` name is split into the domain stem and the
 #: PRODUCT it claims descent from. The stem is greedy, so a name carrying two
 #: `x<Upper>` splits (`MedxDataxChart`) is read at the RIGHTMOST one, which is
@@ -855,10 +871,11 @@ class Classification(tuple):
 class NamingPolicy:
     """Ordered classifier over `contracts/repository-naming.yaml`.
 
-    ORDER IS SEMANTIC, AND TWO OF THE FIVE FORMS ARE UNAMBIGUOUS BY
-    CONSTRUCTION. `open<Product>` and `<X>-Install` say what they are in their
-    own characters: nothing else can spell them and nothing else needs to be
-    consulted, so they win outright.
+    ORDER IS SEMANTIC, AND THREE OF THE SIX FORMS ARE UNAMBIGUOUS BY
+    CONSTRUCTION. `open<Product>`, `<X>-Install` and `<user>-wip` say what
+    they are in their own characters: nothing else can spell them and nothing
+    else needs to be consulted, so they win outright. `UNAMBIGUOUS_FORMS` is
+    the list, and says why it is in code rather than in the data.
 
     A NEUTRAL PRODUCT MAY ELECT THE SHAPE, and that does not disturb the
     sentence above. Ruled by Brett Heap on 2026-09-05: "elect the shape for
@@ -892,6 +909,17 @@ class NamingPolicy:
     form would have widened `also_matches` for every bare CamelCase name in
     every manifest already in the wild, and `validate-manifest.py` compares
     that list exactly.
+
+    THE SIXTH FORM IS NOT A REPOSITORY OF A PROJECT AT ALL. `workspace`
+    (2026-09-10, openRepoShape#81) is `<user>-wip`, the private repository one
+    person owns to index their own unfinished work, and it is unambiguous by
+    construction rather than declared-only: the literal `-wip` suffix is
+    spelled by no other form, so it needs no `--role` and is admitted into no
+    role — `accepts_role` refuses it as an assembly leg, which is how "nothing
+    in this standard creates one" is enforced rather than merely written down.
+    Adding it changed no existing name's answer for a reason the family form
+    could not give: no form above admits a `-wip` suffix, so every name it
+    classifies is a name that matched NOTHING before.
 
     `matches()` still reports every form a name satisfies, in the data's
     precedence order, so an overlap stays visible instead of being resolved in
@@ -1129,14 +1157,15 @@ class NamingPolicy:
         are optional and all are read from `project.yaml` where one exists.
 
         The order:
-          1. `neutral-product` and 2. `install` — unambiguous by construction,
-             carrying a DECLARED role their family ADMITS where the name also
-             satisfies that leg form (2026-09-05).
-          3. a DECLARED-ONLY form the caller asked for by name (`family`).
-          4. `domain-descendant` — ONLY when a referent is REACHED, directly
+          1. `neutral-product`, 2. `install` and 3. `workspace` — unambiguous
+             by construction (`UNAMBIGUOUS_FORMS`), carrying a DECLARED role
+             their family ADMITS where the name also satisfies that leg form
+             (2026-09-05). `install` and `workspace` admit none.
+          4. a DECLARED-ONLY form the caller asked for by name (`family`).
+          5. `domain-descendant` — ONLY when a referent is REACHED, directly
              (2026-09-02) or through the recorded chain (2026-09-05).
-          5. `project-leg` in the DECLARED role, when the name satisfies it.
-          6. `project-leg` residual — the widest form, deliberately last.
+          6. `project-leg` in the DECLARED role, when the name satisfies it.
+          7. `project-leg` residual — the widest form, deliberately last.
         """
         matched = self.matches(name, declared_role)
         if not matched:
@@ -1163,7 +1192,7 @@ class NamingPolicy:
         # consult them too, because a role is only ever admitted where the name
         # can actually spell it.
         leg_roles = [r for r in (by_family.get("project-leg") or []) if r]
-        for family_id in ("neutral-product", "install"):
+        for family_id in UNAMBIGUOUS_FORMS:
             if family_id not in by_family:
                 continue
             family = self.family(family_id) or {}
@@ -1274,10 +1303,25 @@ class NamingPolicy:
         # also a bare CamelCase token — but a policy file is data, and data can
         # be edited. An unresolved claim is reported as one rather than being
         # promoted to a classification by exhaustion.
-        return answer("domain-descendant", by_family["domain-descendant"][0],
-                      f"descendant form, no referent pin declared (it would need "
-                      f"{referents[0] if referents else 'open<Product>'}) and the "
-                      "name satisfies no other form")
+        if claimed:
+            return answer("domain-descendant", by_family["domain-descendant"][0],
+                          f"descendant form, no referent pin declared (it would need "
+                          f"{referents[0] if referents else 'open<Product>'}) and the "
+                          "name satisfies no other form")
+
+        # AND A FORM NO BRANCH ABOVE CLAIMED IS STILL REPORTED, not raised.
+        # `matched` is not empty — some family's pattern said yes — so the
+        # honest answer is its highest-precedence entry, with a reason saying
+        # this classifier has no rule of its own for it. That is the path a
+        # SEVENTH form reaches on the day it is added to the data and before
+        # anybody writes its branch here: until `workspace` was wired into
+        # `UNAMBIGUOUS_FORMS` (2026-09-10) the descendant line above raised
+        # `KeyError: 'domain-descendant'` for `brett-wip`, which is a data file
+        # crashing the tool that reads it instead of being read by it.
+        family_id, role_id = matched[0]
+        return answer(family_id, role_id,
+                      f"the {family_id} form, by precedence; this classifier "
+                      "has no rule of its own for it")
 
     def topic_for(self, project_id: str) -> str:
         return self.topic_template.format(id=project_id)

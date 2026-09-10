@@ -506,12 +506,15 @@ flowchart LR
   assembly -.->|"contracts/shape-pin.yaml"| shape
 ```
 
-The five naming families live in `contracts/repository-naming.yaml`: neutral
+The six naming families live in `contracts/repository-naming.yaml`: neutral
 products `open<Product>`, domain descendants `<Domainx><Product>`, installs
-`<X>-Install`, project legs as above, and family holders (below). The leg suffixes are lowercase and
-hyphenated precisely so they sit in a different visual class from every other
-family, all of which are CamelCase words. Every repository of a project also
-carries the GitHub topic `xf-project-<id>`.
+`<X>-Install`, project legs as above, family holders (below), and one form
+that is no repository of a project at all — a person's own workspace
+repository `<user>-wip` (#81, and
+[below](#carrying-in-flight-work-to-another-workstation)). The leg suffixes
+are lowercase and hyphenated precisely so they sit in a different visual class
+from every other family, all of which are CamelCase words. Every repository of
+a project also carries the GitHub topic `xf-project-<id>`.
 
 ### Reading private legs in CI: a GitHub App first, `SHAPE_LEGS_TOKEN` as fallback
 
@@ -1119,6 +1122,19 @@ path is named ONCE in `~/.agents/workspace.yaml` — not in `project.yaml`, not
 in the assembly root, not in `family.yaml`. Where somebody's unfinished work
 sits is theirs, and a shared tree is the wrong home for per-user state.
 
+**The repository is `<user>-wip`, one per person** (`opensoft/brett-wip`,
+`opensoft/scott-wip`) — private, org-owned so the index survives offboarding
+and a later lane can read the handoffs, and classified as the sixth naming
+family in `contracts/repository-naming.yaml`. By DEFAULT one of them, in the
+person's home organisation, indexes work in every organisation with a folder
+per org inside it (`workspaces/<org>/…`, `handoffs/<estate>/…`); an
+organisation whose work must not be indexed outside it, even by name, is
+pointed at its own `<org>/<user>-wip` by the opt-in `orgs:` map in
+`~/.agents/workspace.yaml` (#81). On a machine that has none of it,
+`resume <Name> --workspace <owner>/<user>-wip` is how it is named, once.
+Nothing here CREATES one: a person makes their own, and this standard
+classifies the name and does no more with it.
+
 **Nothing is synced, and nothing under `worktrees/` is ever committed.** A
 linked worktree records an ABSOLUTE path into its owning repository, which is
 machine plumbing; so the record carries branches and commits and no path at
@@ -1169,7 +1185,7 @@ only: a required check in the repository that owns the object is what confers.
 ## Layout of this repository
 
 ```
-contracts/repository-naming.yaml  the five naming families, as data
+contracts/repository-naming.yaml  the six naming families, as data
 contracts/path-classification.yaml  which leg a path belongs in, as data
 scripts/repo_shape.py             shared helpers: YAML subset reader, digests
 scripts/path_classify.py          the classifier over the path policy

@@ -364,6 +364,10 @@ eligibility; a one-repository project in no family is reviewed identically. If y
 here", say no: that turns a layout into a governance boundary, which is the
 one thing this standard exists to prevent.
 
+That a `<user>-wip` workspace repository confers anything either: it holds no
+code, elects nothing and is membership of nothing — it is one person's index
+of their own unfinished work, and nothing here creates one.
+
 ## Testing your changes to this repository
 
 `python3 -m pytest tests -q`. The suite scaffolds into bare repositories in a
