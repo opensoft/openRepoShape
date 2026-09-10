@@ -12,11 +12,13 @@ The FETCHING path is exercised too, and still offline: the last two tests put
 a fake `gh` first on `$PATH` — `fetch_from_repo` tries the API before the raw
 URL, so answering that one call is the whole of the server they need — and
 shadow `curl` with a script that refuses, so a run cannot fall through to the
-network even if the fake `gh` stops matching. What a fake `gh` cannot show is
-which way round the real two are tried, so THAT rule — the authenticated call
-first, because an organisation can block raw.githubusercontent.com and still
-have a working `gh` — stays asserted against the script's text, the way this
-suite guards other things it cannot run.
+network even if the fake `gh` stops matching. Since #82 there are THREE files
+to answer for (`openRepoShape`, `park`, `resume`), because `--install` places
+all three. What a fake `gh` cannot show is which way round the real two are
+tried, so THAT rule — the authenticated call first, because an organisation
+can block raw.githubusercontent.com and still have a working `gh` — stays
+asserted against the script's text, the way this suite guards other things it
+cannot run.
 """
 
 from __future__ import annotations
@@ -35,6 +37,12 @@ from conftest import REPO, WINDOWS_SKIP
 
 COMMAND = REPO / "openRepoShape"
 SETUP = REPO / "setup.sh"
+
+#: EVERY FILE `--install` PLACES (#82). One install line for the whole
+#: standard: a second engineer gets the estate verbs from the README's one line
+#: and nothing depends on anyone's dotfiles. `openRepoShape` is first because
+#: it is the one a person types to get the other two.
+INSTALLED = ("openRepoShape", "park", "resume")
 
 USAGE_LINES = (
     "openRepoShape <Project> [--org <org>] [setup-project.py options] [-- <scaffold flags>]",
@@ -106,6 +114,18 @@ def test_help_prints_every_usage_line():
         assert line in lines, f"--help never printed:\n    {line}"
 
 
+def test_help_names_the_other_two_commands():
+    """`--install` places three, so `--help` has to say what the other two
+    are: a command a person has on PATH and cannot find written down is a
+    command they will not use."""
+    result = run_cmd("--help")
+    assert result.returncode == 0, result.stderr
+    assert "places THREE commands" in result.stdout
+    assert "park [<Name>]" in result.stdout
+    assert "resume [<Name>]" in result.stdout
+    assert "`park --help` and `resume --help`" in result.stdout
+
+
 def test_version_names_the_repository_and_the_ref():
     """There is no version number in this repository, so the honest answer to
     `--version` is WHICH BYTES it will run: repo and ref."""
@@ -123,42 +143,59 @@ def test_version_follows_the_ref_it_would_fetch():
 # --- --install --------------------------------------------------------------
 
 def test_install_writes_an_executable_copy(tmp_path):
+    """All THREE commands, each 755 and byte-identical to this checkout's.
+
+    A `park` that is not executable is not a command, and a `park` that is a
+    near-copy is a command whose refusals nobody reviewed — so the bytes are
+    compared rather than the presence of a file.
+    """
     result = run_cmd("--install", home=tmp_path)
     assert result.returncode == 0, result.stderr
-    target = tmp_path / ".local" / "bin" / "openRepoShape"
-    assert target.is_file(), result.stdout
-    assert stat.S_IMODE(target.stat().st_mode) == 0o755
-    assert target.read_bytes() == COMMAND.read_bytes()
-    assert "installed at" in result.stdout
+    for name in INSTALLED:
+        target = tmp_path / ".local" / "bin" / name
+        assert target.is_file(), result.stdout + f" (missing {name})"
+        assert stat.S_IMODE(target.stat().st_mode) == 0o755, name
+        assert target.read_bytes() == (REPO / name).read_bytes(), name
+        assert f"{name}: installed at" in result.stdout
 
 
 def test_installing_twice_changes_nothing(tmp_path):
-    """Idempotent BY CONTENT: the second run must not rewrite a file that
-    already holds these bytes, and must say so rather than claim an install."""
+    """Idempotent BY CONTENT, per file: the second run must not rewrite one
+    that already holds these bytes, and must say so rather than claim an
+    install."""
     first = run_cmd("--install", home=tmp_path)
     assert first.returncode == 0, first.stderr
     second = run_cmd("--install", home=tmp_path)
     assert second.returncode == 0, second.stderr
-    assert "unchanged" in second.stdout
+    for name in INSTALLED:
+        assert f"{name}: already installed at" in second.stdout, name
+    assert second.stdout.count("unchanged") == len(INSTALLED)
 
 
-def test_install_replaces_a_copy_that_has_drifted(tmp_path):
+@pytest.mark.parametrize("name", INSTALLED)
+def test_install_replaces_a_copy_that_has_drifted(tmp_path, name):
+    """Per file, and only the one that drifted: an install that rewrote all
+    three every time would have nothing to say about which one was stale."""
     assert run_cmd("--install", home=tmp_path).returncode == 0
-    target = tmp_path / ".local" / "bin" / "openRepoShape"
+    target = tmp_path / ".local" / "bin" / name
     target.write_text(target.read_text(encoding="utf-8") + "# drift\n",
                       encoding="utf-8")
     result = run_cmd("--install", home=tmp_path)
     assert result.returncode == 0, result.stderr
-    assert "updated" in result.stdout
-    assert target.read_bytes() == COMMAND.read_bytes()
+    assert f"{name}: updated at" in result.stdout
+    assert target.read_bytes() == (REPO / name).read_bytes()
+    for other in INSTALLED:
+        if other != name:
+            assert f"{other}: already installed at" in result.stdout, other
 
 
 def test_bin_dir_overrides_where_it_lands(tmp_path):
     result = run_cmd("--install", home=tmp_path,
                      env={"OPENREPOSHAPE_BIN_DIR": str(tmp_path / "elsewhere")})
     assert result.returncode == 0, result.stderr
-    assert (tmp_path / "elsewhere" / "openRepoShape").is_file()
-    assert not (tmp_path / ".local" / "bin" / "openRepoShape").exists()
+    for name in INSTALLED:
+        assert (tmp_path / "elsewhere" / name).is_file(), name
+        assert not (tmp_path / ".local" / "bin" / name).exists(), name
 
 
 def test_install_says_how_to_put_it_on_path(tmp_path):
@@ -180,6 +217,10 @@ def test_install_from_a_file_never_calls_gh(tmp_path):
                      env={"PATH": f"{shim}:{os.environ['PATH']}"})
     assert result.returncode == 0, result.stderr
     assert not marker.exists(), "--install from a file must not call gh"
+    # `park` and `resume` sit BESIDE this file, so a run from a file copies
+    # the siblings it finds rather than fetching them.
+    for name in INSTALLED:
+        assert (tmp_path / ".local" / "bin" / name).is_file(), name
 
 
 def test_install_refuses_to_also_scaffold(tmp_path):
@@ -362,25 +403,28 @@ def offline_github(tmp_path):
     """A fake `gh` first on `$PATH`, and a `curl` that refuses.
 
     `fetch_from_repo` tries `gh api` before the raw URL, so a `gh` that
-    answers the one call the command makes is the whole of the server these
-    tests need: `contents/setup.sh` comes back as a stub that says where it
-    was run from, `contents/openRepoShape` as this checkout's own bytes.
-    `curl` is shadowed by a script that exits 1 — belt and braces, so that a
-    fake `gh` which stopped matching could never quietly become a real
-    request to raw.githubusercontent.com.
+    answers the calls the command makes is the whole of the server these tests
+    need: `contents/setup.sh` comes back as a stub that says where it was run
+    from, and `contents/<command>` as this checkout's own bytes for each of
+    the three files `--install` places (#82). `curl` is shadowed by a script
+    that exits 1 — belt and braces, so that a fake `gh` which stopped matching
+    could never quietly become a real request to raw.githubusercontent.com.
     """
     served = tmp_path / "served"
     served.mkdir()
     (served / "setup.sh").write_text(STUB_SETUP_SH, encoding="utf-8")
-    (served / "openRepoShape").write_bytes(COMMAND.read_bytes())
+    for name in INSTALLED:
+        (served / name).write_bytes((REPO / name).read_bytes())
 
     fake = tmp_path / "fake-path"
     fake.mkdir()
+    routes = "".join(
+        f"*/contents/{name}\\?*) exec cat '{served / name}' ;;\n"
+        for name in ("setup.sh", *INSTALLED))
     (fake / "gh").write_text(
         "#!/bin/sh\n"
         'case "$*" in\n'
-        f"*/contents/setup.sh\\?*) exec cat '{served / 'setup.sh'}' ;;\n"
-        f"*/contents/openRepoShape\\?*) exec cat '{served / 'openRepoShape'}' ;;\n"
+        + routes +
         "esac\n"
         'printf \'fake gh: unexpected call: %s\\n\' "$*" >&2\n'
         "exit 1\n", encoding="utf-8")
@@ -422,10 +466,11 @@ def test_install_from_stdin_fetches_itself_into_a_live_workdir(offline_github,
     """The other caller of `workdir()`, and the documented install line:
     `gh api …/contents/openRepoShape … | bash -s -- --install`.
 
-    Run from stdin there is no file to copy from, so `install_self` fetches
-    this path at this ref into the temporary directory — the same directory
-    #74 had already deleted, which made the one-line install impossible on
-    every machine.
+    Run from stdin there is no file to copy from — not for this command and
+    not for its two siblings — so `install_commands` fetches each of the three
+    at this ref into the temporary directory: the same directory #74 had
+    already deleted, which made the one-line install impossible on every
+    machine.
     """
     bin_dir = tmp_path / "bin"
     result = subprocess.run(
@@ -441,8 +486,10 @@ def test_install_from_stdin_fetches_itself_into_a_live_workdir(offline_github,
                              "OPENREPOSHAPE_BIN_DIR": str(bin_dir)}))
     assert result.returncode == 0, result.stderr + result.stdout
     assert "No such file or directory" not in result.stdout + result.stderr
-    target = bin_dir / "openRepoShape"
-    assert target.is_file(), result.stdout + result.stderr
-    assert stat.S_IMODE(target.stat().st_mode) == 0o755
-    assert target.read_bytes() == COMMAND.read_bytes()
-    assert "installed at" in result.stdout
+    assert "could not fetch" not in result.stderr
+    for name in INSTALLED:
+        target = bin_dir / name
+        assert target.is_file(), result.stdout + result.stderr + f" ({name})"
+        assert stat.S_IMODE(target.stat().st_mode) == 0o755, name
+        assert target.read_bytes() == (REPO / name).read_bytes(), name
+        assert f"{name}: installed at" in result.stdout

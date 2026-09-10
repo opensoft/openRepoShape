@@ -39,6 +39,8 @@ both.
 - [Bootstrap is COPIED into the project, not fetched](#bootstrap-is-copied-into-the-project-not-fetched)
 - [Keeping a project's shape current](#keeping-a-projects-shape-current)
 - [Carrying in-flight work to another workstation](#carrying-in-flight-work-to-another-workstation)
+  - [`park <Name>` and `resume <Name>`, from anywhere](#park-name-and-resume-name-from-anywhere)
+  - [Who implements it, and what the record is](#who-implements-it-and-what-the-record-is)
 - [The degrade rule](#the-degrade-rule)
 - [Layout of this repository](#layout-of-this-repository)
 - [Licence](#licence)
@@ -202,9 +204,11 @@ curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/openRep
     | bash -s -- --install
 ```
 
-It installs into `~/.local/bin`, idempotently — a second run prints
-`unchanged` — and prints the `export PATH=…` line if that directory is not
-on `PATH`.
+It installs THREE commands into `~/.local/bin` — `openRepoShape` itself and
+the two estate verbs `park` and `resume`, for
+[carrying in-flight work](#carrying-in-flight-work-to-another-workstation) —
+idempotently, a second run printing `unchanged` per file, and prints the
+`export PATH=…` line if that directory is not on `PATH`.
 
 **4. Run it:**
 
@@ -338,11 +342,15 @@ curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/openRep
     | bash -s -- --install
 ```
 
-It installs itself into `~/.local/bin`, idempotently — a second run prints
-`unchanged` — and prints the `export PATH=…` line if that directory is not on
-`PATH`. It is one file,
-[`openRepoShape`](https://github.com/opensoft/openRepoShape/blob/main/openRepoShape),
-and all it does is fetch `setup.sh` (API first, raw URL second) and run it.
+It installs THREE commands into `~/.local/bin`, idempotently — a second run
+prints `unchanged` per file — and prints the `export PATH=…` line if that
+directory is not on `PATH`. Each is one file at the repository root, and none
+of them implements anything:
+[`openRepoShape`](https://github.com/opensoft/openRepoShape/blob/main/openRepoShape)
+fetches `setup.sh` (API first, raw URL second) and runs it, and
+[`park`](https://github.com/opensoft/openRepoShape/blob/main/park) and
+[`resume`](https://github.com/opensoft/openRepoShape/blob/main/resume) find an
+estate and run its own `make park` / `make resume`.
 
 Or type the long line, on a machine you would rather install nothing on:
 
@@ -1040,6 +1048,55 @@ parked; `resume` recreates those worktrees on this machine and un-commits the
 work, so what you get back is your tree rather than a commit to unpick.
 `ARGS=--dry-run` rehearses either one and writes nothing.
 
+### `park <Name>` and `resume <Name>`, from anywhere
+
+Those are the targets a root ships. `openRepoShape --install` also puts
+**`park`** and **`resume`** on your `PATH`, so the whole of the sequence above
+is one word from any folder on either machine:
+
+```sh
+park InkRouter                  # on workstation A, from any folder
+resume InkRouter                # on workstation B, and the estate is back
+```
+
+They add no mechanics either: they FIND THE ESTATE and run its own `make park`
+/ `make resume`. What `resume` adds is the rebuilding — the clone, the
+`make bootstrap`, the `make siblings` — so on a machine that has none of it,
+naming your record once is the whole of the setup:
+
+```sh
+resume InkRouter --workspace <owner>/<your-wip-repo>   # the FIRST time here
+```
+
+That flag is the only thing in this standard that writes
+`~/.agents/workspace.yaml`, and it writes it only because you named the
+repository. Afterwards `resume <Name>` needs no flag.
+
+**How the estate is found.** `<Name>` is a folder under your projects
+directory: `~/projects/<Name>`, then `~/Projects/<Name>` — people spell it
+both ways — or wherever `$PROJECTS_DIR` points. A FAMILY folder
+(`<Name>/<Name>/family.yaml`) wins over a standalone root
+(`<Name>/project.yaml`) of the same name, because the holder is what drives
+the members. With no `<Name>` the estate around the current directory is used:
+the nearest holder beside you, or project root above you. With no estate
+around it either, `park` REFUSES and lists the estates it found — nothing is
+parked by guess. `--repo <owner/name>` names the estate by the `origin` of a
+clone you ALREADY have, in any url spelling; it never clones one, because
+`resume` is the command that clones and it clones from the record.
+
+**What they leave behind, said out loud.** `park` finishes by printing what
+did NOT park and why none of it is park's to touch: commits on a `main` that
+`origin` has never seen (a root is PR-only — land them as a pull request), a
+dirty root mid pin-bump, and ignored local files, which never travel at all.
+`resume` fast-forwards each working clone's tracking branch with `--ff-only`
+and REFUSES BY NAME one that is dirty or on a feature branch — that clone is
+skipped and left exactly where it was, never reset, and the rest of the estate
+still comes back. Neither carries an agent session: the handoff document is
+the bridge for those, and `park` exits non-zero when anything was refused, so
+a green run is the only green run.
+
+### Who implements it, and what the record is
+
 **This repository implements neither, deliberately** (ruled by Brett Heap,
 2026-09-09, #77). The WIP commit, the push, the `git worktree add`, the
 `.specify/feature.json` rewrite and the soft reset are the **Speckit git
@@ -1088,7 +1145,9 @@ hidden.
 > [!WARNING]
 > **Native Windows parks nothing.** The extension's `park` and `resume` are
 > bash; its PowerShell mirror has neither, and porting them is a separate
-> object. On Windows the way in is WSL2, exactly as it is for `setup.sh`.
+> object. The two installed commands are bash as well, and so is the
+> `--install` line that places them. On Windows the way in is WSL2, exactly as
+> it is for `setup.sh`.
 
 ## The degrade rule
 

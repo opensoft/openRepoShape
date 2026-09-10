@@ -44,10 +44,12 @@ SHIPPED = [
 LOCAL_MODULES = {"repo_shape", "shape_materialize", "path_classify",
                  "conftest", "bootstrap"}
 
-#: The two bash scripts a person runs BEFORE they have a checkout: the front
-#: door itself, and the command that fetches it. Both are shipped executables
-#: and are held to the same shebang, mode bit and `set -euo pipefail` rule.
-SHIPPED_BASH = ["setup.sh", "openRepoShape"]
+#: The bash scripts a person runs BEFORE they have a checkout, or with no
+#: checkout in sight at all: the front door itself, the command that fetches
+#: it, and — since #82 — the two estate verbs `openRepoShape --install` places
+#: beside it. Every one is a shipped executable and is held to the same
+#: shebang, mode bit and `set -euo pipefail` rule.
+SHIPPED_BASH = ["setup.sh", "openRepoShape", "park", "resume"]
 
 #: The entry point a person runs BEFORE they have a checkout on a machine with
 #: no bash: the same front door, on an interpreter alone. Held to the same
@@ -303,9 +305,26 @@ def test_agents_md_is_short_enough_to_be_read():
     before anyone is told the estate is parked — a member SKIPPED for want of
     a working clone beside the holder was never asked at all, which is the
     one outcome an assistant reads as success. The mechanics themselves are
-    the Speckit git extension's and are deliberately NOT described here."""
+    the Speckit git extension's and are deliberately NOT described here.
+
+    342 -> 364 on 2026-09-09, for the two INSTALLED COMMANDS (#82, RULING
+    2026-09-09). Nine lines are the paragraph: that `park <Name>` and `resume
+    <Name>` are the same verbs on PATH, how they find the estate, and that
+    their per-repository lines are to be relayed rather than summarised — an
+    assistant that did not know the commands existed would hand somebody a
+    hand-built `cd`-and-`make` sequence for a thing that is one word. The two
+    numbered rules are the part that costs work if it is inferred: `park`
+    with no estate around the cwd REFUSES and lists what it found, which is
+    not an invitation to pick one, and `resume` refusing a dirty or
+    feature-branched clone BY NAME is not a state to `git reset`, `git stash`
+    or `git checkout -f` out of the way — that clone holds the very work the
+    refusal exists to protect, and an assistant tidying it away is the worst
+    outcome this whole object has. The last rule is about the one file this
+    standard writes outside a repository: which private repository holds
+    somebody's unfinished work is theirs to name, so `--workspace` is never
+    passed on an assistant's own initiative."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 342, f"AGENTS.md is {len(lines)} lines; the cap is 342"
+    assert len(lines) <= 364, f"AGENTS.md is {len(lines)} lines; the cap is 364"
 
 
 def test_claude_md_points_at_agents_md():
@@ -658,8 +677,37 @@ def test_readme_is_short_enough_to_be_read():
     #   read as success is how somebody concludes their work came back when
     #   none of it did. Five are a `> [!WARNING]` that native Windows parks
     #   nothing: the extension's mirror has neither script, WSL2 is the way.
-    assert len(lines) <= 1141, (
-        f"README.md is {len(lines)} lines; the cap is 1141")
+    # 2026-09-09: 1141 -> 1197 — `park <Name>` and `resume <Name>` as INSTALLED
+    #   COMMANDS (#82, RULING 2026-09-09). The section above it told a reader
+    #   to `cd` to a root and type `make park`, which is the mechanism and not
+    #   the way in — the same gap the `openRepoShape` command closed over
+    #   `setup.sh` (#38), and this is its own `###` subsection for the same
+    #   reason that one is. Forty-nine lines: two command blocks (the two
+    #   words on the two machines, and the `--workspace` line that is typed
+    #   once per machine), then the three facts a reader who learns only the
+    #   two words then gets wrong. HOW THE ESTATE IS FOUND, because `<Name>`
+    #   is a folder and not a repository, both spellings of the projects
+    #   directory are real, a family folder beating a standalone root is why
+    #   `park InkRouter` parks the estate rather than one service, and `park`
+    #   REFUSING with no estate around the cwd reads as a bug until the reason
+    #   is written down. WHAT `--repo` DOES, because it matches a clone you
+    #   already have and never fetches one — a reader who expects it to clone
+    #   will file the refusal as a defect. And WHAT THEY LEAVE BEHIND, because
+    #   "as if I am still on A" has edges: an unpushed `main` commit, a dirty
+    #   root mid pin-bump, ignored files that never travel, a clone refused by
+    #   name and skipped rather than reset, and no agent session at all. Seven
+    #   more lines are the two install paragraphs saying THREE commands rather
+    #   than one, and two extend the Windows warning to the commands
+    #   themselves, which are bash like everything else on that path. Three
+    #   are structural and are the price of the new `###`: a second one,
+    #   `### Who implements it, and what the record is`, so that the doctrine,
+    #   the record, the divergence callout, the holder's half and the Windows
+    #   warning stay in the SECTION rather than falling under the commands'
+    #   heading in the outline — plus its row in the contents list, which is
+    #   the navigation #73's pass added and a section with one of two
+    #   subsections listed would be worse than either.
+    assert len(lines) <= 1200, (
+        f"README.md is {len(lines)} lines; the cap is 1200")
 
 
 @pytest.mark.parametrize("name", SHIPPED_BASH)

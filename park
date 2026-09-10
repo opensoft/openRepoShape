@@ -1,0 +1,540 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+#
+# park — leave this workstation with your half-finished work carried, from any
+# folder: `park InkRouter`, or just `park` from inside the estate.
+#
+# Installed with the other two by `openRepoShape --install`.
+#
+# IT ADDS NO MECHANICS, exactly as the `openRepoShape` command adds none. It
+# FINDS THE ESTATE and runs the estate's own `make park` — the family holder's,
+# which fans out to each member's, or the assembly root's — and those targets
+# run the SPECKIT GIT EXTENSION's `park.sh`, which is the one implementation of
+# the WIP commit, the push and the record (#77, RULING 2026-09-09 ruling 1).
+# Then it says what did NOT park and why none of it is park's to touch. It
+# creates nothing, commits nothing and pushes nothing of its own.
+#
+# openRepoShape #82, under Brett Heap's RULING of 2026-09-09: `--repo` matches
+# a LOCAL clone (ruling 1); with no <Name> and no estate around the cwd this
+# REFUSES and lists what it found (ruling 3); the command is `park` (ruling 4).
+
+set -euo pipefail
+
+SELF_NAME="park"
+
+NAME=""
+REPO_SLUG=""
+DRY_RUN=0
+LANE=""
+PASSTHROUGH=()
+
+say() { printf '%s\n' "$*"; }
+die() { printf '\nREFUSED: %s\n' "$1" >&2; exit "${2:-2}"; }
+
+usage() {
+    cat <<'USAGE'
+park [<Name>] [--repo <owner/name>] [--dry-run] [--lane <name>] [-- ARGS...]
+park --help
+
+Commit, push and RECORD every open feature of one estate, so another
+workstation can take the work up with `resume <Name>`.
+
+<Name> is the estate's folder under your projects directory: a FAMILY folder
+(<Name>/<Name>/family.yaml) or a standalone project root (<Name>/project.yaml).
+With no <Name> the estate around the current directory is used, and with no
+estate around it this REFUSES and lists the ones it found - nothing is parked
+by guess. `--repo <owner/name>` names the estate by the origin of a clone you
+ALREADY HAVE; it never clones (`resume` is the command that clones).
+
+  --project <Name>    the positional under a flag (also --name)
+  --dry-run           rehearse: `make park ARGS=--dry-run`, which writes nothing
+  --lane <name>       the lane recorded in the WIP commit subject
+  -- ARGS...          passed on to the extension through `make park ARGS='...'`
+
+  $PROJECTS_DIR       your projects directory (default: ~/projects, then
+                      ~/Projects - people spell it both ways)
+
+WHAT PARK NEVER DOES: it creates nothing, and it moves nobody's HEAD. Commits
+on a `main` that were never pushed, a dirty root mid pin-bump, and ignored
+local files (.env, credentials) are REPORTED and left exactly where they are.
+USAGE
+}
+
+# --- the estate ------------------------------------------------------------
+#
+# THIS BLOCK IS DUPLICATED IN `resume`, DELIBERATELY. Each of these is one file
+# a person has on PATH: a shared `orp-estate.sh` would be a fourth file for
+# `--install` to place and a broken command the first time somebody copied only
+# one of them. Two copies of a resolver that reads two manifests is cheaper
+# than a command that cannot run alone - and both copies are held to the same
+# tests. The rules themselves are NOT new: `<dir>/<Name>/family.yaml` carrying
+# `kind: family-manifest` and naming `<Name>` is `setup-project.py`'s
+# `family_folder_here`, doubled-name layout and all (#76, RULING ruling 3).
+
+# `$PROJECTS_DIR` names ONE directory when it is set. Otherwise both
+# spellings, in that order, because people really do use both - and DEDUPED by
+# inode, because on a case-insensitive filesystem (a stock Mac) `~/projects`
+# and `~/Projects` are the same directory, and listing every estate twice
+# would read as two estates.
+PROJECTS_DIRS=()
+if [ -n "${PROJECTS_DIR:-}" ]; then
+    PROJECTS_DIRS=("$PROJECTS_DIR")
+else
+    PROJECTS_DIRS=("$HOME/projects")
+    if [ -d "$HOME/Projects" ]; then
+        if [ -d "$HOME/projects" ] && [ "$HOME/Projects" -ef "$HOME/projects" ]; then
+            : # one directory under two spellings; name it once
+        else
+            PROJECTS_DIRS+=("$HOME/Projects")
+        fi
+    fi
+fi
+
+# One indent-zero scalar out of a small YAML file, with parameter expansion
+# only: no YAML library, no python per line, no forks per line. This is the
+# reader the Speckit extension's `workspace_read_scalar` is, narrowed to the
+# keys these two commands read (`kind`, `name`, `family`, `tracking_branch`).
+YAML_VALUE=""
+yaml_scalar() {
+    local file="$1" key="$2" line value
+    YAML_VALUE=""
+    [ -f "$file" ] || return 1
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+        "$key":*) ;;
+        *) continue ;;
+        esac
+        value="${line#"$key":}"
+        value="${value%$'\r'}"
+        value="${value#"${value%%[![:space:]]*}"}"
+        value="${value%"${value##*[![:space:]]}"}"
+        case "$value" in
+        '"'*'"') value="${value#\"}"; value="${value%\"}" ;;
+        "'"*"'") value="${value#\'}"; value="${value%\'}" ;;
+        esac
+        YAML_VALUE="$value"
+        return 0
+    done <"$file"
+    return 1
+}
+
+# Is `<dir>` a FAMILY FOLDER? All three facts have to agree, exactly as
+# `family_folder_here` requires them to: the holder clone sits at
+# `<dir>/<basename>`, its `family.yaml` says `kind: family-manifest`, and it
+# names that same family. A directory called Northwind is a directory called
+# Northwind; what makes it a family folder is read, never guessed from a name.
+is_family_folder() {
+    local dir="$1" name manifest
+    name="${dir##*/}"
+    [ -n "$name" ] || return 1
+    manifest="$dir/$name/family.yaml"
+    yaml_scalar "$manifest" kind || return 1
+    [ "$YAML_VALUE" = "family-manifest" ] || return 1
+    yaml_scalar "$manifest" name || return 1
+    [ "$YAML_VALUE" = "$name" ]
+}
+
+is_project_root() {
+    local dir="$1"
+    yaml_scalar "$dir/project.yaml" kind || return 1
+    [ "$YAML_VALUE" = "project-manifest" ]
+}
+
+ESTATE_KIND=""
+ESTATE_DIR=""
+ESTATE_ROOT=""
+ESTATE_NAME=""
+
+# Is THIS directory an estate? A FAMILY FOLDER WINS over a standalone root of
+# the same name: the holder is what drives the members, so a family answered as
+# one of its own members would park one project and report the estate parked.
+estate_here() {
+    local dir="$1"
+    if is_family_folder "$dir"; then
+        ESTATE_KIND="family"
+        ESTATE_DIR="$dir"
+        ESTATE_NAME="${dir##*/}"
+        ESTATE_ROOT="$dir/$ESTATE_NAME"
+        return 0
+    fi
+    if is_project_root "$dir"; then
+        ESTATE_KIND="standalone"
+        ESTATE_DIR="$dir"
+        ESTATE_NAME="${dir##*/}"
+        ESTATE_ROOT="$dir"
+        return 0
+    fi
+    return 1
+}
+
+# The NEAREST estate at or above `<dir>`: the holder beside you, or the project
+# root you are standing in. NEAREST WINS, so `park` from inside a member of a
+# family parks that member - which is the estate the person is standing in.
+estate_walk_up() {
+    local dir="$1"
+    while [ -n "$dir" ] && [ "$dir" != "/" ]; do
+        estate_here "$dir" && return 0
+        dir="${dir%/*}"
+    done
+    return 1
+}
+
+estate_by_name() {
+    local want="$1" dir
+    for dir in "${PROJECTS_DIRS[@]}"; do
+        estate_here "$dir/$want" && return 0
+    done
+    return 1
+}
+
+# Every estate under the projects directory, one row each. What ruling 3 asks
+# a refusal to print: a person who typed `park` in the wrong folder needs the
+# names, not an instruction to go and look for them.
+list_estates() {
+    local dir child
+    for dir in "${PROJECTS_DIRS[@]}"; do
+        [ -d "$dir" ] || continue
+        for child in "$dir"/*; do
+            [ -d "$child" ] || continue
+            if is_family_folder "$child"; then
+                printf '  family   %-20s %s\n' "${child##*/}" "$child"
+            elif is_project_root "$child"; then
+                printf '  project  %-20s %s\n' "${child##*/}" "$child"
+            fi
+        done
+    done
+}
+
+estates_or_none() {
+    local rows
+    rows="$(list_estates)"
+    if [ -n "$rows" ]; then
+        printf '%s\n' "$rows"
+    else
+        printf '  (none)\n'
+    fi
+}
+
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+# `owner/name`, lowercased, out of any url spelling git accepts:
+# owner/name, https://host/owner/name(.git), git@host:owner/name.git,
+# ssh://git@host/owner/name.git, and a token-bearing https url.
+#
+# A FILESYSTEM PATH IS REFUSED rather than parsed, for the reason the
+# extension's own `workspace_org_from_url` refuses one: `/srv/remotes/Name.git`
+# has a name but no owner, and inventing `remotes` as the owner would let
+# `--repo remotes/Name` match a bare repository on disk. Such a clone simply
+# does not answer `--repo`; it answers `<Name>` and the walk-up.
+repo_slug_of() {
+    local url="$1" rest owner name
+    rest="$url"
+    case "$rest" in
+    /* | ./* | ../* | [A-Za-z]:[/\\]* | file://*) return 1 ;;
+    esac
+    rest="${rest%/}"
+    rest="${rest%.git}"
+    case "$rest" in
+    *://*)
+        rest="${rest#*://}"
+        rest="${rest#*@}"
+        rest="${rest#*/}"
+        ;;
+    *@*:*)
+        rest="${rest#*@}"
+        rest="${rest#*:}"
+        ;;
+    esac
+    case "$rest" in
+    */*) ;;
+    *) return 1 ;;
+    esac
+    name="${rest##*/}"
+    owner="${rest%/*}"
+    owner="${owner##*/}"
+    [ -n "$owner" ] && [ -n "$name" ] || return 1
+    printf '%s/%s\n' "$(lower "$owner")" "$(lower "$name")"
+}
+
+# The clone under the projects directory whose `origin` IS that repository -
+# ruling 1. Two levels deep, because the estates this standard places are
+# `<projects>/<Project>` and `<projects>/<Family>/<Project>`.
+clone_with_origin() {
+    local want dir candidate origin found
+    want="$(lower "$1")"
+    for dir in "${PROJECTS_DIRS[@]}"; do
+        [ -d "$dir" ] || continue
+        for candidate in "$dir"/*/ "$dir"/*/*/; do
+            candidate="${candidate%/}"
+            [ -e "$candidate/.git" ] || continue
+            origin="$(git -C "$candidate" remote get-url origin 2>/dev/null || true)"
+            [ -n "$origin" ] || continue
+            found="$(repo_slug_of "$origin" || true)"
+            [ -n "$found" ] || continue
+            if [ "$found" = "$want" ]; then
+                printf '%s\n' "$candidate"
+                return 0
+            fi
+        done
+    done
+    return 1
+}
+
+# The legs, out of `.gitmodules` - the same file `make bootstrap` mounts them
+# from, so a project whose legs are mounted somewhere unusual still reads
+# correctly. `git config --get-regexp` prints `key value`, so the value is
+# everything after the first space.
+submodule_paths() {
+    local root="$1" line path
+    [ -f "$root/.gitmodules" ] || return 0
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        path="${line#* }"
+        [ -n "$path" ] || continue
+        [ -e "$root/$path/.git" ] || continue
+        printf '%s\n' "$path"
+    done < <(git -C "$root" config --file .gitmodules \
+        --get-regexp '^submodule\..*\.path$' 2>/dev/null || true)
+}
+
+# The family's members, by the same `  - project: <Project>` row `family.py`
+# writes and `siblings.py` reads. The working clone is `<family folder>/
+# <Project>`, beside the holder.
+family_members() {
+    local manifest="$1" line value
+    [ -f "$manifest" ] || return 0
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+        "  - project: "*) value="${line#  - project: }" ;;
+        *) continue ;;
+        esac
+        value="${value%$'\r'}"
+        value="${value%"${value##*[![:space:]]}"}"
+        case "$value" in
+        '"'*'"') value="${value#\"}"; value="${value%\"}" ;;
+        esac
+        [ -n "$value" ] && printf '%s\n' "$value"
+    done <"$manifest"
+}
+
+# --- what did not park ------------------------------------------------------
+
+# `label<TAB>path` per repository the report reads.
+#
+# `members/<Project>` INSIDE A FAMILY HOLDER IS DELIBERATELY NOT HERE. That
+# copy is pinned and DETACHED, for `bootstrap` and `validate`; nobody's
+# in-flight work is in it, and it carries no local `main` to be ahead of. The
+# working clone BESIDE the holder is where a person works, so it is what is
+# read - the same reason the holder's own `park` target dispatches there (#80).
+report_repos() {
+    local leg member
+    if [ "$ESTATE_KIND" = "family" ]; then
+        printf 'holder\t%s\n' "$ESTATE_ROOT"
+        while IFS= read -r member; do
+            [ -e "$ESTATE_DIR/$member/.git" ] || continue
+            printf 'root\t%s\n' "$ESTATE_DIR/$member"
+            while IFS= read -r leg; do
+                printf 'leg\t%s\n' "$ESTATE_DIR/$member/$leg"
+            done < <(submodule_paths "$ESTATE_DIR/$member")
+        done < <(family_members "$ESTATE_ROOT/family.yaml")
+        return 0
+    fi
+    printf 'root\t%s\n' "$ESTATE_ROOT"
+    while IFS= read -r leg; do
+        printf 'leg\t%s\n' "$ESTATE_ROOT/$leg"
+    done < <(submodule_paths "$ESTATE_ROOT")
+}
+
+# Commits on `main` that origin has never seen. BOTH refs must exist locally
+# or there is no question to ask: a detached pinned checkout has no `main`, and
+# a clone with no remote has no `origin/main`. It is read against the
+# remote-tracking ref this machine already has - park fetches nothing, so the
+# count is as of the last fetch, and the report says so.
+unpushed_on_main() {
+    local repo="$1"
+    git -C "$repo" rev-parse --verify -q refs/heads/main >/dev/null 2>&1 || return 1
+    git -C "$repo" rev-parse --verify -q refs/remotes/origin/main >/dev/null 2>&1 || return 1
+    git -C "$repo" rev-list --count origin/main..main 2>/dev/null || return 1
+}
+
+# A dirty ROOT, which is where a pin bump happens. It also answers for a dirty
+# LEG: `git status --porcelain` at a root with submodules reports a leg whose
+# checkout has changes as ` M <leg>`, so one question covers both.
+dirty_count() {
+    local repo="$1" out
+    out="$(git -C "$repo" status --porcelain 2>/dev/null || true)"
+    [ -n "$out" ] || return 1
+    printf '%s\n' "$out" | wc -l | tr -d ' '
+}
+
+LEFT=0
+
+not_parked_report() {
+    local label path count
+    say ""
+    say "what park does NOT carry, and why none of it is park's to touch:"
+    while IFS=$'\t' read -r label path; do
+        [ -n "${path:-}" ] || continue
+        count="$(unpushed_on_main "$path" || true)"
+        if [ -n "$count" ] && [ "$count" != "0" ]; then
+            LEFT=$((LEFT + 1))
+            printf '  unpushed main  %-7s %s\n' "$label" "$path"
+            printf '                 %s commit(s) on main that origin has not seen (as of the last fetch).\n' "$count"
+            if [ "$label" = "leg" ]; then
+                printf '                 A leg goes up as a pull request too; park carries FEATURE branches only.\n'
+            else
+                printf '                 The root is PR-only - land them as a pull request; park never pushes main.\n'
+            fi
+        fi
+        case "$label" in
+        holder | root)
+            count="$(dirty_count "$path" || true)"
+            if [ -n "$count" ]; then
+                LEFT=$((LEFT + 1))
+                printf '  uncommitted    %-7s %s\n' "$label" "$path"
+                printf '                 %s path(s) changed at the root. A pin bump in progress is not\n' "$count"
+                printf "                 park's to commit: the root carries no feature branch at all.\n"
+            fi
+            ;;
+        esac
+    done < <(report_repos)
+    printf '  ignored files  never travel. .env, credentials and every other\n'
+    printf '                 gitignored file come back from your secrets manager, not from git.\n'
+    if [ "$LEFT" -eq 0 ]; then
+        say "  nothing else was left behind: no unpushed main commit, no dirty root."
+    fi
+}
+
+# --- arguments -------------------------------------------------------------
+while [ $# -gt 0 ]; do
+    case "$1" in
+    -h | --help) usage; exit 0 ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    --lane) LANE="${2:?--lane needs a value}"; shift 2 ;;
+    --repo) REPO_SLUG="${2:?--repo needs a value}"; shift 2 ;;
+    # `--project <Name>` and `--name <Name>` are the positional under a flag,
+    # because the issue's own words are "park --project <project> or park
+    # --repo <repo> and it defaults to project" (Brett Heap, 2026-09-09). The
+    # value is never mistaken for the positional this way, which is the same
+    # reason `openRepoShape` names its value-taking flags.
+    --name | --project) NAME="${2:?$1 needs a value}"; shift 2 ;;
+    # EVERYTHING AFTER `--` IS THE EXTENSION'S, verbatim. `park.sh` has flags
+    # this command has no opinion about (--feature, --message, --no-push,
+    # --retire-parked-wip) and a command that ate them would be a command
+    # people have to stop using the moment the extension grows one.
+    --) shift; PASSTHROUGH+=("$@"); break ;;
+    -*)
+        usage >&2
+        die "$SELF_NAME does not know $1. Its own flags are listed above; the
+    extension's own flags travel after a \`--\`, so what you want is:
+
+      $SELF_NAME -- $1"
+        ;;
+    *)
+        [ -z "$NAME" ] ||
+            die "two estate names, '$NAME' and '$1'. One positional <Name>, then flags."
+        NAME="$1"; shift ;;
+    esac
+done
+
+[ -z "$NAME" ] || [ -z "$REPO_SLUG" ] ||
+    die "both <Name> ('$NAME') and --repo '$REPO_SLUG'. One estate per run: name it
+    either way, not both."
+
+# --- resolve ---------------------------------------------------------------
+if [ -n "$REPO_SLUG" ]; then
+    case "$REPO_SLUG" in
+    */*) ;;
+    *) die "--repo '$REPO_SLUG' is not <owner/name>. A family's members may live in
+    another organisation, so there is no owner to assume." ;;
+    esac
+    MATCH="$(clone_with_origin "$REPO_SLUG" || true)"
+    [ -n "$MATCH" ] || die "no clone under your projects directory has origin $REPO_SLUG.
+    \`--repo\` names a clone you ALREADY HAVE; it never clones one (RULING
+    2026-09-09 ruling 1). Get it, or bring the whole estate back from its
+    record:
+
+      git clone --recurse-submodules https://github.com/$REPO_SLUG.git
+      resume <Name>          # rebuilds the estate from your workspace record
+
+estates found under your projects directory:
+$(estates_or_none)"
+    estate_walk_up "$MATCH" ||
+        die "$MATCH is a clone of $REPO_SLUG, but nothing at or above it is an
+    estate: no \`family.yaml\` holder beside it and no \`project.yaml\` root. It
+    is a clone, not a project of this shape - \`park\` has no verb to run in it."
+elif [ -n "$NAME" ]; then
+    estate_by_name "$NAME" || die "no estate named '$NAME' under your projects directory.
+    An estate is a FAMILY folder ($NAME/$NAME/family.yaml) or a standalone
+    project root ($NAME/project.yaml). Bring it back with \`resume $NAME\`, or
+    park one of these:
+
+$(estates_or_none)"
+else
+    # RULING 3: nothing is parked by guess. Not every estate that has a
+    # manifest, and not the one this command happened to find first.
+    estate_walk_up "$PWD" || die "no estate around $PWD, and no <Name> was given, so nothing was parked.
+    \`park\` never guesses which estate you meant, and it never parks all of
+    them. Name one of these:
+
+$(estates_or_none)
+    ...or \`park --repo <owner/name>\`, for the clone whose origin is that
+    repository."
+fi
+
+command -v make >/dev/null 2>&1 ||
+    die "no \`make\` on PATH, so the estate's own \`make park\` cannot be run.
+    Install it (\`xcode-select --install\` on macOS, \`sudo apt-get install -y
+    make\` on Debian and Ubuntu), then re-run \`$SELF_NAME\`."
+
+[ -f "$ESTATE_ROOT/Makefile" ] ||
+    die "$ESTATE_ROOT has no Makefile, so it has no \`park\` target to run.
+    A scaffolded root and a family holder both ship one; a root that has lost
+    it is re-synced with \`update-shape.py\`."
+
+# ONE `ARGS=` STRING, because that is the whole interface the two Makefiles
+# offer (#80): the recipe word-splits `$(ARGS)`, so an argument carrying a
+# space cannot survive the trip and this command does not pretend otherwise.
+MAKE_ARGS=""
+[ "$DRY_RUN" -eq 0 ] || MAKE_ARGS="--dry-run"
+if [ -n "$LANE" ]; then
+    MAKE_ARGS="${MAKE_ARGS:+$MAKE_ARGS }--lane $LANE"
+fi
+if [ ${#PASSTHROUGH[@]} -gt 0 ]; then
+    MAKE_ARGS="${MAKE_ARGS:+$MAKE_ARGS }${PASSTHROUGH[*]}"
+fi
+
+if [ "$ESTATE_KIND" = "family" ]; then
+    say "park: $ESTATE_NAME - the family holder at $ESTATE_ROOT"
+    say "  the members' working clones beside it are where the verb runs."
+else
+    say "park: $ESTATE_NAME - the assembly root at $ESTATE_ROOT"
+fi
+# shellcheck disable=SC2016  # the single quotes are LITERAL: this line is the
+# `make` invocation a person can copy, and `ARGS='...'` is how they must type it.
+say "  make park${MAKE_ARGS:+ ARGS='$MAKE_ARGS'}"
+say ""
+
+# THE EXIT CODE IS MAKE'S, UNCHANGED. `park.sh`'s own 0/1/2/3 do not survive
+# make - GNU make reports ANY non-zero recipe status as its own exit 2 and
+# prints `Error <code>` - and this command neither rewrites nor rescues that:
+# the code is in make's diagnostic, and a run that refused must never read as
+# success. #80's Makefile says the same thing at the target.
+# AN ARRAY, so `ARGS=--feature 001-a --dry-run` reaches make as ONE
+# assignment. `${var:+"..."}` unquoted is one word in bash today and a thing a
+# reader has to squint at; an array is neither.
+PARK_CALL=(make park)
+[ -z "$MAKE_ARGS" ] || PARK_CALL+=("ARGS=$MAKE_ARGS")
+set +e
+(cd "$ESTATE_ROOT" && exec "${PARK_CALL[@]}")
+STATUS=$?
+set -e
+
+not_parked_report
+
+say ""
+say "park: $ESTATE_NAME - \`make park\` exited $STATUS; $LEFT thing(s) above are not park's to carry."
+if [ "$DRY_RUN" -eq 1 ]; then
+    say "  --dry-run: nothing was committed, pushed or recorded."
+fi
+exit "$STATUS"

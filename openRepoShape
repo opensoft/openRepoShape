@@ -14,6 +14,12 @@
 # runs it, turning the positional <Project> into `--project <Project>` and
 # passing every other argument through untouched. The README's long
 # `curl … | bash -s -- --org … --project …` line and this do the same thing.
+#
+# `--install` PLACES THREE COMMANDS, not one: this file, `park` and `resume`
+# (#82). One install line for the whole standard, so a second engineer gets
+# the estate verbs from the README's one line and nothing depends on anyone's
+# dotfiles. The two of them add no behaviour either — they find the estate and
+# run its own `make park` / `make resume`.
 
 set -euo pipefail
 
@@ -49,10 +55,23 @@ argument reaches setup.sh unchanged: --visibility, --elected-by, --family,
 hands on to scaffold-project.py. `./setup.sh --help` prints setup-project.py's
 usage, which lists them all.
 
+`--install` places THREE commands, and each is one file:
+
+  openRepoShape <Project> --org <org>    scaffold a project
+  park [<Name>]                          commit, push and RECORD an estate's
+                                         open features, so another workstation
+                                         can take the work up
+  resume [<Name>]                        clone or fast-forward that estate here
+                                         and recreate those features
+
+`park --help` and `resume --help` say the rest. Neither implements any of the
+mechanics: they find the estate under your projects directory and run its own
+`make park` / `make resume`, which run the Speckit git extension's scripts.
+
   $OPENREPOSHAPE_REPO       owner/name to fetch from (default opensoft/openRepoShape)
   $OPENREPOSHAPE_REF        the ref to fetch it at   (default main)
   $OPENREPOSHAPE_ORG        the organisation, when --org is not given
-  $OPENREPOSHAPE_BIN_DIR    where --install puts it  (default ~/.local/bin)
+  $OPENREPOSHAPE_BIN_DIR    where --install puts them (default ~/.local/bin)
   $OPENREPOSHAPE_SETUP_SH   run this setup.sh on disk instead of fetching one
 USAGE
 }
@@ -105,29 +124,45 @@ shape_clone_url() {
 	esac
 }
 
-install_self() {
+# THE THREE COMMANDS `--install` PLACES (#82). One list, so the installer, the
+# fetch fallback and the tests cannot disagree about what a complete install
+# is. `openRepoShape` is first because it is the one a person types to get the
+# other two.
+INSTALLABLES=(openRepoShape park resume)
+
+install_commands() {
 	local dir="${OPENREPOSHAPE_BIN_DIR:-$HOME/.local/bin}"
-	local target="$dir/openRepoShape" source verb
+	local name target source verb selfdir=""
 	# Run from a file, install THOSE bytes: `--install` then needs no network
-	# and no `gh` at all. Run from stdin (`curl … | bash -s -- --install`)
-	# there is no file to copy from, so fetch this path at this same ref.
+	# and no `gh` at all — and `park` and `resume` sit BESIDE this file, in the
+	# checkout and in the repository alike, so the siblings that are there are
+	# copied and only a missing one is fetched. Run from stdin (`curl … | bash
+	# -s -- --install`) there is no file to copy from at all, so each of the
+	# three is fetched at this same ref.
 	if [ -f "$SELF" ]; then
-		source="$SELF"
-	else
-		workdir
-		source="$WORKDIR/openRepoShape"
-		fetch_from_repo openRepoShape "$source"
+		selfdir="$(cd -- "$(dirname -- "$SELF")" && pwd)"
 	fi
 	mkdir -p "$dir"
-	if [ -e "$target" ] && cmp -s "$source" "$target"; then
-		verb="already installed at $target (unchanged)"
-	else
-		if [ -e "$target" ]; then verb="updated at $target"; else verb="installed at $target"; fi
-		cp -- "$source" "$target"
-	fi
-	# Stamped every time: a copy that is not executable is not a command.
-	chmod 755 "$target"
-	say "openRepoShape: $verb"
+	for name in "${INSTALLABLES[@]}"; do
+		if [ -n "$selfdir" ] && [ -f "$selfdir/$name" ]; then
+			source="$selfdir/$name"
+		else
+			workdir
+			source="$WORKDIR/$name"
+			fetch_from_repo "$name" "$source"
+		fi
+		target="$dir/$name"
+		if [ -e "$target" ] && cmp -s "$source" "$target"; then
+			verb="already installed at $target (unchanged)"
+		else
+			if [ -e "$target" ]; then verb="updated at $target"; else verb="installed at $target"; fi
+			cp -- "$source" "$target"
+		fi
+		# Stamped every time: a copy that is not executable is not a command.
+		chmod 755 "$target"
+		say "$name: $verb"
+	done
+	# ONE PATH NOTE for the three of them: the directory is the same one.
 	case ":${PATH:-}:" in
 	*":$dir:"*) ;;
 	*)
@@ -167,8 +202,8 @@ done
 
 if [ "$MODE" = "install" ]; then
 	[ -z "$PROJECT" ] && [ ${#PASSTHROUGH[@]} -eq 0 ] ||
-		die "--install takes no other arguments; it only installs this command."
-	install_self
+		die "--install takes no other arguments; it only installs the commands."
+	install_commands
 	exit 0
 fi
 
