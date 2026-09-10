@@ -204,11 +204,11 @@ curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/openRep
     | bash -s -- --install
 ```
 
-It installs THREE commands into `~/.local/bin` — `openRepoShape` itself and
-the two estate verbs `park` and `resume`, for
-[carrying in-flight work](#carrying-in-flight-work-to-another-workstation) —
-idempotently, a second run printing `unchanged` per file, and prints the
-`export PATH=…` line if that directory is not on `PATH`.
+It installs ONE command into `~/.local/bin`, idempotently — a second run
+prints `unchanged` — and prints the `export PATH=…` line if that directory is
+not on `PATH`. The estate verbs `park` and `resume`, for [carrying in-flight
+work](#carrying-in-flight-work-to-another-workstation), are
+[opensoft/openRepoTools](https://github.com/opensoft/openRepoTools)' now.
 
 **4. Run it:**
 
@@ -342,15 +342,11 @@ curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/openRep
     | bash -s -- --install
 ```
 
-It installs THREE commands into `~/.local/bin`, idempotently — a second run
-prints `unchanged` per file — and prints the `export PATH=…` line if that
-directory is not on `PATH`. Each is one file at the repository root, and none
-of them implements anything:
+It installs ONE command into `~/.local/bin`, idempotently — a second run
+prints `unchanged` — and prints the `export PATH=…` line if that directory is
+not on `PATH`. It is one file at the repository root and implements nothing:
 [`openRepoShape`](https://github.com/opensoft/openRepoShape/blob/main/openRepoShape)
-fetches `setup.sh` (API first, raw URL second) and runs it, and
-[`park`](https://github.com/opensoft/openRepoShape/blob/main/park) and
-[`resume`](https://github.com/opensoft/openRepoShape/blob/main/resume) find an
-estate and run its own `make park` / `make resume`.
+fetches `setup.sh` (API first, raw URL second) and runs it.
 
 Or type the long line, on a machine you would rather install nothing on:
 
@@ -358,6 +354,15 @@ Or type the long line, on a machine you would rather install nothing on:
 curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup.sh \
     | bash -s -- --org Northwind --project Atlas \
       --visibility private --elected-by 'Dana Okafor'
+```
+
+The estate verbs `park` and `resume`, for [carrying in-flight
+work](#carrying-in-flight-work-to-another-workstation), are
+[opensoft/openRepoTools](https://github.com/opensoft/openRepoTools)' and come
+from its own one-liner, which this command prints and never calls:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoTools/main/openRepoTools | bash -s -- --install
 ```
 
 #### Run
@@ -1053,9 +1058,9 @@ work, so what you get back is your tree rather than a commit to unpick.
 
 ### `park <Name>` and `resume <Name>`, from anywhere
 
-Those are the targets a root ships. `openRepoShape --install` also puts
-**`park`** and **`resume`** on your `PATH`, so the whole of the sequence above
-is one word from any folder on either machine:
+Those are the targets a root ships. [`openRepoTools --install`](#install-the-command)
+puts **`park`** and **`resume`** on your `PATH`, so the whole of the sequence
+above is one word from any folder on either machine:
 
 ```sh
 park InkRouter                  # on workstation A, from any folder
@@ -1170,9 +1175,9 @@ hidden.
 > [!WARNING]
 > **Native Windows parks nothing.** The extension's `park` and `resume` are
 > bash; its PowerShell mirror has neither, and porting them is a separate
-> object. The two installed commands are bash as well, and so is the
-> `--install` line that places them. On Windows the way in is WSL2, exactly as
-> it is for `setup.sh`.
+> object. The two installed commands are bash as well, and so is
+> openRepoTools' `--install` line that places them. On Windows the way in is
+> WSL2, exactly as it is for `setup.sh`.
 
 ## The degrade rule
 

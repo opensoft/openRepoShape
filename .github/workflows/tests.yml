@@ -236,17 +236,16 @@ jobs:
       # `--version` prints what answered, because this job cannot assert on
       # its own which bash `/bin/bash` is.
       #
-      # `park` and `resume` joined the list on 2026-09-09 (#82): they are
-      # installed onto the same macOS PATH by the same `--install`, and a
-      # bash-4 construct in either would be found by the person who typed
-      # `park InkRouter` rather than here.
+      # `park` and `resume` were on this list from 2026-09-09 (#82) until the
+      # carve (#92); the step that parses them is opensoft/openRepoTools' now,
+      # for the reason this one exists — those two are what a stock Mac's bash
+      # 3.2 has to parse, and the repository that ships a file is the one that
+      # can say so.
       - name: /bin/bash parses every bash entry point
         run: |
           /bin/bash --version
           /bin/bash -n setup.sh
           /bin/bash -n openRepoShape
-          /bin/bash -n park
-          /bin/bash -n resume
 
       - name: tests
         run: python3 -m pytest tests -q

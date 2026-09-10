@@ -488,10 +488,11 @@
     | bash -s -- --install
 openRepoShape --doctor
 openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
-          <p class="sub">That first line installs THREE commands into <code>~/.local/bin</code>
-          &mdash; <code>openRepoShape</code> itself and the two estate verbs <code>park</code> and
-          <code>resume</code>, for <a href="#park">carrying in-flight work</a> to another
-          workstation.</p>
+          <p class="sub">That first line installs ONE command into <code>~/.local/bin</code>. The
+          estate verbs <code>park</code> and <code>resume</code>, for <a href="#park">carrying
+          in-flight work</a> to another workstation, are
+          <a href="https://github.com/opensoft/openRepoTools">opensoft/openRepoTools</a>&rsquo; and have a one-liner of
+          their own.</p>
           <p class="sub">On Windows without WSL2 the way in is two PowerShell commands instead,
           because on Windows there is nothing to install &mdash; see <a href="#start">Start
           here</a>.</p>
@@ -733,20 +734,21 @@ sudo dnf install gh</code></pre></div>
             an exhausted stdin, so it cannot ask for the one <code>yes</code> before three
             repositories exist &mdash; it refuses instead. Downloading the file first leaves stdin
             attached to the terminal you are typing at.</p>
-            <p data-platform="mac wsl">It installs THREE commands into <code>~/.local/bin</code> &mdash;
-            <code>openRepoShape</code> itself and the two estate verbs <code>park</code> and
-            <code>resume</code>, for <a href="#park">carrying in-flight work</a> &mdash;
-            idempotently, a second run printing <code>unchanged</code> per file, and prints the
-            <code>export PATH=&hellip;</code> line if that directory is not on <code>PATH</code>.</p>
-            <p data-platform="linux">It installs THREE commands into <code>~/.local/bin</code> &mdash;
-            <code>openRepoShape</code> itself and the two estate verbs <code>park</code> and
-            <code>resume</code>, for <a href="#park">carrying in-flight work</a> &mdash;
-            idempotently, a second run printing <code>unchanged</code> per file, and prints the
+            <p data-platform="mac wsl">It installs ONE command into <code>~/.local/bin</code>,
+            idempotently &mdash; a second run prints <code>unchanged</code> &mdash; and prints the
             <code>export PATH=&hellip;</code> line if that directory is not on <code>PATH</code>.
-            Each is one file at the repository root and none of them implements anything:
+            The estate verbs <code>park</code> and <code>resume</code>, for <a href="#park">carrying
+            in-flight work</a>, are <a href="https://github.com/opensoft/openRepoTools">opensoft/openRepoTools</a>&rsquo; and
+            have an install line of their own.</p>
+            <p data-platform="linux">It installs ONE command into <code>~/.local/bin</code>,
+            idempotently &mdash; a second run prints <code>unchanged</code> &mdash; and prints the
+            <code>export PATH=&hellip;</code> line if that directory is not on <code>PATH</code>.
+            It is one file at the repository root and implements nothing:
             <code>openRepoShape</code> fetches <code>setup.sh</code> (API first, raw URL second) and
-            runs it, and <code>park</code> and <code>resume</code> find an estate and run its own
-            <code>make park</code> / <code>make resume</code>.</p>
+            runs it. The estate verbs <code>park</code> and <code>resume</code>, for
+            <a href="#park">carrying in-flight work</a>, are
+            <a href="https://github.com/opensoft/openRepoTools">opensoft/openRepoTools</a>&rsquo; and have an install line of
+            their own.</p>
           </div></li>
 
           <li><div>
@@ -1365,10 +1367,13 @@ cd &lt;Project&gt; &amp;&amp; make bootstrap &amp;&amp; make resume</code></pre>
       <code>ARGS=--dry-run</code> rehearses either one and writes nothing.</p>
 
       <h3><code>park &lt;Name&gt;</code> and <code>resume &lt;Name&gt;</code>, from anywhere</h3>
-      <p>Those are the targets a root ships. <code>openRepoShape --install</code> also puts
-      <strong><code>park</code></strong> and <strong><code>resume</code></strong> on your
-      <code>PATH</code>, so the whole of that sequence is one word from any folder on either
-      machine:</p>
+      <p>Those are the targets a root ships.
+      <a href="https://github.com/opensoft/openRepoTools">opensoft/openRepoTools</a> puts <strong><code>park</code></strong>
+      and <strong><code>resume</code></strong> on your <code>PATH</code> &mdash; one line, which
+      <code>openRepoShape --install</code> prints and never runs, because a standard that reached
+      into its own tools to finish an install would depend on them at runtime:</p>
+      <div class="code" data-lang="sh"><pre><code>curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoTools/main/openRepoTools | bash -s -- --install</code></pre></div>
+      <p>&mdash; so the whole of that sequence is one word from any folder on either machine:</p>
       <div class="code" data-lang="sh"><pre><code>park InkRouter                  # on workstation A, from any folder
 resume InkRouter                # on workstation B, and the estate is back</code></pre></div>
       <p>They add no mechanics either: they FIND THE ESTATE and run its own <code>make park</code> /
@@ -1469,8 +1474,8 @@ resume InkRouter                # on workstation B, and the estate is back</code
       <p><span class="refuses">Native Windows parks nothing</span></p>
       <p>The extension&rsquo;s <code>park</code> and <code>resume</code> are bash; its PowerShell
       mirror has neither, and porting them is a separate object. The two installed commands are bash
-      as well, and so is the <code>--install</code> line that places them. On Windows the way in is
-      WSL2, exactly as it is for <code>setup.sh</code>.</p>
+      as well, and so is openRepoTools&rsquo; <code>--install</code> line that places them. On
+      Windows the way in is WSL2, exactly as it is for <code>setup.sh</code>.</p>
       <p class="aside">Ruled by <strong>Brett Heap on 2026-09-09</strong> (#77): this repository
       implements neither verb.</p>
       <a class="src" href="https://github.com/opensoft/openRepoShape#carrying-in-flight-work-to-another-workstation">Full text &mdash; carrying work to another workstation</a>
@@ -1500,9 +1505,7 @@ resume InkRouter                # on workstation B, and the estate is back</code
         <dt>scripts/path_classify.py</dt><dd>the classifier over the path policy</dd>
         <dt>scripts/shape_materialize.py</dt><dd>the ONE materializer, used by both tools</dd>
         <dt>scripts/validate-repository-naming.py</dt><dd>answers the naming question for one name</dd>
-        <dt>openRepoShape</dt><dd>installs the three commands; runs setup.sh</dd>
-        <dt>park</dt><dd>finds an estate and runs its own make park</dd>
-        <dt>resume</dt><dd>the same for make resume, rebuilding the estate first</dd>
+        <dt>openRepoShape</dt><dd>installs itself as a command; runs setup.sh</dd>
         <dt>setup.sh</dt><dd>the shim: find an interpreter, hand over</dd>
         <dt>setup-project.py</dt><dd>THE FLOW, and the Windows way in (no bash there)</dd>
         <dt>scaffold-project.py</dt><dd>creates the three repositories and the pins</dd>
@@ -1549,12 +1552,11 @@ resume InkRouter                # on workstation B, and the estate is back</code
         push to <code>main</code> is doing its job; the exits are in the scaffold&rsquo;s own failure
         message. <code>--admin</code> is not a remedy.</li>
         <li><strong>Never reset, stash or force-push to make a refused
-        <a href="#park"><code>park</code></a> or <code>resume</code> succeed.</strong> A parked WIP
-        commit is a real pushed commit, and <code>resume</code> refusing on divergence names both
-        commits and the commands to reconcile by hand. <code>resume --workspace</code> is the only
-        writer of <code>~/.agents/workspace.yaml</code>, and which private repository holds a
-        person&rsquo;s unfinished work is theirs to name &mdash; never pass that flag on your own
-        initiative.</li>
+        <a href="#park"><code>make park</code></a> or <code>make resume</code> succeed.</strong> A
+        parked WIP commit is a real pushed commit, and <code>resume</code> refusing on divergence
+        names both commits and the commands to reconcile by hand. The two INSTALLED commands of
+        those names are <a href="https://github.com/opensoft/openRepoTools">opensoft/openRepoTools</a>&rsquo; now, and its own
+        <code>AGENTS.md</code> is what an assistant driving them reads.</li>
       </ul>
       <p>Beyond those: show the human the tool&rsquo;s output verbatim &mdash; the plan especially
       &mdash; and let them answer its prompt; &ldquo;go ahead&rdquo; about something else is not a
@@ -1579,7 +1581,7 @@ resume InkRouter                # on workstation B, and the estate is back</code
       <p>Licence <strong>Apache-2.0</strong>. See <code>LICENSE</code> in the repository.</p>
       <p><a href="https://github.com/opensoft/openRepoShape#readme">github.com/opensoft/openRepoShape</a></p>
       <p class="meta">First cut from README.md at c093813 (#71); regenerated at cbca5b4 (#89).
-      README.md blob e2598c1b83ac2b1777daa64e54089582153f79de. Every command, flag, exit code and
+      README.md blob 1b1af10ecb9033e1b55aaa9d65ece919cee6079c. Every command, flag, exit code and
       file name on this page is quoted from that README and from AGENTS.md.</p>
     </footer>
   </main>
