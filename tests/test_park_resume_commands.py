@@ -276,10 +276,24 @@ def seed_holder(base: Path, members: dict) -> Path:
 
 
 def family_manifest(family: str = FAMILY) -> str:
-    """One workspace manifest in the S1 schema, by hand (see this file's
-    docstring). `family:` present is what makes it a FAMILY file, and the
-    holder repository is read from the file's own org plus that name — the
-    doubled-name rule; `projects[]` are the MEMBERS."""
+    """One workspace manifest as `park.sh` WRITES ONE, by hand.
+
+    THE CASING IS THE POINT, and it is why this is written out rather than
+    invented (F2 of the review on #83). `park.sh` takes the header's `family:`
+    from `family.yaml`'s **`id:`** — `workspace_family_name` reads that key —
+    and an id is LOWERCASE by construction (`family.py`: `--id … or
+    family.lower()`, checked against `PROJECT_ID_RE = ^[a-z0-9][a-z0-9-]*$`).
+    The manifest FILE is named for the same id. The family FOLDER, and the
+    holder repository, are the family's CamelCase `name:` — and the only place
+    in the file that carries it is each member's
+    `root: <family folder>/<project folder>`, which
+    `workspace_manifest_root_value` writes with the real casing.
+
+    So: `family: testfam`, `workspaces/<org>/testfam.yaml`, `root:
+    TestFam/Alpha`. A resume that read the folder out of `family:` clones
+    `<org>/testfam` into `~/projects/testfam/testfam`, and this fixture is
+    what makes that fail here instead of on somebody's workstation.
+    """
     blocks = ""
     for name in MEMBERS:
         blocks += f"""\
@@ -306,7 +320,7 @@ def family_manifest(family: str = FAMILY) -> str:
             pushed: true
 """
     return (f"schema_version: 1\nkind: workspace-manifest\n"
-            f"family: {family}\nwritten_by: speckit park\nprojects:\n"
+            f"family: {family.lower()}\nwritten_by: speckit park\nprojects:\n"
             + blocks)
 
 
@@ -345,6 +359,61 @@ projects:
 """
 
 
+#: The member for the leg guard: the REAL assembly-root bootstrap, and a real
+#: submodule leg. `Charlie` rather than one of MEMBERS because the family
+#: fixtures are session-scoped and this one is the only place that wants a leg.
+LEG_MEMBER = "Charlie"
+
+
+def seed_leg_member(base: Path) -> tuple[Path, Path]:
+    """A bare project WITH A LEG, carrying the REAL `scripts/bootstrap.py`.
+
+    THE GUARD MUST GUARD THE REAL THING (F3 of the review on #83). The other
+    seeded members ship a bootstrap STUB that only echoes, which would let a
+    leg-guard test pass against a script that could not have moved anything.
+    This one ships `templates/assembly-root/scripts/bootstrap.py` itself — the
+    file whose `checkout_tracking_branch` runs `git checkout <tracking>` in a
+    leg whose branch tip equals the pin — so the test is about that code.
+    """
+    leg_seed = base / "seed" / f"{LEG_MEMBER}-spec"
+    leg_seed.mkdir(parents=True)
+    (leg_seed / "spec.md").write_text("# the spec leg\n", encoding="utf-8")
+    git("init", "-q", "-b", "main", ".", cwd=leg_seed)
+    commit_all(leg_seed, "the leg")
+    leg_bare = base / "remotes" / f"{LEG_MEMBER}-spec.git"
+    leg_bare.parent.mkdir(exist_ok=True)
+    git("clone", "-q", "--bare", str(leg_seed), str(leg_bare), cwd=base)
+
+    seed = base / "seed" / LEG_MEMBER
+    (seed / "scripts").mkdir(parents=True)
+    (seed / "project.yaml").write_text(
+        "schema_version: 1\nkind: project-manifest\n"
+        f"id: {LEG_MEMBER.lower()}\nname: \"{LEG_MEMBER}\"\n"
+        "tracking_branch: main\nlegs:\n"
+        f"  - role: assembly\n    repository: {ORG}/{LEG_MEMBER}\n"
+        '    path: "."\n'
+        f"  - role: spec\n    repository: {ORG}/{LEG_MEMBER}-spec\n"
+        "    path: spec\n", encoding="utf-8")
+    shutil.copy2(REPO / "templates" / "assembly-root" / "Makefile",
+                 seed / "Makefile")
+    shutil.copy2(REPO / "templates" / "assembly-root" / ".gitignore",
+                 seed / ".gitignore")
+    shutil.copy2(REPO / "templates" / "assembly-root" / "scripts" / "bootstrap.py",
+                 seed / "scripts" / "bootstrap.py")
+    shutil.copy2(REPO / "scripts" / "repo_shape.py",
+                 seed / "scripts" / "repo_shape.py")
+    for verb in ("park", "resume"):
+        write_stub(seed, verb, label=LEG_MEMBER)
+    git("init", "-q", "-b", "main", ".", cwd=seed)
+    commit_all(seed, "seed")
+    git("-c", "protocol.file.allow=always", "submodule", "add", "-q",
+        str(leg_bare), "spec", cwd=seed)
+    commit_all(seed, "the leg, pinned")
+    bare = base / "remotes" / f"{LEG_MEMBER}.git"
+    git("clone", "-q", "--bare", str(seed), str(bare), cwd=base)
+    return bare, leg_bare
+
+
 def seed_workspace(base: Path, name: str, files: dict) -> Path:
     """A bare repository standing in for the person's private `<user>-wip`."""
     seed = base / "seed" / f"ws-{name}"
@@ -369,17 +438,31 @@ def remotes(tmp_path_factory) -> dict:
     holder = seed_holder(base, members)
     workspace = seed_workspace(
         base, "wip",
-        {f"workspaces/{ORG}/{FAMILY}.yaml": family_manifest()})
+        {f"workspaces/{ORG}/{FAMILY.lower()}.yaml": family_manifest()})
     two_orgs = seed_workspace(
         base, "twoorgs",
-        {f"workspaces/orga/{FAMILY}.yaml": family_manifest(),
-         f"workspaces/orgb/{FAMILY}.yaml": family_manifest()})
+        {f"workspaces/orga/{FAMILY.lower()}.yaml": family_manifest(),
+         f"workspaces/orgb/{FAMILY.lower()}.yaml": family_manifest()})
     solo = seed_workspace(
         base, "solo",
         {f"workspaces/{ORG}/alpha.yaml": standalone_manifest("Alpha")})
+    leg_member, leg_bare = seed_leg_member(base)
+    legged = seed_workspace(
+        base, "legged",
+        {f"workspaces/{ORG}/{LEG_MEMBER.lower()}.yaml":
+            standalone_manifest(LEG_MEMBER)})
+    # A `root:` that walks OUT of the projects directory, which the schema's
+    # own invariant forbids and a hand-edited file can still carry (F7).
+    escaping = seed_workspace(
+        base, "escaping",
+        {f"workspaces/{ORG}/runaway.yaml":
+            standalone_manifest("Alpha").replace(
+                "root: Alpha", "root: ../../elsewhere/Alpha").replace(
+                "id: alpha", "id: runaway")})
     return {"base": base, "dir": base / "remotes", "members": members,
             "holder": holder, "workspace": workspace, "two_orgs": two_orgs,
-            "solo": solo}
+            "solo": solo, "leg_member": leg_member, "leg_bare": leg_bare,
+            "legged": legged, "escaping": escaping}
 
 
 def offline(remotes: dict, extra: dict | None = None) -> dict:
@@ -558,7 +641,7 @@ def test_repo_with_no_match_refuses_and_names_git_clone(home):
 def test_repo_that_is_not_owner_slash_name_is_refused(home):
     result = run(PARK, "--repo", "Atlas", home=home)
     assert result.returncode == 2, result.stdout + result.stderr
-    assert "is not <owner/name>" in result.stderr
+    assert "'Atlas' is not a repository" in result.stderr
 
 
 def test_a_name_and_repo_together_are_refused(home):
@@ -624,7 +707,7 @@ def test_park_reports_an_unpushed_main_commit_and_a_dirty_root(estate, home):
     result = run(PARK, FAMILY, home=home)
     assert result.returncode == 0, result.stderr + result.stdout
     assert "what park does NOT carry" in result.stdout
-    assert f"unpushed main  root    {alpha}" in result.stdout
+    assert f"unpushed main   root    {alpha}" in result.stdout
     assert "1 commit(s) on main that origin has not seen" in result.stdout
     assert "land them as a pull request" in result.stdout
     assert f"uncommitted    holder  {estate['holder']}" in result.stdout
@@ -725,7 +808,8 @@ def test_resume_on_a_fresh_machine_builds_the_whole_estate(remotes, home):
     assert config.read_text(encoding="utf-8") == (
         f"repository: {WORKSPACE_SLUG}\npath: ~/projects/wip\n")
     assert (home / "projects" / "wip" / "workspaces" / ORG
-            / f"{FAMILY}.yaml").is_file()
+            / f"{FAMILY.lower()}.yaml").is_file(), (
+        "park.sh names the manifest for the family's lowercase id")
 
     folder = home / "projects" / FAMILY
     holder = folder / FAMILY
@@ -790,8 +874,8 @@ def test_resume_refuses_when_two_orgs_record_the_same_name(remotes, home):
                   env=offline(remotes))
     assert refused.returncode == 2, refused.stdout + refused.stderr
     assert "workspace manifests record 'TestFam'" in refused.stderr
-    assert "orga/TestFam.yaml" in refused.stderr
-    assert "orgb/TestFam.yaml" in refused.stderr
+    assert "orga/testfam.yaml" in refused.stderr
+    assert "orgb/testfam.yaml" in refused.stderr
     assert f"resume {FAMILY} --org <org>" in refused.stderr
     assert not (home / "projects" / FAMILY).exists()
 
@@ -848,6 +932,308 @@ def test_resume_rebuilds_a_standalone_project(remotes, home):
     assert "root      Alpha" in result.stdout, "the layout table names the root"
     assert not (home / "projects" / FAMILY).exists(), (
         "a standalone resume must not touch the family of the same members")
+
+
+# ===========================================================================
+# the review on #83 — every finding, reproduced then held
+# ===========================================================================
+
+def test_the_two_commands_carry_the_same_resolver_byte_for_byte():
+    """The duplication is deliberate and the claim has to stay true.
+
+    `park` and `resume` are each ONE file a person has on PATH, so the estate
+    resolver is copied rather than sourced. A copy that has drifted is two
+    answers to "which estate is this", which is the one thing the block exists
+    to prevent — so the two are compared here rather than asserted in a PR
+    body nobody re-reads.
+    """
+    def block(path: Path) -> str:
+        text = path.read_text(encoding="utf-8")
+        start = text.index("# --- BEGIN shared estate resolver")
+        end = text.index("# --- END shared estate resolver")
+        return text[start:end]
+
+    assert block(PARK) == block(RESUME), (
+        "park and resume have drifted apart in the shared estate resolver")
+    assert len(block(PARK).splitlines()) > 100, "the marker moved, not the block"
+
+
+@pytest.mark.parametrize("command", [PARK, RESUME], ids=["park", "resume"])
+@pytest.mark.parametrize("bad", ["../elsewhere", "/abs/where", "a/b", ".hidden"])
+def test_a_name_that_is_a_path_is_refused_by_name(home, command, bad):
+    """<Name> is joined to the projects directory, so a path in it would land
+    the run somewhere nobody named."""
+    result = run(command, bad, home=home)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "is not an estate name" in result.stderr
+    assert bad in result.stderr
+
+
+# --- F5: --repo takes any spelling -----------------------------------------
+
+REPO_FLAG_SPELLINGS = [
+    "TestOrg/Atlas",
+    "TestOrg/Atlas.git",
+    "TestOrg/Atlas/",
+    "https://github.com/TestOrg/Atlas.git",
+    "git@github.com:TestOrg/Atlas.git",
+]
+
+
+@pytest.mark.parametrize("spelling", REPO_FLAG_SPELLINGS)
+def test_repo_accepts_any_spelling_of_the_repository(home, spelling):
+    """A person pastes what they have: the slug, the slug with `.git`, or the
+    whole url out of the browser. All of them are the same repository, and the
+    flag goes through the same parser that reads a clone's `origin`."""
+    projects = home / "projects"
+    root = probe_project(projects, "Atlas")
+    git("init", "-q", "-b", "main", ".", cwd=root)
+    git("remote", "add", "origin", "https://github.com/TestOrg/Atlas.git",
+        cwd=root)
+    result = run(PARK, "--repo", spelling, home=home)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert f"PROBE park in {root}" in result.stdout
+
+
+@pytest.mark.parametrize("spelling", REPO_FLAG_SPELLINGS)
+def test_the_no_match_refusal_prints_one_clone_url_not_two(home, spelling):
+    """The refusal used to wrap `https://github.com/` around whatever it was
+    handed, so a url spelling produced
+    `git clone https://github.com/https://github.com/…git.git`."""
+    result = run(PARK, "--repo", spelling, home=home)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert ("git clone --recurse-submodules "
+            "https://github.com/TestOrg/Atlas.git") in result.stderr
+    assert "github.com/https://" not in result.stderr
+
+
+# --- F6: the walk-up skips a pinned copy and a linked worktree -------------
+
+def test_the_walk_up_skips_the_holders_pinned_member_copy(estate, home):
+    """`members/<Project>` is a whole `project.yaml` root, and it is DETACHED
+    and pinned: running a write verb there acts on the wrong copy of the
+    member, on a HEAD nobody is working from. The walk-up passes it and
+    reaches the family folder, which is what the person is in."""
+    pinned = estate["holder"] / "members" / "Alpha"
+    assert (pinned / "project.yaml").is_file(), "fixture: the pinned copy is a root"
+    result = run(PARK, home=home, cwd=pinned)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert f"the family holder at {estate['holder']}" in result.stdout
+    assert f"the assembly root at {pinned}" not in result.stdout
+
+
+def test_the_walk_up_skips_a_linked_worktree(home):
+    """A single-repository project's FEATURE worktree is a full checkout with
+    the whole `project.yaml` in it, so the walk-up used to answer
+    `<worktree_root>/001-a-feature` as an estate named after the branch — and
+    `park` ran the write verb inside the very worktree the extension parks."""
+    projects = home / "projects"
+    root = probe_project(projects, "Atlas")
+    git("init", "-q", "-b", "main", ".", cwd=root)
+    commit_all(root, "the project")
+    worktree = root / "worktrees" / "001-a-feature"
+    git("worktree", "add", "-q", "-b", "001-a-feature", str(worktree), cwd=root)
+    assert (worktree / "project.yaml").is_file(), "fixture: a full checkout"
+
+    result = run(PARK, home=home, cwd=worktree)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert f"PROBE park in {root} " in result.stdout
+    assert str(worktree) not in result.stdout
+
+
+def test_a_pinned_copy_is_not_listed_as_an_estate(estate, home):
+    """The same rule in the refusal's own list: `members/<Project>` is not
+    somewhere anybody can park."""
+    result = run(PARK, "Nope", home=home)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert f"family   {FAMILY}" in result.stderr
+    assert "members/" not in result.stderr
+
+
+# --- F1: a refused holder is never bootstrapped ----------------------------
+
+def test_a_dirty_holder_is_refused_and_its_bootstrap_never_runs(behind, home,
+                                                                remotes):
+    """THE ONE THAT LOSES WORK. The holder's `make bootstrap` is `git
+    submodule update --init --recursive`, which snaps every `members/<X>` back
+    to the recorded gitlink. Running it after a refusal printed "nothing was
+    reset" discarded exactly the pin bump the refusal was protecting: a
+    half-finished `family.py bump` lives as a MOVED GITLINK in the holder's
+    index, and that is what the submodule update throws away.
+    """
+    holder = behind["holder"]
+    pinned = holder / "members" / "Alpha"
+    # A pin bump in progress: the member's pinned copy moved to a new commit
+    # and the gitlink staged, exactly as `family.py bump` leaves it mid-flight.
+    (pinned / "BUMPED.md").write_text("the member moved on\n", encoding="utf-8")
+    commit_all(pinned, "a commit the family is about to pin")
+    bumped = git("rev-parse", "HEAD", cwd=pinned).stdout.strip()
+    git("add", "--", "members/Alpha", cwd=holder)
+    (holder / "SCRATCH.md").write_text("half a bump\n", encoding="utf-8")
+    staged = git("rev-parse", ":members/Alpha", cwd=holder).stdout.strip()
+    assert staged == bumped, "fixture: the gitlink is staged at the new commit"
+
+    result = run(RESUME, FAMILY, home=home, env=offline(remotes))
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert f"REFUSED holder {FAMILY}: uncommitted changes in {holder}" \
+        in result.stdout
+    assert "bootstrap skipped: refused above" in result.stdout
+    assert "Nothing here was fetched, moved or reset." in result.stdout
+    assert git("rev-parse", ":members/Alpha",
+               cwd=holder).stdout.strip() == bumped, (
+        "the staged gitlink was reset — the pin bump is gone")
+    assert git("rev-parse", "HEAD", cwd=pinned).stdout.strip() == bumped, (
+        "the pinned copy was snapped back to the old gitlink")
+
+
+def test_a_holder_on_a_feature_branch_is_refused_and_not_bootstrapped(behind,
+                                                                      home,
+                                                                      remotes):
+    holder = behind["holder"]
+    git("checkout", "-q", "-b", "pin-bump/alpha", cwd=holder)
+    result = run(RESUME, FAMILY, home=home, env=offline(remotes))
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert f"REFUSED holder {FAMILY}: HEAD is 'pin-bump/alpha'" in result.stdout
+    assert "bootstrap skipped: refused above" in result.stdout
+    assert git("rev-parse", "--abbrev-ref",
+               "HEAD", cwd=holder).stdout.strip() == "pin-bump/alpha"
+
+
+# --- F3: a leg off its tracking branch refuses the root --------------------
+
+@pytest.fixture
+def legged(remotes, home) -> dict:
+    """The leg-bearing project, cloned, with a config that names its record."""
+    config = home / ".agents" / "workspace.yaml"
+    config.parent.mkdir(parents=True)
+    config.write_text("repository: tester/legged\npath: ~/projects/legged\n",
+                      encoding="utf-8")
+    git("clone", "-q", str(remotes["legged"]),
+        str(home / "projects" / "legged"), cwd=home)
+    root = home / "projects" / LEG_MEMBER
+    git("-c", "protocol.file.allow=always", "clone", "-q",
+        "--recurse-submodules", str(remotes["leg_member"]), str(root),
+        cwd=home / "projects")
+    return {"root": root, "leg": root / "spec"}
+
+
+def test_a_leg_on_a_feature_branch_refuses_the_root_and_is_not_moved(legged,
+                                                                     home,
+                                                                     remotes):
+    """The superproject is CLEAN when a leg sits on a clean feature branch at
+    the pin, so the dirty and off-branch guards see nothing — and the root's
+    own `make bootstrap` then walks that leg back onto `main`, because
+    `checkout_tracking_branch` runs `git checkout <tracking>` whenever the
+    leg's branch tip equals the pin. The leg is asked FIRST now.
+    """
+    leg = legged["leg"]
+    git("checkout", "-q", "-b", "001-my-feature", cwd=leg)
+    head = git("rev-parse", "HEAD", cwd=leg).stdout.strip()
+    assert git("status", "--porcelain", cwd=legged["root"]).stdout == "", (
+        "fixture: the superproject is clean, which is the whole point")
+
+    result = run(RESUME, LEG_MEMBER, home=home, env=offline(remotes))
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert (f"REFUSED root {LEG_MEMBER}: leg spec is on '001-my-feature', "
+            "not its tracking branch 'main'") in result.stdout
+    assert "`make bootstrap` would move it - nothing was touched." \
+        in result.stdout
+    assert git("rev-parse", "--abbrev-ref",
+               "HEAD", cwd=leg).stdout.strip() == "001-my-feature", (
+        "the leg was walked off its feature branch")
+    assert git("rev-parse", "HEAD", cwd=leg).stdout.strip() == head
+    assert f"{LEG_MEMBER}.sh ran with:" not in result.stdout, (
+        "a refused root does not get the verb either")
+
+
+def test_the_real_bootstrap_would_have_moved_that_leg(legged):
+    """THE GUARD IS NOT THEATRE. The same fixture, with the guard bypassed:
+    the member's OWN `scripts/bootstrap.py` — the real one, shipped in
+    `templates/assembly-root/` and copied into this seed — moves the leg off
+    its feature branch. That is what `resume` refuses to cause.
+    """
+    leg = legged["leg"]
+    git("checkout", "-q", "-b", "001-my-feature", cwd=leg)
+    proc = subprocess.run([sys.executable, "scripts/bootstrap.py"],
+                          cwd=str(legged["root"]), capture_output=True,
+                          text=True, check=False)
+    assert git("rev-parse", "--abbrev-ref",
+               "HEAD", cwd=leg).stdout.strip() == "main", (
+        "the premise of the guard is gone: bootstrap no longer moves a leg\n"
+        + proc.stdout + proc.stderr)
+
+
+def test_a_leg_detached_at_the_pin_is_not_a_refusal(legged, home, remotes):
+    """The state a fresh clone arrives in, and precisely what bootstrap
+    exists to fix. Refusing it would refuse every first run."""
+    leg = legged["leg"]
+    git("checkout", "-q", "--detach", cwd=leg)
+    result = run(RESUME, LEG_MEMBER, home=home, env=offline(remotes))
+    assert "not its tracking branch" not in result.stdout, (
+        result.stdout + result.stderr)
+    assert f"{LEG_MEMBER}.sh ran with:" in result.stdout
+
+
+# --- F4: two checkouts of one workspace are not two orgs -------------------
+
+def test_two_checkouts_of_one_workspace_are_not_two_orgs(remotes, home):
+    """`FOUND` counted FILES. An `orgs:` override pointing at a second clone of
+    the same private repository — or just a second checkout of it — produced
+    "2 workspace manifests record 'TestFam'", and `--org` could not answer it
+    because both rows named the same org."""
+    config = home / ".agents" / "workspace.yaml"
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        f"repository: {WORKSPACE_SLUG}\npath: ~/projects/wip\n"
+        "orgs:\n"
+        f"  {ORG}:\n"
+        f"    repository: {WORKSPACE_SLUG}\n"
+        "    path: ~/projects/wip-again\n", encoding="utf-8")
+    for name in ("wip", "wip-again"):
+        git("clone", "-q", str(remotes["workspace"]),
+            str(home / "projects" / name), cwd=home)
+
+    result = run(RESUME, FAMILY, home=home, env=offline(remotes))
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "workspace manifests record" not in result.stderr
+    assert (home / "projects" / FAMILY / FAMILY / "family.yaml").is_file()
+
+
+# --- F7: a `root:` that walks out of the projects directory ----------------
+
+def test_a_manifest_root_that_escapes_the_projects_directory_is_refused(
+        remotes, home):
+    config = home / ".agents" / "workspace.yaml"
+    config.parent.mkdir(parents=True)
+    config.write_text("repository: tester/escaping\npath: ~/projects/escaping\n",
+                      encoding="utf-8")
+    result = run(RESUME, "runaway", home=home, env=offline(remotes))
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "root: ../../elsewhere/Alpha" in result.stderr
+    assert "is not one" in result.stderr
+    assert "Nothing was cloned." in result.stderr
+    assert not (home.parent / "elsewhere").exists()
+    assert not (home / "projects" / ".." ).joinpath("elsewhere").exists()
+
+
+# --- F9: a refused member does not get the verb either ---------------------
+
+def test_a_refused_member_does_not_get_the_verb(behind, home, remotes):
+    """The holder's `make resume` is `siblings.py --make resume`, which has no
+    exclusion flag — so a member this run said it would not touch was getting
+    the verb run in it anyway. With a refusal on the board the verb runs per
+    non-refused sibling instead."""
+    alpha = behind["siblings"]["Alpha"]
+    (alpha / "MINE.md").write_text("half a thought\n", encoding="utf-8")
+
+    result = run(RESUME, FAMILY, home=home, env=offline(remotes))
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "the holder's dispatch is NOT used" in result.stdout
+    assert "[Alpha] refused above; `make resume` NOT run." in result.stdout
+    assert "Alpha.sh ran with:" not in result.stdout, (
+        "the verb ran in a clone this run refused to touch")
+    assert "Bravo.sh ran with:" in result.stdout, (
+        "one refusal must not stop the members after it")
 
 
 # ===========================================================================

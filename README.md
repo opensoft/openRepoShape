@@ -1091,9 +1091,12 @@ dirty root mid pin-bump, and ignored local files, which never travel at all.
 `resume` fast-forwards each working clone's tracking branch with `--ff-only`
 and REFUSES BY NAME one that is dirty or on a feature branch — that clone is
 skipped and left exactly where it was, never reset, and the rest of the estate
-still comes back. Neither carries an agent session: the handoff document is
-the bridge for those, and `park` exits non-zero when anything was refused, so
-a green run is the only green run.
+still comes back — and it is not given the verb either, so a clone this run
+said it would not touch is not touched. Neither carries an agent session: the
+handoff document is the bridge for those. READ THE LINES, not the exit code:
+`resume` exits non-zero when anything was refused, but `park` passes `make
+park`'s own status straight through and can exit 0 with a report of what it
+left behind, which is the point of printing that report.
 
 ### Who implements it, and what the record is
 

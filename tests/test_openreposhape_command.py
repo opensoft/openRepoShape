@@ -157,6 +157,10 @@ def test_install_writes_an_executable_copy(tmp_path):
         assert stat.S_IMODE(target.stat().st_mode) == 0o755, name
         assert target.read_bytes() == (REPO / name).read_bytes(), name
         assert f"{name}: installed at" in result.stdout
+    assert f"openRepoShape: {len(INSTALLED)} of {len(INSTALLED)} placed" \
+        in result.stdout, (
+        "a person reading three lines cannot tell whether a fourth was meant "
+        "to be there; the count says so")
 
 
 def test_installing_twice_changes_nothing(tmp_path):
@@ -398,29 +402,24 @@ printf '%s in %s args: %s\\n' '{marker}' "$(cd "$(dirname "$0")" && pwd)" "$*"
 """.format(marker=STUB_MARKER)
 
 
-@pytest.fixture
-def offline_github(tmp_path):
-    """A fake `gh` first on `$PATH`, and a `curl` that refuses.
+def fake_github(tmp_path, served_names) -> dict:
+    """A fake `gh` serving exactly `served_names`, and a `curl` that refuses.
 
-    `fetch_from_repo` tries `gh api` before the raw URL, so a `gh` that
-    answers the calls the command makes is the whole of the server these tests
-    need: `contents/setup.sh` comes back as a stub that says where it was run
-    from, and `contents/<command>` as this checkout's own bytes for each of
-    the three files `--install` places (#82). `curl` is shadowed by a script
-    that exits 1 — belt and braces, so that a fake `gh` which stopped matching
-    could never quietly become a real request to raw.githubusercontent.com.
+    Factored out of the fixture so one test can WITHHOLD a file: `--install`
+    places all three or none (#82, F10 of the review on #83), and the only way
+    to prove "or none" is a server that cannot answer for one of them.
     """
     served = tmp_path / "served"
-    served.mkdir()
+    served.mkdir(exist_ok=True)
     (served / "setup.sh").write_text(STUB_SETUP_SH, encoding="utf-8")
-    for name in INSTALLED:
+    for name in served_names:
         (served / name).write_bytes((REPO / name).read_bytes())
 
     fake = tmp_path / "fake-path"
-    fake.mkdir()
+    fake.mkdir(exist_ok=True)
     routes = "".join(
         f"*/contents/{name}\\?*) exec cat '{served / name}' ;;\n"
-        for name in ("setup.sh", *INSTALLED))
+        for name in ("setup.sh", *served_names))
     (fake / "gh").write_text(
         "#!/bin/sh\n"
         'case "$*" in\n'
@@ -435,6 +434,21 @@ def offline_github(tmp_path):
         "exit 1\n", encoding="utf-8")
     (fake / "curl").chmod(0o755)
     return {"PATH": f"{fake}{os.pathsep}{os.environ['PATH']}"}
+
+
+@pytest.fixture
+def offline_github(tmp_path):
+    """A fake `gh` first on `$PATH`, and a `curl` that refuses.
+
+    `fetch_from_repo` tries `gh api` before the raw URL, so a `gh` that
+    answers the calls the command makes is the whole of the server these tests
+    need: `contents/setup.sh` comes back as a stub that says where it was run
+    from, and `contents/<command>` as this checkout's own bytes for each of
+    the three files `--install` places (#82). `curl` is shadowed by a script
+    that exits 1 — belt and braces, so that a fake `gh` which stopped matching
+    could never quietly become a real request to raw.githubusercontent.com.
+    """
+    return fake_github(tmp_path, INSTALLED)
 
 
 def test_the_fetched_setup_sh_lands_in_a_workdir_that_still_exists(offline_github):
@@ -459,6 +473,40 @@ def test_the_fetched_setup_sh_lands_in_a_workdir_that_still_exists(offline_githu
     assert "--doctor" in forwarded, forwarded
     assert not Path(ran_in).exists(), (
         f"{ran_in} outlived the command; the EXIT trap did not fire")
+
+
+def test_install_places_all_three_or_none(tmp_path):
+    """F10 of the review on #83. One file at a time, dying on the first fetch
+    that failed, left a person with a NEW `openRepoShape` and no `park` — a
+    half-install that prints `installed at` and is not one — with nothing on
+    screen to say which of the three were missing.
+
+    Run from stdin with `park` withheld: NOTHING is placed, nothing already
+    there is replaced, and the refusal names the file it could not fetch.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    # Something already installed, so "nothing was replaced" is a claim with
+    # a witness rather than an empty directory.
+    (bin_dir / "openRepoShape").write_text("# an older copy\n",
+                                           encoding="utf-8")
+    withheld = fake_github(tmp_path, [n for n in INSTALLED if n != "park"])
+    result = subprocess.run(
+        ["bash", "-s", "--", "--install"], capture_output=True, text=True,
+        check=False, input=COMMAND.read_text(encoding="utf-8"),
+        cwd=str(tmp_path),
+        env=command_env(home=tmp_path, setup_sh=None,
+                        env={**withheld,
+                             "OPENREPOSHAPE_BIN_DIR": str(bin_dir)}))
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "could not fetch park" in result.stderr
+    assert "NOTHING was installed" in result.stderr
+    assert "nothing already installed was replaced" in result.stderr
+    assert (bin_dir / "openRepoShape").read_text(encoding="utf-8") == \
+        "# an older copy\n", "the older copy was replaced by a half-install"
+    assert not (bin_dir / "park").exists()
+    assert not (bin_dir / "resume").exists()
+    assert "placed" not in result.stdout
 
 
 def test_install_from_stdin_fetches_itself_into_a_live_workdir(offline_github,

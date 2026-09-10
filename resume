@@ -29,6 +29,7 @@ SELF_NAME="resume"
 
 NAME=""
 REPO_SLUG=""
+REPO_ARG=""
 WORKSPACE_SLUG=""
 ORG_WANTED=""
 DRY_RUN=0
@@ -51,7 +52,8 @@ feature `park` recorded.
 manifest file `workspaces/<org>/<Name>.yaml` in the private repository you own.
 With no <Name> the estate around the current directory is refreshed.
 
-  --repo <owner/name>   the estate of a clone you already have, by its origin
+  --repo <owner/name>   the estate of a clone you already have, by its
+                        origin - in any url spelling of that repository
   --workspace <owner/name>
                         the FIRST time on a fresh machine: clone that private
                         repository and write ~/.agents/workspace.yaml. This is
@@ -72,18 +74,23 @@ With no <Name> the estate around the current directory is refreshed.
 
 WHAT RESUME NEVER DOES: it resets nothing and it moves nobody's HEAD. A clone
 that is dirty, or on a branch that is not its tracking branch, is REFUSED BY
-NAME and skipped; the rest of the estate still comes back.
+NAME and skipped - it is neither fast-forwarded, nor bootstrapped, nor given
+the verb - and so is a root one of whose LEGS is off its tracking branch,
+because that root's own `make bootstrap` would move the leg. The rest of the
+estate still comes back.
 USAGE
 }
 
-# --- the estate ------------------------------------------------------------
+# --- BEGIN shared estate resolver (park and resume carry it byte for byte) --
 #
-# THIS BLOCK IS DUPLICATED IN `park`, DELIBERATELY. Each of these is one file a
-# person has on PATH: a shared `orp-estate.sh` would be a fourth file for
-# `--install` to place and a broken command the first time somebody copied only
-# one of them. The rules themselves are NOT new: `<dir>/<Name>/family.yaml`
-# carrying `kind: family-manifest` and naming `<Name>` is `setup-project.py`'s
-# `family_folder_here`, doubled-name layout and all (#76, RULING ruling 3).
+# THIS BLOCK IS DUPLICATED IN THE OTHER COMMAND, DELIBERATELY, and
+# `tests/test_park_resume_commands.py` asserts the two copies are IDENTICAL.
+# Each of these is one file a person has on PATH: a shared `orp-estate.sh`
+# would be a fourth file for `--install` to place and a broken command the
+# first time somebody copied only one of them. The rules themselves are NOT
+# new: `<dir>/<Name>/family.yaml` carrying `kind: family-manifest` and naming
+# `<Name>` is `setup-project.py`'s `family_folder_here`, doubled-name layout
+# and all (#76, RULING ruling 3).
 
 # `$PROJECTS_DIR` names ONE directory when it is set. Otherwise both
 # spellings, in that order, because people really do use both - and DEDUPED by
@@ -104,9 +111,12 @@ else
     fi
 fi
 
-# Where a NEW clone goes: the first spelling that already exists, else the
-# first named - which `resume` then creates, because cloning into a directory
-# that is not there is the whole of a fresh machine.
+# Where a NEW clone would go: the first spelling that already exists, else the
+# first named.
+#
+# shellcheck disable=SC2329  # `park` creates nothing and never calls this. The
+# block is byte-identical in both commands BY DESIGN, so each carries a couple
+# of functions only the other one asks.
 projects_dir_for_new() {
     local dir
     for dir in "${PROJECTS_DIRS[@]}"; do
@@ -130,6 +140,22 @@ trim_unquote() {
     printf '%s' "$value"
 }
 
+# ONE FOLDER NAME, and never a path. A `<Name>` off the command line and a
+# `root:` out of somebody's workspace manifest both end up joined to the
+# projects directory, so both are held to this: no empty string, no `/`, and
+# no leading `.` — which is what stops `resume ../../elsewhere/X` from cloning
+# outside the projects directory at all, rather than noticing afterwards.
+is_safe_folder_name() {
+    local name="$1"
+    case "$name" in
+    "" | .* | */*) return 1 ;;
+    esac
+    case "$name" in
+    *[!A-Za-z0-9_.+@-]*) return 1 ;;
+    esac
+    return 0
+}
+
 # One indent-zero scalar out of a small YAML file, with parameter expansion
 # only: no YAML library, no python per line, no forks per line. This is the
 # reader the Speckit extension's `workspace_read_scalar` is, narrowed to the
@@ -148,6 +174,41 @@ yaml_scalar() {
         return 0
     done <"$file"
     return 1
+}
+
+# A LINKED WORKTREE, not a checkout of its own: `.git` is a FILE holding a
+# `gitdir:` line, and `--git-dir` and `--git-common-dir` disagree. A
+# single-repository project's FEATURE worktree is a whole `project.yaml` root
+# by construction, so without this the walk-up would answer `<worktree_root>/
+# 001-my-feature` as an estate named after the branch — and `park` would run
+# the write verb inside the very worktree the extension is about to park.
+# GIT'S OWN ANSWER, and not the `.git`-is-a-file shortcut, because that shape
+# is shared with a SUBMODULE and a leg must not be mistaken for a worktree:
+# in a linked worktree `--git-dir` is `<common>/worktrees/<name>` and the two
+# differ; in a submodule both are `<super>/.git/modules/<name>`; in an
+# ordinary checkout both are `.git`. Verified against all three.
+is_linked_worktree() {
+    local dir="$1" gitdir common
+    [ -e "$dir/.git" ] || return 1
+    gitdir="$(git -C "$dir" rev-parse --git-dir 2>/dev/null || true)"
+    common="$(git -C "$dir" rev-parse --git-common-dir 2>/dev/null || true)"
+    [ -n "$gitdir" ] && [ -n "$common" ] && [ "$gitdir" != "$common" ]
+}
+
+# The PINNED copy inside a family holder: `<Family>/<Family>/members/<X>`, so
+# the grandparent carries the `family.yaml`. It is detached, it is what
+# `bootstrap` and `validate` read, and nobody's in-flight work is in it — a
+# walk-up that answered it would run a WRITE verb on a detached HEAD. The
+# working clone BESIDE the holder is the one a person works in, which is the
+# same rule #80's holder dispatch follows.
+is_pinned_member() {
+    local dir="$1" parent grandparent
+    parent="${dir%/*}"
+    [ -n "$parent" ] && [ "$parent" != "$dir" ] || return 1
+    grandparent="${parent%/*}"
+    [ -n "$grandparent" ] && [ "$grandparent" != "$parent" ] || return 1
+    yaml_scalar "$grandparent/family.yaml" kind || return 1
+    [ "$YAML_VALUE" = "family-manifest" ]
 }
 
 # Is `<dir>` a FAMILY FOLDER? All three facts have to agree, exactly as
@@ -169,7 +230,10 @@ is_family_folder() {
 is_project_root() {
     local dir="$1"
     yaml_scalar "$dir/project.yaml" kind || return 1
-    [ "$YAML_VALUE" = "project-manifest" ]
+    [ "$YAML_VALUE" = "project-manifest" ] || return 1
+    is_pinned_member "$dir" && return 1
+    is_linked_worktree "$dir" && return 1
+    return 0
 }
 
 ESTATE_KIND=""
@@ -179,7 +243,7 @@ ESTATE_NAME=""
 
 # Is THIS directory an estate? A FAMILY FOLDER WINS over a standalone root of
 # the same name: the holder is what drives the members, so a family answered as
-# one of its own members would resume one project and report the estate back.
+# one of its own members would act on one project and report the estate done.
 estate_here() {
     local dir="$1"
     if is_family_folder "$dir"; then
@@ -200,8 +264,11 @@ estate_here() {
 }
 
 # The NEAREST estate at or above `<dir>`: the holder beside you, or the project
-# root you are standing in. NEAREST WINS, so `resume` from inside a member of a
-# family refreshes that member - which is the estate the person is standing in.
+# root you are standing in. NEAREST WINS, so standing inside a member of a
+# family acts on that member - the estate the person is standing in. A pinned
+# copy and a linked worktree are WALKED PAST rather than answered, so
+# `<Family>/<Family>/members/<X>` reaches the family folder and a feature
+# worktree reaches the root that owns it.
 estate_walk_up() {
     local dir="$1"
     while [ -n "$dir" ] && [ "$dir" != "/" ]; do
@@ -213,12 +280,16 @@ estate_walk_up() {
 
 estate_by_name() {
     local want="$1" dir
+    is_safe_folder_name "$want" || return 1
     for dir in "${PROJECTS_DIRS[@]}"; do
         estate_here "$dir/$want" && return 0
     done
     return 1
 }
 
+# Every estate under the projects directory, one row each. What ruling 3 asks
+# a refusal to print: a person who typed the command in the wrong folder needs
+# the names, not an instruction to go and look for them.
 list_estates() {
     local dir child
     for dir in "${PROJECTS_DIRS[@]}"; do
@@ -246,11 +317,18 @@ estates_or_none() {
 
 lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
-# `owner/name`, lowercased, out of any url spelling git accepts. A FILESYSTEM
-# PATH IS REFUSED rather than parsed, for the reason the extension's own
-# `workspace_org_from_url` refuses one: `/srv/remotes/Name.git` has a name but
-# no owner, and inventing `remotes` as the owner would let `--repo
-# remotes/Name` match a bare repository on disk.
+# `owner/name` — CASE PRESERVED, so a refusal prints back what a person can
+# type — out of any spelling git accepts: owner/name, owner/name.git,
+# https://host/owner/name(.git), git@host:owner/name.git,
+# ssh://git@host/owner/name.git, and a token-bearing https url. Callers
+# compare with `lower` on both sides, because GitHub owners and names are
+# case-insensitive.
+#
+# A FILESYSTEM PATH IS REFUSED rather than parsed, for the reason the
+# extension's own `workspace_org_from_url` refuses one: `/srv/remotes/Name.git`
+# has a name but no owner, and inventing `remotes` as the owner would let
+# `--repo remotes/Name` match a bare repository on disk. Such a clone answers
+# `<Name>` and the walk-up; it does not answer `--repo`.
 repo_slug_of() {
     local url="$1" rest owner name
     rest="$url"
@@ -278,9 +356,15 @@ repo_slug_of() {
     owner="${rest%/*}"
     owner="${owner##*/}"
     [ -n "$owner" ] && [ -n "$name" ] || return 1
-    printf '%s/%s\n' "$(lower "$owner")" "$(lower "$name")"
+    case "$owner$name" in
+    *[!A-Za-z0-9_.-]*) return 1 ;;
+    esac
+    printf '%s/%s\n' "$owner" "$name"
 }
 
+# The clone under the projects directory whose `origin` IS that repository -
+# ruling 1. Two levels deep, because the estates this standard places are
+# `<projects>/<Project>` and `<projects>/<Family>/<Project>`.
 clone_with_origin() {
     local want dir candidate origin found
     want="$(lower "$1")"
@@ -293,7 +377,7 @@ clone_with_origin() {
             [ -n "$origin" ] || continue
             found="$(repo_slug_of "$origin" || true)"
             [ -n "$found" ] || continue
-            if [ "$found" = "$want" ]; then
+            if [ "$(lower "$found")" = "$want" ]; then
                 printf '%s\n' "$candidate"
                 return 0
             fi
@@ -303,7 +387,8 @@ clone_with_origin() {
 }
 
 # The family's members, by the same `  - project: <Project>` row `family.py`
-# writes and `siblings.py` reads.
+# writes and `siblings.py` reads. The working clone is `<family folder>/
+# <Project>`, beside the holder.
 family_members() {
     local manifest="$1" line
     [ -f "$manifest" ] || return 0
@@ -314,10 +399,10 @@ family_members() {
     done <"$manifest"
 }
 
-# The branch a clone belongs on: its OWN manifest's `tracking_branch:`, which
-# is the field `scripts/bootstrap.py` already reads to place the legs, falling
+# The branch a checkout belongs on: its OWN manifest's `tracking_branch:` —
+# the field `scripts/bootstrap.py` already reads to place the legs — falling
 # back to `main`. The workspace manifest records a `tracking_branch` too, but
-# that is PROVENANCE from the machine that parked - the local declaration is
+# that is PROVENANCE from the machine that parked; the local declaration is
 # what this machine's clone actually tracks, and the extension takes the same
 # line about `worktree_root`.
 tracking_branch_of() {
@@ -332,6 +417,36 @@ tracking_branch_of() {
     fi
     printf 'main\n'
 }
+
+# The legs a root declares, by path, out of `project.yaml`'s `legs:` block —
+# the same rows `scripts/bootstrap.py` reads, and in the order it reads them,
+# `role:` before `path:`. The assembly leg is `path: "."` and is the root
+# itself, so it is not one of these.
+#
+# shellcheck disable=SC2329  # only `resume` bootstraps a root, so only
+# `resume` has to ask where its legs are; see the note above.
+legs_of() {
+    local root="$1" line role="" path=""
+    [ -f "$root/project.yaml" ] || return 0
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%$'\r'}"
+        case "$line" in
+        '  - role:'*)
+            role="$(trim_unquote "${line#*:}")"
+            path=""
+            ;;
+        '    path:'*)
+            path="$(trim_unquote "${line#*:}")"
+            [ -n "$role" ] || continue
+            [ "$role" != "assembly" ] || continue
+            [ "$path" != "." ] || continue
+            [ -n "$path" ] && printf '%s\n' "$path"
+            ;;
+        [![:space:]]*) role=""; path="" ;;
+        esac
+    done <"$root/project.yaml"
+}
+# --- END shared estate resolver ---------------------------------------------
 
 # --- the user config and the workspace repository ---------------------------
 
@@ -499,8 +614,14 @@ REFUSED=0
 # divergent branch a refusal from git itself instead of a merge commit nobody
 # asked for.
 pull_ff_only() {
-    local label="$1" repo="$2" branch head dirty
-    branch="$(tracking_branch_of "$repo")"
+    local label="$1" repo="$2" branch="${3:-}" head dirty
+    # THE BRANCH IS AN ARGUMENT so the WORKSPACE repository can be checked
+    # too: it is a private repository with no `project.yaml` and no declared
+    # tracking branch, and refusing it for being on `master` rather than
+    # `main` would be a refusal about nothing. Its caller passes the branch it
+    # is already on, which keeps the dirty guard and the `--ff-only` guard and
+    # drops only the off-branch one.
+    [ -n "$branch" ] || branch="$(tracking_branch_of "$repo")"
     head="$(git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null || printf '?')"
     if [ "$head" != "$branch" ]; then
         REFUSED=$((REFUSED + 1))
@@ -529,6 +650,68 @@ pull_ff_only() {
         say "          Local commits are on that branch, or the remote has none. Nothing was reset."
         return 1
     fi
+    return 0
+}
+
+# THE LEGS, BEFORE A ROOT IS BOOTSTRAPPED (F3 of the review on #83). A root's
+# own `make bootstrap` — `templates/assembly-root/scripts/bootstrap.py`,
+# `checkout_tracking_branch` — runs `git checkout <tracking>` in a leg whose
+# local tracking-branch tip equals the pin, and `checkout -b <tracking> <pin>`
+# in a leg that has no local one. Either MOVES A LEG'S HEAD. A leg sitting on
+# a clean feature branch at the pin makes the superproject clean, so the dirty
+# and off-branch guards above see nothing and say nothing — and `resume` used
+# to walk that leg off `001-my-feature` onto `main` and exit 0.
+#
+# So the legs are asked first, and a root with one off its tracking branch is
+# REFUSED BY NAME and neither pulled nor bootstrapped. DETACHED AT THE PIN is
+# not a refusal: that is the state a fresh clone arrives in and precisely what
+# bootstrap exists to fix.
+root_legs_ok() {
+    local label="$1" root="$2" branch leg head pin at
+    branch="$(tracking_branch_of "$root")"
+    while IFS= read -r leg; do
+        [ -n "$leg" ] || continue
+        [ -e "$root/$leg/.git" ] || continue
+        head="$(git -C "$root/$leg" rev-parse --abbrev-ref HEAD 2>/dev/null || printf '?')"
+        [ "$head" != "$branch" ] || continue
+        if [ "$head" = "HEAD" ]; then
+            pin="$(git -C "$root" rev-parse "HEAD:$leg" 2>/dev/null || true)"
+            at="$(git -C "$root/$leg" rev-parse HEAD 2>/dev/null || true)"
+            if [ -n "$pin" ] && [ "$pin" = "$at" ]; then
+                continue
+            fi
+            head="detached at ${at:-?}, and the pin is ${pin:-?}"
+        fi
+        REFUSED=$((REFUSED + 1))
+        say "  REFUSED $label: leg $leg is on '$head', not its tracking branch '$branch';"
+        say "          \`make bootstrap\` would move it - nothing was touched."
+        say "            look:  git -C $root/$leg status --short --branch"
+        say "            then:  finish or park that leg's work, put it back on $branch, and re-run."
+        return 1
+    done < <(legs_of "$root")
+    return 0
+}
+
+# One root: the legs, then the fast-forward, then its own bootstrap - and a
+# REFUSAL AT ANY STEP SKIPS THE ONES AFTER IT (F1 of the review on #83). The
+# holder's bootstrap is `git submodule update --init --recursive`, which snaps
+# every `members/<X>` back to the recorded gitlink: running it after saying
+# "nothing was reset" would have reset exactly the pin bump the refusal was
+# protecting. Returns 1 when the root was refused.
+refresh_root() {
+    local label="$1" root="$2"
+    root_legs_ok "$label" "$root" || {
+        say "  [$label] bootstrap skipped: refused above. Nothing here was fetched, moved or reset."
+        return 1
+    }
+    pull_ff_only "$label" "$root" || {
+        say "  [$label] bootstrap skipped: refused above. Nothing here was fetched, moved or reset."
+        return 1
+    }
+    run_make "$label" "$root" bootstrap || {
+        REFUSED=$((REFUSED + 1))
+        say "  FINDING: [$label] \`make bootstrap\` did not exit 0; its legs may not be placed."
+    }
     return 0
 }
 
@@ -562,7 +745,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
     -h | --help) usage; exit 0 ;;
     --dry-run) DRY_RUN=1; shift ;;
-    --repo) REPO_SLUG="${2:?--repo needs a value}"; shift 2 ;;
+    --repo) REPO_SLUG="${2:?--repo needs a value}"; REPO_ARG="$REPO_SLUG"; shift 2 ;;
     --workspace) WORKSPACE_SLUG="${2:?--workspace needs a value}"; shift 2 ;;
     --org) ORG_WANTED="${2:?--org needs a value}"; shift 2 ;;
     --name | --project) NAME="${2:?$1 needs a value}"; shift 2 ;;
@@ -591,6 +774,13 @@ done
     die "both <Name> ('$NAME') and --repo '$REPO_SLUG'. One estate per run: name it
     either way, not both."
 
+# A FOLDER NAME, NEVER A PATH. `resume ../x` or `resume /abs` would otherwise
+# be joined to the projects directory and clone somewhere nobody named.
+[ -z "$NAME" ] || is_safe_folder_name "$NAME" ||
+    die "'$NAME' is not an estate name: it is a path, or it carries a character
+    an estate folder may not. <Name> is ONE name — the family or project your
+    workspace record names — with no slash and no leading dot."
+
 command -v git >/dev/null 2>&1 ||
     die "no \`git\` on PATH, so nothing can be cloned or fast-forwarded."
 command -v make >/dev/null 2>&1 ||
@@ -600,11 +790,13 @@ command -v make >/dev/null 2>&1 ||
 
 # --- which estate, by name ---------------------------------------------------
 if [ -n "$REPO_SLUG" ]; then
-    case "$REPO_SLUG" in
-    */*) ;;
-    *) die "--repo '$REPO_SLUG' is not <owner/name>. A family's members may live in
-    another organisation, so there is no owner to assume." ;;
-    esac
+    # ANY SPELLING A PERSON MIGHT PASTE, through the same reader that reads a
+    # clone's `origin`, so both sides of the comparison come from one parser.
+    REPO_SLUG="$(repo_slug_of "$REPO_SLUG" || true)"
+    [ -n "$REPO_SLUG" ] || die "--repo '$REPO_ARG' is not a repository: it wants <owner>/<name>, or any
+    url spelling of one (https://…/<owner>/<name>.git, git@host:<owner>/<name>).
+    A family's members may live in another organisation, so there is no owner
+    to assume, and a path on disk has none to read."
     MATCH="$(clone_with_origin "$REPO_SLUG" || true)"
     [ -n "$MATCH" ] || die "no clone under your projects directory has origin $REPO_SLUG.
     \`--repo\` names a clone you ALREADY HAVE (RULING 2026-09-09 ruling 1). To
@@ -661,12 +853,18 @@ if [ -f "$CONFIG_FILE" ]; then
     fi
     if is_checkout "$CONFIG_PATH"; then
         WORKSPACE="$CONFIG_PATH"
-        if [ "$DRY_RUN" -eq 1 ]; then
-            say "  would pull       git -C $WORKSPACE pull --ff-only"
-        else
-            say "  pulling         $WORKSPACE"
-            git -C "$WORKSPACE" pull --ff-only ||
-                say "  WARNING: the workspace checkout did not fast-forward; the record read below may be behind."
+        # THE SAME GUARD EVERY OTHER CHECKOUT GETS, and a refusal here is a
+        # refusal: the record is what the whole run reads, and cloning an
+        # estate out of a manifest whose checkout is dirty or mid-conflict is
+        # exactly the wrong thing to do quietly. The branch passed is the one
+        # it is already on — a private repository declares no tracking branch,
+        # so being on `master` is not a finding.
+        if ! pull_ff_only "workspace" "$WORKSPACE" \
+            "$(git -C "$WORKSPACE" rev-parse --abbrev-ref HEAD 2>/dev/null || printf 'main')"; then
+            die "your workspace checkout at $WORKSPACE was not fast-forwarded, so the
+    record this run would read may not be the one \`park\` last wrote.
+    Nothing was cloned and nothing was resumed. Sort that checkout out — the
+    lines above name what it is — and re-run \`$SELF_NAME $NAME\`."
         fi
     else
         [ -n "$CONFIG_REPO" ] || die "$CONFIG_PATH, which $CONFIG_FILE names as your workspace checkout,
@@ -728,7 +926,23 @@ fi
 say ""
 say "(2) the manifest for $NAME"
 
-WORKSPACES=("$WORKSPACE")
+# ONE ENTRY PER DIRECTORY, compared as a PHYSICAL path (F4 of the review on
+# #83): two spellings of one checkout — an `orgs:` override pointing at the
+# same clone as the default, a symlinked projects directory — would otherwise
+# be searched twice and every manifest in it counted twice, which read as
+# "two orgs record this name" and could not be answered by `--org` at all.
+WORKSPACES=()
+add_workspace() {
+    local candidate="$1" physical existing
+    [ -n "$candidate" ] || return 0
+    is_checkout "$candidate" || return 0
+    physical="$(cd "$candidate" 2>/dev/null && pwd -P)" || physical="$candidate"
+    for existing in ${WORKSPACES[@]+"${WORKSPACES[@]}"}; do
+        [ "$existing" != "$physical" ] || return 0
+    done
+    WORKSPACES+=("$physical")
+}
+add_workspace "$WORKSPACE"
 # `orgs:` IS HONOURED IN THE ONLY ORDER THAT IS POSSIBLE. The override is
 # keyed by the estate's org, and the org is a fact recorded IN the manifest
 # (`workspaces/<org>/<Name>.yaml`), so the file has to be found before the org
@@ -736,34 +950,41 @@ WORKSPACES=("$WORKSPACE")
 # which answer was meant when two of them have one.
 if [ -n "$ORG_WANTED" ]; then
     ORG_PATH="$(config_path_for_org "$ORG_WANTED" || true)"
-    if [ -n "$ORG_PATH" ] && is_checkout "$ORG_PATH"; then
-        WORKSPACES=("$ORG_PATH" "$WORKSPACE")
-    fi
+    [ -z "$ORG_PATH" ] || add_workspace "$ORG_PATH"
 fi
 while IFS=$'\t' read -r _ override; do
     [ -n "${override:-}" ] || continue
-    override="$(expand_home "$override")"
-    is_checkout "$override" || continue
-    case " ${WORKSPACES[*]} " in
-    *" $override "*) continue ;;
-    esac
-    WORKSPACES+=("$override")
+    add_workspace "$(expand_home "$override")"
 done < <(config_org_paths "$CONFIG_FILE")
+# Nothing readable at all: the dry-run branch below says so, and a real run
+# has already refused if the config named no checkout it could clone.
+[ ${#WORKSPACES[@]} -gt 0 ] || WORKSPACES=("$WORKSPACE")
 
 MANIFEST_ORG=""
 MANIFEST_FILE=""
 FOUND=0
+FOUND_ORGS=""
 FOUND_ROWS=""
 if [ "$DRY_RUN" -eq 1 ] && [ ! -d "${WORKSPACES[0]}" ]; then
     say "  (--dry-run: the workspace is not here, so no manifest could be read)"
 else
+    # WHAT MAKES THE QUESTION UNANSWERABLE IS TWO ORGS, not two files (F4 of
+    # the review on #83). The same `<org>/<name>.yaml` reached through two
+    # checkouts of one workspace repository is ONE record, and `--org` could
+    # not have told them apart; two DISTINCT orgs is the case `--org` exists
+    # for. So the pairs are deduped on `<org>` plus the file's basename and
+    # the refusal counts the orgs that are left.
     while IFS=$'\t' read -r org file _; do
         [ -n "${file:-}" ] || continue
         if [ -n "$ORG_WANTED" ] && [ "$(lower "$org")" != "$(lower "$ORG_WANTED")" ]; then
             continue
         fi
+        case " $FOUND_ORGS " in
+        *" $(lower "$org")/${file##*/} "*) continue ;;
+        esac
+        FOUND_ORGS="$FOUND_ORGS $(lower "$org")/${file##*/}"
         FOUND=$((FOUND + 1))
-        FOUND_ROWS="$FOUND_ROWS  $org/$(basename "$file")   $file
+        FOUND_ROWS="$FOUND_ROWS  $org/${file##*/}   $file
 "
         MANIFEST_ORG="$org"
         MANIFEST_FILE="$file"
@@ -809,24 +1030,55 @@ MANIFEST_KIND=""
 MANIFEST_DIRNAME=""
 ROOT_REPOSITORY=""
 if [ -n "$MANIFEST_FILE" ]; then
+    MANIFEST_ROOT_VALUE="$(manifest_project_field "$MANIFEST_FILE" root || true)"
     if yaml_scalar "$MANIFEST_FILE" family && [ -n "$YAML_VALUE" ]; then
-        # THE DOUBLED-NAME RULE (#76, RULING ruling 3): a family's holder
-        # repository is the family's own name in the org the manifest is filed
-        # under, and the clone lands at `<Family>/<Family>`. The manifest's
-        # `projects[]` are the MEMBERS; the holder is not one of them, so
-        # there is nothing else in the file to read it from.
         MANIFEST_KIND="family"
-        MANIFEST_DIRNAME="$YAML_VALUE"
-        ROOT_REPOSITORY="$MANIFEST_ORG/$YAML_VALUE"
+        # THE FOLDER COMES FROM `root:`, NEVER FROM `family:` (F2 of the
+        # review on #83, and the headline of it). `park.sh` writes `family:`
+        # from `family.yaml`'s `id:` — `workspace_family_name` reads that key
+        # — and an id is LOWERCASE by construction (`family.py`'s
+        # `--id ... or family.lower()`, checked against
+        # `PROJECT_ID_RE = ^[a-z0-9][a-z0-9-]*$`). The FOLDER is the family's
+        # `name:`, CamelCase, which is what `is_family_folder` requires to
+        # match the directory. Deriving the folder from `family:` therefore
+        # produced `~/projects/inkrouter/inkrouter`, a clone of
+        # `<org>/inkrouter` that 404s on any case-sensitive remote, and then a
+        # "not an estate" refusal over the half-estate it had just made.
+        #
+        # `workspace_manifest_root_value` writes each MEMBER's `root:` as
+        # `<family folder>/<project folder>` with the real casing, so the
+        # first segment is the family folder and — the holder repository being
+        # the family's own name in its org, #76 ruling 3's doubled-name layout
+        # — it is the holder repository's name too. `family:` stays what it is
+        # good for: the flag that says this file is a family's at all.
+        MANIFEST_DIRNAME="${MANIFEST_ROOT_VALUE%%/*}"
+        [ -n "$MANIFEST_ROOT_VALUE" ] &&
+            [ "$MANIFEST_DIRNAME" != "$MANIFEST_ROOT_VALUE" ] ||
+            die "$MANIFEST_FILE says \`family: $YAML_VALUE\` but its first project records
+    \`root: ${MANIFEST_ROOT_VALUE:-(nothing)}\`, which names no family folder. A member of a
+    family is recorded as <family folder>/<project folder>, so this file
+    cannot say where the holder goes. It is written by \`park\`; a
+    hand-edited one is fixed by hand."
+        ROOT_REPOSITORY="$MANIFEST_ORG/$MANIFEST_DIRNAME"
     else
         MANIFEST_KIND="standalone"
         ROOT_REPOSITORY="$(manifest_project_field "$MANIFEST_FILE" repository || true)"
-        MANIFEST_DIRNAME="$(manifest_project_field "$MANIFEST_FILE" root || true)"
+        MANIFEST_DIRNAME="$MANIFEST_ROOT_VALUE"
         [ -n "$MANIFEST_DIRNAME" ] || MANIFEST_DIRNAME="${ROOT_REPOSITORY##*/}"
         [ -n "$ROOT_REPOSITORY" ] || die "$MANIFEST_FILE records no \`repository:\` for its first project, so
     there is no repository to clone. That file is written by \`park\`; a
     hand-edited one is fixed by hand."
     fi
+    # A NAME, NEVER A PATH (F7 of the review on #83). `root:` is somebody's
+    # file and the schema's own invariant is that it is relative and POSIX —
+    # but a hand-edited `root: ../../elsewhere/X` would otherwise be joined to
+    # the projects directory and cloned outside it. Checked BEFORE any path is
+    # built from it, so nothing is created to be noticed afterwards.
+    is_safe_folder_name "$MANIFEST_DIRNAME" ||
+        die "$MANIFEST_FILE records \`root: $MANIFEST_ROOT_VALUE\`, whose folder name
+    '$MANIFEST_DIRNAME' is not one: an estate folder is a single name under your
+    projects directory, with no slash and no leading dot. Nothing was cloned.
+    That file is written by \`park\`; a hand-edited one is fixed by hand."
     say "  records         a $MANIFEST_KIND estate, root repository $ROOT_REPOSITORY"
 fi
 
@@ -855,18 +1107,18 @@ trap cleanup EXIT
 # sentinel spaces so `case` can ask about one. A project name carries no space
 # — `family.py` refuses one that does — so this is a set and not a guess.
 EXISTING_SIBLINGS=" "
+# Members whose working clone was refused, so the verb is not run in them
+# either (F9 of the review on #83), and the root itself when it was refused.
+REFUSED_MEMBERS=" "
+ROOT_REFUSED=0
 
 if [ "$ESTATE_PRESENT" -eq 1 ]; then
     say "  present         $ESTATE_DIR ($ESTATE_KIND)"
     if [ "$ESTATE_KIND" = "family" ]; then
-        pull_ff_only "holder $ESTATE_NAME" "$ESTATE_ROOT" || true
+        refresh_root "holder $ESTATE_NAME" "$ESTATE_ROOT" || ROOT_REFUSED=1
     else
-        pull_ff_only "root $ESTATE_NAME" "$ESTATE_ROOT" || true
+        refresh_root "root $ESTATE_NAME" "$ESTATE_ROOT" || ROOT_REFUSED=1
     fi
-    run_make "$ESTATE_NAME" "$ESTATE_ROOT" bootstrap || {
-        REFUSED=$((REFUSED + 1))
-        say "  FINDING: \`make bootstrap\` did not exit 0 in $ESTATE_ROOT; its legs may not be placed."
-    }
 else
     if [ -z "$ROOT_REPOSITORY" ]; then
         # A DRY RUN ON A FRESH MACHINE CANNOT KNOW MORE THAN THIS, and saying
@@ -962,11 +1214,8 @@ if [ "$ESTATE_KIND" = "family" ]; then
             continue
             ;;
         esac
-        pull_ff_only "$member" "$ESTATE_DIR/$member" || continue
-        run_make "$member" "$ESTATE_DIR/$member" bootstrap || {
-            REFUSED=$((REFUSED + 1))
-            say "  FINDING: [$member] \`make bootstrap\` did not exit 0; its legs may not be placed."
-        }
+        refresh_root "$member" "$ESTATE_DIR/$member" ||
+            REFUSED_MEMBERS="$REFUSED_MEMBERS$member "
     done < <(family_members "$ESTATE_ROOT/family.yaml")
 fi
 
@@ -992,8 +1241,48 @@ say "(4) make resume${MAKE_ARGS:+ ARGS='$MAKE_ARGS'}   ($ESTATE_ROOT)"
 STATUS=0
 RESUME_CALL=(make resume)
 [ -z "$MAKE_ARGS" ] || RESUME_CALL+=("ARGS=$MAKE_ARGS")
+
+# A CLONE THIS RUN REFUSED DOES NOT GET THE VERB EITHER (F9 of the review on
+# #83). The holder's `make resume` is `siblings.py --make resume`, whose whole
+# flag set is `--root`, `--dry-run`, `--make` and `--make-arg`: there is no
+# exclusion to hand it, so with a refusal on the board the verb is run PER
+# NON-REFUSED SIBLING here instead, and the holder's own dispatch is used
+# whenever there is nothing to exclude - which is every ordinary run. Adding
+# an `--exclude` to `siblings.py` is a change to a PINNED template file that
+# reaches every holder through `update-shape.py`, and it is not this object's
+# to make; #82's follow-up can propose it.
+run_the_verb_per_sibling() {
+    local member status worst=0
+    say "  the holder's dispatch is NOT used: it has no way to leave a refused member out,"
+    say "  so the verb runs in each member that was not refused, and in no other."
+    while IFS= read -r member; do
+        [ -n "$member" ] || continue
+        case "$REFUSED_MEMBERS" in
+        *" $member "*)
+            say "  [$member] refused above; \`make resume\` NOT run. Nothing here was touched."
+            continue
+            ;;
+        esac
+        [ -e "$ESTATE_DIR/$member/.git" ] || continue
+        status=0
+        run_make "$member" "$ESTATE_DIR/$member" resume "$MAKE_ARGS" || status=$?
+        [ "$status" -eq 0 ] || worst="$status"
+    done < <(family_members "$ESTATE_ROOT/family.yaml")
+    return "$worst"
+}
+
 if [ "$DRY_RUN" -eq 1 ] && [ ! -f "$ESTATE_ROOT/Makefile" ]; then
     say "  would run: make resume"
+elif [ "$ROOT_REFUSED" -eq 1 ] && [ "$ESTATE_KIND" != "family" ]; then
+    # A standalone root that was refused is one checkout, and it is the one
+    # the verb would run in. Nothing here was touched, and that includes this.
+    say "  NOT run: $ESTATE_ROOT was refused above. Nothing here was touched."
+    say "  Sort that checkout out - the lines above name what it is - and re-run."
+elif [ "$REFUSED_MEMBERS" != " " ]; then
+    set +e
+    run_the_verb_per_sibling
+    STATUS=$?
+    set -e
 else
     set +e
     (cd "$ESTATE_ROOT" && exec "${RESUME_CALL[@]}")

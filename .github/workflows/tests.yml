@@ -204,25 +204,32 @@ jobs:
 
       # THE ONE CLAIM THE SUITE CANNOT MAKE. The README tells a Mac reader
       # that the stock `/bin/bash` — 3.2, the last GPLv2 release, and what
-      # Apple still ships — is enough for both bash entry points. The suite
-      # runs them under whatever `bash` PATH resolves to on this runner, which
-      # is not necessarily that one, so name `/bin/bash` explicitly and PARSE
-      # both files with it: `-n` reads the whole file and executes none of it,
-      # so bash-4-only GRAMMAR (`${x,,}`, `${x^^}`, `|&`, `;;&`, `coproc`) is
-      # a syntax error here, and the README's sentence — which claims SYNTAX
-      # and nothing wider — stays true. A bash-4 BUILTIN is a different thing
-      # and `-n` does NOT catch it: `mapfile`, `declare -A` and `local -n`
-      # parse cleanly under any bash and fail only when run, which is what
-      # the suite's own runs of these two files are for. TWO commands rather
-      # than one: `bash -n a b` parses `a` and hands `b` to it as $1, so a
-      # second file named on the same line is never read at all. `--version`
-      # prints what answered, because this job cannot assert on its own which
-      # bash `/bin/bash` is.
-      - name: /bin/bash parses both bash entry points
+      # Apple still ships — is enough for every bash file this standard ships.
+      # The suite runs them under whatever `bash` PATH resolves to on this
+      # runner, which is not necessarily that one, so name `/bin/bash`
+      # explicitly and PARSE each file with it: `-n` reads the whole file and
+      # executes none of it, so bash-4-only GRAMMAR (`${x,,}`, `${x^^}`, `|&`,
+      # `;;&`, `coproc`) is a syntax error here, and the README's sentence —
+      # which claims SYNTAX and nothing wider — stays true. A bash-4 BUILTIN
+      # is a different thing and `-n` does NOT catch it: `mapfile`, `declare
+      # -A` and `local -n` parse cleanly under any bash and fail only when
+      # run, which is what the suite's own runs of these files are for. ONE
+      # COMMAND PER FILE: `bash -n a b` parses `a` and hands `b` to it as $1,
+      # so a second file named on the same line is never read at all.
+      # `--version` prints what answered, because this job cannot assert on
+      # its own which bash `/bin/bash` is.
+      #
+      # `park` and `resume` joined the list on 2026-09-09 (#82): they are
+      # installed onto the same macOS PATH by the same `--install`, and a
+      # bash-4 construct in either would be found by the person who typed
+      # `park InkRouter` rather than here.
+      - name: /bin/bash parses every bash entry point
         run: |
           /bin/bash --version
           /bin/bash -n setup.sh
           /bin/bash -n openRepoShape
+          /bin/bash -n park
+          /bin/bash -n resume
 
       - name: tests
         run: python3 -m pytest tests -q

@@ -322,9 +322,20 @@ def test_agents_md_is_short_enough_to_be_read():
     outcome this whole object has. The last rule is about the one file this
     standard writes outside a repository: which private repository holds
     somebody's unfinished work is theirs to name, so `--workspace` is never
-    passed on an assistant's own initiative."""
+    passed on an assistant's own initiative.
+
+    364 -> 368 on 2026-09-09, for the adversarial review on PR #83. Four
+    lines, all of them one refusal an assistant would otherwise "fix": a root
+    whose LEG sits on a feature branch is refused BY THE LEG'S NAME, because
+    the superproject is CLEAN in that state and the thing that would move the
+    leg is the root's own `make bootstrap`. An assistant that read only "dirty
+    or on a feature branch" would look at a clean root, conclude the refusal
+    was spurious, and run `git checkout main` in the leg — which is the exact
+    loss the guard exists to prevent, performed by hand. The other half-line
+    says a refused clone is not given the verb either, so nobody reports the
+    estate resumed because the verb ran somewhere."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 364, f"AGENTS.md is {len(lines)} lines; the cap is 364"
+    assert len(lines) <= 368, f"AGENTS.md is {len(lines)} lines; the cap is 368"
 
 
 def test_claude_md_points_at_agents_md():
@@ -706,8 +717,18 @@ def test_readme_is_short_enough_to_be_read():
     #   heading in the outline — plus its row in the contents list, which is
     #   the navigation #73's pass added and a section with one of two
     #   subsections listed would be worse than either.
-    assert len(lines) <= 1200, (
-        f"README.md is {len(lines)} lines; the cap is 1200")
+    # 2026-09-09: 1200 -> 1203 — the adversarial review on PR #83. Three
+    #   lines, and all three are a sentence that was WRONG being made right:
+    #   "a green run is the only green run" is true of `resume`, which exits
+    #   non-zero on a refusal, and false of `park`, which passes `make park`'s
+    #   own status through and can exit 0 with a report of what it left
+    #   behind. A reader who trusts the exit code of `park` skips the report
+    #   that is the whole point of the paragraph, so the paragraph now says
+    #   which of the two to read — plus the half-sentence that a refused clone
+    #   is not given the verb either, which is what the fix to that finding
+    #   made true.
+    assert len(lines) <= 1203, (
+        f"README.md is {len(lines)} lines; the cap is 1203")
 
 
 @pytest.mark.parametrize("name", SHIPPED_BASH)
