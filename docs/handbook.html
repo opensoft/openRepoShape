@@ -991,12 +991,13 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
           </tbody>
         </table>
       </div>
-      <p>The five naming families live in <code>contracts/repository-naming.yaml</code>: neutral
+      <p>The six naming families live in <code>contracts/repository-naming.yaml</code>: neutral
       products <code>open&lt;Product&gt;</code>, domain descendants
       <code>&lt;Domainx&gt;&lt;Product&gt;</code>, installs <code>&lt;X&gt;-Install</code>, project
-      legs as above, and family holders. The leg suffixes are lowercase and hyphenated precisely so
-      they sit in a different visual class from every other family, all of which are CamelCase
-      words. Every repository of a project also carries the GitHub topic
+      legs as above, family holders, and <code>&lt;user&gt;-wip</code>, the person&rsquo;s workspace
+      repository, unambiguous by construction. The leg suffixes are lowercase and hyphenated
+      precisely so they sit in a different visual class from every other family, all of which are
+      CamelCase words. Every repository of a project also carries the GitHub topic
       <code>xf-project-&lt;id&gt;</code>.</p>
       <p>A descendant form is a claim, and a claim needs a referent:
       <code>&lt;Domainx&gt;&lt;Product&gt;</code> counts as a descendant only if it PINS
@@ -1248,7 +1249,7 @@ python3 scripts/family.py remove --family-root ../InkRouter --member IRRS</code>
       <p class="eyebrow">Reference</p>
       <h2>Layout of this repository</h2>
       <dl class="files">
-        <dt>contracts/repository-naming.yaml</dt><dd>the four naming families, as data</dd>
+        <dt>contracts/repository-naming.yaml</dt><dd>the six naming families, as data</dd>
         <dt>contracts/path-classification.yaml</dt><dd>which leg a path belongs in, as data</dd>
         <dt>scripts/repo_shape.py</dt><dd>shared helpers: YAML subset reader, digests</dd>
         <dt>scripts/path_classify.py</dt><dd>the classifier over the path policy</dd>
@@ -1277,9 +1278,6 @@ python3 scripts/family.py remove --family-root ../InkRouter --member IRRS</code>
       <code>tests/test_repo_hygiene.py</code> enforces it. Changes to this repository are tested with
       <code>python3 -m pytest tests -q</code>, which scaffolds into bare repositories in a temporary
       directory; never by creating a real GitHub repository.</p>
-      <p class="aside">The line in the README reads &ldquo;the four naming families&rdquo; against a
-      naming section that counts five, the family holder being the fifth &mdash; kept verbatim
-      here.</p>
       <a class="src" href="https://github.com/opensoft/openRepoShape#layout-of-this-repository">Full text &mdash; repository layout</a>
     </section>
 

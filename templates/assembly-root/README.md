@@ -147,7 +147,7 @@ AGENTS-shape.md                  the RULES OF THE SHAPE, for an agent (copied)
 AGENTS.md                        this project's own instructions (yours)
 CLAUDE.md                        one line, pointing at AGENTS.md
 project.yaml                     the manifest — the SOURCE of this group
-contracts/repository-naming.yaml the four naming families (copied from the shape)
+contracts/repository-naming.yaml the six naming families (copied from the shape)
 contracts/spec-pin.yaml          the spec leg's commit + tree digest
 contracts/code-pin.yaml          the code leg's commit + tree digest
 contracts/shape-pin.yaml         the openRepoShape revision + per-file digests
