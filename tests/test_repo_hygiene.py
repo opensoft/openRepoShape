@@ -307,7 +307,18 @@ def test_agents_md_is_short_enough_to_be_read():
     one outcome an assistant reads as success. The mechanics themselves are
     the Speckit git extension's and are deliberately NOT described here.
 
-    342 -> 364 on 2026-09-09, for the two INSTALLED COMMANDS (#82, RULING
+    342 -> 344 on 2026-09-10, for point 4's exception (#84). `apply` had
+    refused every `both` row before it ever consulted `--accept-local`, so
+    the exit this file already documented — merge by hand, commit, re-run
+    with `--accept-local <path>` — could never actually be taken; the tool
+    was fixed to match the file rather than the other way around. The one
+    sentence added says where that commit goes: on the branch `apply` is
+    then pointed at with `--branch`, because that is the checkout the
+    documented exit leaves behind, and an assistant that recreated the
+    branch instead of committing onto the one already there would be
+    re-running the tool at the wrong git state.
+
+    344 -> 366 on 2026-09-09, for the two INSTALLED COMMANDS (#82, RULING
     2026-09-09). Nine lines are the paragraph: that `park <Name>` and `resume
     <Name>` are the same verbs on PATH, how they find the estate, and that
     their per-repository lines are to be relayed rather than summarised — an
@@ -324,7 +335,7 @@ def test_agents_md_is_short_enough_to_be_read():
     somebody's unfinished work is theirs to name, so `--workspace` is never
     passed on an assistant's own initiative.
 
-    364 -> 368 on 2026-09-09, for the adversarial review on PR #83. Four
+    366 -> 370 on 2026-09-09, for the adversarial review on PR #83. Four
     lines, all of them one refusal an assistant would otherwise "fix": a root
     whose LEG sits on a feature branch is refused BY THE LEG'S NAME, because
     the superproject is CLEAN in that state and the thing that would move the
@@ -335,7 +346,7 @@ def test_agents_md_is_short_enough_to_be_read():
     says a refused clone is not given the verb either, so nobody reports the
     estate resumed because the verb ran somewhere."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 368, f"AGENTS.md is {len(lines)} lines; the cap is 368"
+    assert len(lines) <= 370, f"AGENTS.md is {len(lines)} lines; the cap is 370"
 
 
 def test_claude_md_points_at_agents_md():
