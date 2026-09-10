@@ -69,10 +69,16 @@ MAKEFILE = "Makefile"
 MAKEFILE_SOURCE = f"templates/assembly-root/{MAKEFILE}"
 
 
-@pytest.fixture(scope="module")
-def upstream_and_project(tmp_path_factory) -> dict:
-    """A clone of this repository at A, a project scaffolded from it, and B."""
-    base = tmp_path_factory.mktemp("update-shape")
+def scaffold_upstream_and_project(tmp_path_factory, subdir: str):
+    """A fresh clone of this repository at A, and `PROJECT` scaffolded from
+    it into a recursive clone of its own — the part `upstream_and_project`
+    and `adopted_upstream_and_project` share verbatim. They differ only in
+    what commits they make on top afterward, which is why this stops here
+    and returns the pieces rather than a finished fixture dict: a shared
+    RETURN SHAPE across two fixtures is how the second one quietly drifts
+    from the first.
+    """
+    base = tmp_path_factory.mktemp(subdir)
     upstream = base / "openRepoShape"
     proc = subprocess.run(["git", "clone", "-q", str(REPO), str(upstream)],
                           capture_output=True, text=True, check=False)
@@ -92,15 +98,43 @@ def upstream_and_project(tmp_path_factory) -> dict:
          str(base / "remotes" / f"{PROJECT}.git"), str(clone)],
         capture_output=True, text=True, check=False)
     assert proc.returncode == 0, proc.stderr
+    return base, upstream, commit_a, clone
+
+
+#: The one line appended to a template source to make it "upstream changed"
+#: for `classify()` — shared so `upstream_and_project`'s commit B and
+#: `adopted_upstream_and_project`'s commit B' touch `CHANGED_SOURCE` with the
+#: exact same bytes rather than two typings of one comment.
+UPSTREAM_FIX_LINE = "\n# An upstream fix that must reach every project.\n"
+
+
+def commit_upstream_changes(upstream, message: str,
+                            changes: dict[str, str]) -> str:
+    """Append `{source path relative to upstream: text}` to each file and
+    commit them together. The one shape both `upstream_and_project`'s
+    commit B and `adopted_upstream_and_project`'s commit B' take — append,
+    commit with explicit pathspecs, return the new hash — so a third upstream
+    commit anywhere in this module reaches for this rather than retyping it.
+    """
+    for source, text in changes.items():
+        path = upstream / source
+        path.write_text(path.read_text(encoding="utf-8") + text,
+                        encoding="utf-8")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
+        "-m", message, "--", *changes, cwd=upstream)
+    return git("rev-parse", "HEAD", cwd=upstream).stdout.strip()
+
+
+@pytest.fixture(scope="module")
+def upstream_and_project(tmp_path_factory) -> dict:
+    """A clone of this repository at A, a project scaffolded from it, and B."""
+    _base, upstream, commit_a, clone = scaffold_upstream_and_project(
+        tmp_path_factory, "update-shape")
 
     # ---- commit B: one copied template file changes upstream --------------
-    source = upstream / CHANGED_SOURCE
-    source.write_text(source.read_text(encoding="utf-8")
-                      + "\n# An upstream fix that must reach every project.\n",
-                      encoding="utf-8")
-    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
-        "-m", "Fix the manifest validator", "--", CHANGED_SOURCE, cwd=upstream)
-    commit_b = git("rev-parse", "HEAD", cwd=upstream).stdout.strip()
+    commit_b = commit_upstream_changes(
+        upstream, "Fix the manifest validator",
+        {CHANGED_SOURCE: UPSTREAM_FIX_LINE})
     assert commit_a != commit_b
 
     return {"upstream": upstream, "clone": clone, "a": commit_a, "b": commit_b}
@@ -153,6 +187,21 @@ def validators_are_green(root) -> None:
         result = run_script(root / script)
         assert result.returncode == 0, (
             f"{script} is red after the update:\n{result.stdout}{result.stderr}")
+
+
+def assert_refused_and_unpinned(result, root, upstream_and_project,
+                                refusal_id: str, *needles: str) -> None:
+    """The shape every REFUSED `apply` in this module takes: exit 2, the
+    refusal id (and anything else `needles` names) in stderr, and the pin's
+    `commit:` untouched — "a refused apply writes nothing at all", repeated
+    enough times across the `--branch` postures and the adopted-Makefile
+    conflict that a helper is the row's own row, not a fourth copy of it."""
+    assert result.returncode == 2, result.stdout
+    assert refusal_id in result.stderr
+    for needle in needles:
+        assert needle in result.stderr
+    assert load_yaml(root / "contracts" / "shape-pin.yaml")["commit"].lower() \
+        == upstream_and_project["a"], "a refused apply writes nothing at all"
 
 
 # --- check -----------------------------------------------------------------
@@ -261,14 +310,11 @@ def test_branch_naming_an_existing_non_current_branch_refuses_by_name(
     git("branch", "shape/someone-elses", cwd=root)
     result = apply(root, upstream_and_project,
                    "--branch", "shape/someone-elses")
-    assert result.returncode == 2, result.stdout
-    assert "update-branch-exists" in result.stderr
-    assert "shape/someone-elses" in result.stderr
+    assert_refused_and_unpinned(result, root, upstream_and_project,
+                                "update-branch-exists", "shape/someone-elses")
     assert git("rev-parse", "--abbrev-ref", "HEAD",
                cwd=root).stdout.strip() == "main", (
         "a refused apply must not leave the checkout on a different branch")
-    assert load_yaml(root / "contracts" / "shape-pin.yaml")["commit"].lower() \
-        == upstream_and_project["a"], "a refused apply writes nothing at all"
 
 
 def test_branch_naming_the_tracking_branch_refuses(root, upstream_and_project):
@@ -276,11 +322,8 @@ def test_branch_naming_the_tracking_branch_refuses(root, upstream_and_project):
     proof the tracking-branch refusal is checked BEFORE the current-branch
     fast path, not after it."""
     result = apply(root, upstream_and_project, "--branch", "main")
-    assert result.returncode == 2, result.stdout
-    assert "update-branch-tracking" in result.stderr
-    assert "main" in result.stderr
-    assert load_yaml(root / "contracts" / "shape-pin.yaml")["commit"].lower() \
-        == upstream_and_project["a"]
+    assert_refused_and_unpinned(result, root, upstream_and_project,
+                                "update-branch-tracking", "main")
 
 
 def test_apply_without_yes_refuses_where_nobody_can_be_asked(
@@ -417,11 +460,8 @@ def test_changed_on_both_sides_refuses_and_names_the_file(
     assert f"--accept-local {CHANGED}" in checked.stdout
 
     result = apply(root, upstream_and_project)
-    assert result.returncode == 2, result.stdout
-    assert "update-conflict" in result.stderr
-    assert CHANGED in result.stderr
-    assert load_yaml(root / "contracts" / "shape-pin.yaml")["commit"].lower() \
-        == upstream_and_project["a"]
+    assert_refused_and_unpinned(result, root, upstream_and_project,
+                                "update-conflict", CHANGED)
 
 
 def test_accept_local_on_a_both_row_repins_from_the_local_bytes(
@@ -545,28 +585,11 @@ def adopted_upstream_and_project(tmp_path_factory) -> dict:
     commit on ITS clone would move all of them onto a target none of them
     expect. This fixture's own commit B' changes the Makefile TEMPLATE — the
     one thing no other test here may see move — so it gets its own clone,
-    built the same way `upstream_and_project` is.
+    built by the same `scaffold_upstream_and_project` helper
+    `upstream_and_project` calls.
     """
-    base = tmp_path_factory.mktemp("update-shape-adopted")
-    upstream = base / "openRepoShape"
-    proc = subprocess.run(["git", "clone", "-q", str(REPO), str(upstream)],
-                          capture_output=True, text=True, check=False)
-    assert proc.returncode == 0, proc.stderr
-    commit_a = git("rev-parse", "HEAD", cwd=upstream).stdout.strip()
-
-    result = run_script(
-        upstream / "scaffold-project.py", "--org", ORG, "--project", PROJECT,
-        "--elected-by", "Test Human", "--elected-on", "2026-09-02",
-        "--local-remote-dir", str(base / "remotes"),
-        "--work-dir", str(base / "work"))
-    assert result.returncode == 0, result.stderr + result.stdout
-
-    clone = base / "clone" / PROJECT
-    proc = subprocess.run(
-        ["git", *FILE_PROTOCOL, "clone", "-q", "--recurse-submodules",
-         str(base / "remotes" / f"{PROJECT}.git"), str(clone)],
-        capture_output=True, text=True, check=False)
-    assert proc.returncode == 0, proc.stderr
+    _base, upstream, commit_a, clone = scaffold_upstream_and_project(
+        tmp_path_factory, "update-shape-adopted")
 
     # ---- mirror an in-place adoption's Makefile append ---------------------
     makefile_path = clone / MAKEFILE
@@ -580,19 +603,10 @@ def adopted_upstream_and_project(tmp_path_factory) -> dict:
         "Mirror an in-place adoption's Makefile append", cwd=clone)
 
     # ---- commit B': the Makefile TEMPLATE changes, like #80's make park ----
-    makefile_source = upstream / MAKEFILE_SOURCE
-    other_source = upstream / CHANGED_SOURCE
-    makefile_source.write_text(
-        makefile_source.read_text(encoding="utf-8")
-        + "\n# make park / make resume, upstream (#80).\n", encoding="utf-8")
-    other_source.write_text(
-        other_source.read_text(encoding="utf-8")
-        + "\n# An upstream fix that must reach every project.\n",
-        encoding="utf-8")
-    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m",
-        "Change the Makefile template and the manifest validator",
-        "--", MAKEFILE_SOURCE, CHANGED_SOURCE, cwd=upstream)
-    commit_b = git("rev-parse", "HEAD", cwd=upstream).stdout.strip()
+    commit_b = commit_upstream_changes(
+        upstream, "Change the Makefile template and the manifest validator",
+        {MAKEFILE_SOURCE: "\n# make park / make resume, upstream (#80).\n",
+         CHANGED_SOURCE: UPSTREAM_FIX_LINE})
     assert commit_a != commit_b
 
     return {"upstream": upstream, "clone": clone, "a": commit_a, "b": commit_b}
@@ -640,12 +654,9 @@ def test_an_adopted_makefile_reports_both_and_names_accept_local(
 def test_apply_without_accept_local_still_refuses_the_adopted_makefile(
         adopted_root, adopted_upstream_and_project):
     result = apply(adopted_root, adopted_upstream_and_project)
-    assert result.returncode == 2, result.stdout
-    assert "update-conflict" in result.stderr
-    assert MAKEFILE in result.stderr
-    assert load_yaml(adopted_root / "contracts" / "shape-pin.yaml")[
-        "commit"].lower() == adopted_upstream_and_project["a"], (
-        "a refused apply writes nothing at all")
+    assert_refused_and_unpinned(result, adopted_root,
+                                adopted_upstream_and_project,
+                                "update-conflict", MAKEFILE)
 
 
 def test_accept_local_on_an_adopted_makefile_repins_the_hand_merge(
