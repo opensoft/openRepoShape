@@ -15,13 +15,12 @@ jobs:
       # PINNED BY COMMIT, not by tag — the rule this repository spends a
       # whole README section on. A tag can be moved and a commit cannot.
       #
-      # FULL HISTORY, since #89: `tests/test_repo_hygiene.py::test_the_
-      # handbook_follows_the_readmes_outline` compares README.md against the
-      # commit `docs/handbook.html` says it is a reading of, which needs that
-      # commit's OBJECT present. The default `fetch-depth: 1` fetches one
-      # commit, the object is absent, and the check skips itself — green in CI
-      # and red on the machine where the page would be regenerated, which is
-      # the wrong way round.
+      # FULL HISTORY: kept for any `git log`/history-based provenance check
+      # this suite might grow, even though it no longer matters for
+      # `tests/test_repo_hygiene.py::test_the_handbook_follows_the_readmes_
+      # outline` itself — #91 moved that check from diffing against a named
+      # commit to hashing the working tree's own README.md, which needs no
+      # history at all and runs the same in a shallow clone.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
           fetch-depth: 0
@@ -123,8 +122,9 @@ jobs:
     steps:
       # The SAME two commits the ubuntu job pins. Two jobs resolving two
       # versions of the same action is the drift this repository spends a
-      # README section on. `fetch-depth: 0` for the reason that job gives:
-      # the handbook's staleness check needs the commit it names (#89).
+      # README section on. `fetch-depth: 0` for the reason that job gives —
+      # kept as a generally useful default now that #91 stopped the
+      # handbook's own staleness check from needing history at all.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
           fetch-depth: 0
@@ -183,7 +183,8 @@ jobs:
       # The SAME two commits the other two jobs pin. Three jobs resolving
       # three versions of one action is the drift this repository spends a
       # README section on. `fetch-depth: 0` for the reason the ubuntu job
-      # gives: the handbook's staleness check needs the commit it names (#89).
+      # gives — kept as a generally useful default now that #91 stopped the
+      # handbook's own staleness check from needing history at all.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
           fetch-depth: 0

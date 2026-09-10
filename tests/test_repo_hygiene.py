@@ -1156,11 +1156,17 @@ HANDBOOK_SECTION_WITHOUT_A_README_H2 = {
     "agents": "AGENTS.md — the rules that outrank the rest, not README.md",
 }
 
-#: The page names the README commit it was cut from exactly once, in the
-#: footer: `Regenerated from README.md at <sha>`. Exactly once, because two
-#: of them would make "which sha" a guess — the footer also names the FIRST
-#: cut's commit, and it names it in a different phrase for that reason.
-HANDBOOK_README_SHA = re.compile(r"README\.md at ([0-9a-f]{7,40})\b")
+#: The footer carries the page's history as PROSE — "first cut from README.md
+#: at c093813 (#71); regenerated at cbca5b4 (#89)" — and, separately, its ONE
+#: MACHINE-CHECKED fact: `README.md blob <hash>` (#91). A commit sha named
+#: where the page came FROM and had to exist as a commit object to diff
+#: against; a blob hash names WHAT THE PAGE SAYS and needs no history at all
+#: — `git hash-object README.md` on the bare working tree file, in a shallow
+#: clone or a deep one, is the whole check. Matched on the literal word
+#: "blob" rather than a bare hex run, so it can never pick up either commit
+#: sha sitting in the prose sentence beside it, and `{40}` rather than
+#: `{7,40}` because `git hash-object` always prints the full hash.
+HANDBOOK_README_BLOB = re.compile(r"README\.md blob ([0-9a-f]{40})\b")
 
 
 def _readme_h2s(path):
@@ -1204,34 +1210,40 @@ def test_the_handbook_follows_the_readmes_outline():
        somebody to look at both.
     3. Every mapped id is a real element id on the page - `<section id=...>`
        for ten of them and the `<footer id="licence">` for the eleventh.
-    4. And the page names the README commit it was cut from, whose README
-       must be BYTE-IDENTICAL to the one in the tree. `git diff <sha> --
-       README.md` compares the WORKING TREE against that commit, so the page
-       goes stale the moment the README changes, not one commit later.
+    4. And the page names README.md's own BLOB HASH, which must equal
+       `git hash-object README.md` on the working tree file (#91). No
+       commit needed, no diff, no history: two files with identical bytes
+       hash identically regardless of which commit either sits on, or
+       whether either is on a commit at all.
 
     THE FIX WHEN (4) GOES RED IS TO REGENERATE THE PAGE, and #89 is the
-    precedent for what that means: read `git diff <sha>..HEAD -- README.md`
-    whole, add or amend the page's sections in the page's own design and
+    precedent for what that means: read what changed in README.md since the
+    page was last regenerated — the footer's prose names that regeneration's
+    commit — add or amend the page's sections in the page's own design and
     voice, keep every code block byte-identical to the README's (modulo the
-    README's line-wrapping), then move the footer's sha. A README change that
-    touches nothing the page says is the one case where re-cutting the sha
-    alone is honest — and saying so in the commit message is part of it.
-    Editing the sha to quiet this test without reading the diff is the
+    README's line-wrapping), then set the footer's `README.md blob <hash>`
+    to the new `git hash-object README.md`. A README change that touches
+    nothing the page says is the one case where moving the hash alone is
+    honest — and saying so in the commit message is part of it. Editing the
+    hash to quiet this test without reading what changed is the
     documentation equivalent of hand-editing a pin to make the validator
     agree, which is the thing this repository spends a whole section
     refusing.
 
-    Check (4) is SKIPPED, and only check (4), when the named commit is not
-    in this clone: `git diff` would fail on the missing object rather than on
-    the drift, which is a failure about the clone and not about the page. A
-    SHALLOW clone is the case that hits it — `git clone --depth 1` has
-    exactly one commit — and CI IS NO LONGER ONE. Ruled by Brett Heap on
-    2026-09-10: *set fetch-depth 0 so the staleness check bites in CI*, so
-    all three jobs in `.github/workflows/tests.yml` now check out with
-    `fetch-depth: 0` and name this test as the reason. Before that it was the
-    wrong way round — green in CI, red only on the machine where the page
-    would be regenerated. The first three checks are tree-only and run in any
-    clone, shallow or not.
+    CHECK (4) USED TO BE `git diff <sha> -- README.md` against the commit
+    the page named, SKIPPED when that commit was not in this clone — the
+    case a SHALLOW clone always hits, `git clone --depth 1` having exactly
+    one. CI itself was such a clone, so the one check that should have
+    caught the page falling behind skipped itself there and could only fail
+    on the machine where the page gets regenerated: green in CI, red only
+    where it was too late to matter. #89's fix was `fetch-depth: 0` on all
+    three jobs in `.github/workflows/tests.yml`, naming this test as why.
+    #91 fixed the design instead of only working around it in CI: hashing
+    the WORKING TREE file needs no commit object and skips nothing, so the
+    check is exact in a shallow clone, a fresh `git init`, or no history at
+    all. `fetch-depth: 0` stays in the workflow — a generally useful default
+    for whatever history-based check this suite grows next — but nothing
+    about THIS test's correctness depends on it any more.
     """
     readme_h2s = _readme_h2s(REPO / "README.md")
     page = (REPO / "docs" / "handbook.html").read_bytes().decode("utf-8")
@@ -1266,23 +1278,19 @@ def test_the_handbook_follows_the_readmes_outline():
         "README_HEADING_TO_HANDBOOK_ID; one that is not belongs in "
         "HANDBOOK_SECTION_WITHOUT_A_README_H2, with where it came from.")
 
-    shas = HANDBOOK_README_SHA.findall(page)
-    assert len(shas) == 1, (
-        "docs/handbook.html must name the README commit it was cut from "
-        f"exactly once, as `README.md at <sha>`; found {shas}")
-    sha = shas[0]
-    if subprocess.run(["git", "cat-file", "-e", sha + "^{commit}"],
-                      cwd=str(REPO), capture_output=True,
-                      text=True).returncode != 0:
-        return          # a shallow checkout; see the docstring's last note
-    moved = subprocess.run(["git", "diff", "--stat", sha, "--", "README.md"],
-                           cwd=str(REPO), capture_output=True, text=True,
-                           check=True).stdout
-    assert not moved.strip(), (
-        f"README.md has moved since {sha}, the commit docs/handbook.html "
-        f"says it is a reading of:\n{moved}"
-        "regenerate the page - read the diff whole, add or amend its "
-        "sections in the page's own design, then move the footer's sha "
-        "(#89 is the precedent, and its docstring above says what that "
-        "means). Do not move the sha alone unless the change genuinely "
-        "touched nothing the page says.")
+    blobs = HANDBOOK_README_BLOB.findall(page)
+    assert len(blobs) == 1, (
+        "docs/handbook.html must name README.md's blob hash exactly once, "
+        f"as `README.md blob <hash>`; found {blobs}")
+    actual_blob = subprocess.run(
+        ["git", "hash-object", "README.md"], cwd=str(REPO),
+        capture_output=True, text=True, check=True).stdout.strip()
+    assert blobs[0] == actual_blob, (
+        f"docs/handbook.html says README.md blob {blobs[0]}, but the "
+        f"working tree's README.md hashes to {actual_blob} - it has moved "
+        "since the page was cut. Regenerate the page - read what changed, "
+        "add or amend its sections in the page's own design, then set the "
+        "footer's `README.md blob <hash>` to the new `git hash-object "
+        "README.md` (#89 is the precedent for what regenerating means, and "
+        "the docstring above says so). Do not move the hash alone unless "
+        "the change genuinely touched nothing the page says.")
