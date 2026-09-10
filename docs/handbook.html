@@ -1387,13 +1387,19 @@ resume InkRouter                # on workstation B, and the estate is back</code
       (<code>&lt;Name&gt;/&lt;Name&gt;/family.yaml</code>) wins over a standalone root
       (<code>&lt;Name&gt;/project.yaml</code>) of the same name, because the holder is what drives
       the members. With no <code>&lt;Name&gt;</code> the estate around the current directory is used:
-      the nearest holder beside you, or project root above you.
+      the nearest holder beside you, or project root above you. With no estate around it either,
+      <code>park</code> PARKS EVERY ESTATE it finds under your projects directory instead of
+      refusing (Brett Heap&rsquo;s RULING of 2026-09-10, #91, superseding ruling 3 of #82 for this
+      one case): it lists what it found, then runs itself on each one in name order, continuing
+      past a refusal.
       <code>--repo &lt;owner/name&gt;</code> names the estate by the <code>origin</code> of a clone
       you ALREADY have, in any url spelling; it never clones one, because <code>resume</code> is the
       command that clones and it clones from the record.</p>
-      <p><span class="refuses">Refuses</span> <strong>Nothing is parked by guess</strong>: with no
-      estate around the current directory either, <code>park</code> REFUSES and lists the estates it
-      found.</p>
+      <p><span class="refuses">Refuses</span> <strong><code>resume</code> keeps the old
+      refusal</strong>: with no <code>&lt;Name&gt;</code> and no estate around it either,
+      <code>resume</code>&rsquo;s own bare form still REFUSES and lists the estates it found
+      &mdash; rebuilding every estate on a fresh machine by accident is the opposite risk from
+      <code>park</code> failing to park the one you meant.</p>
       <div class="stack">
         <h4>What they leave behind, said out loud</h4>
         <ul class="plain">
@@ -1572,9 +1578,9 @@ resume InkRouter                # on workstation B, and the estate is back</code
     <footer id="licence">
       <p>Licence <strong>Apache-2.0</strong>. See <code>LICENSE</code> in the repository.</p>
       <p><a href="https://github.com/opensoft/openRepoShape#readme">github.com/opensoft/openRepoShape</a></p>
-      <p class="meta">Regenerated from README.md at cbca5b4 on 2026-09-10; first cut from
-      c093813 (#71). Every command, flag, exit code and file name on this page is quoted from that
-      README and from AGENTS.md.</p>
+      <p class="meta">First cut from README.md at c093813 (#71); regenerated at cbca5b4 (#89).
+      README.md blob e2598c1b83ac2b1777daa64e54089582153f79de. Every command, flag, exit code and
+      file name on this page is quoted from that README and from AGENTS.md.</p>
     </footer>
   </main>
 </div>

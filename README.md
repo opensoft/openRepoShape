@@ -1082,10 +1082,16 @@ both ways — or wherever `$PROJECTS_DIR` points. A FAMILY folder
 (`<Name>/project.yaml`) of the same name, because the holder is what drives
 the members. With no `<Name>` the estate around the current directory is used:
 the nearest holder beside you, or project root above you. With no estate
-around it either, `park` REFUSES and lists the estates it found — nothing is
-parked by guess. `--repo <owner/name>` names the estate by the `origin` of a
-clone you ALREADY have, in any url spelling; it never clones one, because
-`resume` is the command that clones and it clones from the record.
+around it either, `park` PARKS EVERY ESTATE it finds under your projects
+directory instead of refusing (Brett Heap's RULING of 2026-09-10, #91,
+superseding ruling 3 of #82 for this one case): it lists what it found, then
+runs itself on each one in name order, continuing past a refusal. `resume`
+deliberately keeps that old refusal for its own bare form — rebuilding every
+estate on a fresh machine by accident is the opposite risk from failing to
+park the one you meant. `--repo <owner/name>` names the estate by the
+`origin` of a clone you ALREADY have, in any url spelling; it never clones
+one, because `resume` is the command that clones and it clones from the
+record.
 
 **What they leave behind, said out loud.** `park` finishes by printing what
 did NOT park and why none of it is park's to touch: commits on a `main` that

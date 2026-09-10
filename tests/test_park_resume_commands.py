@@ -89,6 +89,23 @@ siblings:
 \t@echo "PROBE siblings in $(CURDIR)"
 """
 
+#: The same probe, except `park` exits 3 after printing — #91's
+#: park-everything has to be shown continuing past ONE estate's refusal
+#: while still parking the rest, and this is the cheapest way to make one
+#: estate's own `make park` fail without a real extension stub.
+FAILING_PARK_PROBE_MAKEFILE = """\
+.PHONY: park resume bootstrap siblings
+park:
+\t@echo "PROBE park in $(CURDIR) ARGS=[$(ARGS)]"
+\t@exit 3
+resume:
+\t@echo "PROBE resume in $(CURDIR) ARGS=[$(ARGS)]"
+bootstrap:
+\t@echo "PROBE bootstrap in $(CURDIR)"
+siblings:
+\t@echo "PROBE siblings in $(CURDIR)"
+"""
+
 FAMILY_YAML = """\
 schema_version: 1
 kind: family-manifest
@@ -554,20 +571,95 @@ def test_nearest_wins_so_a_member_parks_itself(home):
     assert f"PROBE park in {member}" in result.stdout
 
 
-def test_no_name_and_no_estate_refuses_and_lists_what_it_found(home):
-    """RULING 3, and the whole of it: nothing is parked by guess, and the
-    refusal has to carry the names — a person in the wrong folder needs them,
-    not an instruction to go and look."""
+# --- #91: bare `park` with no estate around parks every estate -------------
+#
+# THIS IS WHERE `park` AND `resume` STOP SHARING THE ANSWER. Ruling 3 of #82
+# ("no <Name> and no estate around the cwd REFUSES and lists what it found")
+# is superseded for `park`'s bare form by Brett Heap's RULING of 2026-09-10
+# (#91); `resume`'s own bare form keeps it, and
+# `test_resume_with_no_name_and_no_estate_refuses`, at the end of this file,
+# is what holds that half still.
+
+def test_bare_park_with_no_estate_parks_every_estate_in_name_order(home):
+    """#91: the discovery is the SAME ONE the old refusal used to only list
+    by — a family folder and a standalone root, one level under the projects
+    directory — and now every one of them gets `park`'s own procedure, in
+    name order, with the list printed first."""
     projects = home / "projects"
-    probe_family(projects, "InkRouter")
-    probe_project(projects, "Atlas")
+    holder = probe_family(projects, "TestFam")
+    root = probe_project(projects, "Atlas")
     result = run(PARK, home=home, cwd=home)
-    assert result.returncode == 2, result.stdout + result.stderr
-    assert "no estate around" in result.stderr
-    assert "never guesses which estate you meant, and it never parks all of" \
-        in result.stderr
-    assert "family   InkRouter" in result.stderr
-    assert "project  Atlas" in result.stderr
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "no estate around" in result.stdout
+    assert "parking every estate under" in result.stdout
+    assert "family   TestFam" in result.stdout
+    assert "project  Atlas" in result.stdout
+
+    list_at = result.stdout.index("parking every estate under")
+    atlas_at = result.stdout.index("=== park Atlas ===")
+    testfam_at = result.stdout.index("=== park TestFam ===")
+    assert list_at < atlas_at < testfam_at, (
+        "the list must print first, and the estates must run in NAME order")
+
+    assert f"PROBE park in {root} ARGS=[]" in result.stdout
+    assert f"PROBE park in {holder} ARGS=[]" in result.stdout
+    assert "  parked     Atlas" in result.stdout
+    assert "  parked     TestFam" in result.stdout
+    assert "park: 2 estate(s) parked, 0 refused or with findings" \
+        in result.stdout
+
+
+def test_bare_park_continues_past_a_refused_estate_and_still_parks_the_rest(
+        home):
+    """A skip is not a pass (#80's rule): one estate's own `make park`
+    exiting non-zero must not stop the others, and the overall run must not
+    read as clean either."""
+    projects = home / "projects"
+    holder = probe_family(projects, "TestFam")
+    root = probe_project(projects, "Atlas")
+    (root / "Makefile").write_text(FAILING_PARK_PROBE_MAKEFILE,
+                                   encoding="utf-8")
+
+    result = run(PARK, home=home, cwd=home)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert f"PROBE park in {root} ARGS=[]" in result.stdout, (
+        "the refused estate still ran; it is refused by its OWN exit code")
+    assert f"PROBE park in {holder} ARGS=[]" in result.stdout, (
+        "the estate after the refused one must still be parked")
+    assert "park: Atlas - `make park` exited 2" in result.stdout, (
+        "make wraps the recipe's exit 3 in its own exit 2")
+    assert "  refused    Atlas (exit 2)" in result.stdout
+    assert "  parked     TestFam" in result.stdout
+    assert "park: 1 estate(s) parked, 1 refused or with findings" \
+        in result.stdout
+
+
+def test_bare_park_inside_an_estate_still_parks_only_that_one(home):
+    """The walk-up wins over park-everything: standing inside an estate must
+    never park the whole workstation (#91's own words)."""
+    projects = home / "projects"
+    holder = probe_family(projects, "TestFam")
+    root = probe_project(projects, "Atlas")
+    result = run(PARK, home=home, cwd=holder)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"the family holder at {holder}" in result.stdout
+    assert "parking every estate" not in result.stdout
+    assert f"PROBE park in {root}" not in result.stdout, (
+        "the OTHER estate must not have been parked")
+
+
+def test_bare_park_dry_run_lane_and_passthrough_args_reach_every_estate(home):
+    projects = home / "projects"
+    holder = probe_family(projects, "TestFam")
+    root = probe_project(projects, "Atlas")
+    result = run(PARK, "--dry-run", "--lane", "xfactory-2", "--",
+                 "--feature", "001-a", home=home, cwd=home)
+    assert result.returncode == 0, result.stdout + result.stderr
+    expected = "ARGS=[--dry-run --lane xfactory-2 --feature 001-a]"
+    assert f"PROBE park in {root} {expected}" in result.stdout
+    assert f"PROBE park in {holder} {expected}" in result.stdout
+    assert result.stdout.count(
+        "--dry-run: nothing was committed, pushed or recorded.") == 2
 
 
 def test_no_name_and_no_estates_at_all_says_none(tmp_path):
