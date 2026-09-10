@@ -59,6 +59,7 @@ OPENREPOTOOLS_INSTALL = (
 USAGE_LINES = (
     "openRepoShape <Project> [--org <org>] [setup-project.py options] [-- <scaffold flags>]",
     "openRepoShape --install            install (or update) this command into ~/.local/bin",
+    "openRepoShape --doctor [<path>]    diagnose a REPOSITORY against this standard",
     "openRepoShape --preflight          check this machine and stop; creates nothing",
     "openRepoShape --help | --version",
 )

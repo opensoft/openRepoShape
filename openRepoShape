@@ -35,6 +35,7 @@ PROJECT=""
 ORG=""
 MODE="run"
 PREFLIGHT=0
+DOCTOR_PATH=""
 PASSTHROUGH=()
 WORKDIR=""
 STAGED=""
@@ -46,6 +47,7 @@ usage() {
 	cat <<'USAGE'
 openRepoShape <Project> [--org <org>] [setup-project.py options] [-- <scaffold flags>]
 openRepoShape --install            install (or update) this command into ~/.local/bin
+openRepoShape --doctor [<path>]    diagnose a REPOSITORY against this standard
 openRepoShape --preflight          check this machine and stop; creates nothing
 openRepoShape --help | --version
 
@@ -72,6 +74,17 @@ opensoft/openRepoTools', and its own installer places them:
   $OPENREPOSHAPE_ORG        the organisation, when --org is not given
   $OPENREPOSHAPE_BIN_DIR    where --install puts it  (default ~/.local/bin)
   $OPENREPOSHAPE_SETUP_SH   run this setup.sh on disk instead of fetching one
+
+`--doctor [<path>]` runs `shape-doctor.py` over <path> (default `.`) and prints
+one row per check and ONE verdict: COMPLIANT, COMPLIANT SHAPE BEHIND, DRIFTED,
+INVALID or NOT A SHAPE ROOT. It writes nothing, and every finding names the
+command that fixes it. Exit 0 compliant, 1 findings, 2 not a shape root, 3
+usage. Run beside a checkout of the standard it uses that one; run from
+anywhere else it clones the standard into a temporary directory first.
+
+`--preflight` is the MACHINE check -- it was spelled `--doctor` until
+2026-09-10, and the name moved to the repository diagnosis above, which is
+what a person means by a doctor.
 USAGE
 }
 
@@ -135,6 +148,11 @@ shape_clone_url() {
 # names from #82 until 2026-09-10 and holds one again (#92): `park` and
 # `resume` are opensoft/openRepoTools'.
 INSTALLABLES=(openRepoShape)
+
+#: WHAT `--doctor` RUNS, named once so the two places that reach for it -- the
+#: "is there a checkout beside me" probe and the run itself -- cannot come to
+#: disagree about the filename.
+DOCTOR="shape-doctor.py"
 
 # EVERY ONE IN HAND BEFORE ANY OF THEM IS PLACED (#82, F10 of the review on
 # #83). One file at a time, dying on the first fetch that failed, left a
@@ -222,12 +240,104 @@ install_commands() {
 	esac
 }
 
+# A PYTHON, BY THE SAME RULE `setup.sh` FINDS ONE BY: 3.9 or newer, under
+# whichever name this machine has it. Transcribed rather than shared because
+# these two files are never both on disk in the installed case -- this one is
+# a single file in ~/.local/bin -- and `--doctor` must work there.
+find_python() {
+	local candidate
+	for candidate in python3 python; do
+		if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c \
+			'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' \
+			>/dev/null 2>&1; then
+			printf '%s' "$candidate"
+			return 0
+		fi
+	done
+	return 1
+}
+
+# A CHECKOUT OF THE STANDARD, made the way `setup.sh` self-bootstraps one:
+# `git clone` of `shape_clone_url`, into the temporary directory `workdir`
+# owns, checked out at $OPENREPOSHAPE_REF when one was named. Sets $SHAPE_DIR.
+#
+# WITHOUT `--depth 1`, WHICH IS THE ONE DEVIATION FROM setup.sh AND IS FORCED.
+# A shallow clone has exactly ONE commit, and the doctor's shape-currency row
+# compares a project's copies at the commit its pin NAMES against this
+# standard's tip -- a comparison a one-commit history cannot make at all. The
+# scaffold has no such need, so it stays shallow and this does not.
+#
+# The guard on $SHAPE_REPO is `setup.sh`'s, for its reason: the value reaches
+# a `git clone` command line, where a leading `-` is an option rather than a
+# repository and a control character could forge a line of output before this
+# script has said a word. The refusal does not echo the value back.
+shape_checkout() {
+	local url
+	url="$(shape_clone_url)"
+	case "$url" in
+	-* | *[![:print:]]*) die "OPENREPOSHAPE_REPO is not a value this tool will put on a \`git clone\` command line: it starts with '-' or carries a control character. Set it to a URL or a path." ;;
+	esac
+	workdir
+	SHAPE_DIR="$WORKDIR/shape"
+	git clone --quiet -- "$url" "$SHAPE_DIR" ||
+		die "could not clone $REPO into a temporary directory, so there is no
+    standard to check against. \`--doctor\` needs one: run it from a checkout
+    of openRepoShape, or make the clone work."
+	if [ -n "${OPENREPOSHAPE_REF:-}" ]; then
+		git -C "$SHAPE_DIR" checkout --quiet "$REF" ||
+			die "cloned $REPO but could not check out '$REF'."
+	fi
+}
+
+# `--doctor`: RUN THE STANDARD'S OWN SCRIPT, never a reimplementation here.
+# Beside a checkout -- this file sitting in one, which is how a developer runs
+# it -- that checkout answers, and nothing is fetched at all. Installed, or
+# arriving on stdin, there is no checkout beside this file and one is cloned:
+# the doctor compares a project's copies against a standard, so it must have
+# a standard, and a single file in ~/.local/bin is not one.
+run_doctor() {
+	local py selfdir="" shape=""
+	py="$(find_python)" || die "no Python 3.9 or newer on this machine (tried python3, python). \`--doctor\` is a Python program: https://www.python.org/downloads/"
+	if [ -f "$SELF" ]; then
+		selfdir="$(cd -- "$(dirname -- "$SELF")" && pwd)"
+	fi
+	if [ -n "$selfdir" ] && [ -f "$selfdir/$DOCTOR" ]; then
+		shape="$selfdir"
+	else
+		command -v git >/dev/null 2>&1 ||
+			die "git is not installed, and with no checkout of the standard beside this command there is nothing to clone one with. Install it: https://git-scm.com/downloads"
+		shape_checkout
+		shape="$SHAPE_DIR"
+	fi
+	# RUN, never `exec`: the EXIT trap that removes a cloned checkout belongs
+	# to THIS process, and exec would replace the shell that owes it.
+	set +e
+	"$py" "$shape/$DOCTOR" --root "${DOCTOR_PATH:-.}"
+	STATUS=$?
+	set -e
+	return "$STATUS"
+}
+
 # --- arguments ------------------------------------------------------------
 while [ $# -gt 0 ]; do
 	case "$1" in
 	-h | --help) usage; exit 0 ;;
 	--version) say "openRepoShape ($REPO @ $REF)"; exit 0 ;;
 	--install) MODE="install"; shift ;;
+	# `--doctor [<path>]`: the REPOSITORY diagnosis. The optional path is
+	# eaten here rather than passed on, because it is a positional and
+	# would otherwise be taken for the <Project> a scaffold run names. A
+	# word beginning with a dash is NOT the path -- it is somebody's flag,
+	# and the refusal below tells them this mode takes none.
+	--doctor)
+		MODE="doctor"; shift
+		if [ $# -gt 0 ]; then
+			case "$1" in
+			-*) ;;
+			*) DOCTOR_PATH="$1"; shift ;;
+			esac
+		fi
+		;;
 	# NAMED, THOUGH `-*` BELOW WOULD ALREADY PASS IT ON. The case exists
 	# for the VARIABLE, not for the passing on: `--preflight` examines the
 	# machine and stops, so the organisation and the <Project> this command
@@ -256,6 +366,22 @@ while [ $# -gt 0 ]; do
 		PROJECT="$1"; shift ;;
 	esac
 done
+
+if [ "$MODE" = "doctor" ]; then
+	# ONE PATH AND NOTHING ELSE. Every other argument this command knows is
+	# about a run that CREATES something, and silently ignoring one typed
+	# alongside `--doctor` would answer a question nobody asked. `--json`
+	# is `shape-doctor.py`'s and reaches it from a checkout, deliberately
+	# not plumbed through here while the mode is one path wide.
+	[ -z "$PROJECT" ] && [ -z "$ORG" ] && [ ${#PASSTHROUGH[@]} -eq 0 ] ||
+		die "--doctor takes a path and nothing else; it reads a repository and writes nothing.
+    To scaffold, drop --doctor. To check this machine, run: openRepoShape --preflight"
+	set +e
+	run_doctor
+	STATUS=$?
+	set -e
+	exit "$STATUS"
+fi
 
 if [ "$MODE" = "install" ]; then
 	[ -z "$PROJECT" ] && [ ${#PASSTHROUGH[@]} -eq 0 ] ||
