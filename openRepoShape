@@ -70,7 +70,7 @@ opensoft/openRepoTools', and its own installer places them:
   $OPENREPOSHAPE_REPO       owner/name to fetch from (default opensoft/openRepoShape)
   $OPENREPOSHAPE_REF        the ref to fetch it at   (default main)
   $OPENREPOSHAPE_ORG        the organisation, when --org is not given
-  $OPENREPOSHAPE_BIN_DIR    where --install puts it    (default ~/.local/bin)
+  $OPENREPOSHAPE_BIN_DIR    where --install puts it  (default ~/.local/bin)
   $OPENREPOSHAPE_SETUP_SH   run this setup.sh on disk instead of fetching one
 USAGE
 }
@@ -208,8 +208,11 @@ install_commands() {
 	# and `tests/test_repo_hygiene.py` is what holds the copies together.
 	say "  park and resume are installed by openRepoTools, not by this command:"
 	say "    curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoTools/main/openRepoTools | bash -s -- --install"
-	# THE PATH NOTE, last, because it is about the directory the line above
-	# would put its own commands in as well.
+	# THE PATH NOTE, last, and it is about the directory THIS command just
+	# wrote to — `$OPENREPOSHAPE_BIN_DIR`, nothing else. openRepoTools reads
+	# its own `$OPENREPOTOOLS_BIN_DIR` and defaults to the same
+	# `~/.local/bin`, so the two land together on a machine that sets
+	# neither and in two places on a machine that sets one.
 	case ":${PATH:-}:" in
 	*":$dir:"*) ;;
 	*)

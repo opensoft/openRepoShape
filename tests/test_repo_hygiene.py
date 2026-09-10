@@ -370,9 +370,20 @@ def test_agents_md_is_short_enough_to_be_read():
     refusal: `resume`'s own bare form keeps ruling 3 deliberately, because
     rebuilding every estate on a fresh machine by accident is the opposite
     risk, and an assistant is never to name one estate on the person's behalf
-    to route around it."""
+    to route around it.
+
+    381 -> 351 on 2026-09-10, DOWNWARD, for the carve (#92): `park` and
+    `resume` are opensoft/openRepoTools' commands now, so the
+    installed-commands paragraph and points 5 and 6 left this file for that
+    repository's AGENTS.md, and two lines pointing at it replace them. The
+    cap follows the file down rather than banking thirty lines nobody argued
+    for — the two entries above it earn their headroom with rules that are no
+    longer here, and a cap left at 381 would let the next procedure spend
+    them without anybody making the case. Points 1-4 stay: they are about
+    `make park` and `make resume`, which this standard still ships in both
+    root templates."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 381, f"AGENTS.md is {len(lines)} lines; the cap is 381"
+    assert len(lines) <= 351, f"AGENTS.md is {len(lines)} lines; the cap is 351"
 
 
 def test_claude_md_points_at_agents_md():

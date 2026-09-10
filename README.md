@@ -348,14 +348,6 @@ not on `PATH`. It is one file at the repository root and implements nothing:
 [`openRepoShape`](https://github.com/opensoft/openRepoShape/blob/main/openRepoShape)
 fetches `setup.sh` (API first, raw URL second) and runs it.
 
-Or type the long line, on a machine you would rather install nothing on:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup.sh \
-    | bash -s -- --org Northwind --project Atlas \
-      --visibility private --elected-by 'Dana Okafor'
-```
-
 The estate verbs `park` and `resume`, for [carrying in-flight
 work](#carrying-in-flight-work-to-another-workstation), are
 [opensoft/openRepoTools](https://github.com/opensoft/openRepoTools)' and come
@@ -363,6 +355,14 @@ from its own one-liner, which this command prints and never calls:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoTools/main/openRepoTools | bash -s -- --install
+```
+
+Or type the long line, on a machine you would rather install nothing on:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup.sh \
+    | bash -s -- --org Northwind --project Atlas \
+      --visibility private --elected-by 'Dana Okafor'
 ```
 
 #### Run

@@ -598,6 +598,68 @@ def test_a_failed_fetch_replaces_nothing(tmp_path):
     assert "placed" not in result.stdout
 
 
+def test_all_or_none_still_holds_at_more_than_one_installable(tmp_path):
+    """F10 OF THE REVIEW ON #83, KEPT HONEST AFTER THE CARVE (#92).
+
+    At one installable, "collect everything, then place it" and "fetch and
+    place one file at a time, dying on the first failure" cannot be told
+    apart by any test: there is one file, so there is no half-install to
+    produce. `test_a_failed_fetch_replaces_nothing` therefore covers the
+    refusal but not the STRUCTURE, and the pre-#82 shape would pass this
+    suite green — which is the whole of the argument for keeping
+    `collect_commands` when the list went back to one name.
+
+    So this test lengthens the list. A COPY of the shim in a temporary
+    directory gets a second, synthetic name in `INSTALLABLES`; the copy is
+    run FROM ITS FILE, so `openRepoShape` is taken from the sibling beside it
+    and only `witness` has to be fetched — and the fake server does not serve
+    `witness`. Nothing may be placed: the older `openRepoShape` already in
+    the bin directory has to come out byte for byte, and the refusal has to
+    name the file it could not get. A shim that placed per file would have
+    overwritten that copy before ever discovering `witness` was missing.
+
+    THE COPY IS THE POINT. Editing the real `INSTALLABLES` would be a test
+    that changes the thing it measures; this one asserts a property of the
+    machinery, at a list length this repository does not currently ship.
+    """
+    shimdir = tmp_path / "shimdir"
+    shimdir.mkdir()
+    shim = shimdir / "openRepoShape"
+    source = COMMAND.read_text(encoding="utf-8")
+    assert "\nINSTALLABLES=(openRepoShape)\n" in source, (
+        "the array this test lengthens has moved or been reshaped")
+    shim.write_text(
+        source.replace("\nINSTALLABLES=(openRepoShape)\n",
+                       "\nINSTALLABLES=(openRepoShape witness)\n", 1),
+        encoding="utf-8")
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "openRepoShape").write_text("# an older copy\n",
+                                           encoding="utf-8")
+    withheld = fake_github(tmp_path, ["openRepoShape"])
+    result = subprocess.run(
+        ["bash", str(shim), "--install"], capture_output=True, text=True,
+        check=False, input="",
+        env=command_env(home=tmp_path, setup_sh=None,
+                        env={**withheld,
+                             "OPENREPOSHAPE_BIN_DIR": str(bin_dir)}))
+    # THE STRUCTURAL ASSERTION FIRST, and deliberately: a per-file installer
+    # refuses too, and it may refuse in words that look right. What tells the
+    # two shapes apart is whether the file it COULD place was placed before
+    # it discovered the one it could not.
+    assert (bin_dir / "openRepoShape").read_text(encoding="utf-8") == \
+        "# an older copy\n", (
+        "a file that COULD be placed was placed before the missing one was "
+        "discovered; that is the half-install F10 removed\n"
+        + result.stdout + result.stderr)
+    assert not (bin_dir / "witness").exists()
+    assert "placed" not in result.stdout
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "could not fetch witness" in result.stderr, result.stderr
+    assert "NOTHING was installed" in result.stderr
+
+
 def test_install_from_stdin_fetches_itself_into_a_live_workdir(offline_github,
                                                                tmp_path):
     """The other caller of `workdir()`, and the documented install line:
