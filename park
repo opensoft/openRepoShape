@@ -15,8 +15,16 @@
 # creates nothing, commits nothing and pushes nothing of its own.
 #
 # openRepoShape #82, under Brett Heap's RULING of 2026-09-09: `--repo` matches
-# a LOCAL clone (ruling 1); with no <Name> and no estate around the cwd this
-# REFUSES and lists what it found (ruling 3); the command is `park` (ruling 4).
+# a LOCAL clone (ruling 1); the command is `park` (ruling 4). Ruling 3 of #82
+# ("with no <Name> and no estate around the cwd this REFUSES and lists what
+# it found") is SUPERSEDED for that one case by Brett Heap's RULING of
+# 2026-09-10 (#91): with no <Name> and no estate around the cwd, `park` now
+# discovers and PARKS EVERY ESTATE under the projects directory, in name
+# order, continuing past a refusal, instead of refusing. `park <Name>`,
+# `park --repo` and the walk-up inside an estate are unchanged either way.
+# `resume` deliberately KEEPS ruling 3's refusal for its own bare form (see
+# its header) — rebuilding every estate on a fresh machine by accident is the
+# opposite risk from failing to park the one you meant.
 
 set -euo pipefail
 
@@ -28,9 +36,18 @@ REPO_ARG=""
 DRY_RUN=0
 LANE=""
 PASSTHROUGH=()
+#: Set only in the bare, no-<Name>, no-estate-around-the-cwd case (#91): the
+#: walk-up found nothing, so every estate under the projects directory gets
+#: parked instead of one refusal. Every other path leaves this 0.
+PARK_ALL=0
 
 say() { printf '%s\n' "$*"; }
-die() { printf '\nREFUSED: %s\n' "$1" >&2; exit "${2:-2}"; }
+# THE SAME STDERR SHAPE AS `die`, BUT IT RETURNS: a park-everything run (#91)
+# has to report one estate's refusal and carry on to the next, which `die`'s
+# own `exit` cannot do. `die` is this plus the exit, so the two can never
+# print differently by accident.
+refuse() { printf '\nREFUSED: %s\n' "$1" >&2; }
+die() { refuse "$1"; exit "${2:-2}"; }
 
 usage() {
     cat <<'USAGE'
@@ -42,11 +59,18 @@ workstation can take the work up with `resume <Name>`.
 
 <Name> is the estate's folder under your projects directory: a FAMILY folder
 (<Name>/<Name>/family.yaml) or a standalone project root (<Name>/project.yaml).
-With no <Name> the estate around the current directory is used, and with no
-estate around it this REFUSES and lists the ones it found - nothing is parked
-by guess. `--repo <owner/name>` names the estate by the origin of a clone you
-ALREADY HAVE - in any spelling: the slug, the slug with `.git`, or the whole
-https or ssh url. It never clones (`resume` is the command that clones).
+With no <Name> the estate around the current directory is used. With NO
+estate around it either, `park` PARKS EVERY ESTATE under your projects
+directory instead of refusing (Brett Heap's RULING of 2026-09-10, #91,
+superseding ruling 3 of #82 for this one case): it lists what it found, then
+runs this same procedure on each one in name order, continuing past a
+refusal or a non-zero `make park`, and ends with a summary. `resume`
+deliberately keeps the old refusal for its own bare form: rebuilding every
+estate on a fresh machine by accident is a worse mistake than failing to park
+the one you meant. `--repo <owner/name>` names the estate by the origin of a
+clone you ALREADY HAVE - in any spelling: the slug, the slug with `.git`, or
+the whole https or ssh url. It never clones (`resume` is the command that
+clones).
 
   --project <Name>    the positional under a flag (also --name)
   --dry-run           rehearse: `make park ARGS=--dry-run`, which writes nothing
@@ -546,6 +570,178 @@ not_parked_report() {
     fi
 }
 
+require_make() {
+    command -v make >/dev/null 2>&1 ||
+        die "no \`make\` on PATH, so the estate's own \`make park\` cannot be run.
+    Install it (\`xcode-select --install\` on macOS, \`sudo apt-get install -y
+    make\` on Debian and Ubuntu), then re-run \`$SELF_NAME\`."
+}
+
+# --- run one estate's own `make park` ---------------------------------------
+#
+# FACTORED OUT so park-everything (#91, below) calls exactly what `park
+# <Name>` calls: one `make park`, one not-carried report, one outcome line.
+# ESTATE_KIND / ESTATE_DIR / ESTATE_ROOT / ESTATE_NAME must already be set —
+# by `estate_walk_up`, `estate_by_name`, `clone_with_origin`, or, for
+# park-everything, a direct `estate_here` on a discovered child. RETURNS a
+# status rather than exiting, so a park-everything run can carry on to the
+# next estate instead of dying on the first refusal or non-zero `make`; the
+# single-estate call site below turns that same return straight into its own
+# exit code, so nothing here behaves differently for either caller.
+run_one_estate() {
+    LEFT=0
+    if [ ! -f "$ESTATE_ROOT/Makefile" ]; then
+        refuse "$ESTATE_ROOT has no Makefile, so it has no \`park\` target to run.
+    A scaffolded root and a family holder both ship one; a root that has lost
+    it is re-synced with \`update-shape.py\`."
+        return 2
+    fi
+
+    # ONE `ARGS=` STRING, because that is the whole interface the two
+    # Makefiles offer (#80): the recipe word-splits `$(ARGS)`, so an argument
+    # carrying a space cannot survive the trip and this command does not
+    # pretend otherwise.
+    MAKE_ARGS=""
+    [ "$DRY_RUN" -eq 0 ] || MAKE_ARGS="--dry-run"
+    if [ -n "$LANE" ]; then
+        MAKE_ARGS="${MAKE_ARGS:+$MAKE_ARGS }--lane $LANE"
+    fi
+    if [ ${#PASSTHROUGH[@]} -gt 0 ]; then
+        MAKE_ARGS="${MAKE_ARGS:+$MAKE_ARGS }${PASSTHROUGH[*]}"
+    fi
+
+    if [ "$ESTATE_KIND" = "family" ]; then
+        say "park: $ESTATE_NAME - the family holder at $ESTATE_ROOT"
+        say "  the members' working clones beside it are where the verb runs."
+    else
+        say "park: $ESTATE_NAME - the assembly root at $ESTATE_ROOT"
+    fi
+    # shellcheck disable=SC2016  # the single quotes are LITERAL: this line is
+    # the `make` invocation a person can copy, and `ARGS='...'` is how they
+    # must type it.
+    say "  make park${MAKE_ARGS:+ ARGS='$MAKE_ARGS'}"
+    say ""
+
+    # THE EXIT CODE IS MAKE'S, UNCHANGED. `park.sh`'s own 0/1/2/3 do not
+    # survive make - GNU make reports ANY non-zero recipe status as its own
+    # exit 2 and prints `Error <code>` - and this command neither rewrites
+    # nor rescues that: the code is in make's diagnostic, and a run that
+    # refused must never read as success. #80's Makefile says the same thing
+    # at the target.
+    # AN ARRAY, so `ARGS=--feature 001-a --dry-run` reaches make as ONE
+    # assignment. `${var:+"..."}` unquoted is one word in bash today and a
+    # thing a reader has to squint at; an array is neither.
+    local -a park_call=(make park)
+    [ -z "$MAKE_ARGS" ] || park_call+=("ARGS=$MAKE_ARGS")
+    local one_status
+    set +e
+    (cd "$ESTATE_ROOT" && exec "${park_call[@]}")
+    one_status=$?
+    set -e
+
+    not_parked_report
+
+    say ""
+    say "park: $ESTATE_NAME - \`make park\` exited $one_status; $LEFT thing(s) above are not park's to carry."
+    if [ "$DRY_RUN" -eq 1 ]; then
+        say "  --dry-run: nothing was committed, pushed or recorded."
+    fi
+    return "$one_status"
+}
+
+# --- park-everything (#91) ---------------------------------------------------
+#
+# Brett Heap's RULING, 2026-09-10, verbatim: "for the park-all, lets make
+# that be park with no estate option. so just park will do park-all." This
+# SUPERSEDES ruling 3 of #82 for THIS CASE ONLY: bare `park`, with no <Name>
+# and no estate around the cwd, no longer refuses. `park <Name>`, `park
+# --repo` and the walk-up above (NEAREST STILL WINS - standing inside an
+# estate parks THAT estate, never the workstation) are exactly as they were.
+# `resume` deliberately keeps ruling 3's refusal for its own bare form - see
+# the note in its header - because rebuilding every estate on a fresh machine
+# by accident is the opposite risk from failing to park the one you meant.
+
+# Every estate under the projects directory, `<name><TAB><dir>` per row, in
+# NAME order rather than discovery order: `~/projects` and `~/Projects` can
+# each hold estates when both exist, and reading them in discovery order
+# would print every estate under one spelling before any estate under the
+# other, instead of together, alphabetically. THE SAME RULES `list_estates`
+# USES - a family folder or a standalone project root, one level under a
+# projects directory - which is what already leaves out a pinned
+# `members/<X>` copy (three levels down) and a linked feature worktree
+# (rejected by `is_project_root` itself).
+all_estate_dirs() {
+    local dir child
+    for dir in "${PROJECTS_DIRS[@]}"; do
+        [ -d "$dir" ] || continue
+        for child in "$dir"/*; do
+            [ -d "$child" ] || continue
+            if is_family_folder "$child" || is_project_root "$child"; then
+                printf '%s\t%s\n' "${child##*/}" "$child"
+            fi
+        done
+    done | LC_ALL=C sort -t $'\t' -k1,1
+}
+
+# Discover every estate and run `run_one_estate` for each, in name order,
+# CONTINUING PAST A REFUSAL OR A NON-ZERO `make park`: one estate's trouble is
+# not a reason to leave the others unparked. A SKIP IS NOT A PASS (#80's
+# rule), so an estate whose own report is not clean - a non-zero `make park`,
+# or a zero one that still left something behind - counts against the
+# overall exit code exactly as a refusal does.
+park_every_estate() {
+    local rows name dir estate_status total=0 bad=0
+    local -a summary=()
+
+    rows="$(all_estate_dirs)"
+    if [ -z "$rows" ]; then
+        # NO ESTATES ANYWHERE ON THIS MACHINE: there is no "every estate" to
+        # park, so this is not park-everything's case to change - the
+        # refusal ruling 3 always printed here stands untouched.
+        die "no estate around $PWD, and no <Name> was given, so nothing was parked.
+    \`park\` never guesses which estate you meant, and it never parks all of
+    them. Name one of these:
+
+$(estates_or_none)
+    ...or \`park --repo <owner/name>\`, for the clone whose origin is that
+    repository."
+    fi
+
+    require_make
+
+    say "park: no estate around $PWD; parking every estate under ${PROJECTS_DIRS[*]}:"
+    say ""
+    say "$(estates_or_none)"
+    say ""
+
+    while IFS=$'\t' read -r name dir; do
+        [ -n "$name" ] || continue
+        estate_here "$dir" || continue
+        total=$((total + 1))
+        say "=== park $ESTATE_NAME ==="
+        estate_status=0
+        run_one_estate || estate_status=$?
+        if [ "$estate_status" -ne 0 ]; then
+            summary+=("  refused    $ESTATE_NAME (exit $estate_status)")
+            bad=$((bad + 1))
+        elif [ "$LEFT" -ne 0 ]; then
+            summary+=("  findings   $ESTATE_NAME ($LEFT thing(s) not carried)")
+            bad=$((bad + 1))
+        else
+            summary+=("  parked     $ESTATE_NAME")
+        fi
+        say ""
+    done <<<"$rows"
+
+    say "park: summary"
+    local line
+    for line in "${summary[@]}"; do
+        say "$line"
+    done
+    say "park: $((total - bad)) estate(s) parked, $bad refused or with findings"
+    [ "$bad" -eq 0 ]
+}
+
 # --- arguments -------------------------------------------------------------
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -625,70 +821,22 @@ elif [ -n "$NAME" ]; then
 
 $(estates_or_none)"
 else
-    # RULING 3: nothing is parked by guess. Not every estate that has a
-    # manifest, and not the one this command happened to find first.
-    estate_walk_up "$PWD" || die "no estate around $PWD, and no <Name> was given, so nothing was parked.
-    \`park\` never guesses which estate you meant, and it never parks all of
-    them. Name one of these:
-
-$(estates_or_none)
-    ...or \`park --repo <owner/name>\`, for the clone whose origin is that
-    repository."
+    # RULING #91 (Brett Heap, 2026-09-10) SUPERSEDES ruling 3 of #82 for THIS
+    # CASE ONLY: with no <Name> and no estate around the cwd, `park` no
+    # longer refuses — it parks every estate it can find (park_every_estate,
+    # above). The walk-up still wins first: standing inside an estate parks
+    # THAT estate, never the whole workstation.
+    estate_walk_up "$PWD" || PARK_ALL=1
 fi
 
-command -v make >/dev/null 2>&1 ||
-    die "no \`make\` on PATH, so the estate's own \`make park\` cannot be run.
-    Install it (\`xcode-select --install\` on macOS, \`sudo apt-get install -y
-    make\` on Debian and Ubuntu), then re-run \`$SELF_NAME\`."
-
-[ -f "$ESTATE_ROOT/Makefile" ] ||
-    die "$ESTATE_ROOT has no Makefile, so it has no \`park\` target to run.
-    A scaffolded root and a family holder both ship one; a root that has lost
-    it is re-synced with \`update-shape.py\`."
-
-# ONE `ARGS=` STRING, because that is the whole interface the two Makefiles
-# offer (#80): the recipe word-splits `$(ARGS)`, so an argument carrying a
-# space cannot survive the trip and this command does not pretend otherwise.
-MAKE_ARGS=""
-[ "$DRY_RUN" -eq 0 ] || MAKE_ARGS="--dry-run"
-if [ -n "$LANE" ]; then
-    MAKE_ARGS="${MAKE_ARGS:+$MAKE_ARGS }--lane $LANE"
-fi
-if [ ${#PASSTHROUGH[@]} -gt 0 ]; then
-    MAKE_ARGS="${MAKE_ARGS:+$MAKE_ARGS }${PASSTHROUGH[*]}"
+if [ "$PARK_ALL" -eq 1 ]; then
+    STATUS=0
+    park_every_estate || STATUS=$?
+    exit "$STATUS"
 fi
 
-if [ "$ESTATE_KIND" = "family" ]; then
-    say "park: $ESTATE_NAME - the family holder at $ESTATE_ROOT"
-    say "  the members' working clones beside it are where the verb runs."
-else
-    say "park: $ESTATE_NAME - the assembly root at $ESTATE_ROOT"
-fi
-# shellcheck disable=SC2016  # the single quotes are LITERAL: this line is the
-# `make` invocation a person can copy, and `ARGS='...'` is how they must type it.
-say "  make park${MAKE_ARGS:+ ARGS='$MAKE_ARGS'}"
-say ""
+require_make
 
-# THE EXIT CODE IS MAKE'S, UNCHANGED. `park.sh`'s own 0/1/2/3 do not survive
-# make - GNU make reports ANY non-zero recipe status as its own exit 2 and
-# prints `Error <code>` - and this command neither rewrites nor rescues that:
-# the code is in make's diagnostic, and a run that refused must never read as
-# success. #80's Makefile says the same thing at the target.
-# AN ARRAY, so `ARGS=--feature 001-a --dry-run` reaches make as ONE
-# assignment. `${var:+"..."}` unquoted is one word in bash today and a thing a
-# reader has to squint at; an array is neither.
-PARK_CALL=(make park)
-[ -z "$MAKE_ARGS" ] || PARK_CALL+=("ARGS=$MAKE_ARGS")
-set +e
-(cd "$ESTATE_ROOT" && exec "${PARK_CALL[@]}")
-STATUS=$?
-set -e
-
-not_parked_report
-
-say ""
-say "park: $ESTATE_NAME - \`make park\` exited $STATUS; $LEFT thing(s) above are not park's to carry."
-if [ "$DRY_RUN" -eq 1 ]; then
-    say "  --dry-run: nothing was committed, pushed or recorded."
-fi
+STATUS=0
+run_one_estate || STATUS=$?
 exit "$STATUS"

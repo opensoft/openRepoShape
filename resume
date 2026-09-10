@@ -19,6 +19,15 @@
 # NAME a sibling that is dirty or on a feature branch, never resetting one
 # (ruling 2); the command is `resume` (ruling 4).
 #
+# BARE `resume`, WITH NO <Name> AND NO ESTATE AROUND THE CWD, STILL REFUSES —
+# deliberately NOT changed by Brett Heap's RULING of 2026-09-10 (#91), which
+# supersedes ruling 3 of #82 for `park`'s own bare form only. Rebuilding every
+# estate this machine has a record of, by accident, from one bare `resume` in
+# the wrong folder, is the opposite risk from `park` failing to park the one
+# estate you meant: a clone or a fast-forward per estate is real network and
+# real disk, and undoing an accidental one is not as simple as re-running the
+# command. Ruling #91 names `park` only; this refusal stands.
+#
 # THE ONLY FILE THIS STANDARD EVER WRITES OUTSIDE A REPOSITORY is the two-line
 # user config, and only when `--workspace <owner/name>` asks for it by name on
 # a machine that has none. A person names their own private repository.

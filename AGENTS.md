@@ -340,10 +340,17 @@ to a hand-built sequence, and relay their per-repository lines rather than
 summarising them.
 
 5. **`park` CREATES NOTHING and `resume` RESETS NOTHING.** With no `<Name>` and
-   no estate around the current directory, `park` refuses and lists what it
-   found: it does not park every estate, and that refusal is not a cue for you
-   to pick one. `resume` fast-forwards a working clone with `--ff-only` and
-   REFUSES BY NAME one that is dirty or on a feature branch, skipping it and
+   no estate around the current directory, `park` now PARKS EVERY ESTATE it
+   finds under the projects directory, in name order, continuing past a
+   refusal (Brett Heap's RULING of 2026-09-10, #91, superseding ruling 3 of
+   #82 for this one case) — it is no longer a refusal, so do not tell
+   somebody to name one estate when the bare form's whole point is that it
+   needs none. `resume`'s OWN bare form still refuses with no `<Name>` and no
+   estate around it, deliberately: rebuilding every estate on a fresh machine
+   by accident is the opposite risk, so relay that refusal rather than naming
+   one estate on the person's behalf. `resume` fast-forwards a working clone
+   with `--ff-only` and REFUSES BY NAME one that is dirty or on a feature
+   branch, skipping it and
    leaving it exactly as it is — and not running the verb in it either. It
    also refuses a root whose LEG sits on a feature branch, because that root's
    own `make bootstrap` would walk the leg back onto its tracking branch; the

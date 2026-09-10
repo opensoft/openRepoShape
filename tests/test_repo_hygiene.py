@@ -357,9 +357,21 @@ def test_agents_md_is_short_enough_to_be_read():
     the one repository in this standard that holds somebody's unfinished work
     — an index of what a person has not finished reads like standing unless
     somebody says it is not one, and it is also the one name here that no tool
-    here creates."""
+    here creates.
+
+    374 -> 381 the same day, for park-everything (#91, RULING 2026-09-10):
+    bare `park` with no `<Name>` and no estate around the cwd now PARKS EVERY
+    ESTATE instead of refusing, superseding ruling 3 of #82 for that one case.
+    Point 5's opening sentence is the part an assistant gets wrong if it is
+    inferred rather than read: that refusal is GONE, so telling somebody to
+    name one estate when they typed a bare `park` in the wrong folder is now
+    stale advice, not a courtesy. The second half is the part that stays a
+    refusal: `resume`'s own bare form keeps ruling 3 deliberately, because
+    rebuilding every estate on a fresh machine by accident is the opposite
+    risk, and an assistant is never to name one estate on the person's behalf
+    to route around it."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 374, f"AGENTS.md is {len(lines)} lines; the cap is 374"
+    assert len(lines) <= 381, f"AGENTS.md is {len(lines)} lines; the cap is 381"
 
 
 def test_claude_md_points_at_agents_md():
@@ -771,8 +783,16 @@ def test_readme_is_short_enough_to_be_read():
     #   command that writes a file outside a repository. And that nothing here
     #   CREATES one, which is what stops somebody waiting for a tool that is
     #   never coming.
-    assert len(lines) <= 1219, (
-        f"README.md is {len(lines)} lines; the cap is 1219")
+    # 2026-09-10: 1219 -> 1225 — park-everything (#91, RULING 2026-09-10).
+    #   Six lines rewrite the "How the estate is found" sentence that used to
+    #   say bare `park` REFUSES with no estate around the cwd: it now PARKS
+    #   EVERY ESTATE it finds instead, in name order, continuing past a
+    #   refusal — ruling 3 of #82 superseded for that one case — and the same
+    #   sentence now says `resume` deliberately keeps the old refusal, so a
+    #   reader of one paragraph gets both halves rather than one turning
+    #   stale next to the other.
+    assert len(lines) <= 1225, (
+        f"README.md is {len(lines)} lines; the cap is 1225")
 
 
 @pytest.mark.parametrize("name", SHIPPED_BASH)
