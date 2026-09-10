@@ -1081,3 +1081,188 @@ def test_every_naming_families_count_matches_the_policy():
         f"'<word> naming families' should say {expected!r} "
         f"(contracts/repository-naming.yaml declares {len(policy.families)} "
         f"top-level families) but found: {offenders}")
+
+
+#: `docs/handbook.html` is the DESIGNED READING of `README.md` (#69, PR #71):
+#: one self-contained page a person opens from a checkout. It REORDERS the
+#: README for a newcomer and folds some of it together, so its sections are
+#: not the README's sections in the README's order. What it must not do is
+#: fall BEHIND the README — and between PR #71 (cut at `c093813`) and #89 it
+#: did, in six places at once: the README gained `--family`, the family
+#: WORKSTATION layout, the whole of "Carrying in-flight work to another
+#: workstation" and its two subsections, three installed commands where there
+#: had been one, a sixth naming form, and the rehearsal flag's Windows
+#: spelling (#70). The page said none of it, nothing was red, and the drift
+#: was found by reading rather than by running the suite. #87/#88 had just fixed the same shape of drift in the same file for
+#: a single word ("five naming families"), and that fix is what made the
+#: larger one visible.
+#:
+#: THIS TABLE IS THE TIE, and it is deliberately explicit: every `## ` heading
+#: of README.md, and the id of the element of the page that carries it. A
+#: heading the page folds into a neighbouring section maps to THAT NEIGHBOUR,
+#: so an omission is a named decision rather than silence. Adding a `## ` to
+#: the README and nothing to the page now fails here, naming the heading.
+README_HEADING_TO_HANDBOOK_ID = {
+    "Starting a project in a new organisation": "start",
+    "The three legs": "legs",
+    "Adopting an existing repository": "adopt",
+    "Families: a holder for projects that ship separately": "families",
+    "The double pin, and the lockstep invariant": "doublepin",
+    "Bootstrap is COPIED into the project, not fetched": "copied",
+    "Keeping a project's shape current": "current",
+    "Carrying in-flight work to another workstation": "park",
+    "The degrade rule": "degrade",
+    "Layout of this repository": "layout",
+    #: The page's `<footer>`, which carries the licence line rather than a
+    #: section of its own. The one mapped id that is not a `<section>`, which
+    #: is why the checks below ask for an ELEMENT with that id.
+    "Licence": "licence",
+}
+
+#: The other direction, and the reason it is written down too: the page has
+#: four sections that are NOT a README `## ` heading, because the reading
+#: promotes what a newcomer needs first (the rule that the shape confers
+#: nothing), keeps a `> [!WARNING]` that a reader mid-failure will look for
+#: by itself, gives the CI credential its own section because it was the
+#: first real adoption's defect, and reads AGENTS.md rather than README.md
+#: for the assistant rules. A section appearing with no entry in either table
+#: fails, so a page section can never become unexplained.
+HANDBOOK_SECTION_WITHOUT_A_README_H2 = {
+    "confers": "the README's `> [!IMPORTANT]` callout, promoted to the top",
+    "partway": "the `> [!WARNING]` inside `### A worked example: Northwind "
+               "starts Atlas`",
+    "ci": "`### Reading private legs in CI: a GitHub App first, "
+          "SHAPE_LEGS_TOKEN as fallback`",
+    "agents": "AGENTS.md — the rules that outrank the rest, not README.md",
+}
+
+#: The page names the README commit it was cut from exactly once, in the
+#: footer: `Regenerated from README.md at <sha>`. Exactly once, because two
+#: of them would make "which sha" a guess — the footer also names the FIRST
+#: cut's commit, and it names it in a different phrase for that reason.
+HANDBOOK_README_SHA = re.compile(r"README\.md at ([0-9a-f]{7,40})\b")
+
+
+def _readme_h2s(path):
+    """Every `## ` heading of a Markdown file, fenced code blocks skipped.
+
+    `## ` opens a shell comment as readily as a heading, and this README's
+    own fenced blocks already carry two lines a naive grep reads as headings
+    (`# on the other workstation:`, and the `#   ... a human or an AI
+    answers` line in the adopt sequence). Neither is `## ` today, which is
+    precisely the kind of thing that stops being true quietly, so the fences
+    are tracked rather than assumed harmless.
+    """
+    headings, fence = [], None
+    for line in path.read_bytes().decode("utf-8").splitlines():
+        stripped = line.strip()
+        if fence is not None:
+            if stripped.startswith(fence):
+                fence = None
+            continue
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            fence = stripped[:3]
+            continue
+        if line.startswith("## "):
+            headings.append(line[3:].strip())
+    return headings
+
+
+def test_the_handbook_follows_the_readmes_outline():
+    """#89: the page is a reading of the README, and this is what keeps it one.
+
+    Four checks, and the fourth is the one with teeth:
+
+    1. Every `## ` heading in README.md has an entry in
+       `README_HEADING_TO_HANDBOOK_ID`. A new section in the README with no
+       entry fails NAMING THE HEADING, so the choice — write the section,
+       or fold it into a neighbour and say which — has to be made rather
+       than forgotten.
+    2. No entry names a heading README.md no longer has. A reworded heading
+       also moves its GitHub anchor, so the page's `Full text` link into that
+       heading is stale at the same moment; failing here is what sends
+       somebody to look at both.
+    3. Every mapped id is a real element id on the page - `<section id=...>`
+       for ten of them and the `<footer id="licence">` for the eleventh.
+    4. And the page names the README commit it was cut from, whose README
+       must be BYTE-IDENTICAL to the one in the tree. `git diff <sha> --
+       README.md` compares the WORKING TREE against that commit, so the page
+       goes stale the moment the README changes, not one commit later.
+
+    THE FIX WHEN (4) GOES RED IS TO REGENERATE THE PAGE, and #89 is the
+    precedent for what that means: read `git diff <sha>..HEAD -- README.md`
+    whole, add or amend the page's sections in the page's own design and
+    voice, keep every code block byte-identical to the README's (modulo the
+    README's line-wrapping), then move the footer's sha. A README change that
+    touches nothing the page says is the one case where re-cutting the sha
+    alone is honest — and saying so in the commit message is part of it.
+    Editing the sha to quiet this test without reading the diff is the
+    documentation equivalent of hand-editing a pin to make the validator
+    agree, which is the thing this repository spends a whole section
+    refusing.
+
+    Check (4) is SKIPPED, and only check (4), when the named commit is not
+    in this clone: `git diff` would fail on the missing object rather than on
+    the drift, which is a failure about the clone and not about the page. A
+    SHALLOW clone is the case that hits it — `git clone --depth 1` has
+    exactly one commit — and CI IS NO LONGER ONE. Ruled by Brett Heap on
+    2026-09-10: *set fetch-depth 0 so the staleness check bites in CI*, so
+    all three jobs in `.github/workflows/tests.yml` now check out with
+    `fetch-depth: 0` and name this test as the reason. Before that it was the
+    wrong way round — green in CI, red only on the machine where the page
+    would be regenerated. The first three checks are tree-only and run in any
+    clone, shallow or not.
+    """
+    readme_h2s = _readme_h2s(REPO / "README.md")
+    page = (REPO / "docs" / "handbook.html").read_bytes().decode("utf-8")
+
+    unmapped = [h for h in readme_h2s
+                if h not in README_HEADING_TO_HANDBOOK_ID]
+    assert not unmapped, (
+        f"README.md has `## ` heading(s) no entry accounts for: {unmapped}. "
+        "Add the section to docs/handbook.html and map the heading to its id "
+        "in README_HEADING_TO_HANDBOOK_ID, or map it to the page section it "
+        "is deliberately folded into - an omission must be a named decision.")
+
+    stale = [h for h in README_HEADING_TO_HANDBOOK_ID if h not in readme_h2s]
+    assert not stale, (
+        f"README_HEADING_TO_HANDBOOK_ID names heading(s) README.md no longer "
+        f"has: {stale}. A reworded heading moves its GitHub anchor too, so "
+        "check the page's `Full text` links into it while you are here.")
+
+    ids = set(re.findall(r'\sid="([^"]+)"', page))
+    absent = sorted(set(README_HEADING_TO_HANDBOOK_ID.values()) - ids)
+    assert not absent, (
+        f"docs/handbook.html has no element with id(s) {absent}, which "
+        "README_HEADING_TO_HANDBOOK_ID maps README headings to")
+
+    sections = set(re.findall(r'<section id="([^"]+)">', page))
+    accounted = (set(README_HEADING_TO_HANDBOOK_ID.values())
+                 | set(HANDBOOK_SECTION_WITHOUT_A_README_H2))
+    unaccounted = sorted(sections - accounted)
+    assert not unaccounted, (
+        f"docs/handbook.html section(s) {unaccounted} appear in neither "
+        "table. A section that is a README `## ` heading belongs in "
+        "README_HEADING_TO_HANDBOOK_ID; one that is not belongs in "
+        "HANDBOOK_SECTION_WITHOUT_A_README_H2, with where it came from.")
+
+    shas = HANDBOOK_README_SHA.findall(page)
+    assert len(shas) == 1, (
+        "docs/handbook.html must name the README commit it was cut from "
+        f"exactly once, as `README.md at <sha>`; found {shas}")
+    sha = shas[0]
+    if subprocess.run(["git", "cat-file", "-e", sha + "^{commit}"],
+                      cwd=str(REPO), capture_output=True,
+                      text=True).returncode != 0:
+        return          # a shallow checkout; see the docstring's last note
+    moved = subprocess.run(["git", "diff", "--stat", sha, "--", "README.md"],
+                           cwd=str(REPO), capture_output=True, text=True,
+                           check=True).stdout
+    assert not moved.strip(), (
+        f"README.md has moved since {sha}, the commit docs/handbook.html "
+        f"says it is a reading of:\n{moved}"
+        "regenerate the page - read the diff whole, add or amend its "
+        "sections in the page's own design, then move the footer's sha "
+        "(#89 is the precedent, and its docstring above says what that "
+        "means). Do not move the sha alone unless the change genuinely "
+        "touched nothing the page says.")

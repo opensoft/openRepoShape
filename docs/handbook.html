@@ -459,6 +459,7 @@
       <li><a href="#doublepin">The double pin</a></li>
       <li><a href="#copied">Copied, not fetched</a></li>
       <li><a href="#current">Keeping shape current</a></li>
+      <li><a href="#park">Park and resume</a></li>
       <li><a href="#degrade">The degrade rule</a></li>
       <li><a href="#layout">Repository layout</a></li>
       <li><a href="#agents">For AI assistants</a></li>
@@ -487,6 +488,10 @@
     | bash -s -- --install
 openRepoShape --doctor
 openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
+          <p class="sub">That first line installs THREE commands into <code>~/.local/bin</code>
+          &mdash; <code>openRepoShape</code> itself and the two estate verbs <code>park</code> and
+          <code>resume</code>, for <a href="#park">carrying in-flight work</a> to another
+          workstation.</p>
           <p class="sub">On Windows without WSL2 the way in is two PowerShell commands instead,
           because on Windows there is nothing to install &mdash; see <a href="#start">Start
           here</a>.</p>
@@ -728,13 +733,20 @@ sudo dnf install gh</code></pre></div>
             an exhausted stdin, so it cannot ask for the one <code>yes</code> before three
             repositories exist &mdash; it refuses instead. Downloading the file first leaves stdin
             attached to the terminal you are typing at.</p>
-            <p data-platform="mac wsl">It installs into <code>~/.local/bin</code>, idempotently &mdash; a second run prints
-            <code>unchanged</code> &mdash; and prints the <code>export PATH=&hellip;</code> line if
-            that directory is not on <code>PATH</code>.</p>
-            <p data-platform="linux">It installs into <code>~/.local/bin</code>, idempotently &mdash; a second run prints
-            <code>unchanged</code> &mdash; and prints the <code>export PATH=&hellip;</code> line if
-            that directory is not on <code>PATH</code>. It is one file, and all it does is fetch
-            <code>setup.sh</code> (API first, raw URL second) and run it.</p>
+            <p data-platform="mac wsl">It installs THREE commands into <code>~/.local/bin</code> &mdash;
+            <code>openRepoShape</code> itself and the two estate verbs <code>park</code> and
+            <code>resume</code>, for <a href="#park">carrying in-flight work</a> &mdash;
+            idempotently, a second run printing <code>unchanged</code> per file, and prints the
+            <code>export PATH=&hellip;</code> line if that directory is not on <code>PATH</code>.</p>
+            <p data-platform="linux">It installs THREE commands into <code>~/.local/bin</code> &mdash;
+            <code>openRepoShape</code> itself and the two estate verbs <code>park</code> and
+            <code>resume</code>, for <a href="#park">carrying in-flight work</a> &mdash;
+            idempotently, a second run printing <code>unchanged</code> per file, and prints the
+            <code>export PATH=&hellip;</code> line if that directory is not on <code>PATH</code>.
+            Each is one file at the repository root and none of them implements anything:
+            <code>openRepoShape</code> fetches <code>setup.sh</code> (API first, raw URL second) and
+            runs it, and <code>park</code> and <code>resume</code> find an estate and run its own
+            <code>make park</code> / <code>make resume</code>.</p>
           </div></li>
 
           <li><div>
@@ -772,9 +784,10 @@ sudo dnf install gh</code></pre></div>
             <p data-platform="win"><code>--local-remote-dir &lt;dir&gt;</code> runs the whole flow against three BARE
             repositories in <code>&lt;dir&gt;</code> &mdash; same preflight, same naming check, same
             plan, same <code>Type yes to continue:</code>, same clone and
-            <code>scripts/bootstrap.py</code> &mdash; and <code>gh</code> is never called. The
-            README spells the rehearsal on the bash entry points:</p>
-            <div class="code" data-lang="sh"><pre><code>openRepoShape Atlas --org &lt;your-org&gt; --local-remote-dir ./rehearsal</code></pre></div>
+            <code>scripts/bootstrap.py</code> &mdash; and <code>gh</code> is never called. On Windows
+            the same flag goes on the Python entry point:</p>
+            <div data-platform="win" class="code" data-lang="powershell"><pre><code>py setup-project.py Atlas --org &lt;your-org&gt; --local-remote-dir .\rehearsal</code></pre></div>
+            <div data-platform="linux mac wsl" class="code" data-lang="sh"><pre><code>openRepoShape Atlas --org &lt;your-org&gt; --local-remote-dir ./rehearsal</code></pre></div>
             <p data-platform="linux"><code>--local-remote-dir &lt;dir&gt;</code> runs the whole of the real thing against
             three BARE repositories in <code>&lt;dir&gt;</code>: the same preflight (where
             <code>gh</code> is neither required nor checked), the same naming check, the same plan,
@@ -804,11 +817,10 @@ sudo dnf install gh</code></pre></div>
             fetch <code>setup.sh</code>, then for the self-bootstrap clone of this standard into a
             temporary directory. Run the same flag on <code>./setup.sh</code> from a checkout
             instead and nothing touches the network at all.</p>
-            <p data-platform="win" class="aside"><code>setup-project.py</code> is that same flow with the shim taken off
-            the front, but the README documents this flag on <code>openRepoShape</code> and
-            <code>setup.sh</code> and names <code>openRepoShape --help</code> and
-            <code>setup.sh --help</code> as what lists every flag, this one included. Read the help
-            output on the machine rather than assuming the spelling.</p>
+            <p data-platform="win" class="aside">Run from a download it still clones this standard into a temporary
+            directory first; run from a checkout it clones nothing.
+            <code>openRepoShape --help</code> and <code>setup.sh --help</code> list every flag, this
+            one included.</p>
           </div></li>
 
           <li><div>
@@ -842,6 +854,21 @@ sudo dnf install gh</code></pre></div>
         </ol>
 
       <div class="stack">
+        <h4>Joining a family</h4>
+        <p><code>--family &lt;Family&gt;</code> lands the clone at
+        <code>&lt;Family&gt;/&lt;Project&gt;</code> instead of <code>&lt;Project&gt;</code> &mdash;
+        <a href="#families">the plain folder</a> that holds a family&rsquo;s holder clone and its
+        members&rsquo; working clones as siblings &mdash; creating <code>&lt;Family&gt;/</code> if it
+        is not there, and landing at <code>&lt;Project&gt;</code> when you are ALREADY standing in
+        that folder, because a family is never nested inside a family.</p>
+        <p>It records nothing in the project: membership is recorded only in the holder&rsquo;s
+        <code>family.yaml</code>, so the run&rsquo;s last next-command is the
+        <code>scripts/family.py add</code> that writes it there. Standing in the family folder needs
+        no flag at all &mdash; that is DETECTED and said in the plan, and the project lands beside
+        the holder exactly as it would have.</p>
+      </div>
+
+      <div class="stack">
         <h4>Consent rules, on every platform</h4>
         <ul class="plain">
           <li>Every action that changes the machine or the account is a typed <code>yes</code>, at
@@ -852,6 +879,34 @@ sudo dnf install gh</code></pre></div>
           <li>Homebrew is never run for you: on a Mac without <code>brew</code> the preflight names
           <a href="https://brew.sh">brew.sh</a> and stops there.</li>
         </ul>
+      </div>
+
+      <div class="stack">
+        <h4>What <code>setup.sh</code> actually runs</h4>
+        <p>It is a shim &mdash; about seventy lines of code (twice that with its comments) that find
+        a Python 3.9 or newer, clone this standard into a temporary directory when you are not
+        already in a checkout of it, and hand over to <code>setup-project.py</code>, which IS the
+        flow. These are the commands that flow runs, in order, with no behaviour of its own (the
+        first only in self-bootstrap mode, from the one-liner):</p>
+        <div class="code" data-lang="sh"><pre><code>git clone --depth 1 https://github.com/opensoft/openRepoShape.git &lt;tmp-dir&gt;
+python3 scripts/validate-repository-naming.py --explain Atlas Atlas-spec Atlas-code
+python3 scaffold-project.py --org &lt;your-org&gt; --project Atlas --dry-run
+python3 scaffold-project.py --org &lt;your-org&gt; --project Atlas \
+    --visibility private --elected-by 'Your Name'   # or public / internal
+mkdir -p &lt;into&gt;/&lt;Family&gt;   # --family only, and skipped when &lt;into&gt; IS &lt;Family&gt;
+git clone --recurse-submodules https://github.com/&lt;your-org&gt;/Atlas.git
+cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs</code></pre></div>
+        <p><code>--family &lt;Family&gt;</code> changes exactly one of
+        <a href="https://github.com/opensoft/openRepoShape#what-setupsh-does">those steps</a>: the
+        clone&rsquo;s parent becomes <code>&lt;into&gt;/&lt;Family&gt;</code> instead of
+        <code>&lt;into&gt;</code>, created if absent. Nothing else in the flow moves, and nothing
+        about the family is written into the project.</p>
+        <p><strong>From a checkout</strong> &mdash; <code>git clone</code> this standard,
+        <code>cd</code> in, then <code>./setup.sh --project Atlas --org &lt;your-org&gt;</code>
+        &mdash; it behaves identically: preflight, naming, plan, one yes. Run that way it also
+        detects the organisation from a fork&rsquo;s <code>origin</code> remote, if you have one; a
+        plain clone of <code>opensoft/openRepoShape</code> itself is its own <code>origin</code>, so
+        that still needs an explicit <code>--org</code>.</p>
       </div>
 
       <div class="stack">
@@ -994,21 +1049,33 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
       <p>The six naming families live in <code>contracts/repository-naming.yaml</code>: neutral
       products <code>open&lt;Product&gt;</code>, domain descendants
       <code>&lt;Domainx&gt;&lt;Product&gt;</code>, installs <code>&lt;X&gt;-Install</code>, project
-      legs as above, family holders, and <code>&lt;user&gt;-wip</code>, the person&rsquo;s workspace
-      repository, unambiguous by construction. The leg suffixes are lowercase and hyphenated
-      precisely so they sit in a different visual class from every other family, all of which are
-      CamelCase words. Every repository of a project also carries the GitHub topic
-      <code>xf-project-&lt;id&gt;</code>.</p>
+      legs as above, family holders, and one form that is no repository of a project at all
+      &mdash; <code>&lt;user&gt;-wip</code>, <a href="#park">a person&rsquo;s own workspace
+      repository</a>, unambiguous by construction because nothing else here spells that suffix. The
+      leg suffixes are lowercase and hyphenated precisely so they sit in a different visual class
+      from every other family, all of which are CamelCase words. Every repository of a project also
+      carries the GitHub topic <code>xf-project-&lt;id&gt;</code>.</p>
       <p>A descendant form is a claim, and a claim needs a referent:
       <code>&lt;Domainx&gt;&lt;Product&gt;</code> counts as a descendant only if it PINS
       <code>open&lt;Product&gt;</code>, declared as <code>neutral_product_pins:</code> in the
       project&rsquo;s own <code>project.yaml</code>, so classification stays OFFLINE and never asks
       GitHub whether <code>open&lt;Product&gt;</code> exists. The referent may also be reached
       through a RECORDED chain of pins.</p>
+      <p>A NEUTRAL product may elect the shape and be its own assembly root as well:
+      <code>openDox</code> mounting <code>openDox-spec</code> and <code>openDox-code</code> is a
+      fact about LAYOUT and not a claim about neutrality, because electing confers nothing.
+      <code>open</code> in front still WINS the classification &mdash; the manifest records
+      <code>form: neutral-product, role: assembly</code> with
+      <code>also_matches: [project-leg/assembly]</code>, so the overlap is recorded rather than
+      computed and thrown away. <code>&lt;X&gt;-Install</code> is admitted into nothing at all: it
+      carries a hyphen, so it satisfies no leg form to be admitted into, and is still refused as any
+      leg.</p>
       <div class="code" data-lang="sh"><pre><code>python3 scripts/validate-repository-naming.py --explain Atlas Atlas-spec Atlas-code</code></pre></div>
       <p class="aside">Ruled by <strong>Brett Heap on 2026-09-02</strong>: <em>descendant only if it
       pins <code>open&lt;Product&gt;</code></em> &mdash; and a descendant MAY carry legs, so
-      <code>form: domain-descendant, role: assembly</code> is a valid classification for a root.</p>
+      <code>form: domain-descendant, role: assembly</code> is a valid classification for a root.
+      And on <strong>2026-09-05</strong>, of <code>openDox</code> and <code>openXdox</code>:
+      <em>&ldquo;elect the shape for both, follow the pin chain, no family yet&rdquo;</em>.</p>
       <a class="src" href="https://github.com/opensoft/openRepoShape#the-three-legs">Full text &mdash; the three legs</a>
     </section>
 
@@ -1082,10 +1149,57 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
       one release and one pin, which is the opposite of what &ldquo;deploy separately&rdquo; means.
       <strong>Use one project when the parts ship together</strong> &mdash; that is what the spec and
       code legs already are.</p>
-      <div class="code" data-lang="sh"><pre><code>python3 scripts/family.py init --org InkRouter --family InkRouter     --reuse-empty-repo
-python3 scripts/family.py add  --family-root ../InkRouter     --member InkRouter/IRRS
-python3 scripts/family.py bump --family-root ../InkRouter     --member IRRS --to &lt;40 hex&gt;
-python3 scripts/family.py remove --family-root ../InkRouter --member IRRS</code></pre></div>
+      <h3>The workstation layout: a plain folder, and two copies of every member</h3>
+      <p>The holder is a repository; the thing AROUND it is a <strong>plain folder named after the
+      family</strong>, and the members&rsquo; working clones sit beside the holder in it:</p>
+      <div class="code" data-lang="tree"><pre><code>InkRouter/                      a PLAIN FOLDER, not a git repository
+  InkRouter/                    the holder: family.yaml, members/ (pinned, detached)
+  IRRS/                         a WORKING clone of InkRouter/IRRS, on main
+  IRSS/                         a WORKING clone of InkRouter/IRSS, on main
+  IRRS-worktrees/…              whatever the member's own work needs
+  session-handoff-*.md          the estate's own files live in the folder</code></pre></div>
+      <p><code>scripts/family.py init</code> lands the holder there: <code>--into &lt;dir&gt;</code>
+      is the PARENT directory (the directory you are standing in, by default), the folder
+      <code>&lt;Family&gt;/</code> is created in it, and the holder is cloned INSIDE that at
+      <code>&lt;into&gt;/&lt;Family&gt;/&lt;Family&gt;</code> &mdash; the same &ldquo;lands where you
+      were standing&rdquo; rule projects have. Standing in the family folder already, it does not
+      nest a second one. <code>--work-dir</code> remains the override that lands
+      <code>&lt;work-dir&gt;/&lt;Family&gt;</code> and makes no folder. The doubled name is kept on
+      purpose: the holder keeps its own repository name, and <code>family.yaml</code> is what tells
+      the two apart.</p>
+      <p><code>make siblings</code> in the holder &mdash; or <code>python3 scripts/family.py
+      siblings --family-root &lt;path&gt;</code>, the same file through the other entry point
+      &mdash; clones each member at <code>../&lt;Project&gt;</code> from the same url
+      <code>make bootstrap</code> uses, then runs the member&rsquo;s own bootstrap so its legs are
+      on their tracking branches. <strong>TWO COPIES OF EVERY MEMBER is correct and
+      intended:</strong> <code>members/&lt;Project&gt;</code> inside the holder is pinned and
+      DETACHED, and is what <code>bootstrap</code> and <code>validate</code> read; the sibling
+      beside the holder is where a human works, and <code>family.py bump</code> is how the family
+      follows it. An existing clone is <strong>fetched and nothing else</strong> &mdash; no
+      checkout, no reset, no pull &mdash; and one that is a different repository is reported and
+      skipped. It is idempotent.</p>
+      <p><span class="refuses">Refuses</span> <strong>Nothing ever moves a checkout</strong>: when
+      the holder&rsquo;s parent folder is not named after the family, <code>make siblings</code>
+      WARNS and prints the exact <code>mv</code> for a human to run. A tool that relocated the
+      directory would do it out from under the shell, the editor and every agent lane standing in
+      it, and would break linked worktrees, whose <code>.git</code> files carry absolute paths
+      &mdash; an act by surprise, which is the one thing every refusal here exists to avoid.</p>
+      <p class="aside">Ruled by <strong>Brett Heap on 2026-09-09</strong> (issue #76): the plain
+      folder, and the holder inside it at <code>&lt;Family&gt;/&lt;Family&gt;</code>.</p>
+
+      <h3>The InkRouter example</h3>
+      <p>Eight services, each its own project, one holder:</p>
+      <div class="code" data-lang="tree"><pre><code>InkRouter/                      the family FOLDER (see the layout above)
+  InkRouter/                    the family holder — family.yaml, members/, utilities
+    members/IRRS -> InkRouter/IRRS    assembly root, mounting IRRS-spec and IRRS-code
+    members/IRSS -> InkRouter/IRSS    assembly root, mounting IRSS-spec and IRSS-code
+    …six more, added as they arrive
+  IRRS/  IRSS/  …               the same members as WORKING clones, on main</code></pre></div>
+      <div class="code" data-lang="sh"><pre><code>python3 scripts/family.py init --org InkRouter --family InkRouter --into .. --reuse-empty-repo
+python3 scripts/family.py add  --family-root ../InkRouter/InkRouter --member InkRouter/IRRS
+python3 scripts/family.py bump --family-root ../InkRouter/InkRouter --member IRRS --to &lt;40 hex&gt;
+python3 scripts/family.py remove --family-root ../InkRouter/InkRouter --member IRRS
+python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></pre></div>
       <p><code>add</code>, <code>bump</code> and <code>remove</code> each write ONE commit, with
       explicit pathspecs, moving the gitlink and <code>members[].pin</code> together &mdash; the
       same lockstep rule an assembly root applies to its legs, and
@@ -1097,8 +1211,13 @@ python3 scripts/family.py remove --family-root ../InkRouter --member IRRS</code>
       <code>project.yaml</code> and belongs to its own root.</p>
       <p><code>make bootstrap</code> in the holder fetches every member and its legs &mdash;
       resolving the same GitHub App or <code>SHAPE_LEGS_TOKEN</code> credential the workflow does
-      &mdash; and then runs each member&rsquo;s own <code>make bootstrap</code>. A member that could
-      not be fetched is reported and skipped, never a failure.</p>
+      &mdash; and then runs each member&rsquo;s own <code>make bootstrap</code>.
+      <code>make validate</code> runs the family validator and then each member&rsquo;s own
+      <code>make validate</code>. A member that could not be fetched is reported and skipped, never
+      a failure. The holder carries the same COPY pin an assembly root does, so
+      <a href="#current"><code>update-shape.py</code></a> re-syncs it the same way; it mirrors into
+      <code>family.yaml</code> instead of <code>project.yaml</code> and must leave
+      <code>validate-family.py</code> green.</p>
       <p class="aside">Ruled by <strong>Brett Heap on 2026-09-04</strong>, about InkRouter:
       <em>&ldquo;InkRouter is a set of microservices and they deploy separately as api&rsquo;s. so
       maybe they each need their own assembly repo.&rdquo;</em></p>
@@ -1231,6 +1350,126 @@ python3 scripts/family.py remove --family-root ../InkRouter --member IRRS</code>
       <a class="src" href="https://github.com/opensoft/openRepoShape#keeping-a-projects-shape-current">Full text &mdash; keeping the shape current</a>
     </section>
 
+    <section id="park">
+      <p class="eyebrow">Reference</p>
+      <h2>Carrying in-flight work to another workstation</h2>
+      <p>Two verbs on the assembly root, for the day the machine your half-finished work is on is
+      not the machine you are at:</p>
+      <div class="code" data-lang="sh"><pre><code>make park                       # here: commit, push, RECORD
+# on the other workstation:
+git clone --recurse-submodules https://github.com/&lt;org&gt;/&lt;Project&gt;.git
+cd &lt;Project&gt; &amp;&amp; make bootstrap &amp;&amp; make resume</code></pre></div>
+      <p><code>park</code> commits and pushes every open feature worktree and writes down what it
+      parked; <code>resume</code> recreates those worktrees on this machine and un-commits the work,
+      so what you get back is your tree rather than a commit to unpick.
+      <code>ARGS=--dry-run</code> rehearses either one and writes nothing.</p>
+
+      <h3><code>park &lt;Name&gt;</code> and <code>resume &lt;Name&gt;</code>, from anywhere</h3>
+      <p>Those are the targets a root ships. <code>openRepoShape --install</code> also puts
+      <strong><code>park</code></strong> and <strong><code>resume</code></strong> on your
+      <code>PATH</code>, so the whole of that sequence is one word from any folder on either
+      machine:</p>
+      <div class="code" data-lang="sh"><pre><code>park InkRouter                  # on workstation A, from any folder
+resume InkRouter                # on workstation B, and the estate is back</code></pre></div>
+      <p>They add no mechanics either: they FIND THE ESTATE and run its own <code>make park</code> /
+      <code>make resume</code>. What <code>resume</code> adds is the rebuilding &mdash; the clone,
+      the <code>make bootstrap</code>, the <a href="#families"><code>make siblings</code></a>
+      &mdash; so on a machine that has none of it, naming your record once is the whole of the
+      setup:</p>
+      <div class="code" data-lang="sh"><pre><code>resume InkRouter --workspace &lt;owner&gt;/&lt;your-wip-repo&gt;   # the FIRST time here</code></pre></div>
+      <p>That flag is the only thing in this standard that writes
+      <code>~/.agents/workspace.yaml</code>, and it writes it only because you named the repository.
+      Afterwards <code>resume &lt;Name&gt;</code> needs no flag.</p>
+      <p><strong>How the estate is found.</strong> <code>&lt;Name&gt;</code> is a folder under your
+      projects directory: <code>~/projects/&lt;Name&gt;</code>, then
+      <code>~/Projects/&lt;Name&gt;</code> &mdash; people spell it both ways &mdash; or wherever
+      <code>$PROJECTS_DIR</code> points. A FAMILY folder
+      (<code>&lt;Name&gt;/&lt;Name&gt;/family.yaml</code>) wins over a standalone root
+      (<code>&lt;Name&gt;/project.yaml</code>) of the same name, because the holder is what drives
+      the members. With no <code>&lt;Name&gt;</code> the estate around the current directory is used:
+      the nearest holder beside you, or project root above you.
+      <code>--repo &lt;owner/name&gt;</code> names the estate by the <code>origin</code> of a clone
+      you ALREADY have, in any url spelling; it never clones one, because <code>resume</code> is the
+      command that clones and it clones from the record.</p>
+      <p><span class="refuses">Refuses</span> <strong>Nothing is parked by guess</strong>: with no
+      estate around the current directory either, <code>park</code> REFUSES and lists the estates it
+      found.</p>
+      <div class="stack">
+        <h4>What they leave behind, said out loud</h4>
+        <ul class="plain">
+          <li><code>park</code> finishes by printing what did NOT park and why none of it is
+          park&rsquo;s to touch: commits on a <code>main</code> that <code>origin</code> has never
+          seen (a root is PR-only &mdash; land them as a pull request), a dirty root mid pin-bump,
+          and ignored local files, which never travel at all.</li>
+          <li><code>resume</code> fast-forwards each working clone&rsquo;s tracking branch with
+          <code>--ff-only</code> and REFUSES BY NAME one that is dirty or on a feature branch
+          &mdash; that clone is skipped and left exactly where it was, never reset, and the rest of
+          the estate still comes back; it is not given the verb either, so a clone this run said it
+          would not touch is not touched.</li>
+          <li>Neither carries an agent session: the handoff document is the bridge for those.</li>
+          <li><strong>READ THE LINES, not the exit code.</strong> <code>resume</code> exits
+          non-zero when anything was refused, but <code>park</code> passes <code>make
+          park</code>&rsquo;s own status straight through and can exit 0 with a report of what it
+          left behind &mdash; which is the point of printing that report.</li>
+        </ul>
+      </div>
+
+      <h3>Who implements it, and what the record is</h3>
+      <p><strong>This repository implements neither, deliberately.</strong> The WIP commit, the push,
+      the <code>git worktree add</code>, the <code>.specify/feature.json</code> rewrite and the soft
+      reset are the <strong>Speckit git extension&rsquo;s</strong>, which
+      <code>setup-openspeckit</code> installs &mdash; one implementation. The two targets are three
+      lines each and refuse BY NAME when the overlay is not there:</p>
+      <div class="out"><pre><code>make park needs the Speckit worktree overlay; install it with: setup-openspeckit</code></pre></div>
+      <p>A Makefile that reimplemented half of the mechanics would be a second implementation with
+      no tests of its own, and the two would start disagreeing the first time either was fixed.</p>
+      <p><strong>The record is the PERSON&rsquo;S, and lives in a repository they own.</strong> One
+      manifest file per family or standalone project, in a private repository whose path is named
+      ONCE in <code>~/.agents/workspace.yaml</code> &mdash; not in <code>project.yaml</code>, not in
+      the assembly root, not in <code>family.yaml</code>. Where somebody&rsquo;s unfinished work
+      sits is theirs, and a shared tree is the wrong home for per-user state.</p>
+      <p><strong>The repository is <code>&lt;user&gt;-wip</code>, one per person</strong>
+      (<code>opensoft/brett-wip</code>, <code>opensoft/scott-wip</code>) &mdash; private, org-owned
+      so the index survives offboarding and a later lane can read the handoffs, and classified as
+      <a href="#legs">the sixth naming family</a>. By DEFAULT one of them, in the person&rsquo;s home
+      organisation, indexes work in every organisation with a folder per org inside it
+      (<code>workspaces/&lt;org&gt;/&hellip;</code>, <code>handoffs/&lt;estate&gt;/&hellip;</code>);
+      an organisation whose work must not be indexed outside it, even by name, is pointed at its own
+      <code>&lt;org&gt;/&lt;user&gt;-wip</code> by the opt-in <code>orgs:</code> map in the same
+      file. Nothing here CREATES one: a person makes their own, and this standard classifies the
+      name and does no more with it.</p>
+      <p><strong>Nothing is synced, and nothing under <code>worktrees/</code> is ever
+      committed.</strong> A linked worktree records an ABSOLUTE path into its owning repository,
+      which is machine plumbing; so the record carries branches and commits and no path at all, and
+      <code>resume</code> RECREATES at this machine&rsquo;s own worktree root. <code>park</code>
+      commits inside the feature legs, on the feature branch &mdash; never at the root, which
+      carries no feature branch at all.</p>
+      <p><span class="refuses">Refuses</span> <strong>A branch that MOVED since the park</strong>:
+      <code>resume</code> names the parked commit, the current tip and the commands to reconcile by
+      hand, and it resets over nothing. That refusal is the feature &mdash; the alternative is a
+      tool that discards somebody&rsquo;s pushed commit to make its own record fit.</p>
+      <p><strong>A FAMILY holder carries both verbs too</strong> and runs each member&rsquo;s own
+      &mdash; in the members&rsquo; <strong>WORKING CLONES BESIDE THE HOLDER</strong>, through
+      <code>scripts/siblings.py --make park</code>, and never in
+      <code>members/&lt;Project&gt;</code>. That is <a href="#families">the layout&rsquo;s own
+      rule</a>: the pinned copy is detached, for <code>bootstrap</code> and <code>validate</code>,
+      and the sibling is where a person works, so the sibling is where the features and the
+      worktrees are. A holder that parked the pinned copies would report &ldquo;nothing to
+      park&rdquo; for every member while the work sat untouched next door. The dispatch clones
+      nothing and fetches nothing; a member with no working clone is reported and SKIPPED naming
+      <code>make siblings</code>, a member whose verb refuses has that refusal printed where it
+      happened, and the holder exits non-zero if any member was skipped or refused. A skip is not a
+      pass, and a refusal is never hidden.</p>
+      <p><span class="refuses">Native Windows parks nothing</span></p>
+      <p>The extension&rsquo;s <code>park</code> and <code>resume</code> are bash; its PowerShell
+      mirror has neither, and porting them is a separate object. The two installed commands are bash
+      as well, and so is the <code>--install</code> line that places them. On Windows the way in is
+      WSL2, exactly as it is for <code>setup.sh</code>.</p>
+      <p class="aside">Ruled by <strong>Brett Heap on 2026-09-09</strong> (#77): this repository
+      implements neither verb.</p>
+      <a class="src" href="https://github.com/opensoft/openRepoShape#carrying-in-flight-work-to-another-workstation">Full text &mdash; carrying work to another workstation</a>
+    </section>
+
     <section id="degrade">
       <p class="eyebrow">Reference</p>
       <h2>The degrade rule</h2>
@@ -1255,7 +1494,9 @@ python3 scripts/family.py remove --family-root ../InkRouter --member IRRS</code>
         <dt>scripts/path_classify.py</dt><dd>the classifier over the path policy</dd>
         <dt>scripts/shape_materialize.py</dt><dd>the ONE materializer, used by both tools</dd>
         <dt>scripts/validate-repository-naming.py</dt><dd>answers the naming question for one name</dd>
-        <dt>openRepoShape</dt><dd>installs itself as a command; runs setup.sh</dd>
+        <dt>openRepoShape</dt><dd>installs the three commands; runs setup.sh</dd>
+        <dt>park</dt><dd>finds an estate and runs its own make park</dd>
+        <dt>resume</dt><dd>the same for make resume, rebuilding the estate first</dd>
         <dt>setup.sh</dt><dd>the shim: find an interpreter, hand over</dd>
         <dt>setup-project.py</dt><dd>THE FLOW, and the Windows way in (no bash there)</dd>
         <dt>scaffold-project.py</dt><dd>creates the three repositories and the pins</dd>
@@ -1301,6 +1542,13 @@ python3 scripts/family.py remove --family-root ../InkRouter --member IRRS</code>
         <li><strong>Never bypass an organisation ruleset.</strong> A ruleset that refuses a direct
         push to <code>main</code> is doing its job; the exits are in the scaffold&rsquo;s own failure
         message. <code>--admin</code> is not a remedy.</li>
+        <li><strong>Never reset, stash or force-push to make a refused
+        <a href="#park"><code>park</code></a> or <code>resume</code> succeed.</strong> A parked WIP
+        commit is a real pushed commit, and <code>resume</code> refusing on divergence names both
+        commits and the commands to reconcile by hand. <code>resume --workspace</code> is the only
+        writer of <code>~/.agents/workspace.yaml</code>, and which private repository holds a
+        person&rsquo;s unfinished work is theirs to name &mdash; never pass that flag on your own
+        initiative.</li>
       </ul>
       <p>Beyond those: show the human the tool&rsquo;s output verbatim &mdash; the plan especially
       &mdash; and let them answer its prompt; &ldquo;go ahead&rdquo; about something else is not a
@@ -1311,19 +1559,22 @@ python3 scripts/family.py remove --family-root ../InkRouter --member IRRS</code>
       project carries <code>AGENTS-shape.md</code> at its assembly root, and you read that before
       touching the project.</p>
       <p><strong>What you must not tell them:</strong> that the shape confers anything &mdash; or
-      that membership of a family does. Electing either changes no gate, no floor, no grant and no
-      clearance eligibility; a one-repository project in no family is reviewed identically. If you
+      that membership of a family does &mdash; or that a <code>&lt;user&gt;-wip</code> workspace
+      repository does, which holds no code, elects nothing and is membership of nothing. Electing
+      any of them changes no gate, no floor, no grant and no clearance eligibility; a one-repository
+      project in no family is reviewed identically. If you
       are asked to make <code>role: spec</code> mean &ldquo;spec authority lives here&rdquo;, say no:
       that turns a layout into a governance boundary, which is the one thing this standard exists to
       prevent.</p>
       <a class="src" href="https://github.com/opensoft/openRepoShape/blob/main/AGENTS.md">Full text &mdash; AGENTS.md</a>
     </section>
 
-    <footer>
+    <footer id="licence">
       <p>Licence <strong>Apache-2.0</strong>. See <code>LICENSE</code> in the repository.</p>
       <p><a href="https://github.com/opensoft/openRepoShape#readme">github.com/opensoft/openRepoShape</a></p>
-      <p class="meta">Generated from README.md at c093813 on 2026-09-06. Every command, flag, exit
-      code and file name on this page is quoted from that README and from AGENTS.md.</p>
+      <p class="meta">Regenerated from README.md at cbca5b4 on 2026-09-10; first cut from
+      c093813 (#71). Every command, flag, exit code and file name on this page is quoted from that
+      README and from AGENTS.md.</p>
     </footer>
   </main>
 </div>
