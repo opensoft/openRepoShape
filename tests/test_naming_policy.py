@@ -12,7 +12,8 @@ from conftest import REPO, run_script
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import (  # noqa: E402
-    NamingPolicy, Refusal, accepts_role, link_pins_from_trees,
+    UNAMBIGUOUS_FORMS, NamingPolicy, Refusal, accepts_role,
+    link_pins_from_trees, parse_yaml,
 )
 from shape_materialize import naming_block  # noqa: E402
 
@@ -920,3 +921,288 @@ def test_cli_explain_without_a_role_is_the_answer_it_always_was():
     assert header.strip() == "openDox: neutral-product"
     assert not header.strip().endswith("/ assembly")
     assert "ADMITTED" not in result.stdout
+
+
+# --- the ruling: a SIXTH FORM, the person's WORKSPACE repository -----------
+#
+# openRepoShape#81, and Brett Heap on 2026-09-09: "the new-workstation name is
+# one per user right? so if we have brett and scott as engineers, then we need
+# something like brett-wip and scott-wip right?" — with rulings 1 to 3 giving
+# the placement (one per person, private, in that person's HOME organisation,
+# a per-org `orgs:` override for an org whose work must stay inside it) and
+# the issue's own two recommendations taken on 2026-09-10: nothing in this
+# standard creates one, and `<user>` is the GitHub login lowercased.
+#
+# `<user>-wip` is UNAMBIGUOUS BY CONSTRUCTION, exactly as `<X>-Install` is, so
+# it is not `declared_only:` and needs no `--role`. What every test below is
+# really about is the property the README states and this file has enforced
+# for two earlier forms: adding a form changes NO existing name's answer.
+
+def test_a_wip_suffix_is_the_workspace_form(policy):
+    """THE brett-wip CASE. One lowercase login token, the literal `-wip`, and
+    no declaration of any kind — the characters are the whole rule."""
+    for name in ("brett-wip", "scott-wip", "a1-wip", "my-user-wip"):
+        found = policy.classify(name)
+        assert found == ("workspace", None), f"{name} -> {found}"
+        assert found.also_matches == (), (
+            "no other form in this policy admits a `-wip` suffix, so a "
+            "workspace name overlaps nothing and records nothing")
+        assert "unambiguous by construction" in found.reason
+
+
+def test_the_workspace_form_sits_last_and_is_not_declared_only(policy):
+    """It is BELOW the family holder in precedence and, unlike it, needs no
+    declaration: `family` is spelled like an assembly root and only
+    `family.yaml` tells them apart, while nothing else spells `-wip` at all."""
+    family = _family(policy, "workspace")
+    assert family["precedence"] == 6
+    assert family["precedence"] > _family(policy, "family")["precedence"]
+    assert not policy.declared_only("workspace")
+    assert "declared_only" not in family
+    assert "roles" not in family, (
+        "a workspace repository has no legs and answers in no role")
+    assert "admits_declared_role" not in family, (
+        "it is admitted into no role either: `brett-wip` is not an assembly "
+        "root, which is what makes `nothing creates one` a check")
+    assert not family.get("requires_referent")
+
+
+def test_the_workspace_form_carries_no_declared_role(policy):
+    """`--role` is for a form that needs a declaration. Declared over a
+    workspace name, a role is IGNORED rather than carried — exactly what
+    `<X>-Install` does, and for the same reason."""
+    for role in ("assembly", "spec", "code", "family", "workspace"):
+        found = policy.classify("brett-wip", role)
+        assert found == ("workspace", None), f"--role {role} -> {found}"
+        assert found.reason.startswith("the workspace form is unambiguous")
+
+
+def test_nothing_in_this_standard_creates_a_workspace_repository(policy):
+    """The enforced half of open decision 1. `accepts_role` is the ONE
+    definition of "which forms may be an assembly leg", consulted by the
+    scaffold, by `adopt-project.py` and by a project's own
+    `validate-manifest.py` — and it refuses a workspace name in every role,
+    so no tool here can be pointed at one. A person makes their own."""
+    for role in ("assembly", "spec", "code"):
+        assert not accepts_role(policy.classify("brett-wip", role), role)
+
+
+def test_the_workspace_form_is_unambiguous_by_construction_in_the_code(policy):
+    """The list of forms that need nothing declared lives beside the
+    classifier that reads it, and `UNAMBIGUOUS_FORMS` says why it is not a key
+    in the policy file: a new classifier reading an OLD copied policy would
+    then classify every `open<Product>` as a project leg."""
+    assert UNAMBIGUOUS_FORMS == ("neutral-product", "install", "workspace")
+    for family_id in UNAMBIGUOUS_FORMS:
+        assert _family(policy, family_id) is not None
+        assert not policy.declared_only(family_id)
+        assert not policy.requires_referent(family_id)
+
+
+#: THE REGRESSION SET, as a table: `(name, --role, --pins) -> (family, role,
+#: also_matches)`, or `None` for a name that matches no family at all. Every
+#: row above `brett-wip` restates an answer asserted somewhere else in this
+#: file, and the rows below it are the sixth form's own positives and
+#: negatives. ONE table, because the property being asserted is one property:
+#: adding a form to the policy changes no existing name's answer, and the
+#: evidence for that is worth nothing if it is not the same list of names the
+#: rest of the suite already relies on. A form added to the contract that
+#: moves any row here has broken a live project's manifest, since
+#: `validate-manifest.py` compares `also_matches` exactly.
+KEEPS_ITS_ANSWER = (
+    ("openxFactory", None, (),
+     ("neutral-product", None, ("domain-descendant", "project-leg/assembly"))),
+    ("openScribe", None, (),
+     ("neutral-product", None, ("project-leg/assembly",))),
+    ("openScribe", "assembly", (),
+     ("neutral-product", "assembly", ("project-leg/assembly",))),
+    ("openDox", None, (),
+     ("neutral-product", None, ("project-leg/assembly",))),
+    ("openDox", "assembly", (),
+     ("neutral-product", "assembly", ("project-leg/assembly",))),
+    ("openDox", "spec", (),
+     ("neutral-product", None, ("project-leg/assembly",))),
+    ("openDox-spec", "assembly", (), ("project-leg", "spec", ())),
+    ("openXdox", "assembly", (),
+     ("neutral-product", "assembly", ("project-leg/assembly",))),
+    ("openXwallet", "assembly", (),
+     ("neutral-product", "assembly", ("project-leg/assembly",))),
+    ("openChart", "family", (),
+     ("neutral-product", None, ("project-leg/assembly", "family"))),
+    ("Foo-Install", "assembly", (), ("install", None, ())),
+    ("xFactory-Hermes-Install", "assembly", (), ("install", None, ())),
+    ("MedxChart", None, ("openChart",),
+     ("domain-descendant", None, ("project-leg/assembly",))),
+    ("MedxChart", "assembly", (),
+     ("project-leg", "assembly", ("domain-descendant",))),
+    ("MedxScribe", None, (),
+     ("project-leg", "assembly", ("domain-descendant",))),
+    ("MedxScribe", "assembly", (),
+     ("project-leg", "assembly", ("domain-descendant",))),
+    ("MedxScribe", None, ("openChart",),
+     ("project-leg", "assembly", ("domain-descendant",))),
+    ("MedxScribe-spec", "assembly", (), ("project-leg", "spec", ())),
+    ("MedxGlass", "assembly", ("openGlass",),
+     ("domain-descendant", "assembly", ("project-leg/assembly",))),
+    ("MedxGlass", "code", ("openGlass",),
+     ("domain-descendant", None, ("project-leg/assembly",))),
+    ("MedxGlass-spec", "spec", ("openGlass",), ("project-leg", "spec", ())),
+    ("codexFactory", None, ("openxFactory",),
+     ("domain-descendant", None, ("project-leg/assembly",))),
+    ("Atlas", None, (), ("project-leg", "assembly", ())),
+    ("Atlas-spec", None, (), ("project-leg", "spec", ())),
+    ("Atlas-code", None, (), ("project-leg", "code", ())),
+    ("InkRouter", None, (), ("project-leg", "assembly", ())),
+    ("InkRouter", "family", (), ("family", None, ("project-leg/assembly",))),
+    ("InkRouter-spec", "family", (), ("project-leg", "spec", ())),
+    ("Ink-Router", "family", (), None),
+    ("Atlas_spec", None, (), None),
+    ("Atlas-tests", None, (), None),
+    ("hermes-install", None, (), None),
+    ("Keycloak-Installer", None, (), None),
+    ("xFactory-Installer", None, (), None),
+    ("9Lives", None, (), None),
+    ("Atlas spec", None, (), None),
+    # The sixth form (2026-09-10). The positives are the only names in this
+    # table whose answer this addition changed at all — each of them matched
+    # NOTHING before it existed.
+    ("brett-wip", None, (), ("workspace", None, ())),
+    ("scott-wip", None, (), ("workspace", None, ())),
+    ("a1-wip", None, (), ("workspace", None, ())),
+    ("my-user-wip", None, (), ("workspace", None, ())),
+    ("9lives-wip", None, (), ("workspace", None, ())),
+    ("brett-wip", "assembly", (), ("workspace", None, ())),
+    # And the negatives, each one a thing a reader might expect to classify.
+    # `<user>` is the GitHub login LOWERCASED, so an uppercase letter
+    # anywhere is not one; `-wip` is the literal suffix, so it is neither an
+    # infix nor a name of its own; a login carries single hyphens and neither
+    # doubles them nor leads with one; and `wip` alone is a perfectly good
+    # project name, which is the honest reading rather than a gap.
+    ("Brett-wip", None, (), None),
+    ("brett-WIP", None, (), None),
+    ("brett_wip", None, (), None),
+    ("brett.wip", None, (), None),
+    ("-wip", None, (), None),
+    ("brett--wip", None, (), None),
+    ("brett-wip-2", None, (), None),
+    ("brett-wip2", None, (), None),
+    ("wip", None, (), ("project-leg", "assembly", ())),
+)
+
+
+@pytest.mark.parametrize("name,role,pins,expected", KEEPS_ITS_ANSWER)
+def test_every_classified_name_keeps_its_exact_answer(policy, name, role, pins,
+                                                      expected):
+    """The property the README states, as a table rather than as a claim."""
+    found = policy.classify(name, role, set(pins))
+    if expected is None:
+        assert found is None, f"{name} unexpectedly classified as {found}"
+        return
+    assert found is not None, f"{name} classified as nothing"
+    assert (found.family, found.role, found.also_matches) == expected
+
+
+def test_the_policy_file_parses_under_the_projects_own_loader():
+    """The contract is read by the stdlib YAML SUBSET this standard ships —
+    there is no PyYAML anywhere in it — so a form added to the file has to be
+    spellable in that subset or no tool of this standard can read the file at
+    all, in this repository or in any project carrying a copy."""
+    data = parse_yaml(POLICY_PATH.read_text(encoding="utf-8"))
+    assert isinstance(data, dict)
+    assert data["kind"] == "repository-naming-policy"
+    assert [f["id"] for f in data["families"]] == [
+        "neutral-product", "install", "domain-descendant", "project-leg",
+        "family", "workspace"]
+
+
+def test_the_six_forms_have_distinct_precedences_in_order(policy):
+    """PRECEDENCE IS SEMANTIC, so two forms sharing one would leave the order
+    of two answers to `sorted`'s stability rather than to the contract."""
+    precedences = [f["precedence"] for f in policy.families]
+    assert precedences == [1, 2, 3, 4, 5, 6]
+    assert len(set(precedences)) == len(precedences)
+    assert [f["id"] for f in policy.families] == [
+        "neutral-product", "install", "domain-descendant", "project-leg",
+        "family", "workspace"]
+
+
+def test_a_form_no_branch_claims_is_reported_rather_than_raised(tmp_path):
+    """A SEVENTH form, in a fork's own policy file, before anybody writes its
+    branch in `classify()`. The file is DATA and its own header says data can
+    be edited, so a form this classifier has no rule for is reported by
+    PRECEDENCE with a reason that says so. Until 2026-09-10 that path raised
+    `KeyError: 'domain-descendant'` — a data file crashing the tool that reads
+    it rather than being read by it — which is what `brett-wip` would have hit
+    had the workspace form been added to the contract alone."""
+    policy_file = tmp_path / "seventh.yaml"
+    policy_file.write_text(
+        "schema_version: 1\n"
+        "kind: repository-naming-policy\n"
+        "families:\n"
+        "  - id: sigil\n"
+        "    precedence: 7\n"
+        "    title: Sigil\n"
+        '    pattern: "^~[a-z]+$"\n',
+        encoding="utf-8")
+    found = NamingPolicy.load(policy_file).classify("~ink")
+    assert found == ("sigil", None)
+    assert found.also_matches == ()
+    assert "no rule of its own" in found.reason
+
+
+def test_cli_classifies_a_workspace_name():
+    result = run_script(VALIDATOR, "brett-wip", "scott-wip")
+    assert result.returncode == 0, result.stderr
+    assert "brett-wip                        workspace" in result.stdout
+    assert "also_matches" not in result.stdout
+
+
+def test_cli_strips_the_owner_prefix_from_a_workspace_name():
+    """`opensoft/brett-wip` names the same form as `brett-wip`: the
+    organisation login is not part of any family, and WHICH org holds the
+    repository is the person's `orgs:` map to answer, not the name's."""
+    result = run_script(VALIDATOR, "opensoft/brett-wip")
+    assert result.returncode == 0, result.stderr
+    assert "workspace" in result.stdout
+
+
+def test_cli_explain_names_the_workspace_form_and_the_rule():
+    result = run_script(VALIDATOR, "--explain", "brett-wip")
+    assert result.returncode == 0, result.stderr
+    assert "brett-wip: workspace" in result.stdout
+    assert "MATCH workspace" in result.stdout
+    assert "^[a-z0-9]+(?:-[a-z0-9]+)*-wip$" in result.stdout
+    assert "UNAMBIGUOUS BY CONSTRUCTION" in result.stdout
+    assert "it needs nothing declared" in result.stdout
+    assert "OVERLAP" not in result.stdout, (
+        "a workspace name satisfies exactly one form, so there is no overlap "
+        "to report")
+
+
+def test_cli_refuses_a_near_miss_workspace_name():
+    """A doubled hyphen is not a login and `-wip` is a suffix, so neither name
+    is a workspace — and neither is anything else, which is a FINDING."""
+    result = run_script(VALIDATOR, "brett--wip", "brett-wip-2")
+    assert result.returncode == 1
+    assert "naming-unclassified" in result.stderr
+    assert "brett--wip" in result.stderr and "brett-wip-2" in result.stderr
+
+
+def test_cli_does_not_take_workspace_as_a_declared_role():
+    """`--role` names a DECLARATION, and only a form that needs one is a value
+    there — `family`, and the three leg roles. `workspace` needs none, exactly
+    as `install` and `neutral-product` need none, so the flag refuses it as
+    the unknown choice it is rather than pretending there was something to
+    declare."""
+    result = run_script(VALIDATOR, "--role", "workspace", "brett-wip")
+    assert result.returncode == 2
+    assert "invalid choice: 'workspace'" in result.stderr
+
+
+def test_cli_role_assembly_does_not_move_a_workspace_name():
+    """The other half: a role that IS a choice, declared over a workspace
+    name, leaves the answer exactly where the characters put it."""
+    result = run_script(VALIDATOR, "--role", "assembly", "brett-wip")
+    assert result.returncode == 0, result.stderr
+    assert "workspace" in result.stdout
+    assert "project-leg" not in result.stdout

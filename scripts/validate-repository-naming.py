@@ -33,6 +33,15 @@ and names the admission, while `--explain openDox` — nothing declared — answ
 declaration; the role is ADDED to it, and the leg form it also satisfies stays
 in `also_matches`.
 
+ONLY A FORM THAT NEEDS A DECLARATION IS A `--role` VALUE. `family` is one,
+because the holder form is declared-only and the characters cannot tell you.
+`workspace` is not, for the same reason `install` and `neutral-product` are
+not: `<user>-wip` is unambiguous by construction, so there is nothing to
+declare and `--role workspace` is refused as the unknown choice it is. A role
+that IS a choice, declared over such a name, is ignored rather than carried —
+`--role assembly brett-wip` answers `workspace`, exactly as it does for
+`<X>-Install`.
+
 WHAT `--referent-chain` AND `--link-source` ARE FOR. Since 2026-09-05 the
 referent may be reached through a CHAIN of neutral-product pins: `codexDox`
 pins `openXdox`, and `openXdox` pins `openDox`. The chain is RECORDED, in the
@@ -69,8 +78,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from repo_shape import (  # noqa: E402
-    CHAIN_RECORD_FIELD, NamingPolicy, Refusal, link_pins_from_trees, load_yaml,
-    repo_basename,
+    CHAIN_RECORD_FIELD, UNAMBIGUOUS_FORMS, NamingPolicy, Refusal,
+    link_pins_from_trees, load_yaml, repo_basename,
 )
 
 DEFAULT_POLICY = Path(__file__).resolve().parents[1] / "contracts" / "repository-naming.yaml"
@@ -162,6 +171,16 @@ def _describe(policy: NamingPolicy, target: Target, link_pins: dict) -> list[str
                      + "]")
             if carried:
                 role_note = f" (role {carried}, ADMITTED)"
+        elif hits and family["id"] in UNAMBIGUOUS_FORMS:
+            # WHY THIS ROW NEEDED NOTHING. The three claims above are each a
+            # reason a reader might have to declare something; this is the row
+            # that says there is nothing to declare, which is the answer for
+            # `<X>-Install` and `<user>-wip`. `neutral-product` is unambiguous
+            # too and is answered by the branch above instead, because it has
+            # the further thing to say about the role it admits.
+            claim = (" [UNAMBIGUOUS BY CONSTRUCTION: nothing else spells this "
+                     "form, so it needs nothing declared — no --role and no "
+                     "pin — and it is admitted into no role either]")
         lines.append(
             f"    {mark}{family['id']:<18} {family['pattern']}{role_note}{claim}")
     if target.chain:

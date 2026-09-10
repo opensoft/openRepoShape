@@ -2,7 +2,7 @@ schema_version: 1
 kind: repository-naming-policy
 
 # ===========================================================================
-# repository-naming.yaml — the five live naming families, as DATA.
+# repository-naming.yaml — the six live naming families, as DATA.
 #
 # WHY DATA AND NOT PROSE. A convention written only in a README is checked by
 # whoever remembers it. This file is read by `scripts/validate-repository-naming.py`,
@@ -19,9 +19,10 @@ kind: repository-naming-policy
 #
 # PRECEDENCE IS SEMANTIC, NOT COSMETIC — AND TWO KINDS OF FORM LIVE HERE.
 #
-# `neutral-product` and `install` are UNAMBIGUOUS BY CONSTRUCTION: `open` in
-# front, `-Install` behind. Nothing else spells them, so they win outright and
-# need nothing declared. Their precedence is unchanged.
+# `neutral-product`, `install` and `workspace` are UNAMBIGUOUS BY
+# CONSTRUCTION: `open` in front, `-Install` behind, `-wip` behind. Nothing
+# else spells them, so they win outright and need nothing declared. Their
+# precedence is unchanged.
 #
 # THAT STAYS TRUE OF THE CLASSIFICATION, AND A NEUTRAL PRODUCT MAY STILL ELECT
 # THE SHAPE. Ruled by Brett Heap on 2026-09-05:
@@ -94,6 +95,19 @@ kind: repository-naming-policy
 # reports it only when the reader says which question is being asked, so
 # adding it changed no existing name's answer and no existing manifest's
 # `also_matches`. See that family's own block for the ruling.
+#
+# A SIXTH FORM ARRIVED ON 2026-09-10, AND IT IS NOT A REPOSITORY OF A PROJECT
+# AT ALL: `workspace`, `<user>-wip`, the PRIVATE repository one person owns to
+# index their own unfinished work. Ruled by Brett Heap on 2026-09-09
+# (openRepoShape#81): "if we have brett and scott as engineers, then we need
+# something like brett-wip and scott-wip right?" It is UNAMBIGUOUS BY
+# CONSTRUCTION rather than declared-only — the literal `-wip` suffix is
+# spelled by no other form here — so it needs no `--role`, and it changed no
+# existing name's answer for a different reason than `family` did: no form
+# above admits a `-wip` suffix at all, so the names it classifies are names
+# that matched NOTHING before. See that family's own block for where such a
+# repository lives, and for the fact that nothing in this standard creates
+# one.
 #
 # THE ASSEMBLY-ROOT FORM IS THE RESIDUAL CLASS, deliberately. A bare CamelCase
 # token is the widest form here and sits last on purpose: the staged fragment
@@ -392,6 +406,71 @@ families:
       - InkRouter-spec
       - ink-router
 
+  - id: workspace
+    precedence: 6
+    title: Workspace
+    pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*-wip$"
+    # UNAMBIGUOUS BY CONSTRUCTION, exactly as `<X>-Install` is, and therefore
+    # NOT declared-only. The literal lowercase suffix `-wip` is spelled by no
+    # other form in this file: the leg suffixes are `-spec` and `-code`, the
+    # install suffix is the CamelCase `-Install`, and every other family is one
+    # unhyphenated token. So this form needs NOTHING DECLARED — no `--role`,
+    # no pin, no manifest — and that is also what let it be added to a policy
+    # several live projects already carry a copy of: no name that classified
+    # before this form existed classifies differently now, and no manifest's
+    # `also_matches` widened, because no form above admits a `-wip` suffix at
+    # all. `brett-wip` matched NOTHING before; a name of that spelling is the
+    # only kind whose answer this addition changes.
+    #
+    # `<user>` IS THE GITHUB LOGIN, LOWERCASED — what `gh api user -q .login`
+    # returns and what a `Lane:` header already carries (openRepoShape#81,
+    # open decision 2, taken as its own recommendation on 2026-09-10). The
+    # pattern is lowercase-only and admits a single hyphen INSIDE the login,
+    # because a login may carry one and may not double it, begin with one or
+    # end with one; the login's length bound is GitHub's and is not restated
+    # here.
+    description: >-
+      The PRIVATE repository one person owns and only that person writes:
+      their index of unfinished work. It holds the workspace manifests
+      `speckit park` writes and `resume` reads
+      (`workspaces/<org>/<Family|Project>.yaml`) and the handoff documents a
+      LATER session picks the work up from (`handoffs/<estate>/…`), which is
+      the home the lane-collision protocol's Amendment 4 gives them. It is
+      NOT a project, not a leg and not a family: it holds no code, elects
+      nothing, is membership of nothing, and — like every other name in this
+      file — confers nothing.
+    # WHERE IT LIVES, AND WHY THERE. Ruled by Brett Heap on 2026-09-09
+    # (openRepoShape#81, rulings 1 to 3): ONE repository per person, private,
+    # org-owned rather than personal-account so the index survives
+    # offboarding and a later lane can read the handoffs — the same placement
+    # Amendment 3 already gave the lane registry. By DEFAULT it sits in that
+    # person's HOME organisation and indexes work in every organisation, a
+    # folder per org inside it; an organisation whose work must not be indexed
+    # outside it, even by name, is pointed at its own `<org>/<user>-wip` by
+    # the opt-in `orgs:` map in `~/.agents/workspace.yaml`. Which repository
+    # holds somebody's unfinished work is THEIRS to name, so the path is
+    # declared there and in no project's tree.
+    #
+    # NOTHING IN THIS STANDARD CREATES ONE (openRepoShape#81, open decision 1,
+    # taken as its own recommendation on 2026-09-10). This form is CLASSIFIED
+    # and DOCUMENTED here and scaffolded by nothing: no tool in this
+    # repository makes a `<user>-wip` repository, and the form is admitted
+    # into no role, so a `<user>-wip` name offered as an assembly root is
+    # refused exactly as it was before — with the name's own form in the
+    # refusal now, rather than "matches no family". A person creates their
+    # own, by hand, and names it once.
+    examples:
+      - brett-wip
+      - scott-wip
+      - a1-wip
+    counter_examples:
+      - Brett-wip
+      - brett-WIP
+      - brett_wip
+      - brett--wip
+      - brett-wip-2
+      - wip
+
 # The GitHub topic every repository of a project carries, so the organisation's
 # own search surfaces the group without a checkout. It is the SECOND of the
 # three agreeing layers of grouping (names, topics, register); where they
@@ -421,3 +500,8 @@ unclassified_examples:
   - xFactory-Installer
   - 9Lives
   - "Atlas spec"
+  # The `<user>-wip` near-misses (2026-09-10). A doubled hyphen is not a
+  # login, and `-wip` is a SUFFIX rather than an infix, so neither of these
+  # is a workspace — and neither is anything else either.
+  - brett--wip
+  - brett-wip-2
