@@ -36,8 +36,11 @@ recording an identity, so this tool never records one it cannot justify:
     reports today into a digest that agrees with the fork — which is exactly
     the "record the fork as the standard" failure `shape-pin.yaml`'s own
     header forbids.
-  * A file changed on BOTH sides is refused outright. Two edits to one file is
-    a merge, and a merge is a human's judgement, not a byte copy.
+  * A file changed on BOTH sides is refused outright, UNLESS the human passes
+    `--accept-local <path>` on it too — the same exception `locally-modified`
+    gets, above. Two edits to one file is a merge, and a merge is a human's
+    judgement, not a byte copy; once they have made it and committed it, the
+    row is recomputed from what they merged, the same mechanism.
   * A copy that is not VERBATIM at the pinned commit — `adopt-project.py`
     appends a `CONTRACTS_DIR` block to an adopted Makefile — is treated as a
     conflict the moment upstream touches it, because copying the target bytes
@@ -481,6 +484,13 @@ def classify(root: Path, rows: list[Row], upstream: Upstream, pinned: str,
         if locally_modified and upstream_changed:
             row.state = BOTH
             row.detail = "edited here AND upstream since the pin"
+            # Precomputed the same way `locally-modified` precomputes it,
+            # below: IF `--accept-local` later names this path, `cmd_apply`
+            # must re-pin from what is on disk NOW, not from whatever was
+            # true when the pin was written. Dead weight when nobody accepts
+            # it — an unaccepted `both` row is refused before any digest is
+            # written anywhere.
+            row.digest = local_digest
             continue
         if upstream_changed and not verbatim_at_pin:
             row.state = BOTH
@@ -489,6 +499,7 @@ def classify(root: Path, rows: list[Row], upstream: Upstream, pinned: str,
                 f"{source} at the pinned commit — an in-place adoption "
                 "appends to it — so copying the target bytes would delete "
                 "what was appended")
+            row.digest = local_digest
             continue
         if upstream_changed:
             row.state = UPSTREAM_CHANGED
@@ -822,6 +833,19 @@ def rewrite_manifest(text: str, commit: str, tree: str, kind: Kind) -> str:
 # ---------------------------------------------------------------------------
 
 
+def accept_local_exit(path: str) -> str:
+    """The one sentence `check` appends to a `both` row's detail: the exit
+    AGENTS.md documents for it, once a human has merged the file by hand and
+    committed that merge.
+
+    A DISPLAY-ONLY ADDITION, not folded into `row.detail` itself: the same
+    field also renders inside `apply`'s `update-conflict` refusal, whose
+    wording an unaccepted `both` must keep exactly as it was.
+    """
+    return (f". Merge it by hand, commit it, then `apply --accept-local "
+            f"{path}` so the row is recomputed from what you merged")
+
+
 def report(root: Path, upstream: Upstream, pinned: str, target: str,
            pin_tree: str, target_tree: str, rows: list[Row]) -> None:
     print(f"root        {root}")
@@ -836,9 +860,12 @@ def report(root: Path, upstream: Upstream, pinned: str, target: str,
         for row in rows:
             if row.state != state:
                 continue
+            detail = row.detail
+            if row.state == BOTH and detail:
+                detail += accept_local_exit(row.path)
             line = f"  {state:<{width}}  {row.path}"
-            if row.detail:
-                line += f"\n  {'':<{width}}  ({row.detail})"
+            if detail:
+                line += f"\n  {'':<{width}}  ({detail})"
             print(line)
 
 
@@ -975,6 +1002,37 @@ def run_validator(root: Path, script: str) -> int:
     return proc.returncode
 
 
+def current_branch(root: Path) -> str | None:
+    """The branch HEAD is on, or None when it is detached.
+
+    Named the same as `bump-leg.py`'s own helper for the same one-line read:
+    two different tools reading two different checkouts, so a shared import
+    would be the wrong coupling, but no reason for the name to drift.
+    """
+    proc = subprocess.run(["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
+                          cwd=str(root), capture_output=True, text=True,
+                          check=False)
+    return proc.stdout.strip() or None
+
+
+def branch_exists(root: Path, branch: str) -> bool:
+    """Is `branch` a local branch of `root` — checked out or not?"""
+    proc = subprocess.run(
+        ["git", "show-ref", "--quiet", "--verify", f"refs/heads/{branch}"],
+        cwd=str(root), check=False)
+    return proc.returncode == 0
+
+
+def tracking_branch_of(manifest: dict | None) -> str:
+    """This root's tracking branch, out of an already-loaded manifest — the
+    same field `open_pull_request` lands its pull request on. `--branch` may
+    never commit onto it directly: these organisations are pull-request only,
+    and a commit whose only next step is a push to the default branch is not
+    one this tool will make.
+    """
+    return str((manifest or {}).get("tracking_branch") or "main")
+
+
 def commit_on_branch(root: Path, branch: str, paths: list[str], target: str,
                      upstream: Upstream, count: int, kind: Kind,
                      added: list[str] = ()) -> None:
@@ -991,9 +1049,49 @@ def commit_on_branch(root: Path, branch: str, paths: list[str], target: str,
     to git"). So the additions — and ONLY the additions, by name — are staged
     first. `git add -A` here would sweep in whatever else is in the tree, which
     is the very thing the explicit pathspecs exist to prevent.
+
+    THREE POSTURES FOR `--branch <name>`, decided from git rather than
+    assumed, because AGENTS.md's documented `both` exit needs the second one:
+    the hand merge is committed on a branch FIRST, and `apply --accept-local
+    <path> --branch <that branch>` must be able to land ON it rather than
+    finding `git checkout -b` refusing a branch that is already there.
+
+      * `<name>` is the tracking branch — refused, current or not. These
+        organisations are pull-request only, and a commit whose only next
+        step is a push to the default branch is not one this tool will make.
+      * `<name>` is the CURRENT branch (so, by the rule just above, not the
+        tracking branch) — committed onto it directly, with no checkout at
+        all.
+      * `<name>` names a branch that exists and is NOT current — refused by
+        name: committing there would land this change beside whatever a
+        human already put on that branch, which is theirs to decide.
+      * Anything else is created fresh, as before.
     """
     checked_value("--branch", branch)
-    run(["git", "checkout", "-q", "-b", branch], cwd=root)
+    manifest = load_yaml(root / kind.manifest)
+    tracking = tracking_branch_of(manifest)
+    if branch == tracking:
+        raise Refusal(
+            "update-branch-tracking",
+            f"--branch {branch} names {kind.manifest}'s tracking branch, "
+            "and this tool never commits a shape update directly onto it",
+            "Remediation: pass a different --branch. These organisations "
+            "are pull-request only; a shape update lands as a pull request "
+            "onto the tracking branch, never a commit made on it directly.")
+    here = current_branch(root)
+    if branch != here:
+        if branch_exists(root, branch):
+            checked_out = (f"{here!r} is checked out" if here
+                          else "HEAD is detached")
+            raise Refusal(
+                "update-branch-exists",
+                f"--branch {branch} already exists and is not the current "
+                f"branch ({checked_out})",
+                "Remediation: check out that branch first — `git -C "
+                f"{root} checkout {branch}` — if that is where the hand "
+                "merge AGENTS.md describes was already committed, or pass "
+                "a different --branch to create a new one.")
+        run(["git", "checkout", "-q", "-b", branch], cwd=root)
     if added:
         run(["git", "add", "--", *added], cwd=root)
     gained = (f"; {len(added)} new upstream file(s) added because --add named "
@@ -1048,7 +1146,17 @@ def cmd_apply(args) -> int:
                   f"{upstream.repository} @ {target[:12]}, which the pin "
                   "already names")
             return 0
-        conflicts = [row for row in rows if row.is_conflict]
+        # `both` ALONE has an accepted exit: `--accept-local <path>` on it
+        # means the human already did the merge `update-conflict` below asks
+        # for, so that row is excluded here and handled with LOCALLY_MODIFIED
+        # further down — never copied over, and re-pinned from what is on
+        # disk. The other three conflict states (upstream-removed, unmapped,
+        # copy-missing) have no such exit: there is no local edit to trust a
+        # word about, so `--accept-local` naming one of those is simply not
+        # among the paths this can ever exclude.
+        conflicts = [row for row in rows
+                    if row.is_conflict
+                    and not (row.state == BOTH and row.path in accepted)]
         if conflicts:
             raise Refusal(
                 "update-conflict",
@@ -1104,7 +1212,7 @@ def cmd_apply(args) -> int:
             write(root / row.path, row.target_bytes or b"")
             print(f"  copied   {row.path}")
         for row in rows:
-            if row.state == LOCALLY_MODIFIED:
+            if row.state in (LOCALLY_MODIFIED, BOTH):
                 print(f"  kept     {row.path} (local bytes; row recomputed "
                       "from them because --accept-local named it)")
             elif row.state == ALREADY_AT_TARGET:
@@ -1176,7 +1284,7 @@ def cmd_apply(args) -> int:
 def open_pull_request(root: Path, branch: str, target: str,
                       upstream: Upstream, kind: Kind = PROJECT_KIND) -> None:
     manifest = load_yaml(root / kind.manifest)
-    base = str((manifest or {}).get("tracking_branch") or "main")
+    base = tracking_branch_of(manifest)
     if kind is FAMILY_KIND:
         # A family declares its own repository: it has no legs to read one
         # from, being a holder rather than a project.
