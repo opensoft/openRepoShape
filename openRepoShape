@@ -14,6 +14,12 @@
 # runs it, turning the positional <Project> into `--project <Project>` and
 # passing every other argument through untouched. The README's long
 # `curl … | bash -s -- --org … --project …` line and this do the same thing.
+#
+# `--install` PLACES THREE COMMANDS, not one: this file, `park` and `resume`
+# (#82). One install line for the whole standard, so a second engineer gets
+# the estate verbs from the README's one line and nothing depends on anyone's
+# dotfiles. The two of them add no behaviour either — they find the estate and
+# run its own `make park` / `make resume`.
 
 set -euo pipefail
 
@@ -30,6 +36,7 @@ MODE="run"
 DOCTOR=0
 PASSTHROUGH=()
 WORKDIR=""
+STAGED=""
 
 say() { printf '%s\n' "$*"; }
 die() { printf '\nREFUSED: %s\n' "$1" >&2; exit "${2:-2}"; }
@@ -49,10 +56,23 @@ argument reaches setup.sh unchanged: --visibility, --elected-by, --family,
 hands on to scaffold-project.py. `./setup.sh --help` prints setup-project.py's
 usage, which lists them all.
 
+`--install` places THREE commands, and each is one file:
+
+  openRepoShape <Project> --org <org>    scaffold a project
+  park [<Name>]                          commit, push and RECORD an estate's
+                                         open features, so another workstation
+                                         can take the work up
+  resume [<Name>]                        clone or fast-forward that estate here
+                                         and recreate those features
+
+`park --help` and `resume --help` say the rest. Neither implements any of the
+mechanics: they find the estate under your projects directory and run its own
+`make park` / `make resume`, which run the Speckit git extension's scripts.
+
   $OPENREPOSHAPE_REPO       owner/name to fetch from (default opensoft/openRepoShape)
   $OPENREPOSHAPE_REF        the ref to fetch it at   (default main)
   $OPENREPOSHAPE_ORG        the organisation, when --org is not given
-  $OPENREPOSHAPE_BIN_DIR    where --install puts it  (default ~/.local/bin)
+  $OPENREPOSHAPE_BIN_DIR    where --install puts them (default ~/.local/bin)
   $OPENREPOSHAPE_SETUP_SH   run this setup.sh on disk instead of fetching one
 USAGE
 }
@@ -89,9 +109,16 @@ fetch_from_repo() {
 			>"$dest" 2>/dev/null && [ -s "$dest" ]; then
 		return 0
 	fi
-	die "could not fetch $path from $REPO at $REF. Both ways failed:
-    gh api repos/$REPO/contents/$path?ref=$REF
-    curl -fsSL https://raw.githubusercontent.com/$REPO/$REF/$path"
+	# RETURNS rather than dying, so a caller fetching SEVERAL files can report
+	# the whole set instead of stopping mid-way through an install (#82, F10 of
+	# the review on #83). `fetch_or_die` is the one-file spelling.
+	return 1
+}
+
+fetch_or_die() {
+	fetch_from_repo "$1" "$2" || die "could not fetch $1 from $REPO at $REF. Both ways failed:
+    gh api repos/$REPO/contents/$1?ref=$REF
+    curl -fsSL https://raw.githubusercontent.com/$REPO/$REF/$1"
 }
 
 # setup.sh CLONES $OPENREPOSHAPE_REPO when it self-bootstraps, so the child is
@@ -105,29 +132,73 @@ shape_clone_url() {
 	esac
 }
 
-install_self() {
-	local dir="${OPENREPOSHAPE_BIN_DIR:-$HOME/.local/bin}"
-	local target="$dir/openRepoShape" source verb
+# THE THREE COMMANDS `--install` PLACES (#82). One list, so the installer, the
+# fetch fallback and the tests cannot disagree about what a complete install
+# is. `openRepoShape` is first because it is the one a person types to get the
+# other two.
+INSTALLABLES=(openRepoShape park resume)
+
+# ALL THREE IN HAND BEFORE ANY OF THEM IS PLACED (#82, F10 of the review on
+# #83). One file at a time, dying on the first fetch that failed, left a
+# person with a NEW `openRepoShape` and no `park` — a half-install that says
+# `installed at` and is not one — and there was nothing on screen to say which
+# of the three were missing. Now every one is collected into the temporary
+# directory first: a failure there replaces NOTHING, names what was not
+# fetched, and exits.
+collect_commands() {
+	local name selfdir="" missing=""
 	# Run from a file, install THOSE bytes: `--install` then needs no network
-	# and no `gh` at all. Run from stdin (`curl … | bash -s -- --install`)
-	# there is no file to copy from, so fetch this path at this same ref.
+	# and no `gh` at all — and `park` and `resume` sit BESIDE this file, in the
+	# checkout and in the repository alike, so the siblings that are there are
+	# copied and only a missing one is fetched. Run from stdin (`curl … | bash
+	# -s -- --install`) there is no file to copy from at all, so each of the
+	# three is fetched at this same ref.
 	if [ -f "$SELF" ]; then
-		source="$SELF"
-	else
-		workdir
-		source="$WORKDIR/openRepoShape"
-		fetch_from_repo openRepoShape "$source"
+		selfdir="$(cd -- "$(dirname -- "$SELF")" && pwd)"
 	fi
+	workdir
+	STAGED="$WORKDIR/staged"
+	mkdir -p "$STAGED"
+	for name in "${INSTALLABLES[@]}"; do
+		if [ -n "$selfdir" ] && [ -f "$selfdir/$name" ]; then
+			cp -- "$selfdir/$name" "$STAGED/$name"
+			continue
+		fi
+		fetch_from_repo "$name" "$STAGED/$name" ||
+			missing="${missing:+$missing }$name"
+	done
+	[ -z "$missing" ] || die "could not fetch $missing from $REPO at $REF, so NOTHING was installed
+    and nothing already installed was replaced. \`--install\` places all
+    ${#INSTALLABLES[@]} commands or none: a new openRepoShape beside a missing park is
+    a half-install that reads like a whole one. Both ways were tried:
+    gh api repos/$REPO/contents/<file>?ref=$REF
+    curl -fsSL https://raw.githubusercontent.com/$REPO/$REF/<file>"
+}
+
+install_commands() {
+	local dir="${OPENREPOSHAPE_BIN_DIR:-$HOME/.local/bin}"
+	local name target source verb placed=0
+	collect_commands
 	mkdir -p "$dir"
-	if [ -e "$target" ] && cmp -s "$source" "$target"; then
-		verb="already installed at $target (unchanged)"
-	else
-		if [ -e "$target" ]; then verb="updated at $target"; else verb="installed at $target"; fi
-		cp -- "$source" "$target"
-	fi
-	# Stamped every time: a copy that is not executable is not a command.
-	chmod 755 "$target"
-	say "openRepoShape: $verb"
+	for name in "${INSTALLABLES[@]}"; do
+		source="$STAGED/$name"
+		target="$dir/$name"
+		if [ -e "$target" ] && cmp -s "$source" "$target"; then
+			verb="already installed at $target (unchanged)"
+		else
+			if [ -e "$target" ]; then verb="updated at $target"; else verb="installed at $target"; fi
+			cp -- "$source" "$target"
+		fi
+		# Stamped every time: a copy that is not executable is not a command.
+		chmod 755 "$target"
+		placed=$((placed + 1))
+		say "$name: $verb"
+	done
+	# THE COUNT, out loud: a person reading three lines cannot tell whether a
+	# fourth was meant to be there, and this object is the one that made
+	# `--install` plural.
+	say "openRepoShape: $placed of ${#INSTALLABLES[@]} placed in $dir"
+	# ONE PATH NOTE for the three of them: the directory is the same one.
 	case ":${PATH:-}:" in
 	*":$dir:"*) ;;
 	*)
@@ -167,8 +238,8 @@ done
 
 if [ "$MODE" = "install" ]; then
 	[ -z "$PROJECT" ] && [ ${#PASSTHROUGH[@]} -eq 0 ] ||
-		die "--install takes no other arguments; it only installs this command."
-	install_self
+		die "--install takes no other arguments; it only installs the commands."
+	install_commands
 	exit 0
 fi
 
@@ -219,7 +290,7 @@ if [ -n "${OPENREPOSHAPE_SETUP_SH:-}" ]; then
 else
 	workdir
 	SETUP="$WORKDIR/setup.sh"
-	fetch_from_repo setup.sh "$SETUP"
+	fetch_or_die setup.sh "$SETUP"
 fi
 
 # Run the script as a FILE rather than `bash -s --` from a pipe: setup.sh ASKS

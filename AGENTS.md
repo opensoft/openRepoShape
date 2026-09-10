@@ -330,6 +330,32 @@ make bootstrap && make resume     # on the other machine, after a clone
    member that REFUSED is not parked and one SKIPPED for want of a working
    clone (`make siblings` places one) was never asked.
 
+`park <Name>` and `resume <Name>` are those same two verbs as INSTALLED
+COMMANDS, placed by `openRepoShape --install` beside `openRepoShape`. They find
+the estate — `$PROJECTS_DIR`, else `~/projects/<Name>` then `~/Projects/<Name>`;
+a family folder beats a standalone root of the same name; no `<Name>` means the
+estate around the current directory — and run its own `make park` / `make
+resume`. `resume` also clones and fast-forwards what is not current. Prefer them
+to a hand-built sequence, and relay their per-repository lines rather than
+summarising them.
+
+5. **`park` CREATES NOTHING and `resume` RESETS NOTHING.** With no `<Name>` and
+   no estate around the current directory, `park` refuses and lists what it
+   found: it does not park every estate, and that refusal is not a cue for you
+   to pick one. `resume` fast-forwards a working clone with `--ff-only` and
+   REFUSES BY NAME one that is dirty or on a feature branch, skipping it and
+   leaving it exactly as it is — and not running the verb in it either. It
+   also refuses a root whose LEG sits on a feature branch, because that root's
+   own `make bootstrap` would walk the leg back onto its tracking branch; the
+   superproject looks clean in that state, which is why the refusal names the
+   leg. Never `git reset`, `git stash` or `git checkout -f` — and never
+   `git checkout main` in a leg — to make the next run succeed: that is the
+   work the refusal exists to protect.
+6. **`resume --workspace <owner>/<repo>` is the only writer of
+   `~/.agents/workspace.yaml`**, and only on a machine that has none. Do not
+   write that file yourself, and do not pass that flag on your own initiative:
+   which private repository holds a person's unfinished work is theirs to name.
+
 ## What you must not tell them
 
 That the shape confers anything — or that membership of a family does.

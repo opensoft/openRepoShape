@@ -1,0 +1,1328 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+#
+# resume — arrive at a workstation and get the estate back: `resume InkRouter`.
+#
+# Installed with the other two by `openRepoShape --install`.
+#
+# IT ADDS NO MECHANICS, exactly as the `openRepoShape` command adds none. It
+# REBUILDS OR REFRESHES the estate with the tools that already exist — `git
+# clone`, the root's own `make bootstrap`, the holder's own `make siblings` —
+# and then runs the estate's own `make resume`, which runs the SPECKIT GIT
+# EXTENSION's `resume.sh`: the one implementation of `git worktree add`, the
+# `.specify/feature.json` rewrite and the soft reset (#77, RULING 2026-09-09
+# ruling 1). Every worktree, branch and refusal is that script's.
+#
+# openRepoShape #82, under Brett Heap's RULING of 2026-09-09: this is the ONLY
+# command that clones, and it clones from the manifest (ruling 1); it
+# fast-forwards each sibling's tracking branch with `--ff-only` and REFUSES BY
+# NAME a sibling that is dirty or on a feature branch, never resetting one
+# (ruling 2); the command is `resume` (ruling 4).
+#
+# THE ONLY FILE THIS STANDARD EVER WRITES OUTSIDE A REPOSITORY is the two-line
+# user config, and only when `--workspace <owner/name>` asks for it by name on
+# a machine that has none. A person names their own private repository.
+
+set -euo pipefail
+
+SELF_NAME="resume"
+
+NAME=""
+REPO_SLUG=""
+REPO_ARG=""
+WORKSPACE_SLUG=""
+ORG_WANTED=""
+DRY_RUN=0
+PASSTHROUGH=()
+
+say() { printf '%s\n' "$*"; }
+die() { printf '\nREFUSED: %s\n' "$1" >&2; exit "${2:-2}"; }
+
+usage() {
+    cat <<'USAGE'
+resume [<Name>] [--repo <owner/name>] [--workspace <owner/name>] [--org <org>]
+       [--dry-run] [-- ARGS...]
+resume --help
+
+Bring one estate back on this workstation: clone or fast-forward it, bootstrap
+it, place the family's members beside the holder, and then recreate every
+feature `park` recorded.
+
+<Name> is the family or the project as your workspace record names it - the
+manifest file `workspaces/<org>/<Name>.yaml` in the private repository you own.
+With no <Name> the estate around the current directory is refreshed.
+
+  --repo <owner/name>   the estate of a clone you already have, by its
+                        origin - in any url spelling of that repository
+  --workspace <owner/name>
+                        the FIRST time on a fresh machine: clone that private
+                        repository and write ~/.agents/workspace.yaml. This is
+                        the only thing here that writes that file, and only
+                        when you ask for it by name
+  --project <Name>      the positional under a flag (also --name)
+  --org <org>           which org's manifest, when two of them record a <Name>
+  --dry-run             say what would happen; clone nothing, pull nothing
+  -- ARGS...            passed on to the extension through `make resume ARGS=`
+
+  $PROJECTS_DIR             your projects directory (default: ~/projects, then
+                            ~/Projects - people spell it both ways)
+  $AGENT_PROTOCOL_ROOT      where workspace.yaml lives (default: ~/.agents)
+  $OPENREPOSHAPE_REMOTE_BASE
+                            TEST PATH: clone from bare repositories in this
+                            directory (<name>.git) instead of from GitHub, so
+                            the whole flow runs offline
+
+WHAT RESUME NEVER DOES: it resets nothing and it moves nobody's HEAD. A clone
+that is dirty, or on a branch that is not its tracking branch, is REFUSED BY
+NAME and skipped - it is neither fast-forwarded, nor bootstrapped, nor given
+the verb - and so is a root one of whose LEGS is off its tracking branch,
+because that root's own `make bootstrap` would move the leg. The rest of the
+estate still comes back.
+USAGE
+}
+
+# --- BEGIN shared estate resolver (park and resume carry it byte for byte) --
+#
+# THIS BLOCK IS DUPLICATED IN THE OTHER COMMAND, DELIBERATELY, and
+# `tests/test_park_resume_commands.py` asserts the two copies are IDENTICAL.
+# Each of these is one file a person has on PATH: a shared `orp-estate.sh`
+# would be a fourth file for `--install` to place and a broken command the
+# first time somebody copied only one of them. The rules themselves are NOT
+# new: `<dir>/<Name>/family.yaml` carrying `kind: family-manifest` and naming
+# `<Name>` is `setup-project.py`'s `family_folder_here`, doubled-name layout
+# and all (#76, RULING ruling 3).
+
+# `$PROJECTS_DIR` names ONE directory when it is set. Otherwise both
+# spellings, in that order, because people really do use both - and DEDUPED by
+# inode, because on a case-insensitive filesystem (a stock Mac) `~/projects`
+# and `~/Projects` are the same directory, and listing every estate twice
+# would read as two estates.
+PROJECTS_DIRS=()
+if [ -n "${PROJECTS_DIR:-}" ]; then
+    PROJECTS_DIRS=("$PROJECTS_DIR")
+else
+    PROJECTS_DIRS=("$HOME/projects")
+    if [ -d "$HOME/Projects" ]; then
+        if [ -d "$HOME/projects" ] && [ "$HOME/Projects" -ef "$HOME/projects" ]; then
+            : # one directory under two spellings; name it once
+        else
+            PROJECTS_DIRS+=("$HOME/Projects")
+        fi
+    fi
+fi
+
+# Where a NEW clone would go: the first spelling that already exists, else the
+# first named.
+#
+# shellcheck disable=SC2329  # `park` creates nothing and never calls this. The
+# block is byte-identical in both commands BY DESIGN, so each carries a couple
+# of functions only the other one asks.
+projects_dir_for_new() {
+    local dir
+    for dir in "${PROJECTS_DIRS[@]}"; do
+        if [ -d "$dir" ]; then
+            printf '%s\n' "$dir"
+            return 0
+        fi
+    done
+    printf '%s\n' "${PROJECTS_DIRS[0]}"
+}
+
+trim_unquote() {
+    local value="$1"
+    value="${value%$'\r'}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    case "$value" in
+    '"'*'"') value="${value#\"}"; value="${value%\"}" ;;
+    "'"*"'") value="${value#\'}"; value="${value%\'}" ;;
+    esac
+    printf '%s' "$value"
+}
+
+# ONE FOLDER NAME, and never a path. A `<Name>` off the command line and a
+# `root:` out of somebody's workspace manifest both end up joined to the
+# projects directory, so both are held to this: no empty string, no `/`, and
+# no leading `.` — which is what stops `resume ../../elsewhere/X` from cloning
+# outside the projects directory at all, rather than noticing afterwards.
+is_safe_folder_name() {
+    local name="$1"
+    case "$name" in
+    "" | .* | */*) return 1 ;;
+    esac
+    case "$name" in
+    *[!A-Za-z0-9_.+@-]*) return 1 ;;
+    esac
+    return 0
+}
+
+# One indent-zero scalar out of a small YAML file, with parameter expansion
+# only: no YAML library, no python per line, no forks per line. This is the
+# reader the Speckit extension's `workspace_read_scalar` is, narrowed to the
+# keys these two commands read (`kind`, `name`, `family`, `tracking_branch`).
+YAML_VALUE=""
+yaml_scalar() {
+    local file="$1" key="$2" line
+    YAML_VALUE=""
+    [ -f "$file" ] || return 1
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+        "$key":*) ;;
+        *) continue ;;
+        esac
+        YAML_VALUE="$(trim_unquote "${line#"$key":}")"
+        return 0
+    done <"$file"
+    return 1
+}
+
+# A LINKED WORKTREE, not a checkout of its own: `.git` is a FILE holding a
+# `gitdir:` line, and `--git-dir` and `--git-common-dir` disagree. A
+# single-repository project's FEATURE worktree is a whole `project.yaml` root
+# by construction, so without this the walk-up would answer `<worktree_root>/
+# 001-my-feature` as an estate named after the branch — and `park` would run
+# the write verb inside the very worktree the extension is about to park.
+# GIT'S OWN ANSWER, and not the `.git`-is-a-file shortcut, because that shape
+# is shared with a SUBMODULE and a leg must not be mistaken for a worktree:
+# in a linked worktree `--git-dir` is `<common>/worktrees/<name>` and the two
+# differ; in a submodule both are `<super>/.git/modules/<name>`; in an
+# ordinary checkout both are `.git`. Verified against all three.
+is_linked_worktree() {
+    local dir="$1" gitdir common
+    [ -e "$dir/.git" ] || return 1
+    gitdir="$(git -C "$dir" rev-parse --git-dir 2>/dev/null || true)"
+    common="$(git -C "$dir" rev-parse --git-common-dir 2>/dev/null || true)"
+    [ -n "$gitdir" ] && [ -n "$common" ] && [ "$gitdir" != "$common" ]
+}
+
+# The PINNED copy inside a family holder: `<Family>/<Family>/members/<X>`, so
+# the grandparent carries the `family.yaml`. It is detached, it is what
+# `bootstrap` and `validate` read, and nobody's in-flight work is in it — a
+# walk-up that answered it would run a WRITE verb on a detached HEAD. The
+# working clone BESIDE the holder is the one a person works in, which is the
+# same rule #80's holder dispatch follows.
+is_pinned_member() {
+    local dir="$1" parent grandparent
+    parent="${dir%/*}"
+    [ -n "$parent" ] && [ "$parent" != "$dir" ] || return 1
+    grandparent="${parent%/*}"
+    [ -n "$grandparent" ] && [ "$grandparent" != "$parent" ] || return 1
+    yaml_scalar "$grandparent/family.yaml" kind || return 1
+    [ "$YAML_VALUE" = "family-manifest" ]
+}
+
+# Is `<dir>` a FAMILY FOLDER? All three facts have to agree, exactly as
+# `family_folder_here` requires them to: the holder clone sits at
+# `<dir>/<basename>`, its `family.yaml` says `kind: family-manifest`, and it
+# names that same family. A directory called Northwind is a directory called
+# Northwind; what makes it a family folder is read, never guessed from a name.
+is_family_folder() {
+    local dir="$1" name manifest
+    name="${dir##*/}"
+    [ -n "$name" ] || return 1
+    manifest="$dir/$name/family.yaml"
+    yaml_scalar "$manifest" kind || return 1
+    [ "$YAML_VALUE" = "family-manifest" ] || return 1
+    yaml_scalar "$manifest" name || return 1
+    [ "$YAML_VALUE" = "$name" ]
+}
+
+is_project_root() {
+    local dir="$1"
+    yaml_scalar "$dir/project.yaml" kind || return 1
+    [ "$YAML_VALUE" = "project-manifest" ] || return 1
+    is_pinned_member "$dir" && return 1
+    is_linked_worktree "$dir" && return 1
+    return 0
+}
+
+ESTATE_KIND=""
+ESTATE_DIR=""
+ESTATE_ROOT=""
+ESTATE_NAME=""
+
+# Is THIS directory an estate? A FAMILY FOLDER WINS over a standalone root of
+# the same name: the holder is what drives the members, so a family answered as
+# one of its own members would act on one project and report the estate done.
+estate_here() {
+    local dir="$1"
+    if is_family_folder "$dir"; then
+        ESTATE_KIND="family"
+        ESTATE_DIR="$dir"
+        ESTATE_NAME="${dir##*/}"
+        ESTATE_ROOT="$dir/$ESTATE_NAME"
+        return 0
+    fi
+    if is_project_root "$dir"; then
+        ESTATE_KIND="standalone"
+        ESTATE_DIR="$dir"
+        ESTATE_NAME="${dir##*/}"
+        ESTATE_ROOT="$dir"
+        return 0
+    fi
+    return 1
+}
+
+# The NEAREST estate at or above `<dir>`: the holder beside you, or the project
+# root you are standing in. NEAREST WINS, so standing inside a member of a
+# family acts on that member - the estate the person is standing in. A pinned
+# copy and a linked worktree are WALKED PAST rather than answered, so
+# `<Family>/<Family>/members/<X>` reaches the family folder and a feature
+# worktree reaches the root that owns it.
+estate_walk_up() {
+    local dir="$1"
+    while [ -n "$dir" ] && [ "$dir" != "/" ]; do
+        estate_here "$dir" && return 0
+        dir="${dir%/*}"
+    done
+    return 1
+}
+
+estate_by_name() {
+    local want="$1" dir
+    is_safe_folder_name "$want" || return 1
+    for dir in "${PROJECTS_DIRS[@]}"; do
+        estate_here "$dir/$want" && return 0
+    done
+    return 1
+}
+
+# Every estate under the projects directory, one row each. What ruling 3 asks
+# a refusal to print: a person who typed the command in the wrong folder needs
+# the names, not an instruction to go and look for them.
+list_estates() {
+    local dir child
+    for dir in "${PROJECTS_DIRS[@]}"; do
+        [ -d "$dir" ] || continue
+        for child in "$dir"/*; do
+            [ -d "$child" ] || continue
+            if is_family_folder "$child"; then
+                printf '  family   %-20s %s\n' "${child##*/}" "$child"
+            elif is_project_root "$child"; then
+                printf '  project  %-20s %s\n' "${child##*/}" "$child"
+            fi
+        done
+    done
+}
+
+estates_or_none() {
+    local rows
+    rows="$(list_estates)"
+    if [ -n "$rows" ]; then
+        printf '%s\n' "$rows"
+    else
+        printf '  (none)\n'
+    fi
+}
+
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+# `owner/name` — CASE PRESERVED, so a refusal prints back what a person can
+# type — out of any spelling git accepts: owner/name, owner/name.git,
+# https://host/owner/name(.git), git@host:owner/name.git,
+# ssh://git@host/owner/name.git, and a token-bearing https url. Callers
+# compare with `lower` on both sides, because GitHub owners and names are
+# case-insensitive.
+#
+# A FILESYSTEM PATH IS REFUSED rather than parsed, for the reason the
+# extension's own `workspace_org_from_url` refuses one: `/srv/remotes/Name.git`
+# has a name but no owner, and inventing `remotes` as the owner would let
+# `--repo remotes/Name` match a bare repository on disk. Such a clone answers
+# `<Name>` and the walk-up; it does not answer `--repo`.
+repo_slug_of() {
+    local url="$1" rest owner name
+    rest="$url"
+    case "$rest" in
+    /* | ./* | ../* | [A-Za-z]:[/\\]* | file://*) return 1 ;;
+    esac
+    rest="${rest%/}"
+    rest="${rest%.git}"
+    case "$rest" in
+    *://*)
+        rest="${rest#*://}"
+        rest="${rest#*@}"
+        rest="${rest#*/}"
+        ;;
+    *@*:*)
+        rest="${rest#*@}"
+        rest="${rest#*:}"
+        ;;
+    esac
+    case "$rest" in
+    */*) ;;
+    *) return 1 ;;
+    esac
+    name="${rest##*/}"
+    owner="${rest%/*}"
+    owner="${owner##*/}"
+    [ -n "$owner" ] && [ -n "$name" ] || return 1
+    case "$owner$name" in
+    *[!A-Za-z0-9_.-]*) return 1 ;;
+    esac
+    printf '%s/%s\n' "$owner" "$name"
+}
+
+# The clone under the projects directory whose `origin` IS that repository -
+# ruling 1. Two levels deep, because the estates this standard places are
+# `<projects>/<Project>` and `<projects>/<Family>/<Project>`.
+clone_with_origin() {
+    local want dir candidate origin found
+    want="$(lower "$1")"
+    for dir in "${PROJECTS_DIRS[@]}"; do
+        [ -d "$dir" ] || continue
+        for candidate in "$dir"/*/ "$dir"/*/*/; do
+            candidate="${candidate%/}"
+            [ -e "$candidate/.git" ] || continue
+            origin="$(git -C "$candidate" remote get-url origin 2>/dev/null || true)"
+            [ -n "$origin" ] || continue
+            found="$(repo_slug_of "$origin" || true)"
+            [ -n "$found" ] || continue
+            if [ "$(lower "$found")" = "$want" ]; then
+                printf '%s\n' "$candidate"
+                return 0
+            fi
+        done
+    done
+    return 1
+}
+
+# The family's members, by the same `  - project: <Project>` row `family.py`
+# writes and `siblings.py` reads. The working clone is `<family folder>/
+# <Project>`, beside the holder.
+family_members() {
+    local manifest="$1" line
+    [ -f "$manifest" ] || return 0
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+        "  - project: "*) printf '%s\n' "$(trim_unquote "${line#  - project: }")" ;;
+        esac
+    done <"$manifest"
+}
+
+# The branch a checkout belongs on: its OWN manifest's `tracking_branch:` —
+# the field `scripts/bootstrap.py` already reads to place the legs — falling
+# back to `main`. The workspace manifest records a `tracking_branch` too, but
+# that is PROVENANCE from the machine that parked; the local declaration is
+# what this machine's clone actually tracks, and the extension takes the same
+# line about `worktree_root`.
+tracking_branch_of() {
+    local root="$1"
+    if yaml_scalar "$root/family.yaml" tracking_branch && [ -n "$YAML_VALUE" ]; then
+        printf '%s\n' "$YAML_VALUE"
+        return 0
+    fi
+    if yaml_scalar "$root/project.yaml" tracking_branch && [ -n "$YAML_VALUE" ]; then
+        printf '%s\n' "$YAML_VALUE"
+        return 0
+    fi
+    printf 'main\n'
+}
+
+# The legs a root declares, by path, out of `project.yaml`'s `legs:` block —
+# the same rows `scripts/bootstrap.py` reads, and in the order it reads them,
+# `role:` before `path:`. The assembly leg is `path: "."` and is the root
+# itself, so it is not one of these.
+#
+# shellcheck disable=SC2329  # only `resume` bootstraps a root, so only
+# `resume` has to ask where its legs are; see the note above.
+legs_of() {
+    local root="$1" line role="" path=""
+    [ -f "$root/project.yaml" ] || return 0
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%$'\r'}"
+        case "$line" in
+        '  - role:'*)
+            role="$(trim_unquote "${line#*:}")"
+            path=""
+            ;;
+        '    path:'*)
+            path="$(trim_unquote "${line#*:}")"
+            [ -n "$role" ] || continue
+            [ "$role" != "assembly" ] || continue
+            [ "$path" != "." ] || continue
+            [ -n "$path" ] && printf '%s\n' "$path"
+            ;;
+        [![:space:]]*) role=""; path="" ;;
+        esac
+    done <"$root/project.yaml"
+}
+# --- END shared estate resolver ---------------------------------------------
+
+# --- the user config and the workspace repository ---------------------------
+
+CONFIG_FILE="${AGENT_PROTOCOL_ROOT:-$HOME/.agents}/workspace.yaml"
+
+# shellcheck disable=SC2088  # a literal leading ~ is what is matched here
+expand_home() {
+    local value="$1"
+    case "$value" in
+    '~') printf '%s\n' "$HOME" ;;
+    '~/'*) printf '%s\n' "$HOME/${value#\~/}" ;;
+    *) printf '%s\n' "$value" ;;
+    esac
+}
+
+# The optional per-org override, as `org<TAB>path` rows. The config's shape is
+# the plan's own (#77 S1, §2.3):
+#
+#     repository: opensoft/brett-wip
+#     path: ~/projects/brett-wip
+#     orgs:
+#       MedxSoft:
+#         repository: MedxSoft/brett-wip
+#         path: ~/projects/MedxSoft-wip
+#
+# READ ONLY, AND NEVER A REFUSAL HERE. The extension refuses a malformed
+# `orgs:` block because it is about to WRITE a manifest and filing a
+# confidential org's work in the wrong repository is the one thing that
+# override exists to prevent. Nothing in this command writes a manifest: it
+# looks for one, so an entry it cannot read is an entry it does not find, and
+# `park.sh`'s own refusal is still the authority on the block being wrong.
+config_org_paths() {
+    local file="$1" line org="" path="" in_orgs=0
+    [ -f "$file" ] || return 0
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%$'\r'}"
+        case "$line" in
+        '#'*) continue ;;
+        orgs:*)
+            in_orgs=1; org=""; path=""
+            continue
+            ;;
+        [![:space:]]*)
+            # ANY other indent-zero key ends the block, so a two-space key
+            # under something else is never read as an org override.
+            [ -z "$org" ] || [ -z "$path" ] || printf '%s\t%s\n' "$org" "$path"
+            in_orgs=0; org=""; path=""
+            continue
+            ;;
+        esac
+        [ "$in_orgs" -eq 1 ] || continue
+        case "$line" in
+        '  '[![:space:]]*)
+            [ -z "$org" ] || [ -z "$path" ] || printf '%s\t%s\n' "$org" "$path"
+            org="$(trim_unquote "${line%:}")"
+            path=""
+            ;;
+        '    path:'*) path="$(trim_unquote "${line#*path:}")" ;;
+        esac
+    done <"$file"
+    [ -z "$org" ] || [ -z "$path" ] || printf '%s\t%s\n' "$org" "$path"
+}
+
+config_path_for_org() {
+    local want org path
+    want="$(lower "$1")"
+    while IFS=$'\t' read -r org path; do
+        [ -n "${path:-}" ] || continue
+        if [ "$(lower "$org")" = "$want" ]; then
+            expand_home "$path"
+            return 0
+        fi
+    done < <(config_org_paths "$CONFIG_FILE")
+    return 1
+}
+
+is_checkout() {
+    local path="$1"
+    [ -n "$path" ] || return 1
+    [ -e "$path/.git" ] || return 1
+    git -C "$path" rev-parse --git-dir >/dev/null 2>&1
+}
+
+# `https://github.com/<owner>/<name>.git` by default.
+#
+# `$OPENREPOSHAPE_REMOTE_BASE` IS THE OFFLINE TEST PATH, and it is the same
+# concession `setup-project.py --local-remote-dir` and `family.py
+# --local-remote-dir` make: a directory of BARE repositories named
+# `<name>.git`, used as origins, so this whole flow — clone the workspace,
+# clone the holder, place the siblings — is provable with no network and no
+# real repository. It is documented here for the same reason the shim
+# documents `$OPENREPOSHAPE_SETUP_SH`, and it grants no file-protocol
+# permission of its own: a test that needs `protocol.file.allow` sets it in
+# git's own environment, which is how it stays a test's decision.
+clone_url_for() {
+    local slug="$1" base="${OPENREPOSHAPE_REMOTE_BASE:-}"
+    if [ -n "$base" ]; then
+        printf '%s/%s.git\n' "${base%/}" "${slug##*/}"
+        return 0
+    fi
+    printf 'https://github.com/%s.git\n' "$slug"
+}
+
+# --- the manifest -----------------------------------------------------------
+
+# `<org>\t<file>\t<workspace>` for every `workspaces/<org>/<Name>.yaml` that
+# records this name, in every workspace checkout this config knows about. The
+# basename is compared CASE-INSENSITIVELY: a standalone project's manifest is
+# named for its `project.yaml` id (`atlas`), and the folder a person types is
+# the repository name (`Atlas`).
+manifest_candidates() {
+    local want workspace dir file base
+    want="$(lower "$1")"
+    shift
+    for workspace in "$@"; do
+        [ -d "$workspace/workspaces" ] || continue
+        for dir in "$workspace"/workspaces/*/; do
+            dir="${dir%/}"
+            [ -d "$dir" ] || continue
+            for file in "$dir"/*.yaml; do
+                [ -f "$file" ] || continue
+                base="${file##*/}"
+                base="${base%.yaml}"
+                [ "$(lower "$base")" = "$want" ] || continue
+                printf '%s\t%s\t%s\n' "${dir##*/}" "$file" "$workspace"
+            done
+        done
+    done
+}
+
+# One field of the FIRST `projects[]` block, read the way the extension's own
+# reader does: on the indent width and the leading `- ` of a list item, which
+# is safe because this file is written by that extension with a fixed layout.
+manifest_project_field() {
+    local file="$1" field="$2" line seen=0
+    [ -f "$file" ] || return 1
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%$'\r'}"
+        case "$line" in
+        '  - id:'*)
+            [ "$seen" -eq 0 ] || return 1
+            seen=1
+            continue
+            ;;
+        esac
+        [ "$seen" -eq 1 ] || continue
+        case "$line" in
+        "    $field:"*)
+            printf '%s\n' "$(trim_unquote "${line#*:}")"
+            return 0
+            ;;
+        esac
+    done <"$file"
+    return 1
+}
+
+# --- the refresh ------------------------------------------------------------
+
+REFUSED=0
+
+# RULING 2, and its whole point: a clone that is dirty or on a feature branch
+# is REFUSED BY NAME AND SKIPPED, never reset. `pull --ff-only origin <branch>`
+# rather than a bare `pull`, so a clone with no upstream configured is
+# fast-forwarded rather than told to set one - and `--ff-only` is what makes a
+# divergent branch a refusal from git itself instead of a merge commit nobody
+# asked for.
+pull_ff_only() {
+    local label="$1" repo="$2" branch="${3:-}" head dirty
+    # THE BRANCH IS AN ARGUMENT so the WORKSPACE repository can be checked
+    # too: it is a private repository with no `project.yaml` and no declared
+    # tracking branch, and refusing it for being on `master` rather than
+    # `main` would be a refusal about nothing. Its caller passes the branch it
+    # is already on, which keeps the dirty guard and the `--ff-only` guard and
+    # drops only the off-branch one.
+    [ -n "$branch" ] || branch="$(tracking_branch_of "$repo")"
+    head="$(git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null || printf '?')"
+    if [ "$head" != "$branch" ]; then
+        REFUSED=$((REFUSED + 1))
+        say "  REFUSED $label: HEAD is '$head', not its tracking branch '$branch'."
+        say "          Nothing was fast-forwarded and nothing was reset. Your work is where you left it."
+        say "            look:  git -C $repo status --short --branch"
+        say "            then:  git -C $repo checkout $branch && $SELF_NAME $ESTATE_NAME"
+        return 1
+    fi
+    dirty="$(git -C "$repo" status --porcelain 2>/dev/null || true)"
+    if [ -n "$dirty" ]; then
+        REFUSED=$((REFUSED + 1))
+        say "  REFUSED $label: uncommitted changes in $repo."
+        say "          Nothing was fast-forwarded and nothing was reset."
+        say "            look:  git -C $repo status --short"
+        say "            then:  commit or stash them yourself, and re-run \`$SELF_NAME $ESTATE_NAME\`."
+        return 1
+    fi
+    if [ "$DRY_RUN" -eq 1 ]; then
+        say "  would fast-forward $label: git -C $repo pull --ff-only origin $branch"
+        return 0
+    fi
+    if ! git -C "$repo" pull --ff-only origin "$branch"; then
+        REFUSED=$((REFUSED + 1))
+        say "  REFUSED $label: \`git pull --ff-only origin $branch\` did not fast-forward."
+        say "          Local commits are on that branch, or the remote has none. Nothing was reset."
+        return 1
+    fi
+    return 0
+}
+
+# THE LEGS, BEFORE A ROOT IS BOOTSTRAPPED (F3 of the review on #83). A root's
+# own `make bootstrap` — `templates/assembly-root/scripts/bootstrap.py`,
+# `checkout_tracking_branch` — runs `git checkout <tracking>` in a leg whose
+# local tracking-branch tip equals the pin, and `checkout -b <tracking> <pin>`
+# in a leg that has no local one. Either MOVES A LEG'S HEAD. A leg sitting on
+# a clean feature branch at the pin makes the superproject clean, so the dirty
+# and off-branch guards above see nothing and say nothing — and `resume` used
+# to walk that leg off `001-my-feature` onto `main` and exit 0.
+#
+# So the legs are asked first, and a root with one off its tracking branch is
+# REFUSED BY NAME and neither pulled nor bootstrapped. DETACHED AT THE PIN is
+# not a refusal: that is the state a fresh clone arrives in and precisely what
+# bootstrap exists to fix.
+root_legs_ok() {
+    local label="$1" root="$2" branch leg head pin at
+    branch="$(tracking_branch_of "$root")"
+    while IFS= read -r leg; do
+        [ -n "$leg" ] || continue
+        [ -e "$root/$leg/.git" ] || continue
+        head="$(git -C "$root/$leg" rev-parse --abbrev-ref HEAD 2>/dev/null || printf '?')"
+        [ "$head" != "$branch" ] || continue
+        if [ "$head" = "HEAD" ]; then
+            pin="$(git -C "$root" rev-parse "HEAD:$leg" 2>/dev/null || true)"
+            at="$(git -C "$root/$leg" rev-parse HEAD 2>/dev/null || true)"
+            if [ -n "$pin" ] && [ "$pin" = "$at" ]; then
+                continue
+            fi
+            head="detached at ${at:-?}, and the pin is ${pin:-?}"
+        fi
+        REFUSED=$((REFUSED + 1))
+        say "  REFUSED $label: leg $leg is on '$head', not its tracking branch '$branch';"
+        say "          \`make bootstrap\` would move it - nothing was touched."
+        say "            look:  git -C $root/$leg status --short --branch"
+        say "            then:  finish or park that leg's work, put it back on $branch, and re-run."
+        return 1
+    done < <(legs_of "$root")
+    return 0
+}
+
+# One root: the legs, then the fast-forward, then its own bootstrap - and a
+# REFUSAL AT ANY STEP SKIPS THE ONES AFTER IT (F1 of the review on #83). The
+# holder's bootstrap is `git submodule update --init --recursive`, which snaps
+# every `members/<X>` back to the recorded gitlink: running it after saying
+# "nothing was reset" would have reset exactly the pin bump the refusal was
+# protecting. Returns 1 when the root was refused.
+refresh_root() {
+    local label="$1" root="$2"
+    root_legs_ok "$label" "$root" || {
+        say "  [$label] bootstrap skipped: refused above. Nothing here was fetched, moved or reset."
+        return 1
+    }
+    pull_ff_only "$label" "$root" || {
+        say "  [$label] bootstrap skipped: refused above. Nothing here was fetched, moved or reset."
+        return 1
+    }
+    run_make "$label" "$root" bootstrap || {
+        REFUSED=$((REFUSED + 1))
+        say "  FINDING: [$label] \`make bootstrap\` did not exit 0; its legs may not be placed."
+    }
+    return 0
+}
+
+run_make() {
+    local label="$1" root="$2" target="$3" args="${4:-}" status
+    if [ ! -f "$root/Makefile" ]; then
+        say "  [$label] no Makefile; \`make $target\` skipped. Re-sync the root with update-shape.py."
+        return 0
+    fi
+    if [ "$DRY_RUN" -eq 1 ]; then
+        # shellcheck disable=SC2016  # the single quotes are LITERAL: this is
+        # the `make` line a person can copy, and `ARGS='...'` is how it is typed.
+        say "  would run: make $target${args:+ ARGS='$args'}   ($root)"
+        return 0
+    fi
+    say "  --- $label: make $target ---"
+    # AN ARRAY, so `ARGS=--feature 001-a --dry-run` reaches make as ONE
+    # assignment. `${var:+"..."}` unquoted is one word in bash today and a
+    # thing a reader has to squint at; an array is neither.
+    local call=(make "$target")
+    [ -z "$args" ] || call+=("ARGS=$args")
+    set +e
+    (cd "$root" && exec "${call[@]}")
+    status=$?
+    set -e
+    return "$status"
+}
+
+# --- arguments -------------------------------------------------------------
+while [ $# -gt 0 ]; do
+    case "$1" in
+    -h | --help) usage; exit 0 ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    --repo) REPO_SLUG="${2:?--repo needs a value}"; REPO_ARG="$REPO_SLUG"; shift 2 ;;
+    --workspace) WORKSPACE_SLUG="${2:?--workspace needs a value}"; shift 2 ;;
+    --org) ORG_WANTED="${2:?--org needs a value}"; shift 2 ;;
+    --name | --project) NAME="${2:?$1 needs a value}"; shift 2 ;;
+    # EVERYTHING AFTER `--` IS THE EXTENSION'S, verbatim: `resume.sh` has
+    # flags this command has no opinion about (--feature, --keep-staged), and
+    # a command that ate them would be a command people stop using the moment
+    # the extension grows one. NOTE that `--workspace` above is THIS
+    # command's, and takes `<owner/name>`; the extension's own `--workspace`
+    # takes a PATH and reaches it through `--`.
+    --) shift; PASSTHROUGH+=("$@"); break ;;
+    -*)
+        usage >&2
+        die "$SELF_NAME does not know $1. Its own flags are listed above; the
+    extension's own flags travel after a \`--\`, so what you want is:
+
+      $SELF_NAME -- $1"
+        ;;
+    *)
+        [ -z "$NAME" ] ||
+            die "two estate names, '$NAME' and '$1'. One positional <Name>, then flags."
+        NAME="$1"; shift ;;
+    esac
+done
+
+[ -z "$NAME" ] || [ -z "$REPO_SLUG" ] ||
+    die "both <Name> ('$NAME') and --repo '$REPO_SLUG'. One estate per run: name it
+    either way, not both."
+
+# A FOLDER NAME, NEVER A PATH. `resume ../x` or `resume /abs` would otherwise
+# be joined to the projects directory and clone somewhere nobody named.
+[ -z "$NAME" ] || is_safe_folder_name "$NAME" ||
+    die "'$NAME' is not an estate name: it is a path, or it carries a character
+    an estate folder may not. <Name> is ONE name — the family or project your
+    workspace record names — with no slash and no leading dot."
+
+command -v git >/dev/null 2>&1 ||
+    die "no \`git\` on PATH, so nothing can be cloned or fast-forwarded."
+command -v make >/dev/null 2>&1 ||
+    die "no \`make\` on PATH, so the estate's own \`make resume\` cannot be run.
+    Install it (\`xcode-select --install\` on macOS, \`sudo apt-get install -y
+    make\` on Debian and Ubuntu), then re-run \`$SELF_NAME\`."
+
+# --- which estate, by name ---------------------------------------------------
+if [ -n "$REPO_SLUG" ]; then
+    # ANY SPELLING A PERSON MIGHT PASTE, through the same reader that reads a
+    # clone's `origin`, so both sides of the comparison come from one parser.
+    REPO_SLUG="$(repo_slug_of "$REPO_SLUG" || true)"
+    [ -n "$REPO_SLUG" ] || die "--repo '$REPO_ARG' is not a repository: it wants <owner>/<name>, or any
+    url spelling of one (https://…/<owner>/<name>.git, git@host:<owner>/<name>).
+    A family's members may live in another organisation, so there is no owner
+    to assume, and a path on disk has none to read."
+    MATCH="$(clone_with_origin "$REPO_SLUG" || true)"
+    [ -n "$MATCH" ] || die "no clone under your projects directory has origin $REPO_SLUG.
+    \`--repo\` names a clone you ALREADY HAVE (RULING 2026-09-09 ruling 1). To
+    bring an estate back that is not here yet, name it as your workspace
+    record does:
+
+      $SELF_NAME <Name>
+
+estates found under your projects directory:
+$(estates_or_none)"
+    estate_walk_up "$MATCH" ||
+        die "$MATCH is a clone of $REPO_SLUG, but nothing at or above it is an
+    estate: no \`family.yaml\` holder beside it and no \`project.yaml\` root."
+    NAME="$ESTATE_NAME"
+elif [ -z "$NAME" ]; then
+    estate_walk_up "$PWD" || die "no estate around $PWD, and no <Name> was given.
+    On a machine that has none of it yet, \`$SELF_NAME <Name>\` is how it comes
+    back - <Name> being the family or project your workspace record names.
+    Estates already here:
+
+$(estates_or_none)"
+    NAME="$ESTATE_NAME"
+fi
+
+# --- (1) the workspace repository -------------------------------------------
+say "resume: $NAME"
+say ""
+say "(1) the workspace record"
+
+CONFIG_REPO=""
+CONFIG_PATH=""
+if [ -f "$CONFIG_FILE" ]; then
+    yaml_scalar "$CONFIG_FILE" repository && CONFIG_REPO="$YAML_VALUE"
+    yaml_scalar "$CONFIG_FILE" path && CONFIG_PATH="$(expand_home "$YAML_VALUE")"
+fi
+
+WORKSPACE=""
+if [ -f "$CONFIG_FILE" ]; then
+    say "  config          $CONFIG_FILE"
+    [ -n "$CONFIG_PATH" ] || die "$CONFIG_FILE names no \`path:\`, so there is no workspace checkout
+    to read your record from. It wants exactly two lines:
+
+      repository: <owner>/<repo>
+      path: ~/projects/<repo>"
+    # `--workspace` NEVER SILENTLY REPLACES AN EXISTING CONFIG. Two different
+    # private repositories for one person's work is a state nothing here can
+    # arbitrate, so it is said out loud rather than picked.
+    if [ -n "$WORKSPACE_SLUG" ] && [ -n "$CONFIG_REPO" ] &&
+        [ "$(lower "$WORKSPACE_SLUG")" != "$(lower "$CONFIG_REPO")" ]; then
+        die "--workspace $WORKSPACE_SLUG, but $CONFIG_FILE already names
+    $CONFIG_REPO. This command writes that file only on a machine that has
+    none, and it never overwrites one. Drop the flag to use the config, or
+    edit the file yourself."
+    fi
+    if is_checkout "$CONFIG_PATH"; then
+        WORKSPACE="$CONFIG_PATH"
+        # THE SAME GUARD EVERY OTHER CHECKOUT GETS, and a refusal here is a
+        # refusal: the record is what the whole run reads, and cloning an
+        # estate out of a manifest whose checkout is dirty or mid-conflict is
+        # exactly the wrong thing to do quietly. The branch passed is the one
+        # it is already on — a private repository declares no tracking branch,
+        # so being on `master` is not a finding.
+        if ! pull_ff_only "workspace" "$WORKSPACE" \
+            "$(git -C "$WORKSPACE" rev-parse --abbrev-ref HEAD 2>/dev/null || printf 'main')"; then
+            die "your workspace checkout at $WORKSPACE was not fast-forwarded, so the
+    record this run would read may not be the one \`park\` last wrote.
+    Nothing was cloned and nothing was resumed. Sort that checkout out — the
+    lines above name what it is — and re-run \`$SELF_NAME $NAME\`."
+        fi
+    else
+        [ -n "$CONFIG_REPO" ] || die "$CONFIG_PATH, which $CONFIG_FILE names as your workspace checkout,
+    is not a Git checkout, and the config names no \`repository:\` to clone.
+    Add it, or clone the repository there yourself."
+        WORKSPACE="$CONFIG_PATH"
+        if [ "$DRY_RUN" -eq 1 ]; then
+            say "  would clone      $(clone_url_for "$CONFIG_REPO") -> $WORKSPACE"
+        else
+            say "  cloning         $CONFIG_REPO -> $WORKSPACE"
+            mkdir -p -- "$(dirname -- "$WORKSPACE")"
+            git clone "$(clone_url_for "$CONFIG_REPO")" "$WORKSPACE"
+        fi
+    fi
+else
+    [ -n "$WORKSPACE_SLUG" ] || die "no workspace record is configured, so there is nothing to resume from.
+    \`park\` writes the feature list into a PRIVATE REPOSITORY YOU OWN, and
+    this machine has not been told which one. Name it once, by name:
+
+      $SELF_NAME $NAME --workspace <owner>/<repo>
+
+    which clones it and writes two lines into
+
+      $CONFIG_FILE
+
+    Nothing else in this standard writes that file, and nothing guesses the
+    repository."
+    case "$WORKSPACE_SLUG" in
+    */*) ;;
+    *) die "--workspace '$WORKSPACE_SLUG' is not <owner/name>." ;;
+    esac
+    WORKSPACE="$(projects_dir_for_new)/${WORKSPACE_SLUG##*/}"
+    if [ "$DRY_RUN" -eq 1 ]; then
+        say "  would clone      $(clone_url_for "$WORKSPACE_SLUG") -> $WORKSPACE"
+        say "  would write      $CONFIG_FILE (repository:, path:)"
+    else
+        say "  cloning         $WORKSPACE_SLUG -> $WORKSPACE"
+        mkdir -p -- "$(dirname -- "$WORKSPACE")"
+        git clone "$(clone_url_for "$WORKSPACE_SLUG")" "$WORKSPACE"
+        # THE ONLY WRITE TO THIS FILE ANYWHERE IN THIS STANDARD, and only
+        # because it was asked for by name. Two keys, `~` where the path is
+        # under $HOME so the file travels with the thing it points at.
+        CONFIG_WRITTEN="$WORKSPACE"
+        case "$WORKSPACE" in
+        "$HOME"/*) CONFIG_WRITTEN="~${WORKSPACE#"$HOME"}" ;;
+        esac
+        mkdir -p -- "$(dirname -- "$CONFIG_FILE")"
+        [ ! -e "$CONFIG_FILE" ] ||
+            die "$CONFIG_FILE appeared while this ran; it was not overwritten."
+        printf 'repository: %s\npath: %s\n' "$WORKSPACE_SLUG" "$CONFIG_WRITTEN" \
+            >"$CONFIG_FILE"
+        say "  wrote           $CONFIG_FILE"
+        say "                  repository: $WORKSPACE_SLUG"
+        say "                  path: $CONFIG_WRITTEN"
+    fi
+fi
+
+# --- (2) the manifest -------------------------------------------------------
+say ""
+say "(2) the manifest for $NAME"
+
+# ONE ENTRY PER DIRECTORY, compared as a PHYSICAL path (F4 of the review on
+# #83): two spellings of one checkout — an `orgs:` override pointing at the
+# same clone as the default, a symlinked projects directory — would otherwise
+# be searched twice and every manifest in it counted twice, which read as
+# "two orgs record this name" and could not be answered by `--org` at all.
+WORKSPACES=()
+add_workspace() {
+    local candidate="$1" physical existing
+    [ -n "$candidate" ] || return 0
+    is_checkout "$candidate" || return 0
+    physical="$(cd "$candidate" 2>/dev/null && pwd -P)" || physical="$candidate"
+    for existing in ${WORKSPACES[@]+"${WORKSPACES[@]}"}; do
+        [ "$existing" != "$physical" ] || return 0
+    done
+    WORKSPACES+=("$physical")
+}
+add_workspace "$WORKSPACE"
+# `orgs:` IS HONOURED IN THE ONLY ORDER THAT IS POSSIBLE. The override is
+# keyed by the estate's org, and the org is a fact recorded IN the manifest
+# (`workspaces/<org>/<Name>.yaml`), so the file has to be found before the org
+# is known: every workspace the config names is searched, and `--org` says
+# which answer was meant when two of them have one.
+if [ -n "$ORG_WANTED" ]; then
+    ORG_PATH="$(config_path_for_org "$ORG_WANTED" || true)"
+    [ -z "$ORG_PATH" ] || add_workspace "$ORG_PATH"
+fi
+while IFS=$'\t' read -r _ override; do
+    [ -n "${override:-}" ] || continue
+    add_workspace "$(expand_home "$override")"
+done < <(config_org_paths "$CONFIG_FILE")
+# Nothing readable at all: the dry-run branch below says so, and a real run
+# has already refused if the config named no checkout it could clone.
+[ ${#WORKSPACES[@]} -gt 0 ] || WORKSPACES=("$WORKSPACE")
+
+MANIFEST_ORG=""
+MANIFEST_FILE=""
+FOUND=0
+FOUND_ORGS=""
+FOUND_ROWS=""
+if [ "$DRY_RUN" -eq 1 ] && [ ! -d "${WORKSPACES[0]}" ]; then
+    say "  (--dry-run: the workspace is not here, so no manifest could be read)"
+else
+    # WHAT MAKES THE QUESTION UNANSWERABLE IS TWO ORGS, not two files (F4 of
+    # the review on #83). The same `<org>/<name>.yaml` reached through two
+    # checkouts of one workspace repository is ONE record, and `--org` could
+    # not have told them apart; two DISTINCT orgs is the case `--org` exists
+    # for. So the pairs are deduped on `<org>` plus the file's basename and
+    # the refusal counts the orgs that are left.
+    while IFS=$'\t' read -r org file _; do
+        [ -n "${file:-}" ] || continue
+        if [ -n "$ORG_WANTED" ] && [ "$(lower "$org")" != "$(lower "$ORG_WANTED")" ]; then
+            continue
+        fi
+        case " $FOUND_ORGS " in
+        *" $(lower "$org")/${file##*/} "*) continue ;;
+        esac
+        FOUND_ORGS="$FOUND_ORGS $(lower "$org")/${file##*/}"
+        FOUND=$((FOUND + 1))
+        FOUND_ROWS="$FOUND_ROWS  $org/${file##*/}   $file
+"
+        MANIFEST_ORG="$org"
+        MANIFEST_FILE="$file"
+    done < <(manifest_candidates "$NAME" "${WORKSPACES[@]}")
+fi
+
+if [ "$FOUND" -gt 1 ]; then
+    die "$FOUND workspace manifests record '$NAME', in different orgs:
+
+$FOUND_ROWS
+    Two projects in two organisations may share a name, so nothing here picks
+    one. Say which:
+
+      $SELF_NAME $NAME --org <org>"
+fi
+
+ESTATE_PRESENT=0
+if estate_by_name "$NAME"; then
+    ESTATE_PRESENT=1
+fi
+
+if [ "$FOUND" -eq 0 ]; then
+    if [ "$ESTATE_PRESENT" -eq 0 ] && [ "$DRY_RUN" -eq 0 ]; then
+        die "no workspace manifest records '$NAME', and there is no estate of that
+    name here, so there is nothing to clone and nothing to recreate.
+    Either it was never parked, or it was parked under another name:
+
+      grep -rn 'id: ' $WORKSPACE/workspaces/
+      ls $WORKSPACE/workspaces/*/
+
+    A family's manifest is \`workspaces/<org>/<Family>.yaml\`; a standalone
+    project's is named for its \`project.yaml\` id."
+    fi
+    say "  none found; the estate that IS here will be refreshed, and \`make resume\`"
+    say "  will print the extension's own refusal if it has no record either."
+else
+    say "  $MANIFEST_FILE"
+    say "  org             $MANIFEST_ORG"
+fi
+
+# --- what the manifest says the estate is -----------------------------------
+MANIFEST_KIND=""
+MANIFEST_DIRNAME=""
+ROOT_REPOSITORY=""
+if [ -n "$MANIFEST_FILE" ]; then
+    MANIFEST_ROOT_VALUE="$(manifest_project_field "$MANIFEST_FILE" root || true)"
+    if yaml_scalar "$MANIFEST_FILE" family && [ -n "$YAML_VALUE" ]; then
+        MANIFEST_KIND="family"
+        # THE FOLDER COMES FROM `root:`, NEVER FROM `family:` (F2 of the
+        # review on #83, and the headline of it). `park.sh` writes `family:`
+        # from `family.yaml`'s `id:` — `workspace_family_name` reads that key
+        # — and an id is LOWERCASE by construction (`family.py`'s
+        # `--id ... or family.lower()`, checked against
+        # `PROJECT_ID_RE = ^[a-z0-9][a-z0-9-]*$`). The FOLDER is the family's
+        # `name:`, CamelCase, which is what `is_family_folder` requires to
+        # match the directory. Deriving the folder from `family:` therefore
+        # produced `~/projects/inkrouter/inkrouter`, a clone of
+        # `<org>/inkrouter` that 404s on any case-sensitive remote, and then a
+        # "not an estate" refusal over the half-estate it had just made.
+        #
+        # `workspace_manifest_root_value` writes each MEMBER's `root:` as
+        # `<family folder>/<project folder>` with the real casing, so the
+        # first segment is the family folder and — the holder repository being
+        # the family's own name in its org, #76 ruling 3's doubled-name layout
+        # — it is the holder repository's name too. `family:` stays what it is
+        # good for: the flag that says this file is a family's at all.
+        MANIFEST_DIRNAME="${MANIFEST_ROOT_VALUE%%/*}"
+        [ -n "$MANIFEST_ROOT_VALUE" ] &&
+            [ "$MANIFEST_DIRNAME" != "$MANIFEST_ROOT_VALUE" ] ||
+            die "$MANIFEST_FILE says \`family: $YAML_VALUE\` but its first project records
+    \`root: ${MANIFEST_ROOT_VALUE:-(nothing)}\`, which names no family folder. A member of a
+    family is recorded as <family folder>/<project folder>, so this file
+    cannot say where the holder goes. It is written by \`park\`; a
+    hand-edited one is fixed by hand."
+        ROOT_REPOSITORY="$MANIFEST_ORG/$MANIFEST_DIRNAME"
+    else
+        MANIFEST_KIND="standalone"
+        ROOT_REPOSITORY="$(manifest_project_field "$MANIFEST_FILE" repository || true)"
+        MANIFEST_DIRNAME="$MANIFEST_ROOT_VALUE"
+        [ -n "$MANIFEST_DIRNAME" ] || MANIFEST_DIRNAME="${ROOT_REPOSITORY##*/}"
+        [ -n "$ROOT_REPOSITORY" ] || die "$MANIFEST_FILE records no \`repository:\` for its first project, so
+    there is no repository to clone. That file is written by \`park\`; a
+    hand-edited one is fixed by hand."
+    fi
+    # A NAME, NEVER A PATH (F7 of the review on #83). `root:` is somebody's
+    # file and the schema's own invariant is that it is relative and POSIX —
+    # but a hand-edited `root: ../../elsewhere/X` would otherwise be joined to
+    # the projects directory and cloned outside it. Checked BEFORE any path is
+    # built from it, so nothing is created to be noticed afterwards.
+    is_safe_folder_name "$MANIFEST_DIRNAME" ||
+        die "$MANIFEST_FILE records \`root: $MANIFEST_ROOT_VALUE\`, whose folder name
+    '$MANIFEST_DIRNAME' is not one: an estate folder is a single name under your
+    projects directory, with no slash and no leading dot. Nothing was cloned.
+    That file is written by \`park\`; a hand-edited one is fixed by hand."
+    say "  records         a $MANIFEST_KIND estate, root repository $ROOT_REPOSITORY"
+fi
+
+# THE ESTATE ON DISK WINS over the manifest's idea of where it is: the manifest
+# records a RELATIVE folder name and this machine's own layout is the truth
+# about where that folder sits.
+if [ "$ESTATE_PRESENT" -eq 0 ] && [ -n "$MANIFEST_DIRNAME" ] &&
+    [ "$MANIFEST_DIRNAME" != "$NAME" ]; then
+    if estate_by_name "$MANIFEST_DIRNAME"; then
+        ESTATE_PRESENT=1
+    fi
+fi
+
+# --- (3) rebuild or refresh the estate --------------------------------------
+say ""
+say "(3) the estate"
+
+SIBLINGS_LOG=""
+# shellcheck disable=SC2329  # invoked by the EXIT trap on the next line but one
+cleanup() { [ -z "$SIBLINGS_LOG" ] || rm -f -- "$SIBLINGS_LOG"; }
+# THE TRAP BELONGS TO THE SHELL THAT DOES THE WRITING, so it is set here in
+# the main shell and never inside a `$(...)` — the defect #74 was, in the shim.
+trap cleanup EXIT
+
+# WHICH MEMBERS ALREADY HAD A WORKING CLONE, as a space-delimited list with
+# sentinel spaces so `case` can ask about one. A project name carries no space
+# — `family.py` refuses one that does — so this is a set and not a guess.
+EXISTING_SIBLINGS=" "
+# Members whose working clone was refused, so the verb is not run in them
+# either (F9 of the review on #83), and the root itself when it was refused.
+REFUSED_MEMBERS=" "
+ROOT_REFUSED=0
+
+if [ "$ESTATE_PRESENT" -eq 1 ]; then
+    say "  present         $ESTATE_DIR ($ESTATE_KIND)"
+    if [ "$ESTATE_KIND" = "family" ]; then
+        refresh_root "holder $ESTATE_NAME" "$ESTATE_ROOT" || ROOT_REFUSED=1
+    else
+        refresh_root "root $ESTATE_NAME" "$ESTATE_ROOT" || ROOT_REFUSED=1
+    fi
+else
+    if [ -z "$ROOT_REPOSITORY" ]; then
+        # A DRY RUN ON A FRESH MACHINE CANNOT KNOW MORE THAN THIS, and saying
+        # so is the honest answer: the manifest lives in a workspace this run
+        # deliberately did not clone, so the plan genuinely stops here. It is
+        # not a refusal - nothing was asked for that could not be answered.
+        if [ "$DRY_RUN" -eq 1 ]; then
+            say "  absent          the workspace was not cloned, so the manifest that names the"
+            say "                  estate's repository could not be read. A real run clones the"
+            say "                  workspace first and then the estate."
+            say ""
+            say "resume: $NAME - --dry-run: nothing was cloned, pulled, bootstrapped or recreated."
+            exit 0
+        fi
+        die "there is no estate named '$NAME' here and no manifest to clone one
+    from, so nothing was created."
+    fi
+    ESTATE_KIND="$MANIFEST_KIND"
+    ESTATE_NAME="$MANIFEST_DIRNAME"
+    if [ "$ESTATE_KIND" = "family" ]; then
+        ESTATE_DIR="$(projects_dir_for_new)/$ESTATE_NAME"
+        ESTATE_ROOT="$ESTATE_DIR/$ESTATE_NAME"
+    else
+        ESTATE_DIR="$(projects_dir_for_new)/$ESTATE_NAME"
+        ESTATE_ROOT="$ESTATE_DIR"
+    fi
+    say "  absent          cloning $ROOT_REPOSITORY -> $ESTATE_ROOT"
+    if [ "$DRY_RUN" -eq 1 ]; then
+        say "  would clone      git clone --recurse-submodules $(clone_url_for "$ROOT_REPOSITORY") $ESTATE_ROOT"
+        say "  would run        make bootstrap in $ESTATE_ROOT"
+        [ "$ESTATE_KIND" != "family" ] || say "  would run        make siblings in $ESTATE_ROOT"
+        say ""
+        say "resume: $NAME - --dry-run: nothing was cloned, pulled, bootstrapped or recreated."
+        exit 0
+    fi
+    mkdir -p -- "$ESTATE_DIR"
+    git clone --recurse-submodules "$(clone_url_for "$ROOT_REPOSITORY")" "$ESTATE_ROOT"
+    # The clone is what makes the estate readable; from here on the facts come
+    # off disk, exactly as they would for an estate that was already here.
+    estate_here "$ESTATE_DIR" ||
+        die "$ESTATE_ROOT was cloned, but $ESTATE_DIR is not an estate: no
+    \`family.yaml\` holder and no \`project.yaml\` root. The manifest named
+    $ROOT_REPOSITORY; that repository is not a root of this shape."
+    run_make "$ESTATE_NAME" "$ESTATE_ROOT" bootstrap || {
+        REFUSED=$((REFUSED + 1))
+        say "  FINDING: \`make bootstrap\` did not exit 0 in $ESTATE_ROOT; its legs may not be placed."
+    }
+fi
+
+if [ "$ESTATE_KIND" = "family" ]; then
+    # WHICH SIBLINGS WERE ALREADY HERE, recorded BEFORE `make siblings` runs:
+    # a clone that command places is already on its tracking branch with its
+    # own bootstrap run, so fast-forwarding it again would be work for
+    # nothing. The ones that were here are the ones ruling 2 is about.
+    while IFS= read -r member; do
+        [ -e "$ESTATE_DIR/$member/.git" ] || continue
+        EXISTING_SIBLINGS="$EXISTING_SIBLINGS$member "
+    done < <(family_members "$ESTATE_ROOT/family.yaml")
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+        say "  would run: make siblings   ($ESTATE_ROOT)"
+    else
+        SIBLINGS_LOG="$(mktemp)"
+        say "  --- $ESTATE_NAME: make siblings ---"
+        set +e
+        (cd "$ESTATE_ROOT" && exec make siblings) 2>&1 | tee "$SIBLINGS_LOG"
+        SIBLINGS_STATUS=${PIPESTATUS[0]}
+        set -e
+        if [ "$SIBLINGS_STATUS" -ne 0 ]; then
+            REFUSED=$((REFUSED + 1))
+            say "  FINDING: \`make siblings\` exited $SIBLINGS_STATUS; read its findings above."
+        fi
+    fi
+
+    say ""
+    say "  each member's own working clone, fast-forwarded (RULING ruling 2)"
+    while IFS= read -r member; do
+        [ -n "$member" ] || continue
+        if [ ! -e "$ESTATE_DIR/$member/.git" ]; then
+            # `make siblings` above is what places one, and it has already
+            # reported this as a finding of its own. Said again here because
+            # the line a person reads next is this list.
+            say "  [$member] still no working clone beside the holder; \`make siblings\` places one."
+            continue
+        fi
+        case "$EXISTING_SIBLINGS" in
+        *" $member "*) ;;
+        *)
+            # JUST PLACED by `make siblings`, which clones on the tracking
+            # branch and runs the member's own bootstrap. Fast-forwarding a
+            # clone one command old would be work for nothing.
+            say "  [$member] placed by \`make siblings\`: on its tracking branch, its own bootstrap run."
+            continue
+            ;;
+        esac
+        refresh_root "$member" "$ESTATE_DIR/$member" ||
+            REFUSED_MEMBERS="$REFUSED_MEMBERS$member "
+    done < <(family_members "$ESTATE_ROOT/family.yaml")
+fi
+
+# --- (4) the verb -----------------------------------------------------------
+# ONE `ARGS=` STRING, because that is the whole interface the two Makefiles
+# offer (#80): the recipe word-splits `$(ARGS)`, so an argument carrying a
+# space cannot survive the trip and this command does not pretend otherwise.
+MAKE_ARGS=""
+[ "$DRY_RUN" -eq 0 ] || MAKE_ARGS="--dry-run"
+if [ ${#PASSTHROUGH[@]} -gt 0 ]; then
+    MAKE_ARGS="${MAKE_ARGS:+$MAKE_ARGS }${PASSTHROUGH[*]}"
+fi
+
+say ""
+# shellcheck disable=SC2016  # the single quotes are LITERAL, as above
+say "(4) make resume${MAKE_ARGS:+ ARGS='$MAKE_ARGS'}   ($ESTATE_ROOT)"
+
+# THE EXIT CODE IS MAKE'S, UNCHANGED. `resume.sh`'s own 0/1/2/3 do not survive
+# make - GNU make reports ANY non-zero recipe status as its own exit 2 and
+# prints `Error <code>` - and this command neither rewrites nor rescues that:
+# the code is in make's diagnostic, and a run that refused must never read as
+# success. #80's Makefile says the same thing at the target.
+STATUS=0
+RESUME_CALL=(make resume)
+[ -z "$MAKE_ARGS" ] || RESUME_CALL+=("ARGS=$MAKE_ARGS")
+
+# A CLONE THIS RUN REFUSED DOES NOT GET THE VERB EITHER (F9 of the review on
+# #83). The holder's `make resume` is `siblings.py --make resume`, whose whole
+# flag set is `--root`, `--dry-run`, `--make` and `--make-arg`: there is no
+# exclusion to hand it, so with a refusal on the board the verb is run PER
+# NON-REFUSED SIBLING here instead, and the holder's own dispatch is used
+# whenever there is nothing to exclude - which is every ordinary run. Adding
+# an `--exclude` to `siblings.py` is a change to a PINNED template file that
+# reaches every holder through `update-shape.py`, and it is not this object's
+# to make; #82's follow-up can propose it.
+run_the_verb_per_sibling() {
+    local member status worst=0
+    say "  the holder's dispatch is NOT used: it has no way to leave a refused member out,"
+    say "  so the verb runs in each member that was not refused, and in no other."
+    while IFS= read -r member; do
+        [ -n "$member" ] || continue
+        case "$REFUSED_MEMBERS" in
+        *" $member "*)
+            say "  [$member] refused above; \`make resume\` NOT run. Nothing here was touched."
+            continue
+            ;;
+        esac
+        [ -e "$ESTATE_DIR/$member/.git" ] || continue
+        status=0
+        run_make "$member" "$ESTATE_DIR/$member" resume "$MAKE_ARGS" || status=$?
+        [ "$status" -eq 0 ] || worst="$status"
+    done < <(family_members "$ESTATE_ROOT/family.yaml")
+    return "$worst"
+}
+
+if [ "$DRY_RUN" -eq 1 ] && [ ! -f "$ESTATE_ROOT/Makefile" ]; then
+    say "  would run: make resume"
+elif [ "$ROOT_REFUSED" -eq 1 ] && [ "$ESTATE_KIND" != "family" ]; then
+    # A standalone root that was refused is one checkout, and it is the one
+    # the verb would run in. Nothing here was touched, and that includes this.
+    say "  NOT run: $ESTATE_ROOT was refused above. Nothing here was touched."
+    say "  Sort that checkout out - the lines above name what it is - and re-run."
+elif [ "$REFUSED_MEMBERS" != " " ]; then
+    set +e
+    run_the_verb_per_sibling
+    STATUS=$?
+    set -e
+else
+    set +e
+    (cd "$ESTATE_ROOT" && exec "${RESUME_CALL[@]}")
+    STATUS=$?
+    set -e
+fi
+
+# --- (5) the layout, and the summary ----------------------------------------
+say ""
+say "(5) the layout"
+if [ -n "$SIBLINGS_LOG" ] && [ -s "$SIBLINGS_LOG" ] &&
+    grep -q '^(b) the layout$' "$SIBLINGS_LOG"; then
+    # `make siblings`' OWN TABLE, reprinted rather than recomputed: two
+    # readings of "what is beside the holder" is how they start disagreeing.
+    sed -n '/^(b) the layout$/,/^$/p' "$SIBLINGS_LOG"
+elif [ "$ESTATE_KIND" = "standalone" ]; then
+    printf '  %-9s %-18s %-22s %s\n' "what" "name" "state" "branch"
+    printf '  %-9s %-18s %-22s %s\n' "root" "$ESTATE_NAME" "the assembly root" \
+        "$(git -C "$ESTATE_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || printf '?')"
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        printf '  %-9s %-18s %-22s %s\n' "leg" "$line" "mounted" \
+            "$(git -C "$ESTATE_ROOT/$line" rev-parse --abbrev-ref HEAD 2>/dev/null || printf '?')"
+    done < <(git -C "$ESTATE_ROOT" config --file .gitmodules \
+        --get-regexp '^submodule\..*\.path$' 2>/dev/null | sed 's/^[^ ]* //' || true)
+else
+    say "  (no layout table: \`make siblings\` did not run)"
+fi
+
+say ""
+say "resume: $ESTATE_NAME - \`make resume\` exited $STATUS; $REFUSED refusal(s) or finding(s) above."
+say "  ct / cts land you in the feature the record named active; agent sessions do not travel,"
+say "  and a handoff document is the bridge for those."
+if [ "$DRY_RUN" -eq 1 ]; then
+    say "  --dry-run: nothing was cloned, pulled, bootstrapped or recreated."
+fi
+
+[ "$STATUS" -eq 0 ] || exit "$STATUS"
+# A REFUSAL IS NOT A PASS, and neither is a skip: a run that could not
+# fast-forward a member must not exit 0, or somebody reads it as the estate
+# being current when part of it is not (#80's rule, for the same reason).
+[ "$REFUSED" -eq 0 ] || exit 1
+exit 0
