@@ -56,12 +56,23 @@ OPENREPOTOOLS_INSTALL = (
     "curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoTools/"
     "main/openRepoTools | bash -s -- --install")
 
+#: THE FOUR THINGS THIS COMMAND DOES, in the order a person meets them, plus
+#: the two that are about the command itself. The order is asserted nowhere —
+#: `--help` is checked line by line — but it is the order the file carries,
+#: and a reader of this tuple should see what a reader of `--help` sees.
 USAGE_LINES = (
-    "openRepoShape <Project> [--org <org>] [setup-project.py options] [-- <scaffold flags>]",
     "openRepoShape --install            install (or update) this command into ~/.local/bin",
-    "openRepoShape --doctor             check this machine and stop; creates nothing",
+    "openRepoShape --preflight          check this MACHINE and stop; creates nothing",
+    "openRepoShape --doctor [<path>]    diagnose a REPOSITORY against this standard",
+    "openRepoShape <Project> [--org <org>] [setup-project.py options] [-- <scaffold flags>]",
     "openRepoShape --help | --version",
 )
+
+#: The scaffold line specifically, for the refusals that print the usage at
+#: somebody who was trying to scaffold. Named rather than indexed: the tuple
+#: above is free to be reordered, and an index would silently start asserting
+#: about a different line.
+USAGE_SCAFFOLD = USAGE_LINES[3]
 
 #: Same two reasons as `test_setup_sh.py`: no bash, or a Windows runner where
 #: bash.exe exists and the `python3` the fetched `setup.sh` calls does not.
@@ -116,7 +127,7 @@ def run_cmd(*args: str, home: Path | None = None, env: dict | None = None,
 # --- what it says about itself ---------------------------------------------
 
 def test_help_prints_every_usage_line():
-    """Every line `--help` promises, including the `--doctor` one #59
+    """Every line `--help` promises, including the `--preflight` one #59
     added: a usage line nobody asserts on is a usage line that can go
     stale without anything noticing."""
     result = run_cmd("--help")
@@ -276,20 +287,33 @@ def test_install_says_how_to_put_it_on_path(tmp_path):
 def test_install_from_a_file_never_calls_gh(tmp_path):
     """`--install` run from a file copies THOSE bytes. A machine with no `gh`
     — or no network — must still be able to install the command, so a `gh` on
-    $PATH that fails loudly may not be reached at all."""
+    $PATH that fails loudly may not be FETCHED through.
+
+    ONE CALL IS ALLOWED, AND IT IS NAMED: `gh auth status`, from the
+    read-only machine report the install now ends with. That is a question
+    about this machine and not a fetch, it happens after every byte is
+    placed, and it cannot change the exit code — so the assertion is on WHAT
+    was asked rather than on whether `gh` was reached, which is the stronger
+    claim anyway.
+    """
     shim = tmp_path / "bin"
     shim.mkdir()
-    marker = tmp_path / "gh-was-called"
+    log = tmp_path / "gh-calls.log"
     # QUOTED for the reason `fake_github`'s log is: an unquoted path with a
-    # space in it makes `touch` create two files, neither of them $marker, and
-    # a witness nobody can find is a test that passes without guarding.
-    (shim / "gh").write_text(f"#!/bin/sh\ntouch '{marker}'\nexit 1\n",
-                             encoding="utf-8")
+    # space in it makes the redirection land somewhere else, and a witness
+    # nobody can find is a test that passes without guarding.
+    (shim / "gh").write_text(
+        f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{log}'\nexit 1\n",
+        encoding="utf-8")
     (shim / "gh").chmod(0o755)
     result = run_cmd("--install", home=tmp_path,
                      env={"PATH": f"{shim}:{os.environ['PATH']}"})
     assert result.returncode == 0, result.stderr
-    assert not marker.exists(), "--install from a file must not call gh"
+    called = log.read_text(encoding="utf-8").split("\n")[:-1] \
+        if log.exists() else []
+    assert called == ["auth status"], (
+        "--install from a file must not FETCH through gh; the only call it "
+        f"may make is the machine report's `gh auth status`. Got: {called}")
     for name in INSTALLED:
         assert (tmp_path / ".local" / "bin" / name).is_file(), name
 
@@ -357,35 +381,300 @@ def test_a_family_value_is_never_taken_as_the_project(tmp_path):
     assert not (tmp_path / "remotes").exists()
 
 
-# --- --doctor ---------------------------------------------------------------
+# --- a bare run ------------------------------------------------------------
 
-def test_doctor_passes_through_without_an_org(tmp_path):
-    """`openRepoShape --doctor` is the "install program" without a second
+def test_a_bare_run_prints_the_usage_and_exits_one():
+    """No arguments at all: say what this command does, and stop.
+
+    It used to fall through into the scaffold path and refuse "no
+    organisation to scaffold into" — an answer about a run the person had not
+    asked for, and about the one of four things this command does that is
+    hardest to undo. Exit 1 rather than 0 because typing a command and
+    getting a page of text is a mistake being reported; `--help` is the same
+    page and exits 0, because asking is not.
+    """
+    result = run_cmd()
+    assert result.returncode == 1, result.stdout + result.stderr
+    lines = result.stdout.splitlines()
+    for line in USAGE_LINES:
+        assert line in lines, f"a bare run never printed:\n    {line}"
+    assert "no organisation to scaffold into" not in result.stderr
+
+
+def test_a_bare_run_fetches_nothing(tmp_path):
+    """And it stops BEFORE anything is fetched.
+
+    The fake `gh` and `curl` here log every call they get, so "nothing was
+    fetched" is asserted against what was actually asked for rather than
+    against the absence of an error — a usage page printed after a
+    round-trip to github.com would look identical on screen.
+    """
+    log = tmp_path / "calls.log"
+    served = fake_github(tmp_path, INSTALLED, log=log)
+    result = subprocess.run(
+        ["bash", str(COMMAND)], capture_output=True, text=True, check=False,
+        input="", env=command_env(home=tmp_path, setup_sh=None, env=served))
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert USAGE_LINES[0] in result.stdout
+    assert not log.exists(), (
+        f"a bare run called out to the network:\n{log.read_text()}")
+
+
+@pytest.mark.parametrize("args", [
+    ("Atlas",),
+    ("--org", "TestOrg"),
+    ("--visibility", "private"),
+])
+def test_any_scaffold_argument_keeps_the_old_behaviour(args, tmp_path):
+    """One argument is enough to mean a scaffold, refusals included.
+
+    A person who typed something meant something, and answering them with a
+    usage page instead of the refusal they earned would hide WHICH of their
+    arguments was the problem — which is the whole value of the refusal.
+    """
+    result = run_cmd(*args, "--local-remote-dir", str(tmp_path / "remotes"))
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "REFUSED:" in result.stderr, result.stderr
+    assert not (tmp_path / "remotes").exists()
+
+
+def test_help_still_exits_zero():
+    """The same page, and asking for it is not a mistake."""
+    assert run_cmd("--help").returncode == 0
+
+
+# --- the machine report `--install` ends with -------------------------------
+
+#: The external programs `--install` itself runs, symlinked into the
+#: restricted `$PATH` the machine-report tests build. Everything else it uses
+#: is a bash builtin. The list is short because the installer is: make a
+#: temporary directory, copy a file into place, compare, chmod, tidy up.
+#: `tests/test_setup_sh.py::test_the_shim_refuses_before_cloning_when_git_is_
+#: missing` is the precedent for the whole shape of this — an absolute bash
+#: and a `$PATH` the test owns entirely, because there is no other way to
+#: make `command -v git` answer "no" on a machine that has git.
+INSTALL_NEEDS = ("mktemp", "cp", "chmod", "cmp", "mkdir", "rm", "dirname")
+
+
+def machine_path(tmp_path, present, logged_in=True) -> dict:
+    """A `$PATH` holding `present` and nothing else answerable.
+
+    Every fake LOGS ITS OWN ARGV AND THEN FAILS LOUDLY. `command -v`
+    executes nothing, so a report that only asks whether a program exists
+    leaves that log empty — and anything that RAN one wrote a line into it,
+    which is how "the report never runs an installer" is asserted rather
+    than assumed. `gh` is the one exception by design: a login state can
+    only be learnt by asking, so `gh auth status` is the single call allowed
+    to happen, and `logged_in` is its exit code.
+    """
+    binaries = tmp_path / "machine-path"
+    binaries.mkdir(exist_ok=True)
+    log = tmp_path / "ran.log"
+    for name in INSTALL_NEEDS:
+        real = shutil.which(name)
+        assert real, f"this machine has no {name}, which --install needs"
+        link = binaries / name
+        if not link.exists():
+            link.symlink_to(real)
+    for name in present:
+        script = binaries / name
+        if name == "gh":
+            script.write_text(
+                "#!/bin/sh\n"
+                f"printf 'gh %s\\n' \"$*\" >> '{log}'\n"
+                'case "$*" in "auth status") exit '
+                f'{0 if logged_in else 1};; esac\n'
+                "exit 1\n", encoding="utf-8")
+        else:
+            script.write_text(
+                "#!/bin/sh\n"
+                f"printf '{name} %s\\n' \"$*\" >> '{log}'\n"
+                f"printf 'fake {name} was EXECUTED by a read-only report\\n' >&2\n"
+                "exit 1\n", encoding="utf-8")
+        script.chmod(0o755)
+    return {"PATH": str(binaries), "_log": str(log)}
+
+
+def install_with_machine(tmp_path, present, logged_in=True):
+    """`--install` from this file, onto a $PATH holding only `present`."""
+    env = machine_path(tmp_path, present, logged_in)
+    log = Path(env.pop("_log"))
+    bin_dir = tmp_path / "bin"
+    # The bash by ABSOLUTE path: `subprocess` resolves a bare argv[0] against
+    # the CHILD's PATH, and this one holds no bash on purpose.
+    result = subprocess.run(
+        [shutil.which("bash"), str(COMMAND), "--install"],
+        capture_output=True, text=True, check=False, input="",
+        env=command_env(home=tmp_path, setup_sh=None,
+                        env={**env, "OPENREPOSHAPE_BIN_DIR": str(bin_dir)}))
+    return result, log, bin_dir
+
+
+def test_install_ends_with_a_machine_report(tmp_path):
+    """Four lines, and every one of them either `present` or `MISSING`."""
+    result, _log, bin_dir = install_with_machine(
+        tmp_path, ("git", "gh", "python3", "git-filter-repo"))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (bin_dir / "openRepoShape").is_file()
+    body = result.stdout
+    assert "  machine:" in body
+    for name in ("git", "gh", "python3", "git-filter-repo"):
+        assert re.search(rf"^    {re.escape(name)} +\S", body, re.M), (
+            f"the machine block has no line for {name}:\n{body}")
+    assert "MISSING" not in body
+    assert "present, logged in" in body
+    assert "--preflight" not in body, (
+        "with everything present and logged in there is nothing to point at")
+
+
+def test_the_machine_report_names_what_is_missing(tmp_path):
+    """A missing one reads MISSING, and the closing line appears — once."""
+    result, _log, bin_dir = install_with_machine(
+        tmp_path, ("git", "gh", "python3"))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (bin_dir / "openRepoShape").is_file(), (
+        "the report is informational; it must not stop the install")
+    assert re.search(r"^    git-filter-repo +MISSING$", result.stdout, re.M), \
+        result.stdout
+    assert result.stdout.count(
+        "  run: openRepoShape --preflight   (offers what is missing; each "
+        "install asks first)") == 1, result.stdout
+
+
+def test_a_gh_that_is_not_logged_in_is_reported_and_points_at_preflight(
+        tmp_path):
+    result, _log, _bin = install_with_machine(
+        tmp_path, ("git", "gh", "python3", "git-filter-repo"),
+        logged_in=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "present, not logged in" in result.stdout
+    assert "--preflight" in result.stdout
+    assert "MISSING" not in result.stdout
+
+
+def test_the_machine_report_runs_no_installer(tmp_path):
+    """It PROBES. The only program it may execute is `gh auth status`.
+
+    Every fake on that `$PATH` logs its own argv and then fails loudly, so a
+    report that had shelled out to any of them — to read a version, to
+    install something, to "just check" — would leave a line here.
+    """
+    result, log, _bin = install_with_machine(
+        tmp_path, ("git", "gh", "python3", "git-filter-repo"))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert log.is_file(), "gh auth status is the one call that must happen"
+    assert log.read_text(encoding="utf-8").split("\n")[:-1] == \
+        ["gh auth status"], log.read_text(encoding="utf-8")
+    assert "was EXECUTED by a read-only report" not in result.stderr
+
+
+# --- the fix round on PR #96 ------------------------------------------------
+
+@pytest.mark.parametrize("args", [
+    ("--doctor", "--install"),
+    ("--install", "--doctor"),
+])
+def test_two_modes_is_a_refusal_not_last_wins(args, tmp_path):
+    """`--doctor <path> --install` used to install and drop the diagnosis,
+    and the other order dropped the install (Copilot, PR #96).
+
+    Each of these does a different thing to a different place. A person who
+    typed both meant one of them, and quietly picking the last is how they
+    find out which, later, from the wrong outcome.
+    """
+    bin_dir = tmp_path / "bin"
+    result = run_cmd(*args, home=tmp_path,
+                     env={"OPENREPOSHAPE_BIN_DIR": str(bin_dir)})
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "two different runs" in result.stderr
+    assert not bin_dir.exists(), "a refused run placed a command anyway"
+
+
+@pytest.mark.parametrize("ref", ["-x", "--upload-pack=touch /tmp/pwned",
+                                 "a" * 256, "refs/heads/..", "x.lock"])
+def test_a_ref_the_doctor_would_check_out_is_validated(ref, tmp_path):
+    """$OPENREPOSHAPE_REF reaches `git checkout`, so it is checked first.
+
+    `setup.sh` validates `--shape-ref` in three steps and this value lands
+    in the same place, which the first cut of `--doctor` missed (Copilot,
+    PR #96): a leading dash is an option to git, not a ref. Run from STDIN
+    so the clone path is the one taken, and the refusal has to arrive before
+    any clone does.
+    """
+    result = subprocess.run(
+        ["bash", "-s", "--", "--doctor", str(tmp_path)],
+        capture_output=True, text=True, check=False,
+        input=COMMAND.read_text(encoding="utf-8"), cwd=str(tmp_path),
+        env=command_env(home=tmp_path, setup_sh=None,
+                        env={"OPENREPOSHAPE_REPO": str(REPO),
+                             "OPENREPOSHAPE_REF": ref}))
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "OPENREPOSHAPE_REF" in result.stderr
+    assert "git checkout" in result.stderr
+    # The over-long and control-character refusals must not echo the value
+    # back; the shape refusal may, having passed both.
+    if len(ref) > 255:
+        assert ref not in result.stderr
+
+
+def test_a_checkout_without_the_doctor_refuses_by_name(tmp_path):
+    """A ref older than `shape-doctor.py` produced `can't open file` from
+    python3 and a stack of nothing useful. The ref is the thing to change,
+    so the refusal says so."""
+    bare = tmp_path / "old.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(bare)],
+                   capture_output=True, check=True)
+    seed = tmp_path / "seed"
+    subprocess.run(["git", "clone", "-q", str(bare), str(seed)],
+                   capture_output=True, check=True)
+    (seed / "README.md").write_text("# an older standard\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=str(seed), capture_output=True,
+                   check=True)
+    subprocess.run(["git", "commit", "-qm", "before the doctor"],
+                   cwd=str(seed), capture_output=True, check=True,
+                   env=command_env(home=tmp_path, setup_sh=None))
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=str(seed),
+                   capture_output=True, check=True)
+    result = subprocess.run(
+        ["bash", "-s", "--", "--doctor", str(tmp_path)],
+        capture_output=True, text=True, check=False,
+        input=COMMAND.read_text(encoding="utf-8"), cwd=str(tmp_path),
+        env=command_env(home=tmp_path, setup_sh=None,
+                        env={"OPENREPOSHAPE_REPO": str(bare)}))
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "has no shape-doctor.py" in result.stderr
+    assert "OPENREPOSHAPE_REF" in result.stderr
+
+
+# --- --preflight ------------------------------------------------------------
+
+def test_preflight_passes_through_without_an_org(tmp_path):
+    """`openRepoShape --preflight` is the "install program" without a second
     program: the preflight, the offers it makes, and stop.
 
     This command insists on an organisation and on a `<Project>` because a
-    run that gets past it CREATES three repositories. A doctor run creates
+    run that gets past it CREATES three repositories. A preflight run creates
     nothing, so both refusals are skipped rather than answered - and with
     `input=""` there is no terminal here either, so the preflight makes no
     offer and installs nothing, which is the rule this whole suite runs
     under.
     """
     remotes = tmp_path / "remotes"
-    result = run_cmd("--doctor", "--local-remote-dir", str(remotes))
+    result = run_cmd("--preflight", "--local-remote-dir", str(remotes))
     assert result.returncode == 0, result.stderr + result.stdout
     assert "(1) preflight" in result.stdout
     assert "this machine is ready." in result.stdout
     assert "organisation to scaffold into" not in result.stdout, (
-        "--doctor prompted for an organisation it has no use for")
+        "--preflight prompted for an organisation it has no use for")
     assert "no organisation to scaffold into" not in result.stderr
     assert "no <Project> given" not in result.stderr
     assert not remotes.exists()
 
 
-def test_doctor_forwards_an_org_it_was_given(tmp_path):
+def test_preflight_forwards_an_org_it_was_given(tmp_path):
     """A flag this command ATE would be a flag the person has to type twice
-    to find out about. The doctor ignores it; it still travels."""
-    result = run_cmd("--doctor", "--org", "TestOrg",
+    to find out about. The preflight ignores it; it still travels."""
+    result = run_cmd("--preflight", "--org", "TestOrg",
                      "--local-remote-dir", str(tmp_path / "remotes"))
     assert result.returncode == 0, result.stderr + result.stdout
     assert "(2) organisation" not in result.stdout
@@ -422,7 +711,7 @@ def test_no_project_and_no_terminal_refuses_with_the_usage(tmp_path):
                      "--local-remote-dir", str(tmp_path / "remotes"))
     assert result.returncode == 2
     assert "no <Project> given" in result.stderr
-    assert USAGE_LINES[0] in result.stderr
+    assert USAGE_SCAFFOLD in result.stderr
     assert not (tmp_path / "remotes").exists()
 
 
@@ -547,7 +836,7 @@ def test_the_fetched_setup_sh_lands_in_a_workdir_that_still_exists(offline_githu
     script RAN, and the directory it ran from is gone AFTERWARDS — the trap
     belongs to the main shell, so it fires at the end and not in the middle.
     """
-    result = run_cmd("--doctor", setup_sh=None, env=offline_github)
+    result = run_cmd("--preflight", setup_sh=None, env=offline_github)
     assert result.returncode == 0, result.stderr + result.stdout
     assert "No such file or directory" not in result.stdout + result.stderr
     assert "could not fetch" not in result.stderr
@@ -555,7 +844,7 @@ def test_the_fetched_setup_sh_lands_in_a_workdir_that_still_exists(offline_githu
     assert match, ("the fetched setup.sh never ran:\n"
                    + result.stdout + result.stderr)
     ran_in, forwarded = match.group(1), match.group(2).split()
-    assert "--doctor" in forwarded, forwarded
+    assert "--preflight" in forwarded, forwarded
     assert not Path(ran_in).exists(), (
         f"{ran_in} outlived the command; the EXIT trap did not fire")
 

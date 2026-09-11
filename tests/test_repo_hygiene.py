@@ -25,6 +25,7 @@ SHIPPED = [
     REPO / "bootstrap",
     REPO / "adopt-project.py",
     REPO / "update-shape.py",
+    REPO / "shape-doctor.py",
     REPO / "scripts" / "repo_shape.py",
     REPO / "scripts" / "shape_materialize.py",
     REPO / "scripts" / "path_classify.py",
@@ -381,9 +382,45 @@ def test_agents_md_is_short_enough_to_be_read():
     longer here, and a cap left at 381 would let the next procedure spend
     them without anybody making the case. Points 1-4 stay: they are about
     `make park` and `make resume`, which this standard still ships in both
-    root templates."""
+    root templates.
+
+
+    2026-09-10: 351 -> 390 — `## Checking a repository's compliance` (#95).
+    Thirty-eight lines and one clause, for a command that did not exist: the
+    procedures above each describe ONE act, and nothing here told an
+    assistant how to find out which of them a repository needs. The five
+    numbered points are the five ways an agent gets a doctor's report wrong.
+    Reading the VERDICT and not the rows, because the verdict names the most
+    specific finding and the table names every one. Improvising a repair
+    instead of running the command the row NAMES — the same hand-edited-pin
+    failure `update-shape.py`'s own points are about, arriving through a new
+    door. Treating `NOT A SHAPE ROOT` as a task, when adopting and
+    scaffolding are two different acts and choosing between them is the
+    human's. Reading the `machine` row as a fault in the repository, when it
+    is `n/a` and about the workstation. And `--json`, one line, because an
+    agent acting on a row should not be parsing a table. The clause is one
+    more item in the opening paragraph's list of what the sections cover.
+
+    2026-09-10: 390 -> 395 — the two shim behaviours (#95, on Brett Heap's
+    "add the two shim behaviours too"). Five lines under section 2, where an
+    assistant already reads what the installed command does: that a BARE run
+    prints usage and exits 1 rather than refusing about an organisation
+    nobody asked about, that `--install` ends with a read-only `machine:`
+    block, and — the half an assistant gets wrong — that NEITHER installs
+    anything, so the block is relayed and `--preflight` is the human's to
+    run. An assistant who read only the first half would answer the block by
+    installing something.
+
+    2026-09-10: 395 -> 400 — the adversarial review on PR #96. Five lines:
+    one numbered point saying `note` is not a finding and is not "fixed"
+    (the row that answered INVALID over a live estate now says `note`, and
+    an assistant who reads it as a finding would go and change somebody's
+    leg), and the `CANNOT ANSWER` / exit 3 half-sentence in point 1 —
+    because that verdict is THIS CHECKOUT failing to ask, and an assistant
+    who relays it as a verdict about the repository has relayed the
+    opposite of what happened."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 351, f"AGENTS.md is {len(lines)} lines; the cap is 351"
+    assert len(lines) <= 400, f"AGENTS.md is {len(lines)} lines; the cap is 400"
 
 
 def test_claude_md_points_at_agents_md():
@@ -641,13 +678,13 @@ def test_readme_is_short_enough_to_be_read():
     #   then "yes" to an offer rather than an installer. Twelve lines are the
     #   lead that says the four steps are the REFERENCE and the tool offers
     #   the rest, on what terms (a typed `yes` each time, never `--yes`, never
-    #   Homebrew, no terminal no offer), and that `--doctor` checks a machine
+    #   Homebrew, no terminal no offer), and that `--preflight` checks a
     #   and creates nothing. Four more are the `git` install commands for the
     #   four platforms: a command this tool would RUN that no document shows
     #   is exactly what `test_the_offer_commands_are_the_ones_the_readme_
     #   documents` refuses, and the person who declines an offer reads the
     #   same line to type by hand. The rest are one clause in the worked
-    #   example's preflight sentence and one naming `--doctor` in its
+    #   example's preflight sentence and one naming `--preflight` in its
     #   requirements, because a reader who meets the offers only in the Quick
     #   start meets them once.
     # 2026-09-06: 967 -> 971 — issue #68, Brett Heap's ruling in session: "fix
@@ -819,8 +856,58 @@ def test_readme_is_short_enough_to_be_read():
     #   "Carrying in-flight work to another workstation", which documents two
     #   commands that still exist and still work exactly as it says — they are
     #   installed from somewhere else, which is one clause of one sentence.
-    assert len(lines) <= 1230, (
-        f"README.md is {len(lines)} lines; the cap is 1230")
+    # 2026-09-10: 1230 -> 1298 — the repository doctor (#95). Brett Heap:
+    #   "what tools do we have to check a repo to make sure it is compliant
+    #   with openRepoShape?" -> "add that". Sixty-six lines are its `###`
+    #   subsection under "Keeping a project's shape current", one is its row
+    #   in the contents list, and one names `shape-doctor.py` in the Layout
+    #   block. It is a subsection rather than a paragraph because five of its
+    #   parts are things a reader gets wrong separately, and each of them
+    #   would otherwise be learnt from a surprise. WHAT IT COMPARES AGAINST
+    #   — the checkout the script is run from, which is the whole of why the
+    #   run is offline and is not guessable from the command line. THE ROWS,
+    #   because "it checks the repo" does not say that the project's OWN
+    #   validators run in preference to this standard's, which is the point
+    #   of a pinned copy. THE VERDICT TABLE WITH ITS EXIT CODES, because the
+    #   codes are what a scheduled job reads. WHY DRIFT OUTRANKS A RED
+    #   VALIDATOR on that one line, since a reader who does not know that an
+    #   edited copy is what makes `validate-pins.py` red will read `DRIFTED`
+    #   as the tool having missed the validator. And that `machine` is `n/a`
+    #   and cannot move the verdict — the one row that reaches a network, on
+    #   a page that has just promised none — because a reader who takes it
+    #   for a compliance row will read a missing `gh` as their repository
+    #   being wrong. The registry paragraph is three lines and is the only
+    #   forward-looking one: it says a repair mode hangs off an empty slot,
+    #   so nobody proposes the rewrite it exists to avoid.
+    # 2026-09-10: 1298 -> 1313 — the two shim behaviours (#95). Brett Heap:
+    #   "add the two shim behaviours too". Eight lines are the read-only
+    #   `machine:` block `--install` now ends with, and they are eight rather
+    #   than one because the useful half is what it does NOT do: it installs
+    #   nothing, asks nothing and changes no exit code, so a reader who meets
+    #   it as "the installer checked my machine" would wait for a prompt that
+    #   is not coming. `--preflight` is named as where the offers live, which
+    #   is the same "a refusal names its fix" rule the rest of this file is
+    #   built on. Seven are the bare run: it prints usage and exits 1 now
+    #   instead of refusing about an organisation nobody named, and the
+    #   sentence says both what the four lines are and that ANY scaffold
+    #   argument brings today's behaviour and today's refusals back — a
+    #   reader who learns only the first half will file the refusal they
+    #   earned as the new usage page misfiring.
+    # 2026-09-10: 1313 -> 1324 — the adversarial review on PR #96. Eleven
+    #   lines, and every one of them is a rule the first cut got wrong in
+    #   front of a reader. Seven are the `note` status and WHY it exists:
+    #   only a `FINDING` moves the verdict, `FINDING` means something ELSE
+    #   asserts it, and the line was drawn after this command answered
+    #   `INVALID` about a live estate whose every real gate was green
+    #   because a leg was missing a `.gitignore` that entered the standard
+    #   after that project was scaffolded. A reader who does not know that
+    #   distinction cannot tell a report from a verdict. Three widen exit 3
+    #   to what it actually covers, `CANNOT ANSWER` included — a pin naming
+    #   a commit THIS checkout does not carry is not the repository being
+    #   wrong. One corrects a sentence that was simply false: the machine
+    #   row asks `gh` three questions, not one.
+    assert len(lines) <= 1324, (
+        f"README.md is {len(lines)} lines; the cap is 1324")
 
 
 @pytest.mark.parametrize("name", SHIPPED_BASH)
@@ -995,7 +1082,7 @@ def test_the_windows_commands_name_files_that_exist(name):
         "the file downloaded and the file saved must be the same name")
 
     # ALL of them, not the only one. The README names a second `py` line
-    # since #59 (`py setup-project.py --doctor`, the Windows spelling of the
+    # since #59 (`py setup-project.py --preflight`, the Windows spelling of
     # preflight-and-stop run), and an unpack of a single match would have
     # raised a ValueError on a README that is not wrong. The honest rule is
     # the one asserted here anyway: EVERY `py <file>` in these documents
@@ -1242,6 +1329,14 @@ HANDBOOK_SECTION_WITHOUT_A_README_H2 = {
     "ci": "`### Reading private legs in CI: a GitHub App first, "
           "SHAPE_LEGS_TOKEN as fallback`",
     "agents": "AGENTS.md — the rules that outrank the rest, not README.md",
+    #: `### Is this repository compliant? openRepoShape --doctor`, which sits
+    #: under § Keeping a project's shape current in the README (#95). Its own
+    #: page section rather than a block inside `current`, because a reader
+    #: looking for "how do I check a repository" scans the section list, and
+    #: a doctor folded into a section about re-syncing copies is a doctor
+    #: they do not find.
+    "doctor": "`### Is this repository compliant? openRepoShape --doctor`, "
+              "inside § Keeping a project's shape current",
 }
 
 #: The footer carries the page's history as PROSE — "first cut from README.md

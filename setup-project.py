@@ -164,8 +164,8 @@ USAGE = """usage: setup-project.py [<Project>] [options] [-- <extra scaffold fla
   --yes                   skip the confirmation prompt. It answers the ONE
                           question about creating three repositories, and
                           never an offer to install something.
-  --doctor                check this machine and stop: the preflight and the
-                          offers it makes, nothing else. Exit 0 when
+  --preflight             check this machine and stop: the preflight and
+                          the offers it makes, nothing else. Exit 0 when
                           everything is there, 1 when it is not. Creates
                           nothing, and needs no <Project> and no --org.
   --local-remote-dir <d>  TEST PATH: create three BARE repositories in <d> and
@@ -431,7 +431,7 @@ class Options:
         self.into = ""
         self.local_remote_dir = ""
         self.assume_yes = False
-        self.doctor = False
+        self.preflight = False
         self.allow_upstream_org = False
         self.shape_ref = ""
         self.keep_shape_checkout = False
@@ -468,7 +468,7 @@ PATH_FLAGS = ("--into", "--local-remote-dir")
 BOOLEAN_FLAGS = {
     "--yes": "assume_yes",
     "-y": "assume_yes",
-    "--doctor": "doctor",
+    "--preflight": "preflight",
     "--allow-upstream-org": "allow_upstream_org",
     "--keep-shape-checkout": "keep_shape_checkout",
 }
@@ -1060,7 +1060,7 @@ def _check_credential_helper(opts: Options) -> None:
     is gh) is not transcribed here. A helper that is not gh's still pushes.
 
     NEVER IN THE `checked` LIST. It cannot fail the run and it cannot fail
-    `--doctor`: a warning that refuses is a refusal, and this one would
+    `--preflight`: a warning that refuses is a refusal, and this one would
     refuse a machine whose remotes are SSH and whose HTTPS push this tool
     never makes.
     """
@@ -1110,7 +1110,7 @@ def _warn_autocrlf() -> None:
 def preflight_checks(opts: Options) -> bool:
     """Every check, in order, and whether they all passed.
 
-    SPLIT OUT OF `preflight` FOR `--doctor` (#59), which runs exactly this
+    SPLIT OUT OF `preflight` FOR `--preflight` (#59, renamed 2026-09-10), which runs exactly this
     and then reports instead of refusing. The scaffold path is unchanged: the
     refusal is still one refusal, still at the end, still naming everything
     that was missing.
@@ -1139,15 +1139,15 @@ def preflight(opts: Options) -> None:
         die(PREREQ_MISSING)
 
 
-def doctor(opts: Options) -> int:
-    """`--doctor`: the preflight, the offers it makes, and then stop.
+def preflight_only(opts: Options) -> int:
+    """`--preflight`: the preflight, the offers it makes, and then stop.
 
     Exit 0 when every check passed and 1 when any did not - the 0/1 vocabulary
     a person can put in a script, where the scaffold's own refusal stays exit
     2 whatever fails. A `[??]` warning never changes the code: it is a setting
     worth looking at, not a missing prerequisite.
 
-    It says in as many words that nothing was created, because `--doctor` can
+    It says in as many words that nothing was created, because `--preflight` can
     be typed alongside a project name by somebody who has just read about
     both, and a run that printed a preflight and then stopped must not be
     read as a scaffold that failed silently.
@@ -1810,16 +1810,16 @@ def _main(argv, invocation_dir: str) -> int:
         usage()
         return 0
 
-    # `--doctor` EXAMINES THE MACHINE AND STOPS, so it returns HERE: before
-    # the git probe below (a missing git is one of the things the doctor is
-    # for, and refusing on it would report one fault where the doctor exists
-    # to report them all), before the checkout probe, and before the clone and
-    # the `--org` handshake that follow it. That POSITION is the whole
-    # mechanism: `--doctor` needs no organisation and creates nothing because
-    # the code that would ask for one is never reached, not because any of it
-    # was taught about a flag.
-    if opts.doctor:
-        return doctor(opts)
+    # `--preflight` EXAMINES THE MACHINE AND STOPS, so it returns HERE: before
+    # the git probe below (a missing git is one of the things the preflight is
+    # for, and refusing on it would report one fault where the preflight
+    # exists to report them all), before the checkout probe, and before the
+    # clone and the `--org` handshake that follow it. That POSITION is the
+    # whole mechanism: `--preflight` needs no organisation and creates
+    # nothing because the code that would ask for one is never reached, not
+    # because any of it was taught about a flag.
+    if opts.preflight:
+        return preflight_only(opts)
 
     # BEFORE the checkout probe, which is itself a `git` call - and before
     # self-bootstrap, which is a `git clone`. The preflight is where a missing

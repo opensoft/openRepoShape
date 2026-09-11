@@ -34,20 +34,35 @@ SELF="${BASH_SOURCE[0]:-$0}"
 PROJECT=""
 ORG=""
 MODE="run"
-DOCTOR=0
+PREFLIGHT=0
+DOCTOR_PATH=""
 PASSTHROUGH=()
 WORKDIR=""
 STAGED=""
 
 say() { printf '%s\n' "$*"; }
+
+# One mode per run. See the `--install` case for why this refuses instead of
+# taking the last one typed.
+set_mode() {
+	[ "$MODE" = "run" ] || [ "$MODE" = "$1" ] ||
+		die "--$MODE and --$1 are two different runs; pass one.
+    --install places this command, --doctor reads a repository and writes nothing."
+	MODE="$1"
+}
 die() { printf '\nREFUSED: %s\n' "$1" >&2; exit "${2:-2}"; }
 
 usage() {
 	cat <<'USAGE'
-openRepoShape <Project> [--org <org>] [setup-project.py options] [-- <scaffold flags>]
 openRepoShape --install            install (or update) this command into ~/.local/bin
-openRepoShape --doctor             check this machine and stop; creates nothing
+openRepoShape --preflight          check this MACHINE and stop; creates nothing
+openRepoShape --doctor [<path>]    diagnose a REPOSITORY against this standard
+openRepoShape <Project> [--org <org>] [setup-project.py options] [-- <scaffold flags>]
 openRepoShape --help | --version
+
+Those four lines are the whole command: install it, check the machine you are
+on, diagnose a repository, scaffold a project. Run with NO arguments it prints
+this and exits 1, because a bare run has nothing to do.
 
 <Project> is the assembly-root name, ONE CamelCase token (e.g. Atlas); omit it
 and setup.sh asks, if a terminal is attached. `--org` comes from that flag,
@@ -72,6 +87,17 @@ opensoft/openRepoTools', and its own installer places them:
   $OPENREPOSHAPE_ORG        the organisation, when --org is not given
   $OPENREPOSHAPE_BIN_DIR    where --install puts it  (default ~/.local/bin)
   $OPENREPOSHAPE_SETUP_SH   run this setup.sh on disk instead of fetching one
+
+`--doctor [<path>]` runs `shape-doctor.py` over <path> (default `.`) and prints
+one row per check and ONE verdict: COMPLIANT, COMPLIANT SHAPE BEHIND, DRIFTED,
+INVALID or NOT A SHAPE ROOT. It writes nothing, and every finding names the
+command that fixes it. Exit 0 compliant, 1 findings, 2 not a shape root, 3
+usage. Run beside a checkout of the standard it uses that one; run from
+anywhere else it clones the standard into a temporary directory first.
+
+`--preflight` is the MACHINE check -- it was spelled `--doctor` until
+2026-09-10, and the name moved to the repository diagnosis above, which is
+what a person means by a doctor.
 USAGE
 }
 
@@ -136,6 +162,11 @@ shape_clone_url() {
 # `resume` are opensoft/openRepoTools'.
 INSTALLABLES=(openRepoShape)
 
+#: WHAT `--doctor` RUNS, named once so the two places that reach for it -- the
+#: "is there a checkout beside me" probe and the run itself -- cannot come to
+#: disagree about the filename.
+DOCTOR="shape-doctor.py"
+
 # EVERY ONE IN HAND BEFORE ANY OF THEM IS PLACED (#82, F10 of the review on
 # #83). One file at a time, dying on the first fetch that failed, left a
 # person with a NEW `openRepoShape` and no `park` — a half-install that says
@@ -175,6 +206,45 @@ collect_commands() {
     one is a half-install that reads like a whole one. Both ways were tried:
     gh api repos/$REPO/contents/<file>?ref=$REF
     curl -fsSL https://raw.githubusercontent.com/$REPO/$REF/<file>"
+}
+
+# THE MACHINE, READ ONLY, AS THE LAST THING `--install` SAYS. Somebody who
+# has just placed this command is about to use it, and these are the four
+# things it will then want: `git`, `gh` and whether it is logged in, a
+# `python3`, and `git-filter-repo` -- which only `adopt-project.py` needs and
+# `--preflight` therefore does not ask about.
+#
+# IT OFFERS NOTHING AND RUNS NO INSTALLER. Four `command -v` probes, which
+# execute nothing at all, and one `gh auth status`, which is the only way to
+# learn a login state. An offer belongs behind a typed yes, in `--preflight`,
+# and this line points there rather than growing a second consent.
+#
+# IT NEVER CHANGES THE EXIT CODE. A machine missing a prerequisite did not
+# make the copy that was just placed any less placed, and an install that
+# reported failure because `gh` was not logged in would be an install nobody
+# could script.
+machine_report() {
+	local name state short=0
+	say "  machine:"
+	for name in git gh python3 git-filter-repo; do
+		if command -v "$name" >/dev/null 2>&1; then
+			state="present"
+			if [ "$name" = gh ]; then
+				if gh auth status >/dev/null 2>&1; then
+					state="present, logged in"
+				else
+					state="present, not logged in"
+					short=1
+				fi
+			fi
+		else
+			state="MISSING"
+			short=1
+		fi
+		printf '    %-16s %s\n' "$name" "$state"
+	done
+	[ "$short" -eq 0 ] ||
+		say "  run: openRepoShape --preflight   (offers what is missing; each install asks first)"
 }
 
 install_commands() {
@@ -220,6 +290,119 @@ install_commands() {
 		say "    export PATH=\"$dir:\$PATH\""
 		;;
 	esac
+	# LAST, because it is about the NEXT command rather than about this one.
+	machine_report
+}
+
+# A PYTHON, BY THE SAME RULE `setup.sh` FINDS ONE BY: 3.9 or newer, under
+# whichever name this machine has it. Transcribed rather than shared because
+# these two files are never both on disk in the installed case -- this one is
+# a single file in ~/.local/bin -- and `--doctor` must work there.
+find_python() {
+	local candidate
+	for candidate in python3 python; do
+		if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c \
+			'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' \
+			>/dev/null 2>&1; then
+			printf '%s' "$candidate"
+			return 0
+		fi
+	done
+	return 1
+}
+
+# A CHECKOUT OF THE STANDARD, made the way `setup.sh` self-bootstraps one:
+# `git clone` of `shape_clone_url`, into the temporary directory `workdir`
+# owns, checked out at $OPENREPOSHAPE_REF when one was named. Sets $SHAPE_DIR.
+#
+# WITHOUT `--depth 1`, WHICH IS THE ONE DEVIATION FROM setup.sh AND IS FORCED.
+# A shallow clone has exactly ONE commit, and the doctor's shape-currency row
+# compares a project's copies at the commit its pin NAMES against this
+# standard's tip -- a comparison a one-commit history cannot make at all. The
+# scaffold has no such need, so it stays shallow and this does not.
+#
+# The guard on $SHAPE_REPO is `setup.sh`'s, for its reason: the value reaches
+# a `git clone` command line, where a leading `-` is an option rather than a
+# repository and a control character could forge a line of output before this
+# script has said a word. The refusal does not echo the value back.
+shape_checkout() {
+	local url
+	url="$(shape_clone_url)"
+	case "$url" in
+	-* | *[![:print:]]*) die "OPENREPOSHAPE_REPO is not a value this tool will put on a \`git clone\` command line: it starts with '-' or carries a control character. Set it to a URL or a path." ;;
+	esac
+	workdir
+	SHAPE_DIR="$WORKDIR/shape"
+	git clone --quiet -- "$url" "$SHAPE_DIR" ||
+		die "could not clone $REPO into a temporary directory, so there is no
+    standard to check against. \`--doctor\` needs one: run it from a checkout
+    of openRepoShape, or make the clone work."
+	if [ -n "${OPENREPOSHAPE_REF:-}" ]; then
+		checked_ref "$REF"
+		# `<ref> --`, never `-- <ref>`: a `--` BEFORE the argument makes git
+		# read it as a PATHSPEC and try to restore a file of that name from
+		# the index. AFTER it, it says "and no paths follow", which is the
+		# disambiguation this wants. The leading-dash case is refused by
+		# `checked_ref` above, which is where it belongs.
+		git -C "$SHAPE_DIR" checkout --quiet "$REF" -- ||
+			die "cloned $REPO but could not check out '$REF'."
+	fi
+}
+
+# `setup.sh`'s THREE CHECKS ON A REF, IN ITS ORDER, and the order is the
+# point (Copilot, PR #96: this value reaches `git checkout`, where a leading
+# dash is an option rather than a ref). LENGTH first, so an over-long value
+# is refused without putting 255+ characters of noise on stderr; a CONTROL
+# CHARACTER next, because a newline in it could forge a line of output before
+# this script has said a word; and only then the SHAPE, which is safe to echo
+# back because it has passed both.
+checked_ref() {
+	local ref="$1"
+	if [ "${#ref}" -gt 255 ]; then
+		die "\$OPENREPOSHAPE_REF is ${#ref} characters long; a branch, tag or commit this tool will pass to \`git checkout\` is at most 255 characters."
+	fi
+	case "$ref" in
+	*[![:print:]]*) die "\$OPENREPOSHAPE_REF carries a control character, which is not a branch, tag or commit this tool will pass to \`git checkout\`." ;;
+	esac
+	case "$ref" in
+	[!A-Za-z0-9]* | *..* | *.lock | *[!A-Za-z0-9._/-]*) die "\$OPENREPOSHAPE_REF is '$ref', which is not a branch, tag or commit this tool will pass to \`git checkout\`: a ref starts with a letter or digit, uses only letters, digits, '.', '_', '/', '-', has no '..' and does not end in '.lock'." ;;
+	esac
+}
+
+# `--doctor`: RUN THE STANDARD'S OWN SCRIPT, never a reimplementation here.
+# Beside a checkout -- this file sitting in one, which is how a developer runs
+# it -- that checkout answers, and nothing is fetched at all. Installed, or
+# arriving on stdin, there is no checkout beside this file and one is cloned:
+# the doctor compares a project's copies against a standard, so it must have
+# a standard, and a single file in ~/.local/bin is not one.
+run_doctor() {
+	local py selfdir="" shape=""
+	py="$(find_python)" || die "no Python 3.9 or newer on this machine (tried python3, python). \`--doctor\` is a Python program: https://www.python.org/downloads/"
+	if [ -f "$SELF" ]; then
+		selfdir="$(cd -- "$(dirname -- "$SELF")" && pwd)"
+	fi
+	if [ -n "$selfdir" ] && [ -f "$selfdir/$DOCTOR" ]; then
+		shape="$selfdir"
+	else
+		command -v git >/dev/null 2>&1 ||
+			die "git is not installed, and with no checkout of the standard beside this command there is nothing to clone one with. Install it: https://git-scm.com/downloads"
+		shape_checkout
+		shape="$SHAPE_DIR"
+	fi
+	# NAMED, RATHER THAN LEFT TO THE INTERPRETER. A checkout at a ref older
+	# than the doctor — or a fork that does not carry it — produces a
+	# `can't open file` from python3 and a stack of nothing useful. The ref
+	# is the thing to change, so the refusal says so.
+	[ -f "$shape/$DOCTOR" ] ||
+		die "$shape has no $DOCTOR, so there is nothing to run. That checkout is $REPO at $REF.
+    Set \$OPENREPOSHAPE_REF to a ref that carries it, or run this from a checkout of the standard."
+	# RUN, never `exec`: the EXIT trap that removes a cloned checkout belongs
+	# to THIS process, and exec would replace the shell that owes it.
+	set +e
+	"$py" "$shape/$DOCTOR" --root "${DOCTOR_PATH:-.}"
+	STATUS=$?
+	set -e
+	return "$STATUS"
 }
 
 # --- arguments ------------------------------------------------------------
@@ -227,13 +410,39 @@ while [ $# -gt 0 ]; do
 	case "$1" in
 	-h | --help) usage; exit 0 ;;
 	--version) say "openRepoShape ($REPO @ $REF)"; exit 0 ;;
-	--install) MODE="install"; shift ;;
+	# TWO MODES IS A REFUSAL, NEVER LAST-WINS. `--doctor <path> --install`
+	# used to enter the install path and silently drop the diagnosis, and
+	# the other order dropped the install (Copilot, PR #96). Each of these
+	# does a different thing to a different place; a person who typed both
+	# meant one of them, and quietly picking is how they find out later.
+	--install) set_mode install; shift ;;
+	# `--doctor [<path>]`: the REPOSITORY diagnosis. The optional path is
+	# eaten here rather than passed on, because it is a positional and
+	# would otherwise be taken for the <Project> a scaffold run names. A
+	# word beginning with a dash is NOT the path -- it is somebody's flag,
+	# and the refusal below tells them this mode takes none.
+	--doctor)
+		set_mode doctor; shift
+		if [ $# -gt 0 ]; then
+			case "$1" in
+			-*) ;;
+			*) DOCTOR_PATH="$1"; shift ;;
+			esac
+		fi
+		;;
 	# NAMED, THOUGH `-*` BELOW WOULD ALREADY PASS IT ON. The case exists
-	# for the VARIABLE, not for the passing on: `--doctor` examines the
+	# for the VARIABLE, not for the passing on: `--preflight` examines the
 	# machine and stops, so the organisation and the <Project> this command
 	# insists on further down — both of them about a run that would CREATE
 	# something — are skipped rather than asked for.
-	--doctor) DOCTOR=1; PASSTHROUGH+=("$1"); shift ;;
+	#
+	# THE FLAG WAS `--doctor` UNTIL 2026-09-10 (#59/#62 -> #95). Brett Heap,
+	# in session: "lets use doctor for this, it is better fit. use preflight
+	# for the preflight." The machine check IS a preflight — it is the run's
+	# own section (1) and nothing else — and `--doctor` was wanted for the
+	# thing a person actually calls a doctor: a diagnosis of a REPOSITORY. So
+	# this one took the name that always described it.
+	--preflight) PREFLIGHT=1; PASSTHROUGH+=("$1"); shift ;;
 	--org) ORG="${2:?--org needs a value}"; shift 2 ;;
 	--project) PROJECT="${2:?--project needs a value}"; shift 2 ;;
 	# setup.sh's value-taking flags, named so their VALUE is never mistaken
@@ -250,6 +459,22 @@ while [ $# -gt 0 ]; do
 	esac
 done
 
+if [ "$MODE" = "doctor" ]; then
+	# ONE PATH AND NOTHING ELSE. Every other argument this command knows is
+	# about a run that CREATES something, and silently ignoring one typed
+	# alongside `--doctor` would answer a question nobody asked. `--json`
+	# is `shape-doctor.py`'s and reaches it from a checkout, deliberately
+	# not plumbed through here while the mode is one path wide.
+	[ -z "$PROJECT" ] && [ -z "$ORG" ] && [ ${#PASSTHROUGH[@]} -eq 0 ] ||
+		die "--doctor takes a path and nothing else; it reads a repository and writes nothing.
+    To scaffold, drop --doctor. To check this machine, run: openRepoShape --preflight"
+	set +e
+	run_doctor
+	STATUS=$?
+	set -e
+	exit "$STATUS"
+fi
+
 if [ "$MODE" = "install" ]; then
 	[ -z "$PROJECT" ] && [ ${#PASSTHROUGH[@]} -eq 0 ] ||
 		die "--install takes no other arguments; it only installs the commands."
@@ -257,16 +482,32 @@ if [ "$MODE" = "install" ]; then
 	exit 0
 fi
 
+# A BARE RUN HAS NOTHING TO DO, so it says what this command does and stops.
+# It used to fall through into the scaffold path and refuse "no organisation
+# to scaffold into" -- an answer about a run the person had not asked for, and
+# the least useful of the four things this command can do. `--help` still
+# exits 0, because asking is not a mistake; this exit is 1, because typing a
+# command with no arguments and getting a page of text is.
+#
+# ANY SCAFFOLD ARGUMENT AT ALL KEEPS TODAY'S BEHAVIOUR, refusals included: a
+# person who typed something meant something, and a usage page in place of the
+# refusal they earned would hide which of their arguments was the problem.
+if [ "$MODE" = "run" ] && [ "$PREFLIGHT" -eq 0 ] && [ -z "$PROJECT" ] &&
+	[ -z "$ORG" ] && [ ${#PASSTHROUGH[@]} -eq 0 ]; then
+	usage
+	exit 1
+fi
+
 # NEVER a default organisation. setup.sh refuses `--org opensoft` without
 # --allow-upstream-org for the same reason a guess is refused here: a wrong
 # answer creates three repositories in somebody else's namespace. So: no
 # guess, and --allow-upstream-org passed for nobody.
 #
-# BOTH REFUSALS BELOW ARE ABOUT CREATING SOMETHING, so `--doctor` skips both:
-# it examines the machine and stops, and asking a person which organisation
-# they meant before telling them their machine has no git would be a question
-# with nothing behind it.
-if [ "$DOCTOR" -eq 0 ]; then
+# BOTH REFUSALS BELOW ARE ABOUT CREATING SOMETHING, so `--preflight` skips
+# both: it examines the machine and stops, and asking a person which
+# organisation they meant before telling them their machine has no git would
+# be a question with nothing behind it.
+if [ "$PREFLIGHT" -eq 0 ]; then
 	[ -n "$ORG" ] || ORG="${OPENREPOSHAPE_ORG:-}"
 	if [ -z "$ORG" ] && [ -t 0 ]; then
 		printf 'organisation to scaffold into: '
@@ -283,10 +524,11 @@ if [ "$DOCTOR" -eq 0 ]; then
 	fi
 fi
 
-# An --org typed alongside --doctor is still forwarded rather than dropped —
-# the doctor ignores it, and a flag this command ATE would be a flag the
-# person has to type twice to find out about. Outside --doctor the block above
-# has already made $ORG non-empty or died, so this is what it always was.
+# An --org typed alongside --preflight is still forwarded rather than dropped
+# — the preflight ignores it, and a flag this command ATE would be a flag the
+# person has to type twice to find out about. Outside --preflight the block
+# above has already made $ORG non-empty or died, so this is what it always
+# was.
 ARGS=()
 [ -z "$ORG" ] || ARGS+=(--org "$ORG")
 [ -z "$PROJECT" ] || ARGS+=(--project "$PROJECT")
