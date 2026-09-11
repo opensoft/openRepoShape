@@ -599,7 +599,10 @@ def upstream_copies(upstream: Upstream, rev: str, kind: Kind) -> dict[str, Copy]
         return {}
     try:
         module = ast.parse(data.decode("utf-8"))
-    except (SyntaxError, ValueError, UnicodeDecodeError):
+    except (SyntaxError, ValueError):
+        # Not also `UnicodeDecodeError`: it IS a `ValueError` (by way of
+        # `UnicodeError`), so `.decode("utf-8")`'s own failure is already
+        # caught here, under the name that reaches every ValueError alike.
         return {}
     constants: dict[str, str] = {}
     tuples: dict[str, tuple] = {}
@@ -906,7 +909,11 @@ def prepare(args) -> tuple[Path, dict, list[Row], list[Addition], Upstream,
 
 
 def cmd_check(args) -> int:
-    root, pin, rows, additions, upstream, pinned, target, kind = prepare(args)
+    # `pin` and `kind` are `prepare`'s own return shape, unpacked the same way
+    # every caller does; this command's report never needs either -- `pinned`
+    # (the commit `pin["commit"]` names, already read) and `kind.manifest`'s
+    # callers are `cmd_apply`'s business, not this read-only one's.
+    root, _, rows, additions, upstream, pinned, target, _ = prepare(args)
     try:
         pin_tree = upstream.tree_sha256(pinned)
         target_tree = upstream.tree_sha256(target)
@@ -1136,7 +1143,9 @@ def commit_on_branch(root: Path, branch: str, paths: list[str], target: str,
 
 
 def cmd_apply(args) -> int:
-    root, pin, rows, additions, upstream, pinned, target, kind = prepare(args)
+    # `pin` (the raw mapping `read_pin` returned) is not read again below:
+    # `pinned` is the commit string this command compares and writes back.
+    root, _, rows, additions, upstream, pinned, target, kind = prepare(args)
     written: dict[Path, bytes] = {}
     created: list[Path] = []
     try:

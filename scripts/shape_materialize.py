@@ -141,19 +141,32 @@ def default_reference(elected_on: str) -> str:
 #: the chmod list. Spelling it three times is how the chmod list starts naming
 #: a file the copy list no longer writes.
 VALIDATE_NAMING = "scripts/validate-repository-naming.py"
+#: The same reasoning, for the two names `COPIED_FROM_SHAPE` and
+#: `FAMILY_COPIED_FROM_SHAPE` both copy out of openRepoShape's own tree, always
+#: to the identical path -- one spelling for the pair, in both lists.
+REPO_SHAPE = "scripts/repo_shape.py"
+NAMING_POLICY_YAML = "contracts/repository-naming.yaml"
+#: And again for the name `COPIED_VERBATIM`, `EXECUTABLE`,
+#: `FAMILY_COPIED_VERBATIM` and `FAMILY_EXECUTABLE` all carry -- the exact
+#: copy-list/chmod-list, assembly-root/family-root spread `VALIDATE_NAMING`
+#: is named for above. `setup-project.py`'s own `BOOTSTRAP` names the same
+#: file for the same reason; this module keeps its own copy of the name
+#: rather than importing one across a boundary neither module crosses
+#: otherwise.
+BOOTSTRAP = "scripts/bootstrap.py"
 
 #: Copied out of openRepoShape's OWN tree, so the project carries the standard
 #: it was cut from rather than a link to it.
 COPIED_FROM_SHAPE = (
-    ("scripts/repo_shape.py", "scripts/repo_shape.py"),
+    (REPO_SHAPE, REPO_SHAPE),
     (VALIDATE_NAMING, VALIDATE_NAMING),
-    ("contracts/repository-naming.yaml", "contracts/repository-naming.yaml"),
+    (NAMING_POLICY_YAML, NAMING_POLICY_YAML),
 )
 #: Copied VERBATIM out of the assembly-root template (no substitution).
 COPIED_VERBATIM = (
     "scripts/validate-pins.py",
     "scripts/validate-manifest.py",
-    "scripts/bootstrap.py",
+    BOOTSTRAP,
     "Makefile",
     ".gitignore",
     # WHAT THIS PROJECT'S BYTES ARE, said by the project (2026-09-05, #51).
@@ -196,7 +209,7 @@ TEMPLATED = (
 #: once per declared pin as `contracts/<product lowercased>-pin.yaml`.
 NEUTRAL_PIN_TEMPLATE = "contracts/neutral-product-pin.yaml"
 EXECUTABLE = ("scripts/validate-pins.py", "scripts/validate-manifest.py",
-              "scripts/bootstrap.py", VALIDATE_NAMING)
+              BOOTSTRAP, VALIDATE_NAMING)
 
 # ---------------------------------------------------------------------------
 # The FAMILY root's own lists (2026-09-04)
@@ -217,7 +230,7 @@ FAMILY_TEMPLATED = (
 )
 FAMILY_COPIED_VERBATIM = (
     "scripts/validate-family.py",
-    "scripts/bootstrap.py",
+    BOOTSTRAP,
     # The workstation utility (2026-09-09, #76): it clones each member BESIDE
     # the holder, on its tracking branch, and warns about the parent folder
     # without moving anything. Copied and pinned like the other two, which is
@@ -242,12 +255,12 @@ FAMILY_COPIED_VERBATIM = (
 #: two travel with it. It does NOT copy `validate-repository-naming.py`: the
 #: family has one name to classify and asks the library directly.
 FAMILY_COPIED_FROM_SHAPE = (
-    ("scripts/repo_shape.py", "scripts/repo_shape.py"),
-    ("contracts/repository-naming.yaml", "contracts/repository-naming.yaml"),
+    (REPO_SHAPE, REPO_SHAPE),
+    (NAMING_POLICY_YAML, NAMING_POLICY_YAML),
 )
 FAMILY_EXECUTABLE = (
     "scripts/validate-family.py",
-    "scripts/bootstrap.py",
+    BOOTSTRAP,
     "scripts/siblings.py",
 )
 
