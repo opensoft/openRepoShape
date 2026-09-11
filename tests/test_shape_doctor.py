@@ -835,7 +835,8 @@ def copied_paths(line: str) -> tuple[str, str]:
         return parts[1], parts[2]
     words = command.split()
     assert words[0] == "Copy-Item", line
-    assert words[1] == "-LiteralPath" and words[3] == "-Destination", line
+    assert words[1] == "-LiteralPath", line
+    assert words[3] == "-Destination", line
 
     def bare(word: str) -> str:
         if len(word) > 1 and word.startswith("'") and word.endswith("'"):
@@ -942,7 +943,8 @@ def test_the_copy_line_is_literal_where_cp_is_a_cmdlet(platform, source,
     assert line == expected
     # And both paths arrive whole: the bracket is IN the line, not expanded
     # away by whoever quoted it.
-    assert str(source) in line and str(target) in line, line
+    assert str(source) in line, line
+    assert str(target) in line, line
 
 
 def test_the_copy_line_asked_for_no_platform_is_this_hosts():
