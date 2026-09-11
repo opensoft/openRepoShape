@@ -320,6 +320,28 @@ def test_the_generator_refuses_a_host_absolute_path():
         "placeholder substitution")
 
 
+def test_regenerating_with_no_bash_refuses_unless_skip_bash_is_explicit(
+        monkeypatch, tmp_path):
+    """Copilot review, PR #98: when `bash` is auto-detected as absent, a
+    normal regeneration (no `--check`) used to write the shortened rendering
+    straight to `--out` and report success — silently replacing a full
+    docs/cli.md with one missing `setup.sh` and `openRepoShape`. It must
+    refuse instead, naming `--skip-bash`, unless `--skip-bash` was given
+    explicitly — in which case the write still goes ahead, same as always.
+
+    `shutil.which` is monkeypatched rather than skipped-without-bash, so this
+    runs (and proves the refusal) on every platform, bash-having runners
+    included — the one the auto-detected case is hardest to exercise for.
+    """
+    module = generator_module()
+    monkeypatch.setattr(module.shutil, "which", lambda name: None)
+    out = tmp_path / "cli.md"
+    assert module.main(["--out", str(out)]) == 2
+    assert not out.exists(), "a refused run must write nothing"
+    assert module.main(["--skip-bash", "--out", str(out)]) == 0
+    assert out.is_file(), "--skip-bash given explicitly must still write"
+
+
 @WINDOWS_SKIP
 def test_the_generators_own_check_agrees_with_this_suite():
     """`--check` writes nothing and answers the question this file asks.

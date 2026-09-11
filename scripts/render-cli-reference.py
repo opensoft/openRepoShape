@@ -531,7 +531,10 @@ def main(argv: list | None = None) -> int:
                         help="omit the bash entry points, for a machine that "
                              "has no bash to run them (the windows runner). "
                              "Detected automatically when `bash` is not on "
-                             "PATH.")
+                             "PATH — and then required explicitly for a "
+                             "normal (non---check) write, which otherwise "
+                             "refuses rather than silently shortening the "
+                             "committed file.")
     parser.add_argument("--check", action="store_true",
                         help="print a unified diff against the file that is "
                              "there and write nothing; exit 1 if they differ")
@@ -554,6 +557,18 @@ def main(argv: list | None = None) -> int:
               f"and cannot be compared with the committed {OUTPUT}. Run "
               "`--check` where there is a bash.", file=sys.stderr)
         return 3
+    if skip_bash and not args.check and not args.skip_bash:
+        # Auto-detected, not asked for, and not just `--check`: writing here
+        # would silently replace the committed, full docs/cli.md with one
+        # short two sections and report success (Copilot review, PR #98).
+        # `--skip-bash` is the one way to say that is what you meant.
+        print("[!!] this machine cannot run the bash entry points, so "
+              f"writing {OUTPUT} here would silently replace the committed, "
+              "full reference with one short `setup.sh` and "
+              "`openRepoShape`. Pass --skip-bash if that is the rendering "
+              "you want; otherwise regenerate where there is a bash.",
+              file=sys.stderr)
+        return 2
     try:
         text = render(skip_bash=skip_bash)
     except Refusal as refusal:
