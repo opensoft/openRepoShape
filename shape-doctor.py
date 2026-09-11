@@ -1851,7 +1851,19 @@ def check_not_a_root_naming(ctx: Context) -> Row:
     remote = origin_name(ctx.root)
     if remote and remote not in names:
         names.append(remote)
-    code, quoted, whole = run_validator(ctx, script, ["--explain", *names])
+    # `--` BEFORE THE NAMES. Without it a directory literally named `--help`
+    # or `-x` is not a name to argparse, it is an OPTION: `--explain --help`
+    # exits 0 through argparse's OWN help action before either positional is
+    # read, which this row would have reported as "classifies under the
+    # naming policy" -- a false COMPLIANT for a name that classifies under
+    # nothing. Quoting (#101/#102) cannot fix this: `quote_arg` promises a
+    # value survives the READER'S SHELL as one argument, and `--help` needs
+    # no shell quoting at all to do that -- the token argparse then reads is
+    # exactly what was typed. `--` is argparse's own end-of-options marker,
+    # not a shell's, and `scripts/validate-repository-naming.py`'s parser
+    # accepts it because every `argparse.ArgumentParser` does by default.
+    code, quoted, whole = run_validator(ctx, script,
+                                        ["--explain", "--", *names])
     detail = {"names": names, "origin": remote, "exit": code,
               "explain": ascii_text(whole).strip().splitlines()[:40]}
     reason = f"{', '.join(names)}: " + (
@@ -1860,7 +1872,7 @@ def check_not_a_root_naming(ctx: Context) -> Row:
     spelled = " ".join(quote_arg(name) for name in names)
     return Row("naming", "naming", OK if code == 0 else FINDING, reason,
                None if code == 0 else
-               f"{PYTHON} {quote_arg(script)} --explain {spelled}", detail)
+               f"{PYTHON} {quote_arg(script)} --explain -- {spelled}", detail)
 
 
 def check_what_is_here(ctx: Context) -> Row:
