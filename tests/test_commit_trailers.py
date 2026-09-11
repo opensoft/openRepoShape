@@ -100,13 +100,30 @@ def test_the_grammar_accepts_a_trailer_somebody_would_actually_write(value):
     "-Lane: xfactory-1",        # a token that does not start with a letter
     "Lane: trailing ",          # trailing whitespace in the value
     "Lane: two\nlines",         # a second line, which would forge a trailer
+    # THE `.match` + `$` HOLE (Copilot, PR #112). A pattern ending in `$`
+    # stops just before a FINAL newline, so this was accepted whole and the
+    # newline went into the commit message and into argv.
+    "Lane: x\n",
+    "Lane: x\r\n",
+    # AND "one line" IS NOT "no `\n`". Each of these is a line break to some
+    # reader, and `[^\n]` in the middle of the pattern admitted all of them.
+    "Lane: a\rb",
+    "Lane: a\x0bb",
+    "Lane: a\x0cb",
+    "Lane: a\tb",
+    "Lane: x\x7f",
+    "Lane: a\x00b",
 ])
 def test_the_grammar_refuses_a_line_that_is_not_a_trailer(value):
     """Refused where argparse can say so, with the usage line beside it.
 
-    `Lane: two\\nlines` is the one with teeth: a value carrying a newline
-    would put a line of its own into somebody else's commit message, which
-    is a trailer nobody passed.
+    THE NEWLINE CASES ARE THE ONES WITH TEETH: a value carrying one puts a
+    line of its own into somebody else's commit message, which is a trailer
+    nobody passed — and the trailing one got through `re.match` entirely,
+    because `$` matches just before a final newline (Copilot, PR #112; the
+    same lesson `shape-doctor.py`'s `quote_arg` took on PR #102 against
+    `"Atlas\\n"`). Both halves of the fix are asserted here: `.fullmatch`,
+    and classes that admit no control character.
     """
     with pytest.raises(argparse.ArgumentTypeError):
         trailer_line(value)
@@ -265,6 +282,39 @@ def test_a_lane_name_that_could_not_be_pasted_is_not_offered(value):
     `--trailer` typed by hand still takes anything the grammar accepts."""
     assert lane_trailer({"LANES_LANE": value}) is None
     assert lane_trailer_argument(env={"LANES_LANE": value}) == ""
+
+
+@pytest.mark.parametrize("raw", [
+    "xfactory-1\n",            # the shape `LANES_LANE=$(cat …)` produces
+    "xfactory-1\r\n",
+    "xfactory-1 ",
+    " xfactory-1",
+    "xfactory-1\t",
+])
+def test_a_lane_name_with_whitespace_around_it_is_not_a_lane_name(raw):
+    """CHECKED RAW, NOT STRIPPED (Copilot, PR #112).
+
+    Asking the alphabet about a `.strip()`ed name meant
+    `LANES_LANE="xfactory-1\\n"` was offered as `Lane: xfactory-1`: a name
+    the contract says is not offered, trimmed into one that is, with nothing
+    said. It is decided the other way on purpose — a value with whitespace
+    around it is not a lane name — because `TRAILER_RE` refuses a value that
+    starts or ends in whitespace, and a printed line offering a trailer this
+    tool's own `--trailer` would then refuse is worse than one offering none.
+    """
+    assert lane_trailer({"LANES_LANE": raw}) is None
+    assert lane_trailer_argument(env={"LANES_LANE": raw}) == ""
+
+
+def test_a_lane_that_is_offered_is_a_trailer_the_tool_would_accept():
+    """THE INVARIANT THE TWO RULES EXIST TO KEEP, asserted directly: every
+    lane line a printed next command offers must be one `--trailer` would
+    take, or the line hands somebody a command that refuses itself."""
+    for raw in ["xfactory-1", LANE, "openreposhape-2", "a/b (c) @ d",
+                "x" * 200]:
+        offered = lane_trailer({"LANES_LANE": raw})
+        assert offered is not None, raw
+        assert trailer_line(offered) == offered
 
 
 def test_the_printed_argument_is_spelled_by_the_callers_own_quoter():

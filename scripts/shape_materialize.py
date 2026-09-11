@@ -451,12 +451,24 @@ def git_init_commit(work: Path, message: str, branch: str) -> str:
 #: `<token>: <value>`, which is git's own trailer grammar narrowed to what a
 #: tool can be handed on a command line: a token of letters, digits and
 #: hyphens (`Co-Authored-By`), a colon, ONE space, and a value that is not
-#: empty, is one line, and neither starts nor ends in whitespace. Narrow
-#: BECAUSE THE VALUE ENDS UP IN A COMMIT MESSAGE somebody else reads as a
-#: trailer: `git interpret-trailers` recognises a block by exactly this
-#: shape, so a "trailer" missing the space after the colon is a line that
-#: reads like one and is not.
-TRAILER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*: [^\s](?:[^\n]*[^\s])?$")
+#: empty, is ONE line, carries no control character, and neither starts nor
+#: ends in whitespace. Narrow BECAUSE THE VALUE ENDS UP IN A COMMIT MESSAGE
+#: somebody else reads as a trailer: `git interpret-trailers` recognises a
+#: block by exactly this shape, so a "trailer" missing the space after the
+#: colon is a line that reads like one and is not.
+#:
+#: MATCHED WITH `.fullmatch`, AND THE CLASSES EXCLUDE EVERY CONTROL
+#: CHARACTER, because "is ONE line" was neither (Copilot, PR #112).
+#: `re.match` with a pattern ending in `$` stops just before a FINAL
+#: NEWLINE, so `--trailer "Lane: x\n"` was accepted whole and the newline
+#: went into the commit message and into argv -- a second line inside a
+#: value, which is a trailer nobody passed. And `[^\n]` in the middle is not
+#: "one line": it admitted `\r`, `\v` and `\f` as well, each of which some
+#: reader renders as a line break of its own. `shape-doctor.py`'s
+#: `quote_arg` learnt the `.fullmatch` half of this on PR #102, against
+#: `"Atlas\n"`; this is the same defect one file along.
+TRAILER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*: [^\s\x00-\x1f\x7f]"
+                        r"(?:[^\x00-\x1f\x7f]*[^\s\x00-\x1f\x7f])?$")
 
 
 def trailer_line(text: str) -> str:
@@ -470,11 +482,12 @@ def trailer_line(text: str) -> str:
     tool has read a repository, copied a byte or checked out a branch.
     """
     value = str(text)
-    if not TRAILER_RE.match(value):
+    if not TRAILER_RE.fullmatch(value):
         raise argparse.ArgumentTypeError(
             f"{value!r} is not a `<Key>: <value>` trailer. It needs a token "
             "of letters, digits and hyphens, a colon, ONE space, and a "
-            'non-empty one-line value — e.g. "Lane: xfactory-1" or '
+            "non-empty value that is one line, carries no control character "
+            'and does not end in whitespace — e.g. "Lane: xfactory-1" or '
             '"Co-Authored-By: Someone <someone@example.invalid>"')
     return value
 
@@ -569,22 +582,35 @@ LANE_ENV = "LANES_LANE"
 #: than guess which printer is asking, a name outside this alphabet gets NO
 #: trailer offered on the printed line; `--trailer` typed by hand still takes
 #: anything `TRAILER_RE` accepts. Today's lane names (`openreposhape-2
-#: (openRepoShape-2)`) are inside it.
+#: (openRepoShape-2)`) are inside it. No newline, tab or carriage return is
+#: in it, which is the point of checking the RAW value below.
 LANE_NAME_RE = re.compile(r"[A-Za-z0-9 ()._:/@+-]+")
 
 
 def lane_trailer(env: dict | None = None) -> str | None:
     """`Lane: <name>` when the environment names a lane, else `None`.
 
-    UNSET, EMPTY OR WHITESPACE IS `None`, and a caller prints nothing for it
-    — which is what makes every line this standard printed yesterday
+    UNSET OR ALL WHITESPACE IS `None`, and a caller prints nothing for it —
+    which is what makes every line this standard printed yesterday
     byte-identical today for everybody who is not in a lane.
+
+    THE VALUE IS CHECKED RAW, AND STRIPPING ONLY RECOGNISES "no lane"
+    (Copilot, PR #112). Checking a `.strip()`ed name meant
+    `LANES_LANE="xfactory-1\n"` was offered as `Lane: xfactory-1` — a name
+    the contract says is not offered, trimmed into one that is, silently. So
+    the alphabet above is asked about the bytes the environment actually
+    carries, and a value with whitespace around it is NOT a lane name:
+    `TRAILER_RE` refuses a value that starts or ends in whitespace, and a
+    printed line that offered a trailer this tool's own `--trailer` would
+    then refuse is worse than a line that offers none. The ONE thing
+    stripping decides is whether an all-whitespace variable means "no lane",
+    which it does — that is `LANES_LANE=` spelled with a space in it.
     """
-    name = str((os.environ if env is None else env).get(LANE_ENV) or "").strip()
-    if not name or not LANE_NAME_RE.fullmatch(name):
+    raw = str((os.environ if env is None else env).get(LANE_ENV) or "")
+    if not raw.strip() or not LANE_NAME_RE.fullmatch(raw):
         return None
-    line = f"Lane: {name}"
-    return line if TRAILER_RE.match(line) else None
+    line = f"Lane: {raw}"
+    return line if TRAILER_RE.fullmatch(line) else None
 
 
 def lane_trailer_argument(quote=None, env: dict | None = None) -> str:
