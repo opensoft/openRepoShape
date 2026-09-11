@@ -352,6 +352,129 @@ def ascii_text(text: str) -> str:
     return text.encode("ascii", "replace").decode("ascii")
 
 
+#: A value `sh` needs no quoting for: letters, digits, and the punctuation a
+#: path, a flag, a commit id or a branch name is actually spelled with. `~` is
+#: deliberately absent -- a leading one is expanded -- and so is every
+#: character the shell reads as syntax.
+UNQUOTED_POSIX = re.compile(r"^[A-Za-z0-9_./:@%+=,-]+$")
+#: PowerShell's alphabet, and it is NOT the same one, which is the whole
+#: reason there are two constants here. It GAINS the backslash a Windows path
+#: is spelled with (the drive letter's colon is already admitted above) and it
+#: LOSES two characters `sh` is indifferent to (Copilot, PR #102):
+#:
+#:   `,`  is PowerShell's list separator, so `C:\work,old\Atlas` bare is a
+#:        value that may reach the command as something other than one
+#:        argument;
+#:   `@`  leading, is splatting syntax (`@args`), so a name like `@Atlas` is
+#:        read as an expansion rather than as itself.
+#:
+#: `%` STAYS, and is named here so the next reader need not wonder: it is an
+#: alias for `ForEach-Object` in COMMAND position only -- the first token of a
+#: pipeline element -- and every value this file interpolates is an argument.
+#: (`%VAR%` expansion is `cmd.exe`'s, and the Windows shell this standard
+#: documents is PowerShell; see `setup-project.py`.)
+UNQUOTED_NT = re.compile(r"^[A-Za-z0-9_./:%+=\\-]+$")
+
+
+def quote_arg(value, platform: str | None = None) -> str:
+    # A RAW docstring, because the Windows examples below are Windows paths:
+    # `C:\Users\...` is a `\U` escape to the interpreter, and a docstring that
+    # had to spell a reader's path with doubled backslashes would be a
+    # docstring nobody could compare to what they see on screen.
+    r"""One interpolated value, spelled so the READER'S shell hands it
+    back whole.
+
+    THE DEFECT WAS `--root {ctx.root}`, ON EVERY ROW SINCE #96. A root at
+    `/srv/my projects/Atlas` produced a next command that argparse reads
+    as three arguments and refuses -- in front of whoever pasted it, which is
+    the exact failure `validator_row` already carries a comment about
+    (`python3 validate-pins.py in <root>`, Copilot on PR #96). Copilot found
+    it again on PR #100, against the placement row; it was never that row's,
+    it was every row's.
+
+    AND THE TWO SHELLS ARE NOT ONE DIALECT. PowerShell escapes an apostrophe
+    inside a verbatim string by DOUBLING it and `sh` by closing, escaping and
+    reopening -- and each reads the other's form as a different value with no
+    error to say so: `sh` hands `'O''Brien'` on as `OBrien`, the apostrophe
+    silently gone, and `\` is a literal character to PowerShell, whose escape
+    is the backtick. A path is exactly where that bites, so one function knows
+    both, and `platform` lets a test ask it for either on whichever host it is
+    running on.
+
+    `shlex.quote` COULD NOT BE THAT FUNCTION. Its own module is documented as
+    designed for Unix shells only, so it carries no promise at all about the
+    shell a Windows reader is in -- and since #49 this standard has a native
+    Windows entry point and this file runs there by contract. Nor would its
+    spelling do: `'C:\Users\Jane O'"'"'Neill\proj'` is a line a person is
+    meant to RETYPE, on a machine whose stock shell is Windows PowerShell
+    5.1 (see `setup-project.py`), where the same value is written
+    `'C:\Users\Jane O''Neill\proj'`. A remediation nobody can read is the
+    defect this whole file is against, one step along.
+
+    IT QUOTES WHAT NEEDS IT AND NOTHING ELSE. A table whose whole job is to be
+    read would be worse, not better, for `--root '/srv/work/Atlas'` on every
+    line of every clean run, and a caller lifting a path back out of a `--json`
+    `next` would have to strip quotes that were never load-bearing. So a value
+    matching the platform's alphabet is returned unchanged and everything
+    else is quoted whole. The two alphabets are not the same one: see
+    `UNQUOTED_POSIX` and `UNQUOTED_NT`.
+
+    IT LIVES HERE AND NOT IN `scripts/repo_shape.py`, which is where the
+    standard's other platform-aware constant (`PYTHON`) sits. That file is a
+    SHAPE COPY: `scripts/shape_materialize.py` writes it into every assembly
+    root and every family holder, and `contracts/shape-pin.yaml` digests it --
+    so one function added there would put an `upstream-changed
+    scripts/repo_shape.py` row in front of every project in the estate on its
+    next `update-shape.py check`, for a helper no project's own copy would
+    ever call. `shape-doctor.py` is in no copy list, by its own contract: it
+    compares a project against THE CHECKOUT IT IS RUN FROM, so the only file
+    that builds these strings is the only file that carries the quoter. And
+    `repo_shape.SAFE_PATH_RE` answers a different question anyway -- what may
+    become an argument to `git`, where every command is a list run with
+    `shell=False` and the threat is argument injection, not a shell.
+
+    AND IT NORMALIZES BEFORE IT QUOTES, NOT AFTER. `Row.__init__` runs
+    `ascii_text` again, over the WHOLE assembled `next_command`, once every
+    value in it already sits quoted -- so a curly apostrophe that reached
+    this function unconverted came out the far side of THAT pass as a bare,
+    undoubled one, breaking the very quoting it sat inside (Copilot, PR
+    #102): `'O'Neill'` is an unterminated quotation to `sh`, and an
+    un-doubled apostrophe is exactly as broken to PowerShell's own verbatim
+    string. Normalizing HERE first leaves that later pass nothing to touch:
+    `ascii_text` maps this repository's own typography to ASCII, so calling
+    it twice on an already-ASCII string is a no-op. What the reader then sees
+    is the ASCII FLATTENING of their path rather than its own bytes -- which
+    is this file's PURE ASCII rule, stated at the top and true of every other
+    string in the report, and a command that names a path plainly and is
+    refused by name beats one no shell will parse.
+
+    AND THE ALPHABET CHECK MUST COVER THE VALUE WHOLE. `$` is content to
+    match just before a trailing newline, so `.match` alone waved a value
+    like `"Atlas\n"` through bare, newline and all -- true to the pattern
+    and false to the point of it (Copilot, PR #102). `.fullmatch` is what
+    actually requires every character to be in the alphabet, not only the
+    ones before wherever `$` was willing to stop.
+    """
+    # ASCII first, so the alphabet check and the quoting below it both see
+    # what `Row.__init__` will (Copilot, PR #102); see the docstring above.
+    text = ascii_text(str(value))
+    windows = (os.name if platform is None else platform) == "nt"
+    # `.fullmatch`, not `.match`: a pattern ending in `$` still matches just
+    # before a trailing newline, so `.match` alone would call "Atlas\n" bare
+    # (Copilot, PR #102).
+    if (UNQUOTED_NT if windows else UNQUOTED_POSIX).fullmatch(text):
+        return text
+    if windows:
+        # PowerShell's verbatim string: nothing inside is expanded, and the
+        # apostrophe is escaped by doubling it.
+        return "'" + text.replace("'", "''") + "'"
+    # `sh`'s: close the quote, escape one apostrophe, reopen. `shlex.quote`
+    # spells the same meaning `'"'"'`; this is the form a person reading the
+    # report can see through, and both come back out of `shlex.split` as the
+    # value that went in -- which is what `tests/test_shape_doctor.py` asserts.
+    return "'" + text.replace("'", "'\\''") + "'"
+
+
 # ---------------------------------------------------------------------------
 # A row, a check, and the registry they live in
 # ---------------------------------------------------------------------------
@@ -366,6 +489,11 @@ class Row:
         self.label = label
         self.status = status
         self.reason = ascii_text(reason)
+        # `quote_arg` ascii-normalizes every value it quotes BEFORE it
+        # quotes it (Copilot, PR #102), so this pass has nothing left to do
+        # to a `next_command` already built from it -- it only does its
+        # ordinary job, flattening this repository's own typography, on the
+        # literal words a caller wrote around those values.
         self.next_command = ascii_text(next_command) if next_command else None
         #: Structured facts for `--json`, so a caller reads numbers rather
         #: than parsing the sentence a human is meant to read.
@@ -593,9 +721,11 @@ def validator_row(ctx: Context, check_id: str, label: str, own: str,
         return Row(check_id, label, FINDING,
                    f"neither {own} nor {template} is readable, so the "
                    "question cannot be asked",
-                   f"{PYTHON} {ctx.shape / 'shape-doctor.py'} --root "
-                   f"{ctx.root}   # from a complete checkout of the standard; "
-                   "this one is missing that file", {"validator": None})
+                   f"{PYTHON} "
+                   f"{quote_arg(ctx.shape / 'shape-doctor.py')} --root "
+                   f"{quote_arg(ctx.root)}   # from a complete checkout of "
+                   "the standard; this one is missing that file",
+                   {"validator": None})
     code, quoted, _ = run_validator(ctx, used, args)
     detail = {"validator": used.as_posix(), "own_copy": own_path.is_file(),
               "exit": code}
@@ -608,8 +738,9 @@ def validator_row(ctx: Context, check_id: str, label: str, own: str,
     # clothes: `in` arrives as an argument and argparse refuses it. Every
     # validator here takes `--root`, so the runnable spelling is the absolute
     # path and that flag, and it needs no `cd` (Copilot, PR #96).
+    spelled = " ".join(quote_arg(arg) for arg in args)
     return Row(check_id, label, FINDING, reason,
-               f"{PYTHON} {used} {' '.join(args)}   # read its output in "
+               f"{PYTHON} {quote_arg(used)} {spelled}   # read its output in "
                "full; it names what it refused", detail)
 
 
@@ -638,8 +769,8 @@ def check_naming(ctx: Context) -> Row:
     return Row("naming", "naming", FINDING,
                f"the naming policy is not satisfied (exit {code})"
                + (f": {quoted}" if quoted else ""),
-               f"{PYTHON} {script} --explain --project "
-               f"{ctx.root / 'project.yaml'}", detail)
+               f"{PYTHON} {quote_arg(script)} --explain --project "
+               f"{quote_arg(ctx.root / 'project.yaml')}", detail)
 
 
 def check_manifest(ctx: Context) -> Row:
@@ -747,8 +878,9 @@ def check_shape_currency(ctx: Context) -> Row:
         # evidence that our copy of the standard is short a commit.
         return Row("shape-currency", "shape currency", FINDING,
                    f"the copies cannot be compared: {exc.detail}",
-                   f"git -C {ctx.shape} fetch --all   # this checkout of the "
-                   "standard does not carry the commit the pin names; fetch "
+                   f"git -C {quote_arg(ctx.shape)} fetch --all   # this "
+                   "checkout of the standard does not carry the commit the "
+                   "pin names; fetch "
                    "it, or run the doctor from a clone that has it",
                    {"error": exc.code, "environment": True})
     try:
@@ -796,21 +928,26 @@ def check_shape_currency(ctx: Context) -> Row:
                        "no copied file differs, but the pin names an older "
                        f"commit, so `apply` would move the pin alone; "
                        f"{summary} ({where})",
-                       f"{PYTHON} {ctx.shape / 'update-shape.py'} check "
-                       f"--root {ctx.root} --upstream {ctx.shape}   # then "
-                       f"apply --at {target} --yes --branch "
-                       f"shape/update-{target[:12]}", detail)
-        accept = "".join(f" --accept-local {row.path}" for row in rows
+                       f"{PYTHON} "
+                       f"{quote_arg(ctx.shape / 'update-shape.py')} check "
+                       f"--root {quote_arg(ctx.root)} --upstream "
+                       f"{quote_arg(ctx.shape)}   # then apply --at "
+                       f"{quote_arg(target)} --yes --branch "
+                       f"{quote_arg('shape/update-' + target[:12])}", detail)
+        accept = "".join(f" --accept-local {quote_arg(row.path)}"
+                         for row in rows
                          if row.state == us.LOCALLY_MODIFIED)
         named = ", ".join(row.path for row in moved[:4])
         if len(moved) > 4:
             named += f", and {len(moved) - 4} more"
         return Row("shape-currency", "shape currency", FINDING,
                    f"{summary} ({where}): {named}",
-                   f"{PYTHON} {ctx.shape / 'update-shape.py'} check --root "
-                   f"{ctx.root} --upstream {ctx.shape}   # then apply --at "
-                   f"{target} --yes{accept} --branch shape/update-"
-                   f"{target[:12]}", detail)
+                   f"{PYTHON} "
+                   f"{quote_arg(ctx.shape / 'update-shape.py')} check --root "
+                   f"{quote_arg(ctx.root)} --upstream {quote_arg(ctx.shape)}"
+                   f"   # then apply --at {quote_arg(target)} --yes{accept} "
+                   f"--branch {quote_arg('shape/update-' + target[:12])}",
+                   detail)
     finally:
         upstream.close()
 
@@ -877,9 +1014,11 @@ def check_legs(ctx: Context) -> Row:
     detail = {"legs": rows}
     if problems:
         return Row("legs", "legs", FINDING, "; ".join(problems),
-                   f"{PYTHON} {ctx.root / 'scripts' / 'bootstrap.py'} --root "
-                   f"{ctx.root}   # what `make bootstrap` runs: it puts every "
-                   "leg on its tracking branch AT the pinned commit", detail)
+                   f"{PYTHON} "
+                   f"{quote_arg(ctx.root / 'scripts' / 'bootstrap.py')} "
+                   f"--root {quote_arg(ctx.root)}   # what `make bootstrap` "
+                   "runs: it puts every leg on its tracking branch AT the "
+                   "pinned commit", detail)
     return Row("legs", "legs", OK,
                f"{len(rows)} leg(s) mounted and checked out at their pins",
                None, detail)
@@ -952,8 +1091,9 @@ def check_leg_shape_files(ctx: Context) -> Row:
         copyable = [entry for entry in missing if entry[2] not in LEG_RENDERED]
         if copyable:
             role, rel, name = copyable[0]
-            fix = (f"cp {ctx.shape / 'templates' / (role + '-root') / name} "
-                   f"{ctx.root / rel / name}")
+            source = ctx.shape / "templates" / f"{role}-root" / name
+            fix = (f"cp {quote_arg(source)} "
+                   f"{quote_arg(ctx.root / rel / name)}")
             if len(copyable) < len(missing):
                 fix += ("   # and the rest are RENDERED per project "
                         "(placeholders): scaffold-project.py writes those, "
@@ -961,8 +1101,9 @@ def check_leg_shape_files(ctx: Context) -> Row:
         else:
             fix = (f"the missing file(s) are RENDERED per project from "
                    f"templates/<role>-root/ — `{PYTHON} "
-                   f"{ctx.shape / 'scaffold-project.py'} --help` shows what "
-                   "writes them; copying a template verbatim would leave "
+                   f"{quote_arg(ctx.shape / 'scaffold-project.py')} --help` "
+                   "shows what writes them; copying a template verbatim "
+                   "would leave "
                    "`{{PLACEHOLDER}}`s in the leg")
         # `note`, NOT `FINDING`. This is the row that printed `INVALID`
         # over a live estate whose every real gate was green, because
@@ -1262,9 +1403,9 @@ def check_placement(ctx: Context) -> Row:
             NA,
             f"this checkout of the standard is missing {missing}, so the "
             "adoption's own classification cannot be run over the legs",
-            f"{PYTHON} {ctx.shape / 'shape-doctor.py'} --root {ctx.root}   "
-            "# from a COMPLETE checkout of the standard; this one is short "
-            f"{missing}",
+            f"{PYTHON} {quote_arg(ctx.shape / 'shape-doctor.py')} --root "
+            f"{quote_arg(ctx.root)}   # from a COMPLETE checkout of the "
+            f"standard; this one is short {missing}",
             {"policy": policy_path.as_posix()})
     try:
         policy = adopt.PathPolicy.load(policy_path)
@@ -1317,7 +1458,8 @@ def check_placement(ctx: Context) -> Row:
         return placement_row(
             NA, f"no leg could be read, so nothing was classified: {audited}",
             None, detail)
-    plan = (f"{PYTHON} {ctx.shape / 'shape-doctor.py'} --root {ctx.root} "
+    plan = (f"{PYTHON} {quote_arg(ctx.shape / 'shape-doctor.py')} --root "
+            f"{quote_arg(ctx.root)} "
             "--placement-plan placement-plan.yaml   # writes the paths above "
             "as a plan to resolve by hand. Moving one is a pull request on "
             "each leg and a pin bump in the root, so this command makes "
@@ -1526,19 +1668,23 @@ def check_agent_files(ctx: Context) -> Row:
     # takes (Copilot, PR #96).
     if detail["pinned"]:
         first = detail["pinned"][0]
-        fix = (f"git -C {ctx.root} checkout -- {first}   # the pin has a "
+        fix = (f"git -C {quote_arg(ctx.root)} checkout -- "
+               f"{quote_arg(first)}   # the pin has a "
                "`files:` row for it, so it was deleted rather than never "
                "copied; restore it from this repository's own history, then "
-               f"`{PYTHON} {ctx.root / 'scripts' / 'validate-pins.py'} "
-               f"--root {ctx.root}` to confirm the digest")
+               f"`{PYTHON} "
+               f"{quote_arg(ctx.root / 'scripts' / 'validate-pins.py')} "
+               f"--root {quote_arg(ctx.root)}` to confirm the digest")
     elif "AGENTS-shape.md" in absent:
-        fix = (f"{PYTHON} {ctx.shape / 'update-shape.py'} check --root "
-               f"{ctx.root} --upstream {ctx.shape}   # no pin row names it, "
+        fix = (f"{PYTHON} {quote_arg(ctx.shape / 'update-shape.py')} "
+               f"check --root {quote_arg(ctx.root)} --upstream "
+               f"{quote_arg(ctx.shape)}   # no pin row names it, "
                "so it is reported upstream-added and taken, on the human's "
                "word, with `apply --add AGENTS-shape.md`")
     else:
-        fix = (f"{PYTHON} {ctx.shape / 'scaffold-project.py'} --help   # "
-               f"{' and '.join(absent)} is RENDERED per project, not copied; "
+        fix = (f"{PYTHON} {quote_arg(ctx.shape / 'scaffold-project.py')} "
+               f"--help   # {' and '.join(absent)} is RENDERED per project, "
+               "not copied; "
                "write it, or take a rendered one from a scaffolded root")
     # FINDING ONLY FOR A FILE SOMETHING ELSE ASSERTS. `AGENTS-shape.md` is a
     # pinned copy, so its absence is already a `shape-copy-missing` finding
@@ -1653,10 +1799,11 @@ def check_members(ctx: Context) -> Row:
               "on_a_branch": on_a_branch}
     if problems:
         return Row("members", "members", FINDING, "; ".join(problems),
-                   f"{PYTHON} {ctx.root / 'scripts' / 'bootstrap.py'} --root "
-                   f"{ctx.root}   # what `make bootstrap` runs in a holder: "
-                   "it fetches every member at its pin and leaves it "
-                   "detached there", detail)
+                   f"{PYTHON} "
+                   f"{quote_arg(ctx.root / 'scripts' / 'bootstrap.py')} "
+                   f"--root {quote_arg(ctx.root)}   # what `make bootstrap` "
+                   "runs in a holder: it fetches every member at its pin and "
+                   "leaves it detached there", detail)
     note = f"{len(rows)} member(s) mounted at their pins"
     if on_a_branch:
         note += ("; on a BRANCH rather than detached: "
@@ -1710,9 +1857,10 @@ def check_not_a_root_naming(ctx: Context) -> Row:
     reason = f"{', '.join(names)}: " + (
         "classifies under the naming policy" if code == 0
         else (quoted or "matches no family in the policy"))
+    spelled = " ".join(quote_arg(name) for name in names)
     return Row("naming", "naming", OK if code == 0 else FINDING, reason,
                None if code == 0 else
-               f"{PYTHON} {script} --explain {' '.join(names)}", detail)
+               f"{PYTHON} {quote_arg(script)} --explain {spelled}", detail)
 
 
 def check_what_is_here(ctx: Context) -> Row:
@@ -1798,9 +1946,64 @@ def check_machine(ctx: Context) -> Row:
         reason += f": {quoted}"
     return Row("machine", "machine", NA, reason,
                None if code == 0 else
-               f"{PYTHON} {entry} --preflight   # it names each missing "
-               "prerequisite and offers to install it, on a typed yes",
+               f"{PYTHON} {quote_arg(entry)} --preflight   # it names each "
+               "missing prerequisite and offers to install it, on a typed "
+               "yes",
                detail)
+
+
+def python_command(platform: str | None = None) -> str:
+    """`PYTHON`, for the platform ASKED FOR rather than the one running.
+
+    `repo_shape.PYTHON` is decided ONCE, at import, from `os.name` -- rightly,
+    because every other caller is spelling a command for the machine it is
+    on. This file has one caller that is not: `scaffold_command` takes a
+    `platform` so both spellings can be asserted from either host, and reading
+    the module constant there made the Windows branch print `python3` on a
+    POSIX runner -- the function claiming a spelling it did not produce, with
+    a `startswith("python")` assertion too loose to notice (Copilot, PR #102).
+
+    THE RULE IS `repo_shape`'s OWN, mirrored and not re-argued: `python` on
+    Windows, where python.org and the Microsoft Store both put that name on
+    PATH and there is usually no `python3` at all, and `python3` everywhere
+    else, the command every POSIX install of a supported Python answers to.
+    `platform=None` returns the constant itself, so the host-default path is
+    the same object every other line in this file uses rather than a second
+    derivation of it that could drift.
+    """
+    if platform is None:
+        return PYTHON
+    return "python" if platform == "nt" else "python3"
+
+
+def scaffold_command(shape: Path, project: str,
+                     platform: str | None = None) -> str:
+    """How a NEW project is created, spelled for the READER'S platform.
+
+    `setup.sh` IS A BASH SCRIPT AND WINDOWS HAS NO BASH. This row's whole job
+    is to hand somebody a line they can run, and on the one platform where
+    this file has no shell to run that line in it was handing them a path
+    PowerShell cannot execute at all (Copilot, PR #102). The standard's own
+    answer has been `setup-project.py` since #49 -- it IS the flow and
+    `setup.sh` is a shim over it (#50), which is why the README's Windows
+    two-liner downloads that file and runs it, and why there is no `--install`
+    twin on Windows: there is nothing to install.
+
+    `platform` for the same reason `quote_arg` has one: so both spellings are
+    asserted on whichever host the suite is running on, rather than half of
+    them only ever being exercised where nobody is looking. Which is also why
+    the INTERPRETER comes from `python_command(platform)` and not from the
+    module-global `PYTHON`: that constant is the HOST's, so reading it here
+    made the Windows branch print `python3` on a POSIX runner -- this function
+    claiming a spelling it did not produce, in the one place written to be
+    read from the other platform (Copilot, PR #102).
+    """
+    if (os.name if platform is None else platform) == "nt":
+        return (f"{python_command(platform)} "
+                f"{quote_arg(shape / 'setup-project.py')} "
+                f"--org <your-org> --project {quote_arg(project)}")
+    return (f"{quote_arg(shape / 'setup.sh')} --org <your-org> "
+            f"--project {quote_arg(project)}")
 
 
 def check_the_way_in(ctx: Context) -> Row:
@@ -1818,13 +2021,17 @@ def check_the_way_in(ctx: Context) -> Row:
                       for part in root.name.replace("_", "-").split("-")
                       if part) or "Project"
     if is_repo:
-        fix = (f"{PYTHON} {ctx.shape / 'adopt-project.py'} plan --source "
-               f"{root} --project {project}")
+        fix = (f"{PYTHON} {quote_arg(ctx.shape / 'adopt-project.py')} "
+               f"plan --source {quote_arg(root)} --project "
+               f"{quote_arg(project)}")
         reason = ("this is a git repository with no shape manifest: it is "
                   "ADOPTED in place, keeping its name, identity and history")
     else:
-        fix = (f"{ctx.shape / 'setup.sh'} --org <your-org> --project "
-               f"{project}   # without --yes; it asks")
+        # `<your-org>` IS NOT QUOTED and must not be: it is a placeholder
+        # the reader replaces, not a value this command knows. Quoting it
+        # would tell them to type the angle brackets.
+        fix = (scaffold_command(ctx.shape, project)
+               + "   # without --yes; it asks")
         reason = ("there is no repository here to adopt: a new project is "
                   "SCAFFOLDED, which creates three repositories and asks "
                   "first")

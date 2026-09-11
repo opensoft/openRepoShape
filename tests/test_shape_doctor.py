@@ -26,10 +26,11 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shlex
 import shutil
 import subprocess
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -475,7 +476,12 @@ def test_a_directory_that_is_not_a_repository_says_scaffold(standard,
     result = doctor(standard, here, "--json")
     assert result.returncode == 2, result.stdout + result.stderr
     rows = rows_of(result)
-    assert "setup.sh" in rows["way-in"]["next"]
+    # THE READER'S OWN ENTRY POINT, which is not the same file on every
+    # platform: `setup.sh` is bash and PowerShell cannot execute it, so on
+    # Windows the way in is `setup-project.py`, which IS the flow -- and
+    # `setup.sh` a shim over it (#49, #50; Copilot, PR #102).
+    assert ("setup-project.py" if os.name == "nt" else "setup.sh") in \
+        rows["way-in"]["next"], rows["way-in"]["next"]
     assert "--org <your-org>" in rows["way-in"]["next"]
     assert "without --yes" in rows["way-in"]["next"]
     assert rows["way-in"]["detail"]["git_repository"] is False
@@ -1606,3 +1612,502 @@ def test_a_tracked_symlink_is_never_followed_out_of_the_leg(standard, project,
     assert entry["bytes"] == len(str(outside)), entry
     assert entry["bytes"] != 5000, (
         "the size reported is the link's, never the file it points at")
+
+
+# --- the platform-aware quoter (#101) ---------------------------------------
+#
+# Copilot asked for shell quoting on PR #100, against the placement row. The
+# finding was real and was never that row's: every next command since #96
+# interpolates a path with an f-string, so a root, a leg or a project name
+# with a space in it produced a command argparse reads as three arguments --
+# in front of whoever pasted it. `shlex.quote` is not the answer either: it is
+# POSIX quoting by its own documentation, and this file runs on Windows by
+# contract (#49). So one quoter that knows both shells, asked for either.
+
+#: A directory name that is wrong in every way a shell cares about: a space,
+#: so an unquoted interpolation splits into two arguments, and an apostrophe,
+#: so a naive `'...'` wrapper closes early. Short and distinctive on purpose --
+#: a fragment of it appearing as a token of its own is unmistakable.
+AWKWARD = "do ct'or"
+
+
+def doctor_module(standard: Path):
+    """`shape-doctor.py` from the standard under test, as a module.
+
+    The same load the two tests above do and for the same reason -- the
+    filename has a hyphen -- so the quoter under test is the one that file
+    ships rather than a second copy of its rules written out here.
+    """
+    spec = importlib.util.spec_from_file_location("shape_doctor_quoting",
+                                                  standard / DOCTOR)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+#: What a report is mostly made of, and what must survive UNQUOTED: quoting
+#: these would put `--root '/srv/work/Atlas'` on every line of every clean
+#: run, in a table whose whole job is to be read.
+ORDINARY = [
+    "/srv/work/Atlas",
+    "scripts/bootstrap.py",
+    "--root",
+    "AGENTS-shape.md",
+    "shape/update-3d46ab5b9c1d",
+    "3d46ab5b9c1dcafe0123456789abcdef01234567",
+    "Atlas",
+    "contracts/spec-pin.yaml",
+]
+
+
+@pytest.mark.parametrize("platform", ["posix", "nt"])
+@pytest.mark.parametrize("value", ORDINARY)
+def test_the_quoter_leaves_an_ordinary_value_alone(platform, value):
+    """The half that keeps the report readable, on both platforms."""
+    module = doctor_module(REPO)
+    assert module.quote_arg(value, platform) == value
+
+
+def test_the_quoter_asked_for_a_platform_ignores_the_host():
+    """`platform=` is what makes both forms testable on one machine.
+
+    Without it, half of this section could only ever run on the operating
+    system the runner happened to be and the other half would be asserted
+    nowhere -- which is exactly how a Windows-only spelling stays wrong for a
+    year. Asked for a platform, the function answers for THAT one; asked for
+    none it answers for this host, which is what every caller in
+    `shape-doctor.py` passes.
+    """
+    module = doctor_module(REPO)
+    here = "nt" if os.name == "nt" else "posix"
+    # An apostrophe is where the two shells disagree, so it is the value that
+    # proves the argument is read at all.
+    assert module.quote_arg("O'Brien", "posix") == "'O'\\''Brien'"
+    assert module.quote_arg("O'Brien", "nt") == "'O''Brien'"
+    assert module.quote_arg("O'Brien") == module.quote_arg("O'Brien", here)
+
+
+#: The three shapes the issue names, plus the empty string -- a value no row
+#: produces today and one a `'...'` wrapper is the only honest spelling of.
+AWKWARD_VALUES = [
+    "/srv/my projects/Atlas",            # a space
+    "/srv/O'Brien/Atlas",                # an apostrophe
+    "/srv/my projects/O'Brien's Atlas",  # both
+    r"C:\Users\Brett Heap\proj",         # a Windows drive path, with a space
+    r"C:\Users\Jane O'Neill\proj",       # and with both
+    "",                                  # and the value nothing else spells
+]
+
+
+@pytest.mark.parametrize("value", AWKWARD_VALUES)
+def test_the_posix_form_round_trips_through_shlex(value):
+    """THE PROOF, and it is the shell's own reader that gives it.
+
+    `shlex.split` is the POSIX word-splitting `sh` performs, so a quoted value
+    that comes back out of it as ONE token equal to what went in is a value
+    the reader's shell will hand to argparse whole. Asserting a string the
+    test itself spelled would only prove the test and the function agree about
+    the wrong thing.
+    """
+    module = doctor_module(REPO)
+    quoted = module.quote_arg(value, "posix")
+    assert shlex.split(quoted) == [value], quoted
+    # `'\''` -- close, escape, reopen -- rather than `shlex.quote`'s
+    # `'"'"'`. Both are POSIX, both round-trip, and the difference is one a
+    # person reading the report can see through; what has to agree is the
+    # SHELL, which is the line above and this one.
+    assert shlex.split(shlex.quote(value)) == shlex.split(quoted)
+
+
+#: The PowerShell form, spelled out, because there is no `shlex` for it. A
+#: verbatim single-quoted string expands nothing and escapes an apostrophe by
+#: DOUBLING it -- where `sh` closes the quote, escapes, and reopens.
+POWERSHELL = [
+    ("/srv/my projects/Atlas", "'/srv/my projects/Atlas'"),
+    ("/srv/O'Brien/Atlas", "'/srv/O''Brien/Atlas'"),
+    (r"C:\Users\Brett Heap\proj", r"'C:\Users\Brett Heap\proj'"),
+    (r"C:\Users\Jane O'Neill\proj", "'C:\\Users\\Jane O''Neill\\proj'"),
+    ("", "''"),
+    # A Windows path with nothing awkward in it passes through on Windows --
+    # and is QUOTED on POSIX, where a backslash is an escape character and not
+    # a separator. The same value, two right answers.
+    (r"C:\projects\Atlas", r"C:\projects\Atlas"),
+]
+
+
+@pytest.mark.parametrize("value,expected", POWERSHELL)
+def test_the_powershell_form_is_exactly_this(value, expected):
+    module = doctor_module(REPO)
+    assert module.quote_arg(value, "nt") == expected
+
+
+def test_the_two_shells_are_not_one_dialect():
+    """WHY THERE ARE TWO FORMS AT ALL, proved rather than asserted in prose.
+
+    It would be cheaper to pick one spelling and print it everywhere, and this
+    is the test that says what that would cost: `sh` reads PowerShell's
+    doubled apostrophe as two adjacent quoted strings and concatenates them,
+    so `'O''Brien'` arrives as `OBrien` -- a DIFFERENT path, with no error
+    anywhere to tell the reader their command checked the wrong repository.
+    That is the failure mode a report cannot have.
+    """
+    module = doctor_module(REPO)
+    windows = module.quote_arg("O'Brien", "nt")
+    assert windows == "'O''Brien'"
+    assert shlex.split(windows) == ["OBrien"], (
+        "if `sh` ever reads the PowerShell form correctly, the second form "
+        "has stopped earning its place")
+    assert shlex.split(module.quote_arg("O'Brien", "posix")) == ["O'Brien"]
+
+
+#: Two characters `sh` is indifferent to and PowerShell is not, so the two
+#: alphabets are NOT one alphabet (Copilot, PR #102). `,` is PowerShell's list
+#: separator and a leading `@` is splatting syntax; both are ordinary bytes in
+#: a `sh` word, and quoting them there would be noise for nothing.
+#: `(value, on Windows, on POSIX)`.
+POWERSHELL_METACHARACTERS = [
+    ("@Atlas", "'@Atlas'", "@Atlas"),
+    ("a,b", "'a,b'", "a,b"),
+    ("release,2026@main", "'release,2026@main'", "release,2026@main"),
+    # The issue's own example. It is quoted on BOTH, and for two different
+    # reasons: the comma on Windows, and the backslashes on POSIX, where `\`
+    # is an escape character rather than a separator.
+    (r"C:\work,old\Atlas", r"'C:\work,old\Atlas'", r"'C:\work,old\Atlas'"),
+]
+
+
+@pytest.mark.parametrize("value,windows,posix", POWERSHELL_METACHARACTERS)
+def test_powershell_metacharacters_are_quoted_there_and_bare_here(value,
+                                                                  windows,
+                                                                  posix):
+    r"""One alphabet for both shells would have to be wrong somewhere.
+
+    Admitted bare on Windows, `C:\work,old\Atlas` may reach the command as
+    something other than one argument and `@Atlas` as an expansion rather than
+    as itself -- neither with an error to say so, which is the failure mode a
+    report cannot have. Quoted on POSIX, they would be noise on a line whose
+    whole job is to be read. So the two constants differ, and this is what
+    the difference is for.
+    """
+    module = doctor_module(REPO)
+    assert module.quote_arg(value, "nt") == windows
+    assert module.quote_arg(value, "posix") == posix
+    assert shlex.split(module.quote_arg(value, "posix")) == [value]
+
+
+def test_a_windows_path_is_quoted_on_posix_and_bare_on_windows():
+    """The one case where the two platforms must NOT agree, said out loud.
+
+    `C:\\projects\\Atlas` is a path on Windows and a word full of escape
+    characters to `sh`, where `\\U` is just `U` and the reader silently gets
+    `C:projectsAtlas`. One alphabet for both would have to choose which of
+    the two to be wrong about.
+    """
+    module = doctor_module(REPO)
+    value = "C:\\projects\\Atlas"
+    assert module.quote_arg(value, "nt") == value
+    assert module.quote_arg(value, "posix") == "'" + value + "'"
+    assert shlex.split(module.quote_arg(value, "posix")) == [value]
+
+
+#: THE WHOLE LINE, not a substring of it. `startswith("python")` was true of
+#: `python3 ...` as well, which is exactly the spelling the Windows branch was
+#: wrongly producing on a POSIX runner (Copilot, PR #102): an assertion that
+#: cannot tell `python` from `python3` cannot check the one thing this
+#: function's `platform` argument exists to make checkable.
+#:
+#: THE PATH IS PURE, not `Path`. `Path` is the HOST's flavour -- `WindowsPath`
+#: on a Windows runner -- so `shape / 'setup.sh'` rendered `\srv\openRepoShape
+#: \...` against this hard-coded `/srv/...` expectation no matter which
+#: `platform` a row named: exactly what CI on Windows showed, on BOTH rows
+#: (job `tests-windows`, run 34594408797). `PurePosixPath` is the same
+#: flavour on every host, Windows included, so the rendering asserted below
+#: no longer depends on which machine runs the suite.
+#:
+#: AND BOTH ROWS SHARE THAT ONE FLAVOUR -- the `nt` row is not given a
+#: `PureWindowsPath`. `scaffold_command`'s own `quote_arg(shape / ...)` calls
+#: pass no `platform` of their own, so each falls back to `quote_arg`'s
+#: default, which reads the REAL host's `os.name` -- not the `platform` this
+#: row names. `\` sits in `UNQUOTED_NT` but not in `UNQUOTED_POSIX`, so a
+#: genuine `C:\...` fixture would come back bare on an actual Windows runner
+#: and QUOTED on a POSIX one running this same `nt` row -- trading the
+#: Windows failure this commit fixes for a new Linux/macOS one. `/` sits in
+#: both alphabets, so it is bare everywhere; see `quote_arg` and
+#: `UNQUOTED_NT`/`UNQUOTED_POSIX`.
+SCAFFOLD_COMMAND = [
+    ("posix", PurePosixPath("/srv/openRepoShape"),
+     "/srv/openRepoShape/setup.sh --org <your-org> --project Atlas"),
+    ("nt", PurePosixPath("/srv/openRepoShape"),
+     "python /srv/openRepoShape/setup-project.py --org <your-org> "
+     "--project Atlas"),
+]
+
+
+@pytest.mark.parametrize("platform,shape,expected", SCAFFOLD_COMMAND)
+def test_the_scaffold_command_is_the_readers_own_entry_point(platform,
+                                                             shape,
+                                                             expected):
+    """`setup.sh` is bash, and Windows has no bash.
+
+    The `way in` row's whole job is to hand somebody a line they can run, and
+    on the one platform where this file has no shell to run that line in it
+    was naming a path PowerShell cannot execute at all (Copilot, PR #102).
+    `setup-project.py` is the standard's answer there and has been since #49:
+    it IS the flow, and `setup.sh` is a shim over it (#50), which is why the
+    README's Windows two-liner downloads that file and runs it.
+
+    AND THE INTERPRETER IS THE ASKED-FOR PLATFORM'S, which is the half a
+    loose assertion let through. `PYTHON` is decided once from `os.name`, so
+    the Windows branch reading it printed `python3` on a POSIX runner -- the
+    function claiming a spelling it did not produce, in the one place written
+    to be read from the other platform. The expectation here is now the whole
+    line, byte for byte, on both.
+    """
+    module = doctor_module(REPO)
+    assert module.scaffold_command(shape, "Atlas", platform) == expected
+    # And a project name with a space in it is still one argument.
+    spaced = module.scaffold_command(shape, "My Thing", platform)
+    assert spaced == expected.replace("--project Atlas",
+                                      "--project 'My Thing'"), spaced
+
+
+@pytest.mark.parametrize("platform,expected", [("posix", "python3"),
+                                               ("nt", "python")])
+def test_the_interpreter_named_is_the_asked_for_platforms(platform, expected):
+    """`repo_shape.PYTHON`'s rule, per platform instead of per host.
+
+    That constant is decided ONCE, at import, from `os.name`, and every other
+    caller in this file wants exactly that -- they are spelling a command for
+    the machine they are on. `scaffold_command` is the one that is not, and
+    `python_command` is where the two readings are kept apart.
+    """
+    module = doctor_module(REPO)
+    assert module.python_command(platform) == expected
+    # `None` is the HOST, and it is the constant itself rather than a second
+    # derivation of the same rule that could drift from it.
+    assert module.python_command() is module.PYTHON
+    assert module.python_command(None) == (
+        "python" if os.name == "nt" else "python3")
+
+
+#: The curly apostrophe this repository's OWN prose is written with, not the
+#: straight one `AWKWARD_VALUES` already covers -- and the value that broke
+#: `next_command`, because `ascii_text` maps it to `'` on the FAR side of
+#: quoting rather than before it (Copilot, PR #102).
+CURLY_APOSTROPHE = "O\u2019Neill"
+
+
+def test_a_curly_apostrophe_is_normalized_before_it_is_quoted():
+    """`quote_arg` must ascii-normalize FIRST, or `Row.__init__` breaks it.
+
+    `Row.__init__` runs `ascii_text` again, after quoting, over the whole
+    assembled command -- so a curly apostrophe that reached this function
+    unconverted came back out of THAT pass as a bare, undoubled one, on the
+    far side of the quoting it sat inside. `'O'Neill'` is an unterminated
+    quotation to `sh`, and PowerShell's own verbatim string is exactly as
+    broken by an apostrophe that never got doubled. Normalizing here first
+    means the value quoted is already plain ASCII, so that later pass has
+    nothing left to do.
+    """
+    module = doctor_module(REPO)
+    posix = module.quote_arg(CURLY_APOSTROPHE, "posix")
+    assert shlex.split(posix) == ["O'Neill"], posix
+    assert module.quote_arg(CURLY_APOSTROPHE, "nt") == "'O''Neill'"
+
+
+def test_a_trailing_newline_is_quoted_not_waved_through():
+    r"""`$` matches just before a trailing newline; `.match` does not care.
+
+    `re.match` only anchors the START of the string, so a pattern ending in
+    `$` against `"Atlas\n"` matches the first five characters and stops --
+    true, with the newline left over and never inspected. Bare, that
+    newline would land in the middle of a command meant to run on one line
+    (Copilot, PR #102). `.fullmatch` is what actually requires the alphabet
+    to cover the WHOLE value, newline included.
+    """
+    module = doctor_module(REPO)
+    value = "Atlas\n"
+    posix = module.quote_arg(value, "posix")
+    windows = module.quote_arg(value, "nt")
+    assert posix != value, posix
+    assert windows != value, windows
+    assert shlex.split(posix) == [value], posix
+
+
+@pytest.fixture
+def awkward_project(scaffolded_here, tmp_path) -> Path:
+    """The fixture project, at a path with a space and an apostrophe in it.
+
+    A COPY rather than a scaffold into such a directory: the point under test
+    is what the doctor PRINTS about a root, not what the scaffold does with
+    one, and a submodule's `.git` is a file holding a RELATIVE path into
+    `../.git/modules/<name>` -- which is what makes the copy honest as well as
+    cheap (see `tests/conftest.py`).
+    """
+    target = tmp_path / AWKWARD / PROJECT
+    target.parent.mkdir(parents=True)
+    shutil.copytree(scaffolded_here["clone"], target, symlinks=True)
+    return target
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="shlex.split reads POSIX quoting; on Windows these commands are "
+           "spelled for PowerShell, which the unit tests above assert")
+def test_every_next_command_keeps_an_awkward_root_whole(standard,
+                                                        awkward_project):
+    """EVERY ROW, not the one a reviewer happened to look at.
+
+    This is the shape of the defect: it was found against `placement` and it
+    belonged to every row that interpolates a path, which is every row that
+    names a fix. So the claim is made over a WHOLE report of a root with a
+    space and an apostrophe in its path -- each row's next command read by
+    `shlex.split`, which is the reader's own shell -- and the name that must
+    survive is asserted to arrive in one piece rather than as two tokens
+    nobody typed.
+    """
+    # Four separate faults, so that FIVE different rows go red at once and
+    # each prints a next command of its own that names this root.
+    edited = awkward_project / DRIFT_TARGET
+    edited.write_text(edited.read_text(encoding="utf-8") + "\n# an edit\n",
+                      encoding="utf-8")
+    subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "past it"],
+                   cwd=str(awkward_project / "spec"), capture_output=True,
+                   check=True, env={**os.environ, **GIT_IDENTITY})
+    (awkward_project / "AGENTS-shape.md").unlink()
+    stage(awkward_project / "spec", "tool.py", "VALUE = 1\n")
+
+    rows = rows_of(doctor(standard, awkward_project, "--json"))
+    naming = []
+    for row in rows.values():
+        command = (row["next"] or "").split("#")[0]
+        if not command.strip():
+            continue
+        try:
+            # THE FIRST ASSERTION IS THIS CALL. Unquoted, the apostrophe in
+            # the directory name opens a quotation the line never closes, and
+            # the reader's shell says so before the command has run at all.
+            parts = shlex.split(command)
+        except ValueError as exc:
+            raise AssertionError(
+                f"{row['id']}: no shell can read this line -- {exc}\n"
+                f"  {command}")
+        if not any(AWKWARD in part for part in parts):
+            continue
+        naming.append(row["id"])
+        for part in parts:
+            # The other failure: the name arrives as `.../do` and `ct'or/...`,
+            # two arguments nobody typed.
+            assert not part.endswith("/" + AWKWARD.split()[0]), \
+                (row["id"], parts)
+            assert AWKWARD in part or "ct'or" not in part, (row["id"], parts)
+        # And the root itself is ONE argument wherever a command names it.
+        if "--root" in parts:
+            assert parts[parts.index("--root") + 1] == str(awkward_project), \
+                (row["id"], parts)
+    assert set(naming) >= {"pins", "shape-currency", "legs", "agent-files",
+                           "placement"}, (
+        "five rows are red and every one of them names this root; if a row "
+        "has dropped out, the claim above is being made about less than it "
+        f"says. Named it: {sorted(naming)}")
+
+
+@WINDOWS_SKIP
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_a_drifted_roots_next_command_runs_when_it_is_pasted(
+        standard, awkward_project):
+    """The whole promise, end to end: the string, into a shell, verbatim.
+
+    Not `shlex.split` this time and not an argv list the test assembled --
+    `bash -c` with the printed line exactly as the reader would paste it,
+    trailing `#` comment and all, because that is the act the row exists for.
+    Unquoted, `--root <tmp>/do ct'or/Atlas` is a line the shell will not even
+    parse -- the apostrophe opens a quotation it never closes -- and a root
+    with only a SPACE in it gets as far as argparse, which reads the tail as
+    positionals it has no argument for. Quoted, it is the one path: the check
+    runs and reports the drift that made the row red, exit 1, naming the file.
+    """
+    edited = awkward_project / DRIFT_TARGET
+    edited.write_text(edited.read_text(encoding="utf-8") + "\n# an edit\n",
+                      encoding="utf-8")
+    result = doctor(standard, awkward_project, "--json")
+    assert result.returncode == 1, result.stdout + result.stderr
+    row = rows_of(result)["shape-currency"]
+    assert row["status"] == "FINDING", row
+    assert "update-shape.py" in row["next"], row["next"]
+
+    pasted = subprocess.run(["bash", "-c", row["next"]], capture_output=True,
+                            text=True, check=False,
+                            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+    whole = pasted.stdout + pasted.stderr
+    assert pasted.returncode == 1, (
+        f"`update-shape.py check` reports drift with exit 1; exit "
+        f"{pasted.returncode} is a command that did not run.\n{whole}")
+    assert DRIFT_TARGET in whole, whole
+    assert "usage:" not in whole, whole
+    assert "unrecognized arguments" not in whole, whole
+    # And the unquoted spelling -- what this file printed before #101 -- is
+    # the failure, so the assertion above cannot be passing by accident.
+    quoted_root = doctor_module(standard).quote_arg(awkward_project, "posix")
+    assert quoted_root != str(awkward_project), "the root needs quoting"
+    naive = row["next"].replace(quoted_root, str(awkward_project))
+    assert naive != row["next"], "the root was not quoted in the command"
+    broken = subprocess.run(["bash", "-c", naive], capture_output=True,
+                            text=True, check=False,
+                            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+    said = broken.stdout + broken.stderr
+    # It fails LOUDLY, which is the other half: exit 2 is argparse's usage
+    # error and bash's syntax error alike. An apostrophe opens a quotation
+    # the line never closes, so the shell refuses before `python3` is
+    # reached; a path with only a space in it gets as far as argparse, which
+    # reads the tail as positionals it has no argument for. Either way the
+    # reader is stopped -- what they never get is the wrong repository
+    # checked quietly.
+    assert broken.returncode == 2, (
+        "unquoted, the same line must not run and must say why; if it can, "
+        f"this test is proving nothing.\n  exit {broken.returncode}\n"
+        f"  {said[:400]}")
+    assert "unexpected EOF" in said or "unrecognized arguments" in said, (
+        "unquoted, the same line must not run and must say why; if it can, "
+        f"this test is proving nothing.\n  exit {broken.returncode}\n"
+        f"  {said[:400]}")
+
+
+@pytest.fixture
+def curly_project(scaffolded_here, tmp_path) -> Path:
+    """The fixture project, at a path with a CURLY apostrophe in it.
+
+    Same shape as `awkward_project` and for the same reason -- a COPY, not a
+    scaffold, so a submodule's `.git` file's relative path into
+    `../.git/modules/<name>` still resolves (see `tests/conftest.py`) -- but
+    a different character: `ascii_text` maps `'` to `'`, which is exactly
+    what made this the value that reached `next_command` unconverted
+    (Copilot, PR #102).
+    """
+    target = tmp_path / CURLY_APOSTROPHE / PROJECT
+    target.parent.mkdir(parents=True)
+    shutil.copytree(scaffolded_here["clone"], target, symlinks=True)
+    return target
+
+
+def test_a_curly_apostrophe_in_the_root_survives_the_real_report(
+        standard, curly_project):
+    """The bug lived in `Row.__init__`, on the far side of `quote_arg`.
+
+    Proving `quote_arg` correct in isolation proves nothing about what a
+    caller then PRINTS: `Row.__init__` ascii-normalizes the WHOLE assembled
+    `next_command` a second time, after every value in it is already
+    quoted. So this goes through a real report, and the claim is the
+    strongest one available: whatever a row prints for `--root` is exactly
+    what `quote_arg` itself returns for this path, not that string with its
+    apostrophe knocked bare a second time (Copilot, PR #102).
+    """
+    edited = curly_project / DRIFT_TARGET
+    edited.write_text(edited.read_text(encoding="utf-8") + "\n# an edit\n",
+                      encoding="utf-8")
+    row = rows_of(doctor(standard, curly_project,
+                        "--json"))["shape-currency"]
+    assert row["status"] == "FINDING", row
+    here = "nt" if os.name == "nt" else "posix"
+    quoted_root = doctor_module(standard).quote_arg(curly_project, here)
+    assert quoted_root in row["next"], row["next"]
