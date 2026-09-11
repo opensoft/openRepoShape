@@ -1444,3 +1444,22 @@ def test_the_placement_plan_creates_no_directory(standard, project, tmp_path):
     assert "shape-doctor-placement-plan-unwritable" in result.stderr
     assert "creates no directory" in result.stderr
     assert not out.parent.exists()
+
+
+def test_a_directory_that_is_not_a_shape_root_refuses_the_flag_too(standard,
+                                                                   tmp_path):
+    """No manifest, so no legs, so no row and no plan — and it says which.
+
+    A different sentence from the holder's, because it is a different fact: a
+    holder HAS the question and does not have legs; this directory does not
+    have the question. Exit 3 either way, because both are about the flag.
+    """
+    here = tmp_path / "Loose"
+    here.mkdir()
+    (here / "notes.txt").write_text("nothing to see\n", encoding="utf-8")
+    out = tmp_path / "placement-plan.yaml"
+    result = doctor(standard, here, "--placement-plan", str(out))
+    assert result.returncode == 3, result.stdout + result.stderr
+    assert "REFUSED shape-doctor-no-placement-audit" in result.stderr
+    assert "not an assembly root (none)" in result.stderr
+    assert not out.exists()
