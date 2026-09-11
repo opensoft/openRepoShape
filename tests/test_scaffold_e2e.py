@@ -10,7 +10,6 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-import sys
 
 from conftest import (FILE_PROTOCOL, ORG, PROJECT, REPO, SCAFFOLD,
                       WINDOWS_SKIP, git, run_script)
@@ -277,9 +276,11 @@ def test_the_topic_is_set_on_the_manifest(project):
 
 def test_the_legs_are_submodules_at_the_declared_paths(project):
     status = git("submodule", "status", cwd=project).stdout
-    assert " code" in status and " spec" in status
+    assert " code" in status, status
+    assert " spec" in status, status
     modules = (project / ".gitmodules").read_text()
-    assert 'path = spec' in modules and 'path = code' in modules
+    assert 'path = spec' in modules, modules
+    assert 'path = code' in modules, modules
     assert "branch =" not in modules, (
         "`.gitmodules` must carry no `branch=`: that would buy the ergonomics "
         "by weakening the pin, and then 'what commit is this project' has two "
@@ -571,7 +572,8 @@ def test_the_ci_workflow_mints_an_app_token_before_falling_back(project):
     assert "legs_credential=app" in fetch
     assert "legs_credential=pat" in fetch
     assert "legs_credential=none" in fetch
-    assert "legs_credential" in fetch and "GITHUB_OUTPUT" in fetch
+    assert "legs_credential" in fetch
+    assert "GITHUB_OUTPUT" in fetch
 
     # A misconfigured App must fail loudly, naming both secrets and the
     # required installation, rather than silently degrading like a missing
@@ -684,8 +686,8 @@ def test_no_if_expression_reads_the_secrets_context(project):
             in env_block)
 
 
-def test_the_shape_pin_records_the_openreposhape_commit(project):
-    sys.path.insert(0, str(REPO / "scripts"))
+def test_the_shape_pin_records_the_openreposhape_commit(project, monkeypatch):
+    monkeypatch.syspath_prepend(str(REPO / "scripts"))
     from repo_shape import load_yaml
     pin = load_yaml(project / "contracts" / "shape-pin.yaml")
     assert pin["revision_kind"] == "commit"
@@ -708,12 +710,12 @@ def test_the_shape_pin_records_the_openreposhape_commit(project):
 POINTER = "Read AGENTS-shape.md first — the rules of this repository's shape."
 
 
-def test_the_pinned_agent_file_is_byte_identical_to_the_template(project):
+def test_the_pinned_agent_file_is_byte_identical_to_the_template(project, monkeypatch):
     """VERBATIM means verbatim: no substitution, and a digest row that a
     validator can recompute. A rendered byte here would make every project's
     copy digest differently, and `update-shape.py` could not then say whether
     one had drifted or merely been scaffolded for a different project."""
-    sys.path.insert(0, str(REPO / "scripts"))
+    monkeypatch.syspath_prepend(str(REPO / "scripts"))
     from repo_shape import file_sha256, load_yaml
     copied = project / "AGENTS-shape.md"
     template = REPO / "templates" / "assembly-root" / "AGENTS-shape.md"
@@ -729,7 +731,10 @@ def test_the_pinned_agent_file_is_byte_identical_to_the_template(project):
         "— never edit a file with a row in shape-pin.yaml — is unenforceable "
         "against the file carrying it")
     assert rows["AGENTS-shape.md"] == file_sha256(copied)
-    assert "AGENTS.md" not in rows and "CLAUDE.md" not in rows, (
+    assert "AGENTS.md" not in rows, (
+        "the project's own instructions are the project's; pinning them would "
+        "make an upstream fix overwrite what its agents are told")
+    assert "CLAUDE.md" not in rows, (
         "the project's own instructions are the project's; pinning them would "
         "make an upstream fix overwrite what its agents are told")
 
@@ -752,9 +757,8 @@ def test_the_pinned_agent_file_carries_the_rules_it_exists_for(project):
     # The prose is hard-wrapped, so the sentences are matched against the
     # text with its line breaks flattened rather than against the bytes.
     flat = " ".join(text.split())
-    assert ("`role:` and every other manifest field confer NOTHING" in flat
-            and "a consumer deriving permission from them is defective"
-            in flat)
+    assert "`role:` and every other manifest field confer NOTHING" in flat
+    assert "a consumer deriving permission from them is defective" in flat
     assert "the paths `project.yaml` names, `spec/` and `code/` by default" \
         in flat, ("a verbatim file cannot name a project's real paths, so it "
                   "names where they are declared")
@@ -770,7 +774,8 @@ def test_the_projects_own_agent_file_points_at_the_shapes_first(project):
     for fact in (f"{ORG}/{PROJECT}", f"{ORG}/{PROJECT}-spec",
                  f"{ORG}/{PROJECT}-code", PROJECT, "atlas"):
         assert fact in body, f"{fact} is missing from the rendered AGENTS.md"
-    assert "`spec/`" in body and "`code/`" in body
+    assert "`spec/`" in body
+    assert "`code/`" in body
 
 
 def test_claude_md_is_one_line_pointing_at_agents_md(project):
@@ -785,7 +790,8 @@ def test_each_leg_points_at_the_root_and_says_what_advancing_it_is_not(project):
         leg = project / path / "AGENTS.md"
         text = leg.read_text()
         assert f"**{role} leg**" in text
-        assert f"{ORG}/{PROJECT}" in text and "AGENTS-shape.md" in text
+        assert f"{ORG}/{PROJECT}" in text
+        assert "AGENTS-shape.md" in text
         assert f"{ORG}/{PROJECT}-{other}" in text, (
             "the other leg is named, because reading half a project is the "
             "failure mode")
@@ -809,15 +815,15 @@ def test_the_agent_files_leave_the_gate_green(project):
 
 # --- visibility --------------------------------------------------------
 
-def test_the_default_visibility_is_private(project):
+def test_the_default_visibility_is_private(project, monkeypatch):
     """No `--visibility` was passed for this fixture's scaffold."""
-    sys.path.insert(0, str(REPO / "scripts"))
+    monkeypatch.syspath_prepend(str(REPO / "scripts"))
     from repo_shape import load_yaml
     manifest = load_yaml(project / "project.yaml")
     assert manifest["visibility"] == "private"
 
 
-def test_internal_visibility_is_accepted(tmp_path):
+def test_internal_visibility_is_accepted(tmp_path, monkeypatch):
     """`internal` is a real GitHub visibility (an enterprise org-internal
     repository: `gh repo create --internal`, `gh repo view --json visibility`
     -> `INTERNAL`) — not a typo of `private`/`public`, and this standard must
@@ -838,7 +844,7 @@ def test_internal_visibility_is_accepted(tmp_path):
                         "--local-remote-dir", str(remotes),
                         "--work-dir", str(tmp_path / "work2"))
     assert result.returncode == 0, result.stderr + result.stdout
-    sys.path.insert(0, str(REPO / "scripts"))
+    monkeypatch.syspath_prepend(str(REPO / "scripts"))
     from repo_shape import load_yaml
     manifest = load_yaml(tmp_path / "work2" / "Fernwood" / "project.yaml")
     assert manifest["visibility"] == "internal"
@@ -888,13 +894,13 @@ def clone_with_autocrlf(source, target):
     return target
 
 
-def test_the_scaffolded_root_says_what_its_bytes_are(project):
+def test_the_scaffolded_root_says_what_its_bytes_are(project, monkeypatch):
     """`.gitattributes` is a COPY, verbatim and digest-pinned like the rest.
 
     Pinned rather than merely shipped: a file that says what the bytes are is
     worth nothing if it can be edited without the pin noticing.
     """
-    sys.path.insert(0, str(REPO / "scripts"))
+    monkeypatch.syspath_prepend(str(REPO / "scripts"))
     from repo_shape import file_sha256, load_yaml
     copied = project / ".gitattributes"
     template = REPO / "templates" / "assembly-root" / ".gitattributes"

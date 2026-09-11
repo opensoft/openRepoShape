@@ -65,7 +65,8 @@ def test_a_free_org_gets_the_repository_secret_hint(gh):
     assert hint is not None
     assert "FREE plan" in hint
     assert "--repo InkRouter/IRRS" in hint, "the hint must name the repository"
-    assert "SHAPE_LEGS_APP_ID" in hint and "SHAPE_LEGS_APP_PRIVATE_KEY" in hint
+    assert "SHAPE_LEGS_APP_ID" in hint
+    assert "SHAPE_LEGS_APP_PRIVATE_KEY" in hint
     assert "the legs are" in hint, "the caller's subject is interpolated"
 
 

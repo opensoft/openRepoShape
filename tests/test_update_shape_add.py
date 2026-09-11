@@ -456,7 +456,8 @@ def test_a_family_holder_takes_its_own_addition(holder, standard):
                          str(standard["upstream"]), "--at", standard["c2"])
     assert checked.returncode == 1, checked.stdout + checked.stderr
     assert verdicts(checked.stdout)[FAMILY_ADDED] == "upstream-added"
-    assert ADDED not in checked.stdout and ADDED_SCRIPT not in checked.stdout
+    assert ADDED not in checked.stdout
+    assert ADDED_SCRIPT not in checked.stdout
 
     result = run_script(UPDATE, "apply", "--root", str(holder), "--yes",
                         "--upstream", str(standard["upstream"]),

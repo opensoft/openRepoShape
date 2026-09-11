@@ -1051,7 +1051,8 @@ def test_the_offer_table_names_a_command_for_every_platform():
 
     for rows in module.INSTALL_OFFERS.values():
         for _, command in rows:
-            assert command.strip() and command.isascii()
+            assert command.strip()
+            assert command.isascii()
             assert "brew.sh" not in command
 
 

@@ -149,7 +149,9 @@ def test_a_root_template_says_what_its_bytes_are(template):
     assert EOL_RULE in text, (
         f"templates/{template}/.gitattributes must carry `{EOL_RULE}`; an "
         "`eol` attribute is what overrides a cloner's core.autocrlf")
-    assert "#51" in text and "2026-09-05" in text, (
+    assert "#51" in text, (
+        "the rule is cited by issue and date, like every other ruling here")
+    assert "2026-09-05" in text, (
         "the rule is cited by issue and date, like every other ruling here")
 
 
@@ -1169,7 +1171,8 @@ def test_the_windows_commands_name_files_that_exist(name):
     # names the file the two-liner downloads, because there is only one file
     # on that machine.
     runs = re.findall(r"(?:^|`)py\s+([^\s`]+)", text, re.M)
-    assert runs and all(run == out_file for run in runs), (
+    assert runs, f"{name} saves {out_file} and then runs {runs}"
+    assert all(run == out_file for run in runs), (
         f"{name} saves {out_file} and then runs {runs}")
 
 
