@@ -476,7 +476,12 @@ def test_a_directory_that_is_not_a_repository_says_scaffold(standard,
     result = doctor(standard, here, "--json")
     assert result.returncode == 2, result.stdout + result.stderr
     rows = rows_of(result)
-    assert "setup.sh" in rows["way-in"]["next"]
+    # THE READER'S OWN ENTRY POINT, which is not the same file on every
+    # platform: `setup.sh` is bash and PowerShell cannot execute it, so on
+    # Windows the way in is `setup-project.py`, which IS the flow that shim
+    # shims (#49, #50; Copilot, PR #102).
+    assert ("setup-project.py" if os.name == "nt" else "setup.sh") in \
+        rows["way-in"]["next"], rows["way-in"]["next"]
     assert "--org <your-org>" in rows["way-in"]["next"]
     assert "without --yes" in rows["way-in"]["next"]
     assert rows["way-in"]["detail"]["git_repository"] is False
@@ -1755,6 +1760,41 @@ def test_the_two_shells_are_not_one_dialect():
     assert shlex.split(module.quote_arg("O'Brien", "posix")) == ["O'Brien"]
 
 
+#: Two characters `sh` is indifferent to and PowerShell is not, so the two
+#: alphabets are NOT one alphabet (Copilot, PR #102). `,` is PowerShell's list
+#: separator and a leading `@` is splatting syntax; both are ordinary bytes in
+#: a `sh` word, and quoting them there would be noise for nothing.
+#: `(value, on Windows, on POSIX)`.
+POWERSHELL_METACHARACTERS = [
+    ("@Atlas", "'@Atlas'", "@Atlas"),
+    ("a,b", "'a,b'", "a,b"),
+    ("release,2026@main", "'release,2026@main'", "release,2026@main"),
+    # The issue's own example. It is quoted on BOTH, and for two different
+    # reasons: the comma on Windows, and the backslashes on POSIX, where `\`
+    # is an escape character rather than a separator.
+    (r"C:\work,old\Atlas", r"'C:\work,old\Atlas'", r"'C:\work,old\Atlas'"),
+]
+
+
+@pytest.mark.parametrize("value,windows,posix", POWERSHELL_METACHARACTERS)
+def test_powershell_metacharacters_are_quoted_there_and_bare_here(value,
+                                                                  windows,
+                                                                  posix):
+    r"""One alphabet for both shells would have to be wrong somewhere.
+
+    Admitted bare on Windows, `C:\work,old\Atlas` may reach the command as
+    something other than one argument and `@Atlas` as an expansion rather than
+    as itself -- neither with an error to say so, which is the failure mode a
+    report cannot have. Quoted on POSIX, they would be noise on a line whose
+    whole job is to be read. So the two constants differ, and this is what
+    the difference is for.
+    """
+    module = doctor_module(REPO)
+    assert module.quote_arg(value, "nt") == windows
+    assert module.quote_arg(value, "posix") == posix
+    assert shlex.split(module.quote_arg(value, "posix")) == [value]
+
+
 def test_a_windows_path_is_quoted_on_posix_and_bare_on_windows():
     """The one case where the two platforms must NOT agree, said out loud.
 
@@ -1768,6 +1808,39 @@ def test_a_windows_path_is_quoted_on_posix_and_bare_on_windows():
     assert module.quote_arg(value, "nt") == value
     assert module.quote_arg(value, "posix") == "'" + value + "'"
     assert shlex.split(module.quote_arg(value, "posix")) == [value]
+
+
+@pytest.mark.parametrize("platform,entry,other", [
+    ("posix", "setup.sh", "setup-project.py"),
+    ("nt", "setup-project.py", "setup.sh"),
+])
+def test_the_scaffold_command_is_the_readers_own_entry_point(platform, entry,
+                                                             other):
+    """`setup.sh` is bash, and Windows has no bash.
+
+    The `way in` row's whole job is to hand somebody a line they can run, and
+    on the one platform where this file has no shell to run that line in it
+    was naming a path PowerShell cannot execute at all (Copilot, PR #102).
+    `setup-project.py` is the standard's answer there and has been since #49:
+    it IS the flow, and `setup.sh` is a shim over it (#50), which is why the
+    README's Windows two-liner downloads that file and runs it.
+    """
+    module = doctor_module(REPO)
+    shape = Path("/srv/openRepoShape")
+    command = module.scaffold_command(shape, "Atlas", platform)
+    assert entry in command, command
+    assert other not in command, command
+    assert "--org <your-org>" in command, (
+        "the placeholder is NOT quoted: the reader replaces it, and quoting "
+        "would tell them to type the angle brackets")
+    assert "--project Atlas" in command, command
+    if platform == "nt":
+        assert command.startswith("python"), (
+            "PowerShell runs the script through an interpreter it can find "
+            "on PATH; it cannot execute a .py by itself")
+    # And a project name with a space in it is still one argument.
+    spaced = module.scaffold_command(shape, "My Thing", platform)
+    assert "--project 'My Thing'" in spaced, spaced
 
 
 @pytest.fixture

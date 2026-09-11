@@ -352,16 +352,28 @@ def ascii_text(text: str) -> str:
     return text.encode("ascii", "replace").decode("ascii")
 
 
-#: A value that needs no quoting in EITHER shell this standard's readers are
-#: in. Letters, digits, and the punctuation a path, a flag, a commit id or a
-#: branch name is actually spelled with -- and not one character that `sh` or
-#: PowerShell reads as syntax. `~` is deliberately absent: a leading one is
-#: expanded by both, so a value that starts with it has to be quoted rather
-#: than passed through.
-UNQUOTED = re.compile(r"^[A-Za-z0-9_./:@%+=,-]+$")
-#: The same alphabet plus what a WINDOWS path is spelled with: backslashes,
-#: and a drive letter, whose colon the line above already admits.
-UNQUOTED_NT = re.compile(r"^[A-Za-z0-9_./:@%+=,\\-]+$")
+#: A value `sh` needs no quoting for: letters, digits, and the punctuation a
+#: path, a flag, a commit id or a branch name is actually spelled with. `~` is
+#: deliberately absent -- a leading one is expanded -- and so is every
+#: character the shell reads as syntax.
+UNQUOTED_POSIX = re.compile(r"^[A-Za-z0-9_./:@%+=,-]+$")
+#: PowerShell's alphabet, and it is NOT the same one, which is the whole
+#: reason there are two constants here. It GAINS the backslash a Windows path
+#: is spelled with (the drive letter's colon is already admitted above) and it
+#: LOSES two characters `sh` is indifferent to (Copilot, PR #102):
+#:
+#:   `,`  is PowerShell's list separator, so `C:\work,old\Atlas` bare is a
+#:        value that may reach the command as something other than one
+#:        argument;
+#:   `@`  leading, is splatting syntax (`@args`), so a name like `@Atlas` is
+#:        read as an expansion rather than as itself.
+#:
+#: `%` STAYS, and is named here so the next reader need not wonder: it is an
+#: alias for `ForEach-Object` in COMMAND position only -- the first token of a
+#: pipeline element -- and every value this file interpolates is an argument.
+#: (`%VAR%` expansion is `cmd.exe`'s, and the Windows shell this standard
+#: documents is PowerShell; see `setup-project.py`.)
+UNQUOTED_NT = re.compile(r"^[A-Za-z0-9_./:%+=\\-]+$")
 
 
 def quote_arg(value, platform: str | None = None) -> str:
@@ -403,8 +415,9 @@ def quote_arg(value, platform: str | None = None) -> str:
     read would be worse, not better, for `--root '/srv/work/Atlas'` on every
     line of every clean run, and a caller lifting a path back out of a `--json`
     `next` would have to strip quotes that were never load-bearing. So a value
-    matching `UNQUOTED` is returned unchanged and everything else is quoted
-    whole.
+    matching the platform's alphabet is returned unchanged and everything
+    else is quoted whole. The two alphabets are not the same one: see
+    `UNQUOTED_POSIX` and `UNQUOTED_NT`.
 
     IT LIVES HERE AND NOT IN `scripts/repo_shape.py`, which is where the
     standard's other platform-aware constant (`PYTHON`) sits. That file is a
@@ -422,7 +435,7 @@ def quote_arg(value, platform: str | None = None) -> str:
     """
     text = str(value)
     windows = (os.name if platform is None else platform) == "nt"
-    if (UNQUOTED_NT if windows else UNQUOTED).match(text):
+    if (UNQUOTED_NT if windows else UNQUOTED_POSIX).match(text):
         return text
     if windows:
         # PowerShell's verbatim string: nothing inside is expanded, and the
@@ -1907,6 +1920,30 @@ def check_machine(ctx: Context) -> Row:
                detail)
 
 
+def scaffold_command(shape: Path, project: str,
+                     platform: str | None = None) -> str:
+    """How a NEW project is created, spelled for the READER'S platform.
+
+    `setup.sh` IS A BASH SCRIPT AND WINDOWS HAS NO BASH. This row's whole job
+    is to hand somebody a line they can run, and on the one platform where
+    this file has no shell to run that line in it was handing them a path
+    PowerShell cannot execute at all (Copilot, PR #102). The standard's own
+    answer has been `setup-project.py` since #49 -- it IS the flow and
+    `setup.sh` is a shim over it (#50), which is why the README's Windows
+    two-liner downloads that file and runs it, and why there is no `--install`
+    twin on Windows: there is nothing to install.
+
+    `platform` for the same reason `quote_arg` has one: so both spellings are
+    asserted on whichever host the suite is running on, rather than half of
+    them only ever being exercised where nobody is looking.
+    """
+    if (os.name if platform is None else platform) == "nt":
+        return (f"{PYTHON} {quote_arg(shape / 'setup-project.py')} "
+                f"--org <your-org> --project {quote_arg(project)}")
+    return (f"{quote_arg(shape / 'setup.sh')} --org <your-org> "
+            f"--project {quote_arg(project)}")
+
+
 def check_the_way_in(ctx: Context) -> Row:
     """The two ways a directory becomes a shape root, and who decides.
 
@@ -1931,8 +1968,8 @@ def check_the_way_in(ctx: Context) -> Row:
         # `<your-org>` IS NOT QUOTED and must not be: it is a placeholder
         # the reader replaces, not a value this command knows. Quoting it
         # would tell them to type the angle brackets.
-        fix = (f"{quote_arg(ctx.shape / 'setup.sh')} --org <your-org> "
-               f"--project {quote_arg(project)}   # without --yes; it asks")
+        fix = (scaffold_command(ctx.shape, project)
+               + "   # without --yes; it asks")
         reason = ("there is no repository here to adopt: a new project is "
                   "SCAFFOLDED, which creates three repositories and asks "
                   "first")
