@@ -1029,18 +1029,18 @@ def named_offenders(rows: list) -> str:
     named = []
     totals = []
     for direction, items in grouped.items():
-        text = "; ".join(
+        line = "; ".join(
             f"{item['path']}: {item['classified_as'] or 'ambiguous'} by rule "
             f"{item['rule']}" for item in items[:3])
         if len(items) > 3:
-            text += f"; and {len(items) - 3} more"
-        named.append(text)
+            line += f"; and {len(items) - 3} more"
+        named.append(line)
         totals.append(f"{len(items)} {direction}")
     return "; ".join(named) + " (" + ", ".join(totals) + ")"
 
 
-def placement_row(check_id: str, status: str, reason: str,
-                  next_command=None, detail=None) -> Row:
+def placement_row(status: str, reason: str, next_command=None,
+                  detail=None) -> Row:
     """One `placement` row with the `--json` keys ALWAYS present.
 
     A caller reads `detail.misplaced` and `detail.review_required`; a row that
@@ -1051,7 +1051,66 @@ def placement_row(check_id: str, status: str, reason: str,
             "misplaced": [], "review_required": [],
             "counts": {"misplaced": 0, "review_required": 0}}
     base.update(detail or {})
-    return Row(check_id, "placement", status, reason, next_command, base)
+    return Row("placement", "placement", status, reason, next_command, base)
+
+
+def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
+              mount: Path) -> tuple:
+    """ONE leg: its summary, the paths in the wrong leg, and the questions.
+
+    Split out so the row above reads as three sentences rather than one loop
+    with four ways out of it -- and because a leg that cannot be audited has
+    to say WHICH of the three reasons it is, beside the legs that could.
+    """
+    entry = {"role": role, "path": rel}
+    if not (mount.is_dir() and any(mount.iterdir())):
+        # The `legs` row already reports this, with `make bootstrap` beside
+        # it. Here it is only why this leg has no answer.
+        entry["state"] = "not populated"
+        return entry, [], []
+    if role not in LEG_ROLES:
+        entry["state"] = f"role {role} is not one the path policy classifies"
+        return entry, [], []
+    try:
+        files = leg_tracked_files(mount)
+    except Refusal as exc:
+        entry["state"] = f"git could not list it: {exc.detail}"
+        return entry, [], []
+    kept = [(path, size) for path, size in files
+            if not any(regex.match(path) for regex in patterns)]
+    walked = adopt.walk(policy, kept)
+    misplaced: list = []
+    review: list = []
+    for found in walked:
+        row = {
+            "path": f"{rel}/{found.path}",
+            "leg": role,
+            "path_in_leg": found.path,
+            "classified_as": found.leg,
+            "rule": found.rule,
+            "reason": found.reason,
+            "confidence": found.confidence,
+            "question": found.question,
+            "files": found.files,
+            "bytes": found.bytes,
+            "review_required": found.leg is None,
+            "direction": (f"{found.leg} in the {role} leg" if found.leg
+                          else f"unclassified in the {role} leg"),
+        }
+        if found.leg is None:
+            review.append(row)
+        elif found.leg != role:
+            misplaced.append(row)
+    # FILES AND PATHS ARE DIFFERENT NUMBERS and the row prints both. `walk`
+    # folds a directory whose files agree into ONE entry, so `src/` with two
+    # hundred files under it is one PATH and two hundred FILES -- and a reason
+    # that reported only one of them would either bury the size of the problem
+    # or overstate the number of decisions in it.
+    entry.update({"state": "audited", "tracked": len(files),
+                  "classified": len(kept), "paths": len(walked),
+                  "misplaced": len(misplaced),
+                  "review_required": len(review)})
+    return entry, misplaced, review
 
 
 def check_placement(ctx: Context) -> Row:
@@ -1088,13 +1147,13 @@ def check_placement(ctx: Context) -> Row:
     """
     if ctx.kind == FAMILY:
         return placement_row(
-            "placement", NA,
+            NA,
             "a family holder has no legs of its own: each member is an "
             "assembly root and answers this in its own report")
     legs = ctx.legs()
     if not legs:
         return placement_row(
-            "placement", NA,
+            NA,
             "project.yaml declares no non-assembly leg, so there is no leg "
             "for a path to be in the wrong one of")
     adopt = ctx.adopt()
@@ -1103,7 +1162,7 @@ def check_placement(ctx: Context) -> Row:
         missing = ("adopt-project.py" if adopt is None
                    else "contracts/path-classification.yaml")
         return placement_row(
-            "placement", NA,
+            NA,
             f"this checkout of the standard is missing {missing}, so the "
             "adoption's own classification cannot be run over the legs",
             f"{PYTHON} {ctx.shape / 'shape-doctor.py'} --root {ctx.root}   "
@@ -1117,7 +1176,7 @@ def check_placement(ctx: Context) -> Row:
         # OUR file being wrong, and failing somebody's repository on it would
         # be the `leg shape files` mistake with a different file.
         return placement_row(
-            "placement", NA,
+            NA,
             f"the standard's own path policy could not be read: {exc.detail}",
             exc.remediation or None, {"policy": policy_path.as_posix()})
 
@@ -1129,58 +1188,11 @@ def check_placement(ctx: Context) -> Row:
     for leg in legs:
         role = str(leg.get("role") or "?")
         rel = str(leg.get("path") or role)
-        mount = ctx.root / rel
-        entry = {"role": role, "path": rel}
+        entry, wrong, unsure = audit_leg(adopt, policy, patterns, role, rel,
+                                         ctx.root / rel)
         per_leg.append(entry)
-        if not (mount.is_dir() and any(mount.iterdir())):
-            # The `legs` row already reports this, with `make bootstrap`
-            # beside it. Here it is only why this leg has no answer.
-            entry["state"] = "not populated"
-            continue
-        if role not in LEG_ROLES:
-            entry["state"] = (f"role {role} is not one the path policy "
-                              "classifies")
-            continue
-        try:
-            files = leg_tracked_files(mount)
-        except Refusal as exc:
-            entry["state"] = f"git could not list it: {exc.detail}"
-            continue
-        kept = [(path, size) for path, size in files
-                if not any(regex.match(path) for regex in patterns)]
-        walked_entries = adopt.walk(policy, kept)
-        wrong, unsure = 0, 0
-        for walked in walked_entries:
-            row = {
-                "path": f"{rel}/{walked.path}",
-                "leg": role,
-                "path_in_leg": walked.path,
-                "classified_as": walked.leg,
-                "rule": walked.rule,
-                "reason": walked.reason,
-                "confidence": walked.confidence,
-                "question": walked.question,
-                "files": walked.files,
-                "bytes": walked.bytes,
-                "review_required": walked.leg is None,
-                "direction": (f"{walked.leg} in the {role} leg"
-                              if walked.leg else
-                              f"unclassified in the {role} leg"),
-            }
-            if walked.leg is None:
-                review.append(row)
-                unsure += 1
-            elif walked.leg != role:
-                misplaced.append(row)
-                wrong += 1
-        # FILES AND PATHS ARE DIFFERENT NUMBERS and the row prints both.
-        # `walk` folds a directory whose files agree into ONE entry, so `src/`
-        # with two hundred files under it is one PATH and two hundred FILES --
-        # and a reason that reported only one of them would either bury the
-        # size of the problem or overstate the number of decisions in it.
-        entry.update({"state": "audited", "tracked": len(files),
-                      "classified": len(kept), "paths": len(walked_entries),
-                      "misplaced": wrong, "review_required": unsure})
+        misplaced.extend(wrong)
+        review.extend(unsure)
 
     detail = {"policy": policy_path.as_posix(), "everywhere": ignored,
               "legs": per_leg, "misplaced": misplaced,
@@ -1202,19 +1214,18 @@ def check_placement(ctx: Context) -> Row:
         extra = (f"; {len(review)} more path(s) need a human's reading"
                  if review else "")
         return placement_row(
-            "placement", FINDING,
+            FINDING,
             f"{len(misplaced)} path(s) sit in a leg the policy puts "
             f"elsewhere: {named_offenders(misplaced)}{extra}  [{audited}]",
             plan, detail)
     if review:
         return placement_row(
-            "placement", NOTE,
+            NOTE,
             f"nothing is in the wrong leg; {len(review)} path(s) the policy "
             f"will not call: {named_offenders(review)}  [{audited}]",
             plan, detail)
     return placement_row(
-        "placement", OK,
-        f"every tracked path classifies as the leg it is in: {audited}",
+        OK, f"every tracked path classifies as the leg it is in: {audited}",
         None, detail)
 
 
@@ -1288,7 +1299,13 @@ def placement_plan_text(ctx: Context, adopt, row: Row) -> str:
             adopt.emit(lines, "paths", leg.get("paths"), 4)
             adopt.emit(lines, "misplaced", leg.get("misplaced"), 4)
             adopt.emit(lines, "review_required", leg.get("review_required"), 4)
-    lines += ["", "paths:"]
+    if not entries:
+        lines += ["",
+                  "# Nothing is in the wrong leg and nothing needs a reading:",
+                  "# there is nothing here to resolve.",
+                  "paths: []"]
+    else:
+        lines += ["", "paths:"]
     for entry in entries:
         lines.append(f"  - path: {adopt.y(entry['path'])}")
         adopt.emit(lines, "in_leg", entry["leg"], 4)
