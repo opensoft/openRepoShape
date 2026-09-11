@@ -776,7 +776,8 @@ def test_the_registry_leaves_a_fix_slot_for_the_repair_mode():
     spec.loader.exec_module(module)
     assert module.CHECKS, "the registry is empty"
     for check in module.CHECKS:
-        assert check.id and check.label
+        assert check.id
+        assert check.label
         assert check.applies_to
         assert callable(check.run)
         assert check.fix is None, (
@@ -880,8 +881,8 @@ def test_a_deleted_pinned_agent_file_is_not_an_add(standard, project):
     assert row["status"] == "FINDING"
     assert row["detail"]["pinned"] == ["AGENTS-shape.md"]
     assert "--add" not in row["next"], row["next"]
-    assert "git -C" in row["next"] and "checkout --" in row["next"], \
-        row["next"]
+    assert "git -C" in row["next"], row["next"]
+    assert "checkout --" in row["next"], row["next"]
 
 
 #: How the `leg shape files` row spells a copy ON THIS HOST. `cp` is not a
@@ -1515,7 +1516,8 @@ def test_a_scaffolded_projects_legs_have_nothing_in_the_wrong_one(standard,
     assert set(legs) == {"spec", "code"}
     for entry in legs.values():
         assert entry["state"] == "audited", entry
-        assert entry["misplaced"] == 0 and entry["review_required"] == 0
+        assert entry["misplaced"] == 0, entry
+        assert entry["review_required"] == 0, entry
         assert entry["tracked"] > entry["classified"], (
             "every leg the scaffold writes carries files the row must ignore, "
             "so `classified` is strictly fewer than `tracked` here")

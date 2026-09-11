@@ -731,7 +731,8 @@ def test_the_api_is_tried_before_the_raw_url():
     offline, so the order is read out of the script itself."""
     text = COMMAND.read_text(encoding="utf-8")
     body = text.split("fetch_from_repo() {", 1)[1].split("\n}", 1)[0]
-    assert "gh api" in body and "curl -fsSL" in body
+    assert "gh api" in body
+    assert "curl -fsSL" in body
     assert body.index("gh api") < body.index("curl -fsSL"), (
         "the raw URL is fetched before the API in fetch_from_repo(); the "
         "authenticated call must be tried first")

@@ -171,7 +171,7 @@ def test_init_carries_the_shape_pin_over_its_own_copies(family):
         "a family has no legs, so it does not carry the leg validator")
 
 
-def test_init_copies_the_siblings_utility_and_the_makefile_target(family):
+def test_init_copies_the_siblings_utility_and_the_makefile_target(family, monkeypatch):
     """THE HOLDER CARRIES THE UTILITY, not a second implementation of it.
 
     `make siblings` runs the copy; `family.py siblings` runs the very same
@@ -180,7 +180,7 @@ def test_init_copies_the_siblings_utility_and_the_makefile_target(family):
     by digest, executable like the other two scripts, and named by the
     Makefile the holder ships.
     """
-    sys.path.insert(0, str(REPO / "scripts"))
+    monkeypatch.syspath_prepend(str(REPO / "scripts"))
     from repo_shape import file_sha256
     root = family["root"]
     copied = root / "scripts" / "siblings.py"
@@ -200,11 +200,11 @@ def test_init_copies_the_siblings_utility_and_the_makefile_target(family):
     assert "make siblings" in (root / "AGENTS-shape.md").read_text()
 
 
-def test_init_writes_the_holders_agent_files(family):
+def test_init_writes_the_holders_agent_files(family, monkeypatch):
     """The holder gets its OWN pinned rules — a family has no legs, no leg
     pins and no lockstep workflow refs, so half of the assembly root's file
     would be instructions about things that are not here."""
-    sys.path.insert(0, str(REPO / "scripts"))
+    monkeypatch.syspath_prepend(str(REPO / "scripts"))
     from repo_shape import file_sha256
     root = family["root"]
     template = REPO / "templates" / "family-root" / "AGENTS-shape.md"
@@ -228,19 +228,23 @@ def test_init_writes_the_holders_agent_files(family):
     agents = (root / "AGENTS.md").read_text()
     assert agents.splitlines()[0] == (
         "Read AGENTS-shape.md first — the rules of this repository's shape.")
-    assert NAME in agents and "inkrouter" in agents and ORG in agents
+    assert NAME in agents
+    assert "inkrouter" in agents
+    assert ORG in agents
     assert "{{" not in agents
     assert (root / "CLAUDE.md").read_text() == "Read AGENTS.md.\n"
-    assert "AGENTS.md" not in rows and "CLAUDE.md" not in rows, (
+    assert "AGENTS.md" not in rows, (
+        "the holder's own instructions are the holder's, not the shape's")
+    assert "CLAUDE.md" not in rows, (
         "the holder's own instructions are the holder's, not the shape's")
 
 
-def test_the_holder_says_what_its_bytes_are(family):
+def test_the_holder_says_what_its_bytes_are(family, monkeypatch):
     """A holder carries a digest pin over copies, so it carries the same
     statement about line endings an assembly root does (#51, 2026-09-05).
     Without it a clone under `core.autocrlf=true` digests CRLF against an LF
     row and `make validate` is red on files nobody touched."""
-    sys.path.insert(0, str(REPO / "scripts"))
+    monkeypatch.syspath_prepend(str(REPO / "scripts"))
     from repo_shape import file_sha256
     root = family["root"]
     copied = root / ".gitattributes"
@@ -906,7 +910,9 @@ def test_init_lands_the_holder_in_a_family_folder_where_you_are_standing(
     result = init_local(tmp_path, cwd=stand)
     assert result.returncode == 0, result.stderr + result.stdout
     folder, holder = stand / "Contoso", stand / "Contoso" / "Contoso"
-    assert folder.is_dir() and not (folder / ".git").exists(), (
+    assert folder.is_dir(), (
+        "the family folder is a plain directory and never a repository")
+    assert not (folder / ".git").exists(), (
         "the family folder is a plain directory and never a repository")
     assert (holder / "family.yaml").is_file()
     assert (holder / ".git").is_dir()
@@ -975,7 +981,8 @@ def test_init_refuses_into_and_work_dir_together(tmp_path):
                         "--work-dir", str(tmp_path / "b"))
     assert result.returncode == 2
     assert "family-two-landings" in result.stderr
-    assert not (tmp_path / "a").exists() and not (tmp_path / "b").exists()
+    assert not (tmp_path / "a").exists()
+    assert not (tmp_path / "b").exists()
 
 
 def test_init_refuses_a_landing_that_exists_and_is_not_empty(tmp_path):
@@ -1163,7 +1170,8 @@ def test_siblings_warns_about_the_parent_folder_and_moves_nothing(family,
     assert f"mkdir -p {tmp_path / 'InkRouter'}" in result.stderr
     assert f"mv {tmp_path / 'InkRouter.holder'} " \
            f"{tmp_path / 'InkRouter' / 'InkRouter'}" in result.stderr
-    assert holder.is_dir() and (holder / "family.yaml").is_file(), (
+    assert holder.is_dir(), "it moves nothing, and that is the whole point"
+    assert (holder / "family.yaml").is_file(), (
         "it moves nothing, and that is the whole point")
     assert not (tmp_path / "InkRouter").exists()
 
