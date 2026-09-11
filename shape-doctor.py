@@ -390,8 +390,9 @@ def validator_row(ctx: Context, check_id: str, label: str, own: str,
         return Row(check_id, label, FINDING,
                    f"neither {own} nor {template} is readable, so the "
                    "question cannot be asked",
-                   f"{PYTHON} {ctx.shape / 'setup.sh'} --help  # this checkout "
-                   "of the standard is incomplete", {"validator": None})
+                   f"{PYTHON} {ctx.shape / 'shape-doctor.py'} --root "
+                   f"{ctx.root}   # from a complete checkout of the standard; "
+                   "this one is missing that file", {"validator": None})
     code, quoted, _ = run_validator(ctx, used, args)
     detail = {"validator": used.as_posix(), "own_copy": own_path.is_file(),
               "exit": code}
@@ -399,8 +400,13 @@ def validator_row(ctx: Context, check_id: str, label: str, own: str,
         return Row(check_id, label, OK, f"{which} passes", None, detail)
     verb = "refuses" if code >= 2 else "reports a finding"
     reason = f"{which} {verb} (exit {code})" + (f": {quoted}" if quoted else "")
+    # A COMMAND THAT RUNS WHEN IT IS PASTED. This row used to print
+    # `python3 validate-pins.py in <root>`, which is prose wearing a command's
+    # clothes: `in` arrives as an argument and argparse refuses it. Every
+    # validator here takes `--root`, so the runnable spelling is the absolute
+    # path and that flag, and it needs no `cd` (Copilot, PR #96).
     return Row(check_id, label, FINDING, reason,
-               f"{PYTHON} {used.name} in {ctx.root}  # read its output in "
+               f"{PYTHON} {used} {' '.join(args)}   # read its output in "
                "full; it names what it refused", detail)
 
 
@@ -557,13 +563,26 @@ def check_shape_currency(ctx: Context) -> Row:
                                   or counts.get(us.BOTH) or conflicts)}
         where = f"pinned {pinned[:12]}, this standard {target[:12]}"
         moved = [row for row in reported if row.state != us.UNCHANGED]
-        if not moved:
-            note = ("the pin names this standard's commit"
-                    if pinned == target else
-                    "no copied file differs, though the pin names an older "
-                    "commit")
+        if not moved and pinned == target:
             return Row("shape-currency", "shape currency", OK,
-                       f"{note}; {summary} ({where})", None, detail)
+                       f"the pin names this standard's commit; {summary} "
+                       f"({where})", None, detail)
+        if not moved:
+            # A PIN THAT NAMES AN OLDER COMMIT IS BEHIND, even when not one
+            # copied byte differs. COMPLIANT is documented as "every row ok
+            # AND the pin names this standard's commit", and `update-shape.py
+            # check` exits 1 here for the same reason — `apply` would move the
+            # pin alone. Reporting `ok` would have made the verdict disagree
+            # with the sentence defining it (Copilot, PR #96).
+            detail["behind"] = True
+            return Row("shape-currency", "shape currency", FINDING,
+                       "no copied file differs, but the pin names an older "
+                       f"commit, so `apply` would move the pin alone; "
+                       f"{summary} ({where})",
+                       f"{PYTHON} {ctx.shape / 'update-shape.py'} check "
+                       f"--root {ctx.root} --upstream {ctx.shape}   # then "
+                       f"apply --at {target} --yes --branch "
+                       f"shape/update-{target[:12]}", detail)
         accept = "".join(f" --accept-local {row.path}" for row in rows
                          if row.state == us.LOCALLY_MODIFIED)
         named = ", ".join(row.path for row in moved[:4])
@@ -641,9 +660,9 @@ def check_legs(ctx: Context) -> Row:
     detail = {"legs": rows}
     if problems:
         return Row("legs", "legs", FINDING, "; ".join(problems),
-                   f"{PYTHON} scripts/bootstrap.py in {ctx.root}   # what "
-                   "`make bootstrap` runs: it puts every leg on its tracking "
-                   "branch AT the pinned commit", detail)
+                   f"{PYTHON} {ctx.root / 'scripts' / 'bootstrap.py'} --root "
+                   f"{ctx.root}   # what `make bootstrap` runs: it puts every "
+                   "leg on its tracking branch AT the pinned commit", detail)
     return Row("legs", "legs", OK,
                f"{len(rows)} leg(s) mounted and checked out at their pins",
                None, detail)
@@ -705,15 +724,47 @@ def check_leg_shape_files(ctx: Context) -> Row:
                                 for name, state in entry["files"].items()))
         for rel, entry in per_leg.items())
     if missing:
-        role, rel, name = missing[0]
         named = ", ".join(f"{leg}/{file}" for _, leg, file in missing)
+        # A `cp` IS OFFERED ONLY FOR A FILE A `cp` WOULD FIX. The template's
+        # `AGENTS.md` and `README.md` carry `{{PLACEHOLDER}}`s the scaffold
+        # renders, so copying one verbatim leaves a leg holding literal
+        # `{{PROJECT_NAME}}` — a command that produces an invalid leg is
+        # worse than no command at all (Copilot, PR #96). For those the row
+        # says what the file IS, and the repair is a human's until the repair
+        # mode lands.
+        copyable = [entry for entry in missing if entry[2] not in LEG_RENDERED]
+        if copyable:
+            role, rel, name = copyable[0]
+            fix = (f"cp {ctx.shape / 'templates' / (role + '-root') / name} "
+                   f"{ctx.root / rel / name}")
+            if len(copyable) < len(missing):
+                fix += ("   # and the rest are RENDERED per project "
+                        "(placeholders): scaffold-project.py writes those, "
+                        "and copying a template verbatim would not")
+        else:
+            fix = (f"the missing file(s) are RENDERED per project from "
+                   f"templates/<role>-root/ — `{PYTHON} "
+                   f"{ctx.shape / 'scaffold-project.py'} --help` shows what "
+                   "writes them; copying a template verbatim would leave "
+                   "`{{PLACEHOLDER}}`s in the leg")
         return Row("leg-shape-files", "leg shape files", FINDING,
-                   f"{summary}  (missing: {named})",
-                   f"cp {ctx.shape / 'templates' / (role + '-root') / name} "
-                   f"{ctx.root / rel / name}   # AGENTS.md and README.md are "
-                   "RENDERED per project, so those are re-rendered rather "
-                   "than copied", detail)
+                   f"{summary}  (missing: {named})", fix, detail)
     return Row("leg-shape-files", "leg shape files", OK, summary, None, detail)
+
+
+def pinned_paths(root: Path) -> set:
+    """Every path `contracts/shape-pin.yaml` carries a `files:` row for.
+
+    Read here rather than taken from the shape-currency row because the two
+    checks are independent by design — one may refuse while the other still
+    has something true to say — and because this is one `load_yaml` of a file
+    that is already open in the page cache.
+    """
+    pin = Context._read(root / "contracts" / "shape-pin.yaml")
+    if not isinstance(pin, dict):
+        return set()
+    return {str(row.get("path")) for row in (pin.get("files") or [])
+            if isinstance(row, dict) and row.get("path")}
 
 
 def check_agent_files(ctx: Context) -> Row:
@@ -724,18 +775,81 @@ def check_agent_files(ctx: Context) -> Row:
         return Row("agent-files", "agent files", OK,
                    ", ".join(f"{name} present" for name in AGENT_FILES),
                    None, detail)
-    fix = (f"{PYTHON} {ctx.shape / 'update-shape.py'} check --root {ctx.root} "
-           f"--upstream {ctx.shape}   # AGENTS-shape.md is a pinned copy: it "
-           "is reported upstream-added and taken with `apply --add "
-           "AGENTS-shape.md`") if "AGENTS-shape.md" in absent else (
-        f"the scaffold renders {' and '.join(absent)}; write it, or take it "
-        f"from templates/assembly-root/")
+    pinned = pinned_paths(ctx.root)
+    detail["pinned"] = sorted(name for name in absent if name in pinned)
+    # WHICH FIX DEPENDS ON WHETHER THE PIN ALREADY NAMES IT, and getting that
+    # backwards hands somebody a command that refuses. A path the pin has a
+    # row for and the tree has no file at is `copy-missing` to
+    # `update-shape.py`, and `--add` refuses it BY NAME as already pinned; a
+    # path with no row is `upstream-added`, which is exactly what `--add`
+    # takes (Copilot, PR #96).
+    if detail["pinned"]:
+        first = detail["pinned"][0]
+        fix = (f"git -C {ctx.root} checkout -- {first}   # the pin has a "
+               "`files:` row for it, so it was deleted rather than never "
+               "copied; restore it from this repository's own history, then "
+               f"`{PYTHON} {ctx.root / 'scripts' / 'validate-pins.py'} "
+               f"--root {ctx.root}` to confirm the digest")
+    elif "AGENTS-shape.md" in absent:
+        fix = (f"{PYTHON} {ctx.shape / 'update-shape.py'} check --root "
+               f"{ctx.root} --upstream {ctx.shape}   # no pin row names it, "
+               "so it is reported upstream-added and taken, on the human's "
+               "word, with `apply --add AGENTS-shape.md`")
+    else:
+        fix = (f"{PYTHON} {ctx.shape / 'scaffold-project.py'} --help   # "
+               f"{' and '.join(absent)} is RENDERED per project, not copied; "
+               "write it, or take a rendered one from a scaffolded root")
     return Row("agent-files", "agent files", FINDING,
                "absent: " + ", ".join(absent), fix, detail)
 
 
+def detached(path: Path) -> bool | None:
+    """Is this checkout on a detached HEAD? None when git cannot say.
+
+    `symbolic-ref -q HEAD` succeeds with a branch name and fails when HEAD
+    is detached, which is the one question with no ambiguity in it.
+    """
+    if not (path / ".git").exists():
+        return None
+    proc = subprocess.run(["git", "symbolic-ref", "-q", "HEAD"],
+                          cwd=str(path), capture_output=True, check=False)
+    return proc.returncode != 0
+
+
+def is_this_member(sibling: Path, row: dict) -> bool:
+    """Is the directory beside the holder THIS member, or just a clone?
+
+    `scripts/siblings.py::verify_sibling` asks the same question before it
+    will touch a directory, and for the same reason: a repository that
+    happens to sit at `../<Project>` is somebody else's, and a report that
+    counted it would tell a person their working clone is there when it is
+    not (Copilot, PR #96). The manifest's `id` is the identity
+    `validate-family.py` already checks the MOUNT by, so it is the one asked
+    here too.
+    """
+    if not (sibling / ".git").exists():
+        return False
+    manifest = Context._read(sibling / "project.yaml")
+    if not isinstance(manifest, dict):
+        return False
+    if manifest.get("kind") != "project-manifest":
+        return False
+    wanted = row.get("id")
+    if wanted:
+        return str(manifest.get("id")) == str(wanted)
+    return str(manifest.get("name")) == str(row.get("project"))
+
+
 def check_members(ctx: Context) -> Row:
-    """Each member pinned under `members/`, and the working clone beside it."""
+    """Each member pinned under `members/`, and the working clone beside it.
+
+    TWO COPIES OF EVERY MEMBER IS THE LAYOUT, and they are different things.
+    `members/<Project>` inside the holder is PINNED AND DETACHED — that is
+    what `bootstrap` places and what `validate-family.py` reads — and the
+    sibling beside the holder is where a person works. So the mount is asked
+    whether it is detached AT the pin, and the sibling is only asked whether
+    it exists and is this project.
+    """
     members = ctx.members()
     members_dir = str((ctx.manifest or {}).get("members_dir") or "members")
     if not members:
@@ -745,6 +859,7 @@ def check_members(ctx: Context) -> Row:
     rows: list[dict] = []
     problems: list[str] = []
     siblings_absent: list[str] = []
+    on_a_branch: list[str] = []
     for row in members:
         project = str(row.get("project") or "?")
         rel = str(row.get("path") or f"{members_dir}/{project}")
@@ -754,10 +869,12 @@ def check_members(ctx: Context) -> Row:
         pinned = pinned if COMMIT_RE.match(pinned) else None
         populated = mount.is_dir() and any(mount.iterdir())
         head = head_of(mount) if populated else None
+        loose = detached(mount) if populated else None
         sibling = ctx.root.parent / project
-        has_sibling = (sibling / ".git").exists()
+        has_sibling = is_this_member(sibling, row)
         rows.append({"project": project, "path": rel, "pin": pinned,
                      "populated": populated, "head": head,
+                     "detached": loose,
                      "working_clone": sibling.as_posix() if has_sibling
                      else None})
         if not populated:
@@ -769,15 +886,34 @@ def check_members(ctx: Context) -> Row:
         elif head != pinned:
             problems.append(f"{rel}: checked out at "
                             f"{(head or '?')[:12]}, pinned at {pinned[:12]}")
+        elif loose is False:
+            # AT THE PIN BUT ON A BRANCH: RECORDED AND SAID, NEVER A FINDING.
+            # Copilot asked for this on PR #96, and asked for it as a
+            # failure — but `family.py add` ITSELF leaves the member on a
+            # branch (`git submodule add` checks one out), and only a fresh
+            # `clone --recurse-submodules` of the holder is detached. A row
+            # that refused here would refuse a holder the standard's own
+            # tool had just made, which is a rule this standard has not
+            # made. So the state is reported, because a branch in the copy
+            # the gate reads is worth a person's attention, and the verdict
+            # is left to the facts `validate-family.py` actually asserts.
+            on_a_branch.append(rel)
         if not has_sibling:
             siblings_absent.append(project)
-    detail = {"members": rows, "without_working_clone": siblings_absent}
+    detail = {"members": rows, "without_working_clone": siblings_absent,
+              "on_a_branch": on_a_branch}
     if problems:
         return Row("members", "members", FINDING, "; ".join(problems),
-                   f"{PYTHON} scripts/bootstrap.py in {ctx.root}   # what "
-                   "`make bootstrap` runs in a holder: it fetches every "
-                   "member at its pin", detail)
+                   f"{PYTHON} {ctx.root / 'scripts' / 'bootstrap.py'} --root "
+                   f"{ctx.root}   # what `make bootstrap` runs in a holder: "
+                   "it fetches every member at its pin and leaves it "
+                   "detached there", detail)
     note = f"{len(rows)} member(s) mounted at their pins"
+    if on_a_branch:
+        note += ("; on a BRANCH rather than detached: "
+                 + ", ".join(on_a_branch)
+                 + " (a fresh `clone --recurse-submodules` of this holder is "
+                   "detached; `family.py add` leaves a branch behind)")
     if siblings_absent:
         # NOT A FINDING. The working clones are the WORKSTATION layout, and a
         # holder on a machine that has not placed them is not thereby

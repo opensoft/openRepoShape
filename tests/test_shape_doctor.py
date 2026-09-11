@@ -695,3 +695,195 @@ def test_the_registry_leaves_a_fix_slot_for_the_repair_mode():
                     if kinds in check.applies_to]
         assert len(applying) == len(set(applying)), (
             f"two checks with one id apply to {kinds}")
+
+
+# --- the fix round on PR #96 ------------------------------------------------
+#
+# Every test below is one finding from Copilot's review, kept as a test rather
+# than as a fixed line: each of them is a remediation that LOOKED right and
+# would have failed the person who pasted it.
+
+def test_a_pin_behind_with_no_file_differing_is_still_behind(standard,
+                                                             project,
+                                                             tmp_path):
+    """COMPLIANT is documented as "and the pin names this standard's commit".
+
+    A commit that touches NO copied file leaves every row `unchanged` and
+    the pin naming an older revision — and `update-shape.py check` exits 1
+    there too, because `apply` would move the pin alone. Reporting COMPLIANT
+    would have made the verdict disagree with the sentence that defines it.
+    """
+    ahead = tmp_path / "standard-ahead"
+    shutil.copytree(standard, ahead, symlinks=True)
+    # A file no copy list names, so nothing a project holds can differ.
+    (ahead / "README.md").write_text(
+        (ahead / "README.md").read_text(encoding="utf-8") + "\nA fix.\n",
+        encoding="utf-8")
+    commit_all(ahead, "An upstream change to a file no project copies")
+    result = doctor(ahead, project, "--json")
+    assert result.returncode == 1, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["verdict"].startswith("COMPLIANT, SHAPE BEHIND"), payload
+    row = rows_of(result)["shape-currency"]
+    assert row["status"] == "FINDING"
+    assert row["detail"]["behind"] is True
+    assert row["detail"]["pinned"] != row["detail"]["standard"]
+    assert "apply` would move the pin alone" in row["reason"]
+
+
+def test_a_red_validators_next_command_is_runnable(standard, project):
+    """It used to print `python3 validate-pins.py in <root>`.
+
+    `in` arrives as an argument and argparse refuses it — a remediation that
+    reads like a command, is not one, and fails in front of whoever pasted
+    it. Every validator here takes `--root`, so that is what is printed.
+    """
+    edited = project / DRIFT_TARGET
+    edited.write_text(edited.read_text(encoding="utf-8") + "\n# edit\n",
+                      encoding="utf-8")
+    row = rows_of(doctor(standard, project, "--json"))["pins"]
+    assert row["status"] == "FINDING"
+    command = row["next"].split("#")[0].split()
+    assert "--root" in command, row["next"]
+    assert "in" not in command, row["next"]
+    # And it runs, and reproduces the finding.
+    proc = subprocess.run(command, capture_output=True, text=True,
+                          check=False, env={**os.environ,
+                                            "PYTHONDONTWRITEBYTECODE": "1"})
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert DRIFT_TARGET in proc.stdout + proc.stderr
+
+
+def test_the_legs_next_command_is_runnable(standard, project):
+    leg = project / "spec"
+    subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "past it"],
+                   cwd=str(leg), capture_output=True, check=True,
+                   env={**os.environ, **GIT_IDENTITY})
+    row = rows_of(doctor(standard, project, "--json"))["legs"]
+    command = row["next"].split("#")[0].split()
+    assert "--root" in command, row["next"]
+    assert Path(command[1]).is_file(), command
+    proc = subprocess.run(command, capture_output=True, text=True,
+                          check=False, env={**os.environ, **GIT_IDENTITY,
+                                            "PYTHONDONTWRITEBYTECODE": "1"})
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    # And having run it, the leg is back at its pin.
+    assert doctor(standard, project).returncode == 0
+
+
+def test_a_deleted_pinned_agent_file_is_not_an_add(standard, project):
+    """`--add` refuses a path the pin already names, by name.
+
+    A deleted `AGENTS-shape.md` is `copy-missing` to `update-shape.py`, not
+    `upstream-added`, so the remediation is to restore the bytes — not to
+    pass a flag that will be refused for being about a file that is already
+    pinned.
+    """
+    (project / "AGENTS-shape.md").unlink()
+    row = rows_of(doctor(standard, project, "--json"))["agent-files"]
+    assert row["status"] == "FINDING"
+    assert row["detail"]["pinned"] == ["AGENTS-shape.md"]
+    assert "--add" not in row["next"], row["next"]
+    assert "git -C" in row["next"] and "checkout --" in row["next"], \
+        row["next"]
+
+
+def test_a_missing_rendered_leg_file_is_not_offered_a_cp(standard, project):
+    """`templates/<role>-root/AGENTS.md` is full of `{{PLACEHOLDER}}`s.
+
+    A `cp` of it leaves a leg holding literal `{{PROJECT_NAME}}`, which is a
+    command that produces an invalid leg — worse than no command at all. The
+    verbatim files still get their `cp`, which is the other half.
+    """
+    (project / "spec" / "AGENTS.md").unlink()
+    row = rows_of(doctor(standard, project, "--json"))["leg-shape-files"]
+    assert row["status"] == "FINDING"
+    assert not row["next"].startswith("cp "), row["next"]
+    assert "RENDERED" in row["next"], row["next"]
+
+    (project / "spec" / "CLAUDE.md").unlink()
+    row = rows_of(doctor(standard, project, "--json"))["leg-shape-files"]
+    assert row["next"].startswith("cp "), row["next"]
+    source, target = row["next"].split("#")[0].split()[1:3]
+    assert Path(source).is_file(), source
+    assert target.endswith("CLAUDE.md"), target
+
+
+def test_a_member_on_a_branch_is_reported_and_is_not_a_finding(standard,
+                                                               holder,
+                                                               tmp_path):
+    """The pinned copy is DETACHED in a fresh clone, and the commit alone
+    does not say so — so the state is recorded and said.
+
+    IT IS NOT A FINDING, and that is the half Copilot's review asked for and
+    this suite refused: `family.py add` itself leaves the member on a
+    branch, because `git submodule add` checks one out. A row that failed
+    here would fail a holder the standard's own tool had just made.
+    """
+    root = tmp_path / FAMILY_NAME
+    shutil.copytree(holder["root"], root, symlinks=True)
+    member = root / "members" / FAMILY_MEMBER
+    subprocess.run(["git", "checkout", "-q", "-B", "local-work"],
+                   cwd=str(member), capture_output=True, check=True)
+    result = doctor(standard, root, "--json")
+    row = rows_of(result)["members"]
+    assert row["status"] == "ok", row
+    assert row["detail"]["on_a_branch"] == [f"members/{FAMILY_MEMBER}"], row
+    assert row["detail"]["members"][0]["detached"] is False
+    assert row["detail"]["members"][0]["head"] == \
+        row["detail"]["members"][0]["pin"]
+    assert "on a BRANCH rather than detached" in row["reason"]
+
+
+def test_a_member_detached_at_its_pin_is_recorded_as_detached(standard,
+                                                              holder,
+                                                              tmp_path):
+    """The other direction, so the report above cannot be a constant."""
+    root = tmp_path / FAMILY_NAME
+    shutil.copytree(holder["root"], root, symlinks=True)
+    member = root / "members" / FAMILY_MEMBER
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(member),
+                          capture_output=True, text=True,
+                          check=True).stdout.strip()
+    subprocess.run(["git", "checkout", "-q", "--detach", head],
+                   cwd=str(member), capture_output=True, check=True)
+    row = rows_of(doctor(standard, root, "--json"))["members"]
+    assert row["status"] == "ok", row
+    assert row["detail"]["on_a_branch"] == []
+    assert row["detail"]["members"][0]["detached"] is True
+
+
+def test_an_unrelated_repository_beside_the_holder_is_not_the_member(
+        standard, holder, tmp_path):
+    """`scripts/siblings.py` asks whether the directory IS this project
+    before it touches one, and so does this: a report that counted any clone
+    at `../<Project>` would tell somebody their working clone is there when
+    it is not."""
+    base = tmp_path / "fam"
+    base.mkdir()
+    root = base / FAMILY_NAME
+    shutil.copytree(holder["root"], root, symlinks=True)
+    impostor = base / FAMILY_MEMBER
+    impostor.mkdir()
+    git("init", "-q", "-b", "main", ".", cwd=impostor)
+    (impostor / "README.md").write_text("# not that project\n",
+                                        encoding="utf-8")
+    commit_all(impostor, "Something else entirely")
+    row = rows_of(doctor(standard, root, "--json"))["members"]
+    assert row["detail"]["without_working_clone"] == [FAMILY_MEMBER], row
+    assert row["detail"]["members"][0]["working_clone"] is None
+
+
+def test_a_real_working_clone_beside_the_holder_is_counted(standard, holder,
+                                                           tmp_path):
+    """And the other direction, so the check above cannot pass by refusing
+    everything: the member's own tree, beside the holder, IS the clone."""
+    base = tmp_path / "fam"
+    base.mkdir()
+    root = base / FAMILY_NAME
+    shutil.copytree(holder["root"], root, symlinks=True)
+    shutil.copytree(holder["root"] / "members" / FAMILY_MEMBER,
+                    base / FAMILY_MEMBER, symlinks=True)
+    row = rows_of(doctor(standard, root, "--json"))["members"]
+    assert row["detail"]["without_working_clone"] == [], row
+    assert row["detail"]["members"][0]["working_clone"] is not None

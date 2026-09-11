@@ -41,6 +41,15 @@ WORKDIR=""
 STAGED=""
 
 say() { printf '%s\n' "$*"; }
+
+# One mode per run. See the `--install` case for why this refuses instead of
+# taking the last one typed.
+set_mode() {
+	[ "$MODE" = "run" ] || [ "$MODE" = "$1" ] ||
+		die "--$MODE and --$1 are two different runs; pass one.
+    --install places this command, --doctor reads a repository and writes nothing."
+	MODE="$1"
+}
 die() { printf '\nREFUSED: %s\n' "$1" >&2; exit "${2:-2}"; }
 
 usage() {
@@ -329,9 +338,35 @@ shape_checkout() {
     standard to check against. \`--doctor\` needs one: run it from a checkout
     of openRepoShape, or make the clone work."
 	if [ -n "${OPENREPOSHAPE_REF:-}" ]; then
-		git -C "$SHAPE_DIR" checkout --quiet "$REF" ||
+		checked_ref "$REF"
+		# `<ref> --`, never `-- <ref>`: a `--` BEFORE the argument makes git
+		# read it as a PATHSPEC and try to restore a file of that name from
+		# the index. AFTER it, it says "and no paths follow", which is the
+		# disambiguation this wants. The leading-dash case is refused by
+		# `checked_ref` above, which is where it belongs.
+		git -C "$SHAPE_DIR" checkout --quiet "$REF" -- ||
 			die "cloned $REPO but could not check out '$REF'."
 	fi
+}
+
+# `setup.sh`'s THREE CHECKS ON A REF, IN ITS ORDER, and the order is the
+# point (Copilot, PR #96: this value reaches `git checkout`, where a leading
+# dash is an option rather than a ref). LENGTH first, so an over-long value
+# is refused without putting 255+ characters of noise on stderr; a CONTROL
+# CHARACTER next, because a newline in it could forge a line of output before
+# this script has said a word; and only then the SHAPE, which is safe to echo
+# back because it has passed both.
+checked_ref() {
+	local ref="$1"
+	if [ "${#ref}" -gt 255 ]; then
+		die "\$OPENREPOSHAPE_REF is ${#ref} characters long; a branch, tag or commit this tool will pass to \`git checkout\` is at most 255 characters."
+	fi
+	case "$ref" in
+	*[![:print:]]*) die "\$OPENREPOSHAPE_REF carries a control character, which is not a branch, tag or commit this tool will pass to \`git checkout\`." ;;
+	esac
+	case "$ref" in
+	[!A-Za-z0-9]* | *..* | *.lock | *[!A-Za-z0-9._/-]*) die "\$OPENREPOSHAPE_REF is '$ref', which is not a branch, tag or commit this tool will pass to \`git checkout\`: a ref starts with a letter or digit, uses only letters, digits, '.', '_', '/', '-', has no '..' and does not end in '.lock'." ;;
+	esac
 }
 
 # `--doctor`: RUN THE STANDARD'S OWN SCRIPT, never a reimplementation here.
@@ -354,6 +389,13 @@ run_doctor() {
 		shape_checkout
 		shape="$SHAPE_DIR"
 	fi
+	# NAMED, RATHER THAN LEFT TO THE INTERPRETER. A checkout at a ref older
+	# than the doctor — or a fork that does not carry it — produces a
+	# `can't open file` from python3 and a stack of nothing useful. The ref
+	# is the thing to change, so the refusal says so.
+	[ -f "$shape/$DOCTOR" ] ||
+		die "$shape has no $DOCTOR, so there is nothing to run. That checkout is $REPO at $REF.
+    Set \$OPENREPOSHAPE_REF to a ref that carries it, or run this from a checkout of the standard."
 	# RUN, never `exec`: the EXIT trap that removes a cloned checkout belongs
 	# to THIS process, and exec would replace the shell that owes it.
 	set +e
@@ -368,14 +410,19 @@ while [ $# -gt 0 ]; do
 	case "$1" in
 	-h | --help) usage; exit 0 ;;
 	--version) say "openRepoShape ($REPO @ $REF)"; exit 0 ;;
-	--install) MODE="install"; shift ;;
+	# TWO MODES IS A REFUSAL, NEVER LAST-WINS. `--doctor <path> --install`
+	# used to enter the install path and silently drop the diagnosis, and
+	# the other order dropped the install (Copilot, PR #96). Each of these
+	# does a different thing to a different place; a person who typed both
+	# meant one of them, and quietly picking is how they find out later.
+	--install) set_mode install; shift ;;
 	# `--doctor [<path>]`: the REPOSITORY diagnosis. The optional path is
 	# eaten here rather than passed on, because it is a positional and
 	# would otherwise be taken for the <Project> a scaffold run names. A
 	# word beginning with a dash is NOT the path -- it is somebody's flag,
 	# and the refusal below tells them this mode takes none.
 	--doctor)
-		MODE="doctor"; shift
+		set_mode doctor; shift
 		if [ $# -gt 0 ]; then
 			case "$1" in
 			-*) ;;

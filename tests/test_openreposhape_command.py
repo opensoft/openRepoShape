@@ -568,6 +568,84 @@ def test_the_machine_report_runs_no_installer(tmp_path):
     assert "was EXECUTED by a read-only report" not in result.stderr
 
 
+# --- the fix round on PR #96 ------------------------------------------------
+
+@pytest.mark.parametrize("args", [
+    ("--doctor", "--install"),
+    ("--install", "--doctor"),
+])
+def test_two_modes_is_a_refusal_not_last_wins(args, tmp_path):
+    """`--doctor <path> --install` used to install and drop the diagnosis,
+    and the other order dropped the install (Copilot, PR #96).
+
+    Each of these does a different thing to a different place. A person who
+    typed both meant one of them, and quietly picking the last is how they
+    find out which, later, from the wrong outcome.
+    """
+    bin_dir = tmp_path / "bin"
+    result = run_cmd(*args, home=tmp_path,
+                     env={"OPENREPOSHAPE_BIN_DIR": str(bin_dir)})
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "two different runs" in result.stderr
+    assert not bin_dir.exists(), "a refused run placed a command anyway"
+
+
+@pytest.mark.parametrize("ref", ["-x", "--upload-pack=touch /tmp/pwned",
+                                 "a" * 256, "refs/heads/..", "x.lock"])
+def test_a_ref_the_doctor_would_check_out_is_validated(ref, tmp_path):
+    """$OPENREPOSHAPE_REF reaches `git checkout`, so it is checked first.
+
+    `setup.sh` validates `--shape-ref` in three steps and this value lands
+    in the same place, which the first cut of `--doctor` missed (Copilot,
+    PR #96): a leading dash is an option to git, not a ref. Run from STDIN
+    so the clone path is the one taken, and the refusal has to arrive before
+    any clone does.
+    """
+    result = subprocess.run(
+        ["bash", "-s", "--", "--doctor", str(tmp_path)],
+        capture_output=True, text=True, check=False,
+        input=COMMAND.read_text(encoding="utf-8"), cwd=str(tmp_path),
+        env=command_env(home=tmp_path, setup_sh=None,
+                        env={"OPENREPOSHAPE_REPO": str(REPO),
+                             "OPENREPOSHAPE_REF": ref}))
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "OPENREPOSHAPE_REF" in result.stderr
+    assert "git checkout" in result.stderr
+    # The over-long and control-character refusals must not echo the value
+    # back; the shape refusal may, having passed both.
+    if len(ref) > 255:
+        assert ref not in result.stderr
+
+
+def test_a_checkout_without_the_doctor_refuses_by_name(tmp_path):
+    """A ref older than `shape-doctor.py` produced `can't open file` from
+    python3 and a stack of nothing useful. The ref is the thing to change,
+    so the refusal says so."""
+    bare = tmp_path / "old.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(bare)],
+                   capture_output=True, check=True)
+    seed = tmp_path / "seed"
+    subprocess.run(["git", "clone", "-q", str(bare), str(seed)],
+                   capture_output=True, check=True)
+    (seed / "README.md").write_text("# an older standard\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=str(seed), capture_output=True,
+                   check=True)
+    subprocess.run(["git", "commit", "-qm", "before the doctor"],
+                   cwd=str(seed), capture_output=True, check=True,
+                   env=command_env(home=tmp_path, setup_sh=None))
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=str(seed),
+                   capture_output=True, check=True)
+    result = subprocess.run(
+        ["bash", "-s", "--", "--doctor", str(tmp_path)],
+        capture_output=True, text=True, check=False,
+        input=COMMAND.read_text(encoding="utf-8"), cwd=str(tmp_path),
+        env=command_env(home=tmp_path, setup_sh=None,
+                        env={"OPENREPOSHAPE_REPO": str(bare)}))
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "has no shape-doctor.py" in result.stderr
+    assert "OPENREPOSHAPE_REF" in result.stderr
+
+
 # --- --preflight ------------------------------------------------------------
 
 def test_preflight_passes_through_without_an_org(tmp_path):
