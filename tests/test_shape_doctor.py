@@ -30,7 +30,7 @@ import shlex
 import shutil
 import subprocess
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -1815,17 +1815,37 @@ def test_a_windows_path_is_quoted_on_posix_and_bare_on_windows():
 #: wrongly producing on a POSIX runner (Copilot, PR #102): an assertion that
 #: cannot tell `python` from `python3` cannot check the one thing this
 #: function's `platform` argument exists to make checkable.
+#:
+#: THE PATH IS PURE, not `Path`. `Path` is the HOST's flavour -- `WindowsPath`
+#: on a Windows runner -- so `shape / 'setup.sh'` rendered `\srv\openRepoShape
+#: \...` against this hard-coded `/srv/...` expectation no matter which
+#: `platform` a row named: exactly what CI on Windows showed, on BOTH rows
+#: (job `tests-windows`, run 34594408797). `PurePosixPath` is the same
+#: flavour on every host, Windows included, so the rendering asserted below
+#: no longer depends on which machine runs the suite.
+#:
+#: AND BOTH ROWS SHARE THAT ONE FLAVOUR -- the `nt` row is not given a
+#: `PureWindowsPath`. `scaffold_command`'s own `quote_arg(shape / ...)` calls
+#: pass no `platform` of their own, so each falls back to `quote_arg`'s
+#: default, which reads the REAL host's `os.name` -- not the `platform` this
+#: row names. `\` sits in `UNQUOTED_NT` but not in `UNQUOTED_POSIX`, so a
+#: genuine `C:\...` fixture would come back bare on an actual Windows runner
+#: and QUOTED on a POSIX one running this same `nt` row -- trading the
+#: Windows failure this commit fixes for a new Linux/macOS one. `/` sits in
+#: both alphabets, so it is bare everywhere; see `quote_arg` and
+#: `UNQUOTED_NT`/`UNQUOTED_POSIX`.
 SCAFFOLD_COMMAND = [
-    ("posix",
+    ("posix", PurePosixPath("/srv/openRepoShape"),
      "/srv/openRepoShape/setup.sh --org <your-org> --project Atlas"),
-    ("nt",
+    ("nt", PurePosixPath("/srv/openRepoShape"),
      "python /srv/openRepoShape/setup-project.py --org <your-org> "
      "--project Atlas"),
 ]
 
 
-@pytest.mark.parametrize("platform,expected", SCAFFOLD_COMMAND)
+@pytest.mark.parametrize("platform,shape,expected", SCAFFOLD_COMMAND)
 def test_the_scaffold_command_is_the_readers_own_entry_point(platform,
+                                                             shape,
                                                              expected):
     """`setup.sh` is bash, and Windows has no bash.
 
@@ -1844,7 +1864,6 @@ def test_the_scaffold_command_is_the_readers_own_entry_point(platform,
     line, byte for byte, on both.
     """
     module = doctor_module(REPO)
-    shape = Path("/srv/openRepoShape")
     assert module.scaffold_command(shape, "Atlas", platform) == expected
     # And a project name with a space in it is still one argument.
     spaced = module.scaffold_command(shape, "My Thing", platform)
