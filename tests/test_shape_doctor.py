@@ -181,7 +181,7 @@ def test_every_row_of_a_compliant_project_is_ok_or_na(standard, project):
     rows = rows_of(result)
     assert set(rows) == {"naming", "manifest", "pins", "manifest-kinds",
                          "shape-currency", "legs", "leg-shape-files",
-                         "agent-files", "machine"}
+                         "placement", "agent-files", "machine"}
     for name, row in rows.items():
         assert row["status"] in ("ok", "n/a"), (name, row)
         assert row["status"] != "FINDING", (name, row)
@@ -403,7 +403,13 @@ def test_a_family_holder_gets_the_family_rows(standard, holder):
     assert payload["kind"] == "family"
     rows = rows_of(result)
     assert set(rows) == {"family", "manifest-kinds", "shape-currency",
-                         "agent-files", "members", "machine"}
+                         "placement", "agent-files", "members", "machine"}
+    # A holder has no legs of its own, so it has no leg for a path to be in
+    # the wrong one of. `n/a` rather than absent: a caller keying on row ids
+    # reads the same set of ids from every root kind that HAS the question,
+    # and gets told this one does not.
+    assert rows["placement"]["status"] == "n/a", rows["placement"]
+    assert "each member is an assembly root" in rows["placement"]["reason"]
     assert result.returncode == 0, result.stdout + result.stderr
     assert payload["verdict"] == "COMPLIANT"
     assert rows["family"]["status"] == "ok"
@@ -452,6 +458,9 @@ def test_an_empty_git_repository_is_not_a_shape_root(standard, tmp_path):
     assert payload["note"].startswith("the machine check is")
     rows = rows_of(result)
     assert set(rows) == {"naming", "contents", "way-in", "machine"}
+    assert "placement" not in rows, (
+        "there are no legs here and no manifest declaring any, so there is "
+        "no placement question to answer; the row is absent rather than n/a")
     assert "adopt-project.py plan" in rows["way-in"]["next"]
     assert rows["contents"]["detail"]["project_yaml"] is False
 
@@ -1046,3 +1055,554 @@ def test_the_doctor_writes_no_bytecode_into_the_standard(standard, project,
     left = sorted(path.relative_to(copy).as_posix()
                   for path in copy.rglob("*.pyc"))
     assert left == [], left
+
+
+# --- placement: code in spec, spec in code (#99) ----------------------------
+#
+# Brett Heap, 2026-09-10: "we have to look for code in spec and spec in code".
+# The row runs the ADOPTION'S policy over a project that is already split, and
+# every test below is a claim about one of the four answers it can give: `ok`,
+# `note` for a path the policy will not call, `FINDING` for one in the wrong
+# leg, and `n/a` where there is no leg to ask about.
+
+def stage(leg: Path, name: str, body: str = "x\n") -> None:
+    """Put a file in a leg's INDEX and leave that leg's HEAD where it is.
+
+    `git add` and NO commit, deliberately. `ls-files` reads the index, so the
+    doctor sees the file — and the leg stays AT ITS PIN, which keeps the
+    verdict under test `MISPLACED` rather than `DRIFTED`. Those are two
+    different claims about two different things, and a fixture that tripped
+    both would prove neither. The committed case has its own test below, and
+    what it asserts is the precedence between them.
+    """
+    target = leg / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(body, encoding="utf-8")
+    subprocess.run(["git", "add", "--", name], cwd=str(leg),
+                   capture_output=True, check=True)
+
+
+def adoption_module(standard: Path):
+    """`adopt-project.py` from the standard under test, as a module.
+
+    The same load `shape-doctor.py` does, for the same reason — a hyphen in
+    the filename — and it is how these tests read a placement plan with the
+    reader that wrote it rather than with a second one.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "adopt_project_under_test", standard / "adopt-project.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_a_scaffolded_projects_legs_have_nothing_in_the_wrong_one(standard,
+                                                                  project):
+    """The base case: what the standard's own scaffold writes is `ok`.
+
+    IT IS NOT A TAUTOLOGY, and this is the test that would have caught the
+    obvious first version of this row. `templates/spec-root/` ships
+    `README.md`, `AGENTS.md`, `CLAUDE.md` and `.gitignore`, and the path
+    policy classifies all four as `root` — correctly, for a repository being
+    SPLIT, where exactly one of each stays in the assembly root. A row that
+    read that verdict literally would call every leg this standard has ever
+    cut misplaced on its first day. So the four are read OUT OF THE TEMPLATES
+    at run time and never judged, and `--json` says so.
+    """
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["verdict"] == "COMPLIANT"
+    assert payload["placement_plan"] is None
+    row = rows_of(result)["placement"]
+    assert row["status"] == "ok", row
+    assert row["detail"]["misplaced"] == []
+    assert row["detail"]["review_required"] == []
+    assert row["detail"]["policy"].endswith("contracts/path-classification.yaml")
+    everywhere = row["detail"]["everywhere"]
+    for name in ("README.md", "AGENTS.md", "CLAUDE.md", ".gitignore"):
+        assert name in everywhere, (name, everywhere)
+    legs = {entry["role"]: entry for entry in row["detail"]["legs"]}
+    assert set(legs) == {"spec", "code"}
+    for entry in legs.values():
+        assert entry["state"] == "audited", entry
+        assert entry["misplaced"] == 0 and entry["review_required"] == 0
+        assert entry["tracked"] > entry["classified"], (
+            "every leg the scaffold writes carries files the row must ignore, "
+            "so `classified` is strictly fewer than `tracked` here")
+
+
+def test_code_in_the_spec_leg_and_spec_in_the_code_leg_is_misplaced(standard,
+                                                                    project):
+    """The question in Brett Heap's sentence, both directions at once.
+
+    A `.py` in the spec leg is CODE by the extension table; a
+    `requirements/*.md` in the code leg is SPEC by the `spec-governance` rule.
+    Each is named with the rule that judged it, because the policy's whole
+    posture is that a reader disagrees with a NAMED rule rather than with an
+    opaque verdict — and a row that said "2 paths are wrong" without them
+    would be exactly the opaque verdict.
+    """
+    stage(project / "spec", "tool.py", "VALUE = 1\n")
+    stage(project / "code", "requirements/one.md", "# a requirement\n")
+    result = doctor(standard, project)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert verdict_line(result).startswith("MISPLACED (2 paths)"), \
+        result.stdout
+    assert "spec/tool.py: code by rule extension-majority" in result.stdout
+    assert "code/requirements/: spec by rule spec-governance" in result.stdout
+    assert "1 code in the spec leg" in result.stdout
+    assert "1 spec in the code leg" in result.stdout
+    assert "--placement-plan" in result.stdout, (
+        "a finding names its fix, and this one's is the plan")
+
+    rows = rows_of(doctor(standard, project, "--json"))
+    row = rows["placement"]
+    assert row["status"] == "FINDING"
+    assert row["detail"]["counts"] == {"misplaced": 2, "review_required": 0,
+                                       "unread_legs": 0,
+                                       "unwritable_names": 0}, (
+        "both legs were read in full, so the two counts that qualify a clean "
+        "answer are zero and the row is entitled to the word `FINDING`")
+    found = {entry["path"]: entry for entry in row["detail"]["misplaced"]}
+    assert set(found) == {"spec/tool.py", "code/requirements/"}
+    assert found["spec/tool.py"]["leg"] == "spec"
+    assert found["spec/tool.py"]["classified_as"] == "code"
+    assert found["spec/tool.py"]["rule"] == "extension-majority"
+    assert found["spec/tool.py"]["review_required"] is False
+    assert found["code/requirements/"]["leg"] == "code"
+    assert found["code/requirements/"]["classified_as"] == "spec"
+    assert found["code/requirements/"]["rule"] == "spec-governance"
+    # And nothing else went red: the legs are at their pins and every
+    # validator is green, which is what makes MISPLACED the whole verdict.
+    assert rows["legs"]["status"] == "ok"
+    assert rows["pins"]["status"] == "ok"
+
+
+def test_a_path_the_policy_will_not_call_is_a_note_and_still_compliant(
+        standard, project):
+    """`review_required` is a question for a human, never a finding.
+
+    `examples/` is the policy's own worked example of an honest `ambiguous`:
+    a golden-run corpus is the specification's acceptance evidence or the
+    tests' fixture, and the directory name does not say which. A row that
+    failed somebody's repository for a question nobody has answered would be
+    the `leg shape files` mistake again — inventing a rule to fail them by.
+    """
+    stage(project / "spec", "examples/golden-run/expected.yaml", "result: ok\n")
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["verdict"] == "COMPLIANT"
+    row = rows_of(result)["placement"]
+    assert row["status"] == "note", row
+    assert row["detail"]["misplaced"] == []
+    [entry] = row["detail"]["review_required"]
+    assert entry["path"] == "spec/examples/"
+    assert entry["classified_as"] is None
+    assert entry["review_required"] is True
+    assert entry["rule"] == "ambiguous-examples"
+    assert "acceptance evidence" in entry["question"]
+    assert "will not call" in row["reason"]
+
+
+def test_the_files_every_repository_carries_are_never_misplaced(standard,
+                                                                project):
+    """The allowlist, asserted on the two cases that would otherwise bite.
+
+    A `LICENSE` classifies as `root` and a `.github/workflows/*.yml` as
+    `code` — so a spec leg with a licence and its own lint workflow, which is
+    an ordinary spec leg, would be two findings under a row that read the
+    policy literally. `.github/**` is ignored WHOLE for exactly this: a leg
+    runs its own CI, and the workflow that runs it is not a file in the wrong
+    repository.
+    """
+    stage(project / "spec", "LICENSE", "Apache-2.0\n")
+    stage(project / "spec", ".github/workflows/lint.yml", "on: [push]\n")
+    stage(project / "spec", ".gitattributes", "* text=auto eol=lf\n")
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 0, result.stdout + result.stderr
+    row = rows_of(result)["placement"]
+    assert row["status"] == "ok", row
+    assert json.loads(result.stdout)["verdict"] == "COMPLIANT"
+
+
+def test_a_directory_whose_files_agree_is_ONE_path_however_many_files(
+        standard, project):
+    """A thousand files in one misplaced directory are ONE decision.
+
+    `walk()` is the adoption's own fold and this row borrows it rather than
+    classifying file by file, for two reasons that are the same reason. A
+    reader has to READ this: a thousand rows for one mistake would bury it.
+    And the run has to finish: it is one `git ls-files` and one process, with
+    no subprocess per path, so a leg of this size answers in seconds.
+    """
+    leg = project / "spec"
+    (leg / "src").mkdir()
+    for index in range(1000):
+        (leg / "src" / f"mod_{index:04d}.py").write_text(
+            f"VALUE = {index}\n", encoding="utf-8")
+    subprocess.run(["git", "add", "--", "src"], cwd=str(leg),
+                   capture_output=True, check=True)
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert json.loads(result.stdout)["verdict"] == "MISPLACED (1 path)"
+    row = rows_of(result)["placement"]
+    [entry] = row["detail"]["misplaced"]
+    assert entry["path"] == "spec/src/"
+    assert entry["files"] == 1000, entry
+    assert entry["classified_as"] == "code"
+    spec = [leg for leg in row["detail"]["legs"] if leg["role"] == "spec"][0]
+    assert spec["paths"] < spec["classified"], (
+        "the whole point of the fold: fewer paths to read than files read")
+
+
+def test_a_leg_off_its_pin_outranks_a_misplaced_path(standard, project):
+    """COMMITTING the misplaced file walks the leg off its pin, and DRIFTED
+    wins the verdict line — while the placement row is still printed.
+
+    The precedence is deliberate and this is the case that argues it: the
+    paths this row read are the paths in a leg that is no longer the one the
+    pin describes, so `make bootstrap` comes before deciding anything about
+    where a file should live. Both rows are in the table, which is the rule
+    the whole report is built on: the verdict names the most specific
+    finding, the table names every one.
+    """
+    leg = project / "spec"
+    stage(leg, "tool.py", "VALUE = 1\n")
+    subprocess.run(["git", "commit", "-q", "-m", "a python file in the spec leg"],
+                   cwd=str(leg), capture_output=True, check=True,
+                   env={**os.environ, **GIT_IDENTITY})
+    result = doctor(standard, project)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert verdict_line(result).startswith("DRIFTED ("), result.stdout
+    assert "leg(s) not at the pin" in verdict_line(result)
+    rows = rows_of(doctor(standard, project, "--json"))
+    assert rows["legs"]["status"] == "FINDING"
+    assert rows["placement"]["status"] == "FINDING", (
+        "the row is still asked and still printed; only the verdict LINE is "
+        "somebody else's")
+    assert [entry["path"] for entry in rows["placement"]["detail"]["misplaced"]] \
+        == ["spec/tool.py"]
+
+
+def test_a_leg_whose_role_the_policy_has_no_class_for_is_not_guessed_at(
+        standard, project):
+    """`spec`, `code`, `root`, ambiguous — and nothing else.
+
+    A leg declaring some other role is a leg this policy has no opinion
+    about, and the honest answer is to say so and audit the other one. The
+    alternative is to compare its paths against a class that does not exist,
+    which would report every file in it as misplaced.
+    """
+    manifest = project / "project.yaml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            "role: spec", "role: prose", 1), encoding="utf-8")
+    row = rows_of(doctor(standard, project, "--json"))["placement"]
+    legs = {entry["role"]: entry for entry in row["detail"]["legs"]}
+    assert "prose" in legs, row["detail"]["legs"]
+    assert "not one that the path policy classifies" in legs["prose"]["state"]
+    assert legs["code"]["state"] == "audited"
+
+
+# --- the placement plan -----------------------------------------------------
+
+def test_the_placement_plan_is_written_and_the_root_is_untouched(standard,
+                                                                 project,
+                                                                 tmp_path):
+    """The ONE thing this command writes, and it writes it where it was told.
+
+    `test_the_doctor_writes_nothing` is the promise for every other run; this
+    is the same promise for the run that takes a `--placement-plan`. The
+    plan lands at the named path and NOTHING under the repository moves —
+    which is the whole posture: a path changing legs is a pull request on
+    each leg and a pin bump in the root, and none of those is an edit this
+    command is entitled to make.
+    """
+    stage(project / "spec", "tool.py", "VALUE = 1\n")
+    stage(project / "code", "requirements/one.md", "# a requirement\n")
+
+    def snapshot():
+        return sorted(
+            (path.relative_to(project).as_posix(), path.stat().st_size)
+            for path in project.rglob("*") if path.is_file())
+
+    before = snapshot()
+    out = tmp_path / "placement-plan.yaml"
+    result = doctor(standard, project, "--placement-plan", str(out))
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert snapshot() == before, "the repository under the root moved"
+    assert out.is_file()
+    assert f"placement plan written to {out.as_posix()}" in result.stdout
+    assert verdict_line(result).startswith("MISPLACED (2 paths)")
+
+    adopt = adoption_module(standard)
+    data = adopt.load_yaml(out)
+    assert data["kind"] == adopt.PLACEMENT_PLAN_KIND
+    assert data["kind"] != adopt.PLAN_KIND
+    entries = {entry["path"]: entry for entry in data["paths"]}
+    assert set(entries) == {"spec/tool.py", "code/requirements/"}
+    assert entries["spec/tool.py"]["in_leg"] == "spec"
+    assert entries["spec/tool.py"]["leg"] == "code"
+    assert entries["spec/tool.py"]["resolution"] == "", (
+        "every entry's resolution is empty and is the human's line")
+    assert "README.md" in data["ignored"], (
+        "the plan says what it declined to look at, so a reader is not left "
+        "to infer the allowlist from what is missing")
+    # `--json` says where it went too, so a caller need not parse the table.
+    as_json = doctor(standard, project, "--json", "--placement-plan", str(out))
+    assert json.loads(as_json.stdout)["placement_plan"] == out.as_posix()
+
+
+def test_the_placement_plans_entries_are_adoption_plan_entries(standard,
+                                                               project,
+                                                               tmp_path):
+    """The claim that makes "resolve it as you resolve an adoption plan" true.
+
+    Read by the ADOPTION'S OWN READER: the plan's `paths:` are handed to
+    `adopt-project.py`'s `Plan` with nothing changed but the `kind:` this file
+    carries on purpose, and its own `_leg_findings` is asked what it thinks of
+    them. It must not refuse on their SHAPE — every key it reads is there and
+    every `leg:` it can act on is one of its four words — and it must refuse
+    on exactly the unresolved ones, which is what `review_required: true`
+    means in both files.
+    """
+    stage(project / "spec", "tool.py", "VALUE = 1\n")
+    stage(project / "spec", "examples/golden-run/expected.yaml", "result: ok\n")
+    out = tmp_path / "placement-plan.yaml"
+    assert doctor(standard, project,
+                  "--placement-plan", str(out)).returncode == 1
+
+    adopt = adoption_module(standard)
+    data = dict(adopt.load_yaml(out))
+    data["kind"], data["mode"] = adopt.PLAN_KIND, "in-place"
+    plan = adopt.Plan(out, data)
+    assert len(plan.entries) == 2
+    findings = adopt._leg_findings(plan)
+    assert [f.split(":")[0] for f in findings] == \
+        ["FINDING plan-unresolved"], findings
+    assert "spec/examples/" in findings[0]
+    assert "acceptance evidence" in findings[0], (
+        "the question travels with the entry, which is what a human answers")
+    # Answering it the way `conftest.resolve` answers an adoption plan's
+    # entry leaves nothing for the adoption reader to refuse.
+    for entry in plan.entries:
+        if entry.get("leg") is None:
+            entry["leg"] = "spec"
+    assert adopt._leg_findings(plan) == []
+
+
+def test_the_adoption_tool_refuses_a_placement_plan_and_names_the_doctor(
+        standard, project, tmp_path):
+    """`kind:` is the boundary, and the boundary is a SAFETY property.
+
+    An adoption plan is the input to `adopt-project.py execute`, which
+    creates two repositories and rewrites history with `git filter-repo`. A
+    placement plan describes a project that has already been split, so a file
+    that called itself an adoption plan would be that command aimed at an
+    assembly root, with `--yes` the only thing in the way. It is refused by
+    name — and the refusal says which tool consumes one, because the two
+    files look alike precisely because their entries are alike.
+    """
+    stage(project / "spec", "tool.py", "VALUE = 1\n")
+    out = tmp_path / "placement-plan.yaml"
+    assert doctor(standard, project,
+                  "--placement-plan", str(out)).returncode == 1
+    result = run_script(standard / "adopt-project.py", "check",
+                        "--plan", str(out))
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "REFUSED plan-wrong-kind" in result.stderr
+    assert "'placement-plan', expected 'adoption-plan'" in result.stderr
+    assert "shape-doctor.py --placement-plan" in result.stderr
+    assert "aimed at an assembly root" in result.stderr
+
+
+def test_a_root_with_no_placement_audit_refuses_the_flag_by_name(standard,
+                                                                 holder,
+                                                                 tmp_path):
+    """A family holder has no legs, so there is no plan to write.
+
+    Exit 3 — usage or environment — and not a verdict about the holder: the
+    question is about the FLAG, and printing `COMPLIANT` under a refusal
+    about a plan nobody could write would answer something nobody asked.
+    """
+    out = tmp_path / "placement-plan.yaml"
+    result = doctor(standard, holder["root"], "--placement-plan", str(out))
+    assert result.returncode == 3, result.stdout + result.stderr
+    assert "REFUSED shape-doctor-no-placement-audit" in result.stderr
+    assert "each member is an assembly root" in result.stderr
+    assert not out.exists()
+
+
+def test_the_placement_plan_creates_no_directory(standard, project, tmp_path):
+    """A path whose parent is not there is a typo, and it is refused as one.
+
+    A command that answered a mistyped path by making a directory tree is a
+    command that writes where nobody will look for it.
+    """
+    stage(project / "spec", "tool.py", "VALUE = 1\n")
+    out = tmp_path / "nowhere" / "placement-plan.yaml"
+    result = doctor(standard, project, "--placement-plan", str(out))
+    assert result.returncode == 3, result.stdout + result.stderr
+    assert "shape-doctor-placement-plan-unwritable" in result.stderr
+    assert "creates no directory" in result.stderr
+    assert not out.parent.exists()
+
+
+def test_a_directory_that_is_not_a_shape_root_refuses_the_flag_too(standard,
+                                                                   tmp_path):
+    """No manifest, so no legs, so no row and no plan — and it says which.
+
+    A different sentence from the holder's, because it is a different fact: a
+    holder HAS the question and does not have legs; this directory does not
+    have the question. Exit 3 either way, because both are about the flag.
+    """
+    here = tmp_path / "Loose"
+    here.mkdir()
+    (here / "notes.txt").write_text("nothing to see\n", encoding="utf-8")
+    out = tmp_path / "placement-plan.yaml"
+    result = doctor(standard, here, "--placement-plan", str(out))
+    assert result.returncode == 3, result.stdout + result.stderr
+    assert "REFUSED shape-doctor-no-placement-audit" in result.stderr
+    assert "not an assembly root (none)" in result.stderr
+    assert not out.exists()
+
+
+# --- the placement row declines to guess (the review on PR #100) -----------
+
+def test_a_leg_that_is_not_its_own_repository_is_not_read(standard, project):
+    """`git -C` DISCOVERS, and that is how this row could read the root.
+
+    Run in a plain directory, `git` walks UP and answers from the enclosing
+    repository — so a leg mount that is not a submodule at all would have the
+    ASSEMBLY ROOT's index read as if it were the leg's contents. The row
+    declines, names why, and — the half that matters — does NOT then say `ok`
+    about a repository one of whose legs nobody read.
+    """
+    rmtree(project / "spec")
+    (project / "spec").mkdir()
+    (project / "spec" / "tool.py").write_text("VALUE = 1\n", encoding="utf-8")
+    row = rows_of(doctor(standard, project, "--json"))["placement"]
+    legs = {entry["role"]: entry for entry in row["detail"]["legs"]}
+    assert "not a repository of its own" in legs["spec"]["state"], legs
+    assert legs["code"]["state"] == "audited", legs
+    assert row["status"] == "note", row
+    assert row["detail"]["counts"]["unread_legs"] == 1
+    assert "not everything could be" in row["reason"]
+    assert row["detail"]["misplaced"] == [], (
+        "spec/tool.py is in the ROOT's index, not the leg's, and reporting it "
+        "would be this row telling somebody about a file it never read")
+
+
+def test_a_leg_the_manifest_points_outside_the_root_is_never_read(standard,
+                                                                  project,
+                                                                  tmp_path):
+    """`path:` comes out of `project.yaml`, which this command does not own.
+
+    A `..`, an absolute path or a symlink makes `root / rel` a directory
+    somewhere else, and a `git ls-files` there would put another checkout's
+    paths and sizes into this report and into the plan. The manifest
+    validator has its own opinion about such a `path:`; this row must not act
+    on it in the meantime.
+    """
+    elsewhere = project.parent / "outside"
+    elsewhere.mkdir()
+    git("init", "-q", "-b", "main", ".", cwd=elsewhere)
+    (elsewhere / "secret.py").write_text("TOKEN = 1\n", encoding="utf-8")
+    commit_all(elsewhere, "somebody else's repository")
+
+    manifest = project / "project.yaml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            "path: spec", "path: ../outside", 1), encoding="utf-8")
+    row = rows_of(doctor(standard, project, "--json"))["placement"]
+    legs = {entry["role"]: entry for entry in row["detail"]["legs"]}
+    assert "outside" in legs["spec"]["state"], legs
+    assert "nothing outside the root that was named is read" in \
+        legs["spec"]["state"]
+    assert row["status"] == "note", row
+    assert "secret.py" not in json.dumps(row), (
+        "not one path of the repository next door may appear in this report")
+
+
+@pytest.mark.skipif(os.name == "nt",
+                    reason="Windows has no filename with a newline in it")
+def test_a_tracked_name_no_plan_can_carry_is_reported_and_never_written(
+        standard, project, tmp_path):
+    """Git allows any byte but `/` and NUL in a name; YAML does not.
+
+    A newline in a filename would split one plan entry across two lines, and
+    a name that is not UTF-8 at all raises `UnicodeEncodeError` in the
+    writer — a traceback out of a command whose whole promise is that it
+    reports. Such a path is excluded from the classification and REPORTED by
+    `repr`, and the plan it is kept out of still parses.
+    """
+    stage(project / "spec", "tool\ns.py", "VALUE = 1\n")
+    out = tmp_path / "placement-plan.yaml"
+    result = doctor(standard, project, "--json", "--placement-plan", str(out))
+    row = rows_of(result)["placement"]
+    assert row["status"] == "note", row
+    assert row["detail"]["counts"]["unwritable_names"] == 1
+    spec = [leg for leg in row["detail"]["legs"] if leg["role"] == "spec"][0]
+    assert spec["unwritable"] == ["'tool\\ns.py'"], spec
+    assert "no report or plan can carry" in row["reason"]
+    # And the plan it was kept out of is still a file the reader can read.
+    adopt = adoption_module(standard)
+    data = adopt.load_yaml(out)
+    assert data["kind"] == adopt.PLACEMENT_PLAN_KIND
+    assert (data.get("paths") or []) == []
+
+
+def test_the_misplaced_verdict_needs_an_actual_misplaced_path(standard,
+                                                              project):
+    """A red `placement` row with nothing in it is INVALID, not MISPLACED.
+
+    `run_checks` turns an exception out of any check into a FINDING row with
+    an empty detail — so the verdict branch, reading a length, would have
+    answered `MISPLACED (0 paths)`: a verdict naming a count of zero, about a
+    row that never got as far as classifying anything.
+    """
+    spec = importlib.util.spec_from_file_location("shape_doctor_verdicts",
+                                                  standard / DOCTOR)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    ctx = module.Context(project)
+    assert ctx.kind == module.PROJECT
+    blown = module.Row("placement", "placement", module.FINDING,
+                       "could not be run: [Errno 13] Permission denied",
+                       None, {})
+    verdict, code = module.verdict_for(ctx, [blown])
+    assert verdict == "INVALID (placement)", verdict
+    assert code == 1
+    # And with a path in it, the same row IS the verdict.
+    real = module.Row("placement", "placement", module.FINDING, "two of them",
+                      None, {"misplaced": [{"path": "spec/a.py"},
+                                           {"path": "code/b.md"}]})
+    assert module.verdict_for(ctx, [real])[0] == "MISPLACED (2 paths)"
+
+
+@pytest.mark.skipif(os.name == "nt",
+                    reason="a symlink needs a privilege Windows CI has not")
+def test_a_tracked_symlink_is_never_followed_out_of_the_leg(standard, project,
+                                                            tmp_path):
+    """`stat` follows; `lstat` does not, and here the two disagree about which
+    file is being measured.
+
+    A tracked symlink's BLOB is the target path it holds, so the link's own
+    length is the honest size — and `secret -> /outside/big` would otherwise
+    have this row read metadata outside the very root `outside_the_root`
+    keeps it inside of, and put that size in the report and in the plan.
+    """
+    outside = tmp_path / "big.py"
+    outside.write_text("X" * 5000, encoding="utf-8")
+    link = project / "spec" / "borrowed.py"
+    link.symlink_to(outside)
+    subprocess.run(["git", "add", "--", "borrowed.py"],
+                   cwd=str(project / "spec"), capture_output=True, check=True)
+    row = rows_of(doctor(standard, project, "--json"))["placement"]
+    [entry] = row["detail"]["misplaced"]
+    assert entry["path"] == "spec/borrowed.py"
+    assert entry["bytes"] == len(str(outside)), entry
+    assert entry["bytes"] != 5000, (
+        "the size reported is the link's, never the file it points at")

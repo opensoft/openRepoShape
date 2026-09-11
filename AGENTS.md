@@ -188,14 +188,16 @@ the tool, not scaffold.
 a checkout — answers ONE question about ONE repository: is it compliant with
 this shape, and what is missing. Run it before you propose a change to a
 repository you did not scaffold, and again after any procedure above. It
-writes nothing and fetches nothing, so there is no confirmation to get and no
-`--dry-run` to do first. The checks are a REGISTRY with an empty `fix` slot
+writes nothing into the repository and fetches nothing, so there is no
+confirmation to get and no `--dry-run` to do first. The checks are a REGISTRY with an empty `fix` slot
 in each of them, which is where a repair mode will hang; nothing in it writes
-today.
+today. The one exception to "writes nothing" is `--placement-plan <file>`,
+which writes that file and nothing else — see 4.
 
 1. **Read the verdict, then read the rows.** `COMPLIANT`, `COMPLIANT, SHAPE
-   BEHIND`, `DRIFTED`, `INVALID`, `NOT A SHAPE ROOT` — exits 0, 1, 1, 1, 2 —
-   and `CANNOT ANSWER`, exit 3, which is THIS CHECKOUT failing to ask, never
+   BEHIND`, `DRIFTED`, `MISPLACED`, `INVALID`, `NOT A SHAPE ROOT` — exits 0,
+   1, 1, 1, 1, 2 — and `CANNOT ANSWER`, exit 3, which is THIS CHECKOUT
+   failing to ask, never
    a statement about their repository. The verdict names the MOST SPECIFIC
    finding and the TABLE names every one, so a report summarised from the
    verdict line alone is a report you did not read. Relay the rows.
@@ -210,19 +212,32 @@ today.
    to make a row go green: that is the hand-edited pin this standard spends a
    section refusing. Each of those commands has its own section above and its
    own refusals, and they all still apply.
-4. **`NOT A SHAPE ROOT` is a question for the human, not a task.** There is
+4. **`placement` says what is in the wrong leg, and you never move a file
+   to answer it.** It runs the adoption's own path policy over each mounted
+   leg and names the paths it would have put elsewhere — code in the spec
+   leg, spec in the code leg — each with the rule id that judged it; the
+   verdict is `MISPLACED (n paths)`, exit 1. **The fix is not a `git mv`.** A
+   path changing legs is a pull request on the leg it leaves, a pull request
+   on the leg it joins, and one pin bump in the root. Run the command the row
+   names — `shape-doctor.py --root <path> --placement-plan <file>` — relay
+   the plan, and leave every `resolution:` for the human. An entry with
+   `review_required: true` is a question the policy is ASKING, not a defect
+   found: answering it on their behalf puts a fact in their tree that nobody
+   decided. The plan is `kind: placement-plan` and is not an adoption plan;
+   never hand one to `adopt-project.py`, which refuses it by name.
+5. **`NOT A SHAPE ROOT` is a question for the human, not a task.** There is
    no `project.yaml` and no `family.yaml`. The two ways in are
    `adopt-project.py plan` (a repository that already exists, converted in
    place) and `setup.sh` (a new one, three repositories, one typed yes), and
    which of them is wanted is a fact about their repository. Report the
    verdict and both commands; adopt or scaffold nothing on your own
    initiative. There is no `--force`, deliberately.
-5. **The `machine` row is not about the repository.** It is `n/a` by status
+6. **The `machine` row is not about the repository.** It is `n/a` by status
    and never changes the verdict: it says whether THIS workstation can run
    the fixes the other rows named. Relay a missing prerequisite;
    `openRepoShape --preflight` is what offers to install one, and the human
    types that yes.
-6. `--json` is the same report as one object, each row carrying its `id`, for
+7. `--json` is the same report as one object, each row carrying its `id`, for
    when you have to act on a row rather than quote it.
 
 ## Updating a project's shape

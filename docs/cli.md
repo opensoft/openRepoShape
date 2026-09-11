@@ -488,14 +488,20 @@ options:
 `python3 shape-doctor.py --help`:
 
 ```
-usage: shape-doctor.py [-h] [--root ROOT] [--json]
+usage: shape-doctor.py [-h] [--root ROOT] [--json] [--placement-plan FILE]
 
 Is this repository compliant with openRepoShape, and what is missing?
 
 options:
-  -h, --help   show this help message and exit
-  --root ROOT  the repository to check (default: .)
-  --json       the same report as one JSON object
+  -h, --help            show this help message and exit
+  --root ROOT           the repository to check (default: .)
+  --json                the same report as one JSON object
+  --placement-plan FILE
+                        write the `placement` row's paths to FILE as an
+                        adoption-plan-style YAML to resolve by hand. The only
+                        thing this command writes, and it still moves nothing:
+                        a path changing legs is a pull request on each leg and
+                        a pin bump in the root
 ```
 
 ### `bootstrap`

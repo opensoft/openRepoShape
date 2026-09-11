@@ -121,6 +121,19 @@ def _checked_pin_name(raw: str) -> str:
 
 
 PLAN_KIND = "adoption-plan"
+
+#: The OTHER plan kind, declared here beside the one this tool writes so that
+#: the two are read together and no third file can invent a third spelling.
+#: `shape-doctor.py --placement-plan` writes it for a project that is ALREADY
+#: split — its entries name paths inside MOUNTED LEGS — and this tool splits a
+#: repository that is not. The entries are these entries exactly, which is the
+#: point: a person who has resolved an adoption plan has resolved one of
+#: those. What must never happen is one arriving at `execute`, which creates
+#: two repositories and rewrites history with `git filter-repo`; the `kind:`
+#: is the boundary, and `Plan.load` refuses across it BY NAME rather than by a
+#: mismatch a reader has to interpret.
+PLACEMENT_PLAN_KIND = "placement-plan"
+
 ADOPT_BRANCH = "adopt/three-repo-shape"
 COLLISION_DIR = "shape"
 LEG_VALUES = ("spec", "code", "root", "drop")
@@ -701,9 +714,24 @@ class Plan:
         self.path = path
         self.data = data
         if data.get("kind") != PLAN_KIND:
-            raise Refusal("plan-wrong-kind",
-                          f"{path}: kind is {data.get('kind')!r}, expected "
-                          f"{PLAN_KIND!r}")
+            detail = (f"{path}: kind is {data.get('kind')!r}, expected "
+                      f"{PLAN_KIND!r}")
+            if data.get("kind") == PLACEMENT_PLAN_KIND:
+                # A REFUSAL THAT SAYS WHERE THE FILE GOES INSTEAD. This one is
+                # reachable by an honest mistake -- the two files look alike,
+                # because their entries ARE alike -- and "expected
+                # 'adoption-plan'" alone would leave a reader holding a
+                # correct file with no command to run it through.
+                raise Refusal(
+                    "plan-wrong-kind", detail,
+                    "Remediation: this is a PLACEMENT plan, written by "
+                    "`shape-doctor.py --placement-plan` for a project that is "
+                    "ALREADY split; its entries name paths inside mounted "
+                    "legs. This tool splits a repository that is not, so "
+                    "`execute` here would be aimed at an assembly root. "
+                    "Resolve every `resolution:` and hand it back to the "
+                    "doctor.")
+            raise Refusal("plan-wrong-kind", detail)
         if data.get("mode") != "in-place":
             raise Refusal(
                 "plan-unsupported-mode",

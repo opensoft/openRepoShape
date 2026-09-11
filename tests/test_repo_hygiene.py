@@ -444,9 +444,25 @@ def test_agents_md_is_short_enough_to_be_read():
     flag list invites and the reason one was not written before. And that it
     is GENERATED, so a line that has gone stale is fixed by regenerating and
     never by editing the document, which is the hand-edited-pin rule arriving
-    through a new door."""
+    through a new door.
+
+    2026-09-11: 408 -> 423 — the `placement` row (#99), landing after #97 the
+    same day. Twelve lines are one numbered point, because the way an
+    assistant gets THIS row wrong is specific and expensive: it names paths
+    that are in the wrong REPOSITORY, and the obvious repair is wrong twice
+    over. A path changing legs is a pull request on the leg it leaves, a pull
+    request on the leg it joins and one pin bump in the root — none of which
+    an agent does on its own initiative — and a `review_required` entry is a
+    question the POLICY is asking, so answering it on the human's behalf puts
+    a fact in their tree that nobody decided. That is the same shape of
+    mistake as hand-editing a pin, arriving through a door that did not exist
+    yesterday. Two lines put `MISPLACED` and its exit code in point 1's
+    verdict list, which is what a scheduled job reads. One is the
+    `--placement-plan` caveat on the opening paragraph: "it writes nothing"
+    was absolute and is not any more, and an absolute sentence with an
+    undocumented exception is how the exception gets found by surprise."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 408, f"AGENTS.md is {len(lines)} lines; the cap is 408"
+    assert len(lines) <= 423, f"AGENTS.md is {len(lines)} lines; the cap is 423"
 
 
 def test_claude_md_points_at_agents_md():
@@ -943,8 +959,35 @@ def test_readme_is_short_enough_to_be_read():
     #   next to what it generates, because a reader who finds `docs/cli.md`
     #   and edits it has undone the whole point of it, and a layout row is
     #   where they find that out before they type.
-    assert len(lines) <= 1328, (
-        f"README.md is {len(lines)} lines; the cap is 1328")
+    # 2026-09-11: 1328 -> 1374 — the `placement` row and the plan it writes
+    #   (#99), landing after #97 the same day. Brett Heap: "we have to look
+    #   for code in spec and spec in code". Forty-six lines, and they are
+    #   that many because five separate things about this row are surprises a
+    #   reader would otherwise meet one at a time. WHAT IT RUNS — the
+    #   ADOPTION's policy, over a project that has already been split, with
+    #   that tool's own `walk()` — because a reader who thinks this is a
+    #   second classifier will expect it to disagree with `adopt-project.py
+    #   plan` and will not trust either. WHAT IT REFUSES TO JUDGE, and why
+    #   there is a list at all: the four files the leg templates ship
+    #   classify as `root`, correctly, and a row that read that literally
+    #   would fail every leg this standard has ever cut. `review_required`
+    #   IS A NOTE, which is the same line #96 drew for the leg files and has
+    #   to be redrawn here because this row can reach the same wrong answer
+    #   by a different route. THE VERDICT ROW AND ITS PLACE IN THE ORDER,
+    #   since the codes are what a scheduled job reads and `MISPLACED`
+    #   sitting above `INVALID` is a choice worth one sentence. And THE PLAN,
+    #   which is most of the second half: it is the only thing this command
+    #   writes, its entries are an adoption plan's entries so that resolving
+    #   one teaches the other, and it carries a different `kind:` ON PURPOSE
+    #   — a reader who does not learn that from the page could hand it to
+    #   `adopt-project.py execute`, which creates repositories and rewrites
+    #   history, with `--yes` the only thing in the way. One more line, at
+    #   1374 -> 1375, for the review on PR #100: the FAMILY row list named
+    #   five rows and the command returns six, `placement` among them at
+    #   `n/a`. A page that lists the rows and is short one is a page a reader
+    #   checks their report against and finds a row nobody documented.
+    assert len(lines) <= 1375, (
+        f"README.md is {len(lines)} lines; the cap is 1375")
 
 
 @pytest.mark.parametrize("name", SHIPPED_BASH)

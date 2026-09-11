@@ -1085,10 +1085,12 @@ currency** (`update-shape.py check`'s per-file verdicts, summarised),
 **legs** (each one mounted, and its checked-out commit against the pin, with
 no fetch), **leg shape files** (each leg's `AGENTS.md`, `CLAUDE.md` and
 `.gitignore` against `templates/<role>-root/` — a comparison and not a gate,
-because no leg file is pinned anywhere), **agent files**, and **machine**. A
+because no leg file is pinned anywhere), **placement** (every tracked path of
+every leg, against the path policy), **agent files**, and **machine**. A
 FAMILY holder gets **family**, **manifest kinds**, **shape currency**,
-**members** and **machine**; a directory that is neither gets what it is
-CALLED under the naming policy, what IS in it, and the way in.
+**placement** (`n/a` — a holder has no legs of its own), **members** and
+**machine**; a directory that is neither gets what it is CALLED under the
+naming policy, what IS in it, and the way in.
 
 Every row is `ok`, `note`, `FINDING` or `n/a`, and every one that is not
 `ok` names the exact command that fixes it. **Only a `FINDING` moves the
@@ -1106,6 +1108,7 @@ verdict, and its exit code:
 | `COMPLIANT` | 0 | every row ok, and the pin names this standard's commit |
 | `COMPLIANT, SHAPE BEHIND (n upstream-changed, m upstream-added)` | 1 | valid, and the standard has moved on |
 | `DRIFTED (…)` | 1 | a copy was edited here, or a leg is off its pin |
+| `MISPLACED (n paths)` | 1 | a tracked path sits in a leg the path policy puts elsewhere |
 | `INVALID (<rows>)` | 1 | a validator went red |
 | `NOT A SHAPE ROOT` | 2 | neither manifest is there — adopt, or scaffold |
 
@@ -1116,8 +1119,52 @@ carry (`CANNOT ANSWER`). **Drift outranks a red validator**
 on the verdict line, deliberately — an edited shape copy is exactly what makes
 `validate-pins.py` red, so answering `INVALID (pins)` would send the reader at
 the symptom while the fix is `update-shape.py`. The pins row is printed either
-way, with its own next command. `--json` is the same report as one object,
+way, with its own next command. `MISPLACED` sits between the two: a path in
+the wrong leg is a fact about the shape that no validator, pin or manifest
+here can see, while a red validator names itself in the table whether or not
+it also names the verdict line. `--json` is the same report as one object,
 each row carrying its `id`.
+
+**`placement` is the row that reads what is *inside* the legs.** Brett Heap,
+2026-09-10: *"we have to look for code in spec and spec in code"*. It runs the
+adoption's own policy — `contracts/path-classification.yaml`, walked with
+`adopt-project.py`'s own `walk()`, so there is no second copy of that
+classification to drift — over every tracked path of every mounted leg, and
+names the paths the policy would have put somewhere else, each with the rule
+id that judged it. What belongs to **every** repository is never judged: the
+four files `templates/spec-root/` and `templates/code-root/` themselves ship
+(`README.md`, `AGENTS.md`, `CLAUDE.md`, `.gitignore`), read from those
+templates at run time so the scaffold's own output can never be a finding,
+plus `LICENSE`, `.gitattributes`, `CODEOWNERS`, `.github/**` and the rest of
+the forge furniture — `--json` prints the whole list under `everywhere`,
+because what a report declined to look at belongs in the report. A path the
+policy will not call carries `review_required` and is a **`note`**: it is a
+question for a human, and an unanswered question is never a finding. One
+`git ls-files` per leg, one process for the classifying, and a directory whose
+files agree is ONE path however many are under it — so a leg of several
+thousand files answers in seconds and reads in a line.
+
+**And the doctor still moves nothing.** A path changing legs is a pull request
+on the leg it leaves, a pull request on the leg it joins, and one pin bump in
+the assembly root. So the row's next command writes a plan and stops:
+
+```sh
+./shape-doctor.py --root ../MedxEHR --placement-plan placement-plan.yaml
+```
+
+Its entries are `adopt-project.py plan`'s entries exactly — `path`, `leg`,
+`rule`, `reason`, `review_required`, `question` — plus `in_leg:` (the leg the
+file is in today) and an empty `resolution:`, so a person who has resolved an
+adoption plan has already resolved this one. It carries `kind: placement-plan`
+and **not** `adoption-plan`, deliberately: an adoption plan is the input to
+`adopt-project.py execute`, which creates two repositories and rewrites
+history, and a file that called itself one would be that command aimed at a
+project that is already split. `adopt-project.py` refuses this kind by name,
+and the refusal says which tool consumes one. A later `--fix --plan <file>`
+will carry a **resolved** plan out by paired leg pull requests and a pin bump,
+printing what it will do and asking first; until then the moves are yours.
+`--placement-plan` is the only thing this command writes, and it writes only
+the file you name.
 
 **`machine` is the one row that is not about the repository**, so it is `n/a`
 by status and can never move the verdict: a workstation with no `gh` is not
