@@ -1373,7 +1373,9 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
       <div class="code" data-lang="sh"><pre><code>openRepoShape --doctor ../MedxEHR      # or: ./shape-doctor.py --root ../MedxEHR
 openRepoShape --doctor                 # the repository you are standing in
 ./shape-doctor.py --root ../MedxEHR --json</code></pre></div>
-      <p>It <strong>writes nothing and fetches nothing</strong>, and it reimplements nothing. The
+      <p>It <strong>writes nothing into the repository and fetches nothing</strong>, and it
+      reimplements nothing. One flag writes at all, and it writes one file you named:
+      <code>--placement-plan</code>, below. The
       standard a project&rsquo;s copies are compared against is the checkout the script is RUN FROM
       &mdash; beside one it uses that one, installed it clones the standard into a temporary
       directory first &mdash; which is what makes the verdict offline.</p>
@@ -1385,7 +1387,8 @@ openRepoShape --doctor                 # the repository you are standing in
       rather than a silence), <strong>shape currency</strong>
       (<a href="#current"><code>update-shape.py check</code></a>, summarised), <strong>legs</strong>
       (each mounted, and its checked-out commit against the pin, with no fetch), <strong>leg shape
-      files</strong>, <strong>agent files</strong> and <strong>machine</strong>. A
+      files</strong>, <strong>placement</strong> (every tracked path of every leg, against the path
+      policy), <strong>agent files</strong> and <strong>machine</strong>. A
       <a href="#families">family holder</a> gets <strong>family</strong>, <strong>manifest
       kinds</strong>, <strong>shape currency</strong>, <strong>members</strong> and
       <strong>machine</strong>; a directory that is neither gets what it is CALLED under the naming
@@ -1405,6 +1408,7 @@ openRepoShape --doctor                 # the repository you are standing in
           <tr><td><code>COMPLIANT</code></td><td>0</td><td>every row ok, and the pin names this standard&rsquo;s commit</td></tr>
           <tr><td><code>COMPLIANT, SHAPE BEHIND (n upstream-changed, m upstream-added)</code></td><td>1</td><td>valid, and the standard has moved on</td></tr>
           <tr><td><code>DRIFTED (&hellip;)</code></td><td>1</td><td>a copy was edited here, or a leg is off its pin</td></tr>
+          <tr><td><code>MISPLACED (n paths)</code></td><td>1</td><td>a tracked path sits in a leg the path policy puts elsewhere</td></tr>
           <tr><td><code>INVALID (&lt;rows&gt;)</code></td><td>1</td><td>a validator went red</td></tr>
           <tr><td><code>NOT A SHAPE ROOT</code></td><td>2</td><td>neither manifest is there &mdash; adopt, or scaffold</td></tr>
         </tbody>
@@ -1416,8 +1420,51 @@ openRepoShape --doctor                 # the repository you are standing in
       verdict line, deliberately: an edited shape copy is exactly what makes
       <code>validate-pins.py</code> red, so answering <code>INVALID (pins)</code> would send the
       reader at the symptom while the fix is <code>update-shape.py</code>. The pins row is printed
-      either way, with its own next command. <code>--json</code> is the same report as one object,
+      either way, with its own next command. <code>MISPLACED</code> sits between the two: a path in
+      the wrong leg is a fact about the shape that no validator, pin or manifest here can see, while
+      a red validator names itself in the table whether or not it also names the verdict line.
+      <code>--json</code> is the same report as one object,
       each row carrying its <code>id</code>.</p>
+
+      <p><strong><code>placement</code> is the row that reads what is <em>inside</em> the
+      legs.</strong> Brett Heap, 2026-09-10: &ldquo;we have to look for code in spec and spec in
+      code&rdquo;. It runs the <a href="#adopt">adoption&rsquo;s</a> own policy &mdash;
+      <code>contracts/path-classification.yaml</code>, walked with
+      <code>adopt-project.py</code>&rsquo;s own <code>walk()</code>, so there is no second copy of
+      that classification to drift &mdash; over every tracked path of every mounted leg, and names
+      the paths the policy would have put somewhere else, each with the rule id that judged it.
+      What belongs to <strong>every</strong> repository is never judged: the four files
+      <code>templates/spec-root/</code> and <code>templates/code-root/</code> themselves ship
+      (<code>README.md</code>, <code>AGENTS.md</code>, <code>CLAUDE.md</code>,
+      <code>.gitignore</code>), read from those templates at run time so the scaffold&rsquo;s own
+      output can never be a finding, plus <code>LICENSE</code>, <code>.gitattributes</code>,
+      <code>CODEOWNERS</code>, <code>.github/**</code> and the rest of the forge furniture &mdash;
+      <code>--json</code> prints the whole list under <code>everywhere</code>, because what a report
+      declined to look at belongs in the report. A path the policy will not call carries
+      <code>review_required</code> and is a <strong><code>note</code></strong>: it is a question for
+      a human, and an unanswered question is never a finding. One <code>git ls-files</code> per leg,
+      one process for the classifying, and a directory whose files agree is ONE path however many
+      are under it &mdash; so a leg of several thousand files answers in seconds and reads in a
+      line.</p>
+
+      <p><strong>And the doctor still moves nothing.</strong> A path changing legs is a pull request
+      on the leg it leaves, a pull request on the leg it joins, and one pin bump in the assembly
+      root. So the row&rsquo;s next command writes a plan and stops:</p>
+      <div class="code" data-lang="sh"><pre><code>./shape-doctor.py --root ../MedxEHR --placement-plan placement-plan.yaml</code></pre></div>
+      <p>Its entries are <code>adopt-project.py plan</code>&rsquo;s entries exactly &mdash;
+      <code>path</code>, <code>leg</code>, <code>rule</code>, <code>reason</code>,
+      <code>review_required</code>, <code>question</code> &mdash; plus <code>in_leg:</code> (the leg
+      the file is in today) and an empty <code>resolution:</code>, so a person who has resolved an
+      adoption plan has already resolved this one. It carries <code>kind: placement-plan</code> and
+      <strong>not</strong> <code>adoption-plan</code>, deliberately: an adoption plan is the input
+      to <code>adopt-project.py execute</code>, which creates two repositories and rewrites history,
+      and a file that called itself one would be that command aimed at a project that is already
+      split. <code>adopt-project.py</code> refuses this kind by name, and the refusal says which
+      tool consumes one. A later <code>--fix --plan &lt;file&gt;</code> will carry a
+      <strong>resolved</strong> plan out by paired leg pull requests and a pin bump, printing what
+      it will do and asking first; until then the moves are yours.
+      <code>--placement-plan</code> is the only thing this command writes, and it writes only the
+      file you name.</p>
       <p><strong><code>machine</code> is the one row that is not about the repository</strong>, so
       it is <code>n/a</code> by status and can never move the verdict: a workstation with no
       <code>gh</code> is not this repository being non-compliant. It runs
@@ -1430,7 +1477,8 @@ openRepoShape --doctor                 # the repository you are standing in
       <p>The checks are a REGISTRY &mdash; an <code>id</code>, the root kinds it applies to, a
       <code>run</code>, and a <code>fix</code> slot that is empty in every one of them today. A
       repair mode hangs off that slot instead of a rewrite, and it will print its plan and ask
-      before it writes a byte.</p>
+      before it writes a byte &mdash; which is the plan <code>--placement-plan</code> writes, and
+      the human resolves, and nothing has yet carried out.</p>
       <a class="src" href="https://github.com/opensoft/openRepoShape#is-this-repository-compliant-openreposhape---doctor">Full text &mdash; the repository doctor</a>
     </section>
 
@@ -1664,7 +1712,7 @@ resume InkRouter                # on workstation B, and the estate is back</code
       <p><a href="https://github.com/opensoft/openRepoShape#readme">github.com/opensoft/openRepoShape</a></p>
       <p class="meta">First cut from README.md at c093813 (#71); regenerated at cbca5b4 (#89);
       the repository doctor added at 2986031 (#95).
-      README.md blob 9ebdb5b254a838d8a40c42cffd984452ddcd856c. Every command, flag, exit code and
+      README.md blob d19c404132da748b2269143b05268d249dc90f2f. Every command, flag, exit code and
       file name on this page is quoted from that README and from AGENTS.md.</p>
     </footer>
   </main>

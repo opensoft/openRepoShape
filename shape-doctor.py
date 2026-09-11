@@ -3,6 +3,7 @@
 """Is this repository compliant with openRepoShape, and what is missing?
 
     ./shape-doctor.py [--root <path>] [--json]       # default --root .
+    ./shape-doctor.py --root <path> --placement-plan <file>
     openRepoShape --doctor [<path>]                  # the same, from anywhere
 
 ONE COMMAND, ONE VERDICT, AND IT REIMPLEMENTS NOTHING. Brett Heap asked, on
@@ -17,7 +18,9 @@ carrying neither manifest is not a shape root at all and wants
 `adopt-project.py plan` or `setup.sh`. This runs them in sequence, prints one
 row each, and then prints ONE verdict. Every row is somebody else's check.
 
-WHAT IT NEVER DOES. It never writes and it never fetches. The upstream a
+WHAT IT NEVER DOES. It never writes into the repository it is pointed at and
+it never fetches. ONE FLAG WRITES AT ALL, and it writes one file the caller
+named and nothing else: `--placement-plan <file>`, below. The upstream a
 project's copies are compared against is THE CHECKOUT THIS FILE IS RUN FROM,
 which is the whole of why the verdict is offline: no clone, no authenticated
 call, and the same answer on a machine that has never spoken to github.com.
@@ -63,6 +66,10 @@ THE ROWS, for an assembly root, in this order:
                       pin (no fetch)
     leg shape files   each present leg's `AGENTS.md`, `CLAUDE.md` and
                       `.gitignore` against `templates/<role>-root/`
+    placement         every tracked path of every leg, classified against
+                      `contracts/path-classification.yaml`: code in the spec
+                      leg, spec in the code leg, the root's own files in
+                      either
     agent files       `AGENTS-shape.md`, `AGENTS.md`, `CLAUDE.md` at the root
     machine           whether this workstation can RUN the fixes named above
                       (`setup-project.py --preflight`, plus `git-filter-repo`)
@@ -72,6 +79,42 @@ and for a FAMILY holder: `family` (its own `scripts/validate-family.py`),
 is NEITHER gets `naming` (what it is called, under the policy), `what is
 here`, `the way in` -- `adopt-project.py plan` for a repository that already
 exists, `setup.sh` for a new one -- and `machine`.
+
+THE PLACEMENT ROW ASKS THE ADOPTION'S QUESTION OF A REPOSITORY ALREADY
+SPLIT. Brett Heap, 2026-09-10: "we have to look for code in spec and spec in
+code". `adopt-project.py plan` decides which leg every path of an UNSPLIT
+repository belongs in, from `contracts/path-classification.yaml`; this row
+runs THE SAME POLICY over the legs of a project that has already been cut and
+reports the paths it would have sent elsewhere. It imports that tool's own
+`walk()` rather than carrying a second copy of the classification, so the
+audit and the adoption cannot drift apart, and it costs one `git ls-files` per
+leg and one process for the classifying -- a leg of several thousand files
+answers in seconds.
+
+WHAT THE PLACEMENT ROW IGNORES, AND IT SAYS SO. `README.md`, `AGENTS.md`,
+`CLAUDE.md` and `.gitignore` classify as `root`, correctly, for a repository
+being SPLIT -- exactly one of each stays in the assembly root. A leg is a
+repository of its own afterwards and carries its own: `templates/spec-root/`
+and `templates/code-root/` ship all four, so calling them misplaced would fail
+every project this standard has ever cut. That half of the list is READ FROM
+THOSE TEMPLATES at run time; the other half is `EVERYWHERE` below -- `LICENSE`,
+`.gitattributes`, `CODEOWNERS`, `.github/**` and the rest of the forge
+furniture, which every repository carries whatever is in it. `--json` prints
+the whole list under `everywhere`, because what a report declined to look at
+belongs in the report.
+
+AND THE DOCTOR STILL MOVES NOTHING. A path changing legs is a pull request on
+the leg it leaves, a pull request on the leg it joins, and one pin bump in the
+assembly root -- a human's act, with a human's review. So the row's next
+command is `--placement-plan <file>`, which writes the paths it found as an
+adoption-plan-style YAML: `adopt-project.py plan`'s entries exactly, plus
+`in_leg:` and an empty `resolution:`, so a person who has resolved an adoption
+plan has already resolved this. It carries `kind: placement-plan` and NOT
+`adoption-plan`, deliberately -- an adoption plan is the input to
+`adopt-project.py execute`, which creates repositories and rewrites history,
+and a file that called itself one would be that command aimed at a project
+that is already split. A later `--fix --plan <file>` carries a RESOLVED plan
+out, after printing what it will do and getting a typed yes.
 
 A FINDING NAMES ITS FIX. Every row that is not `ok` carries the exact next
 command, because a refusal that does not say what to run is a refusal the
@@ -90,7 +133,8 @@ invents a rule to fail somebody by is not believed the next time.
 EXIT CODES
     0  COMPLIANT: every row ok and the shape is current
     1  findings: the shape is behind, a copy has drifted, a validator is red,
-       or a leg is off its pin
+       a leg is off its pin, or a tracked path sits in a leg the path policy
+       puts elsewhere -- COMPLIANT SHAPE BEHIND, DRIFTED, MISPLACED, INVALID
     2  NOT A SHAPE ROOT: neither `project.yaml` nor `family.yaml` is there
     3  usage or environment -- nothing here is a statement about the tree
        that was pointed at: no such root, this file is not sitting in a
@@ -102,6 +146,11 @@ outranks a red validator on that line for one concrete reason: an edited shape
 copy is exactly what makes `validate-pins.py` red, so answering `INVALID
 (validate-pins.py)` would send the reader at the symptom while the fix is
 `update-shape.py`. The pins row is still printed, with its own next command.
+MISPLACED sits between the two, under DRIFTED and over INVALID: a path in the
+wrong leg is a fact about the SHAPE -- the subject of this whole standard --
+that no validator, pin or manifest here can see, whereas a red validator names
+itself in the table either way and loses nothing by not being on the verdict
+line.
 
 STANDARD LIBRARY ONLY, like everything else shipped here. Printed text is
 ASCII: a verdict a cp1252 console cannot render is a verdict nobody reads, and
@@ -111,6 +160,7 @@ this tool is run on every platform the standard supports.
 from __future__ import annotations
 
 import argparse
+import datetime as _dt
 import importlib.util
 import json
 import os
@@ -172,6 +222,15 @@ try:
 except ImportError as exc:  # pragma: no cover - exercised as a subprocess
     sys.exit(not_in_the_standard(f"scripts/repo_shape.py ({exc})"))
 
+try:
+    #: The policy's own glob dialect, for the one list this file adds to it.
+    #: `fnmatch` is not the same dialect -- its `*` crosses `/`, which would
+    #: make `LICENSE.*` match `docs/LICENSE.html` -- and a second dialect
+    #: beside a policy written in the first is a bug waiting for its file.
+    from path_classify import glob_to_regex  # noqa: E402
+except ImportError as exc:  # pragma: no cover - exercised as a subprocess
+    sys.exit(not_in_the_standard(f"scripts/path_classify.py ({exc})"))
+
 #: The statuses a row can carry, and only ONE of them moves the verdict.
 #:
 #: `n/a` is a question this ROOT does not have -- a family has no legs -- or,
@@ -205,6 +264,9 @@ NOT_A_ROOT = "none"
 V_COMPLIANT = "COMPLIANT"
 V_BEHIND = "COMPLIANT, SHAPE BEHIND"
 V_DRIFTED = "DRIFTED"
+#: A tracked path sits in a leg the path policy puts somewhere else. Under
+#: DRIFTED and over INVALID -- see the docstring for why.
+V_MISPLACED = "MISPLACED"
 V_INVALID = "INVALID"
 V_NOT_A_ROOT = "NOT A SHAPE ROOT"
 #: Not a verdict about the repository at all: this CHECKOUT could not answer.
@@ -227,6 +289,37 @@ AGENT_FILES = ("AGENTS-shape.md", "AGENTS.md", "CLAUDE.md")
 #: does not judge, beyond a file that is missing altogether.
 LEG_SHAPE_FILES = ("AGENTS.md", "CLAUDE.md", ".gitignore")
 LEG_RENDERED = ("AGENTS.md", "README.md")
+
+#: The leg roles the `placement` row can judge. The path policy's classes are
+#: `spec`, `code`, `root` and ambiguous, so a leg declaring any other role is
+#: one this policy has no opinion about: it is recorded as unaudited and named
+#: in the row, rather than guessed at against a class that does not exist.
+LEG_ROLES = ("spec", "code")
+
+#: What belongs to EVERY repository, so the `placement` row never calls it
+#: misplaced in a leg.
+#:
+#: THE PATH POLICY HAS NO SUCH LIST, and this is the one place this row goes
+#: beyond it. `contracts/path-classification.yaml` answers "which leg does
+#: this path belong in when a repository is SPLIT", and under that question
+#: `README.md` and `AGENTS.md` are `root` -- rightly, because the split leaves
+#: exactly one of each in the assembly root. Afterwards a leg is a repository
+#: of its own and carries its own, which is why `templates/spec-root/` and
+#: `templates/code-root/` ship four of them; `everywhere_patterns` reads THOSE
+#: at run time, so a template that gains a file needs no edit here and the
+#: standard's own scaffold can never produce a finding.
+#:
+#: What is spelled here is the rest: the front door and the forge furniture,
+#: which a repository carries whatever is inside it. `.github/**` is here
+#: WHOLE and deliberately -- a leg runs its own CI, and
+#: `.github/workflows/**` classifies as `code`, which would make every spec
+#: leg with a lint workflow a finding.
+EVERYWHERE = (
+    "LICENSE", "LICENSE.*", "LICENCE", "NOTICE", "COPYING",
+    "CONTRIBUTING.md", "CODE_OF_CONDUCT.md", "SECURITY.md", "SUPPORT.md",
+    "CHANGELOG.md", ".gitattributes", ".editorconfig", ".mailmap",
+    "CODEOWNERS", ".github/**",
+)
 
 
 def ascii_text(text: str) -> str:
@@ -337,6 +430,7 @@ class Context:
         self.manifest: dict | None = None
         self.kind = NOT_A_ROOT
         self._update_shape = None
+        self._adopt = None
         project = root / "project.yaml"
         family = root / "family.yaml"
         # `kind:` DECIDES, not the filename. A `project.yaml` that declares
@@ -387,6 +481,34 @@ class Context:
             spec.loader.exec_module(module)
             self._update_shape = module
         return self._update_shape
+
+    def adopt(self):
+        """`adopt-project.py` as a module, or None when it is not here.
+
+        BY PATH, for the same reason `update_shape` is: the filename has a
+        hyphen in it. What the `placement` row wants from it is `walk()` --
+        the recursive classify-and-fold that turns a file list into ONE entry
+        per decision -- and `PathPolicy`, `y`, `emit` and `write_lf`, so that
+        a placement plan is written by the same three functions that write an
+        adoption plan and cannot come out in a dialect the reader of one
+        would not recognise.
+
+        NONE RATHER THAN A REFUSAL when the file is absent. `adopt-project.py`
+        is not in `SHAPE_MARKERS` and must not join it: the other eight rows
+        answer perfectly well without it, and a whole report refusing because
+        one row's dependency is missing would be this command failing somebody
+        for a gap in OUR checkout. The row says `n/a` and names the file.
+        """
+        if self._adopt is None:
+            path = self.shape / "adopt-project.py"
+            if not path.is_file():
+                return None
+            spec = importlib.util.spec_from_file_location(
+                "openreposhape_adopt_project", path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            self._adopt = module
+        return self._adopt
 
 
 # ---------------------------------------------------------------------------
@@ -841,6 +963,388 @@ def check_leg_shape_files(ctx: Context) -> Row:
     return Row("leg-shape-files", "leg shape files", OK, summary, None, detail)
 
 
+# ---------------------------------------------------------------------------
+# Where a path LIVES, against where the path policy puts it
+# ---------------------------------------------------------------------------
+
+
+def everywhere_patterns(shape: Path) -> list:
+    """`EVERYWHERE`, plus whatever the two leg templates themselves ship.
+
+    READ FROM THE TEMPLATES, not listed a second time here, so that the
+    standard's own scaffold can never write a leg this row then calls
+    misplaced -- the files `templates/<role>-root/` puts in a leg are in a leg
+    BY THIS STANDARD'S OWN HAND. Top-level files only: `spec-root/`'s
+    `requirements/` and `code-root/`'s `src/` are leg CONTENT, and the policy
+    classifies both of them correctly.
+    """
+    names = set(EVERYWHERE)
+    for role in LEG_ROLES:
+        template = shape / "templates" / f"{role}-root"
+        if template.is_dir():
+            names.update(entry.name for entry in template.iterdir()
+                         if entry.is_file())
+    return sorted(names)
+
+
+def leg_tracked_files(mount: Path) -> list:
+    """`(path, size)` for every TRACKED file in a leg, in ONE git call.
+
+    `ls-files` reads the INDEX, which is exactly the question this row asks: a
+    file staged into a leg is in that leg whether or not anybody has committed
+    it yet, and what is on this disk right now is the doctor's subject in
+    every other row too.
+
+    THE SIZE IS A `stat`, NEVER A SUBPROCESS. The plan records it, and one
+    `git cat-file` per path would turn a leg of several thousand files into
+    minutes of forking for a number nothing decides on. A path in the index
+    with no file on disk reports zero rather than raising: it is somebody
+    mid-`git rm`, and the classification of its NAME is unaffected.
+    """
+    raw = git_out(["ls-files", "-z"], cwd=mount, binary=True)
+    out = []
+    for record in raw.split(b"\x00"):
+        if not record:
+            continue
+        path = record.decode("utf-8", "surrogateescape")
+        try:
+            size = (mount / path).stat().st_size
+        except OSError:
+            size = 0
+        out.append((path, size))
+    return out
+
+
+def named_offenders(rows: list) -> str:
+    """The first three PER DIRECTION, and every direction's total.
+
+    Per direction rather than three overall: "code in the spec leg" and "spec
+    in the code leg" are two different mistakes with two different repairs,
+    and a reason that showed three of the first and none of the second would
+    hide half of what the row found.
+    """
+    grouped: dict = {}
+    for row in rows:
+        grouped.setdefault(row["direction"], []).append(row)
+    named = []
+    totals = []
+    for direction, items in grouped.items():
+        text = "; ".join(
+            f"{item['path']}: {item['classified_as'] or 'ambiguous'} by rule "
+            f"{item['rule']}" for item in items[:3])
+        if len(items) > 3:
+            text += f"; and {len(items) - 3} more"
+        named.append(text)
+        totals.append(f"{len(items)} {direction}")
+    return "; ".join(named) + " (" + ", ".join(totals) + ")"
+
+
+def placement_row(check_id: str, status: str, reason: str,
+                  next_command=None, detail=None) -> Row:
+    """One `placement` row with the `--json` keys ALWAYS present.
+
+    A caller reads `detail.misplaced` and `detail.review_required`; a row that
+    omitted them on the `n/a` branches would make every consumer write the
+    same `or []` this writes once.
+    """
+    base = {"policy": None, "everywhere": [], "legs": [],
+            "misplaced": [], "review_required": [],
+            "counts": {"misplaced": 0, "review_required": 0}}
+    base.update(detail or {})
+    return Row(check_id, "placement", status, reason, next_command, base)
+
+
+def check_placement(ctx: Context) -> Row:
+    """Every tracked path of every leg, against the ADOPTION'S own policy.
+
+    THE QUESTION IS BRETT HEAP'S, 2026-09-10: "we have to look for code in
+    spec and spec in code". `adopt-project.py plan` already answers which leg
+    a path belongs in, for a repository being split, out of
+    `contracts/path-classification.yaml`; this row asks the same policy the
+    same question about a project that is ALREADY split, one leg at a time,
+    and reports every path the policy would have put somewhere else.
+
+    IT REIMPLEMENTS NOTHING, like every other row here. The classification is
+    `PathPolicy`, the walk is `adopt-project.py`'s `walk()`, and the folding
+    of a directory whose files all agree into ONE entry is that walk's --
+    which is why `src/` with two hundred files under it in the spec leg is one
+    line of this report and one entry of the plan, rather than two hundred of
+    each. A second copy of that logic here would answer differently from the
+    adoption the day one of them was fixed.
+
+    THREE THINGS ARE COUNTED AND THEY ARE NOT THE SAME THING. A path the
+    policy classifies as the OTHER leg is a FINDING: code in the spec leg,
+    spec in the code leg. So is one it classifies as `root` -- `.specify/`
+    inside a leg is the 2026-09-02 ruling's exact counter-example -- minus
+    what belongs to every repository, which is `everywhere_patterns` and is
+    printed. A path the policy cannot CALL carries `review_required` and is a
+    `note`: it is a question for a human, and this standard's rule is that an
+    unanswered question is never a finding and never an implicit anything.
+
+    AND NOTHING MOVES. The row's next command writes a plan; the plan is the
+    human's to resolve and a later `--fix` is the thing that would carry it
+    out. A row that offered a `git mv` would be offering to edit two
+    repositories from a command documented as writing nothing.
+    """
+    if ctx.kind == FAMILY:
+        return placement_row(
+            "placement", NA,
+            "a family holder has no legs of its own: each member is an "
+            "assembly root and answers this in its own report")
+    legs = ctx.legs()
+    if not legs:
+        return placement_row(
+            "placement", NA,
+            "project.yaml declares no non-assembly leg, so there is no leg "
+            "for a path to be in the wrong one of")
+    adopt = ctx.adopt()
+    policy_path = ctx.shape / "contracts" / "path-classification.yaml"
+    if adopt is None or not policy_path.is_file():
+        missing = ("adopt-project.py" if adopt is None
+                   else "contracts/path-classification.yaml")
+        return placement_row(
+            "placement", NA,
+            f"this checkout of the standard is missing {missing}, so the "
+            "adoption's own classification cannot be run over the legs",
+            f"{PYTHON} {ctx.shape / 'shape-doctor.py'} --root {ctx.root}   "
+            "# from a COMPLETE checkout of the standard; this one is short "
+            f"{missing}",
+            {"policy": policy_path.as_posix()})
+    try:
+        policy = adopt.PathPolicy.load(policy_path)
+    except Refusal as exc:
+        # `n/a`, NOT a finding. A path policy this checkout cannot read is
+        # OUR file being wrong, and failing somebody's repository on it would
+        # be the `leg shape files` mistake with a different file.
+        return placement_row(
+            "placement", NA,
+            f"the standard's own path policy could not be read: {exc.detail}",
+            exc.remediation or None, {"policy": policy_path.as_posix()})
+
+    ignored = everywhere_patterns(ctx.shape)
+    patterns = [glob_to_regex(pattern) for pattern in ignored]
+    per_leg = []
+    misplaced = []
+    review = []
+    for leg in legs:
+        role = str(leg.get("role") or "?")
+        rel = str(leg.get("path") or role)
+        mount = ctx.root / rel
+        entry = {"role": role, "path": rel}
+        per_leg.append(entry)
+        if not (mount.is_dir() and any(mount.iterdir())):
+            # The `legs` row already reports this, with `make bootstrap`
+            # beside it. Here it is only why this leg has no answer.
+            entry["state"] = "not populated"
+            continue
+        if role not in LEG_ROLES:
+            entry["state"] = (f"role {role} is not one the path policy "
+                              "classifies")
+            continue
+        try:
+            files = leg_tracked_files(mount)
+        except Refusal as exc:
+            entry["state"] = f"git could not list it: {exc.detail}"
+            continue
+        kept = [(path, size) for path, size in files
+                if not any(regex.match(path) for regex in patterns)]
+        walked_entries = adopt.walk(policy, kept)
+        wrong, unsure = 0, 0
+        for walked in walked_entries:
+            row = {
+                "path": f"{rel}/{walked.path}",
+                "leg": role,
+                "path_in_leg": walked.path,
+                "classified_as": walked.leg,
+                "rule": walked.rule,
+                "reason": walked.reason,
+                "confidence": walked.confidence,
+                "question": walked.question,
+                "files": walked.files,
+                "bytes": walked.bytes,
+                "review_required": walked.leg is None,
+                "direction": (f"{walked.leg} in the {role} leg"
+                              if walked.leg else
+                              f"unclassified in the {role} leg"),
+            }
+            if walked.leg is None:
+                review.append(row)
+                unsure += 1
+            elif walked.leg != role:
+                misplaced.append(row)
+                wrong += 1
+        # FILES AND PATHS ARE DIFFERENT NUMBERS and the row prints both.
+        # `walk` folds a directory whose files agree into ONE entry, so `src/`
+        # with two hundred files under it is one PATH and two hundred FILES --
+        # and a reason that reported only one of them would either bury the
+        # size of the problem or overstate the number of decisions in it.
+        entry.update({"state": "audited", "tracked": len(files),
+                      "classified": len(kept), "paths": len(walked_entries),
+                      "misplaced": wrong, "review_required": unsure})
+
+    detail = {"policy": policy_path.as_posix(), "everywhere": ignored,
+              "legs": per_leg, "misplaced": misplaced,
+              "review_required": review,
+              "counts": {"misplaced": len(misplaced),
+                         "review_required": len(review)}}
+    audited = "; ".join(
+        f"{entry['path']}: " + (
+            f"{entry['paths']} path(s) over {entry['classified']} of "
+            f"{entry['tracked']} tracked file(s)"
+            if entry.get("state") == "audited" else str(entry.get("state")))
+        for entry in per_leg)
+    plan = (f"{PYTHON} {ctx.shape / 'shape-doctor.py'} --root {ctx.root} "
+            "--placement-plan placement-plan.yaml   # writes the paths above "
+            "as a plan to resolve by hand. Moving one is a pull request on "
+            "each leg and a pin bump in the root, so this command makes "
+            "neither")
+    if misplaced:
+        extra = (f"; {len(review)} more path(s) need a human's reading"
+                 if review else "")
+        return placement_row(
+            "placement", FINDING,
+            f"{len(misplaced)} path(s) sit in a leg the policy puts "
+            f"elsewhere: {named_offenders(misplaced)}{extra}  [{audited}]",
+            plan, detail)
+    if review:
+        return placement_row(
+            "placement", NOTE,
+            f"nothing is in the wrong leg; {len(review)} path(s) the policy "
+            f"will not call: {named_offenders(review)}  [{audited}]",
+            plan, detail)
+    return placement_row(
+        "placement", OK,
+        f"every tracked path classifies as the leg it is in: {audited}",
+        None, detail)
+
+
+#: The header of the file `--placement-plan` writes. It is long because the
+#: file is EDITED by somebody who may never have seen one, and because the
+#: single most expensive mistake available here -- handing it to
+#: `adopt-project.py execute` -- is one the header can talk them out of.
+PLACEMENT_PLAN_PREAMBLE = (
+    "# Written by `shape-doctor.py --placement-plan`. IT IS MEANT TO BE",
+    "# EDITED, and it is NOT an adoption plan: the `kind:` above differs so",
+    "# that `adopt-project.py execute` -- which creates two repositories and",
+    "# rewrites history -- can never be handed one of these by mistake. The",
+    "# ENTRIES are an adoption plan's entries exactly, so a reader who has",
+    "# resolved one of those has already resolved this one.",
+    "#",
+    "# EVERY ENTRY SAYS A TRACKED PATH IS IN THE WRONG REPOSITORY.",
+    "#   in_leg:     the leg it is in today.",
+    "#   leg:        where contracts/path-classification.yaml puts it, and",
+    "#               EDITABLE: setting it back to the value of `in_leg` is",
+    "#               how you record that the policy is wrong about this path.",
+    "#               `null` with a `question:` is the policy saying it does",
+    "#               not know, and an unanswered question is never an",
+    "#               implicit anything.",
+    "#   rule:       the rule id that decided it, so you disagree with a",
+    "#               NAMED rule rather than with an opaque verdict.",
+    "#   resolution: empty on every entry, and the human's line.",
+    "#",
+    "# NOTHING HERE HAS MOVED AND THIS FILE MOVES NOTHING. A path changing",
+    "# legs is a pull request on the leg it leaves, a pull request on the leg",
+    "# it joins, and one pin bump in the assembly root. A later",
+    "# `shape-doctor.py --fix --plan <this file>` will carry a RESOLVED plan",
+    "# out that way, printing what it will do and asking first. Until it",
+    "# lands, the moves are yours.",
+)
+
+
+def placement_plan_text(ctx: Context, adopt, row: Row) -> str:
+    """The placement row's paths, as the YAML a human resolves.
+
+    WRITTEN WITH THE ADOPTION'S OWN EMITTERS. `y` and `emit` write the exact
+    subset `repo_shape.parse_yaml` reads back, and an adoption plan is written
+    by them too -- so these two files are the same dialect by construction
+    rather than by somebody remembering to keep them so.
+    """
+    detail = row.detail
+    entries = sorted(list(detail.get("misplaced") or [])
+                     + list(detail.get("review_required") or []),
+                     key=lambda entry: entry["path"])
+    manifest = ctx.manifest or {}
+    lines = ["schema_version: 1",
+             f"kind: {adopt.PLACEMENT_PLAN_KIND}", ""]
+    lines += list(PLACEMENT_PLAN_PREAMBLE)
+    lines.append("")
+    adopt.emit(lines, "generated_on", _dt.date.today().isoformat())
+    adopt.emit(lines, "tool", f"{adopt.SHAPE_REPOSITORY} shape-doctor.py")
+    adopt.emit(lines, "policy", "contracts/path-classification.yaml")
+    adopt.emit(lines, "standard", ctx.shape.as_posix())
+    lines.append("")
+    lines.append("root:")
+    adopt.emit(lines, "path", ctx.root.as_posix(), 2)
+    adopt.emit(lines, "project", manifest.get("name") or ctx.root.name, 2)
+    adopt.emit(lines, "id", manifest.get("id"), 2)
+    lines += ["", "legs:"]
+    for leg in (detail.get("legs") or []):
+        lines.append(f"  - role: {adopt.y(leg.get('role'))}")
+        adopt.emit(lines, "path", leg.get("path"), 4)
+        adopt.emit(lines, "state", leg.get("state"), 4)
+        if leg.get("state") == "audited":
+            adopt.emit(lines, "tracked", leg.get("tracked"), 4)
+            adopt.emit(lines, "classified", leg.get("classified"), 4)
+            adopt.emit(lines, "paths", leg.get("paths"), 4)
+            adopt.emit(lines, "misplaced", leg.get("misplaced"), 4)
+            adopt.emit(lines, "review_required", leg.get("review_required"), 4)
+    lines += ["", "paths:"]
+    for entry in entries:
+        lines.append(f"  - path: {adopt.y(entry['path'])}")
+        adopt.emit(lines, "in_leg", entry["leg"], 4)
+        adopt.emit(lines, "leg", entry["classified_as"], 4)
+        adopt.emit(lines, "confidence", entry["confidence"], 4)
+        adopt.emit(lines, "rule", entry["rule"], 4)
+        adopt.emit(lines, "reason", entry["reason"], 4)
+        adopt.emit(lines, "files", entry["files"], 4)
+        adopt.emit(lines, "bytes", entry["bytes"], 4)
+        adopt.emit(lines, "review_required", entry["review_required"], 4)
+        if entry.get("question"):
+            adopt.emit(lines, "question", entry["question"], 4)
+        adopt.emit(lines, "resolution", "", 4)
+    lines += ["",
+              "# What was NOT judged: a path matching one of these belongs to",
+              "# every repository, so it is never misplaced in a leg. Four of",
+              "# them are read from templates/<role>-root/ -- files this",
+              "# standard's own scaffold writes INTO a leg.",
+              "ignored:"]
+    for pattern in (detail.get("everywhere") or []):
+        lines.append(f"  - {adopt.y(pattern)}")
+    return "\n".join(lines) + "\n"
+
+
+def write_placement_plan(ctx: Context, rows: list, out: Path) -> str:
+    """Write the plan, or refuse by name. Returns the path written.
+
+    THE ONE THING THIS COMMAND WRITES, and it writes it where the caller said
+    and nowhere else. It creates no directory: a `--placement-plan` naming a
+    path whose parent is not there is a typo, and a command that answered a
+    typo by making a directory tree is a command that writes where nobody
+    looked.
+    """
+    row = next((row for row in rows if row.id == "placement"), None)
+    if row is None or row.status == NA:
+        raise Refusal(
+            "shape-doctor-no-placement-audit",
+            f"{ctx.root} has no placement audit to write a plan from"
+            + (f": {row.reason}" if row is not None
+               else f", because it is not an assembly root ({ctx.kind})"),
+            "Remediation: --placement-plan is for an assembly root whose legs "
+            "are mounted. Run the doctor without it and read the `placement` "
+            "row, which says why this root has none.")
+    adopt = ctx.adopt()
+    try:
+        adopt.write_lf(out, placement_plan_text(ctx, adopt, row))
+    except OSError as exc:
+        raise Refusal(
+            "shape-doctor-placement-plan-unwritable",
+            f"--placement-plan {out}: {exc}",
+            "Remediation: name a file in a directory that already exists. "
+            "This command creates no directory, and writes nothing else "
+            "anywhere.") from exc
+    return out.as_posix()
+
+
 def pinned_paths(root: Path) -> set:
     """Every path `contracts/shape-pin.yaml` carries a `files:` row for.
 
@@ -1197,6 +1701,10 @@ CHECKS = (
     Check("legs", "legs", (PROJECT,), check_legs),
     Check("leg-shape-files", "leg shape files", (PROJECT,),
           check_leg_shape_files),
+    # AFTER the two rows about the legs THEMSELVES, because it is about what
+    # is INSIDE them, and a leg that is not mounted has no paths to judge --
+    # which those rows have just said, with `make bootstrap` beside it.
+    Check("placement", "placement", (PROJECT, FAMILY), check_placement),
     Check("agent-files", "agent files", (PROJECT, FAMILY), check_agent_files),
     Check("members", "members", (FAMILY,), check_members),
     Check("naming", "naming", (NOT_A_ROOT,), check_not_a_root_naming),
@@ -1278,6 +1786,18 @@ def verdict_for(ctx: Context, rows: list[Row]) -> tuple[str, int]:
     if reasons:
         return f"{V_DRIFTED} ({', '.join(reasons)})", 1
 
+    # UNDER DRIFTED AND OVER INVALID. A path in the wrong leg is a fact about
+    # the SHAPE that nothing else in this report can see -- no validator, no
+    # pin row, no manifest asserts where a file lives -- whereas a red
+    # validator names itself in the table whether or not it also names the
+    # verdict line. Drift still outranks it: a leg off its pin means the
+    # paths this row read are not the paths the pin describes.
+    placement = by_id.get("placement")
+    if placement is not None and placement.status == FINDING:
+        count = len(placement.detail.get("misplaced") or [])
+        return (f"{V_MISPLACED} ({count} path"
+                + ("" if count == 1 else "s") + ")"), 1
+
     red = [row.id for row in rows
            if row.status == FINDING
            and row.id in ("naming", "manifest", "pins", "family",
@@ -1310,7 +1830,8 @@ def verdict_for(ctx: Context, rows: list[Row]) -> tuple[str, int]:
 # ---------------------------------------------------------------------------
 
 
-def report(ctx: Context, rows: list[Row], verdict: str, code: int) -> None:
+def report(ctx: Context, rows: list[Row], verdict: str, code: int,
+           plan_written: str | None = None) -> None:
     described = {PROJECT: "assembly root (project.yaml)",
                  FAMILY: "family holder (family.yaml)",
                  NOT_A_ROOT: "not a shape root"}[ctx.kind]
@@ -1327,6 +1848,12 @@ def report(ctx: Context, rows: list[Row], verdict: str, code: int) -> None:
             print(f"  {'':<{status_width}}  {'NEXT':<{width}}  "
                   f"{row.next_command}")
     print()
+    # BEFORE THE VERDICT, because the verdict is the conclusion and reads
+    # last, and this line belongs with the row it came out of.
+    if plan_written:
+        print(f"placement plan written to {plan_written}   # nothing moved: "
+              "answer every `resolution:` before a repair runs it")
+        print()
     print(f"{verdict}   (exit {code})")
     note = verdict_note(ctx)
     if note:
@@ -1352,7 +1879,8 @@ def verdict_note(ctx: Context) -> str | None:
     return PREFLIGHT_MOVED if ctx.kind == NOT_A_ROOT else None
 
 
-def as_json(ctx: Context, rows: list[Row], verdict: str, code: int) -> str:
+def as_json(ctx: Context, rows: list[Row], verdict: str, code: int,
+            plan_written: str | None = None) -> str:
     return json.dumps({
         "root": ctx.root.as_posix(),
         "standard": ctx.shape.as_posix(),
@@ -1360,6 +1888,9 @@ def as_json(ctx: Context, rows: list[Row], verdict: str, code: int) -> str:
         "rows": [row.as_dict() for row in rows],
         "verdict": verdict,
         "note": verdict_note(ctx),
+        #: `null` on every run that did not ask for one, so a caller reads a
+        #: key rather than testing for its absence.
+        "placement_plan": plan_written,
         "exit": code,
     }, indent=2, sort_keys=False)
 
@@ -1375,6 +1906,13 @@ def build_parser() -> argparse.ArgumentParser:
                         help="the repository to check (default: .)")
     parser.add_argument("--json", action="store_true", dest="as_json",
                         help="the same report as one JSON object")
+    parser.add_argument("--placement-plan", metavar="FILE", default=None,
+                        help="write the `placement` row's paths to FILE as "
+                             "an adoption-plan-style YAML to resolve by hand. "
+                             "The only thing this command writes, and it "
+                             "still moves nothing: a path changing legs is a "
+                             "pull request on each leg and a pin bump in the "
+                             "root")
     return parser
 
 
@@ -1399,10 +1937,22 @@ def main(argv: list[str] | None = None) -> int:
     ctx = Context(root)
     rows = run_checks(ctx)
     verdict, code = verdict_for(ctx, rows)
+    plan_written = None
+    if args.placement_plan:
+        try:
+            plan_written = write_placement_plan(
+                ctx, rows, Path(args.placement_plan).expanduser())
+        except Refusal as exc:
+            # EXIT 3, the documented "usage or environment". Asking for a
+            # placement plan of a family holder is a question about the
+            # command, and printing a verdict about the repository underneath
+            # a refusal about the flag would answer something nobody asked.
+            print(str(exc), file=sys.stderr)
+            return 3
     if args.as_json:
-        print(as_json(ctx, rows, verdict, code))
+        print(as_json(ctx, rows, verdict, code, plan_written))
     else:
-        report(ctx, rows, verdict, code)
+        report(ctx, rows, verdict, code, plan_written)
     return code
 
 

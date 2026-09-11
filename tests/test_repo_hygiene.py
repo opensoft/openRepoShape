@@ -418,9 +418,25 @@ def test_agents_md_is_short_enough_to_be_read():
     leg), and the `CANNOT ANSWER` / exit 3 half-sentence in point 1 —
     because that verdict is THIS CHECKOUT failing to ask, and an assistant
     who relays it as a verdict about the repository has relayed the
-    opposite of what happened."""
+    opposite of what happened.
+
+    2026-09-11: 400 -> 415 — the `placement` row (#99). Twelve lines are one
+    numbered point, because the way an assistant gets THIS row wrong is
+    specific and expensive: it names paths that are in the wrong
+    REPOSITORY, and the obvious repair is wrong twice over. A path changing
+    legs is a pull request on the leg it leaves, a pull request on the leg
+    it joins and one pin bump in the root — none of which an agent does on
+    its own initiative — and a `review_required` entry is a question the
+    POLICY is asking, so answering it on the human's behalf puts a fact in
+    their tree that nobody decided. That is the same shape of mistake as
+    hand-editing a pin, arriving through a door that did not exist
+    yesterday. Two lines put `MISPLACED` and its exit code in point 1's
+    verdict list, which is what a scheduled job reads. One is the
+    `--placement-plan` caveat on the opening paragraph: "it writes nothing"
+    was absolute and is not any more, and an absolute sentence with an
+    undocumented exception is how the exception gets found by surprise."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 400, f"AGENTS.md is {len(lines)} lines; the cap is 400"
+    assert len(lines) <= 415, f"AGENTS.md is {len(lines)} lines; the cap is 415"
 
 
 def test_claude_md_points_at_agents_md():
@@ -906,8 +922,31 @@ def test_readme_is_short_enough_to_be_read():
     #   a commit THIS checkout does not carry is not the repository being
     #   wrong. One corrects a sentence that was simply false: the machine
     #   row asks `gh` three questions, not one.
-    assert len(lines) <= 1324, (
-        f"README.md is {len(lines)} lines; the cap is 1324")
+    # 2026-09-11: 1324 -> 1370 — the `placement` row and the plan it writes
+    #   (#99). Brett Heap: "we have to look for code in spec and spec in
+    #   code". Forty-six lines, and they are that many because five separate
+    #   things about this row are surprises a reader would otherwise meet
+    #   one at a time. WHAT IT RUNS — the ADOPTION's policy, over a project
+    #   that has already been split, with that tool's own `walk()` — because
+    #   a reader who thinks this is a second classifier will expect it to
+    #   disagree with `adopt-project.py plan` and will not trust either.
+    #   WHAT IT REFUSES TO JUDGE, and why there is a list at all: the four
+    #   files the leg templates ship classify as `root`, correctly, and a
+    #   row that read that literally would fail every leg this standard has
+    #   ever cut. `review_required` IS A NOTE, which is the same line #96
+    #   drew for the leg files and has to be redrawn here because this row
+    #   can reach the same wrong answer by a different route. THE VERDICT
+    #   ROW AND ITS PLACE IN THE ORDER, since the codes are what a scheduled
+    #   job reads and `MISPLACED` sitting above `INVALID` is a choice worth
+    #   one sentence. And THE PLAN, which is most of the second half: it is
+    #   the only thing this command writes, its entries are an adoption
+    #   plan's entries so that resolving one teaches the other, and it
+    #   carries a different `kind:` ON PURPOSE — a reader who does not learn
+    #   that from the page could hand it to `adopt-project.py execute`,
+    #   which creates repositories and rewrites history, with `--yes` the
+    #   only thing in the way.
+    assert len(lines) <= 1370, (
+        f"README.md is {len(lines)} lines; the cap is 1370")
 
 
 @pytest.mark.parametrize("name", SHIPPED_BASH)
