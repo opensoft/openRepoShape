@@ -468,6 +468,79 @@ def test_an_empty_git_repository_is_not_a_shape_root(standard, tmp_path):
     assert rows["contents"]["detail"]["project_yaml"] is False
 
 
+def test_a_root_named_like_an_option_still_gets_a_real_naming_verdict(
+        standard, tmp_path):
+    """A directory called `--help` is a NAME, not a flag -- to argparse too.
+
+    `check_not_a_root_naming` used to call the validator as
+    `run_validator(ctx, script, ["--explain", *names])`. With no `--` before
+    the names, a root literally named `--help` reached
+    `validate-repository-naming.py --explain --help`, and argparse's OWN
+    `-h`/`--help` matched before either positional was ever read: exit 0,
+    "classifies under the naming policy", for a name that classifies under
+    NOTHING. That is a false COMPLIANT, not a crash -- which is exactly why a
+    red row never caught it.
+    """
+    here = tmp_path / "--help"
+    here.mkdir()
+    git("init", "-q", "-b", "main", ".", cwd=here)
+    result = doctor(standard, here, "--json")
+    assert result.returncode == 2, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["kind"] == "none"
+    rows = rows_of(result)
+    assert set(rows) == {"naming", "contents", "way-in", "machine"}
+    row = rows["naming"]
+    # The real verdict -- unclassified -- not the false OK argparse's own
+    # help action used to produce.
+    assert row["status"] == "FINDING", row
+    assert row["detail"]["exit"] == 1, row
+    assert "naming-unclassified" in row["reason"], row["reason"]
+    assert "--explain -- --help" in row["next"], row["next"]
+
+    # The counterexample, so the assertions above cannot be passing by
+    # accident: called the OLD way -- no `--` -- this exact name reaches the
+    # validator's own help action instead of being classified at all.
+    unfixed = run_script(
+        standard / "scripts" / "validate-repository-naming.py",
+        "--explain", here.name)
+    assert unfixed.returncode == 0, (
+        "if this is no longer 0, `--help` stopped demonstrating the bug and "
+        "the fixed row's test above needs a different name:\n"
+        + unfixed.stdout + unfixed.stderr)
+    assert "show this help message and exit" in unfixed.stdout
+
+
+@WINDOWS_SKIP
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_the_naming_rows_next_command_runs_when_it_is_pasted(standard,
+                                                              tmp_path):
+    """The whole promise, end to end: the printed line, into a shell, verbatim.
+
+    `--explain -- --help` needs no shell quoting at all -- every character in
+    it is in `quote_arg`'s safe set, so #101/#102 leave it untouched -- which
+    is exactly why this row needed its OWN fix: the bug is a missing token in
+    the argument list, not a missing quote, and the only way to prove a
+    pasted line reaches the real classifier is to paste the line.
+    """
+    here = tmp_path / "--help"
+    here.mkdir()
+    git("init", "-q", "-b", "main", ".", cwd=here)
+    row = rows_of(doctor(standard, here, "--json"))["naming"]
+    assert row["status"] == "FINDING", row
+
+    pasted = subprocess.run(["bash", "-c", row["next"]], capture_output=True,
+                            text=True, check=False,
+                            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+    whole = pasted.stdout + pasted.stderr
+    assert pasted.returncode == 1, (
+        "a real classification exits 1 for an unclassified name; exit "
+        f"{pasted.returncode} is argparse's own --help winning again.\n"
+        f"{whole}")
+    assert "naming-unclassified" in whole, whole
+    assert "usage:" not in whole, whole
+
+
 def test_a_directory_that_is_not_a_repository_says_scaffold(standard,
                                                             tmp_path):
     """No repository to adopt, so the way in is the scaffold — and it is
@@ -2134,15 +2207,18 @@ def test_a_windows_path_is_quoted_on_posix_and_bare_on_windows():
 #: flavour on every host, Windows included, so the rendering asserted below
 #: no longer depends on which machine runs the suite.
 #:
-#: AND BOTH ROWS SHARE THAT ONE FLAVOUR -- the `nt` row is not given a
-#: `PureWindowsPath`. `scaffold_command`'s own `quote_arg(shape / ...)` calls
-#: pass no `platform` of their own, so each falls back to `quote_arg`'s
-#: default, which reads the REAL host's `os.name` -- not the `platform` this
-#: row names. `\` sits in `UNQUOTED_NT` but not in `UNQUOTED_POSIX`, so a
-#: genuine `C:\...` fixture would come back bare on an actual Windows runner
-#: and QUOTED on a POSIX one running this same `nt` row -- trading the
-#: Windows failure this commit fixes for a new Linux/macOS one. `/` sits in
-#: both alphabets, so it is bare everywhere; see `quote_arg` and
+#: AND A `PureWindowsPath` IS NOW A STABLE FIXTURE, which it was not when
+#: these rows were written (PR #102, commit 1f513c5). `scaffold_command`'s own
+#: `quote_arg(shape / ...)` calls passed no `platform`, so each fell back to
+#: the REAL host's `os.name` rather than the `platform` the row named -- and
+#: `\` sits in `UNQUOTED_NT` but not in `UNQUOTED_POSIX`, so a genuine
+#: `C:\...` fixture came back bare on a Windows runner and QUOTED on a POSIX
+#: one, from the same row. That is #103, and it is fixed: one `target` now
+#: governs the branch, the interpreter AND the quoting, so the two rows below
+#: that name a Windows path render the same bytes on every host. The
+#: `PurePosixPath` rows stay beside them because `/` is in both alphabets --
+#: bare everywhere -- which is what makes them the pair that isolates the
+#: ENTRY POINT and the INTERPRETER from the quoting; see `quote_arg` and
 #: `UNQUOTED_NT`/`UNQUOTED_POSIX`.
 SCAFFOLD_COMMAND = [
     ("posix", PurePosixPath("/srv/openRepoShape"),
@@ -2150,6 +2226,13 @@ SCAFFOLD_COMMAND = [
     ("nt", PurePosixPath("/srv/openRepoShape"),
      "python /srv/openRepoShape/setup-project.py --org <your-org> "
      "--project Atlas"),
+    # The path a Windows reader actually has, in the platform's own alphabet:
+    # bare there, and quoted on POSIX where every `\` is an escape character.
+    ("nt", PureWindowsPath(r"C:\srv\openRepoShape"),
+     r"python C:\srv\openRepoShape\setup-project.py --org <your-org> "
+     "--project Atlas"),
+    ("posix", PureWindowsPath(r"C:\srv\openRepoShape"),
+     r"'C:\srv\openRepoShape\setup.sh' --org <your-org> --project Atlas"),
 ]
 
 
@@ -2179,6 +2262,96 @@ def test_the_scaffold_command_is_the_readers_own_entry_point(platform,
     spaced = module.scaffold_command(shape, "My Thing", platform)
     assert spaced == expected.replace("--project Atlas",
                                       "--project 'My Thing'"), spaced
+
+
+#: THE ONE VALUE THE TWO ALPHABETS DISAGREE ABOUT, as a path a Windows reader
+#: actually has. `\` is in `UNQUOTED_NT` and not in `UNQUOTED_POSIX`, so this
+#: is what tells the two PLATFORMS' spellings apart -- and, until #103, told
+#: the two HOSTS apart instead, because `scaffold_command` quoted for
+#: `os.name` while it spelled the entry point and the interpreter for the
+#: `platform` it was handed.
+WINDOWS_SHAPE = PureWindowsPath(r"C:\srv\openRepoShape")
+#: The same path with the space every Windows machine has somewhere: NEITHER
+#: alphabet admits it, so this one is quoted on both -- in each shell's own
+#: form, which for a value with no apostrophe in it is the same form.
+WINDOWS_SHAPE_SPACED = PureWindowsPath(r"C:\Program Files\openRepoShape")
+
+
+def test_the_scaffold_lines_quoting_is_the_asked_for_platforms_too():
+    r"""#103: half the line followed the argument and half followed the host.
+
+    `platform` exists so this function can spell a line for the OTHER
+    platform, and since #102 it threads that argument to the entry point
+    (`setup-project.py` vs `setup.sh`) and to `python_command`. Its own
+    `quote_arg` calls passed nothing, so they fell back to `os.name` -- and
+    `\` is in one alphabet and not the other, so ONE call with ONE set of
+    arguments produced two different strings depending on which machine
+    asked: `python C:\srv\openRepoShape\setup-project.py ...` bare on a
+    Windows host and `python 'C:\srv\openRepoShape\setup-project.py' ...` on
+    Linux or macOS.
+
+    BOTH SPELLINGS ARE ASSERTED BYTE FOR BYTE HERE, from whichever host runs
+    the suite, which is the test PR #102 could not write: its `nt` row had to
+    use a `PurePosixPath`, because `/` is in both alphabets and therefore
+    hides the seam this one is about (commit 1f513c5, and the comment above
+    `SCAFFOLD_COMMAND`). Every assertion below is the same on ubuntu, windows
+    and macos, or the bug is back.
+    """
+    module = doctor_module(REPO)
+    windows = module.scaffold_command(WINDOWS_SHAPE, "Atlas", "nt")
+    posix = module.scaffold_command(WINDOWS_SHAPE, "Atlas", "posix")
+    assert windows == (r"python C:\srv\openRepoShape\setup-project.py "
+                       "--org <your-org> --project Atlas"), windows
+    assert posix == (r"'C:\srv\openRepoShape\setup.sh' "
+                     "--org <your-org> --project Atlas"), posix
+    # And the POSIX form is a real `sh` word, not a string this suite spelled:
+    # the shell's own reader hands the path back whole, backslashes and all.
+    assert shlex.split(posix)[0] == r"C:\srv\openRepoShape\setup.sh"
+    # A value NEITHER alphabet admits is quoted on both, so the fix is not
+    # "never quote for Windows" -- it is "quote for the platform asked for".
+    assert module.scaffold_command(WINDOWS_SHAPE_SPACED, "Atlas", "nt") == (
+        r"python 'C:\Program Files\openRepoShape\setup-project.py' "
+        "--org <your-org> --project Atlas")
+    assert module.scaffold_command(WINDOWS_SHAPE_SPACED, "Atlas", "posix") == (
+        r"'C:\Program Files\openRepoShape\setup.sh' "
+        "--org <your-org> --project Atlas")
+    # NO PLATFORM IS STILL THE HOST, unchanged: `quote_arg(value, None)`
+    # resolves `os.name` exactly as `quote_arg(value, os.name)` does, so the
+    # line every real run prints is the one it printed before.
+    assert module.scaffold_command(WINDOWS_SHAPE, "Atlas") == (
+        windows if os.name == "nt" else posix)
+
+
+def test_the_way_in_row_matches_the_host_platform_end_to_end(standard,
+                                                             tmp_path):
+    """The row that PRINTS that line names no platform, and must not need to.
+
+    `check_the_way_in` is where `scaffold_command` is actually called, and it
+    passes no `platform` at all -- so every part of both its lines is the
+    HOST's: the entry point, the interpreter and the quoting. That is the
+    property #103 is about, so it is asserted here rather than assumed: the
+    row's command is byte for byte what `scaffold_command` produces for this
+    machine, and the adopt branch's is byte for byte what `quote_arg`
+    produces for it. A `platform` threaded into this row later without being
+    threaded through the quoting fails this test rather than shipping half a
+    line.
+    """
+    module = doctor_module(standard)
+    here = tmp_path / "Loose"
+    here.mkdir()
+    (here / "notes.txt").write_text("nothing to see\n", encoding="utf-8")
+    scaffolds = module.check_the_way_in(module.Context(here))
+    assert scaffolds.next_command == (
+        module.scaffold_command(module.SHAPE_ROOT, "Loose", os.name)
+        + "   # without --yes; it asks"), scaffolds.next_command
+    # The other way in, from the same directory once it is a repository.
+    git("init", "-q", "-b", "main", ".", cwd=here)
+    adopts = module.check_the_way_in(module.Context(here))
+    assert adopts.next_command == (
+        f"{module.PYTHON} "
+        f"{module.quote_arg(module.SHAPE_ROOT / 'adopt-project.py', os.name)} "
+        f"plan --source {module.quote_arg(here, os.name)} "
+        f"--project {module.quote_arg('Loose', os.name)}"), adopts.next_command
 
 
 @pytest.mark.parametrize("platform,expected", [("posix", "python3"),

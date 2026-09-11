@@ -1909,7 +1909,19 @@ def check_not_a_root_naming(ctx: Context) -> Row:
     remote = origin_name(ctx.root)
     if remote and remote not in names:
         names.append(remote)
-    code, quoted, whole = run_validator(ctx, script, ["--explain", *names])
+    # `--` BEFORE THE NAMES. Without it a directory literally named `--help`
+    # or `-x` is not a name to argparse, it is an OPTION: `--explain --help`
+    # exits 0 through argparse's OWN help action before either positional is
+    # read, which this row would have reported as "classifies under the
+    # naming policy" -- a false COMPLIANT for a name that classifies under
+    # nothing. Quoting (#101/#102) cannot fix this: `quote_arg` promises a
+    # value survives the READER'S SHELL as one argument, and `--help` needs
+    # no shell quoting at all to do that -- the token argparse then reads is
+    # exactly what was typed. `--` is argparse's own end-of-options marker,
+    # not a shell's, and `scripts/validate-repository-naming.py`'s parser
+    # accepts it because every `argparse.ArgumentParser` does by default.
+    code, quoted, whole = run_validator(ctx, script,
+                                        ["--explain", "--", *names])
     detail = {"names": names, "origin": remote, "exit": code,
               "explain": ascii_text(whole).strip().splitlines()[:40]}
     reason = f"{', '.join(names)}: " + (
@@ -1918,7 +1930,7 @@ def check_not_a_root_naming(ctx: Context) -> Row:
     spelled = " ".join(quote_arg(name) for name in names)
     return Row("naming", "naming", OK if code == 0 else FINDING, reason,
                None if code == 0 else
-               f"{PYTHON} {quote_arg(script)} --explain {spelled}", detail)
+               f"{PYTHON} {quote_arg(script)} --explain -- {spelled}", detail)
 
 
 def check_what_is_here(ctx: Context) -> Row:
@@ -2036,7 +2048,11 @@ def python_command(platform: str | None = None) -> str:
 
 def scaffold_command(shape: Path, project: str,
                      platform: str | None = None) -> str:
-    """How a NEW project is created, spelled for the READER'S platform.
+    # RAW, for `quote_arg`'s reason one function along: the paragraph below
+    # spells a Windows path, and `\s` is not an escape sequence -- a
+    # docstring that had to double its backslashes would be a docstring
+    # nobody could compare to the line they see in the report.
+    r"""How a NEW project is created, spelled for the READER'S platform.
 
     `setup.sh` IS A BASH SCRIPT AND WINDOWS HAS NO BASH. This row's whole job
     is to hand somebody a line they can run, and on the one platform where
@@ -2055,13 +2071,36 @@ def scaffold_command(shape: Path, project: str,
     made the Windows branch print `python3` on a POSIX runner -- this function
     claiming a spelling it did not produce, in the one place written to be
     read from the other platform (Copilot, PR #102).
+
+    AND THE QUOTING IS THAT PLATFORM'S TOO, which is the third of the three
+    decisions this one line makes and was the last one still reading the
+    HOST. `quote_arg` defaults to `os.name` when it is passed no platform, so
+    with an explicit `platform` half this line followed the argument and half
+    followed the machine: `scaffold_command(PureWindowsPath(r"C:\srv\Shape"),
+    "Atlas", "nt")` named `setup-project.py` and `python` on every host, as
+    asked, and then rendered the path BARE on Windows and QUOTED on Linux and
+    macOS -- two different strings for the same arguments, from a function
+    whose whole reason to take a `platform` is to spell one line for the
+    OTHER one (#103). `\` is in `UNQUOTED_NT` and not in `UNQUOTED_POSIX`,
+    so a Windows path is exactly where that shows.
+
+    ONE RESOLUTION, USED THREE TIMES. `target` is decided once and the
+    branch, the quoting and the interpreter all read it rather than each
+    re-deriving "which platform is this" from its own source -- which is the
+    defect above, stated as code. `python_command` is the one that keeps the
+    RAW `platform`: `None` there returns the module constant itself rather
+    than a second derivation of the same rule (see its docstring), and
+    `quote_arg(value, None)` resolves the host identically to
+    `quote_arg(value, os.name)`, so the host-default line is unchanged, byte
+    for byte.
     """
-    if (os.name if platform is None else platform) == "nt":
+    target = os.name if platform is None else platform
+    if target == "nt":
         return (f"{python_command(platform)} "
-                f"{quote_arg(shape / 'setup-project.py')} "
-                f"--org <your-org> --project {quote_arg(project)}")
-    return (f"{quote_arg(shape / 'setup.sh')} --org <your-org> "
-            f"--project {quote_arg(project)}")
+                f"{quote_arg(shape / 'setup-project.py', target)} "
+                f"--org <your-org> --project {quote_arg(project, target)}")
+    return (f"{quote_arg(shape / 'setup.sh', target)} --org <your-org> "
+            f"--project {quote_arg(project, target)}")
 
 
 def check_the_way_in(ctx: Context) -> Row:
