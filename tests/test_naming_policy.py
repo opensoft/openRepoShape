@@ -694,10 +694,24 @@ def test_cli_classifies_a_chain_given_on_the_command_line(tmp_path):
     assert "WARNING" not in result.stdout
 
 
-def test_cli_reports_an_unread_link_as_a_warning_and_still_classifies():
-    """Offline is the ordinary case, so it is a WARNING and exit 0."""
+def test_cli_reports_an_unread_link_as_a_warning_and_still_classifies(tmp_path):
+    """Offline is the ordinary case, so it is a WARNING and exit 0.
+
+    Run with `cwd` set to a directory under `tmp_path`, never the pytest
+    process's own cwd: `resolve_link_source`'s rule 3
+    (`scripts/repo_shape.py`) reads a checkout sitting BESIDE wherever the
+    validator is run from, so a workstation that happens to have a real
+    `openXdox` checkout beside whatever directory pytest was invoked from
+    would satisfy that rule and the link would verify instead of staying
+    unread — and the warning under test would never print. `tmp_path` is
+    fresh and unique per test on every machine, so it has no such sibling
+    to be found by accident.
+    """
+    workdir = tmp_path / "codexDox"
+    workdir.mkdir()
     result = run_script(VALIDATOR, "--role", "assembly", "--pins", "openXdox",
-                        "--referent-chain", "openXdox,openDox", "codexDox")
+                        "--referent-chain", "openXdox,openDox", "codexDox",
+                        cwd=workdir)
     assert result.returncode == 0, result.stderr
     assert "domain-descendant/assembly" in result.stdout
     assert "WARNING codexDox: declared-unverified" in result.stderr
@@ -1185,7 +1199,8 @@ def test_cli_refuses_a_near_miss_workspace_name():
     result = run_script(VALIDATOR, "brett--wip", "brett-wip-2")
     assert result.returncode == 1
     assert "naming-unclassified" in result.stderr
-    assert "brett--wip" in result.stderr and "brett-wip-2" in result.stderr
+    assert "brett--wip" in result.stderr
+    assert "brett-wip-2" in result.stderr
 
 
 def test_cli_does_not_take_workspace_as_a_declared_role():
