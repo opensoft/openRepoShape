@@ -550,7 +550,13 @@ def main(argv: list | None = None) -> int:
         return 1
 
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(text, encoding="utf-8", newline="\n")
+    # `Path.write_text()` only gained `newline=` in Python 3.10; this
+    # standard runs on 3.9 (`scripts/shape_materialize.py::write_lf` spells
+    # the same LF-write the same way, for the same reason), so the write
+    # goes through `open()` instead, whatever Python the *runner* happens to
+    # have on PATH.
+    with out.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(text)
     print(f"[ok] wrote {out} ({len(text.splitlines())} lines)")
     return 0
 
