@@ -706,12 +706,26 @@ def test_cli_reports_an_unread_link_as_a_warning_and_still_classifies(tmp_path):
     unread — and the warning under test would never print. `tmp_path` is
     fresh and unique per test on every machine, so it has no such sibling
     to be found by accident.
+
+    That leaves rule 2, which reads BEFORE rule 3:
+    `SHAPE_PIN_SOURCE_OPENXDOX` in the environment. `run_script`
+    (`tests/conftest.py`) starts from a COPY of the calling process's own
+    environment, so a developer shell or CI box that happens to export that
+    variable — pointed at a tree that really does declare `openDox`, the
+    same shape `~/projects/openXdox` has on Brett's workstation — verifies
+    the link the same way a sibling checkout would, and the warning under
+    test would never print, exactly as the docstring above already
+    describes for rule 3. The override below pins that one variable to a
+    path known to carry no manifest, so the outcome cannot depend on
+    whatever the calling environment happens to export.
     """
     workdir = tmp_path / "codexDox"
     workdir.mkdir()
+    no_such_checkout = tmp_path / "not-really-an-openxdox-checkout"
     result = run_script(VALIDATOR, "--role", "assembly", "--pins", "openXdox",
                         "--referent-chain", "openXdox,openDox", "codexDox",
-                        cwd=workdir)
+                        cwd=workdir,
+                        env={"SHAPE_PIN_SOURCE_OPENXDOX": str(no_such_checkout)})
     assert result.returncode == 0, result.stderr
     assert "domain-descendant/assembly" in result.stdout
     assert "WARNING codexDox: declared-unverified" in result.stderr
