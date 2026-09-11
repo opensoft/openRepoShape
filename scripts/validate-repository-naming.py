@@ -362,8 +362,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.explain:
             print("\n".join(_describe(policy, target, link_pins)))
         elif not args.quiet:
-            label = "NO FAMILY" if not found else (
-                found[0] + (f"/{found[1]}" if found[1] else ""))
+            # An independent statement rather than a ternary nested inside a
+            # ternary (python:S3358): the family/role suffix is decided on
+            # its own before it is appended to the label.
+            if not found:
+                label = "NO FAMILY"
+            else:
+                role_suffix = f"/{found[1]}" if found[1] else ""
+                label = found[0] + role_suffix
             also = f"   also_matches {','.join(found.also_matches)}" \
                 if found and found.also_matches else ""
             print(f"  {name:<32} {label}{also}")

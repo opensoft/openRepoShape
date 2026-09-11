@@ -205,16 +205,22 @@ def _naming_findings(leg_role, name: str, naming, policy: NamingPolicy,
             else satisfied)
     declared = naming.get("referent_declared")
     if declared is not None and bool(declared) != (satisfied is not None):
+        # An independent statement rather than a ternary nested inside a
+        # ternary (python:S3358): how the referent is reached is decided on
+        # its own before it is appended to the finding.
+        if satisfied is None:
+            how_reached = f" (directly or through {CHAIN_RECORD_FIELD})"
+        elif resolution.by_chain:
+            how_reached = f" through the recorded chain {' → '.join(resolution.chain)}"
+        else:
+            how_reached = " directly"
         out.append(
             f"FINDING naming-referent-declared: leg {leg_role!r}: "
             f"referent_declared is {declared!r}, but " + " / ".join(referents)
             + (" is" if len(referents) == 1 else " are")
             + (" not" if satisfied is None else "")
             + " reached by this manifest's `neutral_product_pins:`"
-            + (f" (directly or through {CHAIN_RECORD_FIELD})"
-               if satisfied is None else
-               (f" through the recorded chain {' → '.join(resolution.chain)}"
-                if resolution.by_chain else " directly"))
+            + how_reached
             + ". A descendant form is a claim; the pin is the referent.")
     if declared is True and held and root is not None:
         pin_path = root / "contracts" / f"{held.lower()}-pin.yaml"

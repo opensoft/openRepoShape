@@ -168,6 +168,12 @@ class YamlError(Exception):
 
 _DASH_RE = re.compile(r"^-(\s+|$)")
 
+#: Marks a `_Rec` built from a block scalar, carrying its key and body
+#: instead of raw text. A NUL byte never appears in this reader's input (YAML
+#: is text), so it cannot collide with a real key or value; spelled once
+#: because `python:S1192` counts three repeats of the same literal.
+_BLOCK_SENTINEL = "\x00BLOCK\x00"
+
 
 class _Rec:
     __slots__ = ("indent", "text", "dash", "line")
@@ -427,7 +433,7 @@ def _tokenise(text: str) -> list[_Rec]:
             else:
                 joined = joined.rstrip("\n")
             recs.append(_Rec(indent, "", False, i))
-            recs[-1].text = "\x00BLOCK\x00" + kv[0] + "\x00" + joined
+            recs[-1].text = _BLOCK_SENTINEL + kv[0] + "\x00" + joined
             continue
         recs.append(_Rec(indent, content, False, i))
     return recs
@@ -447,7 +453,7 @@ def _parse_sequence(recs: list[_Rec], i: int, indent: int) -> tuple[list[Any], i
         i += 1
         if i < len(recs) and recs[i].indent > indent:
             rec = recs[i]
-            if not rec.dash and not rec.text.startswith("\x00BLOCK\x00") \
+            if not rec.dash and not rec.text.startswith(_BLOCK_SENTINEL) \
                     and _split_key(rec.text) is None:
                 # A plain or flow SCALAR item (`- openAvatar`, `- [a, b]`).
                 value = _flow(rec.text) if rec.text[:1] in "[{" else _scalar(rec.text)
@@ -464,7 +470,7 @@ def _parse_mapping(recs: list[_Rec], i: int, indent: int) -> tuple[dict, int]:
     out: dict[str, Any] = {}
     while i < len(recs) and not recs[i].dash and recs[i].indent == indent:
         rec = recs[i]
-        if rec.text.startswith("\x00BLOCK\x00"):
+        if rec.text.startswith(_BLOCK_SENTINEL):
             _empty, _marker, key, body = rec.text.split("\x00", 3)
             out[key] = body
             i += 1
@@ -650,7 +656,7 @@ def free_plan_secret_hint(org: str, repo: str, what: str) -> str | None:
         proc = subprocess.run(
             ["gh", "api", f"orgs/{org}", "--jq", ".plan.name"],
             capture_output=True, text=True, check=False)
-    except (FileNotFoundError, OSError):
+    except OSError:  # FileNotFoundError (no `gh` on PATH) is already an OSError
         return None
     if proc.returncode != 0:
         return None
@@ -1104,12 +1110,17 @@ class NamingPolicy:
                        "neutral-product pin at all")
                     + f", not {held}")
         status = CHAIN_UNVERIFIED if unverified else "verified"
+        # An independent statement rather than a ternary nested inside a
+        # ternary (python:S3358) — the plural "s" is decided before the note
+        # it belongs to is built, not while it is being built.
+        if unverified:
+            plural = "" if len(unverified) == 1 else "s"
+            unverified_note = f" ({len(unverified)} link{plural} declared-unverified)"
+        else:
+            unverified_note = ""
         return ReferentResolution(
             status, final, chain,
-            reason=f"declared pin chain {rendered}"
-                   + (f" ({len(unverified)} link"
-                      + ("" if len(unverified) == 1 else "s")
-                      + " declared-unverified)" if unverified else ""),
+            reason=f"declared pin chain {rendered}" + unverified_note,
             warnings=warnings, unverified=unverified)
 
     # -- classification ----------------------------------------------------
