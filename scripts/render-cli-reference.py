@@ -64,6 +64,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import NamedTuple
 
@@ -377,13 +378,19 @@ def _host_prefixes() -> list:
     Computed rather than written down: a literal one would itself be the
     host-absolute path `tests/test_repo_hygiene.py::test_no_committed_file_
     names_a_host_absolute_path` refuses, in the file whose job is to keep one
-    out of the reference.
+    out of the reference. `tempfile.gettempdir()` rather than a hand-rolled
+    `TMPDIR`-or-hard-coded-fallback: reading `TMPDIR` directly and falling
+    back to a hard-coded publicly-writable directory is the exact noncompliant
+    shape `python:S5443` names, and the stdlib call is that rule's own
+    compliant idiom for finding the one directory this machine actually uses
+    — it already knows the fallback list, in the order that matters, for
+    every platform this script runs on.
     """
     home = str(Path.home())
+    tmp = tempfile.gettempdir().rstrip("/")
     prefixes = [(home, "<home>")]
-    tmp = os.environ.get("TMPDIR") or "/tmp"
-    if tmp.rstrip("/") and tmp.rstrip("/") != "/tmp":
-        prefixes.append((tmp.rstrip("/"), "<tmp>"))
+    if tmp:
+        prefixes.append((tmp, "<tmp>"))
     return sorted(prefixes, key=lambda pair: -len(pair[0]))
 
 
@@ -521,6 +528,30 @@ def render(skip_bash: bool = False) -> str:
     return text
 
 
+def safe_output_path(raw: str) -> Path:
+    """`--out`, canonicalised and refused if it would land outside the repo.
+
+    `--out` is a CLI argument on a script this standard SHIPS
+    (`tests/test_repo_hygiene.py`'s `SHIPPED` list) and that `AGENTS.md`
+    tells an agent to run on its own initiative to keep the reference
+    current — exactly the shape `pythonsecurity:S8707` is for: a path an
+    agentic run could be manipulated into passing must not turn into a
+    write outside the one tree this command documents. Resolved with
+    `os.path.realpath` BEFORE the containment check runs, never after —
+    checking first would let a `../` component walk out before it is ever
+    resolved — and compared with `Path.parents` rather than
+    `str.startswith`, which is the rule's own named pitfall: the string
+    `/repo-evil` starts with `/repo` without being inside it.
+    """
+    resolved = Path(os.path.realpath(raw))
+    base = Path(os.path.realpath(str(REPO)))
+    if resolved != base and base not in resolved.parents:
+        raise Refusal(
+            f"--out {raw!r} resolves to {resolved}, outside {base}; this "
+            "script only writes inside the repository it documents")
+    return resolved
+
+
 def main(argv: list | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="render-cli-reference.py",
@@ -570,12 +601,12 @@ def main(argv: list | None = None) -> int:
               file=sys.stderr)
         return 2
     try:
+        out = safe_output_path(args.out)
         text = render(skip_bash=skip_bash)
     except Refusal as refusal:
         print(f"[!!] {refusal}", file=sys.stderr)
         return 2
 
-    out = Path(args.out)
     if args.check:
         current = out.read_text(encoding="utf-8") if out.is_file() else ""
         if current == text:

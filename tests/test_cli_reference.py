@@ -320,6 +320,39 @@ def test_the_generator_refuses_a_host_absolute_path():
         "placeholder substitution")
 
 
+def test_host_prefixes_names_the_stdlib_temp_directory():
+    """`python:S5443`: `_host_prefixes()` used to read the `TMPDIR`
+    environment variable directly and fall back to a hard-coded `/tmp` —
+    the exact noncompliant shape that rule names (SonarCloud quality gate,
+    PR #98). It must instead be `tempfile.gettempdir()`, the stdlib's own
+    answer for which directory this machine actually uses.
+    """
+    module = generator_module()
+    prefixes = dict(module._host_prefixes())
+    expected = module.tempfile.gettempdir().rstrip("/")
+    assert prefixes.get(expected) == "<tmp>", (
+        f"_host_prefixes() does not name {expected!r} "
+        "(tempfile.gettempdir()) as the temp-directory placeholder target")
+
+
+def test_safe_output_path_refuses_outside_the_repository(tmp_path):
+    """`pythonsecurity:S8707`: `--out` is a CLI argument on a script this
+    standard ships and an agent may run unattended, so a run driven by a
+    manipulated agent must not be able to turn `--out` into a write outside
+    the repository this command documents (SonarCloud quality gate, PR
+    #98). `main()` must validate it before any read or write touches it.
+    """
+    module = generator_module()
+    outside = tmp_path / "elsewhere" / "cli.md"
+    with pytest.raises(module.Refusal):
+        module.safe_output_path(str(outside))
+    default = module.REPO / "docs" / "cli.md"
+    assert module.safe_output_path(str(default)) == default.resolve()
+    traversal = str(module.REPO / "docs" / ".." / ".." / "escaped.md")
+    with pytest.raises(module.Refusal):
+        module.safe_output_path(traversal)
+
+
 def test_regenerating_with_no_bash_refuses_unless_skip_bash_is_explicit(
         monkeypatch, tmp_path):
     """Copilot review, PR #98: when `bash` is auto-detected as absent, a
@@ -335,11 +368,21 @@ def test_regenerating_with_no_bash_refuses_unless_skip_bash_is_explicit(
     """
     module = generator_module()
     monkeypatch.setattr(module.shutil, "which", lambda name: None)
-    out = tmp_path / "cli.md"
-    assert module.main(["--out", str(out)]) == 2
-    assert not out.exists(), "a refused run must write nothing"
-    assert module.main(["--skip-bash", "--out", str(out)]) == 0
-    assert out.is_file(), "--skip-bash given explicitly must still write"
+    refused_out = tmp_path / "cli.md"
+    assert module.main(["--out", str(refused_out)]) == 2
+    assert not refused_out.exists(), "a refused run must write nothing"
+
+    # The explicit-flag write must still succeed — but `--out` now has to
+    # resolve inside the repository (`safe_output_path`,
+    # `pythonsecurity:S8707`), so this uses a throwaway directory under REPO
+    # rather than pytest's `tmp_path`, removed again in `finally`.
+    written_dir = module.REPO / ".pytest-cli-reference-scratch"
+    written = written_dir / "cli.md"
+    try:
+        assert module.main(["--skip-bash", "--out", str(written)]) == 0
+        assert written.is_file(), "--skip-bash given explicitly must still write"
+    finally:
+        module.shutil.rmtree(written_dir, ignore_errors=True)
 
 
 @WINDOWS_SKIP
