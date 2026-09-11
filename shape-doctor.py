@@ -219,7 +219,8 @@ def not_in_the_standard(detail: str) -> int:
 
 try:
     from repo_shape import (  # noqa: E402
-        COMMIT_RE, PYTHON, Refusal, git_out, load_yaml, recorded_gitlink,
+        COMMIT_RE, NamingPolicy, PYTHON, Refusal, accepts_role, git_out,
+        load_yaml, recorded_gitlink,
     )
 except ImportError as exc:  # pragma: no cover - exercised as a subprocess
     sys.exit(not_in_the_standard(f"scripts/repo_shape.py ({exc})"))
@@ -1887,13 +1888,111 @@ def check_members(ctx: Context) -> Row:
 # ---------------------------------------------------------------------------
 
 
+#: A Windows path, recognized by its OWN spelling rather than by "has a
+#: backslash in it": a drive letter (`D:\` or `D:/`) or a UNC share (`\\
+#: server\share`). Only a remote spelled ONE of these two ways gets its
+#: backslashes read as separators -- everywhere else a `\` is left alone,
+#: because it is an ORDINARY character in a POSIX path or a repository name
+#: (`/tmp/foo\bar.git`'s basename is `foo\bar`, literally, and rewriting
+#: every `\` in that path would have answered `bar` instead, silently
+#: discarding half of it -- Copilot, PR #110).
+_WINDOWS_PATH_RE = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\)")
+
+
+#: `[user@]host:path` with the host itself bracketed -- the only way this
+#: grammar has to write an IPv6 host, since the address is already
+#: colon-separated (`[::1]:repo.git`) and would otherwise swallow the real
+#: separator whole. The captured group is everything after the `:` that
+#: follows the closing `]` (Copilot, PR #110, fourth review).
+_BRACKETED_HOST_RE = re.compile(r"^(?:[^@/\\]*@)?\[[^\]]*\]:(.*)$")
+
+
 def origin_name(root: Path) -> str | None:
+    """`origin`'s own repository name, however its URL spells the path to it.
+
+    A WINDOWS PATH IS NORMALIZED TO `/` FIRST. `git remote get-url origin`
+    answering `D:\\a\\_work\\1\\s\\Atlas.git` -- the shape's own CI runner
+    lays a checkout out exactly like that -- carries no `/` at all, so the
+    old `rsplit("/", 1)` found nothing to split on and returned the WHOLE
+    path as the "name": every caller downstream (`project_token_for` among
+    them) then read a colon and a run of backslashes as part of an identity
+    (Copilot, PR #110). `_WINDOWS_PATH_RE` is what keeps this from ALSO
+    rewriting a POSIX path whose basename merely contains a `\\` of its own.
+
+    AND SCP-LIKE SYNTAX IS READ BY ITS OWN GRAMMAR, not assumed to carry a
+    `/`. `[user@]host:path` -- `git@example.com:Atlas.git`, no group prefix
+    at all -- has no `/` in it either, so it hit the exact same "nothing to
+    split on, return the whole string" failure, and a caller derived
+    `GitExampleComAtlas` from it (Copilot, PR #110).
+
+    BUT NOT EVERY COLON IS THAT SEPARATOR. A local path's basename can
+    carry one of its own -- `/tmp/openRepo:Project.git` -- and reading
+    everything after the LAST `:` once a URL scheme was ruled out treated
+    THAT colon exactly like the one in `git@example.com:Atlas.git`,
+    truncating `openRepo:Project` down to `Project` (Copilot, third review
+    of PR #110). The text BEFORE the colon is what tells the two apart: a
+    drive letter (`D`) or an SCP host (`git@example.com`) never itself
+    contains a `/` or `\\`, so a colon right after one of those IS the
+    separator; everywhere else -- a path that already has one inside it,
+    included -- the colon is just an ordinary character, and the string is
+    left alone.
+
+    AND WHEN THE HOST'S COLON IS NOT THE ONLY ONE, IT IS STILL THE FIRST.
+    `git@example.com:team:repo.git` -- a group prefix in the repository's
+    OWN path, ordinary enough -- has two colons, and the fix above reached
+    for `rpartition`, the LAST one: `team:` read as more of the path the
+    host's colon already separated, and vanished along with it, leaving
+    `repo` where `team:repo` belonged (Copilot, fourth review of PR #110).
+    The host ends at ITS OWN colon, the first one after it, however many
+    the path that follows goes on to contain.
+
+    AND A BRACKETED HOST HIDES ITS COLONS FROM THAT RULE ENTIRELY. An IPv6
+    host is written `[host]` in this grammar for exactly this reason --
+    `::1` is already colon-separated -- so the first colon in
+    `[::1]:repo.git`, by plain text position, sits INSIDE the brackets,
+    part of the host, and splitting there would cut the host in half.
+    `_BRACKETED_HOST_RE` reads a bracketed host whole and takes the
+    separator from right after its closing `]`, before the first-colon
+    rule below ever runs. A drive letter is excluded from that rule the
+    same explicit way, rather than by the accident of also never
+    containing a second colon of its own: `D` in `D:/a/.../Atlas.git` is a
+    PATH, never a host, however this function is later changed to use
+    what comes after it.
+    """
     try:
         url = git_out(["remote", "get-url", "origin"], cwd=root)
     except (Refusal, OSError):
         return None
-    name = url.rstrip("/").rsplit("/", 1)[-1]
+    if _WINDOWS_PATH_RE.match(url):
+        url = url.replace("\\", "/")
+    url = url.rstrip("/")
+    if "://" not in url:
+        bracketed = _BRACKETED_HOST_RE.match(url)
+        if bracketed:
+            url = bracketed.group(1)
+        elif ":" in url and not _WINDOWS_PATH_RE.match(url):
+            prefix, _, rest = url.partition(":")
+            if "/" not in prefix and "\\" not in prefix:
+                url = rest
+    name = url.rsplit("/", 1)[-1]
     return name[:-4] if name.endswith(".git") else name or None
+
+
+def repo_local_origin_name(root: Path) -> str | None:
+    """`origin`'s name, but only when `root` ITSELF carries the `.git` it
+    belongs to.
+
+    `git remote get-url origin` does not stop at `root` looking for one --
+    run from a directory that has none, it walks UP to the nearest ancestor
+    repository and answers for THAT one, which is a fact about the
+    ANCESTOR, not about `root`: a loose folder with no `.git` of its own,
+    sitting inside a clone of `openRepoProject`, is not `openRepoProject`
+    (Copilot, PR #110). Both callers that read an origin's name for `root`'s
+    OWN identity -- `naming` and `the way in` -- share this guard rather
+    than each re-deriving "is this directory itself a repository" on its
+    own.
+    """
+    return origin_name(root) if (root / ".git").exists() else None
 
 
 def check_not_a_root_naming(ctx: Context) -> Row:
@@ -1902,11 +2001,15 @@ def check_not_a_root_naming(ctx: Context) -> Row:
     The directory name and, when there is one, `origin`'s repository name.
     They are usually the same and are not always: a clone into a differently
     named folder is ordinary, and the name that matters for the policy is the
-    repository's.
+    repository's -- ITS OWN, never an ancestor's: `repo_local_origin_name`
+    answers only when `ctx.root` carries the `.git` that origin belongs to,
+    so a loose directory nested inside somebody else's checkout is classified
+    on its own name alone, the same fact `the way in` row now reads it by
+    (Copilot, PR #110).
     """
     script = ctx.shape / "scripts" / "validate-repository-naming.py"
     names = [ctx.root.name]
-    remote = origin_name(ctx.root)
+    remote = repo_local_origin_name(ctx.root)
     if remote and remote not in names:
         names.append(remote)
     # `--` BEFORE THE NAMES. Without it a directory literally named `--help`
@@ -2103,6 +2206,48 @@ def scaffold_command(shape: Path, project: str,
             f"--project {quote_arg(project, target)}")
 
 
+def project_token_for(name: str, policy: NamingPolicy) -> str:
+    """The `--project` `adopt-project.py` (and the scaffold) will accept for
+    `name`, unchanged where `name` is already one.
+
+    `accepts_role` is the ONE definition of which forms may be an assembly
+    root -- `adopt-project.py`'s own `_check_names` runs exactly this,
+    role `assembly`, over the value it is handed, and the scaffold's gate
+    agrees. A name that already passes it is therefore a name those tools
+    take VERBATIM, and respelling it first can hand them a DIFFERENT one:
+    `openRepoProject` classifies as `neutral-product`, which admits the
+    `assembly` role unchanged (2026-09-05) -- but the unconditional
+    `"".join(part.capitalize() ...)` derivation below turned it into
+    `Openrepoproject`, a bare `project-leg/assembly` token that still
+    classified, so nothing in the naming policy caught the mismatch. Run
+    live, the emitted `adopt-project.py plan --project Openrepoproject`
+    named the two new legs off a token that loses the repository's own
+    family, beside a root still called `openRepoProject`.
+
+    The derivation is kept as the fallback for a name the policy admits no
+    form of at all: `my-repo` has no valid `--project` to preserve, so
+    `MyRepo` is offered instead, exactly as before.
+
+    IT SPLITS ON ANYTHING THE POLICY DOES NOT ADMIT, not only `-` and `_`.
+    A `.` is an ordinary character in a repository name -- `my.repo` is
+    exactly as reachable through `origin`'s name now that this function is
+    handed it, not only a directory's -- and the policy admits it in no
+    family at all, so the old rule's narrower split fed it straight through
+    into the suggested `--project`, which `adopt-project.py` then refused
+    outright (Copilot, PR #110). AND THE RESULT MUST ITSELF START WITH A
+    LETTER, because every family the policy declares does: a derivation
+    that begins with a digit (`9lives`) classifies nothing either, the same
+    finding at the other end of the string, and falls back to the same
+    `"Project"` placeholder a name with no letters or digits in it at all
+    already did.
+    """
+    if accepts_role(policy.classify(name, "assembly"), "assembly"):
+        return name
+    parts = [part for part in re.split(r"[^A-Za-z0-9]+", name) if part]
+    derived = "".join(part.capitalize() for part in parts)
+    return derived if re.match(r"^[A-Za-z]", derived) else "Project"
+
+
 def check_the_way_in(ctx: Context) -> Row:
     """The two ways a directory becomes a shape root, and who decides.
 
@@ -2111,12 +2256,30 @@ def check_the_way_in(ctx: Context) -> Row:
     out of it; scaffolding creates three new repositories. Which of those a
     person wants is a fact about their repository, not about this directory
     listing, so both are named and the human chooses.
+
+    THE SUGGESTED `--project` READS THE SAME IDENTITY THE `naming` ROW DOES:
+    `origin`'s repository name where there is one, the directory's own name
+    otherwise -- `check_not_a_root_naming`'s own docstring, "the name that
+    matters for the policy is the repository's" -- because a clone into a
+    differently named folder does not change what would actually be adopted.
+    `project_token_for` decides whether that identity is handed back
+    verbatim or respelled.
+
+    `origin` IS CONSULTED ONLY WHEN `root` CARRIES ITS OWN `.git`, through
+    `repo_local_origin_name`: `git` itself does not stop at `root` looking
+    for one, so a loose folder sitting inside somebody else's checkout would
+    otherwise have picked up THAT checkout's `origin` -- a directory named
+    `Loose` under a clone of `openRepoProject` suggesting `--project
+    openRepoProject` to the SCAFFOLD line, which is about to create a
+    project named after a repository this directory is not (Copilot, PR
+    #110). The `naming` row shares the same guard, for the same reason.
     """
     root = ctx.root
     is_repo = (root / ".git").exists()
-    project = "".join(part.capitalize()
-                      for part in root.name.replace("_", "-").split("-")
-                      if part) or "Project"
+    identity = repo_local_origin_name(root) or root.name
+    policy = NamingPolicy.load(ctx.shape / "contracts" /
+                               "repository-naming.yaml")
+    project = project_token_for(identity, policy)
     if is_repo:
         fix = (f"{PYTHON} {quote_arg(ctx.shape / 'adopt-project.py')} "
                f"plan --source {quote_arg(root)} --project "
