@@ -1952,6 +1952,30 @@ def check_machine(ctx: Context) -> Row:
                detail)
 
 
+def python_command(platform: str | None = None) -> str:
+    """`PYTHON`, for the platform ASKED FOR rather than the one running.
+
+    `repo_shape.PYTHON` is decided ONCE, at import, from `os.name` -- rightly,
+    because every other caller is spelling a command for the machine it is
+    on. This file has one caller that is not: `scaffold_command` takes a
+    `platform` so both spellings can be asserted from either host, and reading
+    the module constant there made the Windows branch print `python3` on a
+    POSIX runner -- the function claiming a spelling it did not produce, with
+    a `startswith("python")` assertion too loose to notice (Copilot, PR #102).
+
+    THE RULE IS `repo_shape`'s OWN, mirrored and not re-argued: `python` on
+    Windows, where python.org and the Microsoft Store both put that name on
+    PATH and there is usually no `python3` at all, and `python3` everywhere
+    else, the command every POSIX install of a supported Python answers to.
+    `platform=None` returns the constant itself, so the host-default path is
+    the same object every other line in this file uses rather than a second
+    derivation of it that could drift.
+    """
+    if platform is None:
+        return PYTHON
+    return "python" if platform == "nt" else "python3"
+
+
 def scaffold_command(shape: Path, project: str,
                      platform: str | None = None) -> str:
     """How a NEW project is created, spelled for the READER'S platform.
@@ -1967,10 +1991,16 @@ def scaffold_command(shape: Path, project: str,
 
     `platform` for the same reason `quote_arg` has one: so both spellings are
     asserted on whichever host the suite is running on, rather than half of
-    them only ever being exercised where nobody is looking.
+    them only ever being exercised where nobody is looking. Which is also why
+    the INTERPRETER comes from `python_command(platform)` and not from the
+    module-global `PYTHON`: that constant is the HOST's, so reading it here
+    made the Windows branch print `python3` on a POSIX runner -- this function
+    claiming a spelling it did not produce, in the one place written to be
+    read from the other platform (Copilot, PR #102).
     """
     if (os.name if platform is None else platform) == "nt":
-        return (f"{PYTHON} {quote_arg(shape / 'setup-project.py')} "
+        return (f"{python_command(platform)} "
+                f"{quote_arg(shape / 'setup-project.py')} "
                 f"--org <your-org> --project {quote_arg(project)}")
     return (f"{quote_arg(shape / 'setup.sh')} --org <your-org> "
             f"--project {quote_arg(project)}")

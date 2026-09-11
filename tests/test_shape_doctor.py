@@ -1810,12 +1810,23 @@ def test_a_windows_path_is_quoted_on_posix_and_bare_on_windows():
     assert shlex.split(module.quote_arg(value, "posix")) == [value]
 
 
-@pytest.mark.parametrize("platform,entry,other", [
-    ("posix", "setup.sh", "setup-project.py"),
-    ("nt", "setup-project.py", "setup.sh"),
-])
-def test_the_scaffold_command_is_the_readers_own_entry_point(platform, entry,
-                                                             other):
+#: THE WHOLE LINE, not a substring of it. `startswith("python")` was true of
+#: `python3 ...` as well, which is exactly the spelling the Windows branch was
+#: wrongly producing on a POSIX runner (Copilot, PR #102): an assertion that
+#: cannot tell `python` from `python3` cannot check the one thing this
+#: function's `platform` argument exists to make checkable.
+SCAFFOLD_COMMAND = [
+    ("posix",
+     "/srv/openRepoShape/setup.sh --org <your-org> --project Atlas"),
+    ("nt",
+     "python /srv/openRepoShape/setup-project.py --org <your-org> "
+     "--project Atlas"),
+]
+
+
+@pytest.mark.parametrize("platform,expected", SCAFFOLD_COMMAND)
+def test_the_scaffold_command_is_the_readers_own_entry_point(platform,
+                                                             expected):
     """`setup.sh` is bash, and Windows has no bash.
 
     The `way in` row's whole job is to hand somebody a line they can run, and
@@ -1824,23 +1835,40 @@ def test_the_scaffold_command_is_the_readers_own_entry_point(platform, entry,
     `setup-project.py` is the standard's answer there and has been since #49:
     it IS the flow, and `setup.sh` is a shim over it (#50), which is why the
     README's Windows two-liner downloads that file and runs it.
+
+    AND THE INTERPRETER IS THE ASKED-FOR PLATFORM'S, which is the half a
+    loose assertion let through. `PYTHON` is decided once from `os.name`, so
+    the Windows branch reading it printed `python3` on a POSIX runner -- the
+    function claiming a spelling it did not produce, in the one place written
+    to be read from the other platform. The expectation here is now the whole
+    line, byte for byte, on both.
     """
     module = doctor_module(REPO)
     shape = Path("/srv/openRepoShape")
-    command = module.scaffold_command(shape, "Atlas", platform)
-    assert entry in command, command
-    assert other not in command, command
-    assert "--org <your-org>" in command, (
-        "the placeholder is NOT quoted: the reader replaces it, and quoting "
-        "would tell them to type the angle brackets")
-    assert "--project Atlas" in command, command
-    if platform == "nt":
-        assert command.startswith("python"), (
-            "PowerShell runs the script through an interpreter it can find "
-            "on PATH; it cannot execute a .py by itself")
+    assert module.scaffold_command(shape, "Atlas", platform) == expected
     # And a project name with a space in it is still one argument.
     spaced = module.scaffold_command(shape, "My Thing", platform)
-    assert "--project 'My Thing'" in spaced, spaced
+    assert spaced == expected.replace("--project Atlas",
+                                      "--project 'My Thing'"), spaced
+
+
+@pytest.mark.parametrize("platform,expected", [("posix", "python3"),
+                                               ("nt", "python")])
+def test_the_interpreter_named_is_the_asked_for_platforms(platform, expected):
+    """`repo_shape.PYTHON`'s rule, per platform instead of per host.
+
+    That constant is decided ONCE, at import, from `os.name`, and every other
+    caller in this file wants exactly that -- they are spelling a command for
+    the machine they are on. `scaffold_command` is the one that is not, and
+    `python_command` is where the two readings are kept apart.
+    """
+    module = doctor_module(REPO)
+    assert module.python_command(platform) == expected
+    # `None` is the HOST, and it is the constant itself rather than a second
+    # derivation of the same rule that could drift from it.
+    assert module.python_command() is module.PYTHON
+    assert module.python_command(None) == (
+        "python" if os.name == "nt" else "python3")
 
 
 #: The curly apostrophe this repository's OWN prose is written with, not the
