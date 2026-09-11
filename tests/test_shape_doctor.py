@@ -2115,8 +2115,8 @@ def test_the_way_in_rows_fallback_refuses_a_name_with_no_leading_letter(
     assert "--project Project" in row.next_command, row.next_command
 
 
-def test_the_way_in_row_never_leaks_an_ancestor_repositorys_origin(standard,
-                                                                    tmp_path):
+def test_the_way_in_row_never_leaks_an_ancestor_repository_origin(standard,
+                                                                   tmp_path):
     """Copilot, PR #110: `git remote get-url origin` does not stop at
     `root` looking for one -- run from a directory that has none, it walks
     UP to the nearest ancestor repository and answers for THAT one. A loose
@@ -2200,11 +2200,31 @@ def test_origin_name_preserves_a_literal_backslash_in_a_posix_path(standard,
     assert module.origin_name(here) == "foo\\bar"
 
 
-def test_the_naming_row_also_never_leaks_an_ancestor_repositorys_origin(
+def test_origin_name_preserves_a_colon_in_a_local_path_basename(standard,
+                                                                 tmp_path):
+    """Copilot, third review of PR #110: the SCP-syntax fix above read
+    EVERY colon in a non-URL remote as `[user@]host:path`'s separator, so
+    a local path whose own basename happens to contain one --
+    `/tmp/openRepo:Project.git` -- was truncated the same way
+    `git@example.com:Atlas.git` legitimately is, down to `Project` instead
+    of `openRepo:Project`. Only a colon that FOLLOWS a drive letter or an
+    SCP host -- neither of which ever contains a `/` -- is the separator;
+    a colon anywhere else, including one already inside a path, is an
+    ordinary character and stays exactly where it was.
+    """
+    module = doctor_module(standard)
+    here = tmp_path / "coloninpath"
+    here.mkdir()
+    git("init", "-q", "-b", "main", ".", cwd=here)
+    git("remote", "add", "origin", "/tmp/openRepo:Project.git", cwd=here)
+    assert module.origin_name(here) == "openRepo:Project"
+
+
+def test_the_naming_row_also_never_leaks_an_ancestor_repository_origin(
         standard, tmp_path):
     """Copilot, second review of PR #110: the `way in` row's guard against
     an ancestor's `origin` (`test_the_way_in_row_never_leaks_an_ancestor
-    _repositorys_origin`, above) meant nothing if the `naming` row right
+    _repository_origin`, above) meant nothing if the `naming` row right
     beside it still read one -- the two rows would disagree about the
     identity being classified for the exact same directory.
     `repo_local_origin_name` is the ONE guard both now share.

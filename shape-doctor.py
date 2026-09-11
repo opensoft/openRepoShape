@@ -1857,11 +1857,19 @@ def origin_name(root: Path) -> str | None:
     `/`. `[user@]host:path` -- `git@example.com:Atlas.git`, no group prefix
     at all -- has no `/` in it either, so it hit the exact same "nothing to
     split on, return the whole string" failure, and a caller derived
-    `GitExampleComAtlas` from it (Copilot, PR #110). Everything after the
-    LAST `:` is the path once a URL scheme (`://`) has been ruled out --
-    which is also, not coincidentally, exactly the substring a Windows drive
-    letter's own colon isolates, so the same rule reads `D:/a/.../Atlas.git`
-    correctly too, once the backslashes above are already gone.
+    `GitExampleComAtlas` from it (Copilot, PR #110).
+
+    BUT NOT EVERY COLON IS THAT SEPARATOR. A local path's basename can
+    carry one of its own -- `/tmp/openRepo:Project.git` -- and reading
+    everything after the LAST `:` once a URL scheme was ruled out treated
+    THAT colon exactly like the one in `git@example.com:Atlas.git`,
+    truncating `openRepo:Project` down to `Project` (Copilot, third review
+    of PR #110). The text BEFORE the colon is what tells the two apart: a
+    drive letter (`D`) or an SCP host (`git@example.com`) never itself
+    contains a `/` or `\\`, so a colon right after one of those IS the
+    separator; everywhere else -- a path that already has one inside it,
+    included -- the colon is just an ordinary character, and the string is
+    left alone.
     """
     try:
         url = git_out(["remote", "get-url", "origin"], cwd=root)
@@ -1871,7 +1879,9 @@ def origin_name(root: Path) -> str | None:
         url = url.replace("\\", "/")
     url = url.rstrip("/")
     if "://" not in url and ":" in url:
-        url = url.rsplit(":", 1)[-1]
+        prefix, _, rest = url.rpartition(":")
+        if "/" not in prefix and "\\" not in prefix:
+            url = rest
     name = url.rsplit("/", 1)[-1]
     return name[:-4] if name.endswith(".git") else name or None
 
