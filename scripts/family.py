@@ -85,6 +85,10 @@ from shape_materialize import (  # noqa: E402
 NAMING_POLICY = SHAPE_ROOT / "contracts" / "repository-naming.yaml"
 MANIFEST = "family.yaml"
 MEMBERS_DIR = "members"
+#: `add` and `remove` each list it as BOTH the gitlink path `git submodule`
+#: writes and (`remove` only) an explicit `add=` path re-staged after `git rm`
+#: -- named once so the two commits cannot spell the file differently.
+GITMODULES = ".gitmodules"
 FILE_PROTOCOL = ["-c", "protocol.file.allow=always"]
 
 #: `<org>/<Project>`, the only spelling `--member` accepts. A bare name would
@@ -712,7 +716,7 @@ def cmd_add(args) -> int:
         "which is the whole of the lockstep rule.\n\nIt remains a whole "
         "project: its own assembly root, its own legs, its own gate. "
         "Membership confers nothing.\n",
-        [".gitmodules", path, MANIFEST])
+        [GITMODULES, path, MANIFEST])
     print(f"  {project:<16} {commit[:12]} tree {digest[:12]}… "
           f"(project {project_id})")
     print(f"  committed {head[:12]}: .gitmodules, {path}, {MANIFEST}")
@@ -820,7 +824,7 @@ def cmd_remove(args) -> int:
         f"{row.get('repository')} itself is untouched: it keeps its name, its "
         "history, its legs and its gate. Membership was navigation and "
         "conferred nothing, so losing it takes nothing away.\n",
-        [".gitmodules", path, MANIFEST], add=[".gitmodules", MANIFEST])
+        [GITMODULES, path, MANIFEST], add=[GITMODULES, MANIFEST])
     print(f"  removed {project} ({row.get('repository')}) from {path}")
     print(f"  committed {head[:12]}: .gitmodules, {path}, {MANIFEST}")
     # POSIX for the same reason it is POSIX in `add`: git spells this path

@@ -272,6 +272,14 @@ PROJECT = "project"
 FAMILY = "family"
 NOT_A_ROOT = "none"
 
+#: The manifest FILENAME for each kind -- distinct from `PROJECT`/`FAMILY`
+#: above, which are the `kind:` a manifest DECLARES, not what the file is
+#: called. `Context.__init__`, `check_naming`, `manifest_candidates`,
+#: `is_this_member` and the way-in and what-is-here probes all read a root by
+#: this name, so it is spelled once for the five of them.
+PROJECT_MANIFEST = "project.yaml"
+FAMILY_MANIFEST = "family.yaml"
+
 #: The verdicts, in the order they outrank each other. See the docstring for
 #: why DRIFTED sits above INVALID.
 V_COMPLIANT = "COMPLIANT"
@@ -287,11 +295,16 @@ V_NOT_A_ROOT = "NOT A SHAPE ROOT"
 #: statement about the tree that was pointed at.
 V_CANNOT_ANSWER = "CANNOT ANSWER"
 
+#: One name, so `AGENT_FILES`, `LEG_SHAPE_FILES`, `LEG_RENDERED` and the
+#: what-is-here probe below stay in agreement about what an agent reads,
+#: rather than four spellings of the same fact.
+AGENTS_MD = "AGENTS.md"
+
 #: The three files a scaffolded root carries for an agent. `AGENTS-shape.md`
 #: is a PINNED shape copy, so the pins and shape-currency rows already digest
 #: it; this row is for a reader, who wants to know whether the file is there
 #: before reading two digest tables to find out.
-AGENT_FILES = ("AGENTS-shape.md", "AGENTS.md", "CLAUDE.md")
+AGENT_FILES = ("AGENTS-shape.md", AGENTS_MD, "CLAUDE.md")
 
 #: The leg files this compares, and the ones a byte comparison is meaningless
 #: for. `templates/<role>-root/AGENTS.md` and `README.md` carry
@@ -300,8 +313,8 @@ AGENT_FILES = ("AGENTS-shape.md", "AGENTS.md", "CLAUDE.md")
 #: comparison of them is a fact. No leg file has a digest row anywhere today
 #: -- only the assembly root's copies are pinned -- so this row reports and
 #: does not judge, beyond a file that is missing altogether.
-LEG_SHAPE_FILES = ("AGENTS.md", "CLAUDE.md", ".gitignore")
-LEG_RENDERED = ("AGENTS.md", "README.md")
+LEG_SHAPE_FILES = (AGENTS_MD, "CLAUDE.md", ".gitignore")
+LEG_RENDERED = (AGENTS_MD, "README.md")
 
 #: A tracked path this row can neither classify honestly nor write into a
 #: plan. Git allows any byte but `/` and NUL in a name, so a file can carry a
@@ -584,8 +597,8 @@ class Context:
         self.kind = NOT_A_ROOT
         self._update_shape = None
         self._adopt = None
-        project = root / "project.yaml"
-        family = root / "family.yaml"
+        project = root / PROJECT_MANIFEST
+        family = root / FAMILY_MANIFEST
         # `kind:` DECIDES, not the filename. A `project.yaml` that declares
         # something else is not a project manifest, and reading the name alone
         # would let a file called the right thing assert whatever it liked.
@@ -770,7 +783,8 @@ def check_naming(ctx: Context) -> Row:
     """
     script = ctx.shape / "scripts" / "validate-repository-naming.py"
     code, quoted, _ = run_validator(
-        ctx, script, ["--project", str(ctx.root / "project.yaml"), "--quiet"])
+        ctx, script,
+        ["--project", str(ctx.root / PROJECT_MANIFEST), "--quiet"])
     detail = {"policy": (ctx.shape / "contracts" /
                          "repository-naming.yaml").as_posix(), "exit": code}
     if code == 0:
@@ -781,7 +795,7 @@ def check_naming(ctx: Context) -> Row:
                f"the naming policy is not satisfied (exit {code})"
                + (f": {quoted}" if quoted else ""),
                f"{PYTHON} {quote_arg(script)} --explain --project "
-               f"{quote_arg(ctx.root / 'project.yaml')}", detail)
+               f"{quote_arg(ctx.root / PROJECT_MANIFEST)}", detail)
 
 
 def check_manifest(ctx: Context) -> Row:
@@ -813,12 +827,17 @@ def manifest_candidates(root: Path) -> list[Path]:
     holder's `members/<Project>` is a whole project -- walking into either
     would make this command report on repositories it was not pointed at.
     """
-    found = [root / "project.yaml", root / "family.yaml"]
+    found = [root / PROJECT_MANIFEST, root / FAMILY_MANIFEST]
     contracts = root / "contracts"
     if contracts.is_dir():
         found += sorted(p for p in contracts.iterdir()
                         if p.is_file() and p.suffix in (".yaml", ".yml"))
     return [path for path in found if path.is_file()]
+
+
+#: Named once: the row this function returns and its own `CHECKS` entry below
+#: must spell the same label, or the two read as two different checks.
+LABEL_MANIFEST_KINDS = "manifest kinds"
 
 
 def check_manifest_kinds(ctx: Context) -> Row:
@@ -855,14 +874,19 @@ def check_manifest_kinds(ctx: Context) -> Row:
                          + ", ".join(unknown))
         if unreadable:
             parts.append("unreadable as YAML: " + ", ".join(unreadable))
-        return Row("manifest-kinds", "manifest kinds", FINDING,
+        return Row("manifest-kinds", LABEL_MANIFEST_KINDS, FINDING,
                    "; ".join(parts),
                    "register the kind in shape-doctor.py's "
                    "MANIFEST_VALIDATORS, beside the check that validates it, "
                    "or remove the file from the root", detail)
-    return Row("manifest-kinds", "manifest kinds", OK,
+    return Row("manifest-kinds", LABEL_MANIFEST_KINDS, OK,
                f"{len(known)} manifest(s), every declared kind has a "
                "registered validator", None, detail)
+
+
+#: Named once, like `LABEL_MANIFEST_KINDS` above: this function's four
+#: returns and the `CHECKS` entry below must all print the same row name.
+LABEL_SHAPE_CURRENCY = "shape currency"
 
 
 def check_shape_currency(ctx: Context) -> Row:
@@ -887,7 +911,7 @@ def check_shape_currency(ctx: Context) -> Row:
         # answer, which is the documented meaning of exit 3. Labelling it
         # INVALID would tell somebody their repository is wrong on the
         # evidence that our copy of the standard is short a commit.
-        return Row("shape-currency", "shape currency", FINDING,
+        return Row("shape-currency", LABEL_SHAPE_CURRENCY, FINDING,
                    f"the copies cannot be compared: {exc.detail}",
                    f"git -C {quote_arg(ctx.shape)} fetch --all   # this "
                    "checkout of the standard does not carry the commit the "
@@ -917,7 +941,7 @@ def check_shape_currency(ctx: Context) -> Row:
         where = f"pinned {pinned[:12]}, this standard {target[:12]}"
         moved = [row for row in reported if row.state != us.UNCHANGED]
         if not moved and pinned == target:
-            return Row("shape-currency", "shape currency", OK,
+            return Row("shape-currency", LABEL_SHAPE_CURRENCY, OK,
                        f"the pin names this standard's commit; {summary} "
                        f"({where})", None, detail)
         if not moved:
@@ -935,7 +959,7 @@ def check_shape_currency(ctx: Context) -> Row:
             # that contradicts its own verdict. It fires on both real estates
             # on this machine, so it is the common case and not an edge.
             detail["behind_pin_only"] = True
-            return Row("shape-currency", "shape currency", FINDING,
+            return Row("shape-currency", LABEL_SHAPE_CURRENCY, FINDING,
                        "no copied file differs, but the pin names an older "
                        f"commit, so `apply` would move the pin alone; "
                        f"{summary} ({where})",
@@ -952,7 +976,7 @@ def check_shape_currency(ctx: Context) -> Row:
         named = ", ".join(row.path for row in moved[:4])
         if len(moved) > 4:
             named += f", and {len(moved) - 4} more"
-        return Row("shape-currency", "shape currency", FINDING,
+        return Row("shape-currency", LABEL_SHAPE_CURRENCY, FINDING,
                    f"{summary} ({where}): {named}",
                    f"{PYTHON} "
                    f"{quote_arg(ctx.shape / 'update-shape.py')} check --root "
@@ -1120,6 +1144,11 @@ def copy_command(source, target, platform: str | None = None) -> str:
     return f"cp {quote_arg(source, platform)} {quote_arg(target, platform)}"
 
 
+#: Named once, like `LABEL_MANIFEST_KINDS` above: this function's three
+#: returns and the `CHECKS` entry below must all print the same row name.
+LABEL_LEG_SHAPE_FILES = "leg shape files"
+
+
 def check_leg_shape_files(ctx: Context) -> Row:
     """Each present leg's shape files against `templates/<role>-root/`.
 
@@ -1137,7 +1166,7 @@ def check_leg_shape_files(ctx: Context) -> Row:
     """
     legs = ctx.legs()
     if not legs:
-        return Row("leg-shape-files", "leg shape files", NA,
+        return Row("leg-shape-files", LABEL_LEG_SHAPE_FILES, NA,
                    "no legs to compare", None, {"legs": []})
     per_leg: dict[str, dict] = {}
     missing: list[tuple[str, str, str]] = []
@@ -1210,9 +1239,10 @@ def check_leg_shape_files(ctx: Context) -> Row:
         # so every project cut before that template existed was failed by a
         # rule this standard never made. The difference is worth a reader's
         # eye and is not a verdict.
-        return Row("leg-shape-files", "leg shape files", NOTE,
+        return Row("leg-shape-files", LABEL_LEG_SHAPE_FILES, NOTE,
                    f"{summary}  (missing: {named})", fix, detail)
-    return Row("leg-shape-files", "leg shape files", OK, summary, None, detail)
+    return Row("leg-shape-files", LABEL_LEG_SHAPE_FILES, OK, summary, None,
+               detail)
 
 
 # ---------------------------------------------------------------------------
@@ -1239,7 +1269,7 @@ def everywhere_patterns(shape: Path) -> list:
     return sorted(names)
 
 
-def leg_tracked_files(mount: Path) -> list:
+def leg_tracked_files(mount: Path) -> tuple:
     """`(path, size)` for every TRACKED file in a leg, in ONE git call.
 
     `ls-files` reads the INDEX, which is exactly the question this row asks: a
@@ -1747,12 +1777,17 @@ def pinned_paths(root: Path) -> set:
             if isinstance(row, dict) and row.get("path")}
 
 
+#: Named once, like `LABEL_MANIFEST_KINDS` above: this function's two returns
+#: and the `CHECKS` entry below must all print the same row name.
+LABEL_AGENT_FILES = "agent files"
+
+
 def check_agent_files(ctx: Context) -> Row:
     present = {name: (ctx.root / name).is_file() for name in AGENT_FILES}
     absent = [name for name, there in present.items() if not there]
     detail = {"files": present}
     if not absent:
-        return Row("agent-files", "agent files", OK,
+        return Row("agent-files", LABEL_AGENT_FILES, OK,
                    ", ".join(f"{name} present" for name in AGENT_FILES),
                    None, detail)
     pinned = pinned_paths(ctx.root)
@@ -1791,7 +1826,7 @@ def check_agent_files(ctx: Context) -> Row:
     # failing it here would be the `leg shape files` mistake again, one file
     # along.
     status = FINDING if detail["pinned"] else NOTE
-    return Row("agent-files", "agent files", status,
+    return Row("agent-files", LABEL_AGENT_FILES, status,
                "absent: " + ", ".join(absent), fix, detail)
 
 
@@ -1821,7 +1856,7 @@ def is_this_member(sibling: Path, row: dict) -> bool:
     """
     if not (sibling / ".git").exists():
         return False
-    manifest = Context._read(sibling / "project.yaml")
+    manifest = Context._read(sibling / PROJECT_MANIFEST)
     if not isinstance(manifest, dict):
         return False
     if manifest.get("kind") != "project-manifest":
@@ -2084,14 +2119,14 @@ def check_what_is_here(ctx: Context) -> Row:
                        ("contracts", "a contracts/ directory"),
                        ("spec", "a spec/ directory"),
                        ("code", "a code/ directory"),
-                       ("AGENTS.md", "an AGENTS.md"),
+                       (AGENTS_MD, "an AGENTS.md"),
                        ("Makefile", "a Makefile")):
         there = (root / name).exists()
         detail[name] = there
         if there:
             facts.append(note)
-    detail["project_yaml"] = (root / "project.yaml").is_file()
-    detail["family_yaml"] = (root / "family.yaml").is_file()
+    detail["project_yaml"] = (root / PROJECT_MANIFEST).is_file()
+    detail["family_yaml"] = (root / FAMILY_MANIFEST).is_file()
     if detail["project_yaml"] or detail["family_yaml"]:
         # A manifest is THERE and did not declare the kind that makes it one,
         # which is a different fault from having none, and worth saying.
@@ -2347,18 +2382,19 @@ CHECKS = (
     Check("manifest", "manifest", (PROJECT,), check_manifest),
     Check("pins", "pins", (PROJECT,), check_pins),
     Check("family", "family", (FAMILY,), check_family),
-    Check("manifest-kinds", "manifest kinds", (PROJECT, FAMILY),
+    Check("manifest-kinds", LABEL_MANIFEST_KINDS, (PROJECT, FAMILY),
           check_manifest_kinds),
-    Check("shape-currency", "shape currency", (PROJECT, FAMILY),
+    Check("shape-currency", LABEL_SHAPE_CURRENCY, (PROJECT, FAMILY),
           check_shape_currency),
     Check("legs", "legs", (PROJECT,), check_legs),
-    Check("leg-shape-files", "leg shape files", (PROJECT,),
+    Check("leg-shape-files", LABEL_LEG_SHAPE_FILES, (PROJECT,),
           check_leg_shape_files),
     # AFTER the two rows about the legs THEMSELVES, because it is about what
     # is INSIDE them, and a leg that is not mounted has no paths to judge --
     # which those rows have just said, with `make bootstrap` beside it.
     Check("placement", "placement", (PROJECT, FAMILY), check_placement),
-    Check("agent-files", "agent files", (PROJECT, FAMILY), check_agent_files),
+    Check("agent-files", LABEL_AGENT_FILES, (PROJECT, FAMILY),
+          check_agent_files),
     Check("members", "members", (FAMILY,), check_members),
     Check("naming", "naming", (NOT_A_ROOT,), check_not_a_root_naming),
     Check("contents", "what is here", (NOT_A_ROOT,), check_what_is_here),
