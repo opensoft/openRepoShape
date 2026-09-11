@@ -1024,6 +1024,63 @@ def check_legs(ctx: Context) -> Row:
                None, detail)
 
 
+def copy_command(source, target, platform: str | None = None) -> str:
+    r"""One file copied to one place, spelled for the READER'S SHELL.
+
+    `cp` IS NOT A PROGRAM ON WINDOWS. It is an alias of `Copy-Item`, and the
+    documentation says so in as many words -- "PowerShell includes the
+    following aliases for `Copy-Item`: ... Windows: `cp`". So the line this
+    row printed was never `cp` at all on the one platform this standard has
+    a native entry point for (#49): it was a cmdlet, read by cmdlet rules.
+
+    AND `Copy-Item -Path` DOES NOT TAKE A PATH, IT TAKES A PATTERN. Its own
+    parameter reference reads "Wildcard characters are permitted", so `[`,
+    `]`, `*` and `?` inside the value are SYNTAX to it -- and quoting cannot
+    reach that, because quoting decides where the argument ENDS and the
+    cmdlet decides how to read what arrived. A root at `C:\work[old]\Atlas`
+    therefore gives a reader one of two outcomes from a line this file told
+    them to run: `Cannot find path` for a directory that is plainly there,
+    or -- where `[old]` is a character class with a sibling that matches, a
+    `C:\workd\Atlas` next door -- A COPY OUT OF THE WRONG DIRECTORY, with
+    nothing said. #102's quoter cannot fix it and is not wrong: that is
+    tokenization, this is parameter semantics, one layer past it.
+
+    `-LiteralPath` IS THE PARAMETER THAT MEANS "THIS PATH": "The value of
+    LiteralPath is used exactly as it's typed. No characters are interpreted
+    as wildcards." It is the whole repair, and the value still passes through
+    `quote_arg` -- the two answer different questions, and a destination with
+    a space in it needs the quoting exactly as much as a bracket needs the
+    literal parameter.
+
+    THE DESTINATION NEEDS NO TWIN AND HAS NONE. `Copy-Item` has no
+    `-LiteralDestination`, and wants none: `-Destination` is documented
+    "Supports wildcards: False" -- it names where the copy LANDS rather than
+    searching for what to copy, so a `[` in it is already a character and
+    not a class. It is passed through `quote_arg` for the same reason every
+    other interpolated value is, and that is all it needs.
+
+    POSIX KEEPS `cp`, unchanged and correct: there `cp` is `/bin/cp`, the
+    shell does the globbing, and a single-quoted argument reaches it with
+    every bracket intact. Two shells, two spellings, one function -- the
+    shape `scaffold_command` already has, and `platform` is here for the
+    same reason it is there: so BOTH lines are asserted byte for byte from
+    whichever host the suite is running on, rather than the Windows half
+    being exercised only where nobody is looking.
+
+    AND `platform` IS PASSED ON, not merely branched on. `quote_arg(value)`
+    with no platform reads the REAL host's `os.name`, so a Windows line
+    built on a POSIX runner would be quoted by `sh` rules -- the function
+    claiming a spelling it did not produce, which is the defect #103 names
+    in the neighbouring `scaffold_command`. Here the argument is threaded
+    through to every value, so what the test asserts is what a Windows
+    reader gets.
+    """
+    if (os.name if platform is None else platform) == "nt":
+        return (f"Copy-Item -LiteralPath {quote_arg(source, platform)} "
+                f"-Destination {quote_arg(target, platform)}")
+    return f"cp {quote_arg(source, platform)} {quote_arg(target, platform)}"
+
+
 def check_leg_shape_files(ctx: Context) -> Row:
     """Each present leg's shape files against `templates/<role>-root/`.
 
@@ -1081,8 +1138,10 @@ def check_leg_shape_files(ctx: Context) -> Row:
         for rel, entry in per_leg.items())
     if missing:
         named = ", ".join(f"{leg}/{file}" for _, leg, file in missing)
-        # A `cp` IS OFFERED ONLY FOR A FILE A `cp` WOULD FIX. The template's
-        # `AGENTS.md` and `README.md` carry `{{PLACEHOLDER}}`s the scaffold
+        # A COPY IS OFFERED ONLY FOR A FILE A COPY WOULD FIX -- `cp` for a
+        # POSIX reader and `Copy-Item -LiteralPath` for a PowerShell one,
+        # which is `copy_command`'s job (#105). The template's `AGENTS.md`
+        # and `README.md` carry `{{PLACEHOLDER}}`s the scaffold
         # renders, so copying one verbatim leaves a leg holding literal
         # `{{PROJECT_NAME}}` — a command that produces an invalid leg is
         # worse than no command at all (Copilot, PR #96). For those the row
@@ -1092,8 +1151,7 @@ def check_leg_shape_files(ctx: Context) -> Row:
         if copyable:
             role, rel, name = copyable[0]
             source = ctx.shape / "templates" / f"{role}-root" / name
-            fix = (f"cp {quote_arg(source)} "
-                   f"{quote_arg(ctx.root / rel / name)}")
+            fix = copy_command(source, ctx.root / rel / name)
             if len(copyable) < len(missing):
                 fix += ("   # and the rest are RENDERED per project "
                         "(placeholders): scaffold-project.py writes those, "
