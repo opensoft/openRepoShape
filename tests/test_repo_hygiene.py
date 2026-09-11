@@ -32,6 +32,7 @@ SHIPPED = [
     REPO / "scripts" / "validate-repository-naming.py",
     REPO / "scripts" / "family.py",
     REPO / "scripts" / "bump-leg.py",
+    REPO / "scripts" / "render-cli-reference.py",
     REPO / "templates" / "assembly-root" / "scripts" / "validate-pins.py",
     REPO / "templates" / "assembly-root" / "scripts" / "validate-manifest.py",
     REPO / "templates" / "assembly-root" / "scripts" / "bootstrap.py",
@@ -45,6 +46,13 @@ SHIPPED = [
 #: two files travel together in `contracts/shape-pin.yaml`. It is a local
 #: module in exactly the sense the other four are — a file this standard
 #: ships, never a package anybody installs.
+#:
+#: `scripts/render-cli-reference.py` joins them on 2026-09-11 (#97). It
+#: reaches no scaffolded project — it renders `docs/cli.md` from the other
+#: tools' own `--help` — but it is non-test code in this repository, and a
+#: fork that cannot install anything still has to be able to regenerate the
+#: reference after it changes a tool. The rule costs it nothing and the
+#: category it would otherwise sit in is "nothing checks this file".
 LOCAL_MODULES = {"repo_shape", "shape_materialize", "path_classify",
                  "conftest", "bootstrap"}
 
@@ -418,9 +426,27 @@ def test_agents_md_is_short_enough_to_be_read():
     leg), and the `CANNOT ANSWER` / exit 3 half-sentence in point 1 —
     because that verdict is THIS CHECKOUT failing to ask, and an assistant
     who relays it as a verdict about the repository has relayed the
-    opposite of what happened."""
+    opposite of what happened.
+
+    2026-09-11: 400 -> 408 — `docs/cli.md` (#97). Brett Heap: "do we have
+    documentation designed for an AI to understand what our CLI can do and
+    how to use it?" -> "add the docs/cli.md". Seven lines and a blank one, in
+    the opening, for a file that did not exist until that ruling: this file
+    is PROCEDURE-first by design and the flags lived only inside seventeen
+    separate `--help` texts, so an assistant that needed a spelling either
+    ran seventeen commands or worked from memory. The paragraph says four
+    things, and an assistant can infer none of them. That the reference
+    EXISTS at all. That it is GROUPED, because six of the tools are copies
+    that run from inside a scaffolded project and not from a checkout of this
+    standard, and a flat list would have an agent running `validate-pins.py`
+    where there is no manifest. That THIS FILE STILL OUTRANKS IT — a flag
+    being documented is not permission to pass it, which is the failure a
+    flag list invites and the reason one was not written before. And that it
+    is GENERATED, so a line that has gone stale is fixed by regenerating and
+    never by editing the document, which is the hand-edited-pin rule arriving
+    through a new door."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 400, f"AGENTS.md is {len(lines)} lines; the cap is 400"
+    assert len(lines) <= 408, f"AGENTS.md is {len(lines)} lines; the cap is 408"
 
 
 def test_claude_md_points_at_agents_md():
@@ -906,8 +932,19 @@ def test_readme_is_short_enough_to_be_read():
     #   a commit THIS checkout does not carry is not the repository being
     #   wrong. One corrects a sentence that was simply false: the machine
     #   row asks `gh` three questions, not one.
-    assert len(lines) <= 1324, (
-        f"README.md is {len(lines)} lines; the cap is 1324")
+    # 2026-09-11: 1324 -> 1328 — `docs/cli.md` (#97). Three lines in the
+    #   Layout block and one in the sentence that already sent a reader to
+    #   `openRepoShape --help` and `setup.sh --help` for the flags — it now
+    #   names the file that has all seventeen tools' help instead of the two.
+    #   The block claims to list what this repository ships and named nothing
+    #   under `docs/` at all, so `docs/handbook.html` — shipped since #71 —
+    #   goes in beside the new file rather than remaining the one shipped
+    #   thing the layout does not mention. The generator gets its own row
+    #   next to what it generates, because a reader who finds `docs/cli.md`
+    #   and edits it has undone the whole point of it, and a layout row is
+    #   where they find that out before they type.
+    assert len(lines) <= 1328, (
+        f"README.md is {len(lines)} lines; the cap is 1328")
 
 
 @pytest.mark.parametrize("name", SHIPPED_BASH)

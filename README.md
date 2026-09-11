@@ -272,7 +272,8 @@ which, run from a download, still clones the standard into a temporary
 directory first, and from a checkout clones nothing. What it leaves behind is
 `./Atlas` and three bare repositories in `./rehearsal`, both of which you can
 delete. `openRepoShape --help` and `setup.sh --help` list every flag, this one
-included.
+included; [`docs/cli.md`](docs/cli.md) is every tool's help and every
+subcommand's in one file, generated from the tools themselves.
 
 Without installing anything — no fork, no manual clone — one command:
 
@@ -1312,6 +1313,9 @@ templates/code-root/              the skeleton for <Project>-code
 templates/*/AGENTS-shape.md       the rules of the shape, for an agent (PINNED)
 templates/*/.gitattributes        LF in every clone, so a copy digests as pinned
 AGENTS.md                         the procedure an AI assistant follows
+docs/cli.md                       every tool's --help: the flag-level reference
+docs/handbook.html                the designed reading of this README, one page
+scripts/render-cli-reference.py   renders docs/cli.md; never hand-edit that file
 tests/                            pytest; scaffolds into bare repos in /tmp
 ```
 
