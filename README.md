@@ -1088,8 +1088,9 @@ no fetch), **leg shape files** (each leg's `AGENTS.md`, `CLAUDE.md` and
 because no leg file is pinned anywhere), **placement** (every tracked path of
 every leg, against the path policy), **agent files**, and **machine**. A
 FAMILY holder gets **family**, **manifest kinds**, **shape currency**,
-**members** and **machine**; a directory that is neither gets what it is
-CALLED under the naming policy, what IS in it, and the way in.
+**placement** (`n/a` — a holder has no legs of its own), **members** and
+**machine**; a directory that is neither gets what it is CALLED under the
+naming policy, what IS in it, and the way in.
 
 Every row is `ok`, `note`, `FINDING` or `n/a`, and every one that is not
 `ok` names the exact command that fixes it. **Only a `FINDING` moves the

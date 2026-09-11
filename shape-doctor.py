@@ -75,7 +75,8 @@ THE ROWS, for an assembly root, in this order:
                       (`setup-project.py --preflight`, plus `git-filter-repo`)
 
 and for a FAMILY holder: `family` (its own `scripts/validate-family.py`),
-`manifest kinds`, `shape currency`, `members` and `machine`. A directory that
+`manifest kinds`, `shape currency`, `placement` (`n/a`: a holder has no legs
+of its own), `members` and `machine`. A directory that
 is NEITHER gets `naming` (what it is called, under the policy), `what is
 here`, `the way in` -- `adopt-project.py plan` for a repository that already
 exists, `setup.sh` for a new one -- and `machine`.
@@ -164,6 +165,7 @@ import datetime as _dt
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -289,6 +291,18 @@ AGENT_FILES = ("AGENTS-shape.md", "AGENTS.md", "CLAUDE.md")
 #: does not judge, beyond a file that is missing altogether.
 LEG_SHAPE_FILES = ("AGENTS.md", "CLAUDE.md", ".gitignore")
 LEG_RENDERED = ("AGENTS.md", "README.md")
+
+#: A tracked path this row can neither classify honestly nor write into a
+#: plan. Git allows any byte but `/` and NUL in a name, so a file can carry a
+#: newline, a control character, or a sequence that is not UTF-8 at all.
+#: `surrogateescape` keeps those bytes readable as a Python string, but they
+#: cannot be WRITTEN: a newline splits one plan entry across two lines of
+#: YAML, and a surrogate raises `UnicodeEncodeError` in the writer -- a
+#: traceback out of a command whose whole promise is that it reports. So such
+#: a path is excluded from the classification and REPORTED by `repr`, which is
+#: the only spelling that is safe in every output this command has (Copilot,
+#: PR #100).
+UNWRITABLE_IN_A_PLAN = re.compile(r"[\x00-\x1f\x7f\ud800-\udfff]")
 
 #: The leg roles the `placement` row can judge. The path policy's classes are
 #: `spec`, `code`, `root` and ambiguous, so a leg declaring any other role is
@@ -1000,19 +1014,79 @@ def leg_tracked_files(mount: Path) -> list:
     minutes of forking for a number nothing decides on. A path in the index
     with no file on disk reports zero rather than raising: it is somebody
     mid-`git rm`, and the classification of its NAME is unaffected.
+
+    THE SECOND RETURN IS THE RESIDUE: the names this command cannot put in a
+    report or a plan without breaking one, as `repr`. See
+    `UNWRITABLE_IN_A_PLAN`.
     """
     raw = git_out(["ls-files", "-z"], cwd=mount, binary=True)
     out = []
+    unwritable = []
     for record in raw.split(b"\x00"):
         if not record:
             continue
         path = record.decode("utf-8", "surrogateescape")
+        if UNWRITABLE_IN_A_PLAN.search(path):
+            unwritable.append(repr(path))
+            continue
         try:
             size = (mount / path).stat().st_size
         except OSError:
             size = 0
         out.append((path, size))
-    return out
+    return out, unwritable
+
+
+def outside_the_root(root: Path, mount: Path) -> str | None:
+    """Why this mount is not a directory of the repository being checked.
+
+    `path:` COMES OUT OF `project.yaml`, WHICH THIS COMMAND DOES NOT OWN. An
+    absolute path, a `..`, or a symlink makes `root / rel` a directory
+    somewhere else entirely, and a `git ls-files` there would put another
+    checkout's paths and sizes into this report and into the plan (Copilot,
+    PR #100). The manifest validator has its own opinion about such a
+    `path:`; this row must not act on it in the meantime.
+
+    A leg mounted AT the root is refused by the same function and for the
+    neighbouring reason: it is the assembly root's own repository, whose
+    contents are the root's, and reading them as a leg's would call every
+    file in the root misplaced.
+    """
+    try:
+        here, base = mount.resolve(), root.resolve()
+    except OSError as exc:
+        return f"the mount cannot be resolved on this machine: {exc}"
+    if here == base:
+        return ("the manifest mounts this leg at the assembly root itself, "
+                "whose contents are the root's and not a leg's")
+    if base not in here.parents:
+        return (f"the manifest points this leg outside {base}, and nothing "
+                "outside the root that was named is read")
+    return None
+
+
+def not_its_own_repository(mount: Path) -> str | None:
+    """Why `git ls-files` here would answer about somebody else's index.
+
+    `git -C` DISCOVERS. Run in a plain directory it walks UP and answers from
+    the enclosing repository, so a leg that is not a submodule at all would
+    have the ASSEMBLY ROOT's index read as if it were the leg's contents
+    (Copilot, PR #100). The `legs` row already reports a missing gitlink with
+    `make bootstrap` beside it; this one simply declines to guess.
+    """
+    try:
+        top = Path(git_out(["rev-parse", "--show-toplevel"], cwd=mount))
+    except (Refusal, OSError):
+        return ("it is not a git repository, so it has no tracked paths of "
+                "its own to read")
+    try:
+        if top.resolve() == mount.resolve():
+            return None
+    except OSError as exc:  # pragma: no cover - a path git named and we cannot
+        return f"git named a top level this machine cannot resolve: {exc}"
+    return (f"it is not a repository of its own -- `git` answers from "
+            f"{top.as_posix()} -- so `ls-files` there would report that "
+            "repository's paths, not this leg's")
 
 
 def named_offenders(rows: list) -> str:
@@ -1055,27 +1129,44 @@ def placement_row(status: str, reason: str, next_command=None,
 
 
 def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
-              mount: Path) -> tuple:
+              root: Path) -> tuple:
     """ONE leg: its summary, the paths in the wrong leg, and the questions.
 
     Split out so the row above reads as three sentences rather than one loop
-    with four ways out of it -- and because a leg that cannot be audited has
-    to say WHICH of the three reasons it is, beside the legs that could.
+    with six ways out of it -- and because a leg that cannot be audited has to
+    say WHICH of the reasons it is, beside the legs that could.
+
+    EVERY EARLY RETURN IS A LEG THIS ROW DECLINES TO GUESS ABOUT, and the
+    caller must not read any of them as a clean leg: `check_placement` says
+    `note` rather than `ok` while one is there, because "every tracked path
+    classifies as the leg it is in" is not a claim to make about a leg nobody
+    read (Copilot, PR #100).
     """
     entry = {"role": role, "path": rel}
+    mount = root / rel
+    escaped = outside_the_root(root, mount)
+    if escaped:
+        entry["state"] = escaped
+        return entry, [], []
     if not (mount.is_dir() and any(mount.iterdir())):
         # The `legs` row already reports this, with `make bootstrap` beside
         # it. Here it is only why this leg has no answer.
         entry["state"] = "not populated"
         return entry, [], []
     if role not in LEG_ROLES:
-        entry["state"] = f"role {role} is not one the path policy classifies"
+        entry["state"] = (f"role {role} is not one that the path policy "
+                          "classifies")
+        return entry, [], []
+    borrowed = not_its_own_repository(mount)
+    if borrowed:
+        entry["state"] = borrowed
         return entry, [], []
     try:
-        files = leg_tracked_files(mount)
+        files, unwritable = leg_tracked_files(mount)
     except Refusal as exc:
         entry["state"] = f"git could not list it: {exc.detail}"
         return entry, [], []
+    entry["unwritable"] = unwritable
     kept = [(path, size) for path, size in files
             if not any(regex.match(path) for regex in patterns)]
     walked = adopt.walk(policy, kept)
@@ -1189,7 +1280,7 @@ def check_placement(ctx: Context) -> Row:
         role = str(leg.get("role") or "?")
         rel = str(leg.get("path") or role)
         entry, wrong, unsure = audit_leg(adopt, policy, patterns, role, rel,
-                                         ctx.root / rel)
+                                         ctx.root)
         per_leg.append(entry)
         misplaced.extend(wrong)
         review.extend(unsure)
@@ -1199,12 +1290,27 @@ def check_placement(ctx: Context) -> Row:
               "review_required": review,
               "counts": {"misplaced": len(misplaced),
                          "review_required": len(review)}}
+    unread = [entry for entry in per_leg if entry.get("state") != "audited"]
+    unwritable = [name for entry in per_leg
+                  for name in (entry.get("unwritable") or [])]
+    detail["counts"]["unread_legs"] = len(unread)
+    detail["counts"]["unwritable_names"] = len(unwritable)
     audited = "; ".join(
         f"{entry['path']}: " + (
             f"{entry['paths']} path(s) over {entry['classified']} of "
             f"{entry['tracked']} tracked file(s)"
+            + (f", and {len(entry['unwritable'])} name(s) no report or plan "
+               f"can carry: {', '.join(entry['unwritable'][:3])}"
+               if entry.get("unwritable") else "")
             if entry.get("state") == "audited" else str(entry.get("state")))
         for entry in per_leg)
+    if len(unread) == len(per_leg):
+        # NOT `ok` AND NOT A FINDING. Every leg declined for a reason the
+        # `legs` row already asserts or the manifest already carries, and a
+        # row that answered `ok` here would be answering about nothing.
+        return placement_row(
+            NA, f"no leg could be read, so nothing was classified: {audited}",
+            None, detail)
     plan = (f"{PYTHON} {ctx.shape / 'shape-doctor.py'} --root {ctx.root} "
             "--placement-plan placement-plan.yaml   # writes the paths above "
             "as a plan to resolve by hand. Moving one is a pull request on "
@@ -1224,6 +1330,15 @@ def check_placement(ctx: Context) -> Row:
             f"nothing is in the wrong leg; {len(review)} path(s) the policy "
             f"will not call: {named_offenders(review)}  [{audited}]",
             plan, detail)
+    if unread or unwritable:
+        # `note`, because what is missing is a READ and not a fault of this
+        # repository's -- and never `ok`, because "every tracked path
+        # classifies as the leg it is in" is a claim about paths nobody read.
+        return placement_row(
+            NOTE,
+            "nothing is in the wrong leg in what could be read, and not "
+            f"everything could be: {audited}",
+            None, detail)
     return placement_row(
         OK, f"every tracked path classifies as the leg it is in: {audited}",
         None, detail)
@@ -1299,11 +1414,21 @@ def placement_plan_text(ctx: Context, adopt, row: Row) -> str:
             adopt.emit(lines, "paths", leg.get("paths"), 4)
             adopt.emit(lines, "misplaced", leg.get("misplaced"), 4)
             adopt.emit(lines, "review_required", leg.get("review_required"), 4)
+            for name in (leg.get("unwritable") or []):
+                lines.append("    # a tracked name no plan can carry: "
+                             + name.replace("\n", " "))
+    unread = [leg.get("path") for leg in (detail.get("legs") or [])
+              if leg.get("state") != "audited"]
     if not entries:
         lines += ["",
-                  "# Nothing is in the wrong leg and nothing needs a reading:",
-                  "# there is nothing here to resolve.",
-                  "paths: []"]
+                  "# Nothing is in the wrong leg and nothing needs a reading",
+                  "# IN WHAT WAS READ: there is nothing here to resolve."]
+        if unread:
+            lines += ["# The `legs:` block above names "
+                      f"{len(unread)} leg(s) that could not be read at all,",
+                      "# so this emptiness is not a clean bill of health for "
+                      "them."]
+        lines.append("paths: []")
     else:
         lines += ["", "paths:"]
     for entry in entries:
@@ -1810,8 +1935,15 @@ def verdict_for(ctx: Context, rows: list[Row]) -> tuple[str, int]:
     # verdict line. Drift still outranks it: a leg off its pin means the
     # paths this row read are not the paths the pin describes.
     placement = by_id.get("placement")
-    if placement is not None and placement.status == FINDING:
-        count = len(placement.detail.get("misplaced") or [])
+    misplaced = (placement.detail.get("misplaced") or []) if placement else []
+    # THE LIST HAS TO BE NON-EMPTY, not merely the row red. `run_checks` turns
+    # an exception out of any check into a FINDING row with an empty detail,
+    # and this branch would then have answered `MISPLACED (0 paths)` about a
+    # row that never got as far as classifying anything -- a verdict naming a
+    # count of zero. Such a row falls through to the generic handling below
+    # and reads `INVALID (placement)`, which is what it is (Copilot, PR #100).
+    if placement is not None and placement.status == FINDING and misplaced:
+        count = len(misplaced)
         return (f"{V_MISPLACED} ({count} path"
                 + ("" if count == 1 else "s") + ")"), 1
 

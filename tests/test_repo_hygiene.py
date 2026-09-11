@@ -981,9 +981,13 @@ def test_readme_is_short_enough_to_be_read():
     #   one teaches the other, and it carries a different `kind:` ON PURPOSE
     #   — a reader who does not learn that from the page could hand it to
     #   `adopt-project.py execute`, which creates repositories and rewrites
-    #   history, with `--yes` the only thing in the way.
-    assert len(lines) <= 1374, (
-        f"README.md is {len(lines)} lines; the cap is 1374")
+    #   history, with `--yes` the only thing in the way. One more line, at
+    #   1374 -> 1375, for the review on PR #100: the FAMILY row list named
+    #   five rows and the command returns six, `placement` among them at
+    #   `n/a`. A page that lists the rows and is short one is a page a reader
+    #   checks their report against and finds a row nobody documented.
+    assert len(lines) <= 1375, (
+        f"README.md is {len(lines)} lines; the cap is 1375")
 
 
 @pytest.mark.parametrize("name", SHIPPED_BASH)

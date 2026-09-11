@@ -1159,7 +1159,11 @@ def test_code_in_the_spec_leg_and_spec_in_the_code_leg_is_misplaced(standard,
     rows = rows_of(doctor(standard, project, "--json"))
     row = rows["placement"]
     assert row["status"] == "FINDING"
-    assert row["detail"]["counts"] == {"misplaced": 2, "review_required": 0}
+    assert row["detail"]["counts"] == {"misplaced": 2, "review_required": 0,
+                                       "unread_legs": 0,
+                                       "unwritable_names": 0}, (
+        "both legs were read in full, so the two counts that qualify a clean "
+        "answer are zero and the row is entitled to the word `FINDING`")
     found = {entry["path"]: entry for entry in row["detail"]["misplaced"]}
     assert set(found) == {"spec/tool.py", "code/requirements/"}
     assert found["spec/tool.py"]["leg"] == "spec"
@@ -1298,7 +1302,7 @@ def test_a_leg_whose_role_the_policy_has_no_class_for_is_not_guessed_at(
     row = rows_of(doctor(standard, project, "--json"))["placement"]
     legs = {entry["role"]: entry for entry in row["detail"]["legs"]}
     assert "prose" in legs, row["detail"]["legs"]
-    assert "not one the path policy classifies" in legs["prose"]["state"]
+    assert "not one that the path policy classifies" in legs["prose"]["state"]
     assert legs["code"]["state"] == "audited"
 
 
@@ -1463,3 +1467,116 @@ def test_a_directory_that_is_not_a_shape_root_refuses_the_flag_too(standard,
     assert "REFUSED shape-doctor-no-placement-audit" in result.stderr
     assert "not an assembly root (none)" in result.stderr
     assert not out.exists()
+
+
+# --- the placement row declines to guess (the review on PR #100) -----------
+
+def test_a_leg_that_is_not_its_own_repository_is_not_read(standard, project):
+    """`git -C` DISCOVERS, and that is how this row could read the root.
+
+    Run in a plain directory, `git` walks UP and answers from the enclosing
+    repository — so a leg mount that is not a submodule at all would have the
+    ASSEMBLY ROOT's index read as if it were the leg's contents. The row
+    declines, names why, and — the half that matters — does NOT then say `ok`
+    about a repository one of whose legs nobody read.
+    """
+    rmtree(project / "spec")
+    (project / "spec").mkdir()
+    (project / "spec" / "tool.py").write_text("VALUE = 1\n", encoding="utf-8")
+    row = rows_of(doctor(standard, project, "--json"))["placement"]
+    legs = {entry["role"]: entry for entry in row["detail"]["legs"]}
+    assert "not a repository of its own" in legs["spec"]["state"], legs
+    assert legs["code"]["state"] == "audited", legs
+    assert row["status"] == "note", row
+    assert row["detail"]["counts"]["unread_legs"] == 1
+    assert "not everything could be" in row["reason"]
+    assert row["detail"]["misplaced"] == [], (
+        "spec/tool.py is in the ROOT's index, not the leg's, and reporting it "
+        "would be this row telling somebody about a file it never read")
+
+
+def test_a_leg_the_manifest_points_outside_the_root_is_never_read(standard,
+                                                                  project,
+                                                                  tmp_path):
+    """`path:` comes out of `project.yaml`, which this command does not own.
+
+    A `..`, an absolute path or a symlink makes `root / rel` a directory
+    somewhere else, and a `git ls-files` there would put another checkout's
+    paths and sizes into this report and into the plan. The manifest
+    validator has its own opinion about such a `path:`; this row must not act
+    on it in the meantime.
+    """
+    elsewhere = project.parent / "outside"
+    elsewhere.mkdir()
+    git("init", "-q", "-b", "main", ".", cwd=elsewhere)
+    (elsewhere / "secret.py").write_text("TOKEN = 1\n", encoding="utf-8")
+    commit_all(elsewhere, "somebody else's repository")
+
+    manifest = project / "project.yaml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            "path: spec", "path: ../outside", 1), encoding="utf-8")
+    row = rows_of(doctor(standard, project, "--json"))["placement"]
+    legs = {entry["role"]: entry for entry in row["detail"]["legs"]}
+    assert "outside" in legs["spec"]["state"], legs
+    assert "nothing outside the root that was named is read" in \
+        legs["spec"]["state"]
+    assert row["status"] == "note", row
+    assert "secret.py" not in json.dumps(row), (
+        "not one path of the repository next door may appear in this report")
+
+
+@pytest.mark.skipif(os.name == "nt",
+                    reason="Windows has no filename with a newline in it")
+def test_a_tracked_name_no_plan_can_carry_is_reported_and_never_written(
+        standard, project, tmp_path):
+    """Git allows any byte but `/` and NUL in a name; YAML does not.
+
+    A newline in a filename would split one plan entry across two lines, and
+    a name that is not UTF-8 at all raises `UnicodeEncodeError` in the
+    writer — a traceback out of a command whose whole promise is that it
+    reports. Such a path is excluded from the classification and REPORTED by
+    `repr`, and the plan it is kept out of still parses.
+    """
+    stage(project / "spec", "tool\ns.py", "VALUE = 1\n")
+    out = tmp_path / "placement-plan.yaml"
+    result = doctor(standard, project, "--json", "--placement-plan", str(out))
+    row = rows_of(result)["placement"]
+    assert row["status"] == "note", row
+    assert row["detail"]["counts"]["unwritable_names"] == 1
+    spec = [leg for leg in row["detail"]["legs"] if leg["role"] == "spec"][0]
+    assert spec["unwritable"] == ["'tool\\ns.py'"], spec
+    assert "no report or plan can carry" in row["reason"]
+    # And the plan it was kept out of is still a file the reader can read.
+    adopt = adoption_module(standard)
+    data = adopt.load_yaml(out)
+    assert data["kind"] == adopt.PLACEMENT_PLAN_KIND
+    assert (data.get("paths") or []) == []
+
+
+def test_the_misplaced_verdict_needs_an_actual_misplaced_path(standard,
+                                                              project):
+    """A red `placement` row with nothing in it is INVALID, not MISPLACED.
+
+    `run_checks` turns an exception out of any check into a FINDING row with
+    an empty detail — so the verdict branch, reading a length, would have
+    answered `MISPLACED (0 paths)`: a verdict naming a count of zero, about a
+    row that never got as far as classifying anything.
+    """
+    spec = importlib.util.spec_from_file_location("shape_doctor_verdicts",
+                                                  standard / DOCTOR)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    ctx = module.Context(project)
+    assert ctx.kind == module.PROJECT
+    blown = module.Row("placement", "placement", module.FINDING,
+                       "could not be run: [Errno 13] Permission denied",
+                       None, {})
+    verdict, code = module.verdict_for(ctx, [blown])
+    assert verdict == "INVALID (placement)", verdict
+    assert code == 1
+    # And with a path in it, the same row IS the verdict.
+    real = module.Row("placement", "placement", module.FINDING, "two of them",
+                      None, {"misplaced": [{"path": "spec/a.py"},
+                                           {"path": "code/b.md"}]})
+    assert module.verdict_for(ctx, [real])[0] == "MISPLACED (2 paths)"
