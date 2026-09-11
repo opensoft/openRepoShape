@@ -478,8 +478,8 @@ def test_a_directory_that_is_not_a_repository_says_scaffold(standard,
     rows = rows_of(result)
     # THE READER'S OWN ENTRY POINT, which is not the same file on every
     # platform: `setup.sh` is bash and PowerShell cannot execute it, so on
-    # Windows the way in is `setup-project.py`, which IS the flow that shim
-    # shims (#49, #50; Copilot, PR #102).
+    # Windows the way in is `setup-project.py`, which IS the flow -- and
+    # `setup.sh` a shim over it (#49, #50; Copilot, PR #102).
     assert ("setup-project.py" if os.name == "nt" else "setup.sh") in \
         rows["way-in"]["next"], rows["way-in"]["next"]
     assert "--org <your-org>" in rows["way-in"]["next"]
@@ -1843,6 +1843,50 @@ def test_the_scaffold_command_is_the_readers_own_entry_point(platform, entry,
     assert "--project 'My Thing'" in spaced, spaced
 
 
+#: The curly apostrophe this repository's OWN prose is written with, not the
+#: straight one `AWKWARD_VALUES` already covers -- and the value that broke
+#: `next_command`, because `ascii_text` maps it to `'` on the FAR side of
+#: quoting rather than before it (Copilot, PR #102).
+CURLY_APOSTROPHE = "O\u2019Neill"
+
+
+def test_a_curly_apostrophe_is_normalized_before_it_is_quoted():
+    """`quote_arg` must ascii-normalize FIRST, or `Row.__init__` breaks it.
+
+    `Row.__init__` runs `ascii_text` again, after quoting, over the whole
+    assembled command -- so a curly apostrophe that reached this function
+    unconverted came back out of THAT pass as a bare, undoubled one, on the
+    far side of the quoting it sat inside. `'O'Neill'` is an unterminated
+    quotation to `sh`, and PowerShell's own verbatim string is exactly as
+    broken by an apostrophe that never got doubled. Normalizing here first
+    means the value quoted is already plain ASCII, so that later pass has
+    nothing left to do.
+    """
+    module = doctor_module(REPO)
+    posix = module.quote_arg(CURLY_APOSTROPHE, "posix")
+    assert shlex.split(posix) == ["O'Neill"], posix
+    assert module.quote_arg(CURLY_APOSTROPHE, "nt") == "'O''Neill'"
+
+
+def test_a_trailing_newline_is_quoted_not_waved_through():
+    r"""`$` matches just before a trailing newline; `.match` does not care.
+
+    `re.match` only anchors the START of the string, so a pattern ending in
+    `$` against `"Atlas\n"` matches the first five characters and stops --
+    true, with the newline left over and never inspected. Bare, that
+    newline would land in the middle of a command meant to run on one line
+    (Copilot, PR #102). `.fullmatch` is what actually requires the alphabet
+    to cover the WHOLE value, newline included.
+    """
+    module = doctor_module(REPO)
+    value = "Atlas\n"
+    posix = module.quote_arg(value, "posix")
+    windows = module.quote_arg(value, "nt")
+    assert posix != value, posix
+    assert windows != value, windows
+    assert shlex.split(posix) == [value], posix
+
+
 @pytest.fixture
 def awkward_project(scaffolded_here, tmp_path) -> Path:
     """The fixture project, at a path with a space and an apostrophe in it.
@@ -1953,8 +1997,8 @@ def test_a_drifted_roots_next_command_runs_when_it_is_pasted(
         f"`update-shape.py check` reports drift with exit 1; exit "
         f"{pasted.returncode} is a command that did not run.\n{whole}")
     assert DRIFT_TARGET in whole, whole
-    assert "usage:" not in whole and "unrecognized arguments" not in whole, \
-        whole
+    assert "usage:" not in whole, whole
+    assert "unrecognized arguments" not in whole, whole
     # And the unquoted spelling -- what this file printed before #101 -- is
     # the failure, so the assertion above cannot be passing by accident.
     quoted_root = doctor_module(standard).quote_arg(awkward_project, "posix")
@@ -1972,8 +2016,51 @@ def test_a_drifted_roots_next_command_runs_when_it_is_pasted(
     # reads the tail as positionals it has no argument for. Either way the
     # reader is stopped -- what they never get is the wrong repository
     # checked quietly.
-    assert broken.returncode == 2 and ("unexpected EOF" in said
-                                       or "unrecognized arguments" in said), (
+    assert broken.returncode == 2, (
         "unquoted, the same line must not run and must say why; if it can, "
         f"this test is proving nothing.\n  exit {broken.returncode}\n"
         f"  {said[:400]}")
+    assert "unexpected EOF" in said or "unrecognized arguments" in said, (
+        "unquoted, the same line must not run and must say why; if it can, "
+        f"this test is proving nothing.\n  exit {broken.returncode}\n"
+        f"  {said[:400]}")
+
+
+@pytest.fixture
+def curly_project(scaffolded_here, tmp_path) -> Path:
+    """The fixture project, at a path with a CURLY apostrophe in it.
+
+    Same shape as `awkward_project` and for the same reason -- a COPY, not a
+    scaffold, so a submodule's `.git` file's relative path into
+    `../.git/modules/<name>` still resolves (see `tests/conftest.py`) -- but
+    a different character: `ascii_text` maps `'` to `'`, which is exactly
+    what made this the value that reached `next_command` unconverted
+    (Copilot, PR #102).
+    """
+    target = tmp_path / CURLY_APOSTROPHE / PROJECT
+    target.parent.mkdir(parents=True)
+    shutil.copytree(scaffolded_here["clone"], target, symlinks=True)
+    return target
+
+
+def test_a_curly_apostrophe_in_the_root_survives_the_real_report(
+        standard, curly_project):
+    """The bug lived in `Row.__init__`, on the far side of `quote_arg`.
+
+    Proving `quote_arg` correct in isolation proves nothing about what a
+    caller then PRINTS: `Row.__init__` ascii-normalizes the WHOLE assembled
+    `next_command` a second time, after every value in it is already
+    quoted. So this goes through a real report, and the claim is the
+    strongest one available: whatever a row prints for `--root` is exactly
+    what `quote_arg` itself returns for this path, not that string with its
+    apostrophe knocked bare a second time (Copilot, PR #102).
+    """
+    edited = curly_project / DRIFT_TARGET
+    edited.write_text(edited.read_text(encoding="utf-8") + "\n# an edit\n",
+                      encoding="utf-8")
+    row = rows_of(doctor(standard, curly_project,
+                        "--json"))["shape-currency"]
+    assert row["status"] == "FINDING", row
+    here = "nt" if os.name == "nt" else "posix"
+    quoted_root = doctor_module(standard).quote_arg(curly_project, here)
+    assert quoted_root in row["next"], row["next"]

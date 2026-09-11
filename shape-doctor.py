@@ -432,10 +432,37 @@ def quote_arg(value, platform: str | None = None) -> str:
     `repo_shape.SAFE_PATH_RE` answers a different question anyway -- what may
     become an argument to `git`, where every command is a list run with
     `shell=False` and the threat is argument injection, not a shell.
+
+    AND IT NORMALIZES BEFORE IT QUOTES, NOT AFTER. `Row.__init__` runs
+    `ascii_text` again, over the WHOLE assembled `next_command`, once every
+    value in it already sits quoted -- so a curly apostrophe that reached
+    this function unconverted came out the far side of THAT pass as a bare,
+    undoubled one, breaking the very quoting it sat inside (Copilot, PR
+    #102): `'O'Neill'` is an unterminated quotation to `sh`, and an
+    un-doubled apostrophe is exactly as broken to PowerShell's own verbatim
+    string. Normalizing HERE first leaves that later pass nothing to touch:
+    `ascii_text` maps this repository's own typography to ASCII, so calling
+    it twice on an already-ASCII string is a no-op. What the reader then sees
+    is the ASCII FLATTENING of their path rather than its own bytes -- which
+    is this file's PURE ASCII rule, stated at the top and true of every other
+    string in the report, and a command that names a path plainly and is
+    refused by name beats one no shell will parse.
+
+    AND THE ALPHABET CHECK MUST COVER THE VALUE WHOLE. `$` is content to
+    match just before a trailing newline, so `.match` alone waved a value
+    like `"Atlas\n"` through bare, newline and all -- true to the pattern
+    and false to the point of it (Copilot, PR #102). `.fullmatch` is what
+    actually requires every character to be in the alphabet, not only the
+    ones before wherever `$` was willing to stop.
     """
-    text = str(value)
+    # ASCII first, so the alphabet check and the quoting below it both see
+    # what `Row.__init__` will (Copilot, PR #102); see the docstring above.
+    text = ascii_text(str(value))
     windows = (os.name if platform is None else platform) == "nt"
-    if (UNQUOTED_NT if windows else UNQUOTED_POSIX).match(text):
+    # `.fullmatch`, not `.match`: a pattern ending in `$` still matches just
+    # before a trailing newline, so `.match` alone would call "Atlas\n" bare
+    # (Copilot, PR #102).
+    if (UNQUOTED_NT if windows else UNQUOTED_POSIX).fullmatch(text):
         return text
     if windows:
         # PowerShell's verbatim string: nothing inside is expanded, and the
@@ -462,6 +489,11 @@ class Row:
         self.label = label
         self.status = status
         self.reason = ascii_text(reason)
+        # `quote_arg` ascii-normalizes every value it quotes BEFORE it
+        # quotes it (Copilot, PR #102), so this pass has nothing left to do
+        # to a `next_command` already built from it -- it only does its
+        # ordinary job, flattening this repository's own typography, on the
+        # literal words a caller wrote around those values.
         self.next_command = ascii_text(next_command) if next_command else None
         #: Structured facts for `--json`, so a caller reads numbers rather
         #: than parsing the sentence a human is meant to read.
