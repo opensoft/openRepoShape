@@ -820,30 +820,70 @@ def test_a_deleted_pinned_agent_file_is_not_an_add(standard, project):
 COPY_VERB = "Copy-Item " if os.name == "nt" else "cp "
 
 
-def copied_paths(line: str) -> tuple[str, str]:
+def powershell_tokens(line: str) -> list[str]:
+    """PowerShell's reading of a command line, as far as this row needs it.
+
+    A QUOTE-AWARE PARSER, NOT `str.split()` (Copilot, PR #107). The row's
+    own paths are quoted exactly when they need to be, so a checkout at
+    `C:\\Users\\Jane Doe\\...` arrives as ONE token `'C:\\Users\\Jane
+    Doe\\...'` -- and a test that split on whitespace tore that value in
+    half and then failed a correct command. `#` has the same shape of
+    answer: it opens a comment where a TOKEN starts and is an ordinary
+    character anywhere else, so a path with one in it survives and the
+    trailing `# and the rest are RENDERED...` the row appends does not.
+
+    Verbatim `'...'` only, because that is the one quoting `quote_arg`
+    emits: nothing inside is expanded and an apostrophe is doubled.
+    """
+    tokens: list[str] = []
+    index, length = 0, len(line)
+    while index < length:
+        if line[index].isspace():
+            index += 1
+            continue
+        if line[index] == "#":          # a comment, to the end of the line
+            break
+        if line[index] == "'":
+            index += 1
+            word = []
+            while index < length:
+                if line[index] != "'":
+                    word.append(line[index])
+                    index += 1
+                elif line[index:index + 2] == "''":
+                    word.append("'")    # a doubled apostrophe is one
+                    index += 2
+                else:
+                    index += 1          # the quotation ends
+                    break
+            tokens.append("".join(word))
+            continue
+        start = index
+        while index < length and not line[index].isspace():
+            index += 1
+        tokens.append(line[start:index])
+    return tokens
+
+
+def copied_paths(line: str, platform: str | None = None) -> tuple[str, str]:
     """The source and the target back out of the row's copy line.
 
-    `shlex` on POSIX because that is the reader's own parser there, and the
-    cmdlet's spelling on Windows -- `Copy-Item -LiteralPath <source>
-    -Destination <target>` -- where PowerShell's verbatim string doubles an
-    apostrophe rather than escaping it.
+    `shlex` on POSIX because that is the reader's own parser there --
+    `comments=True` so it drops the row's trailing `#` note the way the
+    shell would, rather than a naive `split("#")` cutting a path that has
+    one in it. On Windows the cmdlet's spelling, read by a parser that
+    knows PowerShell's verbatim string; `platform` so either branch can be
+    asserted from either host, as `copy_command` itself can be.
     """
-    command = line.split("#")[0]
-    if os.name != "nt":
-        parts = shlex.split(command)
+    if (os.name if platform is None else platform) != "nt":
+        parts = shlex.split(line, comments=True)
         assert parts[0] == "cp", line
         return parts[1], parts[2]
-    words = command.split()
+    words = powershell_tokens(line)
     assert words[0] == "Copy-Item", line
     assert words[1] == "-LiteralPath", line
     assert words[3] == "-Destination", line
-
-    def bare(word: str) -> str:
-        if len(word) > 1 and word.startswith("'") and word.endswith("'"):
-            return word[1:-1].replace("''", "'")
-        return word
-
-    return bare(words[2]), bare(words[4])
+    return words[2], words[4]
 
 
 def test_a_missing_rendered_leg_file_is_not_offered_a_cp(standard, project):
@@ -945,6 +985,51 @@ def test_the_copy_line_is_literal_where_cp_is_a_cmdlet(platform, source,
     # away by whoever quoted it.
     assert str(source) in line, line
     assert str(target) in line, line
+
+
+#: A path that breaks a naive parser three ways at once -- a space, an
+#: apostrophe (doubled inside PowerShell's verbatim string, closed-escaped-
+#: reopened by `sh`'s) and a `#`, which opens a comment where a TOKEN starts
+#: and is an ordinary character anywhere else. The row appends a real
+#: trailing comment of its own when only some of the missing files are
+#: copyable, so a reader of these lines has to tell those two apart
+#: (Copilot, PR #107). Each row is its own platform's spelling of a path,
+#: and both are asserted from whichever host runs the suite.
+AWKWARD_COPY = [
+    ("posix", "/srv/open Repo'Shape/templates/spec-root/CLAUDE.md",
+     "/srv/work #2/Atlas/spec/CLAUDE.md"),
+    ("nt", "C:\\Users\\Jane Doe\\shape\\templates\\spec-root\\CLAUDE.md",
+     "C:\\work #2\\O'Brien\\spec\\CLAUDE.md"),
+]
+
+#: What `check_leg_shape_files` appends when some of the missing files are
+#: RENDERED per project and only the rest can be copied -- a real trailing
+#: comment on a real line, kept here verbatim so the parser above is proved
+#: against what the row actually prints.
+RENDERED_NOTE = ("   # and the rest are RENDERED per project (placeholders): "
+                 "scaffold-project.py writes those, and copying a template "
+                 "verbatim would not")
+
+
+@pytest.mark.parametrize("platform,source,target", AWKWARD_COPY)
+def test_the_copy_line_is_read_back_by_the_quoting_it_was_written_with(
+        platform, source, target):
+    """Round trip: what `copy_command` wrote, `copied_paths` reads.
+
+    The parser is the test suite's, not the product's, and it was
+    `str.split()` -- which tears `'C:\\Users\\Jane Doe\\...'` in half at the
+    space and then fails a command that was perfectly correct, and truncates
+    a path with a `#` in it before the assertion is even made (Copilot, PR
+    #107). Both shells' quoting is now read by something that knows it, and
+    the row's own trailing comment is dropped without taking a `#` that sits
+    inside a quotation with it.
+    """
+    module = doctor_module(REPO)
+    line = module.copy_command(source, target, platform) + RENDERED_NOTE
+    # The values really are ones the quoter quotes -- a round trip over two
+    # bare words would prove nothing about either parser.
+    assert "'" in line, line
+    assert copied_paths(line, platform) == (source, target), line
 
 
 def test_the_copy_line_asked_for_no_platform_is_this_hosts():
