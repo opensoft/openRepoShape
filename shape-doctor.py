@@ -22,8 +22,9 @@ project's copies are compared against is THE CHECKOUT THIS FILE IS RUN FROM,
 which is the whole of why the verdict is offline: no clone, no authenticated
 call, and the same answer on a machine that has never spoken to github.com.
 It runs the project's own validators, which are offline by their own
-contract. ONE ROW IS THE EXCEPTION AND IT IS NAMED: `machine` asks `gh`
-whether it is logged in, which `gh` answers by talking to its host. That row
+contract. ONE ROW IS THE EXCEPTION AND IT IS NAMED: `machine` asks `gh` who
+it is logged in as (`setup-project.py --preflight` runs `gh --version`, `gh
+auth status` and `gh api user`), which `gh` answers by talking to its host. That row
 is `n/a` by status and cannot move the verdict -- a workstation missing `gh`
 is not a repository being non-compliant -- so nothing this command CONCLUDES
 depends on a network, and a machine with no `gh` at all is reported rather
@@ -77,13 +78,24 @@ command, because a refusal that does not say what to run is a refusal the
 reader improvises around -- which is the house rule the rest of this standard
 is built on.
 
+AND ONLY A `FINDING` MOVES THE VERDICT. A row is `ok`, `note`, `FINDING` or
+`n/a`, and `FINDING` means exactly "something ELSE asserts this" -- a
+validator, a pin row, a manifest, a gitlink. A difference nothing asserts is
+a `note`: it is printed, it is in `--json`, and the verdict steps over it.
+That line was drawn after this command printed `INVALID` over a live estate
+whose every real gate was green, because a leg was missing a `.gitignore`
+that entered the standard after the project was scaffolded. A doctor that
+invents a rule to fail somebody by is not believed the next time.
+
 EXIT CODES
     0  COMPLIANT: every row ok and the shape is current
     1  findings: the shape is behind, a copy has drifted, a validator is red,
        or a leg is off its pin
     2  NOT A SHAPE ROOT: neither `project.yaml` nor `family.yaml` is there
-    3  usage or environment: no such root, or this file is not sitting in a
-       checkout of the standard
+    3  usage or environment -- nothing here is a statement about the tree
+       that was pointed at: no such root, this file is not sitting in a
+       checkout of the standard, or THIS CHECKOUT cannot answer (a pin
+       naming a commit it does not carry)
 
 THE VERDICT NAMES THE MOST SPECIFIC FINDING; THE TABLE NAMES EVERY ONE. Drift
 outranks a red validator on that line for one concrete reason: an edited shape
@@ -108,19 +120,77 @@ import sys
 from pathlib import Path
 
 SHAPE_ROOT = Path(__file__).resolve().parent
-sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
-from repo_shape import (  # noqa: E402
-    COMMIT_RE, PYTHON, Refusal, git_out, load_yaml, recorded_gitlink,
-)
 
-#: The statuses a row can carry. `n/a` is not a pass and not a failure: it is
-#: a question this ROOT does not have -- a family has no legs, a project
-#: standing outside a git repository has no gitlinks to read -- or, for the
-#: `machine` row, a question that is not about the root at all. Nothing `n/a`
-#: ever changes the verdict, which is the whole reason the word is here: this
-#: command answers "is this REPOSITORY compliant", and a workstation missing
-#: `gh` is not that repository being wrong.
+#: NOT ONE `.pyc` ANYWHERE, and this line has to be BEFORE the first import
+#: of anything beside this file. `PYTHONDONTWRITEBYTECODE=1` further down
+#: covers the validators this runs as subprocesses; `repo_shape` below and
+#: `update-shape.py` in `Context.update_shape` are imported IN PROCESS, and
+#: they were leaving `__pycache__/` in the standard's own checkout. "It
+#: writes nothing" is the first promise this file makes, and a caveat about
+#: which directory would be a worse sentence than the fix.
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
+
+#: What the standard has to have around this file for any of this to mean
+#: anything. `shape-doctor.py` compares a project against THE CHECKOUT IT IS
+#: RUN FROM, so a copy of this one file on its own can answer nothing.
+#:
+#: SPELLED BEFORE THE FIRST IMPORT because the guard that reads it has to run
+#: before one too -- see `not_in_the_standard`.
+SHAPE_MARKERS = ("contracts/repository-naming.yaml",
+                 "scripts/validate-repository-naming.py",
+                 "templates/assembly-root", "update-shape.py")
+
+
+def not_in_the_standard(detail: str) -> int:
+    """The refusal for a `shape-doctor.py` that has no standard around it.
+
+    IT IS A FUNCTION, AND IT IS DEFINED BEFORE THE FIRST IMPORT, because the
+    single most obvious way to be "not in the standard" -- this one file
+    copied out on its own -- used to be met by a ModuleNotFoundError
+    traceback and exit 1. Exit 1 is this tool's code for "the repository has
+    findings", so a caller scripting on it read an interpreter crash as a
+    verdict about somebody's repository; and a traceback names no fix, which
+    is the one rule every refusal in this standard keeps.
+    """
+    missing = [marker for marker in SHAPE_MARKERS
+               if not (SHAPE_ROOT / marker).exists()]
+    print(f"REFUSED shape-doctor-not-in-the-standard: this file is at "
+          f"{SHAPE_ROOT}, which is missing "
+          f"{', '.join(missing) if missing else detail}. shape-doctor.py "
+          "compares a repository against THE CHECKOUT IT IS RUN FROM, so it "
+          "needs one.\n  Remediation: run it from a clone of openRepoShape, "
+          "or `openRepoShape --doctor <path>`, which fetches one for you.",
+          file=sys.stderr)
+    return 3
+
+
+try:
+    from repo_shape import (  # noqa: E402
+        COMMIT_RE, PYTHON, Refusal, git_out, load_yaml, recorded_gitlink,
+    )
+except ImportError as exc:  # pragma: no cover - exercised as a subprocess
+    sys.exit(not_in_the_standard(f"scripts/repo_shape.py ({exc})"))
+
+#: The statuses a row can carry, and only ONE of them moves the verdict.
+#:
+#: `n/a` is a question this ROOT does not have -- a family has no legs -- or,
+#: for the `machine` row, one that is not about the root at all.
+#:
+#: `note` is a DIFFERENCE NOTHING ASSERTS. It was learnt the hard way: a leg
+#: missing `.gitignore` made this command print `INVALID` over a live estate
+#: whose every real gate was green, because `templates/spec-root/.gitignore`
+#: entered the standard AFTER that project was scaffolded and no pin, no
+#: validator and no manifest says a leg must carry one. A doctor that
+#: invents a rule to fail somebody by is a doctor nobody believes the next
+#: time. So a row says `note`, the reader sees the difference, and
+#: `verdict_for` steps over it.
+#:
+#: `FINDING` is therefore exactly what something ELSE asserts -- a validator,
+#: a pin row, a manifest, a gitlink -- and it is the only status that can
+#: make this command exit non-zero about the repository.
 OK = "ok"
+NOTE = "note"
 FINDING = "FINDING"
 NA = "n/a"
 
@@ -137,13 +207,10 @@ V_BEHIND = "COMPLIANT, SHAPE BEHIND"
 V_DRIFTED = "DRIFTED"
 V_INVALID = "INVALID"
 V_NOT_A_ROOT = "NOT A SHAPE ROOT"
-
-#: What the standard has to have around this file for any of this to mean
-#: anything. `shape-doctor.py` compares a project against THE CHECKOUT IT IS RUN
-#: FROM, so a copy of this one file on its own can answer nothing.
-SHAPE_MARKERS = ("contracts/repository-naming.yaml",
-                 "scripts/validate-repository-naming.py",
-                 "templates/assembly-root", "update-shape.py")
+#: Not a verdict about the repository at all: this CHECKOUT could not answer.
+#: Exit 3, the documented "usage or environment", because nothing here is a
+#: statement about the tree that was pointed at.
+V_CANNOT_ANSWER = "CANNOT ANSWER"
 
 #: The three files a scaffolded root carries for an agent. `AGENTS-shape.md`
 #: is a PINNED shape copy, so the pins and shape-currency rows already digest
@@ -536,11 +603,18 @@ def check_shape_currency(ctx: Context) -> Row:
         _root, _pin, rows, additions, upstream, pinned, target, _kind = \
             us.prepare(args)
     except Refusal as exc:
+        # NOT A VERDICT ABOUT THE REPOSITORY. A pin naming a commit THIS
+        # checkout does not carry -- a fork, a branch pin, a clone made
+        # before the commit landed -- is this standard being unable to
+        # answer, which is the documented meaning of exit 3. Labelling it
+        # INVALID would tell somebody their repository is wrong on the
+        # evidence that our copy of the standard is short a commit.
         return Row("shape-currency", "shape currency", FINDING,
                    f"the copies cannot be compared: {exc.detail}",
-                   f"{PYTHON} {ctx.shape / 'update-shape.py'} check --root "
-                   f"{ctx.root} --upstream {ctx.shape}",
-                   {"error": exc.code})
+                   f"git -C {ctx.shape} fetch --all   # this checkout of the "
+                   "standard does not carry the commit the pin names; fetch "
+                   "it, or run the doctor from a clone that has it",
+                   {"error": exc.code, "environment": True})
     try:
         added = [add for add in additions if not add.present]
         reported = list(rows) + added
@@ -575,6 +649,13 @@ def check_shape_currency(ctx: Context) -> Row:
             # pin alone. Reporting `ok` would have made the verdict disagree
             # with the sentence defining it (Copilot, PR #96).
             detail["behind"] = True
+            # WHICH KIND OF BEHIND, because the verdict line quotes counts
+            # that are zero BY CONSTRUCTION on this branch -- it is only
+            # reached when nothing differs -- and `(0 upstream-changed, 0
+            # upstream-added)` under the words SHAPE BEHIND is a parenthetical
+            # that contradicts its own verdict. It fires on both real estates
+            # on this machine, so it is the common case and not an edge.
+            detail["behind_pin_only"] = True
             return Row("shape-currency", "shape currency", FINDING,
                        "no copied file differs, but the pin names an older "
                        f"commit, so `apply` would move the pin alone; "
@@ -747,7 +828,15 @@ def check_leg_shape_files(ctx: Context) -> Row:
                    f"{ctx.shape / 'scaffold-project.py'} --help` shows what "
                    "writes them; copying a template verbatim would leave "
                    "`{{PLACEHOLDER}}`s in the leg")
-        return Row("leg-shape-files", "leg shape files", FINDING,
+        # `note`, NOT `FINDING`. This is the row that printed `INVALID`
+        # over a live estate whose every real gate was green, because
+        # `templates/spec-root/.gitignore` entered the standard AFTER that
+        # project was scaffolded. No pin names a leg file, no validator
+        # asserts one, and the shape-currency row cannot even report it --
+        # so every project cut before that template existed was failed by a
+        # rule this standard never made. The difference is worth a reader's
+        # eye and is not a verdict.
+        return Row("leg-shape-files", "leg shape files", NOTE,
                    f"{summary}  (missing: {named})", fix, detail)
     return Row("leg-shape-files", "leg shape files", OK, summary, None, detail)
 
@@ -799,7 +888,15 @@ def check_agent_files(ctx: Context) -> Row:
         fix = (f"{PYTHON} {ctx.shape / 'scaffold-project.py'} --help   # "
                f"{' and '.join(absent)} is RENDERED per project, not copied; "
                "write it, or take a rendered one from a scaffolded root")
-    return Row("agent-files", "agent files", FINDING,
+    # FINDING ONLY FOR A FILE SOMETHING ELSE ASSERTS. `AGENTS-shape.md` is a
+    # pinned copy, so its absence is already a `shape-copy-missing` finding
+    # from the project's own `validate-pins.py` and this row agrees with it.
+    # `AGENTS.md` and `CLAUDE.md` are RENDERED and pinned by nothing: a root
+    # without one is a root nothing in this standard says anything about, and
+    # failing it here would be the `leg shape files` mistake again, one file
+    # along.
+    status = FINDING if detail["pinned"] else NOTE
+    return Row("agent-files", "agent files", status,
                "absent: " + ", ".join(absent), fix, detail)
 
 
@@ -1017,9 +1114,10 @@ def check_machine(ctx: Context) -> Row:
     consent.
 
     THIS IS THE ONE ROW THAT CAN REACH A NETWORK, and it is `n/a` by status
-    for a separate reason. Asking `gh` whether it is logged in is a question
-    `gh` answers by talking to its host; nothing else in this command leaves
-    the disk. And a machine's state is not the repository's: a workstation
+    for a separate reason. The preflight asks `gh` its version, whether it is
+    authenticated and who as (`gh --version`, `gh auth status`, `gh api
+    user`) -- three questions `gh` answers by talking to its host; nothing
+    else in this command leaves the disk. And a machine's state is not the repository's: a workstation
     with no `gh` cannot open the pull request a fix needs, which is worth
     saying and is not this repository being non-compliant. So the row reports
     and never changes the verdict.
@@ -1135,6 +1233,14 @@ def run_checks(ctx: Context) -> list[Row]:
 # ---------------------------------------------------------------------------
 
 
+def cannot_answer(rows: list[Row]) -> Row | None:
+    """The first row that says this CHECKOUT could not ask its question."""
+    for row in rows:
+        if row.detail.get("environment"):
+            return row
+    return None
+
+
 def verdict_for(ctx: Context, rows: list[Row]) -> tuple[str, int]:
     """ONE line, and the exit code that goes with it.
 
@@ -1145,6 +1251,9 @@ def verdict_for(ctx: Context, rows: list[Row]) -> tuple[str, int]:
     """
     if ctx.kind == NOT_A_ROOT:
         return V_NOT_A_ROOT, 2
+    blocked = cannot_answer(rows)
+    if blocked is not None:
+        return f"{V_CANNOT_ANSWER} ({blocked.label}: {blocked.reason})", 3
     by_id = {row.id: row for row in rows}
     currency = by_id.get("shape-currency")
     detail = currency.detail if currency else {}
@@ -1172,10 +1281,14 @@ def verdict_for(ctx: Context, rows: list[Row]) -> tuple[str, int]:
     red = [row.id for row in rows
            if row.status == FINDING
            and row.id in ("naming", "manifest", "pins", "family",
-                          "manifest-kinds", "agent-files", "leg-shape-files")]
+                          "manifest-kinds", "agent-files")]
     if red:
         return f"{V_INVALID} ({', '.join(red)})", 1
 
+    if detail.get("behind_pin_only"):
+        return (f"{V_BEHIND} (pin {str(detail.get('pinned'))[:12]} -> "
+                f"{str(detail.get('standard'))[:12]}, no copied file "
+                "differs)"), 1
     if detail.get("behind"):
         changed = counts.get("upstream-changed", 0)
         added = counts.get("upstream-added", 0)
@@ -1183,7 +1296,9 @@ def verdict_for(ctx: Context, rows: list[Row]) -> tuple[str, int]:
                 f"{added} upstream-added)"), 1
     # THE CATCH-ALL, and it is here so that a check ADDED LATER cannot exit 0
     # while its row says FINDING. A new row that belongs in `red` above is a
-    # one-line edit; a new row nobody classified still fails loudly.
+    # one-line edit; a new row nobody classified still fails loudly. It reads
+    # `FINDING` only, so a `note` row is stepped over here too -- which is
+    # the whole of what `note` means.
     other = [row.id for row in rows if row.status == FINDING]
     if other:
         return f"{V_INVALID} ({', '.join(other)})", 1
@@ -1216,6 +1331,10 @@ def report(ctx: Context, rows: list[Row], verdict: str, code: int) -> None:
     note = verdict_note(ctx)
     if note:
         print(note)
+    blocked = cannot_answer(rows)
+    if blocked is not None:
+        print(f"\nREFUSED shape-doctor-cannot-answer: {blocked.reason}\n"
+              f"  Remediation: {blocked.next_command}", file=sys.stderr)
 
 
 #: The line NOT A SHAPE ROOT adds, and the one thing in this file that is
@@ -1261,16 +1380,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    missing = [marker for marker in SHAPE_MARKERS
-               if not (SHAPE_ROOT / marker).exists()]
-    if missing:
-        print("REFUSED shape-doctor-not-in-the-standard: this file is at "
-              f"{SHAPE_ROOT}, which is missing {', '.join(missing)}. "
-              "shape-doctor.py compares a repository against THE CHECKOUT IT "
-              "IS RUN FROM, so it needs one.\n  Remediation: run it from a "
-              "clone of openRepoShape, or `openRepoShape --doctor <path>`, "
-              "which fetches one for you.", file=sys.stderr)
-        return 3
+    if [marker for marker in SHAPE_MARKERS
+            if not (SHAPE_ROOT / marker).exists()]:
+        return not_in_the_standard("")
     root = Path(args.root).expanduser()
     try:
         root = root.resolve()

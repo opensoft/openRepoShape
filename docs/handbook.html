@@ -1390,8 +1390,15 @@ openRepoShape --doctor                 # the repository you are standing in
       kinds</strong>, <strong>shape currency</strong>, <strong>members</strong> and
       <strong>machine</strong>; a directory that is neither gets what it is CALLED under the naming
       policy, what IS in it, and the way in.</p>
-      <p>Every row is <code>ok</code>, <code>FINDING</code> or <code>n/a</code>, and every FINDING
-      names the exact command that fixes it. Then one verdict, and its exit code:</p>
+      <p>Every row is <code>ok</code>, <code>note</code>, <code>FINDING</code> or
+      <code>n/a</code>, and every one that is not <code>ok</code> names the exact command that
+      fixes it. <strong>Only a <code>FINDING</code> moves the verdict</strong>, and
+      <code>FINDING</code> means exactly <em>something else asserts this</em> &mdash; a validator,
+      a pin row, a manifest, a gitlink. A difference nothing asserts is a <code>note</code>:
+      printed, in <code>--json</code>, and stepped over by the verdict. That line was drawn after
+      this command answered <code>INVALID</code> about a live estate whose every real gate was
+      green, because a leg was missing a <code>.gitignore</code> that entered the standard
+      <em>after</em> that project was scaffolded. Then one verdict, and its exit code:</p>
       <table>
         <thead><tr><th>verdict</th><th>exit</th><th>when</th></tr></thead>
         <tbody>
@@ -1402,7 +1409,10 @@ openRepoShape --doctor                 # the repository you are standing in
           <tr><td><code>NOT A SHAPE ROOT</code></td><td>2</td><td>neither manifest is there &mdash; adopt, or scaffold</td></tr>
         </tbody>
       </table>
-      <p>Exit 3 is usage or environment. <strong>Drift outranks a red validator</strong> on the
+      <p>Exit 3 is usage or environment &mdash; nothing about it is a statement about the tree
+      you pointed at: no such path, a <code>shape-doctor.py</code> not in a checkout of the
+      standard, or a pin naming a commit <em>this</em> checkout does not carry
+      (<code>CANNOT ANSWER</code>). <strong>Drift outranks a red validator</strong> on the
       verdict line, deliberately: an edited shape copy is exactly what makes
       <code>validate-pins.py</code> red, so answering <code>INVALID (pins)</code> would send the
       reader at the symptom while the fix is <code>update-shape.py</code>. The pins row is printed
@@ -1414,8 +1424,9 @@ openRepoShape --doctor                 # the repository you are standing in
       <code>setup-project.py --preflight</code> with stdin closed &mdash; no terminal, no offer,
       nothing installed &mdash; and adds <code>git-filter-repo</code>, which
       <a href="#adopt"><code>adopt-project.py</code></a> needs and the preflight does not ask about.
-      Asking <code>gh</code> whether it is logged in is the only question in the whole report that
-      leaves the disk.</p>
+      The preflight&rsquo;s three questions to <code>gh</code> &mdash; <code>gh --version</code>,
+      <code>gh auth status</code>, <code>gh api user</code> &mdash; are the only ones in the whole
+      report that leave the disk.</p>
       <p>The checks are a REGISTRY &mdash; an <code>id</code>, the root kinds it applies to, a
       <code>run</code>, and a <code>fix</code> slot that is empty in every one of them today. A
       repair mode hangs off that slot instead of a rewrite, and it will print its plan and ask
@@ -1653,7 +1664,7 @@ resume InkRouter                # on workstation B, and the estate is back</code
       <p><a href="https://github.com/opensoft/openRepoShape#readme">github.com/opensoft/openRepoShape</a></p>
       <p class="meta">First cut from README.md at c093813 (#71); regenerated at cbca5b4 (#89);
       the repository doctor added at 2986031 (#95).
-      README.md blob 3d7b9534394ac9c4c9ec7b194731ffdc902163e5. Every command, flag, exit code and
+      README.md blob 9ebdb5b254a838d8a40c42cffd984452ddcd856c. Every command, flag, exit code and
       file name on this page is quoted from that README and from AGENTS.md.</p>
     </footer>
   </main>

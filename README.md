@@ -1089,8 +1089,16 @@ FAMILY holder gets **family**, **manifest kinds**, **shape currency**,
 **members** and **machine**; a directory that is neither gets what it is
 CALLED under the naming policy, what IS in it, and the way in.
 
-Every row is `ok`, `FINDING` or `n/a`, and every FINDING names the exact
-command that fixes it. Then one verdict, and its exit code:
+Every row is `ok`, `note`, `FINDING` or `n/a`, and every one that is not
+`ok` names the exact command that fixes it. **Only a `FINDING` moves the
+verdict**, and `FINDING` means exactly *something else asserts this* — a
+validator, a pin row, a manifest, a gitlink. A difference nothing asserts is
+a `note`: printed, in `--json`, and stepped over by the verdict. That line
+was drawn after this command answered `INVALID` about a live estate whose
+every real gate was green, because a leg was missing a `.gitignore` that
+entered the standard *after* that project was scaffolded. A doctor that
+invents a rule to fail you by is not believed the next time. Then one
+verdict, and its exit code:
 
 | verdict | exit | when |
 |---|---|---|
@@ -1100,8 +1108,10 @@ command that fixes it. Then one verdict, and its exit code:
 | `INVALID (<rows>)` | 1 | a validator went red |
 | `NOT A SHAPE ROOT` | 2 | neither manifest is there — adopt, or scaffold |
 
-Exit 3 is usage or environment: no such path, or a `shape-doctor.py` that is
-not sitting in a checkout of the standard. **Drift outranks a red validator**
+Exit 3 is usage or environment — nothing about it is a statement about the
+tree you pointed at: no such path, a `shape-doctor.py` not sitting in a
+checkout of the standard, or a pin naming a commit **this** checkout does not
+carry (`CANNOT ANSWER`). **Drift outranks a red validator**
 on the verdict line, deliberately — an edited shape copy is exactly what makes
 `validate-pins.py` red, so answering `INVALID (pins)` would send the reader at
 the symptom while the fix is `update-shape.py`. The pins row is printed either
@@ -1113,8 +1123,9 @@ by status and can never move the verdict: a workstation with no `gh` is not
 this repository being non-compliant. It runs `setup-project.py --preflight`
 with stdin closed — no terminal, no offer, nothing installed — and adds
 `git-filter-repo`, which `adopt-project.py` needs and the preflight does not
-ask about. Asking `gh` whether it is logged in is the only question in the
-whole report that leaves this disk.
+ask about. The preflight's three questions to `gh` — `gh --version`, `gh auth
+status`, `gh api user` — are the only ones in the whole report that leave
+this disk.
 
 The checks are a REGISTRY — an `id`, the root kinds it applies to, a `run`,
 and a `fix` slot that is empty in every one of them today. A repair mode hangs

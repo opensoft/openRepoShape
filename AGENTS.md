@@ -186,30 +186,35 @@ in each of them, which is where a repair mode will hang; nothing in it writes
 today.
 
 1. **Read the verdict, then read the rows.** `COMPLIANT`, `COMPLIANT, SHAPE
-   BEHIND`, `DRIFTED`, `INVALID`, `NOT A SHAPE ROOT` — exits 0, 1, 1, 1, 2,
-   and 3 for usage. The verdict names the MOST SPECIFIC finding and the TABLE
-   names every one, so a report summarised from the verdict line alone is a
-   report you did not read. Relay the rows.
-2. **A FINDING names its fix, and you run THAT.** Every one carries the exact
+   BEHIND`, `DRIFTED`, `INVALID`, `NOT A SHAPE ROOT` — exits 0, 1, 1, 1, 2 —
+   and `CANNOT ANSWER`, exit 3, which is THIS CHECKOUT failing to ask, never
+   a statement about their repository. The verdict names the MOST SPECIFIC
+   finding and the TABLE names every one, so a report summarised from the
+   verdict line alone is a report you did not read. Relay the rows.
+2. **`note` is not a finding and you do not "fix" it.** A row says `note`
+   when it found a difference nothing asserts — a leg file no pin names, a
+   rendered `AGENTS.md`. It never moves the verdict. Report it; propose a
+   change only if the human asks.
+3. **A FINDING names its fix, and you run THAT.** Every one carries the exact
    next command — `update-shape.py apply …`, `make bootstrap`, `bump-leg.py
    …`, the project's own validator. Run the one the row names. Do not
    improvise a repair, and never edit a pinned file, a digest or a manifest
    to make a row go green: that is the hand-edited pin this standard spends a
    section refusing. Each of those commands has its own section above and its
    own refusals, and they all still apply.
-3. **`NOT A SHAPE ROOT` is a question for the human, not a task.** There is
+4. **`NOT A SHAPE ROOT` is a question for the human, not a task.** There is
    no `project.yaml` and no `family.yaml`. The two ways in are
    `adopt-project.py plan` (a repository that already exists, converted in
    place) and `setup.sh` (a new one, three repositories, one typed yes), and
    which of them is wanted is a fact about their repository. Report the
    verdict and both commands; adopt or scaffold nothing on your own
    initiative. There is no `--force`, deliberately.
-4. **The `machine` row is not about the repository.** It is `n/a` by status
+5. **The `machine` row is not about the repository.** It is `n/a` by status
    and never changes the verdict: it says whether THIS workstation can run
    the fixes the other rows named. Relay a missing prerequisite;
    `openRepoShape --preflight` is what offers to install one, and the human
    types that yes.
-5. `--json` is the same report as one object, each row carrying its `id`, for
+6. `--json` is the same report as one object, each row carrying its `id`, for
    when you have to act on a row rather than quote it.
 
 ## Updating a project's shape

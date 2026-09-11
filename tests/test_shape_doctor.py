@@ -184,6 +184,7 @@ def test_every_row_of_a_compliant_project_is_ok_or_na(standard, project):
                          "agent-files", "machine"}
     for name, row in rows.items():
         assert row["status"] in ("ok", "n/a"), (name, row)
+        assert row["status"] != "FINDING", (name, row)
         assert set(row) == {"id", "label", "status", "reason", "next",
                             "detail"}
     # The project carries its OWN validators, so those are what ran.
@@ -509,13 +510,18 @@ def test_the_script_refuses_outside_a_checkout_of_the_standard(tmp_path,
     `shape-doctor.py` sitting alone in a directory has no upstream, no
     templates and no naming policy — and it says which of them are missing
     rather than dying on the first import that fails.
+
+    THE FILE IS COPIED OUT ALONE, which is the whole point and is what this
+    test used to arrange away: it copied `scripts/repo_shape.py` in beside
+    it — precisely the file whose absence caused the death — and so asserted
+    the opposite of the sentence above. Alone, the module-level import used
+    to raise ModuleNotFoundError and exit 1, which is this tool's code for
+    "the repository has findings": a caller scripting on it read an
+    interpreter crash as a verdict about somebody's repository.
     """
     lonely = tmp_path / "lonely"
     lonely.mkdir()
     shutil.copy2(REPO / DOCTOR, lonely / DOCTOR)
-    (lonely / "scripts").mkdir()
-    shutil.copy2(REPO / "scripts" / "repo_shape.py",
-                 lonely / "scripts" / "repo_shape.py")
     result = run_script(lonely / DOCTOR, "--root", str(project))
     assert result.returncode == 3, result.stdout + result.stderr
     assert "shape-doctor-not-in-the-standard" in result.stderr
@@ -797,7 +803,7 @@ def test_a_missing_rendered_leg_file_is_not_offered_a_cp(standard, project):
     """
     (project / "spec" / "AGENTS.md").unlink()
     row = rows_of(doctor(standard, project, "--json"))["leg-shape-files"]
-    assert row["status"] == "FINDING"
+    assert row["status"] == "note"
     assert not row["next"].startswith("cp "), row["next"]
     assert "RENDERED" in row["next"], row["next"]
 
@@ -887,3 +893,156 @@ def test_a_real_working_clone_beside_the_holder_is_counted(standard, holder,
     row = rows_of(doctor(standard, root, "--json"))["members"]
     assert row["detail"]["without_working_clone"] == [], row
     assert row["detail"]["members"][0]["working_clone"] is not None
+
+
+# --- the adversarial review on #96 ------------------------------------------
+
+def test_a_leg_file_the_standard_GAINED_is_reported_and_never_invalid(
+        standard, tmp_path):
+    """THE DEFECT THIS ROW WAS FAILING LIVE ESTATES WITH.
+
+    `templates/spec-root/.gitignore` entered the standard at `be488ed`,
+    AFTER InkRouter's services were scaffolded — so every project cut before
+    that commit was told `INVALID (leg-shape-files)` by this command while
+    `validate-manifest.py`, `validate-pins.py` and `update-shape.py` were
+    all green on it. No pin names a leg file and no validator asserts one;
+    the shape-currency row cannot even report it, because a leg file has no
+    `files:` row to be `upstream-added` under.
+
+    THE SUITE WAS BLIND TO IT because `standard` is this checkout and the
+    fixture project therefore always had every leg file the current
+    templates carry. So this test builds the real sequence: a standard
+    WITHOUT the file, a project scaffolded from it, and then the file
+    added — which is history as it actually happened.
+    """
+    before = tmp_path / "standard-before"
+    shutil.copytree(standard, before, symlinks=True)
+    gitignore = before / "templates" / "spec-root" / ".gitignore"
+    kept = gitignore.read_bytes()
+    gitignore.unlink()
+    commit_all(before, "A standard whose spec template has no .gitignore")
+
+    base = tmp_path / "cut-before"
+    base.mkdir()
+    scaffold(before, base, PROJECT)
+    root = base / "work" / PROJECT
+    assert not (root / "spec" / ".gitignore").exists()
+
+    gitignore.write_bytes(kept)
+    commit_all(before, "The standard gains templates/spec-root/.gitignore")
+
+    result = doctor(before, root, "--json")
+    payload = json.loads(result.stdout)
+    rows = rows_of(result)
+    assert rows["leg-shape-files"]["status"] == "note", rows["leg-shape-files"]
+    assert ".gitignore absent" in rows["leg-shape-files"]["reason"]
+    assert "INVALID" not in payload["verdict"], payload["verdict"]
+    assert payload["verdict"].startswith("COMPLIANT"), payload["verdict"]
+    assert result.returncode != 1 or "SHAPE BEHIND" in payload["verdict"], (
+        "the only thing left to report is the pin, not the leg file")
+
+
+def test_a_missing_leg_file_alone_is_compliant_exit_zero(standard, project):
+    """And with the pin naming this very standard, it is plain COMPLIANT."""
+    (project / "spec" / ".gitignore").unlink()
+    result = doctor(standard, project, "--json")
+    payload = json.loads(result.stdout)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert payload["verdict"] == "COMPLIANT"
+    assert rows_of(result)["leg-shape-files"]["status"] == "note"
+
+
+def test_a_rendered_root_agent_file_is_a_note_not_a_finding(standard,
+                                                            project):
+    """The same rule, one file along. `AGENTS.md` at the root is RENDERED
+    and pinned by nothing, so its absence is nobody's assertion; the PINNED
+    `AGENTS-shape.md` stays a FINDING, and `validate-pins.py` agrees."""
+    (project / "AGENTS.md").unlink()
+    result = doctor(standard, project, "--json")
+    row = rows_of(result)["agent-files"]
+    assert row["status"] == "note", row
+    assert row["detail"]["pinned"] == []
+    assert result.returncode == 0, result.stdout
+    assert json.loads(result.stdout)["verdict"] == "COMPLIANT"
+
+
+def test_shape_behind_names_the_pin_when_no_file_differs(standard, project,
+                                                         tmp_path):
+    """The parenthetical exists to say WHAT moved.
+
+    On the no-file-differs branch the counts are zero by construction, so
+    `(0 upstream-changed, 0 upstream-added)` under the words SHAPE BEHIND
+    was a clause contradicting its own verdict — and it fired on both real
+    estates on this machine, which makes it the common case.
+    """
+    ahead = tmp_path / "standard-ahead"
+    shutil.copytree(standard, ahead, symlinks=True)
+    (ahead / "README.md").write_text(
+        (ahead / "README.md").read_text(encoding="utf-8") + "\nA fix.\n",
+        encoding="utf-8")
+    commit_all(ahead, "An upstream change to a file no project copies")
+    result = doctor(ahead, project, "--json")
+    payload = json.loads(result.stdout)
+    assert result.returncode == 1
+    assert payload["verdict"].startswith("COMPLIANT, SHAPE BEHIND (pin ")
+    assert "no copied file differs" in payload["verdict"]
+    assert "upstream-changed" not in payload["verdict"], payload["verdict"]
+    assert rows_of(result)["shape-currency"]["detail"]["behind_pin_only"] \
+        is True
+
+
+def test_shape_behind_names_the_counts_when_a_file_differs(
+        advanced_standard, project):
+    """And the other branch keeps the counts, which are true there."""
+    payload = json.loads(doctor(advanced_standard, project,
+                                "--json").stdout)
+    assert payload["verdict"] == \
+        "COMPLIANT, SHAPE BEHIND (1 upstream-changed, 0 upstream-added)"
+
+
+def test_a_pin_this_standard_cannot_resolve_is_exit_three(standard, project,
+                                                          tmp_path):
+    """Not a verdict about the repository: this CHECKOUT cannot answer.
+
+    A pin naming a commit this standard does not carry — a fork, a branch
+    pin, a clone made before the commit landed — used to fall through to
+    `INVALID`, telling somebody their repository was wrong on the evidence
+    that our copy of the standard was short a commit.
+    """
+    stranger = tmp_path / "stranger"
+    stranger.mkdir()
+    for name in ("contracts", "scripts", "templates"):
+        shutil.copytree(standard / name, stranger / name, symlinks=True)
+    for name in ("update-shape.py", "shape-doctor.py", "scaffold-project.py",
+                 "setup-project.py", "setup.sh", "openRepoShape"):
+        shutil.copy2(standard / name, stranger / name)
+    git("init", "-q", "-b", "main", ".", cwd=stranger)
+    commit_all(stranger, "A standard with a history of its own")
+    result = doctor(stranger, project, "--json")
+    assert result.returncode == 3, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["verdict"].startswith("CANNOT ANSWER (shape currency:")
+    assert payload["exit"] == 3
+    assert rows_of(result)["shape-currency"]["detail"]["environment"] is True
+    plain = doctor(stranger, project)
+    assert plain.returncode == 3
+    assert "REFUSED shape-doctor-cannot-answer" in plain.stderr
+    assert "fetch --all" in plain.stderr
+
+
+def test_the_doctor_writes_no_bytecode_into_the_standard(standard, project,
+                                                         tmp_path):
+    """"It writes nothing" has to be true of the STANDARD too.
+
+    `PYTHONDONTWRITEBYTECODE=1` covers the validators run as subprocesses;
+    `repo_shape` and `update-shape.py` are imported IN PROCESS and were
+    leaving `__pycache__/` in the standard's own checkout.
+    """
+    copy = tmp_path / "standard-clean"
+    shutil.copytree(standard, copy, symlinks=True)
+    for cached in copy.rglob("__pycache__"):
+        rmtree(cached)
+    assert doctor(copy, project).returncode == 0
+    left = sorted(path.relative_to(copy).as_posix()
+                  for path in copy.rglob("*.pyc"))
+    assert left == [], left

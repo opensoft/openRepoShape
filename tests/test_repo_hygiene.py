@@ -409,9 +409,18 @@ def test_agents_md_is_short_enough_to_be_read():
     block, and — the half an assistant gets wrong — that NEITHER installs
     anything, so the block is relayed and `--preflight` is the human's to
     run. An assistant who read only the first half would answer the block by
-    installing something."""
+    installing something.
+
+    2026-09-10: 395 -> 400 — the adversarial review on PR #96. Five lines:
+    one numbered point saying `note` is not a finding and is not "fixed"
+    (the row that answered INVALID over a live estate now says `note`, and
+    an assistant who reads it as a finding would go and change somebody's
+    leg), and the `CANNOT ANSWER` / exit 3 half-sentence in point 1 —
+    because that verdict is THIS CHECKOUT failing to ask, and an assistant
+    who relays it as a verdict about the repository has relayed the
+    opposite of what happened."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 395, f"AGENTS.md is {len(lines)} lines; the cap is 395"
+    assert len(lines) <= 400, f"AGENTS.md is {len(lines)} lines; the cap is 400"
 
 
 def test_claude_md_points_at_agents_md():
@@ -884,8 +893,21 @@ def test_readme_is_short_enough_to_be_read():
     #   argument brings today's behaviour and today's refusals back — a
     #   reader who learns only the first half will file the refusal they
     #   earned as the new usage page misfiring.
-    assert len(lines) <= 1313, (
-        f"README.md is {len(lines)} lines; the cap is 1313")
+    # 2026-09-10: 1313 -> 1324 — the adversarial review on PR #96. Eleven
+    #   lines, and every one of them is a rule the first cut got wrong in
+    #   front of a reader. Seven are the `note` status and WHY it exists:
+    #   only a `FINDING` moves the verdict, `FINDING` means something ELSE
+    #   asserts it, and the line was drawn after this command answered
+    #   `INVALID` about a live estate whose every real gate was green
+    #   because a leg was missing a `.gitignore` that entered the standard
+    #   after that project was scaffolded. A reader who does not know that
+    #   distinction cannot tell a report from a verdict. Three widen exit 3
+    #   to what it actually covers, `CANNOT ANSWER` included — a pin naming
+    #   a commit THIS checkout does not carry is not the repository being
+    #   wrong. One corrects a sentence that was simply false: the machine
+    #   row asks `gh` three questions, not one.
+    assert len(lines) <= 1324, (
+        f"README.md is {len(lines)} lines; the cap is 1324")
 
 
 @pytest.mark.parametrize("name", SHIPPED_BASH)
