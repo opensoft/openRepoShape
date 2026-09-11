@@ -2220,6 +2220,43 @@ def test_origin_name_preserves_a_colon_in_a_local_path_basename(standard,
     assert module.origin_name(here) == "openRepo:Project"
 
 
+def test_origin_name_reads_scp_like_syntax_with_a_colon_in_the_path(
+        standard, tmp_path):
+    """Copilot, fourth review of PR #110: the fix above reached for
+    `rpartition`, the LAST colon, but the host's own colon is the FIRST
+    one -- a group prefix in the path, `git@example.com:team:repo.git`,
+    is ordinary SCP-like syntax and has two of them. Reading from the
+    last one read `team:` as more of the HOST the first colon already
+    separated, and dropped it along with the host: `repo` instead of
+    `team:repo`.
+    """
+    module = doctor_module(standard)
+    here = tmp_path / "scpgroup"
+    here.mkdir()
+    git("init", "-q", "-b", "main", ".", cwd=here)
+    git("remote", "add", "origin", "git@example.com:team:repo.git",
+        cwd=here)
+    assert module.origin_name(here) == "team:repo"
+
+
+def test_origin_name_reads_a_bracketed_ipv6_host(standard, tmp_path):
+    """Copilot, fourth review of PR #110: an IPv6 host is written
+    `[host]` in this grammar because the address is already
+    colon-separated -- `[::1]:repo.git`'s FIRST colon, by plain text
+    position, sits INSIDE the brackets, part of the host, not at the
+    host/path boundary. Splitting on it -- or on the last colon, equally
+    wrong here since there is only the one -- would cut the host in
+    half instead of finding the one real separator, right after the
+    closing `]`.
+    """
+    module = doctor_module(standard)
+    here = tmp_path / "ipv6host"
+    here.mkdir()
+    git("init", "-q", "-b", "main", ".", cwd=here)
+    git("remote", "add", "origin", "[::1]:repo.git", cwd=here)
+    assert module.origin_name(here) == "repo"
+
+
 def test_the_naming_row_also_never_leaks_an_ancestor_repository_origin(
         standard, tmp_path):
     """Copilot, second review of PR #110: the `way in` row's guard against

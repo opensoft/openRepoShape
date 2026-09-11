@@ -1841,6 +1841,14 @@ def check_members(ctx: Context) -> Row:
 _WINDOWS_PATH_RE = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\)")
 
 
+#: `[user@]host:path` with the host itself bracketed -- the only way this
+#: grammar has to write an IPv6 host, since the address is already
+#: colon-separated (`[::1]:repo.git`) and would otherwise swallow the real
+#: separator whole. The captured group is everything after the `:` that
+#: follows the closing `]` (Copilot, PR #110, fourth review).
+_BRACKETED_HOST_RE = re.compile(r"^(?:[^@/\\]*@)?\[[^\]]*\]:(.*)$")
+
+
 def origin_name(root: Path) -> str | None:
     """`origin`'s own repository name, however its URL spells the path to it.
 
@@ -1870,6 +1878,28 @@ def origin_name(root: Path) -> str | None:
     separator; everywhere else -- a path that already has one inside it,
     included -- the colon is just an ordinary character, and the string is
     left alone.
+
+    AND WHEN THE HOST'S COLON IS NOT THE ONLY ONE, IT IS STILL THE FIRST.
+    `git@example.com:team:repo.git` -- a group prefix in the repository's
+    OWN path, ordinary enough -- has two colons, and the fix above reached
+    for `rpartition`, the LAST one: `team:` read as more of the path the
+    host's colon already separated, and vanished along with it, leaving
+    `repo` where `team:repo` belonged (Copilot, fourth review of PR #110).
+    The host ends at ITS OWN colon, the first one after it, however many
+    the path that follows goes on to contain.
+
+    AND A BRACKETED HOST HIDES ITS COLONS FROM THAT RULE ENTIRELY. An IPv6
+    host is written `[host]` in this grammar for exactly this reason --
+    `::1` is already colon-separated -- so the first colon in
+    `[::1]:repo.git`, by plain text position, sits INSIDE the brackets,
+    part of the host, and splitting there would cut the host in half.
+    `_BRACKETED_HOST_RE` reads a bracketed host whole and takes the
+    separator from right after its closing `]`, before the first-colon
+    rule below ever runs. A drive letter is excluded from that rule the
+    same explicit way, rather than by the accident of also never
+    containing a second colon of its own: `D` in `D:/a/.../Atlas.git` is a
+    PATH, never a host, however this function is later changed to use
+    what comes after it.
     """
     try:
         url = git_out(["remote", "get-url", "origin"], cwd=root)
@@ -1878,10 +1908,14 @@ def origin_name(root: Path) -> str | None:
     if _WINDOWS_PATH_RE.match(url):
         url = url.replace("\\", "/")
     url = url.rstrip("/")
-    if "://" not in url and ":" in url:
-        prefix, _, rest = url.rpartition(":")
-        if "/" not in prefix and "\\" not in prefix:
-            url = rest
+    if "://" not in url:
+        bracketed = _BRACKETED_HOST_RE.match(url)
+        if bracketed:
+            url = bracketed.group(1)
+        elif ":" in url and not _WINDOWS_PATH_RE.match(url):
+            prefix, _, rest = url.partition(":")
+            if "/" not in prefix and "\\" not in prefix:
+                url = rest
     name = url.rsplit("/", 1)[-1]
     return name[:-4] if name.endswith(".git") else name or None
 
