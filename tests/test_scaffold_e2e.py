@@ -752,6 +752,10 @@ def test_the_pinned_agent_file_carries_the_rules_it_exists_for(project):
         "--accept-local",
         "neutral_product_pins:",
         "members/<Project>",
+        # 2026-09-11 (#111): a scaffolded project reads THIS file for its
+        # shape mechanics, so the re-pin procedure's trailers have to reach
+        # it here rather than only in the standard checkout's AGENTS.md.
+        "--trailer",
     ):
         assert rule in text, f"AGENTS-shape.md says nothing about {rule}"
     # The prose is hard-wrapped, so the sentences are matched against the

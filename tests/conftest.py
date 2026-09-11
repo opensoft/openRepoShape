@@ -97,7 +97,17 @@ def run_script(script: Path, *args: str, cwd: Path | None = None,
     `subprocess.run` itself refuses to accept `input` together with `stdin`,
     so there is nothing to reconcile between the two here.
     """
-    env = {**os.environ, **(env or {})}
+    asked = env or {}
+    env = {**os.environ, **asked}
+    #: THE LANE IS NOT INHERITED (Copilot, PR #112). `LANES_LANE` changes
+    #: what `update-shape.py check` and `shape-doctor.py` print — by design
+    #: — so a suite that passed it through would assert a different line
+    #: depending on whether the person running it happened to be inside a
+    #: lane, and the baseline half of a with/without comparison would
+    #: quietly become a second lane run. Blanked for every tool under test
+    #: unless the CALLER named it, which is how a test asks for a lane.
+    if "LANES_LANE" not in asked:
+        env["LANES_LANE"] = ""
     env.setdefault("GIT_AUTHOR_NAME", "openRepoShape tests")
     env.setdefault("GIT_AUTHOR_EMAIL", "tests@openreposhape.invalid")
     env.setdefault("GIT_COMMITTER_NAME", "openRepoShape tests")

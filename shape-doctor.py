@@ -226,6 +226,16 @@ except ImportError as exc:  # pragma: no cover - exercised as a subprocess
     sys.exit(not_in_the_standard(f"scripts/repo_shape.py ({exc})"))
 
 try:
+    #: ONE RULE FOR WHAT A LANE IS (2026-09-11, #111). `LANES_LANE` is read
+    #: in `scripts/shape_materialize.py` because `update-shape.py` and
+    #: `scripts/family.py` -- the two tools that WRITE these trailers -- both
+    #: import it already, and a next command that named a different lane than
+    #: the commit it asks for would be worse than one that named none.
+    from shape_materialize import lane_trailer_argument  # noqa: E402
+except ImportError as exc:  # pragma: no cover - exercised as a subprocess
+    sys.exit(not_in_the_standard(f"scripts/shape_materialize.py ({exc})"))
+
+try:
     #: The policy's own glob dialect, for the one list this file adds to it.
     #: `fnmatch` is not the same dialect -- its `*` crosses `/`, which would
     #: make `LICENSE.*` match `docs/LICENSE.html` -- and a second dialect
@@ -934,7 +944,8 @@ def check_shape_currency(ctx: Context) -> Row:
                        f"--root {quote_arg(ctx.root)} --upstream "
                        f"{quote_arg(ctx.shape)}   # then apply --at "
                        f"{quote_arg(target)} --yes --branch "
-                       f"{quote_arg('shape/update-' + target[:12])}", detail)
+                       f"{quote_arg('shape/update-' + target[:12])}"
+                       f"{lane_trailer_command()}", detail)
         accept = "".join(f" --accept-local {quote_arg(row.path)}"
                          for row in rows
                          if row.state == us.LOCALLY_MODIFIED)
@@ -947,7 +958,8 @@ def check_shape_currency(ctx: Context) -> Row:
                    f"{quote_arg(ctx.shape / 'update-shape.py')} check --root "
                    f"{quote_arg(ctx.root)} --upstream {quote_arg(ctx.shape)}"
                    f"   # then apply --at {quote_arg(target)} --yes{accept} "
-                   f"--branch {quote_arg('shape/update-' + target[:12])}",
+                   f"--branch {quote_arg('shape/update-' + target[:12])}"
+                   f"{lane_trailer_command()}",
                    detail)
     finally:
         upstream.close()
@@ -1023,6 +1035,32 @@ def check_legs(ctx: Context) -> Row:
     return Row("legs", "legs", OK,
                f"{len(rows)} leg(s) mounted and checked out at their pins",
                None, detail)
+
+
+def lane_trailer_command(platform: str | None = None) -> str:
+    """The ` --trailer 'Lane: <name>'` a next command carries when the
+    environment names a lane, and `""` when it does not.
+
+    WHY A NEXT COMMAND CARRIES IT AT ALL. `update-shape.py apply --branch`
+    writes its own commit, and the lane-collision protocol wants the `Lane:`
+    line on that commit as much as on the pull request -- so a row that
+    printed the apply without it handed somebody a command whose result they
+    then had to amend by hand. Four InkRouter re-pins landed on 2026-09-11
+    with no trailer at all, each one run exactly as the line printed it
+    (#111).
+
+    NOTHING WHEN NO LANE IS SET, which is what keeps every row this file has
+    ever printed byte-identical for everybody who is not in a lane; and only
+    the LANE, never `Co-Authored-By:`, which names a person or a model that
+    no environment variable knows.
+
+    `platform` IS PASSED ON, not merely branched on -- the rule
+    `copy_command` below states at length: the trailer is spelled by
+    `quote_arg` for the platform ASKED FOR, so a line rendered for a Windows
+    reader is quoted PowerShell's way whichever host rendered it, and both
+    spellings are assertable from either.
+    """
+    return lane_trailer_argument(lambda value: quote_arg(value, platform))
 
 
 def copy_command(source, target, platform: str | None = None) -> str:

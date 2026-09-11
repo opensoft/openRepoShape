@@ -38,6 +38,9 @@ import pytest
 
 from conftest import (FILE_PROTOCOL, REPO, WINDOWS_SKIP, git, rmtree,
                       run_script)
+#: The lane a lane's run sets, imported from the file that owns that rule
+#: rather than retyped -- see `tests/test_commit_trailers.py`.
+from test_commit_trailers import LANE
 
 DOCTOR = "shape-doctor.py"
 ORG = "testorg"
@@ -1399,6 +1402,81 @@ def test_shape_behind_names_the_counts_when_a_file_differs(
         "COMPLIANT, SHAPE BEHIND (1 upstream-changed, 0 upstream-added)"
 
 
+# --- the lane a printed `apply` offers (#111) -------------------------------
+#
+# `update-shape.py apply --branch` writes its own commit, and the
+# lane-collision protocol wants the `Lane:` line on that commit as much as on
+# the pull request -- so a row that printed the apply without it handed
+# somebody a command whose result they then had to amend by hand. Four
+# InkRouter re-pins landed on 2026-09-11 with no trailer at all, each run
+# exactly as a printed line said (#111).
+
+
+def behind_row(standard, root, lane: str | None):
+    """The `shape-currency` row of a SHAPE BEHIND project, run with or
+    without a lane in the environment.
+
+    `LANES_LANE` is set to the empty string rather than left alone for the
+    no-lane case: the suite inherits the environment it was launched in, and
+    a runner that happened to be inside a lane would otherwise flip the
+    assertion that today's line is unchanged.
+    """
+    result = run_script(standard / DOCTOR, "--root", str(root), "--json",
+                        env={"LANES_LANE": "" if lane is None else lane})
+    assert result.returncode == 1, result.stdout + result.stderr
+    return rows_of(result)["shape-currency"]
+
+
+def test_the_apply_a_behind_row_prints_carries_the_lane_when_one_is_set(
+        advanced_standard, project):
+    """The copied-file branch of the row: `--trailer` last, after
+    `--branch`, quoted whole so the paste survives the space in it."""
+    plain = behind_row(advanced_standard, project, None)["next"]
+    lane = behind_row(advanced_standard, project, LANE)["next"]
+    assert lane == plain + f" --trailer 'Lane: {LANE}'"
+    assert shlex.split(lane)[-2:] == ["--trailer", f"Lane: {LANE}"]
+    assert "Co-Authored-By" not in lane, (
+        "the second trailer names a person or a model, which no environment "
+        "variable knows; it is the caller's to pass")
+
+
+def test_the_behind_pin_only_row_carries_it_too(standard, project, tmp_path):
+    """The other branch of the same row -- no copied file differs and the pin
+    alone is behind -- because it spells its own apply and would otherwise be
+    the one line in the report that forgot."""
+    ahead = tmp_path / "standard-ahead"
+    shutil.copytree(standard, ahead, symlinks=True)
+    (ahead / "README.md").write_text(
+        (ahead / "README.md").read_text(encoding="utf-8") + "\nA fix.\n",
+        encoding="utf-8")
+    commit_all(ahead, "An upstream change to a file no project copies")
+    row = behind_row(ahead, project, LANE)
+    assert row["detail"]["behind_pin_only"] is True
+    assert row["next"].endswith(f" --trailer 'Lane: {LANE}'")
+    assert shlex.split(row["next"])[-2:] == ["--trailer", f"Lane: {LANE}"]
+
+
+def test_a_row_says_nothing_about_a_lane_when_none_is_set(advanced_standard,
+                                                          project):
+    """Today's report, byte for byte, for everybody who is not in a lane."""
+    row = behind_row(advanced_standard, project, None)
+    assert "--trailer" not in row["next"]
+    assert row["next"].rstrip().endswith("--branch shape/update-"
+                                         + row["detail"]["standard"][:12])
+
+
+def test_no_other_row_grows_a_trailer(advanced_standard, project):
+    """A `Lane:` trailer belongs on an `apply` and nowhere else: the row is
+    naming the flag of a command that writes a commit, not decorating every
+    remediation in the table."""
+    result = run_script(advanced_standard / DOCTOR, "--root", str(project),
+                        "--json", env={"LANES_LANE": LANE})
+    rows = rows_of(result)
+    carrying = [name for name, row in rows.items()
+                if row["next"] and "--trailer" in row["next"]]
+    assert carrying == ["shape-currency"], rows
+
+
 def test_a_pin_this_standard_cannot_resolve_is_exit_three(standard, project,
                                                           tmp_path):
     """Not a verdict about the repository: this CHECKOUT cannot answer.
@@ -2193,6 +2271,53 @@ def test_a_windows_path_is_quoted_on_posix_and_bare_on_windows():
     assert module.quote_arg(value, "nt") == value
     assert module.quote_arg(value, "posix") == "'" + value + "'"
     assert shlex.split(module.quote_arg(value, "posix")) == [value]
+
+
+def test_the_lane_trailer_is_quoted_for_the_platform_asked_for(monkeypatch):
+    """`platform` IS PASSED ON, not merely branched on -- the rule
+    `copy_command` and `scaffold_command` already state, kept here so this
+    row cannot drift out of it.
+
+    THE TWO SPELLINGS COINCIDE, AND THAT IS A PROPERTY RATHER THAN AN
+    ACCIDENT: a trailer always carries the space after the colon, so it is
+    never returned bare on either platform, and `shape_materialize
+    .LANE_NAME_RE` excludes the apostrophe -- the one character the two
+    dialects escape differently -- precisely because a printed argument
+    cannot be quoted two ways at once. Both are asserted anyway: the day the
+    alphabet or either dialect changes, this is where it is noticed.
+    """
+    module = doctor_module(REPO)
+    monkeypatch.setenv("LANES_LANE", LANE)
+    assert module.lane_trailer_command("posix") == \
+        f" --trailer 'Lane: {LANE}'"
+    assert module.lane_trailer_command("nt") == \
+        f" --trailer 'Lane: {LANE}'"
+    assert module.lane_trailer_command() == \
+        module.lane_trailer_command(os.name)
+    assert shlex.split(module.lane_trailer_command("posix")) == \
+        ["--trailer", f"Lane: {LANE}"]
+
+
+def test_the_lane_trailer_is_nothing_at_all_with_no_lane(monkeypatch):
+    module = doctor_module(REPO)
+    monkeypatch.delenv("LANES_LANE", raising=False)
+    for platform in ("posix", "nt", None):
+        assert module.lane_trailer_command(platform) == ""
+    monkeypatch.setenv("LANES_LANE", "")
+    assert module.lane_trailer_command("posix") == ""
+
+
+def test_an_awkward_lane_name_is_quoted_and_not_merely_hoped_about(
+        monkeypatch):
+    """A name inside the alphabet but full of characters a shell cares
+    about: parentheses, spaces and a slash all come back as ONE argument."""
+    module = doctor_module(REPO)
+    awkward = "xfactory-1 (spec/leg) @ home"
+    monkeypatch.setenv("LANES_LANE", awkward)
+    posix = module.lane_trailer_command("posix")
+    assert shlex.split(posix) == ["--trailer", f"Lane: {awkward}"]
+    assert module.lane_trailer_command("nt") == \
+        f" --trailer 'Lane: {awkward}'"
 
 
 #: THE WHOLE LINE, not a substring of it. `startswith("python")` was true of

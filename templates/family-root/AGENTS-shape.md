@@ -25,7 +25,8 @@ against this holder:
 
 ```sh
 python3 scripts/family.py add    --family-root <path> --member <org>/<Project>
-python3 scripts/family.py bump   --family-root <path> --member <Project> --to <40 hex>
+python3 scripts/family.py bump   --family-root <path> --member <Project> --to <40 hex> \
+    --trailer "Lane: <name>" --trailer "Co-Authored-By: <who>"
 python3 scripts/family.py remove --family-root <path> --member <Project>
 ```
 
@@ -36,6 +37,13 @@ to: a gitlink moved alone is a pin that names a commit the tree is not at. Do
 not hand-edit the `members:` block — the tool rewrites it wholesale. Land the
 commit as a pull request; the member must already be scaffolded or adopted,
 because a family cannot make a project out of a repository.
+
+`bump` takes a repeatable `--trailer "<Key>: <value>"`, appended to the commit
+it writes in the order given. It composes that message itself, so whatever
+lines your own conventions require on a commit — a `Lane:` where a lane is
+running, a `Co-Authored-By:` where something co-wrote it — reach it this way
+and no other; passing them is how the commit lands complete instead of being
+amended afterwards. `add` and `remove` do not take it.
 
 ## The six commands
 

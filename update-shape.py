@@ -107,7 +107,7 @@ from repo_shape import (  # noqa: E402
 from shape_materialize import (  # noqa: E402
     COPIED_FROM_SHAPE, COPIED_VERBATIM, FAMILY_COPIED_FROM_SHAPE,
     FAMILY_COPIED_VERBATIM, SHAPE_REPOSITORY, CommandFailed, check_program,
-    run,
+    commit_trailers, lane_trailer_argument, run, trailer_line,
 )
 
 #: `owner/repo`, the only remote spelling `--upstream` accepts.
@@ -942,9 +942,17 @@ def cmd_check(args) -> int:
                   "one path at a time — "
                   + " ".join(f"--add {add.path}" for add in added))
         accept = "".join(f" --accept-local {row.path}" for row in local)
+        # THE LANE, WHEN THE ENVIRONMENT NAMES ONE (2026-09-11, #111). A run
+        # that pastes this line then lands a commit carrying the `Lane:`
+        # trailer the protocol asks for, instead of one that has to be
+        # amended afterwards — which is how four InkRouter re-pins landed
+        # without it. `Co-Authored-By:` is NOT added here: it names a person
+        # or a model, which no environment variable knows. With no lane set
+        # this adds nothing at all and the line is the one it always was.
         print(f"NEXT  {PYTHON} {Path(__file__).name} apply --root {root} "
               f"--upstream {upstream.label} --at {target} --yes{accept} "
-              f"--branch shape/update-{target[:12]}")
+              f"--branch shape/update-{target[:12]}"
+              f"{lane_trailer_argument()}")
         return 1
     finally:
         upstream.close()
@@ -1035,7 +1043,7 @@ def tracking_branch_of(manifest: dict | None) -> str:
 
 def commit_on_branch(root: Path, branch: str, paths: list[str], target: str,
                      upstream: Upstream, count: int, kind: Kind,
-                     added: list[str] = ()) -> None:
+                     added: list[str] = (), trailers: list[str] = ()) -> None:
     """A branch and ONE commit, with EXPLICIT PATHSPECS.
 
     `git commit -- <paths>` commits the working-tree state of exactly those
@@ -1066,6 +1074,14 @@ def commit_on_branch(root: Path, branch: str, paths: list[str], target: str,
         name: committing there would land this change beside whatever a
         human already put on that branch, which is theirs to decide.
       * Anything else is created fresh, as before.
+
+    `trailers` ARE THE LINES THIS COMMIT ENDS WITH, in the order `--trailer`
+    named them (2026-09-11, #111). The lane-collision protocol wants `Lane:
+    <name>` on every artifact a lane produces and the commit is one of them,
+    and this estate adds `Co-Authored-By:` — neither of which a tool that
+    writes its own commit message can be told any other way. Passed none, the
+    message is exactly the one this function has always written; see
+    `shape_materialize.commit_trailers` for the two ways git is asked.
     """
     checked_value("--branch", branch)
     manifest = load_yaml(root / kind.manifest)
@@ -1109,7 +1125,8 @@ def commit_on_branch(root: Path, branch: str, paths: list[str], target: str,
                           ("GIT_COMMITTER_EMAIL", "update@openreposhape.invalid")):
         if not env.get(key):
             env[key] = fallback
-    args = ["git", "commit", "-q", "-F", "-", "--", *paths]
+    message, trailer_args = commit_trailers(message, trailers)
+    args = ["git", "commit", "-q", "-F", "-", *trailer_args, "--", *paths]
     check_program(args)
     proc = subprocess.run(args, cwd=str(root), input=message,
                           capture_output=True, text=True, check=False, env=env)
@@ -1254,7 +1271,8 @@ def cmd_apply(args) -> int:
                        | {"contracts/shape-pin.yaml", kind.manifest})
         if args.branch:
             commit_on_branch(root, args.branch, paths, target, upstream,
-                             len(copied), kind, [add.path for add in taking])
+                             len(copied), kind, [add.path for add in taking],
+                             args.trailer)
             print(f"\n  committed on {args.branch}: " + ", ".join(paths))
             if args.push:
                 run(["git", "push", "-q", "-u", "origin", args.branch], cwd=root)
@@ -1375,6 +1393,14 @@ def build_parser() -> argparse.ArgumentParser:
     apply_parser.add_argument("--branch", default=None,
                               help="create this branch and commit the change "
                                    "to it, with explicit pathspecs")
+    apply_parser.add_argument("--trailer", action="append",
+                              metavar='"KEY: VALUE"', default=[],
+                              type=trailer_line,
+                              help="append this `<Key>: <value>` line to the "
+                                   "commit, after any already there; "
+                                   "repeatable, kept in the order given, and "
+                                   "needs --branch — there is no commit to "
+                                   "put a line on without one")
     apply_parser.add_argument("--push", action="store_true",
                               help="push the branch to origin (needs --branch)")
     apply_parser.add_argument("--pr", action="store_true",
@@ -1388,12 +1414,27 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "check":
             return cmd_check(args)
-        if (args.push or args.pr) and not args.branch:
+        # NAMED BY WHAT WAS ACTUALLY PASSED. The three fail for one
+        # reason — there is no commit — and a refusal listing flags nobody
+        # typed reads as a refusal of something else. `--trailer` joined them
+        # on 2026-09-11 (#111): a trailer is a LINE ON THE COMMIT this tool
+        # writes, so without --branch there is no commit for it to be a line
+        # on, and writing one onto the current branch is the very thing the
+        # posture rules in `commit_on_branch` exist to refuse.
+        offered = [name for name, given in (("--push", args.push),
+                                            ("--pr", args.pr),
+                                            ("--trailer", bool(args.trailer)))
+                   if given]
+        if offered and not args.branch:
             raise Refusal(
                 "update-branch-required",
-                "--push and --pr have nothing to act on without --branch",
+                " and ".join(offered)
+                + (" has" if len(offered) == 1 else " have")
+                + " nothing to act on without --branch",
                 "Remediation: pass --branch <name>; this tool never pushes to "
-                "a default branch and never commits without being asked to.")
+                "a default branch, never commits without being asked to, and "
+                "a trailer is a line on a commit it has not been asked to "
+                "make.")
         return cmd_apply(args)
     except Refusal as exc:
         return die(exc)
