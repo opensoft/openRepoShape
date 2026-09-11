@@ -23,9 +23,11 @@ rather than quietly succeed against github.com.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -882,6 +884,81 @@ def test_a_deleted_pinned_agent_file_is_not_an_add(standard, project):
         row["next"]
 
 
+#: How the `leg shape files` row spells a copy ON THIS HOST. `cp` is not a
+#: program on Windows, it is an alias of `Copy-Item` (Microsoft's own
+#: reference: "PowerShell includes the following aliases for `Copy-Item`:
+#: ... Windows: `cp`"), so the verb the row prints is a fact about the
+#: runner -- and a test that hard-coded `cp ` was a test that could only
+#: pass on two of this repository's three CI jobs (#105).
+COPY_VERB = "Copy-Item " if os.name == "nt" else "cp "
+
+
+def powershell_tokens(line: str) -> list[str]:
+    """PowerShell's reading of a command line, as far as this row needs it.
+
+    A QUOTE-AWARE PARSER, NOT `str.split()` (Copilot, PR #107). The row's
+    own paths are quoted exactly when they need to be, so a checkout at
+    `C:\\Users\\Jane Doe\\...` arrives as ONE token `'C:\\Users\\Jane
+    Doe\\...'` -- and a test that split on whitespace tore that value in
+    half and then failed a correct command. `#` has the same shape of
+    answer: it opens a comment where a TOKEN starts and is an ordinary
+    character anywhere else, so a path with one in it survives and the
+    trailing `# and the rest are RENDERED...` the row appends does not.
+
+    Verbatim `'...'` only, because that is the one quoting `quote_arg`
+    emits: nothing inside is expanded and an apostrophe is doubled.
+    """
+    tokens: list[str] = []
+    index, length = 0, len(line)
+    while index < length:
+        if line[index].isspace():
+            index += 1
+            continue
+        if line[index] == "#":          # a comment, to the end of the line
+            break
+        if line[index] == "'":
+            index += 1
+            word = []
+            while index < length:
+                if line[index] != "'":
+                    word.append(line[index])
+                    index += 1
+                elif line[index:index + 2] == "''":
+                    word.append("'")    # a doubled apostrophe is one
+                    index += 2
+                else:
+                    index += 1          # the quotation ends
+                    break
+            tokens.append("".join(word))
+            continue
+        start = index
+        while index < length and not line[index].isspace():
+            index += 1
+        tokens.append(line[start:index])
+    return tokens
+
+
+def copied_paths(line: str, platform: str | None = None) -> tuple[str, str]:
+    """The source and the target back out of the row's copy line.
+
+    `shlex` on POSIX because that is the reader's own parser there --
+    `comments=True` so it drops the row's trailing `#` note the way the
+    shell would, rather than a naive `split("#")` cutting a path that has
+    one in it. On Windows the cmdlet's spelling, read by a parser that
+    knows PowerShell's verbatim string; `platform` so either branch can be
+    asserted from either host, as `copy_command` itself can be.
+    """
+    if (os.name if platform is None else platform) != "nt":
+        parts = shlex.split(line, comments=True)
+        assert parts[0] == "cp", line
+        return parts[1], parts[2]
+    words = powershell_tokens(line)
+    assert words[0] == "Copy-Item", line
+    assert words[1] == "-LiteralPath", line
+    assert words[3] == "-Destination", line
+    return words[2], words[4]
+
+
 def test_a_missing_rendered_leg_file_is_not_offered_a_cp(standard, project):
     """`templates/<role>-root/AGENTS.md` is full of `{{PLACEHOLDER}}`s.
 
@@ -892,15 +969,248 @@ def test_a_missing_rendered_leg_file_is_not_offered_a_cp(standard, project):
     (project / "spec" / "AGENTS.md").unlink()
     row = rows_of(doctor(standard, project, "--json"))["leg-shape-files"]
     assert row["status"] == "note"
-    assert not row["next"].startswith("cp "), row["next"]
+    assert not row["next"].startswith(COPY_VERB), row["next"]
     assert "RENDERED" in row["next"], row["next"]
 
     (project / "spec" / "CLAUDE.md").unlink()
     row = rows_of(doctor(standard, project, "--json"))["leg-shape-files"]
-    assert row["next"].startswith("cp "), row["next"]
-    source, target = row["next"].split("#")[0].split()[1:3]
+    # `COPY_VERB`, not `cp `: on Windows the row says `Copy-Item`, because
+    # `cp` there is that cmdlet's alias and reads `[` as a wildcard (#105).
+    assert row["next"].startswith(COPY_VERB), row["next"]
+    source, target = copied_paths(row["next"])
     assert Path(source).is_file(), source
     assert target.endswith("CLAUDE.md"), target
+
+
+#: The two spellings of ONE copy, byte for byte, asserted for BOTH platforms
+#: from whichever host runs the suite. The value that makes the difference
+#: visible is a `[old]` in a path: `Copy-Item`'s `-Path` is documented
+#: "Wildcard characters are permitted", so on Windows those brackets are a
+#: character class and not a directory name -- which quoting cannot fix,
+#: because quoting says where the argument ENDS and the cmdlet decides how
+#: to read what arrived (#105).
+#:
+#: THE PATHS ARE PURE AND EACH IS ITS OWN PLATFORM'S FLAVOUR. `Path` is the
+#: HOST's, so a `/srv/...` fixture rendered `\srv\...` on the Windows runner
+#: and broke both `scaffold_command` rows there (job `tests-windows`, run
+#: 34594408797, PR #102). `PurePosixPath` and `PureWindowsPath` render the
+#: same string on every host. And a genuine `PureWindowsPath` is safe HERE
+#: where it was not there, because `copy_command` threads the asked-for
+#: `platform` into both of its `quote_arg` calls rather than letting them
+#: fall back to the real host's `os.name` -- which is the whole of #103,
+#: next door, and is why the `nt` rows below are quoted by PowerShell's
+#: rules on Linux and macOS too.
+COPY_COMMAND = [
+    # The bracket in the TARGET: a project at `<root>/work[old]/Atlas`.
+    ("posix",
+     PurePosixPath("/srv/openRepoShape/templates/spec-root/CLAUDE.md"),
+     PurePosixPath("/srv/work[old]/Atlas/spec/CLAUDE.md"),
+     "cp /srv/openRepoShape/templates/spec-root/CLAUDE.md "
+     "'/srv/work[old]/Atlas/spec/CLAUDE.md'"),
+    ("nt",
+     PureWindowsPath(r"C:\openRepoShape\templates\spec-root\CLAUDE.md"),
+     PureWindowsPath(r"C:\work[old]\Atlas\spec\CLAUDE.md"),
+     r"Copy-Item -LiteralPath C:\openRepoShape\templates\spec-root\CLAUDE.md"
+     r" -Destination 'C:\work[old]\Atlas\spec\CLAUDE.md'"),
+    # And in the SOURCE: a checkout of the standard at `<root>/shape[2]`,
+    # which is the half a fix that only guarded the destination would miss.
+    ("posix",
+     PurePosixPath("/srv/shape[2]/templates/code-root/.gitignore"),
+     PurePosixPath("/srv/Atlas/code/.gitignore"),
+     "cp '/srv/shape[2]/templates/code-root/.gitignore' "
+     "/srv/Atlas/code/.gitignore"),
+    ("nt",
+     PureWindowsPath(r"C:\shape[2]\templates\code-root\.gitignore"),
+     PureWindowsPath(r"C:\Atlas\code\.gitignore"),
+     r"Copy-Item -LiteralPath 'C:\shape[2]\templates\code-root\.gitignore'"
+     r" -Destination C:\Atlas\code\.gitignore"),
+]
+
+
+@pytest.mark.parametrize("platform,source,target,expected", COPY_COMMAND)
+def test_the_copy_line_is_literal_where_cp_is_a_cmdlet(platform, source,
+                                                       target, expected):
+    r"""`cp` on Windows is `Copy-Item`, and `-Path` is a PATTERN.
+
+    The row printed one spelling for both platforms. On Windows that word is
+    an alias of `Copy-Item`, whose `-Path` parameter is documented "Wildcard
+    characters are permitted" -- so `C:\work[old]\Atlas` is read as a
+    character class matching `C:\worko`, `C:\workl` or `C:\workd`, and the
+    reader gets either `Cannot find path` for a directory that is plainly
+    there or a copy out of a sibling that happens to match, silently.
+    Quoting cannot reach it: `quote_arg` (#102) decides where the argument
+    ends, and this is what the cmdlet does with the argument afterwards.
+
+    `-LiteralPath` is the parameter that means this path -- "used exactly as
+    it's typed. No characters are interpreted as wildcards" -- and the
+    destination needs no twin, because `-Destination` is documented
+    "Supports wildcards: False": it names where the copy lands rather than
+    searching for what to copy.
+
+    POSIX IS UNCHANGED AND IS ASSERTED TO BE, on the same values: there `cp`
+    is `/bin/cp`, the glob belongs to the shell, and `quote_arg`'s
+    single quotes already hand the brackets through intact.
+    """
+    module = doctor_module(REPO)
+    line = module.copy_command(source, target, platform)
+    assert line == expected
+    # And both paths arrive whole: the bracket is IN the line, not expanded
+    # away by whoever quoted it.
+    assert str(source) in line, line
+    assert str(target) in line, line
+
+
+#: A path that breaks a naive parser three ways at once -- a space, an
+#: apostrophe (doubled inside PowerShell's verbatim string, closed-escaped-
+#: reopened by `sh`'s) and a `#`, which opens a comment where a TOKEN starts
+#: and is an ordinary character anywhere else. The row appends a real
+#: trailing comment of its own when only some of the missing files are
+#: copyable, so a reader of these lines has to tell those two apart
+#: (Copilot, PR #107). Each row is its own platform's spelling of a path,
+#: and both are asserted from whichever host runs the suite.
+AWKWARD_COPY = [
+    ("posix", "/srv/open Repo'Shape/templates/spec-root/CLAUDE.md",
+     "/srv/work #2/Atlas/spec/CLAUDE.md"),
+    ("nt", "C:\\Users\\Jane Doe\\shape\\templates\\spec-root\\CLAUDE.md",
+     "C:\\work #2\\O'Brien\\spec\\CLAUDE.md"),
+]
+
+#: What `check_leg_shape_files` appends when some of the missing files are
+#: RENDERED per project and only the rest can be copied -- a real trailing
+#: comment on a real line, kept here verbatim so the parser above is proved
+#: against what the row actually prints.
+RENDERED_NOTE = ("   # and the rest are RENDERED per project (placeholders): "
+                 "scaffold-project.py writes those, and copying a template "
+                 "verbatim would not")
+
+
+@pytest.mark.parametrize("platform,source,target", AWKWARD_COPY)
+def test_the_copy_line_is_read_back_by_the_quoting_it_was_written_with(
+        platform, source, target):
+    """Round trip: what `copy_command` wrote, `copied_paths` reads.
+
+    The parser is the test suite's, not the product's, and it was
+    `str.split()` -- which tears `'C:\\Users\\Jane Doe\\...'` in half at the
+    space and then fails a command that was perfectly correct, and truncates
+    a path with a `#` in it before the assertion is even made (Copilot, PR
+    #107). Both shells' quoting is now read by something that knows it, and
+    the row's own trailing comment is dropped without taking a `#` that sits
+    inside a quotation with it.
+    """
+    module = doctor_module(REPO)
+    line = module.copy_command(source, target, platform) + RENDERED_NOTE
+    # The values really are ones the quoter quotes -- a round trip over two
+    # bare words would prove nothing about either parser.
+    assert "'" in line, line
+    assert copied_paths(line, platform) == (source, target), line
+
+
+def test_the_copy_line_asked_for_no_platform_is_this_hosts():
+    """`platform=None` is every caller in `shape-doctor.py`.
+
+    The argument exists so both spellings are testable from one machine
+    (`quote_arg` and `scaffold_command` carry one for the same reason); the
+    row itself asks for nothing and must get the shell of the person reading
+    the report.
+    """
+    module = doctor_module(REPO)
+    here = "nt" if os.name == "nt" else "posix"
+    assert module.copy_command("a b", "c d") == \
+        module.copy_command("a b", "c d", here)
+    # And the two spellings are not one spelling, or the parametrized
+    # assertions above would prove nothing about which host got which.
+    assert module.copy_command("a", "b", "nt") != \
+        module.copy_command("a", "b", "posix")
+
+
+def test_the_only_shell_verb_this_file_spells_goes_through_copy_command():
+    """The CLASS of the defect, not just the one line that had it.
+
+    Every other remediation `shape-doctor.py` prints is `python3 ...` or
+    `git -C ...` -- the same programs, with the same parsing, on both
+    platforms. The copy was the one line that named a SHELL's own verb, and
+    a shell verb is exactly where the two platforms stop agreeing. So the
+    guard is that there is still only one of them in the file and it is
+    inside the function that knows both spellings: a future row that reaches
+    for a bare `cp`, `mv` or `rm` fails here, with this comment to read,
+    rather than on somebody's Windows machine.
+    """
+    source = (REPO / DOCTOR).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    known = [node for node in tree.body
+             if isinstance(node, ast.FunctionDef)
+             and node.name == "copy_command"]
+    assert len(known) == 1, "copy_command is where a shell verb may live"
+    first, last = known[0].lineno, known[0].end_lineno
+    verbs = re.compile(r"""["'](cp|mv|rm|ln|cat|touch|mkdir|chmod) """)
+    outside = [source[:match.start()].count("\n") + 1
+               for match in verbs.finditer(source)
+               if not first <= source[:match.start()].count("\n") + 1 <= last]
+    assert not outside, (
+        f"{DOCTOR} spells a bare shell verb at line(s) {outside}; on Windows "
+        "those words are cmdlet aliases read by cmdlet rules (#105) -- give "
+        "the command a platform branch, as `copy_command` has.")
+
+
+@WINDOWS_SKIP
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_the_copy_line_of_a_bracketed_root_lands_where_it_says(
+        standard, tmp_path, scaffolded_here):
+    """End to end, with the failure standing next door: `work[old]`.
+
+    A root at `<tmp>/work[old]/Atlas` with a sibling `<tmp>/workd` -- which
+    is what the character class `[old]` matches -- and the row's own line
+    pasted into `bash -c` exactly as printed. Quoted, the shell hands the
+    brackets to `/bin/cp` and the leg's file is restored from the template.
+    Unquoted, the same line resolves to the SIBLING and overwrites a file in
+    a repository the reader never named, leaving the one they were fixing
+    still missing: silent, and in the wrong directory.
+
+    THAT SECOND HALF IS THE WINDOWS CASE, WRITTEN WHERE IT CAN BE RUN. On
+    PowerShell the expansion is `Copy-Item`'s own, so quoting does not
+    prevent it and only `-LiteralPath` does; this test is the same mistake
+    in the one shell this runner has, so what the Windows branch is for is
+    a demonstrated failure rather than an argument.
+    """
+    root = tmp_path / "work[old]" / PROJECT
+    root.parent.mkdir(parents=True)
+    shutil.copytree(scaffolded_here["clone"], root, symlinks=True)
+    decoy = tmp_path / "workd" / PROJECT / "spec"
+    decoy.mkdir(parents=True)
+    (decoy / "CLAUDE.md").write_text("a file nobody asked to touch\n",
+                                     encoding="utf-8")
+    missing = root / "spec" / "CLAUDE.md"
+    template = standard / "templates" / "spec-root" / "CLAUDE.md"
+    missing.unlink()
+
+    row = rows_of(doctor(standard, root, "--json"))["leg-shape-files"]
+    assert row["status"] == "note", row
+    assert row["next"].startswith("cp "), row["next"]
+
+    pasted = subprocess.run(["bash", "-c", row["next"]], capture_output=True,
+                            text=True, check=False)
+    assert pasted.returncode == 0, pasted.stdout + pasted.stderr
+    assert missing.read_bytes() == template.read_bytes(), row["next"]
+    assert (decoy / "CLAUDE.md").read_text(encoding="utf-8") == \
+        "a file nobody asked to touch\n", "the quoted line went next door"
+
+    # And the unquoted spelling of the same line is the failure, so the
+    # assertions above cannot be passing by accident.
+    missing.unlink()
+    module = doctor_module(standard)
+    quoted = module.quote_arg(missing, "posix")
+    assert quoted != str(missing), "a bracketed target needs quoting"
+    naive = row["next"].replace(quoted, str(missing))
+    assert naive != row["next"], "the target was not quoted in the command"
+    broken = subprocess.run(["bash", "-c", naive], capture_output=True,
+                            text=True, check=False)
+    assert broken.returncode == 0, broken.stdout + broken.stderr
+    assert not missing.exists(), (
+        "unquoted, `work[old]` must expand to the sibling; if it does not, "
+        "this test is proving nothing about the wildcard")
+    assert (decoy / "CLAUDE.md").read_bytes() == template.read_bytes(), (
+        "the unquoted line is meant to land in the SIBLING -- that is the "
+        "whole point of the quoted assertion above")
 
 
 def test_a_member_on_a_branch_is_reported_and_is_not_a_finding(standard,
