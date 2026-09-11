@@ -26,6 +26,17 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[1]
+
+#: `repo_shape` is the dependency-free module every validator imports (see
+#: its own docstring), so importing it here costs nothing at collection
+#: time — the same `sys.path.insert` every test module that reads it
+#: already does (`tests/test_naming_policy.py` and others).
+#: `PIN_SOURCE_ENV_PREFIX` is read from there rather than re-spelled, so
+#: `run_script` below and `resolve_link_source` can never name the prefix
+#: two different ways.
+sys.path.insert(0, str(REPO / "scripts"))
+from repo_shape import PIN_SOURCE_ENV_PREFIX  # noqa: E402
+
 SCAFFOLD = REPO / "scaffold-project.py"
 PROJECT = "Atlas"
 ORG = "testorg"
@@ -108,6 +119,24 @@ def run_script(script: Path, *args: str, cwd: Path | None = None,
     #: unless the CALLER named it, which is how a test asks for a lane.
     if "LANES_LANE" not in asked:
         env["LANES_LANE"] = ""
+    #: NOR IS ANY PIN-SOURCE OVERRIDE (2026-09-11, #114, #120). Every
+    #: `SHAPE_PIN_SOURCE_<PRODUCT>` name (`repo_shape.PIN_SOURCE_ENV_PREFIX`)
+    #: changes what `resolve_link_source` resolves a link to — rule 2 there
+    #: reads it BEFORE rule 3, the cwd-derived sibling checkout — for
+    #: exactly the same reason `LANES_LANE` is blanked above: a suite that
+    #: passed one through would verify or fail to verify a link depending
+    #: on what the person (or the CI box) running it happens to have
+    #: exported, not on what the test wrote. PR #120 hit this directly:
+    #: `SHAPE_PIN_SOURCE_OPENXDOX`, inherited from a workstation shell where
+    #: it pointed at a real `openDox`-declaring checkout, made an
+    #: offline-link warning stop printing, and that PR could only fix it
+    #: locally, one test at a time, because this rule did not exist yet.
+    #: Blanked for every product-specific variable unless the CALLER named
+    #: that exact name, which is how a test asks for one.
+    for pin_source_name in list(env):
+        if (pin_source_name.startswith(PIN_SOURCE_ENV_PREFIX)
+                and pin_source_name not in asked):
+            env[pin_source_name] = ""
     env.setdefault("GIT_AUTHOR_NAME", "openRepoShape tests")
     env.setdefault("GIT_AUTHOR_EMAIL", "tests@openreposhape.invalid")
     env.setdefault("GIT_COMMITTER_NAME", "openRepoShape tests")

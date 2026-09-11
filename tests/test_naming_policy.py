@@ -707,28 +707,93 @@ def test_cli_reports_an_unread_link_as_a_warning_and_still_classifies(tmp_path):
     fresh and unique per test on every machine, so it has no such sibling
     to be found by accident.
 
-    That leaves rule 2, which reads BEFORE rule 3:
-    `SHAPE_PIN_SOURCE_OPENXDOX` in the environment. `run_script`
-    (`tests/conftest.py`) starts from a COPY of the calling process's own
-    environment, so a developer shell or CI box that happens to export that
-    variable — pointed at a tree that really does declare `openDox`, the
-    same shape `~/projects/openXdox` has on Brett's workstation — verifies
-    the link the same way a sibling checkout would, and the warning under
-    test would never print, exactly as the docstring above already
-    describes for rule 3. The override below pins that one variable to a
-    path known to carry no manifest, so the outcome cannot depend on
-    whatever the calling environment happens to export.
+    That leaves rule 2, which reads BEFORE rule 3: `SHAPE_PIN_SOURCE_OPENXDOX`
+    in the environment. This test no longer overrides it itself (#114 fixed
+    it locally that way; #120's own follow-up asked for the general form):
+    `run_script` (`tests/conftest.py`) now blanks every `SHAPE_PIN_SOURCE_*`
+    variable it would otherwise inherit from the calling process unless THIS
+    call's own `env=` names it — the same mechanism PR #112 gave
+    `LANES_LANE`, generalised for #114/#120 — so a developer shell or CI box
+    that happens to export `SHAPE_PIN_SOURCE_OPENXDOX`, pointed at a tree
+    that really does declare `openDox` (the same shape `~/projects/openXdox`
+    has on Brett's workstation), never reaches the validator subprocess
+    started below and cannot make the link verify by accident.
+    `test_run_script_blanks_an_inherited_pin_source_unless_named` and
+    `test_run_script_still_passes_a_pin_source_the_caller_names`, right
+    below, prove that mechanism directly; this test only needs its own
+    `cwd` isolation from rule 3.
     """
     workdir = tmp_path / "codexDox"
     workdir.mkdir()
-    no_such_checkout = tmp_path / "not-really-an-openxdox-checkout"
     result = run_script(VALIDATOR, "--role", "assembly", "--pins", "openXdox",
                         "--referent-chain", "openXdox,openDox", "codexDox",
-                        cwd=workdir,
-                        env={"SHAPE_PIN_SOURCE_OPENXDOX": str(no_such_checkout)})
+                        cwd=workdir)
     assert result.returncode == 0, result.stderr
     assert "domain-descendant/assembly" in result.stdout
     assert "WARNING codexDox: declared-unverified" in result.stderr
+
+
+def test_run_script_blanks_an_inherited_pin_source_unless_named(
+        tmp_path, monkeypatch):
+    """PROVES the general rule #120's follow-up asked for and
+    `tests/conftest.py::run_script` now carries: an inherited
+    `SHAPE_PIN_SOURCE_*` variable must not reach the child unless THIS
+    CALL's own `env=` names it.
+
+    Build a tree that WOULD verify the `openXdox` link (`_tree`, same
+    helper every other test in this section uses), point the AMBIENT
+    environment at it with `monkeypatch.setenv` — standing in for the
+    developer shell or CI box PR #120's review comment described — and call
+    the validator through `run_script` with no `env=` of its own. Without
+    the blanking rule, rule 2 (`resolve_link_source`,
+    `scripts/repo_shape.py`) would read that ambient variable before rule 3
+    is ever reached, the link would verify, and the warning below would
+    never print — exactly the finding Copilot made on PR #120 before
+    `c30d9f4` fixed it for this one test only.
+    """
+    workdir = tmp_path / "codexDox"
+    workdir.mkdir()
+    _tree(tmp_path / "would-verify-if-not-blanked", "openDox")
+    monkeypatch.setenv("SHAPE_PIN_SOURCE_OPENXDOX",
+                       str(tmp_path / "would-verify-if-not-blanked"))
+    result = run_script(VALIDATOR, "--role", "assembly", "--pins", "openXdox",
+                        "--referent-chain", "openXdox,openDox", "codexDox",
+                        cwd=workdir)
+    assert result.returncode == 0, result.stderr
+    assert "domain-descendant/assembly" in result.stdout
+    assert "WARNING codexDox: declared-unverified" in result.stderr
+
+
+def test_run_script_still_passes_a_pin_source_the_caller_names(tmp_path):
+    """The other half of the same rule: a caller that DOES name the
+    variable in its own `env=` must still reach the child. The blanking
+    rule stands in only for a caller that said nothing; it never overrides
+    one that said something. Point `SHAPE_PIN_SOURCE_OPENXDOX` at a tree
+    that verifies the link and expect a `[verified]` chain, mirroring
+    `test_cli_classifies_a_chain_given_on_the_command_line` above but
+    through rule 2 instead of `--link-source`.
+
+    THE TREE SITS AT `elsewhere`, NOT AT THE SIBLING PATH `tmp_path /
+    "openXdox"` rule 3 would also check: putting the verifying manifest
+    there would let this test pass even if a broken blanking rule wiped the
+    caller's own `env=` too, because rule 3 would find the very same tree
+    by accident and the assertion would never notice. Naming it something
+    else means only rule 2 — the env var this test actually names — can
+    make the chain verify, which is what `test_a_link_source_names_the_tree_explicitly`
+    above already does for the same reason, one rule earlier.
+    """
+    workdir = tmp_path / "codexDox"
+    workdir.mkdir()
+    _tree(tmp_path / "elsewhere", "openDox")
+    result = run_script(VALIDATOR, "--role", "assembly", "--pins", "openXdox",
+                        "--referent-chain", "openXdox,openDox",
+                        "--explain", "codexDox", cwd=workdir,
+                        env={"SHAPE_PIN_SOURCE_OPENXDOX":
+                             str(tmp_path / "elsewhere")})
+    assert result.returncode == 0, result.stderr
+    assert "codexDox: domain-descendant / assembly" in result.stdout
+    assert "CHAIN openXdox → openDox   [verified]" in result.stdout
+    assert "WARNING" not in result.stdout
 
 
 def test_cli_reports_a_broken_link_as_a_finding_naming_it(tmp_path):
