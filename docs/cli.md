@@ -462,25 +462,31 @@ options:
 ```
 usage: update-shape.py apply [-h] --root ROOT [--upstream UPSTREAM] [--at AT]
                              [--yes] [--accept-local PATH] [--add PATH]
-                             [--branch BRANCH] [--push] [--pr]
+                             [--branch BRANCH] [--trailer "KEY: VALUE"]
+                             [--push] [--pr]
 
 options:
-  -h, --help           show this help message and exit
-  --root ROOT          the assembly root to update
-  --upstream UPSTREAM  a path to a clone of openRepoShape, or `owner/repo`
-                       (default: the pin's `source_repository`)
-  --at AT              the upstream revision to update to (default: the
-                       upstream's tip)
-  --yes                the human has read `check` and said yes
-  --accept-local PATH  re-pin this locally-modified file FROM THE ROOT'S OWN
-                       BYTES; repeatable
-  --add PATH           copy this `upstream-added` file into the root and
-                       append its pin row; repeatable, and never passed for a
-                       file a human has not said to take
-  --branch BRANCH      create this branch and commit the change to it, with
-                       explicit pathspecs
-  --push               push the branch to origin (needs --branch)
-  --pr                 open a pull request with `gh` (needs --branch)
+  -h, --help            show this help message and exit
+  --root ROOT           the assembly root to update
+  --upstream UPSTREAM   a path to a clone of openRepoShape, or `owner/repo`
+                        (default: the pin's `source_repository`)
+  --at AT               the upstream revision to update to (default: the
+                        upstream's tip)
+  --yes                 the human has read `check` and said yes
+  --accept-local PATH   re-pin this locally-modified file FROM THE ROOT'S OWN
+                        BYTES; repeatable
+  --add PATH            copy this `upstream-added` file into the root and
+                        append its pin row; repeatable, and never passed for a
+                        file a human has not said to take
+  --branch BRANCH       create this branch and commit the change to it, with
+                        explicit pathspecs
+  --trailer "KEY: VALUE"
+                        append this `<Key>: <value>` line to the commit, after
+                        any already there; repeatable, kept in the order
+                        given, and needs --branch — there is no commit to put
+                        a line on without one
+  --push                push the branch to origin (needs --branch)
+  --pr                  open a pull request with `gh` (needs --branch)
 ```
 
 ### `shape-doctor.py`
@@ -636,7 +642,7 @@ options:
 
 ```
 usage: family.py bump [-h] --family-root FAMILY_ROOT --member PROJECT
-                      --to COMMIT
+                      --to COMMIT [--trailer "KEY: VALUE"]
 
 options:
   -h, --help            show this help message and exit
@@ -644,6 +650,9 @@ options:
   --member PROJECT
   --to COMMIT           the 40-hex commit to move the gitlink and the pin to,
                         together
+  --trailer "KEY: VALUE"
+                        append this `<Key>: <value>` line to the commit this
+                        writes; repeatable, kept in the order given
 ```
 
 #### `scripts/family.py remove`

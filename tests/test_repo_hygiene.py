@@ -460,9 +460,21 @@ def test_agents_md_is_short_enough_to_be_read():
     verdict list, which is what a scheduled job reads. One is the
     `--placement-plan` caveat on the opening paragraph: "it writes nothing"
     was absolute and is not any more, and an absolute sentence with an
-    undocumented exception is how the exception gets found by surprise."""
+    undocumented exception is how the exception gets found by surprise.
+
+    2026-09-11: 423 -> 433 — the commit `--trailer` (#111), later the same
+    day. Eight lines are one numbered point under "Updating a project's
+    shape" and two a clause in the family section, and they buy the one
+    thing `docs/cli.md` cannot: PERMISSION. A flag listed there is not
+    permission to pass it — this file's own opening paragraph says so — and
+    the flag an assistant now has to pass is the one the lane-collision
+    protocol requires on a commit. Four InkRouter re-pins landed carrying
+    neither `Lane:` nor `Co-Authored-By:` because both tools were run
+    exactly as their own `NEXT` lines printed them; a point saying which
+    trailers to pass, and that the printed line already carries the lane, is
+    what makes the next run land complete rather than amended by hand."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 423, f"AGENTS.md is {len(lines)} lines; the cap is 423"
+    assert len(lines) <= 433, f"AGENTS.md is {len(lines)} lines; the cap is 433"
 
 
 def test_claude_md_points_at_agents_md():

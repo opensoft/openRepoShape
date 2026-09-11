@@ -27,6 +27,7 @@ So a colliding template file is written BESIDE the original under
 
 from __future__ import annotations
 
+import argparse
 import datetime as _dt
 import os
 import re
@@ -419,6 +420,195 @@ def git_init_commit(work: Path, message: str, branch: str) -> str:
     run(["git", "add", "-A", "--", "."], cwd=work)
     env_commit(work, message)
     return run(["git", "rev-parse", "HEAD"], cwd=work)
+
+
+# ---------------------------------------------------------------------------
+# Commit trailers (2026-09-11, #111)
+# ---------------------------------------------------------------------------
+#
+# WHAT WAS WRONG. `update-shape.py apply --branch` and `scripts/family.py
+# bump` compose and write their own commits, and neither had any way to put a
+# line on one. The lane-collision protocol wants `Lane: <name>` on every
+# artifact a lane produces — the COMMIT included — and this estate's own
+# convention adds `Co-Authored-By:`; four InkRouter re-pins landed on
+# 2026-09-11 carrying neither, because both tools were run exactly as their
+# own `NEXT` lines printed them and nothing in either wrote a trailer (#111).
+# So both take a repeatable `--trailer`, and what a trailer IS, whether this
+# host's git can be asked for one, and which environment variable names the
+# lane are ONE implementation here rather than two that agree until they do
+# not.
+#
+# AND NOT IN `scripts/repo_shape.py`, which is where this standard's other
+# shared helpers sit. That file is a SHAPE COPY: the materializer below
+# writes it into every assembly root and every family holder and
+# `contracts/shape-pin.yaml` digests it — so one function added there would
+# put an `upstream-changed scripts/repo_shape.py` row in front of every
+# project in the estate on its next `update-shape.py check`, for a helper no
+# project's own copy would ever call. `shape-doctor.py` makes exactly that
+# argument about its own quoter. This module is in no copy list and is
+# already imported by both tools that write these commits.
+
+#: `<token>: <value>`, which is git's own trailer grammar narrowed to what a
+#: tool can be handed on a command line: a token of letters, digits and
+#: hyphens (`Co-Authored-By`), a colon, ONE space, and a value that is not
+#: empty, is one line, and neither starts nor ends in whitespace. Narrow
+#: BECAUSE THE VALUE ENDS UP IN A COMMIT MESSAGE somebody else reads as a
+#: trailer: `git interpret-trailers` recognises a block by exactly this
+#: shape, so a "trailer" missing the space after the colon is a line that
+#: reads like one and is not.
+TRAILER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*: [^\s](?:[^\n]*[^\s])?$")
+
+
+def trailer_line(text: str) -> str:
+    """One `--trailer` value, validated where argparse can refuse it.
+
+    ARGPARSE'S OWN ERROR PATH RATHER THAN A `Refusal`, and deliberately: a
+    malformed trailer is a malformed COMMAND LINE, which is the one class of
+    mistake argparse already reports with the usage line beside it. Both
+    exits are 2, so a caller scripting on the exit code sees no difference;
+    what it buys is that `--trailer 'Lane xfactory-1'` is refused before the
+    tool has read a repository, copied a byte or checked out a branch.
+    """
+    value = str(text)
+    if not TRAILER_RE.match(value):
+        raise argparse.ArgumentTypeError(
+            f"{value!r} is not a `<Key>: <value>` trailer. It needs a token "
+            "of letters, digits and hyphens, a colon, ONE space, and a "
+            'non-empty one-line value — e.g. "Lane: xfactory-1" or '
+            '"Co-Authored-By: Someone <someone@example.invalid>"')
+    return value
+
+
+#: The git that learned `commit --trailer` (2.32, 2021-06-06). An older one
+#: still has `git interpret-trailers`, but not the commit option — so on that
+#: host the trailer is appended to the message TEXT instead, which produces
+#: the same commit. See `commit_trailers`.
+TRAILER_OPTION_SINCE = (2, 32)
+
+#: `git version 2.43.0` on Linux, `git version 2.45.1.windows.1`, `git
+#: version 2.39.3 (Apple Git-146)`. TWO numbers, because two answer the
+#: question and the third field is spelled differently on all three
+#: platforms; anchored, so a number from anywhere else in the line cannot be
+#: read as a version.
+GIT_VERSION_RE = re.compile(r"^git version (\d+)\.(\d+)")
+
+#: Probed once per process; see `git_takes_trailer_option`.
+_trailer_option: bool | None = None
+
+
+def git_takes_trailer_option(version: str | None = None) -> bool:
+    """Does THIS host's `git commit` take `--trailer`?
+
+    PROBED ONCE AND CACHED. Both callers write ONE commit per run, so the
+    cost is one `git --version` either way; what the cache buys is that a
+    tool cannot answer the question twice and differently inside one run.
+
+    `version` IS THE PARSE, EXPOSED. Passed a string it parses that and
+    caches nothing, so both branches are assertable on any host — the same
+    thing `shape-doctor.py`'s `platform=` argument does for its quoter, and
+    for the same reason: a branch that only ever runs on one machine is a
+    branch nothing checks.
+
+    CONSERVATIVE ON PURPOSE: a version line this cannot parse, a `git` that
+    is not on PATH, a probe that fails for any reason at all — all read as
+    "no", and "no" is the path that works on every git there is.
+    """
+    global _trailer_option
+    if version is not None:
+        found = GIT_VERSION_RE.match(version.strip())
+        return bool(found) and (int(found.group(1)),
+                                int(found.group(2))) >= TRAILER_OPTION_SINCE
+    if _trailer_option is None:
+        try:
+            _trailer_option = git_takes_trailer_option(
+                run(["git", "--version"]))
+        except (CommandFailed, Refusal, OSError):
+            _trailer_option = False
+    return _trailer_option
+
+
+def commit_trailers(message: str, trailers=()) -> tuple[str, list[str]]:
+    """`(message, extra git-commit arguments)` that put `trailers` at the END
+    of the commit message, in the order given, on whichever git this is.
+
+    TWO PATHS, ONE RESULT. With `--trailer` available, git appends each line
+    itself through `interpret-trailers`, which is the implementation that
+    knows where a trailer block goes. Without it, the lines are appended to
+    the message text after one blank line — and the commit that comes out is
+    byte-identical to the one the option produces, because that is all the
+    option had left to do for a message whose last paragraph is prose.
+
+    THE MESSAGE STILL ARRIVES ON STDIN either way (`-F -`; see
+    `COMMIT_COMMAND`), and the trailers are literal arguments after it. Both
+    callers already commit with EXPLICIT PATHSPECS, so the returned arguments
+    go BEFORE the `--` that starts them.
+
+    NO TRAILERS IS NO CHANGE AT ALL: the message is handed back as it came
+    and the argument list is empty, which is what keeps every commit these
+    tools have ever written byte-identical when nobody passes the flag.
+    """
+    lines = [str(line) for line in (trailers or ())]
+    if not lines:
+        return message, []
+    if git_takes_trailer_option():
+        return message, [part for line in lines
+                         for part in ("--trailer", line)]
+    body = message if message.endswith("\n") else message + "\n"
+    return body + "\n" + "\n".join(lines) + "\n", []
+
+
+#: The environment variable that names the LANE a run belongs to — the one
+#: `lanes-edit.sh` already reads. Read in ONE place so a printed next command
+#: and the commit it asks for cannot disagree about which lane is running.
+LANE_ENV = "LANES_LANE"
+
+#: What a lane name may be AND STILL SURVIVE BEING PASTED. A next command is
+#: a line somebody copies into a shell, and the trailer inside it is quoted
+#: by whoever prints it — so a name carrying a quote character would break
+#: the very quoting it sits inside, in front of whoever pasted it. Rather
+#: than guess which printer is asking, a name outside this alphabet gets NO
+#: trailer offered on the printed line; `--trailer` typed by hand still takes
+#: anything `TRAILER_RE` accepts. Today's lane names (`openreposhape-2
+#: (openRepoShape-2)`) are inside it.
+LANE_NAME_RE = re.compile(r"[A-Za-z0-9 ()._:/@+-]+")
+
+
+def lane_trailer(env: dict | None = None) -> str | None:
+    """`Lane: <name>` when the environment names a lane, else `None`.
+
+    UNSET, EMPTY OR WHITESPACE IS `None`, and a caller prints nothing for it
+    — which is what makes every line this standard printed yesterday
+    byte-identical today for everybody who is not in a lane.
+    """
+    name = str((os.environ if env is None else env).get(LANE_ENV) or "").strip()
+    if not name or not LANE_NAME_RE.fullmatch(name):
+        return None
+    line = f"Lane: {name}"
+    return line if TRAILER_RE.match(line) else None
+
+
+def lane_trailer_argument(quote=None, env: dict | None = None) -> str:
+    """The ` --trailer <Lane: ...>` a printed next command carries, or `""`.
+
+    `quote` IS THE CALLER'S OWN SPELLING FUNCTION, passed in rather than
+    chosen here. `shape-doctor.py` hands over its platform-aware `quote_arg`,
+    because every other value on those rows is spelled by that one function
+    and a line half-quoted by two rules is a line no shell reads the way its
+    writer meant. With none, the trailer is spelled inside double quotes —
+    which is how `AGENTS.md`, `docs/cli.md` and the issue all write it, and
+    is what `update-shape.py`'s own NEXT line, which quotes nothing, can
+    carry without pretending to a quoting rule it does not have.
+
+    ONE ARGUMENT, NOT TWO. `Co-Authored-By:` is the caller's to pass: it
+    names a person or a model, which no environment variable knows, and a
+    tool that invented one would be putting a name nobody chose on somebody
+    else's commit.
+    """
+    line = lane_trailer(env)
+    if not line:
+        return ""
+    spelled = quote(line) if quote else '"' + line + '"'
+    return f" --trailer {spelled}"
 
 
 def render(text: str, values: dict[str, str], source: str) -> str:

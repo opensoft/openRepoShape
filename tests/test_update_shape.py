@@ -16,6 +16,7 @@ adoption case where a file the human merged away has no pin row at all.
 from __future__ import annotations
 
 import importlib.util
+import shlex
 import shutil
 import subprocess
 import sys
@@ -24,6 +25,10 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import FILE_PROTOCOL, ORG, REPO, git, run_script
+#: The trailer helpers and the two lines a lane's run lands, imported from
+#: the file that owns those rules rather than retyped — see
+#: `tests/test_commit_trailers.py`.
+from test_commit_trailers import LANE, TRAILERS, message_of, trailers_of
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import Refusal, file_sha256, load_yaml, tree_digest  # noqa: E402
@@ -174,6 +179,19 @@ def verdicts(stdout: str) -> dict:
         if len(parts) == 2 and parts[0] in STATES and line.startswith("  "):
             out[parts[1]] = parts[0]
     return out
+
+
+def next_line_of(stdout: str) -> str:
+    """The one `NEXT` line the report ends with, whole.
+
+    Whole, and not a substring match: the property under test is what the
+    END of that line is, and a test that searched for `--trailer` anywhere in
+    the output would pass just as well if the argument landed in the middle
+    of the command.
+    """
+    lines = [line for line in stdout.splitlines() if line.startswith("NEXT")]
+    assert len(lines) == 1, stdout
+    return lines[0]
 
 
 def pin_rows(root) -> dict:
@@ -766,3 +784,146 @@ def test_apply_at_the_pinned_commit_writes_nothing(root, upstream_and_project):
     assert "nothing to do" in result.stdout
     assert git("rev-parse", "--abbrev-ref", "HEAD",
                cwd=root).stdout.strip() == "main"
+
+
+# --- --trailer: the lines the commit ends with (#111) -----------------------
+#
+# `apply --branch` composes its own commit message, so a `Lane:` line — which
+# the lane-collision protocol wants on every artifact a lane produces, the
+# COMMIT included — reaches it no other way, and this estate's convention adds
+# `Co-Authored-By:` beside it. The grammar, the git-version question and the
+# `LANES_LANE` rule are `tests/test_commit_trailers.py`'s; what these assert is
+# the tool: that the flag reaches the commit, that it is refused where there is
+# no commit to reach, and that a run passing none writes exactly what it always
+# wrote.
+
+def test_two_trailers_end_the_commit_message_in_the_order_given(
+        root, upstream_and_project, tmp_path):
+    """TWO RUNS OF THE SAME APPLY, one with the flag and one without, and the
+    trailer block is the ONLY difference between the messages.
+
+    That is the byte-identity claim and the ordering claim in one assertion,
+    and it is written as a comparison rather than against a pasted copy of
+    today's message on purpose: a future edit to the wording is then a change
+    in one place, not a test that fails for a reason that has nothing to do
+    with trailers.
+    """
+    plain = tmp_path / (PROJECT + "-plain")
+    shutil.copytree(root, plain, symlinks=True)
+    bare = apply(plain, upstream_and_project, "--branch", "shape/update-plain")
+    assert bare.returncode == 0, bare.stderr + bare.stdout
+
+    result = apply(root, upstream_and_project,
+                   "--branch", "shape/update-trailers",
+                   "--trailer", TRAILERS[0], "--trailer", TRAILERS[1])
+    assert result.returncode == 0, result.stderr + result.stdout
+
+    assert message_of(root) == \
+        message_of(plain) + "\n" + "\n".join(TRAILERS) + "\n"
+    assert trailers_of(root) == list(TRAILERS), (
+        "and git reads them back as the trailer block, in order")
+    assert trailers_of(plain) == [], "the run without the flag carries none"
+    # The commit is still the one this tool makes: explicit pathspecs, and
+    # nothing about a trailer changes what it committed.
+    assert set(git("show", "--name-only", "--format=", "HEAD",
+                   cwd=root).stdout.split()) == \
+        {CHANGED, "contracts/shape-pin.yaml", "project.yaml"}
+
+
+def test_one_trailer_is_the_whole_block(root, upstream_and_project):
+    """Repeatable means one is as legitimate as two: a lane with no
+    co-author to name passes the `Lane:` line alone."""
+    result = apply(root, upstream_and_project, "--branch", "shape/update-one",
+                   "--trailer", TRAILERS[0])
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert message_of(root).endswith("\n" + TRAILERS[0] + "\n")
+    assert trailers_of(root) == [TRAILERS[0]]
+
+
+def test_no_trailer_leaves_the_commit_carrying_none(root,
+                                                    upstream_and_project):
+    """The default, stated on its own: a message with no trailer block at
+    all, still ending in the sentence this tool has always ended on."""
+    result = apply(root, upstream_and_project, "--branch", "shape/update-none")
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert trailers_of(root) == []
+    assert message_of(root).endswith(
+        "the copies are not hand-edited and the digests are recomputed, not "
+        "adjusted.\n")
+    assert "Lane:" not in message_of(root)
+
+
+def test_a_trailer_without_branch_is_refused_like_push_and_pr(
+        root, upstream_and_project):
+    """A trailer is a LINE ON THE COMMIT this tool writes, so without
+    `--branch` there is no commit for it to be a line on — the same shape of
+    refusal `--push` and `--pr` already carry, under the same id, and a
+    refused apply writes nothing at all."""
+    result = apply(root, upstream_and_project, "--trailer", TRAILERS[0])
+    assert_refused_and_unpinned(result, root, upstream_and_project,
+                                "update-branch-required", "--trailer",
+                                "--branch")
+    assert "--push" not in result.stderr, (
+        "the refusal names the flag that was passed, not the two that were "
+        "not")
+
+
+def test_the_refusal_names_every_flag_that_was_passed(root,
+                                                      upstream_and_project):
+    result = apply(root, upstream_and_project, "--push",
+                   "--trailer", TRAILERS[0])
+    assert_refused_and_unpinned(result, root, upstream_and_project,
+                                "update-branch-required",
+                                "--push and --trailer have nothing to act on")
+
+
+@pytest.mark.parametrize("value", ["Lane xfactory-1", "Lane:xfactory-1",
+                                   "Lane: ", "not a trailer at all"])
+def test_a_malformed_trailer_is_refused_before_a_byte_is_read(
+        root, upstream_and_project, value):
+    """ARGPARSE'S OWN ERROR PATH, which is why this refusal arrives with the
+    usage line and before the tool has opened the root: a malformed trailer
+    is a malformed command line."""
+    result = apply(root, upstream_and_project, "--branch", "shape/update-bad",
+                   "--trailer", value)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "--trailer" in result.stderr
+    assert "usage:" in result.stderr
+    assert load_yaml(root / "contracts" / "shape-pin.yaml")["commit"].lower() \
+        == upstream_and_project["a"], "argparse refused before anything ran"
+    assert git("rev-parse", "--abbrev-ref", "HEAD",
+               cwd=root).stdout.strip() == "main"
+
+
+def test_the_next_line_check_prints_carries_the_lane_when_one_is_set(
+        root, upstream_and_project):
+    """So a run that PASTES the line lands protocol-complete, rather than
+    landing a commit somebody has to amend afterwards — which is how four
+    InkRouter re-pins landed with no trailer at all (#111)."""
+    result = check(root, upstream_and_project)
+    assert result.returncode == 1, result.stdout + result.stderr
+    plain = next_line_of(result.stdout)
+
+    lane = run_script(UPDATE, "check", "--root", str(root), "--upstream",
+                      str(upstream_and_project["upstream"]),
+                      env={"LANES_LANE": LANE})
+    assert lane.returncode == 1, lane.stdout + lane.stderr
+    assert next_line_of(lane.stdout) == plain + f' --trailer "Lane: {LANE}"'
+    # And it is a line that survives being pasted: one argument, whole.
+    assert shlex.split(next_line_of(lane.stdout))[-2:] == \
+        ["--trailer", f"Lane: {LANE}"]
+    assert "Co-Authored-By" not in lane.stdout, (
+        "the second trailer names a person or a model, which no environment "
+        "variable knows; it is the caller's to pass")
+
+
+def test_the_next_line_says_nothing_about_a_lane_when_none_is_set(
+        root, upstream_and_project):
+    """Today's output, byte for byte, for everybody who is not in a lane."""
+    result = run_script(UPDATE, "check", "--root", str(root), "--upstream",
+                        str(upstream_and_project["upstream"]),
+                        env={"LANES_LANE": ""})
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "--trailer" not in result.stdout
+    assert next_line_of(result.stdout).endswith(
+        f"--branch shape/update-{upstream_and_project['b'][:12]}")
