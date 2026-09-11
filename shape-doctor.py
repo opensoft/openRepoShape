@@ -1831,11 +1831,24 @@ def check_members(ctx: Context) -> Row:
 
 
 def origin_name(root: Path) -> str | None:
+    """`origin`'s own repository name, however its URL spells the path to it.
+
+    NORMALIZED TO `/` BEFORE THE SPLIT. A `git remote get-url origin` that is
+    itself a Windows path -- `D:\\a\\_work\\1\\s\\Atlas.git`, the shape CI's
+    own runner lays a checkout out exactly like that -- carries no `/` at
+    all, so the old `rsplit("/", 1)` found nothing to split on and returned
+    the WHOLE path as the "name": every caller downstream (`project_token_for`
+    among them) then read a colon and a run of backslashes as part of an
+    identity (Copilot, PR #110). `\\` is not a legal path character in any
+    remote URL scheme this reads a basename out of, so replacing it is not a
+    Windows-only rule -- it is safe for the `/`-only forms too, which carry
+    none to replace.
+    """
     try:
         url = git_out(["remote", "get-url", "origin"], cwd=root)
     except (Refusal, OSError):
         return None
-    name = url.rstrip("/").rsplit("/", 1)[-1]
+    name = url.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
     return name[:-4] if name.endswith(".git") else name or None
 
 
@@ -2055,12 +2068,25 @@ def project_token_for(name: str, policy: NamingPolicy) -> str:
     The derivation is kept as the fallback for a name the policy admits no
     form of at all: `my-repo` has no valid `--project` to preserve, so
     `MyRepo` is offered instead, exactly as before.
+
+    IT SPLITS ON ANYTHING THE POLICY DOES NOT ADMIT, not only `-` and `_`.
+    A `.` is an ordinary character in a repository name -- `my.repo` is
+    exactly as reachable through `origin`'s name now that this function is
+    handed it, not only a directory's -- and the policy admits it in no
+    family at all, so the old rule's narrower split fed it straight through
+    into the suggested `--project`, which `adopt-project.py` then refused
+    outright (Copilot, PR #110). AND THE RESULT MUST ITSELF START WITH A
+    LETTER, because every family the policy declares does: a derivation
+    that begins with a digit (`9lives`) classifies nothing either, the same
+    finding at the other end of the string, and falls back to the same
+    `"Project"` placeholder a name with no letters or digits in it at all
+    already did.
     """
     if accepts_role(policy.classify(name, "assembly"), "assembly"):
         return name
-    return "".join(part.capitalize()
-                  for part in name.replace("_", "-").split("-")
-                  if part) or "Project"
+    parts = [part for part in re.split(r"[^A-Za-z0-9]+", name) if part]
+    derived = "".join(part.capitalize() for part in parts)
+    return derived if re.match(r"^[A-Za-z]", derived) else "Project"
 
 
 def check_the_way_in(ctx: Context) -> Row:
@@ -2079,10 +2105,21 @@ def check_the_way_in(ctx: Context) -> Row:
     differently named folder does not change what would actually be adopted.
     `project_token_for` decides whether that identity is handed back
     verbatim or respelled.
+
+    `origin` IS CONSULTED ONLY WHEN `root` CARRIES ITS OWN `.git`. `git`
+    itself does not stop at `root` looking for one: run from a directory
+    that has none, it walks UP to the nearest ancestor repository and
+    answers for that one instead, so a loose folder sitting inside somebody
+    else's checkout would have picked up THAT checkout's `origin` -- a
+    directory named `Loose` under a clone of `openRepoProject` suggesting
+    `--project openRepoProject` to the SCAFFOLD line, which is about to
+    create a project named after a repository this directory is not
+    (Copilot, PR #110). `is_repo` is already this exact fact, computed once
+    below, so the guard costs nothing new to ask.
     """
     root = ctx.root
     is_repo = (root / ".git").exists()
-    identity = origin_name(root) or root.name
+    identity = (origin_name(root) if is_repo else None) or root.name
     policy = NamingPolicy.load(ctx.shape / "contracts" /
                                "repository-naming.yaml")
     project = project_token_for(identity, policy)

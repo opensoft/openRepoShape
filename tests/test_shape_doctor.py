@@ -2052,7 +2052,8 @@ def test_the_way_in_row_also_keeps_a_classifying_name_when_scaffolding(
 
 
 @pytest.mark.parametrize("name", ["openRepoProject", "openDox", "Thing",
-                                  "my-repo", "brett-wip"])
+                                  "my-repo", "brett-wip", "my.repo",
+                                  "9lives"])
 def test_the_way_in_rows_suggested_project_always_classifies(standard,
                                                               tmp_path, name):
     """Whichever branch answered -- verbatim or derived -- the value it
@@ -2062,6 +2063,11 @@ def test_the_way_in_rows_suggested_project_always_classifies(standard,
     would take is not a suggestion, checked here the way
     `tests/test_naming_policy.py` checks a classification -- in process,
     against the policy this run of the doctor itself loaded.
+
+    `my.repo` and `9lives` are the two cases Copilot's review of #110 found
+    the derivation still failed on -- a separator it did not split on, and a
+    result with no leading letter -- kept here so the general property
+    covers them alongside the cases #109 was filed for.
     """
     module = doctor_module(standard)
     here = tmp_path / name
@@ -2073,6 +2079,87 @@ def test_the_way_in_rows_suggested_project_always_classifies(standard,
     found = policy.classify(row.detail["suggested_project"], "assembly")
     assert module.accepts_role(found, "assembly"), (
         name, row.detail["suggested_project"], found)
+
+
+def test_the_way_in_rows_fallback_normalizes_every_separator(standard,
+                                                              tmp_path):
+    """Copilot, PR #110: the fallback only split on `-` and `_`, so a `.`
+    -- an ordinary character in a repository name, and now reachable through
+    `origin`'s name and not only a directory's -- rode straight through into
+    the suggested `--project`. `my.repo` must come back `MyRepo`, not
+    `My.repo`.
+    """
+    module = doctor_module(standard)
+    here = tmp_path / "my.repo"
+    here.mkdir()
+    git("init", "-q", "-b", "main", ".", cwd=here)
+    row = module.check_the_way_in(module.Context(here))
+    assert row.detail["suggested_project"] == "MyRepo", row.detail
+    assert "--project MyRepo" in row.next_command, row.next_command
+
+
+def test_the_way_in_rows_fallback_refuses_a_name_with_no_leading_letter(
+        standard, tmp_path):
+    """Copilot, PR #110: every family the policy declares starts with a
+    letter, so a derivation that does not -- `9lives`, digit-led -- was
+    never going to classify either, the same finding at the other end of
+    the string. It falls back to the same `Project` placeholder a name
+    with no letters or digits in it at all already used.
+    """
+    module = doctor_module(standard)
+    here = tmp_path / "9lives"
+    here.mkdir()
+    git("init", "-q", "-b", "main", ".", cwd=here)
+    row = module.check_the_way_in(module.Context(here))
+    assert row.detail["suggested_project"] == "Project", row.detail
+    assert "--project Project" in row.next_command, row.next_command
+
+
+def test_the_way_in_row_never_leaks_an_ancestor_repositorys_origin(standard,
+                                                                    tmp_path):
+    """Copilot, PR #110: `git remote get-url origin` does not stop at
+    `root` looking for one -- run from a directory that has none, it walks
+    UP to the nearest ancestor repository and answers for THAT one. A loose
+    folder with no `.git` of its own, sitting inside a clone of
+    `openRepoProject`, must still scaffold itself as `Loose`, never adopt
+    the ancestor's identity for a project this directory is not.
+    """
+    module = doctor_module(standard)
+    parent = tmp_path / "ParentRepo"
+    parent.mkdir()
+    git("init", "-q", "-b", "main", ".", cwd=parent)
+    git("remote", "add", "origin",
+        "git@github.com:opensoft/openRepoProject.git", cwd=parent)
+    loose = parent / "Loose"
+    loose.mkdir()
+    row = module.check_the_way_in(module.Context(loose))
+    assert row.detail["git_repository"] is False
+    assert row.detail["suggested_project"] == "Loose", row.detail
+    assert "--project Loose" in row.next_command, row.next_command
+    assert "openRepoProject" not in row.next_command, row.next_command
+
+
+def test_origin_name_reads_a_windows_style_local_path_remote(standard,
+                                                              tmp_path):
+    """Copilot, PR #110: a local-path `origin` git hands back exactly as
+    configured, backslashes included, on any host -- the shape's own
+    Windows CI lays a checkout out at a path spelled that way. The old
+    basename split found no `/` to split a purely-backslash path on and
+    returned the WHOLE path, which then read as an identity with a colon
+    and a run of backslashes in it. Normalizing to `/` first must recover
+    just `Atlas`, on every platform this suite runs on -- reading the
+    remote back is a string operation, not a filesystem one, so the
+    assertion holds without actually being on Windows.
+    """
+    module = doctor_module(standard)
+    here = tmp_path / "winrepo"
+    here.mkdir()
+    git("init", "-q", "-b", "main", ".", cwd=here)
+    git("remote", "add", "origin", r"D:\a\_work\1\s\Atlas.git", cwd=here)
+    assert module.origin_name(here) == "Atlas"
+    row = module.check_the_way_in(module.Context(here))
+    assert row.detail["suggested_project"] == "Atlas", row.detail
+    assert "--project Atlas" in row.next_command, row.next_command
 
 
 @pytest.mark.parametrize("platform,expected", [("posix", "python3"),
