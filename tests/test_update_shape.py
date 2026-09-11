@@ -900,7 +900,15 @@ def test_the_next_line_check_prints_carries_the_lane_when_one_is_set(
     """So a run that PASTES the line lands protocol-complete, rather than
     landing a commit somebody has to amend afterwards — which is how four
     InkRouter re-pins landed with no trailer at all (#111)."""
-    result = check(root, upstream_and_project)
+    # THE BASELINE PINS THE ENVIRONMENT ITSELF (Copilot, PR #112).
+    # `tests/conftest.py::run_script` blanks `LANES_LANE` for every run that
+    # does not ask for one, so this is belt and braces — but the assertion
+    # below is "the lane run is the plain one PLUS the trailer", and a
+    # baseline that had silently been a second lane run would have compared
+    # two identical lines and passed.
+    result = run_script(UPDATE, "check", "--root", str(root), "--upstream",
+                        str(upstream_and_project["upstream"]),
+                        env={"LANES_LANE": ""})
     assert result.returncode == 1, result.stdout + result.stderr
     plain = next_line_of(result.stdout)
 

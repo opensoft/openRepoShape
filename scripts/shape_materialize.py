@@ -34,6 +34,7 @@ import re
 import shutil
 import subprocess
 import sys
+import unicodedata
 from pathlib import Path, PurePath
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -457,8 +458,11 @@ def git_init_commit(work: Path, message: str, branch: str) -> str:
 #: block by exactly this shape, so a "trailer" missing the space after the
 #: colon is a line that reads like one and is not.
 #:
-#: MATCHED WITH `.fullmatch`, AND THE CLASSES EXCLUDE EVERY CONTROL
-#: CHARACTER, because "is ONE line" was neither (Copilot, PR #112).
+#: MATCHED WITH `.fullmatch`, AND THE CLASSES EXCLUDE THE CONTROL
+#: CHARACTERS AN ASCII PATTERN CAN NAME, because "is ONE line" was neither
+#: (Copilot, PR #112). The rest of that contract is `one_printable_line`
+#: below, which is where the characters no character class should be asked
+#: to enumerate are refused.
 #: `re.match` with a pattern ending in `$` stops just before a FINAL
 #: NEWLINE, so `--trailer "Lane: x\n"` was accepted whole and the newline
 #: went into the commit message and into argv -- a second line inside a
@@ -482,14 +486,70 @@ def trailer_line(text: str) -> str:
     tool has read a repository, copied a byte or checked out a branch.
     """
     value = str(text)
-    if not TRAILER_RE.fullmatch(value):
+    if not is_trailer(value):
         raise argparse.ArgumentTypeError(
             f"{value!r} is not a `<Key>: <value>` trailer. It needs a token "
             "of letters, digits and hyphens, a colon, ONE space, and a "
-            "non-empty value that is one line, carries no control character "
-            'and does not end in whitespace — e.g. "Lane: xfactory-1" or '
+            "non-empty value that is one line of text, carries no control, "
+            "invisible or line-separator character, and does not end in "
+            'whitespace — e.g. "Lane: xfactory-1" or '
             '"Co-Authored-By: Someone <someone@example.invalid>"')
     return value
+
+
+#: The Unicode categories no line of a commit message may carry: `Cc` (every
+#: control character, the C1 block `\x80`-`\x9f` as much as C0), `Cf` (the
+#: invisible formatting ones — a zero-width joiner, a byte-order mark, a soft
+#: hyphen), `Zl`/`Zp`, which are U+2028 LINE SEPARATOR and U+2029 PARAGRAPH
+#: SEPARATOR themselves, and `Cs` — a LONE SURROGATE, which is what a byte
+#: the locale could not decode becomes in `sys.argv`, and is not text at
+#: all: git is handed that undecodable byte straight back, or, on the
+#: pre-2.32 path that appends trailers to the MESSAGE, `subprocess` raises
+#: `UnicodeEncodeError` on a value this tool had already accepted. A SPACE
+#: is `Zs` and is not in this list.
+UNPRINTABLE_CATEGORIES = ("Cc", "Cf", "Cs", "Zl", "Zp")
+
+
+def one_printable_line(value: str) -> bool:
+    r"""Is `value` ONE line, with nothing invisible or unwritable in it?
+
+    `TRAILER_RE` CANNOT ANSWER THIS AND SHOULD NOT TRY (Copilot, PR #112).
+    `[^\x00-\x1f\x7f]` reads as "no control character" and is not one: the
+    C1 block sits above it, and so do U+2028, U+2029 and U+0085 NEXT LINE —
+    every one of which Python's own `str.splitlines()` treats as a line
+    boundary, so a value this called "one line" arrived as two in anything
+    that read the message back that way. A character class large enough to
+    name them all would be a second, worse copy of the Unicode tables.
+
+    TWO CHECKS, EACH SAYING THE PROPERTY IN ITS OWN WORDS. `splitlines()` IS
+    this interpreter's definition of a line boundary, so comparing its
+    result against `[value]` asks the question directly rather than
+    approximating it — and it is the check that moves when a future Python
+    adds a boundary. `unicodedata.category` then catches what is invisible
+    WITHOUT being a break: a zero-width joiner between two words makes two
+    trailers that look identical to a reader and are not, which is exactly
+    the confusion a trailer exists to avoid — and, in `Cs`, what is not text
+    at all, because a byte the locale could not decode reaches `sys.argv` as
+    a lone surrogate and no encoder will take it back.
+    """
+    if value.splitlines() != [value]:
+        return False
+    return not any(unicodedata.category(char) in UNPRINTABLE_CATEGORIES
+                   for char in value)
+
+
+def is_trailer(value: str) -> bool:
+    """The WHOLE rule: the shape `TRAILER_RE` describes, and one printable
+    line.
+
+    ONE PREDICATE, TWO CALLERS, by construction rather than by agreement:
+    `trailer_line` refuses what it rejects and `lane_trailer` offers nothing
+    it rejects, so a lane line a printed next command carries is always a
+    trailer that tool's own `--trailer` would accept. Two checks that merely
+    agreed today would be one release away from a printed command that
+    refuses itself.
+    """
+    return bool(TRAILER_RE.fullmatch(value)) and one_printable_line(value)
 
 
 #: The git that learned `commit --trailer` (2.32, 2021-06-06). An older one
@@ -582,8 +642,11 @@ LANE_ENV = "LANES_LANE"
 #: than guess which printer is asking, a name outside this alphabet gets NO
 #: trailer offered on the printed line; `--trailer` typed by hand still takes
 #: anything `TRAILER_RE` accepts. Today's lane names (`openreposhape-2
-#: (openRepoShape-2)`) are inside it. No newline, tab or carriage return is
-#: in it, which is the point of checking the RAW value below.
+#: (openRepoShape-2)`) are inside it. It is a POSITIVE alphabet of printable
+#: ASCII, so it already excludes every character `one_printable_line`
+#: refuses — no newline, tab or carriage return, no C1 control, no U+2028,
+#: U+2029 or U+0085, nothing invisible — which is the point of checking the
+#: RAW value below, and why no second guard is bolted on here.
 LANE_NAME_RE = re.compile(r"[A-Za-z0-9 ()._:/@+-]+")
 
 
@@ -610,7 +673,7 @@ def lane_trailer(env: dict | None = None) -> str | None:
     if not raw.strip() or not LANE_NAME_RE.fullmatch(raw):
         return None
     line = f"Lane: {raw}"
-    return line if TRAILER_RE.fullmatch(line) else None
+    return line if is_trailer(line) else None
 
 
 def lane_trailer_argument(quote=None, env: dict | None = None) -> str:

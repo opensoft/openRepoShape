@@ -28,9 +28,29 @@ from conftest import REPO, git
 
 sys.path.insert(0, str(REPO / "scripts"))
 from shape_materialize import (  # noqa: E402
-    TRAILER_OPTION_SINCE, commit_trailers, git_takes_trailer_option,
-    lane_trailer, lane_trailer_argument, trailer_line,
+    LANE_NAME_RE, TRAILER_OPTION_SINCE, commit_trailers,
+    git_takes_trailer_option, is_trailer, lane_trailer, lane_trailer_argument,
+    one_printable_line, trailer_line,
 )
+
+#: Every character that is a LINE BOUNDARY to something without being `\n`.
+#: `str.splitlines()` breaks on all of them, so a value carrying one is two
+#: lines to anything that reads the commit message back that way — and an
+#: ASCII character class in a regex names none of them (Copilot, PR #112).
+LINE_BOUNDARIES = ["\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85",
+                   "\u2028", "\u2029"]
+
+#: Invisible WITHOUT being a break: the C1 block above the ASCII controls,
+#: and the `Cf` formatting characters. Two trailers differing only by one of
+#: these look identical to a reader and are not, which is the confusion a
+#: trailer exists to avoid.
+INVISIBLES = ["\x80", "\x9f", "\u200b", "\u200d", "\ufeff", "\u00ad"]
+
+#: NOT TEXT AT ALL: a lone surrogate, which is what a byte the locale could
+#: not decode becomes in `sys.argv`. `splitlines()` is content with one and
+#: every encoder refuses it, so it is `Cs` in `UNPRINTABLE_CATEGORIES` that
+#: keeps it out of a commit message.
+NOT_TEXT = ["\udcff", "\ud800"]
 
 #: The two lines a lane's run lands, exactly as the protocol spells them.
 LANE = "openreposhape-2 (openRepoShape-2)"
@@ -113,6 +133,11 @@ def test_the_grammar_accepts_a_trailer_somebody_would_actually_write(value):
     "Lane: a\tb",
     "Lane: x\x7f",
     "Lane: a\x00b",
+    # Every line boundary, every invisible and every lone surrogate, in the
+    # middle of a value and at the end of one — the two places a regex was
+    # asked to notice them and could not (Copilot, PR #112).
+    *[f"Lane: a{char}b" for char in LINE_BOUNDARIES + INVISIBLES + NOT_TEXT],
+    *[f"Lane: x{char}" for char in LINE_BOUNDARIES + INVISIBLES + NOT_TEXT],
 ])
 def test_the_grammar_refuses_a_line_that_is_not_a_trailer(value):
     """Refused where argparse can say so, with the usage line beside it.
@@ -282,6 +307,71 @@ def test_a_lane_name_that_could_not_be_pasted_is_not_offered(value):
     `--trailer` typed by hand still takes anything the grammar accepts."""
     assert lane_trailer({"LANES_LANE": value}) is None
     assert lane_trailer_argument(env={"LANES_LANE": value}) == ""
+
+
+@pytest.mark.parametrize("char", LINE_BOUNDARIES)
+def test_one_printable_line_asks_python_what_a_line_boundary_is(char):
+    """The half no character class should be asked to enumerate.
+
+    `[^\\x00-\\x1f\\x7f]` reads as "no control character" and is not one:
+    U+0085, U+2028 and U+2029 sit above it, and `str.splitlines()` — which
+    IS this interpreter's definition of a line boundary — breaks on every
+    one of them. So the guard asks it directly instead of approximating it.
+    """
+    assert f"a{char}b".splitlines() != [f"a{char}b"], (
+        "the fixture is only interesting while Python calls this a break")
+    assert one_printable_line(f"a{char}b") is False
+    assert one_printable_line("a b") is True
+
+
+@pytest.mark.parametrize("char", INVISIBLES)
+def test_one_printable_line_refuses_what_is_invisible_without_breaking(char):
+    """A zero-width joiner between two words makes two trailers that look
+    identical to a reader and are not. `unicodedata.category` catches those;
+    `splitlines()` never would."""
+    assert f"a{char}b".splitlines() == [f"a{char}b"], (
+        "these are NOT line boundaries, which is why they need the second "
+        "check")
+    assert one_printable_line(f"a{char}b") is False
+
+
+@pytest.mark.parametrize("char", NOT_TEXT)
+def test_one_printable_line_refuses_what_is_not_text_at_all(char):
+    """A byte the locale could not decode arrives in `sys.argv` as a lone
+    surrogate, and a commit message cannot carry one: git is handed the
+    undecodable byte straight back, or — on the pre-2.32 path that appends
+    trailers to the MESSAGE text — `subprocess` raises encoding a value
+    `--trailer` had already accepted. Neither check would catch it alone:
+    `splitlines()` sees one line, and it took `Cs` in the category list."""
+    assert f"a{char}b".splitlines() == [f"a{char}b"], (
+        "a surrogate is no line boundary; the second check is what refuses "
+        "it")
+    with pytest.raises(UnicodeEncodeError):
+        f"a{char}b".encode("utf-8")
+    assert one_printable_line(f"a{char}b") is False
+
+
+@pytest.mark.parametrize("char", LINE_BOUNDARIES + INVISIBLES + NOT_TEXT)
+def test_the_lane_alphabet_already_excludes_every_one_of_them(char):
+    """`LANE_NAME_RE` is a POSITIVE alphabet of printable ASCII, so it needs
+    no guard bolted on: nothing in either list can be in it. Asserted rather
+    than reasoned about, because the day somebody widens that alphabet is
+    the day this needs to be said out loud."""
+    assert not LANE_NAME_RE.fullmatch(f"x{char}y")
+    assert lane_trailer({"LANES_LANE": f"x{char}y"}) is None
+    assert lane_trailer_argument(env={"LANES_LANE": f"x{char}y"}) == ""
+
+
+def test_the_two_checks_are_one_predicate_both_callers_use():
+    """`is_trailer` is the whole rule, so the invariant holds by
+    construction rather than by two checks that agree today: what
+    `--trailer` refuses, no printed next command offers."""
+    assert is_trailer("Lane: x") is True
+    assert is_trailer("Lane: a\u2028b") is False
+    assert is_trailer("Lane: a\udcffb") is False
+    assert is_trailer("Lane:x") is False
+    for raw in ["xfactory-1", LANE]:
+        assert is_trailer(lane_trailer({"LANES_LANE": raw}))
 
 
 @pytest.mark.parametrize("raw", [
