@@ -279,6 +279,14 @@ git -C <path> push -u origin shape/update-<sha>   # then open a pull request
 6. `apply` runs the project's own `validate-pins.py` and `validate-manifest.py`
    and rolls every byte back if either goes red. Land it as a pull request;
    never suggest a push to the default branch.
+7. **`--trailer "<Key>: <value>"` puts a line on the commit `apply` writes.**
+   Repeatable, in the order given, and only with `--branch` — without one there
+   is nothing to put a line on, and it is refused. A lane passes its `Lane:`
+   line and this estate's `Co-Authored-By:` there, not by amending afterwards.
+   Where `LANES_LANE` holds a name that survives being pasted, `check`'s `NEXT`
+   line and the doctor's `shape currency` row carry the `Lane:` argument
+   already; one that would not is offered on neither. Paste it and the commit
+   lands complete. The co-author is yours: no variable knows who that is.
 
 ## Advancing a leg
 
@@ -344,7 +352,9 @@ python3 scripts/family.py siblings --family-root <path>
 3. **Each of `add`, `bump` and `remove` writes ONE commit** moving the
    gitlink and the pin together. Land it as a pull request; never suggest a
    push to the default branch. Do not hand-edit `family.yaml`'s `members:`
-   block — the tool rewrites it wholesale.
+   block — the tool rewrites it wholesale. `bump` takes the same repeatable
+   `--trailer "<Key>: <value>"` as `update-shape.py apply`, for the lines its
+   commit must end with.
 4. **The member must be scaffolded or adopted FIRST.** A family cannot make a
    project out of a repository; it can only pin one that already is.
 5. **`make siblings` in the holder — or `family.py siblings --family-root

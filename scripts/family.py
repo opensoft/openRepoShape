@@ -77,8 +77,9 @@ from repo_shape import (  # noqa: E402
     load_yaml, recorded_gitlink, repo_basename, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
-    RULESET_HINT, SHAPE_REPOSITORY, CommandFailed, check_program, env_commit,
-    materialize_family_root, run, write_lf,
+    RULESET_HINT, SHAPE_REPOSITORY, CommandFailed, check_program,
+    commit_trailers, env_commit, materialize_family_root, run, trailer_line,
+    write_lf,
 )
 
 NAMING_POLICY = SHAPE_ROOT / "contracts" / "repository-naming.yaml"
@@ -295,7 +296,8 @@ def _read_member_project(path: Path, project: str, repository: str) -> str:
 
 
 def _commit_one(root: Path, message: str, paths: list[str],
-                add: list[str] | None = None) -> str:
+                add: list[str] | None = None,
+                trailers: list[str] = ()) -> str:
     """ONE commit, with EXPLICIT PATHSPECS.
 
     `git commit -- <paths>` commits the working-tree state of exactly those
@@ -310,9 +312,18 @@ def _commit_one(root: Path, message: str, paths: list[str],
     path out of both the index and the tree, so `git add` on it fails with
     "pathspec did not match any files" while `git commit` on it is correct —
     the pathspec still matches what HEAD has.
+
+    `trailers` ARE THE LINES THE COMMIT ENDS WITH, in the order `--trailer`
+    named them (2026-09-11, #111). A holder's `bump` writes its own message,
+    so a `Lane:` line — which the lane-collision protocol wants on every
+    artifact a lane produces, the commit included — reaches it no other way;
+    `Co-Authored-By:` is this estate's own convention beside it. Passed none,
+    the message is exactly the one this function has always written. See
+    `shape_materialize.commit_trailers` for the two ways git is asked.
     """
     run(["git", "add", "--", *(paths if add is None else add)], cwd=root)
-    args = ["git", "commit", "-q", "-F", "-", "--", *paths]
+    message, trailer_args = commit_trailers(message, trailers)
+    args = ["git", "commit", "-q", "-F", "-", *trailer_args, "--", *paths]
     check_program(args)
     env = dict(os.environ)
     for key, fallback in (("GIT_AUTHOR_NAME", "openRepoShape family"),
@@ -771,7 +782,7 @@ def cmd_bump(args) -> int:
         f"`members[].pin` in {MANIFEST} move in ONE commit, which is what "
         "`validate-family.py` checks and what a reviewer reads as one "
         "change.\n",
-        [path, MANIFEST])
+        [path, MANIFEST], trailers=args.trailer)
     print(f"  {project:<16} {was[:12]} -> {commit[:12]} tree {digest[:12]}…")
     print(f"  committed {head[:12]}: {path}, {MANIFEST}")
     return 0
@@ -927,6 +938,10 @@ def build_parser() -> argparse.ArgumentParser:
     bump.add_argument("--to", required=True, metavar="COMMIT",
                       help="the 40-hex commit to move the gitlink and the pin "
                            "to, together")
+    bump.add_argument("--trailer", action="append", metavar='"KEY: VALUE"',
+                      default=[], type=trailer_line,
+                      help="append this `<Key>: <value>` line to the commit "
+                           "this writes; repeatable, kept in the order given")
     bump.set_defaults(func=cmd_bump)
 
     remove = subparsers.add_parser("remove", help="unmount a member")

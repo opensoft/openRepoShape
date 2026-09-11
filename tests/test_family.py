@@ -29,6 +29,10 @@ import sys
 import pytest
 
 from conftest import FILE_PROTOCOL, REPO, git, rmtree, run_script
+#: The trailer helpers and the two lines a lane's run lands, imported from
+#: the file that owns those rules rather than retyped — see
+#: `tests/test_commit_trailers.py`.
+from test_commit_trailers import TRAILERS, message_of, trailers_of
 from test_update_shape import strip_shape_block
 
 sys.path.insert(0, str(REPO / "scripts"))
@@ -221,7 +225,11 @@ def test_init_writes_the_holders_agent_files(family, monkeypatch):
     for rule in ("members/<Project>", "family.py add", "family.py bump",
                  "family.py remove", "make bootstrap", "make validate",
                  "make pins", "update-shape.py", "--admin",
-                 "--accept-local", "pull request"):
+                 "--accept-local", "pull request",
+                 # 2026-09-11 (#111): the procedure an agent follows is the
+                 # one in the holder it is standing in, so `bump`'s trailers
+                 # have to be HERE and not only in the standard's AGENTS.md.
+                 "--trailer"):
         assert rule in flat, f"the holder's rules say nothing about {rule}"
     assert "no spec leg, no code leg and no `project.yaml`" in flat
 
@@ -613,6 +621,74 @@ def test_bump_refuses_a_tag(holder):
                         "--member", "IRRS", "--to", "v1.0.0")
     assert result.returncode == 2
     assert "member-to-not-a-commit" in result.stderr
+
+
+# --- --trailer: the lines a bump's commit ends with (#111) ------------------
+
+def test_bump_with_two_trailers_ends_the_commit_message_in_the_order_given(
+        family, tmp_path):
+    """`bump` composes its own message, so a `Lane:` line — which the
+    lane-collision protocol wants on every artifact a lane produces, the
+    COMMIT included — reaches it no other way, and this estate's convention
+    adds `Co-Authored-By:` beside it (#111).
+
+    TWO BUMPS OF THE SAME MEMBER TO THE SAME COMMIT, one with the flag and
+    one without, so the trailer block is the ONLY difference between the two
+    messages: the ordering claim and the "a run passing none writes what it
+    always wrote" claim, in one assertion, with no pasted copy of today's
+    wording to go stale.
+    """
+    plain = tmp_path / (NAME + "-plain")
+    trailed = tmp_path / (NAME + "-trailed")
+    shutil.copytree(family["root"], plain, symlinks=True)
+    shutil.copytree(family["root"], trailed, symlinks=True)
+
+    member = family["work"] / "IRRS"
+    (member / "TRAILED.md").write_text("the member advanced\n")
+    git("add", "--", "TRAILED.md", cwd=member)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm",
+        "Advance the member again", cwd=member)
+    git("push", "-q", "origin", "main", cwd=member)
+    moved = git("rev-parse", "HEAD", cwd=member).stdout.strip()
+
+    for holder_root, extra in ((plain, ()),
+                               (trailed, ("--trailer", TRAILERS[0],
+                                          "--trailer", TRAILERS[1]))):
+        result = run_script(FAMILY, "bump", "--family-root", str(holder_root),
+                            "--member", "IRRS", "--to", moved, *extra)
+        assert result.returncode == 0, result.stderr + result.stdout
+
+    assert message_of(trailed) == \
+        message_of(plain) + "\n" + "\n".join(TRAILERS) + "\n"
+    assert trailers_of(trailed) == list(TRAILERS), (
+        "and git reads them back as the trailer block, in order")
+    assert trailers_of(plain) == [], "the run without the flag carries none"
+    # Still ONE commit, still explicit pathspecs: a trailer changes the
+    # message and nothing else.
+    assert set(git("show", "--name-only", "--format=", "HEAD",
+                   cwd=trailed).stdout.split()) == {"members/IRRS",
+                                                    "family.yaml"}
+    assert validate(trailed).returncode == 0
+    # Undo it in the shared bare repository, so the module fixture's own
+    # members stay where the other tests found them.
+    git("reset", "-q", "--hard", "HEAD~1", cwd=member)
+    git("push", "-q", "--force", "origin", "main", cwd=member)
+
+
+@pytest.mark.parametrize("value", ["Lane xfactory-1", "Lane:xfactory-1",
+                                   "Lane: "])
+def test_bump_refuses_a_malformed_trailer(holder, value):
+    """ARGPARSE'S OWN ERROR PATH: a malformed trailer is a malformed command
+    line, refused with the usage line beside it and before the holder is
+    read — so the manifest is untouched and no member was fetched."""
+    result = run_script(FAMILY, "bump", "--family-root", str(holder),
+                        "--member", "IRRS", "--to", "0" * 40,
+                        "--trailer", value)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "--trailer" in result.stderr
+    assert "usage:" in result.stderr
+    assert "member-to-not-a-commit" not in result.stderr, (
+        "argparse refuses before the tool reads anything at all")
 
 
 # --- remove -----------------------------------------------------------------
