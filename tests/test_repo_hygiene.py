@@ -32,6 +32,7 @@ SHIPPED = [
     REPO / "scripts" / "validate-repository-naming.py",
     REPO / "scripts" / "family.py",
     REPO / "scripts" / "bump-leg.py",
+    REPO / "scripts" / "render-cli-reference.py",
     REPO / "templates" / "assembly-root" / "scripts" / "validate-pins.py",
     REPO / "templates" / "assembly-root" / "scripts" / "validate-manifest.py",
     REPO / "templates" / "assembly-root" / "scripts" / "bootstrap.py",
@@ -45,6 +46,13 @@ SHIPPED = [
 #: two files travel together in `contracts/shape-pin.yaml`. It is a local
 #: module in exactly the sense the other four are — a file this standard
 #: ships, never a package anybody installs.
+#:
+#: `scripts/render-cli-reference.py` joins them on 2026-09-11 (#97). It
+#: reaches no scaffolded project — it renders `docs/cli.md` from the other
+#: tools' own `--help` — but it is non-test code in this repository, and a
+#: fork that cannot install anything still has to be able to regenerate the
+#: reference after it changes a tool. The rule costs it nothing and the
+#: category it would otherwise sit in is "nothing checks this file".
 LOCAL_MODULES = {"repo_shape", "shape_materialize", "path_classify",
                  "conftest", "bootstrap"}
 
@@ -420,23 +428,41 @@ def test_agents_md_is_short_enough_to_be_read():
     who relays it as a verdict about the repository has relayed the
     opposite of what happened.
 
-    2026-09-11: 400 -> 415 — the `placement` row (#99). Twelve lines are one
-    numbered point, because the way an assistant gets THIS row wrong is
-    specific and expensive: it names paths that are in the wrong
-    REPOSITORY, and the obvious repair is wrong twice over. A path changing
-    legs is a pull request on the leg it leaves, a pull request on the leg
-    it joins and one pin bump in the root — none of which an agent does on
-    its own initiative — and a `review_required` entry is a question the
-    POLICY is asking, so answering it on the human's behalf puts a fact in
-    their tree that nobody decided. That is the same shape of mistake as
-    hand-editing a pin, arriving through a door that did not exist
+    2026-09-11: 400 -> 408 — `docs/cli.md` (#97). Brett Heap: "do we have
+    documentation designed for an AI to understand what our CLI can do and
+    how to use it?" -> "add the docs/cli.md". Seven lines and a blank one, in
+    the opening, for a file that did not exist until that ruling: this file
+    is PROCEDURE-first by design and the flags lived only inside seventeen
+    separate `--help` texts, so an assistant that needed a spelling either
+    ran seventeen commands or worked from memory. The paragraph says four
+    things, and an assistant can infer none of them. That the reference
+    EXISTS at all. That it is GROUPED, because six of the tools are copies
+    that run from inside a scaffolded project and not from a checkout of this
+    standard, and a flat list would have an agent running `validate-pins.py`
+    where there is no manifest. That THIS FILE STILL OUTRANKS IT — a flag
+    being documented is not permission to pass it, which is the failure a
+    flag list invites and the reason one was not written before. And that it
+    is GENERATED, so a line that has gone stale is fixed by regenerating and
+    never by editing the document, which is the hand-edited-pin rule arriving
+    through a new door.
+
+    2026-09-11: 408 -> 423 — the `placement` row (#99), landing after #97 the
+    same day. Twelve lines are one numbered point, because the way an
+    assistant gets THIS row wrong is specific and expensive: it names paths
+    that are in the wrong REPOSITORY, and the obvious repair is wrong twice
+    over. A path changing legs is a pull request on the leg it leaves, a pull
+    request on the leg it joins and one pin bump in the root — none of which
+    an agent does on its own initiative — and a `review_required` entry is a
+    question the POLICY is asking, so answering it on the human's behalf puts
+    a fact in their tree that nobody decided. That is the same shape of
+    mistake as hand-editing a pin, arriving through a door that did not exist
     yesterday. Two lines put `MISPLACED` and its exit code in point 1's
     verdict list, which is what a scheduled job reads. One is the
     `--placement-plan` caveat on the opening paragraph: "it writes nothing"
     was absolute and is not any more, and an absolute sentence with an
     undocumented exception is how the exception gets found by surprise."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 415, f"AGENTS.md is {len(lines)} lines; the cap is 415"
+    assert len(lines) <= 423, f"AGENTS.md is {len(lines)} lines; the cap is 423"
 
 
 def test_claude_md_points_at_agents_md():
@@ -922,31 +948,42 @@ def test_readme_is_short_enough_to_be_read():
     #   a commit THIS checkout does not carry is not the repository being
     #   wrong. One corrects a sentence that was simply false: the machine
     #   row asks `gh` three questions, not one.
-    # 2026-09-11: 1324 -> 1370 — the `placement` row and the plan it writes
-    #   (#99). Brett Heap: "we have to look for code in spec and spec in
-    #   code". Forty-six lines, and they are that many because five separate
-    #   things about this row are surprises a reader would otherwise meet
-    #   one at a time. WHAT IT RUNS — the ADOPTION's policy, over a project
-    #   that has already been split, with that tool's own `walk()` — because
-    #   a reader who thinks this is a second classifier will expect it to
-    #   disagree with `adopt-project.py plan` and will not trust either.
-    #   WHAT IT REFUSES TO JUDGE, and why there is a list at all: the four
-    #   files the leg templates ship classify as `root`, correctly, and a
-    #   row that read that literally would fail every leg this standard has
-    #   ever cut. `review_required` IS A NOTE, which is the same line #96
-    #   drew for the leg files and has to be redrawn here because this row
-    #   can reach the same wrong answer by a different route. THE VERDICT
-    #   ROW AND ITS PLACE IN THE ORDER, since the codes are what a scheduled
-    #   job reads and `MISPLACED` sitting above `INVALID` is a choice worth
-    #   one sentence. And THE PLAN, which is most of the second half: it is
-    #   the only thing this command writes, its entries are an adoption
-    #   plan's entries so that resolving one teaches the other, and it
-    #   carries a different `kind:` ON PURPOSE — a reader who does not learn
-    #   that from the page could hand it to `adopt-project.py execute`,
-    #   which creates repositories and rewrites history, with `--yes` the
-    #   only thing in the way.
-    assert len(lines) <= 1370, (
-        f"README.md is {len(lines)} lines; the cap is 1370")
+    # 2026-09-11: 1324 -> 1328 — `docs/cli.md` (#97). Three lines in the
+    #   Layout block and one in the sentence that already sent a reader to
+    #   `openRepoShape --help` and `setup.sh --help` for the flags — it now
+    #   names the file that has all seventeen tools' help instead of the two.
+    #   The block claims to list what this repository ships and named nothing
+    #   under `docs/` at all, so `docs/handbook.html` — shipped since #71 —
+    #   goes in beside the new file rather than remaining the one shipped
+    #   thing the layout does not mention. The generator gets its own row
+    #   next to what it generates, because a reader who finds `docs/cli.md`
+    #   and edits it has undone the whole point of it, and a layout row is
+    #   where they find that out before they type.
+    # 2026-09-11: 1328 -> 1374 — the `placement` row and the plan it writes
+    #   (#99), landing after #97 the same day. Brett Heap: "we have to look
+    #   for code in spec and spec in code". Forty-six lines, and they are
+    #   that many because five separate things about this row are surprises a
+    #   reader would otherwise meet one at a time. WHAT IT RUNS — the
+    #   ADOPTION's policy, over a project that has already been split, with
+    #   that tool's own `walk()` — because a reader who thinks this is a
+    #   second classifier will expect it to disagree with `adopt-project.py
+    #   plan` and will not trust either. WHAT IT REFUSES TO JUDGE, and why
+    #   there is a list at all: the four files the leg templates ship
+    #   classify as `root`, correctly, and a row that read that literally
+    #   would fail every leg this standard has ever cut. `review_required`
+    #   IS A NOTE, which is the same line #96 drew for the leg files and has
+    #   to be redrawn here because this row can reach the same wrong answer
+    #   by a different route. THE VERDICT ROW AND ITS PLACE IN THE ORDER,
+    #   since the codes are what a scheduled job reads and `MISPLACED`
+    #   sitting above `INVALID` is a choice worth one sentence. And THE PLAN,
+    #   which is most of the second half: it is the only thing this command
+    #   writes, its entries are an adoption plan's entries so that resolving
+    #   one teaches the other, and it carries a different `kind:` ON PURPOSE
+    #   — a reader who does not learn that from the page could hand it to
+    #   `adopt-project.py execute`, which creates repositories and rewrites
+    #   history, with `--yes` the only thing in the way.
+    assert len(lines) <= 1374, (
+        f"README.md is {len(lines)} lines; the cap is 1374")
 
 
 @pytest.mark.parametrize("name", SHIPPED_BASH)

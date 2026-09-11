@@ -834,7 +834,8 @@ sudo dnf install gh</code></pre></div>
             <p data-platform="win" class="aside">Run from a download it still clones this standard into a temporary
             directory first; run from a checkout it clones nothing.
             <code>openRepoShape --help</code> and <code>setup.sh --help</code> list every flag, this
-            one included.</p>
+            one included; <code>docs/cli.md</code> is every tool&rsquo;s help and every
+            subcommand&rsquo;s in one file, generated from the tools themselves.</p>
           </div></li>
 
           <li><div>
@@ -1641,6 +1642,7 @@ resume InkRouter                # on workstation B, and the estate is back</code
         <dt>scaffold-project.py</dt><dd>creates the three repositories and the pins</dd>
         <dt>adopt-project.py</dt><dd>converts an EXISTING repository in place</dd>
         <dt>update-shape.py</dt><dd>re-syncs a root&rsquo;s copies and re-pins</dd>
+        <dt>shape-doctor.py</dt><dd>diagnoses ONE repository: rows, then one verdict</dd>
         <dt>scripts/family.py</dt><dd>creates a FAMILY holder and maintains its pins</dd>
         <dt>scripts/bump-leg.py</dt><dd>advances ONE leg&rsquo;s pin, in one lockstep commit</dd>
         <dt>bootstrap</dt><dd>bootstrap a project that was never scaffolded</dd>
@@ -1651,6 +1653,9 @@ resume InkRouter                # on workstation B, and the estate is back</code
         <dt>templates/*/AGENTS-shape.md</dt><dd>the rules of the shape, for an agent (PINNED)</dd>
         <dt>templates/*/.gitattributes</dt><dd>LF in every clone, so a copy digests as pinned</dd>
         <dt>AGENTS.md</dt><dd>the procedure an AI assistant follows</dd>
+        <dt>docs/cli.md</dt><dd>every tool&rsquo;s --help: the flag-level reference</dd>
+        <dt>docs/handbook.html</dt><dd>the designed reading of this README, one page</dd>
+        <dt>scripts/render-cli-reference.py</dt><dd>renders docs/cli.md; never hand-edit that file</dd>
         <dt>tests/</dt><dd>pytest; scaffolds into bare repos in /tmp</dd>
       </dl>
       <p><strong>Python 3 standard library only.</strong> No <code>pip</code>, no packaging, no
@@ -1665,7 +1670,11 @@ resume InkRouter                # on workstation B, and the estate is back</code
       <p class="eyebrow">Reference</p>
       <h2>For AI assistants</h2>
       <p>An assistant asked to &ldquo;scaffold a new project with this shape&rdquo; follows
-      <code>AGENTS.md</code>, which carries the whole procedure. These are the rules that outrank the
+      <code>AGENTS.md</code>, which carries the whole procedure, and reaches for
+      <code>docs/cli.md</code> beside it when it needs an exact spelling &mdash; every
+      tool&rsquo;s own <code>--help</code> and every subcommand&rsquo;s, generated from the
+      tools themselves and never hand-edited. A flag documented there is not permission to
+      pass it: the procedure outranks the reference. These are the rules that outrank the
       rest.</p>
       <ul class="plain">
         <li><strong>Never create a repository without the human&rsquo;s explicit confirmation.</strong>
@@ -1711,9 +1720,11 @@ resume InkRouter                # on workstation B, and the estate is back</code
       <p>Licence <strong>Apache-2.0</strong>. See <code>LICENSE</code> in the repository.</p>
       <p><a href="https://github.com/opensoft/openRepoShape#readme">github.com/opensoft/openRepoShape</a></p>
       <p class="meta">First cut from README.md at c093813 (#71); regenerated at cbca5b4 (#89);
-      the repository doctor added at 2986031 (#95); the placement row and the
-      plan it writes added at 9bd5fcc (#99).
-      README.md blob d19c404132da748b2269143b05268d249dc90f2f. Every command, flag, exit code and
+      the repository doctor added at 2986031 (#95); the CLI reference, the <code>docs/</code>
+      rows and the <code>shape-doctor.py</code> row the layout list had never gained,
+      added (#97); the placement row and the plan it writes added (#99) &mdash; a page cannot
+      name the commit that contains it, and the blob below is the fact a test checks.
+      README.md blob 6568576e150a1522effad9373f955b0542213d3d. Every command, flag, exit code and
       file name on this page is quoted from that README and from AGENTS.md.</p>
     </footer>
   </main>
