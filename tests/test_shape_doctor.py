@@ -466,6 +466,79 @@ def test_an_empty_git_repository_is_not_a_shape_root(standard, tmp_path):
     assert rows["contents"]["detail"]["project_yaml"] is False
 
 
+def test_a_root_named_like_an_option_still_gets_a_real_naming_verdict(
+        standard, tmp_path):
+    """A directory called `--help` is a NAME, not a flag -- to argparse too.
+
+    `check_not_a_root_naming` used to call the validator as
+    `run_validator(ctx, script, ["--explain", *names])`. With no `--` before
+    the names, a root literally named `--help` reached
+    `validate-repository-naming.py --explain --help`, and argparse's OWN
+    `-h`/`--help` matched before either positional was ever read: exit 0,
+    "classifies under the naming policy", for a name that classifies under
+    NOTHING. That is a false COMPLIANT, not a crash -- which is exactly why a
+    red row never caught it.
+    """
+    here = tmp_path / "--help"
+    here.mkdir()
+    git("init", "-q", "-b", "main", ".", cwd=here)
+    result = doctor(standard, here, "--json")
+    assert result.returncode == 2, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["kind"] == "none"
+    rows = rows_of(result)
+    assert set(rows) == {"naming", "contents", "way-in", "machine"}
+    row = rows["naming"]
+    # The real verdict -- unclassified -- not the false OK argparse's own
+    # help action used to produce.
+    assert row["status"] == "FINDING", row
+    assert row["detail"]["exit"] == 1, row
+    assert "naming-unclassified" in row["reason"], row["reason"]
+    assert "--explain -- --help" in row["next"], row["next"]
+
+    # The counterexample, so the assertions above cannot be passing by
+    # accident: called the OLD way -- no `--` -- this exact name reaches the
+    # validator's own help action instead of being classified at all.
+    unfixed = run_script(
+        standard / "scripts" / "validate-repository-naming.py",
+        "--explain", here.name)
+    assert unfixed.returncode == 0, (
+        "if this is no longer 0, `--help` stopped demonstrating the bug and "
+        "the fixed row's test above needs a different name:\n"
+        + unfixed.stdout + unfixed.stderr)
+    assert "show this help message and exit" in unfixed.stdout
+
+
+@WINDOWS_SKIP
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_the_naming_rows_next_command_runs_when_it_is_pasted(standard,
+                                                              tmp_path):
+    """The whole promise, end to end: the printed line, into a shell, verbatim.
+
+    `--explain -- --help` needs no shell quoting at all -- every character in
+    it is in `quote_arg`'s safe set, so #101/#102 leave it untouched -- which
+    is exactly why this row needed its OWN fix: the bug is a missing token in
+    the argument list, not a missing quote, and the only way to prove a
+    pasted line reaches the real classifier is to paste the line.
+    """
+    here = tmp_path / "--help"
+    here.mkdir()
+    git("init", "-q", "-b", "main", ".", cwd=here)
+    row = rows_of(doctor(standard, here, "--json"))["naming"]
+    assert row["status"] == "FINDING", row
+
+    pasted = subprocess.run(["bash", "-c", row["next"]], capture_output=True,
+                            text=True, check=False,
+                            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+    whole = pasted.stdout + pasted.stderr
+    assert pasted.returncode == 1, (
+        "a real classification exits 1 for an unclassified name; exit "
+        f"{pasted.returncode} is argparse's own --help winning again.\n"
+        f"{whole}")
+    assert "naming-unclassified" in whole, whole
+    assert "usage:" not in whole, whole
+
+
 def test_a_directory_that_is_not_a_repository_says_scaffold(standard,
                                                             tmp_path):
     """No repository to adopt, so the way in is the scaffold — and it is
