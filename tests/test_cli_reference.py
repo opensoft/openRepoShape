@@ -225,6 +225,27 @@ USAGE_AS_314 = (
     "                      --to COMMIT\n\noptions:\n  -h, --help  show it\n")
 
 
+def test_child_env_pins_a_deterministic_locale(monkeypatch):
+    """Copilot review, PR #98: `child_env()` used to copy `LANG`/`LC_*`
+    straight from `os.environ`, so a runner whose inherited locale is not
+    actually installed there made bash write a `setlocale` warning onto the
+    stderr this script captures — noise that would then land in the
+    committed reference on that one platform only. Every such variable must
+    be gone, and `LC_ALL` must be the one value that replaces them all.
+    """
+    for name in ("LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "LC_MESSAGES",
+                 "LC_COLLATE"):
+        monkeypatch.setenv(name, "xx_XX.not-a-real-locale")
+    module = generator_module()
+    env = module.child_env()
+    assert env["LC_ALL"] == "C"
+    leaked = {name: value for name, value in env.items()
+              if name != "LC_ALL"
+              and (name == "LANG" or name == "LANGUAGE"
+                   or name.startswith("LC_"))}
+    assert not leaked, f"child_env() still passes through {leaked}"
+
+
 def test_the_usage_block_normalises_the_same_on_either_python():
     """The version-proofing, asserted without a second interpreter.
 

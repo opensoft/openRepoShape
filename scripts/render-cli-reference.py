@@ -20,10 +20,11 @@ the document itself is either reverted by the next run or caught by
 DETERMINISM IS THE WHOLE DESIGN CONSTRAINT, because the guard compares bytes:
 
 *   The child environment pins `COLUMNS` (argparse wraps to the terminal
-    width), forces UTF-8 in and out, and turns off colour. No `LC_*` variable
-    is set: a locale a runner does not have makes bash write a `setlocale`
-    warning to the stderr this script captures, which would be noise in the
-    document on one platform only.
+    width), forces UTF-8 in and out, and turns off colour. Every inherited
+    `LANG`, `LANGUAGE` and `LC_*` variable is stripped and `LC_ALL` is pinned
+    to `C`: a runner whose own locale is not actually installed otherwise
+    makes bash write a `setlocale` warning to the stderr this script
+    captures, which would be noise in the document on one platform only.
 *   Every line is stripped of trailing whitespace, CRLF is folded to LF, and
     trailing blank lines are dropped, so the file is the same on the windows
     runner as on the other two.
@@ -246,11 +247,19 @@ def child_env() -> dict:
     `repo_shape` that is beside them only in a materialized project. The
     UTF-8 pair is for the windows runner, whose locale encoding is cp1252 and
     whose console would otherwise mangle the em dashes this repository is
-    written in. Nothing sets `LC_ALL`: a locale a runner does not have makes
-    bash warn on stderr, and stderr is captured.
+    written in. `LANG`, `LANGUAGE` and every inherited `LC_*` variable are
+    removed and `LC_ALL` is pinned to `C`: leaving a runner's own locale in
+    place does not avoid the `setlocale` warning bash writes to stderr when
+    that locale is not actually installed there — it only leaves the warning
+    to depend on which locales happen to be installed on whichever machine
+    runs this script next, which is exactly the noise this capture must not
+    have on one platform and not another.
     """
     env = dict(os.environ)
     env.pop("LINES", None)
+    for name in [key for key in env
+                 if key == "LANG" or key == "LANGUAGE" or key.startswith("LC_")]:
+        env.pop(name, None)
     env.update({
         "COLUMNS": str(COLUMNS),
         "PYTHONPATH": str(REPO / "scripts"),
@@ -258,6 +267,7 @@ def child_env() -> dict:
         "PYTHONIOENCODING": "utf-8",
         "NO_COLOR": "1",
         "TERM": "dumb",
+        "LC_ALL": "C",
     })
     return env
 
