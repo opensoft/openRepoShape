@@ -94,10 +94,22 @@ jobs:
           tar -xzf "$archive" actionlint
           chmod +x actionlint
 
-      - name: actionlint — templates/assembly-root/.github/workflows/validate.yml
+      # THE TWO WORKFLOWS THIS REPOSITORY SHIPS INTO A PROJECT, AND THIS ONE.
+      # `templates/assembly-root/.../validate.yml` and
+      # `templates/family-root/.../validate.yml` are what a scaffolded
+      # project or family holder runs, never this repository — until now
+      # that was the whole list. #122/#124 added an `if:` guard on two jobs
+      # and a `concurrency:` expression to `tests.yml` itself, with no lint
+      # anywhere that would have caught a typo in either: the workflow
+      # everybody here runs, on every push and pull request, was linted by
+      # nothing. Handing actionlint its own path alongside the two templates
+      # closes that gap without touching what it already checked.
+      - name: actionlint — this workflow and the two it ships into a project
         run: >-
           ./actionlint
+          .github/workflows/tests.yml
           templates/assembly-root/.github/workflows/validate.yml
+          templates/family-root/.github/workflows/validate.yml
 
   # THE SAME SUITE ON WINDOWS, because `setup-project.py` exists for a machine
   # nobody here runs. A SECOND JOB rather than a matrix on the first one: that
