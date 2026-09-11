@@ -1830,26 +1830,67 @@ def check_members(ctx: Context) -> Row:
 # ---------------------------------------------------------------------------
 
 
+#: A Windows path, recognized by its OWN spelling rather than by "has a
+#: backslash in it": a drive letter (`D:\` or `D:/`) or a UNC share (`\\
+#: server\share`). Only a remote spelled ONE of these two ways gets its
+#: backslashes read as separators -- everywhere else a `\` is left alone,
+#: because it is an ORDINARY character in a POSIX path or a repository name
+#: (`/tmp/foo\bar.git`'s basename is `foo\bar`, literally, and rewriting
+#: every `\` in that path would have answered `bar` instead, silently
+#: discarding half of it -- Copilot, PR #110).
+_WINDOWS_PATH_RE = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\)")
+
+
 def origin_name(root: Path) -> str | None:
     """`origin`'s own repository name, however its URL spells the path to it.
 
-    NORMALIZED TO `/` BEFORE THE SPLIT. A `git remote get-url origin` that is
-    itself a Windows path -- `D:\\a\\_work\\1\\s\\Atlas.git`, the shape CI's
-    own runner lays a checkout out exactly like that -- carries no `/` at
-    all, so the old `rsplit("/", 1)` found nothing to split on and returned
-    the WHOLE path as the "name": every caller downstream (`project_token_for`
-    among them) then read a colon and a run of backslashes as part of an
-    identity (Copilot, PR #110). `\\` is not a legal path character in any
-    remote URL scheme this reads a basename out of, so replacing it is not a
-    Windows-only rule -- it is safe for the `/`-only forms too, which carry
-    none to replace.
+    A WINDOWS PATH IS NORMALIZED TO `/` FIRST. `git remote get-url origin`
+    answering `D:\\a\\_work\\1\\s\\Atlas.git` -- the shape's own CI runner
+    lays a checkout out exactly like that -- carries no `/` at all, so the
+    old `rsplit("/", 1)` found nothing to split on and returned the WHOLE
+    path as the "name": every caller downstream (`project_token_for` among
+    them) then read a colon and a run of backslashes as part of an identity
+    (Copilot, PR #110). `_WINDOWS_PATH_RE` is what keeps this from ALSO
+    rewriting a POSIX path whose basename merely contains a `\\` of its own.
+
+    AND SCP-LIKE SYNTAX IS READ BY ITS OWN GRAMMAR, not assumed to carry a
+    `/`. `[user@]host:path` -- `git@example.com:Atlas.git`, no group prefix
+    at all -- has no `/` in it either, so it hit the exact same "nothing to
+    split on, return the whole string" failure, and a caller derived
+    `GitExampleComAtlas` from it (Copilot, PR #110). Everything after the
+    LAST `:` is the path once a URL scheme (`://`) has been ruled out --
+    which is also, not coincidentally, exactly the substring a Windows drive
+    letter's own colon isolates, so the same rule reads `D:/a/.../Atlas.git`
+    correctly too, once the backslashes above are already gone.
     """
     try:
         url = git_out(["remote", "get-url", "origin"], cwd=root)
     except (Refusal, OSError):
         return None
-    name = url.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    if _WINDOWS_PATH_RE.match(url):
+        url = url.replace("\\", "/")
+    url = url.rstrip("/")
+    if "://" not in url and ":" in url:
+        url = url.rsplit(":", 1)[-1]
+    name = url.rsplit("/", 1)[-1]
     return name[:-4] if name.endswith(".git") else name or None
+
+
+def repo_local_origin_name(root: Path) -> str | None:
+    """`origin`'s name, but only when `root` ITSELF carries the `.git` it
+    belongs to.
+
+    `git remote get-url origin` does not stop at `root` looking for one --
+    run from a directory that has none, it walks UP to the nearest ancestor
+    repository and answers for THAT one, which is a fact about the
+    ANCESTOR, not about `root`: a loose folder with no `.git` of its own,
+    sitting inside a clone of `openRepoProject`, is not `openRepoProject`
+    (Copilot, PR #110). Both callers that read an origin's name for `root`'s
+    OWN identity -- `naming` and `the way in` -- share this guard rather
+    than each re-deriving "is this directory itself a repository" on its
+    own.
+    """
+    return origin_name(root) if (root / ".git").exists() else None
 
 
 def check_not_a_root_naming(ctx: Context) -> Row:
@@ -1858,11 +1899,15 @@ def check_not_a_root_naming(ctx: Context) -> Row:
     The directory name and, when there is one, `origin`'s repository name.
     They are usually the same and are not always: a clone into a differently
     named folder is ordinary, and the name that matters for the policy is the
-    repository's.
+    repository's -- ITS OWN, never an ancestor's: `repo_local_origin_name`
+    answers only when `ctx.root` carries the `.git` that origin belongs to,
+    so a loose directory nested inside somebody else's checkout is classified
+    on its own name alone, the same fact `the way in` row now reads it by
+    (Copilot, PR #110).
     """
     script = ctx.shape / "scripts" / "validate-repository-naming.py"
     names = [ctx.root.name]
-    remote = origin_name(ctx.root)
+    remote = repo_local_origin_name(ctx.root)
     if remote and remote not in names:
         names.append(remote)
     code, quoted, whole = run_validator(ctx, script, ["--explain", *names])
@@ -2106,20 +2151,18 @@ def check_the_way_in(ctx: Context) -> Row:
     `project_token_for` decides whether that identity is handed back
     verbatim or respelled.
 
-    `origin` IS CONSULTED ONLY WHEN `root` CARRIES ITS OWN `.git`. `git`
-    itself does not stop at `root` looking for one: run from a directory
-    that has none, it walks UP to the nearest ancestor repository and
-    answers for that one instead, so a loose folder sitting inside somebody
-    else's checkout would have picked up THAT checkout's `origin` -- a
-    directory named `Loose` under a clone of `openRepoProject` suggesting
-    `--project openRepoProject` to the SCAFFOLD line, which is about to
-    create a project named after a repository this directory is not
-    (Copilot, PR #110). `is_repo` is already this exact fact, computed once
-    below, so the guard costs nothing new to ask.
+    `origin` IS CONSULTED ONLY WHEN `root` CARRIES ITS OWN `.git`, through
+    `repo_local_origin_name`: `git` itself does not stop at `root` looking
+    for one, so a loose folder sitting inside somebody else's checkout would
+    otherwise have picked up THAT checkout's `origin` -- a directory named
+    `Loose` under a clone of `openRepoProject` suggesting `--project
+    openRepoProject` to the SCAFFOLD line, which is about to create a
+    project named after a repository this directory is not (Copilot, PR
+    #110). The `naming` row shares the same guard, for the same reason.
     """
     root = ctx.root
     is_repo = (root / ".git").exists()
-    identity = (origin_name(root) if is_repo else None) or root.name
+    identity = repo_local_origin_name(root) or root.name
     policy = NamingPolicy.load(ctx.shape / "contracts" /
                                "repository-naming.yaml")
     project = project_token_for(identity, policy)

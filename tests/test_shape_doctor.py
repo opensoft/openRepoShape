@@ -2162,6 +2162,67 @@ def test_origin_name_reads_a_windows_style_local_path_remote(standard,
     assert "--project Atlas" in row.next_command, row.next_command
 
 
+def test_origin_name_reads_scp_like_syntax_with_no_slash_at_all(standard,
+                                                                 tmp_path):
+    """Copilot, second review of PR #110: `[user@]host:path` -- no group
+    prefix, so no `/` anywhere in the URL -- hit the same "nothing to split
+    on" failure the Windows path did: the whole string came back as the
+    "name," and the derivation from it read `git@example.com:Atlas.git` as
+    `GitExampleComAtlas`. Everything after the LAST `:`, once a URL scheme
+    is ruled out, must recover just `Atlas`.
+    """
+    module = doctor_module(standard)
+    here = tmp_path / "scprepo"
+    here.mkdir()
+    git("init", "-q", "-b", "main", ".", cwd=here)
+    git("remote", "add", "origin", "git@example.com:Atlas.git", cwd=here)
+    assert module.origin_name(here) == "Atlas"
+    row = module.check_the_way_in(module.Context(here))
+    assert row.detail["suggested_project"] == "Atlas", row.detail
+    assert "--project Atlas" in row.next_command, row.next_command
+
+
+def test_origin_name_preserves_a_literal_backslash_in_a_posix_path(standard,
+                                                                    tmp_path):
+    """Copilot, second review of PR #110: normalizing EVERY backslash also
+    rewrote a valid POSIX local-path remote whose basename merely contains
+    one of its own -- `/tmp/foo\\bar.git` has `foo\\bar` as its basename,
+    literally, and a blanket replace turned it into `bar`, silently
+    discarding half of it. Only a recognizable Windows drive or UNC spelling
+    gets its backslashes read as separators; everywhere else `\\` is an
+    ordinary character and stays exactly where it was.
+    """
+    module = doctor_module(standard)
+    here = tmp_path / "posixbs"
+    here.mkdir()
+    git("init", "-q", "-b", "main", ".", cwd=here)
+    git("remote", "add", "origin", r"/tmp/foo\bar.git", cwd=here)
+    assert module.origin_name(here) == "foo\\bar"
+
+
+def test_the_naming_row_also_never_leaks_an_ancestor_repositorys_origin(
+        standard, tmp_path):
+    """Copilot, second review of PR #110: the `way in` row's guard against
+    an ancestor's `origin` (`test_the_way_in_row_never_leaks_an_ancestor
+    _repositorys_origin`, above) meant nothing if the `naming` row right
+    beside it still read one -- the two rows would disagree about the
+    identity being classified for the exact same directory.
+    `repo_local_origin_name` is the ONE guard both now share.
+    """
+    module = doctor_module(standard)
+    parent = tmp_path / "ParentRepo"
+    parent.mkdir()
+    git("init", "-q", "-b", "main", ".", cwd=parent)
+    git("remote", "add", "origin",
+        "git@github.com:opensoft/openRepoProject.git", cwd=parent)
+    loose = parent / "Loose"
+    loose.mkdir()
+    row = module.check_not_a_root_naming(module.Context(loose))
+    assert row.detail["names"] == ["Loose"], row.detail
+    assert row.detail["origin"] is None, row.detail
+    assert "openRepoProject" not in row.reason, row.reason
+
+
 @pytest.mark.parametrize("platform,expected", [("posix", "python3"),
                                                ("nt", "python")])
 def test_the_interpreter_named_is_the_asked_for_platforms(platform, expected):
