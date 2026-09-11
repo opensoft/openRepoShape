@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO, run_script
+from conftest import REPO, blank_unnamed_pin_sources, run_script
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import (  # noqa: E402
@@ -794,6 +794,49 @@ def test_run_script_still_passes_a_pin_source_the_caller_names(tmp_path):
     assert "codexDox: domain-descendant / assembly" in result.stdout
     assert "CHAIN openXdox → openDox   [verified]" in result.stdout
     assert "WARNING" not in result.stdout
+
+
+def test_blank_unnamed_pin_sources_folds_case_like_windows_does():
+    """Copilot's finding on PR #128: Windows environment variable names are
+    case-insensitive, so `blank_unnamed_pin_sources` (`tests/conftest.py`)
+    must fold case for both "is this a pin-source name at all" and "did
+    the caller ask for THIS one" — a real Windows child would treat
+    `SHAPE_PIN_SOURCE_OPENXDOX` and any other-cased spelling of the same
+    name as one variable, so a dict built with plain, case-sensitive
+    Python comparisons cannot be allowed to disagree with it.
+
+    Unit-level on the dict, not through `run_script` and a real
+    subprocess like the two tests above: POSIX environment variables ARE
+    case-sensitive, so a CLI-level test run on this suite's own ubuntu and
+    macos legs could not observe a case-folding defect here at all — the
+    child would simply never look up the differently-cased key, fix or no
+    fix. Only a Windows child's OWN case-insensitive lookup makes the
+    distinction this function has to get right observable, which a direct
+    check of what the function returns proves without needing one."""
+    # Not asked for, in ANY case: every spelling of the name is blanked,
+    # exactly as an all-uppercase one already was before PR #128.
+    assert blank_unnamed_pin_sources(
+        {"SHAPE_PIN_SOURCE_OPENXDOX": "/real", "shape_pin_source_openink": "/real2"},
+        {},
+    ) == {"SHAPE_PIN_SOURCE_OPENXDOX": "", "shape_pin_source_openink": ""}
+    # Asked for under the exact same spelling that is already in `env`
+    # (the ordinary case, `env` already merged with `asked` the way
+    # `run_script` merges them): kept, not blanked.
+    assert blank_unnamed_pin_sources(
+        {"SHAPE_PIN_SOURCE_OPENXDOX": "/named"},
+        {"SHAPE_PIN_SOURCE_OPENXDOX": "/named"},
+    ) == {"SHAPE_PIN_SOURCE_OPENXDOX": "/named"}
+    # Asked for, but an INHERITED case-variant alias of that same name is
+    # ALSO in `env` (as it would be after `{**os.environ, **asked}` merges
+    # an ambient lower-case name with the caller's own upper-case one):
+    # the alias is DROPPED, not merely left unblanked, so a real Windows
+    # child — which would fold both to the one name it actually reads —
+    # is never handed two disagreeing values for it.
+    assert blank_unnamed_pin_sources(
+        {"shape_pin_source_openxdox": "/ambient",
+         "SHAPE_PIN_SOURCE_OPENXDOX": "/named"},
+        {"SHAPE_PIN_SOURCE_OPENXDOX": "/named"},
+    ) == {"SHAPE_PIN_SOURCE_OPENXDOX": "/named"}
 
 
 def test_cli_reports_a_broken_link_as_a_finding_naming_it(tmp_path):

@@ -89,6 +89,42 @@ def git(*args: str, cwd: Path, check: bool = True) -> subprocess.CompletedProces
     return proc
 
 
+def blank_unnamed_pin_sources(env: dict, asked: dict) -> dict:
+    """`env`, but every inherited `PIN_SOURCE_ENV_PREFIX`-named variable
+    THIS CALL did not ask for is blanked to `""`, and an inherited
+    case-variant alias of one it DID ask for is dropped outright.
+
+    WINDOWS ENVIRONMENT NAMES ARE CASE-INSENSITIVE (Copilot, PR #128):
+    `SHAPE_PIN_SOURCE_OPENXDOX` and any other-cased spelling of the same
+    name are THE SAME VARIABLE there, so both "is this a pin-source name
+    at all" and "did the caller ask for THIS one" fold to uppercase before
+    comparing — a plain `dict` merge and a case-sensitive `.startswith`
+    know nothing of that. `""` rather than deleting a blanked key matches
+    how `resolve_link_source` already reads an empty value as absent
+    (`if env_value:`, `scripts/repo_shape.py`) and how `lane_trailer`
+    already reads an empty `LANES_LANE` as "no lane"
+    (`scripts/shape_materialize.py`) — the same convention on both
+    variables, not a new one. An inherited alias whose CASE does not
+    match the caller's own spelling is DELETED rather than blanked,
+    though: leaving both behind would hand a real Windows child two keys
+    that its own case-folding treats as one, disagreeing about the value,
+    which is exactly the ambiguity naming one of them was supposed to
+    resolve.
+    """
+    asked_by_fold = {name.upper(): name for name in asked}
+    result = dict(env)
+    for name in env:
+        folded = name.upper()
+        if not folded.startswith(PIN_SOURCE_ENV_PREFIX):
+            continue
+        caller_spelling = asked_by_fold.get(folded)
+        if caller_spelling is None:
+            result[name] = ""
+        elif name != caller_spelling:
+            del result[name]
+    return result
+
+
 def run_script(script: Path, *args: str, cwd: Path | None = None,
                env: dict | None = None, input: str | None = None,
                stdin: int | None = None) -> subprocess.CompletedProcess:
@@ -119,7 +155,7 @@ def run_script(script: Path, *args: str, cwd: Path | None = None,
     #: unless the CALLER named it, which is how a test asks for a lane.
     if "LANES_LANE" not in asked:
         env["LANES_LANE"] = ""
-    #: NOR IS ANY PIN-SOURCE OVERRIDE (2026-09-11, #114, #120). Every
+    #: NOR IS ANY PIN-SOURCE OVERRIDE (2026-09-11, #114, #120, #126). Every
     #: `SHAPE_PIN_SOURCE_<PRODUCT>` name (`repo_shape.PIN_SOURCE_ENV_PREFIX`)
     #: changes what `resolve_link_source` resolves a link to — rule 2 there
     #: reads it BEFORE rule 3, the cwd-derived sibling checkout — for
@@ -132,11 +168,10 @@ def run_script(script: Path, *args: str, cwd: Path | None = None,
     #: offline-link warning stop printing, and that PR could only fix it
     #: locally, one test at a time, because this rule did not exist yet.
     #: Blanked for every product-specific variable unless the CALLER named
-    #: that exact name, which is how a test asks for one.
-    for pin_source_name in list(env):
-        if (pin_source_name.startswith(PIN_SOURCE_ENV_PREFIX)
-                and pin_source_name not in asked):
-            env[pin_source_name] = ""
+    #: that exact name, which is how a test asks for one — see
+    #: `blank_unnamed_pin_sources` above for the Windows case-folding this
+    #: needs that `LANES_LANE`, a single fixed name, never did.
+    env = blank_unnamed_pin_sources(env, asked)
     env.setdefault("GIT_AUTHOR_NAME", "openRepoShape tests")
     env.setdefault("GIT_AUTHOR_EMAIL", "tests@openreposhape.invalid")
     env.setdefault("GIT_COMMITTER_NAME", "openRepoShape tests")
