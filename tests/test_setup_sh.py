@@ -165,7 +165,8 @@ def test_preflight_reports_each_prerequisite(setup_run):
     # version and a path, not a constant. The old spelling would still pass —
     # off the `bootstrap runs as \`python3 scripts/bootstrap.py\`` line, which
     # is a different fact about a different program.
-    assert "git " in out and re.search(r"python 3\.\d+\.\d+ \(", out), out
+    assert "git " in out, out
+    assert re.search(r"python 3\.\d+\.\d+ \(", out), out
     assert "gh not required" in out, "local mode must skip the gh preflight"
 
 
