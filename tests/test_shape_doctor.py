@@ -1939,7 +1939,8 @@ def test_the_scaffold_lines_quoting_is_the_asked_for_platforms_too():
         windows if os.name == "nt" else posix)
 
 
-def test_the_way_in_row_is_one_platforms_line_end_to_end(standard, tmp_path):
+def test_the_way_in_row_matches_the_host_platform_end_to_end(standard,
+                                                             tmp_path):
     """The row that PRINTS that line names no platform, and must not need to.
 
     `check_the_way_in` is where `scaffold_command` is actually called, and it
