@@ -225,7 +225,11 @@ def test_init_writes_the_holders_agent_files(family):
     for rule in ("members/<Project>", "family.py add", "family.py bump",
                  "family.py remove", "make bootstrap", "make validate",
                  "make pins", "update-shape.py", "--admin",
-                 "--accept-local", "pull request"):
+                 "--accept-local", "pull request",
+                 # 2026-09-11 (#111): the procedure an agent follows is the
+                 # one in the holder it is standing in, so `bump`'s trailers
+                 # have to be HERE and not only in the standard's AGENTS.md.
+                 "--trailer"):
         assert rule in flat, f"the holder's rules say nothing about {rule}"
     assert "no spec leg, no code leg and no `project.yaml`" in flat
 

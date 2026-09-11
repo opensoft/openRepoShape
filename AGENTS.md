@@ -280,13 +280,13 @@ git -C <path> push -u origin shape/update-<sha>   # then open a pull request
    and rolls every byte back if either goes red. Land it as a pull request;
    never suggest a push to the default branch.
 7. **`--trailer "<Key>: <value>"` puts a line on the commit `apply` writes.**
-   Repeatable, kept in the order given, and only with `--branch`: without one
-   there is no commit to put a line on, and it is refused. A lane passes its
-   `Lane:` line and this estate's `Co-Authored-By:` there rather than amending
-   the commit afterwards. Where `LANES_LANE` is set, `check`'s `NEXT` line and
-   the doctor's `shape currency` row already carry the `Lane:` argument — paste
-   the line and the commit lands complete; the co-author is yours to add,
-   because no environment variable knows who that is.
+   Repeatable, in the order given, and only with `--branch` — without one there
+   is nothing to put a line on, and it is refused. A lane passes its `Lane:`
+   line and this estate's `Co-Authored-By:` there, not by amending afterwards.
+   Where `LANES_LANE` holds a name that survives being pasted, `check`'s `NEXT`
+   line and the doctor's `shape currency` row carry the `Lane:` argument
+   already; one that would not is offered on neither. Paste it and the commit
+   lands complete. The co-author is yours: no variable knows who that is.
 
 ## Advancing a leg
 

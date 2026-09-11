@@ -47,6 +47,22 @@ standard, and land the result as a pull request. **Never update a digest in
 place.** That records this copy as the standard and makes the drift the
 validator reports today invisible tomorrow.
 
+```sh
+./update-shape.py check --root <path-to-this-project>
+# then, once the human has seen the per-file verdicts and said yes:
+./update-shape.py apply --root <path-to-this-project> --at <commit> --yes \
+    --branch shape/update-<sha> \
+    --trailer "Lane: <name>" --trailer "Co-Authored-By: <who>"
+```
+
+`apply` takes a repeatable `--trailer "<Key>: <value>"`, appended in the order
+given to the commit it writes, and only alongside `--branch` — without one
+there is no commit to put a line on, and it is refused. `apply` composes that
+message itself, so whatever lines your own conventions require on a commit —
+a `Lane:` where a lane is running, a `Co-Authored-By:` where something
+co-wrote it — reach the re-pin this way and no other, rather than by amending
+the commit afterwards. `check` writes nothing and takes none.
+
 `AGENTS.md`, `CLAUDE.md`, `README.md`, `project.yaml` and the leg pins have no
 row: they are this project's own content, and yours to edit.
 
