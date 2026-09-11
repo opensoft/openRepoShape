@@ -50,6 +50,7 @@ die() { printf '\nREFUSED: %s\n' "$1" >&2; exit "${2:-2}"; }
 MAC_TOOLS=""
 case "$(uname -s 2>/dev/null)" in
 Darwin) MAC_TOOLS=$'\n  On a Mac, install Apple\'s Command Line Tools with `xcode-select --install` (a dialog opens; run this again when it has finished), which supplies git, make and a python3.' ;;
+*) ;;  # Linux, another OS, or a failed uname: no Mac-specific text to add.
 esac
 
 # THE INTERPRETER FIRST, BEFORE ANY CLONE. A machine with no Python cannot run
@@ -85,8 +86,8 @@ command -v git >/dev/null 2>&1 || die "git is not installed. Install it: https:/
 is_shape_checkout() {
 	local dir="$1" toplevel
 	toplevel="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)" || return 1
-	[ -n "$toplevel" ] && [ -f "$toplevel/scaffold-project.py" ] \
-		&& [ -f "$toplevel/contracts/repository-naming.yaml" ] || return 1
+	[[ -n "$toplevel" ]] && [[ -f "$toplevel/scaffold-project.py" ]] \
+		&& [[ -f "$toplevel/contracts/repository-naming.yaml" ]] || return 1
 	SHAPE_ROOT="$toplevel"
 }
 
@@ -124,6 +125,7 @@ fi
 # a confusing git error.
 case "$SHAPE_REPO" in
 -*|*[![:print:]]*) die "OPENREPOSHAPE_REPO is not a value this tool will put on a \`git clone\` command line: it starts with '-' or carries a control character. Set it to a URL or a path." ;;
+*) ;;  # a well-formed value; passed to `git clone` unchanged below.
 esac
 
 # THE ONLY READ OF THE COMMAND LINE, AND IT CONSUMES NOTHING. Both flags are
@@ -134,14 +136,16 @@ esac
 # makes the WORD AFTER IT become $SHAPE_REF. Both runs are refused anyway by
 # Python's `checked_value`, which rejects that leading `-` before anything is
 # created — this scan only decides whether a temporary directory is removed
-# and whether a ref gets checked out, never what the run itself does.
+# and whether a ref gets checked out, never what the run itself does. Each
+# `case` below ends `*) ;;` for the same reason: an argument this scan does
+# not recognize is Python's to read, not this script's to reject.
 KEEP_SHAPE_CHECKOUT=0
 SHAPE_REF=""
 prev=""
 for arg in ${1+"$@"}; do
-	case "$arg" in --) break ;; esac
-	case "$prev" in --shape-ref) SHAPE_REF="$arg" ;; esac
-	case "$arg" in --keep-shape-checkout) KEEP_SHAPE_CHECKOUT=1 ;; esac
+	case "$arg" in --) break ;; *) ;; esac
+	case "$prev" in --shape-ref) SHAPE_REF="$arg" ;; *) ;; esac
+	case "$arg" in --keep-shape-checkout) KEEP_SHAPE_CHECKOUT=1 ;; *) ;; esac
 	prev="$arg"
 done
 # Mirrors `setup-project.py`'s REF_RE: a ref starts with a letter or digit,
@@ -160,14 +164,16 @@ done
 # a ref has passed both - so it is at most 255 characters and entirely
 # printable - does (3) the shape `case` below echo it back, which is by
 # then safe to read.
-if [ "${#SHAPE_REF}" -gt 255 ]; then
+if [[ "${#SHAPE_REF}" -gt 255 ]]; then
 	die "--shape-ref is ${#SHAPE_REF} characters long; a branch, tag or commit this tool will pass to \`git checkout\` is at most 255 characters."
 fi
 case "$SHAPE_REF" in
 *[![:print:]]*) die "--shape-ref carries a control character, which is not a branch, tag or commit this tool will pass to \`git checkout\`." ;;
+*) ;;  # printable; the ref-syntax check below still has to pass.
 esac
 case "$SHAPE_REF" in
 [!A-Za-z0-9]*|*..*|*.lock|*[!A-Za-z0-9._/-]*) die "--shape-ref is '$SHAPE_REF', which is not a branch, tag or commit this tool will pass to \`git checkout\`: a ref starts with a letter or digit, uses only letters, digits, '.', '_', '/', '-', has no '..' and does not end in '.lock'." ;;
+*) ;;  # a valid ref shape; $SHAPE_REF is safe to echo back and check out.
 esac
 
 say "openRepoShape setup"
@@ -176,7 +182,7 @@ say "(0) self-bootstrap"
 # An explicit template, because BSD `mktemp` (macOS) requires one.
 SHAPE_CHECKOUT="$(mktemp -d "${TMPDIR:-/tmp}/openreposhape-shape-XXXXXX")"
 self_bootstrap_cleanup() {
-	if [ "$KEEP_SHAPE_CHECKOUT" -eq 1 ]; then
+	if [[ "$KEEP_SHAPE_CHECKOUT" -eq 1 ]]; then
 		say ""
 		say "kept the shape checkout: $SHAPE_CHECKOUT"
 	else
@@ -190,12 +196,13 @@ CLONE_SHAPE_CMD=(git clone --quiet)
 # ignores it for a bare local path (what the tests use via
 # $OPENREPOSHAPE_REPO), so skip it there rather than clone shallow noise.
 case "$SHAPE_REPO" in
-*://*) [ -n "$SHAPE_REF" ] || CLONE_SHAPE_CMD+=(--depth 1) ;;
+*://*) [[ -n "$SHAPE_REF" ]] || CLONE_SHAPE_CMD+=(--depth 1) ;;
+*) ;;  # a local path: --depth means nothing there, so skip it (see above).
 esac
 CLONE_SHAPE_CMD+=(-- "$SHAPE_REPO" "$SHAPE_CHECKOUT")
 say "  ${CLONE_SHAPE_CMD[*]}"
 "${CLONE_SHAPE_CMD[@]}"
-if [ -n "$SHAPE_REF" ]; then
+if [[ -n "$SHAPE_REF" ]]; then
 	say "  git -C $SHAPE_CHECKOUT checkout --quiet $SHAPE_REF"
 	git -C "$SHAPE_CHECKOUT" checkout --quiet "$SHAPE_REF"
 fi
