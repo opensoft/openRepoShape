@@ -3,10 +3,21 @@ name: tests
 # The suite scaffolds into BARE REPOSITORIES IN A TEMPORARY DIRECTORY and
 # clones them over the filesystem. It never calls `gh`, never touches the
 # network, and must never create a real repository.
+#
+# `push` to `main` is deliberate and LINUX-ONLY: a squash lands a tree no
+# pull-request run ever tested, and the ubuntu job alone is priced to catch
+# that (macOS bills at 10x, Windows at 2x, and a squash-interaction defect is
+# not an OS-specific one) — see #122.
 
 on:
+  push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   tests:
@@ -94,6 +105,12 @@ jobs:
   # binary, and neither belongs on a Windows runner.
   tests-windows:
     runs-on: windows-latest
+    # SKIPPED on a push to main: a squash-interaction regression is not
+    # OS-specific, so the ubuntu job is the gate for that on `main` and these
+    # two OS jobs stay the pull-request gate instead — Windows bills at 2x
+    # the Linux rate, not a cost worth doubling for the same landing (#122).
+    # Still runs on `pull_request` and a manual `workflow_dispatch`.
+    if: github.event_name != 'push'
     env:
       # PER-INVOCATION GIT CONFIG, never `git config --global` — the same rule
       # the identity step below follows, and the reason a lane mirroring these
@@ -179,6 +196,11 @@ jobs:
   # actionlint binary, which belongs on no other runner.
   tests-macos:
     runs-on: macos-latest
+    # SKIPPED on a push to main, for the reason the windows job gives: macOS
+    # bills at 10x the Linux rate, a squash-interaction regression is not
+    # OS-specific, and the ubuntu job is already the gate for that on `main`
+    # (#122). Still runs on `pull_request` and a manual `workflow_dispatch`.
+    if: github.event_name != 'push'
     steps:
       # The SAME two commits the other two jobs pin. Three jobs resolving
       # three versions of one action is the drift this repository spends a
