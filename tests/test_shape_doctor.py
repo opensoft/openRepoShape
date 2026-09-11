@@ -1971,6 +1971,110 @@ def test_the_way_in_row_matches_the_host_platform_end_to_end(standard,
         f"--project {module.quote_arg('Loose', os.name)}"), adopts.next_command
 
 
+def test_the_way_in_row_emits_a_classifying_name_verbatim(standard, tmp_path):
+    """#109: the derivation used to run unconditionally, respelling a name
+    the `naming` row just above this one already classified.
+
+    `openRepoProject` is `neutral-product` (`^open(?:[A-Z]|x[A-Z])
+    [A-Za-z0-9]*$`), which admits the `assembly` role it would carry
+    unchanged (2026-09-05). The old `"".join(part.capitalize() ...)`
+    derivation turned it into `Openrepoproject` -- a bare
+    `project-leg/assembly` token that ALSO classifies, so nothing in the
+    naming policy caught the mismatch -- and the emitted
+    `adopt-project.py plan` line proposed naming the two new legs off a
+    token that loses the repository's own family, beside a root still
+    called `openRepoProject`.
+    """
+    module = doctor_module(standard)
+    here = tmp_path / "openRepoProject"
+    here.mkdir()
+    git("init", "-q", "-b", "main", ".", cwd=here)
+    row = module.check_the_way_in(module.Context(here))
+    assert row.detail["suggested_project"] == "openRepoProject", row.detail
+    assert "--project openRepoProject" in row.next_command, row.next_command
+    assert "Openrepoproject" not in row.next_command, row.next_command
+
+
+def test_the_way_in_row_prefers_origins_name_over_the_local_folder(standard,
+                                                                    tmp_path):
+    """The identity that matters is the REPOSITORY's, not the folder it
+    happens to sit in -- `check_not_a_root_naming`'s own docstring: "a clone
+    into a differently named folder is ordinary, and the name that matters
+    for the policy is the repository's." A folder named
+    `clone-of-openrepoproject` (hyphenated, classifies nothing) beside an
+    `origin` named `openRepoProject` must still emit `--project
+    openRepoProject`, because that -- not the folder -- is what would
+    actually be adopted.
+    """
+    module = doctor_module(standard)
+    here = tmp_path / "clone-of-openrepoproject"
+    here.mkdir()
+    git("init", "-q", "-b", "main", ".", cwd=here)
+    git("remote", "add", "origin",
+        "git@github.com:opensoft/openRepoProject.git", cwd=here)
+    row = module.check_the_way_in(module.Context(here))
+    assert row.detail["suggested_project"] == "openRepoProject", row.detail
+    assert "--project openRepoProject" in row.next_command, row.next_command
+
+
+def test_the_way_in_row_still_derives_a_token_for_a_name_that_does_not_classify(
+        standard, tmp_path):
+    """The fallback this row always had, kept for the case it exists for: a
+    name the naming policy admits no form of at all has no valid
+    `--project` to preserve, so the capitalized-parts derivation still runs
+    -- unchanged from before #109.
+    """
+    module = doctor_module(standard)
+    here = tmp_path / "my-repo"
+    here.mkdir()
+    git("init", "-q", "-b", "main", ".", cwd=here)
+    row = module.check_the_way_in(module.Context(here))
+    assert row.detail["suggested_project"] == "MyRepo", row.detail
+    assert "--project MyRepo" in row.next_command, row.next_command
+
+
+def test_the_way_in_row_also_keeps_a_classifying_name_when_scaffolding(
+        standard, tmp_path):
+    """The suggestion is computed ONCE, before the branch on `is_repo`, so a
+    directory with no `.git` at all -- the SCAFFOLD half of this row --
+    gets the identical treatment: a loose folder already named like a live
+    neutral product (`openWidget`) is offered to `setup.sh` /
+    `setup-project.py` as itself, never as `Openwidget`.
+    """
+    module = doctor_module(standard)
+    here = tmp_path / "openWidget"
+    here.mkdir()
+    (here / "notes.txt").write_text("nothing to see\n", encoding="utf-8")
+    row = module.check_the_way_in(module.Context(here))
+    assert row.detail["git_repository"] is False
+    assert row.detail["suggested_project"] == "openWidget", row.detail
+    assert "--project openWidget" in row.next_command, row.next_command
+
+
+@pytest.mark.parametrize("name", ["openRepoProject", "openDox", "Thing",
+                                  "my-repo", "brett-wip"])
+def test_the_way_in_rows_suggested_project_always_classifies(standard,
+                                                              tmp_path, name):
+    """Whichever branch answered -- verbatim or derived -- the value it
+    handed back is always something `adopt-project.py` (and the scaffold)
+    will actually accept as `--project`: the same `accepts_role` gate, role
+    `assembly`, that `_check_names` runs. A suggestion nothing downstream
+    would take is not a suggestion, checked here the way
+    `tests/test_naming_policy.py` checks a classification -- in process,
+    against the policy this run of the doctor itself loaded.
+    """
+    module = doctor_module(standard)
+    here = tmp_path / name
+    here.mkdir()
+    git("init", "-q", "-b", "main", ".", cwd=here)
+    row = module.check_the_way_in(module.Context(here))
+    policy = module.NamingPolicy.load(
+        standard / "contracts" / "repository-naming.yaml")
+    found = policy.classify(row.detail["suggested_project"], "assembly")
+    assert module.accepts_role(found, "assembly"), (
+        name, row.detail["suggested_project"], found)
+
+
 @pytest.mark.parametrize("platform,expected", [("posix", "python3"),
                                                ("nt", "python")])
 def test_the_interpreter_named_is_the_asked_for_platforms(platform, expected):

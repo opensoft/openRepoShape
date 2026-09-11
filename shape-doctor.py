@@ -219,7 +219,8 @@ def not_in_the_standard(detail: str) -> int:
 
 try:
     from repo_shape import (  # noqa: E402
-        COMMIT_RE, PYTHON, Refusal, git_out, load_yaml, recorded_gitlink,
+        COMMIT_RE, NamingPolicy, PYTHON, Refusal, accepts_role, git_out,
+        load_yaml, recorded_gitlink,
     )
 except ImportError as exc:  # pragma: no cover - exercised as a subprocess
     sys.exit(not_in_the_standard(f"scripts/repo_shape.py ({exc})"))
@@ -2033,6 +2034,35 @@ def scaffold_command(shape: Path, project: str,
             f"--project {quote_arg(project, target)}")
 
 
+def project_token_for(name: str, policy: NamingPolicy) -> str:
+    """The `--project` `adopt-project.py` (and the scaffold) will accept for
+    `name`, unchanged where `name` is already one.
+
+    `accepts_role` is the ONE definition of which forms may be an assembly
+    root -- `adopt-project.py`'s own `_check_names` runs exactly this,
+    role `assembly`, over the value it is handed, and the scaffold's gate
+    agrees. A name that already passes it is therefore a name those tools
+    take VERBATIM, and respelling it first can hand them a DIFFERENT one:
+    `openRepoProject` classifies as `neutral-product`, which admits the
+    `assembly` role unchanged (2026-09-05) -- but the unconditional
+    `"".join(part.capitalize() ...)` derivation below turned it into
+    `Openrepoproject`, a bare `project-leg/assembly` token that still
+    classified, so nothing in the naming policy caught the mismatch. Run
+    live, the emitted `adopt-project.py plan --project Openrepoproject`
+    named the two new legs off a token that loses the repository's own
+    family, beside a root still called `openRepoProject`.
+
+    The derivation is kept as the fallback for a name the policy admits no
+    form of at all: `my-repo` has no valid `--project` to preserve, so
+    `MyRepo` is offered instead, exactly as before.
+    """
+    if accepts_role(policy.classify(name, "assembly"), "assembly"):
+        return name
+    return "".join(part.capitalize()
+                  for part in name.replace("_", "-").split("-")
+                  if part) or "Project"
+
+
 def check_the_way_in(ctx: Context) -> Row:
     """The two ways a directory becomes a shape root, and who decides.
 
@@ -2041,12 +2071,21 @@ def check_the_way_in(ctx: Context) -> Row:
     out of it; scaffolding creates three new repositories. Which of those a
     person wants is a fact about their repository, not about this directory
     listing, so both are named and the human chooses.
+
+    THE SUGGESTED `--project` READS THE SAME IDENTITY THE `naming` ROW DOES:
+    `origin`'s repository name where there is one, the directory's own name
+    otherwise -- `check_not_a_root_naming`'s own docstring, "the name that
+    matters for the policy is the repository's" -- because a clone into a
+    differently named folder does not change what would actually be adopted.
+    `project_token_for` decides whether that identity is handed back
+    verbatim or respelled.
     """
     root = ctx.root
     is_repo = (root / ".git").exists()
-    project = "".join(part.capitalize()
-                      for part in root.name.replace("_", "-").split("-")
-                      if part) or "Project"
+    identity = origin_name(root) or root.name
+    policy = NamingPolicy.load(ctx.shape / "contracts" /
+                               "repository-naming.yaml")
+    project = project_token_for(identity, policy)
     if is_repo:
         fix = (f"{PYTHON} {quote_arg(ctx.shape / 'adopt-project.py')} "
                f"plan --source {quote_arg(root)} --project "
