@@ -1862,7 +1862,8 @@ def check_not_a_root_naming(ctx: Context) -> Row:
     # exactly what was typed. `--` is argparse's own end-of-options marker,
     # not a shell's, and `scripts/validate-repository-naming.py`'s parser
     # accepts it because every `argparse.ArgumentParser` does by default.
-    code, quoted, whole = run_validator(ctx, script, ["--explain", "--", *names])
+    code, quoted, whole = run_validator(ctx, script,
+                                        ["--explain", "--", *names])
     detail = {"names": names, "origin": remote, "exit": code,
               "explain": ascii_text(whole).strip().splitlines()[:40]}
     reason = f"{', '.join(names)}: " + (
