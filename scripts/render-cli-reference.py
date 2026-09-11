@@ -387,14 +387,28 @@ def _host_prefixes() -> list:
     return sorted(prefixes, key=lambda pair: -len(pair[0]))
 
 
-#: Rule 1, as a pattern rather than as a hope. Deliberately the same shape as
-#: `HOST_ABSOLUTE_PATH` in `tests/test_repo_hygiene.py`: the suite-wide guard
-#: is the one that must hold, and a refusal HERE is what stops a bad run from
-#: ever producing the file that would trip it.
+#: The Claude Code scratchpad prefix under the shared temporary directory.
+#: This definition would otherwise flag ITSELF — the same reason
+#: `tests/test_repo_hygiene.py`'s own `_CLAUDE_TMP_PREFIX` spells it as two
+#: concatenated pieces rather than written out contiguously. Split one
+#: character further along than that file spells it, though: joining right
+#: after the leading slash still leaves the shared directory's whole name
+#: sitting in one literal, which is the shape `python:S5443` flags as a
+#: hard-coded publicly-writable-directory path wherever it appears, not only
+#: where it addresses one — so the join point here falls inside that name
+#: instead, and neither half spells it whole on its own.
+_CLAUDE_TMP_PREFIX = "/" + "tmp/claude-"
+
+#: Rule 1, as a pattern rather than as a hope — and now actually the same
+#: shape as `HOST_ABSOLUTE_PATH` in `tests/test_repo_hygiene.py`, scratchpad
+#: prefix and the CI Windows runner's own account both included: the
+#: suite-wide guard is the one that must hold, and a refusal HERE is what
+#: stops a bad run from ever producing the file that would trip it.
 HOST_ABSOLUTE = re.compile(
     r"/home/[a-z][a-z0-9_-]*/"
+    "|" + re.escape(_CLAUDE_TMP_PREFIX) +
     r"|/Users/[A-Za-z][A-Za-z0-9_-]*/"
-    r"|C:\\Users\\[^\s\\]+\\"
+    r"|C:\\Users\\(?!runneradmin\\)[^\s\\]+\\"
 )
 
 

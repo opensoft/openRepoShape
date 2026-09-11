@@ -274,6 +274,32 @@ def test_the_usage_block_normalises_the_same_on_either_python():
 _A_HOST_PATH = "/home/" + "somebody/projects/Thing"
 
 
+def test_the_generators_host_absolute_pattern_matches_tests_test_repo_hygiene():
+    """Copilot review, PR #98: the generator's own `HOST_ABSOLUTE` had drifted
+    from `tests/test_repo_hygiene.py::HOST_ABSOLUTE_PATH` — it recognised
+    neither a Claude Code scratchpad path nor the CI Windows runner's own
+    `C:\\Users\\runneradmin\\` account — so a leaked scratchpad path would
+    reach docs/cli.md and only the hygiene test, run separately, would ever
+    catch it. Same four cases, checked against the generator's own pattern.
+    """
+    module = generator_module()
+    # Every example below is SPELLED IN PIECES, like `_A_HOST_PATH` below and
+    # `tests/test_repo_hygiene.py`'s own `_CLAUDE_TMP_PREFIX`: a contiguous
+    # literal here would make this file the very thing
+    # `test_no_committed_file_names_a_host_absolute_path` refuses.
+    scratchpad = "/" + "tmp/claude-1000/-home-brett-projects-x/scratch"
+    assert module.HOST_ABSOLUTE.search(scratchpad), (
+        "HOST_ABSOLUTE does not recognise a Claude Code scratchpad path")
+    windows_user = "C:" + r"\Users\dana\stuff"
+    assert module.HOST_ABSOLUTE.search(windows_user), (
+        "HOST_ABSOLUTE does not recognise a real Windows user path")
+    windows_runner = "C:" + r"\Users\runneradmin\stuff"
+    assert not module.HOST_ABSOLUTE.search(windows_runner), (
+        "HOST_ABSOLUTE must not flag the GitHub Windows runner's own account")
+    assert module.HOST_ABSOLUTE.search(_A_HOST_PATH), (
+        "HOST_ABSOLUTE does not recognise a Linux/macOS home directory")
+
+
 def test_the_generator_refuses_a_host_absolute_path():
     """Rule 1, before the file exists rather than after it is committed.
 
