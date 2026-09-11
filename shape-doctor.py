@@ -1009,11 +1009,17 @@ def leg_tracked_files(mount: Path) -> list:
     it yet, and what is on this disk right now is the doctor's subject in
     every other row too.
 
-    THE SIZE IS A `stat`, NEVER A SUBPROCESS. The plan records it, and one
-    `git cat-file` per path would turn a leg of several thousand files into
-    minutes of forking for a number nothing decides on. A path in the index
-    with no file on disk reports zero rather than raising: it is somebody
-    mid-`git rm`, and the classification of its NAME is unaffected.
+    THE SIZE IS AN `lstat`, NEVER A SUBPROCESS AND NEVER A FOLLOWED LINK.
+    The plan records it, and one `git cat-file` per path would turn a leg of
+    several thousand files into minutes of forking for a number nothing
+    decides on. `lstat` rather than `stat` for two reasons that agree: a
+    tracked symlink's BLOB is the target path it holds, so the link's own
+    length is the honest size and the target's is a different file's; and
+    `secret -> /outside/file` would otherwise have this row read metadata
+    outside the very root `outside_the_root` keeps it inside of, and put that
+    size in the report (Copilot, PR #100). A path in the index with nothing
+    on disk reports zero rather than raising: it is somebody mid-`git rm`,
+    and the classification of its NAME is unaffected.
 
     THE SECOND RETURN IS THE RESIDUE: the names this command cannot put in a
     report or a plan without breaking one, as `repr`. See
@@ -1030,7 +1036,7 @@ def leg_tracked_files(mount: Path) -> list:
             unwritable.append(repr(path))
             continue
         try:
-            size = (mount / path).stat().st_size
+            size = (mount / path).lstat().st_size
         except OSError:
             size = 0
         out.append((path, size))

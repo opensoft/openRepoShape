@@ -1580,3 +1580,29 @@ def test_the_misplaced_verdict_needs_an_actual_misplaced_path(standard,
                       None, {"misplaced": [{"path": "spec/a.py"},
                                            {"path": "code/b.md"}]})
     assert module.verdict_for(ctx, [real])[0] == "MISPLACED (2 paths)"
+
+
+@pytest.mark.skipif(os.name == "nt",
+                    reason="a symlink needs a privilege Windows CI has not")
+def test_a_tracked_symlink_is_never_followed_out_of_the_leg(standard, project,
+                                                            tmp_path):
+    """`stat` follows; `lstat` does not, and here the two disagree about which
+    file is being measured.
+
+    A tracked symlink's BLOB is the target path it holds, so the link's own
+    length is the honest size — and `secret -> /outside/big` would otherwise
+    have this row read metadata outside the very root `outside_the_root`
+    keeps it inside of, and put that size in the report and in the plan.
+    """
+    outside = tmp_path / "big.py"
+    outside.write_text("X" * 5000, encoding="utf-8")
+    link = project / "spec" / "borrowed.py"
+    link.symlink_to(outside)
+    subprocess.run(["git", "add", "--", "borrowed.py"],
+                   cwd=str(project / "spec"), capture_output=True, check=True)
+    row = rows_of(doctor(standard, project, "--json"))["placement"]
+    [entry] = row["detail"]["misplaced"]
+    assert entry["path"] == "spec/borrowed.py"
+    assert entry["bytes"] == len(str(outside)), entry
+    assert entry["bytes"] != 5000, (
+        "the size reported is the link's, never the file it points at")
