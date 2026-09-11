@@ -1746,9 +1746,9 @@ resume InkRouter                # on workstation B, and the estate is back</code
         var panel = document.getElementById(t.getAttribute('aria-controls'));
         if (panel) { panel.hidden = !on; }
       });
-      var plat = tab.getAttribute('data-platform');
+      var plat = tab.dataset.platform;
       platformEls.forEach(function (el) {
-        var list = el.getAttribute('data-platform').split(/\s+/);
+        var list = el.dataset.platform.split(/\s+/);
         el.hidden = !list.includes(plat);
       });
       if (moveFocus) { tab.focus(); }

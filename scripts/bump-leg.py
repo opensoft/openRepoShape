@@ -512,7 +512,7 @@ def cmd_bump(args) -> int:  # noqa: C901
             "no pin to advance",
             "Remediation: the leg is declared in project.yaml but this "
             "repository does not record it as a submodule. `git submodule "
-            f"add` mounted it once; restore that commit, or re-scaffold. "
+            "add` mounted it once; restore that commit, or re-scaffold. "
             "`validate-pins.py` refuses on the same fact.")
     print(f"project      {project.display_name} ({project.data.get('id')})")
     print(f"leg          {role:<8} {repository} at {path}/")

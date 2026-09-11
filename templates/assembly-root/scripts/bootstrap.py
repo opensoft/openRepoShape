@@ -144,9 +144,9 @@ def checkout_tracking_branch(root: Path, leg: dict, branch: str) -> None:
 
     print(f"  [{role}] {path}: PIN {_short(pin)} != branch {branch} tip "
           f"{_short(local)}")
-    print(f"          not moving an existing branch. The checkout stays at "
-          f"the pin; the recorded pin is authoritative and advancing it is an "
-          f"explicit commit in this repository.")
+    print("          not moving an existing branch. The checkout stays at "
+          "the pin; the recorded pin is authoritative and advancing it is an "
+          "explicit commit in this repository.")
 
 
 def shape_upstream_notice(root: Path) -> None:
@@ -225,7 +225,7 @@ def _matches(obj: str, repositories: set[str], prefixes: list[str]) -> bool:
     return False
 
 
-def read_authority(root: Path, manifest: dict | None, legs: list[dict]) -> None:
+def read_authority(root: Path, legs: list[dict]) -> None:
     """Step (c). Prints the degrade line and returns when no register exists."""
     found = _register_paths(root, legs)
     if not found:
@@ -337,7 +337,7 @@ def main(argv: list[str] | None = None) -> int:
         shape_upstream_notice(root)
 
     print("\n(c) review authority")
-    read_authority(root, manifest, legs)
+    read_authority(root, legs)
 
     print()
     if failed:

@@ -1427,7 +1427,7 @@ def family_folder_here(shape_root: Path, parent: Path) -> str:
         return ""
     try:
         data = shape_scripts(shape_root).load_yaml(manifest)
-    except Exception:  # noqa: BLE001 - advice, not a gate; see above
+    except Exception:  # noqa: BLE001  (advice rather than a gate; see above)
         return ""
     if not isinstance(data, dict) or data.get("kind") != FAMILY_KIND:
         return ""
@@ -1640,8 +1640,7 @@ def scaffold(shape_root: Path, args: list) -> None:
 # 7. clone and bootstrap
 # ---------------------------------------------------------------------------
 
-def clone_and_bootstrap(opts: Options, shape_root: Path, org: str,
-                        landing: Landing) -> dict:
+def clone_and_bootstrap(opts: Options, org: str, landing: Landing) -> dict:
     # WHERE IT LANDS WAS DECIDED IN STEP (3), by `resolve_family`: `--into`
     # or, on the DEVELOPER PATH, the `..` of this checkout - a checkout's
     # parent is where the person cloned it, so the new project lands beside
@@ -1854,7 +1853,7 @@ def _main(argv, invocation_dir: str) -> int:
     args = scaffold_args(opts, org)
     plan_and_confirm(opts, shape_root, org, args)
     scaffold(shape_root, args)
-    created = clone_and_bootstrap(opts, shape_root, org, landing)
+    created = clone_and_bootstrap(opts, org, landing)
     hand_over(opts.project, created["clone"], created["urls"], org, landing)
     return 0
 

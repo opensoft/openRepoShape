@@ -285,10 +285,10 @@ def _check_member(root: Path, row: dict, seen: dict, report: Report) -> None:
         else:
             report.note(f"{path}: tree digest recomputes ({recorded[:12]}…)")
 
-    _check_member_identity(root, member, row, project, report)
+    _check_member_identity(member, row, project, report)
 
 
-def _check_member_identity(root: Path, member: Path, row: dict, project: str,
+def _check_member_identity(member: Path, row: dict, project: str,
                            report: Report) -> None:
     """The mounted tree is the PROJECT this row claims, not just a commit.
 

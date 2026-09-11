@@ -152,39 +152,45 @@ CHECKOUT_TOOLS = [
 #: are run FROM THERE, as `scripts/<name>.py`, never from this checkout — the
 #: help is rendered from the master copy because that is where a change to
 #: them is made.
+#:
+#: The two kinds of root a copy lands in, spelled once: each phrase names the
+#: `installed_in` of three `Tool` rows below, and three repeats of the same
+#: string is the literal `python:S1192` counts.
+INSTALLED_IN_ASSEMBLY_ROOT = "an assembly root"
+INSTALLED_IN_FAMILY_HOLDER = "a family holder"
 PROJECT_TOOLS = [
     Tool("templates/assembly-root/scripts/bootstrap.py", "python",
          "python3 scripts/bootstrap.py",
          "The one command after `git clone --recurse-submodules`: places each "
          "leg on its tracking branch AT the pinned commit. What `make "
          "bootstrap` runs.",
-         "scripts/bootstrap.py", "an assembly root"),
+         "scripts/bootstrap.py", INSTALLED_IN_ASSEMBLY_ROOT),
     Tool("templates/assembly-root/scripts/validate-manifest.py", "python",
          "python3 scripts/validate-manifest.py",
          "The project's own `project.yaml` validator: the manifest against "
          "the naming and path policies it was cut from.",
-         "scripts/validate-manifest.py", "an assembly root"),
+         "scripts/validate-manifest.py", INSTALLED_IN_ASSEMBLY_ROOT),
     Tool("templates/assembly-root/scripts/validate-pins.py", "python",
          "python3 scripts/validate-pins.py",
          "The project's own LOCKSTEP validator: the gitlink, the pin and the "
          "workflow references must agree, and every digest must recompute.",
-         "scripts/validate-pins.py", "an assembly root"),
+         "scripts/validate-pins.py", INSTALLED_IN_ASSEMBLY_ROOT),
     Tool("templates/family-root/scripts/bootstrap.py", "python",
          "python3 scripts/bootstrap.py",
          "The holder's own bootstrap: mounts every member at its pin and runs "
          "each member's.",
-         "scripts/bootstrap.py", "a family holder"),
+         "scripts/bootstrap.py", INSTALLED_IN_FAMILY_HOLDER),
     Tool("templates/family-root/scripts/siblings.py", "python",
          "python3 scripts/siblings.py",
          "Places the WORKSTATION layout: every member cloned BESIDE the "
          "holder, on its tracking branch. It moves nothing and overwrites "
          "nothing.",
-         "scripts/siblings.py", "a family holder"),
+         "scripts/siblings.py", INSTALLED_IN_FAMILY_HOLDER),
     Tool("templates/family-root/scripts/validate-family.py", "python",
          "python3 scripts/validate-family.py",
          "The holder's own `family.yaml` validator: the members, their pins "
          "and its shape copies.",
-         "scripts/validate-family.py", "a family holder"),
+         "scripts/validate-family.py", INSTALLED_IN_FAMILY_HOLDER),
 ]
 
 GROUPS = [
