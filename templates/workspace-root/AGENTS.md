@@ -90,4 +90,6 @@ is what you must and must not do inside it.
 - `opensoft/openRepoTools` — the lane tooling: `lanes-edit.sh`, `lane-start`,
   `lane-end`, `test_lane_helpers.sh`, `link-estates`, and `wip init` (what
   makes a repository like this one). Its own `AGENTS.md` is the operating
-  manual; README-lanes there describes the register's data shape.
+  manual; README-lanes there describes the register's data shape. That
+  tooling is Amendment 9's later, coordinated act 3; this template (act 1)
+  depends on none of it.

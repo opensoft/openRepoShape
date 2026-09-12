@@ -15,7 +15,9 @@ register — data, and nothing else. The tooling that reads and writes these
 files — `lanes-edit.sh`, `lane-start`, `lane-end`, `link-estates` — is
 `opensoft/openRepoTools`'s, not this repository's own; nothing in this
 standard creates one of these repositories either, a person makes their own
-by hand (or by `openRepoTools wip init`) and names it once.
+by hand (or by `openRepoTools wip init`) and names it once. That tooling
+ships in Amendment 9's later, coordinated act 3 — this template is act 1
+and is complete on its own without it.
 
 ## Layout
 
