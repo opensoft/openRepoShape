@@ -446,71 +446,103 @@ def classify(root: Path, rows: list[Row], upstream: Upstream, pinned: str,
     same answer it gives.
     """
     for row in rows:
-        target_path = root / row.path
-        if not target_path.is_file():
-            row.state = COPY_MISSING
-            row.detail = ("pinned but absent from the root; a human decides "
-                          "whether it was deleted on purpose")
-            continue
-        source = source_for(row.path, upstream, target, kind)
-        row.source = source
-        if source is None:
-            row.state = UNMAPPED
-            row.detail = ("no file in the upstream tree corresponds to this "
-                          "pinned path")
-            continue
-        here = target_path.read_bytes()
-        pinned_bytes = upstream.blob(pinned, source)
-        target_bytes = upstream.blob(target, source)
-        if target_bytes is None:
-            row.state = UPSTREAM_REMOVED
-            row.detail = (f"{source} is gone from the upstream at the target "
-                          "commit; deleting a project's copy is a decision, "
-                          "not a copy")
-            continue
-        row.target_bytes = target_bytes
-        local_digest = file_sha256(target_path)
-        locally_modified = local_digest != row.recorded
-        upstream_changed = pinned_bytes is None or pinned_bytes != target_bytes
-        verbatim_at_pin = (pinned_bytes is not None
-                           and file_bytes_sha256(pinned_bytes) == row.recorded)
+        _classify_row(root, row, upstream, pinned, target, kind)
 
-        if here == target_bytes:
-            # Already holding the target's bytes. Only the row is stale, and
-            # recomputing it hides nothing: these ARE the upstream's bytes.
-            row.state = (ALREADY_AT_TARGET if locally_modified else UNCHANGED)
-            row.digest = local_digest
-            continue
-        if locally_modified and upstream_changed:
-            row.state = BOTH
-            row.detail = "edited here AND upstream since the pin"
-            # Precomputed the same way `locally-modified` precomputes it,
-            # below: IF `--accept-local` later names this path, `cmd_apply`
-            # must re-pin from what is on disk NOW, not from whatever was
-            # true when the pin was written. Dead weight when nobody accepts
-            # it — an unaccepted `both` row is refused before any digest is
-            # written anywhere.
-            row.digest = local_digest
-            continue
-        if upstream_changed and not verbatim_at_pin:
-            row.state = BOTH
-            row.detail = (
-                "upstream changed, but this copy is not a verbatim copy of "
-                f"{source} at the pinned commit — an in-place adoption "
-                "appends to it — so copying the target bytes would delete "
-                "what was appended")
-            row.digest = local_digest
-            continue
-        if upstream_changed:
-            row.state = UPSTREAM_CHANGED
-            row.digest = file_bytes_sha256(target_bytes)
-            continue
-        if locally_modified:
-            row.state = LOCALLY_MODIFIED
-            row.detail = "edited in this project since the pin"
-            row.digest = local_digest
-            continue
-        row.state = UNCHANGED
+
+def _classify_row(root: Path, row: Row, upstream: Upstream, pinned: str,
+                  target: str, kind: Kind) -> None:
+    """One pinned row's verdict, split out of `classify` for #133.
+
+    THE THREE EXITS HERE ARE THE ONES WHERE THE COMPARISON CANNOT BE MADE AT
+    ALL, because one of the four byte-strings `classify` names does not
+    exist: the root has no file at this path, no upstream path corresponds to
+    it, or the upstream has none at the target commit. Each is a decision for
+    a human rather than a difference this tool can act on, so `_row_verdict`
+    below is never reached holding a hole. The reads are left in the order
+    they were written in — the root's bytes, then the pinned blob, then the
+    target blob — because `Upstream.blob` shells out to git and a reordering
+    would change what a failing run prints.
+    """
+    target_path = root / row.path
+    if not target_path.is_file():
+        row.state = COPY_MISSING
+        row.detail = ("pinned but absent from the root; a human decides "
+                      "whether it was deleted on purpose")
+        return
+    source = source_for(row.path, upstream, target, kind)
+    row.source = source
+    if source is None:
+        row.state = UNMAPPED
+        row.detail = ("no file in the upstream tree corresponds to this "
+                      "pinned path")
+        return
+    here = target_path.read_bytes()
+    pinned_bytes = upstream.blob(pinned, source)
+    target_bytes = upstream.blob(target, source)
+    if target_bytes is None:
+        row.state = UPSTREAM_REMOVED
+        row.detail = (f"{source} is gone from the upstream at the target "
+                      "commit; deleting a project's copy is a decision, "
+                      "not a copy")
+        return
+    row.target_bytes = target_bytes
+    _row_verdict(row, source, here, pinned_bytes, target_bytes,
+                 file_sha256(target_path))
+
+
+def _row_verdict(row: Row, source: str, here: bytes,
+                 pinned_bytes: bytes | None, target_bytes: bytes,
+                 local_digest: str) -> None:
+    """The verdict ladder itself, split out of `classify` for #133.
+
+    Reached only for a row whose four byte-strings all read, so this is the
+    ladder and nothing else: the three derived booleans the parent's
+    docstring argues for, and the first branch that matches. The order of the
+    branches is the order of the argument — already at the target, then the
+    two ways to be a `both`, then the two single-sided answers — and moving
+    one would change a verdict.
+    """
+    locally_modified = local_digest != row.recorded
+    upstream_changed = pinned_bytes is None or pinned_bytes != target_bytes
+    verbatim_at_pin = (pinned_bytes is not None
+                       and file_bytes_sha256(pinned_bytes) == row.recorded)
+
+    if here == target_bytes:
+        # Already holding the target's bytes. Only the row is stale, and
+        # recomputing it hides nothing: these ARE the upstream's bytes.
+        row.state = (ALREADY_AT_TARGET if locally_modified else UNCHANGED)
+        row.digest = local_digest
+        return
+    if locally_modified and upstream_changed:
+        row.state = BOTH
+        row.detail = "edited here AND upstream since the pin"
+        # Precomputed the same way `locally-modified` precomputes it,
+        # below: IF `--accept-local` later names this path, `cmd_apply`
+        # must re-pin from what is on disk NOW, not from whatever was
+        # true when the pin was written. Dead weight when nobody accepts
+        # it — an unaccepted `both` row is refused before any digest is
+        # written anywhere.
+        row.digest = local_digest
+        return
+    if upstream_changed and not verbatim_at_pin:
+        row.state = BOTH
+        row.detail = (
+            "upstream changed, but this copy is not a verbatim copy of "
+            f"{source} at the pinned commit — an in-place adoption "
+            "appends to it — so copying the target bytes would delete "
+            "what was appended")
+        row.digest = local_digest
+        return
+    if upstream_changed:
+        row.state = UPSTREAM_CHANGED
+        row.digest = file_bytes_sha256(target_bytes)
+        return
+    if locally_modified:
+        row.state = LOCALLY_MODIFIED
+        row.detail = "edited in this project since the pin"
+        row.digest = local_digest
+        return
+    row.state = UNCHANGED
 
 
 def file_bytes_sha256(data: bytes) -> str:
