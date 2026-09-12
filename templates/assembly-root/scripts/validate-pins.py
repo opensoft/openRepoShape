@@ -385,6 +385,162 @@ def resolve_neutral_pin_source(root: Path, product: str, repository: str,
     return None, None
 
 
+def _check_neutral_pin_entry_and_load(root: Path, product, report: Report
+                                      ) -> tuple[dict, str] | None:
+    """Validate one `neutral_product_pins:` entry and load its pin file.
+
+    Split from `_check_neutral_product_pins` for #132. Returns `None` when
+    the entry itself is malformed — already reported, and there is no pin
+    file name to go read — so the caller moves on to the next entry exactly
+    as the original loop's `continue` did.
+    """
+    if not isinstance(product, str) or not product:
+        report.finding(
+            "neutral-pin-entry-malformed",
+            f"project.yaml neutral_product_pins entry {product!r} is not "
+            "a non-empty product name",
+        )
+        return None
+    pin_path = root / "contracts" / f"{product.lower()}-pin.yaml"
+    if not pin_path.is_file():
+        raise Refusal(
+            "neutral-pin-missing",
+            f"project.yaml declares a pin on {product!r} but "
+            f"{pin_path.relative_to(root).as_posix()} does not exist",
+            "Remediation: `scaffold-project.py --pin "
+            f"{product}@<commit>` writes that file. A declaration in "
+            "project.yaml with no pin file beside it is a claim with no "
+            "referent — either restore the file or remove the "
+            "declaration.",
+        )
+    pin = load_yaml(pin_path)
+    rel = pin_path.relative_to(root).as_posix()
+    if not isinstance(pin, dict):
+        raise Refusal("neutral-pin-unreadable", f"{pin_path}: not a mapping")
+    return pin, rel
+
+
+def _check_neutral_pin_commit_and_digest_fields(pin: dict, rel: str,
+                                                report: Report
+                                                ) -> tuple[str, str] | None:
+    """The pin's own `revision_kind`/`commit`/digest fields, before any
+    recompute of the referent is attempted.
+
+    Split from `_check_neutral_product_pins` for #132. Returns `None` when
+    the digest fields are themselves malformed — already reported, and
+    recomputing anything to compare against them would be pointless — else
+    `(commit, recorded_digest)`.
+    """
+    if pin.get("revision_kind") != "commit":
+        report.finding(
+            "neutral-pin-tag-only",
+            f"{rel}: revision_kind is {pin.get('revision_kind')!r}. A tag "
+            "can be moved and a commit cannot; a pin is a commit or it is "
+            "nothing.",
+        )
+    commit = str(pin.get("commit") or "")
+    if not COMMIT_RE.match(commit):
+        raise Refusal(
+            "neutral-pin-tag-only",
+            f"{rel}: `commit:` is {commit!r}, which is not 40 hex. An "
+            "abbreviated oid, a branch or a tag is a moving reference.",
+        )
+    commit = commit.lower()
+
+    recorded = (pin.get("digests") or {}).get("tree_sha256")
+    if not isinstance(recorded, str) or not SHA256_RE.match(recorded):
+        report.finding("neutral-pin-digest-malformed",
+                       f"{rel}: digests.tree_sha256 is {recorded!r}, not "
+                       "64 hex")
+        return None
+    if pin.get("digest_definition") != TREE_DIGEST_DEFINITION:
+        report.finding(
+            "neutral-pin-digest-definition",
+            f"{rel}: digest_definition is "
+            f"{pin.get('digest_definition')!r}, expected "
+            f"{TREE_DIGEST_DEFINITION!r}. A digest whose definition is "
+            "unstated is a number, not an identity.",
+        )
+        return None
+    return commit, recorded
+
+
+def _recompute_neutral_pin_digest(root: Path, product: str, repository: str,
+                                  commit: str, rel: str,
+                                  keyed_sources: dict[str, Path],
+                                  default_source: Path | None,
+                                  report: Report) -> tuple[str, str] | None:
+    """Recompute the referent's tree digest: offline where a source can be
+    found, else from `gh api`, else a named SKIP that never fails the run.
+
+    Split from `_check_neutral_product_pins` for #132. Returns `(actual,
+    how)`, or `None` when nothing could answer — a finding or a skip is
+    already reported in that case, exactly as the original loop's
+    `continue` left it.
+    """
+    source, how = resolve_neutral_pin_source(root, product, repository,
+                                              keyed_sources, default_source)
+    if source is not None:
+        try:
+            return tree_digest(source, commit), how
+        except Refusal as exc:
+            report.finding(
+                "neutral-pin-source-unreadable",
+                f"{rel}: {source} ({how}) could not answer for "
+                f"{repository} @ {commit}: {exc.detail}",
+            )
+            return None
+    try:
+        return tree_digest_from_gh(repository, commit), "gh-api-tree-recursive"
+    except Refusal as exc:
+        report.skip(
+            f"{product}: pin commit {commit[:12]} digest NOT "
+            f"rechecked — no local checkout ({exc.code}: "
+            f"{exc.detail}). A --pin-source, {pin_source_env_name(product)}, "
+            f"or a checkout at ../{repo_basename(repository)} beside "
+            "this assembly root would verify it offline.",
+        )
+        return None
+
+
+def _check_one_neutral_product_pin(root: Path, product, report: Report,
+                                   keyed_sources: dict[str, Path],
+                                   default_source: Path | None) -> None:
+    """One `neutral_product_pins:` entry, start to finish.
+
+    Split from `_check_neutral_product_pins` for #132 so the loop in that
+    function is a single call per entry instead of the whole re-check
+    inline; each `return` below is one of the original loop's `continue`s.
+    """
+    loaded = _check_neutral_pin_entry_and_load(root, product, report)
+    if loaded is None:
+        return
+    pin, rel = loaded
+    repository = str(pin.get("source_repository") or "")
+    fields = _check_neutral_pin_commit_and_digest_fields(pin, rel, report)
+    if fields is None:
+        return
+    commit, recorded = fields
+    recomputed = _recompute_neutral_pin_digest(root, product, repository,
+                                               commit, rel, keyed_sources,
+                                               default_source, report)
+    if recomputed is None:
+        return
+    actual, how = recomputed
+    if actual.lower() != recorded.lower():
+        report.finding(
+            "neutral-pin-digest-mismatch",
+            f"{rel}: digests.tree_sha256 {recorded}\n"
+            f"       recomputed at {commit[:12]} {actual} ({how})\n"
+            "  A neutral-product pin's digest no longer matches the "
+            "bytes it names — the referent this project's name claims "
+            "descent from has moved, or the pin was hand-edited.",
+        )
+    else:
+        report.note(f"{product}: pin commit {commit[:12]} digest "
+                   f"recomputes ({how})")
+
+
 def _check_neutral_product_pins(root: Path, manifest: dict, report: Report,
                                 keyed_sources: dict[str, Path],
                                 default_source: Path | None) -> None:
@@ -400,101 +556,8 @@ def _check_neutral_product_pins(root: Path, manifest: dict, report: Report,
     """
     products = manifest.get("neutral_product_pins") or []
     for product in products:
-        if not isinstance(product, str) or not product:
-            report.finding(
-                "neutral-pin-entry-malformed",
-                f"project.yaml neutral_product_pins entry {product!r} is not "
-                "a non-empty product name",
-            )
-            continue
-        pin_path = root / "contracts" / f"{product.lower()}-pin.yaml"
-        if not pin_path.is_file():
-            raise Refusal(
-                "neutral-pin-missing",
-                f"project.yaml declares a pin on {product!r} but "
-                f"{pin_path.relative_to(root).as_posix()} does not exist",
-                "Remediation: `scaffold-project.py --pin "
-                f"{product}@<commit>` writes that file. A declaration in "
-                "project.yaml with no pin file beside it is a claim with no "
-                "referent — either restore the file or remove the "
-                "declaration.",
-            )
-        pin = load_yaml(pin_path)
-        rel = pin_path.relative_to(root).as_posix()
-        if not isinstance(pin, dict):
-            raise Refusal("neutral-pin-unreadable", f"{pin_path}: not a mapping")
-
-        if pin.get("revision_kind") != "commit":
-            report.finding(
-                "neutral-pin-tag-only",
-                f"{rel}: revision_kind is {pin.get('revision_kind')!r}. A tag "
-                "can be moved and a commit cannot; a pin is a commit or it is "
-                "nothing.",
-            )
-        commit = str(pin.get("commit") or "")
-        if not COMMIT_RE.match(commit):
-            raise Refusal(
-                "neutral-pin-tag-only",
-                f"{rel}: `commit:` is {commit!r}, which is not 40 hex. An "
-                "abbreviated oid, a branch or a tag is a moving reference.",
-            )
-        commit = commit.lower()
-        repository = str(pin.get("source_repository") or "")
-
-        recorded = (pin.get("digests") or {}).get("tree_sha256")
-        if not isinstance(recorded, str) or not SHA256_RE.match(recorded):
-            report.finding("neutral-pin-digest-malformed",
-                           f"{rel}: digests.tree_sha256 is {recorded!r}, not "
-                           "64 hex")
-            continue
-        if pin.get("digest_definition") != TREE_DIGEST_DEFINITION:
-            report.finding(
-                "neutral-pin-digest-definition",
-                f"{rel}: digest_definition is "
-                f"{pin.get('digest_definition')!r}, expected "
-                f"{TREE_DIGEST_DEFINITION!r}. A digest whose definition is "
-                "unstated is a number, not an identity.",
-            )
-            continue
-
-        source, how = resolve_neutral_pin_source(root, product, repository,
-                                                  keyed_sources, default_source)
-        if source is not None:
-            try:
-                actual = tree_digest(source, commit)
-            except Refusal as exc:
-                report.finding(
-                    "neutral-pin-source-unreadable",
-                    f"{rel}: {source} ({how}) could not answer for "
-                    f"{repository} @ {commit}: {exc.detail}",
-                )
-                continue
-        else:
-            try:
-                actual = tree_digest_from_gh(repository, commit)
-                how = "gh-api-tree-recursive"
-            except Refusal as exc:
-                report.skip(
-                    f"{product}: pin commit {commit[:12]} digest NOT "
-                    f"rechecked — no local checkout ({exc.code}: "
-                    f"{exc.detail}). A --pin-source, {pin_source_env_name(product)}, "
-                    f"or a checkout at ../{repo_basename(repository)} beside "
-                    "this assembly root would verify it offline.",
-                )
-                continue
-
-        if actual.lower() != recorded.lower():
-            report.finding(
-                "neutral-pin-digest-mismatch",
-                f"{rel}: digests.tree_sha256 {recorded}\n"
-                f"       recomputed at {commit[:12]} {actual} ({how})\n"
-                "  A neutral-product pin's digest no longer matches the "
-                "bytes it names — the referent this project's name claims "
-                "descent from has moved, or the pin was hand-edited.",
-            )
-        else:
-            report.note(f"{product}: pin commit {commit[:12]} digest "
-                       f"recomputes ({how})")
+        _check_one_neutral_product_pin(root, product, report, keyed_sources,
+                                       default_source)
 
 
 def main(argv: list[str] | None = None) -> int:
