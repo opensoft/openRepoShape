@@ -560,6 +560,76 @@ def _check_neutral_product_pins(root: Path, manifest: dict, report: Report,
                                        default_source)
 
 
+def _parse_pin_sources(pin_source_args: list[str]
+                       ) -> tuple[dict[str, Path], Path | None]:
+    """`--pin-source` may be repeated, each either `PRODUCT=PATH` or a bare
+    `PATH`. Split from `main` for #132. Returns the keyed sources and the
+    one bare default, exactly as `main` used to build them inline.
+    """
+    keyed_sources: dict[str, Path] = {}
+    default_source: Path | None = None
+    for raw in pin_source_args:
+        product, sep, path = raw.partition("=")
+        if sep:
+            keyed_sources[product.casefold()] = Path(path)
+        else:
+            default_source = Path(raw)
+    return keyed_sources, default_source
+
+
+def _load_legs_to_check(root: Path) -> tuple[dict, list[dict]]:
+    """The manifest and its non-assembly legs, or a Refusal naming why there
+    is nothing here to check. Split from `main` for #132.
+    """
+    manifest_path = root / "project.yaml"
+    if not manifest_path.is_file():
+        raise Refusal(
+            "manifest-missing",
+            f"{manifest_path} does not exist, so there is no declaration of "
+            "which legs to check. A one-repository project has no legs and "
+            "does not run this validator.",
+        )
+    manifest = load_yaml(manifest_path)
+    if not isinstance(manifest, dict):
+        raise Refusal("manifest-unreadable", f"{manifest_path}: not a mapping")
+    legs = [leg for leg in (manifest.get("legs") or [])
+            if isinstance(leg, dict) and leg.get("role") != "assembly"]
+    if not legs:
+        raise Refusal("manifest-no-legs",
+                      f"{manifest_path}: no non-assembly legs declared")
+    return manifest, legs
+
+
+def _run_all_checks(root: Path, report: Report, keyed_sources: dict[str, Path],
+                    default_source: Path | None) -> None:
+    """Every check `main` runs inside its one `try`, in order. Split from
+    `main` for #132 so that `try` wraps a single call.
+    """
+    manifest, legs = _load_legs_to_check(root)
+    refs = _workflow_refs(root)
+    for leg in legs:
+        _check_leg(root, leg, report, refs)
+    _check_shape_pin(root, manifest, report)
+    _check_neutral_product_pins(root, manifest, report, keyed_sources,
+                                default_source)
+
+
+def _emit_report(report: Report, quiet: bool) -> int:
+    """Print the notes and findings and choose the exit code. Split from
+    `main` for #132.
+    """
+    if not quiet:
+        for note in report.notes:
+            print(note)
+    for finding in report.findings:
+        print(finding, file=sys.stderr)
+    if report.findings:
+        print(f"\n{len(report.findings)} finding(s). " + LOCKSTEP, file=sys.stderr)
+        return 1
+    print("pins ok")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--root", type=Path, default=None,
@@ -577,54 +647,17 @@ def main(argv: list[str] | None = None) -> int:
              "before `gh api` and before this flag's bare form.")
     args = parser.parse_args(argv)
 
-    keyed_sources: dict[str, Path] = {}
-    default_source: Path | None = None
-    for raw in args.pin_source:
-        product, sep, path = raw.partition("=")
-        if sep:
-            keyed_sources[product.casefold()] = Path(path)
-        else:
-            default_source = Path(raw)
+    keyed_sources, default_source = _parse_pin_sources(args.pin_source)
 
     report = Report()
     try:
         root = find_repo_root(args.root or Path(__file__).resolve().parents[1])
-        manifest_path = root / "project.yaml"
-        if not manifest_path.is_file():
-            raise Refusal(
-                "manifest-missing",
-                f"{manifest_path} does not exist, so there is no declaration of "
-                "which legs to check. A one-repository project has no legs and "
-                "does not run this validator.",
-            )
-        manifest = load_yaml(manifest_path)
-        if not isinstance(manifest, dict):
-            raise Refusal("manifest-unreadable", f"{manifest_path}: not a mapping")
-        legs = [leg for leg in (manifest.get("legs") or [])
-                if isinstance(leg, dict) and leg.get("role") != "assembly"]
-        if not legs:
-            raise Refusal("manifest-no-legs",
-                          f"{manifest_path}: no non-assembly legs declared")
-        refs = _workflow_refs(root)
-        for leg in legs:
-            _check_leg(root, leg, report, refs)
-        _check_shape_pin(root, manifest, report)
-        _check_neutral_product_pins(root, manifest, report, keyed_sources,
-                                    default_source)
+        _run_all_checks(root, report, keyed_sources, default_source)
     except Refusal as exc:
         print(str(exc), file=sys.stderr)
         return 2
 
-    if not args.quiet:
-        for note in report.notes:
-            print(note)
-    for finding in report.findings:
-        print(finding, file=sys.stderr)
-    if report.findings:
-        print(f"\n{len(report.findings)} finding(s). " + LOCKSTEP, file=sys.stderr)
-        return 1
-    print("pins ok")
-    return 0
+    return _emit_report(report, args.quiet)
 
 
 if __name__ == "__main__":
