@@ -925,7 +925,7 @@ def _shape_block_bounds(lines: list[str], kind: Kind) -> tuple[int, int]:
 #: this tool ever changes in it is the 40 hex characters of the line below.
 README = "README.md"
 
-#: What a root's README says about the standard: the seven answers `check`
+#: What a root's README says about the standard: the eight answers `check`
 #: prints and `apply` acts on. Only ONE of them is a write.
 README_ABSENT = "absent"
 README_CURRENT = "current"
@@ -934,6 +934,7 @@ README_AMBIGUOUS = "ambiguous"
 README_OTHER_REPOSITORY = "other-repository"
 README_UNREADABLE = "unreadable"
 README_UNCOMMITTED = "uncommitted"
+README_SYMLINK = "symlink"
 
 
 def readme_is_committed(root: Path) -> bool:
@@ -948,17 +949,23 @@ def readme_is_committed(root: Path) -> bool:
     the xFactory sweep `commit_on_branch` documents, arriving through a door
     this feature opened.
 
-    ANY output means no: modified, staged, or untracked. Untracked matters on
-    its own — `git commit -- README.md` refuses a pathspec git has never heard
-    of, and that failure would arrive after every other byte was written.
+    ANY output means no: modified, staged, untracked — or IGNORED, which is
+    why `--ignored` is passed. Plain `git status --porcelain` says nothing at
+    all about an ignored untracked file, so a root whose `README.md` is
+    ignored would have read as clean, been rewritten, and then handed `git
+    commit -- README.md` a pathspec git has never heard of — a failure
+    arriving after every other byte was written, on the one path
+    `cmd_apply`'s `except CommandFailed` arm does not roll back (Copilot,
+    PR #152). Untracked-but-not-ignored was already caught; this is the same
+    hazard wearing the one hat `--porcelain` hides.
 
     A git that cannot answer (no repository, no git) is treated as NOT
     committed, which costs a rewrite in a place that could not have committed
     it anyway.
     """
-    proc = subprocess.run(["git", "status", "--porcelain", "--", README],
-                          cwd=str(root), capture_output=True, text=True,
-                          check=False)
+    proc = subprocess.run(
+        ["git", "status", "--porcelain", "--ignored", "--", README],
+        cwd=str(root), capture_output=True, text=True, check=False)
     return proc.returncode == 0 and not proc.stdout.strip()
 
 
@@ -993,7 +1000,7 @@ class ReadmeShapeLine:
         self.state = self._classify()
 
     def _classify(self) -> str:
-        """Which of the seven answers this README gives, read once.
+        """Which of the eight answers this README gives, read once.
 
         The UTF-8 branch is not hypothetical bookkeeping: this runs inside
         `apply`, after the copies are on disk, and an uncaught
@@ -1004,6 +1011,14 @@ class ReadmeShapeLine:
         the common answers cost no subprocess at all and a README nobody is
         editing is classified exactly as before.
         """
+        if self.path.is_symlink():
+            # NOT WRITTEN THROUGH, EVER. `is_file()` follows the link, and a
+            # rewrite would then put these bytes into the link's TARGET —
+            # which a root is free to point outside itself — while the
+            # symlink git tracks is unchanged, so the commit this tool makes
+            # would not contain the edit it just made somebody else's file
+            # (Copilot, PR #152).
+            return README_SYMLINK
         if not self.path.is_file():
             return README_ABSENT
         try:
@@ -1047,6 +1062,9 @@ class ReadmeShapeLine:
             return (f"{README_UNCOMMITTED} ({self.named[:12]} is behind, but "
                     f"{README} has changes of its own; `apply` leaves it "
                     "alone rather than commit somebody else's edit)")
+        if self.state == README_SYMLINK:
+            return (f"{README_SYMLINK} ({README} is a symlink; `apply` never "
+                    "writes through one)")
         return self.state
 
     @property
@@ -1072,6 +1090,9 @@ class ReadmeShapeLine:
             return (f"  kept     {README}: its Shape: line is behind, but the "
                     "file has uncommitted changes, untouched — commit them "
                     "and the next re-pin carries the line")
+        if self.state == README_SYMLINK:
+            return (f"  kept     {README}: a symlink, untouched — a rewrite "
+                    "would land in its target rather than in this root")
         return f"  kept     {README}: no Shape: line, untouched"
 
     def rewrite(self, ledger: Rollback) -> bool:

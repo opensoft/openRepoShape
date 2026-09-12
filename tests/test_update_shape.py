@@ -24,7 +24,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import FILE_PROTOCOL, ORG, REPO, git, run_script
+from conftest import (FILE_PROTOCOL, ORG, REPO, WINDOWS_SKIP, git,
+                      run_script)
 #: The trailer helpers and the two lines a lane's run lands, imported from
 #: the file that owns those rules rather than retyped — see
 #: `tests/test_commit_trailers.py`.
@@ -1199,3 +1200,71 @@ def test_check_names_the_readme_in_the_pin_alone_preview(
     assert "`apply` would move the pin and README.md's Shape: line" \
         in result.stdout
     assert "the pin alone" not in result.stdout
+
+
+def test_an_ignored_untracked_readme_is_left_alone_rather_than_half_committed(
+        root, upstream_and_project):
+    """`git status --porcelain` SAYS NOTHING ABOUT AN IGNORED FILE, so the
+    committed check had to ask with `--ignored` (Copilot, #152).
+
+    Without it this README read as clean, was rewritten, and then handed `git
+    commit -- README.md` a pathspec git has never heard of — a failure
+    arriving after every other byte was written, on the one path `cmd_apply`
+    does not roll back. The exclude goes in `.git/info/exclude` rather than
+    `.gitignore` because `.gitignore` is a PINNED copy: editing it would be
+    drift, and this test would be exercising that refusal instead.
+    """
+    a = upstream_and_project["a"]
+    readme = give_readme(root, rendered_shape_line(a))
+    before = readme.read_bytes()
+    exclude = root / ".git" / "info" / "exclude"
+    exclude.parent.mkdir(parents=True, exist_ok=True)
+    exclude.write_text("README.md\n", encoding="utf-8")
+    git("rm", "-q", "--cached", "--", "README.md", cwd=root)
+    # No pathspec: the staged DELETION is what has to land, and `commit --
+    # README.md` would commit the working tree's copy of that path instead,
+    # putting the file straight back.
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m",
+        "The README is this project's own, and ignored", cwd=root)
+
+    result = apply(root, upstream_and_project, "--branch", "shape/update-ign")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert readme.read_bytes() == before
+    assert "uncommitted changes, untouched" in result.stdout
+    assert "README.md" not in committed_files(root)
+    validators_are_green(root)
+
+
+@WINDOWS_SKIP
+def test_a_symlinked_readme_is_never_written_through(root,
+                                                     upstream_and_project,
+                                                     tmp_path):
+    """A ROOT MAY POINT ITS README OUT OF ITSELF, and `Path.is_file()`
+    follows the link (Copilot, #152).
+
+    Written through, the replacement would land in a file outside this
+    repository — somebody else's — while the symlink git tracks stayed
+    byte-identical, so the commit would not contain the edit it had just
+    made. Left alone, and said.
+    """
+    outside = tmp_path / "elsewhere.md"
+    outside.write_text("Someone else's document.\n\n"
+                       + rendered_shape_line(upstream_and_project["a"])
+                       + "\n", encoding="utf-8")
+    before = outside.read_bytes()
+    readme = root / "README.md"
+    readme.unlink()
+    readme.symlink_to(outside)
+    git("add", "--", "README.md", cwd=root)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m",
+        "The README lives outside this root", "--", "README.md", cwd=root)
+
+    result = apply(root, upstream_and_project, "--branch", "shape/update-sym")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert outside.read_bytes() == before, (
+        "a file outside the root is not this tool's to write")
+    assert "a symlink, untouched" in result.stdout
+    assert "README.md" not in committed_files(root)
+
+    checked = check(root, upstream_and_project)
+    assert "readme-shape-line: symlink" in checked.stdout
