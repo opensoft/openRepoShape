@@ -855,24 +855,7 @@ def rewrite_manifest(text: str, commit: str, tree: str, kind: Kind) -> str:
     pin while claiming to move the shape's.
     """
     lines = text.splitlines()
-    start = None
-    for index, line in enumerate(lines):
-        if line.rstrip() == "shape:":
-            start = index
-            break
-    if start is None:
-        raise Refusal(
-            "update-manifest-no-shape",
-            f"{kind.manifest} has no `shape:` block, so there is nothing to "
-            "mirror the pin into",
-            f"Remediation: `{Path(kind.manifest_validator).name}` requires "
-            "one; add it, or re-scaffold.")
-    end = len(lines)
-    for index in range(start + 1, len(lines)):
-        line = lines[index]
-        if line.strip() and not line.startswith((" ", "\t")):
-            end = index
-            break
+    start, end = _shape_block_bounds(lines, kind)
     seen = {"commit": 0, "tree": 0}
     for index in range(start + 1, end):
         stripped = lines[index].strip()
@@ -891,6 +874,38 @@ def rewrite_manifest(text: str, commit: str, tree: str, kind: Kind) -> str:
                 "Remediation: fix the block by hand this once; this tool will "
                 "not guess at a manifest it does not recognise.")
     return "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+
+
+def _shape_block_bounds(lines: list[str], kind: Kind) -> tuple[int, int]:
+    """Where the manifest's `shape:` block starts and ends, as line indices.
+    Split out of `rewrite_manifest` for #133.
+
+    FINDING THE BLOCK IS A SEPARATE QUESTION FROM EDITING IT, and the answer
+    is what scopes the edit: `commit:` and `tree_sha256:` are spelled the same
+    way in every pin the manifest carries, so a rewrite that ran past the end
+    of this block would move a leg's pin while claiming to move the shape's.
+    The block ends at the next line that is non-blank and not indented — the
+    next top-level key — or at the end of the file, which is the `shape:`
+    block a scaffold writes last. No `shape:` block at all is the one
+    refusal, raised here because there is nothing to return.
+    """
+    start = None
+    for index, line in enumerate(lines):
+        if line.rstrip() == "shape:":
+            start = index
+            break
+    if start is None:
+        raise Refusal(
+            "update-manifest-no-shape",
+            f"{kind.manifest} has no `shape:` block, so there is nothing to "
+            "mirror the pin into",
+            f"Remediation: `{Path(kind.manifest_validator).name}` requires "
+            "one; add it, or re-scaffold.")
+    for index in range(start + 1, len(lines)):
+        line = lines[index]
+        if line.strip() and not line.startswith((" ", "\t")):
+            return start, index
+    return start, len(lines)
 
 
 # ---------------------------------------------------------------------------
