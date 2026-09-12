@@ -222,10 +222,14 @@ def test_the_workspace_template_says_what_its_bytes_are():
     `openRepoTools wip init` still copies it byte for byte, the way
     `scaffold-project.py` copies `assembly-root`, and the register it seeds,
     `lanes/LANES.md`, is then edited a WHOLE LINE at a time by the installed
-    `lanes-edit.sh` — exactly the match `unname_everywhere()` makes blind on
-    a CRLF checkout of THIS repository, in
-    `test_the_repository_root_carries_the_rule_too` above. No digest pins
-    this template's copies, so nothing else would ever catch it (#154).
+    `lanes-edit.sh` — in the MATERIALIZED copy (a person's own `<user>-wip`,
+    a different repository from this one). A checkout of THAT repository
+    made CRLF turns `lanes-edit.sh`'s whole-line match blind or wrong, the
+    same failure shape `unname_everywhere()` has on a CRLF checkout of THIS
+    repository in `test_the_repository_root_carries_the_rule_too` above —
+    a different function, in a different repository, guarding the same
+    kind of line-matching edit. No digest pins this template's copies, so
+    nothing else would ever catch it (#154).
     """
     path = REPO / "templates" / "workspace-root" / ".gitattributes"
     assert path.is_file(), (
