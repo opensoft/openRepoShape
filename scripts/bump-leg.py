@@ -435,23 +435,29 @@ def current_branch(root: Path) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def cmd_bump(args) -> int:  # noqa: C901
-    project = Project.open(args.root)
-    root = project.root
-    role = checked_value("--leg", args.leg)
-    leg = project.leg(role)
-    repository = checked_value("the leg's repository",
-                               str(leg.get("repository") or ""))
-    path = checked_value("the leg's path", str(leg.get("path") or ""))
-    commit = checked_value("--to", args.to).lower()
+def _checked_target_commit(raw: str) -> str:
+    """`--to`, lower-cased, refused unless it is exactly 40 hex.
+
+    Split from `cmd_bump` for #136: a tag can be moved and an abbreviated
+    oid can become ambiguous, so this is checked before anything else reads
+    `--to`.
+    """
+    commit = checked_value("--to", raw).lower()
     if not COMMIT_RE.match(commit):
         raise Refusal(
             "bump-leg-target-not-a-commit",
-            f"--to {args.to!r} is not a 40-hex commit",
+            f"--to {raw!r} is not a 40-hex commit",
             "Remediation: pass the full 40 characters. A tag can be moved and "
             "an abbreviated oid can become ambiguous; a pin is a whole commit "
             "or it is nothing.")
+    return commit
 
+
+def _ensure_root_clean(root: Path) -> None:
+    """Refuse when the root has uncommitted TRACKED changes.
+
+    Split from `cmd_bump` for #136.
+    """
     # THE ROOT MUST BE CLEAN. Tracked changes only: an untracked scratch file
     # cannot reach a commit made with explicit pathspecs, and refusing one
     # would be this tool having an opinion about somebody's working
@@ -470,6 +476,16 @@ def cmd_bump(args) -> int:  # noqa: C901
             "cannot be read as exactly one change is the thing the rule "
             "exists to keep readable.")
 
+
+def _branch_to_bump_from(root: Path, project: "Project", role: str,
+                         commit: str) -> str:
+    """The branch the bump commits on, refused if there is none or it is
+    the project's own tracking branch.
+
+    Split from `cmd_bump` for #136: these organisations are pull-request
+    only, so a bump is refused before it ever makes a commit whose only
+    next step would be a push to the default branch.
+    """
     branch = current_branch(root)
     if branch is None:
         raise Refusal(
@@ -487,7 +503,15 @@ def cmd_bump(args) -> int:  # noqa: C901
             "will not make a commit whose only next step is a push to the "
             "default branch. Run:\n    git -C " + str(root)
             + f" switch -c bump/{role}-{commit[:12]}\nand re-run.")
+    return branch
 
+
+def _initialized_submodule(root: Path, path: str) -> Path:
+    """The leg's checkout, refused if it was never `git submodule update
+    --init`ed.
+
+    Split from `cmd_bump` for #136.
+    """
     submodule = root / path
     if not (submodule / ".git").exists():
         raise Refusal(
@@ -497,7 +521,15 @@ def cmd_bump(args) -> int:  # noqa: C901
             "Remediation: `make bootstrap` in the root, which resolves a "
             "credential for a private leg first, or `git submodule update "
             "--init " + path + "`.")
+    return submodule
 
+
+def _recorded_leg_commit(root: Path, path: str) -> str:
+    """The commit currently recorded at the leg's gitlink, refused if there
+    is none to advance.
+
+    Split from `cmd_bump` for #136.
+    """
     # THE COMMIT BEING REPLACED, read from the INDEX first (`recorded_gitlink`
     # does), because the index is what the next commit will record. Its
     # absence is refused rather than treated as "nothing to roll back to": a
@@ -514,11 +546,14 @@ def cmd_bump(args) -> int:  # noqa: C901
             "repository does not record it as a submodule. `git submodule "
             "add` mounted it once; restore that commit, or re-scaffold. "
             "`validate-pins.py` refuses on the same fact.")
-    print(f"project      {project.display_name} ({project.data.get('id')})")
-    print(f"leg          {role:<8} {repository} at {path}/")
-    fetch_leg(submodule, repository, commit, args.local_remote_dir)
-    digest = tree_digest(submodule, commit)
-    pin_rel = f"contracts/{role}-pin.yaml"
+    return was
+
+
+def _leg_pin_path(root: Path, pin_rel: str) -> Path:
+    """The leg's `contracts/<role>-pin.yaml`, refused if it does not exist.
+
+    Split from `cmd_bump` for #136.
+    """
     pin_path = root / pin_rel
     if not pin_path.is_file():
         raise Refusal(
@@ -527,12 +562,14 @@ def cmd_bump(args) -> int:  # noqa: C901
             "to be written into",
             "Remediation: `validate-pins.py` refuses the same way. Restore "
             "the file from the project's history, or re-scaffold it.")
-    pin_text = pin_path.read_text(encoding="utf-8")
-    plans = plan_workflows(root, repository, commit)
+    return pin_path
 
-    print(f"commit       {was[:12]} -> {commit[:12]}")
-    print(f"tree         {digest[:12]}… ({digest})")
-    print(f"pin          {pin_rel}")
+
+def _print_workflow_plan(root: Path, plans: list) -> None:
+    """Print how many workflow `@<sha>` references this bump will move.
+
+    Split from `cmd_bump` for #136.
+    """
     if plans:
         moved = sum(count for _, _, count in plans)
         print(f"workflows    {moved} reference(s) in {len(plans)} file(s):")
@@ -545,24 +582,24 @@ def cmd_bump(args) -> int:  # noqa: C901
     else:
         print("workflows    no `@<sha>` reference names this leg")
 
-    if was == commit and not plans and rewrite_pin(pin_text, commit,
-                                                   digest) == pin_text:
-        print(f"\nnothing to do: {repository} is already pinned at "
-              f"{commit[:12]} and every fact agrees.")
-        return 1
 
-    if args.dry_run:
-        print("\n--dry-run: nothing was changed. The leg's object store was "
-              "fetched into, which is how the digest above was computed; the "
-              "working tree, the pin, the workflows and the index are "
-              "untouched.")
-        return 0
+def _apply_rewrite(root: Path, submodule: Path, commit: str, was: str,
+                   pin_path: Path, pin_text: str, digest: str, plans: list,
+                   staged: list[str]) -> None:
+    """Rewrite the pin and every workflow file, stage them and validate —
+    or roll every byte back and re-raise.
 
-    # ---- the rewrite, remembered byte for byte so a red validator undoes it
+    Split from `cmd_bump` for #136: the whole rewrite-or-roll-back sequence
+    is one question, asked once, instead of being the tail half of a
+    function that also does everything before it. Every git command and
+    its order are unchanged: the leg is checked out detached BEFORE any
+    file is written, the rewritten files are staged AFTER they are all
+    written and BEFORE the validators run (`recorded_gitlink` reads the
+    INDEX), and a caught `Refusal` or `CommandFailed` rolls every byte back
+    before it is re-raised, never swallowed.
+    """
     written: dict[Path, bytes] = {}
     placement = leg_placement(submodule)
-    staged: list[str] = [path, pin_rel] + [
-        wf_path.relative_to(root).as_posix() for wf_path, _, _ in plans]
     moved_leg = False
     try:
         # A BUMP LEAVES THE LEG AT THE COMMIT, detached, and does not move any
@@ -618,6 +655,55 @@ def cmd_bump(args) -> int:  # noqa: C901
         except CommandFailed as undo:
             print(undo.loudly("rolling the bump back"), file=sys.stderr)
         raise
+
+
+def cmd_bump(args) -> int:
+    project = Project.open(args.root)
+    root = project.root
+    role = checked_value("--leg", args.leg)
+    leg = project.leg(role)
+    repository = checked_value("the leg's repository",
+                               str(leg.get("repository") or ""))
+    path = checked_value("the leg's path", str(leg.get("path") or ""))
+    commit = _checked_target_commit(args.to)
+
+    _ensure_root_clean(root)
+    branch = _branch_to_bump_from(root, project, role, commit)
+    submodule = _initialized_submodule(root, path)
+    was = _recorded_leg_commit(root, path)
+
+    print(f"project      {project.display_name} ({project.data.get('id')})")
+    print(f"leg          {role:<8} {repository} at {path}/")
+    fetch_leg(submodule, repository, commit, args.local_remote_dir)
+    digest = tree_digest(submodule, commit)
+    pin_rel = f"contracts/{role}-pin.yaml"
+    pin_path = _leg_pin_path(root, pin_rel)
+    pin_text = pin_path.read_text(encoding="utf-8")
+    plans = plan_workflows(root, repository, commit)
+
+    print(f"commit       {was[:12]} -> {commit[:12]}")
+    print(f"tree         {digest[:12]}… ({digest})")
+    print(f"pin          {pin_rel}")
+    _print_workflow_plan(root, plans)
+
+    if was == commit and not plans and rewrite_pin(pin_text, commit,
+                                                   digest) == pin_text:
+        print(f"\nnothing to do: {repository} is already pinned at "
+              f"{commit[:12]} and every fact agrees.")
+        return 1
+
+    if args.dry_run:
+        print("\n--dry-run: nothing was changed. The leg's object store was "
+              "fetched into, which is how the digest above was computed; the "
+              "working tree, the pin, the workflows and the index are "
+              "untouched.")
+        return 0
+
+    # ---- the rewrite, remembered byte for byte so a red validator undoes it
+    staged: list[str] = [path, pin_rel] + [
+        wf_path.relative_to(root).as_posix() for wf_path, _, _ in plans]
+    _apply_rewrite(root, submodule, commit, was, pin_path, pin_text, digest,
+                   plans, staged)
 
     body = (
         f"{was[:12]} -> {commit[:12]}, tree {digest}.\n\n"
