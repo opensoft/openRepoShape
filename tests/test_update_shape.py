@@ -35,7 +35,9 @@ from repo_shape import Refusal, file_sha256, load_yaml, tree_digest  # noqa: E40
 #: The exact block `adopt-project.py` appends to an adopted Makefile,
 #: imported rather than retyped — see `adopted_root` below, whose whole point
 #: is that it cannot drift from what a real adoption writes.
-from shape_materialize import ADOPT_MAKEFILE_BLOCK  # noqa: E402
+from shape_materialize import (  # noqa: E402
+    ADOPT_MAKEFILE_BLOCK, SHAPE_REPOSITORY, readme_shape_lines,
+)
 
 UPDATE = REPO / "update-shape.py"
 PROJECT = "Atlas"
@@ -935,3 +937,194 @@ def test_the_next_line_says_nothing_about_a_lane_when_none_is_set(
     assert "--trailer" not in result.stdout
     assert next_line_of(result.stdout).endswith(
         f"--branch shape/update-{upstream_and_project['b'][:12]}")
+
+
+# --- the README's `Shape:` line (#148) --------------------------------------
+#
+# A family holder's README ends with the standard it was cut from, and until
+# #148 nothing moved that sha afterwards: InkRouter's holder named a commit
+# four re-pins old while its pin was current. The line is prose in a file no
+# pin row covers, so `apply` moves it in the pin's own commit and leaves it
+# strictly alone in every case where moving it would be a guess.
+#
+# THE TESTS BUILD THE LINE FROM THE TEMPLATE rather than retyping it, so a
+# reworded template fails here rather than quietly passing against a form
+# nothing renders any more. `tests/test_family.py` asserts the other half of
+# that: what the template renders is what the pattern matches.
+
+FAMILY_README_TEMPLATE = REPO / "templates" / "family-root" / "README.md"
+
+
+def rendered_shape_line(commit: str,
+                        repository: str = SHAPE_REPOSITORY) -> str:
+    """The trailing line `templates/family-root/README.md` renders, built out
+    of the template itself.
+
+    An ASSEMBLY root renders no such line — which is why these tests put one
+    on a scaffolded project by hand: the rewriter reads a form, not a kind of
+    root, and an adopted project that copied the holder's sentence gets the
+    same answer as the holder.
+    """
+    line = FAMILY_README_TEMPLATE.read_text(encoding="utf-8").splitlines()[-1]
+    assert "{{SHAPE_COMMIT}}" in line, (
+        "the template's last line is no longer the Shape: line; #148's "
+        "rewriter reads the LAST line's form")
+    return (line.replace("{{SHAPE_REPOSITORY}}", repository)
+                .replace("{{SHAPE_COMMIT}}", commit))
+
+
+def give_readme(root, *lines: str):
+    """Append `lines` to this root's README and hand it back."""
+    readme = root / "README.md"
+    readme.write_text(readme.read_text(encoding="utf-8") + "\n"
+                      + "".join(line + "\n" for line in lines),
+                      encoding="utf-8")
+    return readme
+
+
+def committed_files(root) -> set:
+    return set(git("show", "--name-only", "--format=", "HEAD",
+                   cwd=root).stdout.split())
+
+
+def test_apply_moves_the_readmes_shape_line_in_the_pins_own_commit(
+        root, upstream_and_project):
+    """ONE COMMIT, because the line is a claim about the pin beside it.
+
+    A sha moved in a later commit is a README that was wrong in between, and
+    "in between" is where every stale holder README has lived. Everything but
+    those 40 characters is byte for byte what it was: this tool does not
+    re-render a document the project owns.
+    """
+    a, b = upstream_and_project["a"], upstream_and_project["b"]
+    readme = give_readme(root, rendered_shape_line(a))
+    before = readme.read_bytes()
+
+    result = apply(root, upstream_and_project, "--branch", "shape/update-rm")
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    after = readme.read_bytes()
+    assert len(after) == len(before), "one sha for another, nothing else"
+    assert after.decode("utf-8").splitlines()[:-1] == \
+        before.decode("utf-8").splitlines()[:-1]
+    assert after.decode("utf-8").splitlines()[-1] == rendered_shape_line(b)
+    assert f"README.md: Shape: line {a[:12]} -> {b[:12]}" in result.stdout
+
+    committed = committed_files(root)
+    assert {"README.md", "contracts/shape-pin.yaml"} <= committed, committed
+    assert "README.md" in git("log", "-1", "--format=%B", cwd=root).stdout, (
+        "the one file in this commit with no pin row is named in the message")
+    validators_are_green(root)
+
+
+def test_a_red_validator_rolls_the_readme_line_back_with_the_rest(
+        root, upstream_and_project):
+    """The rewrite is inside the SAME transaction as the copies and the pin.
+
+    A README left naming a commit the rolled-back tree is not pinned to would
+    be exactly the drift this feature exists to end, introduced by the
+    feature.
+    """
+    a = upstream_and_project["a"]
+    readme = give_readme(root, rendered_shape_line(a))
+    before = readme.read_bytes()
+    spec = root / "contracts" / "spec-pin.yaml"
+    spec.write_text(spec.read_text(encoding="utf-8")
+                    .replace('commit: "', 'commit: "' + "0" * 40 + '" # ', 1),
+                    encoding="utf-8")
+    assert run_script(root / "scripts" / "validate-pins.py",
+                      cwd=root).returncode != 0, "fixture: the leg pin is red"
+
+    result = apply(root, upstream_and_project)
+    assert result.returncode == 2, result.stdout
+    assert "update-validators-red" in result.stderr
+    assert readme.read_bytes() == before, "every byte, including the README"
+
+
+def test_a_readme_with_no_shape_line_is_left_exactly_as_it_was(
+        root, upstream_and_project):
+    """A SCAFFOLDED ASSEMBLY ROOT IS THIS CASE, and so is every adopted
+    project whose own README says nothing about a shape. Silence would read
+    as "done", so the run says which of the two it did."""
+    readme = root / "README.md"
+    before = readme.read_bytes()
+    assert readme_shape_lines(before.decode("utf-8")) == [], (
+        "fixture: an assembly root renders no Shape: line")
+
+    result = apply(root, upstream_and_project, "--branch", "shape/update-no")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert readme.read_bytes() == before
+    assert "README.md: no Shape: line, untouched" in result.stdout
+    assert "README.md" not in committed_files(root)
+
+
+def test_a_shape_line_naming_another_repository_is_untouched_and_said(
+        root, upstream_and_project):
+    """The line names WHICH standard, and this tool pins one of them. A
+    project that records a second standard's revision in the same form is
+    making a statement about a repository this run knows nothing about."""
+    elsewhere = rendered_shape_line(upstream_and_project["a"],
+                                    repository="octo/Elsewhere")
+    readme = give_readme(root, elsewhere)
+    before = readme.read_bytes()
+
+    result = apply(root, upstream_and_project, "--branch", "shape/update-el")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert readme.read_bytes() == before
+    assert "octo/Elsewhere" in result.stdout
+    assert f"not {SHAPE_REPOSITORY}, untouched" in result.stdout
+    assert "README.md" not in committed_files(root)
+
+
+def test_two_shape_lines_are_untouched_and_the_run_says_why(
+        root, upstream_and_project):
+    """Choosing between them would be the tool deciding which of a project's
+    own sentences is the true one."""
+    readme = give_readme(root,
+                         rendered_shape_line(upstream_and_project["a"]),
+                         rendered_shape_line(upstream_and_project["b"]))
+    before = readme.read_bytes()
+
+    result = apply(root, upstream_and_project, "--branch", "shape/update-two")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert readme.read_bytes() == before
+    assert "README.md: 2 Shape: lines, untouched" in result.stdout
+    assert "README.md" not in committed_files(root)
+
+
+def test_check_says_what_apply_would_do_to_the_readme_line(
+        root, upstream_and_project):
+    """THE HUMAN READS THIS BEFORE SAYING YES, which is the whole posture of
+    this tool: `apply` writes nothing `check` did not print first."""
+    a, b = upstream_and_project["a"], upstream_and_project["b"]
+    absent = check(root, upstream_and_project)
+    assert absent.returncode == 1, absent.stdout + absent.stderr
+    assert "readme-shape-line: absent" in absent.stdout
+
+    readme = give_readme(root, rendered_shape_line(a))
+    stale = check(root, upstream_and_project)
+    assert stale.returncode == 1, stale.stdout + stale.stderr
+    assert f"readme-shape-line: stale ({a[:12]}, pin will read {b[:12]})" \
+        in stale.stdout
+
+    readme.write_text(readme.read_text(encoding="utf-8").replace(a, b),
+                      encoding="utf-8")
+    current = check(root, upstream_and_project)
+    assert current.returncode == 1, current.stdout + current.stderr
+    assert "readme-shape-line: current" in current.stdout
+
+
+def test_a_stale_readme_line_never_moves_checks_exit_code(
+        root, upstream_and_project):
+    """INKROUTER'S EXACT STATE, and the one run that cannot fix it: the pin
+    already names the target, so there is no commit for the line to move in.
+    Exit 0 all the same — the line is prose, and a `check` that failed over a
+    sentence would be a gate this standard never made — and the report says
+    plainly that the next re-pin carries it."""
+    a = upstream_and_project["a"]
+    give_readme(root, rendered_shape_line(upstream_and_project["b"]))
+    result = check(root, upstream_and_project, "--at", a)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "nothing to do" in result.stdout
+    assert "readme-shape-line: stale" in result.stdout
+    assert "the next re-pin carries it" in result.stdout

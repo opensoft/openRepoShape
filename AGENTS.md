@@ -279,7 +279,14 @@ git -C <path> push -u origin shape/update-<sha>   # then open a pull request
 6. `apply` runs the project's own `validate-pins.py` and `validate-manifest.py`
    and rolls every byte back if either goes red. Land it as a pull request;
    never suggest a push to the default branch.
-7. **`--trailer "<Key>: <value>"` puts a line on the commit `apply` writes.**
+7. **A README's trailing `Shape: <repository> @ <sha>.` line — a family
+   holder renders one — is `apply`'s to rewrite and never yours.** It moves
+   the sha in the pin's own commit; `check` says first whether the line is
+   `stale`, `current` or `absent`, and one that is missing, doubled or names
+   another repository is left alone and said so. The doctor's `shape
+   currency` row carries a `note` while a line is behind, never a finding: a
+   hand edit between re-pins is how it drifted in the first place (#148).
+8. **`--trailer "<Key>: <value>"` puts a line on the commit `apply` writes.**
    Repeatable, in the order given, and only with `--branch` — without one there
    is nothing to put a line on, and it is refused. A lane passes its `Lane:`
    line and this estate's `Co-Authored-By:` there, not by amending afterwards.

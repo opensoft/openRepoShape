@@ -107,7 +107,8 @@ from repo_shape import (  # noqa: E402
 from shape_materialize import (  # noqa: E402
     COPIED_FROM_SHAPE, COPIED_VERBATIM, FAMILY_COPIED_FROM_SHAPE,
     FAMILY_COPIED_VERBATIM, SHAPE_REPOSITORY, CommandFailed, check_program,
-    commit_trailers, lane_trailer_argument, run, trailer_line,
+    commit_trailers, lane_trailer_argument, readme_shape_lines, run,
+    trailer_line,
 )
 
 #: `owner/repo`, the only remote spelling `--upstream` accepts.
@@ -916,6 +917,139 @@ def _shape_block_bounds(lines: list[str], kind: Kind) -> tuple[int, int]:
 
 
 # ---------------------------------------------------------------------------
+# The README line that names the standard (#148)
+# ---------------------------------------------------------------------------
+
+#: The root's own document, which is NOT a pinned copy: it has no row in
+#: `contracts/shape-pin.yaml`, it is a project's to write, and the only thing
+#: this tool ever changes in it is the 40 hex characters of the line below.
+README = "README.md"
+
+#: What a root's README says about the standard: the six answers `check`
+#: prints and `apply` acts on. Only ONE of them is a write.
+README_ABSENT = "absent"
+README_CURRENT = "current"
+README_STALE = "stale"
+README_AMBIGUOUS = "ambiguous"
+README_OTHER_REPOSITORY = "other-repository"
+README_UNREADABLE = "unreadable"
+
+
+class ReadmeShapeLine:
+    """The root README's ``Shape: `<repository>` @ `<sha>`.`` line, judged.
+
+    WHY THIS EXISTS. A family holder's README is rendered with the commit the
+    holder was cut from, and nothing moved it afterwards: InkRouter's holder
+    named a commit four re-pins old while its pin was current (#148). The
+    line is prose in a file this standard does not own, so it is never a
+    refusal and never a finding — it is one sha, moved in the same commit as
+    the pin it claims to name, and left strictly alone in every case where
+    moving it would be a guess.
+
+    ONE READING, TWO COMMANDS. `check` prints what `apply` WOULD do to the
+    line and `apply` does it, from this same classification — two readings
+    would be two answers, and the human says yes to the first.
+
+    A REWRITE IS BYTES, not a re-rendering: only the `commit` group's span is
+    replaced, so a README with CRLF endings, a BOM or a trailing form feed
+    comes back byte for byte what it was apart from those 40 characters.
+    """
+
+    def __init__(self, root: Path, repository: str, target: str):
+        self.path = root / README
+        self.repository = repository
+        self.target = target
+        self.text: str | None = None
+        self.matches: list = []
+        self.rewritten = False
+        self.state = self._classify()
+
+    def _classify(self) -> str:
+        """Which of the six answers this README gives, read once.
+
+        The UTF-8 branch is not hypothetical bookkeeping: this runs inside
+        `apply`, after the copies are on disk, and an uncaught
+        `UnicodeDecodeError` there would escape the `except Refusal` arm that
+        owns the rollback and leave the tree half-written.
+        """
+        if not self.path.is_file():
+            return README_ABSENT
+        try:
+            self.text = self.path.read_bytes().decode("utf-8")
+        except UnicodeDecodeError:
+            return README_UNREADABLE
+        self.matches = readme_shape_lines(self.text)
+        if not self.matches:
+            return README_ABSENT
+        if len(self.matches) > 1:
+            return README_AMBIGUOUS
+        if self.matches[0]["repository"] != self.repository:
+            return README_OTHER_REPOSITORY
+        if self.matches[0]["commit"] == self.target:
+            return README_CURRENT
+        return README_STALE
+
+    @property
+    def named(self) -> str | None:
+        """The commit the line names, or None when there is no single line."""
+        return self.matches[0]["commit"] if len(self.matches) == 1 else None
+
+    @property
+    def verdict(self) -> str:
+        """`check`'s row: what `apply` would do, before anybody says yes."""
+        if self.state == README_STALE:
+            return (f"{README_STALE} ({self.named[:12]}, pin will read "
+                    f"{self.target[:12]})")
+        if self.state == README_AMBIGUOUS:
+            return (f"{README_AMBIGUOUS} ({len(self.matches)} Shape: lines; "
+                    f"`apply` leaves {README} alone)")
+        if self.state == README_OTHER_REPOSITORY:
+            return (f"{README_OTHER_REPOSITORY} (names "
+                    f"{self.matches[0]['repository']}, this pin is "
+                    f"{self.repository}; `apply` leaves {README} alone)")
+        if self.state == README_UNREADABLE:
+            return f"{README_UNREADABLE} ({README} is not valid UTF-8)"
+        return self.state
+
+    @property
+    def said(self) -> str:
+        """`apply`'s line, in the verb column its copies are reported in."""
+        if self.state == README_STALE and self.rewritten:
+            return (f"  rewrote  {README}: Shape: line {self.named[:12]} -> "
+                    f"{self.target[:12]}")
+        if self.state == README_CURRENT:
+            return (f"  kept     {README}: Shape: line already names "
+                    f"{self.target[:12]}")
+        if self.state == README_AMBIGUOUS:
+            return (f"  kept     {README}: {len(self.matches)} Shape: lines, "
+                    "untouched — a rewrite would have to choose which of "
+                    "them is the project's")
+        if self.state == README_OTHER_REPOSITORY:
+            return (f"  kept     {README}: its Shape: line names "
+                    f"{self.matches[0]['repository']}, not {self.repository}, "
+                    "untouched")
+        if self.state == README_UNREADABLE:
+            return f"  kept     {README}: not valid UTF-8, untouched"
+        return f"  kept     {README}: no Shape: line, untouched"
+
+    def rewrite(self, ledger: Rollback) -> bool:
+        """Move the sha, and only the sha, through the rollback ledger.
+
+        Through the ledger like every other byte `apply` writes, so the red
+        validator that rolls the copies back restores this too: a README
+        naming a pin the tree no longer carries would be the same drift this
+        fixes, made by the fix.
+        """
+        if self.state != README_STALE:
+            return False
+        start, end = self.matches[0].span("commit")
+        ledger.write(self.path, (self.text[:start] + self.target
+                                 + self.text[end:]).encode("utf-8"))
+        self.rewritten = True
+        return True
+
+
+# ---------------------------------------------------------------------------
 # Reporting
 # ---------------------------------------------------------------------------
 
@@ -1013,8 +1147,22 @@ def cmd_check(args) -> int:
         print()
         print("  ".join(f"{state} {counts[state]}" for state in ORDER
                         if counts.get(state)))
+        # THE README'S OWN LINE, REPORTED BEFORE THE YES IS ASKED FOR. It is
+        # not a pinned copy and has no verdict above; `apply` moves its sha
+        # with the pin, and a human who is about to approve a re-pin should
+        # read what that will do to a file this standard does not own. It
+        # never moves this command's exit code: the line is prose.
+        readme = ReadmeShapeLine(root, upstream.repository, target)
+        print(f"readme-shape-line: {readme.verdict}")
         if not moved and pinned == target:
             print("nothing to do")
+            if readme.state == README_STALE:
+                # The exact state #148 was filed over, and the one run that
+                # cannot fix it: `apply` writes nothing when the pin already
+                # names the target, so the line moves with the NEXT re-pin.
+                print(f"  ({README}'s Shape: line is stale, and this pin is "
+                      "already at the target, so there is no commit to move "
+                      "it in; the next re-pin carries it)")
             return 0
         if not moved:
             print("no copied file differs; `apply` would move the pin alone")
@@ -1203,12 +1351,19 @@ def commit_on_branch(root: Path, branch: str, paths: list[str], target: str,
         run(["git", "add", "--", *added], cwd=root)
     gained = (f"; {len(added)} new upstream file(s) added because --add named "
               "them" if added else "")
+    # READ OFF THE PATHSPECS RATHER THAN PASSED IN: `README.md` is in `paths`
+    # only when `_rewrite_readme` moved its sha, so the message names the one
+    # file in this commit that carries no pin row and would otherwise read as
+    # an unexplained edit to a document the project owns (#148).
+    prose = (f", and {README}'s `Shape:` line now names it too"
+             if README in paths else "")
     message = (
         f"Re-sync the shape copies to {upstream.repository} @ {target[:12]}\n\n"
         f"{count} copied file(s) re-copied from the upstream{gained}; "
         f"contracts/shape-pin.yaml and {kind.manifest}'s `shape:` block now "
-        f"record {target}.\n\nWritten by update-shape.py; the copies are not "
-        f"hand-edited and the digests are recomputed, not adjusted.\n")
+        f"record {target}{prose}.\n\nWritten by update-shape.py; the copies "
+        f"are not hand-edited and the digests are recomputed, not "
+        f"adjusted.\n")
     env = dict(os.environ)
     for key, fallback in (("GIT_AUTHOR_NAME", "openRepoShape update"),
                           ("GIT_COMMITTER_NAME", "openRepoShape update"),
@@ -1429,6 +1584,26 @@ def _repin(root: Path, kind: Kind, ledger: Rollback, rows: list[Row],
           f"{pinned[:12]} -> {target[:12]}")
 
 
+def _rewrite_readme(root: Path, upstream: Upstream, target: str,
+                    ledger: Rollback) -> ReadmeShapeLine:
+    """The README's `Shape:` line phase of `apply`, added for #148.
+
+    AFTER THE PIN MOVE AND BEFORE THE VALIDATORS, which is where it belongs
+    twice over: the line claims the commit `_repin` has just written, and the
+    write goes through the same ledger, so `_refuse_red_validators` rolling
+    the copies back restores this too.
+
+    Says what happened either way. A README with no such line, two of them,
+    or one naming another repository is LEFT ALONE — and the reader is told
+    which of those it was, because silence there reads as "done" and this
+    is the one file `apply` touches that nobody pinned.
+    """
+    readme = ReadmeShapeLine(root, upstream.repository, target)
+    readme.rewrite(ledger)
+    print(readme.said)
+    return readme
+
+
 def _refuse_red_validators(root: Path, kind: Kind) -> None:
     """Run the root's OWN validators over what was just written, and refuse
     if either goes red. Split out of `cmd_apply` for #133; the rollback is
@@ -1492,10 +1667,12 @@ def cmd_apply(args) -> int:
         target_tree = upstream.tree_sha256(target)
         copied = _write_copies(root, rows, taking, ledger)
         _repin(root, kind, ledger, rows, pinned, target, target_tree)
+        readme = _rewrite_readme(root, upstream, target, ledger)
         _refuse_red_validators(root, kind)
         added = [add.path for add in taking]
         paths = sorted({row.path for row in copied} | set(added)
-                       | {"contracts/shape-pin.yaml", kind.manifest})
+                       | {"contracts/shape-pin.yaml", kind.manifest}
+                       | ({README} if readme.rewritten else set()))
         _land(root, args, paths, added, target, upstream, kind, len(copied))
         print()
         next_line(root, args, paths, target, added)

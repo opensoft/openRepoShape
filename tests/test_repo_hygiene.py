@@ -474,9 +474,20 @@ def test_agents_md_is_short_enough_to_be_read():
     neither `Lane:` nor `Co-Authored-By:` because both tools were run
     exactly as their own `NEXT` lines printed them; a point saying which
     trailers to pass, and that the printed line already carries the lane, is
-    what makes the next run land complete rather than amended by hand."""
+    what makes the next run land complete rather than amended by hand.
+
+    2026-09-12: 433 -> 440 — the README's `Shape:` line (#148). Seven lines,
+    one numbered point under "Updating a project's shape", and they buy the
+    same thing the trailer point did: PERMISSION, and its withdrawal. A
+    family holder's README is rendered naming the commit it was cut from, and
+    the one correction ever made to a stale one was made BY HAND
+    (InkRouter#18) — a day later it was stale again, because a sha corrected
+    outside the re-pin that moved the pin is a sha nothing keeps. `apply` now
+    carries it, so the point an assistant needs is the one telling them not
+    to reach for the file themselves, and which of the readings the tool
+    leaves alone."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 433, f"AGENTS.md is {len(lines)} lines; the cap is 433"
+    assert len(lines) <= 440, f"AGENTS.md is {len(lines)} lines; the cap is 440"
 
 
 def test_claude_md_points_at_agents_md():

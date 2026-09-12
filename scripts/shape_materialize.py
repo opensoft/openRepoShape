@@ -266,6 +266,43 @@ FAMILY_EXECUTABLE = (
 
 PLACEHOLDER_RE = re.compile(r"\{\{[A-Z_]+\}\}")
 
+#: THE ONE READING OF THE LINE A FAMILY HOLDER'S README ENDS WITH.
+#: `templates/family-root/README.md` closes with ``Shape: `<repository>` @
+#: `<40 hex>`.`` — the standard the holder was cut from — and until #148
+#: nothing rewrote it after the scaffold, so it drifted silently from
+#: `contracts/shape-pin.yaml`: InkRouter's holder still named a commit four
+#: re-pins old. `update-shape.py apply` now moves that sha with the pin and
+#: `shape-doctor.py` reports a difference as a `note`, and BOTH read the line
+#: through this one compiled pattern. It lives here, beside the template
+#: lists that render it, because a change to the template's wording and a
+#: change to the readers of it have to be one edit;
+#: `tests/test_family.py` renders the template and asserts this matches
+#: exactly one of the rendered README's lines, so the two cannot drift apart
+#: in silence. The assembly-root README carries no such line and is expected
+#: to match nothing.
+#:
+#: `\r?` before the end anchor: a README checked out on Windows with
+#: `core.autocrlf=true` holds CRLF, and the rewriter works on BYTES so that
+#: everything but the 40 hex characters survives untouched — a reader that
+#: normalised the line endings instead would rewrite every line of the file
+#: to move one sha.
+README_SHAPE_LINE_RE = re.compile(
+    r"^Shape: `(?P<repository>[^`]+)` @ `(?P<commit>[0-9a-f]{40})`\.\r?$",
+    re.MULTILINE)
+
+
+def readme_shape_lines(text: str) -> list:
+    """Every line of `text` in that exact rendered form, in the order found.
+
+    A LIST, NOT THE FIRST MATCH, because "more than one" is one of the
+    answers a caller has to be able to give. A README carrying two such lines
+    is one no rewriter may touch — choosing between them would be the tool
+    deciding which of a project's own sentences is the true one — and the
+    caller can only say that if it is told how many there are.
+    """
+    return list(README_SHAPE_LINE_RE.finditer(text))
+
+
 #: The one line an existing assistant-instruction file needs, and the exact
 #: bytes of the pointer the templated `AGENTS.md` opens with.
 SHAPE_POINTER_LINE = ("Read AGENTS-shape.md first — the rules of this "

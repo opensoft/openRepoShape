@@ -33,10 +33,16 @@ from conftest import FILE_PROTOCOL, REPO, git, rmtree, run_script
 #: the file that owns those rules rather than retyped — see
 #: `tests/test_commit_trailers.py`.
 from test_commit_trailers import TRAILERS, message_of, trailers_of
-from test_update_shape import strip_shape_block
+#: The renderer of the README line #148 made `update-shape.py apply` rewrite,
+#: and the module that owns its tests, imported rather than retyped for the
+#: same reason.
+from test_update_shape import rendered_shape_line, strip_shape_block
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import load_yaml, tree_digest  # noqa: E402
+from shape_materialize import (  # noqa: E402
+    SHAPE_REPOSITORY, readme_shape_lines,
+)
 
 FAMILY = REPO / "scripts" / "family.py"
 SCAFFOLD = REPO / "scaffold-project.py"
@@ -173,6 +179,36 @@ def test_init_carries_the_shape_pin_over_its_own_copies(family):
                     "contracts/repository-naming.yaml"}
     assert "scripts/validate-pins.py" not in rows, (
         "a family has no legs, so it does not carry the leg validator")
+
+
+def test_the_rendered_readme_carries_exactly_one_line_the_rewriter_reads(
+        family):
+    """THE PARITY THE WHOLE OF #148 RESTS ON: what the template renders is
+    what `shape_materialize.README_SHAPE_LINE_RE` matches.
+
+    The template and the pattern are two files, and a reworded template would
+    otherwise leave `update-shape.py apply` reporting `absent` for every
+    holder in the estate — silently, and exactly as if the drift had been
+    fixed. So the holder is rendered by the real materializer and the pattern
+    is run over the result: one line, this standard's name, and the commit
+    the pin records.
+
+    AND THE OTHER HALF: an ASSEMBLY root renders no such line at all, which
+    is why `apply` on a project reads `absent` rather than finding a sentence
+    to rewrite. A member scaffolded by this same fixture is the evidence.
+    """
+    holder = (family["root"] / "README.md").read_text(encoding="utf-8")
+    matches = readme_shape_lines(holder)
+    assert len(matches) == 1, holder[-400:]
+    assert matches[0]["repository"] == SHAPE_REPOSITORY
+    assert matches[0]["commit"] == \
+        load_yaml(family["root"] / "contracts" / "shape-pin.yaml")["commit"]
+    assert matches[0].group(0) == rendered_shape_line(matches[0]["commit"])
+
+    member = family["work"] / MEMBERS[0] / "README.md"
+    assert readme_shape_lines(member.read_text(encoding="utf-8")) == [], (
+        "an assembly root's README claims no shape commit, so there is "
+        "nothing there to drift")
 
 
 def test_init_copies_the_siblings_utility_and_the_makefile_target(family, monkeypatch):
@@ -870,6 +906,44 @@ def test_update_shape_reads_a_family_root_and_mirrors_into_family_yaml(
         == target_commit
     assert "must reach every family" in \
         (holder / "scripts" / "validate-family.py").read_text()
+    assert validate(holder).returncode == 0
+
+
+def test_update_shape_moves_the_holder_readmes_shape_line_with_the_pin(
+        family, tmp_path):
+    """#148 END TO END, ON A REAL HOLDER RATHER THAN A SYNTHESISED README.
+
+    This is the drift the issue was filed over: InkRouter's holder still read
+    `6fe09a41535a` four re-pins after `contracts/shape-pin.yaml` had moved on,
+    because nothing rewrote the sentence the scaffold rendered. Here the same
+    re-pin carries it, in the same commit, and the rest of the file is byte
+    for byte what it was — a holder's README is its own document.
+    """
+    upstream = upstream_clone(tmp_path / "openRepoShape")
+    changed = "templates/family-root/scripts/validate-family.py"
+    source = upstream / changed
+    source.write_text(source.read_text()
+                      + "\n# An upstream fix that must reach every family.\n")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m",
+        "Fix the family validator", "--", changed, cwd=upstream)
+    target_commit = git("rev-parse", "HEAD", cwd=upstream).stdout.strip()
+
+    holder = tmp_path / NAME
+    shutil.copytree(family["root"], holder, symlinks=True)
+    readme = holder / "README.md"
+    before = readme.read_bytes()
+    named = readme_shape_lines(before.decode("utf-8"))[0]["commit"]
+    assert named != target_commit, "fixture: the line starts out behind"
+
+    applied = run_script(UPDATE, "apply", "--root", str(holder), "--yes",
+                         "--upstream", str(upstream), "--at", target_commit)
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    after = readme.read_bytes()
+    assert len(after) == len(before), "one sha for another, nothing else"
+    assert readme_shape_lines(after.decode("utf-8"))[0]["commit"] == \
+        target_commit
+    assert (f"README.md: Shape: line {named[:12]} -> {target_commit[:12]}"
+            in applied.stdout)
     assert validate(holder).returncode == 0
 
 
