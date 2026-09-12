@@ -636,6 +636,21 @@ def upstream_copies(upstream: Upstream, rev: str, kind: Kind) -> dict[str, Copy]
         # `UnicodeError`), so `.decode("utf-8")`'s own failure is already
         # caught here, under the name that reaches every ValueError alike.
         return {}
+    return _listed_copies(_tuple_constants(module), kind)
+
+
+def _tuple_constants(module: ast.Module) -> dict[str, tuple]:
+    """The materializer's top-level TUPLE constants, by the name each is
+    assigned to. Split out of `upstream_copies` for #133.
+
+    The string constants are harvested in the same pass and then thrown away,
+    because they are not the answer: they exist so `as_literal` can resolve
+    `COPIED_FROM_SHAPE`'s `VALUE_NAMING`-style references BY NAME as it walks
+    the module, and a copy list is a tuple. Anything that is neither — a
+    call, a comprehension, an entry this will not guess at — is skipped, for
+    the reason the section header above gives: a guess about where a file
+    comes from is what `unmapped` exists to refuse.
+    """
     constants: dict[str, str] = {}
     tuples: dict[str, tuple] = {}
     for node in module.body:
@@ -649,6 +664,21 @@ def upstream_copies(upstream: Upstream, rev: str, kind: Kind) -> dict[str, Copy]
             constants[target.id] = value
         elif isinstance(value, tuple):
             tuples[target.id] = value
+    return tuples
+
+
+def _listed_copies(tuples: dict[str, tuple], kind: Kind) -> dict[str, Copy]:
+    """`{path in the root: Copy}` for the three lists `kind` names, out of
+    the constants `_tuple_constants` harvested. Split out of
+    `upstream_copies` for #133, which documents the mapping itself.
+
+    The shape of each entry is CHECKED rather than assumed: these tuples came
+    out of a file read from somebody's git history, so a verbatim entry that
+    is not a string, a `..._FROM_SHAPE` entry that is not a pair of them, and
+    any path `inside_a_root` refuses are all dropped instead of raising. The
+    `..._FROM_SHAPE` pass runs second and may overwrite a verbatim entry of
+    the same path, exactly as it did when both loops sat in one body.
+    """
     verbatim, from_shape, executable = kind.lists
     executables = {entry for entry in tuples.get(executable, ())
                    if isinstance(entry, str)}
