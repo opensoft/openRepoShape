@@ -231,7 +231,16 @@ try:
     #: `scripts/family.py` -- the two tools that WRITE these trailers -- both
     #: import it already, and a next command that named a different lane than
     #: the commit it asks for would be worse than one that named none.
-    from shape_materialize import lane_trailer_argument  # noqa: E402
+    #:
+    #: AND ONE RULE FOR "IS THIS THE SAME REPOSITORY" (2026-09-12, #146).
+    #: `same_repository` is this file's half of the definition
+    #: `templates/family-root/scripts/siblings.py` REFUSES a working clone
+    #: by, and it sits in the same non-pinned module for the same reason --
+    #: that module's own section comment says why it is not in
+    #: `scripts/repo_shape.py` and what keeps the two copies agreeing.
+    from shape_materialize import (  # noqa: E402
+        lane_trailer_argument, same_repository,
+    )
 except ImportError as exc:  # pragma: no cover - exercised as a subprocess
     sys.exit(not_in_the_standard(f"scripts/shape_materialize.py ({exc})"))
 
@@ -2047,15 +2056,20 @@ def detached(path: Path) -> bool | None:
 
 
 def is_this_member(sibling: Path, row: dict) -> bool:
-    """Is the directory beside the holder THIS member, or just a clone?
+    """Does the directory beside the holder CLAIM to be this member?
 
-    `scripts/siblings.py::verify_sibling` asks the same question before it
-    will touch a directory, and for the same reason: a repository that
-    happens to sit at `../<Project>` is somebody else's, and a report that
-    counted it would tell a person their working clone is there when it is
-    not (Copilot, PR #96). The manifest's `id` is the identity
-    `validate-family.py` already checks the MOUNT by, so it is the one asked
-    here too.
+    `scripts/siblings.py::verify_sibling` asks this before it will touch a
+    directory, and for the same reason: a repository that happens to sit at
+    `../<Project>` is somebody else's, and a report that counted it would
+    tell a person their working clone is there when it is not (Copilot, PR
+    #96). The manifest's `id` is the identity `validate-family.py` already
+    checks the MOUNT by, so it is the one asked here too.
+
+    HALF THE QUESTION, AND IT SAYS SO NOW. `verify_sibling` asks a second
+    one -- is this clone's `origin` the remote the row names -- and refuses
+    on it FIRST, as `WRONG ORIGIN`, so a fork or a stale clone of a renamed
+    repository carries exactly this manifest and is still not the working
+    clone. `working_clone` below puts the two back together (#146).
     """
     if not (sibling / ".git").exists():
         return False
@@ -2068,6 +2082,106 @@ def is_this_member(sibling: Path, row: dict) -> bool:
     if wanted:
         return str(manifest.get("id")) == str(wanted)
     return str(manifest.get("name")) == str(row.get("project"))
+
+
+def sibling_origin(sibling: Path) -> str:
+    """`origin`'s url in a directory SOMEBODY ELSE made, or `""`.
+
+    READ ONLY, AND NEVER A FETCH, like every other question this file asks of
+    a checkout it did not make: `remote get-url` reads `.git/config` and
+    talks to nothing.
+
+    ONLY EVER ASKED OF A DIRECTORY THAT CARRIES ITS OWN `.git`, which
+    `is_this_member` has already established by the time this runs: `git
+    remote get-url` in a directory that has none walks UP to the nearest
+    ancestor repository and answers about THAT one -- the trap
+    `repo_local_origin_name` guards the naming row against, and it would be
+    worse here, where the ancestor of `../<Project>` is often the family's
+    own workspace.
+
+    THE EMPTY STRING WHEN GIT WILL NOT ANSWER -- a clone with no `origin`, a
+    dangling `.git` file left behind by a copied submodule -- because that is
+    a directory this report cannot identify, and `same_repository` matches it
+    against nothing. `scripts/siblings.py` calls the same state
+    `(no origin)` and refuses to fetch into it.
+    """
+    try:
+        return git_out(["remote", "get-url", "origin"], cwd=sibling)
+    except (Refusal, OSError):
+        return ""
+
+
+def mounted_from(root: Path, rel: str, repository: str) -> str:
+    """The url THIS HOLDER mounts the member at `rel` from.
+
+    `.gitmodules` FIRST AND `family.yaml`'s `repository:` SECOND, which is
+    the order `scripts/siblings.py::clone_url` resolves and therefore the
+    order that names the remote a working clone beside the holder was
+    actually made from. `git submodule update` reads `.gitmodules`, so a
+    family whose members are mounted from an SSH remote, a mirror or a bare
+    repository on disk has a url that `https://github.com/<repository>.git`
+    does not resemble at all; deriving the second and never reading the first
+    would call every clone in those estates a stranger.
+
+    A RELATIVE URL (`../Repo.git`) IS HANDED BACK AS IT IS rather than
+    resolved against the holder's own remote the way `siblings.py` resolves
+    one. This row is a report: the `repository:` spelling is compared as well
+    (`working_clone` accepts either), and a report that guessed at a second
+    remote in order to have something to print would be naming a url nobody
+    wrote down.
+    """
+    mounts: dict = {}
+    try:
+        listing = git_out(["config", "-f", str(root / ".gitmodules"),
+                           "--get-regexp", r"^submodule\..*\.(path|url)$"],
+                          cwd=root)
+    except (Refusal, OSError):
+        listing = ""
+    for line in listing.splitlines():
+        key, _, value = line.partition(" ")
+        name, _, field = key[len("submodule."):].rpartition(".")
+        mounts.setdefault(name, {})[field] = value
+    for name, mount in mounts.items():
+        # A submodule's NAME is its path unless somebody mounted it by hand
+        # under another one, which git allows and this reads rather than
+        # assumes.
+        if mount.get("path", name) == rel and mount.get("url"):
+            return mount["url"]
+    return f"https://github.com/{repository}.git"
+
+
+def working_clone(sibling: Path, row: dict,
+                  remote: str) -> tuple[str | None, str | None]:
+    """`(the working clone beside the holder, what is there instead)`.
+
+    BOTH OF `verify_sibling`'S QUESTIONS, WHICH IS THE POINT (#146). The
+    manifest says which project a directory is; only `origin` says which
+    repository it came from, and a fork, a stale clone of a repository that
+    has since been renamed, or any second copy of the same project from
+    another remote carries the right manifest and the wrong origin.
+    `scripts/siblings.py` calls that directory `WRONG ORIGIN` and leaves it
+    alone, so a report that counted it as the working clone would disagree
+    with the tool about the same directory on the same disk.
+
+    EITHER SPELLING OF THE REMOTE ANSWERS, exactly as `verify_sibling`
+    accepts either: the url the holder MOUNTS the member from, and the bare
+    `Org/Repo` the row records, which `same_repository` matches by its tail.
+    Nobody's own clone is required to spell a remote the way a manifest does.
+
+    IT REPORTS AND IT NEVER REFUSES. The second half of the pair is the
+    origin it FOUND, for the row to say out loud; the verdict for a member
+    with no working clone beside the holder is unchanged, because where a
+    person keeps their checkouts is the workstation's layout and not a
+    compliance fact about the repository.
+    """
+    if not is_this_member(sibling, row):
+        return None, None
+    origin = sibling_origin(sibling)
+    repository = str(row.get("repository") or "")
+    if origin and (same_repository(origin, remote)
+                   or (repository and same_repository(origin, repository))):
+        return sibling.as_posix(), None
+    return None, origin or "(no origin)"
 
 
 def member_state(ctx: Context, row: dict, members_dir: str) -> dict:
@@ -2097,12 +2211,12 @@ def member_state(ctx: Context, row: dict, members_dir: str) -> dict:
     head = head_of(mount) if populated else None
     loose = detached(mount) if populated else None
     sibling = ctx.root.parent / project
-    has_sibling = is_this_member(sibling, row)
+    remote = mounted_from(ctx.root, rel, str(row.get("repository") or ""))
+    clone, elsewhere = working_clone(sibling, row, remote)
     return {"project": project, "path": rel, "pin": pinned,
             "populated": populated, "head": head,
-            "detached": loose,
-            "working_clone": sibling.as_posix() if has_sibling
-            else None}
+            "detached": loose, "mounted_from": remote,
+            "working_clone": clone, "other_origin": elsewhere}
 
 
 def member_problem(entry: dict) -> str | None:
@@ -2144,7 +2258,11 @@ def members_verdict(ctx: Context, detail: dict, members_dir: str,
     branch at its pin is a state worth a person's eye rather than a verdict.
     Both of those are therefore said inside an `ok` row, at length, instead
     of being left out of a report that would then look cleaner than the
-    machine it ran on.
+    machine it ran on. A directory beside the holder that carries the
+    member's manifest but was cloned from ANOTHER remote is the third of
+    them (#146): `working_clone` declines to count it, and this says which
+    origin it found, because a row that only said "no working clone" would
+    leave a person staring at a directory of that exact name.
 
     Split out of `check_members` for #134.
     """
@@ -2164,6 +2282,19 @@ def members_verdict(ctx: Context, detail: dict, members_dir: str,
                  + ", ".join(on_a_branch)
                  + " (a fresh `clone --recurse-submodules` of this holder is "
                    "detached; `family.py add` leaves a branch behind)")
+    strangers = [f"{entry['project']}: {ctx.root.parent / entry['project']} "
+                 f"is a clone of {entry['other_origin']}, not of "
+                 f"{entry['mounted_from']}, so it is not counted as its "
+                 "working clone (`make siblings` calls the same directory "
+                 "WRONG ORIGIN and leaves it exactly as it is)"
+                 for entry in rows if entry["other_origin"]]
+    # A STRANGER BESIDE THE HOLDER IS SAID BEFORE THE ABSENCE IT EXPLAINS.
+    # Every one of these is also in `siblings_absent` -- it is not counted --
+    # and "there is no working clone for IRRS" on its own, about a directory
+    # named `IRRS` that is sitting right there, is the sentence that sends a
+    # person looking for a bug in this command (#146).
+    if strangers:
+        note += "; " + "; ".join(strangers)
     if siblings_absent:
         return Row("members", "members", OK,
                    f"{note}; no working clone beside the holder for "

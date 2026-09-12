@@ -31,6 +31,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
@@ -395,6 +396,40 @@ def holder(standard, tmp_path_factory) -> dict:
                        "--local-remote-dir", str(base / "remotes"))
     assert added.returncode == 0, added.stderr + added.stdout
     return {"base": base, "root": root}
+
+
+@pytest.fixture(scope="module")
+def siblings():
+    """The HOLDER's `scripts/siblings.py`, for the definition of "same
+    repository" this file's `members` row has to agree with.
+
+    THE SAME LOAD `tests/test_windows_paths.py` DOES, and for the same
+    reason: the filename is fine but the module imports `bootstrap`, which
+    sits beside it in a materialized holder and nowhere on `sys.path` here,
+    so it is pre-registered under that name and `sys.modules` is put back
+    afterwards. Loading the template rather than re-typing its rules is the
+    whole point — a copy of the rule in this file could not detect drift in
+    the file it was copied from.
+    """
+    scripts = REPO / "templates" / "family-root" / "scripts"
+    saved_path, saved_module = list(sys.path), sys.modules.get("bootstrap")
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "doctor_family_bootstrap", scripts / "bootstrap.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        sys.modules["bootstrap"] = module
+        spec = importlib.util.spec_from_file_location(
+            "doctor_family_siblings", scripts / "siblings.py")
+        loaded = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(loaded)
+        yield loaded
+    finally:
+        sys.path[:] = saved_path
+        if saved_module is None:
+            sys.modules.pop("bootstrap", None)
+        else:
+            sys.modules["bootstrap"] = saved_module
 
 
 def test_a_family_holder_gets_the_family_rows(standard, holder):
@@ -1282,10 +1317,132 @@ def test_an_unrelated_repository_beside_the_holder_is_not_the_member(
     assert row["detail"]["members"][0]["working_clone"] is None
 
 
+def member_beside(holder: dict, tmp_path: Path) -> tuple[Path, Path]:
+    """A holder in its own directory, with a real CLONE of its member beside
+    it — which is the layout `make siblings` leaves behind.
+
+    CLONED, NOT COPIED. These tests used to `copytree` the submodule
+    checkout out of `members/`, and the `.git` FILE that git leaves in a
+    submodule working tree carries a RELATIVE `gitdir:` into the holder's
+    `.git/modules/` — so the copy beside the holder was a directory git
+    itself refuses to answer any question about (`fatal: not a git
+    repository`). It passed only because the row asked nothing of origin
+    (#146). `git clone` from the url the holder mounts the member from is
+    both a real clone and the exact thing `siblings.py` does.
+    """
+    base = tmp_path / "fam"
+    base.mkdir()
+    root = base / FAMILY_NAME
+    shutil.copytree(holder["root"], root, symlinks=True)
+    remote = holder["base"] / "remotes" / f"{FAMILY_MEMBER}.git"
+    git("clone", "-q", str(remote), str(base / FAMILY_MEMBER), cwd=base)
+    return root, base / FAMILY_MEMBER
+
+
 def test_a_real_working_clone_beside_the_holder_is_counted(standard, holder,
                                                            tmp_path):
     """And the other direction, so the check above cannot pass by refusing
-    everything: the member's own tree, beside the holder, IS the clone."""
+    everything: a clone of the member, beside the holder, IS the clone."""
+    root, sibling = member_beside(holder, tmp_path)
+    row = rows_of(doctor(standard, root, "--json"))["members"]
+    assert row["detail"]["without_working_clone"] == [], row
+    assert row["detail"]["members"][0]["working_clone"] == sibling.as_posix()
+    assert row["detail"]["members"][0]["other_origin"] is None
+    # The url it was compared against is the one the holder MOUNTS it from —
+    # a bare repository on disk here, which no `https://github.com/...`
+    # derived from `repository:` would ever have matched.
+    #
+    # COMPARED WITH THE SEPARATORS FOLDED, and NOT against the raw bytes of
+    # `.gitmodules`: git ESCAPES a backslash when it writes a config value,
+    # so a Windows runner has `D:\\a\\...\\IRRS.git` in the file and hands
+    # `D:\a\...\IRRS.git` back to the reader — the url is right and the two
+    # spellings of it are not the same string.
+    mounted = row["detail"]["members"][0]["mounted_from"]
+    assert mounted.replace("\\", "/") == \
+        str(holder["base"] / "remotes" / f"{FAMILY_MEMBER}.git").replace(
+            "\\", "/")
+    assert not mounted.startswith("https://github.com/"), mounted
+
+
+# --- #146: the origin question, which `siblings.py` asks first -------------
+
+def test_a_sibling_with_this_members_id_but_another_origin_is_not_counted(
+        standard, holder, tmp_path):
+    """THE DEFECT #146 WAS FILED FOR. A fork, or a stale clone of a
+    repository that has since been renamed, carries this member's
+    `project.yaml` byte for byte and is NOT the working clone: `make
+    siblings` calls it `WRONG ORIGIN` and refuses to fetch into it, so a
+    report that counted it would disagree with the tool about one directory
+    on one disk.
+    """
+    root, sibling = member_beside(holder, tmp_path)
+    elsewhere = str(holder["base"] / "remotes" / f"{FAMILY_NAME}.git")
+    git("remote", "set-url", "origin", elsewhere, cwd=sibling)
+    row = rows_of(doctor(standard, root, "--json"))["members"]
+    entry = row["detail"]["members"][0]
+    assert entry["working_clone"] is None, entry
+    # Separators folded for the same reason the test above folds them: a
+    # Windows runner spells this path with backslashes at both ends of the
+    # comparison, and git is free to hand back either.
+    assert entry["other_origin"].replace("\\", "/") == \
+        elsewhere.replace("\\", "/"), entry
+    assert row["detail"]["without_working_clone"] == [FAMILY_MEMBER], row
+    # REPORTED, NEVER REFUSED: where somebody keeps a checkout is the
+    # workstation's layout, so the verdict is exactly what it is for a
+    # member with no clone beside the holder at all.
+    assert row["status"] == "ok", row
+    assert "is a clone of" in row["reason"], row["reason"]
+    assert entry["other_origin"] in row["reason"], row["reason"]
+    assert json.loads(doctor(standard, root, "--json").stdout)["verdict"] == \
+        "COMPLIANT"
+
+
+def test_a_sibling_at_the_right_origin_with_another_id_is_not_the_member(
+        standard, holder, tmp_path):
+    """The `WRONG PROJECT` half, which was already asked and stays asked: a
+    repository at the right url is not by itself the project the row
+    claims."""
+    root, sibling = member_beside(holder, tmp_path)
+    manifest = sibling / "project.yaml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace("id: irrs",
+                                                     "id: somethingelse"),
+        encoding="utf-8")
+    row = rows_of(doctor(standard, root, "--json"))["members"]
+    entry = row["detail"]["members"][0]
+    assert entry["working_clone"] is None, entry
+    # Not "a clone of something else": it never claimed to be this member,
+    # so the row says what it said before #146 — there is no working clone.
+    assert entry["other_origin"] is None, entry
+    assert row["detail"]["without_working_clone"] == [FAMILY_MEMBER], row
+
+
+def test_an_origin_spelled_scp_where_the_row_is_https_is_the_same_clone(
+        standard, holder, tmp_path):
+    """NOBODY'S OWN CLONE HAS TO SPELL THE REMOTE THE WAY A MANIFEST DOES.
+
+    `git@github.com:InkRouter/IRRS.git` against a row that records
+    `InkRouter/IRRS` is one repository, and a row that compared the two as
+    text would have turned this fix from a false positive into a false
+    negative — telling a person with a perfectly good working clone that it
+    is a clone of something else.
+    """
+    root, sibling = member_beside(holder, tmp_path)
+    git("remote", "set-url", "origin",
+        f"git@github.com:{FAMILY_NAME}/{FAMILY_MEMBER}.git", cwd=sibling)
+    row = rows_of(doctor(standard, root, "--json"))["members"]
+    entry = row["detail"]["members"][0]
+    assert entry["working_clone"] == sibling.as_posix(), entry
+    assert entry["other_origin"] is None, entry
+
+
+def test_a_directory_that_is_not_a_clone_at_all_is_not_called_a_stranger(
+        standard, holder, tmp_path):
+    """A copied submodule checkout — a `.git` FILE whose relative `gitdir:`
+    points nowhere — is a directory git answers nothing about. It carries
+    this member's manifest, so it is reported as what it is rather than
+    counted, and the wording is `siblings.py`'s own `(no origin)`.
+    """
     base = tmp_path / "fam"
     base.mkdir()
     root = base / FAMILY_NAME
@@ -1293,8 +1450,55 @@ def test_a_real_working_clone_beside_the_holder_is_counted(standard, holder,
     shutil.copytree(holder["root"] / "members" / FAMILY_MEMBER,
                     base / FAMILY_MEMBER, symlinks=True)
     row = rows_of(doctor(standard, root, "--json"))["members"]
-    assert row["detail"]["without_working_clone"] == [], row
-    assert row["detail"]["members"][0]["working_clone"] is not None
+    entry = row["detail"]["members"][0]
+    assert entry["working_clone"] is None, entry
+    assert entry["other_origin"] == "(no origin)", entry
+    assert row["status"] == "ok", row
+
+
+def test_the_doctor_and_siblings_agree_on_what_one_repository_is(siblings):
+    """THE TWO DEFINITIONS, OVER ONE TABLE, ASSERTED EQUAL.
+
+    `shape-doctor.py` reads `same_repository` out of
+    `scripts/shape_materialize.py` and `make siblings` refuses by the copy in
+    `templates/family-root/scripts/siblings.py`, because the doctor imports
+    nothing out of `templates/` and the module both could have shared —
+    `scripts/repo_shape.py` — is digest-pinned into every project (#146).
+    Two copies of one rule drift; this is what stops that happening in
+    silence, and it is the reason a later consolidation into `repo_shape.py`
+    can be made without anybody having to re-derive the semantics first.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "shape_materialize_remotes", REPO / "scripts" / "shape_materialize.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    pairs = [
+        # The same repository, spelled every way a human or a tool spells it
+        ("https://github.com/Org/Repo.git", "https://github.com/Org/Repo"),
+        ("git@github.com:Org/Repo.git", "https://github.com/Org/Repo.git"),
+        ("ssh://git@github.com/Org/Repo.git", "git@github.com:Org/Repo"),
+        ("https://github.com/Org/Repo/", "https://github.com/Org/Repo.git"),
+        ("https://GitHub.com/Org/Repo.git", "https://github.com/org/repo"),
+        # A manifest's bare `Org/Repo`, which is matched by its tail
+        ("https://github.com/Org/Repo.git", "Org/Repo"),
+        ("git@github.com:Org/Repo.git", "Org/Repo"),
+        # A bare repository on disk, which is what this suite clones from
+        ("file:///srv/mirrors/Repo.git", "/srv/mirrors/Repo.git"),
+        ("/srv/mirrors/Repo.git/", "/srv/mirrors/Repo"),
+        # And the ones that are NOT one repository
+        ("https://github.com/Other/Repo.git", "Org/Repo"),
+        ("https://github.com/Org/Other.git", "https://github.com/Org/Repo"),
+        ("https://github.com/Org/Repo.git", ""),
+        ("", "Org/Repo"),
+        ("/srv/mirrors/Other.git", "/srv/mirrors/Repo.git"),
+    ]
+    for one, two in pairs:
+        assert module.same_repository(one, two) == \
+            siblings.same_repository(one, two), (one, two)
+    # And the table is not all one answer, or agreeing on it would prove
+    # nothing about either copy.
+    answers = {module.same_repository(one, two) for one, two in pairs}
+    assert answers == {True, False}
 
 
 # --- the adversarial review on #96 ------------------------------------------
