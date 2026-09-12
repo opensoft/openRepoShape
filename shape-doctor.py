@@ -1149,6 +1149,112 @@ def copy_command(source, target, platform: str | None = None) -> str:
 LABEL_LEG_SHAPE_FILES = "leg shape files"
 
 
+def shape_file_state(here: Path, there: Path, name: str) -> str:
+    """What ONE leg shape file is, against the template's copy of it.
+
+    The five answers this returns are the whole vocabulary of the row above,
+    and they are five because a byte comparison is only meaningful for two of
+    them. `AGENTS.md` and `README.md` are RENDERED from their templates --
+    they carry `{{PLACEHOLDER}}`s the scaffold fills in -- so "differs" is
+    their permanent state and this says `rendered` rather than pretending a
+    byte comparison meant something. A file the template does not carry is
+    reported as what it is rather than as a difference, because the standard
+    has nothing to compare it against.
+
+    Split out of `check_leg_shape_files` for #134: the chain answers one
+    question about one file, and the loop that calls it answers a different
+    one about a leg.
+    """
+    if not here.is_file():
+        return "absent"
+    if name in LEG_RENDERED:
+        return "rendered"
+    if not there.is_file():
+        return "present (the template has none)"
+    if here.read_bytes() == there.read_bytes():
+        return "identical"
+    return "differs"
+
+
+def leg_shape_comparison(ctx: Context, role: str, rel: str) -> tuple:
+    """ONE leg's shape files, and the ones that are not there at all.
+
+    Returns the `--json` entry for the leg and the `(role, leg, file)` triples
+    the row names as missing, so that the caller adds them up rather than
+    being handed a half-built dictionary to finish.
+
+    EVERY EARLY RETURN IS A LEG THERE IS NOTHING TO COMPARE, and neither of
+    them is a fault of the repository's: a leg nobody has bootstrapped has no
+    files yet, and a `templates/<role>-root/` this checkout does not carry is
+    the STANDARD being short rather than the project being wrong. Both say
+    which they are, in the `state` the row prints.
+
+    Split out of `check_leg_shape_files` for #134.
+    """
+    mount = ctx.root / rel
+    template = ctx.shape / "templates" / f"{role}-root"
+    if not (mount.is_dir() and any(mount.iterdir())):
+        return {"role": role, "state": "not populated"}, []
+    if not template.is_dir():
+        return {"role": role,
+                "state": f"no templates/{role}-root/ to compare against"}, []
+    files: dict[str, str] = {}
+    absent: list[tuple[str, str, str]] = []
+    for name in LEG_SHAPE_FILES:
+        state = shape_file_state(mount / name, template / name, name)
+        files[name] = state
+        if state == "absent":
+            absent.append((role, rel, name))
+    return {"role": role, "state": "compared", "files": files}, absent
+
+
+def leg_shape_summary(rel: str, entry: dict) -> str:
+    """One leg's half of the row's reason: its state, or its files by name.
+
+    A leg that WAS compared says what each file is rather than the word
+    `compared`, which on its own tells a reader nothing they came for.
+
+    Split out of `check_leg_shape_files` for #134.
+    """
+    if entry["state"] != "compared":
+        return f"{rel}: {entry['state']}"
+    named = ", ".join(f"{name} {state}"
+                      for name, state in entry["files"].items())
+    return f"{rel}: {named}"
+
+
+def missing_shape_file_fix(ctx: Context, missing: list) -> str:
+    """The next command for a leg missing a shape file, or why there is none.
+
+    A COPY IS OFFERED ONLY FOR A FILE A COPY WOULD FIX -- `cp` for a POSIX
+    reader and `Copy-Item -LiteralPath` for a PowerShell one, which is
+    `copy_command`'s job (#105). The template's `AGENTS.md` and `README.md`
+    carry `{{PLACEHOLDER}}`s the scaffold renders, so copying one verbatim
+    leaves a leg holding literal `{{PROJECT_NAME}}` -- a command that produces
+    an invalid leg is worse than no command at all (Copilot, PR #96). For
+    those the row says what the file IS, and the repair is a human's until the
+    repair mode lands.
+
+    Split out of `check_leg_shape_files` for #134.
+    """
+    copyable = [entry for entry in missing if entry[2] not in LEG_RENDERED]
+    if not copyable:
+        return (f"the missing file(s) are RENDERED per project from "
+                f"templates/<role>-root/ — `{PYTHON} "
+                f"{quote_arg(ctx.shape / 'scaffold-project.py')} --help` "
+                "shows what writes them; copying a template verbatim "
+                "would leave "
+                "`{{PLACEHOLDER}}`s in the leg")
+    role, rel, name = copyable[0]
+    source = ctx.shape / "templates" / f"{role}-root" / name
+    fix = copy_command(source, ctx.root / rel / name)
+    if len(copyable) < len(missing):
+        fix += ("   # and the rest are RENDERED per project "
+                "(placeholders): scaffold-project.py writes those, "
+                "and copying a template verbatim would not")
+    return fix
+
+
 def check_leg_shape_files(ctx: Context) -> Row:
     """Each present leg's shape files against `templates/<role>-root/`.
 
@@ -1159,10 +1265,10 @@ def check_leg_shape_files(ctx: Context) -> Row:
     reported as a finding is a file that is not there at all, because a leg
     with no `AGENTS.md` is a leg an agent reads nothing in.
 
-    `AGENTS.md` and `README.md` are RENDERED from their templates -- they
-    carry `{{PLACEHOLDER}}`s the scaffold fills in -- so "differs" is their
-    permanent state and the row says `rendered` rather than pretending a byte
-    comparison meant something.
+    THE COMPARING IS `leg_shape_comparison`'s and the wording is
+    `leg_shape_summary`'s, so that this reads as the three sentences it is:
+    compare every leg, say what was found, and offer a copy for the files a
+    copy would fix.
     """
     legs = ctx.legs()
     if not legs:
@@ -1173,64 +1279,14 @@ def check_leg_shape_files(ctx: Context) -> Row:
     for leg in legs:
         role = str(leg.get("role") or "?")
         rel = str(leg.get("path") or role)
-        mount = ctx.root / rel
-        template = ctx.shape / "templates" / f"{role}-root"
-        if not (mount.is_dir() and any(mount.iterdir())):
-            per_leg[rel] = {"role": role, "state": "not populated"}
-            continue
-        if not template.is_dir():
-            per_leg[rel] = {"role": role,
-                            "state": f"no templates/{role}-root/ to compare "
-                                     "against"}
-            continue
-        files: dict[str, str] = {}
-        for name in LEG_SHAPE_FILES:
-            here, there = mount / name, template / name
-            if not here.is_file():
-                files[name] = "absent"
-                missing.append((role, rel, name))
-            elif name in LEG_RENDERED:
-                files[name] = "rendered"
-            elif not there.is_file():
-                files[name] = "present (the template has none)"
-            elif here.read_bytes() == there.read_bytes():
-                files[name] = "identical"
-            else:
-                files[name] = "differs"
-        per_leg[rel] = {"role": role, "state": "compared", "files": files}
+        entry, absent = leg_shape_comparison(ctx, role, rel)
+        per_leg[rel] = entry
+        missing.extend(absent)
     detail = {"legs": per_leg, "compared": list(LEG_SHAPE_FILES)}
-    summary = "; ".join(
-        f"{rel}: " + (entry["state"] if entry["state"] != "compared" else
-                      ", ".join(f"{name} {state}"
-                                for name, state in entry["files"].items()))
-        for rel, entry in per_leg.items())
+    summary = "; ".join(leg_shape_summary(rel, entry)
+                        for rel, entry in per_leg.items())
     if missing:
         named = ", ".join(f"{leg}/{file}" for _, leg, file in missing)
-        # A COPY IS OFFERED ONLY FOR A FILE A COPY WOULD FIX -- `cp` for a
-        # POSIX reader and `Copy-Item -LiteralPath` for a PowerShell one,
-        # which is `copy_command`'s job (#105). The template's `AGENTS.md`
-        # and `README.md` carry `{{PLACEHOLDER}}`s the scaffold
-        # renders, so copying one verbatim leaves a leg holding literal
-        # `{{PROJECT_NAME}}` — a command that produces an invalid leg is
-        # worse than no command at all (Copilot, PR #96). For those the row
-        # says what the file IS, and the repair is a human's until the repair
-        # mode lands.
-        copyable = [entry for entry in missing if entry[2] not in LEG_RENDERED]
-        if copyable:
-            role, rel, name = copyable[0]
-            source = ctx.shape / "templates" / f"{role}-root" / name
-            fix = copy_command(source, ctx.root / rel / name)
-            if len(copyable) < len(missing):
-                fix += ("   # and the rest are RENDERED per project "
-                        "(placeholders): scaffold-project.py writes those, "
-                        "and copying a template verbatim would not")
-        else:
-            fix = (f"the missing file(s) are RENDERED per project from "
-                   f"templates/<role>-root/ — `{PYTHON} "
-                   f"{quote_arg(ctx.shape / 'scaffold-project.py')} --help` "
-                   "shows what writes them; copying a template verbatim "
-                   "would leave "
-                   "`{{PLACEHOLDER}}`s in the leg")
         # `note`, NOT `FINDING`. This is the row that printed `INVALID`
         # over a live estate whose every real gate was green, because
         # `templates/spec-root/.gitignore` entered the standard AFTER that
@@ -1240,7 +1296,8 @@ def check_leg_shape_files(ctx: Context) -> Row:
         # rule this standard never made. The difference is worth a reader's
         # eye and is not a verdict.
         return Row("leg-shape-files", LABEL_LEG_SHAPE_FILES, NOTE,
-                   f"{summary}  (missing: {named})", fix, detail)
+                   f"{summary}  (missing: {named})",
+                   missing_shape_file_fix(ctx, missing), detail)
     return Row("leg-shape-files", LABEL_LEG_SHAPE_FILES, OK, summary, None,
                detail)
 
@@ -1478,6 +1535,126 @@ def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
     return entry, misplaced, review
 
 
+def placement_policy(ctx: Context, policy_path: Path) -> tuple:
+    """The adoption's classifier and its loaded policy, or the `n/a` row.
+
+    THREE OF THE FOUR WAYS THIS ROW SAYS `n/a` ARE HERE, and every one of
+    them is THIS CHECKOUT being short rather than the repository being wrong:
+    an `adopt-project.py` this standard does not carry, a
+    `contracts/path-classification.yaml` that is not there, and a policy file
+    that is there and could not be read. The last is `n/a` and never a
+    finding for the reason the `leg shape files` row is a note -- failing
+    somebody else's repository on OUR file being wrong is exactly the mistake
+    that row was written about.
+
+    Returns `(adopt, policy, None)` when the legs can be classified at all
+    and `(None, None, row)` when they cannot, so the caller returns the
+    refusal this composed rather than composing a second one.
+
+    Split out of `check_placement` for #134.
+    """
+    adopt = ctx.adopt()
+    if adopt is None or not policy_path.is_file():
+        missing = ("adopt-project.py" if adopt is None
+                   else "contracts/path-classification.yaml")
+        return None, None, placement_row(
+            NA,
+            f"this checkout of the standard is missing {missing}, so the "
+            "adoption's own classification cannot be run over the legs",
+            f"{PYTHON} {quote_arg(ctx.shape / 'shape-doctor.py')} --root "
+            f"{quote_arg(ctx.root)}   # from a COMPLETE checkout of the "
+            f"standard; this one is short {missing}",
+            {"policy": policy_path.as_posix()})
+    try:
+        policy = adopt.PathPolicy.load(policy_path)
+    except Refusal as exc:
+        return None, None, placement_row(
+            NA,
+            f"the standard's own path policy could not be read: {exc.detail}",
+            exc.remediation or None, {"policy": policy_path.as_posix()})
+    return adopt, policy, None
+
+
+def leg_audit_summary(entry: dict) -> str:
+    """One leg's half of the row's reason: its counts, or why it has none.
+
+    A LEG THAT WAS NOT AUDITED PRINTS ITS `state` AND NEVER A ZERO, because a
+    leg nobody could read and a leg with nothing wrong in it are not the same
+    answer (Copilot, PR #100) -- `audit_leg` already worded which of the
+    reasons it is, and this repeats it rather than flattening it into a
+    count. An audited leg names up to three of the tracked names no report or
+    plan can carry, because a name that cannot be written down is the one
+    thing a reader cannot go and look at for themselves.
+
+    Split out of `check_placement` for #134.
+    """
+    if entry.get("state") != "audited":
+        return f"{entry['path']}: {entry.get('state')}"
+    counted = (f"{entry['paths']} path(s) over {entry['classified']} of "
+               f"{entry['tracked']} tracked file(s)")
+    unwritable = entry.get("unwritable")
+    if unwritable:
+        counted += (f", and {len(unwritable)} name(s) no report or plan "
+                    f"can carry: {', '.join(unwritable[:3])}")
+    return f"{entry['path']}: {counted}"
+
+
+def placement_verdict(detail: dict, audited: str, plan: str) -> Row:
+    """What the audited legs add up to, in the order the answers outrank.
+
+    A PATH IN THE WRONG LEG OUTRANKS A QUESTION ABOUT ONE. Misplaced first
+    because it is the finding the row exists for; then the paths the policy
+    will not call, which are a note because an unanswered question is never a
+    finding and never an implicit anything; then the legs that could not be
+    read, which are a note because what is missing is a READ and not a fault
+    of this repository's. `ok` is last and is the only branch that claims
+    every tracked path was classified, which is why nothing above it may fall
+    through to it.
+
+    Reads what it needs out of `detail` rather than taking the same six
+    numbers a second time: the row prints that dictionary, so a count this
+    judged on and a count the reader is shown cannot drift apart.
+
+    Split out of `check_placement` for #134.
+    """
+    misplaced = detail["misplaced"]
+    review = detail["review_required"]
+    counts = detail["counts"]
+    if counts["unread_legs"] == len(detail["legs"]):
+        # NOT `ok` AND NOT A FINDING. Every leg declined for a reason the
+        # `legs` row already asserts or the manifest already carries, and a
+        # row that answered `ok` here would be answering about nothing.
+        return placement_row(
+            NA, f"no leg could be read, so nothing was classified: {audited}",
+            None, detail)
+    if misplaced:
+        extra = (f"; {len(review)} more path(s) need a human's reading"
+                 if review else "")
+        return placement_row(
+            FINDING,
+            f"{len(misplaced)} path(s) sit in a leg the policy puts "
+            f"elsewhere: {named_offenders(misplaced)}{extra}  [{audited}]",
+            plan, detail)
+    if review:
+        return placement_row(
+            NOTE,
+            f"nothing is in the wrong leg; {len(review)} path(s) the policy "
+            f"will not call: {named_offenders(review)}  [{audited}]",
+            plan, detail)
+    if counts["unread_legs"] or counts["unwritable_names"]:
+        # `note`, because what is missing is a READ and not a fault of this
+        # repository's -- and never `ok`, because "every tracked path
+        # classifies as the leg it is in" is a claim about paths nobody read.
+        return placement_row(
+            NOTE,
+            "nothing is in the wrong leg in what could be read, and not "
+            f"everything could be: {audited}",
+            None, detail)
+    return placement_row(
+        OK, f"every tracked path classifies as the leg it is in: {audited}",
+        None, detail)
+
+
 def check_placement(ctx: Context) -> Row:
     """Every tracked path of every leg, against the ADOPTION'S own policy.
 
@@ -1509,6 +1686,11 @@ def check_placement(ctx: Context) -> Row:
     human's to resolve and a later `--fix` is the thing that would carry it
     out. A row that offered a `git mv` would be offering to edit two
     repositories from a command documented as writing nothing.
+
+    THE REFUSALS ARE `placement_policy`'s, ONE LEG IS `audit_leg`'s, THE
+    WORDING IS `leg_audit_summary`'s AND THE ANSWER IS `placement_verdict`'s,
+    so that this reads as the three sentences it is: load the policy, audit
+    every leg with it, and say what the legs came to.
     """
     if ctx.kind == FAMILY:
         return placement_row(
@@ -1521,29 +1703,10 @@ def check_placement(ctx: Context) -> Row:
             NA,
             "project.yaml declares no non-assembly leg, so there is no leg "
             "for a path to be in the wrong one of")
-    adopt = ctx.adopt()
     policy_path = ctx.shape / "contracts" / "path-classification.yaml"
-    if adopt is None or not policy_path.is_file():
-        missing = ("adopt-project.py" if adopt is None
-                   else "contracts/path-classification.yaml")
-        return placement_row(
-            NA,
-            f"this checkout of the standard is missing {missing}, so the "
-            "adoption's own classification cannot be run over the legs",
-            f"{PYTHON} {quote_arg(ctx.shape / 'shape-doctor.py')} --root "
-            f"{quote_arg(ctx.root)}   # from a COMPLETE checkout of the "
-            f"standard; this one is short {missing}",
-            {"policy": policy_path.as_posix()})
-    try:
-        policy = adopt.PathPolicy.load(policy_path)
-    except Refusal as exc:
-        # `n/a`, NOT a finding. A path policy this checkout cannot read is
-        # OUR file being wrong, and failing somebody's repository on it would
-        # be the `leg shape files` mistake with a different file.
-        return placement_row(
-            NA,
-            f"the standard's own path policy could not be read: {exc.detail}",
-            exc.remediation or None, {"policy": policy_path.as_posix()})
+    adopt, policy, refusal = placement_policy(ctx, policy_path)
+    if refusal is not None:
+        return refusal
 
     ignored = everywhere_patterns(ctx.shape)
     patterns = [glob_to_regex(pattern) for pattern in ignored]
@@ -1569,54 +1732,14 @@ def check_placement(ctx: Context) -> Row:
                   for name in (entry.get("unwritable") or [])]
     detail["counts"]["unread_legs"] = len(unread)
     detail["counts"]["unwritable_names"] = len(unwritable)
-    audited = "; ".join(
-        f"{entry['path']}: " + (
-            f"{entry['paths']} path(s) over {entry['classified']} of "
-            f"{entry['tracked']} tracked file(s)"
-            + (f", and {len(entry['unwritable'])} name(s) no report or plan "
-               f"can carry: {', '.join(entry['unwritable'][:3])}"
-               if entry.get("unwritable") else "")
-            if entry.get("state") == "audited" else str(entry.get("state")))
-        for entry in per_leg)
-    if len(unread) == len(per_leg):
-        # NOT `ok` AND NOT A FINDING. Every leg declined for a reason the
-        # `legs` row already asserts or the manifest already carries, and a
-        # row that answered `ok` here would be answering about nothing.
-        return placement_row(
-            NA, f"no leg could be read, so nothing was classified: {audited}",
-            None, detail)
+    audited = "; ".join(leg_audit_summary(entry) for entry in per_leg)
     plan = (f"{PYTHON} {quote_arg(ctx.shape / 'shape-doctor.py')} --root "
             f"{quote_arg(ctx.root)} "
             "--placement-plan placement-plan.yaml   # writes the paths above "
             "as a plan to resolve by hand. Moving one is a pull request on "
             "each leg and a pin bump in the root, so this command makes "
             "neither")
-    if misplaced:
-        extra = (f"; {len(review)} more path(s) need a human's reading"
-                 if review else "")
-        return placement_row(
-            FINDING,
-            f"{len(misplaced)} path(s) sit in a leg the policy puts "
-            f"elsewhere: {named_offenders(misplaced)}{extra}  [{audited}]",
-            plan, detail)
-    if review:
-        return placement_row(
-            NOTE,
-            f"nothing is in the wrong leg; {len(review)} path(s) the policy "
-            f"will not call: {named_offenders(review)}  [{audited}]",
-            plan, detail)
-    if unread or unwritable:
-        # `note`, because what is missing is a READ and not a fault of this
-        # repository's -- and never `ok`, because "every tracked path
-        # classifies as the leg it is in" is a claim about paths nobody read.
-        return placement_row(
-            NOTE,
-            "nothing is in the wrong leg in what could be read, and not "
-            f"everything could be: {audited}",
-            None, detail)
-    return placement_row(
-        OK, f"every tracked path classifies as the leg it is in: {audited}",
-        None, detail)
+    return placement_verdict(detail, audited, plan)
 
 
 #: The header of the file `--placement-plan` writes. It is long because the
@@ -1652,18 +1775,23 @@ PLACEMENT_PLAN_PREAMBLE = (
 )
 
 
-def placement_plan_text(ctx: Context, adopt, row: Row) -> str:
-    """The placement row's paths, as the YAML a human resolves.
+def placement_plan_header(ctx: Context, adopt) -> list:
+    """The plan's first block: what it is, what wrote it, and about what.
 
-    WRITTEN WITH THE ADOPTION'S OWN EMITTERS. `y` and `emit` write the exact
-    subset `repo_shape.parse_yaml` reads back, and an adoption plan is written
-    by them too -- so these two files are the same dialect by construction
-    rather than by somebody remembering to keep them so.
+    `kind:` IS THE SAFETY PROPERTY AND IT IS WRITTEN HERE. It is
+    `adopt.PLACEMENT_PLAN_KIND` and not `adopt.PLAN_KIND`, which is what stops
+    `adopt-project.py execute` -- a command that creates two repositories and
+    rewrites history -- from ever being handed one of these by mistake. The
+    preamble that follows it is the file's own argument to the human who will
+    edit it, and it is a constant because it is read far more often than it is
+    written.
+
+    The `standard` and `generated_on` lines say which checkout answered and
+    when, so a plan found in a branch months later is readable as evidence
+    rather than as an assertion about today.
+
+    Split out of `placement_plan_text` for #134.
     """
-    detail = row.detail
-    entries = sorted(list(detail.get("misplaced") or [])
-                     + list(detail.get("review_required") or []),
-                     key=lambda entry: entry["path"])
     manifest = ctx.manifest or {}
     lines = ["schema_version: 1",
              f"kind: {adopt.PLACEMENT_PLAN_KIND}", ""]
@@ -1678,47 +1806,122 @@ def placement_plan_text(ctx: Context, adopt, row: Row) -> str:
     adopt.emit(lines, "path", ctx.root.as_posix(), 2)
     adopt.emit(lines, "project", manifest.get("name") or ctx.root.name, 2)
     adopt.emit(lines, "id", manifest.get("id"), 2)
-    lines += ["", "legs:"]
-    for leg in (detail.get("legs") or []):
-        lines.append(f"  - role: {adopt.y(leg.get('role'))}")
-        adopt.emit(lines, "path", leg.get("path"), 4)
-        adopt.emit(lines, "state", leg.get("state"), 4)
-        if leg.get("state") == "audited":
-            adopt.emit(lines, "tracked", leg.get("tracked"), 4)
-            adopt.emit(lines, "classified", leg.get("classified"), 4)
-            adopt.emit(lines, "paths", leg.get("paths"), 4)
-            adopt.emit(lines, "misplaced", leg.get("misplaced"), 4)
-            adopt.emit(lines, "review_required", leg.get("review_required"), 4)
-            for name in (leg.get("unwritable") or []):
-                lines.append("    # a tracked name no plan can carry: "
-                             + name.replace("\n", " "))
-    unread = [leg.get("path") for leg in (detail.get("legs") or [])
-              if leg.get("state") != "audited"]
+    return lines
+
+
+def placement_plan_leg(adopt, leg: dict) -> list:
+    """ONE leg under `legs:`: what was read in it, or that it was not read.
+
+    THE COUNTS ARE HERE SO THE `paths:` BELOW CAN BE READ HONESTLY: a plan
+    with two entries in it means something different over a leg whose every
+    tracked file was classified than over one nobody could open, and a reader
+    holding only the entries cannot tell those apart.
+
+    A tracked name no plan can carry is written as a COMMENT and never as a
+    value: it is already a `repr`, and its newlines are flattened here as
+    well, because a name that split one entry across two lines is the defect
+    this whole branch exists to avoid -- the plan it is kept out of must still
+    parse.
+
+    Split out of `placement_plan_text` for #134.
+    """
+    lines = [f"  - role: {adopt.y(leg.get('role'))}"]
+    adopt.emit(lines, "path", leg.get("path"), 4)
+    adopt.emit(lines, "state", leg.get("state"), 4)
+    if leg.get("state") == "audited":
+        adopt.emit(lines, "tracked", leg.get("tracked"), 4)
+        adopt.emit(lines, "classified", leg.get("classified"), 4)
+        adopt.emit(lines, "paths", leg.get("paths"), 4)
+        adopt.emit(lines, "misplaced", leg.get("misplaced"), 4)
+        adopt.emit(lines, "review_required", leg.get("review_required"), 4)
+        for name in (leg.get("unwritable") or []):
+            lines.append("    # a tracked name no plan can carry: "
+                         + name.replace("\n", " "))
+    return lines
+
+
+def placement_plan_entry(adopt, entry: dict) -> list:
+    """ONE path under `paths:`, in an adoption plan entry's keys exactly.
+
+    THE KEYS ARE THE ADOPTION'S, WHICH IS WHAT MAKES "resolve it as you
+    resolve an adoption plan" TRUE: `adopt-project.py`'s own reader is handed
+    these entries with nothing changed but the `kind:` above them. `rule:`
+    travels with the entry so a human disagrees with a NAMED rule rather than
+    with an opaque verdict, `question:` only when the policy asked one, and
+    `resolution:` is emitted empty on every entry because it is the human's
+    line and a file that did not offer it would not look like one to fill in.
+
+    Split out of `placement_plan_text` for #134.
+    """
+    lines = [f"  - path: {adopt.y(entry['path'])}"]
+    adopt.emit(lines, "in_leg", entry["leg"], 4)
+    adopt.emit(lines, "leg", entry["classified_as"], 4)
+    adopt.emit(lines, "confidence", entry["confidence"], 4)
+    adopt.emit(lines, "rule", entry["rule"], 4)
+    adopt.emit(lines, "reason", entry["reason"], 4)
+    adopt.emit(lines, "files", entry["files"], 4)
+    adopt.emit(lines, "bytes", entry["bytes"], 4)
+    adopt.emit(lines, "review_required", entry["review_required"], 4)
+    if entry.get("question"):
+        adopt.emit(lines, "question", entry["question"], 4)
+    adopt.emit(lines, "resolution", "", 4)
+    return lines
+
+
+def placement_plan_paths(adopt, entries: list, unread: list) -> list:
+    """The `paths:` block: the entries to resolve, or why there are none.
+
+    AN EMPTY PLAN SAYS WHAT ITS EMPTINESS MEANS. `paths: []` over a project
+    whose every leg was read is a clean bill of health; the same two words
+    over a project whose legs could not be opened is a report about nothing,
+    and this names the count of unread legs so the difference cannot be read
+    the wrong way round. Written as a comment beside a list the reader's tools
+    still parse, because the emptiness has to survive being loaded as YAML.
+
+    Split out of `placement_plan_text` for #134.
+    """
     if not entries:
-        lines += ["",
-                  "# Nothing is in the wrong leg and nothing needs a reading",
-                  "# IN WHAT WAS READ: there is nothing here to resolve."]
+        lines = ["",
+                 "# Nothing is in the wrong leg and nothing needs a reading",
+                 "# IN WHAT WAS READ: there is nothing here to resolve."]
         if unread:
             lines += ["# The `legs:` block above names "
                       f"{len(unread)} leg(s) that could not be read at all,",
                       "# so this emptiness is not a clean bill of health for "
                       "them."]
         lines.append("paths: []")
-    else:
-        lines += ["", "paths:"]
+        return lines
+    lines = ["", "paths:"]
     for entry in entries:
-        lines.append(f"  - path: {adopt.y(entry['path'])}")
-        adopt.emit(lines, "in_leg", entry["leg"], 4)
-        adopt.emit(lines, "leg", entry["classified_as"], 4)
-        adopt.emit(lines, "confidence", entry["confidence"], 4)
-        adopt.emit(lines, "rule", entry["rule"], 4)
-        adopt.emit(lines, "reason", entry["reason"], 4)
-        adopt.emit(lines, "files", entry["files"], 4)
-        adopt.emit(lines, "bytes", entry["bytes"], 4)
-        adopt.emit(lines, "review_required", entry["review_required"], 4)
-        if entry.get("question"):
-            adopt.emit(lines, "question", entry["question"], 4)
-        adopt.emit(lines, "resolution", "", 4)
+        lines += placement_plan_entry(adopt, entry)
+    return lines
+
+
+def placement_plan_text(ctx: Context, adopt, row: Row) -> str:
+    """The placement row's paths, as the YAML a human resolves.
+
+    WRITTEN WITH THE ADOPTION'S OWN EMITTERS. `y` and `emit` write the exact
+    subset `repo_shape.parse_yaml` reads back, and an adoption plan is written
+    by them too -- so these two files are the same dialect by construction
+    rather than by somebody remembering to keep them so.
+
+    THE FILE IS FOUR BLOCKS AND EACH ONE IS COMPOSED BY ITS OWN FUNCTION --
+    the header, the legs, the paths and what was never judged -- so that this
+    reads as the shape of the file it writes rather than as one run of
+    appends in which a reader has to count indents to find out which block
+    they are in.
+    """
+    detail = row.detail
+    entries = sorted(list(detail.get("misplaced") or [])
+                     + list(detail.get("review_required") or []),
+                     key=lambda entry: entry["path"])
+    lines = placement_plan_header(ctx, adopt)
+    lines += ["", "legs:"]
+    for leg in (detail.get("legs") or []):
+        lines += placement_plan_leg(adopt, leg)
+    unread = [leg.get("path") for leg in (detail.get("legs") or [])
+              if leg.get("state") != "audited"]
+    lines += placement_plan_paths(adopt, entries, unread)
     lines += ["",
               "# What was NOT judged: a path matching one of these belongs to",
               "# every repository, so it is never misplaced in a leg. Four of",
@@ -1867,68 +2070,87 @@ def is_this_member(sibling: Path, row: dict) -> bool:
     return str(manifest.get("name")) == str(row.get("project"))
 
 
-def check_members(ctx: Context) -> Row:
-    """Each member pinned under `members/`, and the working clone beside it.
+def member_state(ctx: Context, row: dict, members_dir: str) -> dict:
+    """ONE member's `--json` entry: both copies of it, as they are found.
 
-    TWO COPIES OF EVERY MEMBER IS THE LAYOUT, and they are different things.
-    `members/<Project>` inside the holder is PINNED AND DETACHED — that is
-    what `bootstrap` places and what `validate-family.py` reads — and the
-    sibling beside the holder is where a person works. So the mount is asked
-    whether it is detached AT the pin, and the sibling is only asked whether
-    it exists and is this project.
+    NOTHING IS ASKED OF A MOUNT THAT IS NOT POPULATED. An unbootstrapped
+    submodule is an EMPTY directory, and `git rev-parse HEAD` run inside one
+    answers about the HOLDER -- the repository whose working tree that empty
+    directory sits in -- so a member that had never been fetched would be
+    reported as checked out at the holder's commit. `head` and `detached` are
+    `None` there, and the caller says which of the two it is.
+
+    THE PIN IS ONLY BELIEVED WHEN IT IS 40 HEX. A `pin.commit` carrying a
+    branch name or a tag is not a commit to compare a HEAD against, and this
+    reports no pin at all rather than a comparison that would fail for the
+    wrong reason.
+
+    Split out of `check_members` for #134.
     """
-    members = ctx.members()
-    members_dir = str((ctx.manifest or {}).get("members_dir") or "members")
-    if not members:
-        return Row("members", "members", OK,
-                   "no members yet: a family with none is empty, not wrong",
-                   None, {"members": []})
-    rows: list[dict] = []
-    problems: list[str] = []
-    siblings_absent: list[str] = []
-    on_a_branch: list[str] = []
-    for row in members:
-        project = str(row.get("project") or "?")
-        rel = str(row.get("path") or f"{members_dir}/{project}")
-        mount = ctx.root / rel
-        pin = row.get("pin") if isinstance(row.get("pin"), dict) else {}
-        pinned = str(pin.get("commit") or "").lower()
-        pinned = pinned if COMMIT_RE.match(pinned) else None
-        populated = mount.is_dir() and any(mount.iterdir())
-        head = head_of(mount) if populated else None
-        loose = detached(mount) if populated else None
-        sibling = ctx.root.parent / project
-        has_sibling = is_this_member(sibling, row)
-        rows.append({"project": project, "path": rel, "pin": pinned,
-                     "populated": populated, "head": head,
-                     "detached": loose,
-                     "working_clone": sibling.as_posix() if has_sibling
-                     else None})
-        if not populated:
-            problems.append(f"{rel}: not populated -- the pinned copy is an "
-                            "unbootstrapped submodule")
-        elif pinned is None:
-            problems.append(f"{project}: the row carries no 40-hex "
-                            "`pin.commit` to compare against")
-        elif head != pinned:
-            problems.append(f"{rel}: checked out at "
-                            f"{(head or '?')[:12]}, pinned at {pinned[:12]}")
-        elif loose is False:
-            # AT THE PIN BUT ON A BRANCH: RECORDED AND SAID, NEVER A FINDING.
-            # Copilot asked for this on PR #96, and asked for it as a
-            # failure — but `family.py add` ITSELF leaves the member on a
-            # branch (`git submodule add` checks one out), and only a fresh
-            # `clone --recurse-submodules` of the holder is detached. A row
-            # that refused here would refuse a holder the standard's own
-            # tool had just made, which is a rule this standard has not
-            # made. So the state is reported, because a branch in the copy
-            # the gate reads is worth a person's attention, and the verdict
-            # is left to the facts `validate-family.py` actually asserts.
-            on_a_branch.append(rel)
-        if not has_sibling:
-            siblings_absent.append(project)
-    detail = {"members": rows, "without_working_clone": siblings_absent,
-              "on_a_branch": on_a_branch}
+    project = str(row.get("project") or "?")
+    rel = str(row.get("path") or f"{members_dir}/{project}")
+    mount = ctx.root / rel
+    pin = row.get("pin") if isinstance(row.get("pin"), dict) else {}
+    pinned = str(pin.get("commit") or "").lower()
+    pinned = pinned if COMMIT_RE.match(pinned) else None
+    populated = mount.is_dir() and any(mount.iterdir())
+    head = head_of(mount) if populated else None
+    loose = detached(mount) if populated else None
+    sibling = ctx.root.parent / project
+    has_sibling = is_this_member(sibling, row)
+    return {"project": project, "path": rel, "pin": pinned,
+            "populated": populated, "head": head,
+            "detached": loose,
+            "working_clone": sibling.as_posix() if has_sibling
+            else None}
+
+
+def member_problem(entry: dict) -> str | None:
+    """What is wrong with one member's pinned copy, or None.
+
+    THE ORDER IS THE ONLY ORDER THE ANSWERS MAKE SENSE IN: an empty mount has
+    no HEAD to compare, a row with no 40-hex pin has nothing to compare it
+    against, and only then is "checked out somewhere else" a thing that can
+    be said. Each of these three is a member the family's own gate would
+    fail, which is why they are the row's findings and the state below them
+    is not.
+
+    A MEMBER AT ITS PIN BUT ON A BRANCH IS NOT ONE OF THEM, deliberately; the
+    branch in `check_members` that records it says at length why the standard
+    does not refuse a holder its own `family.py add` has just made.
+
+    Split out of `check_members` for #134.
+    """
+    if not entry["populated"]:
+        return (f"{entry['path']}: not populated -- the pinned copy is an "
+                "unbootstrapped submodule")
+    if entry["pin"] is None:
+        return (f"{entry['project']}: the row carries no 40-hex "
+                "`pin.commit` to compare against")
+    if entry["head"] != entry["pin"]:
+        return (f"{entry['path']}: checked out at "
+                f"{(entry['head'] or '?')[:12]}, pinned at "
+                f"{entry['pin'][:12]}")
+    return None
+
+
+def members_verdict(ctx: Context, detail: dict, members_dir: str,
+                    problems: list) -> Row:
+    """What the members add up to: the one finding, or the two OK wordings.
+
+    ONLY THE PINNED COPIES CAN MAKE THIS ROW RED. A missing working clone is
+    the WORKSTATION layout and not a fault of the repository's -- what the
+    family gate reads is `<members_dir>/<Project>` -- and a member on a
+    branch at its pin is a state worth a person's eye rather than a verdict.
+    Both of those are therefore said inside an `ok` row, at length, instead
+    of being left out of a report that would then look cleaner than the
+    machine it ran on.
+
+    Split out of `check_members` for #134.
+    """
+    rows = detail["members"]
+    on_a_branch = detail["on_a_branch"]
+    siblings_absent = detail["without_working_clone"]
     if problems:
         return Row("members", "members", FINDING, "; ".join(problems),
                    f"{PYTHON} "
@@ -1943,9 +2165,6 @@ def check_members(ctx: Context) -> Row:
                  + " (a fresh `clone --recurse-submodules` of this holder is "
                    "detached; `family.py add` leaves a branch behind)")
     if siblings_absent:
-        # NOT A FINDING. The working clones are the WORKSTATION layout, and a
-        # holder on a machine that has not placed them is not thereby
-        # non-compliant -- `members/<Project>` is what the gate reads.
         return Row("members", "members", OK,
                    f"{note}; no working clone beside the holder for "
                    + ", ".join(siblings_absent)
@@ -1954,6 +2173,56 @@ def check_members(ctx: Context) -> Row:
     return Row("members", "members", OK,
                f"{note}, each with a working clone beside the holder", None,
                detail)
+
+
+def check_members(ctx: Context) -> Row:
+    """Each member pinned under `members/`, and the working clone beside it.
+
+    TWO COPIES OF EVERY MEMBER IS THE LAYOUT, and they are different things.
+    `members/<Project>` inside the holder is PINNED AND DETACHED — that is
+    what `bootstrap` places and what `validate-family.py` reads — and the
+    sibling beside the holder is where a person works. So the mount is asked
+    whether it is detached AT the pin, and the sibling is only asked whether
+    it exists and is this project.
+
+    FINDING THE STATE IS `member_state`'s, JUDGING IT IS `member_problem`'s
+    AND THE WORDING IS `members_verdict`'s, so that this loop reads as the
+    one sentence it is: every member is looked at, and each is either a fault
+    or a state worth saying.
+    """
+    members = ctx.members()
+    members_dir = str((ctx.manifest or {}).get("members_dir") or "members")
+    if not members:
+        return Row("members", "members", OK,
+                   "no members yet: a family with none is empty, not wrong",
+                   None, {"members": []})
+    rows: list[dict] = []
+    problems: list[str] = []
+    siblings_absent: list[str] = []
+    on_a_branch: list[str] = []
+    for row in members:
+        entry = member_state(ctx, row, members_dir)
+        rows.append(entry)
+        problem = member_problem(entry)
+        if problem:
+            problems.append(problem)
+        elif entry["detached"] is False:
+            # AT THE PIN BUT ON A BRANCH: RECORDED AND SAID, NEVER A FINDING.
+            # Copilot asked for this on PR #96, and asked for it as a
+            # failure — but `family.py add` ITSELF leaves the member on a
+            # branch (`git submodule add` checks one out), and only a fresh
+            # `clone --recurse-submodules` of the holder is detached. A row
+            # that refused here would refuse a holder the standard's own
+            # tool had just made, which is a rule this standard has not
+            # made. So the state is reported, because a branch in the copy
+            # the gate reads is worth a person's attention, and the verdict
+            # is left to the facts `validate-family.py` actually asserts.
+            on_a_branch.append(entry["path"])
+        if not entry["working_clone"]:
+            siblings_absent.append(entry["project"])
+    detail = {"members": rows, "without_working_clone": siblings_absent,
+              "on_a_branch": on_a_branch}
+    return members_verdict(ctx, detail, members_dir, problems)
 
 
 # ---------------------------------------------------------------------------
@@ -2438,6 +2707,131 @@ def cannot_answer(rows: list[Row]) -> Row | None:
     return None
 
 
+def drifted_file_reasons(counts: dict) -> list:
+    """The drifted shape copies the verdict line quotes, in its own order.
+
+    TWO GROUPS AND THEY SAY DIFFERENT THINGS. `locally-modified` and `both`
+    are what MADE this repository drifted -- a copy of the standard carries
+    an edit -- so they are named first. `upstream-removed`, `unmapped` and
+    `copy-missing` are states in which the standard and the copy no longer
+    map onto each other at all, which is worth quoting beside the edits
+    because it is the same person's next question.
+
+    A state is named only when its count is non-zero: a verdict line reading
+    `0 unmapped` would be a parenthetical contradicting the words above it.
+
+    Split out of `verdict_for` for #134.
+    """
+    edited = ("locally-modified", "both")
+    unmapped = ("upstream-removed", "unmapped", "copy-missing")
+    return [f"{counts[state]} {state}" for state in edited + unmapped
+            if counts.get(state)]
+
+
+def drifted_reasons(by_id: dict, detail: dict) -> list:
+    """Everything that makes this repository DRIFTED, in the order said.
+
+    THREE DIFFERENT THINGS CAN BE OFF AND ALL OF THEM ARE DRIFT: a copy of
+    the standard carrying a local edit, a leg checked out somewhere other
+    than the commit the root pins, and a member of a family in that same
+    state. They share one verdict because they are one fact -- the tree is
+    not the tree the pins describe -- and a reader told only the first of
+    them would fix it and still be drifted.
+
+    Returns the empty list when none of them is, which is the caller's signal
+    to go on down the ladder rather than a claim that anything is well.
+
+    Split out of `verdict_for` for #134.
+    """
+    reasons: list[str] = []
+    if detail.get("drifted"):
+        reasons += drifted_file_reasons(detail.get("counts") or {})
+    legs = by_id.get("legs")
+    if legs is not None and legs.status == FINDING:
+        off = [leg for leg in (legs.detail.get("legs") or [])
+               if leg.get("head") != leg.get("pin")]
+        reasons.append(f"{len(off) or 1} leg(s) not at the pin")
+    members = by_id.get("members")
+    if members is not None and members.status == FINDING:
+        reasons.append("a member is not at its pin")
+    return reasons
+
+
+def misplaced_verdict(by_id: dict) -> tuple | None:
+    """MISPLACED and its exit code, or None when nothing is in the wrong leg.
+
+    UNDER DRIFTED AND OVER INVALID. A path in the wrong leg is a fact about
+    the SHAPE that nothing else in this report can see -- no validator, no
+    pin row, no manifest asserts where a file lives -- whereas a red
+    validator names itself in the table whether or not it also names the
+    verdict line. Drift still outranks it: a leg off its pin means the paths
+    that row read are not the paths the pin describes.
+
+    THE LIST HAS TO BE NON-EMPTY, not merely the row red. `run_checks` turns
+    an exception out of any check into a FINDING row with an empty detail,
+    and this branch would then have answered `MISPLACED (0 paths)` about a
+    row that never got as far as classifying anything -- a verdict naming a
+    count of zero. Such a row falls through to the generic handling further
+    down and reads `INVALID (placement)`, which is what it is (Copilot, PR
+    #100).
+
+    Split out of `verdict_for` for #134.
+    """
+    placement = by_id.get("placement")
+    misplaced = (placement.detail.get("misplaced") or []) if placement else []
+    if placement is not None and placement.status == FINDING and misplaced:
+        count = len(misplaced)
+        return (f"{V_MISPLACED} ({count} path"
+                + ("" if count == 1 else "s") + ")"), 1
+    return None
+
+
+def invalid_verdict(rows: list[Row]) -> tuple | None:
+    """INVALID and its exit code, when a NAMED gate is red, or None.
+
+    EVERY ID LISTED HERE IS A GATE SOMEBODY ELSE OWNS -- the naming policy,
+    the project's own two validators, the family's, the registry of manifest
+    kinds, the agent files -- so this verdict always names a check the reader
+    can go and run for themselves. A row that is red and not on this list is
+    not thereby harmless: the catch-all at the end of `verdict_for` answers
+    `INVALID` for it too, and says why it is written the way it is.
+
+    Split out of `verdict_for` for #134.
+    """
+    red = [row.id for row in rows
+           if row.status == FINDING
+           and row.id in ("naming", "manifest", "pins", "family",
+                          "manifest-kinds", "agent-files")]
+    if red:
+        return f"{V_INVALID} ({', '.join(red)})", 1
+    return None
+
+
+def behind_verdict(detail: dict) -> tuple | None:
+    """SHAPE BEHIND and its exit code, in either of its two kinds, or None.
+
+    WHICH KIND OF BEHIND IS THE WHOLE POINT OF THERE BEING TWO BRANCHES. A
+    pin naming an older commit while not one copied byte differs quotes the
+    two commits, because the counts it would otherwise print are zero BY
+    CONSTRUCTION on that branch; the ordinary kind quotes the counts. Both
+    are exit 1, and both are the `shape-currency` row's `detail` read back --
+    this decides nothing the row did not already say.
+
+    Split out of `verdict_for` for #134.
+    """
+    if detail.get("behind_pin_only"):
+        return (f"{V_BEHIND} (pin {str(detail.get('pinned'))[:12]} -> "
+                f"{str(detail.get('standard'))[:12]}, no copied file "
+                "differs)"), 1
+    if detail.get("behind"):
+        counts = detail.get("counts") or {}
+        changed = counts.get("upstream-changed", 0)
+        added = counts.get("upstream-added", 0)
+        return (f"{V_BEHIND} ({changed} upstream-changed, "
+                f"{added} upstream-added)"), 1
+    return None
+
+
 def verdict_for(ctx: Context, rows: list[Row]) -> tuple[str, int]:
     """ONE line, and the exit code that goes with it.
 
@@ -2445,6 +2839,11 @@ def verdict_for(ctx: Context, rows: list[Row]) -> tuple[str, int]:
     file argues the one that surprises: drift outranks a red validator,
     because an edited shape copy is what makes `validate-pins.py` red and
     naming the validator would send the reader at the symptom.
+
+    EACH RUNG OF THE LADDER IS ITS OWN FUNCTION and each of them argues, in
+    its own docstring, why it sits where it does -- so the precedence can be
+    read here as the list it is, and the argument for any one place in it is
+    found by opening the function that holds that place.
     """
     if ctx.kind == NOT_A_ROOT:
         return V_NOT_A_ROOT, 2
@@ -2454,67 +2853,24 @@ def verdict_for(ctx: Context, rows: list[Row]) -> tuple[str, int]:
     by_id = {row.id: row for row in rows}
     currency = by_id.get("shape-currency")
     detail = currency.detail if currency else {}
-    counts = detail.get("counts") or {}
 
-    reasons: list[str] = []
-    if detail.get("drifted"):
-        for state in ("locally-modified", "both"):
-            if counts.get(state):
-                reasons.append(f"{counts[state]} {state}")
-        for state in ("upstream-removed", "unmapped", "copy-missing"):
-            if counts.get(state):
-                reasons.append(f"{counts[state]} {state}")
-    legs = by_id.get("legs")
-    if legs is not None and legs.status == FINDING:
-        off = [leg for leg in (legs.detail.get("legs") or [])
-               if leg.get("head") != leg.get("pin")]
-        reasons.append(f"{len(off) or 1} leg(s) not at the pin")
-    members = by_id.get("members")
-    if members is not None and members.status == FINDING:
-        reasons.append("a member is not at its pin")
+    reasons = drifted_reasons(by_id, detail)
     if reasons:
         return f"{V_DRIFTED} ({', '.join(reasons)})", 1
-
-    # UNDER DRIFTED AND OVER INVALID. A path in the wrong leg is a fact about
-    # the SHAPE that nothing else in this report can see -- no validator, no
-    # pin row, no manifest asserts where a file lives -- whereas a red
-    # validator names itself in the table whether or not it also names the
-    # verdict line. Drift still outranks it: a leg off its pin means the
-    # paths this row read are not the paths the pin describes.
-    placement = by_id.get("placement")
-    misplaced = (placement.detail.get("misplaced") or []) if placement else []
-    # THE LIST HAS TO BE NON-EMPTY, not merely the row red. `run_checks` turns
-    # an exception out of any check into a FINDING row with an empty detail,
-    # and this branch would then have answered `MISPLACED (0 paths)` about a
-    # row that never got as far as classifying anything -- a verdict naming a
-    # count of zero. Such a row falls through to the generic handling below
-    # and reads `INVALID (placement)`, which is what it is (Copilot, PR #100).
-    if placement is not None and placement.status == FINDING and misplaced:
-        count = len(misplaced)
-        return (f"{V_MISPLACED} ({count} path"
-                + ("" if count == 1 else "s") + ")"), 1
-
-    red = [row.id for row in rows
-           if row.status == FINDING
-           and row.id in ("naming", "manifest", "pins", "family",
-                          "manifest-kinds", "agent-files")]
-    if red:
-        return f"{V_INVALID} ({', '.join(red)})", 1
-
-    if detail.get("behind_pin_only"):
-        return (f"{V_BEHIND} (pin {str(detail.get('pinned'))[:12]} -> "
-                f"{str(detail.get('standard'))[:12]}, no copied file "
-                "differs)"), 1
-    if detail.get("behind"):
-        changed = counts.get("upstream-changed", 0)
-        added = counts.get("upstream-added", 0)
-        return (f"{V_BEHIND} ({changed} upstream-changed, "
-                f"{added} upstream-added)"), 1
+    misplaced = misplaced_verdict(by_id)
+    if misplaced is not None:
+        return misplaced
+    invalid = invalid_verdict(rows)
+    if invalid is not None:
+        return invalid
+    behind = behind_verdict(detail)
+    if behind is not None:
+        return behind
     # THE CATCH-ALL, and it is here so that a check ADDED LATER cannot exit 0
-    # while its row says FINDING. A new row that belongs in `red` above is a
-    # one-line edit; a new row nobody classified still fails loudly. It reads
-    # `FINDING` only, so a `note` row is stepped over here too -- which is
-    # the whole of what `note` means.
+    # while its row says FINDING. A new row that belongs in `invalid_verdict`
+    # above is a one-line edit; a new row nobody classified still fails
+    # loudly. It reads `FINDING` only, so a `note` row is stepped over here
+    # too -- which is the whole of what `note` means.
     other = [row.id for row in rows if row.status == FINDING]
     if other:
         return f"{V_INVALID} ({', '.join(other)})", 1
