@@ -225,6 +225,76 @@ def _matches(obj: str, repositories: set[str], prefixes: list[str]) -> bool:
     return False
 
 
+def _load_register_rows(register_path: Path) -> list[dict] | None:
+    """One register file's rows, tolerant of which key holds them.
+
+    Split from `read_authority` for #132. Returns `None` when the file
+    itself could not be read — already printed in that case — so the
+    caller's loop moves on to the next register file exactly as the
+    original loop's `continue` did.
+    """
+    try:
+        data = load_yaml(register_path)
+    except Refusal as exc:
+        print(f"    unreadable, so nothing is claimed from it: {exc.detail}")
+        return None
+    rows = []
+    if isinstance(data, dict):
+        for key in ("rows", "grants", "entries"):
+            value = data.get(key)
+            if isinstance(value, list):
+                rows.extend(r for r in value if isinstance(r, dict))
+    return rows
+
+
+def _row_report_line(row: dict, repositories: set[str],
+                     prefixes: list[str]) -> str | None:
+    """One register row, formatted for `read_authority`'s report — or
+    `None` when it names none of this project's repositories or paths.
+
+    Split from `read_authority` for #132.
+    """
+    objects = [o for o in _row_objects(row)
+              if _matches(o, repositories, prefixes)]
+    if not objects:
+        return None
+    holder = row.get("holder_ref") or row.get("holder") or "?"
+    act = row.get("act") or row.get("acts") or "?"
+    state = row.get("state") or "?"
+    expires = row.get("expires_at") or "-"
+    return (f"    {holder} · {act} · {', '.join(objects)} · "
+           f"{state} · expires {expires}")
+
+
+def _report_one_register(register_path: Path, root: Path,
+                         repositories: set[str], prefixes: list[str]) -> None:
+    """One register file, start to finish: read it, print each row that
+    names this project, and the "no rows"/"no row names…" line when there
+    is nothing to show.
+
+    Split from `read_authority` for #132 so its loop over every register
+    file found is a single call per file.
+    """
+    # POSIX, on every platform: this line names a file in the repository,
+    # and git and the reader both spell it that way.
+    print(f"  register: {register_path.relative_to(root).as_posix()}")
+    rows = _load_register_rows(register_path)
+    if rows is None:
+        return
+    if not rows:
+        print("    no rows")
+        return
+    hits = 0
+    for row in rows:
+        line = _row_report_line(row, repositories, prefixes)
+        if line is None:
+            continue
+        hits += 1
+        print(line)
+    if not hits:
+        print("    no row names this project's repositories or paths")
+
+
 def read_authority(root: Path, legs: list[dict]) -> None:
     """Step (c). Prints the degrade line and returns when no register exists."""
     found = _register_paths(root, legs)
@@ -240,41 +310,71 @@ def read_authority(root: Path, legs: list[dict]) -> None:
     prefixes = [str(leg.get("path")) for leg in legs
                 if leg.get("path") and leg.get("path") != "."]
     for register_path in found:
-        # POSIX, on every platform: this line names a file in the repository,
-        # and git and the reader both spell it that way.
-        print(f"  register: {register_path.relative_to(root).as_posix()}")
-        try:
-            data = load_yaml(register_path)
-        except Refusal as exc:
-            print(f"    unreadable, so nothing is claimed from it: {exc.detail}")
-            continue
-        rows = []
-        if isinstance(data, dict):
-            for key in ("rows", "grants", "entries"):
-                value = data.get(key)
-                if isinstance(value, list):
-                    rows.extend(r for r in value if isinstance(r, dict))
-        if not rows:
-            print("    no rows")
-            continue
-        hits = 0
-        for row in rows:
-            objects = [o for o in _row_objects(row)
-                       if _matches(o, repositories, prefixes)]
-            if not objects:
-                continue
-            hits += 1
-            holder = row.get("holder_ref") or row.get("holder") or "?"
-            act = row.get("act") or row.get("acts") or "?"
-            state = row.get("state") or "?"
-            expires = row.get("expires_at") or "-"
-            print(f"    {holder} · {act} · {', '.join(objects)} · "
-                  f"{state} · expires {expires}")
-        if not hits:
-            print("    no row names this project's repositories or paths")
+        _report_one_register(register_path, root, repositories, prefixes)
     print("  Grants are read here for REPORTING only. This command confers "
           "nothing and enforces nothing; a required check in the repository "
           "that owns the object is what confers.")
+
+
+def _load_root_and_manifest(args) -> tuple[Path, dict | None]:
+    """`--root`'s repository, and its `project.yaml` if it has one.
+
+    Split from `main` for #132 so its `try` wraps one call — a `Refusal`
+    from either step is `main`'s early exit 2, exactly as the original
+    function's two separate `try`/`except Refusal` blocks around these same
+    two steps both were.
+    """
+    root = find_repo_root(args.root or Path(__file__).resolve().parents[1])
+    manifest_path = root / "project.yaml"
+    manifest: dict | None = None
+    if manifest_path.is_file():
+        loaded = load_yaml(manifest_path)
+        manifest = loaded if isinstance(loaded, dict) else None
+    return root, manifest
+
+
+def _checkout_all_tracking_branches(root: Path, sub_legs: list[dict],
+                                    manifest: dict | None,
+                                    branch_arg: str | None) -> None:
+    """Step (a): place every submodule leg on its tracking branch.
+
+    Split from `main` for #132.
+    """
+    if not sub_legs:
+        print("  no submodule legs declared. A one-repository project runs "
+              "the same command and this step is a no-op.")
+        return
+    branch = branch_arg or (manifest or {}).get("tracking_branch") or "main"
+    for leg in sub_legs:
+        checkout_tracking_branch(root, leg, str(leg.get("branch") or branch))
+
+
+def _run_neutral_validators(root: Path, manifest: dict | None,
+                            skip: bool) -> list[str]:
+    """Step (b): run the neutral validators, then the upstream notice.
+
+    Split from `main` for #132. Returns the labels of any validator that
+    failed, exactly as `main`'s local `failed` list used to accumulate them.
+    """
+    if skip:
+        print("  skipped (--skip-validators)")
+        return []
+    if manifest is None:
+        print("  no project.yaml: this project has not elected the schema, "
+              "so there is no manifest and no pins to check. It is not less "
+              "governed for that.")
+        return []
+    failed = []
+    for label, argv_ in VALIDATORS:
+        if not (root / argv_[0]).is_file():
+            print(f"  {label}: {argv_[0]} is absent; SKIPPED")
+            continue
+        print(f"  --- {label} ---")
+        code = _run(root, argv_)
+        if code != 0:
+            failed.append(f"{label} (exit {code})")
+    shape_upstream_notice(root)
+    return failed
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -287,20 +387,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        root = find_repo_root(args.root or Path(__file__).resolve().parents[1])
+        root, manifest = _load_root_and_manifest(args)
     except Refusal as exc:
         print(str(exc), file=sys.stderr)
         return 2
 
-    manifest_path = root / "project.yaml"
-    manifest: dict | None = None
-    if manifest_path.is_file():
-        try:
-            loaded = load_yaml(manifest_path)
-            manifest = loaded if isinstance(loaded, dict) else None
-        except Refusal as exc:
-            print(str(exc), file=sys.stderr)
-            return 2
     legs = [leg for leg in ((manifest or {}).get("legs") or [])
             if isinstance(leg, dict)]
     sub_legs = [leg for leg in legs if leg.get("role") != "assembly"]
@@ -309,32 +400,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"bootstrap: {name} ({root})")
 
     print("\n(a) legs on tracking branches, pins untouched")
-    if not sub_legs:
-        print("  no submodule legs declared. A one-repository project runs the "
-              "same command and this step is a no-op.")
-    else:
-        branch = args.branch or (manifest or {}).get("tracking_branch") or "main"
-        for leg in sub_legs:
-            checkout_tracking_branch(root, leg, str(leg.get("branch") or branch))
+    _checkout_all_tracking_branches(root, sub_legs, manifest, args.branch)
 
     print("\n(b) neutral validators")
-    failed: list[str] = []
-    if args.skip_validators:
-        print("  skipped (--skip-validators)")
-    elif manifest is None:
-        print("  no project.yaml: this project has not elected the schema, so "
-              "there is no manifest and no pins to check. It is not less "
-              "governed for that.")
-    else:
-        for label, argv_ in VALIDATORS:
-            if not (root / argv_[0]).is_file():
-                print(f"  {label}: {argv_[0]} is absent; SKIPPED")
-                continue
-            print(f"  --- {label} ---")
-            code = _run(root, argv_)
-            if code != 0:
-                failed.append(f"{label} (exit {code})")
-        shape_upstream_notice(root)
+    failed = _run_neutral_validators(root, manifest, args.skip_validators)
 
     print("\n(c) review authority")
     read_authority(root, legs)

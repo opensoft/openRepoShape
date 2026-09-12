@@ -113,10 +113,15 @@ def _workflow_refs(root: Path) -> list[tuple[Path, str, str]]:
     return out
 
 
-def _check_leg(root: Path, leg: dict, report: Report, refs) -> None:
-    role = leg.get("role")
-    path = str(leg.get("path") or "")
-    repository = str(leg.get("repository") or "")
+def _load_leg_pin(root: Path, role, path: str, repository: str,
+                  report: Report) -> tuple[dict, str, str]:
+    """Read `<role>-pin.yaml` and check its own fields, before any fact in it
+    is compared against another.
+
+    Split from `_check_leg` for #132: everything that answers "does the pin
+    file itself look right" belongs together. Returns the pin, its path
+    relative to `root`, and its `commit:` lowercased.
+    """
     pin_path = root / "contracts" / f"{role}-pin.yaml"
     if not pin_path.is_file():
         raise Refusal(
@@ -159,8 +164,15 @@ def _check_leg(root: Path, leg: dict, report: Report, refs) -> None:
                        f"{rel}: source_repository is "
                        f"{pin.get('source_repository')!r} but project.yaml "
                        f"declares {repository!r}")
+    return pin, rel, commit
 
-    # ---- fact 1 vs fact 2: the gitlink and the pin file --------------------
+
+def _check_gitlink_matches_pin(root: Path, role, path: str, commit: str,
+                               rel: str, report: Report) -> str:
+    """Fact 1 vs fact 2: the recorded gitlink against the pin file's
+    `commit:`. Split from `_check_leg` for #132. Returns the gitlink so the
+    caller can check it again against fact 3, the workflow references.
+    """
     gitlink = recorded_gitlink(root, path)
     if gitlink is None:
         raise Refusal(
@@ -176,8 +188,15 @@ def _check_leg(root: Path, leg: dict, report: Report, refs) -> None:
         )
     else:
         report.note(f"{path}: gitlink == {rel} commit {commit[:12]}")
+    return gitlink
 
-    # ---- the digest --------------------------------------------------------
+
+def _check_pin_digest(root: Path, path: str, commit: str, pin: dict, rel: str,
+                      report: Report) -> None:
+    """The digest: split from `_check_leg` for #132. Recomputes the leg's
+    tree sha256 at the pinned commit, because a gitlink and a pin file that
+    agree on a commit may still disagree on that commit's bytes.
+    """
     submodule = root / path
     if not (submodule / ".git").exists():
         raise Refusal(
@@ -219,7 +238,12 @@ def _check_leg(root: Path, leg: dict, report: Report, refs) -> None:
         else:
             report.note(f"{path}: tree digest recomputes ({recorded[:12]}…)")
 
-    # ---- fact 3: every workflow reference naming this leg ------------------
+
+def _check_workflow_refs_for_leg(refs, repository: str, path: str,
+                                 gitlink: str, report: Report) -> None:
+    """Fact 3: split from `_check_leg` for #132 — every workflow `@<sha>`
+    reference naming this leg's repository must agree with the gitlink.
+    """
     seen = 0
     for wf_path, wf_repo, wf_sha in refs:
         if wf_repo != repository:
@@ -236,15 +260,23 @@ def _check_leg(root: Path, leg: dict, report: Report, refs) -> None:
                     f"agree with the gitlink")
 
 
-def _check_shape_pin(root: Path, manifest: dict, report: Report) -> None:
-    """The shape pin is a COPY pin, and it is checked as one.
+def _check_leg(root: Path, leg: dict, report: Report, refs) -> None:
+    role = leg.get("role")
+    path = str(leg.get("path") or "")
+    repository = str(leg.get("repository") or "")
+    pin, rel, commit = _load_leg_pin(root, role, path, repository, report)
+    gitlink = _check_gitlink_matches_pin(root, role, path, commit, rel, report)
+    _check_pin_digest(root, path, commit, pin, rel, report)
+    _check_workflow_refs_for_leg(refs, repository, path, gitlink, report)
 
-    openRepoShape is not a submodule of a scaffolded project: the scaffold
-    COPIES a small set of files out of it so the project is self-contained in
-    an org that may never obtain the upstream. There is therefore no gitlink to
-    compare — the identity of the copies is carried by the per-file `sha256`
-    rows, exactly the half of `neutral-product-pin`'s shape that exists for
-    artifacts a consumer holds rather than mounts.
+
+def _check_shape_pin_header(root: Path, manifest: dict, report: Report
+                            ) -> tuple[dict, str]:
+    """Load `shape-pin.yaml` and check the fields that describe its own
+    commit, before the files it lists are checked one by one.
+
+    Split from `_check_shape_pin` for #132. Returns the pin and its path
+    relative to `root`.
     """
     pin_path = root / "contracts" / "shape-pin.yaml"
     if not pin_path.is_file():
@@ -265,6 +297,46 @@ def _check_shape_pin(root: Path, manifest: dict, report: Report) -> None:
         report.finding("shape-pin-manifest-disagree",
                        f"{rel} commit {commit} != project.yaml shape.commit "
                        f"{declared}")
+    return pin, rel
+
+
+def _check_shape_copy(root: Path, row, rel: str, report: Report) -> None:
+    """One `files:` row of the shape pin.
+
+    Split from `_check_shape_pin` for #132 so the loop over the pinned files
+    is a single call per row: is it a mapping, is the file still there, and
+    does its sha256 still match what the pin recorded.
+    """
+    if not isinstance(row, dict):
+        report.finding("shape-pin-row", f"{rel}: a files row is not a mapping")
+        return
+    target = root / str(row.get("path"))
+    if not target.is_file():
+        report.finding("shape-copy-missing",
+                       f"{rel}: {row.get('path')} is pinned but absent")
+        return
+    actual = file_sha256(target)
+    if actual != str(row.get("sha256", "")).lower():
+        report.finding(
+            "shape-copy-drift",
+            f"{row.get('path')}: sha256 {actual}\n"
+            f"       {rel} records {row.get('sha256')}\n"
+            "  A shape file was edited in place. Either revert it, or "
+            "carry the change upstream to openRepoShape and re-pin.",
+        )
+
+
+def _check_shape_pin(root: Path, manifest: dict, report: Report) -> None:
+    """The shape pin is a COPY pin, and it is checked as one.
+
+    openRepoShape is not a submodule of a scaffolded project: the scaffold
+    COPIES a small set of files out of it so the project is self-contained in
+    an org that may never obtain the upstream. There is therefore no gitlink to
+    compare — the identity of the copies is carried by the per-file `sha256`
+    rows, exactly the half of `neutral-product-pin`'s shape that exists for
+    artifacts a consumer holds rather than mounts.
+    """
+    pin, rel = _check_shape_pin_header(root, manifest, report)
     before = len(report.findings)
     files = pin.get("files") or []
     if not files:
@@ -272,23 +344,7 @@ def _check_shape_pin(root: Path, manifest: dict, report: Report) -> None:
                        f"{rel}: no `files:` rows, so nothing about the copied "
                        "shape files is actually asserted")
     for row in files:
-        if not isinstance(row, dict):
-            report.finding("shape-pin-row", f"{rel}: a files row is not a mapping")
-            continue
-        target = root / str(row.get("path"))
-        if not target.is_file():
-            report.finding("shape-copy-missing",
-                           f"{rel}: {row.get('path')} is pinned but absent")
-            continue
-        actual = file_sha256(target)
-        if actual != str(row.get("sha256", "")).lower():
-            report.finding(
-                "shape-copy-drift",
-                f"{row.get('path')}: sha256 {actual}\n"
-                f"       {rel} records {row.get('sha256')}\n"
-                "  A shape file was edited in place. Either revert it, or "
-                "carry the change upstream to openRepoShape and re-pin.",
-            )
+        _check_shape_copy(root, row, rel, report)
     if len(report.findings) == before:
         report.note(f"{rel}: {len(files)} copied shape file(s) match their digests")
 
@@ -329,6 +385,162 @@ def resolve_neutral_pin_source(root: Path, product: str, repository: str,
     return None, None
 
 
+def _check_neutral_pin_entry_and_load(root: Path, product, report: Report
+                                      ) -> tuple[dict, str] | None:
+    """Validate one `neutral_product_pins:` entry and load its pin file.
+
+    Split from `_check_neutral_product_pins` for #132. Returns `None` when
+    the entry itself is malformed — already reported, and there is no pin
+    file name to go read — so the caller moves on to the next entry exactly
+    as the original loop's `continue` did.
+    """
+    if not isinstance(product, str) or not product:
+        report.finding(
+            "neutral-pin-entry-malformed",
+            f"project.yaml neutral_product_pins entry {product!r} is not "
+            "a non-empty product name",
+        )
+        return None
+    pin_path = root / "contracts" / f"{product.lower()}-pin.yaml"
+    if not pin_path.is_file():
+        raise Refusal(
+            "neutral-pin-missing",
+            f"project.yaml declares a pin on {product!r} but "
+            f"{pin_path.relative_to(root).as_posix()} does not exist",
+            "Remediation: `scaffold-project.py --pin "
+            f"{product}@<commit>` writes that file. A declaration in "
+            "project.yaml with no pin file beside it is a claim with no "
+            "referent — either restore the file or remove the "
+            "declaration.",
+        )
+    pin = load_yaml(pin_path)
+    rel = pin_path.relative_to(root).as_posix()
+    if not isinstance(pin, dict):
+        raise Refusal("neutral-pin-unreadable", f"{pin_path}: not a mapping")
+    return pin, rel
+
+
+def _check_neutral_pin_commit_and_digest_fields(pin: dict, rel: str,
+                                                report: Report
+                                                ) -> tuple[str, str] | None:
+    """The pin's own `revision_kind`/`commit`/digest fields, before any
+    recompute of the referent is attempted.
+
+    Split from `_check_neutral_product_pins` for #132. Returns `None` when
+    the digest fields are themselves malformed — already reported, and
+    recomputing anything to compare against them would be pointless — else
+    `(commit, recorded_digest)`.
+    """
+    if pin.get("revision_kind") != "commit":
+        report.finding(
+            "neutral-pin-tag-only",
+            f"{rel}: revision_kind is {pin.get('revision_kind')!r}. A tag "
+            "can be moved and a commit cannot; a pin is a commit or it is "
+            "nothing.",
+        )
+    commit = str(pin.get("commit") or "")
+    if not COMMIT_RE.match(commit):
+        raise Refusal(
+            "neutral-pin-tag-only",
+            f"{rel}: `commit:` is {commit!r}, which is not 40 hex. An "
+            "abbreviated oid, a branch or a tag is a moving reference.",
+        )
+    commit = commit.lower()
+
+    recorded = (pin.get("digests") or {}).get("tree_sha256")
+    if not isinstance(recorded, str) or not SHA256_RE.match(recorded):
+        report.finding("neutral-pin-digest-malformed",
+                       f"{rel}: digests.tree_sha256 is {recorded!r}, not "
+                       "64 hex")
+        return None
+    if pin.get("digest_definition") != TREE_DIGEST_DEFINITION:
+        report.finding(
+            "neutral-pin-digest-definition",
+            f"{rel}: digest_definition is "
+            f"{pin.get('digest_definition')!r}, expected "
+            f"{TREE_DIGEST_DEFINITION!r}. A digest whose definition is "
+            "unstated is a number, not an identity.",
+        )
+        return None
+    return commit, recorded
+
+
+def _recompute_neutral_pin_digest(root: Path, product: str, repository: str,
+                                  commit: str, rel: str,
+                                  keyed_sources: dict[str, Path],
+                                  default_source: Path | None,
+                                  report: Report) -> tuple[str, str] | None:
+    """Recompute the referent's tree digest: offline where a source can be
+    found, else from `gh api`, else a named SKIP that never fails the run.
+
+    Split from `_check_neutral_product_pins` for #132. Returns `(actual,
+    how)`, or `None` when nothing could answer — a finding or a skip is
+    already reported in that case, exactly as the original loop's
+    `continue` left it.
+    """
+    source, how = resolve_neutral_pin_source(root, product, repository,
+                                              keyed_sources, default_source)
+    if source is not None:
+        try:
+            return tree_digest(source, commit), how
+        except Refusal as exc:
+            report.finding(
+                "neutral-pin-source-unreadable",
+                f"{rel}: {source} ({how}) could not answer for "
+                f"{repository} @ {commit}: {exc.detail}",
+            )
+            return None
+    try:
+        return tree_digest_from_gh(repository, commit), "gh-api-tree-recursive"
+    except Refusal as exc:
+        report.skip(
+            f"{product}: pin commit {commit[:12]} digest NOT "
+            f"rechecked — no local checkout ({exc.code}: "
+            f"{exc.detail}). A --pin-source, {pin_source_env_name(product)}, "
+            f"or a checkout at ../{repo_basename(repository)} beside "
+            "this assembly root would verify it offline.",
+        )
+        return None
+
+
+def _check_one_neutral_product_pin(root: Path, product, report: Report,
+                                   keyed_sources: dict[str, Path],
+                                   default_source: Path | None) -> None:
+    """One `neutral_product_pins:` entry, start to finish.
+
+    Split from `_check_neutral_product_pins` for #132 so the loop in that
+    function is a single call per entry instead of the whole re-check
+    inline; each `return` below is one of the original loop's `continue`s.
+    """
+    loaded = _check_neutral_pin_entry_and_load(root, product, report)
+    if loaded is None:
+        return
+    pin, rel = loaded
+    repository = str(pin.get("source_repository") or "")
+    fields = _check_neutral_pin_commit_and_digest_fields(pin, rel, report)
+    if fields is None:
+        return
+    commit, recorded = fields
+    recomputed = _recompute_neutral_pin_digest(root, product, repository,
+                                               commit, rel, keyed_sources,
+                                               default_source, report)
+    if recomputed is None:
+        return
+    actual, how = recomputed
+    if actual.lower() != recorded.lower():
+        report.finding(
+            "neutral-pin-digest-mismatch",
+            f"{rel}: digests.tree_sha256 {recorded}\n"
+            f"       recomputed at {commit[:12]} {actual} ({how})\n"
+            "  A neutral-product pin's digest no longer matches the "
+            "bytes it names — the referent this project's name claims "
+            "descent from has moved, or the pin was hand-edited.",
+        )
+    else:
+        report.note(f"{product}: pin commit {commit[:12]} digest "
+                   f"recomputes ({how})")
+
+
 def _check_neutral_product_pins(root: Path, manifest: dict, report: Report,
                                 keyed_sources: dict[str, Path],
                                 default_source: Path | None) -> None:
@@ -344,101 +556,78 @@ def _check_neutral_product_pins(root: Path, manifest: dict, report: Report,
     """
     products = manifest.get("neutral_product_pins") or []
     for product in products:
-        if not isinstance(product, str) or not product:
-            report.finding(
-                "neutral-pin-entry-malformed",
-                f"project.yaml neutral_product_pins entry {product!r} is not "
-                "a non-empty product name",
-            )
-            continue
-        pin_path = root / "contracts" / f"{product.lower()}-pin.yaml"
-        if not pin_path.is_file():
-            raise Refusal(
-                "neutral-pin-missing",
-                f"project.yaml declares a pin on {product!r} but "
-                f"{pin_path.relative_to(root).as_posix()} does not exist",
-                "Remediation: `scaffold-project.py --pin "
-                f"{product}@<commit>` writes that file. A declaration in "
-                "project.yaml with no pin file beside it is a claim with no "
-                "referent — either restore the file or remove the "
-                "declaration.",
-            )
-        pin = load_yaml(pin_path)
-        rel = pin_path.relative_to(root).as_posix()
-        if not isinstance(pin, dict):
-            raise Refusal("neutral-pin-unreadable", f"{pin_path}: not a mapping")
+        _check_one_neutral_product_pin(root, product, report, keyed_sources,
+                                       default_source)
 
-        if pin.get("revision_kind") != "commit":
-            report.finding(
-                "neutral-pin-tag-only",
-                f"{rel}: revision_kind is {pin.get('revision_kind')!r}. A tag "
-                "can be moved and a commit cannot; a pin is a commit or it is "
-                "nothing.",
-            )
-        commit = str(pin.get("commit") or "")
-        if not COMMIT_RE.match(commit):
-            raise Refusal(
-                "neutral-pin-tag-only",
-                f"{rel}: `commit:` is {commit!r}, which is not 40 hex. An "
-                "abbreviated oid, a branch or a tag is a moving reference.",
-            )
-        commit = commit.lower()
-        repository = str(pin.get("source_repository") or "")
 
-        recorded = (pin.get("digests") or {}).get("tree_sha256")
-        if not isinstance(recorded, str) or not SHA256_RE.match(recorded):
-            report.finding("neutral-pin-digest-malformed",
-                           f"{rel}: digests.tree_sha256 is {recorded!r}, not "
-                           "64 hex")
-            continue
-        if pin.get("digest_definition") != TREE_DIGEST_DEFINITION:
-            report.finding(
-                "neutral-pin-digest-definition",
-                f"{rel}: digest_definition is "
-                f"{pin.get('digest_definition')!r}, expected "
-                f"{TREE_DIGEST_DEFINITION!r}. A digest whose definition is "
-                "unstated is a number, not an identity.",
-            )
-            continue
-
-        source, how = resolve_neutral_pin_source(root, product, repository,
-                                                  keyed_sources, default_source)
-        if source is not None:
-            try:
-                actual = tree_digest(source, commit)
-            except Refusal as exc:
-                report.finding(
-                    "neutral-pin-source-unreadable",
-                    f"{rel}: {source} ({how}) could not answer for "
-                    f"{repository} @ {commit}: {exc.detail}",
-                )
-                continue
+def _parse_pin_sources(pin_source_args: list[str]
+                       ) -> tuple[dict[str, Path], Path | None]:
+    """`--pin-source` may be repeated, each either `PRODUCT=PATH` or a bare
+    `PATH`. Split from `main` for #132. Returns the keyed sources and the
+    one bare default, exactly as `main` used to build them inline.
+    """
+    keyed_sources: dict[str, Path] = {}
+    default_source: Path | None = None
+    for raw in pin_source_args:
+        product, sep, path = raw.partition("=")
+        if sep:
+            keyed_sources[product.casefold()] = Path(path)
         else:
-            try:
-                actual = tree_digest_from_gh(repository, commit)
-                how = "gh-api-tree-recursive"
-            except Refusal as exc:
-                report.skip(
-                    f"{product}: pin commit {commit[:12]} digest NOT "
-                    f"rechecked — no local checkout ({exc.code}: "
-                    f"{exc.detail}). A --pin-source, {pin_source_env_name(product)}, "
-                    f"or a checkout at ../{repo_basename(repository)} beside "
-                    "this assembly root would verify it offline.",
-                )
-                continue
+            default_source = Path(raw)
+    return keyed_sources, default_source
 
-        if actual.lower() != recorded.lower():
-            report.finding(
-                "neutral-pin-digest-mismatch",
-                f"{rel}: digests.tree_sha256 {recorded}\n"
-                f"       recomputed at {commit[:12]} {actual} ({how})\n"
-                "  A neutral-product pin's digest no longer matches the "
-                "bytes it names — the referent this project's name claims "
-                "descent from has moved, or the pin was hand-edited.",
-            )
-        else:
-            report.note(f"{product}: pin commit {commit[:12]} digest "
-                       f"recomputes ({how})")
+
+def _load_legs_to_check(root: Path) -> tuple[dict, list[dict]]:
+    """The manifest and its non-assembly legs, or a Refusal naming why there
+    is nothing here to check. Split from `main` for #132.
+    """
+    manifest_path = root / "project.yaml"
+    if not manifest_path.is_file():
+        raise Refusal(
+            "manifest-missing",
+            f"{manifest_path} does not exist, so there is no declaration of "
+            "which legs to check. A one-repository project has no legs and "
+            "does not run this validator.",
+        )
+    manifest = load_yaml(manifest_path)
+    if not isinstance(manifest, dict):
+        raise Refusal("manifest-unreadable", f"{manifest_path}: not a mapping")
+    legs = [leg for leg in (manifest.get("legs") or [])
+            if isinstance(leg, dict) and leg.get("role") != "assembly"]
+    if not legs:
+        raise Refusal("manifest-no-legs",
+                      f"{manifest_path}: no non-assembly legs declared")
+    return manifest, legs
+
+
+def _run_all_checks(root: Path, report: Report, keyed_sources: dict[str, Path],
+                    default_source: Path | None) -> None:
+    """Every check `main` runs inside its one `try`, in order. Split from
+    `main` for #132 so that `try` wraps a single call.
+    """
+    manifest, legs = _load_legs_to_check(root)
+    refs = _workflow_refs(root)
+    for leg in legs:
+        _check_leg(root, leg, report, refs)
+    _check_shape_pin(root, manifest, report)
+    _check_neutral_product_pins(root, manifest, report, keyed_sources,
+                                default_source)
+
+
+def _emit_report(report: Report, quiet: bool) -> int:
+    """Print the notes and findings and choose the exit code. Split from
+    `main` for #132.
+    """
+    if not quiet:
+        for note in report.notes:
+            print(note)
+    for finding in report.findings:
+        print(finding, file=sys.stderr)
+    if report.findings:
+        print(f"\n{len(report.findings)} finding(s). " + LOCKSTEP, file=sys.stderr)
+        return 1
+    print("pins ok")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -458,54 +647,17 @@ def main(argv: list[str] | None = None) -> int:
              "before `gh api` and before this flag's bare form.")
     args = parser.parse_args(argv)
 
-    keyed_sources: dict[str, Path] = {}
-    default_source: Path | None = None
-    for raw in args.pin_source:
-        product, sep, path = raw.partition("=")
-        if sep:
-            keyed_sources[product.casefold()] = Path(path)
-        else:
-            default_source = Path(raw)
+    keyed_sources, default_source = _parse_pin_sources(args.pin_source)
 
     report = Report()
     try:
         root = find_repo_root(args.root or Path(__file__).resolve().parents[1])
-        manifest_path = root / "project.yaml"
-        if not manifest_path.is_file():
-            raise Refusal(
-                "manifest-missing",
-                f"{manifest_path} does not exist, so there is no declaration of "
-                "which legs to check. A one-repository project has no legs and "
-                "does not run this validator.",
-            )
-        manifest = load_yaml(manifest_path)
-        if not isinstance(manifest, dict):
-            raise Refusal("manifest-unreadable", f"{manifest_path}: not a mapping")
-        legs = [leg for leg in (manifest.get("legs") or [])
-                if isinstance(leg, dict) and leg.get("role") != "assembly"]
-        if not legs:
-            raise Refusal("manifest-no-legs",
-                          f"{manifest_path}: no non-assembly legs declared")
-        refs = _workflow_refs(root)
-        for leg in legs:
-            _check_leg(root, leg, report, refs)
-        _check_shape_pin(root, manifest, report)
-        _check_neutral_product_pins(root, manifest, report, keyed_sources,
-                                    default_source)
+        _run_all_checks(root, report, keyed_sources, default_source)
     except Refusal as exc:
         print(str(exc), file=sys.stderr)
         return 2
 
-    if not args.quiet:
-        for note in report.notes:
-            print(note)
-    for finding in report.findings:
-        print(finding, file=sys.stderr)
-    if report.findings:
-        print(f"\n{len(report.findings)} finding(s). " + LOCKSTEP, file=sys.stderr)
-        return 1
-    print("pins ok")
-    return 0
+    return _emit_report(report, args.quiet)
 
 
 if __name__ == "__main__":
