@@ -511,8 +511,8 @@ def _shape_snapshot() -> tuple[str, str]:
 def _template_values(args, family: str, family_id: str, repository: str,
                      url: str, created_by: str, shape_commit: str,
                      shape_tree: str) -> dict:
-    """The substitution values `materialize_family_root` fills the
-    holder's template with.
+    """The values `materialize_family_root` substitutes into the holder's
+    template.
 
     Split from `cmd_init` for #136.
     """

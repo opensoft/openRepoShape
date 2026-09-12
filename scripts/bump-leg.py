@@ -479,8 +479,8 @@ def _ensure_root_clean(root: Path) -> None:
 
 def _branch_to_bump_from(root: Path, project: "Project", role: str,
                          commit: str) -> str:
-    """The branch the bump commits on, refused if there is none or it is
-    the project's own tracking branch.
+    """The branch on which the bump commits, refused if there is none or
+    it is the project's own tracking branch.
 
     Split from `cmd_bump` for #136: these organisations are pull-request
     only, so a bump is refused before it ever makes a commit whose only

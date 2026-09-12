@@ -202,7 +202,7 @@ def _admission_row(role_note: str, family: dict, role: str | None,
     not just its effect — a reader who sees `openDox: neutral-product /
     assembly` and no explanation has to go and read the classifier to learn
     that the form still won and the role was ADDED to it (2026-09-05).
-    `role_note` in is the plain note the caller already computed, kept
+    `role_note` is the plain note the caller already computed, kept
     as-is unless this name CARRIES the admitted role.
     """
     carried = (found.role if found.family == family["id"]
