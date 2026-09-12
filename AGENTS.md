@@ -284,8 +284,8 @@ git -C <path> push -u origin shape/update-<sha>   # then open a pull request
    line the file ENDS with, moved in the pin's own commit; `check` says first
    whether it is `stale`, `current` or `absent`. One that is missing, doubled,
    an example mid-file or another repository's is left alone, and so is any
-   README this tool cannot account for: uncommitted, ignored, a symlink, a
-   hard link. The doctor notes a stale line, never a finding.
+   README this tool cannot account for: unreadable, uncommitted, ignored, a
+   symlink, a hard link. The doctor notes a stale line, never a finding.
 8. **`--trailer "<Key>: <value>"` puts a line on the commit `apply` writes.**
    Repeatable, in the order given, and only with `--branch` — without one there
    is nothing to put a line on, and it is refused. A lane passes its `Lane:`

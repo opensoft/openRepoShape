@@ -1173,12 +1173,55 @@ def test_a_readme_with_changes_of_its_own_is_left_alone_and_not_committed(
     assert readme.read_text(encoding="utf-8") == mine, (
         "neither the sha nor the paragraph moved")
     assert "uncommitted changes, untouched" in result.stdout
+    assert f"README.md: its Shape: line names {a[:12]} and the pin will read "\
+        f"{upstream_and_project['b'][:12]}" in result.stdout, (
+        "the line names both commits and claims no direction between them — "
+        "see test_an_uncommitted_line_ahead_of_the_target_is_not_behind")
     assert "README.md" not in committed_files(root)
 
     # And `check` says the same thing first, rather than promising a rewrite
     # the run will not perform.
     checked = check(root, upstream_and_project)
     assert "readme-shape-line: uncommitted" in checked.stdout
+
+
+def test_an_uncommitted_line_ahead_of_the_target_is_not_behind(
+        root, upstream_and_project):
+    """`--at` CAN AIM A RE-PIN BACKWARDS, so "behind" is not a fact.
+
+    `uncommitted` is reached on any disagreement between the line and the
+    TARGET, and `--at` is free to name a commit OLDER than the one the README
+    already claims — rehearsing a rollback to a known-good standard is the
+    ordinary way that happens. Both readings used to call such a line
+    "behind", which is the one thing it is not (Copilot, PR #152), and an
+    operator told an ahead line is an old one reaches for the wrong repair.
+    Naming both commits in the order `stale` already names them is true
+    whichever way they lie.
+
+    `check` is where this is reachable end to end, because it is the reader
+    that answers about a target `apply` would decline as nothing to do. The
+    `apply` half of the same sentence is asserted in
+    `test_a_readme_with_changes_of_its_own_is_left_alone_and_not_committed`,
+    which runs a real re-pin over an uncommitted README.
+    """
+    a, b = upstream_and_project["a"], upstream_and_project["b"]
+    readme = give_readme(root, rendered_shape_line(b))
+    # ABOVE the trailing line, so the reading under test is `uncommitted` and
+    # not `absent`: a paragraph added below it would make the claim no longer
+    # the last line, which is a different reading and a different test.
+    line = rendered_shape_line(b) + "\n"
+    text = readme.read_text(encoding="utf-8")
+    readme.write_text(text[:-len(line)] + "A paragraph I am writing.\n" + line,
+                      encoding="utf-8")
+
+    # `--at a` aims at the commit this root is already pinned to, while the
+    # README names b — so the line is AHEAD of the target, not behind it.
+    checked = check(root, upstream_and_project, "--at", a)
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    assert f"readme-shape-line: uncommitted ({b[:12]}, pin will read " \
+        f"{a[:12]}," in checked.stdout
+    assert "behind" not in checked.stdout, (
+        "the line is ahead of the target here; nothing may call it behind")
 
 
 def test_check_names_the_readme_in_the_pin_alone_preview(

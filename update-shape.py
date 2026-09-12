@@ -1150,9 +1150,15 @@ class ReadmeShapeLine:
                     "not as its last line — an example rather than this "
                     f"root's own claim; `apply` leaves {README} alone)")
         if self.state == README_UNCOMMITTED:
-            return (f"{README_UNCOMMITTED} ({self.named[:12]} is behind, but "
-                    f"{README} has changes of its own; `apply` leaves it "
-                    "alone rather than commit somebody else's edit)")
+            # THE SAME TWO COMMITS `stale` NAMES, and in the same order: the
+            # line is `uncommitted` on any disagreement with the target, and
+            # `--at` can aim a re-pin BACKWARDS, so a README that has run
+            # ahead of the pin would be told it is "behind" (Copilot,
+            # PR #152). Naming both is true whichever way they lie.
+            return (f"{README_UNCOMMITTED} ({self.named[:12]}, pin will read "
+                    f"{self.target[:12]}, but {README} has changes of its "
+                    "own; `apply` leaves it alone rather than commit "
+                    "somebody else's edit)")
         if self.state == README_SYMLINK:
             return (f"{README_SYMLINK} ({README} is a symlink; `apply` never "
                     "writes through one)")
@@ -1181,9 +1187,11 @@ class ReadmeShapeLine:
         if self.state == README_UNREADABLE:
             return f"  kept     {README}: {self.unreadable}, untouched"
         if self.state == README_UNCOMMITTED:
-            return (f"  kept     {README}: its Shape: line is behind, but the "
-                    "file has uncommitted changes, untouched — commit them "
-                    "and the next re-pin carries the line")
+            return (f"  kept     {README}: its Shape: line names "
+                    f"{self.named[:12]} and the pin will read "
+                    f"{self.target[:12]}, but the file has uncommitted "
+                    "changes, untouched — commit them and the next re-pin "
+                    "carries the line")
         if self.state == README_SYMLINK:
             return (f"  kept     {README}: a symlink, untouched — a rewrite "
                     "would land in its target rather than in this root")
