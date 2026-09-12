@@ -568,6 +568,22 @@ def _parse_sequence(recs: list[_Rec], i: int, indent: int) -> tuple[list[Any], i
     return items, i
 
 
+def _nested_value(recs: list[_Rec], i: int, indent: int) -> tuple[Any, int]:
+    """The value of a `key:` with NOTHING after the colon, and the index past it.
+
+    Split out of `_parse_mapping` for #135. A sequence may sit at the key's own
+    column or deeper, because `- ` markers are conventionally written flush
+    with the key they belong to, so it is admitted at `>= indent`. A nested
+    mapping must be strictly deeper, or it is a SIBLING key rather than this
+    key's value. Neither, and the key's value is null.
+    """
+    if i < len(recs) and recs[i].dash and recs[i].indent >= indent:
+        return _parse_sequence(recs, i, recs[i].indent)
+    if i < len(recs) and recs[i].indent > indent:
+        return _parse_nodes(recs, i, recs[i].indent)
+    return None, i
+
+
 def _parse_mapping(recs: list[_Rec], i: int, indent: int) -> tuple[dict, int]:
     out: dict[str, Any] = {}
     while i < len(recs) and not recs[i].dash and recs[i].indent == indent:
@@ -583,12 +599,7 @@ def _parse_mapping(recs: list[_Rec], i: int, indent: int) -> tuple[dict, int]:
         key, rest = kv
         i += 1
         if rest == "":
-            if i < len(recs) and recs[i].dash and recs[i].indent >= indent:
-                out[key], i = _parse_sequence(recs, i, recs[i].indent)
-            elif i < len(recs) and recs[i].indent > indent:
-                out[key], i = _parse_nodes(recs, i, recs[i].indent)
-            else:
-                out[key] = None
+            out[key], i = _nested_value(recs, i, indent)
         elif rest[0] in "[{":
             out[key] = _flow(rest)
         else:
