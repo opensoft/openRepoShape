@@ -52,17 +52,22 @@ protocol).
 ## The link targets
 
 Every path an estate already uses keeps resolving, through symlinks placed
-idempotently by `opensoft/openRepoTools`'s `link-estates`:
+idempotently by `opensoft/openRepoTools`'s `link-estates`, into whichever
+repository that estate's organisation resolves to (Addendum to Amendment 4,
+clauses (c)-(d)): this repository, by default, or the organisation's own
+`<org>/{{LOGIN}}-wip` where `~/.agents/workspace.yaml`'s `orgs:` map (above)
+names it instead — in which case `link-estates` run from that other
+checkout is what places the pair below, not this one:
 
-| the live path a lane already uses | points at |
+| the live path a lane already uses | points at, in this repository, by default |
 |---|---|
 | `~/projects/<estate>/handoffs` | `~/projects/{{LOGIN}}-wip/handoffs/<estate>` |
 | `~/projects/<estate>/LANES.md` | `~/projects/{{LOGIN}}-wip/lanes/LANES.md` |
 
-A handoffs link is placed for every `handoffs/<estate>/` directory here whose
-`~/projects/<estate>` exists on the workstation, and skipped for the rest.
-`link-estates` never deletes a real file — it moves one aside with a stamped
-suffix — and rehearses with `--dry-run`.
+A handoffs link is placed for every `handoffs/<estate>/` directory in the
+resolved repository whose `~/projects/<estate>` exists on the workstation,
+and skipped for the rest. `link-estates` never deletes a real file — it
+moves one aside with a stamped suffix — and rehearses with `--dry-run`.
 
 ## Adopting it on a second workstation
 

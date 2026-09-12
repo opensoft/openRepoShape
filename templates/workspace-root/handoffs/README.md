@@ -20,17 +20,19 @@ header.
 
 ## The `~/projects/<estate>/handoffs` symlink
 
-`~/projects/<estate>/handoffs` is a **symlink** to
-`~/projects/{{LOGIN}}-wip/handoffs/<estate>`, placed by
-`opensoft/openRepoTools`'s `link-estates`, so the old path,
+`~/projects/<estate>/handoffs` is a **symlink**, placed by
+`opensoft/openRepoTools`'s `link-estates`, into `handoffs/<estate>` of
+whichever repository this estate's organisation resolves to (Addendum to
+Amendment 4, clauses (c)-(d)): `{{ORG}}/{{LOGIN}}-wip` at
+`~/projects/{{LOGIN}}-wip`, by default, unless `~/.agents/workspace.yaml`'s
+`orgs:` map points this estate's organisation at its own
+`<org>/{{LOGIN}}-wip` instead — in which case the symlink is placed by
+running `link-estates` from that other checkout, and resolves there. Either
+way the old path,
 `~/projects/<estate>/handoffs/session-handoff-<date>-lane-<name>.md`, keeps
 resolving to the same file under both spellings. `cat`, `grep`, `ls`, a `>>`
 redirect, and a plain `open()` all keep working from the estate folder. The
 estate folder itself is not a repository and does not become one.
-
-An org placed under the `orgs:` override (Addendum to Amendment 4,
-`openRepoShape#81`) keeps that estate's handoffs in that org's own
-`<user>-wip` repository instead, and this same symlink points there.
 
 ## The symlink hazard (Amendment 4(c))
 
