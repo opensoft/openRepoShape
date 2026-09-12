@@ -270,15 +270,13 @@ def _check_leg(root: Path, leg: dict, report: Report, refs) -> None:
     _check_workflow_refs_for_leg(refs, repository, path, gitlink, report)
 
 
-def _check_shape_pin(root: Path, manifest: dict, report: Report) -> None:
-    """The shape pin is a COPY pin, and it is checked as one.
+def _check_shape_pin_header(root: Path, manifest: dict, report: Report
+                            ) -> tuple[dict, str]:
+    """Load `shape-pin.yaml` and check the fields that describe its own
+    commit, before the files it lists are checked one by one.
 
-    openRepoShape is not a submodule of a scaffolded project: the scaffold
-    COPIES a small set of files out of it so the project is self-contained in
-    an org that may never obtain the upstream. There is therefore no gitlink to
-    compare — the identity of the copies is carried by the per-file `sha256`
-    rows, exactly the half of `neutral-product-pin`'s shape that exists for
-    artifacts a consumer holds rather than mounts.
+    Split from `_check_shape_pin` for #132. Returns the pin and its path
+    relative to `root`.
     """
     pin_path = root / "contracts" / "shape-pin.yaml"
     if not pin_path.is_file():
@@ -299,6 +297,46 @@ def _check_shape_pin(root: Path, manifest: dict, report: Report) -> None:
         report.finding("shape-pin-manifest-disagree",
                        f"{rel} commit {commit} != project.yaml shape.commit "
                        f"{declared}")
+    return pin, rel
+
+
+def _check_shape_copy(root: Path, row, rel: str, report: Report) -> None:
+    """One `files:` row of the shape pin.
+
+    Split from `_check_shape_pin` for #132 so the loop over the pinned files
+    is a single call per row: is it a mapping, is the file still there, and
+    does its sha256 still match what the pin recorded.
+    """
+    if not isinstance(row, dict):
+        report.finding("shape-pin-row", f"{rel}: a files row is not a mapping")
+        return
+    target = root / str(row.get("path"))
+    if not target.is_file():
+        report.finding("shape-copy-missing",
+                       f"{rel}: {row.get('path')} is pinned but absent")
+        return
+    actual = file_sha256(target)
+    if actual != str(row.get("sha256", "")).lower():
+        report.finding(
+            "shape-copy-drift",
+            f"{row.get('path')}: sha256 {actual}\n"
+            f"       {rel} records {row.get('sha256')}\n"
+            "  A shape file was edited in place. Either revert it, or "
+            "carry the change upstream to openRepoShape and re-pin.",
+        )
+
+
+def _check_shape_pin(root: Path, manifest: dict, report: Report) -> None:
+    """The shape pin is a COPY pin, and it is checked as one.
+
+    openRepoShape is not a submodule of a scaffolded project: the scaffold
+    COPIES a small set of files out of it so the project is self-contained in
+    an org that may never obtain the upstream. There is therefore no gitlink to
+    compare — the identity of the copies is carried by the per-file `sha256`
+    rows, exactly the half of `neutral-product-pin`'s shape that exists for
+    artifacts a consumer holds rather than mounts.
+    """
+    pin, rel = _check_shape_pin_header(root, manifest, report)
     before = len(report.findings)
     files = pin.get("files") or []
     if not files:
@@ -306,23 +344,7 @@ def _check_shape_pin(root: Path, manifest: dict, report: Report) -> None:
                        f"{rel}: no `files:` rows, so nothing about the copied "
                        "shape files is actually asserted")
     for row in files:
-        if not isinstance(row, dict):
-            report.finding("shape-pin-row", f"{rel}: a files row is not a mapping")
-            continue
-        target = root / str(row.get("path"))
-        if not target.is_file():
-            report.finding("shape-copy-missing",
-                           f"{rel}: {row.get('path')} is pinned but absent")
-            continue
-        actual = file_sha256(target)
-        if actual != str(row.get("sha256", "")).lower():
-            report.finding(
-                "shape-copy-drift",
-                f"{row.get('path')}: sha256 {actual}\n"
-                f"       {rel} records {row.get('sha256')}\n"
-                "  A shape file was edited in place. Either revert it, or "
-                "carry the change upstream to openRepoShape and re-pin.",
-            )
+        _check_shape_copy(root, row, rel, report)
     if len(report.findings) == before:
         report.note(f"{rel}: {len(files)} copied shape file(s) match their digests")
 
