@@ -13,7 +13,7 @@ from conftest import REPO, blank_unnamed_pin_sources, run_script
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import (  # noqa: E402
     UNAMBIGUOUS_FORMS, NamingPolicy, Refusal, accepts_role,
-    link_pins_from_trees, parse_yaml,
+    link_pins_from_trees, parse_yaml, pin_source_env_name,
 )
 from shape_materialize import naming_block  # noqa: E402
 
@@ -622,6 +622,20 @@ def test_every_example_chain_in_the_data_holds(policy):
 
 
 # --- reading a link's own declaration, from whatever tree is on the disk ----
+#
+# EVERY TEST BELOW CALLS `link_pins_from_trees` DIRECTLY, IN THIS PROCESS —
+# no `run_script`, no subprocess (Copilot, PR #128, on `blank_unnamed_pin_
+# sources`'s own tests/conftest.py doc: "the direct link_pins_from_trees
+# tests... still call resolve_link_source, which reads os.environ
+# directly"). `blank_unnamed_pin_sources` only sanitises the environment a
+# SPAWNED CHILD sees; it does nothing for `resolve_link_source`'s rule 2
+# reading THIS process's own `os.environ`, which is exactly what these
+# tests do. An exported `SHAPE_PIN_SOURCE_OPENXDOX` pointing at a real
+# manifest — `~/projects/openXdox` on this workstation, again — would let
+# rule 2 answer before rule 3 (the sibling `tmp_path` tree each test below
+# actually builds) is ever tried, exactly the class of exposure #126
+# closed for a spawned child but not for a direct call. Every test below
+# clears it first.
 
 def _tree(path: Path, *pins: str) -> Path:
     """A stand-in for a link's checkout: a manifest and its declaration."""
@@ -634,16 +648,18 @@ def _tree(path: Path, *pins: str) -> Path:
     return path
 
 
-def test_a_link_is_read_from_a_checkout_beside_the_project(tmp_path):
+def test_a_link_is_read_from_a_checkout_beside_the_project(tmp_path, monkeypatch):
     """The ordinary workspace: the project and the products it pins, cloned
     side by side. Same lookup order `validate-pins.py` already uses."""
+    monkeypatch.delenv(pin_source_env_name("openXdox"), raising=False)
     _tree(tmp_path / "openXdox", "openDox")
     found = link_pins_from_trees(("openXdox", "openDox"),
                                  root=tmp_path / "codexDox")
     assert found == {"openxdox": {"openDox"}}
 
 
-def test_a_link_source_names_the_tree_explicitly(tmp_path):
+def test_a_link_source_names_the_tree_explicitly(tmp_path, monkeypatch):
+    monkeypatch.delenv(pin_source_env_name("openXdox"), raising=False)
     _tree(tmp_path / "elsewhere", "openDox")
     found = link_pins_from_trees(
         ("openXdox",), root=None,
@@ -651,16 +667,18 @@ def test_a_link_source_names_the_tree_explicitly(tmp_path):
     assert found == {"openxdox": {"openDox"}}
 
 
-def test_a_tree_with_no_manifest_answers_nothing(tmp_path):
+def test_a_tree_with_no_manifest_answers_nothing(tmp_path, monkeypatch):
     """Absent is UNVERIFIED, not empty: a directory that is not a project of
     this shape has not said that it declares no pins."""
+    monkeypatch.delenv(pin_source_env_name("openXdox"), raising=False)
     (tmp_path / "openXdox").mkdir()
     assert link_pins_from_trees(("openXdox",), root=tmp_path / "codexDox") == {}
 
 
-def test_a_tree_that_declares_nothing_answers_the_empty_set(tmp_path):
+def test_a_tree_that_declares_nothing_answers_the_empty_set(tmp_path, monkeypatch):
     """And an EMPTY declaration is an answer, which is why it breaks a chain
     running through it rather than leaving it unverified."""
+    monkeypatch.delenv(pin_source_env_name("openXdox"), raising=False)
     _tree(tmp_path / "openXdox")
     assert link_pins_from_trees(("openXdox",),
                                 root=tmp_path / "codexDox") == {"openxdox": set()}
