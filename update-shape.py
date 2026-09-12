@@ -1219,164 +1219,282 @@ def commit_on_branch(root: Path, branch: str, paths: list[str], target: str,
                             proc.stderr + proc.stdout)
 
 
-def cmd_apply(args) -> int:
-    # `pin` (the raw mapping `read_pin` returned) is not read again below:
-    # `pinned` is the commit string this command compares and writes back.
-    root, _, rows, additions, upstream, pinned, target, kind = prepare(args)
-    written: dict[Path, bytes] = {}
-    created: list[Path] = []
-    try:
-        accepted = {str(path) for path in (args.accept_local or [])}
-        stray = accepted - {row.path for row in rows}
-        if stray:
-            raise Refusal(
-                "update-accept-local-unknown",
-                f"--accept-local names {sorted(stray)}, which the shape pin "
-                "does not carry a row for",
-                "Remediation: only a pinned copy can be accepted; a file with "
-                "no row is not a shape copy. Checked FIRST, before the drift "
-                "refusal, so a mistyped path is reported as a mistyped path.")
-        taking = resolve_additions(rows, additions,
-                                   [str(path) for path in (args.add or [])],
-                                   target)
-        for add in additions:
-            if not add.present and add not in taking:
-                print(f"  note     {add.path} is new upstream; not added; "
-                      f"pass --add {add.path}")
-        if all(row.state == UNCHANGED for row in rows) and pinned == target \
-                and not taking:
-            print(f"nothing to do: every copied file matches "
-                  f"{upstream.repository} @ {target[:12]}, which the pin "
-                  "already names")
-            return 0
-        # `both` ALONE has an accepted exit: `--accept-local <path>` on it
-        # means the human already did the merge `update-conflict` below asks
-        # for, so that row is excluded here and handled with LOCALLY_MODIFIED
-        # further down — never copied over, and re-pinned from what is on
-        # disk. The other three conflict states (upstream-removed, unmapped,
-        # copy-missing) have no such exit: there is no local edit to trust a
-        # word about, so `--accept-local` naming one of those is simply not
-        # among the paths this can ever exclude.
-        conflicts = [row for row in rows
-                    if row.is_conflict
-                    and not (row.state == BOTH and row.path in accepted)]
-        if conflicts:
-            raise Refusal(
-                "update-conflict",
-                "these files changed on BOTH sides, or cannot be compared, and "
-                "a merge is a human's judgement rather than a byte copy:\n"
-                + "\n".join(f"    {row.path}: {row.detail or row.state}"
-                            for row in conflicts),
-                "Remediation: merge each one by hand (the upstream bytes are "
-                "`git show <target>:<source path>` in a shape clone), commit "
-                "it, then re-run this with --accept-local on that path so the "
-                "row is recomputed from what you merged.")
-        unaccepted = [row for row in rows
-                      if row.state == LOCALLY_MODIFIED and row.path not in accepted]
-        if unaccepted:
-            raise Refusal(
-                "update-local-drift",
-                "these files were edited in this project since the pin:\n"
-                + "\n".join(f"    {row.path}" for row in unaccepted)
-                + "\n  Re-pinning them from the root's own bytes would make "
-                  "the drift `validate-pins.py` reports today invisible, "
-                  "which is the fork recorded as the standard.",
-                "Remediation: revert each edit, or carry it upstream, or — "
-                "having decided the project keeps it — re-run with "
-                + " ".join(f"--accept-local {row.path}" for row in unaccepted))
-        confirm(args, rows, taking, target)
-        target_tree = upstream.tree_sha256(target)
-        pin_path = root / "contracts" / "shape-pin.yaml"
-        manifest_path = root / kind.manifest
+class Rollback:
+    """Every byte `apply` writes, and how to put the tree back.
 
-        def write(path: Path, data: bytes) -> None:
-            written.setdefault(path, path.read_bytes())
-            path.write_bytes(data)
+    ONE LEDGER, TWO KINDS OF WRITE, because the undo differs. A file the root
+    already had is restored from the original bytes kept here; a file `--add`
+    created has to be DELETED, along with any directory that had to be made to
+    hold it. `cmd_apply` carried both as closures over two of its own locals
+    and the undo as two loops in an `except` arm, which is a third of what
+    Sonar scored that function at; split out for #133, with the same writes in
+    the same order and the same undo.
+    """
 
-        def write_added(path: Path, data: bytes, executable: bool) -> None:
-            """A file the root does not have yet, remembered for the rollback.
+    def __init__(self) -> None:
+        self.written: dict[Path, bytes] = {}
+        self.created: list[Path] = []
 
-            `write` cannot serve it: there are no original bytes to keep, so
-            the rollback has to DELETE what this made — including any directory
-            it had to create to put the file in. The mode is set the way
-            `_materialize` sets it, which is to chmod the executables and leave
-            everything else to the umask.
-            """
-            for parent in reversed([p for p in path.parents if not p.exists()]):
-                parent.mkdir()
-                created.append(parent)
-            created.append(path)
-            path.write_bytes(data)
-            if executable:
-                path.chmod(0o755)
+    def write(self, path: Path, data: bytes) -> None:
+        """Overwrite a file the root already has, keeping its first bytes.
 
-        copied = [row for row in rows if row.state == UPSTREAM_CHANGED]
-        for row in copied:
-            write(root / row.path, row.target_bytes or b"")
-            print(f"  copied   {row.path}")
-        for row in rows:
-            if row.state in (LOCALLY_MODIFIED, BOTH):
-                print(f"  kept     {row.path} (local bytes; row recomputed "
-                      "from them because --accept-local named it)")
-            elif row.state == ALREADY_AT_TARGET:
-                print(f"  kept     {row.path} (already the target's bytes; "
-                      "the row was stale)")
-        for add in taking:
-            write_added(root / add.path, add.target_bytes or b"",
-                        add.executable)
-            # Appended, so the pin's existing rows keep the order the scaffold
-            # wrote them in and the new one reads as what it is: a file this
-            # project took later, by name.
-            rows.append(add)
-            print(f"  added    {add.path} (new upstream file, copied from "
-                  f"{add.source}; its row is appended to the pin)")
-        write(pin_path, rewrite_shape_pin(
-            pin_path.read_text(encoding="utf-8"), target, target_tree, rows
-        ).encode("utf-8"))
-        write(manifest_path, rewrite_manifest(
-            manifest_path.read_text(encoding="utf-8"), target, target_tree, kind
-        ).encode("utf-8"))
-        print(f"  re-pinned contracts/shape-pin.yaml and {kind.manifest} "
-              f"{pinned[:12]} -> {target[:12]}")
+        `setdefault` so a path written twice is still restored to what it held
+        before the FIRST write; nothing does that today, and a ledger that
+        remembered the second write would silently stop being a rollback.
+        """
+        self.written.setdefault(path, path.read_bytes())
+        path.write_bytes(data)
 
-        print(f"\nthe {kind.name}'s own validators")
-        failed = [name for name in kind.validators
-                  if run_validator(root, name) != 0]
-        if failed:
-            raise Refusal(
-                "update-validators-red",
-                "after the rewrite, " + " and ".join(failed) + " refused. "
-                "Every byte this command wrote has been rolled back; the tree "
-                "is exactly as it was.",
-                "Remediation: read the finding above. A tool that left a "
-                "project red would have moved the cost from this command to "
-                "somebody else's pull request.")
+    def write_added(self, path: Path, data: bytes, executable: bool) -> None:
+        """A file the root does not have yet, remembered for the rollback.
 
-        paths = sorted({row.path for row in copied}
-                       | {add.path for add in taking}
-                       | {"contracts/shape-pin.yaml", kind.manifest})
-        if args.branch:
-            commit_on_branch(root, args.branch, paths, target, upstream,
-                             len(copied), kind, [add.path for add in taking],
-                             args.trailer)
-            print(f"\n  committed on {args.branch}: " + ", ".join(paths))
-            if args.push:
-                run(["git", "push", "-q", "-u", "origin", args.branch], cwd=root)
-                print(f"  pushed {args.branch} to origin")
-            if args.pr:
-                open_pull_request(root, args.branch, target, upstream, kind)
-        print()
-        next_line(root, args, paths, target, [add.path for add in taking])
-        return 0
-    except Refusal:
-        for path, original in written.items():
+        `write` cannot serve it: there are no original bytes to keep, so the
+        rollback has to DELETE what this made — including any directory it had
+        to create to put the file in. The mode is set the way `_materialize`
+        sets it, which is to chmod the executables and leave everything else to
+        the umask.
+        """
+        for parent in reversed([p for p in path.parents if not p.exists()]):
+            parent.mkdir()
+            self.created.append(parent)
+        self.created.append(path)
+        path.write_bytes(data)
+        if executable:
+            path.chmod(0o755)
+
+    def undo(self) -> None:
+        """Put the tree back exactly as it was, and leave nothing behind.
+
+        Restores first, then unwinds the creations in reverse so a directory
+        is only considered after the file it was made for is gone. A directory
+        that is not empty is LEFT: something nobody here wrote is in it, and
+        removing that is not a rollback.
+        """
+        for path, original in self.written.items():
             path.write_bytes(original)
-        for path in reversed(created):
+        for path in reversed(self.created):
             if path.is_dir():
                 if not any(path.iterdir()):
                     path.rmdir()
             elif path.exists():
                 path.unlink()
+
+
+def _refuse_unknown_accept_local(rows: list[Row], accepted: set) -> None:
+    """`--accept-local` on a path the pin carries no row for. Split out of
+    `cmd_apply` for #133, and asked FIRST for the reason the remediation
+    gives: a mistyped path reported as a drift refusal sends a human looking
+    for drift that is not there.
+    """
+    stray = accepted - {row.path for row in rows}
+    if stray:
+        raise Refusal(
+            "update-accept-local-unknown",
+            f"--accept-local names {sorted(stray)}, which the shape pin "
+            "does not carry a row for",
+            "Remediation: only a pinned copy can be accepted; a file with "
+            "no row is not a shape copy. Checked FIRST, before the drift "
+            "refusal, so a mistyped path is reported as a mistyped path.")
+
+
+def _refuse_conflicts(rows: list[Row], accepted: set) -> None:
+    """The `update-conflict` refusal, split out of `cmd_apply` for #133.
+
+    `both` ALONE has an accepted exit: `--accept-local <path>` on it means the
+    human already did the merge this refusal asks for, so that row is excluded
+    here and handled with LOCALLY_MODIFIED further down — never copied over,
+    and re-pinned from what is on disk. The other three conflict states
+    (upstream-removed, unmapped, copy-missing) have no such exit: there is no
+    local edit to trust a word about, so `--accept-local` naming one of those
+    is simply not among the paths this can ever exclude.
+    """
+    conflicts = [row for row in rows
+                 if row.is_conflict
+                 and not (row.state == BOTH and row.path in accepted)]
+    if conflicts:
+        raise Refusal(
+            "update-conflict",
+            "these files changed on BOTH sides, or cannot be compared, and "
+            "a merge is a human's judgement rather than a byte copy:\n"
+            + "\n".join(f"    {row.path}: {row.detail or row.state}"
+                        for row in conflicts),
+            "Remediation: merge each one by hand (the upstream bytes are "
+            "`git show <target>:<source path>` in a shape clone), commit "
+            "it, then re-run this with --accept-local on that path so the "
+            "row is recomputed from what you merged.")
+
+
+def _refuse_local_drift(rows: list[Row], accepted: set) -> None:
+    """The `update-local-drift` refusal, split out of `cmd_apply` for #133:
+    a file the project edited since the pin, which nobody has said to accept.
+    """
+    unaccepted = [row for row in rows
+                  if row.state == LOCALLY_MODIFIED and row.path not in accepted]
+    if unaccepted:
+        raise Refusal(
+            "update-local-drift",
+            "these files were edited in this project since the pin:\n"
+            + "\n".join(f"    {row.path}" for row in unaccepted)
+            + "\n  Re-pinning them from the root's own bytes would make "
+              "the drift `validate-pins.py` reports today invisible, "
+              "which is the fork recorded as the standard.",
+            "Remediation: revert each edit, or carry it upstream, or — "
+            "having decided the project keeps it — re-run with "
+            + " ".join(f"--accept-local {row.path}" for row in unaccepted))
+
+
+def _note_untaken_additions(additions: list[Addition],
+                            taking: list[Addition]) -> None:
+    """One `note` line per `upstream-added` path `--add` did not name. Split
+    out of `cmd_apply` for #133.
+
+    Printed before the nothing-to-do exit and before any refusal, because it
+    is the report rather than the act: a run that then refuses has still told
+    the human which files the standard has gained and what to pass to take
+    one. An addition the root already HAS a file at is silent here for the
+    reason `Addition` gives.
+    """
+    for add in additions:
+        if not add.present and add not in taking:
+            print(f"  note     {add.path} is new upstream; not added; "
+                  f"pass --add {add.path}")
+
+
+def _nothing_to_do(rows: list[Row], pinned: str, target: str,
+                   taking: list[Addition]) -> bool:
+    """Is there no write to make at all? Split out of `cmd_apply` for #133.
+
+    All three have to hold: no copied file differs, the pin already names the
+    target, and `--add` named nothing. A pin that names a different commit is
+    a write even when every file matches, which is the re-pin `check` reports
+    as "`apply` would move the pin alone".
+    """
+    return (all(row.state == UNCHANGED for row in rows)
+            and pinned == target and not taking)
+
+
+def _write_copies(root: Path, rows: list[Row], taking: list[Addition],
+                  ledger: Rollback) -> list[Row]:
+    """Write every byte this run copies, and say what happened to each row.
+    Split out of `cmd_apply` for #133. Returns the rows actually re-copied.
+
+    THE ORDER IS THE REPORT'S ORDER: the copies, then what was kept and why,
+    then the additions. `rows` GROWS here — an `--add` row is appended rather
+    than inserted, so the pin keeps the order the scaffold wrote it in and the
+    new row reads as what it is: a file this project took later, by name.
+    """
+    copied = [row for row in rows if row.state == UPSTREAM_CHANGED]
+    for row in copied:
+        ledger.write(root / row.path, row.target_bytes or b"")
+        print(f"  copied   {row.path}")
+    for row in rows:
+        if row.state in (LOCALLY_MODIFIED, BOTH):
+            print(f"  kept     {row.path} (local bytes; row recomputed "
+                  "from them because --accept-local named it)")
+        elif row.state == ALREADY_AT_TARGET:
+            print(f"  kept     {row.path} (already the target's bytes; "
+                  "the row was stale)")
+    for add in taking:
+        ledger.write_added(root / add.path, add.target_bytes or b"",
+                           add.executable)
+        rows.append(add)
+        print(f"  added    {add.path} (new upstream file, copied from "
+              f"{add.source}; its row is appended to the pin)")
+    return copied
+
+
+def _repin(root: Path, kind: Kind, ledger: Rollback, rows: list[Row],
+           pinned: str, target: str, target_tree: str) -> None:
+    """Rewrite `contracts/shape-pin.yaml` and the kind's manifest onto the
+    target, through the ledger so both roll back. Split out of `cmd_apply`
+    for #133; the two rewriters are where the refusals about an unrecognised
+    pin or manifest live.
+    """
+    pin_path = root / "contracts" / "shape-pin.yaml"
+    manifest_path = root / kind.manifest
+    ledger.write(pin_path, rewrite_shape_pin(
+        pin_path.read_text(encoding="utf-8"), target, target_tree, rows
+    ).encode("utf-8"))
+    ledger.write(manifest_path, rewrite_manifest(
+        manifest_path.read_text(encoding="utf-8"), target, target_tree, kind
+    ).encode("utf-8"))
+    print(f"  re-pinned contracts/shape-pin.yaml and {kind.manifest} "
+          f"{pinned[:12]} -> {target[:12]}")
+
+
+def _refuse_red_validators(root: Path, kind: Kind) -> None:
+    """Run the root's OWN validators over what was just written, and refuse
+    if either goes red. Split out of `cmd_apply` for #133; the rollback is
+    the caller's `except Refusal` arm, which is why this only has to raise.
+    """
+    print(f"\nthe {kind.name}'s own validators")
+    failed = [name for name in kind.validators
+              if run_validator(root, name) != 0]
+    if failed:
+        raise Refusal(
+            "update-validators-red",
+            "after the rewrite, " + " and ".join(failed) + " refused. "
+            "Every byte this command wrote has been rolled back; the tree "
+            "is exactly as it was.",
+            "Remediation: read the finding above. A tool that left a "
+            "project red would have moved the cost from this command to "
+            "somebody else's pull request.")
+
+
+def _land(root: Path, args, paths: list[str], added: list[str], target: str,
+          upstream: Upstream, kind: Kind, count: int) -> None:
+    """The three optional acts after a clean rewrite — commit, push, open a
+    pull request — each done only because a flag asked for it. Split out of
+    `cmd_apply` for #133.
+
+    Nested the way the flags are: `--push` and `--pr` have nothing to act on
+    without `--branch`, which `main` refuses before this is ever reached.
+    """
+    if not args.branch:
+        return
+    commit_on_branch(root, args.branch, paths, target, upstream,
+                     count, kind, added, args.trailer)
+    print(f"\n  committed on {args.branch}: " + ", ".join(paths))
+    if args.push:
+        run(["git", "push", "-q", "-u", "origin", args.branch], cwd=root)
+        print(f"  pushed {args.branch} to origin")
+    if args.pr:
+        open_pull_request(root, args.branch, target, upstream, kind)
+
+
+def cmd_apply(args) -> int:
+    # `pin` (the raw mapping `read_pin` returned) is not read again below:
+    # `pinned` is the commit string this command compares and writes back.
+    root, _, rows, additions, upstream, pinned, target, kind = prepare(args)
+    ledger = Rollback()
+    try:
+        accepted = {str(path) for path in (args.accept_local or [])}
+        _refuse_unknown_accept_local(rows, accepted)
+        taking = resolve_additions(rows, additions,
+                                   [str(path) for path in (args.add or [])],
+                                   target)
+        _note_untaken_additions(additions, taking)
+        if _nothing_to_do(rows, pinned, target, taking):
+            print(f"nothing to do: every copied file matches "
+                  f"{upstream.repository} @ {target[:12]}, which the pin "
+                  "already names")
+            return 0
+        _refuse_conflicts(rows, accepted)
+        _refuse_local_drift(rows, accepted)
+        confirm(args, rows, taking, target)
+        target_tree = upstream.tree_sha256(target)
+        copied = _write_copies(root, rows, taking, ledger)
+        _repin(root, kind, ledger, rows, pinned, target, target_tree)
+        _refuse_red_validators(root, kind)
+        added = [add.path for add in taking]
+        paths = sorted({row.path for row in copied} | set(added)
+                       | {"contracts/shape-pin.yaml", kind.manifest})
+        _land(root, args, paths, added, target, upstream, kind, len(copied))
+        print()
+        next_line(root, args, paths, target, added)
+        return 0
+    except Refusal:
+        ledger.undo()
         raise
     except CommandFailed as exc:
         print(exc.loudly("committing the re-synced shape"), file=sys.stderr)
