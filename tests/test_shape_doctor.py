@@ -39,6 +39,13 @@ import pytest
 
 from conftest import (FILE_PROTOCOL, REPO, WINDOWS_SKIP, git, rmtree,
                       run_script)
+
+sys.path.insert(0, str(REPO / "scripts"))
+#: THE ONE DEFINITION of "is this the same repository" (#155), imported here
+#: so the test below can assert that the doctor's name and the holder's name
+#: ARE it -- an identity assertion, where two copies could only ever be
+#: compared to each other.
+import repo_shape  # noqa: E402
 #: The lane a lane's run sets, imported from the file that owns that rule
 #: rather than retyped -- see `tests/test_commit_trailers.py`.
 from test_commit_trailers import LANE
@@ -1628,84 +1635,126 @@ def test_a_stranger_is_reported_even_when_a_pinned_copy_also_fails(
     assert "is a clone of" in row["reason"], row["reason"]
 
 
-def test_the_doctor_and_siblings_agree_on_what_one_repository_is(siblings):
-    """THE TWO DEFINITIONS, OVER ONE TABLE, ASSERTED EQUAL.
+def test_the_doctor_and_siblings_run_ONE_definition_of_one_repository(
+        siblings):
+    """THE SAME FUNCTION OBJECT, ASSERTED BY IDENTITY, THEN HELD TO A TABLE.
 
-    `shape-doctor.py` reads `same_repository` out of
-    `scripts/shape_materialize.py` and `make siblings` refuses by the copy in
-    `templates/family-root/scripts/siblings.py`, because the doctor imports
-    nothing out of `templates/` and the module both could have shared —
-    `scripts/repo_shape.py` — is digest-pinned into every project (#146).
-    Two copies of one rule drift; this is what stops that happening in
-    silence, and it is the reason a later consolidation into `repo_shape.py`
-    can be made without anybody having to re-derive the semantics first.
+    `shape-doctor.py`'s `members` row REPORTS whether the directory beside a
+    holder is the member's working clone and `make siblings` REFUSES to fetch
+    into it when it is not, and until #155 each answered out of its own copy
+    of the rule -- the doctor's in `scripts/shape_materialize.py`, the tool's
+    in `templates/family-root/scripts/siblings.py`. What held them together
+    was a PARITY test over this table: the right instrument for two copies and
+    the wrong one for a rule that should have one, because it can only ever
+    say the two have not drifted YET and can never say that either is right.
+    The rule is one function in `scripts/repo_shape.py` now, which both files
+    import, so the first assertions here are that the names ARE that function
+    and the table carries the ANSWER each row must get.
+
+    THE CASE ROWS ARE #149'S RULE, the one behaviour the consolidation
+    deliberately changed: a remote that names a HOST compares
+    case-insensitively because GitHub treats an owner and a name that way, and
+    a FILESYSTEM PATH does not, because `/srv/mirrors/IRRS.git` and
+    `/srv/mirrors/irrs.git` are two different bare repositories on a
+    case-sensitive host -- which is precisely how this suite's own fixtures,
+    and any mirror-based family, mount their members.
     """
     spec = importlib.util.spec_from_file_location(
-        "shape_materialize_remotes", REPO / "scripts" / "shape_materialize.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+        "shape_doctor_remote_rule", REPO / DOCTOR)
+    doctor = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(doctor)
+    assert doctor.same_repository is repo_shape.same_repository
+    assert siblings.same_repository is repo_shape.same_repository
+    assert doctor.resolved_remote is repo_shape.resolved_remote
+    assert siblings.join_remote is repo_shape.join_remote
+    assert doctor.redacted is repo_shape.redacted
+
     pairs = [
         # The same repository, spelled every way a human or a tool spells it
-        ("https://github.com/Org/Repo.git", "https://github.com/Org/Repo"),
-        ("git@github.com:Org/Repo.git", "https://github.com/Org/Repo.git"),
-        ("ssh://git@github.com/Org/Repo.git", "git@github.com:Org/Repo"),
-        ("https://github.com/Org/Repo/", "https://github.com/Org/Repo.git"),
-        ("https://GitHub.com/Org/Repo.git", "https://github.com/org/repo"),
+        ("https://github.com/Org/Repo.git", "https://github.com/Org/Repo",
+         True),
+        ("git@github.com:Org/Repo.git", "https://github.com/Org/Repo.git",
+         True),
+        ("ssh://git@github.com/Org/Repo.git", "git@github.com:Org/Repo", True),
+        ("https://github.com/Org/Repo/", "https://github.com/Org/Repo.git",
+         True),
         # A manifest's bare `Org/Repo`, which is matched by its tail
-        ("https://github.com/Org/Repo.git", "Org/Repo"),
-        ("git@github.com:Org/Repo.git", "Org/Repo"),
+        ("https://github.com/Org/Repo.git", "Org/Repo", True),
+        ("git@github.com:Org/Repo.git", "Org/Repo", True),
         # A bare repository on disk, which is what this suite clones from
-        ("file:///srv/mirrors/Repo.git", "/srv/mirrors/Repo.git"),
-        ("/srv/mirrors/Repo.git/", "/srv/mirrors/Repo"),
+        ("file:///srv/mirrors/Repo.git", "/srv/mirrors/Repo.git", True),
+        ("/srv/mirrors/Repo.git/", "/srv/mirrors/Repo", True),
+        # A HOST FOLDS CASE (#149): the owner, the name and the host itself,
+        # through every spelling, because that is what the forge does
+        ("https://GitHub.com/Org/Repo", "https://github.com/org/repo", True),
+        ("https://GitHub.com/Org/Repo.git", "https://github.com/org/repo",
+         True),
+        ("git@GitHub.com:Org/Repo.git", "ssh://git@github.com/org/repo", True),
+        ("Org/Repo", "org/repo", True),
+        # A PATH DOES NOT (#149), on every platform, deliberately: Windows and
+        # macOS filesystems are case-INsensitive by default, and a report that
+        # changed its answer with the machine it ran on would be worse than
+        # one that is strict everywhere
+        ("/srv/mirrors/IRRS.git", "/srv/mirrors/irrs.git", False),
+        ("file:///srv/mirrors/IRRS.git", "file:///srv/mirrors/irrs.git",
+         False),
+        ("D:\\remotes\\Fam.git", "d:\\remotes\\fam.git", False),
+        # ...and a path still matches ITSELF, however it is spelled
+        ("D:\\remotes\\Fam.git", "D:/remotes/Fam.git", True),
+        ("/srv/mirrors/IRRS.git", "file:///srv/mirrors/IRRS.git", True),
         # And the ones that are NOT one repository
-        ("https://github.com/Other/Repo.git", "Org/Repo"),
-        ("https://github.com/Org/Other.git", "https://github.com/Org/Repo"),
-        ("https://github.com/Org/Repo.git", ""),
-        ("", "Org/Repo"),
-        ("/srv/mirrors/Other.git", "/srv/mirrors/Repo.git"),
+        ("https://github.com/Other/Repo.git", "Org/Repo", False),
+        ("https://github.com/Org/Other.git", "https://github.com/Org/Repo",
+         False),
+        ("https://github.com/Org/Repo.git", "", False),
+        ("", "Org/Repo", False),
+        ("/srv/mirrors/Other.git", "/srv/mirrors/Repo.git", False),
     ]
-    for one, two in pairs:
-        assert module.same_repository(one, two) == \
-            siblings.same_repository(one, two), (one, two)
-    # And the table is not all one answer, or agreeing on it would prove
-    # nothing about either copy.
-    answers = {module.same_repository(one, two) for one, two in pairs}
-    assert answers == {True, False}
+    for one, two, expected in pairs:
+        assert repo_shape.same_repository(one, two) is expected, (one, two)
+    # And the table is not all one answer, or it would prove nothing about the
+    # function it is asked of.
+    assert {expected for _, _, expected in pairs} == {True, False}
 
     # THE OTHER HALF OF THE SHARED RULE: git's arithmetic for a relative
     # submodule url, which `mounted_from` applies to the tracked declaration
-    # and `siblings.py::clone_url` applies before it clones. One table, both
-    # implementations, asserted EQUAL AS STRINGS -- a url a person reads off
-    # a report and a url a tool fetches from should not even be spelled
-    # differently.
+    # and `siblings.py::clone_url` applies before it clones. The same table,
+    # against the same one function, now with the string each row must
+    # produce -- a url a person reads off a report and a url a tool fetches
+    # from should not even be spelled differently.
     relative = [
-        ("https://mirror.example/team/Fam.git", "../IRRS.git"),
-        ("git@mirror.example:team/Fam.git", "../IRRS.git"),
-        ("ssh://git@host/org/Fam.git", "../sub/IRRS.git"),
-        ("/srv/mirrors/Fam.git", "../IRRS.git"),
-        ("file:///srv/mirrors/Fam.git", "../IRRS.git"),
+        ("https://mirror.example/team/Fam.git", "../IRRS.git",
+         "https://mirror.example/team/IRRS.git"),
+        ("git@mirror.example:team/Fam.git", "../IRRS.git",
+         "git@mirror.example:team/IRRS.git"),
+        ("ssh://git@host/org/Fam.git", "../sub/IRRS.git",
+         "ssh://git@host/org/sub/IRRS.git"),
+        ("/srv/mirrors/Fam.git", "../IRRS.git", "/srv/mirrors/IRRS.git"),
+        ("file:///srv/mirrors/Fam.git", "../IRRS.git",
+         "file:///srv/mirrors/IRRS.git"),
         # A Windows remote, which has no `/` in it at all -- the walk that
         # split on one alone appended to the whole string (`siblings.py`,
-        # PR #79), and this is the assertion that keeps both copies fixed.
-        ("D:\\a\\remotes\\Fam.git", "../IRRS.git"),
+        # PR #79), and this is the assertion that keeps it fixed.
+        ("D:\\a\\remotes\\Fam.git", "../IRRS.git",
+         "D:\\a\\remotes\\IRRS.git"),
         # A `..` too many, which consumes nothing rather than eating a
         # scheme or an scp host
-        ("https://host/Fam.git", "../../../IRRS.git"),
-        ("git@host:Fam.git", "../IRRS.git"),
-        ("/Fam.git", "../IRRS.git"),
-        ("https://host/a/b/Fam.git", "./IRRS.git"),
+        ("https://host/Fam.git", "../../../IRRS.git",
+         "https://host/IRRS.git"),
+        ("git@host:Fam.git", "../IRRS.git", "git@host:Fam.git/IRRS.git"),
+        ("/Fam.git", "../IRRS.git", "/IRRS.git"),
+        ("https://host/a/b/Fam.git", "./IRRS.git",
+         "https://host/a/b/Fam.git/IRRS.git"),
     ]
-    for base, url in relative:
-        assert module.join_remote(base, url) == \
-            siblings.join_relative(base, url), (base, url)
+    for base, url, expected in relative:
+        assert repo_shape.join_remote(base, url) == expected, (base, url)
         # And the wrapper makes the same two choices `resolve_relative`
         # does: an absolute url is handed straight back, and so is a
         # relative one with no remote to resolve it against.
-        assert module.resolved_remote(url, base) == \
-            module.join_remote(base, url), (base, url)
-    assert module.resolved_remote("../IRRS.git", "") == "../IRRS.git"
-    assert module.resolved_remote("https://host/IRRS.git", "https://host/x") \
-        == "https://host/IRRS.git"
+        assert repo_shape.resolved_remote(url, base) == expected, (base, url)
+    assert repo_shape.resolved_remote("../IRRS.git", "") == "../IRRS.git"
+    assert repo_shape.resolved_remote(
+        "https://host/IRRS.git", "https://host/x") == "https://host/IRRS.git"
 
 
 # --- the adversarial review on #96 ------------------------------------------

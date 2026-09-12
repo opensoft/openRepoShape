@@ -218,9 +218,22 @@ def not_in_the_standard(detail: str) -> int:
 
 
 try:
+    #: ONE RULE FOR "IS THIS THE SAME REPOSITORY" (2026-09-12, #155).
+    #: `same_repository` is the definition this report's `members` row counts
+    #: a working clone by AND the one
+    #: `templates/family-root/scripts/siblings.py` REFUSES to fetch into a
+    #: clone by -- ONE function now, imported by both, rather than this
+    #: file's half of a pair held together by a parity test (#146, #147).
+    #: This module is the one file both may read: the doctor imports nothing
+    #: out of `templates/`, and `repo_shape.py` is copied in beside
+    #: `siblings.py` in every family holder. `redacted` and `resolved_remote`
+    #: are the rest of that arithmetic and came with it -- a row that quotes
+    #: an `origin` must not publish a token, and a mount declared `../x.git`
+    #: is a url only against the root's own remote.
     from repo_shape import (  # noqa: E402
         COMMIT_RE, NamingPolicy, PYTHON, Refusal, accepts_role, git_out,
-        load_yaml, recorded_gitlink,
+        load_yaml, recorded_gitlink, redacted, resolved_remote,
+        same_repository,
     )
 except ImportError as exc:  # pragma: no cover - exercised as a subprocess
     sys.exit(not_in_the_standard(f"scripts/repo_shape.py ({exc})"))
@@ -231,16 +244,7 @@ try:
     #: `scripts/family.py` -- the two tools that WRITE these trailers -- both
     #: import it already, and a next command that named a different lane than
     #: the commit it asks for would be worse than one that named none.
-    #:
-    #: AND ONE RULE FOR "IS THIS THE SAME REPOSITORY" (2026-09-12, #146).
-    #: `same_repository` is this file's half of the definition
-    #: `templates/family-root/scripts/siblings.py` REFUSES a working clone
-    #: by, and it sits in the same non-pinned module for the same reason --
-    #: that module's own section comment says why it is not in
-    #: `scripts/repo_shape.py` and what keeps the two copies agreeing.
-    from shape_materialize import (  # noqa: E402
-        lane_trailer_argument, redacted, resolved_remote, same_repository,
-    )
+    from shape_materialize import lane_trailer_argument  # noqa: E402
 except ImportError as exc:  # pragma: no cover - exercised as a subprocess
     sys.exit(not_in_the_standard(f"scripts/shape_materialize.py ({exc})"))
 
@@ -2153,8 +2157,9 @@ def mounted_from(root: Path, rel: str, repository: str) -> str:
     git's rule for one: `../Repo.git` is arithmetic against the
     SUPERPROJECT'S remote, not a remote, and a clone that took it literally
     would fetch from wherever the process is standing. `resolved_remote` is
-    the same arithmetic `siblings.py::resolve_relative` does, in the module
-    the parity test holds the two copies of this rule together in.
+    the SAME FUNCTION `siblings.py::resolve_relative` hands the holder's own
+    `origin` to -- one definition in `scripts/repo_shape.py`, imported by
+    both, rather than two copies and a parity test (#155).
 
     AND THE TRACKED DECLARATION IS WHAT IS RESOLVED, not the copy git cached
     in `.git/config` when it initialized the mount. The cache can be STALE --
