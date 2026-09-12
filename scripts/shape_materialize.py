@@ -514,6 +514,23 @@ def git_init_commit(work: Path, message: str, branch: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Is this the same repository? — IT MOVED (2026-09-12, #155)
+# ---------------------------------------------------------------------------
+#
+# `same_repository`, `remote_key`, `join_remote`, `resolved_remote`,
+# `redacted` and the regexes under them were written HERE on 2026-09-12 as a
+# deliberate stopgap (#146, #147): a second copy of the rule
+# `templates/family-root/scripts/siblings.py` refuses a working clone by,
+# put in the one module `shape-doctor.py` could import without reading
+# `templates/` and without moving a digest pin, and held to the first copy by
+# a parity test. They are ONE definition in `scripts/repo_shape.py` now, which
+# both tools import, and the parity test is an identity assertion.
+#
+# NOTHING IN THIS FILE EVER CALLED THEM — it held them for the doctor — so
+# this is a pointer and no code. It is here because the next reader of #146 or
+# #147 will come looking for the block those issues name.
+
+# ---------------------------------------------------------------------------
 # Commit trailers (2026-09-11, #111)
 # ---------------------------------------------------------------------------
 #

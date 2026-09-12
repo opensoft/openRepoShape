@@ -31,6 +31,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
@@ -38,6 +39,13 @@ import pytest
 
 from conftest import (FILE_PROTOCOL, REPO, WINDOWS_SKIP, git, rmtree,
                       run_script)
+
+sys.path.insert(0, str(REPO / "scripts"))
+#: THE ONE DEFINITION of "is this the same repository" (#155), imported here
+#: so the test below can assert that the doctor's name and the holder's name
+#: ARE it -- an identity assertion, where two copies could only ever be
+#: compared to each other.
+import repo_shape  # noqa: E402
 #: The lane a lane's run sets, imported from the file that owns that rule
 #: rather than retyped -- see `tests/test_commit_trailers.py`.
 from test_commit_trailers import LANE
@@ -399,6 +407,40 @@ def holder(standard, tmp_path_factory) -> dict:
                        "--local-remote-dir", str(base / "remotes"))
     assert added.returncode == 0, added.stderr + added.stdout
     return {"base": base, "root": root}
+
+
+@pytest.fixture(scope="module")
+def siblings():
+    """The HOLDER's `scripts/siblings.py`, for the definition of "same
+    repository" this file's `members` row has to agree with.
+
+    THE SAME LOAD `tests/test_windows_paths.py` DOES, and for the same
+    reason: the filename is fine but the module imports `bootstrap`, which
+    sits beside it in a materialized holder and nowhere on `sys.path` here,
+    so it is pre-registered under that name and `sys.modules` is put back
+    afterwards. Loading the template rather than re-typing its rules is the
+    whole point — a copy of the rule in this file could not detect drift in
+    the file it was copied from.
+    """
+    scripts = REPO / "templates" / "family-root" / "scripts"
+    saved_path, saved_module = list(sys.path), sys.modules.get("bootstrap")
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "doctor_family_bootstrap", scripts / "bootstrap.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        sys.modules["bootstrap"] = module
+        spec = importlib.util.spec_from_file_location(
+            "doctor_family_siblings", scripts / "siblings.py")
+        loaded = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(loaded)
+        yield loaded
+    finally:
+        sys.path[:] = saved_path
+        if saved_module is None:
+            sys.modules.pop("bootstrap", None)
+        else:
+            sys.modules["bootstrap"] = saved_module
 
 
 def test_a_family_holder_gets_the_family_rows(standard, holder):
@@ -1286,10 +1328,132 @@ def test_an_unrelated_repository_beside_the_holder_is_not_the_member(
     assert row["detail"]["members"][0]["working_clone"] is None
 
 
+def member_beside(holder: dict, tmp_path: Path) -> tuple[Path, Path]:
+    """A holder in its own directory, with a real CLONE of its member beside
+    it — which is the layout `make siblings` leaves behind.
+
+    CLONED, NOT COPIED. These tests used to `copytree` the submodule
+    checkout out of `members/`, and the `.git` FILE that git leaves in a
+    submodule working tree carries a RELATIVE `gitdir:` into the holder's
+    `.git/modules/` — so the copy beside the holder was a directory git
+    itself refuses to answer any question about (`fatal: not a git
+    repository`). It passed only because the row asked nothing of origin
+    (#146). `git clone` from the url the holder mounts the member from is
+    both a real clone and the exact thing `siblings.py` does.
+    """
+    base = tmp_path / "fam"
+    base.mkdir()
+    root = base / FAMILY_NAME
+    shutil.copytree(holder["root"], root, symlinks=True)
+    remote = holder["base"] / "remotes" / f"{FAMILY_MEMBER}.git"
+    git("clone", "-q", str(remote), str(base / FAMILY_MEMBER), cwd=base)
+    return root, base / FAMILY_MEMBER
+
+
 def test_a_real_working_clone_beside_the_holder_is_counted(standard, holder,
                                                            tmp_path):
     """And the other direction, so the check above cannot pass by refusing
-    everything: the member's own tree, beside the holder, IS the clone."""
+    everything: a clone of the member, beside the holder, IS the clone."""
+    root, sibling = member_beside(holder, tmp_path)
+    row = rows_of(doctor(standard, root, "--json"))["members"]
+    assert row["detail"]["without_working_clone"] == [], row
+    assert row["detail"]["members"][0]["working_clone"] == sibling.as_posix()
+    assert row["detail"]["members"][0]["other_origin"] is None
+    # The url it was compared against is the one the holder MOUNTS it from —
+    # a bare repository on disk here, which no `https://github.com/...`
+    # derived from `repository:` would ever have matched.
+    #
+    # COMPARED WITH THE SEPARATORS FOLDED, and NOT against the raw bytes of
+    # `.gitmodules`: git ESCAPES a backslash when it writes a config value,
+    # so a Windows runner has `D:\\a\\...\\IRRS.git` in the file and hands
+    # `D:\a\...\IRRS.git` back to the reader — the url is right and the two
+    # spellings of it are not the same string.
+    mounted = row["detail"]["members"][0]["mounted_from"]
+    assert mounted.replace("\\", "/") == \
+        str(holder["base"] / "remotes" / f"{FAMILY_MEMBER}.git").replace(
+            "\\", "/")
+    assert not mounted.startswith("https://github.com/"), mounted
+
+
+# --- #146: the origin question, which `siblings.py` asks first -------------
+
+def test_a_sibling_with_this_members_id_but_another_origin_is_not_counted(
+        standard, holder, tmp_path):
+    """THE DEFECT #146 WAS FILED FOR. A fork, or a stale clone of a
+    repository that has since been renamed, carries this member's
+    `project.yaml` byte for byte and is NOT the working clone: `make
+    siblings` calls it `WRONG ORIGIN` and refuses to fetch into it, so a
+    report that counted it would disagree with the tool about one directory
+    on one disk.
+    """
+    root, sibling = member_beside(holder, tmp_path)
+    elsewhere = str(holder["base"] / "remotes" / f"{FAMILY_NAME}.git")
+    git("remote", "set-url", "origin", elsewhere, cwd=sibling)
+    row = rows_of(doctor(standard, root, "--json"))["members"]
+    entry = row["detail"]["members"][0]
+    assert entry["working_clone"] is None, entry
+    # Separators folded for the same reason the test above folds them: a
+    # Windows runner spells this path with backslashes at both ends of the
+    # comparison, and git is free to hand back either.
+    assert entry["other_origin"].replace("\\", "/") == \
+        elsewhere.replace("\\", "/"), entry
+    assert row["detail"]["without_working_clone"] == [FAMILY_MEMBER], row
+    # REPORTED, NEVER REFUSED: where somebody keeps a checkout is the
+    # workstation's layout, so the verdict is exactly what it is for a
+    # member with no clone beside the holder at all.
+    assert row["status"] == "ok", row
+    assert "is a clone of" in row["reason"], row["reason"]
+    assert entry["other_origin"] in row["reason"], row["reason"]
+    assert json.loads(doctor(standard, root, "--json").stdout)["verdict"] == \
+        "COMPLIANT"
+
+
+def test_a_sibling_at_the_right_origin_with_another_id_is_not_the_member(
+        standard, holder, tmp_path):
+    """The `WRONG PROJECT` half, which was already asked and stays asked: a
+    repository at the right url is not by itself the project the row
+    claims."""
+    root, sibling = member_beside(holder, tmp_path)
+    manifest = sibling / "project.yaml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace("id: irrs",
+                                                     "id: somethingelse"),
+        encoding="utf-8")
+    row = rows_of(doctor(standard, root, "--json"))["members"]
+    entry = row["detail"]["members"][0]
+    assert entry["working_clone"] is None, entry
+    # Not "a clone of something else": it never claimed to be this member,
+    # so the row says what it said before #146 — there is no working clone.
+    assert entry["other_origin"] is None, entry
+    assert row["detail"]["without_working_clone"] == [FAMILY_MEMBER], row
+
+
+def test_an_origin_spelled_scp_where_the_row_is_https_is_the_same_clone(
+        standard, holder, tmp_path):
+    """NOBODY'S OWN CLONE HAS TO SPELL THE REMOTE THE WAY A MANIFEST DOES.
+
+    `git@github.com:InkRouter/IRRS.git` against a row that records
+    `InkRouter/IRRS` is one repository, and a row that compared the two as
+    text would have turned this fix from a false positive into a false
+    negative — telling a person with a perfectly good working clone that it
+    is a clone of something else.
+    """
+    root, sibling = member_beside(holder, tmp_path)
+    git("remote", "set-url", "origin",
+        f"git@github.com:{FAMILY_NAME}/{FAMILY_MEMBER}.git", cwd=sibling)
+    row = rows_of(doctor(standard, root, "--json"))["members"]
+    entry = row["detail"]["members"][0]
+    assert entry["working_clone"] == sibling.as_posix(), entry
+    assert entry["other_origin"] is None, entry
+
+
+def test_a_directory_that_is_not_a_clone_at_all_is_not_called_a_stranger(
+        standard, holder, tmp_path):
+    """A copied submodule checkout — a `.git` FILE whose relative `gitdir:`
+    points nowhere — is a directory git answers nothing about. It carries
+    this member's manifest, so it is reported as what it is rather than
+    counted, and the wording is `siblings.py`'s own `(no origin)`.
+    """
     base = tmp_path / "fam"
     base.mkdir()
     root = base / FAMILY_NAME
@@ -1297,8 +1461,328 @@ def test_a_real_working_clone_beside_the_holder_is_counted(standard, holder,
     shutil.copytree(holder["root"] / "members" / FAMILY_MEMBER,
                     base / FAMILY_MEMBER, symlinks=True)
     row = rows_of(doctor(standard, root, "--json"))["members"]
-    assert row["detail"]["without_working_clone"] == [], row
-    assert row["detail"]["members"][0]["working_clone"] is not None
+    entry = row["detail"]["members"][0]
+    assert entry["working_clone"] is None, entry
+    assert entry["other_origin"] == "(no origin)", entry
+    assert row["status"] == "ok", row
+
+
+def test_a_credential_in_an_origin_is_not_printed_or_put_in_the_json(
+        standard, holder, tmp_path):
+    """A REPORT PRINTS WHAT IT FINDS, AND WHAT IT FINDS CAN BE A TOKEN.
+
+    Git permits a credential in a remote url and people do put one there;
+    `--json` from this command is pasted into issues and kept as a CI
+    artifact. So the origin a row quotes is redacted to `***` and the token
+    appears NOWHERE in the output (Codex and Copilot, PR #147).
+    """
+    root, sibling = member_beside(holder, tmp_path)
+    git("remote", "set-url", "origin",
+        "https://x-access-token:SUPERSECRET@github.com/Someone/Fork.git",
+        cwd=sibling)
+    result = doctor(standard, root, "--json")
+    entry = rows_of(result)["members"]["detail"]["members"][0]
+    assert entry["working_clone"] is None, entry
+    assert entry["other_origin"] == \
+        "https://***@github.com/Someone/Fork.git", entry
+    # Not in the row, and not anywhere else in the report either: the whole
+    # of `--json` is what gets pasted, not the one field.
+    assert "SUPERSECRET" not in result.stdout, result.stdout
+    assert "SUPERSECRET" not in doctor(standard, root).stdout
+
+
+@pytest.mark.parametrize("holder_origin,sibling_origin", [
+    (f"https://mirror.example/team/{FAMILY_NAME}.git",
+     f"git@mirror.example:team/{FAMILY_MEMBER}.git"),
+    (f"git@mirror.example:team/{FAMILY_NAME}.git",
+     f"https://mirror.example/team/{FAMILY_MEMBER}.git"),
+])
+def test_a_relative_mount_is_resolved_against_the_holders_own_remote(
+        standard, holder, tmp_path, holder_origin, sibling_origin):
+    """`../Repo.git` IS NOT A REMOTE. It is arithmetic against the
+    SUPERPROJECT'S remote — git's own rule, one path component dropped per
+    `..` — and git has already done it, into the holder's `.git/config`,
+    for the mount that exists.
+
+    THE MIRROR IS THE CASE THAT BITES. This family's remote is not
+    `github.com`, so a row that compared the sibling's origin against the
+    literal `../IRRS.git` and then against the manifest's `InkRouter/IRRS`
+    would match neither and call a perfectly good working clone a stranger
+    (Copilot, PR #147). Reading what git resolved is also the only answer
+    that cannot DISAGREE with the tool: re-deriving the arithmetic here is
+    how a report and `make siblings` come to hold two opinions about one url.
+
+    BOTH SPELLINGS OF THE HOLDER'S REMOTE, and the sibling spelled the other
+    way each time, because the two questions compose: git resolves the
+    relative url in whatever spelling the holder's remote uses, and
+    `same_repository` is what makes that the same repository as the clone.
+    """
+    root, sibling = member_beside(holder, tmp_path)
+    git("remote", "set-url", "origin", holder_origin, cwd=root)
+    git("config", "-f", str(root / ".gitmodules"),
+        f"submodule.members/{FAMILY_MEMBER}.url", f"../{FAMILY_MEMBER}.git",
+        cwd=root)
+    # AND `git submodule sync` IS DELIBERATELY NOT RUN. The holder's own
+    # `.git/config` still carries the url git cached when it initialized the
+    # mount — the bare repository on disk this fixture was built from — so a
+    # row that read the cache instead of the tracked declaration would answer
+    # with that stale url and this assertion would catch it (Copilot, PR
+    # #147). `make siblings` reads the declaration; so does this.
+    git("remote", "set-url", "origin", sibling_origin, cwd=sibling)
+    entry = rows_of(doctor(standard, root, "--json"))["members"]["detail"][
+        "members"][0]
+    assert entry["mounted_from"] == \
+        f"{holder_origin.rsplit('/', 1)[0]}/{FAMILY_MEMBER}.git", entry
+    assert not entry["mounted_from"].startswith(".."), entry
+    assert entry["working_clone"] == sibling.as_posix(), entry
+    assert entry["other_origin"] is None, entry
+
+
+def test_a_relative_url_with_no_remote_leaves_the_manifest_the_only_judge(
+        standard, holder, tmp_path):
+    """A REFERENCE THIS ROW CANNOT RESOLVE CHANGES NOTHING ABOUT THE ANSWER.
+
+    `../Repo.git` on a holder with no remote of its own is not a url: it
+    matches nothing, and `family.yaml`'s `repository:` — the other reference
+    `verify_sibling` accepts — is then the whole of the question. That is
+    exactly the state `scripts/siblings.py` is in for the same holder, which
+    is the point: counting a clone BECAUSE the mount url was unresolvable
+    would put back the disagreement this change exists to remove, since
+    `make siblings` calls a clone from somewhere else `WRONG ORIGIN` whether
+    or not the url resolved (Copilot, PR #147).
+    """
+    root, sibling = member_beside(holder, tmp_path)
+    git("config", "-f", str(root / ".gitmodules"),
+        f"submodule.members/{FAMILY_MEMBER}.url", f"../{FAMILY_MEMBER}.git",
+        cwd=root)
+    git("remote", "remove", "origin", cwd=root)
+    # Cloned from the repository the row NAMES: counted, on the manifest's
+    # spelling alone.
+    git("remote", "set-url", "origin",
+        f"https://github.com/{FAMILY_NAME}/{FAMILY_MEMBER}.git", cwd=sibling)
+    entry = rows_of(doctor(standard, root, "--json"))["members"]["detail"][
+        "members"][0]
+    assert entry["mounted_from"] == f"../{FAMILY_MEMBER}.git", entry
+    assert entry["working_clone"] == sibling.as_posix(), entry
+    assert entry["other_origin"] is None, entry
+
+    # And cloned from somewhere else: reported, exactly as `make siblings`
+    # would refuse it, rather than waved through because the mount url could
+    # not be resolved. A host this suite has never named, because a
+    # developer's own `url.<base>.insteadOf` rewrites `https://github.com/`
+    # on the way into `.git/config` and the row would then quote a spelling
+    # this test never wrote.
+    git("remote", "set-url", "origin",
+        f"https://elsewhere.example/{FAMILY_NAME}/SomethingElse.git",
+        cwd=sibling)
+    spelled = git("remote", "get-url", "origin", cwd=sibling).stdout.strip()
+    entry = rows_of(doctor(standard, root, "--json"))["members"]["detail"][
+        "members"][0]
+    assert entry["working_clone"] is None, entry
+    assert entry["other_origin"] == spelled, entry
+
+
+def test_an_unresolvable_reference_does_not_excuse_an_originless_clone(
+        standard, holder, tmp_path):
+    """AN UNANSWERABLE REFERENCE IS NOT AN UNANSWERABLE CLONE.
+
+    The fallback above says nothing about a directory when the ROW's url
+    cannot be resolved — but a directory with no readable origin of its own
+    is not a working clone under anybody's definition, and `verify_sibling`
+    refuses that state too. Letting the one excuse the other would have made
+    a dangling `.git` file count as a clone the moment a family mounted a
+    member with a relative url (Copilot, PR #147).
+    """
+    base = tmp_path / "fam"
+    base.mkdir()
+    root = base / FAMILY_NAME
+    shutil.copytree(holder["root"], root, symlinks=True)
+    shutil.copytree(holder["root"] / "members" / FAMILY_MEMBER,
+                    base / FAMILY_MEMBER, symlinks=True)
+    git("config", "-f", str(root / ".gitmodules"),
+        f"submodule.members/{FAMILY_MEMBER}.url", f"../{FAMILY_MEMBER}.git",
+        cwd=root)
+    git("remote", "remove", "origin", cwd=root)
+    entry = rows_of(doctor(standard, root, "--json"))["members"]["detail"][
+        "members"][0]
+    assert entry["mounted_from"] == f"../{FAMILY_MEMBER}.git", entry
+    assert entry["working_clone"] is None, entry
+    assert entry["other_origin"] == "(no origin)", entry
+
+
+def test_a_stranger_is_reported_even_when_a_pinned_copy_also_fails(
+        standard, holder, tmp_path):
+    """THE RED PATH SAYS IT TOO, AND SAYS IT IS NOT THE FINDING.
+
+    A holder with one member checked out away from its pin returns the
+    finding row and used to say nothing about the directory beside it — so
+    a person would fix the mount, re-run, and only then hear about a clone
+    that had been the wrong one all along (Codex, PR #147).
+    """
+    root, sibling = member_beside(holder, tmp_path)
+    elsewhere = str(holder["base"] / "remotes" / f"{FAMILY_NAME}.git")
+    git("remote", "set-url", "origin", elsewhere, cwd=sibling)
+    manifest = root / "family.yaml"
+    # The sha THIS ROW reads, rather than the first 40-hex string in the
+    # file: a family manifest carries the shape's pin as well, and moving
+    # that one would prove nothing about a member.
+    pinned = rows_of(doctor(standard, root, "--json"))["members"]["detail"][
+        "members"][0]["pin"]
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(pinned, "0" * 40),
+        encoding="utf-8")
+    row = rows_of(doctor(standard, root, "--json"))["members"]
+    assert row["status"] == "FINDING", row
+    assert "checked out at" in row["reason"], row["reason"]
+    assert "though it is not what fails this row" in row["reason"], \
+        row["reason"]
+    assert "is a clone of" in row["reason"], row["reason"]
+
+
+def test_the_doctor_and_siblings_run_ONE_definition_of_one_repository(
+        siblings):
+    """THE SAME FUNCTION OBJECT, ASSERTED BY IDENTITY, THEN HELD TO A TABLE.
+
+    `shape-doctor.py`'s `members` row REPORTS whether the directory beside a
+    holder is the member's working clone and `make siblings` REFUSES to fetch
+    into it when it is not, and until #155 each answered out of its own copy
+    of the rule -- the doctor's in `scripts/shape_materialize.py`, the tool's
+    in `templates/family-root/scripts/siblings.py`. What held them together
+    was a PARITY test over this table: the right instrument for two copies and
+    the wrong one for a rule that should have one, because it can only ever
+    say the two have not drifted YET and can never say that either is right.
+    The rule is one function in `scripts/repo_shape.py` now, which both files
+    import, so the first assertions here are that the names ARE that function
+    and the table carries the ANSWER each row must get.
+
+    THE CASE ROWS ARE #149'S RULE, the one behaviour the consolidation
+    deliberately changed: a remote that names a HOST compares
+    case-insensitively because GitHub treats an owner and a name that way, and
+    a FILESYSTEM PATH does not, because `/srv/mirrors/IRRS.git` and
+    `/srv/mirrors/irrs.git` are two different bare repositories on a
+    case-sensitive host -- which is precisely how this suite's own fixtures,
+    and any mirror-based family, mount their members. A RELATIVE path (`./`,
+    `../`) is a path for the same reason, and the TRAILING `owner/repo`
+    fallback is a FORGE question unless both sides are paths: a mirror at
+    `/srv/mirrors/InkRouter/IRRS.git` is matched against the row's bare
+    `InkRouter/IRRS`, which is a name somebody typed into a manifest and is
+    case-insensitive at the forge (Copilot and Codex, PR #156).
+    """
+    spec = importlib.util.spec_from_file_location(
+        "shape_doctor_remote_rule", REPO / DOCTOR)
+    doctor = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(doctor)
+    assert doctor.same_repository is repo_shape.same_repository
+    assert siblings.same_repository is repo_shape.same_repository
+    assert doctor.resolved_remote is repo_shape.resolved_remote
+    assert siblings.join_remote is repo_shape.join_remote
+    assert doctor.redacted is repo_shape.redacted
+
+    pairs = [
+        # The same repository, spelled every way a human or a tool spells it
+        ("https://github.com/Org/Repo.git", "https://github.com/Org/Repo",
+         True),
+        ("git@github.com:Org/Repo.git", "https://github.com/Org/Repo.git",
+         True),
+        ("ssh://git@github.com/Org/Repo.git", "git@github.com:Org/Repo", True),
+        ("https://github.com/Org/Repo/", "https://github.com/Org/Repo.git",
+         True),
+        # A manifest's bare `Org/Repo`, which is matched by its tail
+        ("https://github.com/Org/Repo.git", "Org/Repo", True),
+        ("git@github.com:Org/Repo.git", "Org/Repo", True),
+        # A bare repository on disk, which is what this suite clones from
+        ("file:///srv/mirrors/Repo.git", "/srv/mirrors/Repo.git", True),
+        ("/srv/mirrors/Repo.git/", "/srv/mirrors/Repo", True),
+        # A HOST FOLDS CASE (#149): the owner, the name and the host itself,
+        # through every spelling, because that is what the forge does
+        ("https://GitHub.com/Org/Repo", "https://github.com/org/repo", True),
+        ("https://GitHub.com/Org/Repo.git", "https://github.com/org/repo",
+         True),
+        ("git@GitHub.com:Org/Repo.git", "ssh://git@github.com/org/repo", True),
+        ("Org/Repo", "org/repo", True),
+        # A MIRROR ON DISK IS STILL MATCHED AGAINST THE MANIFEST'S BARE ROW
+        # by its trailing `owner/repo` -- the InkRouter estate's own layout,
+        # and the reason the tail comparison folds case whenever either side
+        # is a forge name rather than a directory (Copilot, PR #156)
+        ("/srv/mirrors/InkRouter/IRRS.git", "InkRouter/IRRS", True),
+        ("/srv/mirrors/inkrouter/irrs.git", "InkRouter/IRRS", True),
+        ("InkRouter/IRRS", "/srv/mirrors/InkRouter/IRRS.git", True),
+        ("../InkRouter/IRRS.git", "InkRouter/IRRS", True),
+        # ...and the tail still has to be the RIGHT two components
+        ("/srv/mirrors/InkRouter/Other.git", "InkRouter/IRRS", False),
+        # A PATH DOES NOT (#149), on every platform, deliberately: Windows and
+        # macOS filesystems are case-INsensitive by default, and a report that
+        # changed its answer with the machine it ran on would be worse than
+        # one that is strict everywhere
+        ("/srv/mirrors/IRRS.git", "/srv/mirrors/irrs.git", False),
+        ("file:///srv/mirrors/IRRS.git", "file:///srv/mirrors/irrs.git",
+         False),
+        ("D:\\remotes\\Fam.git", "d:\\remotes\\fam.git", False),
+        # A RELATIVE path is a path too -- `../mirrors/Fam.git` is as much on
+        # a disk as `/srv/mirrors/Fam.git`, and git requires the `./` or
+        # `../` of anybody who means one (Copilot and Codex, PR #156)
+        ("../IRRS.git", "../irrs.git", False),
+        ("../mirrors/Repo.git", "../mirrors/repo.git", False),
+        # ...including through the tail, where two paths compare strictly
+        ("/srv/mirrors/InkRouter/IRRS.git", "/srv/mirrors/inkrouter/irrs.git",
+         False),
+        # ...and a path still matches ITSELF, however it is spelled
+        ("D:\\remotes\\Fam.git", "D:/remotes/Fam.git", True),
+        ("/srv/mirrors/IRRS.git", "file:///srv/mirrors/IRRS.git", True),
+        ("../mirrors/Repo.git", "../mirrors/Repo", True),
+        # And the ones that are NOT one repository
+        ("https://github.com/Other/Repo.git", "Org/Repo", False),
+        ("https://github.com/Org/Other.git", "https://github.com/Org/Repo",
+         False),
+        ("https://github.com/Org/Repo.git", "", False),
+        ("", "Org/Repo", False),
+        ("/srv/mirrors/Other.git", "/srv/mirrors/Repo.git", False),
+    ]
+    for one, two, expected in pairs:
+        assert repo_shape.same_repository(one, two) is expected, (one, two)
+    # And the table is not all one answer, or it would prove nothing about the
+    # function it is asked of.
+    assert {expected for _, _, expected in pairs} == {True, False}
+
+    # THE OTHER HALF OF THE SHARED RULE: git's arithmetic for a relative
+    # submodule url, which `mounted_from` applies to the tracked declaration
+    # and `siblings.py::clone_url` applies before it clones. The same table,
+    # against the same one function, now with the string each row must
+    # produce -- a url a person reads off a report and a url a tool fetches
+    # from should not even be spelled differently.
+    relative = [
+        ("https://mirror.example/team/Fam.git", "../IRRS.git",
+         "https://mirror.example/team/IRRS.git"),
+        ("git@mirror.example:team/Fam.git", "../IRRS.git",
+         "git@mirror.example:team/IRRS.git"),
+        ("ssh://git@host/org/Fam.git", "../sub/IRRS.git",
+         "ssh://git@host/org/sub/IRRS.git"),
+        ("/srv/mirrors/Fam.git", "../IRRS.git", "/srv/mirrors/IRRS.git"),
+        ("file:///srv/mirrors/Fam.git", "../IRRS.git",
+         "file:///srv/mirrors/IRRS.git"),
+        # A Windows remote, which has no `/` in it at all -- the walk that
+        # split on one alone appended to the whole string (`siblings.py`,
+        # PR #79), and this is the assertion that keeps it fixed.
+        ("D:\\a\\remotes\\Fam.git", "../IRRS.git",
+         "D:\\a\\remotes\\IRRS.git"),
+        # A `..` too many, which consumes nothing rather than eating a
+        # scheme or an scp host
+        ("https://host/Fam.git", "../../../IRRS.git",
+         "https://host/IRRS.git"),
+        ("git@host:Fam.git", "../IRRS.git", "git@host:Fam.git/IRRS.git"),
+        ("/Fam.git", "../IRRS.git", "/IRRS.git"),
+        ("https://host/a/b/Fam.git", "./IRRS.git",
+         "https://host/a/b/Fam.git/IRRS.git"),
+    ]
+    for base, url, expected in relative:
+        assert repo_shape.join_remote(base, url) == expected, (base, url)
+        # And the wrapper makes the same two choices `resolve_relative`
+        # does: an absolute url is handed straight back, and so is a
+        # relative one with no remote to resolve it against.
+        assert repo_shape.resolved_remote(url, base) == expected, (base, url)
+    assert repo_shape.resolved_remote("../IRRS.git", "") == "../IRRS.git"
+    assert repo_shape.resolved_remote(
+        "https://host/IRRS.git", "https://host/x") == "https://host/IRRS.git"
 
 
 # --- the adversarial review on #96 ------------------------------------------
