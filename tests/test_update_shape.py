@@ -1553,6 +1553,70 @@ def test_crlf_endings_and_a_bom_survive_a_rewrite_byte_for_byte(
     assert "README.md" in committed_files(root)
 
 
+def test_a_readme_checked_out_with_crlf_is_committed_and_keeps_its_endings(
+        root, upstream_and_project, update_shape):
+    """A HOLDER CLONED ON WINDOWS IS THE ONE MOST APT TO DRIFT, and this is
+    what says its README is still a README `apply` writes.
+
+    `readme_is_committed` weighs `git hash-object -- README.md` against
+    `HEAD:README.md`, and a reviewer read that as hashing the RAW bytes: a
+    CRLF working tree would then hash unequal to its own LF blob, be read as
+    `uncommitted`, and keep its stale line for ever — this feature's
+    byte-preserving CRLF support defeated on the one platform that needs it
+    (Copilot, PR #152). It does not happen, because a file handed to
+    `hash-object` as an argument is hashed AS that path, clean filter and
+    all. The three hashes below are that argument made of bytes rather than
+    of prose: the raw file is NOT the committed blob, and the filtered one
+    is.
+
+    THE CRLF COMES FROM `.git/info/attributes`, which outranks every
+    `.gitattributes` in the tree — the project's own ships `* text=auto
+    eol=lf` and is a PINNED copy, so editing it would be drift and this test
+    would be exercising that refusal instead. It is the per-clone lever
+    `test_git_answers_three_ways_for_a_readme_and_one_of_them_is_committed`
+    already uses for the ignored case, and it reproduces exactly what a
+    clone under Git for Windows' `core.autocrlf=true` default gets: LF in
+    the index, CRLF on disk, and a `git status` with nothing to say.
+    """
+    a, b = upstream_and_project["a"], upstream_and_project["b"]
+    readme = give_readme(root, rendered_shape_line(a))
+    attributes = root / ".git" / "info" / "attributes"
+    attributes.parent.mkdir(parents=True, exist_ok=True)
+    attributes.write_text("README.md text eol=crlf\n", encoding="utf-8")
+    readme.unlink()
+    git("checkout", "--", "README.md", cwd=root)
+
+    before = readme.read_bytes()
+    assert b"\r\n" in before, (
+        "fixture: `eol=crlf` is what puts CRLF in this working tree")
+    assert not git("status", "--porcelain", "--ignored", "--", "README.md",
+                   cwd=root).stdout.strip(), (
+        "fixture: git calls a CRLF checkout of an LF blob clean")
+    head = git("rev-parse", "HEAD:README.md", cwd=root).stdout.strip()
+    assert git("hash-object", "--no-filters", "--", "README.md",
+               cwd=root).stdout.strip() != head, (
+        "fixture: the bytes on disk really are not the committed blob")
+    assert git("hash-object", "--", "README.md",
+               cwd=root).stdout.strip() == head, (
+        "the clean filter runs on a file argument, so a CRLF working tree "
+        "hashes to the LF blob it was committed as")
+    assert update_shape.readme_is_committed(root) is True
+
+    result = apply(root, upstream_and_project, "--branch", "shape/update-eol")
+    assert result.returncode == 0, result.stdout + result.stderr
+    after = readme.read_bytes()
+    # The scaffolded README names commit A in prose of its own a few lines
+    # up, so the expectation is built by index rather than by replacing every
+    # occurrence: only the LAST line is this tool's, and every CRLF in the
+    # file — including the one ending the line it rewrote — is where it was.
+    was, now = (rendered_shape_line(a).encode("utf-8"),
+                rendered_shape_line(b).encode("utf-8"))
+    at = before.rindex(was)
+    assert after == before[:at] + now + before[at + len(was):]
+    assert after.count(b"\r\n") == before.count(b"\r\n")
+    assert "README.md" in committed_files(root)
+
+
 def test_a_backtick_name_running_over_a_line_break_is_not_a_second_line(
         root, upstream_and_project):
     """`[^`]+` MATCHED NEWLINES, and `re.MULTILINE` does not stop it: only

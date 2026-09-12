@@ -992,6 +992,18 @@ def readme_is_committed(root: Path) -> bool:
     the same blob it was committed as rather than reading as a whole-file
     edit.
 
+    NO `--path` IS PASSED, AND THAT IS NOT AN OMISSION. A file handed to
+    `hash-object` as an argument is hashed AS the path it was handed, so the
+    attributes that govern `README.md` — the `* text=auto eol=lf` these
+    templates ship among them — are the ones that run: `--no-filters` is the
+    flag that turns the conversion OFF, and `--path` is for stdin and for
+    files outside the working tree. Without that, a Windows holder's CRLF
+    checkout would hash unequal to its own LF blob, read as `uncommitted`,
+    and keep its stale line for ever — this feature's byte-preserving CRLF
+    support defeated on the one platform that needs it (Copilot, PR #152).
+    `test_a_readme_checked_out_with_crlf_is_committed_and_keeps_its_endings`
+    hashes one file three ways so that stays a fact rather than a claim.
+
     The status question is still asked, and first: it is the one that catches
     a change STAGED but reverted in the working tree, where the bytes on disk
     do match HEAD and the commit would quietly drop what the human staged.
