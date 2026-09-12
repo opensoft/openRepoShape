@@ -1592,11 +1592,15 @@ class NamingPolicy:
 
     def _descendant_answer(self, by_family, declared_role, leg_roles,
                            declared, resolution) -> tuple:
-        """The answer for a descendant claim that REACHED its referent.
+        """The answer for a descendant claim `classify` decided to honour.
 
         Split out of `classify` for #135, returning the same
         `(family_id, role_id, reason, matched_key)` ingredients as
-        `_unambiguous_answer` above.
+        `_unambiguous_answer` above. TWO PATHS REACH IT, and
+        `_descendant_reason` words both: a referent REACHED — by a direct pin
+        or through a chain that holds, with `declared` naming it — and a
+        policy whose descendant family does not require a referent at all,
+        where `declared` is None and the reason says exactly that.
 
         A DESCENDANT MAY CARRY LEGS (Brett Heap, 2026-09-02). The descendant
         family declares no roles of its own, so the role a descendant answers
