@@ -357,7 +357,159 @@ def _split_flow(body: str) -> list[str]:
     return [p for p in parts if p != ""]
 
 
+#: A block scalar's HEADER: `|` or `>`, optionally with a chomping indicator
+#: and an explicit indentation digit. Spelled once, beside the pair of
+#: functions that read the body it introduces.
+_BLOCK_HEADER_RE = re.compile(r"[|>][-+]?\d*")
+
+
+def _significant_text(raw: str, line: int) -> str | None:
+    """The stripped line, or `None` for a line that tokenises to nothing.
+
+    Split out of `_tokenise` for #135. One refusal and both of this reader's
+    "nothing here" cases are decided by the raw line ALONE, before any
+    indentation, marker or key has been read: a tab in the indentation is
+    refused outright, and a blank line or a whole-line comment carries no
+    record at all.
+    """
+    if "\t" in raw[: len(raw) - len(raw.lstrip())]:
+        raise YamlError(f"line {line}: tab used for indentation")
+    stripped = raw.strip()
+    if not stripped or stripped.startswith("#"):
+        return None
+    return stripped
+
+
+def _document_marker(marker: str, seen_doc: bool) -> bool:
+    """`seen_doc` after a `---` or `...` line. Split out of `_tokenise` (#135).
+
+    A SECOND `---` opens a second document, which this reader refuses rather
+    than guess which of them its caller meant. `...` ends a document and says
+    nothing about how many there have been, so it leaves the flag where it is.
+    """
+    if marker == "---":
+        if seen_doc:
+            raise YamlError("multiple documents are not supported")
+        return True
+    return seen_doc
+
+
+def _peel_dashes(recs: list[_Rec], indent: int, content: str,
+                 line: int) -> tuple[int, str]:
+    """Peel leading `- ` markers into DASH records so a sequence item's
+    content sits at its own column, which is where its sibling keys are.
+
+    Split out of `_tokenise` for #135. It returns the column and the text that
+    are LEFT once every marker on the line has a record of its own, which is
+    what the rest of the line is then read at.
+    """
+    while True:
+        m = _DASH_RE.match(content)
+        if not m:
+            return indent, content
+        recs.append(_Rec(indent, "", True, line))
+        indent += len(m.group(0))
+        content = content[m.end():]
+
+
+def _refuse_unsupported(content: str, line: int) -> None:
+    """The two constructs this reader will not guess at, refused by name.
+
+    Split out of `_tokenise` for #135. An explicit key and a merge key each
+    have a meaning the reader would have to invent, and an invented meaning in
+    a validator is a wrong answer with a confident tone.
+    """
+    if content.startswith("? "):
+        raise YamlError(f"line {line}: explicit keys are not supported")
+    if content.startswith("<<"):
+        raise YamlError(f"line {line}: merge keys are not supported")
+
+
+def _opens_block_scalar(kv: tuple[str, str] | None) -> bool:
+    """Does a split `key: rest` introduce a literal or folded block scalar?
+
+    Split out of `_tokenise` for #135. `|`, `>`, `|-`, `>2` and the rest of
+    that alphabet are HEADERS, and the value is the lines below them; a `rest`
+    that merely BEGINS with one of those characters (`>= 3`) is an ordinary
+    scalar and is read as one, which is why the whole of it must match.
+    """
+    return (kv is not None and kv[1][:1] in ("|", ">")
+            and _BLOCK_HEADER_RE.fullmatch(kv[1]) is not None)
+
+
+def _block_scalar_body(raw_lines: list[str], i: int,
+                       indent: int) -> tuple[list[str], int]:
+    """A block scalar's body lines, and the index of the line after them.
+
+    Split out of `_tokenise` for #135. The body is every following line MORE
+    INDENTED than the key, with the first such line's column taken as the
+    block's own indentation and stripped from all of them. A blank line
+    belongs to the body whatever its column, because it has none.
+    """
+    body: list[str] = []
+    block_indent = None
+    while i < len(raw_lines):
+        nxt = raw_lines[i]
+        if nxt.strip() == "":
+            body.append("")
+            i += 1
+            continue
+        nxt_indent = len(nxt) - len(nxt.lstrip(" "))
+        if nxt_indent <= indent:
+            break
+        if block_indent is None:
+            block_indent = nxt_indent
+        body.append(nxt[block_indent:])
+        i += 1
+    return body, i
+
+
+def _fold_block_body(body: list[str]) -> str:
+    """A FOLDED (`>`) block scalar's body, joined the way folding joins it.
+
+    Split out of `_tokenise` for #135. A blank line is a newline of its own
+    and every other line is joined to the one before it with a space; a body
+    whose LAST line is blank is stripped of newlines at both ends, because the
+    trailing one is the chomping indicator's to decide.
+    """
+    folded: list[str] = []
+    for line in body:
+        if line == "":
+            folded.append("\n")
+        elif folded and folded[-1] not in ("", "\n"):
+            folded.append(" " + line)
+        else:
+            folded.append(line)
+    if body and body[-1] == "":
+        return "".join(folded).strip("\n")
+    return "".join(folded)
+
+
+def _block_scalar_text(header: str, body: list[str]) -> str:
+    """A block scalar's body as the one string its key takes as a value.
+
+    Split out of `_tokenise` for #135. `|` keeps every line break and `>`
+    folds them; the `-` chomping indicator drops the trailing newline, and its
+    absence leaves exactly one, which is YAML's clip behaviour.
+    """
+    if header[0] == "|":
+        joined = "\n".join(body)
+    else:
+        joined = _fold_block_body(body)
+    if header.endswith("-"):
+        return joined.rstrip("\n")
+    return joined.rstrip("\n") + "\n"
+
+
 def _tokenise(text: str) -> list[_Rec]:
+    """The `_Rec` stream `_parse_nodes` reads, one record per significant line.
+
+    THE RULE THIS FUNCTION IMPLEMENTS IS THE ORDER, which is why each step of
+    it is a named helper above (#135): a line that tokenises to nothing, a
+    document marker, the `- ` markers peeled off the front, the two refusals,
+    a block scalar's header and the body swallowed under it, and last an
+    ordinary line kept as its own record.
+    """
     recs: list[_Rec] = []
     raw_lines = text.splitlines()
     i = 0
@@ -365,75 +517,25 @@ def _tokenise(text: str) -> list[_Rec]:
     while i < len(raw_lines):
         raw = raw_lines[i]
         i += 1
-        if "\t" in raw[: len(raw) - len(raw.lstrip())]:
-            raise YamlError(f"line {i}: tab used for indentation")
-        stripped = raw.strip()
-        if not stripped or stripped.startswith("#"):
+        stripped = _significant_text(raw, i)
+        if stripped is None:
             continue
         if stripped in ("---", "..."):
-            if stripped == "---":
-                if seen_doc:
-                    raise YamlError("multiple documents are not supported")
-                seen_doc = True
+            seen_doc = _document_marker(stripped, seen_doc)
             continue
-        indent = len(raw) - len(raw.lstrip(" "))
-        content = _strip_comment(raw.strip())
-        if not content:
-            continue
-        # Peel leading `- ` markers into DASH records so a sequence item's
-        # content sits at its own column, which is where its sibling keys are.
-        while True:
-            m = _DASH_RE.match(content)
-            if not m:
-                break
-            recs.append(_Rec(indent, "", True, i))
-            indent += len(m.group(0))
-            content = content[m.end():]
+        indent, content = _peel_dashes(
+            recs, len(raw) - len(raw.lstrip(" ")), _strip_comment(stripped), i)
         if content == "":
             continue
-        if content.startswith("? "):
-            raise YamlError(f"line {i}: explicit keys are not supported")
-        if content.startswith("<<"):
-            raise YamlError(f"line {i}: merge keys are not supported")
+        _refuse_unsupported(content, i)
         kv = _split_key(content)
-        if kv is not None and kv[1][:1] in ("|", ">") and re.fullmatch(r"[|>][-+]?\d*", kv[1]):
+        if _opens_block_scalar(kv):
             # A block scalar: swallow every following line more indented than
             # the key, and keep it as one string.
-            chomp = kv[1]
-            body: list[str] = []
-            block_indent = None
-            while i < len(raw_lines):
-                nxt = raw_lines[i]
-                if nxt.strip() == "":
-                    body.append("")
-                    i += 1
-                    continue
-                nxt_indent = len(nxt) - len(nxt.lstrip(" "))
-                if nxt_indent <= indent:
-                    break
-                if block_indent is None:
-                    block_indent = nxt_indent
-                body.append(nxt[block_indent:])
-                i += 1
-            if chomp[0] == "|":
-                joined = "\n".join(body)
-            else:
-                folded: list[str] = []
-                for line in body:
-                    if line == "":
-                        folded.append("\n")
-                    elif folded and folded[-1] not in ("", "\n"):
-                        folded.append(" " + line)
-                    else:
-                        folded.append(line)
-                joined = "".join(folded).strip("\n") if body and body[-1] == "" \
-                    else "".join(folded)
-            if not chomp.endswith("-"):
-                joined = joined.rstrip("\n") + "\n"
-            else:
-                joined = joined.rstrip("\n")
+            body, i = _block_scalar_body(raw_lines, i, indent)
             recs.append(_Rec(indent, "", False, i))
-            recs[-1].text = _BLOCK_SENTINEL + kv[0] + "\x00" + joined
+            recs[-1].text = (_BLOCK_SENTINEL + kv[0] + "\x00"
+                             + _block_scalar_text(kv[1], body))
             continue
         recs.append(_Rec(indent, content, False, i))
     return recs
@@ -466,6 +568,22 @@ def _parse_sequence(recs: list[_Rec], i: int, indent: int) -> tuple[list[Any], i
     return items, i
 
 
+def _nested_value(recs: list[_Rec], i: int, indent: int) -> tuple[Any, int]:
+    """The value of a `key:` with NOTHING after the colon, and the index past it.
+
+    Split out of `_parse_mapping` for #135. A sequence may sit at the key's own
+    column or deeper, because `- ` markers are conventionally written flush
+    with the key they belong to, so it is admitted at `>= indent`. A nested
+    mapping must be strictly deeper, or it is a SIBLING key rather than this
+    key's value. Neither, and the key's value is null.
+    """
+    if i < len(recs) and recs[i].dash and recs[i].indent >= indent:
+        return _parse_sequence(recs, i, recs[i].indent)
+    if i < len(recs) and recs[i].indent > indent:
+        return _parse_nodes(recs, i, recs[i].indent)
+    return None, i
+
+
 def _parse_mapping(recs: list[_Rec], i: int, indent: int) -> tuple[dict, int]:
     out: dict[str, Any] = {}
     while i < len(recs) and not recs[i].dash and recs[i].indent == indent:
@@ -481,12 +599,7 @@ def _parse_mapping(recs: list[_Rec], i: int, indent: int) -> tuple[dict, int]:
         key, rest = kv
         i += 1
         if rest == "":
-            if i < len(recs) and recs[i].dash and recs[i].indent >= indent:
-                out[key], i = _parse_sequence(recs, i, recs[i].indent)
-            elif i < len(recs) and recs[i].indent > indent:
-                out[key], i = _parse_nodes(recs, i, recs[i].indent)
-            else:
-                out[key] = None
+            out[key], i = _nested_value(recs, i, indent)
         elif rest[0] in "[{":
             out[key] = _flow(rest)
         else:
@@ -874,6 +987,202 @@ class Classification(tuple):
                 f"also_matches={list(self.also_matches)!r})")
 
 
+# ---------------------------------------------------------------------------
+# The pieces a referent resolution is assembled from
+# ---------------------------------------------------------------------------
+#
+# Split out of `NamingPolicy.resolve_referent` for #135, each answering one
+# question that function used to answer inline. NONE OF THEM KNOWS WHAT A
+# `ReferentResolution` IS, deliberately: a resolution is still built in
+# exactly the places it was, so the reader who wants to know how a STATUS is
+# chosen still finds the whole of that in one function.
+
+
+def _pinned_basenames(declared_pins) -> set[str]:
+    """The repositories a manifest's `neutral_product_pins:` name, casefolded.
+
+    Casefolded because every comparison made against them — a referent
+    template's output, a chain's first link — is written in whatever case its
+    own file chose, and a pin is a fact about WHICH repository, not about how
+    it was typed.
+    """
+    return {repo_basename(str(pin)).casefold()
+            for pin in (declared_pins or ()) if pin}
+
+
+def _chain_links(referent_chain) -> list[str]:
+    """A recorded chain's links, as basenames, in the spelling it records.
+
+    An empty or whitespace-only entry is not a link and is dropped, so a
+    manifest that left a blank list item behind has not thereby recorded a
+    chain that cannot hold.
+    """
+    return [repo_basename(str(link)) for link in (referent_chain or ())
+            if str(link).strip()]
+
+
+def _referent_in(referents, wanted) -> str | None:
+    """The first of `referents` whose casefolded name is one of `wanted`."""
+    return next((r for r in referents if r.casefold() in wanted), None)
+
+
+def _link_declarations(link_pins) -> dict[str, set[str]]:
+    """`{link: the pins ITS manifest declares}` for the links that answered.
+
+    The pins are kept in the SPELLING THAT LINK'S MANIFEST USES, so a
+    broken-link message quotes what the other tree actually says. A link whose
+    tree could not be read is ABSENT rather than empty: the two mean opposite
+    things — unverified, and declaring nothing at all — and the caller reads
+    the difference.
+    """
+    return {str(link).casefold():
+            {repo_basename(str(pin)) for pin in (pins_of or ()) if pin}
+            for link, pins_of in (link_pins or {}).items()
+            if pins_of is not None}
+
+
+def _chain_link_findings(chain, link_pins) -> tuple:
+    """What each link of a recorded chain says about the next one along it.
+
+    Split out of `NamingPolicy.resolve_referent` for #135. Returns the detail
+    of the FIRST contradiction — or `None` when there is none — beside the
+    warnings and the links whose own trees could not be read. A link that did
+    not answer is `declared-unverified` and never a failure: the recorded
+    declaration is the offline fact, and reading the other tree is the
+    stronger check, available or not.
+    """
+    available = _link_declarations(link_pins)
+    warnings: list[str] = []
+    unverified: list[str] = []
+    for holder, held in zip(chain, chain[1:]):
+        declared = available.get(holder.casefold())
+        if declared is None:
+            unverified.append(holder)
+            warnings.append(
+                f"{CHAIN_UNVERIFIED}: {holder} declaring a pin on {held} "
+                f"is a fact in {holder}'s own tree, which is not "
+                f"reachable here (a sibling checkout, "
+                f"{pin_source_env_name(holder)}, or --link-source "
+                f"{holder}=<path> would let it be read). The recorded "
+                "chain still classifies.")
+            continue
+        if held.casefold() not in {pin.casefold() for pin in declared}:
+            return (f"{holder} declares "
+                    + (", ".join(sorted(declared)) if declared else "no "
+                       "neutral-product pin at all")
+                    + f", not {held}", warnings, unverified)
+    return None, warnings, unverified
+
+
+def _unverified_note(unverified) -> str:
+    """The parenthetical a held chain's reason carries when a link went unread.
+
+    An independent statement rather than a ternary nested inside a ternary
+    (python:S3358) — the plural "s" is decided before the note it belongs to
+    is built, not while it is being built.
+    """
+    if not unverified:
+        return ""
+    plural = "" if len(unverified) == 1 else "s"
+    return f" ({len(unverified)} link{plural} declared-unverified)"
+
+
+# ---------------------------------------------------------------------------
+# The pieces a classification is assembled from
+# ---------------------------------------------------------------------------
+#
+# Split out of `NamingPolicy.classify` for #135. The two that decide a branch
+# return an ANSWER'S INGREDIENTS — `(family_id, role_id, reason, matched_key)`
+# — and never a `Classification`, because `classify`'s own `answer()` closure
+# is the single place `also_matches` is computed: a branch that built its own
+# classification would be a second place for that record to be got wrong.
+
+
+def _forms_by_family(matched) -> dict:
+    """`[(family, role), …]` grouped as `{family: [role, …]}`, order kept.
+
+    `matches()` reports every form a name satisfies in the data's precedence
+    order; this is that same list read BY FAMILY, which is how each branch of
+    the classifier asks whether the form it decides is among them.
+    """
+    by_family: dict[str, list[str | None]] = {}
+    for family_id, role_id in matched:
+        by_family.setdefault(family_id, []).append(role_id)
+    return by_family
+
+
+def _leg_roles(by_family) -> list:
+    """The leg roles the NAME satisfies, read once.
+
+    Every branch of the classifier consults them, the unambiguous forms
+    included, because a role is only ever admitted where the name can actually
+    spell it: `openDox` may carry the `assembly` role it declares because
+    `openDox` also satisfies `project-leg/assembly`, and `Widget-Install`
+    carries none because a hyphenated name satisfies no leg form at all.
+    """
+    return [r for r in (by_family.get("project-leg") or []) if r]
+
+
+def _other_forms(matched, key) -> list:
+    """Every form the name satisfies EXCEPT the one an answer consumes.
+
+    This is `Classification.also_matches`: an overlap resolved without being
+    RECORDED is exactly the failure that field exists to prevent.
+    """
+    return [form_id(f, r) for f, r in matched if (f, r) != key]
+
+
+def _descendant_reason(declared, resolution, role: str | None) -> str:
+    """The sentence `--explain` prints for a descendant-form classification.
+
+    HOW the referent was reached is the first half — through the recorded
+    chain, by a direct pin, or not required at all by this policy — and the
+    role the name also carries is the second. A policy that requires no
+    referent never reaches that second half, because it has no referent to
+    name and nothing was declared for it to carry.
+    """
+    if declared and resolution.by_chain:
+        reason = (f"descendant form reaching {declared} through the "
+                  f"{resolution.reason} → domain descendant")
+    elif declared:
+        reason = (f"descendant form with a declared pin on {declared} "
+                  "→ domain descendant")
+    else:
+        return "descendant form (this policy does not require a referent)"
+    if role:
+        reason += (f", carrying the {role} role it declares (a "
+                   "descendant may carry legs)")
+    return reason
+
+
+def _leg_answer(claimed: bool, leg_roles, declared_role, resolution,
+                referents) -> tuple | None:
+    """The answer for the residual `project-leg` reading, or None.
+
+    The role is the DECLARED one where the name satisfies it, and the widest
+    leg form it satisfies otherwise. The reason records what the name ALSO
+    claimed, and for a broken chain it quotes `resolution.reason` rather than
+    summarising it: NAME THE LINK — "the chain is invalid" sends the reader
+    off to read four manifests, and that sentence says which one broke.
+    """
+    chosen = None
+    if declared_role is not None and declared_role in leg_roles:
+        chosen, how = declared_role, "by declared role"
+    elif leg_roles:
+        chosen, how = leg_roles[0], "by its residual project-leg form"
+    if chosen is None:
+        return None
+    if claimed and resolution.status == "broken":
+        reason = (f"descendant form, {resolution.reason} → {chosen} "
+                  f"root {how}")
+    elif claimed:
+        reason = (f"descendant form, no referent pin declared (it would "
+                  f"need {referents[0]}) → {chosen} root {how}")
+    else:
+        reason = f"project leg, {chosen} {how}"
+    return ("project-leg", chosen, reason, None)
+
+
 class NamingPolicy:
     """Ordered classifier over `contracts/repository-naming.yaml`.
 
@@ -1032,17 +1341,15 @@ class NamingPolicy:
         referents = self.descendant_referents(name)
         if not referents:
             return ReferentResolution()
-        pins = {repo_basename(str(pin)).casefold()
-                for pin in (declared_pins or ()) if pin}
-        direct = next((r for r in referents if r.casefold() in pins), None)
+        pins = _pinned_basenames(declared_pins)
+        direct = _referent_in(referents, pins)
 
         def directly(extra_warnings=()) -> ReferentResolution:
             return ReferentResolution(
                 "direct", direct, reason=f"declared pin on {direct}",
                 warnings=extra_warnings)
 
-        chain = [repo_basename(str(link)) for link in (referent_chain or ())
-                 if str(link).strip()]
+        chain = _chain_links(referent_chain)
         if not chain:
             if direct is not None:
                 return directly()
@@ -1050,9 +1357,7 @@ class NamingPolicy:
                 reason="no referent pin declared (it would need "
                        + " or ".join(referents) + ")")
 
-        rule = self.chain_rule()
         rendered = " → ".join(chain)
-        max_length = int(rule.get("max_length") or CHAIN_MAX_LENGTH)
 
         def broken(detail: str) -> ReferentResolution:
             said = f"the declared chain {rendered} is broken ({detail})"
@@ -1065,63 +1370,48 @@ class NamingPolicy:
                                  "classifies this name",))
             return ReferentResolution("broken", None, chain, reason=said)
 
-        if len(chain) > max_length:
-            return broken(f"it names {len(chain)} links and the policy admits "
-                          f"at most {max_length}")
-        seen = [link.casefold() for link in chain]
-        if len(set(seen)) != len(seen):
-            return broken("it repeats a link, so it is a cycle rather than a "
-                          "chain")
-        if chain[0].casefold() not in pins:
-            return broken(f"it begins at {chain[0]}, which is not in this "
-                          "project's `neutral_product_pins:` — the first "
-                          "entry is the pin this project actually holds")
-        final = next((r for r in referents
-                      if r.casefold() == chain[-1].casefold()), None)
-        if final is None:
-            return broken(f"it ends at {chain[-1]}, but {name} would need "
-                          + " or ".join(referents))
-
-        # The link's pins are kept in the SPELLING ITS MANIFEST USES, so a
-        # broken-link message quotes what the other tree actually says.
-        available = {str(link).casefold():
-                     {repo_basename(str(pin))
-                      for pin in (pins_of or ()) if pin}
-                     for link, pins_of in (link_pins or {}).items()
-                     if pins_of is not None}
-        warnings: list[str] = []
-        unverified: list[str] = []
-        for holder, held in zip(chain, chain[1:]):
-            declared = available.get(holder.casefold())
-            if declared is None:
-                unverified.append(holder)
-                warnings.append(
-                    f"{CHAIN_UNVERIFIED}: {holder} declaring a pin on {held} "
-                    f"is a fact in {holder}'s own tree, which is not "
-                    f"reachable here (a sibling checkout, "
-                    f"{pin_source_env_name(holder)}, or --link-source "
-                    f"{holder}=<path> would let it be read). The recorded "
-                    "chain still classifies.")
-                continue
-            if held.casefold() not in {pin.casefold() for pin in declared}:
-                return broken(
-                    f"{holder} declares "
-                    + (", ".join(sorted(declared)) if declared else "no "
-                       "neutral-product pin at all")
-                    + f", not {held}")
+        problem = self._chain_shape_problem(name, chain, pins, referents)
+        if problem is not None:
+            return broken(problem)
+        final = _referent_in(referents, {chain[-1].casefold()})
+        contradiction, warnings, unverified = _chain_link_findings(chain,
+                                                                   link_pins)
+        if contradiction is not None:
+            return broken(contradiction)
         status = CHAIN_UNVERIFIED if unverified else "verified"
-        # An independent statement rather than a ternary nested inside a
-        # ternary (python:S3358) — the plural "s" is decided before the note
-        # it belongs to is built, not while it is being built.
-        if unverified:
-            plural = "" if len(unverified) == 1 else "s"
-            unverified_note = f" ({len(unverified)} link{plural} declared-unverified)"
-        else:
-            unverified_note = ""
         return ReferentResolution(
             status, final, chain,
-            reason=f"declared pin chain {rendered}" + unverified_note,
+            reason=f"declared pin chain {rendered}"
+                   + _unverified_note(unverified),
             warnings=warnings, unverified=unverified)
+
+    def _chain_shape_problem(self, name: str, chain: list,
+                             pins: set, referents) -> str | None:
+        """What is wrong with a recorded chain's SHAPE, or None if nothing is.
+
+        Split out of `resolve_referent` for #135, asking the four questions in
+        the order that function asked them: is the chain longer than the
+        policy admits, does it repeat a link, does it begin at a pin this
+        project actually holds, and does it end at a referent this name could
+        have. Each answer becomes the `detail` of a `broken` resolution, which
+        is where the reader is told WHICH link broke rather than merely that
+        one did.
+        """
+        max_length = int(self.chain_rule().get("max_length") or CHAIN_MAX_LENGTH)
+        if len(chain) > max_length:
+            return (f"it names {len(chain)} links and the policy admits "
+                    f"at most {max_length}")
+        seen = [link.casefold() for link in chain]
+        if len(set(seen)) != len(seen):
+            return "it repeats a link, so it is a cycle rather than a chain"
+        if chain[0].casefold() not in pins:
+            return (f"it begins at {chain[0]}, which is not in this "
+                    "project's `neutral_product_pins:` — the first "
+                    "entry is the pin this project actually holds")
+        if _referent_in(referents, {chain[-1].casefold()}) is None:
+            return (f"it ends at {chain[-1]}, but {name} would need "
+                    + " or ".join(referents))
+        return None
 
     # -- classification ----------------------------------------------------
 
@@ -1181,9 +1471,7 @@ class NamingPolicy:
         matched = self.matches(name, declared_role)
         if not matched:
             return None
-        by_family: dict[str, list[str | None]] = {}
-        for family_id, role_id in matched:
-            by_family.setdefault(family_id, []).append(role_id)
+        by_family = _forms_by_family(matched)
         resolution = self.resolve_referent(name, declared_pins, referent_chain,
                                            link_pins)
 
@@ -1196,48 +1484,14 @@ class NamingPolicy:
             # name was classified INTO would also be listed among the forms it
             # was not, which is a record contradicting itself.
             key = matched_key if matched_key is not None else (family_id, role_id)
-            also = [form_id(f, r) for f, r in matched if (f, r) != key]
-            return Classification(family_id, role_id, also, reason, resolution)
+            return Classification(family_id, role_id,
+                                  _other_forms(matched, key), reason, resolution)
 
-        # The leg roles the NAME satisfies, read once: the unambiguous forms
-        # consult them too, because a role is only ever admitted where the name
-        # can actually spell it.
-        leg_roles = [r for r in (by_family.get("project-leg") or []) if r]
-        for family_id in UNAMBIGUOUS_FORMS:
-            if family_id not in by_family:
-                continue
-            family = self.family(family_id) or {}
-            # A NEUTRAL PRODUCT MAY ELECT THE SHAPE (Brett Heap, 2026-09-05).
-            # The form is not being overridden — it is still the answer, and
-            # the entry this CONSUMES is `(family_id, None)`, so
-            # `project-leg/assembly` survives in `also_matches` exactly as it
-            # did before. What is added is the ROLE the project declares, and
-            # only where the family's data admits it and the name satisfies
-            # that leg form. Electing confers nothing, so this records a
-            # layout, not a claim; it is the same MECHANISM as the descendant
-            # branch below, both reading `admits_declared_role:` — but this
-            # branch is deliberately STRICTER about what an absent key means.
-            # With no `admits_declared_role:` in the data this branch admits
-            # NOTHING (`or ()`), because the admission itself is the
-            # 2026-09-05 rule and the file must say so or grant nothing. The
-            # descendant branch below falls back to `or ("assembly",)`
-            # instead, because that key predates this ruling: it keeps the
-            # 2026-09-02 behaviour for a policy file that never wrote the key
-            # at all, and changing the fallback would be changing that
-            # ruling's answer out from under a file silent about it.
-            admitted = family.get("admits_declared_role") or ()
-            if by_family[family_id][0] is None and declared_role is not None \
-                    and declared_role in admitted and declared_role in leg_roles:
-                title = str(family.get("title") or family_id).lower()
-                return answer(
-                    family_id, declared_role,
-                    f"the {family_id} form is unambiguous by construction; it "
-                    f"carries the {declared_role} role it declares — a {title} "
-                    "may elect the shape (Brett Heap, 2026-09-05)",
-                    (family_id, None))
-            return answer(family_id, by_family[family_id][0],
-                          f"the {family_id} form is unambiguous by "
-                          "construction, so it needs nothing declared")
+        leg_roles = _leg_roles(by_family)
+        unambiguous = self._unambiguous_answer(by_family, declared_role,
+                                               leg_roles)
+        if unambiguous is not None:
+            return answer(*unambiguous)
 
         # A declared-only form the caller ASKED for. It sits above the leg
         # forms in the decision even though its precedence is below them: the
@@ -1259,56 +1513,14 @@ class NamingPolicy:
         # falling back — the declaration is the offline fact.
         declared = resolution.referent if resolution.reached else None
         if claimed and (declared or not self.requires_referent("domain-descendant")):
-            # A DESCENDANT MAY CARRY LEGS (Brett Heap, 2026-09-02). The
-            # descendant family declares no roles of its own, so the role a
-            # descendant answers with is the one the project DECLARES, and
-            # only where the name also satisfies that leg form. `MedxGlass`
-            # pins `openGlass` AND mounts `MedxGlass-spec` and
-            # `MedxGlass-code`: it is a descendant AND the assembly root.
-            # Refusing that pair would have made the descendant ruling and the
-            # three-repository shape mutually exclusive, which neither ruling
-            # says and both organisations that have one need both of.
-            family = self.family("domain-descendant") or {}
-            admitted = family.get("admits_declared_role") or ("assembly",)
-            role = by_family["domain-descendant"][0]
-            if role is None and declared_role is not None \
-                    and declared_role in leg_roles \
-                    and declared_role in admitted:
-                role = declared_role
-            if declared and resolution.by_chain:
-                reason = (f"descendant form reaching {declared} through the "
-                          f"{resolution.reason} → domain descendant")
-                if role:
-                    reason += (f", carrying the {role} role it declares (a "
-                               "descendant may carry legs)")
-            elif declared:
-                reason = (f"descendant form with a declared pin on {declared} "
-                          "→ domain descendant")
-                if role:
-                    reason += (f", carrying the {role} role it declares (a "
-                               "descendant may carry legs)")
-            else:
-                reason = "descendant form (this policy does not require a referent)"
-            return answer("domain-descendant", role, reason,
-                          ("domain-descendant", by_family["domain-descendant"][0]))
+            return answer(*self._descendant_answer(by_family, declared_role,
+                                                   leg_roles, declared,
+                                                   resolution))
 
-        chosen = None
-        if declared_role is not None and declared_role in leg_roles:
-            chosen, how = declared_role, "by declared role"
-        elif leg_roles:
-            chosen, how = leg_roles[0], "by its residual project-leg form"
-        if chosen is not None:
-            if claimed and resolution.status == "broken":
-                # NAME THE LINK. "The chain is invalid" sends the reader to
-                # read four manifests; `resolution.reason` says which one.
-                reason = (f"descendant form, {resolution.reason} → {chosen} "
-                          f"root {how}")
-            elif claimed:
-                reason = (f"descendant form, no referent pin declared (it would "
-                          f"need {referents[0]}) → {chosen} root {how}")
-            else:
-                reason = f"project leg, {chosen} {how}"
-            return answer("project-leg", chosen, reason)
+        leg = _leg_answer(claimed, leg_roles, declared_role, resolution,
+                          referents)
+        if leg is not None:
+            return answer(*leg)
 
         # Unreachable with the shipped patterns — every descendant-form name is
         # also a bare CamelCase token — but a policy file is data, and data can
@@ -1333,6 +1545,82 @@ class NamingPolicy:
         return answer(family_id, role_id,
                       f"the {family_id} form, by precedence; this classifier "
                       "has no rule of its own for it")
+
+    def _unambiguous_answer(self, by_family, declared_role,
+                            leg_roles) -> tuple | None:
+        """The answer for a form decided by the CHARACTERS ALONE, or None.
+
+        Split out of `classify` for #135. It returns an answer's INGREDIENTS —
+        `(family_id, role_id, reason, matched_key)` — rather than a
+        `Classification`, so `classify`'s own `answer()` closure stays the one
+        place `also_matches` is computed and a classification is built.
+
+        A NEUTRAL PRODUCT MAY ELECT THE SHAPE (Brett Heap, 2026-09-05). The
+        form is not being overridden — it is still the answer, and the entry
+        this CONSUMES is `(family_id, None)`, so `project-leg/assembly`
+        survives in `also_matches` exactly as it did before. What is added is
+        the ROLE the project declares, and only where the family's data admits
+        it and the name satisfies that leg form. Electing confers nothing, so
+        this records a layout, not a claim; it is the same MECHANISM as
+        `_descendant_answer` below, both reading `admits_declared_role:` — but
+        this one is deliberately STRICTER about what an absent key means. With
+        no `admits_declared_role:` in the data it admits NOTHING (`or ()`),
+        because the admission itself is the 2026-09-05 rule and the file must
+        say so or grant nothing. `_descendant_answer` falls back to
+        `or ("assembly",)` instead, because that key predates this ruling: it
+        keeps the 2026-09-02 behaviour for a policy file that never wrote the
+        key at all, and changing the fallback would be changing that ruling's
+        answer out from under a file silent about it.
+        """
+        for family_id in UNAMBIGUOUS_FORMS:
+            if family_id not in by_family:
+                continue
+            family = self.family(family_id) or {}
+            admitted = family.get("admits_declared_role") or ()
+            if by_family[family_id][0] is None and declared_role is not None \
+                    and declared_role in admitted and declared_role in leg_roles:
+                title = str(family.get("title") or family_id).lower()
+                return (family_id, declared_role,
+                        f"the {family_id} form is unambiguous by construction; it "
+                        f"carries the {declared_role} role it declares — a {title} "
+                        "may elect the shape (Brett Heap, 2026-09-05)",
+                        (family_id, None))
+            return (family_id, by_family[family_id][0],
+                    f"the {family_id} form is unambiguous by "
+                    "construction, so it needs nothing declared", None)
+        return None
+
+    def _descendant_answer(self, by_family, declared_role, leg_roles,
+                           declared, resolution) -> tuple:
+        """The answer for a descendant claim `classify` decided to honour.
+
+        Split out of `classify` for #135, returning the same
+        `(family_id, role_id, reason, matched_key)` ingredients as
+        `_unambiguous_answer` above. TWO PATHS REACH IT, and
+        `_descendant_reason` words both: a referent REACHED — by a direct pin
+        or through a chain that holds, with `declared` naming it — and a
+        policy whose descendant family does not require a referent at all,
+        where `declared` is None and the reason says exactly that.
+
+        A DESCENDANT MAY CARRY LEGS (Brett Heap, 2026-09-02). The descendant
+        family declares no roles of its own, so the role a descendant answers
+        with is the one the project DECLARES, and only where the name also
+        satisfies that leg form. `MedxGlass` pins `openGlass` AND mounts
+        `MedxGlass-spec` and `MedxGlass-code`: it is a descendant AND the
+        assembly root. Refusing that pair would have made the descendant
+        ruling and the three-repository shape mutually exclusive, which
+        neither ruling says and both organisations that have one need both of.
+        """
+        family = self.family("domain-descendant") or {}
+        admitted = family.get("admits_declared_role") or ("assembly",)
+        role = by_family["domain-descendant"][0]
+        if role is None and declared_role is not None \
+                and declared_role in leg_roles \
+                and declared_role in admitted:
+            role = declared_role
+        return ("domain-descendant", role,
+                _descendant_reason(declared, resolution, role),
+                ("domain-descendant", by_family["domain-descendant"][0]))
 
     def topic_for(self, project_id: str) -> str:
         return self.topic_template.format(id=project_id)
