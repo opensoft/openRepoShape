@@ -89,18 +89,30 @@ def git(*args: str, cwd: Path, check: bool = True) -> subprocess.CompletedProces
     return proc
 
 
+def is_pin_source_name(name: str) -> bool:
+    """Whether `name` is a `PIN_SOURCE_ENV_PREFIX`-named variable.
+
+    WINDOWS ENVIRONMENT NAMES ARE CASE-INSENSITIVE (Copilot, PR #128) —
+    `SHAPE_PIN_SOURCE_OPENXDOX` and any other-cased spelling of the same
+    name are THE SAME VARIABLE there — so the check folds to uppercase
+    before comparing. Shared by `blank_unnamed_pin_sources` and
+    `clear_ambient_pin_sources` below rather than written out twice: the
+    second copy is exactly how this rule went missing from
+    `clear_ambient_pin_sources` in the first place (Copilot again, a
+    round later, on that very function) after `blank_unnamed_pin_sources`
+    had already been fixed — one predicate cannot drift out of step with
+    itself.
+    """
+    return name.upper().startswith(PIN_SOURCE_ENV_PREFIX)
+
+
 def blank_unnamed_pin_sources(env: dict, asked: dict) -> dict:
     """`env`, but every inherited `PIN_SOURCE_ENV_PREFIX`-named variable
     THIS CALL did not ask for is blanked to `""`, and an inherited
     case-variant alias of one it DID ask for is dropped outright.
 
-    WINDOWS ENVIRONMENT NAMES ARE CASE-INSENSITIVE (Copilot, PR #128):
-    `SHAPE_PIN_SOURCE_OPENXDOX` and any other-cased spelling of the same
-    name are THE SAME VARIABLE there, so both "is this a pin-source name
-    at all" and "did the caller ask for THIS one" fold to uppercase before
-    comparing — a plain `dict` merge and a case-sensitive `.startswith`
-    know nothing of that. `""` rather than deleting a blanked key matches
-    how `resolve_link_source` already reads an empty value as absent
+    `""` rather than deleting a blanked key matches how
+    `resolve_link_source` already reads an empty value as absent
     (`if env_value:`, `scripts/repo_shape.py`) and how `lane_trailer`
     already reads an empty `LANES_LANE` as "no lane"
     (`scripts/shape_materialize.py`) — the same convention on both
@@ -109,15 +121,17 @@ def blank_unnamed_pin_sources(env: dict, asked: dict) -> dict:
     though: leaving both behind would hand a real Windows child two keys
     that its own case-folding treats as one, disagreeing about the value,
     which is exactly the ambiguity naming one of them was supposed to
-    resolve.
+    resolve. `asked`'s own keys are folded the same way `is_pin_source_
+    name` folds `env`'s, so "did the caller ask for THIS one" cannot
+    disagree with "is this a pin-source name at all" about what case
+    means here.
     """
     asked_by_fold = {name.upper(): name for name in asked}
     result = dict(env)
     for name in env:
-        folded = name.upper()
-        if not folded.startswith(PIN_SOURCE_ENV_PREFIX):
+        if not is_pin_source_name(name):
             continue
-        caller_spelling = asked_by_fold.get(folded)
+        caller_spelling = asked_by_fold.get(name.upper())
         if caller_spelling is None:
             result[name] = ""
         elif name != caller_spelling:
@@ -135,16 +149,18 @@ def clear_ambient_pin_sources(monkeypatch: pytest.MonkeyPatch) -> None:
     `resolve_link_source` (or `link_pins_from_trees`, built on it)
     directly, in this same process, the way the "reading a link's own
     declaration" section of `tests/test_naming_policy.py` does (Copilot,
-    PR #128, twice over: first for the one product such a test names
-    itself, then again once it was clear `link_pins_from_trees` resolves
-    EVERY name it is given, not only the first). Every name, not one
+    PR #128, three times over: first for the one product such a test
+    names itself, then again once it was clear `link_pins_from_trees`
+    resolves EVERY name it is given, not only the first, then a third
+    time because this function's own prefix check did not yet fold case
+    the way `blank_unnamed_pin_sources`'s did). Every name, not one
     product picked by hand, so a test that names a second product — or a
     third, tomorrow — is not exposed again the way naming `openXdox`
     alone here would still have left `SHAPE_PIN_SOURCE_OPENDOX` free to
     answer for `openDox`.
     """
     for name in list(os.environ):
-        if name.startswith(PIN_SOURCE_ENV_PREFIX):
+        if is_pin_source_name(name):
             monkeypatch.delenv(name, raising=False)
 
 

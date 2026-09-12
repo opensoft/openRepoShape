@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -862,6 +863,27 @@ def test_blank_unnamed_pin_sources_folds_case_like_windows_does():
          "SHAPE_PIN_SOURCE_OPENXDOX": "/named"},
         {"SHAPE_PIN_SOURCE_OPENXDOX": "/named"},
     ) == {"SHAPE_PIN_SOURCE_OPENXDOX": "/named"}
+
+
+def test_clear_ambient_pin_sources_folds_case_like_windows_does(monkeypatch):
+    """Copilot's round-4 finding on PR #128: `clear_ambient_pin_sources`
+    (`tests/conftest.py`) repeated `blank_unnamed_pin_sources`'s own
+    round-1 case-sensitivity gap — its prefix check did not fold case
+    before this fix, so an inherited `shape_pin_source_openxdox`
+    (lower-case, as a real Windows child would still read
+    case-insensitively) survived it.
+
+    Hermetic, not through the four `link_pins_from_trees` tests above:
+    those only fail when the MACHINE running them happens to carry a
+    matching ambient variable, which this suite's own CI legs never do —
+    so they cannot tell this fix from its absence either. Setting the
+    ambient variable INSIDE the test with `monkeypatch.setenv`, the same
+    way `test_run_script_blanks_an_inherited_pin_source_unless_named`
+    above does for `blank_unnamed_pin_sources`, makes the fold provable
+    regardless of what the machine running it actually exports."""
+    monkeypatch.setenv("shape_pin_source_openxdox", "/ambient")
+    clear_ambient_pin_sources(monkeypatch)
+    assert "shape_pin_source_openxdox" not in os.environ
 
 
 def test_cli_reports_a_broken_link_as_a_finding_naming_it(tmp_path):
