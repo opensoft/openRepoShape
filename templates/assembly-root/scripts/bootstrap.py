@@ -225,6 +225,76 @@ def _matches(obj: str, repositories: set[str], prefixes: list[str]) -> bool:
     return False
 
 
+def _load_register_rows(register_path: Path) -> list[dict] | None:
+    """One register file's rows, tolerant of which key holds them.
+
+    Split from `read_authority` for #132. Returns `None` when the file
+    itself could not be read — already printed in that case — so the
+    caller's loop moves on to the next register file exactly as the
+    original loop's `continue` did.
+    """
+    try:
+        data = load_yaml(register_path)
+    except Refusal as exc:
+        print(f"    unreadable, so nothing is claimed from it: {exc.detail}")
+        return None
+    rows = []
+    if isinstance(data, dict):
+        for key in ("rows", "grants", "entries"):
+            value = data.get(key)
+            if isinstance(value, list):
+                rows.extend(r for r in value if isinstance(r, dict))
+    return rows
+
+
+def _row_report_line(row: dict, repositories: set[str],
+                     prefixes: list[str]) -> str | None:
+    """One register row, formatted for `read_authority`'s report — or
+    `None` when it names none of this project's repositories or paths.
+
+    Split from `read_authority` for #132.
+    """
+    objects = [o for o in _row_objects(row)
+              if _matches(o, repositories, prefixes)]
+    if not objects:
+        return None
+    holder = row.get("holder_ref") or row.get("holder") or "?"
+    act = row.get("act") or row.get("acts") or "?"
+    state = row.get("state") or "?"
+    expires = row.get("expires_at") or "-"
+    return (f"    {holder} · {act} · {', '.join(objects)} · "
+           f"{state} · expires {expires}")
+
+
+def _report_one_register(register_path: Path, root: Path,
+                         repositories: set[str], prefixes: list[str]) -> None:
+    """One register file, start to finish: read it, print each row that
+    names this project, and the "no rows"/"no row names…" line when there
+    is nothing to show.
+
+    Split from `read_authority` for #132 so its loop over every register
+    file found is a single call per file.
+    """
+    # POSIX, on every platform: this line names a file in the repository,
+    # and git and the reader both spell it that way.
+    print(f"  register: {register_path.relative_to(root).as_posix()}")
+    rows = _load_register_rows(register_path)
+    if rows is None:
+        return
+    if not rows:
+        print("    no rows")
+        return
+    hits = 0
+    for row in rows:
+        line = _row_report_line(row, repositories, prefixes)
+        if line is None:
+            continue
+        hits += 1
+        print(line)
+    if not hits:
+        print("    no row names this project's repositories or paths")
+
+
 def read_authority(root: Path, legs: list[dict]) -> None:
     """Step (c). Prints the degrade line and returns when no register exists."""
     found = _register_paths(root, legs)
@@ -240,38 +310,7 @@ def read_authority(root: Path, legs: list[dict]) -> None:
     prefixes = [str(leg.get("path")) for leg in legs
                 if leg.get("path") and leg.get("path") != "."]
     for register_path in found:
-        # POSIX, on every platform: this line names a file in the repository,
-        # and git and the reader both spell it that way.
-        print(f"  register: {register_path.relative_to(root).as_posix()}")
-        try:
-            data = load_yaml(register_path)
-        except Refusal as exc:
-            print(f"    unreadable, so nothing is claimed from it: {exc.detail}")
-            continue
-        rows = []
-        if isinstance(data, dict):
-            for key in ("rows", "grants", "entries"):
-                value = data.get(key)
-                if isinstance(value, list):
-                    rows.extend(r for r in value if isinstance(r, dict))
-        if not rows:
-            print("    no rows")
-            continue
-        hits = 0
-        for row in rows:
-            objects = [o for o in _row_objects(row)
-                       if _matches(o, repositories, prefixes)]
-            if not objects:
-                continue
-            hits += 1
-            holder = row.get("holder_ref") or row.get("holder") or "?"
-            act = row.get("act") or row.get("acts") or "?"
-            state = row.get("state") or "?"
-            expires = row.get("expires_at") or "-"
-            print(f"    {holder} · {act} · {', '.join(objects)} · "
-                  f"{state} · expires {expires}")
-        if not hits:
-            print("    no row names this project's repositories or paths")
+        _report_one_register(register_path, root, repositories, prefixes)
     print("  Grants are read here for REPORTING only. This command confers "
           "nothing and enforces nothing; a required check in the repository "
           "that owns the object is what confers.")
