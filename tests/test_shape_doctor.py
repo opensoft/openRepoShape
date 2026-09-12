@@ -1511,10 +1511,12 @@ def test_a_relative_mount_is_resolved_against_the_holders_own_remote(
     git("config", "-f", str(root / ".gitmodules"),
         f"submodule.members/{FAMILY_MEMBER}.url", f"../{FAMILY_MEMBER}.git",
         cwd=root)
-    # What `git submodule sync` is FOR: it re-resolves `.gitmodules` against
-    # the current remote and writes the answer into the holder's config,
-    # which is exactly the state a clone of this family would be in.
-    git("submodule", "sync", "-q", cwd=root)
+    # AND `git submodule sync` IS DELIBERATELY NOT RUN. The holder's own
+    # `.git/config` still carries the url git cached when it initialized the
+    # mount — the bare repository on disk this fixture was built from — so a
+    # row that read the cache instead of the tracked declaration would answer
+    # with that stale url and this assertion would catch it (Copilot, PR
+    # #147). `make siblings` reads the declaration; so does this.
     git("remote", "set-url", "origin", sibling_origin, cwd=sibling)
     entry = rows_of(doctor(standard, root, "--json"))["members"]["detail"][
         "members"][0]
@@ -1525,29 +1527,56 @@ def test_a_relative_mount_is_resolved_against_the_holders_own_remote(
     assert entry["other_origin"] is None, entry
 
 
-def test_a_relative_url_git_never_resolved_accuses_nobody(standard, holder,
-                                                          tmp_path):
-    """AND WHEN THERE IS NO RESOLVED COPY, THE ROW SAYS NOTHING RATHER THAN
-    SOMETHING IT CANNOT KNOW.
+def test_a_relative_url_with_no_remote_to_resolve_it_accuses_nobody(
+        standard, holder, tmp_path):
+    """AND WHEN THE REFERENCE CANNOT BE RESOLVED, THE ROW SAYS NOTHING
+    RATHER THAN SOMETHING IT CANNOT KNOW.
 
-    A member mounted by hand with a relative url and never initialized
-    leaves this row a string that is not a remote. Telling somebody their
-    working clone is a clone of something else, on the strength of a url the
-    report admits it could not resolve, is worse than the silence this row
-    kept before the origin question existed — so the answer falls back to
-    the manifest's, exactly as it was.
+    `../Repo.git` on a holder with no remote of its own is arithmetic with
+    no base: there is nothing to compare a clone against. Telling somebody
+    their working clone is a clone of something else, on the strength of a
+    url the report admits it could not resolve, is worse than the silence
+    this row kept before the origin question existed — so the answer falls
+    back to the manifest's, exactly as it was.
     """
     root, sibling = member_beside(holder, tmp_path)
     git("config", "-f", str(root / ".gitmodules"),
         f"submodule.members/{FAMILY_MEMBER}.url", f"../{FAMILY_MEMBER}.git",
         cwd=root)
-    git("config", "--unset", f"submodule.members/{FAMILY_MEMBER}.url",
-        cwd=root)
+    git("remote", "remove", "origin", cwd=root)
     entry = rows_of(doctor(standard, root, "--json"))["members"]["detail"][
         "members"][0]
     assert entry["mounted_from"] == f"../{FAMILY_MEMBER}.git", entry
     assert entry["working_clone"] == sibling.as_posix(), entry
     assert entry["other_origin"] is None, entry
+
+
+def test_an_unresolvable_reference_does_not_excuse_an_originless_clone(
+        standard, holder, tmp_path):
+    """AN UNANSWERABLE REFERENCE IS NOT AN UNANSWERABLE CLONE.
+
+    The fallback above says nothing about a directory when the ROW's url
+    cannot be resolved — but a directory with no readable origin of its own
+    is not a working clone under anybody's definition, and `verify_sibling`
+    refuses that state too. Letting the one excuse the other would have made
+    a dangling `.git` file count as a clone the moment a family mounted a
+    member with a relative url (Copilot, PR #147).
+    """
+    base = tmp_path / "fam"
+    base.mkdir()
+    root = base / FAMILY_NAME
+    shutil.copytree(holder["root"], root, symlinks=True)
+    shutil.copytree(holder["root"] / "members" / FAMILY_MEMBER,
+                    base / FAMILY_MEMBER, symlinks=True)
+    git("config", "-f", str(root / ".gitmodules"),
+        f"submodule.members/{FAMILY_MEMBER}.url", f"../{FAMILY_MEMBER}.git",
+        cwd=root)
+    git("remote", "remove", "origin", cwd=root)
+    entry = rows_of(doctor(standard, root, "--json"))["members"]["detail"][
+        "members"][0]
+    assert entry["mounted_from"] == f"../{FAMILY_MEMBER}.git", entry
+    assert entry["working_clone"] is None, entry
+    assert entry["other_origin"] == "(no origin)", entry
 
 
 def test_a_stranger_is_reported_even_when_a_pinned_copy_also_fails(
@@ -1622,6 +1651,41 @@ def test_the_doctor_and_siblings_agree_on_what_one_repository_is(siblings):
     # nothing about either copy.
     answers = {module.same_repository(one, two) for one, two in pairs}
     assert answers == {True, False}
+
+    # THE OTHER HALF OF THE SHARED RULE: git's arithmetic for a relative
+    # submodule url, which `mounted_from` applies to the tracked declaration
+    # and `siblings.py::clone_url` applies before it clones. One table, both
+    # implementations, asserted EQUAL AS STRINGS -- a url a person reads off
+    # a report and a url a tool fetches from should not even be spelled
+    # differently.
+    relative = [
+        ("https://mirror.example/team/Fam.git", "../IRRS.git"),
+        ("git@mirror.example:team/Fam.git", "../IRRS.git"),
+        ("ssh://git@host/org/Fam.git", "../sub/IRRS.git"),
+        ("/srv/mirrors/Fam.git", "../IRRS.git"),
+        ("file:///srv/mirrors/Fam.git", "../IRRS.git"),
+        # A Windows remote, which has no `/` in it at all -- the walk that
+        # split on one alone appended to the whole string (`siblings.py`,
+        # PR #79), and this is the assertion that keeps both copies fixed.
+        ("D:\\a\\remotes\\Fam.git", "../IRRS.git"),
+        # A `..` too many, which consumes nothing rather than eating a
+        # scheme or an scp host
+        ("https://host/Fam.git", "../../../IRRS.git"),
+        ("git@host:Fam.git", "../IRRS.git"),
+        ("/Fam.git", "../IRRS.git"),
+        ("https://host/a/b/Fam.git", "./IRRS.git"),
+    ]
+    for base, url in relative:
+        assert module.join_remote(base, url) == \
+            siblings.join_relative(base, url), (base, url)
+        # And the wrapper makes the same two choices `resolve_relative`
+        # does: an absolute url is handed straight back, and so is a
+        # relative one with no remote to resolve it against.
+        assert module.resolved_remote(url, base) == \
+            module.join_remote(base, url), (base, url)
+    assert module.resolved_remote("../IRRS.git", "") == "../IRRS.git"
+    assert module.resolved_remote("https://host/IRRS.git", "https://host/x") \
+        == "https://host/IRRS.git"
 
 
 # --- the adversarial review on #96 ------------------------------------------

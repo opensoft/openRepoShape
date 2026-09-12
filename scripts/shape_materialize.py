@@ -501,6 +501,101 @@ def remote_key(url: str) -> str:
     return text.lower().strip("/")
 
 
+#: The same scheme with NOTHING AFTER IT, which is what one `..` too many
+#: would leave behind if it were allowed to go on trimming.
+REMOTE_SCHEME_ONLY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:/*$")
+
+#: A Windows drive, and the ONLY colon a filesystem path may carry: without
+#: this, `D:\\remotes\\Repo.git` reads as git's `host:path` scp syntax and its
+#: drive letter is eaten as a host. The same distinction `repo_shape`'s
+#: `SAFE_PATH_RE` draws, for the same reason.
+REMOTE_DRIVE_RE = re.compile(r"^[A-Za-z]:$")
+
+
+def remote_is_a_path(base: str) -> bool:
+    """Is this remote a FILESYSTEM PATH rather than a url?
+
+    THE COLON IS A DRIVE LETTER'S OR IT IS SCP SYNTAX.
+    `D:\\a\\remotes\\Fam.git` is a path; `git@host:org/Repo.git` and
+    `host:path/Repo.git` are urls in git's scp spelling; anything with a
+    `<scheme>://` is a url outright. Only the path answer may be walked with
+    a backslash in it, because a url's separator is `/` on every platform.
+    """
+    if REMOTE_SCHEME_RE.match(base):
+        return False
+    head = base.replace("\\", "/").split("/", 1)[0]
+    return ":" not in head or REMOTE_DRIVE_RE.match(head) is not None
+
+
+def _up_one(flat: str) -> str | None:
+    """`flat` with its last component dropped, or None when it has none.
+
+    A `..` TOO MANY CONSUMES NOTHING. What is left after the last component
+    can be a scheme (`https:/`), an scp host (`git@host:`) or nothing at all,
+    and none of those is a directory a `..` may eat -- a url like that is
+    wrong wherever it is read, and the clone that fails prints it. The one
+    case where nothing left IS an answer is a POSIX root: the parent of
+    `/Repo.git` is `/`, so the empty string comes back and the next name
+    appended makes `/Other.git`. A Windows DRIVE is a component of its own
+    for the same reason, and is the one colon that is not scp syntax -- so it
+    is asked FIRST, because `D:` is also what a one-letter scheme looks like.
+    """
+    if "/" not in flat:
+        return None
+    head = flat.rsplit("/", 1)[0]
+    if REMOTE_DRIVE_RE.match(head):
+        return head
+    if REMOTE_SCHEME_ONLY_RE.match(head) or head.endswith(":"):
+        return None
+    return head
+
+
+def join_remote(base: str, url: str) -> str:
+    """`base` with `url`'s `../` applied -- PURE STRING ARITHMETIC.
+
+    GIT'S OWN RULE FOR A RELATIVE SUBMODULE URL, which is textual and has no
+    filesystem and no platform in it: one trailing component dropped per
+    `..`, one appended per name, `.` ignored. A clone that took `../Repo.git`
+    literally would fetch from wherever the process happens to be standing,
+    which is why git resolves it against the SUPERPROJECT'S REMOTE instead.
+
+    THE SEPARATOR IS THE BASE'S OWN. A local path on Windows arrives from
+    `git remote get-url` as `D:\\a\\_temp\\remotes\\Fam.git` with no forward
+    slash anywhere in it, so a walk that split on `/` alone would drop
+    nothing and append to the whole string. The walk therefore normalises to
+    `/` and hands the result back in the spelling the remote used: git
+    accepts either, and `same_repository` folds both to one answer anyway.
+
+    MIRRORS `templates/family-root/scripts/siblings.py::join_relative`, for
+    the reason the section comment above gives, and the parity test in
+    `tests/test_shape_doctor.py` asserts the two agree.
+    """
+    native_backslash = remote_is_a_path(base) and "\\" in base
+    flat = (base.replace("\\", "/") if native_backslash else base).rstrip("/")
+    for part in url.split("/"):
+        if part == "..":
+            up = _up_one(flat)
+            if up is not None:
+                flat = up
+        elif part not in (".", ""):
+            flat = f"{flat}/{part}"
+    return flat.replace("/", "\\") if native_backslash else flat
+
+
+def resolved_remote(url: str, base: str) -> str:
+    """A submodule url spelled `../<Repo>.git`, against THIS remote.
+
+    Absolute urls are handed straight back, and so is a relative one when
+    there is no remote to resolve it against -- a holder with no `origin`
+    names nothing this can complete, and inventing a base would be worse
+    than saying so. `scripts/siblings.py::resolve_relative` makes exactly
+    these two choices before it clones.
+    """
+    if not url.startswith(("./", "../")):
+        return url
+    return join_remote(base, url) if base else url
+
+
 #: A url's CREDENTIAL -- `[user[:password]@]` in front of the host, and only
 #: in a url that has a scheme, which is the spelling a token is ever written
 #: in (`https://x-access-token:<pat>@github.com/Org/Repo.git`). The scp form
