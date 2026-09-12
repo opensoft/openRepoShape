@@ -20,6 +20,9 @@ WHAT THIS MODULE OWNS
   - `file_sha256` — the per-file digest used by the shape pin's `files:` block,
     mirroring `neutral-product-pin`'s per-file `sha256` rows.
   - `NamingPolicy` — the classifier over `contracts/repository-naming.yaml`.
+  - `same_repository` and the remote-url arithmetic under it — the ONE
+    definition of whether two remote spellings name one repository, which
+    `shape-doctor.py` reports by and `scripts/siblings.py` refuses by.
   - `Refusal` — the fail-closed exception every validator raises, carrying a
     remediation string, because a refusal that names what is wrong without
     naming what to run puts the exit in tribal memory instead of the message.
@@ -1698,6 +1701,318 @@ def accepts_role(found, role: str) -> bool:
 def repo_basename(repository: str) -> str:
     """`opensoft/openRepoShape` -> `openRepoShape`; a bare name is returned."""
     return repository.rsplit("/", 1)[-1]
+
+
+# ---------------------------------------------------------------------------
+# Is this the SAME REPOSITORY? (2026-09-12, #146, #155 and #149)
+# ---------------------------------------------------------------------------
+#
+# ONE DEFINITION, BECAUSE TWO TOOLS ACT ON IT AND MUST NOT DISAGREE.
+# `templates/family-root/scripts/siblings.py` REFUSES to fetch into a clone
+# beside a family holder whose `origin` is not the member's remote (`WRONG
+# ORIGIN`), and `shape-doctor.py`'s `members` row REPORTS whether that same
+# directory is the member's working clone. While those two answered out of
+# two copies of the rule, a fork beside the holder was counted by the report
+# and skipped by the tool — about the same directory, which is the one thing
+# a doctor must not do (#146).
+#
+# WHY HERE. The doctor imports nothing out of `templates/`: those files are
+# the standard's PAYLOAD, materialized into somebody else's repository, and a
+# report that imported them would be reading the copy it is meant to be
+# comparing against. This module is the one file both may read — it is
+# stdlib-only, `scaffold-project.py` copies it into every assembly root and
+# `family.py init` into every family holder, where it lands beside
+# `siblings.py` in `scripts/` and is imported by the same `sys.path` line
+# `bootstrap.py` and `validate-family.py` already use. The cost is that this
+# file is DIGEST-PINNED, so every estate reads `upstream-changed` for it until
+# it re-pins; #147 paid for a second copy instead while a re-pin was in
+# flight, and #155 is the change that was told to ride the next one.
+#
+# ONE BEHAVIOUR CHANGED WITH THE MOVE, AND ONLY ONE (#149): case folds for a
+# remote that names a HOST and is PRESERVED for a filesystem path, so two bare
+# repositories on a case-sensitive disk that differ only in case stop being
+# called one repository. It is argued where it is decided, in
+# `_remote_names_a_host` below. Everything else answers exactly what the two
+# copies answered, spelling for spelling.
+#
+# NOTHING HERE FETCHES ANYTHING, ASKS GIT ANYTHING OR TOUCHES A DISK. Every
+# function below is string arithmetic over remotes a caller has already read,
+# which is what lets `tests/test_windows_paths.py` ask the Windows questions
+# from Linux and `tests/test_shape_doctor.py` hold the whole rule to one
+# table.
+
+#: ANY `<scheme>://` prefix, by PATTERN rather than by a list of the schemes
+#: git happens to speak. Two reasons, in that order: a list has to be kept in
+#: step with git's transports — `ssh`, `git`, `file`, `https`, `git+ssh` and
+#: whatever an estate's own helper registers — and a list is also a list of
+#: LITERALS, one of them the clear-text HTTP scheme, which a scanner reads as
+#: a transport this file chose rather than as a string it strips (SonarCloud
+#: python:S5332, on PR #79). Dropping it is what makes
+#: `file:///srv/mirrors/Repo.git` and `/srv/mirrors/Repo.git` one answer, and
+#: `ssh://git@example.com/Org/Repo.git` and the scp spelling
+#: `git@example.com:Org/Repo.git` another.
+REMOTE_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
+
+#: The same scheme with NOTHING AFTER IT, which is what one `..` too many
+#: would leave behind if it were allowed to go on trimming.
+REMOTE_SCHEME_ONLY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:/*$")
+
+#: A Windows drive, and the ONLY colon a filesystem path may carry: without
+#: this, `D:\remotes\Repo.git` reads as git's `host:path` scp syntax and its
+#: drive letter is eaten as a host. The same distinction `SAFE_PATH_RE` above
+#: draws for a value on a command line, for the same reason.
+REMOTE_DRIVE_RE = re.compile(r"^[A-Za-z]:$")
+
+
+def _remote_body(url: str) -> str:
+    """A remote with its scheme, its credential and its trailing `/` gone.
+
+    THE PART EVERY QUESTION BELOW IS ASKED OF, taken off in one place rather
+    than in each of them: `<scheme>://` because the transport is not the
+    identity, `[user[:password]@]` because whoever fetches is not the
+    repository, and `\\` for `/` because only the SPELLING of a separator is
+    at stake. What is left is a host and a path, git's scp `host:path`, or a
+    path on its own — which is exactly the question `_remote_names_a_host`
+    then answers.
+    """
+    text = REMOTE_SCHEME_RE.sub("", url.strip().replace("\\", "/").rstrip("/"))
+    if "@" in text.split("/", 1)[0]:      # git@github.com:Org/Repo.git
+        text = text.split("@", 1)[1]
+    return text
+
+
+def _remote_names_a_host(url: str) -> bool:
+    """Does this remote name a HOST rather than a filesystem PATH?
+
+    THE CASE QUESTION, AND ONLY THE CASE QUESTION (2026-09-12, #149). A
+    remote that names a host compares case-INSENSITIVELY: GitHub treats an
+    owner and a repository name that way, so `https://GitHub.com/Org/Repo`
+    and `https://github.com/org/repo` are one repository, and a report that
+    called them two would send somebody to delete a good clone over a
+    capitalisation. A FILESYSTEM PATH does not: `/srv/mirrors/IRRS.git` and
+    `/srv/mirrors/irrs.git` are two different bare repositories on a
+    case-sensitive host, and the estates that mount members from bare
+    repositories on disk — every fixture in this suite, and any mirror-based
+    family — are exactly the ones where a remote is a path.
+
+    A REMOTE IS A PATH WHEN IT IS ONE OF THESE FOUR, and a host otherwise:
+
+      * an ABSOLUTE path, `/srv/mirrors/Repo.git`;
+      * `file:///srv/mirrors/Repo.git`, which is the same answer arrived at
+        by a different road — that spelling carries an EMPTY authority, so
+        the scheme leaves an absolute path and no host behind it;
+      * a WINDOWS DRIVE, `D:\\a\\remotes\\Fam.git` — the one colon that is
+        NOT scp syntax;
+      * a RELATIVE path written `./` or `../`, which is the spelling git
+        itself requires of a relative remote (Copilot and Codex, PR #156):
+        a holder whose own `origin` is `../mirrors/Fam.git` is as much on a
+        disk as one whose origin is absolute, and lowercasing it would put
+        back the very false positive #149 is about.
+
+    Everything else names a host: `<scheme>://<host>/…`, git's scp spelling
+    `[user@]host:path`, and the bare `Org/Repo` a `family.yaml` `repository:`
+    row is written as, which names a forge repository and no directory at all.
+
+    THE BARE TWO-SEGMENT FORM IS READ AS A FORGE NAME, DELIBERATELY, and it
+    is the one place this cannot be decided from the string: `mirrors/Fam.git`
+    might be a directory under whatever the process is standing in, and
+    nothing in it says so. `Org/Repo` is what every manifest in this standard
+    writes and what `siblings.py::clone_url` turns into
+    `https://github.com/Org/Repo.git`, so that is what an unanchored value is
+    taken for — and a person who means a path from somewhere writes `./`,
+    which git requires of them anyway.
+
+    STRICT ON EVERY PLATFORM, DELIBERATELY. Windows and macOS filesystems are
+    case-INsensitive by default, so a platform probe would make a report
+    change its answer with the machine it ran on; "a path compares
+    case-sensitively" is the honest rule, and the one #149 argues for.
+    """
+    text = _remote_body(url)
+    if not text or text.startswith("/"):
+        return False
+    first = text.split("/", 1)[0]
+    if first in (".", ".."):
+        return False
+    return REMOTE_DRIVE_RE.match(first) is None
+
+
+def remote_key(url: str) -> str:
+    """ONE remote spelling folded to the identity underneath it.
+
+    A HUMAN'S OWN CLONE IS NOT REQUIRED TO SPELL A REMOTE THE WAY A MANIFEST
+    OR `.gitmodules` DOES. `git@github.com:Org/Repo.git`,
+    `https://github.com/Org/Repo` and `ssh://git@github.com/Org/Repo.git` are
+    one repository, and a report that called them three would tell somebody
+    their working clone is a stranger's over a punctuation difference. So the
+    scheme, the credential prefix, the scp colon, a trailing `/` and a `.git`
+    suffix all come off, and what is left — `host/owner/repo` — is the thing
+    worth comparing. A bare `owner/repo`, which is how `family.yaml`'s
+    `repository:` is written, folds to itself and is matched by its tail in
+    `same_repository` below.
+
+    THE CASE IS FOLDED ONLY FOR A REMOTE THAT NAMES A HOST, which
+    `_remote_names_a_host` decides and #149 argues; a path keeps the case it
+    was written in. It is asked of the remote AS IT WAS WRITTEN, because the
+    scp colon this function is about to turn into a `/` is the one thing that
+    tells a Windows drive from a host.
+    """
+    text = _remote_body(url)
+    fold_case = _remote_names_a_host(url)
+    if ":" in text.split("/", 1)[0]:     # the scp spelling's one separator
+        text = text.replace(":", "/", 1)
+    if text.lower().endswith(".git"):
+        text = text[:-4]
+    return (text.lower() if fold_case else text).strip("/")
+
+
+def remote_is_a_path(base: str) -> bool:
+    """Is this remote a FILESYSTEM PATH rather than a url?
+
+    THE SEPARATOR QUESTION, which is a different one from the case question
+    above: only a path may be WALKED with a backslash in it, because a url's
+    separator is `/` on every platform, and `file:///srv/mirrors/Repo.git` is
+    a url by that measure however absolute the path inside it is.
+
+    THE COLON IS A DRIVE LETTER'S OR IT IS SCP SYNTAX.
+    `D:\\a\\remotes\\Fam.git` is a path; `git@host:org/Repo.git` and
+    `host:path/Repo.git` are urls in git's scp spelling; anything with a
+    `<scheme>://` is a url outright.
+    """
+    if REMOTE_SCHEME_RE.match(base):
+        return False
+    head = base.replace("\\", "/").split("/", 1)[0]
+    return ":" not in head or REMOTE_DRIVE_RE.match(head) is not None
+
+
+def _up_one(flat: str) -> str | None:
+    """`flat` with its last component dropped, or None when it has none.
+
+    A `..` TOO MANY CONSUMES NOTHING. What is left after the last component
+    can be a scheme (`https:/`), an scp host (`git@host:`) or nothing at all,
+    and none of those is a directory a `..` may eat — a url like that is
+    wrong wherever it is read, and the clone that fails prints it. The one
+    case where nothing left IS an answer is a POSIX root: the parent of
+    `/Repo.git` is `/`, so the empty string comes back and the next name
+    appended makes `/Other.git`. A Windows DRIVE is a component of its own
+    for the same reason, and is the one colon that is not scp syntax — so it
+    is asked FIRST, because `D:` is also what a one-letter scheme looks like.
+    """
+    if "/" not in flat:
+        return None
+    head = flat.rsplit("/", 1)[0]
+    if REMOTE_DRIVE_RE.match(head):
+        return head
+    if REMOTE_SCHEME_ONLY_RE.match(head) or head.endswith(":"):
+        return None
+    return head
+
+
+def join_remote(base: str, url: str) -> str:
+    """`base` with `url`'s `../` applied — PURE STRING ARITHMETIC.
+
+    GIT'S OWN RULE FOR A RELATIVE SUBMODULE URL, which is textual and has no
+    filesystem and no platform in it: one trailing component dropped per
+    `..`, one appended per name, `.` ignored. A clone that took `../Repo.git`
+    literally would fetch from wherever the process happens to be standing,
+    which is why git resolves it against the SUPERPROJECT'S REMOTE instead.
+
+    THE SEPARATOR IS THE BASE'S OWN. A local path on Windows arrives from
+    `git remote get-url` as `D:\\a\\_temp\\remotes\\Fam.git` with no forward
+    slash anywhere in it, so a walk that split on `/` alone would drop
+    nothing and append to the whole string (the `windows-latest` failure on
+    PR #79). The walk therefore normalises to `/` and hands the result back
+    in the spelling the remote used: git accepts either, a human comparing
+    this against `git remote -v` should not have to translate it, and
+    `same_repository` folds both spellings to one answer anyway.
+    """
+    native_backslash = remote_is_a_path(base) and "\\" in base
+    flat = (base.replace("\\", "/") if native_backslash else base).rstrip("/")
+    for part in url.split("/"):
+        if part == "..":
+            up = _up_one(flat)
+            if up is not None:
+                flat = up
+        elif part not in (".", ""):
+            flat = f"{flat}/{part}"
+    return flat.replace("/", "\\") if native_backslash else flat
+
+
+def resolved_remote(url: str, base: str) -> str:
+    """A submodule url spelled `../<Repo>.git`, against THIS remote.
+
+    Absolute urls are handed straight back, and so is a relative one when
+    there is no remote to resolve it against — a holder with no `origin`
+    names nothing this can complete, and inventing a base would be worse than
+    saying so. `siblings.py::resolve_relative` is the wrapper that reads the
+    holder's own `origin` and hands it here as `base`; the doctor reads the
+    root's and does the same.
+    """
+    if not url.startswith(("./", "../")):
+        return url
+    return join_remote(base, url) if base else url
+
+
+#: A url's CREDENTIAL — `[user[:password]@]` in front of the host, and only
+#: in a url that has a scheme, which is the spelling a token is ever written
+#: in (`https://x-access-token:<pat>@github.com/Org/Repo.git`). The scp form
+#: `git@host:Org/Repo.git` carries a user name and no secret — ssh takes no
+#: password in a url — and is left legible.
+CREDENTIAL_RE = re.compile(r"^([A-Za-z][A-Za-z0-9+.-]*://)[^/@]*@")
+
+
+def redacted(url: str) -> str:
+    """A remote url with any credential in it replaced by `***`.
+
+    A REPORT PRINTS WHAT IT FINDS, AND WHAT IT FINDS CAN BE A TOKEN. Git
+    permits a credential in a remote url, people do put one there, and
+    `shape-doctor.py --json` is pasted into issues and kept as a CI artifact
+    — so a row that quoted `origin` verbatim would publish somebody's PAT to
+    everywhere the report goes (Codex and Copilot, PR #147). The raw value is
+    still what `same_repository` compares; this is what gets stored and
+    printed, and the host and the path — the whole of what a person needs in
+    order to see which repository it is — survive.
+    """
+    return CREDENTIAL_RE.sub(r"\1***@", url)
+
+
+def same_repository(one: str, two: str) -> bool:
+    """Do two remote spellings name the SAME repository?
+
+    The normalised identities, and failing that the TRAILING `owner/repo` of
+    the second: a manifest records `Org/Repo` with no host in it at all, and a
+    mirror or an enterprise host spells the same repository under a different
+    one. Only the second argument's tail is tried, because that is the
+    reference being matched against — the row, or the mount — and the first
+    is whatever a clone on somebody's disk happens to say.
+
+    THE TAIL IS A FORGE QUESTION UNLESS BOTH SIDES ARE PATHS, which is where
+    #149's rule stops (Copilot, PR #156). A mirror on disk at
+    `/srv/mirrors/InkRouter/IRRS.git` is matched against the row's bare
+    `InkRouter/IRRS` — a FORGE name, spelled by whoever wrote the manifest and
+    case-insensitive at the forge — so comparing that tail case-sensitively
+    would report a legitimate mirror clone as `WRONG ORIGIN` over a
+    capitalisation, which is the fault #149 is against, not for. When BOTH
+    sides are paths the filesystem is the only authority there is and the
+    comparison stays strict, so `/srv/mirrors/IRRS.git` and
+    `/srv/mirrors/irrs.git` are still two repositories however they are
+    reached.
+
+    THE DEFINITION `make siblings` REFUSES BY AND THE DOCTOR REPORTS BY, one
+    function imported by both: `templates/family-root/scripts/siblings.py`
+    and `shape-doctor.py` each import this name, and
+    `tests/test_shape_doctor.py` asserts they are the same object before it
+    runs the table.
+    """
+    left, right = remote_key(one), remote_key(two)
+    if left == right:
+        return True
+    tail = right.split("/")
+    if len(tail) < 2:
+        return False
+    suffix = "/".join(tail[-2:])
+    if _remote_names_a_host(one) or _remote_names_a_host(two):
+        return left.lower().endswith(suffix.lower())
+    return left.endswith(suffix)
 
 
 # ---------------------------------------------------------------------------

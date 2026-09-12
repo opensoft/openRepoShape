@@ -107,8 +107,19 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+# "IS THIS THE SAME REPOSITORY" IS IMPORTED, NEVER RE-SPELLED (2026-09-12,
+# #155). This file REFUSES to fetch into a clone beside the holder whose
+# `origin` is not the member's remote (`verify_sibling` below), and
+# `shape-doctor.py`'s `members` row REPORTS whether that same directory is
+# the member's working clone. While each answered out of its OWN copy of the
+# rule they could disagree about one directory, and for three commits they
+# did (#146, #147). `repo_shape.py` is copied in beside this file by
+# `family.py init` and travels with it in `contracts/shape-pin.yaml`, so the
+# rule is one function both tools import — and `join_remote` is the
+# arithmetic `resolve_relative` hands git's relative-url rule to.
 from repo_shape import (  # noqa: E402
-    PYTHON, Refusal, find_repo_root, load_yaml, repo_basename,
+    PYTHON, Refusal, find_repo_root, join_remote, load_yaml, repo_basename,
+    same_repository,
 )
 # THE CREDENTIAL AND THE MEMBER ROWS ARE READ BY `bootstrap.py` ALREADY, and a
 # second definition of either is how the two start disagreeing about which
@@ -120,23 +131,6 @@ from bootstrap import (  # noqa: E402
 )
 
 MANIFEST = "family.yaml"
-
-#: ANY `<scheme>://` prefix, by PATTERN rather than by a list of the schemes
-#: git happens to speak. Two reasons, in that order: a list has to be kept in
-#: step with git's transports — `ssh`, `git`, `file`, `https`, `git+ssh` and
-#: whatever an estate's own helper registers — and a list is also a list of
-#: LITERALS, one of them the clear-text HTTP scheme, which a scanner reads as
-#: a transport this file chose rather than as a string it strips (SonarCloud
-#: python:S5332, on PR #79). Nothing here fetches anything at all: the prefix
-#: is removed from both sides before two urls are compared.
-SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
-#: The same scheme with NOTHING AFTER IT, which is what a `..` too many would
-#: leave behind if it were allowed to keep trimming.
-SCHEME_ONLY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:/*$")
-#: A Windows drive, and the only colon a FILESYSTEM PATH may carry — the
-#: distinction `repo_shape.SAFE_PATH_RE` draws for the same reason: without
-#: it, `D:\remotes\Repo.git` reads as git's `host:path` scp syntax.
-DRIVE_RE = re.compile(r"^[A-Za-z]:$")
 
 #: A `make` TARGET NAME, and the whole of what `--make` may be: a letter, then
 #: letters, digits, `_`, `.` and `-`. `--make-arg` is narrower still — a make
@@ -195,81 +189,6 @@ def submodule_urls(root: Path) -> dict[str, str]:
     return {paths.get(name, name): url for name, url in urls.items()}
 
 
-def base_is_a_path(base: str) -> bool:
-    """Is this remote a FILESYSTEM PATH rather than a url?
-
-    THE COLON IS A DRIVE LETTER'S OR IT IS SCP SYNTAX, which is the same
-    distinction `repo_shape.SAFE_PATH_RE` draws for a value on a git command
-    line: `D:\\a\\remotes\\InkRouter.git` is a path, `git@host:org/Repo.git`
-    and `host:path/Repo.git` are urls in git's scp spelling, and anything
-    with a `<scheme>://` is a url outright. Only the path answer may be
-    walked with a backslash in it — a url's separator is always `/`, on
-    every platform.
-    """
-    if SCHEME_RE.match(base):
-        return False
-    head = base.replace("\\", "/").split("/", 1)[0]
-    return ":" not in head or DRIVE_RE.match(head) is not None
-
-
-def _one_level_up(flat: str) -> str | None:
-    """`flat` with its last component dropped, or None when there is none.
-
-    A `..` TOO MANY CONSUMES NOTHING. What is left after the last component
-    can be a scheme (`https:/`), an scp host (`git@host:`) or nothing at all,
-    and none of those is a directory a `..` may eat — such a url is wrong
-    wherever it is read, and the clone that fails prints it. The one case
-    where nothing left IS an answer is a POSIX root: the parent of
-    `/Repo.git` is `/`, so it returns the empty string and the next name
-    appended makes `/Other.git`. A Windows DRIVE is a component of its own
-    for the same reason (`D:/Repo.git` -> `D:` -> `D:/Other.git`), and is the
-    one colon that is not scp syntax.
-    """
-    if "/" not in flat:
-        return None
-    head = flat.rsplit("/", 1)[0]
-    # THE DRIVE IS ASKED FIRST, because `D:` is also what a one-letter scheme
-    # would look like and `SCHEME_ONLY_RE` cannot tell them apart. On Windows
-    # it is a component and the answer is yes.
-    if DRIVE_RE.match(head):
-        return head
-    if SCHEME_ONLY_RE.match(head) or head.endswith(":"):
-        return None
-    return head
-
-
-def join_relative(base: str, url: str) -> str:
-    """`base` with `url`'s `../` applied — PURE STRING ARITHMETIC.
-
-    NO FILESYSTEM AND NO PLATFORM, so `tests/test_windows_paths.py` can ask
-    it the Windows question from Linux the way it asks `family_landing` and
-    `root_key`. Git's rule for a relative submodule url is textual: one
-    trailing component dropped per `..`, appended per name.
-
-    THE SEPARATOR IS THE BASE'S OWN. A local path on Windows arrives from
-    `git remote get-url` as `D:\\a\\_temp\\remotes\\InkRouter.git` — no
-    forward slash anywhere in it — so a walk that split on `/` alone dropped
-    nothing and appended `/IRRS.git` to the whole thing, which is the
-    `windows-latest` failure on PR #79 (`fatal: '…\\InkRouter.git/IRRS.git'
-    does not appear to be a git repository`). The walk therefore normalises
-    to `/`, and hands the result BACK in the spelling the remote used: git on
-    Windows accepts either, and a human comparing this against `git remote
-    -v` or `.gitmodules` should not have to translate it. `same_repository`
-    folds both spellings to one answer anyway, so identity does not depend
-    on the choice.
-    """
-    native_backslash = base_is_a_path(base) and "\\" in base
-    flat = (base.replace("\\", "/") if native_backslash else base).rstrip("/")
-    for part in url.split("/"):
-        if part == "..":
-            up = _one_level_up(flat)
-            if up is not None:
-                flat = up
-        elif part not in (".", ""):
-            flat = f"{flat}/{part}"
-    return flat.replace("/", "\\") if native_backslash else flat
-
-
 def resolve_relative(url: str, root: Path) -> str:
     """A `.gitmodules` url spelled `../<Repo>.git`, against THIS remote.
 
@@ -279,14 +198,16 @@ def resolve_relative(url: str, root: Path) -> str:
     happens to be standing. `family.py add` writes absolute urls and never
     produces one of these; a hand-mounted member can, and the honest answer
     is git's own rule rather than a guess. The arithmetic itself is
-    `join_relative`, which knows nothing about this machine.
+    `repo_shape.join_remote`, which knows nothing about this machine; THIS
+    function is the half that does — it reads the holder's own `origin`, and
+    that is the only reason it is still here rather than beside the rest.
     """
     if not url.startswith(("./", "../")):
         return url
     base = (git_text(["remote", "get-url", "origin"], root) or "").strip()
     if not base:
         return url
-    return join_relative(base, url)
+    return join_remote(base, url)
 
 
 def clone_url(root: Path, row: dict, urls: dict[str, str]) -> tuple[str, str]:
@@ -296,38 +217,6 @@ def clone_url(root: Path, row: dict, urls: dict[str, str]) -> tuple[str, str]:
         return resolve_relative(urls[path], root), ".gitmodules"
     repository = str(row.get("repository") or "")
     return f"https://github.com/{repository}.git", f"{MANIFEST} repository:"
-
-
-def same_repository(one: str, two: str) -> bool:
-    """Do two remote spellings name the SAME repository?
-
-    A HUMAN'S OWN CLONE IS NOT REQUIRED TO SPELL THE REMOTE THE WAY
-    `.gitmodules` DOES: `git@github.com:Org/Repo.git`,
-    `https://github.com/Org/Repo` and `ssh://git@github.com/Org/Repo.git` are
-    one repository, and refusing to fetch somebody's existing clone over a
-    punctuation difference would send them to delete it. So the comparison is
-    on the normalised `host/owner/repo`, and on the trailing `owner/repo`
-    where the hosts are spelled differently (a mirror, an enterprise host).
-    Any scheme at all is dropped by `SCHEME_RE`, which is what makes
-    `file:///srv/mirrors/Repo.git` and `/srv/mirrors/Repo.git` one answer too.
-    """
-    def normalise(url: str) -> str:
-        text = SCHEME_RE.sub("", url.strip().replace("\\", "/").rstrip("/"))
-        head = text.split("/", 1)[0]
-        if "@" in head:                      # git@github.com:Org/Repo.git
-            text = text.split("@", 1)[1]
-        head = text.split("/", 1)[0]
-        if ":" in head:                      # the scp-like spelling's colon
-            text = text.replace(":", "/", 1)
-        if text.lower().endswith(".git"):
-            text = text[:-4]
-        return text.lower().strip("/")
-
-    left, right = normalise(one), normalise(two)
-    if left == right:
-        return True
-    tail = right.split("/")
-    return len(tail) >= 2 and left.endswith("/".join(tail[-2:]))
 
 
 # ---------------------------------------------------------------------------

@@ -39,6 +39,7 @@ from conftest import REPO
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import (  # noqa: E402
     SAFE_ARG_RE, SAFE_PATH_RE, Refusal, checked_value, load_yaml,
+    remote_is_a_path,
 )
 from shape_materialize import root_key  # noqa: E402
 
@@ -229,30 +230,44 @@ def test_a_relative_member_url_resolves_against_any_remote_spelling(
         siblings, base, expected):
     r"""`../IRRS.git` against the holder's own remote, on every spelling.
 
-    `join_relative` is PURE STRING ARITHMETIC over the two strings, which is
+    `join_remote` is PURE STRING ARITHMETIC over the two strings, which is
     what lets the Windows answer be asserted from Linux — the same trick
     `root_key` and `family_landing` above are held to. The end-to-end test in
     `tests/test_family.py` is what caught this on the runner; this is what
     keeps it caught between Windows runs.
+
+    ASKED OF THE HOLDER, which is where it matters and which is no longer
+    where it is written: the arithmetic is `repo_shape.join_remote` since
+    #155, and `siblings.py` imports it — so a holder that stopped importing
+    it fails here rather than quietly answering out of a second copy.
     """
-    assert siblings.join_relative(base, "../IRRS.git") == expected
+    assert siblings.join_remote(base, "../IRRS.git") == expected
 
 
-def test_a_windows_remote_is_a_path_and_an_scp_url_is_not(siblings):
+def test_a_windows_remote_is_a_path_and_an_scp_url_is_not():
     r"""Only a FILESYSTEM PATH may be walked with a backslash in it.
 
     `D:\...` is a path whose colon is a drive letter; `git@host:org/Repo.git`
     and `host:path/Repo.git` are urls in git's scp spelling, and a url's
     separator is `/` on every platform. Getting this backwards would rewrite
     an scp url's slashes into backslashes on a Windows workstation.
+
+    ASKED OF `repo_shape`, which owns this question since #155 — the holder's
+    `siblings.py` and `shape-doctor.py` both reach it there, and the test
+    above is the one that keeps the holder's own import honest.
     """
-    assert siblings.base_is_a_path(WINDOWS_HOLDER_REMOTE)
-    assert siblings.base_is_a_path("D:/x/remotes/InkRouter.git")
-    assert siblings.base_is_a_path("/srv/mirrors/InkRouter.git")
-    assert not siblings.base_is_a_path("git@host:org/InkRouter.git")
-    assert not siblings.base_is_a_path("host:path/InkRouter.git")
-    assert not siblings.base_is_a_path("https://host/org/InkRouter.git")
-    assert not siblings.base_is_a_path("file:///srv/mirrors/InkRouter.git")
+    assert remote_is_a_path(WINDOWS_HOLDER_REMOTE)
+    assert remote_is_a_path("D:/x/remotes/InkRouter.git")
+    assert remote_is_a_path("/srv/mirrors/InkRouter.git")
+    # A RELATIVE remote is a path to BOTH halves of the rule: this one, which
+    # decides whether it may be walked with a backslash in it, and the case
+    # question `_remote_names_a_host` asks (Copilot and Codex, PR #156).
+    assert remote_is_a_path("../mirrors/InkRouter.git")
+    assert remote_is_a_path("./mirrors/InkRouter.git")
+    assert not remote_is_a_path("git@host:org/InkRouter.git")
+    assert not remote_is_a_path("host:path/InkRouter.git")
+    assert not remote_is_a_path("https://host/org/InkRouter.git")
+    assert not remote_is_a_path("file:///srv/mirrors/InkRouter.git")
 
 
 @pytest.mark.parametrize("base,url,expected", [
@@ -276,7 +291,7 @@ def test_the_walk_stops_where_there_is_nothing_left_to_consume(
     """The edges of the same arithmetic, each one a shape a hand-mounted
     member can carry. A url with a `..` too many is wrong wherever it is
     read; what this must not do is invent `https:/` out of a scheme."""
-    assert siblings.join_relative(base, url) == expected
+    assert siblings.join_remote(base, url) == expected
 
 
 def test_an_absolute_member_url_is_returned_untouched(siblings):
