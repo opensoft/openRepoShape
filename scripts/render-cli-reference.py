@@ -489,10 +489,68 @@ def fence(body: str) -> list:
     return ["```", *body.split("\n"), "```"]
 
 
+def _active_tools(group: list, skip_bash: bool) -> list:
+    """One group's tools, minus the bash entry points this machine has none
+    to run.
+
+    Split from `render` for #136.
+    """
+    return [t for t in group if not (skip_bash and t.runner == "bash")]
+
+
+def _subcommand_sections(tool: Tool, body: str) -> list:
+    """The `#### tool subcommand` sections a dispatcher's own help lists.
+
+    Split from `render` for #136: what a tool's subcommands are is answered
+    by `subcommands()` already; composing their sections is the other half,
+    asked once per tool instead of inline in the group loop.
+    """
+    out: list = []
+    for name in subcommands(body):
+        out += [f"#### `{tool.path} {name}`", "",
+                f"`{tool.command} {name} --help`:", ""]
+        out += fence(capture_help(tool, name)) + [""]
+    return out
+
+
+def _tool_section(tool: Tool) -> list:
+    """The whole `### tool` section: heading, notes, help, subcommands.
+
+    Split from `render` for #136: what to say about ONE tool is one
+    question, asked once per tool instead of inline in the group loop.
+    """
+    out = [f"### `{tool.path}`", ""]
+    if tool.installed_as:
+        out += [f"Run as `{tool.command}` from inside "
+                f"{tool.installed_in}.", ""]
+    if tool.note:
+        out += [tool.note, ""]
+    out += [f"`{tool.command} --help`:", ""]
+    body = capture_help(tool)
+    out += fence(body) + [""]
+    out += _subcommand_sections(tool, body)
+    return out
+
+
+def _refuse_host_paths(text: str) -> None:
+    """Refuse to hand back a document that leaked a host-absolute path.
+
+    Split from `render` for #136: Rule 1 is checked once, on the finished
+    document, rather than folded into the assembly that produces it.
+    """
+    leaked = HOST_ABSOLUTE.findall(text)
+    if leaked:
+        raise Refusal(
+            f"the rendered reference carries host-absolute path(s) {leaked}; "
+            "writing it would break the estate's Rule 1 and "
+            "tests/test_repo_hygiene.py::test_no_committed_file_names_a_host_"
+            "absolute_path. Fix the tool that prints one.")
+
+
 def render(skip_bash: bool = False) -> str:
     """The whole document."""
-    tools = [(title, [t for t in group if not (skip_bash and t.runner == "bash")],
-              blurb) for title, group, blurb in GROUPS]
+    tools = [(title, _active_tools(group, skip_bash), blurb)
+             for title, group, blurb in GROUPS]
 
     out = ["# The openRepoShape CLI, flag by flag", "", HEADER, "",
            ORIENTATION.rstrip(), "", NORMALISATION.rstrip(), ""]
@@ -509,28 +567,10 @@ def render(skip_bash: bool = False) -> str:
     for title, group, blurb in tools:
         out += [f"## {title}", "", blurb, ""]
         for tool in group:
-            out += [f"### `{tool.path}`", ""]
-            if tool.installed_as:
-                out += [f"Run as `{tool.command}` from inside "
-                        f"{tool.installed_in}.", ""]
-            if tool.note:
-                out += [tool.note, ""]
-            out += [f"`{tool.command} --help`:", ""]
-            body = capture_help(tool)
-            out += fence(body) + [""]
-            for name in subcommands(body):
-                out += [f"#### `{tool.path} {name}`", "",
-                        f"`{tool.command} {name} --help`:", ""]
-                out += fence(capture_help(tool, name)) + [""]
+            out += _tool_section(tool)
 
     text = "\n".join(out).rstrip("\n") + "\n"
-    leaked = HOST_ABSOLUTE.findall(text)
-    if leaked:
-        raise Refusal(
-            f"the rendered reference carries host-absolute path(s) {leaked}; "
-            "writing it would break the estate's Rule 1 and "
-            "tests/test_repo_hygiene.py::test_no_committed_file_names_a_host_"
-            "absolute_path. Fix the tool that prints one.")
+    _refuse_host_paths(text)
     return text
 
 

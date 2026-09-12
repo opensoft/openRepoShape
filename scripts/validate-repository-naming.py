@@ -78,8 +78,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from repo_shape import (  # noqa: E402
-    CHAIN_RECORD_FIELD, UNAMBIGUOUS_FORMS, NamingPolicy, Refusal,
-    link_pins_from_trees, load_yaml, repo_basename,
+    CHAIN_RECORD_FIELD, UNAMBIGUOUS_FORMS, Classification, NamingPolicy,
+    Refusal, link_pins_from_trees, load_yaml, repo_basename,
 )
 
 DEFAULT_POLICY = Path(__file__).resolve().parents[1] / "contracts" / "repository-naming.yaml"
@@ -113,76 +113,153 @@ def _link_pins(target: Target, keyed_sources: dict,
                                 default_source)
 
 
-def _describe(policy: NamingPolicy, target: Target, link_pins: dict) -> list[str]:
-    name, role, pins = target.name, target.role, target.pins
-    lines = []
-    matches = policy.matches(name, role)
-    if not matches:
-        lines.append(f"  {name}: NO FAMILY")
-        lines.append(f"    the {len(policy.families)} families are: " + ", ".join(
-            f["id"] for f in policy.families))
-        for family in policy.families:
-            lines.append(f"    {family['id']:<18} {family['pattern']}")
-        return lines
-    found = policy.classify(name, role, pins, target.chain, link_pins)
-    lines.append(f"  {name}: {found[0]}" + (f" / {found[1]}" if found[1] else ""))
+def _no_family_lines(policy: NamingPolicy, name: str) -> list[str]:
+    """The `--explain` lines for a name that matches no family at all.
+
+    Split from `_describe` for #136: what to print when nothing classifies is
+    one question, answered once, so the per-family row below never has to
+    guard against a `found` that does not exist.
+    """
+    lines = [f"  {name}: NO FAMILY"]
+    lines.append(f"    the {len(policy.families)} families are: " + ", ".join(
+        f["id"] for f in policy.families))
     for family in policy.families:
-        hits = [m for m in matches if m[0] == family["id"]]
-        mark = "MATCH " if hits else "      "
-        role_note = f" (role {hits[0][1]})" if hits and hits[0][1] else ""
-        claim = ""
-        if hits and policy.requires_referent(family["id"]):
-            # WHAT WOULD BE ACCEPTED, both halves of it. Naming only the direct
-            # pin is what sent `codexDox` looking for an `openDox` pin its
-            # family does not hold (2026-09-05).
-            claim = (" [a CLAIM: needs a declared pin on " + " or ".join(
-                policy.descendant_referents(name))
-                + ", or a declared chain (`"
-                + str(policy.chain_rule().get("record_field")
-                      or CHAIN_RECORD_FIELD)
-                + "`) of pins ending in one of them]")
-        elif policy.declared_only(family["id"]):
-            claim = (" [DECLARED-ONLY: reported only with --role "
-                     + family["id"] + "; " + str(family.get("declared_by") or
-                                                 "a declaration").strip() + "]")
-        elif hits and family.get("admits_declared_role"):
-            # NAME THE ADMISSION, not just its effect. A reader who sees
-            # `openDox: neutral-product / assembly` and no explanation has to
-            # go and read the classifier to learn that the form still won and
-            # the role was ADDED to it (2026-09-05).
-            admits = ", ".join(str(r) for r in family["admits_declared_role"])
-            carried = (found.role if found.family == family["id"]
-                       and found.role else None)
-            # THREE ANSWERS, not two: nothing declared, a role declared and
-            # ADMITTED, or a role declared and REFUSED (`--role spec openDox`
-            # declares a role this family does not admit). Collapsing the
-            # last two into "none is declared here" told the reader a
-            # declaration was absent when it was in fact refused (2026-09-05).
-            if role is None:
-                admission = "; none is declared here"
-            elif carried:
-                admission = f" — this name carries {carried}"
-            else:
-                admission = f"; {role} is declared here and is not admitted"
-            claim = (f" [ADMITS a declared role of {admits}: the form still "
-                     "wins and carries the role the project declares, where "
-                     "the name also satisfies that leg form"
-                     + admission
-                     + "]")
-            if carried:
-                role_note = f" (role {carried}, ADMITTED)"
-        elif hits and family["id"] in UNAMBIGUOUS_FORMS:
-            # WHY THIS ROW NEEDED NOTHING. The three claims above are each a
-            # reason a reader might have to declare something; this is the row
-            # that says there is nothing to declare, which is the answer for
-            # `<X>-Install` and `<user>-wip`. `neutral-product` is unambiguous
-            # too and is answered by the branch above instead, because it has
-            # the further thing to say about the role it admits.
-            claim = (" [UNAMBIGUOUS BY CONSTRUCTION: nothing else spells this "
-                     "form, so it needs nothing declared — no --role and no "
-                     "pin — and it is admitted into no role either]")
-        lines.append(
-            f"    {mark}{family['id']:<18} {family['pattern']}{role_note}{claim}")
+        lines.append(f"    {family['id']:<18} {family['pattern']}")
+    return lines
+
+
+def _admission_note(family: dict, role: str | None, carried: str | None) -> str:
+    """The `[ADMITS ...]` note for a family whose data admits a declared role.
+
+    Split from `_describe` for #136: THREE ANSWERS, not two — nothing
+    declared, a role declared and ADMITTED, or a role declared and REFUSED
+    (`--role spec openDox` declares a role this family does not admit).
+    Collapsing the last two into "none is declared here" told the reader a
+    declaration was absent when it was in fact refused (2026-09-05); giving
+    the three answers their own function is what keeps them three.
+    """
+    admits = ", ".join(str(r) for r in family["admits_declared_role"])
+    if role is None:
+        admission = "; none is declared here"
+    elif carried:
+        admission = f" — this name carries {carried}"
+    else:
+        admission = f"; {role} is declared here and is not admitted"
+    return (f" [ADMITS a declared role of {admits}: the form still "
+            "wins and carries the role the project declares, where "
+            "the name also satisfies that leg form"
+            + admission
+            + "]")
+
+
+def _referent_claim_note(policy: NamingPolicy, family: dict, name: str) -> str:
+    """The `[a CLAIM: ...]` note for a family that `requires_referent`.
+
+    Split from `_family_claim_and_role_note` for #136: WHAT WOULD BE
+    ACCEPTED, both halves of it. Naming only the direct pin is what sent
+    `codexDox` looking for an `openDox` pin its family does not hold
+    (2026-09-05).
+    """
+    return (" [a CLAIM: needs a declared pin on " + " or ".join(
+        policy.descendant_referents(name))
+        + ", or a declared chain (`"
+        + str(policy.chain_rule().get("record_field")
+              or CHAIN_RECORD_FIELD)
+        + "`) of pins ending in one of them]")
+
+
+def _declared_only_note(family: dict) -> str:
+    """The `[DECLARED-ONLY: ...]` note for a family only reported by name.
+
+    Split from `_family_claim_and_role_note` for #136.
+    """
+    return (" [DECLARED-ONLY: reported only with --role "
+             + family["id"] + "; " + str(family.get("declared_by") or
+                                         "a declaration").strip() + "]")
+
+
+def _unambiguous_note() -> str:
+    """The `[UNAMBIGUOUS BY CONSTRUCTION: ...]` note.
+
+    Split from `_family_claim_and_role_note` for #136: WHY THIS ROW NEEDED
+    NOTHING. The other three notes are each a reason a reader might have to
+    declare something; this is the answer for `<X>-Install` and
+    `<user>-wip` — nothing to declare, and admitted into no role either.
+    `neutral-product` is unambiguous too and answered by `_admission_note`
+    instead, because it has the further thing to say about the role it
+    admits.
+    """
+    return (" [UNAMBIGUOUS BY CONSTRUCTION: nothing else spells this "
+             "form, so it needs nothing declared — no --role and no "
+             "pin — and it is admitted into no role either]")
+
+
+def _admission_row(role_note: str, family: dict, role: str | None,
+                   found: Classification) -> tuple[str, str]:
+    """`(role_note, claim)` for a family whose data admits a declared role.
+
+    Split from `_family_claim_and_role_note` for #136: NAME THE ADMISSION,
+    not just its effect — a reader who sees `openDox: neutral-product /
+    assembly` and no explanation has to go and read the classifier to learn
+    that the form still won and the role was ADDED to it (2026-09-05).
+    `role_note` is the plain note the caller already computed, kept
+    as-is unless this name CARRIES the admitted role.
+    """
+    carried = (found.role if found.family == family["id"]
+               and found.role else None)
+    claim = _admission_note(family, role, carried)
+    if carried:
+        role_note = f" (role {carried}, ADMITTED)"
+    return role_note, claim
+
+
+def _family_claim_and_role_note(policy: NamingPolicy, family: dict, hits: list,
+                                role: str | None, name: str,
+                                found: Classification) -> tuple[str, str]:
+    """The `(role_note, claim)` suffixes for one family's `--explain` row.
+
+    Split from `_describe` for #136: what a family's row says about what
+    claiming it would need is one question with four mutually exclusive
+    answers, each now its own named note, asked once per family instead of
+    inline in the row loop.
+    """
+    role_note = f" (role {hits[0][1]})" if hits and hits[0][1] else ""
+    claim = ""
+    if hits and policy.requires_referent(family["id"]):
+        claim = _referent_claim_note(policy, family, name)
+    elif policy.declared_only(family["id"]):
+        claim = _declared_only_note(family)
+    elif hits and family.get("admits_declared_role"):
+        role_note, claim = _admission_row(role_note, family, role, found)
+    elif hits and family["id"] in UNAMBIGUOUS_FORMS:
+        claim = _unambiguous_note()
+    return role_note, claim
+
+
+def _family_row(policy: NamingPolicy, family: dict, matches: list,
+                role: str | None, name: str, found: Classification) -> str:
+    """The one `--explain` line for a single family, MATCH or not.
+
+    Split from `_describe` for #136: composing one family's row — whether it
+    matched, and what it would need declared — is one question, asked once
+    per family instead of inline in the name's own loop.
+    """
+    hits = [m for m in matches if m[0] == family["id"]]
+    mark = "MATCH " if hits else "      "
+    role_note, claim = _family_claim_and_role_note(
+        policy, family, hits, role, name, found)
+    return f"    {mark}{family['id']:<18} {family['pattern']}{role_note}{claim}"
+
+
+def _referent_lines(target: Target, matches: list,
+                    found: Classification) -> list[str]:
+    """The CHAIN / WARNING / OVERLAP lines after a name's family rows.
+
+    Split from `_describe` for #136: what to say about the referent, and
+    about an overlap, are two more questions asked once per name after every
+    row has already been printed, not per family.
+    """
+    lines: list[str] = []
     if target.chain:
         lines.append("    CHAIN " + " → ".join(target.chain)
                      + f"   [{found.referent.status}]")
@@ -191,6 +268,26 @@ def _describe(policy: NamingPolicy, target: Target, link_pins: dict) -> list[str
     if len(matches) > 1:
         lines.append("    OVERLAP " + found.reason)
         lines.append("    also_matches: " + ", ".join(found.also_matches))
+    return lines
+
+
+def _describe(policy: NamingPolicy, target: Target, link_pins: dict) -> list[str]:
+    """Every family `target.name` satisfies, why one of them won, and what
+    the others are recorded as — the full `--explain` report for one name.
+
+    Split into `_family_row` (one family's line) and `_referent_lines` (the
+    CHAIN/WARNING/OVERLAP trailer) for #136: this function now only decides
+    WHICH lines to assemble, not how each one reads.
+    """
+    name, role, pins = target.name, target.role, target.pins
+    matches = policy.matches(name, role)
+    if not matches:
+        return _no_family_lines(policy, name)
+    found = policy.classify(name, role, pins, target.chain, link_pins)
+    lines = [f"  {name}: {found[0]}" + (f" / {found[1]}" if found[1] else "")]
+    for family in policy.families:
+        lines.append(_family_row(policy, family, matches, role, name, found))
+    lines.extend(_referent_lines(target, matches, found))
     return lines
 
 
@@ -221,6 +318,55 @@ def _chain_from_leg(leg: dict) -> tuple:
     return tuple(str(link) for link in (recorded or []) if str(link).strip())
 
 
+def _leg_target(policy: NamingPolicy, path: Path, leg, root: Path,
+                pins: set, keyed_sources: dict,
+                default_source: Path | None) -> tuple[Target | None, list[str]]:
+    """One leg's `Target` and what is wrong with it, from its manifest entry.
+
+    Split from `_targets_from_project` for #136: what one leg's own entry
+    says is a question asked once per leg, not folded into the loop that
+    walks every leg in the manifest. `(None, [finding])` is a leg with no
+    `repository:` to classify at all — the same case the loop's own `finding`
+    list has always carried, now returned instead of appended in place.
+    """
+    if not isinstance(leg, dict) or "repository" not in leg:
+        return None, [f"{path}: a leg has no `repository:`"]
+    name = repo_basename(str(leg["repository"]))
+    declared = leg.get("role")
+    declared = str(declared) if declared else None
+    target = Target(name, declared, pins, _chain_from_leg(leg), root)
+    found = policy.classify(name, declared, pins, target.chain,
+                            _link_pins(target, keyed_sources, default_source))
+    findings: list[str] = []
+    # `declared_role` only wins where the NAME satisfies it, so a role that
+    # disagrees with its own name still lands here rather than being made
+    # true by declaring it.
+    if found and found[0] == "project-leg" and declared and found[1] != declared:
+        findings.append(
+            f"{name}: declared role {declared!r} but the name is the "
+            f"{found[1]!r} form of the project-leg family"
+        )
+    # A RECORDED chain that does not hold is drift in the record, and the
+    # finding names the link. Unverified is not this: it is a warning,
+    # printed by the caller, and never an exit code.
+    if found and found.referent.status == "broken":
+        findings.append(f"{name}: {found.referent.reason}")
+    return target, findings
+
+
+def _topic_finding(policy: NamingPolicy, project_id, topic) -> str | None:
+    """The one finding a manifest's `topic:` disagreeing with its `id:` needs.
+
+    Split from `_targets_from_project` for #136.
+    """
+    if project_id is None:
+        return None
+    expected = policy.topic_for(str(project_id))
+    if topic is not None and topic != expected:
+        return f"topic {topic!r} != {expected!r} derived from id {project_id!r}"
+    return None
+
+
 def _targets_from_project(policy: NamingPolicy, path: Path,
                           keyed_sources: dict,
                           default_source: Path | None) -> tuple[list, list[str]]:
@@ -228,44 +374,129 @@ def _targets_from_project(policy: NamingPolicy, path: Path,
     data = load_yaml(path)
     if not isinstance(data, dict):
         raise Refusal("manifest-unreadable", f"{path}: not a mapping")
-    findings: list[str] = []
     pins = _pins_from_project(data)
     root = path.resolve().parent
     targets: list[Target] = []
+    findings: list[str] = []
     for leg in data.get("legs") or []:
-        if not isinstance(leg, dict) or "repository" not in leg:
-            findings.append(f"{path}: a leg has no `repository:`")
-            continue
-        name = repo_basename(str(leg["repository"]))
-        declared = leg.get("role")
-        declared = str(declared) if declared else None
-        target = Target(name, declared, pins, _chain_from_leg(leg), root)
-        targets.append(target)
-        found = policy.classify(name, declared, pins, target.chain,
-                                _link_pins(target, keyed_sources,
-                                           default_source))
-        # `declared_role` only wins where the NAME satisfies it, so a role that
-        # disagrees with its own name still lands here rather than being made
-        # true by declaring it.
-        if found and found[0] == "project-leg" and declared and found[1] != declared:
-            findings.append(
-                f"{name}: declared role {declared!r} but the name is the "
-                f"{found[1]!r} form of the project-leg family"
-            )
-        # A RECORDED chain that does not hold is drift in the record, and the
-        # finding names the link. Unverified is not this: it is a warning,
-        # printed by the caller, and never an exit code.
-        if found and found.referent.status == "broken":
-            findings.append(f"{name}: {found.referent.reason}")
-    project_id = data.get("id")
-    topic = data.get("topic")
-    if project_id is not None:
-        expected = policy.topic_for(str(project_id))
-        if topic is not None and topic != expected:
-            findings.append(
-                f"topic {topic!r} != {expected!r} derived from id {project_id!r}"
-            )
+        target, leg_findings = _leg_target(policy, path, leg, root, pins,
+                                           keyed_sources, default_source)
+        if target is not None:
+            targets.append(target)
+        findings.extend(leg_findings)
+    topic_finding = _topic_finding(policy, data.get("id"), data.get("topic"))
+    if topic_finding is not None:
+        findings.append(topic_finding)
     return targets, findings
+
+
+def _link_sources_from_args(raw_sources: list[str]) -> tuple[dict, Path | None]:
+    """`(keyed_sources, default_source)` from every `--link-source` given.
+
+    Split from `main` for #136: parsing what each `--link-source` value
+    means — keyed to one product, or the fallback for any link with no more
+    specific answer — is one question, asked once instead of inline in the
+    argument-handling half of `main`.
+    """
+    keyed_sources: dict[str, Path] = {}
+    default_source: Path | None = None
+    for raw in raw_sources:
+        product, sep, path = raw.partition("=")
+        if sep:
+            keyed_sources[product.casefold()] = Path(path)
+        else:
+            default_source = Path(raw)
+    return keyed_sources, default_source
+
+
+def _targets_from_stdin(role: str | None, pins: set, chain: tuple,
+                        here: Path) -> list[Target]:
+    """The targets read from stdin, one per non-blank line.
+
+    Split from `main` for #136: reading the stdin fallback is its own
+    question, asked only once `main` has decided no other source answered.
+    """
+    return [Target(repo_basename(line.strip()), role, pins, chain, here)
+            for line in sys.stdin if line.strip()]
+
+
+def _print_classification(name: str, found: Classification | None) -> None:
+    """The one plain-listing line `main` prints for a name, un-`--explain`d.
+
+    Split from `main` for #136: composing this line is a single question —
+    what to call the name, and what else it also matched — asked once per
+    name instead of inline in the classify loop.
+    """
+    # An independent statement rather than a ternary nested inside a
+    # ternary (python:S3358): the family/role suffix is decided on
+    # its own before it is appended to the label.
+    if not found:
+        label = "NO FAMILY"
+    else:
+        role_suffix = f"/{found[1]}" if found[1] else ""
+        label = found[0] + role_suffix
+    also = f"   also_matches {','.join(found.also_matches)}" \
+        if found and found.also_matches else ""
+    print(f"  {name:<32} {label}{also}")
+
+
+def _classify_targets(policy: NamingPolicy, targets: list, args,
+                      keyed_sources: dict,
+                      default_source: Path | None) -> tuple[list[str], list[str]]:
+    """Classify every target, printing as `args` asks; return `(unclassified
+    names, warnings)`.
+
+    Split from `main` for #136: walking every target and deciding what to
+    print for EACH is one question; what to do with the totals afterwards
+    (the exit code, the FINDING/WARNING lines) stays `main`'s, unchanged.
+    """
+    unclassified: list[str] = []
+    warnings: list[str] = []
+    for target in targets:
+        name = target.name
+        link_pins = _link_pins(target, keyed_sources, default_source)
+        found = policy.classify(name, target.role, target.pins, target.chain,
+                                link_pins)
+        if args.explain:
+            print("\n".join(_describe(policy, target, link_pins)))
+        elif not args.quiet:
+            _print_classification(name, found)
+        if found:
+            warnings.extend(f"{name}: {text}"
+                            for text in found.referent.warnings)
+        else:
+            unclassified.append(name)
+    return unclassified, warnings
+
+
+def _emit_reports(args, unclassified: list[str], warnings: list[str],
+                  findings: list[str]) -> int:
+    """Print the WARNING/FINDING lines owed once, and return the exit code.
+
+    Split from `main` for #136: what to print once classification is
+    finished, and what code to exit with, is one question asked once at the
+    end, not interleaved with the loop that classifies.
+    """
+    # A WARNING IS NOT A FINDING. An unread link tree is the ordinary case in
+    # a fork-and-run checkout, and an exit code that punished it would make the
+    # answer depend on which repositories happen to be on the disk.
+    for warning in warnings:
+        if not args.quiet and not args.explain:
+            print(f"WARNING {warning}", file=sys.stderr)
+    for finding in findings:
+        print(f"FINDING {finding}", file=sys.stderr)
+    if unclassified:
+        print(
+            "FINDING naming-unclassified: "
+            + ", ".join(unclassified)
+            + "\n  These names match none of the families in "
+            + str(args.policy)
+            + ".\n  A project's three repositories are `<Project>`, "
+            "`<Project>-spec` and `<Project>-code`; `<Project>` is one "
+            "CamelCase token with no hyphen, underscore, dot or space.",
+            file=sys.stderr,
+        )
+    return 1 if (unclassified or findings) else 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -318,14 +549,7 @@ def main(argv: list[str] | None = None) -> int:
         print(str(exc), file=sys.stderr)
         return 2
 
-    keyed_sources: dict[str, Path] = {}
-    default_source: Path | None = None
-    for raw in args.link_source:
-        product, sep, path = raw.partition("=")
-        if sep:
-            keyed_sources[product.casefold()] = Path(path)
-        else:
-            default_source = Path(raw)
+    keyed_sources, default_source = _link_sources_from_args(args.link_source)
 
     cli_pins = {p.strip() for p in args.pins.split(",") if p.strip()}
     cli_chain = tuple(c.strip() for c in args.referent_chain.split(",")
@@ -344,61 +568,15 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         targets.extend(extra)
     if not targets and not sys.stdin.isatty():
-        targets = [Target(repo_basename(line.strip()), args.role, cli_pins,
-                          cli_chain, here)
-                   for line in sys.stdin if line.strip()]
+        targets = _targets_from_stdin(args.role, cli_pins, cli_chain, here)
     if not targets:
         print("REFUSED naming-no-target: no names given. Pass names, "
               "`--project project.yaml`, or names on stdin.", file=sys.stderr)
         return 2
 
-    unclassified = []
-    warnings: list[str] = []
-    for target in targets:
-        name = target.name
-        link_pins = _link_pins(target, keyed_sources, default_source)
-        found = policy.classify(name, target.role, target.pins, target.chain,
-                                link_pins)
-        if args.explain:
-            print("\n".join(_describe(policy, target, link_pins)))
-        elif not args.quiet:
-            # An independent statement rather than a ternary nested inside a
-            # ternary (python:S3358): the family/role suffix is decided on
-            # its own before it is appended to the label.
-            if not found:
-                label = "NO FAMILY"
-            else:
-                role_suffix = f"/{found[1]}" if found[1] else ""
-                label = found[0] + role_suffix
-            also = f"   also_matches {','.join(found.also_matches)}" \
-                if found and found.also_matches else ""
-            print(f"  {name:<32} {label}{also}")
-        if found:
-            warnings.extend(f"{name}: {text}"
-                            for text in found.referent.warnings)
-        if not found:
-            unclassified.append(name)
-
-    # A WARNING IS NOT A FINDING. An unread link tree is the ordinary case in
-    # a fork-and-run checkout, and an exit code that punished it would make the
-    # answer depend on which repositories happen to be on the disk.
-    for warning in warnings:
-        if not args.quiet and not args.explain:
-            print(f"WARNING {warning}", file=sys.stderr)
-    for finding in findings:
-        print(f"FINDING {finding}", file=sys.stderr)
-    if unclassified:
-        print(
-            "FINDING naming-unclassified: "
-            + ", ".join(unclassified)
-            + "\n  These names match none of the families in "
-            + str(args.policy)
-            + ".\n  A project's three repositories are `<Project>`, "
-            "`<Project>-spec` and `<Project>-code`; `<Project>` is one "
-            "CamelCase token with no hyphen, underscore, dot or space.",
-            file=sys.stderr,
-        )
-    return 1 if (unclassified or findings) else 0
+    unclassified, warnings = _classify_targets(
+        policy, targets, args, keyed_sources, default_source)
+    return _emit_reports(args, unclassified, warnings, findings)
 
 
 if __name__ == "__main__":

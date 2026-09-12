@@ -432,7 +432,15 @@ def _landing(args, family: str) -> tuple[Path | None, Path]:
     return into / family, into / family / family
 
 
-def cmd_init(args) -> int:  # noqa: C901
+def _checked_family_identity(args) -> tuple[str, str, str]:
+    """`(family, family_id, topic)` — every name check `init` makes before
+    it decides where anything lands.
+
+    Split from `cmd_init` for #136. Mutates `args.org` and
+    `args.tracking_branch` to their checked values, exactly as `cmd_init`
+    always has, because every later read of either expects the checked
+    form.
+    """
     family = checked_value("--family", args.family)
     args.org = checked_value("--org", args.org)
     args.tracking_branch = checked_value("--tracking-branch",
@@ -445,7 +453,16 @@ def cmd_init(args) -> int:  # noqa: C901
     policy = NamingPolicy.load(NAMING_POLICY)
     _classify_family_name(policy, family)
     topic = policy.topic_for(family_id)
+    return family, family_id, topic
 
+
+def _creator_name(args) -> str:
+    """Whoever `--created-by` (or the environment, or git config) says
+    created this family — refused when nothing does.
+
+    Split from `cmd_init` for #136: creating a family is a human's act and
+    the manifest records whose.
+    """
     created_by = args.created_by or (os.environ.get("GIT_AUTHOR_NAME") or "").strip()
     if not created_by:
         try:
@@ -459,12 +476,27 @@ def cmd_init(args) -> int:  # noqa: C901
             "user.name`. Creating a family is a human's act and the manifest "
             "records whose.",
             "Remediation: re-run with --created-by 'Your Name'.")
+    return created_by
 
+
+def _holder_remote(args, family: str) -> tuple[bool, str, str]:
+    """`(local, repository, url)` — where the holder's remote lives.
+
+    Split from `cmd_init` for #136.
+    """
     local = args.local_remote_dir is not None
     repository = f"{args.org}/{family}"
     url = (str(args.local_remote_dir.resolve() / f"{family}.git") if local
            else f"https://github.com/{repository}.git")
+    return local, repository, url
 
+
+def _shape_snapshot() -> tuple[str, str]:
+    """`(shape_commit, shape_tree)` of this checkout, warning to stderr when
+    it is dirty.
+
+    Split from `cmd_init` for #136.
+    """
     shape_commit = git_out(["rev-parse", "HEAD"], cwd=SHAPE_ROOT).lower()
     shape_tree = tree_digest(SHAPE_ROOT, shape_commit)
     if git_out(["status", "--porcelain"], cwd=SHAPE_ROOT):
@@ -473,8 +505,18 @@ def cmd_init(args) -> int:  # noqa: C901
               "describe the bytes being copied. The per-file sha256 rows are "
               "computed from the actual copies, so drift stays detectable — "
               "but commit before creating a real family.", file=sys.stderr)
+    return shape_commit, shape_tree
 
-    values = {
+
+def _template_values(args, family: str, family_id: str, repository: str,
+                     url: str, created_by: str, shape_commit: str,
+                     shape_tree: str) -> dict:
+    """The values `materialize_family_root` substitutes into the holder's
+    template.
+
+    Split from `cmd_init` for #136.
+    """
+    return {
         "FAMILY": family,
         "FAMILY_NAME": args.name or family,
         "FAMILY_ID": family_id,
@@ -491,6 +533,13 @@ def cmd_init(args) -> int:  # noqa: C901
         "DIGEST_DEFINITION": TREE_DIGEST_DEFINITION,
     }
 
+
+def _checked_landing(args, family: str) -> tuple[Path | None, Path]:
+    """`(folder, holder)`, refused when `--into` and `--work-dir` both name
+    where the holder goes.
+
+    Split from `cmd_init` for #136.
+    """
     if args.into is not None and args.work_dir is not None:
         raise Refusal(
             "family-two-landings",
@@ -499,9 +548,19 @@ def cmd_init(args) -> int:  # noqa: C901
             "Remediation: pass --into <parent> for the workstation layout "
             f"(<parent>/{family}/{family}), or --work-dir <dir> for the bare "
             f"override (<dir>/{family}, no family folder). Not both.")
-    folder, holder = _landing(args, family)
+    return _landing(args, family)
 
-    print(f"family       {values['FAMILY_NAME']} ({family_id})")
+
+def _print_init_plan(values: dict, repository: str, url: str,
+                     shape_commit: str, shape_tree: str, folder: Path | None,
+                     holder: Path, local: bool, topic: str,
+                     reuse_empty_repo: bool) -> None:
+    """Print the plan `init` is about to carry out — what `--dry-run` shows,
+    and what a real run shows before it does anything.
+
+    Split from `cmd_init` for #136.
+    """
+    print(f"family       {values['FAMILY_NAME']} ({values['FAMILY_ID']})")
     print(f"shape        {SHAPE_REPOSITORY} @ {shape_commit[:12]} "
           f"(tree {shape_tree[:12]}…)")
     print(f"created by   {values['CREATED_BY']} on {values['CREATED_ON']}")
@@ -514,16 +573,20 @@ def cmd_init(args) -> int:  # noqa: C901
     print(f"members      mounted under {MEMBERS_DIR}/; none yet — "
           "`family.py add` puts one there")
     print("remotes      " + ("a bare repository on disk (no network)" if local
-                             else f"gh repo create --{args.visibility}"))
-    if args.reuse_empty_repo:
+                             else f"gh repo create --{values['VISIBILITY']}"))
+    if reuse_empty_repo:
         print("reuse        an EXISTING <Family> with zero commits is used as "
               "the holder")
     print("topics       " + ("skipped for local remotes" if local
                              else f"gh repo edit --add-topic {topic}"))
-    if args.dry_run:
-        print("\n--dry-run: nothing was created.")
-        return 0
 
+
+def _prepare_landing_dir(folder: Path | None, holder: Path) -> Path:
+    """Make the landing directory, refused if the holder's target already
+    exists and is not empty.
+
+    Split from `cmd_init` for #136.
+    """
     # `mkdir -p` on the FOLDER, which is fine if it is already there — a
     # family folder somebody made by hand, or one a scaffolded member already
     # landed in, is exactly the case this is supposed to join.
@@ -535,42 +598,71 @@ def cmd_init(args) -> int:  # noqa: C901
             "Remediation: choose another --into (or an empty --work-dir); if "
             "that IS the holder, it is already a family and `family.py add` "
             "is what grows it. There is no --force.")
+    return work
 
+
+def _checked_reuse(reuse_empty_repo: bool, local: bool, url: str,
+                   repository: str) -> bool:
+    """Is the holder's remote an existing, empty repository being reused?
+
+    Refused when the remote already exists WITH commits, or exists empty
+    without `--reuse-empty-repo`. Split from `cmd_init` for #136.
+    """
     # THE ONE REPOSITORY THAT MAY ALREADY EXIST is the holder, and only with
     # --reuse-empty-repo, and only with ZERO commits. `InkRouter` in the
     # InkRouter org is exactly that today: a name somebody reserved, which is
     # not the same as a project somebody started.
     target = Path(url) if local else repository
     empty = _local_remote_is_empty(target) if local else _remote_is_empty(target)
-    reuse = False
-    if empty is not None:
-        if not (args.reuse_empty_repo and empty):
-            raise Refusal(
-                "family-remote-exists",
-                f"{target} already exists" + ("" if local else " on GitHub")
-                + ("" if empty else " and has commits"),
-                ("Remediation: it has ZERO commits, so it is a reserved name "
-                 "rather than a live repository — re-run with "
-                 "--reuse-empty-repo to use it as the family holder."
-                 if empty else
-                 "Remediation: it HAS commits, so it is a live repository and "
-                 "this is not an init. There is no --force."))
-        reuse = True
-        print(f"  reuse {target} (zero commits)")
+    if empty is None:
+        return False
+    if not (reuse_empty_repo and empty):
+        raise Refusal(
+            "family-remote-exists",
+            f"{target} already exists" + ("" if local else " on GitHub")
+            + ("" if empty else " and has commits"),
+            ("Remediation: it has ZERO commits, so it is a reserved name "
+             "rather than a live repository — re-run with "
+             "--reuse-empty-repo to use it as the family holder."
+             if empty else
+             "Remediation: it HAS commits, so it is a live repository and "
+             "this is not an init. There is no --force."))
+    print(f"  reuse {target} (zero commits)")
+    return True
 
+
+def _create_holder_remote(args, values: dict, local: bool, url: str,
+                          repository: str, reuse: bool) -> None:
+    """Create the holder's remote — a bare local repository, or a GitHub
+    repository — unless an existing empty one is being reused.
+
+    Split from `cmd_init` for #136.
+    """
     print("\ncreating the holder")
-    if not reuse:
-        if local:
-            Path(url).parent.mkdir(parents=True, exist_ok=True)
-            run(["git", "init", "-q", "--bare", "-b", args.tracking_branch, url])
-            print(f"  bare  {url}")
-        else:
-            run(["gh", "repo", "create", repository, f"--{args.visibility}",
-                 "--description",
-                 f"{values['FAMILY_NAME']} — family holder: the "
-                 f"{family_id} projects, pinned as submodules"])
-            print(f"  gh    {repository} ({args.visibility})")
+    if reuse:
+        return
+    if local:
+        Path(url).parent.mkdir(parents=True, exist_ok=True)
+        run(["git", "init", "-q", "--bare", "-b", args.tracking_branch, url])
+        print(f"  bare  {url}")
+    else:
+        run(["gh", "repo", "create", repository, f"--{args.visibility}",
+             "--description",
+             f"{values['FAMILY_NAME']} — family holder: the "
+             f"{values['FAMILY_ID']} projects, pinned as submodules"])
+        print(f"  gh    {repository} ({args.visibility})")
 
+
+def _create_holder_worktree(args, work: Path, values: dict, shape_commit: str,
+                            repository: str, url: str) -> int | None:
+    """Materialize the holder, make its first commit, and push it.
+
+    `None` on success (push succeeded, or `--no-push`); an int is the exit
+    code `cmd_init` should return right away. Split from `cmd_init` for
+    #136: a push that fails here is reported with the ruleset hint and its
+    own exit code, handled here rather than left for `main`'s generic "a
+    git or gh command failed".
+    """
     work.mkdir(parents=True, exist_ok=True)
     materialize_family_root(SHAPE_ROOT, work, values)
     run(["git", "init", "-q", "-b", args.tracking_branch, str(work)])
@@ -583,21 +675,31 @@ def cmd_init(args) -> int:  # noqa: C901
                f"2026-09-04).\n\nShape {SHAPE_REPOSITORY} @ {shape_commit}.\n"
                "Membership confers nothing.\n")
     run(["git", "remote", "add", "origin", url], cwd=work)
-    if not args.no_push:
-        try:
-            run(["git", "push", "-q", "-u", "origin", args.tracking_branch],
-                cwd=work)
-        except CommandFailed as exc:
-            print(exc.loudly("pushing the family holder"), file=sys.stderr)
-            print(RULESET_HINT.format(work=work, repo=repository,
-                                      role="family"), file=sys.stderr)
-            return 2
-    head = git_out(["rev-parse", "HEAD"], cwd=work)[:12]
-    print(f"  holder    {head} -> {url}")
-    if not local:
-        run(["gh", "repo", "edit", repository, "--add-topic", topic])
-        print(f"  topic     {topic} set on the holder")
-    if not local and args.visibility in ("private", "internal"):
+    if args.no_push:
+        return None
+    try:
+        run(["git", "push", "-q", "-u", "origin", args.tracking_branch],
+            cwd=work)
+    except CommandFailed as exc:
+        print(exc.loudly("pushing the family holder"), file=sys.stderr)
+        print(RULESET_HINT.format(work=work, repo=repository,
+                                  role="family"), file=sys.stderr)
+        return 2
+    return None
+
+
+def _finish_holder_remote(args, repository: str, topic: str,
+                          local: bool) -> None:
+    """Set the holder's topic and print the private-visibility secrets hint.
+
+    Neither applies to a local (no-network) remote. Split from `cmd_init`
+    for #136.
+    """
+    if local:
+        return
+    run(["gh", "repo", "edit", repository, "--add-topic", topic])
+    print(f"  topic     {topic} set on the holder")
+    if args.visibility in ("private", "internal"):
         print(f"NOTE {repository} is {args.visibility} and its members will "
               "be too: give it a way to read them — a GitHub App "
               "(SHAPE_LEGS_APP_ID + SHAPE_LEGS_APP_PRIVATE_KEY, preferred) or "
@@ -607,6 +709,13 @@ def cmd_init(args) -> int:  # noqa: C901
             args.org, repository, f"{repository} and its members are")
         if hint:
             print(hint)
+
+
+def _print_next_steps(args, work: Path, folder: Path | None) -> None:
+    """The NEXT STEPS block `init` ends with.
+
+    Split from `cmd_init` for #136.
+    """
     print(f"""
 NEXT STEPS
 
@@ -627,6 +736,35 @@ working clone BESIDE the holder — that second one is where you work, and
 family folder  {folder if folder is not None else work.parent}
 holder         {work}
 """)
+
+
+def cmd_init(args) -> int:
+    family, family_id, topic = _checked_family_identity(args)
+    created_by = _creator_name(args)
+    local, repository, url = _holder_remote(args, family)
+    shape_commit, shape_tree = _shape_snapshot()
+    values = _template_values(args, family, family_id, repository, url,
+                              created_by, shape_commit, shape_tree)
+
+    folder, holder = _checked_landing(args, family)
+    _print_init_plan(values, repository, url, shape_commit, shape_tree,
+                     folder, holder, local, topic, args.reuse_empty_repo)
+    if args.dry_run:
+        print("\n--dry-run: nothing was created.")
+        return 0
+
+    work = _prepare_landing_dir(folder, holder)
+    reuse = _checked_reuse(args.reuse_empty_repo, local, url, repository)
+    _create_holder_remote(args, values, local, url, repository, reuse)
+
+    code = _create_holder_worktree(args, work, values, shape_commit,
+                                   repository, url)
+    if code is not None:
+        return code
+    head = git_out(["rev-parse", "HEAD"], cwd=work)[:12]
+    print(f"  holder    {head} -> {url}")
+    _finish_holder_remote(args, repository, topic, local)
+    _print_next_steps(args, work, folder)
     return 0
 
 
