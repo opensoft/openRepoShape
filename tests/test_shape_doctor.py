@@ -1350,11 +1350,17 @@ def test_a_real_working_clone_beside_the_holder_is_counted(standard, holder,
     assert row["detail"]["members"][0]["other_origin"] is None
     # The url it was compared against is the one the holder MOUNTS it from —
     # a bare repository on disk here, which no `https://github.com/...`
-    # derived from `repository:` would ever have matched. Read back out of
-    # `.gitmodules` rather than rebuilt from the path, so the assertion says
-    # "the same string git has" on a runner that spells it with backslashes.
+    # derived from `repository:` would ever have matched.
+    #
+    # COMPARED WITH THE SEPARATORS FOLDED, and NOT against the raw bytes of
+    # `.gitmodules`: git ESCAPES a backslash when it writes a config value,
+    # so a Windows runner has `D:\\a\\...\\IRRS.git` in the file and hands
+    # `D:\a\...\IRRS.git` back to the reader — the url is right and the two
+    # spellings of it are not the same string.
     mounted = row["detail"]["members"][0]["mounted_from"]
-    assert mounted in (root / ".gitmodules").read_text(encoding="utf-8")
+    assert mounted.replace("\\", "/") == \
+        str(holder["base"] / "remotes" / f"{FAMILY_MEMBER}.git").replace(
+            "\\", "/")
     assert not mounted.startswith("https://github.com/"), mounted
 
 
@@ -1375,14 +1381,18 @@ def test_a_sibling_with_this_members_id_but_another_origin_is_not_counted(
     row = rows_of(doctor(standard, root, "--json"))["members"]
     entry = row["detail"]["members"][0]
     assert entry["working_clone"] is None, entry
-    assert entry["other_origin"] == elsewhere, entry
+    # Separators folded for the same reason the test above folds them: a
+    # Windows runner spells this path with backslashes at both ends of the
+    # comparison, and git is free to hand back either.
+    assert entry["other_origin"].replace("\\", "/") == \
+        elsewhere.replace("\\", "/"), entry
     assert row["detail"]["without_working_clone"] == [FAMILY_MEMBER], row
     # REPORTED, NEVER REFUSED: where somebody keeps a checkout is the
     # workstation's layout, so the verdict is exactly what it is for a
     # member with no clone beside the holder at all.
     assert row["status"] == "ok", row
     assert "is a clone of" in row["reason"], row["reason"]
-    assert elsewhere in row["reason"], row["reason"]
+    assert entry["other_origin"] in row["reason"], row["reason"]
     assert json.loads(doctor(standard, root, "--json").stdout)["verdict"] == \
         "COMPLIANT"
 
