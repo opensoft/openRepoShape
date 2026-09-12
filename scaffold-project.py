@@ -673,10 +673,14 @@ def _refuse_existing_trees(work_root: Path, names: dict) -> None:
             )
 
 
-def _create_remotes(args, values: dict, names: dict, repositories: dict,
-                    urls: dict, local: bool, reused: set) -> None:
+def _create_remotes(args, values: dict, repositories: dict, urls: dict,
+                    local: bool, reused: set) -> None:
     """(k) The three remotes, spec and code first so a failure costs the
     cheapest thing. Split out of `_scaffold` for #138.
+
+    It takes no `names`: every line here addresses a repository by the
+    `<org>/<name>` the forge knows it as, or by its clone URL, and the bare
+    name is not one of the things it needs.
     """
     display = values["PROJECT_NAME"]
     project_id = values["PROJECT_ID"]
@@ -931,7 +935,7 @@ def _scaffold(args) -> int:
     reused = _reusable_remotes(names, urls, repositories, local,
                                args.reuse_empty_repo)
 
-    _create_remotes(args, values, names, repositories, urls, local, reused)
+    _create_remotes(args, values, repositories, urls, local, reused)
     _private_leg_note(args, repositories, local)
 
     leg_values = _seed_legs(args, values, names, repositories, urls, work_root)
