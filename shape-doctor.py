@@ -1775,18 +1775,23 @@ PLACEMENT_PLAN_PREAMBLE = (
 )
 
 
-def placement_plan_text(ctx: Context, adopt, row: Row) -> str:
-    """The placement row's paths, as the YAML a human resolves.
+def placement_plan_header(ctx: Context, adopt) -> list:
+    """The plan's first block: what it is, what wrote it, and about what.
 
-    WRITTEN WITH THE ADOPTION'S OWN EMITTERS. `y` and `emit` write the exact
-    subset `repo_shape.parse_yaml` reads back, and an adoption plan is written
-    by them too -- so these two files are the same dialect by construction
-    rather than by somebody remembering to keep them so.
+    `kind:` IS THE SAFETY PROPERTY AND IT IS WRITTEN HERE. It is
+    `adopt.PLACEMENT_PLAN_KIND` and not `adopt.PLAN_KIND`, which is what stops
+    `adopt-project.py execute` -- a command that creates two repositories and
+    rewrites history -- from ever being handed one of these by mistake. The
+    preamble that follows it is the file's own argument to the human who will
+    edit it, and it is a constant because it is read far more often than it is
+    written.
+
+    The `standard` and `generated_on` lines say which checkout answered and
+    when, so a plan found in a branch months later is readable as evidence
+    rather than as an assertion about today.
+
+    Split out of `placement_plan_text` for #134.
     """
-    detail = row.detail
-    entries = sorted(list(detail.get("misplaced") or [])
-                     + list(detail.get("review_required") or []),
-                     key=lambda entry: entry["path"])
     manifest = ctx.manifest or {}
     lines = ["schema_version: 1",
              f"kind: {adopt.PLACEMENT_PLAN_KIND}", ""]
@@ -1801,47 +1806,122 @@ def placement_plan_text(ctx: Context, adopt, row: Row) -> str:
     adopt.emit(lines, "path", ctx.root.as_posix(), 2)
     adopt.emit(lines, "project", manifest.get("name") or ctx.root.name, 2)
     adopt.emit(lines, "id", manifest.get("id"), 2)
-    lines += ["", "legs:"]
-    for leg in (detail.get("legs") or []):
-        lines.append(f"  - role: {adopt.y(leg.get('role'))}")
-        adopt.emit(lines, "path", leg.get("path"), 4)
-        adopt.emit(lines, "state", leg.get("state"), 4)
-        if leg.get("state") == "audited":
-            adopt.emit(lines, "tracked", leg.get("tracked"), 4)
-            adopt.emit(lines, "classified", leg.get("classified"), 4)
-            adopt.emit(lines, "paths", leg.get("paths"), 4)
-            adopt.emit(lines, "misplaced", leg.get("misplaced"), 4)
-            adopt.emit(lines, "review_required", leg.get("review_required"), 4)
-            for name in (leg.get("unwritable") or []):
-                lines.append("    # a tracked name no plan can carry: "
-                             + name.replace("\n", " "))
-    unread = [leg.get("path") for leg in (detail.get("legs") or [])
-              if leg.get("state") != "audited"]
+    return lines
+
+
+def placement_plan_leg(adopt, leg: dict) -> list:
+    """ONE leg under `legs:`: what was read in it, or that it was not read.
+
+    THE COUNTS ARE HERE SO THE `paths:` BELOW CAN BE READ HONESTLY: a plan
+    with two entries in it means something different over a leg whose every
+    tracked file was classified than over one nobody could open, and a reader
+    holding only the entries cannot tell those apart.
+
+    A tracked name no plan can carry is written as a COMMENT and never as a
+    value: it is already a `repr`, and its newlines are flattened here as
+    well, because a name that split one entry across two lines is the defect
+    this whole branch exists to avoid -- the plan it is kept out of must still
+    parse.
+
+    Split out of `placement_plan_text` for #134.
+    """
+    lines = [f"  - role: {adopt.y(leg.get('role'))}"]
+    adopt.emit(lines, "path", leg.get("path"), 4)
+    adopt.emit(lines, "state", leg.get("state"), 4)
+    if leg.get("state") == "audited":
+        adopt.emit(lines, "tracked", leg.get("tracked"), 4)
+        adopt.emit(lines, "classified", leg.get("classified"), 4)
+        adopt.emit(lines, "paths", leg.get("paths"), 4)
+        adopt.emit(lines, "misplaced", leg.get("misplaced"), 4)
+        adopt.emit(lines, "review_required", leg.get("review_required"), 4)
+        for name in (leg.get("unwritable") or []):
+            lines.append("    # a tracked name no plan can carry: "
+                         + name.replace("\n", " "))
+    return lines
+
+
+def placement_plan_entry(adopt, entry: dict) -> list:
+    """ONE path under `paths:`, in an adoption plan entry's keys exactly.
+
+    THE KEYS ARE THE ADOPTION'S, WHICH IS WHAT MAKES "resolve it as you
+    resolve an adoption plan" TRUE: `adopt-project.py`'s own reader is handed
+    these entries with nothing changed but the `kind:` above them. `rule:`
+    travels with the entry so a human disagrees with a NAMED rule rather than
+    with an opaque verdict, `question:` only when the policy asked one, and
+    `resolution:` is emitted empty on every entry because it is the human's
+    line and a file that did not offer it would not look like one to fill in.
+
+    Split out of `placement_plan_text` for #134.
+    """
+    lines = [f"  - path: {adopt.y(entry['path'])}"]
+    adopt.emit(lines, "in_leg", entry["leg"], 4)
+    adopt.emit(lines, "leg", entry["classified_as"], 4)
+    adopt.emit(lines, "confidence", entry["confidence"], 4)
+    adopt.emit(lines, "rule", entry["rule"], 4)
+    adopt.emit(lines, "reason", entry["reason"], 4)
+    adopt.emit(lines, "files", entry["files"], 4)
+    adopt.emit(lines, "bytes", entry["bytes"], 4)
+    adopt.emit(lines, "review_required", entry["review_required"], 4)
+    if entry.get("question"):
+        adopt.emit(lines, "question", entry["question"], 4)
+    adopt.emit(lines, "resolution", "", 4)
+    return lines
+
+
+def placement_plan_paths(adopt, entries: list, unread: list) -> list:
+    """The `paths:` block: the entries to resolve, or why there are none.
+
+    AN EMPTY PLAN SAYS WHAT ITS EMPTINESS MEANS. `paths: []` over a project
+    whose every leg was read is a clean bill of health; the same two words
+    over a project whose legs could not be opened is a report about nothing,
+    and this names the count of unread legs so the difference cannot be read
+    the wrong way round. Written as a comment beside a list the reader's tools
+    still parse, because the emptiness has to survive being loaded as YAML.
+
+    Split out of `placement_plan_text` for #134.
+    """
     if not entries:
-        lines += ["",
-                  "# Nothing is in the wrong leg and nothing needs a reading",
-                  "# IN WHAT WAS READ: there is nothing here to resolve."]
+        lines = ["",
+                 "# Nothing is in the wrong leg and nothing needs a reading",
+                 "# IN WHAT WAS READ: there is nothing here to resolve."]
         if unread:
             lines += ["# The `legs:` block above names "
                       f"{len(unread)} leg(s) that could not be read at all,",
                       "# so this emptiness is not a clean bill of health for "
                       "them."]
         lines.append("paths: []")
-    else:
-        lines += ["", "paths:"]
+        return lines
+    lines = ["", "paths:"]
     for entry in entries:
-        lines.append(f"  - path: {adopt.y(entry['path'])}")
-        adopt.emit(lines, "in_leg", entry["leg"], 4)
-        adopt.emit(lines, "leg", entry["classified_as"], 4)
-        adopt.emit(lines, "confidence", entry["confidence"], 4)
-        adopt.emit(lines, "rule", entry["rule"], 4)
-        adopt.emit(lines, "reason", entry["reason"], 4)
-        adopt.emit(lines, "files", entry["files"], 4)
-        adopt.emit(lines, "bytes", entry["bytes"], 4)
-        adopt.emit(lines, "review_required", entry["review_required"], 4)
-        if entry.get("question"):
-            adopt.emit(lines, "question", entry["question"], 4)
-        adopt.emit(lines, "resolution", "", 4)
+        lines += placement_plan_entry(adopt, entry)
+    return lines
+
+
+def placement_plan_text(ctx: Context, adopt, row: Row) -> str:
+    """The placement row's paths, as the YAML a human resolves.
+
+    WRITTEN WITH THE ADOPTION'S OWN EMITTERS. `y` and `emit` write the exact
+    subset `repo_shape.parse_yaml` reads back, and an adoption plan is written
+    by them too -- so these two files are the same dialect by construction
+    rather than by somebody remembering to keep them so.
+
+    THE FILE IS FOUR BLOCKS AND EACH ONE IS COMPOSED BY ITS OWN FUNCTION --
+    the header, the legs, the paths and what was never judged -- so that this
+    reads as the shape of the file it writes rather than as one run of
+    appends in which a reader has to count indents to find out which block
+    they are in.
+    """
+    detail = row.detail
+    entries = sorted(list(detail.get("misplaced") or [])
+                     + list(detail.get("review_required") or []),
+                     key=lambda entry: entry["path"])
+    lines = placement_plan_header(ctx, adopt)
+    lines += ["", "legs:"]
+    for leg in (detail.get("legs") or []):
+        lines += placement_plan_leg(adopt, leg)
+    unread = [leg.get("path") for leg in (detail.get("legs") or [])
+              if leg.get("state") != "audited"]
+    lines += placement_plan_paths(adopt, entries, unread)
     lines += ["",
               "# What was NOT judged: a path matching one of these belongs to",
               "# every repository, so it is never misplaced in a leg. Four of",
