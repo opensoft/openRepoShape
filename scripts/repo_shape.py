@@ -987,6 +987,106 @@ class Classification(tuple):
                 f"also_matches={list(self.also_matches)!r})")
 
 
+# ---------------------------------------------------------------------------
+# The pieces a referent resolution is assembled from
+# ---------------------------------------------------------------------------
+#
+# Split out of `NamingPolicy.resolve_referent` for #135, each answering one
+# question that function used to answer inline. NONE OF THEM KNOWS WHAT A
+# `ReferentResolution` IS, deliberately: a resolution is still built in
+# exactly the places it was, so the reader who wants to know how a STATUS is
+# chosen still finds the whole of that in one function.
+
+
+def _pinned_basenames(declared_pins) -> set[str]:
+    """The repositories a manifest's `neutral_product_pins:` name, casefolded.
+
+    Casefolded because every comparison made against them — a referent
+    template's output, a chain's first link — is written in whatever case its
+    own file chose, and a pin is a fact about WHICH repository, not about how
+    it was typed.
+    """
+    return {repo_basename(str(pin)).casefold()
+            for pin in (declared_pins or ()) if pin}
+
+
+def _chain_links(referent_chain) -> list[str]:
+    """A recorded chain's links, as basenames, in the spelling it records.
+
+    An empty or whitespace-only entry is not a link and is dropped, so a
+    manifest that left a blank list item behind has not thereby recorded a
+    chain that cannot hold.
+    """
+    return [repo_basename(str(link)) for link in (referent_chain or ())
+            if str(link).strip()]
+
+
+def _referent_in(referents, wanted) -> str | None:
+    """The first of `referents` whose casefolded name is one of `wanted`."""
+    return next((r for r in referents if r.casefold() in wanted), None)
+
+
+def _link_declarations(link_pins) -> dict[str, set[str]]:
+    """`{link: the pins ITS manifest declares}` for the links that answered.
+
+    The pins are kept in the SPELLING THAT LINK'S MANIFEST USES, so a
+    broken-link message quotes what the other tree actually says. A link whose
+    tree could not be read is ABSENT rather than empty: the two mean opposite
+    things — unverified, and declaring nothing at all — and the caller reads
+    the difference.
+    """
+    return {str(link).casefold():
+            {repo_basename(str(pin)) for pin in (pins_of or ()) if pin}
+            for link, pins_of in (link_pins or {}).items()
+            if pins_of is not None}
+
+
+def _chain_link_findings(chain, link_pins) -> tuple:
+    """What each link of a recorded chain says about the next one along it.
+
+    Split out of `NamingPolicy.resolve_referent` for #135. Returns the detail
+    of the FIRST contradiction — or `None` when there is none — beside the
+    warnings and the links whose own trees could not be read. A link that did
+    not answer is `declared-unverified` and never a failure: the recorded
+    declaration is the offline fact, and reading the other tree is the
+    stronger check, available or not.
+    """
+    available = _link_declarations(link_pins)
+    warnings: list[str] = []
+    unverified: list[str] = []
+    for holder, held in zip(chain, chain[1:]):
+        declared = available.get(holder.casefold())
+        if declared is None:
+            unverified.append(holder)
+            warnings.append(
+                f"{CHAIN_UNVERIFIED}: {holder} declaring a pin on {held} "
+                f"is a fact in {holder}'s own tree, which is not "
+                f"reachable here (a sibling checkout, "
+                f"{pin_source_env_name(holder)}, or --link-source "
+                f"{holder}=<path> would let it be read). The recorded "
+                "chain still classifies.")
+            continue
+        if held.casefold() not in {pin.casefold() for pin in declared}:
+            return (f"{holder} declares "
+                    + (", ".join(sorted(declared)) if declared else "no "
+                       "neutral-product pin at all")
+                    + f", not {held}", warnings, unverified)
+    return None, warnings, unverified
+
+
+def _unverified_note(unverified) -> str:
+    """The parenthetical a held chain's reason carries when a link went unread.
+
+    An independent statement rather than a ternary nested inside a ternary
+    (python:S3358) — the plural "s" is decided before the note it belongs to
+    is built, not while it is being built.
+    """
+    if not unverified:
+        return ""
+    plural = "" if len(unverified) == 1 else "s"
+    return f" ({len(unverified)} link{plural} declared-unverified)"
+
+
 class NamingPolicy:
     """Ordered classifier over `contracts/repository-naming.yaml`.
 
@@ -1145,17 +1245,15 @@ class NamingPolicy:
         referents = self.descendant_referents(name)
         if not referents:
             return ReferentResolution()
-        pins = {repo_basename(str(pin)).casefold()
-                for pin in (declared_pins or ()) if pin}
-        direct = next((r for r in referents if r.casefold() in pins), None)
+        pins = _pinned_basenames(declared_pins)
+        direct = _referent_in(referents, pins)
 
         def directly(extra_warnings=()) -> ReferentResolution:
             return ReferentResolution(
                 "direct", direct, reason=f"declared pin on {direct}",
                 warnings=extra_warnings)
 
-        chain = [repo_basename(str(link)) for link in (referent_chain or ())
-                 if str(link).strip()]
+        chain = _chain_links(referent_chain)
         if not chain:
             if direct is not None:
                 return directly()
@@ -1163,9 +1261,7 @@ class NamingPolicy:
                 reason="no referent pin declared (it would need "
                        + " or ".join(referents) + ")")
 
-        rule = self.chain_rule()
         rendered = " → ".join(chain)
-        max_length = int(rule.get("max_length") or CHAIN_MAX_LENGTH)
 
         def broken(detail: str) -> ReferentResolution:
             said = f"the declared chain {rendered} is broken ({detail})"
@@ -1178,63 +1274,48 @@ class NamingPolicy:
                                  "classifies this name",))
             return ReferentResolution("broken", None, chain, reason=said)
 
-        if len(chain) > max_length:
-            return broken(f"it names {len(chain)} links and the policy admits "
-                          f"at most {max_length}")
-        seen = [link.casefold() for link in chain]
-        if len(set(seen)) != len(seen):
-            return broken("it repeats a link, so it is a cycle rather than a "
-                          "chain")
-        if chain[0].casefold() not in pins:
-            return broken(f"it begins at {chain[0]}, which is not in this "
-                          "project's `neutral_product_pins:` — the first "
-                          "entry is the pin this project actually holds")
-        final = next((r for r in referents
-                      if r.casefold() == chain[-1].casefold()), None)
-        if final is None:
-            return broken(f"it ends at {chain[-1]}, but {name} would need "
-                          + " or ".join(referents))
-
-        # The link's pins are kept in the SPELLING ITS MANIFEST USES, so a
-        # broken-link message quotes what the other tree actually says.
-        available = {str(link).casefold():
-                     {repo_basename(str(pin))
-                      for pin in (pins_of or ()) if pin}
-                     for link, pins_of in (link_pins or {}).items()
-                     if pins_of is not None}
-        warnings: list[str] = []
-        unverified: list[str] = []
-        for holder, held in zip(chain, chain[1:]):
-            declared = available.get(holder.casefold())
-            if declared is None:
-                unverified.append(holder)
-                warnings.append(
-                    f"{CHAIN_UNVERIFIED}: {holder} declaring a pin on {held} "
-                    f"is a fact in {holder}'s own tree, which is not "
-                    f"reachable here (a sibling checkout, "
-                    f"{pin_source_env_name(holder)}, or --link-source "
-                    f"{holder}=<path> would let it be read). The recorded "
-                    "chain still classifies.")
-                continue
-            if held.casefold() not in {pin.casefold() for pin in declared}:
-                return broken(
-                    f"{holder} declares "
-                    + (", ".join(sorted(declared)) if declared else "no "
-                       "neutral-product pin at all")
-                    + f", not {held}")
+        problem = self._chain_shape_problem(name, chain, pins, referents)
+        if problem is not None:
+            return broken(problem)
+        final = _referent_in(referents, {chain[-1].casefold()})
+        contradiction, warnings, unverified = _chain_link_findings(chain,
+                                                                   link_pins)
+        if contradiction is not None:
+            return broken(contradiction)
         status = CHAIN_UNVERIFIED if unverified else "verified"
-        # An independent statement rather than a ternary nested inside a
-        # ternary (python:S3358) — the plural "s" is decided before the note
-        # it belongs to is built, not while it is being built.
-        if unverified:
-            plural = "" if len(unverified) == 1 else "s"
-            unverified_note = f" ({len(unverified)} link{plural} declared-unverified)"
-        else:
-            unverified_note = ""
         return ReferentResolution(
             status, final, chain,
-            reason=f"declared pin chain {rendered}" + unverified_note,
+            reason=f"declared pin chain {rendered}"
+                   + _unverified_note(unverified),
             warnings=warnings, unverified=unverified)
+
+    def _chain_shape_problem(self, name: str, chain: list,
+                             pins: set, referents) -> str | None:
+        """What is wrong with a recorded chain's SHAPE, or None if nothing is.
+
+        Split out of `resolve_referent` for #135, asking the four questions in
+        the order that function asked them: is the chain longer than the
+        policy admits, does it repeat a link, does it begin at a pin this
+        project actually holds, and does it end at a referent this name could
+        have. Each answer becomes the `detail` of a `broken` resolution, which
+        is where the reader is told WHICH link broke rather than merely that
+        one did.
+        """
+        max_length = int(self.chain_rule().get("max_length") or CHAIN_MAX_LENGTH)
+        if len(chain) > max_length:
+            return (f"it names {len(chain)} links and the policy admits "
+                    f"at most {max_length}")
+        seen = [link.casefold() for link in chain]
+        if len(set(seen)) != len(seen):
+            return "it repeats a link, so it is a cycle rather than a chain"
+        if chain[0].casefold() not in pins:
+            return (f"it begins at {chain[0]}, which is not in this "
+                    "project's `neutral_product_pins:` — the first "
+                    "entry is the pin this project actually holds")
+        if _referent_in(referents, {chain[-1].casefold()}) is None:
+            return (f"it ends at {chain[-1]}, but {name} would need "
+                    + " or ".join(referents))
+        return None
 
     # -- classification ----------------------------------------------------
 
