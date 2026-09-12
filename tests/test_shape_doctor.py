@@ -1657,7 +1657,12 @@ def test_the_doctor_and_siblings_run_ONE_definition_of_one_repository(
     a FILESYSTEM PATH does not, because `/srv/mirrors/IRRS.git` and
     `/srv/mirrors/irrs.git` are two different bare repositories on a
     case-sensitive host -- which is precisely how this suite's own fixtures,
-    and any mirror-based family, mount their members.
+    and any mirror-based family, mount their members. A RELATIVE path (`./`,
+    `../`) is a path for the same reason, and the TRAILING `owner/repo`
+    fallback is a FORGE question unless both sides are paths: a mirror at
+    `/srv/mirrors/InkRouter/IRRS.git` is matched against the row's bare
+    `InkRouter/IRRS`, which is a name somebody typed into a manifest and is
+    case-insensitive at the forge (Copilot and Codex, PR #156).
     """
     spec = importlib.util.spec_from_file_location(
         "shape_doctor_remote_rule", REPO / DOCTOR)
@@ -1691,6 +1696,16 @@ def test_the_doctor_and_siblings_run_ONE_definition_of_one_repository(
          True),
         ("git@GitHub.com:Org/Repo.git", "ssh://git@github.com/org/repo", True),
         ("Org/Repo", "org/repo", True),
+        # A MIRROR ON DISK IS STILL MATCHED AGAINST THE MANIFEST'S BARE ROW
+        # by its trailing `owner/repo` -- the InkRouter estate's own layout,
+        # and the reason the tail comparison folds case whenever either side
+        # is a forge name rather than a directory (Copilot, PR #156)
+        ("/srv/mirrors/InkRouter/IRRS.git", "InkRouter/IRRS", True),
+        ("/srv/mirrors/inkrouter/irrs.git", "InkRouter/IRRS", True),
+        ("InkRouter/IRRS", "/srv/mirrors/InkRouter/IRRS.git", True),
+        ("../InkRouter/IRRS.git", "InkRouter/IRRS", True),
+        # ...and the tail still has to be the RIGHT two components
+        ("/srv/mirrors/InkRouter/Other.git", "InkRouter/IRRS", False),
         # A PATH DOES NOT (#149), on every platform, deliberately: Windows and
         # macOS filesystems are case-INsensitive by default, and a report that
         # changed its answer with the machine it ran on would be worse than
@@ -1699,9 +1714,18 @@ def test_the_doctor_and_siblings_run_ONE_definition_of_one_repository(
         ("file:///srv/mirrors/IRRS.git", "file:///srv/mirrors/irrs.git",
          False),
         ("D:\\remotes\\Fam.git", "d:\\remotes\\fam.git", False),
+        # A RELATIVE path is a path too -- `../mirrors/Fam.git` is as much on
+        # a disk as `/srv/mirrors/Fam.git`, and git requires the `./` or
+        # `../` of anybody who means one (Copilot and Codex, PR #156)
+        ("../IRRS.git", "../irrs.git", False),
+        ("../mirrors/Repo.git", "../mirrors/repo.git", False),
+        # ...including through the tail, where two paths compare strictly
+        ("/srv/mirrors/InkRouter/IRRS.git", "/srv/mirrors/inkrouter/irrs.git",
+         False),
         # ...and a path still matches ITSELF, however it is spelled
         ("D:\\remotes\\Fam.git", "D:/remotes/Fam.git", True),
         ("/srv/mirrors/IRRS.git", "file:///srv/mirrors/IRRS.git", True),
+        ("../mirrors/Repo.git", "../mirrors/Repo", True),
         # And the ones that are NOT one repository
         ("https://github.com/Other/Repo.git", "Org/Repo", False),
         ("https://github.com/Org/Other.git", "https://github.com/Org/Repo",

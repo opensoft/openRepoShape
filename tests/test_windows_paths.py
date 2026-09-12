@@ -259,6 +259,11 @@ def test_a_windows_remote_is_a_path_and_an_scp_url_is_not():
     assert remote_is_a_path(WINDOWS_HOLDER_REMOTE)
     assert remote_is_a_path("D:/x/remotes/InkRouter.git")
     assert remote_is_a_path("/srv/mirrors/InkRouter.git")
+    # A RELATIVE remote is a path to BOTH halves of the rule: this one, which
+    # decides whether it may be walked with a backslash in it, and the case
+    # question `_remote_names_a_host` asks (Copilot and Codex, PR #156).
+    assert remote_is_a_path("../mirrors/InkRouter.git")
+    assert remote_is_a_path("./mirrors/InkRouter.git")
     assert not remote_is_a_path("git@host:org/InkRouter.git")
     assert not remote_is_a_path("host:path/InkRouter.git")
     assert not remote_is_a_path("https://host/org/InkRouter.git")
