@@ -437,6 +437,92 @@ def git_init_commit(work: Path, message: str, branch: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Is this the same repository? (2026-09-12, #146)
+# ---------------------------------------------------------------------------
+#
+# WHAT WAS WRONG. `shape-doctor.py`'s `members` row called the directory beside
+# a family holder that member's WORKING CLONE on the strength of its
+# `project.yaml` id alone, while the tool that actually fetches into that
+# directory -- `templates/family-root/scripts/siblings.py` -- refuses a clone
+# whose `origin` is not the row's remote (`WRONG ORIGIN`) BEFORE it ever
+# compares an id. So a fork, or a stale clone of a repository that has since
+# been renamed, was counted by the report and skipped by the tool, about the
+# same directory, which is the one thing a doctor must not do (#146).
+#
+# WHY THE DEFINITION LIVES HERE. `shape-doctor.py` imports nothing out of
+# `templates/`: those files are the standard's PAYLOAD, materialized into
+# somebody else's repository, and a report that imported them would be reading
+# the copy it is meant to be comparing against. `scripts/repo_shape.py`, where
+# a rule shared by every tool otherwise belongs, is digest-pinned into every
+# project, so a line added to it leaves every estate `upstream-changed` until
+# it re-pins -- a price this defect does not justify on its own. This module is
+# already the doctor's one non-pinned import for exactly this reason (the lane
+# trailer, #111) and `scripts/family.py` imports it too, which is where the
+# second caller for this function is expected to come from. Consolidating both
+# copies into `repo_shape.py` is the better long-term home and can ride the
+# next change that has to move the pin anyway.
+#
+# WHAT KEEPS THE TWO COPIES HONEST. `tests/test_shape_doctor.py` runs one table
+# of remote spellings through THIS function and through `siblings.py`'s own and
+# asserts they answer the same for every pair, so the definition the report
+# uses and the definition the tool refuses by cannot drift in silence.
+
+
+#: A url scheme -- any of them -- dropped before two remotes are compared. It
+#: is what makes `file:///srv/mirrors/Repo.git` and `/srv/mirrors/Repo.git` one
+#: answer, and `ssh://git@example.com/Org/Repo.git` and the scp spelling
+#: `git@example.com:Org/Repo.git` another.
+REMOTE_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
+
+
+def remote_key(url: str) -> str:
+    """ONE remote spelling folded to the identity underneath it.
+
+    A HUMAN'S OWN CLONE IS NOT REQUIRED TO SPELL A REMOTE THE WAY A MANIFEST
+    OR `.gitmodules` DOES. `git@github.com:Org/Repo.git`,
+    `https://github.com/Org/Repo` and `ssh://git@github.com/Org/Repo.git` are
+    one repository, and a report that called them three would tell somebody
+    their working clone is a stranger's over a punctuation difference. So the
+    scheme, the credential prefix, the scp colon, a trailing `/` and a `.git`
+    suffix all come off, and what is left -- `host/owner/repo`, lowercased --
+    is the thing worth comparing. A bare `owner/repo`, which is how
+    `family.yaml`'s `repository:` is written, folds to itself and is matched
+    by its tail in `same_repository` below.
+    """
+    text = REMOTE_SCHEME_RE.sub("", url.strip().replace("\\", "/").rstrip("/"))
+    first = text.split("/", 1)[0]
+    if "@" in first:                     # git@github.com:Org/Repo.git
+        text = text.split("@", 1)[1]
+        first = text.split("/", 1)[0]
+    if ":" in first:                     # the scp spelling's one separator
+        text = text.replace(":", "/", 1)
+    if text.lower().endswith(".git"):
+        text = text[:-4]
+    return text.lower().strip("/")
+
+
+def same_repository(one: str, two: str) -> bool:
+    """Do two remote spellings name the SAME repository?
+
+    The normalised identities, and failing that the TRAILING `owner/repo` of
+    the second: a manifest records `Org/Repo` with no host in it at all, and a
+    mirror or an enterprise host spells the same repository under a different
+    one. Only the second argument's tail is tried, because that is the
+    reference being matched against -- the row, or the mount -- and the first
+    is whatever a clone on somebody's disk happens to say.
+
+    MIRRORS `templates/family-root/scripts/siblings.py::same_repository`,
+    which is the definition `make siblings` refuses by; see the note above
+    this section for why there are two of them and what holds them together.
+    """
+    left, right = remote_key(one), remote_key(two)
+    if left == right:
+        return True
+    tail = right.split("/")
+    return len(tail) >= 2 and left.endswith("/".join(tail[-2:]))
+
+
+# ---------------------------------------------------------------------------
 # Commit trailers (2026-09-11, #111)
 # ---------------------------------------------------------------------------
 #
