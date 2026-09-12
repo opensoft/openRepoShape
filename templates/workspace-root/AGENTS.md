@@ -28,7 +28,7 @@ is what you must and must not do inside it.
    symlink with a regular file and silently detaches the register from git;
    `sed -i --follow-symlinks`, a `>` or `>>` redirect, `cat tmp > LANES.md`
    and python's `open(path,'w'|'a')` all preserve it. See
-   `lanes/README-lanes.md`.
+   README-lanes in `opensoft/openRepoTools`.
 3. **Handoffs are named for the lane**, never for the date alone:
    `handoffs/<estate>/session-handoff-<YYYY-MM-DD>-lane-<name>.md`, first
    line the lane header. One directory per estate. A bare
@@ -37,7 +37,7 @@ is what you must and must not do inside it.
    to the link itself: an `mv` or `rm -rf` that rewrites it as a real
    directory detaches every handoff in that estate from git with no error.
 4. **Never hand-edit anything under `workspaces/`.** Those manifests are
-   `speckit park`'s record of git state; a hand-edited value can only fail to
+   `park`'s record of git state; a hand-edited value can only fail to
    match reality, and `resume`'s refusals depend on `parked_commit` being
    true. If a manifest is wrong, `park` again from a checkout that has the
    truth.
@@ -47,11 +47,13 @@ is what you must and must not do inside it.
    `handoff(<lane>@<workstation>): <what>`. One commit per write, pushed in
    the same act: a write left uncommitted is captured by the next lane's
    commit and its attribution is lost.
-6. **Direct commits to `main` are the norm here, by design.** This
-   repository is excluded from the organisation's PR-only ruleset precisely
-   so a per-edit registry commit can land. Pull with `--rebase`, push; on a
-   real conflict abort, leave the checkout clean, and report. Never
-   force-push and never delete a remote branch.
+6. **Direct commits to `main` are the norm here, when the organisation's
+   PR-only ruleset excludes this repository.** That exclusion is what lets
+   a per-edit registry commit land at all; where it does not exist, write
+   through that organisation's approved PR flow instead, and never bypass
+   a ruleset that refuses a direct push. Where it does: pull with
+   `--rebase`, push; on a real conflict abort, leave the checkout clean,
+   and report. Never force-push and never delete a remote branch.
 7. **The first act of a lane is `lane-start`; the last is `lane-end`.**
    `lane-start <repo> <n>`, run in the tmux window that will carry the lane,
    is what makes the window name, the session name and the row say the same
@@ -88,5 +90,4 @@ is what you must and must not do inside it.
 - `opensoft/openRepoTools` — the lane tooling: `lanes-edit.sh`, `lane-start`,
   `lane-end`, `test_lane_helpers.sh`, `link-estates`, and `wip init` (what
   makes a repository like this one). Its own `AGENTS.md` is the operating
-  manual; `lanes/README-lanes.md` here describes only the register's data
-  shape.
+  manual; README-lanes there describes the register's data shape.

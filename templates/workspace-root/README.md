@@ -25,8 +25,9 @@ workspaces/   one YAML manifest per family or standalone project — what
 handoffs/     session-handoff documents, one directory per estate
               (`handoffs/<estate>/session-handoff-<date>-lane-<name>.md`).
 lanes/        LANES.md — the estate lane register (lane-collision-protocol
-              Rule 9) — with README-lanes.md describing its data shape, and
-              the per-lane object logs under lanes/log/ (Amendment 7).
+              Rule 9) — its data shape described by README-lanes in
+              opensoft/openRepoTools, and the per-lane object logs under
+              lanes/log/ (Amendment 7).
 ```
 
 ## How it is found
@@ -39,8 +40,8 @@ repository: {{ORG}}/{{LOGIN}}-wip
 path: ~/projects/{{LOGIN}}-wip
 ```
 
-`speckit park` and `speckit resume` read that file; so does every lane
-looking for where a handoff goes. By default this one repository, in this
+`park` and `resume` read that file; so does every lane looking for
+where a handoff goes. By default this one repository, in this
 person's home organisation, indexes work in every organisation they touch,
 a folder per org inside it (`workspaces/<org>/…`, `handoffs/<estate>/…`); an
 organisation whose work must not be indexed outside it — even by name — is
@@ -63,10 +64,19 @@ A handoffs link is placed for every `handoffs/<estate>/` directory here whose
 `link-estates` never deletes a real file — it moves one aside with a stamped
 suffix — and rehearses with `--dry-run`.
 
+## Adopting it on a second workstation
+
+Clone `{{ORG}}/{{LOGIN}}-wip`, write the same two lines shown above into
+`~/.agents/workspace.yaml` on that workstation (`path:` set to wherever the
+clone lives there), and run the installed `link-estates` to place this
+workstation's symlinks. Both steps are idempotent: run again, they change
+nothing that is already correct.
+
 ## Direct commits to `main`
 
-Deliberate, and the reason this repository is excluded from the
-organisation's PR-only ruleset. The register writes **one commit per edit**
-(lane-collision-protocol Rule 9), from many concurrent lanes on more than one
-workstation. A pull request per registry edit is not a workable shape, and
-nothing here is product code that a review gate protects.
+When the organisation's PR-only ruleset excludes this repository, direct
+commits to `main` are deliberate: the register writes **one commit per
+edit** (lane-collision-protocol Rule 9), from many concurrent lanes on more
+than one workstation, and a pull request per registry edit is not a workable
+shape for data that no review gate protects. Where no such exclusion is
+configured, write through that organisation's approved PR flow instead.

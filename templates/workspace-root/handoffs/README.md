@@ -44,7 +44,8 @@ symlink, stop and report before writing anything.
 
 ## One commit per write (Amendment 4(d))
 
-The lane that writes a handoff commits it immediately and pushes:
+When the organisation's PR-only ruleset excludes this repository, the lane
+that writes a handoff commits it immediately and pushes:
 
 ```text
 handoff(<lane>@<workstation>): <what>
@@ -56,4 +57,5 @@ the next lane's commit and its attribution is lost. A Rule 3 `RESUMED by` /
 `COMPLETED by` / `HANDED OFF to` stamp is a write like any other and is
 committed the same way, in the same act. `git pull --rebase` precedes the
 push; on a real conflict the writer aborts, leaves the checkout clean, and
-reports.
+reports. Where no such exclusion is configured, commit through that
+organisation's approved PR flow instead.
