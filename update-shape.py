@@ -453,15 +453,18 @@ def _classify_row(root: Path, row: Row, upstream: Upstream, pinned: str,
                   target: str, kind: Kind) -> None:
     """One pinned row's verdict, split out of `classify` for #133.
 
-    THE THREE EXITS HERE ARE THE ONES WHERE THE COMPARISON CANNOT BE MADE AT
-    ALL, because one of the four byte-strings `classify` names does not
-    exist: the root has no file at this path, no upstream path corresponds to
-    it, or the upstream has none at the target commit. Each is a decision for
-    a human rather than a difference this tool can act on, so `_row_verdict`
-    below is never reached holding a hole. The reads are left in the order
-    they were written in — the root's bytes, then the pinned blob, then the
-    target blob — because `Upstream.blob` shells out to git and a reordering
-    would change what a failing run prints.
+    THE THREE EXITS HERE ARE THE ONES WHERE THERE IS NOTHING TO COMPARE: the
+    root has no file at this path, no upstream path corresponds to it, or the
+    upstream has none at the target commit. Each is a decision for a human
+    rather than a difference this tool can act on, so `_row_verdict` below is
+    only ever reached holding the root's bytes and the target's bytes for
+    certain. THE PINNED BLOB IS THE EXCEPTION and is passed on as `None` when
+    the standard carried no such source at the pinned commit: that is not a
+    hole in the comparison but an upstream change, and the ladder reads it as
+    one. The reads are left in the order they were written in — the root's
+    bytes, then the pinned blob, then the target blob — because
+    `Upstream.blob` shells out to git and a reordering would change what a
+    failing run prints.
     """
     target_path = root / row.path
     if not target_path.is_file():
@@ -495,12 +498,16 @@ def _row_verdict(row: Row, source: str, here: bytes,
                  local_digest: str) -> None:
     """The verdict ladder itself, split out of `classify` for #133.
 
-    Reached only for a row whose four byte-strings all read, so this is the
-    ladder and nothing else: the three derived booleans the parent's
-    docstring argues for, and the first branch that matches. The order of the
-    branches is the order of the argument — already at the target, then the
-    two ways to be a `both`, then the two single-sided answers — and moving
-    one would change a verdict.
+    Reached with the root's bytes and the target's bytes both in hand, so
+    this is the ladder and nothing else: the three derived booleans the
+    parent's docstring argues for, and the first branch that matches.
+    `pinned_bytes` is the one that may be `None` — the standard carried no
+    such source at the pinned commit — and that is deliberately not treated
+    as a missing comparison: it makes `upstream_changed` true, and it makes
+    `verbatim_at_pin` false, because a copy cannot be a verbatim copy of a
+    blob that was never there. The order of the branches is the order of the
+    argument — already at the target, then the two ways to be a `both`, then
+    the two single-sided answers — and moving one would change a verdict.
     """
     locally_modified = local_digest != row.recorded
     upstream_changed = pinned_bytes is None or pinned_bytes != target_bytes
@@ -1226,9 +1233,9 @@ class Rollback:
     already had is restored from the original bytes kept here; a file `--add`
     created has to be DELETED, along with any directory that had to be made to
     hold it. `cmd_apply` carried both as closures over two of its own locals
-    and the undo as two loops in an `except` arm, which is a third of what
-    Sonar scored that function at; split out for #133, with the same writes in
-    the same order and the same undo.
+    and the undo as two loops in an `except` arm — together about a third of
+    the 47 Sonar scored that function at. Split out for #133, with the same
+    writes in the same order and the same undo.
     """
 
     def __init__(self) -> None:
