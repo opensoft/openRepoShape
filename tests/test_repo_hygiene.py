@@ -1013,8 +1013,14 @@ def test_readme_is_short_enough_to_be_read():
     #   five rows and the command returns six, `placement` among them at
     #   `n/a`. A page that lists the rows and is short one is a page a reader
     #   checks their report against and finds a row nobody documented.
-    assert len(lines) <= 1375, (
-        f"README.md is {len(lines)} lines; the cap is 1375")
+    # 2026-09-12: 1375 -> 1376 — `templates/workspace-root/` (#154,
+    #   lane-collision-protocol Amendment 9, adoption act 1): the fifth
+    #   template, for `<user>-wip`. One line in the Layout block names it
+    #   beside `assembly-root`, `code-root`, `family-root` and `spec-root`,
+    #   the same row shape as the other four, so this page keeps listing
+    #   everything this repository ships rather than four out of five.
+    assert len(lines) <= 1376, (
+        f"README.md is {len(lines)} lines; the cap is 1376")
 
 
 @pytest.mark.parametrize("name", SHIPPED_BASH)
