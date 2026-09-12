@@ -1574,13 +1574,18 @@ def test_a_backtick_name_running_over_a_line_break_is_not_a_second_line(
     result = apply(root, upstream_and_project, "--branch", "shape/update-brk")
     assert result.returncode == 0, result.stdout + result.stderr
     after = readme.read_bytes()
-    # EVERYTHING ABOVE THE LAST LINE IS BYTE FOR BYTE WHAT IT WAS, which is
-    # the strongest way to say it: the malformed example keeps its sha, and
-    # so does the scaffolded sentence that names the same commit in prose of
-    # its own a few lines up. Only the trailing line is this tool's.
-    tail = (rendered_shape_line(a) + "\n").encode("utf-8")
-    assert before.endswith(tail), "fixture: the real line is the last one"
-    assert after == before[:-len(tail)] \
-        + (rendered_shape_line(b) + "\n").encode("utf-8")
+    # EVERYTHING BUT THE LAST LINE IS BYTE FOR BYTE WHAT IT WAS, which is the
+    # strongest way to say it: the malformed example keeps its sha, and so
+    # does the scaffolded sentence that names the same commit in prose of its
+    # own a few lines up. Only the trailing line is this tool's.
+    #
+    # The line is found by index rather than by slicing a tail off the end,
+    # because the ending is not this test's business: `Path.write_text` gives
+    # the fixture CRLF on Windows, and the rewriter is supposed to leave
+    # whatever it finds there exactly as it is.
+    was, now = (rendered_shape_line(a).encode("utf-8"),
+                rendered_shape_line(b).encode("utf-8"))
+    at = before.rindex(was)
+    assert after == before[:at] + now + before[at + len(was):]
     assert f"README.md: Shape: line {a[:12]} -> {b[:12]}" in result.stdout
     assert "README.md" in committed_files(root)
