@@ -390,28 +390,14 @@ def _exists_remedy(role: str, empty: bool, reuse_flag: bool) -> str:
             "--force.")
 
 
-def _scaffold(args) -> int:  # noqa: C901
-    # VALIDATED BEFORE ANYTHING IS BUILT FROM THEM. These five reach a `git`
-    # or `gh` command line, and `checked_value` refuses a leading `-` because
-    # git reads its own arguments. The naming policy checks what a project
-    # name MEANS a few lines below; this checks what it may CONTAIN.
-    project = checked_value("--project", args.project)
-    args.tracking_branch = checked_value("--tracking-branch",
-                                         args.tracking_branch)
-    args.spec_path = checked_value("--spec-path", args.spec_path)
-    args.code_path = checked_value("--code-path", args.code_path)
-    args.org = checked_value("--org", args.org)
-    args.pin_owner = checked_value("--pin-owner", args.pin_owner)
-    project_id = checked_value("--id", args.id or project.lower())
-    display = args.name or project
-    elected_on = args.elected_on or _dt.date.today().isoformat()
-    # PARSED HERE, BEFORE ANYTHING IS CREATED, whether or not it is the value
-    # that chooses the reference: an explicit --reference must not let a
-    # malformed --elected-on through into a manifest field no reader can use.
-    election_date(elected_on)
-    reference = args.reference or default_reference(elected_on)
-    local = args.local_remote_dir is not None
+def _elector(args) -> str:
+    """(a) Whose act electing this shape was, or a refusal.
 
+    Split out of `_scaffold` for #138. `--elected-by` first, then this
+    machine's git identity; the manifest records a name either way, because
+    electing this shape is a human's act and `elected_by` is the record of
+    whose.
+    """
     elected_by = args.elected_by
     if not elected_by:
         try:
@@ -427,6 +413,437 @@ def _scaffold(args) -> int:  # noqa: C901
             "shape is a human's act and the manifest records whose.",
             "Remediation: re-run with --elected-by 'Your Name'.",
         )
+    return elected_by
+
+
+def _identity(args, project: str) -> tuple[str, str, str, str, str]:
+    """(b) Who this project is and who elected the shape for it, from the
+    defaults its flags fall back to: `(project_id, display, elected_on,
+    reference, elected_by)`.
+
+    Split out of `_scaffold` for #138, and the ORDER inside it is load-bearing.
+    `--elected-on` is PARSED HERE, before anything is created, whether or not
+    it is the value that chooses the reference: an explicit --reference must
+    not let a malformed --elected-on through into a manifest field no reader
+    can use.
+    """
+    project_id = checked_value("--id", args.id or project.lower())
+    display = args.name or project
+    elected_on = args.elected_on or _dt.date.today().isoformat()
+    election_date(elected_on)
+    reference = args.reference or default_reference(elected_on)
+    return project_id, display, elected_on, reference, _elector(args)
+
+
+def _declaration(args) -> tuple[dict, set, tuple, dict]:
+    """(c) What the project DECLARES about itself: `(pins, declared_pins,
+    chain, link_pins)`.
+
+    Split out of `_scaffold` for #138. THE RECORDED CHAIN (2026-09-05):
+    `codexDox` pins `openXdox` and reaches `openDox` through it; the chain is a
+    DECLARATION, so it is checked by `_check_declared_names` below and written
+    into the manifest rather than re-derived by every reader. A link is
+    verified against its own tree when `--pin-source` (or
+    `SHAPE_PIN_SOURCE_<PRODUCT>`) points at one, and is declared-unverified
+    otherwise — a warning, never a refusal, because the check is offline.
+    """
+    pins = declared_pin_values(args)
+    declared_pins: set[str] = set(pins)
+    chain = tuple(c.strip() for c in args.referent_chain.split(",") if c.strip())
+    link_pins = link_pins_from_trees(chain, None, {}, args.pin_source) \
+        if chain else {}
+    return pins, declared_pins, chain, link_pins
+
+
+def _check_referent_chain(policy, assembly_name: str, declared_pins: set,
+                          chain: tuple, link_pins: dict) -> None:
+    """(d) A declared `--referent-chain` reaches the referent the name claims,
+    or this refuses. Split out of `_scaffold` for #138.
+    """
+    if not chain:
+        return
+    resolution = policy.resolve_referent(assembly_name, declared_pins,
+                                         chain, link_pins)
+    if resolution.status == "broken":
+        raise Refusal(
+            "chain-not-declared",
+            f"--referent-chain {','.join(chain)}: {resolution.reason}",
+            "Remediation: the first entry is the product this project "
+            "PINS (pass it as --pin <product>@<40 hex>) and the last is "
+            "the `open<Product>` the name claims; every link between them "
+            "is declared by that link's own project.yaml.")
+    for warning in resolution.warnings:
+        print(f"WARNING {warning}", file=sys.stderr)
+
+
+def _check_one_name(policy, name: str, role: str, declared_pins: set,
+                    chain: tuple, link_pins: dict) -> None:
+    """(e) ONE of the three names classifies as a form its role accepts, or
+    this refuses. Split out of `_scaffold` for #138.
+    """
+    found = policy.classify(name, role, declared_pins,
+                            chain if role == "assembly" else (), link_pins)
+    if found is None:
+        raise Refusal(
+            "naming-unclassified",
+            f"{name!r} matches no family in the naming policy. "
+            "`<Project>` is one CamelCase token with no hyphen, "
+            "underscore, dot or space.",
+            "Remediation: re-run with a --project value of that form.",
+        )
+    if not accepts_role(found, role):
+        raise Refusal(
+            "naming-role-mismatch",
+            f"{name!r} classifies as {found[0]}"
+            + (f"/{found[1]}" if found[1] else "")
+            + f", not as the {role!r} form of a project leg"
+            + f" ({found.reason})",
+            "Remediation: re-run with a --project value that is one "
+            "CamelCase token.",
+        )
+
+
+def _check_declared_names(policy, names: dict, declared_pins: set,
+                          chain: tuple, link_pins: dict) -> None:
+    """(d+e) The chain, then each of the three names. Split out of `_scaffold`
+    for #138; the chain is judged first because a broken one makes every
+    classification under it meaningless.
+    """
+    _check_referent_chain(policy, names["assembly"], declared_pins, chain,
+                          link_pins)
+    for role, name in names.items():
+        _check_one_name(policy, name, role, declared_pins, chain, link_pins)
+
+
+def _shape_revision() -> tuple[str, str]:
+    """(f) The shape revision this project is cut from: `(commit, tree)`.
+
+    Split out of `_scaffold` for #138. A DIRTY checkout still scaffolds — the
+    per-file sha256 rows are computed from the actual copies, so drift stays
+    detectable — but it says so, loudly, because `commit:` and `tree_sha256`
+    would then describe bytes nobody copied.
+    """
+    shape_commit = git_out(["rev-parse", "HEAD"], cwd=SHAPE_ROOT).lower()
+    shape_tree = tree_digest(SHAPE_ROOT, shape_commit)
+    dirty = git_out(["status", "--porcelain"], cwd=SHAPE_ROOT)
+    if dirty:
+        print(
+            "WARNING the openRepoShape checkout is DIRTY. `commit:` and "
+            f"`tree_sha256` in the shape pin will record {shape_commit[:12]}, "
+            "which does NOT describe the bytes being copied. The per-file "
+            "sha256 rows are computed from the actual copies, so drift stays "
+            "detectable — but commit before scaffolding a real project.",
+            file=sys.stderr,
+        )
+    return shape_commit, shape_tree
+
+
+def _repository_urls(args, names: dict) -> tuple[bool, dict, dict]:
+    """(g) The three repositories as the forge — or the disk — names them:
+    `(local, repositories, urls)`.
+
+    Split out of `_scaffold` for #138. `local` is `--local-remote-dir`, the
+    TEST path: three bare repositories in a directory, and no network.
+    """
+    local = args.local_remote_dir is not None
+    if local:
+        remote_dir = args.local_remote_dir.resolve()
+        urls = {role: str(remote_dir / f"{name}.git")
+                for role, name in names.items()}
+    else:
+        urls = {role: f"https://github.com/{args.org}/{name}.git"
+                for role, name in names.items()}
+    repositories = {role: f"{args.org}/{name}" for role, name in names.items()}
+    return local, repositories, urls
+
+
+def _leg_visibility(args, assembly_repository: str, local: bool) -> str:
+    """(h) The visibility the two NEW legs are created at: explicit, or
+    inherited from a reused empty root.
+
+    Split out of `_scaffold` for #138. An organisation that created the
+    assembly root first (--reuse-empty-repo) generally wants the two NEW legs
+    to match what it already is, not the tool's own idea of a default. Reading
+    it costs one `gh repo view`, is skipped entirely for --local-remote-dir (a
+    bare repository on disk has no visibility at all) and for a fresh scaffold
+    with nothing to reuse.
+    """
+    reused_visibility = None
+    if args.reuse_empty_repo and not local:
+        reused_visibility = remote_visibility(assembly_repository)
+    if args.visibility is None:
+        if reused_visibility:
+            print(f"NOTE {assembly_repository} is already {reused_visibility} "
+                  "on GitHub; the two new legs inherit that visibility (pass "
+                  "--visibility to choose one explicitly).")
+        return reused_visibility or "private"
+    if reused_visibility and reused_visibility != args.visibility:
+        print(f"WARNING --visibility {args.visibility} disagrees with the "
+              f"reused {assembly_repository}, which is {reused_visibility} "
+              "on GitHub. The two new legs are created "
+              f"{args.visibility} because that is what you asked for, not "
+              "because it is what the assembly root already is.",
+              file=sys.stderr)
+    return args.visibility
+
+
+def _print_plan(args, values: dict, names: dict, repositories: dict,
+                urls: dict, local: bool, policy, declared_pins: set,
+                chain: tuple, link_pins: dict, pins: dict) -> None:
+    """(i) The plan a human reads before they type yes.
+
+    Split out of `_scaffold` for #138, in three parts — this one, the declared
+    classification and the actions — because the plan is the ONE output of
+    this tool that somebody is asked to act on, and a printer that no longer
+    fits on a screen is a printer nobody proof-reads.
+    """
+    print(f"project      {values['PROJECT_NAME']} ({values['PROJECT_ID']})   "
+          f"topic {values['TOPIC']}")
+    print(f"shape        {SHAPE_REPOSITORY} @ {values['SHAPE_COMMIT'][:12]} "
+          f"(tree {values['SHAPE_TREE_SHA256'][:12]}…)")
+    print(f"elected by   {values['ELECTED_BY']} on {values['ELECTED_ON']}")
+    print(f"reference    {values['REFERENCE']}"
+          + ("" if args.reference else "   (chosen by the election date)"))
+    for role in ("assembly", "spec", "code"):
+        print(f"  {role:<9} {repositories[role]:<28} -> {urls[role]}")
+    for role in ("assembly", "spec", "code"):
+        note = descendant_note(policy, names[role], role, declared_pins,
+                               chain if role == "assembly" else ())
+        if note:
+            print(note)
+    print(f"legs mounted at {args.spec_path}/ and {args.code_path}/ inside "
+          f"{names['assembly']}")
+    for product, pin_values in pins.items():
+        print(f"pin          {pin_values['PIN_REPOSITORY']} @ "
+              f"{pin_values['PIN_COMMIT'][:12]} tree "
+              f"{pin_values['PIN_TREE_SHA256'][:12]}… -> "
+              f"contracts/{product.lower()}-pin.yaml ({pin_values['PIN_DIGEST_SOURCE']})")
+    _print_declared_classification(policy, names, declared_pins, chain,
+                                   link_pins, pins)
+    _print_plan_actions(args, values["TOPIC"], local)
+
+
+def _print_declared_classification(policy, names: dict, declared_pins: set,
+                                   chain: tuple, link_pins: dict,
+                                   pins: dict) -> None:
+    """(i′) What the naming policy makes of the assembly root's own name.
+
+    PRINT THE CLASSIFICATION whenever the root is not an ordinary project-leg
+    — a neutral-product or descendant root, pinned or not — so the human
+    reading the plan before typing yes sees `neutral-product / assembly` even
+    with no `--pin` on the command line (2026-09-05). A pinned root always
+    printed this line; what is new is that `openDox` needs no pin to earn one.
+    Split out of `_print_plan` for #138.
+    """
+    found = policy.classify(names["assembly"], "assembly", declared_pins,
+                            chain, link_pins)
+    if pins or found.family != "project-leg":
+        print(f"declared     {names['assembly']} classifies as {found.family}"
+              + (f" / {found.role}" if found.role else "")
+              + f" — {found.reason}")
+
+
+def _print_plan_actions(args, topic: str, local: bool) -> None:
+    """(i″) The four lines that say what this run will DO — create the
+    remotes, reuse an empty root, push, set the topic. Split out of
+    `_print_plan` for #138.
+    """
+    print("remotes      " + ("bare repositories on disk (no network)" if local
+                             else f"gh repo create --{args.visibility}"))
+    if args.reuse_empty_repo:
+        print("reuse        an EXISTING <Project> with zero commits is used as "
+              "the assembly root")
+    print("push         " + ("SKIPPED (--no-push)" if args.no_push else "yes"))
+    print("topics       " + ("skipped for local remotes" if local
+                             else f"gh repo edit --add-topic {topic}"))
+
+
+def _refuse_existing_trees(work_root: Path, names: dict) -> None:
+    """(j) Refuse to write over a working tree that already has something in
+    it. Split out of `_scaffold` for #138.
+    """
+    for role, name in names.items():
+        target = work_root / name
+        if target.exists() and any(target.iterdir()):
+            raise Refusal(
+                "scaffold-target-exists",
+                f"{target} already exists and is not empty",
+                "Remediation: choose an empty --work-dir. There is no --force: "
+                "re-running over a live tree is not a scaffold.",
+            )
+
+
+def _create_remotes(args, values: dict, names: dict, repositories: dict,
+                    urls: dict, local: bool, reused: set) -> None:
+    """(k) The three remotes, spec and code first so a failure costs the
+    cheapest thing. Split out of `_scaffold` for #138.
+    """
+    display = values["PROJECT_NAME"]
+    project_id = values["PROJECT_ID"]
+    print("\ncreating remotes")
+    for role in ("spec", "code", "assembly"):
+        if role in reused:
+            print(f"  reused {repositories[role]} (created by somebody else, "
+                  "zero commits)")
+            continue
+        if local:
+            run(["git", "init", "-q", "--bare", "-b", args.tracking_branch,
+                 urls[role]])
+            print(f"  bare  {urls[role]}")
+        else:
+            description = {
+                "assembly": f"{display} — assembly root (project {project_id})",
+                "spec": f"{display} — spec leg (project {project_id})",
+                "code": f"{display} — code leg (project {project_id})",
+            }[role]
+            run(["gh", "repo", "create", repositories[role],
+                 f"--{args.visibility}", "--description", description])
+            print(f"  gh    {repositories[role]} ({args.visibility})")
+
+
+def _private_leg_note(args, repositories: dict, local: bool) -> None:
+    """(k′) A private or internal leg is unreadable to the `validate`
+    workflow's default GITHUB_TOKEN — the defect on the first real adoption
+    (MedxSoft/MedxEHR #7). Printed once, after both legs are known to have
+    been created at this visibility, rather than per-leg. Split out of
+    `_scaffold` for #138.
+    """
+    if not local and args.visibility in ("private", "internal"):
+        print(f"NOTE {repositories['spec']} and {repositories['code']} are "
+              f"{args.visibility}: give {repositories['assembly']} a way to "
+              "read them — a GitHub App (SHAPE_LEGS_APP_ID + "
+              "SHAPE_LEGS_APP_PRIVATE_KEY, preferred) or a SHAPE_LEGS_TOKEN "
+              "PAT (contents:read on the legs, fallback) — or the `validate` "
+              "check cannot check them out.")
+        hint = free_plan_secret_hint(
+            args.org, repositories["assembly"],
+            f"{repositories['spec']} and {repositories['code']} are")
+        if hint:
+            print(hint)
+
+
+def _seed_legs(args, values: dict, names: dict, repositories: dict,
+               urls: dict, work_root: Path) -> dict | None:
+    """(l) The two legs: template, one commit, push.
+
+    Returns the four template values the assembly root's own templates name —
+    or None when a push was REFUSED, having already said so on stderr and
+    printed the ruleset hint. Split out of `_scaffold` for #138.
+    """
+    display = values["PROJECT_NAME"]
+    shape_commit = values["SHAPE_COMMIT"]
+    leg_commits: dict[str, str] = {}
+    leg_digests: dict[str, str] = {}
+    for role, template in (("spec", "spec-root"), ("code", "code-root")):
+        work = work_root / names[role]
+        copy_tree(SHAPE_ROOT / "templates" / template, work, values)
+        commit = git_init_commit(
+            work, f"Seed the {role} leg of {display}\n\n"
+                  f"Scaffolded from {SHAPE_REPOSITORY} @ {shape_commit}.",
+            args.tracking_branch)
+        leg_commits[role] = commit.lower()
+        leg_digests[role] = tree_digest(work, commit)
+        run(["git", "remote", "add", "origin", urls[role]], cwd=work)
+        if not args.no_push:
+            try:
+                run(["git", "push", "-q", "-u", "origin", args.tracking_branch],
+                    cwd=work)
+            except CommandFailed as exc:
+                print(exc.loudly(f"pushing the {role} leg"), file=sys.stderr)
+                print(RULESET_HINT.format(work=work, repo=repositories[role],
+                                          role=role), file=sys.stderr)
+                return None
+        print(f"  {role:<9} {commit[:12]} tree {leg_digests[role][:12]}… "
+              f"-> {urls[role]}")
+    return {
+        "SPEC_COMMIT": leg_commits["spec"],
+        "CODE_COMMIT": leg_commits["code"],
+        "SPEC_TREE_SHA256": leg_digests["spec"],
+        "CODE_TREE_SHA256": leg_digests["code"],
+    }
+
+
+def _build_assembly_root(args, values: dict, names: dict, repositories: dict,
+                         urls: dict, pins: dict, work_root: Path) -> bool:
+    """(m) The assembly root: manifest, the two legs mounted, three pins.
+
+    Returns False when the push was REFUSED, having already said so on stderr
+    and printed the ruleset hint. Split out of `_scaffold` for #138.
+    """
+    display = values["PROJECT_NAME"]
+    shape_commit = values["SHAPE_COMMIT"]
+    assembly = work_root / names["assembly"]
+    assembly.mkdir(parents=True, exist_ok=True)
+    # ONE materializer, shared with `adopt-project.py`. The scaffold builds
+    # into a directory it made itself, so a collision here is a defect and
+    # `collision_dir=None` says so by raising.
+    materialize_assembly_root(SHAPE_ROOT, assembly, values, neutral_pins=pins)
+
+    run(["git", "init", "-q", "-b", args.tracking_branch, str(assembly)])
+    # `git submodule add` from the LEG WORKING TREE, then the recorded URL is
+    # rewritten to the canonical remote: this way the scaffold never depends on
+    # a push having propagated, and `--no-push` produces the same tree.
+    for role, path in (("spec", args.spec_path), ("code", args.code_path)):
+        run(["git", "-c", "protocol.file.allow=always", "submodule", "add",
+             "-q", str(work_root / names[role]), path], cwd=assembly)
+        run(["git", "config", "-f", ".gitmodules", f"submodule.{path}.url",
+             urls[role]], cwd=assembly)
+        run(["git", "remote", "set-url", "origin", urls[role]],
+            cwd=assembly / path)
+    run(["git", "submodule", "sync", "-q"], cwd=assembly)
+    run(["git", "add", "-A", "--", "."], cwd=assembly)
+    env_commit(assembly,
+               f"Scaffold {display}: manifest, two legs, three pins\n\n"
+               f"Shape {SHAPE_REPOSITORY} @ {shape_commit}.\n"
+               f"spec {values['SPEC_COMMIT']}\ncode {values['CODE_COMMIT']}")
+    run(["git", "remote", "add", "origin", urls["assembly"]], cwd=assembly)
+    if not args.no_push:
+        try:
+            run(["git", "push", "-q", "-u", "origin", args.tracking_branch],
+                cwd=assembly)
+        except CommandFailed as exc:
+            print(exc.loudly("pushing the assembly root"), file=sys.stderr)
+            print(RULESET_HINT.format(work=assembly,
+                                      repo=repositories["assembly"],
+                                      role="assembly"), file=sys.stderr)
+            return False
+    print(f"  assembly  {run(['git', 'rev-parse', 'HEAD'], cwd=assembly)[:12]} "
+          f"-> {urls['assembly']}")
+    return True
+
+
+def _set_topics(repositories: dict, topic: str, local: bool) -> None:
+    """(n) The `xf-project-<id>` topic, on all three. Skipped entirely for
+    `--local-remote-dir`: a bare repository on disk has no topics. Split out
+    of `_scaffold` for #138.
+    """
+    if local:
+        return
+    for role in ("assembly", "spec", "code"):
+        run(["gh", "repo", "edit", repositories[role], "--add-topic", topic])
+    print(f"  topic     {topic} set on all three")
+
+
+def _scaffold(args) -> int:
+    """The whole act, as the phases above, in the order they must happen.
+
+    NOTHING IS CREATED until every name has been judged and the plan has been
+    printed, which is what makes `--dry-run` an honest rehearsal: the refusals
+    a real run would raise are raised by a dry run too.
+    """
+    # VALIDATED BEFORE ANYTHING IS BUILT FROM THEM. These five reach a `git`
+    # or `gh` command line, and `checked_value` refuses a leading `-` because
+    # git reads its own arguments. The naming policy checks what a project
+    # name MEANS a few lines below; this checks what it may CONTAIN.
+    project = checked_value("--project", args.project)
+    args.tracking_branch = checked_value("--tracking-branch",
+                                         args.tracking_branch)
+    args.spec_path = checked_value("--spec-path", args.spec_path)
+    args.code_path = checked_value("--code-path", args.code_path)
+    args.org = checked_value("--org", args.org)
+    args.pin_owner = checked_value("--pin-owner", args.pin_owner)
+    project_id, display, elected_on, reference, elected_by = _identity(
+        args, project)
 
     names = {"assembly": project, "spec": f"{project}-spec",
              "code": f"{project}-code"}
@@ -453,98 +870,13 @@ def _scaffold(args) -> int:  # noqa: C901
     # satisfies no leg form at all, offered as ANY leg; and either of the two
     # CamelCase forms offered as the `spec` or `code` leg, because those names
     # carry the lowercase suffix and are ordinary project legs.
-    pins = declared_pin_values(args)
-    declared_pins: set[str] = set(pins)
-    # THE RECORDED CHAIN (2026-09-05). `codexDox` pins `openXdox` and reaches
-    # `openDox` through it; the chain is a DECLARATION, so it is checked here
-    # and written into the manifest rather than re-derived by every reader. A
-    # link is verified against its own tree when `--pin-source` (or
-    # `SHAPE_PIN_SOURCE_<PRODUCT>`) points at one, and is declared-unverified
-    # otherwise — a warning, never a refusal, because the check is offline.
-    chain = tuple(c.strip() for c in args.referent_chain.split(",") if c.strip())
-    link_pins = link_pins_from_trees(chain, None, {}, args.pin_source) \
-        if chain else {}
-    if chain:
-        resolution = policy.resolve_referent(names["assembly"], declared_pins,
-                                             chain, link_pins)
-        if resolution.status == "broken":
-            raise Refusal(
-                "chain-not-declared",
-                f"--referent-chain {','.join(chain)}: {resolution.reason}",
-                "Remediation: the first entry is the product this project "
-                "PINS (pass it as --pin <product>@<40 hex>) and the last is "
-                "the `open<Product>` the name claims; every link between them "
-                "is declared by that link's own project.yaml.")
-        for warning in resolution.warnings:
-            print(f"WARNING {warning}", file=sys.stderr)
-    for role, name in names.items():
-        found = policy.classify(name, role, declared_pins,
-                                chain if role == "assembly" else (), link_pins)
-        if found is None:
-            raise Refusal(
-                "naming-unclassified",
-                f"{name!r} matches no family in the naming policy. "
-                "`<Project>` is one CamelCase token with no hyphen, "
-                "underscore, dot or space.",
-                "Remediation: re-run with a --project value of that form.",
-            )
-        if not accepts_role(found, role):
-            raise Refusal(
-                "naming-role-mismatch",
-                f"{name!r} classifies as {found[0]}"
-                + (f"/{found[1]}" if found[1] else "")
-                + f", not as the {role!r} form of a project leg"
-                + f" ({found.reason})",
-                "Remediation: re-run with a --project value that is one "
-                "CamelCase token.",
-            )
+    pins, declared_pins, chain, link_pins = _declaration(args)
+    _check_declared_names(policy, names, declared_pins, chain, link_pins)
     topic = policy.topic_for(project_id)
 
-    # ---- the shape revision this project is cut from ----------------------
-    shape_commit = git_out(["rev-parse", "HEAD"], cwd=SHAPE_ROOT).lower()
-    shape_tree = tree_digest(SHAPE_ROOT, shape_commit)
-    dirty = git_out(["status", "--porcelain"], cwd=SHAPE_ROOT)
-    if dirty:
-        print(
-            "WARNING the openRepoShape checkout is DIRTY. `commit:` and "
-            f"`tree_sha256` in the shape pin will record {shape_commit[:12]}, "
-            "which does NOT describe the bytes being copied. The per-file "
-            "sha256 rows are computed from the actual copies, so drift stays "
-            "detectable — but commit before scaffolding a real project.",
-            file=sys.stderr,
-        )
-
-    if local:
-        remote_dir = args.local_remote_dir.resolve()
-        urls = {role: str(remote_dir / f"{name}.git")
-                for role, name in names.items()}
-    else:
-        urls = {role: f"https://github.com/{args.org}/{name}.git"
-                for role, name in names.items()}
-    repositories = {role: f"{args.org}/{name}" for role, name in names.items()}
-
-    # ---- visibility: explicit, or inherited from a reused empty root ------
-    # An organisation that created the assembly root first (--reuse-empty-repo)
-    # generally wants the two NEW legs to match what it already is, not the
-    # tool's own idea of a default. Reading it costs one `gh repo view`, is
-    # skipped entirely for --local-remote-dir (a bare repository on disk has
-    # no visibility at all) and for a fresh scaffold with nothing to reuse.
-    reused_visibility = None
-    if args.reuse_empty_repo and not local:
-        reused_visibility = remote_visibility(repositories["assembly"])
-    if args.visibility is None:
-        args.visibility = reused_visibility or "private"
-        if reused_visibility:
-            print(f"NOTE {repositories['assembly']} is already {reused_visibility} "
-                  "on GitHub; the two new legs inherit that visibility (pass "
-                  "--visibility to choose one explicitly).")
-    elif reused_visibility and reused_visibility != args.visibility:
-        print(f"WARNING --visibility {args.visibility} disagrees with the "
-              f"reused {repositories['assembly']}, which is {reused_visibility} "
-              "on GitHub. The two new legs are created "
-              f"{args.visibility} because that is what you asked for, not "
-              "because it is what the assembly root already is.",
-              file=sys.stderr)
+    shape_commit, shape_tree = _shape_revision()
+    local, repositories, urls = _repository_urls(args, names)
+    args.visibility = _leg_visibility(args, repositories["assembly"], local)
 
     values = {
         "PROJECT": project,
@@ -576,47 +908,8 @@ def _scaffold(args) -> int:  # noqa: C901
         "CODE_NAMING": naming_block(policy, names["code"], "code", declared_pins),
     }
 
-    # ---- the plan ----------------------------------------------------------
-    print(f"project      {display} ({project_id})   topic {topic}")
-    print(f"shape        {SHAPE_REPOSITORY} @ {shape_commit[:12]} "
-          f"(tree {shape_tree[:12]}…)")
-    print(f"elected by   {elected_by} on {elected_on}")
-    print(f"reference    {reference}"
-          + ("" if args.reference else "   (chosen by the election date)"))
-    for role in ("assembly", "spec", "code"):
-        print(f"  {role:<9} {repositories[role]:<28} -> {urls[role]}")
-    for role in ("assembly", "spec", "code"):
-        note = descendant_note(policy, names[role], role, declared_pins,
-                               chain if role == "assembly" else ())
-        if note:
-            print(note)
-    print(f"legs mounted at {args.spec_path}/ and {args.code_path}/ inside "
-          f"{names['assembly']}")
-    for product, pin_values in pins.items():
-        print(f"pin          {pin_values['PIN_REPOSITORY']} @ "
-              f"{pin_values['PIN_COMMIT'][:12]} tree "
-              f"{pin_values['PIN_TREE_SHA256'][:12]}… -> "
-              f"contracts/{product.lower()}-pin.yaml ({pin_values['PIN_DIGEST_SOURCE']})")
-    # PRINT THE CLASSIFICATION whenever the root is not an ordinary
-    # project-leg — a neutral-product or descendant root, pinned or not — so
-    # the human reading the plan before typing yes sees `neutral-product /
-    # assembly` even with no `--pin` on the command line (2026-09-05). A
-    # pinned root always printed this line; what is new is that `openDox`
-    # needs no pin to earn one.
-    found = policy.classify(names["assembly"], "assembly", declared_pins,
-                            chain, link_pins)
-    if pins or found.family != "project-leg":
-        print(f"declared     {names['assembly']} classifies as {found.family}"
-              + (f" / {found.role}" if found.role else "")
-              + f" — {found.reason}")
-    print("remotes      " + ("bare repositories on disk (no network)" if local
-                             else f"gh repo create --{args.visibility}"))
-    if args.reuse_empty_repo:
-        print("reuse        an EXISTING <Project> with zero commits is used as "
-              "the assembly root")
-    print("push         " + ("SKIPPED (--no-push)" if args.no_push else "yes"))
-    print("topics       " + ("skipped for local remotes" if local
-                             else f"gh repo edit --add-topic {topic}"))
+    _print_plan(args, values, names, repositories, urls, local, policy,
+                declared_pins, chain, link_pins, pins)
     if args.dry_run:
         print("\n--dry-run: nothing was created.")
         return 0
@@ -625,15 +918,7 @@ def _scaffold(args) -> int:  # noqa: C901
     work_root = (args.work_dir.resolve() if args.work_dir
                  else Path(tempfile.mkdtemp(prefix="openreposhape-")))
     work_root.mkdir(parents=True, exist_ok=True)
-    for role, name in names.items():
-        target = work_root / name
-        if target.exists() and any(target.iterdir()):
-            raise Refusal(
-                "scaffold-target-exists",
-                f"{target} already exists and is not empty",
-                "Remediation: choose an empty --work-dir. There is no --force: "
-                "re-running over a live tree is not a scaffold.",
-            )
+    _refuse_existing_trees(work_root, names)
     # THE ONE REPOSITORY THAT MAY ALREADY EXIST is the assembly root, and only
     # with `--reuse-empty-repo`, and only with ZERO commits. An organisation
     # that creates the repository first and asks for the shape second is the
@@ -642,124 +927,22 @@ def _scaffold(args) -> int:  # noqa: C901
     # with commits is refused exactly as before: that is a live project, and
     # `adopt-project.py` is the tool for one of those.
     if local:
-        remote_dir.mkdir(parents=True, exist_ok=True)
+        args.local_remote_dir.resolve().mkdir(parents=True, exist_ok=True)
     reused = _reusable_remotes(names, urls, repositories, local,
                                args.reuse_empty_repo)
 
-    # ---- create the remotes ------------------------------------------------
-    print("\ncreating remotes")
-    for role in ("spec", "code", "assembly"):
-        if role in reused:
-            print(f"  reused {repositories[role]} (created by somebody else, "
-                  "zero commits)")
-            continue
-        if local:
-            run(["git", "init", "-q", "--bare", "-b", args.tracking_branch,
-                 urls[role]])
-            print(f"  bare  {urls[role]}")
-        else:
-            description = {
-                "assembly": f"{display} — assembly root (project {project_id})",
-                "spec": f"{display} — spec leg (project {project_id})",
-                "code": f"{display} — code leg (project {project_id})",
-            }[role]
-            run(["gh", "repo", "create", repositories[role],
-                 f"--{args.visibility}", "--description", description])
-            print(f"  gh    {repositories[role]} ({args.visibility})")
+    _create_remotes(args, values, names, repositories, urls, local, reused)
+    _private_leg_note(args, repositories, local)
 
-    # A private or internal leg is unreadable to the `validate` workflow's
-    # default GITHUB_TOKEN — the defect on the first real adoption
-    # (MedxSoft/MedxEHR #7). Printed once, after both legs are known to have
-    # been created at this visibility, rather than per-leg.
-    if not local and args.visibility in ("private", "internal"):
-        print(f"NOTE {repositories['spec']} and {repositories['code']} are "
-              f"{args.visibility}: give {repositories['assembly']} a way to "
-              "read them — a GitHub App (SHAPE_LEGS_APP_ID + "
-              "SHAPE_LEGS_APP_PRIVATE_KEY, preferred) or a SHAPE_LEGS_TOKEN "
-              "PAT (contents:read on the legs, fallback) — or the `validate` "
-              "check cannot check them out.")
-        hint = free_plan_secret_hint(
-            args.org, repositories["assembly"],
-            f"{repositories['spec']} and {repositories['code']} are")
-        if hint:
-            print(hint)
+    leg_values = _seed_legs(args, values, names, repositories, urls, work_root)
+    if leg_values is None:
+        return 2
+    values.update(leg_values)
 
-    # ---- the two legs ------------------------------------------------------
-    leg_commits: dict[str, str] = {}
-    leg_digests: dict[str, str] = {}
-    for role, template in (("spec", "spec-root"), ("code", "code-root")):
-        work = work_root / names[role]
-        copy_tree(SHAPE_ROOT / "templates" / template, work, values)
-        commit = git_init_commit(
-            work, f"Seed the {role} leg of {display}\n\n"
-                  f"Scaffolded from {SHAPE_REPOSITORY} @ {shape_commit}.",
-            args.tracking_branch)
-        leg_commits[role] = commit.lower()
-        leg_digests[role] = tree_digest(work, commit)
-        run(["git", "remote", "add", "origin", urls[role]], cwd=work)
-        if not args.no_push:
-            try:
-                run(["git", "push", "-q", "-u", "origin", args.tracking_branch],
-                    cwd=work)
-            except CommandFailed as exc:
-                print(exc.loudly(f"pushing the {role} leg"), file=sys.stderr)
-                print(RULESET_HINT.format(work=work, repo=repositories[role],
-                                          role=role), file=sys.stderr)
-                return 2
-        print(f"  {role:<9} {commit[:12]} tree {leg_digests[role][:12]}… "
-              f"-> {urls[role]}")
-
-    values.update({
-        "SPEC_COMMIT": leg_commits["spec"],
-        "CODE_COMMIT": leg_commits["code"],
-        "SPEC_TREE_SHA256": leg_digests["spec"],
-        "CODE_TREE_SHA256": leg_digests["code"],
-    })
-
-    # ---- the assembly root -------------------------------------------------
-    assembly = work_root / names["assembly"]
-    assembly.mkdir(parents=True, exist_ok=True)
-    # ONE materializer, shared with `adopt-project.py`. The scaffold builds
-    # into a directory it made itself, so a collision here is a defect and
-    # `collision_dir=None` says so by raising.
-    materialize_assembly_root(SHAPE_ROOT, assembly, values, neutral_pins=pins)
-
-    run(["git", "init", "-q", "-b", args.tracking_branch, str(assembly)])
-    # `git submodule add` from the LEG WORKING TREE, then the recorded URL is
-    # rewritten to the canonical remote: this way the scaffold never depends on
-    # a push having propagated, and `--no-push` produces the same tree.
-    for role, path in (("spec", args.spec_path), ("code", args.code_path)):
-        run(["git", "-c", "protocol.file.allow=always", "submodule", "add",
-             "-q", str(work_root / names[role]), path], cwd=assembly)
-        run(["git", "config", "-f", ".gitmodules", f"submodule.{path}.url",
-             urls[role]], cwd=assembly)
-        run(["git", "remote", "set-url", "origin", urls[role]],
-            cwd=assembly / path)
-    run(["git", "submodule", "sync", "-q"], cwd=assembly)
-    run(["git", "add", "-A", "--", "."], cwd=assembly)
-    env_commit(assembly,
-               f"Scaffold {display}: manifest, two legs, three pins\n\n"
-               f"Shape {SHAPE_REPOSITORY} @ {shape_commit}.\n"
-               f"spec {leg_commits['spec']}\ncode {leg_commits['code']}")
-    run(["git", "remote", "add", "origin", urls["assembly"]], cwd=assembly)
-    if not args.no_push:
-        try:
-            run(["git", "push", "-q", "-u", "origin", args.tracking_branch],
-                cwd=assembly)
-        except CommandFailed as exc:
-            print(exc.loudly("pushing the assembly root"), file=sys.stderr)
-            print(RULESET_HINT.format(work=assembly,
-                                      repo=repositories["assembly"],
-                                      role="assembly"), file=sys.stderr)
-            return 2
-    print(f"  assembly  {run(['git', 'rev-parse', 'HEAD'], cwd=assembly)[:12]} "
-          f"-> {urls['assembly']}")
-
-    # ---- topics ------------------------------------------------------------
-    if not local:
-        for role in ("assembly", "spec", "code"):
-            run(["gh", "repo", "edit", repositories[role], "--add-topic", topic])
-        print(f"  topic     {topic} set on all three")
+    if not _build_assembly_root(args, values, names, repositories, urls, pins,
+                                work_root):
+        return 2
+    _set_topics(repositories, topic, local)
 
     print(f"""
 NEXT STEPS
