@@ -1535,6 +1535,126 @@ def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
     return entry, misplaced, review
 
 
+def placement_policy(ctx: Context, policy_path: Path) -> tuple:
+    """The adoption's classifier and its loaded policy, or the `n/a` row.
+
+    THREE OF THE FOUR WAYS THIS ROW SAYS `n/a` ARE HERE, and every one of
+    them is THIS CHECKOUT being short rather than the repository being wrong:
+    an `adopt-project.py` this standard does not carry, a
+    `contracts/path-classification.yaml` that is not there, and a policy file
+    that is there and could not be read. The last is `n/a` and never a
+    finding for the reason the `leg shape files` row is a note -- failing
+    somebody else's repository on OUR file being wrong is exactly the mistake
+    that row was written about.
+
+    Returns `(adopt, policy, None)` when the legs can be classified at all
+    and `(None, None, row)` when they cannot, so the caller returns the
+    refusal this composed rather than composing a second one.
+
+    Split out of `check_placement` for #134.
+    """
+    adopt = ctx.adopt()
+    if adopt is None or not policy_path.is_file():
+        missing = ("adopt-project.py" if adopt is None
+                   else "contracts/path-classification.yaml")
+        return None, None, placement_row(
+            NA,
+            f"this checkout of the standard is missing {missing}, so the "
+            "adoption's own classification cannot be run over the legs",
+            f"{PYTHON} {quote_arg(ctx.shape / 'shape-doctor.py')} --root "
+            f"{quote_arg(ctx.root)}   # from a COMPLETE checkout of the "
+            f"standard; this one is short {missing}",
+            {"policy": policy_path.as_posix()})
+    try:
+        policy = adopt.PathPolicy.load(policy_path)
+    except Refusal as exc:
+        return None, None, placement_row(
+            NA,
+            f"the standard's own path policy could not be read: {exc.detail}",
+            exc.remediation or None, {"policy": policy_path.as_posix()})
+    return adopt, policy, None
+
+
+def leg_audit_summary(entry: dict) -> str:
+    """One leg's half of the row's reason: its counts, or why it has none.
+
+    A LEG THAT WAS NOT AUDITED PRINTS ITS `state` AND NEVER A ZERO, because a
+    leg nobody could read and a leg with nothing wrong in it are not the same
+    answer (Copilot, PR #100) -- `audit_leg` already worded which of the
+    reasons it is, and this repeats it rather than flattening it into a
+    count. An audited leg names up to three of the tracked names no report or
+    plan can carry, because a name that cannot be written down is the one
+    thing a reader cannot go and look at for themselves.
+
+    Split out of `check_placement` for #134.
+    """
+    if entry.get("state") != "audited":
+        return f"{entry['path']}: {entry.get('state')}"
+    counted = (f"{entry['paths']} path(s) over {entry['classified']} of "
+               f"{entry['tracked']} tracked file(s)")
+    unwritable = entry.get("unwritable")
+    if unwritable:
+        counted += (f", and {len(unwritable)} name(s) no report or plan "
+                    f"can carry: {', '.join(unwritable[:3])}")
+    return f"{entry['path']}: {counted}"
+
+
+def placement_verdict(detail: dict, audited: str, plan: str) -> Row:
+    """What the audited legs add up to, in the order the answers outrank.
+
+    A PATH IN THE WRONG LEG OUTRANKS A QUESTION ABOUT ONE. Misplaced first
+    because it is the finding the row exists for; then the paths the policy
+    will not call, which are a note because an unanswered question is never a
+    finding and never an implicit anything; then the legs that could not be
+    read, which are a note because what is missing is a READ and not a fault
+    of this repository's. `ok` is last and is the only branch that claims
+    every tracked path was classified, which is why nothing above it may fall
+    through to it.
+
+    Reads what it needs out of `detail` rather than taking the same six
+    numbers a second time: the row prints that dictionary, so a count this
+    judged on and a count the reader is shown cannot drift apart.
+
+    Split out of `check_placement` for #134.
+    """
+    misplaced = detail["misplaced"]
+    review = detail["review_required"]
+    counts = detail["counts"]
+    if counts["unread_legs"] == len(detail["legs"]):
+        # NOT `ok` AND NOT A FINDING. Every leg declined for a reason the
+        # `legs` row already asserts or the manifest already carries, and a
+        # row that answered `ok` here would be answering about nothing.
+        return placement_row(
+            NA, f"no leg could be read, so nothing was classified: {audited}",
+            None, detail)
+    if misplaced:
+        extra = (f"; {len(review)} more path(s) need a human's reading"
+                 if review else "")
+        return placement_row(
+            FINDING,
+            f"{len(misplaced)} path(s) sit in a leg the policy puts "
+            f"elsewhere: {named_offenders(misplaced)}{extra}  [{audited}]",
+            plan, detail)
+    if review:
+        return placement_row(
+            NOTE,
+            f"nothing is in the wrong leg; {len(review)} path(s) the policy "
+            f"will not call: {named_offenders(review)}  [{audited}]",
+            plan, detail)
+    if counts["unread_legs"] or counts["unwritable_names"]:
+        # `note`, because what is missing is a READ and not a fault of this
+        # repository's -- and never `ok`, because "every tracked path
+        # classifies as the leg it is in" is a claim about paths nobody read.
+        return placement_row(
+            NOTE,
+            "nothing is in the wrong leg in what could be read, and not "
+            f"everything could be: {audited}",
+            None, detail)
+    return placement_row(
+        OK, f"every tracked path classifies as the leg it is in: {audited}",
+        None, detail)
+
+
 def check_placement(ctx: Context) -> Row:
     """Every tracked path of every leg, against the ADOPTION'S own policy.
 
@@ -1566,6 +1686,11 @@ def check_placement(ctx: Context) -> Row:
     human's to resolve and a later `--fix` is the thing that would carry it
     out. A row that offered a `git mv` would be offering to edit two
     repositories from a command documented as writing nothing.
+
+    THE REFUSALS ARE `placement_policy`'s, ONE LEG IS `audit_leg`'s, THE
+    WORDING IS `leg_audit_summary`'s AND THE ANSWER IS `placement_verdict`'s,
+    so that this reads as the three sentences it is: load the policy, audit
+    every leg with it, and say what the legs came to.
     """
     if ctx.kind == FAMILY:
         return placement_row(
@@ -1578,29 +1703,10 @@ def check_placement(ctx: Context) -> Row:
             NA,
             "project.yaml declares no non-assembly leg, so there is no leg "
             "for a path to be in the wrong one of")
-    adopt = ctx.adopt()
     policy_path = ctx.shape / "contracts" / "path-classification.yaml"
-    if adopt is None or not policy_path.is_file():
-        missing = ("adopt-project.py" if adopt is None
-                   else "contracts/path-classification.yaml")
-        return placement_row(
-            NA,
-            f"this checkout of the standard is missing {missing}, so the "
-            "adoption's own classification cannot be run over the legs",
-            f"{PYTHON} {quote_arg(ctx.shape / 'shape-doctor.py')} --root "
-            f"{quote_arg(ctx.root)}   # from a COMPLETE checkout of the "
-            f"standard; this one is short {missing}",
-            {"policy": policy_path.as_posix()})
-    try:
-        policy = adopt.PathPolicy.load(policy_path)
-    except Refusal as exc:
-        # `n/a`, NOT a finding. A path policy this checkout cannot read is
-        # OUR file being wrong, and failing somebody's repository on it would
-        # be the `leg shape files` mistake with a different file.
-        return placement_row(
-            NA,
-            f"the standard's own path policy could not be read: {exc.detail}",
-            exc.remediation or None, {"policy": policy_path.as_posix()})
+    adopt, policy, refusal = placement_policy(ctx, policy_path)
+    if refusal is not None:
+        return refusal
 
     ignored = everywhere_patterns(ctx.shape)
     patterns = [glob_to_regex(pattern) for pattern in ignored]
@@ -1626,54 +1732,14 @@ def check_placement(ctx: Context) -> Row:
                   for name in (entry.get("unwritable") or [])]
     detail["counts"]["unread_legs"] = len(unread)
     detail["counts"]["unwritable_names"] = len(unwritable)
-    audited = "; ".join(
-        f"{entry['path']}: " + (
-            f"{entry['paths']} path(s) over {entry['classified']} of "
-            f"{entry['tracked']} tracked file(s)"
-            + (f", and {len(entry['unwritable'])} name(s) no report or plan "
-               f"can carry: {', '.join(entry['unwritable'][:3])}"
-               if entry.get("unwritable") else "")
-            if entry.get("state") == "audited" else str(entry.get("state")))
-        for entry in per_leg)
-    if len(unread) == len(per_leg):
-        # NOT `ok` AND NOT A FINDING. Every leg declined for a reason the
-        # `legs` row already asserts or the manifest already carries, and a
-        # row that answered `ok` here would be answering about nothing.
-        return placement_row(
-            NA, f"no leg could be read, so nothing was classified: {audited}",
-            None, detail)
+    audited = "; ".join(leg_audit_summary(entry) for entry in per_leg)
     plan = (f"{PYTHON} {quote_arg(ctx.shape / 'shape-doctor.py')} --root "
             f"{quote_arg(ctx.root)} "
             "--placement-plan placement-plan.yaml   # writes the paths above "
             "as a plan to resolve by hand. Moving one is a pull request on "
             "each leg and a pin bump in the root, so this command makes "
             "neither")
-    if misplaced:
-        extra = (f"; {len(review)} more path(s) need a human's reading"
-                 if review else "")
-        return placement_row(
-            FINDING,
-            f"{len(misplaced)} path(s) sit in a leg the policy puts "
-            f"elsewhere: {named_offenders(misplaced)}{extra}  [{audited}]",
-            plan, detail)
-    if review:
-        return placement_row(
-            NOTE,
-            f"nothing is in the wrong leg; {len(review)} path(s) the policy "
-            f"will not call: {named_offenders(review)}  [{audited}]",
-            plan, detail)
-    if unread or unwritable:
-        # `note`, because what is missing is a READ and not a fault of this
-        # repository's -- and never `ok`, because "every tracked path
-        # classifies as the leg it is in" is a claim about paths nobody read.
-        return placement_row(
-            NOTE,
-            "nothing is in the wrong leg in what could be read, and not "
-            f"everything could be: {audited}",
-            None, detail)
-    return placement_row(
-        OK, f"every tracked path classifies as the leg it is in: {audited}",
-        None, detail)
+    return placement_verdict(detail, audited, plan)
 
 
 #: The header of the file `--placement-plan` writes. It is long because the
