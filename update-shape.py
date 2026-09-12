@@ -938,6 +938,25 @@ README_SYMLINK = "symlink"
 README_HARDLINK = "hard-link"
 
 
+def _git_answer(root: Path, args: list) -> "str | None":
+    """`git <args>` run in `root`: its stdout, or None when git would not
+    answer at all — a non-zero exit, no repository, no git on the path.
+
+    None rather than an empty string because "git said nothing" and "git
+    could not be asked" are different facts and this file's one caller
+    treats them differently. `subprocess.run` is what raises when there is no
+    `git` binary, and `readme_is_committed` documents that case as NOT
+    committed, so the raise is caught here rather than left to escape a
+    classification that must not raise.
+    """
+    try:
+        proc = subprocess.run(["git", *args], cwd=str(root),
+                              capture_output=True, text=True, check=False)
+    except OSError:
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
 def readme_is_committed(root: Path) -> bool:
     """Is `README.md` exactly what HEAD has, with nothing else in it?
 
@@ -960,14 +979,34 @@ def readme_is_committed(root: Path) -> bool:
     PR #152). Untracked-but-not-ignored was already caught; this is the same
     hazard wearing the one hat `--porcelain` hides.
 
+    TWO QUESTIONS, BECAUSE NEITHER ANSWERS THE OTHER. `git status` reads the
+    INDEX, and `git update-index --assume-unchanged` / `--skip-worktree` tell
+    it to stop looking at the file: a README carrying an editor's unfinished
+    paragraph under either flag reports nothing at all, while `git commit --
+    README.md` goes on recording the complete working-tree file (Codex,
+    PR #152). So the bytes are asked for as well — what `git hash-object`
+    makes of the file on disk, against the blob `HEAD` records for that path
+    — and that comparison is blind to index flags, to ignore rules and to
+    whether the file is tracked at all. `hash-object` applies the same clean
+    filter `git add` would, so a CRLF checkout under `core.autocrlf` hashes to
+    the same blob it was committed as rather than reading as a whole-file
+    edit.
+
+    The status question is still asked, and first: it is the one that catches
+    a change STAGED but reverted in the working tree, where the bytes on disk
+    do match HEAD and the commit would quietly drop what the human staged.
+
     A git that cannot answer (no repository, no git) is treated as NOT
     committed, which costs a rewrite in a place that could not have committed
     it anyway.
     """
-    proc = subprocess.run(
-        ["git", "status", "--porcelain", "--ignored", "--", README],
-        cwd=str(root), capture_output=True, text=True, check=False)
-    return proc.returncode == 0 and not proc.stdout.strip()
+    status = _git_answer(root, ["status", "--porcelain", "--ignored", "--",
+                                README])
+    if status is None or status.strip():
+        return False
+    head = _git_answer(root, ["rev-parse", f"HEAD:{README}"])
+    disk = _git_answer(root, ["hash-object", "--", README])
+    return bool(head and disk and head.strip() == disk.strip())
 
 
 class ReadmeShapeLine:

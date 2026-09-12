@@ -287,13 +287,20 @@ PLACEHOLDER_RE = re.compile(r"\{\{[A-Z_]+\}\}")
 #: `readme_trailing_shape_line` is where that is decided, once, for both
 #: readers.
 #:
+#: `[^`\r\n]+` rather than `[^`]+` for the repository: under `re.MULTILINE`
+#: the `^` and `$` anchors are per line but a negated class is not, so a
+#: backtick-quoted name running over a line break used to match as ONE line
+#: spanning two — enough for a malformed example to count as a second `Shape:`
+#: line and leave a holder's real one `ambiguous` and unmoved (Copilot,
+#: PR #152).
+#:
 #: `\r?` before the end anchor: a README checked out on Windows with
 #: `core.autocrlf=true` holds CRLF, and the rewriter works on BYTES so that
 #: everything but the 40 hex characters survives untouched — a reader that
 #: normalised the line endings instead would rewrite every line of the file
 #: to move one sha.
 README_SHAPE_LINE_RE = re.compile(
-    r"^Shape: `(?P<repository>[^`]+)` @ `(?P<commit>[0-9a-f]{40})`\.\r?$",
+    r"^Shape: `(?P<repository>[^`\r\n]+)` @ `(?P<commit>[0-9a-f]{40})`\.\r?$",
     re.MULTILINE)
 
 

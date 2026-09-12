@@ -1477,3 +1477,110 @@ def test_git_answers_three_ways_for_a_readme_and_one_of_them_is_committed(
     assert update_shape.readme_is_committed(root) is False, (
         "an IGNORED untracked README, which `--porcelain` alone says "
         "nothing at all about")
+
+
+def test_an_index_flag_does_not_make_an_edited_readme_committed(
+        root, upstream_and_project, update_shape):
+    """`git status` READS THE INDEX, and two flags tell it to stop looking.
+
+    `--assume-unchanged` and `--skip-worktree` both leave `git status` silent
+    over a README somebody is part way through editing, while `git commit --
+    README.md` goes on recording the complete working-tree file (Codex,
+    PR #152) — so the status question alone would have let exactly the edit
+    the last round closed back in through a flag. The bytes are asked for as
+    well now: what `git hash-object` makes of the file on disk against the
+    blob HEAD records for that path, which no index flag can quiet.
+    """
+    a = upstream_and_project["a"]
+    readme = give_readme(root, rendered_shape_line(a))
+    line = rendered_shape_line(a) + "\n"
+    text = readme.read_text(encoding="utf-8")
+    mine = text[:-len(line)] + "A paragraph I am writing.\n" + line
+
+    for flag in ("assume-unchanged", "skip-worktree"):
+        git("update-index", f"--{flag}", "--", "README.md", cwd=root)
+        readme.write_text(mine, encoding="utf-8")
+        assert not git("status", "--porcelain", "--ignored", "--",
+                       "README.md", cwd=root).stdout.strip(), (
+            f"fixture: --{flag} is what makes git say nothing here")
+        assert update_shape.readme_is_committed(root) is False, flag
+        git("update-index", f"--no-{flag}", "--", "README.md", cwd=root)
+        readme.write_text(text, encoding="utf-8")
+
+    git("update-index", "--assume-unchanged", "--", "README.md", cwd=root)
+    readme.write_text(mine, encoding="utf-8")
+    result = apply(root, upstream_and_project, "--branch", "shape/update-flag")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert readme.read_text(encoding="utf-8") == mine, (
+        "neither the sha nor the paragraph moved")
+    assert "uncommitted changes, untouched" in result.stdout
+    assert "README.md" not in committed_files(root)
+
+
+def test_crlf_endings_and_a_bom_survive_a_rewrite_byte_for_byte(
+        root, upstream_and_project):
+    """THE REWRITE IS 40 CHARACTERS, and the rest of the file is evidence.
+
+    `_classify` decodes the whole README and `rewrite` re-encodes it, so
+    every byte outside the `commit` span is a promise this test is the only
+    thing keeping (Copilot, PR #152): a holder checked out on Windows under
+    `core.autocrlf`, or written by an editor that leads with a BOM, must come
+    back with its endings and its BOM exactly as they were. A rewriter that
+    normalised them would rewrite every line of the file to move one sha —
+    and would show up in that holder's next diff as a whole-file change
+    nobody asked for.
+    """
+    a, b = upstream_and_project["a"], upstream_and_project["b"]
+    readme = root / "README.md"
+    readme.write_bytes(
+        ("\ufeff# Atlas\r\n\r\nA README written where the lines end in two "
+         "characters.\r\n\r\n" + rendered_shape_line(a) + "\r\n")
+        .encode("utf-8"))
+    git("add", "--", "README.md", cwd=root)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m",
+        "The README came from a Windows editor", "--", "README.md", cwd=root)
+    before = readme.read_bytes()
+
+    result = apply(root, upstream_and_project, "--branch", "shape/update-crlf")
+    assert result.returncode == 0, result.stdout + result.stderr
+    after = readme.read_bytes()
+    assert after != before, "the sha moved"
+    assert after == before.replace(a.encode("ascii"), b.encode("ascii")), (
+        "only the 40 hex characters changed — the BOM, the CRLF endings and "
+        "every other byte are what they were")
+    assert after.startswith(b"\xef\xbb\xbf")
+    assert after.count(b"\r\n") == before.count(b"\r\n")
+    assert "README.md" in committed_files(root)
+
+
+def test_a_backtick_name_running_over_a_line_break_is_not_a_second_line(
+        root, upstream_and_project):
+    """`[^`]+` MATCHED NEWLINES, and `re.MULTILINE` does not stop it: only
+    the `^` and `$` anchors are per line, so a backtick-quoted name broken
+    over two lines used to match as one (Copilot, PR #152).
+
+    The cost was not a bad rewrite but a missing one: a malformed example
+    like this counted as a SECOND `Shape:` line, which made the holder's real
+    one `ambiguous` and left it drifting — the failure #148 exists to end,
+    reached through a typo in somebody's prose.
+    """
+    a, b = upstream_and_project["a"], upstream_and_project["b"]
+    broken = ["Shape: `not/a real", "repository` @ `" + "0" * 40 + "`."]
+    readme = give_readme(root, *broken, "", rendered_shape_line(a))
+    before = readme.read_bytes()
+    assert len(readme_shape_lines(before.decode("utf-8"))) == 1, (
+        "fixture: the malformed example is not a line the rewriter reads")
+
+    result = apply(root, upstream_and_project, "--branch", "shape/update-brk")
+    assert result.returncode == 0, result.stdout + result.stderr
+    after = readme.read_bytes()
+    # EVERYTHING ABOVE THE LAST LINE IS BYTE FOR BYTE WHAT IT WAS, which is
+    # the strongest way to say it: the malformed example keeps its sha, and
+    # so does the scaffolded sentence that names the same commit in prose of
+    # its own a few lines up. Only the trailing line is this tool's.
+    tail = (rendered_shape_line(a) + "\n").encode("utf-8")
+    assert before.endswith(tail), "fixture: the real line is the last one"
+    assert after == before[:-len(tail)] \
+        + (rendered_shape_line(b) + "\n").encode("utf-8")
+    assert f"README.md: Shape: line {a[:12]} -> {b[:12]}" in result.stdout
+    assert "README.md" in committed_files(root)
