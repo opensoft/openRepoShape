@@ -125,6 +125,29 @@ def blank_unnamed_pin_sources(env: dict, asked: dict) -> dict:
     return result
 
 
+def clear_ambient_pin_sources(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every `PIN_SOURCE_ENV_PREFIX`-named variable THIS PROCESS's own
+    `os.environ` carries, cleared for the rest of the test `monkeypatch`
+    belongs to.
+
+    `blank_unnamed_pin_sources` above only reaches a SPAWNED CHILD's
+    environment; it cannot do anything for a test that calls
+    `resolve_link_source` (or `link_pins_from_trees`, built on it)
+    directly, in this same process, the way the "reading a link's own
+    declaration" section of `tests/test_naming_policy.py` does (Copilot,
+    PR #128, twice over: first for the one product such a test names
+    itself, then again once it was clear `link_pins_from_trees` resolves
+    EVERY name it is given, not only the first). Every name, not one
+    product picked by hand, so a test that names a second product — or a
+    third, tomorrow — is not exposed again the way naming `openXdox`
+    alone here would still have left `SHAPE_PIN_SOURCE_OPENDOX` free to
+    answer for `openDox`.
+    """
+    for name in list(os.environ):
+        if name.startswith(PIN_SOURCE_ENV_PREFIX):
+            monkeypatch.delenv(name, raising=False)
+
+
 def run_script(script: Path, *args: str, cwd: Path | None = None,
                env: dict | None = None, input: str | None = None,
                stdin: int | None = None) -> subprocess.CompletedProcess:
