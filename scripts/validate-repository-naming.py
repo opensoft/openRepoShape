@@ -318,6 +318,55 @@ def _chain_from_leg(leg: dict) -> tuple:
     return tuple(str(link) for link in (recorded or []) if str(link).strip())
 
 
+def _leg_target(policy: NamingPolicy, path: Path, leg, root: Path,
+                pins: set, keyed_sources: dict,
+                default_source: Path | None) -> tuple[Target | None, list[str]]:
+    """One leg's `Target` and what is wrong with it, from its manifest entry.
+
+    Split from `_targets_from_project` for #136: what one leg's own entry
+    says is a question asked once per leg, not folded into the loop that
+    walks every leg in the manifest. `(None, [finding])` is a leg with no
+    `repository:` to classify at all — the same case the loop's own `finding`
+    list has always carried, now returned instead of appended in place.
+    """
+    if not isinstance(leg, dict) or "repository" not in leg:
+        return None, [f"{path}: a leg has no `repository:`"]
+    name = repo_basename(str(leg["repository"]))
+    declared = leg.get("role")
+    declared = str(declared) if declared else None
+    target = Target(name, declared, pins, _chain_from_leg(leg), root)
+    found = policy.classify(name, declared, pins, target.chain,
+                            _link_pins(target, keyed_sources, default_source))
+    findings: list[str] = []
+    # `declared_role` only wins where the NAME satisfies it, so a role that
+    # disagrees with its own name still lands here rather than being made
+    # true by declaring it.
+    if found and found[0] == "project-leg" and declared and found[1] != declared:
+        findings.append(
+            f"{name}: declared role {declared!r} but the name is the "
+            f"{found[1]!r} form of the project-leg family"
+        )
+    # A RECORDED chain that does not hold is drift in the record, and the
+    # finding names the link. Unverified is not this: it is a warning,
+    # printed by the caller, and never an exit code.
+    if found and found.referent.status == "broken":
+        findings.append(f"{name}: {found.referent.reason}")
+    return target, findings
+
+
+def _topic_finding(policy: NamingPolicy, project_id, topic) -> str | None:
+    """The one finding a manifest's `topic:` disagreeing with its `id:` needs.
+
+    Split from `_targets_from_project` for #136.
+    """
+    if project_id is None:
+        return None
+    expected = policy.topic_for(str(project_id))
+    if topic is not None and topic != expected:
+        return f"topic {topic!r} != {expected!r} derived from id {project_id!r}"
+    return None
+
+
 def _targets_from_project(policy: NamingPolicy, path: Path,
                           keyed_sources: dict,
                           default_source: Path | None) -> tuple[list, list[str]]:
@@ -325,43 +374,19 @@ def _targets_from_project(policy: NamingPolicy, path: Path,
     data = load_yaml(path)
     if not isinstance(data, dict):
         raise Refusal("manifest-unreadable", f"{path}: not a mapping")
-    findings: list[str] = []
     pins = _pins_from_project(data)
     root = path.resolve().parent
     targets: list[Target] = []
+    findings: list[str] = []
     for leg in data.get("legs") or []:
-        if not isinstance(leg, dict) or "repository" not in leg:
-            findings.append(f"{path}: a leg has no `repository:`")
-            continue
-        name = repo_basename(str(leg["repository"]))
-        declared = leg.get("role")
-        declared = str(declared) if declared else None
-        target = Target(name, declared, pins, _chain_from_leg(leg), root)
-        targets.append(target)
-        found = policy.classify(name, declared, pins, target.chain,
-                                _link_pins(target, keyed_sources,
-                                           default_source))
-        # `declared_role` only wins where the NAME satisfies it, so a role that
-        # disagrees with its own name still lands here rather than being made
-        # true by declaring it.
-        if found and found[0] == "project-leg" and declared and found[1] != declared:
-            findings.append(
-                f"{name}: declared role {declared!r} but the name is the "
-                f"{found[1]!r} form of the project-leg family"
-            )
-        # A RECORDED chain that does not hold is drift in the record, and the
-        # finding names the link. Unverified is not this: it is a warning,
-        # printed by the caller, and never an exit code.
-        if found and found.referent.status == "broken":
-            findings.append(f"{name}: {found.referent.reason}")
-    project_id = data.get("id")
-    topic = data.get("topic")
-    if project_id is not None:
-        expected = policy.topic_for(str(project_id))
-        if topic is not None and topic != expected:
-            findings.append(
-                f"topic {topic!r} != {expected!r} derived from id {project_id!r}"
-            )
+        target, leg_findings = _leg_target(policy, path, leg, root, pins,
+                                           keyed_sources, default_source)
+        if target is not None:
+            targets.append(target)
+        findings.extend(leg_findings)
+    topic_finding = _topic_finding(policy, data.get("id"), data.get("topic"))
+    if topic_finding is not None:
+        findings.append(topic_finding)
     return targets, findings
 
 
