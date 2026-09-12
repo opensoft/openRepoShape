@@ -316,6 +316,67 @@ def read_authority(root: Path, legs: list[dict]) -> None:
           "that owns the object is what confers.")
 
 
+def _load_root_and_manifest(args) -> tuple[Path, dict | None]:
+    """`--root`'s repository, and its `project.yaml` if it has one.
+
+    Split from `main` for #132 so its `try` wraps one call — a `Refusal`
+    from either step is `main`'s early exit 2, exactly as the original
+    function's two separate `try`/`except Refusal` blocks around these same
+    two steps both were.
+    """
+    root = find_repo_root(args.root or Path(__file__).resolve().parents[1])
+    manifest_path = root / "project.yaml"
+    manifest: dict | None = None
+    if manifest_path.is_file():
+        loaded = load_yaml(manifest_path)
+        manifest = loaded if isinstance(loaded, dict) else None
+    return root, manifest
+
+
+def _checkout_all_tracking_branches(root: Path, sub_legs: list[dict],
+                                    manifest: dict | None,
+                                    branch_arg: str | None) -> None:
+    """Step (a): place every submodule leg on its tracking branch.
+
+    Split from `main` for #132.
+    """
+    if not sub_legs:
+        print("  no submodule legs declared. A one-repository project runs "
+              "the same command and this step is a no-op.")
+        return
+    branch = branch_arg or (manifest or {}).get("tracking_branch") or "main"
+    for leg in sub_legs:
+        checkout_tracking_branch(root, leg, str(leg.get("branch") or branch))
+
+
+def _run_neutral_validators(root: Path, manifest: dict | None,
+                            skip: bool) -> list[str]:
+    """Step (b): run the neutral validators, then the upstream notice.
+
+    Split from `main` for #132. Returns the labels of any validator that
+    failed, exactly as `main`'s local `failed` list used to accumulate them.
+    """
+    if skip:
+        print("  skipped (--skip-validators)")
+        return []
+    if manifest is None:
+        print("  no project.yaml: this project has not elected the schema, "
+              "so there is no manifest and no pins to check. It is not less "
+              "governed for that.")
+        return []
+    failed = []
+    for label, argv_ in VALIDATORS:
+        if not (root / argv_[0]).is_file():
+            print(f"  {label}: {argv_[0]} is absent; SKIPPED")
+            continue
+        print(f"  --- {label} ---")
+        code = _run(root, argv_)
+        if code != 0:
+            failed.append(f"{label} (exit {code})")
+    shape_upstream_notice(root)
+    return failed
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--root", type=Path, default=None)
@@ -326,20 +387,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        root = find_repo_root(args.root or Path(__file__).resolve().parents[1])
+        root, manifest = _load_root_and_manifest(args)
     except Refusal as exc:
         print(str(exc), file=sys.stderr)
         return 2
 
-    manifest_path = root / "project.yaml"
-    manifest: dict | None = None
-    if manifest_path.is_file():
-        try:
-            loaded = load_yaml(manifest_path)
-            manifest = loaded if isinstance(loaded, dict) else None
-        except Refusal as exc:
-            print(str(exc), file=sys.stderr)
-            return 2
     legs = [leg for leg in ((manifest or {}).get("legs") or [])
             if isinstance(leg, dict)]
     sub_legs = [leg for leg in legs if leg.get("role") != "assembly"]
@@ -348,32 +400,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"bootstrap: {name} ({root})")
 
     print("\n(a) legs on tracking branches, pins untouched")
-    if not sub_legs:
-        print("  no submodule legs declared. A one-repository project runs the "
-              "same command and this step is a no-op.")
-    else:
-        branch = args.branch or (manifest or {}).get("tracking_branch") or "main"
-        for leg in sub_legs:
-            checkout_tracking_branch(root, leg, str(leg.get("branch") or branch))
+    _checkout_all_tracking_branches(root, sub_legs, manifest, args.branch)
 
     print("\n(b) neutral validators")
-    failed: list[str] = []
-    if args.skip_validators:
-        print("  skipped (--skip-validators)")
-    elif manifest is None:
-        print("  no project.yaml: this project has not elected the schema, so "
-              "there is no manifest and no pins to check. It is not less "
-              "governed for that.")
-    else:
-        for label, argv_ in VALIDATORS:
-            if not (root / argv_[0]).is_file():
-                print(f"  {label}: {argv_[0]} is absent; SKIPPED")
-                continue
-            print(f"  --- {label} ---")
-            code = _run(root, argv_)
-            if code != 0:
-                failed.append(f"{label} (exit {code})")
-        shape_upstream_notice(root)
+    failed = _run_neutral_validators(root, manifest, args.skip_validators)
 
     print("\n(c) review authority")
     read_authority(root, legs)
