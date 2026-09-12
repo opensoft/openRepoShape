@@ -26,6 +26,17 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[1]
+
+#: `repo_shape` is the dependency-free module every validator imports (see
+#: its own docstring), so importing it here costs nothing at collection
+#: time — the same `sys.path.insert` every test module that reads it
+#: already does (`tests/test_naming_policy.py` and others).
+#: `PIN_SOURCE_ENV_PREFIX` is read from there rather than re-spelled, so
+#: `run_script` below and `resolve_link_source` can never name the prefix
+#: two different ways.
+sys.path.insert(0, str(REPO / "scripts"))
+from repo_shape import PIN_SOURCE_ENV_PREFIX  # noqa: E402
+
 SCAFFOLD = REPO / "scaffold-project.py"
 PROJECT = "Atlas"
 ORG = "testorg"
@@ -78,6 +89,81 @@ def git(*args: str, cwd: Path, check: bool = True) -> subprocess.CompletedProces
     return proc
 
 
+def is_pin_source_name(name: str) -> bool:
+    """Whether `name` is a `PIN_SOURCE_ENV_PREFIX`-named variable.
+
+    WINDOWS ENVIRONMENT NAMES ARE CASE-INSENSITIVE (Copilot, PR #128) —
+    `SHAPE_PIN_SOURCE_OPENXDOX` and any other-cased spelling of the same
+    name are THE SAME VARIABLE there — so the check folds to uppercase
+    before comparing. Shared by `blank_unnamed_pin_sources` and
+    `clear_ambient_pin_sources` below rather than written out twice: the
+    second copy is exactly how this rule went missing from
+    `clear_ambient_pin_sources` in the first place (Copilot again, a
+    round later, on that very function) after `blank_unnamed_pin_sources`
+    had already been fixed — one predicate cannot drift out of step with
+    itself.
+    """
+    return name.upper().startswith(PIN_SOURCE_ENV_PREFIX)
+
+
+def blank_unnamed_pin_sources(env: dict, asked: dict) -> dict:
+    """`env`, but every inherited `PIN_SOURCE_ENV_PREFIX`-named variable
+    THIS CALL did not ask for is blanked to `""`, and an inherited
+    case-variant alias of one it DID ask for is dropped outright.
+
+    `""` rather than deleting a blanked key matches how
+    `resolve_link_source` already reads an empty value as absent
+    (`if env_value:`, `scripts/repo_shape.py`) and how `lane_trailer`
+    already reads an empty `LANES_LANE` as "no lane"
+    (`scripts/shape_materialize.py`) — the same convention on both
+    variables, not a new one. An inherited alias whose CASE does not
+    match the caller's own spelling is DELETED rather than blanked,
+    though: leaving both behind would hand a real Windows child two keys
+    that its own case-folding treats as one, disagreeing about the value,
+    which is exactly the ambiguity naming one of them was supposed to
+    resolve. `asked`'s own keys are folded the same way `is_pin_source_
+    name` folds `env`'s, so "did the caller ask for THIS one" cannot
+    disagree with "is this a pin-source name at all" about what case
+    means here.
+    """
+    asked_by_fold = {name.upper(): name for name in asked}
+    result = dict(env)
+    for name in env:
+        if not is_pin_source_name(name):
+            continue
+        caller_spelling = asked_by_fold.get(name.upper())
+        if caller_spelling is None:
+            result[name] = ""
+        elif name != caller_spelling:
+            del result[name]
+    return result
+
+
+def clear_ambient_pin_sources(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every `PIN_SOURCE_ENV_PREFIX`-named variable THIS PROCESS's own
+    `os.environ` carries, cleared for the rest of the test `monkeypatch`
+    belongs to.
+
+    `blank_unnamed_pin_sources` above only reaches a SPAWNED CHILD's
+    environment; it cannot do anything for a test that calls
+    `resolve_link_source` (or `link_pins_from_trees`, built on it)
+    directly, in this same process, the way the "reading a link's own
+    declaration" section of `tests/test_naming_policy.py` does (Copilot,
+    PR #128, three times over: first for the one product such a test
+    names itself, then again once it was clear `link_pins_from_trees`
+    resolves EVERY name it is given, not only the first, then a third
+    time because this function's own prefix check did not yet fold case
+    the way `blank_unnamed_pin_sources`'s did). Every name, not one
+    product picked by hand, so a test that names a second product — or a
+    third, tomorrow — is not exposed again the way naming `openXdox`
+    alone here would still have left `SHAPE_PIN_SOURCE_OPENDOX` free to
+    answer for `openDox`.
+    """
+    for name in list(os.environ):
+        if is_pin_source_name(name):
+            monkeypatch.delenv(name, raising=False)
+
+
 def run_script(script: Path, *args: str, cwd: Path | None = None,
                env: dict | None = None, input: str | None = None,
                stdin: int | None = None) -> subprocess.CompletedProcess:
@@ -108,6 +194,23 @@ def run_script(script: Path, *args: str, cwd: Path | None = None,
     #: unless the CALLER named it, which is how a test asks for a lane.
     if "LANES_LANE" not in asked:
         env["LANES_LANE"] = ""
+    #: NOR IS ANY PIN-SOURCE OVERRIDE (2026-09-11, #114, #120, #126). Every
+    #: `SHAPE_PIN_SOURCE_<PRODUCT>` name (`repo_shape.PIN_SOURCE_ENV_PREFIX`)
+    #: changes what `resolve_link_source` resolves a link to — rule 2 there
+    #: reads it BEFORE rule 3, the cwd-derived sibling checkout — for
+    #: exactly the same reason `LANES_LANE` is blanked above: a suite that
+    #: passed one through would verify or fail to verify a link depending
+    #: on what the person (or the CI box) running it happens to have
+    #: exported, not on what the test wrote. PR #120 hit this directly:
+    #: `SHAPE_PIN_SOURCE_OPENXDOX`, inherited from a workstation shell where
+    #: it pointed at a real `openDox`-declaring checkout, made an
+    #: offline-link warning stop printing, and that PR could only fix it
+    #: locally, one test at a time, because this rule did not exist yet.
+    #: Blanked for every product-specific variable unless the CALLER named
+    #: that exact name, which is how a test asks for one — see
+    #: `blank_unnamed_pin_sources` above for the Windows case-folding this
+    #: needs that `LANES_LANE`, a single fixed name, never did.
+    env = blank_unnamed_pin_sources(env, asked)
     env.setdefault("GIT_AUTHOR_NAME", "openRepoShape tests")
     env.setdefault("GIT_AUTHOR_EMAIL", "tests@openreposhape.invalid")
     env.setdefault("GIT_COMMITTER_NAME", "openRepoShape tests")

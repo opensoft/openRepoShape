@@ -3,12 +3,15 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 import pytest
 
-from conftest import REPO, run_script
+from conftest import (
+    REPO, blank_unnamed_pin_sources, clear_ambient_pin_sources, run_script,
+)
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import (  # noqa: E402
@@ -622,6 +625,25 @@ def test_every_example_chain_in_the_data_holds(policy):
 
 
 # --- reading a link's own declaration, from whatever tree is on the disk ----
+#
+# EVERY TEST BELOW CALLS `link_pins_from_trees` DIRECTLY, IN THIS PROCESS —
+# no `run_script`, no subprocess (Copilot, PR #128, on `blank_unnamed_pin_
+# sources`'s own tests/conftest.py doc: "the direct link_pins_from_trees
+# tests... still call resolve_link_source, which reads os.environ
+# directly"). `blank_unnamed_pin_sources` only sanitises the environment a
+# SPAWNED CHILD sees; it does nothing for `resolve_link_source`'s rule 2
+# reading THIS process's own `os.environ`, which is exactly what these
+# tests do. An exported `SHAPE_PIN_SOURCE_OPENXDOX` pointing at a real
+# manifest — `~/projects/openXdox` on this workstation, again — would let
+# rule 2 answer before rule 3 (the sibling `tmp_path` tree each test below
+# actually builds) is ever tried, exactly the class of exposure #126
+# closed for a spawned child but not for a direct call. `clear_ambient_
+# pin_sources` (`tests/conftest.py`) clears every SHAPE_PIN_SOURCE_* name,
+# not only `openXdox`: `link_pins_from_trees(("openXdox", "openDox"), ...)`
+# below resolves BOTH names it is given, so naming only the first one
+# would still leave `SHAPE_PIN_SOURCE_OPENDOX` free to answer for the
+# second (Copilot's second pass on the same PR). Every test below clears
+# them all first.
 
 def _tree(path: Path, *pins: str) -> Path:
     """A stand-in for a link's checkout: a manifest and its declaration."""
@@ -634,16 +656,18 @@ def _tree(path: Path, *pins: str) -> Path:
     return path
 
 
-def test_a_link_is_read_from_a_checkout_beside_the_project(tmp_path):
+def test_a_link_is_read_from_a_checkout_beside_the_project(tmp_path, monkeypatch):
     """The ordinary workspace: the project and the products it pins, cloned
     side by side. Same lookup order `validate-pins.py` already uses."""
+    clear_ambient_pin_sources(monkeypatch)
     _tree(tmp_path / "openXdox", "openDox")
     found = link_pins_from_trees(("openXdox", "openDox"),
                                  root=tmp_path / "codexDox")
     assert found == {"openxdox": {"openDox"}}
 
 
-def test_a_link_source_names_the_tree_explicitly(tmp_path):
+def test_a_link_source_names_the_tree_explicitly(tmp_path, monkeypatch):
+    clear_ambient_pin_sources(monkeypatch)
     _tree(tmp_path / "elsewhere", "openDox")
     found = link_pins_from_trees(
         ("openXdox",), root=None,
@@ -651,16 +675,18 @@ def test_a_link_source_names_the_tree_explicitly(tmp_path):
     assert found == {"openxdox": {"openDox"}}
 
 
-def test_a_tree_with_no_manifest_answers_nothing(tmp_path):
+def test_a_tree_with_no_manifest_answers_nothing(tmp_path, monkeypatch):
     """Absent is UNVERIFIED, not empty: a directory that is not a project of
     this shape has not said that it declares no pins."""
+    clear_ambient_pin_sources(monkeypatch)
     (tmp_path / "openXdox").mkdir()
     assert link_pins_from_trees(("openXdox",), root=tmp_path / "codexDox") == {}
 
 
-def test_a_tree_that_declares_nothing_answers_the_empty_set(tmp_path):
+def test_a_tree_that_declares_nothing_answers_the_empty_set(tmp_path, monkeypatch):
     """And an EMPTY declaration is an answer, which is why it breaks a chain
     running through it rather than leaving it unverified."""
+    clear_ambient_pin_sources(monkeypatch)
     _tree(tmp_path / "openXdox")
     assert link_pins_from_trees(("openXdox",),
                                 root=tmp_path / "codexDox") == {"openxdox": set()}
@@ -707,28 +733,157 @@ def test_cli_reports_an_unread_link_as_a_warning_and_still_classifies(tmp_path):
     fresh and unique per test on every machine, so it has no such sibling
     to be found by accident.
 
-    That leaves rule 2, which reads BEFORE rule 3:
-    `SHAPE_PIN_SOURCE_OPENXDOX` in the environment. `run_script`
-    (`tests/conftest.py`) starts from a COPY of the calling process's own
-    environment, so a developer shell or CI box that happens to export that
-    variable — pointed at a tree that really does declare `openDox`, the
-    same shape `~/projects/openXdox` has on Brett's workstation — verifies
-    the link the same way a sibling checkout would, and the warning under
-    test would never print, exactly as the docstring above already
-    describes for rule 3. The override below pins that one variable to a
-    path known to carry no manifest, so the outcome cannot depend on
-    whatever the calling environment happens to export.
+    That leaves rule 2, which reads BEFORE rule 3: `SHAPE_PIN_SOURCE_OPENXDOX`
+    in the environment. This test no longer overrides it itself (#114 fixed
+    it locally that way; #120's own follow-up asked for the general form):
+    `run_script` (`tests/conftest.py`) now blanks every `SHAPE_PIN_SOURCE_*`
+    variable it would otherwise inherit from the calling process unless THIS
+    call's own `env=` names it — the same mechanism PR #112 gave
+    `LANES_LANE`, generalised for #114/#120 — so a developer shell or CI box
+    that happens to export `SHAPE_PIN_SOURCE_OPENXDOX`, pointed at a tree
+    that really does declare `openDox` (the same shape `~/projects/openXdox`
+    has on Brett's workstation), never reaches the validator subprocess
+    started below and cannot make the link verify by accident.
+    `test_run_script_blanks_an_inherited_pin_source_unless_named` and
+    `test_run_script_still_passes_a_pin_source_the_caller_names`, right
+    below, prove that mechanism directly; this test only needs its own
+    `cwd` isolation from rule 3.
     """
     workdir = tmp_path / "codexDox"
     workdir.mkdir()
-    no_such_checkout = tmp_path / "not-really-an-openxdox-checkout"
     result = run_script(VALIDATOR, "--role", "assembly", "--pins", "openXdox",
                         "--referent-chain", "openXdox,openDox", "codexDox",
-                        cwd=workdir,
-                        env={"SHAPE_PIN_SOURCE_OPENXDOX": str(no_such_checkout)})
+                        cwd=workdir)
     assert result.returncode == 0, result.stderr
     assert "domain-descendant/assembly" in result.stdout
     assert "WARNING codexDox: declared-unverified" in result.stderr
+
+
+def test_run_script_blanks_an_inherited_pin_source_unless_named(
+        tmp_path, monkeypatch):
+    """PROVES the general rule #120's follow-up asked for and
+    `tests/conftest.py::run_script` now carries: an inherited
+    `SHAPE_PIN_SOURCE_*` variable must not reach the child unless THIS
+    CALL's own `env=` names it.
+
+    Build a tree that WOULD verify the `openXdox` link (`_tree`, same
+    helper every other test in this section uses), point the AMBIENT
+    environment at it with `monkeypatch.setenv` — standing in for the
+    developer shell or CI box PR #120's review comment described — and call
+    the validator through `run_script` with no `env=` of its own. Without
+    the blanking rule, rule 2 (`resolve_link_source`,
+    `scripts/repo_shape.py`) would read that ambient variable before rule 3
+    is ever reached, the link would verify, and the warning below would
+    never print — exactly the finding Copilot made on PR #120 before
+    `c30d9f4` fixed it for this one test only.
+    """
+    workdir = tmp_path / "codexDox"
+    workdir.mkdir()
+    _tree(tmp_path / "would-verify-if-not-blanked", "openDox")
+    monkeypatch.setenv("SHAPE_PIN_SOURCE_OPENXDOX",
+                       str(tmp_path / "would-verify-if-not-blanked"))
+    result = run_script(VALIDATOR, "--role", "assembly", "--pins", "openXdox",
+                        "--referent-chain", "openXdox,openDox", "codexDox",
+                        cwd=workdir)
+    assert result.returncode == 0, result.stderr
+    assert "domain-descendant/assembly" in result.stdout
+    assert "WARNING codexDox: declared-unverified" in result.stderr
+
+
+def test_run_script_still_passes_a_pin_source_the_caller_names(tmp_path):
+    """The other half of the same rule: a caller that DOES name the
+    variable in its own `env=` must still reach the child. The blanking
+    rule stands in only for a caller that said nothing; it never overrides
+    one that said something. Point `SHAPE_PIN_SOURCE_OPENXDOX` at a tree
+    that verifies the link and expect a `[verified]` chain, mirroring
+    `test_cli_classifies_a_chain_given_on_the_command_line` above but
+    through rule 2 instead of `--link-source`.
+
+    THE TREE SITS AT `elsewhere`, NOT AT THE SIBLING PATH `tmp_path /
+    "openXdox"` rule 3 would also check: putting the verifying manifest
+    there would let this test pass even if a broken blanking rule wiped the
+    caller's own `env=` too, because rule 3 would find the very same tree
+    by accident and the assertion would never notice. Naming it something
+    else means only rule 2 — the env var this test actually names — can
+    make the chain verify, which is what `test_a_link_source_names_the_tree_explicitly`
+    above already does for the same reason, one rule earlier.
+    """
+    workdir = tmp_path / "codexDox"
+    workdir.mkdir()
+    _tree(tmp_path / "elsewhere", "openDox")
+    result = run_script(VALIDATOR, "--role", "assembly", "--pins", "openXdox",
+                        "--referent-chain", "openXdox,openDox",
+                        "--explain", "codexDox", cwd=workdir,
+                        env={"SHAPE_PIN_SOURCE_OPENXDOX":
+                             str(tmp_path / "elsewhere")})
+    assert result.returncode == 0, result.stderr
+    assert "codexDox: domain-descendant / assembly" in result.stdout
+    assert "CHAIN openXdox → openDox   [verified]" in result.stdout
+    assert "WARNING" not in result.stdout
+
+
+def test_blank_unnamed_pin_sources_folds_case_like_windows_does():
+    """Copilot's finding on PR #128: Windows environment variable names are
+    case-insensitive, so `blank_unnamed_pin_sources` (`tests/conftest.py`)
+    must fold case for both "is this a pin-source name at all" and "did
+    the caller ask for THIS one" — a real Windows child would treat
+    `SHAPE_PIN_SOURCE_OPENXDOX` and any other-cased spelling of the same
+    name as one variable, so a dict built with plain, case-sensitive
+    Python comparisons cannot be allowed to disagree with it.
+
+    Unit-level on the dict, not through `run_script` and a real
+    subprocess like the two tests above: POSIX environment variables ARE
+    case-sensitive, so a CLI-level test run on this suite's own ubuntu and
+    macos legs could not observe a case-folding defect here at all — the
+    child would simply never look up the differently-cased key, fix or no
+    fix. Only a Windows child's OWN case-insensitive lookup makes the
+    distinction this function has to get right observable, which a direct
+    check of what the function returns proves without needing one."""
+    # Not asked for, in ANY case: every spelling of the name is blanked,
+    # exactly as an all-uppercase one already was before PR #128.
+    assert blank_unnamed_pin_sources(
+        {"SHAPE_PIN_SOURCE_OPENXDOX": "/real", "shape_pin_source_openink": "/real2"},
+        {},
+    ) == {"SHAPE_PIN_SOURCE_OPENXDOX": "", "shape_pin_source_openink": ""}
+    # Asked for under the exact same spelling that is already in `env`
+    # (the ordinary case, `env` already merged with `asked` the way
+    # `run_script` merges them): kept, not blanked.
+    assert blank_unnamed_pin_sources(
+        {"SHAPE_PIN_SOURCE_OPENXDOX": "/named"},
+        {"SHAPE_PIN_SOURCE_OPENXDOX": "/named"},
+    ) == {"SHAPE_PIN_SOURCE_OPENXDOX": "/named"}
+    # Asked for, but an INHERITED case-variant alias of that same name is
+    # ALSO in `env` (as it would be after `{**os.environ, **asked}` merges
+    # an ambient lower-case name with the caller's own upper-case one):
+    # the alias is DROPPED, not merely left unblanked, so a real Windows
+    # child — which would fold both to the one name it actually reads —
+    # is never handed two disagreeing values for it.
+    assert blank_unnamed_pin_sources(
+        {"shape_pin_source_openxdox": "/ambient",
+         "SHAPE_PIN_SOURCE_OPENXDOX": "/named"},
+        {"SHAPE_PIN_SOURCE_OPENXDOX": "/named"},
+    ) == {"SHAPE_PIN_SOURCE_OPENXDOX": "/named"}
+
+
+def test_clear_ambient_pin_sources_folds_case_like_windows_does(monkeypatch):
+    """Copilot's round-4 finding on PR #128: `clear_ambient_pin_sources`
+    (`tests/conftest.py`) repeated `blank_unnamed_pin_sources`'s own
+    round-1 case-sensitivity gap — its prefix check did not fold case
+    before this fix, so an inherited `shape_pin_source_openxdox`
+    (lower-case, as a real Windows child would still read
+    case-insensitively) survived it.
+
+    Hermetic, not through the four `link_pins_from_trees` tests above:
+    those only fail when the MACHINE running them happens to carry a
+    matching ambient variable, which this suite's own CI legs never do —
+    so they cannot tell this fix from its absence either. Setting the
+    ambient variable INSIDE the test with `monkeypatch.setenv`, the same
+    way `test_run_script_blanks_an_inherited_pin_source_unless_named`
+    above does for `blank_unnamed_pin_sources`, makes the fold provable
+    regardless of what the machine running it actually exports."""
+    monkeypatch.setenv("shape_pin_source_openxdox", "/ambient")
+    clear_ambient_pin_sources(monkeypatch)
+    assert "shape_pin_source_openxdox" not in os.environ
 
 
 def test_cli_reports_a_broken_link_as_a_finding_naming_it(tmp_path):
