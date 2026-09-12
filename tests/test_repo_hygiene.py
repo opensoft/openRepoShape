@@ -476,18 +476,31 @@ def test_agents_md_is_short_enough_to_be_read():
     trailers to pass, and that the printed line already carries the lane, is
     what makes the next run land complete rather than amended by hand.
 
-    2026-09-12: 433 -> 440 — the README's `Shape:` line (#148). Seven lines,
-    one numbered point under "Updating a project's shape", and they buy the
-    same thing the trailer point did: PERMISSION, and its withdrawal. A
-    family holder's README is rendered naming the commit it was cut from, and
-    the one correction ever made to a stale one was made BY HAND
-    (InkRouter#18) — a day later it was stale again, because a sha corrected
-    outside the re-pin that moved the pin is a sha nothing keeps. `apply` now
-    carries it, so the point an assistant needs is the one telling them not
-    to reach for the file themselves, and which of the readings the tool
-    leaves alone."""
+    2026-09-12: 433 -> 439 — `bump-leg.py`'s own `--trailer` (#150), closing
+    the gap #111 left in the THIRD pin-moving tool: `update-shape.py apply`
+    and `family.py bump` got the flag that day and `bump-leg.py` did not, so
+    a leg bump still needed a `git commit --amend --trailer` by hand after
+    the fact — four of them, in the InkRouter estate on 2026-09-12 alone.
+    Six lines are one more numbered point under "Advancing a leg", mirroring
+    the wording the other two tools' own points already use rather than
+    restating the trailer grammar itself, which lives once in
+    `scripts/shape_materialize.py` and nowhere else. The one thing an
+    assistant cannot infer on its own: that `--dry-run` now shows the
+    trailers too, after the `old -> new` line it already prints, so reading
+    that line before running for real means reading the trailers as well.
+
+    2026-09-12: 439 -> 446 — the README's `Shape:` line (#148), landing
+    beside the point above on the same day. Seven lines, one numbered point
+    under "Updating a project's shape", and they buy the same thing that one
+    does: PERMISSION, and its withdrawal. A family holder's README is
+    rendered naming the commit it was cut from, and the only correction ever
+    made to a stale one was made BY HAND (InkRouter#18) — a day later it was
+    stale again, because a sha corrected outside the re-pin that moved the
+    pin is a sha nothing keeps. `apply` now carries it, so the point an
+    assistant needs is the one telling them not to reach for the file
+    themselves, and which readings the tool leaves alone."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 440, f"AGENTS.md is {len(lines)} lines; the cap is 440"
+    assert len(lines) <= 446, f"AGENTS.md is {len(lines)} lines; the cap is 446"
 
 
 def test_claude_md_points_at_agents_md():
