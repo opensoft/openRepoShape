@@ -215,6 +215,34 @@ def test_the_root_and_both_templates_agree_about_the_rule():
     assert root == [EOL_RULE] == assembly == family
 
 
+def test_the_workspace_template_says_what_its_bytes_are():
+    """`workspace-root` ships no `contracts/` and no digest pin — clause (d)
+    of lane-collision-protocol Amendment 9 gives it no scripts, no manifest,
+    no CI — so it is not a third parameter on the two tests above. But
+    `openRepoTools wip init` still copies it byte for byte, the way
+    `scaffold-project.py` copies `assembly-root`, and the register it seeds,
+    `lanes/LANES.md`, is then edited a WHOLE LINE at a time by the installed
+    `lanes-edit.sh` — exactly the match `unname_everywhere()` makes blind on
+    a CRLF checkout of THIS repository, in
+    `test_the_repository_root_carries_the_rule_too` above. No digest pins
+    this template's copies, so nothing else would ever catch it (#154).
+    """
+    path = REPO / "templates" / "workspace-root" / ".gitattributes"
+    assert path.is_file(), (
+        "templates/workspace-root/ is copied byte for byte by `wip init` and "
+        "line-matched by lanes-edit.sh, and must say what its line endings "
+        "are")
+    data = path.read_bytes()
+    assert b"\r" not in data, "the file that says LF is itself LF"
+    text = data.decode("utf-8")
+    assert _only_rule_lines(text) == [EOL_RULE], (
+        f"templates/workspace-root/.gitattributes' only rule line must be "
+        f"`{EOL_RULE}`")
+    assert "#154" in text, (
+        "the rule is cited by the PR that added it, like every other ruling "
+        "here")
+
+
 def test_the_shape_pin_template_carries_a_files_block():
     text = (REPO / "templates" / "assembly-root" / "contracts" /
             "shape-pin.yaml").read_text()
