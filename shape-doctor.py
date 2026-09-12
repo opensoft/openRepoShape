@@ -2162,8 +2162,9 @@ def mounted_from(root: Path, rel: str, repository: str) -> str:
     there -- and `make siblings` reads the declaration, so reading the cache
     is how this report would come to accept a clone the tool refuses, or
     refuse one it accepts (Copilot, PR #147). A relative url with no remote
-    to resolve it against is handed back as it is, and `working_clone`
-    declines to accuse anybody on the strength of it.
+    to resolve it against is handed back as it is: it then matches nothing,
+    and the row's answer rests on the `repository:` comparison alone --
+    which is the state `verify_sibling` is in for the same holder.
     """
     for name, mount in submodule_config(root).items():
         # A submodule's NAME is its path unless somebody mounted it by hand
@@ -2199,14 +2200,16 @@ def working_clone(sibling: Path, row: dict,
     person keeps their checkouts is the workstation's layout and not a
     compliance fact about the repository.
 
-    AND IT NEVER ACCUSES ON A URL IT COULD NOT RESOLVE. A `.gitmodules` url
-    spelled `../Repo.git` on a holder with no remote of its own names
-    nothing this row can compare against; the answer there is the one it gave
-    before the origin question existed -- the manifest's -- rather than a
-    stranger's name derived from a string that is not a url. A directory with
-    no readable origin is still not a working clone, though: an unanswerable
-    REFERENCE is not the same as an unanswerable CLONE, and `verify_sibling`
-    refuses that one too (Copilot, PR #147).
+    AND A REFERENCE THIS ROW COULD NOT RESOLVE CHANGES NOTHING ABOUT THE
+    ANSWER. A `.gitmodules` url spelled `../Repo.git` on a holder with no
+    remote of its own is not a url, so it matches nothing -- and the
+    `repository:` comparison beside it is then the whole of the question,
+    which is EXACTLY what `verify_sibling` is left with in that state.
+    Accepting any origin at all because the mount reference was unresolvable
+    was this row's own invention, and it put back the disagreement this
+    change exists to remove: `make siblings` calls a clone from somewhere
+    else `WRONG ORIGIN` whether or not the mount url resolved (Copilot, PR
+    #147).
 
     THE ORIGIN IS REDACTED ON THE WAY OUT. The comparisons above are on the
     raw value; what a row prints and `--json` carries must not be somebody's
@@ -2218,8 +2221,6 @@ def working_clone(sibling: Path, row: dict,
     repository = str(row.get("repository") or "")
     if origin and (same_repository(origin, remote)
                    or (repository and same_repository(origin, repository))):
-        return sibling.as_posix(), None
-    if origin and remote.startswith(("./", "../")):
         return sibling.as_posix(), None
     return None, redacted(origin) if origin else "(no origin)"
 

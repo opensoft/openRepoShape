@@ -1527,28 +1527,48 @@ def test_a_relative_mount_is_resolved_against_the_holders_own_remote(
     assert entry["other_origin"] is None, entry
 
 
-def test_a_relative_url_with_no_remote_to_resolve_it_accuses_nobody(
+def test_a_relative_url_with_no_remote_leaves_the_manifest_the_only_judge(
         standard, holder, tmp_path):
-    """AND WHEN THE REFERENCE CANNOT BE RESOLVED, THE ROW SAYS NOTHING
-    RATHER THAN SOMETHING IT CANNOT KNOW.
+    """A REFERENCE THIS ROW CANNOT RESOLVE CHANGES NOTHING ABOUT THE ANSWER.
 
-    `../Repo.git` on a holder with no remote of its own is arithmetic with
-    no base: there is nothing to compare a clone against. Telling somebody
-    their working clone is a clone of something else, on the strength of a
-    url the report admits it could not resolve, is worse than the silence
-    this row kept before the origin question existed — so the answer falls
-    back to the manifest's, exactly as it was.
+    `../Repo.git` on a holder with no remote of its own is not a url: it
+    matches nothing, and `family.yaml`'s `repository:` — the other reference
+    `verify_sibling` accepts — is then the whole of the question. That is
+    exactly the state `scripts/siblings.py` is in for the same holder, which
+    is the point: counting a clone BECAUSE the mount url was unresolvable
+    would put back the disagreement this change exists to remove, since
+    `make siblings` calls a clone from somewhere else `WRONG ORIGIN` whether
+    or not the url resolved (Copilot, PR #147).
     """
     root, sibling = member_beside(holder, tmp_path)
     git("config", "-f", str(root / ".gitmodules"),
         f"submodule.members/{FAMILY_MEMBER}.url", f"../{FAMILY_MEMBER}.git",
         cwd=root)
     git("remote", "remove", "origin", cwd=root)
+    # Cloned from the repository the row NAMES: counted, on the manifest's
+    # spelling alone.
+    git("remote", "set-url", "origin",
+        f"https://github.com/{FAMILY_NAME}/{FAMILY_MEMBER}.git", cwd=sibling)
     entry = rows_of(doctor(standard, root, "--json"))["members"]["detail"][
         "members"][0]
     assert entry["mounted_from"] == f"../{FAMILY_MEMBER}.git", entry
     assert entry["working_clone"] == sibling.as_posix(), entry
     assert entry["other_origin"] is None, entry
+
+    # And cloned from somewhere else: reported, exactly as `make siblings`
+    # would refuse it, rather than waved through because the mount url could
+    # not be resolved. A host this suite has never named, because a
+    # developer's own `url.<base>.insteadOf` rewrites `https://github.com/`
+    # on the way into `.git/config` and the row would then quote a spelling
+    # this test never wrote.
+    git("remote", "set-url", "origin",
+        f"https://elsewhere.example/{FAMILY_NAME}/SomethingElse.git",
+        cwd=sibling)
+    spelled = git("remote", "get-url", "origin", cwd=sibling).stdout.strip()
+    entry = rows_of(doctor(standard, root, "--json"))["members"]["detail"][
+        "members"][0]
+    assert entry["working_clone"] is None, entry
+    assert entry["other_origin"] == spelled, entry
 
 
 def test_an_unresolvable_reference_does_not_excuse_an_originless_clone(
