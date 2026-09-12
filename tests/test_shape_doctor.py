@@ -1456,6 +1456,129 @@ def test_a_directory_that_is_not_a_clone_at_all_is_not_called_a_stranger(
     assert row["status"] == "ok", row
 
 
+def test_a_credential_in_an_origin_is_not_printed_or_put_in_the_json(
+        standard, holder, tmp_path):
+    """A REPORT PRINTS WHAT IT FINDS, AND WHAT IT FINDS CAN BE A TOKEN.
+
+    Git permits a credential in a remote url and people do put one there;
+    `--json` from this command is pasted into issues and kept as a CI
+    artifact. So the origin a row quotes is redacted to `***` and the token
+    appears NOWHERE in the output (Codex and Copilot, PR #147).
+    """
+    root, sibling = member_beside(holder, tmp_path)
+    git("remote", "set-url", "origin",
+        "https://x-access-token:SUPERSECRET@github.com/Someone/Fork.git",
+        cwd=sibling)
+    result = doctor(standard, root, "--json")
+    entry = rows_of(result)["members"]["detail"]["members"][0]
+    assert entry["working_clone"] is None, entry
+    assert entry["other_origin"] == \
+        "https://***@github.com/Someone/Fork.git", entry
+    # Not in the row, and not anywhere else in the report either: the whole
+    # of `--json` is what gets pasted, not the one field.
+    assert "SUPERSECRET" not in result.stdout, result.stdout
+    assert "SUPERSECRET" not in doctor(standard, root).stdout
+
+
+@pytest.mark.parametrize("holder_origin,sibling_origin", [
+    (f"https://mirror.example/team/{FAMILY_NAME}.git",
+     f"git@mirror.example:team/{FAMILY_MEMBER}.git"),
+    (f"git@mirror.example:team/{FAMILY_NAME}.git",
+     f"https://mirror.example/team/{FAMILY_MEMBER}.git"),
+])
+def test_a_relative_mount_is_resolved_against_the_holders_own_remote(
+        standard, holder, tmp_path, holder_origin, sibling_origin):
+    """`../Repo.git` IS NOT A REMOTE. It is arithmetic against the
+    SUPERPROJECT'S remote — git's own rule, one path component dropped per
+    `..` — and git has already done it, into the holder's `.git/config`,
+    for the mount that exists.
+
+    THE MIRROR IS THE CASE THAT BITES. This family's remote is not
+    `github.com`, so a row that compared the sibling's origin against the
+    literal `../IRRS.git` and then against the manifest's `InkRouter/IRRS`
+    would match neither and call a perfectly good working clone a stranger
+    (Copilot, PR #147). Reading what git resolved is also the only answer
+    that cannot DISAGREE with the tool: re-deriving the arithmetic here is
+    how a report and `make siblings` come to hold two opinions about one url.
+
+    BOTH SPELLINGS OF THE HOLDER'S REMOTE, and the sibling spelled the other
+    way each time, because the two questions compose: git resolves the
+    relative url in whatever spelling the holder's remote uses, and
+    `same_repository` is what makes that the same repository as the clone.
+    """
+    root, sibling = member_beside(holder, tmp_path)
+    git("remote", "set-url", "origin", holder_origin, cwd=root)
+    git("config", "-f", str(root / ".gitmodules"),
+        f"submodule.members/{FAMILY_MEMBER}.url", f"../{FAMILY_MEMBER}.git",
+        cwd=root)
+    # What `git submodule sync` is FOR: it re-resolves `.gitmodules` against
+    # the current remote and writes the answer into the holder's config,
+    # which is exactly the state a clone of this family would be in.
+    git("submodule", "sync", "-q", cwd=root)
+    git("remote", "set-url", "origin", sibling_origin, cwd=sibling)
+    entry = rows_of(doctor(standard, root, "--json"))["members"]["detail"][
+        "members"][0]
+    assert entry["mounted_from"] == \
+        f"{holder_origin.rsplit('/', 1)[0]}/{FAMILY_MEMBER}.git", entry
+    assert not entry["mounted_from"].startswith(".."), entry
+    assert entry["working_clone"] == sibling.as_posix(), entry
+    assert entry["other_origin"] is None, entry
+
+
+def test_a_relative_url_git_never_resolved_accuses_nobody(standard, holder,
+                                                          tmp_path):
+    """AND WHEN THERE IS NO RESOLVED COPY, THE ROW SAYS NOTHING RATHER THAN
+    SOMETHING IT CANNOT KNOW.
+
+    A member mounted by hand with a relative url and never initialized
+    leaves this row a string that is not a remote. Telling somebody their
+    working clone is a clone of something else, on the strength of a url the
+    report admits it could not resolve, is worse than the silence this row
+    kept before the origin question existed — so the answer falls back to
+    the manifest's, exactly as it was.
+    """
+    root, sibling = member_beside(holder, tmp_path)
+    git("config", "-f", str(root / ".gitmodules"),
+        f"submodule.members/{FAMILY_MEMBER}.url", f"../{FAMILY_MEMBER}.git",
+        cwd=root)
+    git("config", "--unset", f"submodule.members/{FAMILY_MEMBER}.url",
+        cwd=root)
+    entry = rows_of(doctor(standard, root, "--json"))["members"]["detail"][
+        "members"][0]
+    assert entry["mounted_from"] == f"../{FAMILY_MEMBER}.git", entry
+    assert entry["working_clone"] == sibling.as_posix(), entry
+    assert entry["other_origin"] is None, entry
+
+
+def test_a_stranger_is_reported_even_when_a_pinned_copy_also_fails(
+        standard, holder, tmp_path):
+    """THE RED PATH SAYS IT TOO, AND SAYS IT IS NOT THE FINDING.
+
+    A holder with one member checked out away from its pin returns the
+    finding row and used to say nothing about the directory beside it — so
+    a person would fix the mount, re-run, and only then hear about a clone
+    that had been the wrong one all along (Codex, PR #147).
+    """
+    root, sibling = member_beside(holder, tmp_path)
+    elsewhere = str(holder["base"] / "remotes" / f"{FAMILY_NAME}.git")
+    git("remote", "set-url", "origin", elsewhere, cwd=sibling)
+    manifest = root / "family.yaml"
+    # The sha THIS ROW reads, rather than the first 40-hex string in the
+    # file: a family manifest carries the shape's pin as well, and moving
+    # that one would prove nothing about a member.
+    pinned = rows_of(doctor(standard, root, "--json"))["members"]["detail"][
+        "members"][0]["pin"]
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(pinned, "0" * 40),
+        encoding="utf-8")
+    row = rows_of(doctor(standard, root, "--json"))["members"]
+    assert row["status"] == "FINDING", row
+    assert "checked out at" in row["reason"], row["reason"]
+    assert "though it is not what fails this row" in row["reason"], \
+        row["reason"]
+    assert "is a clone of" in row["reason"], row["reason"]
+
+
 def test_the_doctor_and_siblings_agree_on_what_one_repository_is(siblings):
     """THE TWO DEFINITIONS, OVER ONE TABLE, ASSERTED EQUAL.
 

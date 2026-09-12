@@ -239,7 +239,7 @@ try:
     #: that module's own section comment says why it is not in
     #: `scripts/repo_shape.py` and what keeps the two copies agreeing.
     from shape_materialize import (  # noqa: E402
-        lane_trailer_argument, same_repository,
+        lane_trailer_argument, redacted, same_repository,
     )
 except ImportError as exc:  # pragma: no cover - exercised as a subprocess
     sys.exit(not_in_the_standard(f"scripts/shape_materialize.py ({exc})"))
@@ -2111,42 +2111,65 @@ def sibling_origin(sibling: Path) -> str:
         return ""
 
 
-def mounted_from(root: Path, rel: str, repository: str) -> str:
-    """The url THIS HOLDER mounts the member at `rel` from.
+def submodule_config(root: Path, source: list[str]) -> dict:
+    """`{submodule name: {field: value}}` out of ONE config source.
 
-    `.gitmodules` FIRST AND `family.yaml`'s `repository:` SECOND, which is
-    the order `scripts/siblings.py::clone_url` resolves and therefore the
-    order that names the remote a working clone beside the holder was
-    actually made from. `git submodule update` reads `.gitmodules`, so a
-    family whose members are mounted from an SSH remote, a mirror or a bare
-    repository on disk has a url that `https://github.com/<repository>.git`
-    does not resemble at all; deriving the second and never reading the first
-    would call every clone in those estates a stranger.
-
-    A RELATIVE URL (`../Repo.git`) IS HANDED BACK AS IT IS rather than
-    resolved against the holder's own remote the way `siblings.py` resolves
-    one. This row is a report: the `repository:` spelling is compared as well
-    (`working_clone` accepts either), and a report that guessed at a second
-    remote in order to have something to print would be naming a url nobody
-    wrote down.
+    Two of them are read below and they say different things, so the reader
+    is shared and the CHOICE between them is made where it means something.
+    Git's own parser rather than a `.gitmodules` parser of this file's own:
+    the file is config syntax, it escapes a backslash on the way in -- a
+    Windows path is stored `D:\\a\\...` -- and reading it as text is how a
+    report ends up quoting a url nobody has.
     """
-    mounts: dict = {}
+    fields: dict = {}
     try:
-        listing = git_out(["config", "-f", str(root / ".gitmodules"),
-                           "--get-regexp", r"^submodule\..*\.(path|url)$"],
-                          cwd=root)
+        listing = git_out(["config", *source, "--get-regexp",
+                           r"^submodule\..*\.(path|url)$"], cwd=root)
     except (Refusal, OSError):
-        listing = ""
+        return fields
     for line in listing.splitlines():
         key, _, value = line.partition(" ")
         name, _, field = key[len("submodule."):].rpartition(".")
-        mounts.setdefault(name, {})[field] = value
-    for name, mount in mounts.items():
+        fields.setdefault(name, {})[field] = value
+    return fields
+
+
+def mounted_from(root: Path, rel: str, repository: str) -> str:
+    """The url THIS HOLDER mounts the member at `rel` from.
+
+    THE HOLDER'S OWN CONFIG FIRST, `.gitmodules` SECOND AND `family.yaml`'s
+    `repository:` THIRD. `git submodule update` reads `.gitmodules`, so a
+    family whose members are mounted from an SSH remote, a mirror or a bare
+    repository on disk has a url that `https://github.com/<repository>.git`
+    does not resemble at all; deriving the manifest's spelling and never
+    reading the mount would call every clone in those estates a stranger.
+
+    AND `.gitmodules` IS NOT ALWAYS THE URL GIT USES. A submodule url may be
+    written RELATIVE (`../Repo.git`), which git resolves against the
+    SUPERPROJECT'S REMOTE -- not against any directory -- and writes
+    resolved into the holder's `.git/config` when it initializes the
+    submodule. So the resolved copy is read first: it is git's own answer to
+    the arithmetic, for the mount that actually exists, and re-deriving that
+    arithmetic here is how a report and a tool come to hold two opinions
+    about one url (Copilot, PR #147). `scripts/siblings.py::resolve_relative`
+    does the arithmetic because it is about to CLONE, with no initialized
+    mount to read; this row has one.
+
+    A relative url that git has never resolved -- a mount that was never
+    initialized -- is handed back as it is, and `working_clone` declines to
+    accuse anybody on the strength of it.
+    """
+    declared = submodule_config(root, ["-f", str(root / ".gitmodules")])
+    resolved = submodule_config(root, [])
+    for name, mount in declared.items():
         # A submodule's NAME is its path unless somebody mounted it by hand
         # under another one, which git allows and this reads rather than
         # assumes.
-        if mount.get("path", name) == rel and mount.get("url"):
-            return mount["url"]
+        if mount.get("path", name) != rel:
+            continue
+        url = resolved.get(name, {}).get("url") or mount.get("url")
+        if url:
+            return url
     return f"https://github.com/{repository}.git"
 
 
@@ -2173,6 +2196,16 @@ def working_clone(sibling: Path, row: dict,
     with no working clone beside the holder is unchanged, because where a
     person keeps their checkouts is the workstation's layout and not a
     compliance fact about the repository.
+
+    AND IT NEVER ACCUSES ON A URL IT COULD NOT RESOLVE. A `.gitmodules` url
+    spelled `../Repo.git` that git has not resolved into the holder's config
+    names a remote this row does not know; the answer there is the one this
+    row gave before the origin question existed -- the manifest's -- rather
+    than a stranger's name derived from a string that is not a url.
+
+    THE ORIGIN IS REDACTED ON THE WAY OUT. The comparisons above are on the
+    raw value; what a row prints and `--json` carries must not be somebody's
+    token (Codex and Copilot, PR #147).
     """
     if not is_this_member(sibling, row):
         return None, None
@@ -2181,7 +2214,9 @@ def working_clone(sibling: Path, row: dict,
     if origin and (same_repository(origin, remote)
                    or (repository and same_repository(origin, repository))):
         return sibling.as_posix(), None
-    return None, origin or "(no origin)"
+    if remote.startswith(("./", "../")):
+        return sibling.as_posix(), None
+    return None, redacted(origin) if origin else "(no origin)"
 
 
 def member_state(ctx: Context, row: dict, members_dir: str) -> dict:
@@ -2215,7 +2250,7 @@ def member_state(ctx: Context, row: dict, members_dir: str) -> dict:
     clone, elsewhere = working_clone(sibling, row, remote)
     return {"project": project, "path": rel, "pin": pinned,
             "populated": populated, "head": head,
-            "detached": loose, "mounted_from": remote,
+            "detached": loose, "mounted_from": redacted(remote),
             "working_clone": clone, "other_origin": elsewhere}
 
 
@@ -2269,8 +2304,25 @@ def members_verdict(ctx: Context, detail: dict, members_dir: str,
     rows = detail["members"]
     on_a_branch = detail["on_a_branch"]
     siblings_absent = detail["without_working_clone"]
+    strangers = [f"{entry['project']}: {ctx.root.parent / entry['project']} "
+                 f"is a clone of {entry['other_origin']}, not of "
+                 f"{entry['mounted_from']}, so it is not counted as its "
+                 "working clone (`make siblings` calls the same directory "
+                 "WRONG ORIGIN and leaves it exactly as it is)"
+                 for entry in rows if entry["other_origin"]]
     if problems:
-        return Row("members", "members", FINDING, "; ".join(problems),
+        # A STRANGER IS SAID ON THE RED PATH TOO, AND IS NOT ONE OF THE
+        # FINDINGS. It was not, until Codex pointed out on PR #147 that a
+        # holder with ONE unbootstrapped mount returns here and says nothing
+        # about the directory beside it -- so the person bootstraps, re-runs,
+        # and only then hears about a clone that has been the wrong one all
+        # along. The pinned copies are still the whole of what makes this row
+        # red; the sentence says so.
+        reason = "; ".join(problems)
+        if strangers:
+            reason += ("; and, though it is not what fails this row: "
+                       + "; ".join(strangers))
+        return Row("members", "members", FINDING, reason,
                    f"{PYTHON} "
                    f"{quote_arg(ctx.root / 'scripts' / 'bootstrap.py')} "
                    f"--root {quote_arg(ctx.root)}   # what `make bootstrap` "
@@ -2282,13 +2334,7 @@ def members_verdict(ctx: Context, detail: dict, members_dir: str,
                  + ", ".join(on_a_branch)
                  + " (a fresh `clone --recurse-submodules` of this holder is "
                    "detached; `family.py add` leaves a branch behind)")
-    strangers = [f"{entry['project']}: {ctx.root.parent / entry['project']} "
-                 f"is a clone of {entry['other_origin']}, not of "
-                 f"{entry['mounted_from']}, so it is not counted as its "
-                 "working clone (`make siblings` calls the same directory "
-                 "WRONG ORIGIN and leaves it exactly as it is)"
-                 for entry in rows if entry["other_origin"]]
-    # A STRANGER BESIDE THE HOLDER IS SAID BEFORE THE ABSENCE IT EXPLAINS.
+    # AND ON THE GREEN PATH IT IS SAID BEFORE THE ABSENCE IT EXPLAINS.
     # Every one of these is also in `siblings_absent` -- it is not counted --
     # and "there is no working clone for IRRS" on its own, about a directory
     # named `IRRS` that is sitting right there, is the sentence that sends a

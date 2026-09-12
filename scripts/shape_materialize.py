@@ -501,6 +501,29 @@ def remote_key(url: str) -> str:
     return text.lower().strip("/")
 
 
+#: A url's CREDENTIAL -- `[user[:password]@]` in front of the host, and only
+#: in a url that has a scheme, which is the spelling a token is ever written
+#: in (`https://x-access-token:<pat>@github.com/Org/Repo.git`). The scp form
+#: `git@host:Org/Repo.git` carries a user name and no secret -- ssh takes no
+#: password in a url -- and is left legible.
+CREDENTIAL_RE = re.compile(r"^([A-Za-z][A-Za-z0-9+.-]*://)[^/@]*@")
+
+
+def redacted(url: str) -> str:
+    """A remote url with any credential in it replaced by `***`.
+
+    A REPORT PRINTS WHAT IT FINDS, AND WHAT IT FINDS CAN BE A TOKEN. Git
+    permits a credential in a remote url, people do put one there, and
+    `shape-doctor.py --json` is pasted into issues and kept as a CI artifact
+    -- so a row that quoted `origin` verbatim would publish somebody's PAT to
+    everywhere the report goes (Codex and Copilot, PR #147). The raw value is
+    still what `same_repository` compares; this is what gets stored and
+    printed, and the host and the path -- the whole of what a person needs in
+    order to see which repository it is -- survive.
+    """
+    return CREDENTIAL_RE.sub(r"\1***@", url)
+
+
 def same_repository(one: str, two: str) -> bool:
     """Do two remote spellings name the SAME repository?
 
