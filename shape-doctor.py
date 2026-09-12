@@ -2707,6 +2707,131 @@ def cannot_answer(rows: list[Row]) -> Row | None:
     return None
 
 
+def drifted_file_reasons(counts: dict) -> list:
+    """The drifted shape copies the verdict line quotes, in its own order.
+
+    TWO GROUPS AND THEY SAY DIFFERENT THINGS. `locally-modified` and `both`
+    are what MADE this repository drifted -- a copy of the standard carries
+    an edit -- so they are named first. `upstream-removed`, `unmapped` and
+    `copy-missing` are states in which the standard and the copy no longer
+    map onto each other at all, which is worth quoting beside the edits
+    because it is the same person's next question.
+
+    A state is named only when its count is non-zero: a verdict line reading
+    `0 unmapped` would be a parenthetical contradicting the words above it.
+
+    Split out of `verdict_for` for #134.
+    """
+    edited = ("locally-modified", "both")
+    unmapped = ("upstream-removed", "unmapped", "copy-missing")
+    return [f"{counts[state]} {state}" for state in edited + unmapped
+            if counts.get(state)]
+
+
+def drifted_reasons(by_id: dict, detail: dict) -> list:
+    """Everything that makes this repository DRIFTED, in the order said.
+
+    THREE DIFFERENT THINGS CAN BE OFF AND ALL OF THEM ARE DRIFT: a copy of
+    the standard carrying a local edit, a leg checked out somewhere other
+    than the commit the root pins, and a member of a family in that same
+    state. They share one verdict because they are one fact -- the tree is
+    not the tree the pins describe -- and a reader told only the first of
+    them would fix it and still be drifted.
+
+    Returns the empty list when none of them is, which is the caller's signal
+    to go on down the ladder rather than a claim that anything is well.
+
+    Split out of `verdict_for` for #134.
+    """
+    reasons: list[str] = []
+    if detail.get("drifted"):
+        reasons += drifted_file_reasons(detail.get("counts") or {})
+    legs = by_id.get("legs")
+    if legs is not None and legs.status == FINDING:
+        off = [leg for leg in (legs.detail.get("legs") or [])
+               if leg.get("head") != leg.get("pin")]
+        reasons.append(f"{len(off) or 1} leg(s) not at the pin")
+    members = by_id.get("members")
+    if members is not None and members.status == FINDING:
+        reasons.append("a member is not at its pin")
+    return reasons
+
+
+def misplaced_verdict(by_id: dict) -> tuple | None:
+    """MISPLACED and its exit code, or None when nothing is in the wrong leg.
+
+    UNDER DRIFTED AND OVER INVALID. A path in the wrong leg is a fact about
+    the SHAPE that nothing else in this report can see -- no validator, no
+    pin row, no manifest asserts where a file lives -- whereas a red
+    validator names itself in the table whether or not it also names the
+    verdict line. Drift still outranks it: a leg off its pin means the paths
+    that row read are not the paths the pin describes.
+
+    THE LIST HAS TO BE NON-EMPTY, not merely the row red. `run_checks` turns
+    an exception out of any check into a FINDING row with an empty detail,
+    and this branch would then have answered `MISPLACED (0 paths)` about a
+    row that never got as far as classifying anything -- a verdict naming a
+    count of zero. Such a row falls through to the generic handling further
+    down and reads `INVALID (placement)`, which is what it is (Copilot, PR
+    #100).
+
+    Split out of `verdict_for` for #134.
+    """
+    placement = by_id.get("placement")
+    misplaced = (placement.detail.get("misplaced") or []) if placement else []
+    if placement is not None and placement.status == FINDING and misplaced:
+        count = len(misplaced)
+        return (f"{V_MISPLACED} ({count} path"
+                + ("" if count == 1 else "s") + ")"), 1
+    return None
+
+
+def invalid_verdict(rows: list[Row]) -> tuple | None:
+    """INVALID and its exit code, when a NAMED gate is red, or None.
+
+    EVERY ID LISTED HERE IS A GATE SOMEBODY ELSE OWNS -- the naming policy,
+    the project's own two validators, the family's, the registry of manifest
+    kinds, the agent files -- so this verdict always names a check the reader
+    can go and run for themselves. A row that is red and not on this list is
+    not thereby harmless: the catch-all at the end of `verdict_for` answers
+    `INVALID` for it too, and says why it is written the way it is.
+
+    Split out of `verdict_for` for #134.
+    """
+    red = [row.id for row in rows
+           if row.status == FINDING
+           and row.id in ("naming", "manifest", "pins", "family",
+                          "manifest-kinds", "agent-files")]
+    if red:
+        return f"{V_INVALID} ({', '.join(red)})", 1
+    return None
+
+
+def behind_verdict(detail: dict) -> tuple | None:
+    """SHAPE BEHIND and its exit code, in either of its two kinds, or None.
+
+    WHICH KIND OF BEHIND IS THE WHOLE POINT OF THERE BEING TWO BRANCHES. A
+    pin naming an older commit while not one copied byte differs quotes the
+    two commits, because the counts it would otherwise print are zero BY
+    CONSTRUCTION on that branch; the ordinary kind quotes the counts. Both
+    are exit 1, and both are the `shape-currency` row's `detail` read back --
+    this decides nothing the row did not already say.
+
+    Split out of `verdict_for` for #134.
+    """
+    if detail.get("behind_pin_only"):
+        return (f"{V_BEHIND} (pin {str(detail.get('pinned'))[:12]} -> "
+                f"{str(detail.get('standard'))[:12]}, no copied file "
+                "differs)"), 1
+    if detail.get("behind"):
+        counts = detail.get("counts") or {}
+        changed = counts.get("upstream-changed", 0)
+        added = counts.get("upstream-added", 0)
+        return (f"{V_BEHIND} ({changed} upstream-changed, "
+                f"{added} upstream-added)"), 1
+    return None
+
+
 def verdict_for(ctx: Context, rows: list[Row]) -> tuple[str, int]:
     """ONE line, and the exit code that goes with it.
 
@@ -2714,6 +2839,11 @@ def verdict_for(ctx: Context, rows: list[Row]) -> tuple[str, int]:
     file argues the one that surprises: drift outranks a red validator,
     because an edited shape copy is what makes `validate-pins.py` red and
     naming the validator would send the reader at the symptom.
+
+    EACH RUNG OF THE LADDER IS ITS OWN FUNCTION and each of them argues, in
+    its own docstring, why it sits where it does -- so the precedence can be
+    read here as the list it is, and the argument for any one place in it is
+    found by opening the function that holds that place.
     """
     if ctx.kind == NOT_A_ROOT:
         return V_NOT_A_ROOT, 2
@@ -2723,67 +2853,24 @@ def verdict_for(ctx: Context, rows: list[Row]) -> tuple[str, int]:
     by_id = {row.id: row for row in rows}
     currency = by_id.get("shape-currency")
     detail = currency.detail if currency else {}
-    counts = detail.get("counts") or {}
 
-    reasons: list[str] = []
-    if detail.get("drifted"):
-        for state in ("locally-modified", "both"):
-            if counts.get(state):
-                reasons.append(f"{counts[state]} {state}")
-        for state in ("upstream-removed", "unmapped", "copy-missing"):
-            if counts.get(state):
-                reasons.append(f"{counts[state]} {state}")
-    legs = by_id.get("legs")
-    if legs is not None and legs.status == FINDING:
-        off = [leg for leg in (legs.detail.get("legs") or [])
-               if leg.get("head") != leg.get("pin")]
-        reasons.append(f"{len(off) or 1} leg(s) not at the pin")
-    members = by_id.get("members")
-    if members is not None and members.status == FINDING:
-        reasons.append("a member is not at its pin")
+    reasons = drifted_reasons(by_id, detail)
     if reasons:
         return f"{V_DRIFTED} ({', '.join(reasons)})", 1
-
-    # UNDER DRIFTED AND OVER INVALID. A path in the wrong leg is a fact about
-    # the SHAPE that nothing else in this report can see -- no validator, no
-    # pin row, no manifest asserts where a file lives -- whereas a red
-    # validator names itself in the table whether or not it also names the
-    # verdict line. Drift still outranks it: a leg off its pin means the
-    # paths this row read are not the paths the pin describes.
-    placement = by_id.get("placement")
-    misplaced = (placement.detail.get("misplaced") or []) if placement else []
-    # THE LIST HAS TO BE NON-EMPTY, not merely the row red. `run_checks` turns
-    # an exception out of any check into a FINDING row with an empty detail,
-    # and this branch would then have answered `MISPLACED (0 paths)` about a
-    # row that never got as far as classifying anything -- a verdict naming a
-    # count of zero. Such a row falls through to the generic handling below
-    # and reads `INVALID (placement)`, which is what it is (Copilot, PR #100).
-    if placement is not None and placement.status == FINDING and misplaced:
-        count = len(misplaced)
-        return (f"{V_MISPLACED} ({count} path"
-                + ("" if count == 1 else "s") + ")"), 1
-
-    red = [row.id for row in rows
-           if row.status == FINDING
-           and row.id in ("naming", "manifest", "pins", "family",
-                          "manifest-kinds", "agent-files")]
-    if red:
-        return f"{V_INVALID} ({', '.join(red)})", 1
-
-    if detail.get("behind_pin_only"):
-        return (f"{V_BEHIND} (pin {str(detail.get('pinned'))[:12]} -> "
-                f"{str(detail.get('standard'))[:12]}, no copied file "
-                "differs)"), 1
-    if detail.get("behind"):
-        changed = counts.get("upstream-changed", 0)
-        added = counts.get("upstream-added", 0)
-        return (f"{V_BEHIND} ({changed} upstream-changed, "
-                f"{added} upstream-added)"), 1
+    misplaced = misplaced_verdict(by_id)
+    if misplaced is not None:
+        return misplaced
+    invalid = invalid_verdict(rows)
+    if invalid is not None:
+        return invalid
+    behind = behind_verdict(detail)
+    if behind is not None:
+        return behind
     # THE CATCH-ALL, and it is here so that a check ADDED LATER cannot exit 0
-    # while its row says FINDING. A new row that belongs in `red` above is a
-    # one-line edit; a new row nobody classified still fails loudly. It reads
-    # `FINDING` only, so a `note` row is stepped over here too -- which is
-    # the whole of what `note` means.
+    # while its row says FINDING. A new row that belongs in `invalid_verdict`
+    # above is a one-line edit; a new row nobody classified still fails
+    # loudly. It reads `FINDING` only, so a `note` row is stepped over here
+    # too -- which is the whole of what `note` means.
     other = [row.id for row in rows if row.status == FINDING]
     if other:
         return f"{V_INVALID} ({', '.join(other)})", 1
