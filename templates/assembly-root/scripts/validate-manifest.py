@@ -199,54 +199,88 @@ def _naming_referent_findings(leg_role, name: str, naming: dict,
     return (out, True)
 
 
+def _how_referent_reached(satisfied, resolution) -> str:
+    """Phrase how a leg's referent was reached, for the
+    naming-referent-declared finding.
+
+    Split from `_naming_referent_declared_findings` for #132 — an
+    independent statement rather than a ternary nested inside a ternary
+    (python:S3358): how the referent is reached is decided on its own
+    before it is appended to the finding.
+    """
+    if satisfied is None:
+        return f" (directly or through {CHAIN_RECORD_FIELD})"
+    if resolution.by_chain:
+        return f" through the recorded chain {' → '.join(resolution.chain)}"
+    return " directly"
+
+
+def _naming_referent_declared_mismatch_finding(leg_role, naming: dict,
+                                               referents: list,
+                                               found) -> list[str]:
+    """Does `referent_declared`, if recorded, agree with whether the
+    referent was actually reached?
+
+    Split from `_naming_referent_declared_findings` for #132.
+    """
+    resolution = found.referent
+    satisfied = resolution.referent if resolution.reached else None
+    declared = naming.get("referent_declared")
+    if declared is None or bool(declared) == (satisfied is not None):
+        return []
+    how_reached = _how_referent_reached(satisfied, resolution)
+    return [
+        f"FINDING naming-referent-declared: leg {leg_role!r}: "
+        f"referent_declared is {declared!r}, but " + " / ".join(referents)
+        + (" is" if len(referents) == 1 else " are")
+        + (" not" if satisfied is None else "")
+        + " reached by this manifest's `neutral_product_pins:`"
+        + how_reached
+        + ". A descendant form is a claim; the pin is the referent."]
+
+
+def _naming_referent_missing_pin_finding(leg_role, naming: dict, found,
+                                         root: Path | None) -> list[str]:
+    """When `referent_declared: true`, does the pin file for the referent
+    this leg actually holds exist in the tree?
+
+    Split from `_naming_referent_declared_findings` for #132. A direct pin
+    is the referent's own pin file; a chain's is the FIRST LINK's, because
+    that is the pin this project actually holds.
+    """
+    resolution = found.referent
+    satisfied = resolution.referent if resolution.reached else None
+    held = (resolution.chain[0] if resolution.by_chain and resolution.chain
+            else satisfied)
+    declared = naming.get("referent_declared")
+    if not (declared is True and held and root is not None):
+        return []
+    pin_path = root / "contracts" / f"{held.lower()}-pin.yaml"
+    if pin_path.is_file():
+        return []
+    return [
+        f"FINDING naming-referent-missing: leg {leg_role!r}: "
+        f"{held} is "
+        + (f"the first link of this leg's recorded chain, reaching "
+           f"{satisfied}" if held != satisfied else
+           "declared as this leg's referent")
+        + f", but {pin_path.relative_to(root).as_posix()} does not "
+        "exist. A declared pin that is not in the tree is a claim "
+        "wearing the costume of a referent."]
+
+
 def _naming_referent_declared_findings(leg_role, naming: dict, referents: list,
                                        found, root: Path | None) -> list[str]:
     """REACHED, not merely pinned (2026-09-05): whether `referent_declared`
     agrees with what the classifier resolved, and, when it is `true`,
     whether the pin file for the referent this leg actually holds exists.
 
-    Split from `_naming_findings` for #132. The referent may be reached by
-    a DIRECT pin, exactly as on 2026-09-02, or through the chain this leg
-    records — and what the tree must show for it differs: a direct pin is
-    the referent's own pin file, a chain's is the FIRST LINK's, because that
-    is the pin this project actually holds.
+    Split from `_naming_findings` for #132.
     """
-    out: list[str] = []
-    resolution = found.referent
-    satisfied = resolution.referent if resolution.reached else None
-    held = (resolution.chain[0] if resolution.by_chain and resolution.chain
-            else satisfied)
-    declared = naming.get("referent_declared")
-    if declared is not None and bool(declared) != (satisfied is not None):
-        # An independent statement rather than a ternary nested inside a
-        # ternary (python:S3358): how the referent is reached is decided on
-        # its own before it is appended to the finding.
-        if satisfied is None:
-            how_reached = f" (directly or through {CHAIN_RECORD_FIELD})"
-        elif resolution.by_chain:
-            how_reached = f" through the recorded chain {' → '.join(resolution.chain)}"
-        else:
-            how_reached = " directly"
-        out.append(
-            f"FINDING naming-referent-declared: leg {leg_role!r}: "
-            f"referent_declared is {declared!r}, but " + " / ".join(referents)
-            + (" is" if len(referents) == 1 else " are")
-            + (" not" if satisfied is None else "")
-            + " reached by this manifest's `neutral_product_pins:`"
-            + how_reached
-            + ". A descendant form is a claim; the pin is the referent.")
-    if declared is True and held and root is not None:
-        pin_path = root / "contracts" / f"{held.lower()}-pin.yaml"
-        if not pin_path.is_file():
-            out.append(
-                f"FINDING naming-referent-missing: leg {leg_role!r}: "
-                f"{held} is "
-                + (f"the first link of this leg's recorded chain, reaching "
-                   f"{satisfied}" if held != satisfied else
-                   "declared as this leg's referent")
-                + f", but {pin_path.relative_to(root).as_posix()} does not "
-                "exist. A declared pin that is not in the tree is a claim "
-                "wearing the costume of a referent.")
+    out = list(_naming_referent_declared_mismatch_finding(
+        leg_role, naming, referents, found))
+    out.extend(_naming_referent_missing_pin_finding(leg_role, naming, found,
+                                                    root))
     return out
 
 
