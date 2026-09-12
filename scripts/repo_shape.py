@@ -1087,6 +1087,102 @@ def _unverified_note(unverified) -> str:
     return f" ({len(unverified)} link{plural} declared-unverified)"
 
 
+# ---------------------------------------------------------------------------
+# The pieces a classification is assembled from
+# ---------------------------------------------------------------------------
+#
+# Split out of `NamingPolicy.classify` for #135. The two that decide a branch
+# return an ANSWER'S INGREDIENTS — `(family_id, role_id, reason, matched_key)`
+# — and never a `Classification`, because `classify`'s own `answer()` closure
+# is the single place `also_matches` is computed: a branch that built its own
+# classification would be a second place for that record to be got wrong.
+
+
+def _forms_by_family(matched) -> dict:
+    """`[(family, role), …]` grouped as `{family: [role, …]}`, order kept.
+
+    `matches()` reports every form a name satisfies in the data's precedence
+    order; this is that same list read BY FAMILY, which is how each branch of
+    the classifier asks whether the form it decides is among them.
+    """
+    by_family: dict[str, list[str | None]] = {}
+    for family_id, role_id in matched:
+        by_family.setdefault(family_id, []).append(role_id)
+    return by_family
+
+
+def _leg_roles(by_family) -> list:
+    """The leg roles the NAME satisfies, read once.
+
+    Every branch of the classifier consults them, the unambiguous forms
+    included, because a role is only ever admitted where the name can actually
+    spell it: `openDox` may carry the `assembly` role it declares because
+    `openDox` also satisfies `project-leg/assembly`, and `Widget-Install`
+    carries none because a hyphenated name satisfies no leg form at all.
+    """
+    return [r for r in (by_family.get("project-leg") or []) if r]
+
+
+def _other_forms(matched, key) -> list:
+    """Every form the name satisfies EXCEPT the one an answer consumes.
+
+    This is `Classification.also_matches`: an overlap resolved without being
+    RECORDED is exactly the failure that field exists to prevent.
+    """
+    return [form_id(f, r) for f, r in matched if (f, r) != key]
+
+
+def _descendant_reason(declared, resolution, role: str | None) -> str:
+    """The sentence `--explain` prints for a descendant-form classification.
+
+    HOW the referent was reached is the first half — through the recorded
+    chain, by a direct pin, or not required at all by this policy — and the
+    role the name also carries is the second. A policy that requires no
+    referent never reaches that second half, because it has no referent to
+    name and nothing was declared for it to carry.
+    """
+    if declared and resolution.by_chain:
+        reason = (f"descendant form reaching {declared} through the "
+                  f"{resolution.reason} → domain descendant")
+    elif declared:
+        reason = (f"descendant form with a declared pin on {declared} "
+                  "→ domain descendant")
+    else:
+        return "descendant form (this policy does not require a referent)"
+    if role:
+        reason += (f", carrying the {role} role it declares (a "
+                   "descendant may carry legs)")
+    return reason
+
+
+def _leg_answer(claimed: bool, leg_roles, declared_role, resolution,
+                referents) -> tuple | None:
+    """The answer for the residual `project-leg` reading, or None.
+
+    The role is the DECLARED one where the name satisfies it, and the widest
+    leg form it satisfies otherwise. The reason records what the name ALSO
+    claimed, and for a broken chain it quotes `resolution.reason` rather than
+    summarising it: NAME THE LINK — "the chain is invalid" sends the reader
+    off to read four manifests, and that sentence says which one broke.
+    """
+    chosen = None
+    if declared_role is not None and declared_role in leg_roles:
+        chosen, how = declared_role, "by declared role"
+    elif leg_roles:
+        chosen, how = leg_roles[0], "by its residual project-leg form"
+    if chosen is None:
+        return None
+    if claimed and resolution.status == "broken":
+        reason = (f"descendant form, {resolution.reason} → {chosen} "
+                  f"root {how}")
+    elif claimed:
+        reason = (f"descendant form, no referent pin declared (it would "
+                  f"need {referents[0]}) → {chosen} root {how}")
+    else:
+        reason = f"project leg, {chosen} {how}"
+    return ("project-leg", chosen, reason, None)
+
+
 class NamingPolicy:
     """Ordered classifier over `contracts/repository-naming.yaml`.
 
@@ -1375,9 +1471,7 @@ class NamingPolicy:
         matched = self.matches(name, declared_role)
         if not matched:
             return None
-        by_family: dict[str, list[str | None]] = {}
-        for family_id, role_id in matched:
-            by_family.setdefault(family_id, []).append(role_id)
+        by_family = _forms_by_family(matched)
         resolution = self.resolve_referent(name, declared_pins, referent_chain,
                                            link_pins)
 
@@ -1390,48 +1484,14 @@ class NamingPolicy:
             # name was classified INTO would also be listed among the forms it
             # was not, which is a record contradicting itself.
             key = matched_key if matched_key is not None else (family_id, role_id)
-            also = [form_id(f, r) for f, r in matched if (f, r) != key]
-            return Classification(family_id, role_id, also, reason, resolution)
+            return Classification(family_id, role_id,
+                                  _other_forms(matched, key), reason, resolution)
 
-        # The leg roles the NAME satisfies, read once: the unambiguous forms
-        # consult them too, because a role is only ever admitted where the name
-        # can actually spell it.
-        leg_roles = [r for r in (by_family.get("project-leg") or []) if r]
-        for family_id in UNAMBIGUOUS_FORMS:
-            if family_id not in by_family:
-                continue
-            family = self.family(family_id) or {}
-            # A NEUTRAL PRODUCT MAY ELECT THE SHAPE (Brett Heap, 2026-09-05).
-            # The form is not being overridden — it is still the answer, and
-            # the entry this CONSUMES is `(family_id, None)`, so
-            # `project-leg/assembly` survives in `also_matches` exactly as it
-            # did before. What is added is the ROLE the project declares, and
-            # only where the family's data admits it and the name satisfies
-            # that leg form. Electing confers nothing, so this records a
-            # layout, not a claim; it is the same MECHANISM as the descendant
-            # branch below, both reading `admits_declared_role:` — but this
-            # branch is deliberately STRICTER about what an absent key means.
-            # With no `admits_declared_role:` in the data this branch admits
-            # NOTHING (`or ()`), because the admission itself is the
-            # 2026-09-05 rule and the file must say so or grant nothing. The
-            # descendant branch below falls back to `or ("assembly",)`
-            # instead, because that key predates this ruling: it keeps the
-            # 2026-09-02 behaviour for a policy file that never wrote the key
-            # at all, and changing the fallback would be changing that
-            # ruling's answer out from under a file silent about it.
-            admitted = family.get("admits_declared_role") or ()
-            if by_family[family_id][0] is None and declared_role is not None \
-                    and declared_role in admitted and declared_role in leg_roles:
-                title = str(family.get("title") or family_id).lower()
-                return answer(
-                    family_id, declared_role,
-                    f"the {family_id} form is unambiguous by construction; it "
-                    f"carries the {declared_role} role it declares — a {title} "
-                    "may elect the shape (Brett Heap, 2026-09-05)",
-                    (family_id, None))
-            return answer(family_id, by_family[family_id][0],
-                          f"the {family_id} form is unambiguous by "
-                          "construction, so it needs nothing declared")
+        leg_roles = _leg_roles(by_family)
+        unambiguous = self._unambiguous_answer(by_family, declared_role,
+                                               leg_roles)
+        if unambiguous is not None:
+            return answer(*unambiguous)
 
         # A declared-only form the caller ASKED for. It sits above the leg
         # forms in the decision even though its precedence is below them: the
@@ -1453,56 +1513,14 @@ class NamingPolicy:
         # falling back — the declaration is the offline fact.
         declared = resolution.referent if resolution.reached else None
         if claimed and (declared or not self.requires_referent("domain-descendant")):
-            # A DESCENDANT MAY CARRY LEGS (Brett Heap, 2026-09-02). The
-            # descendant family declares no roles of its own, so the role a
-            # descendant answers with is the one the project DECLARES, and
-            # only where the name also satisfies that leg form. `MedxGlass`
-            # pins `openGlass` AND mounts `MedxGlass-spec` and
-            # `MedxGlass-code`: it is a descendant AND the assembly root.
-            # Refusing that pair would have made the descendant ruling and the
-            # three-repository shape mutually exclusive, which neither ruling
-            # says and both organisations that have one need both of.
-            family = self.family("domain-descendant") or {}
-            admitted = family.get("admits_declared_role") or ("assembly",)
-            role = by_family["domain-descendant"][0]
-            if role is None and declared_role is not None \
-                    and declared_role in leg_roles \
-                    and declared_role in admitted:
-                role = declared_role
-            if declared and resolution.by_chain:
-                reason = (f"descendant form reaching {declared} through the "
-                          f"{resolution.reason} → domain descendant")
-                if role:
-                    reason += (f", carrying the {role} role it declares (a "
-                               "descendant may carry legs)")
-            elif declared:
-                reason = (f"descendant form with a declared pin on {declared} "
-                          "→ domain descendant")
-                if role:
-                    reason += (f", carrying the {role} role it declares (a "
-                               "descendant may carry legs)")
-            else:
-                reason = "descendant form (this policy does not require a referent)"
-            return answer("domain-descendant", role, reason,
-                          ("domain-descendant", by_family["domain-descendant"][0]))
+            return answer(*self._descendant_answer(by_family, declared_role,
+                                                   leg_roles, declared,
+                                                   resolution))
 
-        chosen = None
-        if declared_role is not None and declared_role in leg_roles:
-            chosen, how = declared_role, "by declared role"
-        elif leg_roles:
-            chosen, how = leg_roles[0], "by its residual project-leg form"
-        if chosen is not None:
-            if claimed and resolution.status == "broken":
-                # NAME THE LINK. "The chain is invalid" sends the reader to
-                # read four manifests; `resolution.reason` says which one.
-                reason = (f"descendant form, {resolution.reason} → {chosen} "
-                          f"root {how}")
-            elif claimed:
-                reason = (f"descendant form, no referent pin declared (it would "
-                          f"need {referents[0]}) → {chosen} root {how}")
-            else:
-                reason = f"project leg, {chosen} {how}"
-            return answer("project-leg", chosen, reason)
+        leg = _leg_answer(claimed, leg_roles, declared_role, resolution,
+                          referents)
+        if leg is not None:
+            return answer(*leg)
 
         # Unreachable with the shipped patterns — every descendant-form name is
         # also a bare CamelCase token — but a policy file is data, and data can
@@ -1527,6 +1545,78 @@ class NamingPolicy:
         return answer(family_id, role_id,
                       f"the {family_id} form, by precedence; this classifier "
                       "has no rule of its own for it")
+
+    def _unambiguous_answer(self, by_family, declared_role,
+                            leg_roles) -> tuple | None:
+        """The answer for a form decided by the CHARACTERS ALONE, or None.
+
+        Split out of `classify` for #135. It returns an answer's INGREDIENTS —
+        `(family_id, role_id, reason, matched_key)` — rather than a
+        `Classification`, so `classify`'s own `answer()` closure stays the one
+        place `also_matches` is computed and a classification is built.
+
+        A NEUTRAL PRODUCT MAY ELECT THE SHAPE (Brett Heap, 2026-09-05). The
+        form is not being overridden — it is still the answer, and the entry
+        this CONSUMES is `(family_id, None)`, so `project-leg/assembly`
+        survives in `also_matches` exactly as it did before. What is added is
+        the ROLE the project declares, and only where the family's data admits
+        it and the name satisfies that leg form. Electing confers nothing, so
+        this records a layout, not a claim; it is the same MECHANISM as
+        `_descendant_answer` below, both reading `admits_declared_role:` — but
+        this one is deliberately STRICTER about what an absent key means. With
+        no `admits_declared_role:` in the data it admits NOTHING (`or ()`),
+        because the admission itself is the 2026-09-05 rule and the file must
+        say so or grant nothing. `_descendant_answer` falls back to
+        `or ("assembly",)` instead, because that key predates this ruling: it
+        keeps the 2026-09-02 behaviour for a policy file that never wrote the
+        key at all, and changing the fallback would be changing that ruling's
+        answer out from under a file silent about it.
+        """
+        for family_id in UNAMBIGUOUS_FORMS:
+            if family_id not in by_family:
+                continue
+            family = self.family(family_id) or {}
+            admitted = family.get("admits_declared_role") or ()
+            if by_family[family_id][0] is None and declared_role is not None \
+                    and declared_role in admitted and declared_role in leg_roles:
+                title = str(family.get("title") or family_id).lower()
+                return (family_id, declared_role,
+                        f"the {family_id} form is unambiguous by construction; it "
+                        f"carries the {declared_role} role it declares — a {title} "
+                        "may elect the shape (Brett Heap, 2026-09-05)",
+                        (family_id, None))
+            return (family_id, by_family[family_id][0],
+                    f"the {family_id} form is unambiguous by "
+                    "construction, so it needs nothing declared", None)
+        return None
+
+    def _descendant_answer(self, by_family, declared_role, leg_roles,
+                           declared, resolution) -> tuple:
+        """The answer for a descendant claim that REACHED its referent.
+
+        Split out of `classify` for #135, returning the same
+        `(family_id, role_id, reason, matched_key)` ingredients as
+        `_unambiguous_answer` above.
+
+        A DESCENDANT MAY CARRY LEGS (Brett Heap, 2026-09-02). The descendant
+        family declares no roles of its own, so the role a descendant answers
+        with is the one the project DECLARES, and only where the name also
+        satisfies that leg form. `MedxGlass` pins `openGlass` AND mounts
+        `MedxGlass-spec` and `MedxGlass-code`: it is a descendant AND the
+        assembly root. Refusing that pair would have made the descendant
+        ruling and the three-repository shape mutually exclusive, which
+        neither ruling says and both organisations that have one need both of.
+        """
+        family = self.family("domain-descendant") or {}
+        admitted = family.get("admits_declared_role") or ("assembly",)
+        role = by_family["domain-descendant"][0]
+        if role is None and declared_role is not None \
+                and declared_role in leg_roles \
+                and declared_role in admitted:
+            role = declared_role
+        return ("domain-descendant", role,
+                _descendant_reason(declared, resolution, role),
+                ("domain-descendant", by_family["domain-descendant"][0]))
 
     def topic_for(self, project_id: str) -> str:
         return self.topic_template.format(id=project_id)
