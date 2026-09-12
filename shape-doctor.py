@@ -904,9 +904,23 @@ def readme_shape_note(ctx: Context, us, repository: str, pinned: str,
     too, and a note about a line nothing will ever rewrite is a chore with no
     exit.
 
-    The reader IS `update-shape.py`'s, loaded through `ctx.update_shape()`
-    and asked with the PIN as its target, so the doctor and the tool that
-    does the rewriting cannot disagree about what the line says.
+    THE PIN, NOT THIS STANDARD'S HEAD, is what the line is compared against,
+    and that is the question the doctor is for: `contracts/shape-pin.yaml` is
+    the authority on what revision this root is a copy of, so a README that
+    disagrees with it is wrong ABOUT THIS TREE, today, whatever any upstream
+    has since done. Comparing against the target instead would fire on every
+    project that is merely behind — including one whose README names its own
+    pin perfectly — which is the `SHAPE BEHIND` verdict this row already
+    carries, said twice (Copilot, PR #152).
+
+    So the clause says what IS true rather than promising a rewrite: a README
+    that has run AHEAD of the pin to the commit a re-pin is about to record
+    is left alone by `apply` (it already names the target) and is still worth
+    a reader's eye here. Either way the next re-pin leaves the two agreeing.
+
+    The reader IS `update-shape.py`'s, loaded through `ctx.update_shape()`,
+    so the doctor and the tool that does the rewriting cannot disagree about
+    what the line says or about which readings are nobody's to touch.
 
     RETURNS THE CLAUSE AND RECORDS THE EVIDENCE: the row's `detail` gains a
     `readme_shape_line` entry on the same condition, because `--json` is what
@@ -919,8 +933,8 @@ def readme_shape_note(ctx: Context, us, repository: str, pinned: str,
         return ""
     detail["readme_shape_line"] = {"names": readme.named, "pin": pinned}
     return (f"  (note: {us.README}'s Shape: line names "
-            f"{readme.named[:12]}, the pin {pinned[:12]} — `apply` "
-            "rewrites it)")
+            f"{readme.named[:12]}, the pin {pinned[:12]} — `apply` owns "
+            "that line; the next re-pin leaves them agreeing)")
 
 
 def check_shape_currency(ctx: Context) -> Row:

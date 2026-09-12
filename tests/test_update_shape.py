@@ -973,12 +973,24 @@ def rendered_shape_line(commit: str,
                 .replace("{{SHAPE_COMMIT}}", commit))
 
 
-def give_readme(root, *lines: str):
-    """Append `lines` to this root's README and hand it back."""
+def give_readme(root, *lines: str, commit: bool = True):
+    """Append `lines` to this root's README and hand it back.
+
+    COMMITTED BY DEFAULT, because that is what a holder's README is: the line
+    is rendered by the scaffold and lands in the scaffold's commit. `apply`
+    refuses to carry a README that has changes of its own (Copilot, PR #152),
+    so a fixture that left the line in the working tree would be testing that
+    refusal by accident in every test here instead of the rewrite.
+    """
     readme = root / "README.md"
     readme.write_text(readme.read_text(encoding="utf-8") + "\n"
                       + "".join(line + "\n" for line in lines),
                       encoding="utf-8")
+    if commit:
+        git("add", "--", "README.md", cwd=root)
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m",
+            "The README names the shape it was cut from", "--", "README.md",
+            cwd=root)
     return readme
 
 
@@ -1128,3 +1140,62 @@ def test_a_stale_readme_line_never_moves_checks_exit_code(
     assert "nothing to do" in result.stdout
     assert "readme-shape-line: stale" in result.stdout
     assert "the next re-pin carries it" in result.stdout
+
+
+def test_a_readme_with_changes_of_its_own_is_left_alone_and_not_committed(
+        root, upstream_and_project):
+    """THE ONE FILE `apply` WRITES THAT HAS NO DRIFT CHECK (Copilot, #152).
+
+    `git commit -- README.md` commits the WORKING TREE version of that path,
+    and a pinned copy can never carry somebody else's edit into that commit
+    because `update-local-drift` refuses first. The README has no pin row, so
+    without a check of its own a half-written paragraph — staged or not —
+    would ride into a shape re-pin the human approved from a `check` that
+    never showed it. That is the xFactory sweep `commit_on_branch` was
+    written against, arriving through the door this feature opened.
+    """
+    a = upstream_and_project["a"]
+    readme = give_readme(root, rendered_shape_line(a))
+    mine = readme.read_text(encoding="utf-8") + "\nA paragraph I am writing.\n"
+    readme.write_text(mine, encoding="utf-8")
+
+    result = apply(root, upstream_and_project, "--branch", "shape/update-wip")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert readme.read_text(encoding="utf-8") == mine, (
+        "neither the sha nor the paragraph moved")
+    assert "uncommitted changes, untouched" in result.stdout
+    assert "README.md" not in committed_files(root)
+
+    # And `check` says the same thing first, rather than promising a rewrite
+    # the run will not perform.
+    checked = check(root, upstream_and_project)
+    assert "readme-shape-line: uncommitted" in checked.stdout
+
+
+def test_check_names_the_readme_in_the_pin_alone_preview(
+        root, upstream_and_project, tmp_path):
+    """THE COMMONEST HOLDER RE-PIN OF ALL: a pin behind the standard with not
+    one copied byte different. `apply` moves the README's line in that same
+    commit, so a preview reading "the pin alone" described a commit that
+    would have had a second file in it (Copilot, #152)."""
+    give_readme(root, rendered_shape_line(upstream_and_project["a"]))
+    # A PRIVATE COPY of the upstream, advanced by a commit that changes
+    # nothing this project copies: the pin moves and every row stays
+    # `unchanged`. A copy rather than a commit on the module-scoped fixture,
+    # for the reason `test_shape_doctor.py::advanced_standard` gives — every
+    # other test here is a claim about a project cut from THAT upstream at
+    # THAT HEAD.
+    ahead = tmp_path / "openRepoShape-ahead"
+    shutil.copytree(upstream_and_project["upstream"], ahead, symlinks=True)
+    # Back to A first: commit B changes a file this project COPIES, and one
+    # `upstream-changed` row is the other branch of the report entirely.
+    git("reset", "--hard", "-q", upstream_and_project["a"], cwd=ahead)
+    empty = commit_upstream_changes(
+        ahead, "An upstream change no project copies",
+        {"README.md": "\nA line no project copies.\n"})
+    result = run_script(UPDATE, "check", "--root", str(root),
+                        "--upstream", str(ahead), "--at", empty)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "`apply` would move the pin and README.md's Shape: line" \
+        in result.stdout
+    assert "the pin alone" not in result.stdout

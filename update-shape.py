@@ -925,7 +925,7 @@ def _shape_block_bounds(lines: list[str], kind: Kind) -> tuple[int, int]:
 #: this tool ever changes in it is the 40 hex characters of the line below.
 README = "README.md"
 
-#: What a root's README says about the standard: the six answers `check`
+#: What a root's README says about the standard: the seven answers `check`
 #: prints and `apply` acts on. Only ONE of them is a write.
 README_ABSENT = "absent"
 README_CURRENT = "current"
@@ -933,6 +933,33 @@ README_STALE = "stale"
 README_AMBIGUOUS = "ambiguous"
 README_OTHER_REPOSITORY = "other-repository"
 README_UNREADABLE = "unreadable"
+README_UNCOMMITTED = "uncommitted"
+
+
+def readme_is_committed(root: Path) -> bool:
+    """Is `README.md` exactly what HEAD has, with nothing else in it?
+
+    THE ONE FILE THIS TOOL WRITES THAT HAS NO DRIFT CHECK. A pinned copy
+    carrying a local edit is refused (`update-local-drift`) precisely so that
+    `git commit -- <path>` lands this tool's bytes and nobody else's; the
+    README has no pin row, so without this it would be the one path where a
+    human's half-finished paragraph — staged or not — rode into a shape
+    re-pin commit that `check` never showed them (Copilot, PR #152). That is
+    the xFactory sweep `commit_on_branch` documents, arriving through a door
+    this feature opened.
+
+    ANY output means no: modified, staged, or untracked. Untracked matters on
+    its own — `git commit -- README.md` refuses a pathspec git has never heard
+    of, and that failure would arrive after every other byte was written.
+
+    A git that cannot answer (no repository, no git) is treated as NOT
+    committed, which costs a rewrite in a place that could not have committed
+    it anyway.
+    """
+    proc = subprocess.run(["git", "status", "--porcelain", "--", README],
+                          cwd=str(root), capture_output=True, text=True,
+                          check=False)
+    return proc.returncode == 0 and not proc.stdout.strip()
 
 
 class ReadmeShapeLine:
@@ -956,6 +983,7 @@ class ReadmeShapeLine:
     """
 
     def __init__(self, root: Path, repository: str, target: str):
+        self.root = root
         self.path = root / README
         self.repository = repository
         self.target = target
@@ -965,12 +993,16 @@ class ReadmeShapeLine:
         self.state = self._classify()
 
     def _classify(self) -> str:
-        """Which of the six answers this README gives, read once.
+        """Which of the seven answers this README gives, read once.
 
         The UTF-8 branch is not hypothetical bookkeeping: this runs inside
         `apply`, after the copies are on disk, and an uncaught
         `UnicodeDecodeError` there would escape the `except Refusal` arm that
         owns the rollback and leave the tree half-written.
+
+        THE GIT QUESTION IS ASKED LAST AND ONLY OF A LINE THAT WOULD MOVE, so
+        the common answers cost no subprocess at all and a README nobody is
+        editing is classified exactly as before.
         """
         if not self.path.is_file():
             return README_ABSENT
@@ -987,6 +1019,8 @@ class ReadmeShapeLine:
             return README_OTHER_REPOSITORY
         if self.matches[0]["commit"] == self.target:
             return README_CURRENT
+        if not readme_is_committed(self.root):
+            return README_UNCOMMITTED
         return README_STALE
 
     @property
@@ -1009,6 +1043,10 @@ class ReadmeShapeLine:
                     f"{self.repository}; `apply` leaves {README} alone)")
         if self.state == README_UNREADABLE:
             return f"{README_UNREADABLE} ({README} is not valid UTF-8)"
+        if self.state == README_UNCOMMITTED:
+            return (f"{README_UNCOMMITTED} ({self.named[:12]} is behind, but "
+                    f"{README} has changes of its own; `apply` leaves it "
+                    "alone rather than commit somebody else's edit)")
         return self.state
 
     @property
@@ -1030,6 +1068,10 @@ class ReadmeShapeLine:
                     "untouched")
         if self.state == README_UNREADABLE:
             return f"  kept     {README}: not valid UTF-8, untouched"
+        if self.state == README_UNCOMMITTED:
+            return (f"  kept     {README}: its Shape: line is behind, but the "
+                    "file has uncommitted changes, untouched — commit them "
+                    "and the next re-pin carries the line")
         return f"  kept     {README}: no Shape: line, untouched"
 
     def rewrite(self, ledger: Rollback) -> bool:
@@ -1165,7 +1207,15 @@ def cmd_check(args) -> int:
                       "it in; the next re-pin carries it)")
             return 0
         if not moved:
-            print("no copied file differs; `apply` would move the pin alone")
+            # AND WHAT ELSE IT WOULD MOVE. `apply` rewrites the README's
+            # `Shape:` line in the pin's own commit, so on the commonest
+            # holder re-pin of all — a pin behind the standard with not one
+            # copied byte different — "the pin alone" was a preview of a
+            # commit that would have had a second file in it (Copilot,
+            # PR #152).
+            alone = ("the pin alone" if readme.state != README_STALE
+                     else f"the pin and {README}'s Shape: line")
+            print(f"no copied file differs; `apply` would move {alone}")
         conflicts = [row for row in rows if row.is_conflict]
         local = [row for row in rows if row.state == LOCALLY_MODIFIED]
         if conflicts:
