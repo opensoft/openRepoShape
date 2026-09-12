@@ -116,35 +116,30 @@ def _chain_and_links(naming, root: Path | None) -> tuple[tuple, dict]:
     return chain, (link_pins_from_trees(chain, root) if chain else {})
 
 
-def _naming_findings(leg_role, name: str, naming, policy: NamingPolicy,
-                     pins: set[str], root: Path | None,
-                     chain: tuple, link_pins: dict) -> list[str]:
-    """Check one leg's OPTIONAL `naming:` record against the policy.
+def _naming_chain_field_finding(leg_role, naming: dict) -> list[str]:
+    """Is `naming[CHAIN_RECORD_FIELD]`, if present, a string or a list?
 
-    Absent is fine: the block is a record, not a requirement, and a manifest
-    written before this field existed is not thereby wrong. Present and
-    disagreeing with the classifier is a FINDING, because a record that can
-    drift from the thing it records is worse than no record.
-
-    `WARNING`-prefixed lines are returned alongside the findings and are NOT
-    findings: a chain link whose tree is not checked out here is the ordinary
-    case offline, and `main` prints those without changing the exit code.
+    Split from `_naming_findings` for #132.
     """
-    out: list[str] = []
-    if naming is None:
-        return out
-    if not isinstance(naming, dict):
-        return [f"FINDING manifest-naming: leg {leg_role!r}: naming is "
-                f"{naming!r}, expected a mapping"]
     recorded = naming.get(CHAIN_RECORD_FIELD)
     if recorded is not None and not isinstance(recorded, (str, list)):
-        out.append(f"FINDING naming-referent-chain: leg {leg_role!r}: "
-                   f"{CHAIN_RECORD_FIELD} is {recorded!r}, expected a list of "
-                   "neutral-product names")
-    found = policy.classify(name, str(leg_role) if leg_role else None, pins,
-                            chain, link_pins)
-    if found is None:
-        return out  # already reported as naming-unclassified
+        return [f"FINDING naming-referent-chain: leg {leg_role!r}: "
+                f"{CHAIN_RECORD_FIELD} is {recorded!r}, expected a list of "
+                "neutral-product names"]
+    return []
+
+
+def _naming_classification_findings(leg_role, name: str, naming: dict,
+                                    found) -> list[str]:
+    """Everything the classifier's own result says about this leg: a broken
+    referent chain, its warnings, and whether the recorded `form`/`role`/
+    `also_matches` agree with what `name` actually classifies as.
+
+    Split from `_naming_findings` for #132 so one call replaces the middle
+    third of that function's checks, each of which reads `found` but
+    nothing computed after it.
+    """
+    out: list[str] = []
     if found.referent.status == "broken":
         out.append(f"FINDING naming-referent-chain: leg {leg_role!r}: "
                    f"{found.referent.reason}. The first entry is what this "
@@ -173,32 +168,50 @@ def _naming_findings(leg_role, name: str, naming, policy: NamingPolicy,
             f"{sorted(str(a) for a in also)}, but {name!r} also satisfies "
             f"{sorted(found.also_matches)}. `also_matches` records the forms "
             "that were NOT chosen; it is not a place to add or drop one.")
+    return out
 
-    # The referent. `descendant_referents()` returns every spelling that would
-    # serve — `open<Product>` canonically, and the x-stem `openx<Product>` the
-    # neutral family also admits — so the record and the pins are checked
-    # against the same set the classifier consulted, not against one spelling.
-    referents = policy.descendant_referents(name)
+
+def _naming_referent_findings(leg_role, name: str, naming: dict,
+                              referents: list) -> tuple[list[str], bool]:
+    """Does `descendant_referent`, if recorded, name one of `name`'s
+    `<Domainx><Product>` forms?
+
+    Split from `_naming_findings` for #132. Returns the findings so far,
+    and whether there is a referent to check further — `name` is not in
+    descendant form, so the caller stops here exactly as the original
+    function's `return out` inside `if not referents:` did.
+    """
     recorded_referent = naming.get("descendant_referent")
     if not referents:
         if recorded_referent is not None:
-            out.append(
+            return ([
                 f"FINDING naming-referent: leg {leg_role!r}: "
                 f"descendant_referent is {recorded_referent!r}, but {name!r} "
                 "is not in `<Domainx><Product>` form and claims descent from "
-                "nothing")
-        return out
-
+                "nothing"], False)
+        return ([], False)
+    out = []
     if recorded_referent is not None and str(recorded_referent) not in referents:
         out.append(
             f"FINDING naming-referent: leg {leg_role!r}: descendant_referent "
             f"is {recorded_referent!r}, but {name!r} would need "
             + " or ".join(referents))
-    # REACHED, not merely pinned (2026-09-05). The referent may be reached by
-    # a DIRECT pin, exactly as on 2026-09-02, or through the chain this leg
-    # records — and what the tree must show for it differs: a direct pin is
-    # the referent's own pin file, a chain's is the FIRST LINK's, because that
-    # is the pin this project actually holds.
+    return (out, True)
+
+
+def _naming_referent_declared_findings(leg_role, naming: dict, referents: list,
+                                       found, root: Path | None) -> list[str]:
+    """REACHED, not merely pinned (2026-09-05): whether `referent_declared`
+    agrees with what the classifier resolved, and, when it is `true`,
+    whether the pin file for the referent this leg actually holds exists.
+
+    Split from `_naming_findings` for #132. The referent may be reached by
+    a DIRECT pin, exactly as on 2026-09-02, or through the chain this leg
+    records — and what the tree must show for it differs: a direct pin is
+    the referent's own pin file, a chain's is the FIRST LINK's, because that
+    is the pin this project actually holds.
+    """
+    out: list[str] = []
     resolution = found.referent
     satisfied = resolution.referent if resolution.reached else None
     held = (resolution.chain[0] if resolution.by_chain and resolution.chain
@@ -234,6 +247,47 @@ def _naming_findings(leg_role, name: str, naming, policy: NamingPolicy,
                 + f", but {pin_path.relative_to(root).as_posix()} does not "
                 "exist. A declared pin that is not in the tree is a claim "
                 "wearing the costume of a referent.")
+    return out
+
+
+def _naming_findings(leg_role, name: str, naming, policy: NamingPolicy,
+                     pins: set[str], root: Path | None,
+                     chain: tuple, link_pins: dict) -> list[str]:
+    """Check one leg's OPTIONAL `naming:` record against the policy.
+
+    Absent is fine: the block is a record, not a requirement, and a manifest
+    written before this field existed is not thereby wrong. Present and
+    disagreeing with the classifier is a FINDING, because a record that can
+    drift from the thing it records is worse than no record.
+
+    `WARNING`-prefixed lines are returned alongside the findings and are NOT
+    findings: a chain link whose tree is not checked out here is the ordinary
+    case offline, and `main` prints those without changing the exit code.
+    """
+    if naming is None:
+        return []
+    if not isinstance(naming, dict):
+        return [f"FINDING manifest-naming: leg {leg_role!r}: naming is "
+                f"{naming!r}, expected a mapping"]
+    out = list(_naming_chain_field_finding(leg_role, naming))
+    found = policy.classify(name, str(leg_role) if leg_role else None, pins,
+                            chain, link_pins)
+    if found is None:
+        return out  # already reported as naming-unclassified
+    out.extend(_naming_classification_findings(leg_role, name, naming, found))
+
+    # The referent. `descendant_referents()` returns every spelling that would
+    # serve — `open<Product>` canonically, and the x-stem `openx<Product>` the
+    # neutral family also admits — so the record and the pins are checked
+    # against the same set the classifier consulted, not against one spelling.
+    referents = policy.descendant_referents(name)
+    referent_findings, has_referent = _naming_referent_findings(
+        leg_role, name, naming, referents)
+    out.extend(referent_findings)
+    if not has_referent:
+        return out
+    out.extend(_naming_referent_declared_findings(leg_role, naming, referents,
+                                                  found, root))
     return out
 
 
