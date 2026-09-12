@@ -390,6 +390,115 @@ def _targets_from_project(policy: NamingPolicy, path: Path,
     return targets, findings
 
 
+def _link_sources_from_args(raw_sources: list[str]) -> tuple[dict, Path | None]:
+    """`(keyed_sources, default_source)` from every `--link-source` given.
+
+    Split from `main` for #136: parsing what each `--link-source` value
+    means — keyed to one product, or the fallback for any link with no more
+    specific answer — is one question, asked once instead of inline in the
+    argument-handling half of `main`.
+    """
+    keyed_sources: dict[str, Path] = {}
+    default_source: Path | None = None
+    for raw in raw_sources:
+        product, sep, path = raw.partition("=")
+        if sep:
+            keyed_sources[product.casefold()] = Path(path)
+        else:
+            default_source = Path(raw)
+    return keyed_sources, default_source
+
+
+def _targets_from_stdin(role: str | None, pins: set, chain: tuple,
+                        here: Path) -> list[Target]:
+    """The targets read from stdin, one per non-blank line.
+
+    Split from `main` for #136: reading the stdin fallback is its own
+    question, asked only once `main` has decided no other source answered.
+    """
+    return [Target(repo_basename(line.strip()), role, pins, chain, here)
+            for line in sys.stdin if line.strip()]
+
+
+def _print_classification(name: str, found: Classification | None) -> None:
+    """The one plain-listing line `main` prints for a name, un-`--explain`d.
+
+    Split from `main` for #136: composing this line is a single question —
+    what to call the name, and what else it also matched — asked once per
+    name instead of inline in the classify loop.
+    """
+    # An independent statement rather than a ternary nested inside a
+    # ternary (python:S3358): the family/role suffix is decided on
+    # its own before it is appended to the label.
+    if not found:
+        label = "NO FAMILY"
+    else:
+        role_suffix = f"/{found[1]}" if found[1] else ""
+        label = found[0] + role_suffix
+    also = f"   also_matches {','.join(found.also_matches)}" \
+        if found and found.also_matches else ""
+    print(f"  {name:<32} {label}{also}")
+
+
+def _classify_targets(policy: NamingPolicy, targets: list, args,
+                      keyed_sources: dict,
+                      default_source: Path | None) -> tuple[list[str], list[str]]:
+    """Classify every target, printing as `args` asks; return `(unclassified
+    names, warnings)`.
+
+    Split from `main` for #136: walking every target and deciding what to
+    print for EACH is one question; what to do with the totals afterwards
+    (the exit code, the FINDING/WARNING lines) stays `main`'s, unchanged.
+    """
+    unclassified: list[str] = []
+    warnings: list[str] = []
+    for target in targets:
+        name = target.name
+        link_pins = _link_pins(target, keyed_sources, default_source)
+        found = policy.classify(name, target.role, target.pins, target.chain,
+                                link_pins)
+        if args.explain:
+            print("\n".join(_describe(policy, target, link_pins)))
+        elif not args.quiet:
+            _print_classification(name, found)
+        if found:
+            warnings.extend(f"{name}: {text}"
+                            for text in found.referent.warnings)
+        else:
+            unclassified.append(name)
+    return unclassified, warnings
+
+
+def _emit_reports(args, unclassified: list[str], warnings: list[str],
+                  findings: list[str]) -> int:
+    """Print the WARNING/FINDING lines owed once, and return the exit code.
+
+    Split from `main` for #136: what to print once classification is
+    finished, and what code to exit with, is one question asked once at the
+    end, not interleaved with the loop that classifies.
+    """
+    # A WARNING IS NOT A FINDING. An unread link tree is the ordinary case in
+    # a fork-and-run checkout, and an exit code that punished it would make the
+    # answer depend on which repositories happen to be on the disk.
+    for warning in warnings:
+        if not args.quiet and not args.explain:
+            print(f"WARNING {warning}", file=sys.stderr)
+    for finding in findings:
+        print(f"FINDING {finding}", file=sys.stderr)
+    if unclassified:
+        print(
+            "FINDING naming-unclassified: "
+            + ", ".join(unclassified)
+            + "\n  These names match none of the families in "
+            + str(args.policy)
+            + ".\n  A project's three repositories are `<Project>`, "
+            "`<Project>-spec` and `<Project>-code`; `<Project>` is one "
+            "CamelCase token with no hyphen, underscore, dot or space.",
+            file=sys.stderr,
+        )
+    return 1 if (unclassified or findings) else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("names", nargs="*", help="repository names to classify")
@@ -440,14 +549,7 @@ def main(argv: list[str] | None = None) -> int:
         print(str(exc), file=sys.stderr)
         return 2
 
-    keyed_sources: dict[str, Path] = {}
-    default_source: Path | None = None
-    for raw in args.link_source:
-        product, sep, path = raw.partition("=")
-        if sep:
-            keyed_sources[product.casefold()] = Path(path)
-        else:
-            default_source = Path(raw)
+    keyed_sources, default_source = _link_sources_from_args(args.link_source)
 
     cli_pins = {p.strip() for p in args.pins.split(",") if p.strip()}
     cli_chain = tuple(c.strip() for c in args.referent_chain.split(",")
@@ -466,61 +568,15 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         targets.extend(extra)
     if not targets and not sys.stdin.isatty():
-        targets = [Target(repo_basename(line.strip()), args.role, cli_pins,
-                          cli_chain, here)
-                   for line in sys.stdin if line.strip()]
+        targets = _targets_from_stdin(args.role, cli_pins, cli_chain, here)
     if not targets:
         print("REFUSED naming-no-target: no names given. Pass names, "
               "`--project project.yaml`, or names on stdin.", file=sys.stderr)
         return 2
 
-    unclassified = []
-    warnings: list[str] = []
-    for target in targets:
-        name = target.name
-        link_pins = _link_pins(target, keyed_sources, default_source)
-        found = policy.classify(name, target.role, target.pins, target.chain,
-                                link_pins)
-        if args.explain:
-            print("\n".join(_describe(policy, target, link_pins)))
-        elif not args.quiet:
-            # An independent statement rather than a ternary nested inside a
-            # ternary (python:S3358): the family/role suffix is decided on
-            # its own before it is appended to the label.
-            if not found:
-                label = "NO FAMILY"
-            else:
-                role_suffix = f"/{found[1]}" if found[1] else ""
-                label = found[0] + role_suffix
-            also = f"   also_matches {','.join(found.also_matches)}" \
-                if found and found.also_matches else ""
-            print(f"  {name:<32} {label}{also}")
-        if found:
-            warnings.extend(f"{name}: {text}"
-                            for text in found.referent.warnings)
-        if not found:
-            unclassified.append(name)
-
-    # A WARNING IS NOT A FINDING. An unread link tree is the ordinary case in
-    # a fork-and-run checkout, and an exit code that punished it would make the
-    # answer depend on which repositories happen to be on the disk.
-    for warning in warnings:
-        if not args.quiet and not args.explain:
-            print(f"WARNING {warning}", file=sys.stderr)
-    for finding in findings:
-        print(f"FINDING {finding}", file=sys.stderr)
-    if unclassified:
-        print(
-            "FINDING naming-unclassified: "
-            + ", ".join(unclassified)
-            + "\n  These names match none of the families in "
-            + str(args.policy)
-            + ".\n  A project's three repositories are `<Project>`, "
-            "`<Project>-spec` and `<Project>-code`; `<Project>` is one "
-            "CamelCase token with no hyphen, underscore, dot or space.",
-            file=sys.stderr,
-        )
-    return 1 if (unclassified or findings) else 0
+    unclassified, warnings = _classify_targets(
+        policy, targets, args, keyed_sources, default_source)
+    return _emit_reports(args, unclassified, warnings, findings)
 
 
 if __name__ == "__main__":
