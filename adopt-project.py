@@ -568,12 +568,16 @@ def render_plan(args, source: Source, entries: list[Entry], names: dict,
     return "\n".join(lines) + "\n"
 
 
-def cmd_plan(args) -> int:
-    work_root = _work_root(args)
-    source = Source.open(args.source, work_root)
-    policy = PathPolicy.load(args.path_policy or PATH_POLICY)
-    naming = NamingPolicy.load(NAMING_POLICY)
+def _checked_plan_inputs(args, source: Source,
+                         naming: NamingPolicy) -> tuple[dict, list]:
+    """Every value the plan will RECORD, defaulted and checked before one of
+    them is written. Returns `(names, pins)`.
 
+    Split out of `cmd_plan` for #138, and the order inside it is the order the
+    refusals came in: a run that got as far as naming the three legs before it
+    refused an unparseable `--elected-on` would send a reader looking in the
+    wrong place for the line that was wrong.
+    """
     args.project = checked_value("--project", args.project)
     args.tracking_branch = checked_value("--tracking-branch",
                                          args.tracking_branch)
@@ -600,15 +604,18 @@ def cmd_plan(args) -> int:
     names = _names(args.project)
     pins = [_checked_pin_name(p) for p in (args.pin or []) if p.strip()]
     _check_names(naming, names, set(pins))
+    return names, pins
 
-    tree = source.tree()
-    entries = walk(policy, [(path, size) for path, _, _, size in tree])
-    materialized = _predict_collisions(entries)
-    follow_ups = follow_ups_for(source, entries, names, args.spec_path,
-                                args.code_path, materialized)
-    out = Path(args.out)
-    write_lf(out, render_plan(args, source, entries, names, pins, follow_ups))
 
+def _print_plan_report(args, source: Source, tree: list, entries: list,
+                       follow_ups: list, out: Path) -> None:
+    """What `plan` says to the terminal once the file is on disk.
+
+    Split out of `cmd_plan` for #138. THE UNRESOLVED PATHS ARE LAST on
+    purpose: they are the one part of this report somebody has to act on, and
+    a question printed above a summary table is a question that gets scrolled
+    past.
+    """
     print(f"source     {source.repository or source.path} @ "
           f"{source.commit[:12]} ({source.branch}), "
           f"{len(tree)} files, {source.commit_count()} commits")
@@ -628,6 +635,25 @@ def cmd_plan(args) -> int:
               "question before `execute` will run:")
         for entry in unresolved:
             print(f"  {entry.path}\n      {entry.question}")
+
+
+def cmd_plan(args) -> int:
+    work_root = _work_root(args)
+    source = Source.open(args.source, work_root)
+    policy = PathPolicy.load(args.path_policy or PATH_POLICY)
+    naming = NamingPolicy.load(NAMING_POLICY)
+
+    names, pins = _checked_plan_inputs(args, source, naming)
+
+    tree = source.tree()
+    entries = walk(policy, [(path, size) for path, _, _, size in tree])
+    materialized = _predict_collisions(entries)
+    follow_ups = follow_ups_for(source, entries, names, args.spec_path,
+                                args.code_path, materialized)
+    out = Path(args.out)
+    write_lf(out, render_plan(args, source, entries, names, pins, follow_ups))
+
+    _print_plan_report(args, source, tree, entries, follow_ups, out)
     return 0
 
 
@@ -1192,22 +1218,12 @@ def _mount_the_legs(assembly: Path, work_root: Path, names: dict, urls: dict,
     run(["git", "submodule", "sync", "-q"], cwd=assembly)
 
 
-def cmd_execute(args) -> int:  # noqa: C901
-    plan = Plan.load(Path(args.plan))
-    work_root = _work_root(args)
-    source = plan.open_source(args.source, work_root)
-    naming = NamingPolicy.load(NAMING_POLICY)
-    _require_filter_repo()
+def _checked_plan_values(plan: Plan) -> tuple[str, str, str, str]:
+    """The four plan values that reach a `git` command line as arguments:
+    `(spec_path, code_path, branch, tracking)`.
 
-    names = plan.names()
-    pins = set(plan.pins)
-    _check_names(naming, names, pins)
-    _refuse_an_unrunnable_plan(plan, source)
-
-    # THE PLAN IS UNTRUSTED INPUT. It is a file a human or an AI edited, and
-    # every value below becomes an argument to `git` or `gh`, so each one is
-    # validated before it is used rather than after something has gone wrong.
-    local = args.local_remote_dir is not None
+    Split out of `cmd_execute` for #138, in the order the refusals came in.
+    """
     spec_path = checked_value("legs.spec_path", plan.legs.get("spec_path")
                               or "spec")
     code_path = checked_value("legs.code_path", plan.legs.get("code_path")
@@ -1216,6 +1232,18 @@ def cmd_execute(args) -> int:  # noqa: C901
                                                     ADOPT_BRANCH))
     tracking = checked_value("tracking_branch",
                              plan.get("tracking_branch", "main"))
+    return spec_path, code_path, branch, tracking
+
+
+def _repository_urls(args, plan: Plan, names: dict,
+                     source: Source) -> tuple[bool, dict, dict]:
+    """Where the three repositories are: `(local, repositories, urls)`.
+
+    Split out of `cmd_execute` for #138. The assembly root's URL is the SOURCE
+    itself under `--local-remote-dir`, because an in-place adoption pushes its
+    split branch back to the repository it read.
+    """
+    local = args.local_remote_dir is not None
     org = checked_value("org", plan.get("org"))
     repositories = {role: f"{org}/{name}" for role, name in names.items()}
     if local:
@@ -1229,15 +1257,27 @@ def cmd_execute(args) -> int:  # noqa: C901
     else:
         urls = {role: f"https://github.com/{org}/{name}.git"
                 for role, name in names.items()}
+    return local, repositories, urls
 
-    paths_for = {leg: [checked_value("a plan path", e.get("path"))
-                       for e in plan.entries if str(e.get("leg")) == leg]
-                 for leg in LEG_VALUES}
 
-    # A leg with no path is SEEDED, and seeding takes a human's word. Derived
-    # from the ENTRIES, never from the plan's own `seeding:` record: the
-    # entries are what the split is actually made of.
-    seeded = seeded_legs(paths_for)
+def _leg_paths(plan: Plan) -> dict:
+    """Every plan entry's path, by the leg it was assigned to.
+
+    Each one is checked because it reaches `git filter-repo` as an argument.
+    Split out of `cmd_execute` for #138.
+    """
+    return {leg: [checked_value("a plan path", e.get("path"))
+                  for e in plan.entries if str(e.get("leg")) == leg]
+            for leg in LEG_VALUES}
+
+
+def _refuse_unconsented_seeding(args, plan: Plan, seeded: list) -> None:
+    """A leg with no path is SEEDED, and seeding takes a human's word.
+
+    Split out of `cmd_execute` for #138. `seeded` is derived from the ENTRIES,
+    never from the plan's own `seeding:` record: the entries are what the
+    split is actually made of.
+    """
     allowed = plan.allowed_empty_legs() | set(args.allow_empty_leg or [])
     unconsented = [role for role in seeded if role not in allowed]
     if unconsented:
@@ -1257,25 +1297,18 @@ def cmd_execute(args) -> int:  # noqa: C901
             + "/".join(unconsented) + " paths to a bad edit looks identical "
             "from here, which is why this is a human's word and not an "
             "inference.")
-    for line in plan.seeding_record_disagreements(seeded):
-        print(line)
-    topic = naming.topic_for(plan.project_id)
-    print(_topics_line(topic, local))
-    _confirm(args, plan, names)
 
-    # ---- (a) the two legs' remotes ----------------------------------------
-    _create_leg_remotes(plan, names, repositories, urls, tracking, local)
 
-    # The substitution table is built BEFORE the legs, because a SEEDED leg is
-    # rendered from `templates/<role>-root/` and needs it. The four leg
-    # commit/digest values are the only ones that cannot be known yet; they
-    # are filled in below, before the assembly root is materialized.
-    shape_commit = git_out(["rev-parse", "HEAD"], cwd=SHAPE_ROOT).lower()
-    values = _template_values(plan, names, repositories, urls, spec_path,
-                              code_path, tracking, {}, {},
-                              shape_commit, pins, naming)
+def _build_the_legs(source: Source, names: dict, repositories: dict,
+                    urls: dict, values: dict, work_root: Path,
+                    paths_for: dict, seeded: list, branch: str,
+                    tracking: str) -> tuple[dict, dict] | None:
+    """(b) Each leg, extracted with its history or seeded from the template.
 
-    # ---- (b) history-preserving extraction, or a seeded leg ---------------
+    Returns `(leg_commits, leg_digests)`, or None when a `git` or `gh` command
+    failed — `run` has already said which and why. Split out of `cmd_execute`
+    for #138.
+    """
     leg_commits: dict[str, str] = {}
     leg_digests: dict[str, str] = {}
     for role in EXTRACTED_LEGS:
@@ -1290,16 +1323,78 @@ def cmd_execute(args) -> int:  # noqa: C901
                     work_root / f"{role}-paths.txt", branch, urls[role],
                     tracking, repositories[role])
         except CommandFailed:
-            return 2
-    values.update({
-        "SPEC_COMMIT": leg_commits["spec"],
-        "CODE_COMMIT": leg_commits["code"],
-        "SPEC_TREE_SHA256": leg_digests["spec"],
-        "CODE_TREE_SHA256": leg_digests["code"],
-    })
+            return None
+    return leg_commits, leg_digests
 
-    # ---- (c) ONE split commit on a branch of the source -------------------
-    assembly = work_root / names["assembly"]
+
+def _open_the_pull_request(repositories: dict, names: dict, tracking: str,
+                           branch: str, message: str) -> bool:
+    """(c′) The pull request, because these organisations are pull-request
+    only.
+
+    Returns False when `gh` refused, having printed why and the command that
+    finishes the job by hand — the branch IS pushed by the time this runs, so
+    the exit is never "start again". Split out of `cmd_execute` for #138.
+    """
+    try:
+        url = run(["gh", "pr", "create", "--repo", repositories["assembly"],
+                   "--base", tracking, "--head", branch,
+                   "--title", f"Adopt the three-repository shape: "
+                              f"{names['spec']} and {names['code']}",
+                   "--body", message])
+        print(f"  pull request {url}")
+    except CommandFailed as exc:
+        print(exc.loudly("opening the pull request"), file=sys.stderr)
+        print("The branch IS pushed. Open the pull request by hand:\n"
+              f"    gh pr create --repo {repositories['assembly']} "
+              f"--base {tracking} --head {branch}", file=sys.stderr)
+        return False
+    return True
+
+
+def _set_the_topic(repositories: dict, topic: str) -> bool:
+    """(c″) The topic, on all three.
+
+    The assembly root pre-existed and is still a repository OF THIS PROJECT:
+    `project.yaml` claims `topic: <topic>` either way, and a claim the
+    organisation cannot see is the defect being fixed here.
+
+    A TOPIC THAT WILL NOT SET DOES NOT SUPPRESS THE VERIFICATION TABLE. The
+    split is pushed and the pull request is open by now, and the blob-sha
+    accounting for every source path is the report a human is told to read
+    back (AGENTS.md step 7); losing it to a permission or a rate limit would
+    be the more expensive failure. So this RETURNS False rather than exiting:
+    the caller reports it after the table, with the commands to finish by
+    hand, and still exits non-zero. Split out of `cmd_execute` for #138.
+    """
+    try:
+        for role in ("assembly", "spec", "code"):
+            run(["gh", "repo", "edit", repositories[role], "--add-topic",
+                 topic])
+        print(f"  topic     {topic} set on all three")
+    except CommandFailed as exc:
+        print(exc.loudly("setting the project topic"), file=sys.stderr)
+        print("The split IS pushed and the pull request IS open. Set the "
+              "topic by hand:\n"
+              + "\n".join(f"    gh repo edit {repositories[role]} "
+                          f"--add-topic {topic}"
+                          for role in ("assembly", "spec", "code")),
+              file=sys.stderr)
+        return False
+    return True
+
+
+def _commit_the_split(plan: Plan, source: Source, assembly: Path,
+                      names: dict, urls: dict, values: dict, work_root: Path,
+                      paths_for: dict, seeded: list, spec_path: str,
+                      code_path: str, branch: str,
+                      leg_commits: dict) -> tuple[str, str] | None:
+    """(c) ONE split commit on a branch of the source, pushed.
+
+    Returns `(split_commit, message)` — the message travels on because it is
+    also the pull request's body — or None when the push was REFUSED, having
+    already said so. Split out of `cmd_execute` for #138.
+    """
     run(["git", *FILE_PROTOCOL, "clone", "-q", str(source.path), str(assembly)])
     run(["git", "checkout", "-q", "-B", branch, source.commit], cwd=assembly)
     _mount_the_legs(assembly, work_root, names, urls, paths_for, spec_path,
@@ -1324,50 +1419,78 @@ def cmd_execute(args) -> int:  # noqa: C901
              f"HEAD:refs/heads/{branch}"], cwd=assembly)
     except CommandFailed as exc:
         print(exc.loudly("pushing the split branch"), file=sys.stderr)
-        return 2
+        return None
     print(f"\n  split {split_commit[:12]} on {branch} -> {urls['assembly']}")
+    return split_commit, message
+
+
+def cmd_execute(args) -> int:
+    plan = Plan.load(Path(args.plan))
+    work_root = _work_root(args)
+    source = plan.open_source(args.source, work_root)
+    naming = NamingPolicy.load(NAMING_POLICY)
+    _require_filter_repo()
+
+    names = plan.names()
+    pins = set(plan.pins)
+    _check_names(naming, names, pins)
+    _refuse_an_unrunnable_plan(plan, source)
+
+    # THE PLAN IS UNTRUSTED INPUT. It is a file a human or an AI edited, and
+    # every value below becomes an argument to `git` or `gh`, so each one is
+    # validated before it is used rather than after something has gone wrong.
+    spec_path, code_path, branch, tracking = _checked_plan_values(plan)
+    local, repositories, urls = _repository_urls(args, plan, names, source)
+    paths_for = _leg_paths(plan)
+
+    seeded = seeded_legs(paths_for)
+    _refuse_unconsented_seeding(args, plan, seeded)
+    for line in plan.seeding_record_disagreements(seeded):
+        print(line)
+    topic = naming.topic_for(plan.project_id)
+    print(_topics_line(topic, local))
+    _confirm(args, plan, names)
+
+    # ---- (a) the two legs' remotes ----------------------------------------
+    _create_leg_remotes(plan, names, repositories, urls, tracking, local)
+
+    # The substitution table is built BEFORE the legs, because a SEEDED leg is
+    # rendered from `templates/<role>-root/` and needs it. The four leg
+    # commit/digest values are the only ones that cannot be known yet; they
+    # are filled in below, before the assembly root is materialized.
+    shape_commit = git_out(["rev-parse", "HEAD"], cwd=SHAPE_ROOT).lower()
+    values = _template_values(plan, names, repositories, urls, spec_path,
+                              code_path, tracking, {}, {},
+                              shape_commit, pins, naming)
+
+    # ---- (b) history-preserving extraction, or a seeded leg ---------------
+    legs = _build_the_legs(source, names, repositories, urls, values,
+                           work_root, paths_for, seeded, branch, tracking)
+    if legs is None:
+        return 2
+    leg_commits, leg_digests = legs
+    values.update({
+        "SPEC_COMMIT": leg_commits["spec"],
+        "CODE_COMMIT": leg_commits["code"],
+        "SPEC_TREE_SHA256": leg_digests["spec"],
+        "CODE_TREE_SHA256": leg_digests["code"],
+    })
+
+    # ---- (c) ONE split commit on a branch of the source -------------------
+    assembly = work_root / names["assembly"]
+    split = _commit_the_split(plan, source, assembly, names, urls, values,
+                              work_root, paths_for, seeded, spec_path,
+                              code_path, branch, leg_commits)
+    if split is None:
+        return 2
+    split_commit, message = split
+
     topics_failed = False
     if not local:
-        try:
-            url = run(["gh", "pr", "create", "--repo", repositories["assembly"],
-                       "--base", tracking, "--head", branch,
-                       "--title", f"Adopt the three-repository shape: "
-                                  f"{names['spec']} and {names['code']}",
-                       "--body", message])
-            print(f"  pull request {url}")
-        except CommandFailed as exc:
-            print(exc.loudly("opening the pull request"), file=sys.stderr)
-            print("The branch IS pushed. Open the pull request by hand:\n"
-                  f"    gh pr create --repo {repositories['assembly']} "
-                  f"--base {tracking} --head {branch}", file=sys.stderr)
+        if not _open_the_pull_request(repositories, names, tracking, branch,
+                                      message):
             return 2
-
-        # ---- the topic, on all three --------------------------------------
-        # The assembly root pre-existed and is still a repository OF THIS
-        # PROJECT: `project.yaml` claims `topic: <topic>` either way, and a
-        # claim the organisation cannot see is the defect being fixed here.
-        #
-        # A TOPIC THAT WILL NOT SET DOES NOT SUPPRESS THE VERIFICATION TABLE.
-        # The split is pushed and the pull request is open by now, and the
-        # blob-sha accounting for every source path is the report a human is
-        # told to read back (AGENTS.md step 7); losing it to a permission or a
-        # rate limit would be the more expensive failure. It is still a
-        # non-zero exit, reported after the table, with the commands to
-        # finish by hand.
-        try:
-            for role in ("assembly", "spec", "code"):
-                run(["gh", "repo", "edit", repositories[role], "--add-topic",
-                     topic])
-            print(f"  topic     {topic} set on all three")
-        except CommandFailed as exc:
-            topics_failed = True
-            print(exc.loudly("setting the project topic"), file=sys.stderr)
-            print("The split IS pushed and the pull request IS open. Set the "
-                  "topic by hand:\n"
-                  + "\n".join(f"    gh repo edit {repositories[role]} "
-                              f"--add-topic {topic}"
-                              for role in ("assembly", "spec", "code")),
-                  file=sys.stderr)
+        topics_failed = not _set_the_topic(repositories, topic)
 
     # ---- (d) verification, by blob sha ------------------------------------
     verified = _verify(source, assembly, work_root, names, paths_for,
