@@ -2070,68 +2070,87 @@ def is_this_member(sibling: Path, row: dict) -> bool:
     return str(manifest.get("name")) == str(row.get("project"))
 
 
-def check_members(ctx: Context) -> Row:
-    """Each member pinned under `members/`, and the working clone beside it.
+def member_state(ctx: Context, row: dict, members_dir: str) -> dict:
+    """ONE member's `--json` entry: both copies of it, as they are found.
 
-    TWO COPIES OF EVERY MEMBER IS THE LAYOUT, and they are different things.
-    `members/<Project>` inside the holder is PINNED AND DETACHED — that is
-    what `bootstrap` places and what `validate-family.py` reads — and the
-    sibling beside the holder is where a person works. So the mount is asked
-    whether it is detached AT the pin, and the sibling is only asked whether
-    it exists and is this project.
+    NOTHING IS ASKED OF A MOUNT THAT IS NOT POPULATED. An unbootstrapped
+    submodule is an EMPTY directory, and `git rev-parse HEAD` run inside one
+    answers about the HOLDER -- the repository whose working tree that empty
+    directory sits in -- so a member that had never been fetched would be
+    reported as checked out at the holder's commit. `head` and `detached` are
+    `None` there, and the caller says which of the two it is.
+
+    THE PIN IS ONLY BELIEVED WHEN IT IS 40 HEX. A `pin.commit` carrying a
+    branch name or a tag is not a commit to compare a HEAD against, and this
+    reports no pin at all rather than a comparison that would fail for the
+    wrong reason.
+
+    Split out of `check_members` for #134.
     """
-    members = ctx.members()
-    members_dir = str((ctx.manifest or {}).get("members_dir") or "members")
-    if not members:
-        return Row("members", "members", OK,
-                   "no members yet: a family with none is empty, not wrong",
-                   None, {"members": []})
-    rows: list[dict] = []
-    problems: list[str] = []
-    siblings_absent: list[str] = []
-    on_a_branch: list[str] = []
-    for row in members:
-        project = str(row.get("project") or "?")
-        rel = str(row.get("path") or f"{members_dir}/{project}")
-        mount = ctx.root / rel
-        pin = row.get("pin") if isinstance(row.get("pin"), dict) else {}
-        pinned = str(pin.get("commit") or "").lower()
-        pinned = pinned if COMMIT_RE.match(pinned) else None
-        populated = mount.is_dir() and any(mount.iterdir())
-        head = head_of(mount) if populated else None
-        loose = detached(mount) if populated else None
-        sibling = ctx.root.parent / project
-        has_sibling = is_this_member(sibling, row)
-        rows.append({"project": project, "path": rel, "pin": pinned,
-                     "populated": populated, "head": head,
-                     "detached": loose,
-                     "working_clone": sibling.as_posix() if has_sibling
-                     else None})
-        if not populated:
-            problems.append(f"{rel}: not populated -- the pinned copy is an "
-                            "unbootstrapped submodule")
-        elif pinned is None:
-            problems.append(f"{project}: the row carries no 40-hex "
-                            "`pin.commit` to compare against")
-        elif head != pinned:
-            problems.append(f"{rel}: checked out at "
-                            f"{(head or '?')[:12]}, pinned at {pinned[:12]}")
-        elif loose is False:
-            # AT THE PIN BUT ON A BRANCH: RECORDED AND SAID, NEVER A FINDING.
-            # Copilot asked for this on PR #96, and asked for it as a
-            # failure — but `family.py add` ITSELF leaves the member on a
-            # branch (`git submodule add` checks one out), and only a fresh
-            # `clone --recurse-submodules` of the holder is detached. A row
-            # that refused here would refuse a holder the standard's own
-            # tool had just made, which is a rule this standard has not
-            # made. So the state is reported, because a branch in the copy
-            # the gate reads is worth a person's attention, and the verdict
-            # is left to the facts `validate-family.py` actually asserts.
-            on_a_branch.append(rel)
-        if not has_sibling:
-            siblings_absent.append(project)
-    detail = {"members": rows, "without_working_clone": siblings_absent,
-              "on_a_branch": on_a_branch}
+    project = str(row.get("project") or "?")
+    rel = str(row.get("path") or f"{members_dir}/{project}")
+    mount = ctx.root / rel
+    pin = row.get("pin") if isinstance(row.get("pin"), dict) else {}
+    pinned = str(pin.get("commit") or "").lower()
+    pinned = pinned if COMMIT_RE.match(pinned) else None
+    populated = mount.is_dir() and any(mount.iterdir())
+    head = head_of(mount) if populated else None
+    loose = detached(mount) if populated else None
+    sibling = ctx.root.parent / project
+    has_sibling = is_this_member(sibling, row)
+    return {"project": project, "path": rel, "pin": pinned,
+            "populated": populated, "head": head,
+            "detached": loose,
+            "working_clone": sibling.as_posix() if has_sibling
+            else None}
+
+
+def member_problem(entry: dict) -> str | None:
+    """What is wrong with one member's pinned copy, or None.
+
+    THE ORDER IS THE ONLY ORDER THE ANSWERS MAKE SENSE IN: an empty mount has
+    no HEAD to compare, a row with no 40-hex pin has nothing to compare it
+    against, and only then is "checked out somewhere else" a thing that can
+    be said. Each of these three is a member the family's own gate would
+    fail, which is why they are the row's findings and the state below them
+    is not.
+
+    A MEMBER AT ITS PIN BUT ON A BRANCH IS NOT ONE OF THEM, deliberately; the
+    branch in `check_members` that records it says at length why the standard
+    does not refuse a holder its own `family.py add` has just made.
+
+    Split out of `check_members` for #134.
+    """
+    if not entry["populated"]:
+        return (f"{entry['path']}: not populated -- the pinned copy is an "
+                "unbootstrapped submodule")
+    if entry["pin"] is None:
+        return (f"{entry['project']}: the row carries no 40-hex "
+                "`pin.commit` to compare against")
+    if entry["head"] != entry["pin"]:
+        return (f"{entry['path']}: checked out at "
+                f"{(entry['head'] or '?')[:12]}, pinned at "
+                f"{entry['pin'][:12]}")
+    return None
+
+
+def members_verdict(ctx: Context, detail: dict, members_dir: str,
+                    problems: list) -> Row:
+    """What the members add up to: the one finding, or the two OK wordings.
+
+    ONLY THE PINNED COPIES CAN MAKE THIS ROW RED. A missing working clone is
+    the WORKSTATION layout and not a fault of the repository's -- what the
+    family gate reads is `<members_dir>/<Project>` -- and a member on a
+    branch at its pin is a state worth a person's eye rather than a verdict.
+    Both of those are therefore said inside an `ok` row, at length, instead
+    of being left out of a report that would then look cleaner than the
+    machine it ran on.
+
+    Split out of `check_members` for #134.
+    """
+    rows = detail["members"]
+    on_a_branch = detail["on_a_branch"]
+    siblings_absent = detail["without_working_clone"]
     if problems:
         return Row("members", "members", FINDING, "; ".join(problems),
                    f"{PYTHON} "
@@ -2146,9 +2165,6 @@ def check_members(ctx: Context) -> Row:
                  + " (a fresh `clone --recurse-submodules` of this holder is "
                    "detached; `family.py add` leaves a branch behind)")
     if siblings_absent:
-        # NOT A FINDING. The working clones are the WORKSTATION layout, and a
-        # holder on a machine that has not placed them is not thereby
-        # non-compliant -- `members/<Project>` is what the gate reads.
         return Row("members", "members", OK,
                    f"{note}; no working clone beside the holder for "
                    + ", ".join(siblings_absent)
@@ -2157,6 +2173,56 @@ def check_members(ctx: Context) -> Row:
     return Row("members", "members", OK,
                f"{note}, each with a working clone beside the holder", None,
                detail)
+
+
+def check_members(ctx: Context) -> Row:
+    """Each member pinned under `members/`, and the working clone beside it.
+
+    TWO COPIES OF EVERY MEMBER IS THE LAYOUT, and they are different things.
+    `members/<Project>` inside the holder is PINNED AND DETACHED — that is
+    what `bootstrap` places and what `validate-family.py` reads — and the
+    sibling beside the holder is where a person works. So the mount is asked
+    whether it is detached AT the pin, and the sibling is only asked whether
+    it exists and is this project.
+
+    FINDING THE STATE IS `member_state`'s, JUDGING IT IS `member_problem`'s
+    AND THE WORDING IS `members_verdict`'s, so that this loop reads as the
+    one sentence it is: every member is looked at, and each is either a fault
+    or a state worth saying.
+    """
+    members = ctx.members()
+    members_dir = str((ctx.manifest or {}).get("members_dir") or "members")
+    if not members:
+        return Row("members", "members", OK,
+                   "no members yet: a family with none is empty, not wrong",
+                   None, {"members": []})
+    rows: list[dict] = []
+    problems: list[str] = []
+    siblings_absent: list[str] = []
+    on_a_branch: list[str] = []
+    for row in members:
+        entry = member_state(ctx, row, members_dir)
+        rows.append(entry)
+        problem = member_problem(entry)
+        if problem:
+            problems.append(problem)
+        elif entry["detached"] is False:
+            # AT THE PIN BUT ON A BRANCH: RECORDED AND SAID, NEVER A FINDING.
+            # Copilot asked for this on PR #96, and asked for it as a
+            # failure — but `family.py add` ITSELF leaves the member on a
+            # branch (`git submodule add` checks one out), and only a fresh
+            # `clone --recurse-submodules` of the holder is detached. A row
+            # that refused here would refuse a holder the standard's own
+            # tool had just made, which is a rule this standard has not
+            # made. So the state is reported, because a branch in the copy
+            # the gate reads is worth a person's attention, and the verdict
+            # is left to the facts `validate-family.py` actually asserts.
+            on_a_branch.append(entry["path"])
+        if not entry["working_clone"]:
+            siblings_absent.append(entry["project"])
+    detail = {"members": rows, "without_working_clone": siblings_absent,
+              "on_a_branch": on_a_branch}
+    return members_verdict(ctx, detail, members_dir, problems)
 
 
 # ---------------------------------------------------------------------------
