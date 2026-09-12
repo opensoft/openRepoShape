@@ -113,10 +113,15 @@ def _workflow_refs(root: Path) -> list[tuple[Path, str, str]]:
     return out
 
 
-def _check_leg(root: Path, leg: dict, report: Report, refs) -> None:
-    role = leg.get("role")
-    path = str(leg.get("path") or "")
-    repository = str(leg.get("repository") or "")
+def _load_leg_pin(root: Path, role, path: str, repository: str,
+                  report: Report) -> tuple[dict, str, str]:
+    """Read `<role>-pin.yaml` and check its own fields, before any fact in it
+    is compared against another.
+
+    Split from `_check_leg` for #132: everything that answers "does the pin
+    file itself look right" belongs together. Returns the pin, its path
+    relative to `root`, and its `commit:` lowercased.
+    """
     pin_path = root / "contracts" / f"{role}-pin.yaml"
     if not pin_path.is_file():
         raise Refusal(
@@ -159,8 +164,15 @@ def _check_leg(root: Path, leg: dict, report: Report, refs) -> None:
                        f"{rel}: source_repository is "
                        f"{pin.get('source_repository')!r} but project.yaml "
                        f"declares {repository!r}")
+    return pin, rel, commit
 
-    # ---- fact 1 vs fact 2: the gitlink and the pin file --------------------
+
+def _check_gitlink_matches_pin(root: Path, role, path: str, commit: str,
+                               rel: str, report: Report) -> str:
+    """Fact 1 vs fact 2: the recorded gitlink against the pin file's
+    `commit:`. Split from `_check_leg` for #132. Returns the gitlink so the
+    caller can check it again against fact 3, the workflow references.
+    """
     gitlink = recorded_gitlink(root, path)
     if gitlink is None:
         raise Refusal(
@@ -176,8 +188,15 @@ def _check_leg(root: Path, leg: dict, report: Report, refs) -> None:
         )
     else:
         report.note(f"{path}: gitlink == {rel} commit {commit[:12]}")
+    return gitlink
 
-    # ---- the digest --------------------------------------------------------
+
+def _check_pin_digest(root: Path, path: str, commit: str, pin: dict, rel: str,
+                      report: Report) -> None:
+    """The digest: split from `_check_leg` for #132. Recomputes the leg's
+    tree sha256 at the pinned commit, because a gitlink and a pin file that
+    agree on a commit may still disagree on that commit's bytes.
+    """
     submodule = root / path
     if not (submodule / ".git").exists():
         raise Refusal(
@@ -219,7 +238,12 @@ def _check_leg(root: Path, leg: dict, report: Report, refs) -> None:
         else:
             report.note(f"{path}: tree digest recomputes ({recorded[:12]}…)")
 
-    # ---- fact 3: every workflow reference naming this leg ------------------
+
+def _check_workflow_refs_for_leg(refs, repository: str, path: str,
+                                 gitlink: str, report: Report) -> None:
+    """Fact 3: split from `_check_leg` for #132 — every workflow `@<sha>`
+    reference naming this leg's repository must agree with the gitlink.
+    """
     seen = 0
     for wf_path, wf_repo, wf_sha in refs:
         if wf_repo != repository:
@@ -234,6 +258,16 @@ def _check_leg(root: Path, leg: dict, report: Report, refs) -> None:
     if seen:
         report.note(f"{repository}: {seen} workflow @<sha> reference(s) "
                     f"agree with the gitlink")
+
+
+def _check_leg(root: Path, leg: dict, report: Report, refs) -> None:
+    role = leg.get("role")
+    path = str(leg.get("path") or "")
+    repository = str(leg.get("repository") or "")
+    pin, rel, commit = _load_leg_pin(root, role, path, repository, report)
+    gitlink = _check_gitlink_matches_pin(root, role, path, commit, rel, report)
+    _check_pin_digest(root, path, commit, pin, rel, report)
+    _check_workflow_refs_for_leg(refs, repository, path, gitlink, report)
 
 
 def _check_shape_pin(root: Path, manifest: dict, report: Report) -> None:
