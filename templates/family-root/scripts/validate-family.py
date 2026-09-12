@@ -85,8 +85,11 @@ class Report:
         self.notes.append(f"  ok  {text}")
 
 
-def _check_envelope(manifest: dict, policy: NamingPolicy,
-                    report: Report) -> None:
+def _check_schema_kind_and_id(manifest: dict, report: Report) -> None:
+    """`schema_version`, `kind` and `id` — three fixed-shape fields that carry
+    no lookup and no branch of their own, split from `_check_envelope` for
+    #137 so the fields that DO (the name, the dates, the shape block) are not
+    buried beside them."""
     if manifest.get("schema_version") != 1:
         report.finding("family-schema-version",
                        f"schema_version is {manifest.get('schema_version')!r}, "
@@ -100,28 +103,44 @@ def _check_envelope(manifest: dict, policy: NamingPolicy,
         report.finding("family-id",
                        f"id is {family_id!r}; it must match "
                        f"{PROJECT_ID_RE.pattern}")
+
+
+def _check_family_name(manifest: dict, policy: NamingPolicy,
+                       report: Report) -> None:
+    """The one field in the envelope that is also a naming-policy question:
+    is `name` even a string, and if so, does it classify as a family?
+
+    Split from `_check_envelope` for #137: the DECLARED-ONLY classification
+    below is its own decision, distinct from the fixed-shape checks beside it.
+    """
     name = manifest.get("name")
     if not isinstance(name, str) or not name.strip():
         report.finding("family-name", f"name is {name!r}")
+        return
+    # THE DECLARED-ONLY FORM, ASKED FOR BY NAME. This manifest IS the
+    # declaration, so the classifier is given `family` rather than being
+    # left to read a bare CamelCase token as the assembly root it also
+    # looks like.
+    found = policy.classify(repo_basename(name.strip()), "family")
+    if found is None:
+        report.finding("naming-unclassified",
+                       f"{name!r} matches no family in the naming policy. "
+                       "A family holder is one CamelCase token with no "
+                       "hyphen, underscore, dot or space.")
+    elif found.family != "family":
+        report.finding(
+            "naming-not-a-family",
+            f"{name!r} classifies as {found.family!r}"
+            + (f"/{found.role}" if found.role else "")
+            + f", not as a family holder ({found.reason})")
     else:
-        # THE DECLARED-ONLY FORM, ASKED FOR BY NAME. This manifest IS the
-        # declaration, so the classifier is given `family` rather than being
-        # left to read a bare CamelCase token as the assembly root it also
-        # looks like.
-        found = policy.classify(repo_basename(name.strip()), "family")
-        if found is None:
-            report.finding("naming-unclassified",
-                           f"{name!r} matches no family in the naming policy. "
-                           "A family holder is one CamelCase token with no "
-                           "hyphen, underscore, dot or space.")
-        elif found.family != "family":
-            report.finding(
-                "naming-not-a-family",
-                f"{name!r} classifies as {found.family!r}"
-                + (f"/{found.role}" if found.role else "")
-                + f", not as a family holder ({found.reason})")
-        else:
-            report.note(f"{name}: {found.family} (declared by {MANIFEST})")
+        report.note(f"{name}: {found.family} (declared by {MANIFEST})")
+
+
+def _check_org_visibility_and_dates(manifest: dict, report: Report) -> None:
+    """`org`, `created_by`, `created_on`, `visibility` and `members_dir` —
+    five independent fields, none of them read by any other check, split from
+    `_check_envelope` for #137."""
     if not isinstance(manifest.get("org"), str) or not manifest.get("org"):
         report.finding("family-org", f"org is {manifest.get('org')!r}")
     if not isinstance(manifest.get("created_by"), str) or \
@@ -147,6 +166,12 @@ def _check_envelope(manifest: dict, policy: NamingPolicy,
                        "is what keeps a reader and a validator looking in the "
                        "same place")
 
+
+def _check_shape_block(manifest: dict, report: Report) -> None:
+    """`shape:` — the commit-and-digest pin of the openRepoShape revision
+    this root was cut from. Split from `_check_envelope` for #137: an absent
+    block ends the check early exactly as it always did, since nothing below
+    it can be asked about a `shape` that is not there."""
     shape = manifest.get("shape")
     if not isinstance(shape, dict):
         report.finding("family-shape",
@@ -172,19 +197,43 @@ def _check_envelope(manifest: dict, policy: NamingPolicy,
                        f"{TREE_DIGEST_DEFINITION!r}")
 
 
-def _check_member(root: Path, row: dict, seen: dict, report: Report) -> None:
-    """One member: the row itself, the gitlink, the digest, the identity."""
+def _check_envelope(manifest: dict, policy: NamingPolicy,
+                    report: Report) -> None:
+    """`schema_version`, `kind: family-manifest`, `id`, `name`, `org`,
+    `created_by` / `created_on`, `visibility`, `members_dir` and `shape` — in
+    that order, unchanged; each is now its own decision (#137)."""
+    _check_schema_kind_and_id(manifest, report)
+    _check_family_name(manifest, policy, report)
+    _check_org_visibility_and_dates(manifest, report)
+    _check_shape_block(manifest, report)
+
+
+def _member_project_name(row: dict, seen: dict, report: Report) -> str | None:
+    """The row's own `project:`, or None when nothing else about this member
+    should run — it has none, or its name was already seen once in
+    `members:`. Split from `_check_member` for #137: the two ways this
+    member's checks stop before they start, in one place."""
     project = row.get("project")
     if not isinstance(project, str) or not project:
         report.finding("member-project", f"a member row has no `project:`: "
                                          f"{row!r}")
-        return
+        return None
     if project in seen:
         report.finding("member-duplicate",
                        f"{project} appears more than once in `members:`")
-        return
+        return None
     seen[project] = True
+    return project
 
+
+def _check_member_repository_and_path(row: dict, project: str,
+                                      report: Report) -> str:
+    """`repository:` and `path:` against what they must equal for `project`.
+
+    Split from `_check_member` for #137. Returns `path`, defaulted the same
+    way the row itself defaults it, since the gitlink and digest checks that
+    follow need the same value.
+    """
     repository = row.get("repository")
     if not isinstance(repository, str) or not QUALIFIED_RE.match(repository):
         report.finding("member-repository",
@@ -202,12 +251,14 @@ def _check_member(root: Path, row: dict, seen: dict, report: Report) -> None:
     if path != expected:
         report.finding("member-path",
                        f"{project}: path is {path!r}, expected {expected!r}")
+    return path
 
-    pin = row.get("pin")
-    if not isinstance(pin, dict):
-        report.finding("member-pin", f"{project}: `pin:` is {pin!r}, expected "
-                                     "a mapping")
-        return
+
+def _pin_commit(pin: dict, project: str, report: Report) -> str:
+    """The pin's `revision_kind` and `commit`, checked; returns the LOWERED
+    commit. Split from `_check_member` for #137. Raises `Refusal` for a
+    commit nothing after this point can be checked against — an abbreviated
+    oid, a branch or a tag is a moving reference."""
     if pin.get("revision_kind") != "commit":
         report.finding("pin-tag-only",
                        f"{project}: pin.revision_kind is "
@@ -219,9 +270,15 @@ def _check_member(root: Path, row: dict, seen: dict, report: Report) -> None:
             "member-pin-commit",
             f"{project}: pin.commit is {commit!r}, which is not 40 hex. An "
             "abbreviated oid, a branch or a tag is a moving reference.")
-    commit = commit.lower()
+    return commit.lower()
 
-    # ---- the gitlink -------------------------------------------------------
+
+def _check_member_gitlink(root: Path, path: str, commit: str, project: str,
+                          report: Report) -> None:
+    """The submodule gitlink this repository records at `path`, against the
+    pin — THE LOCKSTEP RULE. Split from `_check_member` for #137. Raises
+    `Refusal` when there is no gitlink at all: a row naming a member this
+    repository does not record as a submodule."""
     gitlink = recorded_gitlink(root, path)
     if gitlink is None:
         raise Refusal(
@@ -240,8 +297,16 @@ def _check_member(root: Path, row: dict, seen: dict, report: Report) -> None:
     else:
         report.note(f"{path}: gitlink == pin {commit[:12]}")
 
-    # ---- the digest and the identity --------------------------------------
-    member = root / path
+
+def _check_member_tree(member: Path, pin: dict, path: str, commit: str,
+                       project: str, report: Report) -> None:
+    """Is `member`'s own object store readable at `commit`, and does its
+    digest match the pin? Split from `_check_member` for #137 — the two
+    questions were already one comment block ("the digest and the identity")
+    in the source. Raises `Refusal` when the tree cannot even be read: an
+    uninitialized submodule, or a commit its checkout does not have. Presence
+    is not identity and an unreadable surface must fail rather than degrade.
+    """
     if not (member / ".git").exists():
         raise Refusal(
             "member-uninitialized",
@@ -285,6 +350,28 @@ def _check_member(root: Path, row: dict, seen: dict, report: Report) -> None:
         else:
             report.note(f"{path}: tree digest recomputes ({recorded[:12]}…)")
 
+
+def _check_member(root: Path, row: dict, seen: dict, report: Report) -> None:
+    """One member: the row itself, the gitlink, the digest, the identity."""
+    project = _member_project_name(row, seen, report)
+    if project is None:
+        return
+
+    path = _check_member_repository_and_path(row, project, report)
+
+    pin = row.get("pin")
+    if not isinstance(pin, dict):
+        report.finding("member-pin", f"{project}: `pin:` is {pin!r}, expected "
+                                     "a mapping")
+        return
+    commit = _pin_commit(pin, project, report)
+
+    # ---- the gitlink -------------------------------------------------------
+    _check_member_gitlink(root, path, commit, project, report)
+
+    # ---- the digest and the identity --------------------------------------
+    member = root / path
+    _check_member_tree(member, pin, path, commit, project, report)
     _check_member_identity(member, row, project, report)
 
 
@@ -332,12 +419,12 @@ def _check_member_identity(member: Path, row: dict, project: str,
         report.note(f"{row.get('path')}: project.yaml id {actual_id}")
 
 
-def _check_shape_pin(root: Path, manifest: dict, report: Report) -> None:
-    """The COPIED shape files, each against its digest. Same rule everywhere.
+def _load_shape_pin(root: Path) -> tuple[dict, str]:
+    """`contracts/shape-pin.yaml`, read and validated as a mapping.
 
-    A family root holds copies of openRepoShape rather than mounting it, so
-    there is no gitlink to compare and the identity of the copies is carried
-    by the per-file `sha256` rows.
+    Split from `_check_shape_pin` for #137. Raises `Refusal` for a pin this
+    validator cannot read at all — absent, or not a mapping — the same two
+    ways every other REFUSAL in this file is unreadable.
     """
     pin_path = root / "contracts" / "shape-pin.yaml"
     if not pin_path.is_file():
@@ -349,6 +436,18 @@ def _check_shape_pin(root: Path, manifest: dict, report: Report) -> None:
     rel = pin_path.relative_to(root).as_posix()
     if not isinstance(pin, dict):
         raise Refusal("shape-pin-unreadable", f"{pin_path}: not a mapping")
+    return pin, rel
+
+
+def _check_shape_pin_envelope(pin: dict, rel: str, manifest: dict,
+                              report: Report) -> str:
+    """`revision_kind`, `commit` and its agreement with `family.yaml`.
+
+    Split from `_check_shape_pin` for #137. Returns the (un-lowered) `commit`
+    string exactly as the parent used to hold it in its own local variable —
+    nothing downstream reads it, but the shape matches every other `_pin_*`
+    helper in this file.
+    """
     if pin.get("revision_kind") != "commit":
         report.finding("pin-tag-only",
                        f"{rel}: revision_kind is {pin.get('revision_kind')!r}")
@@ -361,6 +460,39 @@ def _check_shape_pin(root: Path, manifest: dict, report: Report) -> None:
         report.finding("shape-pin-manifest-disagree",
                        f"{rel} commit {commit} != {MANIFEST} shape.commit "
                        f"{declared}")
+    return commit
+
+
+def _check_one_shape_file(root: Path, rel: str, row, report: Report) -> None:
+    """One `files:` row: present, and its digest matches its `sha256`.
+
+    Split from `_check_shape_pin` for #137 — the per-row body of its loop.
+    """
+    if not isinstance(row, dict):
+        report.finding("shape-pin-row", f"{rel}: a files row is not a mapping")
+        return
+    target = root / str(row.get("path"))
+    if not target.is_file():
+        report.finding("shape-copy-missing",
+                       f"{rel}: {row.get('path')} is pinned but absent")
+        return
+    actual = file_sha256(target)
+    if actual != str(row.get("sha256", "")).lower():
+        report.finding(
+            "shape-copy-drift",
+            f"{row.get('path')}: sha256 {actual}\n"
+            f"       {rel} records {row.get('sha256')}\n"
+            "  A shape file was edited in place. Either revert it, or "
+            "carry the change upstream to openRepoShape and re-pin with "
+            "`update-shape.py`.")
+
+
+def _check_shape_pin_files(root: Path, pin: dict, rel: str,
+                           report: Report) -> None:
+    """Every `files:` row, and the summary note when none of them drifted.
+
+    Split from `_check_shape_pin` for #137.
+    """
     before = len(report.findings)
     files = pin.get("files") or []
     if not files:
@@ -368,27 +500,88 @@ def _check_shape_pin(root: Path, manifest: dict, report: Report) -> None:
                        f"{rel}: no `files:` rows, so nothing about the copied "
                        "shape files is actually asserted")
     for row in files:
-        if not isinstance(row, dict):
-            report.finding("shape-pin-row",
-                           f"{rel}: a files row is not a mapping")
-            continue
-        target = root / str(row.get("path"))
-        if not target.is_file():
-            report.finding("shape-copy-missing",
-                           f"{rel}: {row.get('path')} is pinned but absent")
-            continue
-        actual = file_sha256(target)
-        if actual != str(row.get("sha256", "")).lower():
-            report.finding(
-                "shape-copy-drift",
-                f"{row.get('path')}: sha256 {actual}\n"
-                f"       {rel} records {row.get('sha256')}\n"
-                "  A shape file was edited in place. Either revert it, or "
-                "carry the change upstream to openRepoShape and re-pin with "
-                "`update-shape.py`.")
+        _check_one_shape_file(root, rel, row, report)
     if len(report.findings) == before:
         report.note(f"{rel}: {len(files)} copied shape file(s) match their "
                     "digests")
+
+
+def _check_shape_pin(root: Path, manifest: dict, report: Report) -> None:
+    """The COPIED shape files, each against its digest. Same rule everywhere.
+
+    A family root holds copies of openRepoShape rather than mounting it, so
+    there is no gitlink to compare and the identity of the copies is carried
+    by the per-file `sha256` rows.
+    """
+    pin, rel = _load_shape_pin(root)
+    _check_shape_pin_envelope(pin, rel, manifest, report)
+    _check_shape_pin_files(root, pin, rel, report)
+
+
+def _check_members(root: Path, members: list, no_members: bool,
+                  report: Report) -> None:
+    """Every row in `members:`, or the `--no-members` skip line.
+
+    Split from `main` for #137.
+    """
+    if no_members:
+        print(f"  --  {len(members)} member(s) SKIPPED (--no-members): "
+              "their gitlinks, digests and project ids are not checked "
+              "here")
+        return
+    seen: dict[str, bool] = {}
+    for row in members:
+        if not isinstance(row, dict):
+            report.finding("member-row",
+                           f"a member is not a mapping: {row!r}")
+            continue
+        _check_member(root, row, seen, report)
+    if not members:
+        report.note("no members yet: a family with none is empty, not "
+                    "wrong")
+
+
+def _run_checks(args: argparse.Namespace, report: Report) -> tuple[dict, list]:
+    """Everything `main` used to run inside its own single `try`.
+
+    Split from `main` for #137: lifting this whole body out from under
+    `main`'s `try` removes a level of nesting from every branch inside it,
+    which is where most of `main`'s cognitive complexity was. Raises
+    `Refusal` exactly as `main` always caught it; returns `(manifest,
+    members)`, which `main` still needs afterward for the final summary line.
+    """
+    root = find_repo_root(args.root or Path(__file__).resolve().parents[1])
+    manifest_path = root / MANIFEST
+    if not manifest_path.is_file():
+        raise Refusal(
+            "family-manifest-missing",
+            f"{manifest_path} does not exist. A family holder declares "
+            f"itself in `{MANIFEST}`; a repository without one is not a "
+            "family and does not run this validator.",
+            f"Remediation: `{PYTHON} scripts/family.py init --org <org> "
+            "--family <Name>` creates one. An ordinary project runs "
+            "`validate-manifest.py` instead.")
+    manifest = load_yaml(manifest_path)
+    if not isinstance(manifest, dict):
+        raise Refusal("family-manifest-unreadable",
+                      f"{manifest_path}: not a mapping")
+    policy_path = args.policy or (root / "contracts" /
+                                  "repository-naming.yaml")
+    policy = NamingPolicy.load(policy_path)
+    if not args.pins:
+        _check_envelope(manifest, policy, report)
+
+    members = manifest.get("members")
+    if members is None:
+        members = []
+    if not isinstance(members, list):
+        raise Refusal("family-members-unreadable",
+                      f"{manifest_path}: `members:` is {members!r}, "
+                      "expected a list")
+    _check_members(root, members, args.no_members, report)
+    if not args.pins:
+        _check_shape_pin(root, manifest, report)
+    return manifest, members
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -419,51 +612,7 @@ def main(argv: list[str] | None = None) -> int:
 
     report = Report()
     try:
-        root = find_repo_root(args.root or Path(__file__).resolve().parents[1])
-        manifest_path = root / MANIFEST
-        if not manifest_path.is_file():
-            raise Refusal(
-                "family-manifest-missing",
-                f"{manifest_path} does not exist. A family holder declares "
-                f"itself in `{MANIFEST}`; a repository without one is not a "
-                "family and does not run this validator.",
-                f"Remediation: `{PYTHON} scripts/family.py init --org <org> "
-                "--family <Name>` creates one. An ordinary project runs "
-                "`validate-manifest.py` instead.")
-        manifest = load_yaml(manifest_path)
-        if not isinstance(manifest, dict):
-            raise Refusal("family-manifest-unreadable",
-                          f"{manifest_path}: not a mapping")
-        policy_path = args.policy or (root / "contracts" /
-                                      "repository-naming.yaml")
-        policy = NamingPolicy.load(policy_path)
-        if not args.pins:
-            _check_envelope(manifest, policy, report)
-
-        members = manifest.get("members")
-        if members is None:
-            members = []
-        if not isinstance(members, list):
-            raise Refusal("family-members-unreadable",
-                          f"{manifest_path}: `members:` is {members!r}, "
-                          "expected a list")
-        seen: dict[str, bool] = {}
-        if args.no_members:
-            print(f"  --  {len(members)} member(s) SKIPPED (--no-members): "
-                  "their gitlinks, digests and project ids are not checked "
-                  "here")
-        else:
-            for row in members:
-                if not isinstance(row, dict):
-                    report.finding("member-row",
-                                   f"a member is not a mapping: {row!r}")
-                    continue
-                _check_member(root, row, seen, report)
-            if not members:
-                report.note("no members yet: a family with none is empty, not "
-                            "wrong")
-        if not args.pins:
-            _check_shape_pin(root, manifest, report)
+        manifest, members = _run_checks(args, report)
     except Refusal as exc:
         print(str(exc), file=sys.stderr)
         return 2

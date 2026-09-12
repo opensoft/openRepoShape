@@ -833,6 +833,152 @@ def parent_folder_warning(root: Path, family: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+def _resolve_make_target(args: argparse.Namespace) -> tuple[str | None,
+                                                            list[str]]:
+    """`--make`/`--make-arg`, VALIDATED HERE, BEFORE ANYTHING RUNS.
+
+    Split from `main` for #137. Not at the first member: a bad value must
+    refuse the whole run rather than be found after one member has already
+    committed and pushed somebody's work. Raises `Refusal` for one, exactly
+    as `main` always caught it.
+    """
+    if args.make is None:
+        return None, list(args.make_arg)
+    return validated_make_call(args.make, args.make_arg)
+
+
+def _load_family(args: argparse.Namespace) -> tuple[Path, str, list[dict],
+                                                     dict]:
+    """The family this run acts on: its root, name, member rows and manifest.
+
+    Split from `main` for #137. Raises `Refusal` exactly as `main` always
+    caught it — no `family.yaml`, or one that is not a mapping.
+    """
+    root = find_repo_root(args.root or Path(__file__).resolve().parents[1])
+    # `members_of` is `bootstrap.py`'s reading of the rows and stays the
+    # only one; the manifest is then read again for the two fields the
+    # LAYOUT needs and bootstrap has no use for.
+    name, rows = members_of(root)
+    manifest = load_yaml(root / MANIFEST)
+    if not isinstance(manifest, dict):
+        raise Refusal("family-manifest-unreadable",
+                      f"{root / MANIFEST}: not a mapping")
+    return root, name, rows, manifest
+
+
+def _place_all_members(root: Path, rows: list[dict], urls: dict[str, str],
+                       prefix: list[str], token: str,
+                       dry_run: bool) -> list[Sibling]:
+    """Every member, placed, in the order `family.yaml` lists them.
+
+    Split from `main` for #137 — "(a) the members, beside the holder".
+    """
+    if not rows:
+        print("  no members declared. A family with none is empty, not wrong: "
+              "`family.py add` is what puts one here.")
+    return [place(root, row, urls, prefix, token, dry_run) for row in rows]
+
+
+def _print_pinned_row(root: Path, row: dict) -> None:
+    """One `members/<Project>` row of the layout table: the PINNED copy,
+    detached, that `make bootstrap` and `make validate` read.
+
+    Split from `main` for #137 — the body of its second layout-table loop.
+    """
+    mounted = member_path(root, row)
+    # The row's OWN `path:` as the label, never a path computed back out
+    # of the mount: a hand-edited manifest can carry something that is not
+    # under this root, and a table is not the place to discover it.
+    pinned = Sibling(str(row.get("path")
+                         or f"members/{row.get('project')}"), mounted)
+    if (mounted / ".git").exists():
+        pinned.state = "pinned in the holder"
+        pinned.branch = branch_of(mounted)
+    else:
+        pinned.state = "not checked out"
+        pinned.branch = "make bootstrap"
+    print(pinned.row("pinned"))
+
+
+def _print_layout_table(root: Path, siblings: list[Sibling],
+                        rows: list[dict]) -> None:
+    """"(b) the layout": the holder, every sibling, then every PINNED mount.
+
+    Split from `main` for #137.
+    """
+    print("\n(b) the layout")
+    print(f"  {'what':<9} {'name':<18} {'state':<22} branch")
+    holder = Sibling(root.name, root)
+    holder.state = "the holder"
+    holder.branch = branch_of(root)
+    print(holder.row("holder"))
+    for sibling in siblings:
+        print(sibling.row())
+    # THE SECOND COPY, said out loud in the same table: the pinned mount is
+    # what `make bootstrap` and `make validate` read, and it is detached
+    # because a pin is a commit and not a branch.
+    for row in rows:
+        _print_pinned_row(root, row)
+
+
+def _report_placement(root: Path, siblings: list[Sibling],
+                      dry_run: bool) -> int:
+    """The findings (or the ok / dry-run line), and the exit code that
+    matches. Split from `main` for #137.
+    """
+    findings = [s.finding for s in siblings if s.finding]
+    print()
+    sys.stdout.flush()
+    if findings:
+        for finding in findings:
+            print(f"FINDING {finding}", file=sys.stderr)
+        print(f"siblings: {len(findings)} finding(s); nothing was moved and "
+              "no existing clone was touched", file=sys.stderr)
+        return 1
+    if dry_run:
+        print("--dry-run: nothing was cloned, fetched or moved.")
+        return 0
+    print(f"siblings ok: {len(siblings)} member(s) beside the holder in "
+          f"{root.parent}")
+    return 0
+
+
+def _run_placement(root: Path, name: str, rows: list[dict], manifest: dict,
+                   dry_run: bool) -> int:
+    """THE PLACEMENT RUN: every member cloned or fetched beside the holder,
+    the layout table, the parent-folder warning, and the exit code.
+
+    Split from `main` for #137: once `_resolve_make_target` and
+    `_load_family` are also lifted out of it, `main` is left with only the
+    dispatch-or-placement choice.
+    """
+    family = family_folder_name(manifest, root)
+    print(f"siblings: {name} ({root}) — {len(rows)} member(s)")
+    print(f"  family folder   {root.parent}")
+    print("  each member is cloned BESIDE the holder and stays PINNED inside "
+          "it under")
+    print("  members/ — the pinned copy is detached for bootstrap and "
+          "validate, the")
+    print("  sibling is where you work.")
+
+    prefix, source, token = git_prefix()
+    urls = submodule_urls(root)
+    print(f"\n(a) the members, beside the holder (credential source: "
+          f"{source})")
+    siblings = _place_all_members(root, rows, urls, prefix, token, dry_run)
+
+    _print_layout_table(root, siblings, rows)
+
+    warning = parent_folder_warning(root, family)
+    if warning:
+        print()
+        sys.stdout.flush()          # so the warning lands where it belongs
+        print(warning, file=sys.stderr)
+        sys.stderr.flush()
+
+    return _report_placement(root, siblings, dry_run)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--root", type=Path, default=None,
@@ -855,28 +1001,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.make_arg and args.make is None:
         parser.error("--make-arg is only meaningful with --make <target>")
-    # VALIDATED HERE, BEFORE ANYTHING RUNS. Not at the first member: a bad
-    # value must refuse the whole run rather than be found after one member
-    # has already committed and pushed somebody's work.
-    make_target, make_assignments = args.make, list(args.make_arg)
-    if args.make is not None:
-        try:
-            make_target, make_assignments = validated_make_call(
-                args.make, args.make_arg)
-        except Refusal as exc:
-            print(str(exc), file=sys.stderr)
-            return 2
 
     try:
-        root = find_repo_root(args.root or Path(__file__).resolve().parents[1])
-        # `members_of` is `bootstrap.py`'s reading of the rows and stays the
-        # only one; the manifest is then read again for the two fields the
-        # LAYOUT needs and bootstrap has no use for.
-        name, rows = members_of(root)
-        manifest = load_yaml(root / MANIFEST)
-        if not isinstance(manifest, dict):
-            raise Refusal("family-manifest-unreadable",
-                          f"{root / MANIFEST}: not a mapping")
+        make_target, make_assignments = _resolve_make_target(args)
+    except Refusal as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    try:
+        root, name, rows, manifest = _load_family(args)
     except Refusal as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -890,74 +1023,7 @@ def main(argv: list[str] | None = None) -> int:
         return dispatch_all(root, name, rows, make_target, make_assignments,
                             args.dry_run)
 
-    family = family_folder_name(manifest, root)
-    print(f"siblings: {name} ({root}) — {len(rows)} member(s)")
-    print(f"  family folder   {root.parent}")
-    print("  each member is cloned BESIDE the holder and stays PINNED inside "
-          "it under")
-    print("  members/ — the pinned copy is detached for bootstrap and "
-          "validate, the")
-    print("  sibling is where you work.")
-
-    prefix, source, token = git_prefix()
-    urls = submodule_urls(root)
-    print(f"\n(a) the members, beside the holder (credential source: "
-          f"{source})")
-    siblings: list[Sibling] = []
-    if not rows:
-        print("  no members declared. A family with none is empty, not wrong: "
-              "`family.py add` is what puts one here.")
-    for row in rows:
-        siblings.append(place(root, row, urls, prefix, token, args.dry_run))
-
-    print("\n(b) the layout")
-    print(f"  {'what':<9} {'name':<18} {'state':<22} branch")
-    holder = Sibling(root.name, root)
-    holder.state = "the holder"
-    holder.branch = branch_of(root)
-    print(holder.row("holder"))
-    for sibling in siblings:
-        print(sibling.row())
-    # THE SECOND COPY, said out loud in the same table: the pinned mount is
-    # what `make bootstrap` and `make validate` read, and it is detached
-    # because a pin is a commit and not a branch.
-    for row in rows:
-        mounted = member_path(root, row)
-        # The row's OWN `path:` as the label, never a path computed back out
-        # of the mount: a hand-edited manifest can carry something that is not
-        # under this root, and a table is not the place to discover it.
-        pinned = Sibling(str(row.get("path")
-                             or f"members/{row.get('project')}"), mounted)
-        if (mounted / ".git").exists():
-            pinned.state = "pinned in the holder"
-            pinned.branch = branch_of(mounted)
-        else:
-            pinned.state = "not checked out"
-            pinned.branch = "make bootstrap"
-        print(pinned.row("pinned"))
-
-    warning = parent_folder_warning(root, family)
-    if warning:
-        print()
-        sys.stdout.flush()          # so the warning lands where it belongs
-        print(warning, file=sys.stderr)
-        sys.stderr.flush()
-
-    findings = [s.finding for s in siblings if s.finding]
-    print()
-    sys.stdout.flush()
-    if findings:
-        for finding in findings:
-            print(f"FINDING {finding}", file=sys.stderr)
-        print(f"siblings: {len(findings)} finding(s); nothing was moved and "
-              "no existing clone was touched", file=sys.stderr)
-        return 1
-    if args.dry_run:
-        print("--dry-run: nothing was cloned, fetched or moved.")
-        return 0
-    print(f"siblings ok: {len(siblings)} member(s) beside the holder in "
-          f"{root.parent}")
-    return 0
+    return _run_placement(root, name, rows, manifest, args.dry_run)
 
 
 if __name__ == "__main__":
