@@ -357,7 +357,159 @@ def _split_flow(body: str) -> list[str]:
     return [p for p in parts if p != ""]
 
 
+#: A block scalar's HEADER: `|` or `>`, optionally with a chomping indicator
+#: and an explicit indentation digit. Spelled once, beside the pair of
+#: functions that read the body it introduces.
+_BLOCK_HEADER_RE = re.compile(r"[|>][-+]?\d*")
+
+
+def _significant_text(raw: str, line: int) -> str | None:
+    """The stripped line, or `None` for a line that tokenises to nothing.
+
+    Split out of `_tokenise` for #135. One refusal and both of this reader's
+    "nothing here" cases are decided by the raw line ALONE, before any
+    indentation, marker or key has been read: a tab in the indentation is
+    refused outright, and a blank line or a whole-line comment carries no
+    record at all.
+    """
+    if "\t" in raw[: len(raw) - len(raw.lstrip())]:
+        raise YamlError(f"line {line}: tab used for indentation")
+    stripped = raw.strip()
+    if not stripped or stripped.startswith("#"):
+        return None
+    return stripped
+
+
+def _document_marker(marker: str, seen_doc: bool) -> bool:
+    """`seen_doc` after a `---` or `...` line. Split out of `_tokenise` (#135).
+
+    A SECOND `---` opens a second document, which this reader refuses rather
+    than guess which of them its caller meant. `...` ends a document and says
+    nothing about how many there have been, so it leaves the flag where it is.
+    """
+    if marker == "---":
+        if seen_doc:
+            raise YamlError("multiple documents are not supported")
+        return True
+    return seen_doc
+
+
+def _peel_dashes(recs: list[_Rec], indent: int, content: str,
+                 line: int) -> tuple[int, str]:
+    """Peel leading `- ` markers into DASH records so a sequence item's
+    content sits at its own column, which is where its sibling keys are.
+
+    Split out of `_tokenise` for #135. It returns the column and the text that
+    are LEFT once every marker on the line has a record of its own, which is
+    what the rest of the line is then read at.
+    """
+    while True:
+        m = _DASH_RE.match(content)
+        if not m:
+            return indent, content
+        recs.append(_Rec(indent, "", True, line))
+        indent += len(m.group(0))
+        content = content[m.end():]
+
+
+def _refuse_unsupported(content: str, line: int) -> None:
+    """The two constructs this reader will not guess at, refused by name.
+
+    Split out of `_tokenise` for #135. An explicit key and a merge key each
+    have a meaning the reader would have to invent, and an invented meaning in
+    a validator is a wrong answer with a confident tone.
+    """
+    if content.startswith("? "):
+        raise YamlError(f"line {line}: explicit keys are not supported")
+    if content.startswith("<<"):
+        raise YamlError(f"line {line}: merge keys are not supported")
+
+
+def _opens_block_scalar(kv: tuple[str, str] | None) -> bool:
+    """Does a split `key: rest` introduce a literal or folded block scalar?
+
+    Split out of `_tokenise` for #135. `|`, `>`, `|-`, `>2` and the rest of
+    that alphabet are HEADERS, and the value is the lines below them; a `rest`
+    that merely BEGINS with one of those characters (`>= 3`) is an ordinary
+    scalar and is read as one, which is why the whole of it must match.
+    """
+    return (kv is not None and kv[1][:1] in ("|", ">")
+            and _BLOCK_HEADER_RE.fullmatch(kv[1]) is not None)
+
+
+def _block_scalar_body(raw_lines: list[str], i: int,
+                       indent: int) -> tuple[list[str], int]:
+    """A block scalar's body lines, and the index of the line after them.
+
+    Split out of `_tokenise` for #135. The body is every following line MORE
+    INDENTED than the key, with the first such line's column taken as the
+    block's own indentation and stripped from all of them. A blank line
+    belongs to the body whatever its column, because it has none.
+    """
+    body: list[str] = []
+    block_indent = None
+    while i < len(raw_lines):
+        nxt = raw_lines[i]
+        if nxt.strip() == "":
+            body.append("")
+            i += 1
+            continue
+        nxt_indent = len(nxt) - len(nxt.lstrip(" "))
+        if nxt_indent <= indent:
+            break
+        if block_indent is None:
+            block_indent = nxt_indent
+        body.append(nxt[block_indent:])
+        i += 1
+    return body, i
+
+
+def _fold_block_body(body: list[str]) -> str:
+    """A FOLDED (`>`) block scalar's body, joined the way folding joins it.
+
+    Split out of `_tokenise` for #135. A blank line is a newline of its own
+    and every other line is joined to the one before it with a space; a body
+    whose LAST line is blank is stripped of newlines at both ends, because the
+    trailing one is the chomping indicator's to decide.
+    """
+    folded: list[str] = []
+    for line in body:
+        if line == "":
+            folded.append("\n")
+        elif folded and folded[-1] not in ("", "\n"):
+            folded.append(" " + line)
+        else:
+            folded.append(line)
+    if body and body[-1] == "":
+        return "".join(folded).strip("\n")
+    return "".join(folded)
+
+
+def _block_scalar_text(header: str, body: list[str]) -> str:
+    """A block scalar's body as the one string its key takes as a value.
+
+    Split out of `_tokenise` for #135. `|` keeps every line break and `>`
+    folds them; the `-` chomping indicator drops the trailing newline, and its
+    absence leaves exactly one, which is YAML's clip behaviour.
+    """
+    if header[0] == "|":
+        joined = "\n".join(body)
+    else:
+        joined = _fold_block_body(body)
+    if header.endswith("-"):
+        return joined.rstrip("\n")
+    return joined.rstrip("\n") + "\n"
+
+
 def _tokenise(text: str) -> list[_Rec]:
+    """The `_Rec` stream `_parse_nodes` reads, one record per significant line.
+
+    THE RULE THIS FUNCTION IMPLEMENTS IS THE ORDER, which is why each step of
+    it is a named helper above (#135): a line that tokenises to nothing, a
+    document marker, the `- ` markers peeled off the front, the two refusals,
+    a block scalar's header and the body swallowed under it, and last an
+    ordinary line kept as its own record.
+    """
     recs: list[_Rec] = []
     raw_lines = text.splitlines()
     i = 0
@@ -365,75 +517,25 @@ def _tokenise(text: str) -> list[_Rec]:
     while i < len(raw_lines):
         raw = raw_lines[i]
         i += 1
-        if "\t" in raw[: len(raw) - len(raw.lstrip())]:
-            raise YamlError(f"line {i}: tab used for indentation")
-        stripped = raw.strip()
-        if not stripped or stripped.startswith("#"):
+        stripped = _significant_text(raw, i)
+        if stripped is None:
             continue
         if stripped in ("---", "..."):
-            if stripped == "---":
-                if seen_doc:
-                    raise YamlError("multiple documents are not supported")
-                seen_doc = True
+            seen_doc = _document_marker(stripped, seen_doc)
             continue
-        indent = len(raw) - len(raw.lstrip(" "))
-        content = _strip_comment(raw.strip())
-        if not content:
-            continue
-        # Peel leading `- ` markers into DASH records so a sequence item's
-        # content sits at its own column, which is where its sibling keys are.
-        while True:
-            m = _DASH_RE.match(content)
-            if not m:
-                break
-            recs.append(_Rec(indent, "", True, i))
-            indent += len(m.group(0))
-            content = content[m.end():]
+        indent, content = _peel_dashes(
+            recs, len(raw) - len(raw.lstrip(" ")), _strip_comment(stripped), i)
         if content == "":
             continue
-        if content.startswith("? "):
-            raise YamlError(f"line {i}: explicit keys are not supported")
-        if content.startswith("<<"):
-            raise YamlError(f"line {i}: merge keys are not supported")
+        _refuse_unsupported(content, i)
         kv = _split_key(content)
-        if kv is not None and kv[1][:1] in ("|", ">") and re.fullmatch(r"[|>][-+]?\d*", kv[1]):
+        if _opens_block_scalar(kv):
             # A block scalar: swallow every following line more indented than
             # the key, and keep it as one string.
-            chomp = kv[1]
-            body: list[str] = []
-            block_indent = None
-            while i < len(raw_lines):
-                nxt = raw_lines[i]
-                if nxt.strip() == "":
-                    body.append("")
-                    i += 1
-                    continue
-                nxt_indent = len(nxt) - len(nxt.lstrip(" "))
-                if nxt_indent <= indent:
-                    break
-                if block_indent is None:
-                    block_indent = nxt_indent
-                body.append(nxt[block_indent:])
-                i += 1
-            if chomp[0] == "|":
-                joined = "\n".join(body)
-            else:
-                folded: list[str] = []
-                for line in body:
-                    if line == "":
-                        folded.append("\n")
-                    elif folded and folded[-1] not in ("", "\n"):
-                        folded.append(" " + line)
-                    else:
-                        folded.append(line)
-                joined = "".join(folded).strip("\n") if body and body[-1] == "" \
-                    else "".join(folded)
-            if not chomp.endswith("-"):
-                joined = joined.rstrip("\n") + "\n"
-            else:
-                joined = joined.rstrip("\n")
+            body, i = _block_scalar_body(raw_lines, i, indent)
             recs.append(_Rec(indent, "", False, i))
-            recs[-1].text = _BLOCK_SENTINEL + kv[0] + "\x00" + joined
+            recs[-1].text = (_BLOCK_SENTINEL + kv[0] + "\x00"
+                             + _block_scalar_text(kv[1], body))
             continue
         recs.append(_Rec(indent, content, False, i))
     return recs
