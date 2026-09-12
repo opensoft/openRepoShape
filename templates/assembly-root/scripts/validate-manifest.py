@@ -291,172 +291,345 @@ def _naming_findings(leg_role, name: str, naming, policy: NamingPolicy,
     return out
 
 
-def _findings(manifest: dict, policy: NamingPolicy, root=None) -> list[str]:
-    out: list[str] = []
+def _finding(code: str, detail: str) -> str:
+    """Format one `FINDING <code>: <detail>` line.
 
-    def bad(code: str, detail: str) -> None:
-        out.append(f"FINDING {code}: {detail}")
+    Split from `_findings`' local `bad` closure for #132, so each function
+    it split into can build its own list without capturing an enclosing
+    `out`.
+    """
+    return f"FINDING {code}: {detail}"
 
+
+def _envelope_findings(manifest: dict) -> list[str]:
+    """schema_version, kind and schema: the envelope that says what KIND of
+    document this is, checked before anything about its content.
+
+    Split from `_findings` for #132.
+    """
+    out = []
     if manifest.get("schema_version") != 1:
-        bad("manifest-schema-version",
-            f"schema_version is {manifest.get('schema_version')!r}, expected 1")
+        out.append(_finding(
+            "manifest-schema-version",
+            f"schema_version is {manifest.get('schema_version')!r}, expected 1"))
     if manifest.get("kind") != "project-manifest":
-        bad("manifest-kind",
-            f"kind is {manifest.get('kind')!r}, expected 'project-manifest'")
+        out.append(_finding(
+            "manifest-kind",
+            f"kind is {manifest.get('kind')!r}, expected 'project-manifest'"))
     if manifest.get("schema") != "project-repo-schema":
-        bad("manifest-schema",
+        out.append(_finding(
+            "manifest-schema",
             f"schema is {manifest.get('schema')!r}, expected "
-            "'project-repo-schema'")
+            "'project-repo-schema'"))
+    return out
 
+
+def _id_findings(manifest: dict) -> tuple[list[str], str | None]:
+    """`id`, checked against `PROJECT_ID_RE`.
+
+    Split from `_findings` for #132. Returns the findings and the id to use
+    for the `topic` check later — `None` when it failed to validate, exactly
+    as `_findings` used to null out its local `project_id` on that path.
+    """
     project_id = manifest.get("id")
     if not isinstance(project_id, str) or not PROJECT_ID_RE.match(project_id):
-        bad("manifest-id",
-            f"id is {project_id!r}; it must match {PROJECT_ID_RE.pattern}")
-        project_id = None
-    if not isinstance(manifest.get("name"), str) or not manifest.get("name").strip():
-        bad("manifest-name", f"name is {manifest.get('name')!r}")
+        return ([_finding(
+            "manifest-id",
+            f"id is {project_id!r}; it must match {PROJECT_ID_RE.pattern}")],
+            None)
+    return [], project_id
 
+
+def _name_finding(manifest: dict) -> list[str]:
+    """`name`.
+
+    Split from `_findings` for #132.
+    """
+    if not isinstance(manifest.get("name"), str) or not manifest.get("name").strip():
+        return [_finding("manifest-name", f"name is {manifest.get('name')!r}")]
+    return []
+
+
+def _elected_by_finding(manifest: dict) -> list[str]:
+    """`elected_by`.
+
+    Split from `_findings` for #132.
+    """
     if not isinstance(manifest.get("elected_by"), str) or \
             not manifest["elected_by"].strip():
-        bad("manifest-elected-by",
-            "elected_by is empty. Electing the shape is a human's act and the "
-            "manifest records whose.")
+        return [_finding(
+            "manifest-elected-by",
+            "elected_by is empty. Electing the shape is a human's act and "
+            "the manifest records whose.")]
+    return []
+
+
+def _elected_on_finding(manifest: dict) -> list[str]:
+    """`elected_on`.
+
+    Split from `_findings` for #132.
+    """
     elected_on = manifest.get("elected_on")
     if not isinstance(elected_on, str) or not DATE_RE.match(elected_on):
-        bad("manifest-elected-on",
-            f"elected_on is {elected_on!r}, expected an ISO date YYYY-MM-DD")
+        return [_finding(
+            "manifest-elected-on",
+            f"elected_on is {elected_on!r}, expected an ISO date YYYY-MM-DD")]
+    return []
 
-    if project_id:
-        expected_topic = policy.topic_for(project_id)
-        if manifest.get("topic") != expected_topic:
-            bad("manifest-topic",
-                f"topic is {manifest.get('topic')!r}, expected "
-                f"{expected_topic!r} derived from id {project_id!r}")
 
+def _topic_finding(manifest: dict, policy: NamingPolicy,
+                   project_id: str) -> list[str]:
+    """`topic`, derived from a VALID `id`.
+
+    Split from `_findings` for #132; the caller only calls this when
+    `_id_findings` returned a `project_id`, exactly as the original
+    `if project_id:` guard did.
+    """
+    expected_topic = policy.topic_for(project_id)
+    if manifest.get("topic") != expected_topic:
+        return [_finding(
+            "manifest-topic",
+            f"topic is {manifest.get('topic')!r}, expected {expected_topic!r} "
+            f"derived from id {project_id!r}")]
+    return []
+
+
+def _reference_finding(manifest: dict) -> list[str]:
+    """`reference`, OPTIONAL.
+
+    Split from `_findings` for #132.
+    """
     reference = manifest.get("reference")
     if reference is not None and (not isinstance(reference, str) or not reference.strip()):
-        bad("manifest-reference", f"reference is {reference!r}; drop the key or "
-                                  "name the document the election followed")
+        return [_finding(
+            "manifest-reference",
+            f"reference is {reference!r}; drop the key or name the document "
+            "the election followed")]
+    return []
 
-    # OPTIONAL, like `reference:` — a manifest scaffolded before this field
-    # existed is not thereby wrong. Present and not one of the three real
-    # GitHub visibilities is a finding.
+
+def _visibility_finding(manifest: dict) -> list[str]:
+    """`visibility`, OPTIONAL like `reference:` — a manifest scaffolded
+    before this field existed is not thereby wrong. Present and not one of
+    the three real GitHub visibilities is a finding.
+
+    Split from `_findings` for #132.
+    """
     visibility = manifest.get("visibility")
     if visibility is not None and visibility not in VISIBILITY_CHOICES:
-        bad("manifest-visibility",
+        return [_finding(
+            "manifest-visibility",
             f"visibility is {visibility!r}, expected one of "
-            f"{sorted(VISIBILITY_CHOICES)} or no field at all")
+            f"{sorted(VISIBILITY_CHOICES)} or no field at all")]
+    return []
 
+
+def _shape_findings(manifest: dict) -> list[str]:
+    """`shape`: the commit-and-digest pin of the openRepoShape revision this
+    project was scaffolded from.
+
+    Split from `_findings` for #132.
+    """
     shape = manifest.get("shape")
     if not isinstance(shape, dict):
-        bad("manifest-shape", "shape is missing; a scaffolded project records "
-                              "the openRepoShape revision it was cut from")
-    else:
-        if not isinstance(shape.get("repository"), str):
-            bad("manifest-shape-repository",
-                f"shape.repository is {shape.get('repository')!r}")
-        if shape.get("revision_kind") != "commit":
-            bad("pin-tag-only",
-                f"shape.revision_kind is {shape.get('revision_kind')!r}. A tag "
-                "can be moved and a commit cannot.")
-        if not COMMIT_RE.match(str(shape.get("commit") or "")):
-            bad("manifest-shape-commit",
-                f"shape.commit is {shape.get('commit')!r}, not 40 hex")
-        digests = shape.get("digests")
-        if not isinstance(digests, dict) or \
-                not SHA256_RE.match(str(digests.get("tree_sha256") or "")):
-            bad("manifest-shape-digest",
-                f"shape.digests.tree_sha256 is not 64 hex: {digests!r}")
-        if shape.get("digest_definition") != TREE_DIGEST_DEFINITION:
-            bad("manifest-shape-digest-definition",
-                f"shape.digest_definition is "
-                f"{shape.get('digest_definition')!r}, expected "
-                f"{TREE_DIGEST_DEFINITION!r}")
+        return [_finding(
+            "manifest-shape",
+            "shape is missing; a scaffolded project records the "
+            "openRepoShape revision it was cut from")]
+    out = []
+    if not isinstance(shape.get("repository"), str):
+        out.append(_finding("manifest-shape-repository",
+                            f"shape.repository is {shape.get('repository')!r}"))
+    if shape.get("revision_kind") != "commit":
+        out.append(_finding(
+            "pin-tag-only",
+            f"shape.revision_kind is {shape.get('revision_kind')!r}. A tag "
+            "can be moved and a commit cannot."))
+    if not COMMIT_RE.match(str(shape.get("commit") or "")):
+        out.append(_finding(
+            "manifest-shape-commit",
+            f"shape.commit is {shape.get('commit')!r}, not 40 hex"))
+    digests = shape.get("digests")
+    if not isinstance(digests, dict) or \
+            not SHA256_RE.match(str(digests.get("tree_sha256") or "")):
+        out.append(_finding(
+            "manifest-shape-digest",
+            f"shape.digests.tree_sha256 is not 64 hex: {digests!r}"))
+    if shape.get("digest_definition") != TREE_DIGEST_DEFINITION:
+        out.append(_finding(
+            "manifest-shape-digest-definition",
+            f"shape.digest_definition is "
+            f"{shape.get('digest_definition')!r}, expected "
+            f"{TREE_DIGEST_DEFINITION!r}"))
+    return out
+
+
+def _neutral_product_pins_type_finding(manifest: dict) -> list[str]:
+    """`neutral_product_pins`, OPTIONAL.
+
+    Split from `_findings` for #132.
+    """
+    declared_pins = manifest.get("neutral_product_pins")
+    if declared_pins is not None and not isinstance(declared_pins, list):
+        return [_finding(
+            "manifest-neutral-product-pins",
+            f"neutral_product_pins is {declared_pins!r}, expected a list of "
+            "neutral product names")]
+    return []
+
+
+def _roles_finding(legs: list) -> list[str]:
+    """Are the declared roles exactly {assembly, spec, code}, once each?
+
+    Split from `_findings` for #132.
+    """
+    roles = [leg.get("role") for leg in legs if isinstance(leg, dict)]
+    if sorted(r for r in roles if r) != sorted(REQUIRED_ROLES):
+        return [_finding(
+            "manifest-roles",
+            f"legs declare roles {roles!r}; this schema requires exactly "
+            f"{sorted(REQUIRED_ROLES)}, once each")]
+    return []
+
+
+def _leg_role_classification_finding(role, name: str, found) -> list[str]:
+    """Does the declared `role` accept the family/form `name` actually
+    classifies as?
+
+    Split from `_findings`' per-leg loop for #132.
+    """
+    if found is None:
+        return [_finding(
+            "naming-unclassified",
+            f"leg {role!r}: {name!r} matches no family in the naming policy")]
+    if accepts_role(found, str(role or "")):
+        # The project-leg family in exactly the declared role; or a
+        # DECLARED domain descendant serving as the assembly root, which
+        # the 2026-09-02 ruling admits (a descendant may carry legs); or a
+        # NEUTRAL PRODUCT serving as its own assembly root, which the
+        # 2026-09-05 ruling admits (a neutral product may elect the shape,
+        # and electing confers nothing, so the root is a layout fact).
+        # `accepts_role` is the one definition; see `repo_shape`.
+        return []
+    if found[0] != "project-leg":
+        return [_finding(
+            "naming-not-a-leg",
+            f"leg {role!r}: {name!r} classifies as {found[0]!r}, not as a "
+            f"project leg ({found.reason})")]
+    return [_finding(
+        "naming-role-mismatch",
+        f"leg {role!r}: {name!r} is the {found[1]!r} form of the "
+        "project-leg family")]
+
+
+def _leg_path_findings(role, path, paths: dict[str, str]) -> list[str]:
+    """One leg's `path:`.
+
+    Split from `_findings`' per-leg loop for #132. Mutates `paths` exactly
+    as the original loop body did, so the next leg's collision check sees
+    this one recorded.
+    """
+    if not isinstance(path, str) or not path:
+        return [_finding("manifest-leg-path", f"leg {role!r}: path is {path!r}")]
+    out = []
+    if role == "assembly" and path != ".":
+        out.append(_finding(
+            "manifest-assembly-path",
+            f"the assembly leg is this repository, so its path is '.', not "
+            f"{path!r}"))
+    if role != "assembly":
+        if path.startswith("/") or ".." in Path(path).parts or path == ".":
+            out.append(_finding(
+                "manifest-leg-path",
+                f"leg {role!r}: path {path!r} must be a relative path "
+                "inside the assembly root"))
+        if path in paths:
+            out.append(_finding(
+                "manifest-leg-path-collision",
+                f"legs {paths[path]!r} and {role!r} both claim path {path!r}"))
+        paths[path] = str(role)
+    return out
+
+
+def _leg_findings(leg, policy: NamingPolicy, pins: set[str], root,
+                  owners: set[str], paths: dict[str, str]) -> list[str]:
+    """One `legs:` entry, start to finish: its repository name against the
+    naming policy, its optional `naming:` record, and its path.
+
+    Split from `_findings` for #132 so the loop over `legs` is a single
+    call per entry. Mutates `owners` and `paths` exactly as the original
+    loop body did, so the path-collision check and the owners-span check
+    after the loop see the same accumulated state; every `continue` in the
+    original loop is a `return` here.
+    """
+    if not isinstance(leg, dict):
+        return [_finding("manifest-leg", f"a leg is not a mapping: {leg!r}")]
+    role = leg.get("role")
+    repository = leg.get("repository")
+    path = leg.get("path")
+    if not isinstance(repository, str) or not QUALIFIED_RE.match(repository):
+        return [_finding(
+            "manifest-leg-repository",
+            f"leg {role!r}: repository is {repository!r}, expected "
+            "`<org>/<Name>`")]
+    owners.add(repository.split("/", 1)[0])
+    name = repo_basename(repository)
+    # The DECLARED role, the declared pins and the RECORDED CHAIN are
+    # what the classifier is given, because that is what the project says
+    # about itself. A role only wins where the NAME satisfies it, so
+    # declaring `assembly` over `<Project>-spec` still lands in
+    # naming-role-mismatch below.
+    naming = leg.get("naming")
+    chain, link_pins = _chain_and_links(naming, root)
+    found = policy.classify(name, str(role) if role else None, pins,
+                            chain, link_pins)
+    out = list(_leg_role_classification_finding(role, name, found))
+    out.extend(_naming_findings(role, name, naming, policy, pins, root,
+                                chain, link_pins))
+    out.extend(_leg_path_findings(role, path, paths))
+    return out
+
+
+def _owners_span_finding(owners: set[str]) -> list[str]:
+    """Do the legs span more than one organisation?
+
+    Split from `_findings` for #132.
+    """
+    if len(owners) > 1:
+        return [_finding(
+            "manifest-legs-split",
+            f"the legs span more than one organisation: {sorted(owners)}")]
+    return []
+
+
+def _findings(manifest: dict, policy: NamingPolicy, root=None) -> list[str]:
+    out: list[str] = list(_envelope_findings(manifest))
+
+    id_findings, project_id = _id_findings(manifest)
+    out.extend(id_findings)
+    out.extend(_name_finding(manifest))
+    out.extend(_elected_by_finding(manifest))
+    out.extend(_elected_on_finding(manifest))
+    if project_id:
+        out.extend(_topic_finding(manifest, policy, project_id))
+    out.extend(_reference_finding(manifest))
+    out.extend(_visibility_finding(manifest))
+    out.extend(_shape_findings(manifest))
 
     legs = manifest.get("legs")
     if not isinstance(legs, list) or not legs:
-        bad("manifest-legs", "legs is missing or empty")
+        out.append(_finding("manifest-legs", "legs is missing or empty"))
         return out
 
     pins = _declared_pins(manifest)
-    declared_pins = manifest.get("neutral_product_pins")
-    if declared_pins is not None and not isinstance(declared_pins, list):
-        bad("manifest-neutral-product-pins",
-            f"neutral_product_pins is {declared_pins!r}, expected a list of "
-            "neutral product names")
-
-    roles = [leg.get("role") for leg in legs if isinstance(leg, dict)]
-    if sorted(r for r in roles if r) != sorted(REQUIRED_ROLES):
-        bad("manifest-roles",
-            f"legs declare roles {roles!r}; this schema requires exactly "
-            f"{sorted(REQUIRED_ROLES)}, once each")
+    out.extend(_neutral_product_pins_type_finding(manifest))
+    out.extend(_roles_finding(legs))
 
     owners: set[str] = set()
     paths: dict[str, str] = {}
     for leg in legs:
-        if not isinstance(leg, dict):
-            bad("manifest-leg", f"a leg is not a mapping: {leg!r}")
-            continue
-        role = leg.get("role")
-        repository = leg.get("repository")
-        path = leg.get("path")
-        if not isinstance(repository, str) or not QUALIFIED_RE.match(repository):
-            bad("manifest-leg-repository",
-                f"leg {role!r}: repository is {repository!r}, expected "
-                "`<org>/<Name>`")
-            continue
-        owners.add(repository.split("/", 1)[0])
-        name = repo_basename(repository)
-        # The DECLARED role, the declared pins and the RECORDED CHAIN are
-        # what the classifier is given, because that is what the project says
-        # about itself. A role only wins where the NAME satisfies it, so
-        # declaring `assembly` over `<Project>-spec` still lands in
-        # naming-role-mismatch below.
-        naming = leg.get("naming")
-        chain, link_pins = _chain_and_links(naming, root)
-        found = policy.classify(name, str(role) if role else None, pins,
-                                chain, link_pins)
-        if found is None:
-            bad("naming-unclassified",
-                f"leg {role!r}: {name!r} matches no family in the naming policy")
-        elif accepts_role(found, str(role or "")):
-            # The project-leg family in exactly the declared role; or a
-            # DECLARED domain descendant serving as the assembly root, which
-            # the 2026-09-02 ruling admits (a descendant may carry legs); or a
-            # NEUTRAL PRODUCT serving as its own assembly root, which the
-            # 2026-09-05 ruling admits (a neutral product may elect the shape,
-            # and electing confers nothing, so the root is a layout fact).
-            # `accepts_role` is the one definition; see `repo_shape`.
-            pass
-        elif found[0] != "project-leg":
-            bad("naming-not-a-leg",
-                f"leg {role!r}: {name!r} classifies as {found[0]!r}, not as a "
-                f"project leg ({found.reason})")
-        else:
-            bad("naming-role-mismatch",
-                f"leg {role!r}: {name!r} is the {found[1]!r} form of the "
-                "project-leg family")
-        out.extend(_naming_findings(role, name, naming, policy, pins, root,
-                                    chain, link_pins))
-        if not isinstance(path, str) or not path:
-            bad("manifest-leg-path", f"leg {role!r}: path is {path!r}")
-            continue
-        if role == "assembly" and path != ".":
-            bad("manifest-assembly-path",
-                f"the assembly leg is this repository, so its path is '.', not "
-                f"{path!r}")
-        if role != "assembly":
-            if path.startswith("/") or ".." in Path(path).parts or path == ".":
-                bad("manifest-leg-path",
-                    f"leg {role!r}: path {path!r} must be a relative path "
-                    "inside the assembly root")
-            if path in paths:
-                bad("manifest-leg-path-collision",
-                    f"legs {paths[path]!r} and {role!r} both claim path {path!r}")
-            paths[path] = str(role)
-    if len(owners) > 1:
-        bad("manifest-legs-split",
-            f"the legs span more than one organisation: {sorted(owners)}")
+        out.extend(_leg_findings(leg, policy, pins, root, owners, paths))
+    out.extend(_owners_span_finding(owners))
     return out
 
 
