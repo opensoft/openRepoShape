@@ -16,6 +16,7 @@ adoption case where a file the human merged away has no pin row at all.
 from __future__ import annotations
 
 import importlib.util
+import os
 import shlex
 import shutil
 import subprocess
@@ -1157,7 +1158,14 @@ def test_a_readme_with_changes_of_its_own_is_left_alone_and_not_committed(
     """
     a = upstream_and_project["a"]
     readme = give_readme(root, rendered_shape_line(a))
-    mine = readme.read_text(encoding="utf-8") + "\nA paragraph I am writing.\n"
+    line = rendered_shape_line(a) + "\n"
+    text = readme.read_text(encoding="utf-8")
+    assert text.endswith(line), "fixture: the rendered line is the last one"
+    # ABOVE the trailing line, which is where a paragraph added to a README
+    # that has one goes. Under it the line would no longer be the last, and
+    # a line that is not the last is a different reading (`absent`) and a
+    # different test — this one is about the edit, not about the position.
+    mine = text[:-len(line)] + "A paragraph I am writing.\n" + line
     readme.write_text(mine, encoding="utf-8")
 
     result = apply(root, upstream_and_project, "--branch", "shape/update-wip")
@@ -1268,3 +1276,204 @@ def test_a_symlinked_readme_is_never_written_through(root,
 
     checked = check(root, upstream_and_project)
     assert "readme-shape-line: symlink" in checked.stdout
+
+
+def test_a_shape_line_that_is_not_the_last_line_is_an_example_not_a_claim(
+        root, upstream_and_project):
+    """A README MAY SHOW WHAT THE LINE LOOKS LIKE (Copilot, PR #152).
+
+    The pattern is anchored to a LINE, so before #152's third round any
+    occurrence of the form was read as this root's claim about its own pin —
+    including one inside a paragraph explaining the form to a reader, or a
+    fenced example in a project whose whole subject is this standard. `apply`
+    would have rewritten that prose to say something the prose does not mean:
+    the documentation version of the drift #148 is about, made by the fix.
+    Only the line the file ENDS with is the rendered metadata, so this README
+    reads `absent` — and `absent` says which absent it is, because a human
+    looking at a file that plainly contains the line deserves better than
+    silence.
+    """
+    a = upstream_and_project["a"]
+    readme = give_readme(root, "A holder's README ends with a line like",
+                         rendered_shape_line(a), "",
+                         "and `apply` moves that sha with the pin.")
+    before = readme.read_bytes()
+    assert len(readme_shape_lines(before.decode("utf-8"))) == 1, (
+        "fixture: the form is in the file, just not as its last line")
+
+    checked = check(root, upstream_and_project)
+    assert "readme-shape-line: absent (README.md carries a Shape: line, but " \
+        "not as its last line" in checked.stdout
+
+    result = apply(root, upstream_and_project, "--branch", "shape/update-eg")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert readme.read_bytes() == before, (
+        "an example is not this tool's to move")
+    assert "README.md: its Shape: line is not the last line" in result.stdout
+    assert "README.md" not in committed_files(root)
+    validators_are_green(root)
+
+
+def test_an_example_above_the_rendered_line_leaves_the_readme_ambiguous(
+        root, upstream_and_project):
+    """AND THE COLLISION THE EOF RULE DOES NOT DISSOLVE. A README that both
+    SHOWS the form and ENDS with it carries two exact matches, and two is
+    already the answer `apply` refuses to choose between: rewriting the last
+    one and leaving an example naming a different commit two paragraphs above
+    would leave the file contradicting itself, in this tool's name.
+    """
+    a = upstream_and_project["a"]
+    readme = give_readme(root, "A holder's README ends with a line like",
+                         rendered_shape_line(a), "",
+                         "which for this root reads", "",
+                         rendered_shape_line(a))
+    before = readme.read_bytes()
+
+    checked = check(root, upstream_and_project)
+    assert "readme-shape-line: ambiguous (2 Shape: lines" in checked.stdout
+
+    result = apply(root, upstream_and_project, "--branch", "shape/update-two")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert readme.read_bytes() == before
+    assert "README.md: 2 Shape: lines, untouched" in result.stdout
+    assert "README.md" not in committed_files(root)
+
+
+def test_a_hard_linked_readme_is_never_written_through(
+        root, upstream_and_project, tmp_path):
+    """A SECOND NAME FOR THE SAME BYTES IS NOT A SECOND FILE (Copilot, #152).
+
+    `is_symlink()` says no and git says clean, because nothing about the
+    content differs — and every write this tool makes goes THROUGH a name:
+    `Rollback.write` overwrites the inode and the undo writes back the same
+    way. So a rewrite here would also change whatever else that inode is
+    called, a file no `check` showed and no pin covers, while the commit
+    records only `README.md`. Left alone, and said.
+    """
+    a = upstream_and_project["a"]
+    readme = give_readme(root, rendered_shape_line(a))
+    before = readme.read_bytes()
+    second = tmp_path / "the-same-bytes.md"
+    try:
+        os.link(str(readme), str(second))
+    except (OSError, NotImplementedError) as exc:  # pragma: no cover
+        pytest.skip(f"this platform will not hard-link: {exc}")
+
+    result = apply(root, upstream_and_project, "--branch", "shape/update-hard")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert readme.read_bytes() == before
+    assert second.read_bytes() == before, (
+        "a file outside the root is not this tool's to write")
+    assert "another name points at these same bytes, untouched" \
+        in result.stdout
+    assert "README.md" not in committed_files(root)
+
+    checked = check(root, upstream_and_project)
+    assert "readme-shape-line: hard-link" in checked.stdout
+
+
+def denied(readme, mode: int, probe: str) -> None:
+    """Put `mode` on the README, and SKIP if this user is not stopped by it.
+
+    root ignores a file's permission bits and so does a filesystem mounted
+    without them; a test that assumed otherwise would be failing about the
+    machine it runs on rather than about the code. Windows has no mode to
+    take a read away with, so the reading probe skips there too.
+    """
+    readme.chmod(mode)
+    try:
+        with readme.open(probe):
+            pass
+    except OSError:
+        return
+    pytest.skip("this user is not stopped by the README's permission bits")
+
+
+def test_a_readme_the_os_will_not_write_refuses_and_rolls_the_tree_back(
+        root, upstream_and_project):
+    """THE PHASE RUNS AFTER THE COPIES AND THE PIN (Copilot, PR #152).
+
+    An `OSError` escaping it would have ended the command with a traceback
+    over a tree that had already been rewritten and re-pinned: `cmd_apply`
+    rolls back on `Refusal` and `CommandFailed` and on nothing else. Named as
+    a refusal, the arm that already exists puts every byte back — and the
+    ledger opens for writing BEFORE it records anything, so a file it cannot
+    write is one it never promised to restore.
+    """
+    a = upstream_and_project["a"]
+    readme = give_readme(root, rendered_shape_line(a))
+    before = readme.read_bytes()
+    copied = root / CHANGED
+    copied_before = copied.read_bytes()
+    denied(readme, 0o444, "r+b")
+    try:
+        result = apply(root, upstream_and_project)
+    finally:
+        readme.chmod(0o644)
+
+    assert_refused_and_unpinned(result, root, upstream_and_project,
+                                "update-readme-unwritable", "README.md")
+    assert readme.read_bytes() == before
+    assert copied.read_bytes() == copied_before, (
+        "the copies this command had already written are rolled back too")
+    validators_are_green(root)
+
+
+def test_a_readme_the_os_will_not_read_is_a_reading_rather_than_a_traceback(
+        root, upstream_and_project):
+    """THE SAME HAZARD ON THE WAY IN, and the answer is the opposite one: a
+    README this tool cannot read is one it cannot be wrong about, so it is
+    LEFT ALONE and the reason is said, rather than a refusal that would stop
+    a re-pin over prose.
+    """
+    readme = give_readme(root, rendered_shape_line(upstream_and_project["a"]))
+    before = readme.read_bytes()
+    denied(readme, 0o000, "rb")
+    try:
+        result = apply(root, upstream_and_project, "--branch",
+                       "shape/update-noread")
+        checked = check(root, upstream_and_project)
+    finally:
+        readme.chmod(0o644)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert readme.read_bytes() == before
+    assert "README.md: not readable" in result.stdout
+    assert "README.md" not in committed_files(root)
+    assert "readme-shape-line: unreadable (README.md is not readable" \
+        in checked.stdout
+
+
+def test_git_answers_three_ways_for_a_readme_and_one_of_them_is_committed(
+        root, upstream_and_project, update_shape):
+    """THE THREE READINGS BEHIND ONE BOOLEAN, side by side (Codex, PR #152).
+
+    `apply` moves the sha only in a README that is exactly what HEAD has.
+    `git commit -- README.md` records the WORKING TREE version of that path,
+    so a dirty README would carry somebody's unrelated paragraph into a shape
+    re-pin the human approved from a `check` that never showed it; an
+    untracked or IGNORED one is a pathspec git has never heard of, and that
+    failure would arrive after every other byte was written. Each is one
+    `git status` away from the others, and this is where which is which is
+    written down.
+    """
+    readme = give_readme(root, rendered_shape_line(upstream_and_project["a"]))
+    committed = readme.read_text(encoding="utf-8")
+    assert update_shape.readme_is_committed(root) is True, (
+        "a tracked README holding nothing but HEAD's bytes")
+
+    readme.write_text(committed + "\nA paragraph I am writing.\n",
+                      encoding="utf-8")
+    assert update_shape.readme_is_committed(root) is False, (
+        "a tracked README with changes of its own")
+
+    readme.write_text(committed, encoding="utf-8")
+    exclude = root / ".git" / "info" / "exclude"
+    exclude.parent.mkdir(parents=True, exist_ok=True)
+    exclude.write_text("README.md\n", encoding="utf-8")
+    git("rm", "-q", "--cached", "--", "README.md", cwd=root)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m",
+        "The README is this project's own, and ignored", cwd=root)
+    assert update_shape.readme_is_committed(root) is False, (
+        "an IGNORED untracked README, which `--porcelain` alone says "
+        "nothing at all about")

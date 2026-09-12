@@ -41,7 +41,7 @@ from test_update_shape import rendered_shape_line, strip_shape_block
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import load_yaml, tree_digest  # noqa: E402
 from shape_materialize import (  # noqa: E402
-    SHAPE_REPOSITORY, readme_shape_lines,
+    SHAPE_REPOSITORY, readme_shape_lines, readme_trailing_shape_line,
 )
 
 FAMILY = REPO / "scripts" / "family.py"
@@ -204,6 +204,12 @@ def test_the_rendered_readme_carries_exactly_one_line_the_rewriter_reads(
     assert matches[0]["commit"] == \
         load_yaml(family["root"] / "contracts" / "shape-pin.yaml")["commit"]
     assert matches[0].group(0) == rendered_shape_line(matches[0]["commit"])
+    # AND THAT IT IS THE LAST LINE. `apply` moves the sha only in a line the
+    # file ENDS with, so that anything higher up is read as an example rather
+    # than as this root's claim (Copilot, PR #152); a template that grew a
+    # section under this line would otherwise answer `absent` for every
+    # holder in the estate, silently and exactly as if the drift were fixed.
+    assert readme_trailing_shape_line(holder) is not None, holder[-400:]
 
     member = family["work"] / MEMBERS[0] / "README.md"
     assert readme_shape_lines(member.read_text(encoding="utf-8")) == [], (

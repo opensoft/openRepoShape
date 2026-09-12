@@ -280,12 +280,12 @@ git -C <path> push -u origin shape/update-<sha>   # then open a pull request
    and rolls every byte back if either goes red. Land it as a pull request;
    never suggest a push to the default branch.
 7. **A README's trailing `Shape: <repository> @ <sha>.` line — a family
-   holder renders one — is `apply`'s to rewrite and never yours.** It moves
-   the sha in the pin's own commit; `check` says first whether the line is
-   `stale`, `current` or `absent`. A line that is missing, doubled or names
-   another repository is left alone and said so, and so is any README this
-   tool may not commit: uncommitted, ignored, a symlink. The doctor notes a
-   line that is behind, never a finding — a hand edit is how it drifted.
+   holder renders one — is `apply`'s to rewrite and never yours.** Only the
+   line the file ENDS with, moved in the pin's own commit; `check` says first
+   whether it is `stale`, `current` or `absent`. One that is missing, doubled,
+   an example mid-file or another repository's is left alone, and so is any
+   README this tool cannot account for: uncommitted, ignored, a symlink, a
+   hard link. The doctor notes a stale line, never a finding.
 8. **`--trailer "<Key>: <value>"` puts a line on the commit `apply` writes.**
    Repeatable, in the order given, and only with `--branch` — without one there
    is nothing to put a line on, and it is refused. A lane passes its `Lane:`

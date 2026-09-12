@@ -281,6 +281,12 @@ PLACEHOLDER_RE = re.compile(r"\{\{[A-Z_]+\}\}")
 #: in silence. The assembly-root README carries no such line and is expected
 #: to match nothing.
 #:
+#: A MATCH IS NOT BY ITSELF THE LINE: the form also appears where a README
+#: SHOWS the reader what a holder's last line looks like, and only the one
+#: the file ENDS with is this root's claim about its own pin.
+#: `readme_trailing_shape_line` is where that is decided, once, for both
+#: readers.
+#:
 #: `\r?` before the end anchor: a README checked out on Windows with
 #: `core.autocrlf=true` holds CRLF, and the rewriter works on BYTES so that
 #: everything but the 40 hex characters survives untouched — a reader that
@@ -301,6 +307,33 @@ def readme_shape_lines(text: str) -> list:
     caller can only say that if it is told how many there are.
     """
     return list(README_SHAPE_LINE_RE.finditer(text))
+
+
+def readme_trailing_shape_line(text: str) -> "re.Match | None":
+    """The one match a rewriter may move — the line the FILE ENDS WITH.
+
+    THE PATTERN IS ANCHORED TO A LINE, NOT TO THE END OF THE FILE, so it also
+    finds the form where a README is SHOWING the reader what a holder's last
+    line looks like. That example is prose ABOUT the standard, and a rewriter
+    that moved its sha would be editing an illustration into saying something
+    the illustration does not mean — the documentation equivalent of the drift
+    #148 is about, made by the fix (Copilot, PR #152). What separates the two
+    is position and only position: the template renders this line last, and
+    `tests/test_family.py` asserts that a real rendered holder ends with it.
+
+    TRAILING MEANS NOTHING BUT WHITESPACE AFTER IT. A text file ends with a
+    newline and an editor may leave a blank line under it; neither of those
+    makes the last sentence of a README a different sentence. Anything else —
+    a heading, a paragraph, the rest of a fenced block — does.
+
+    `None` when the README ends with something else, INCLUDING when it carries
+    such a line higher up: the caller's answer there is that the trailing line
+    is absent, not that it found one to move.
+    """
+    matches = readme_shape_lines(text)
+    if matches and not text[matches[-1].end():].strip():
+        return matches[-1]
+    return None
 
 
 #: The one line an existing assistant-instruction file needs, and the exact
