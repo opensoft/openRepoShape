@@ -78,8 +78,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from repo_shape import (  # noqa: E402
-    CHAIN_RECORD_FIELD, UNAMBIGUOUS_FORMS, NamingPolicy, Refusal,
-    link_pins_from_trees, load_yaml, repo_basename,
+    CHAIN_RECORD_FIELD, UNAMBIGUOUS_FORMS, Classification, NamingPolicy,
+    Refusal, link_pins_from_trees, load_yaml, repo_basename,
 )
 
 DEFAULT_POLICY = Path(__file__).resolve().parents[1] / "contracts" / "repository-naming.yaml"
@@ -113,76 +113,153 @@ def _link_pins(target: Target, keyed_sources: dict,
                                 default_source)
 
 
-def _describe(policy: NamingPolicy, target: Target, link_pins: dict) -> list[str]:
-    name, role, pins = target.name, target.role, target.pins
-    lines = []
-    matches = policy.matches(name, role)
-    if not matches:
-        lines.append(f"  {name}: NO FAMILY")
-        lines.append(f"    the {len(policy.families)} families are: " + ", ".join(
-            f["id"] for f in policy.families))
-        for family in policy.families:
-            lines.append(f"    {family['id']:<18} {family['pattern']}")
-        return lines
-    found = policy.classify(name, role, pins, target.chain, link_pins)
-    lines.append(f"  {name}: {found[0]}" + (f" / {found[1]}" if found[1] else ""))
+def _no_family_lines(policy: NamingPolicy, name: str) -> list[str]:
+    """The `--explain` lines for a name that matches no family at all.
+
+    Split from `_describe` for #136: what to print when nothing classifies is
+    one question, answered once, so the per-family row below never has to
+    guard against a `found` that does not exist.
+    """
+    lines = [f"  {name}: NO FAMILY"]
+    lines.append(f"    the {len(policy.families)} families are: " + ", ".join(
+        f["id"] for f in policy.families))
     for family in policy.families:
-        hits = [m for m in matches if m[0] == family["id"]]
-        mark = "MATCH " if hits else "      "
-        role_note = f" (role {hits[0][1]})" if hits and hits[0][1] else ""
-        claim = ""
-        if hits and policy.requires_referent(family["id"]):
-            # WHAT WOULD BE ACCEPTED, both halves of it. Naming only the direct
-            # pin is what sent `codexDox` looking for an `openDox` pin its
-            # family does not hold (2026-09-05).
-            claim = (" [a CLAIM: needs a declared pin on " + " or ".join(
-                policy.descendant_referents(name))
-                + ", or a declared chain (`"
-                + str(policy.chain_rule().get("record_field")
-                      or CHAIN_RECORD_FIELD)
-                + "`) of pins ending in one of them]")
-        elif policy.declared_only(family["id"]):
-            claim = (" [DECLARED-ONLY: reported only with --role "
-                     + family["id"] + "; " + str(family.get("declared_by") or
-                                                 "a declaration").strip() + "]")
-        elif hits and family.get("admits_declared_role"):
-            # NAME THE ADMISSION, not just its effect. A reader who sees
-            # `openDox: neutral-product / assembly` and no explanation has to
-            # go and read the classifier to learn that the form still won and
-            # the role was ADDED to it (2026-09-05).
-            admits = ", ".join(str(r) for r in family["admits_declared_role"])
-            carried = (found.role if found.family == family["id"]
-                       and found.role else None)
-            # THREE ANSWERS, not two: nothing declared, a role declared and
-            # ADMITTED, or a role declared and REFUSED (`--role spec openDox`
-            # declares a role this family does not admit). Collapsing the
-            # last two into "none is declared here" told the reader a
-            # declaration was absent when it was in fact refused (2026-09-05).
-            if role is None:
-                admission = "; none is declared here"
-            elif carried:
-                admission = f" — this name carries {carried}"
-            else:
-                admission = f"; {role} is declared here and is not admitted"
-            claim = (f" [ADMITS a declared role of {admits}: the form still "
-                     "wins and carries the role the project declares, where "
-                     "the name also satisfies that leg form"
-                     + admission
-                     + "]")
-            if carried:
-                role_note = f" (role {carried}, ADMITTED)"
-        elif hits and family["id"] in UNAMBIGUOUS_FORMS:
-            # WHY THIS ROW NEEDED NOTHING. The three claims above are each a
-            # reason a reader might have to declare something; this is the row
-            # that says there is nothing to declare, which is the answer for
-            # `<X>-Install` and `<user>-wip`. `neutral-product` is unambiguous
-            # too and is answered by the branch above instead, because it has
-            # the further thing to say about the role it admits.
-            claim = (" [UNAMBIGUOUS BY CONSTRUCTION: nothing else spells this "
-                     "form, so it needs nothing declared — no --role and no "
-                     "pin — and it is admitted into no role either]")
-        lines.append(
-            f"    {mark}{family['id']:<18} {family['pattern']}{role_note}{claim}")
+        lines.append(f"    {family['id']:<18} {family['pattern']}")
+    return lines
+
+
+def _admission_note(family: dict, role: str | None, carried: str | None) -> str:
+    """The `[ADMITS ...]` note for a family whose data admits a declared role.
+
+    Split from `_describe` for #136: THREE ANSWERS, not two — nothing
+    declared, a role declared and ADMITTED, or a role declared and REFUSED
+    (`--role spec openDox` declares a role this family does not admit).
+    Collapsing the last two into "none is declared here" told the reader a
+    declaration was absent when it was in fact refused (2026-09-05); giving
+    the three answers their own function is what keeps them three.
+    """
+    admits = ", ".join(str(r) for r in family["admits_declared_role"])
+    if role is None:
+        admission = "; none is declared here"
+    elif carried:
+        admission = f" — this name carries {carried}"
+    else:
+        admission = f"; {role} is declared here and is not admitted"
+    return (f" [ADMITS a declared role of {admits}: the form still "
+            "wins and carries the role the project declares, where "
+            "the name also satisfies that leg form"
+            + admission
+            + "]")
+
+
+def _referent_claim_note(policy: NamingPolicy, family: dict, name: str) -> str:
+    """The `[a CLAIM: ...]` note for a family that `requires_referent`.
+
+    Split from `_family_claim_and_role_note` for #136: WHAT WOULD BE
+    ACCEPTED, both halves of it. Naming only the direct pin is what sent
+    `codexDox` looking for an `openDox` pin its family does not hold
+    (2026-09-05).
+    """
+    return (" [a CLAIM: needs a declared pin on " + " or ".join(
+        policy.descendant_referents(name))
+        + ", or a declared chain (`"
+        + str(policy.chain_rule().get("record_field")
+              or CHAIN_RECORD_FIELD)
+        + "`) of pins ending in one of them]")
+
+
+def _declared_only_note(family: dict) -> str:
+    """The `[DECLARED-ONLY: ...]` note for a family only reported by name.
+
+    Split from `_family_claim_and_role_note` for #136.
+    """
+    return (" [DECLARED-ONLY: reported only with --role "
+             + family["id"] + "; " + str(family.get("declared_by") or
+                                         "a declaration").strip() + "]")
+
+
+def _unambiguous_note() -> str:
+    """The `[UNAMBIGUOUS BY CONSTRUCTION: ...]` note.
+
+    Split from `_family_claim_and_role_note` for #136: WHY THIS ROW NEEDED
+    NOTHING. The other three notes are each a reason a reader might have to
+    declare something; this is the answer for `<X>-Install` and
+    `<user>-wip` — nothing to declare, and admitted into no role either.
+    `neutral-product` is unambiguous too and answered by `_admission_note`
+    instead, because it has the further thing to say about the role it
+    admits.
+    """
+    return (" [UNAMBIGUOUS BY CONSTRUCTION: nothing else spells this "
+             "form, so it needs nothing declared — no --role and no "
+             "pin — and it is admitted into no role either]")
+
+
+def _admission_row(role_note: str, family: dict, role: str | None,
+                   found: Classification) -> tuple[str, str]:
+    """`(role_note, claim)` for a family whose data admits a declared role.
+
+    Split from `_family_claim_and_role_note` for #136: NAME THE ADMISSION,
+    not just its effect — a reader who sees `openDox: neutral-product /
+    assembly` and no explanation has to go and read the classifier to learn
+    that the form still won and the role was ADDED to it (2026-09-05).
+    `role_note` in is the plain note the caller already computed, kept
+    as-is unless this name CARRIES the admitted role.
+    """
+    carried = (found.role if found.family == family["id"]
+               and found.role else None)
+    claim = _admission_note(family, role, carried)
+    if carried:
+        role_note = f" (role {carried}, ADMITTED)"
+    return role_note, claim
+
+
+def _family_claim_and_role_note(policy: NamingPolicy, family: dict, hits: list,
+                                role: str | None, name: str,
+                                found: Classification) -> tuple[str, str]:
+    """The `(role_note, claim)` suffixes for one family's `--explain` row.
+
+    Split from `_describe` for #136: what a family's row says about what
+    claiming it would need is one question with four mutually exclusive
+    answers, each now its own named note, asked once per family instead of
+    inline in the row loop.
+    """
+    role_note = f" (role {hits[0][1]})" if hits and hits[0][1] else ""
+    claim = ""
+    if hits and policy.requires_referent(family["id"]):
+        claim = _referent_claim_note(policy, family, name)
+    elif policy.declared_only(family["id"]):
+        claim = _declared_only_note(family)
+    elif hits and family.get("admits_declared_role"):
+        role_note, claim = _admission_row(role_note, family, role, found)
+    elif hits and family["id"] in UNAMBIGUOUS_FORMS:
+        claim = _unambiguous_note()
+    return role_note, claim
+
+
+def _family_row(policy: NamingPolicy, family: dict, matches: list,
+                role: str | None, name: str, found: Classification) -> str:
+    """The one `--explain` line for a single family, MATCH or not.
+
+    Split from `_describe` for #136: composing one family's row — whether it
+    matched, and what it would need declared — is one question, asked once
+    per family instead of inline in the name's own loop.
+    """
+    hits = [m for m in matches if m[0] == family["id"]]
+    mark = "MATCH " if hits else "      "
+    role_note, claim = _family_claim_and_role_note(
+        policy, family, hits, role, name, found)
+    return f"    {mark}{family['id']:<18} {family['pattern']}{role_note}{claim}"
+
+
+def _referent_lines(target: Target, matches: list,
+                    found: Classification) -> list[str]:
+    """The CHAIN / WARNING / OVERLAP lines after a name's family rows.
+
+    Split from `_describe` for #136: what to say about the referent, and
+    about an overlap, are two more questions asked once per name after every
+    row has already been printed, not per family.
+    """
+    lines: list[str] = []
     if target.chain:
         lines.append("    CHAIN " + " → ".join(target.chain)
                      + f"   [{found.referent.status}]")
@@ -191,6 +268,26 @@ def _describe(policy: NamingPolicy, target: Target, link_pins: dict) -> list[str
     if len(matches) > 1:
         lines.append("    OVERLAP " + found.reason)
         lines.append("    also_matches: " + ", ".join(found.also_matches))
+    return lines
+
+
+def _describe(policy: NamingPolicy, target: Target, link_pins: dict) -> list[str]:
+    """Every family `target.name` satisfies, why one of them won, and what
+    the others are recorded as — the full `--explain` report for one name.
+
+    Split into `_family_row` (one family's line) and `_referent_lines` (the
+    CHAIN/WARNING/OVERLAP trailer) for #136: this function now only decides
+    WHICH lines to assemble, not how each one reads.
+    """
+    name, role, pins = target.name, target.role, target.pins
+    matches = policy.matches(name, role)
+    if not matches:
+        return _no_family_lines(policy, name)
+    found = policy.classify(name, role, pins, target.chain, link_pins)
+    lines = [f"  {name}: {found[0]}" + (f" / {found[1]}" if found[1] else "")]
+    for family in policy.families:
+        lines.append(_family_row(policy, family, matches, role, name, found))
+    lines.extend(_referent_lines(target, matches, found))
     return lines
 
 
