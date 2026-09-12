@@ -535,6 +535,7 @@ options:
 
 ```
 usage: bump-leg.py [-h] --root PATH --leg {spec,code} --to COMMIT
+                   [--trailer "KEY: VALUE"]
                    [--local-remote-dir LOCAL_REMOTE_DIR] [--dry-run]
 
 Advance ONE leg of an assembly root, in ONE LOCKSTEP COMMIT.
@@ -547,6 +548,9 @@ options:
                         project.yaml declares
   --to COMMIT           the 40-hex commit to move the gitlink, the pin and
                         every workflow reference to, together
+  --trailer "KEY: VALUE"
+                        append this `<Key>: <value>` line to the commit this
+                        writes; repeatable, kept in the order given
   --local-remote-dir LOCAL_REMOTE_DIR
                         resolve the leg's remote to a bare repository here
                         instead of its origin (the TEST path; no network)

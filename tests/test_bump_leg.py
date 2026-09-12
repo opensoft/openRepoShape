@@ -15,6 +15,8 @@ is the question a pin actually has.
 
 from __future__ import annotations
 
+import importlib.util
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -22,12 +24,34 @@ from pathlib import Path
 import pytest
 
 from conftest import ORG, PROJECT, REPO, git, run_script
+#: The trailer helpers and the two lines a lane's run lands, imported from
+#: the file that owns those rules rather than retyped — see
+#: `tests/test_commit_trailers.py`.
+from test_commit_trailers import TRAILERS, message_of, trailers_of
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import load_yaml, tree_digest  # noqa: E402
 
 BUMP = REPO / "scripts" / "bump-leg.py"
 VALIDATE_PINS = "scripts/validate-pins.py"
+
+
+@pytest.fixture(scope="module")
+def bump_leg_module():
+    """`bump-leg.py` as a module, so `commit_once` can be called in-process
+    and the `git commit` argv it builds captured directly.
+
+    A hyphenated filename is not importable the ordinary way; this is the
+    same `spec_from_file_location` load `test_update_shape.py`'s
+    `update_shape` fixture uses. Loading it here executes its own `from
+    repo_shape import …` and `from shape_materialize import …`, which
+    resolve to the SAME module objects imported above and in `conftest.py` —
+    both are cached in `sys.modules` by name, not reloaded.
+    """
+    spec = importlib.util.spec_from_file_location("bump_leg_entry", BUMP)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 #: Where the advanced spec commit is pushed. See the module docstring.
 ADVANCE_BRANCH = "bump-leg-advance"
@@ -240,6 +264,130 @@ def test_dry_run_prints_the_move_and_changes_nothing(project, scaffolded,
     assert (project / "contracts" / "spec-pin.yaml").read_bytes() == pin
     assert (project / ".github" / "workflows" /
             "legs.yml").read_bytes() == workflow
+    assert git("status", "--porcelain", cwd=project).stdout == ""
+
+
+# --- --trailer: the lines the commit ends with (#150) -----------------------
+
+def test_bump_with_two_trailers_ends_the_commit_message_in_the_order_given(
+        scaffolded, advanced, tmp_path):
+    """`bump-leg.py` composes its own commit message, so a `Lane:` line —
+    which the lane-collision protocol wants on every artifact a lane
+    produces, the COMMIT included — reaches it no other way, and this
+    estate's convention adds `Co-Authored-By:` beside it (#111 gave the other
+    two pin-moving tools this; #150 is this one's turn).
+
+    TWO BUMPS OF THE SAME LEG TO THE SAME COMMIT, from two independent copies
+    of the same starting clone, one with the flag and one without, so the
+    trailer block is the ONLY difference between the two messages: the
+    ordering claim and the "a run passing none writes what it always wrote"
+    claim, in one assertion, with no pasted copy of today's wording to go
+    stale.
+    """
+    plain = tmp_path / "plain"
+    trailed = tmp_path / "trailed"
+    shutil.copytree(scaffolded["clone"], plain, symlinks=True)
+    shutil.copytree(scaffolded["clone"], trailed, symlinks=True)
+    branched(plain)
+    branched(trailed)
+
+    plain_result = bump(plain, scaffolded, advanced)
+    trailed_result = bump(trailed, scaffolded, advanced,
+                          "--trailer", TRAILERS[0], "--trailer", TRAILERS[1])
+    assert plain_result.returncode == 0, plain_result.stderr + plain_result.stdout
+    assert trailed_result.returncode == 0, (
+        trailed_result.stderr + trailed_result.stdout)
+
+    assert message_of(trailed) == \
+        message_of(plain) + "\n" + "\n".join(TRAILERS) + "\n"
+    assert trailers_of(trailed) == list(TRAILERS), (
+        "and git reads them back as the trailer block, in order")
+    assert trailers_of(plain) == [], "the run without the flag carries none"
+    # Still ONE commit touching the same paths either way: a trailer changes
+    # the message and nothing else.
+    assert committed(trailed) == committed(plain)
+    assert validate(trailed).returncode == 0
+    assert validate(plain).returncode == 0
+
+
+def test_no_trailers_leaves_the_commit_argv_byte_identical(bump_leg_module,
+                                                           tmp_path,
+                                                           monkeypatch):
+    """THE CLAIM `--dry-run` CANNOT SHOW, because it makes no commit at all:
+    passed no `--trailer`, `commit_once` must build the exact `git commit`
+    argv it has always built. `shape_materialize.commit_trailers` returns an
+    EMPTY argument list for no trailers, by construction — this asserts that
+    `commit_once` actually uses that empty list rather than, say, always
+    inserting `--trailer` markers even when there is nothing to put in them.
+    """
+    root = tmp_path / "repo"
+    root.mkdir()
+    git("init", "-q", "-b", "main", ".", cwd=root)
+    (root / "a.txt").write_text("x\n", encoding="utf-8")
+
+    captured: dict = {}
+    real_run = subprocess.run
+
+    def spy(args, **kwargs):
+        if args[:2] == ["git", "commit"]:
+            captured["args"] = list(args)
+        return real_run(args, **kwargs)
+
+    monkeypatch.setattr(bump_leg_module.subprocess, "run", spy)
+    head = bump_leg_module.commit_once(root, "A commit\n", ["a.txt"])
+
+    assert captured["args"] == ["git", "commit", "-q", "-F", "-", "--",
+                                "a.txt"], (
+        "no --trailer means no extra arguments before `--` — the exact argv "
+        "this tool has always built")
+    assert git("rev-parse", "HEAD", cwd=root).stdout.strip() == head
+
+
+def test_dry_run_prints_the_trailers_after_the_old_to_new_line(project,
+                                                               scaffolded,
+                                                               advanced):
+    """`--dry-run` shows what a real run would end the commit with,
+    positioned after the `old -> new` line it already prints — the same
+    "read it before it lands" property AGENTS.md's "Advancing a leg" already
+    asks of that line."""
+    was = git("rev-parse", "HEAD:spec", cwd=project).stdout.strip()
+    branched(project)
+    result = bump(project, scaffolded, advanced, "--dry-run",
+                 "--trailer", TRAILERS[0], "--trailer", TRAILERS[1])
+    assert result.returncode == 0, result.stderr + result.stdout
+
+    old_to_new = f"{was[:12]} -> {advanced[:12]}"
+    assert old_to_new in result.stdout
+    for line in TRAILERS:
+        assert line in result.stdout
+    assert result.stdout.index(old_to_new) < result.stdout.index(TRAILERS[0]), (
+        "the trailers are printed after the `old -> new` line, not before it")
+    assert git("status", "--porcelain", cwd=project).stdout == ""
+
+
+def test_dry_run_with_no_trailer_says_so(project, scaffolded, advanced):
+    branched(project)
+    result = bump(project, scaffolded, advanced, "--dry-run")
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "trailers     none" in result.stdout
+
+
+@pytest.mark.parametrize("value", ["Lane xfactory-1", "Lane:xfactory-1",
+                                   "Lane: "])
+def test_a_malformed_trailer_is_refused_before_the_project_is_read(
+        project, scaffolded, advanced, value):
+    """ARGPARSE'S OWN ERROR PATH: a malformed trailer is a malformed command
+    line, refused with the usage line beside it — before `cmd_bump` ever
+    runs, so nothing is fetched, nothing is staged and HEAD does not move,
+    even though `--to` and the project both are otherwise entirely valid."""
+    branched(project)
+    head = git("rev-parse", "HEAD", cwd=project).stdout.strip()
+    result = bump(project, scaffolded, advanced, "--trailer", value)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "--trailer" in result.stderr
+    assert "usage:" in result.stderr
+    assert git("rev-parse", "HEAD", cwd=project).stdout.strip() == head, (
+        "argparse refuses before the tool reads anything, let alone commits")
     assert git("status", "--porcelain", cwd=project).stdout == ""
 
 

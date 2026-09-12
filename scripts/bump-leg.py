@@ -3,7 +3,8 @@
 """Advance ONE leg of an assembly root, in ONE LOCKSTEP COMMIT.
 
     ./scripts/bump-leg.py --root <assembly root> --leg spec|code
-                          --to <40 hex> [--local-remote-dir <dir>] [--dry-run]
+                          --to <40 hex> [--trailer "<Key>: <value>" ...]
+                          [--local-remote-dir <dir>] [--dry-run]
 
 Run from a checkout of THIS standard and pointed at a project, exactly as
 `scripts/family.py` and `update-shape.py` are run.
@@ -61,7 +62,8 @@ from repo_shape import (  # noqa: E402
     recorded_gitlink, repo_basename, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
-    CommandFailed, check_program, run, write_lf,
+    CommandFailed, check_program, commit_trailers, run, trailer_line,
+    write_lf,
 )
 
 MANIFEST = "project.yaml"
@@ -390,7 +392,8 @@ def run_validator(root: Path, script: str) -> tuple[int, str]:
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
 
-def commit_once(root: Path, message: str, paths: list[str]) -> str:
+def commit_once(root: Path, message: str, paths: list[str],
+                trailers: list[str] = ()) -> str:
     """ONE commit, with EXPLICIT PATHSPECS.
 
     `git commit -- <paths>` commits the working-tree state of exactly those
@@ -405,9 +408,18 @@ def commit_once(root: Path, message: str, paths: list[str]) -> str:
     that has nothing to do with the leg being advanced, and writing
     `git config --global` to fix that is this tool editing a machine it was
     only asked to read.
+
+    `trailers` ARE THE LINES THE COMMIT ENDS WITH, in the order `--trailer`
+    named them (#111 gave `update-shape.py apply` and `scripts/family.py
+    bump` this; #150 is this tool's turn, the third pin-moving tool the
+    gap left behind). Passed none, `commit_trailers` hands the message back
+    unchanged and adds no argument, which is what keeps a plain bump's
+    message and `git commit` argv byte-identical to every one before it. See
+    `shape_materialize.commit_trailers` for the two ways git is asked.
     """
     run(["git", "add", "--", *paths], cwd=root)
-    args = ["git", "commit", "-q", "-F", "-", "--", *paths]
+    message, trailer_args = commit_trailers(message, trailers)
+    args = ["git", "commit", "-q", "-F", "-", *trailer_args, "--", *paths]
     check_program(args)
     env = dict(os.environ)
     for key, fallback in (("GIT_AUTHOR_NAME", "openRepoShape bump-leg"),
@@ -583,6 +595,25 @@ def _print_workflow_plan(root: Path, plans: list) -> None:
         print("workflows    no `@<sha>` reference names this leg")
 
 
+def _print_trailers(trailers: list[str]) -> None:
+    """Print the `--trailer` lines this run would end the commit with, read
+    off verbatim and in the order `--trailer` was given — the same order
+    `commit_trailers` appends them in.
+
+    Printed after the `nothing to do` exit, so it is never shown for a bump
+    that will not write anything, and before the `--dry-run` return, so a
+    dry run shows it beside the `old -> new` line already printed above,
+    exactly like a real run shows the same thing right before it writes them
+    (#150).
+    """
+    if trailers:
+        print(f"trailers     {len(trailers)} to append, in order:")
+        for line in trailers:
+            print(f"  {line}")
+    else:
+        print("trailers     none")
+
+
 def _apply_rewrite(root: Path, submodule: Path, commit: str, was: str,
                    pin_path: Path, pin_text: str, digest: str, plans: list,
                    staged: list[str]) -> None:
@@ -692,6 +723,8 @@ def cmd_bump(args) -> int:
               f"{commit[:12]} and every fact agrees.")
         return 1
 
+    _print_trailers(args.trailer)
+
     if args.dry_run:
         print("\n--dry-run: nothing was changed. The leg's object store was "
               "fetched into, which is how the digest above was computed; the "
@@ -721,7 +754,7 @@ def cmd_bump(args) -> int:
           "from the leg's own objects, not adjusted.\n")
     head = commit_once(
         root, f"Bump {role} leg to {commit[:12]} in {project.display_name}\n\n"
-        + body, staged)
+        + body, staged, trailers=args.trailer)
     print(f"\n  committed {head[:12]}: " + ", ".join(staged))
     print(f"  {path}/ is left DETACHED at {commit[:12]}; `make bootstrap` in "
           "the root re-places it on its tracking branch AT the new pin")
@@ -744,6 +777,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--to", required=True, metavar="COMMIT",
                         help="the 40-hex commit to move the gitlink, the pin "
                              "and every workflow reference to, together")
+    parser.add_argument("--trailer", action="append", metavar='"KEY: VALUE"',
+                        default=[], type=trailer_line,
+                        help="append this `<Key>: <value>` line to the "
+                             "commit this writes; repeatable, kept in the "
+                             "order given")
     parser.add_argument("--local-remote-dir", type=Path, default=None,
                         help="resolve the leg's remote to a bare repository "
                              "here instead of its origin (the TEST path; no "
