@@ -319,6 +319,12 @@ git -C <path> push -u origin <branch>   # then open a pull request
 5. The leg is left DETACHED at the new commit. `make bootstrap` in the root
    re-places it on its tracking branch AT the new pin; say so when you relay
    the result.
+6. **`--trailer "<Key>: <value>"` puts a line on the commit this writes.**
+   Repeatable, kept in the order given — the same flag `update-shape.py
+   apply` and `family.py bump` already take. `--dry-run` prints the
+   trailers it would write, after the `old -> new` line, so the human reads
+   them before they land rather than after. A lane passes its `Lane:` line
+   and this estate's `Co-Authored-By:` there, not by amending afterwards.
 
 ## Creating a family, and adding a member
 
