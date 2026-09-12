@@ -1149,6 +1149,112 @@ def copy_command(source, target, platform: str | None = None) -> str:
 LABEL_LEG_SHAPE_FILES = "leg shape files"
 
 
+def shape_file_state(here: Path, there: Path, name: str) -> str:
+    """What ONE leg shape file is, against the template's copy of it.
+
+    The five answers this returns are the whole vocabulary of the row above,
+    and they are five because a byte comparison is only meaningful for two of
+    them. `AGENTS.md` and `README.md` are RENDERED from their templates --
+    they carry `{{PLACEHOLDER}}`s the scaffold fills in -- so "differs" is
+    their permanent state and this says `rendered` rather than pretending a
+    byte comparison meant something. A file the template does not carry is
+    reported as what it is rather than as a difference, because the standard
+    has nothing to compare it against.
+
+    Split out of `check_leg_shape_files` for #134: the chain answers one
+    question about one file, and the loop that calls it answers a different
+    one about a leg.
+    """
+    if not here.is_file():
+        return "absent"
+    if name in LEG_RENDERED:
+        return "rendered"
+    if not there.is_file():
+        return "present (the template has none)"
+    if here.read_bytes() == there.read_bytes():
+        return "identical"
+    return "differs"
+
+
+def leg_shape_comparison(ctx: Context, role: str, rel: str) -> tuple:
+    """ONE leg's shape files, and the ones that are not there at all.
+
+    Returns the `--json` entry for the leg and the `(role, leg, file)` triples
+    the row names as missing, so that the caller adds them up rather than
+    being handed a half-built dictionary to finish.
+
+    EVERY EARLY RETURN IS A LEG THERE IS NOTHING TO COMPARE, and neither of
+    them is a fault of the repository's: a leg nobody has bootstrapped has no
+    files yet, and a `templates/<role>-root/` this checkout does not carry is
+    the STANDARD being short rather than the project being wrong. Both say
+    which they are, in the `state` the row prints.
+
+    Split out of `check_leg_shape_files` for #134.
+    """
+    mount = ctx.root / rel
+    template = ctx.shape / "templates" / f"{role}-root"
+    if not (mount.is_dir() and any(mount.iterdir())):
+        return {"role": role, "state": "not populated"}, []
+    if not template.is_dir():
+        return {"role": role,
+                "state": f"no templates/{role}-root/ to compare against"}, []
+    files: dict[str, str] = {}
+    absent: list[tuple[str, str, str]] = []
+    for name in LEG_SHAPE_FILES:
+        state = shape_file_state(mount / name, template / name, name)
+        files[name] = state
+        if state == "absent":
+            absent.append((role, rel, name))
+    return {"role": role, "state": "compared", "files": files}, absent
+
+
+def leg_shape_summary(rel: str, entry: dict) -> str:
+    """One leg's half of the row's reason: its state, or its files by name.
+
+    A leg that WAS compared says what each file is rather than the word
+    `compared`, which on its own tells a reader nothing they came for.
+
+    Split out of `check_leg_shape_files` for #134.
+    """
+    if entry["state"] != "compared":
+        return f"{rel}: {entry['state']}"
+    named = ", ".join(f"{name} {state}"
+                      for name, state in entry["files"].items())
+    return f"{rel}: {named}"
+
+
+def missing_shape_file_fix(ctx: Context, missing: list) -> str:
+    """The next command for a leg missing a shape file, or why there is none.
+
+    A COPY IS OFFERED ONLY FOR A FILE A COPY WOULD FIX -- `cp` for a POSIX
+    reader and `Copy-Item -LiteralPath` for a PowerShell one, which is
+    `copy_command`'s job (#105). The template's `AGENTS.md` and `README.md`
+    carry `{{PLACEHOLDER}}`s the scaffold renders, so copying one verbatim
+    leaves a leg holding literal `{{PROJECT_NAME}}` -- a command that produces
+    an invalid leg is worse than no command at all (Copilot, PR #96). For
+    those the row says what the file IS, and the repair is a human's until the
+    repair mode lands.
+
+    Split out of `check_leg_shape_files` for #134.
+    """
+    copyable = [entry for entry in missing if entry[2] not in LEG_RENDERED]
+    if not copyable:
+        return (f"the missing file(s) are RENDERED per project from "
+                f"templates/<role>-root/ — `{PYTHON} "
+                f"{quote_arg(ctx.shape / 'scaffold-project.py')} --help` "
+                "shows what writes them; copying a template verbatim "
+                "would leave "
+                "`{{PLACEHOLDER}}`s in the leg")
+    role, rel, name = copyable[0]
+    source = ctx.shape / "templates" / f"{role}-root" / name
+    fix = copy_command(source, ctx.root / rel / name)
+    if len(copyable) < len(missing):
+        fix += ("   # and the rest are RENDERED per project "
+                "(placeholders): scaffold-project.py writes those, "
+                "and copying a template verbatim would not")
+    return fix
+
+
 def check_leg_shape_files(ctx: Context) -> Row:
     """Each present leg's shape files against `templates/<role>-root/`.
 
@@ -1159,10 +1265,10 @@ def check_leg_shape_files(ctx: Context) -> Row:
     reported as a finding is a file that is not there at all, because a leg
     with no `AGENTS.md` is a leg an agent reads nothing in.
 
-    `AGENTS.md` and `README.md` are RENDERED from their templates -- they
-    carry `{{PLACEHOLDER}}`s the scaffold fills in -- so "differs" is their
-    permanent state and the row says `rendered` rather than pretending a byte
-    comparison meant something.
+    THE COMPARING IS `leg_shape_comparison`'s and the wording is
+    `leg_shape_summary`'s, so that this reads as the three sentences it is:
+    compare every leg, say what was found, and offer a copy for the files a
+    copy would fix.
     """
     legs = ctx.legs()
     if not legs:
@@ -1173,64 +1279,14 @@ def check_leg_shape_files(ctx: Context) -> Row:
     for leg in legs:
         role = str(leg.get("role") or "?")
         rel = str(leg.get("path") or role)
-        mount = ctx.root / rel
-        template = ctx.shape / "templates" / f"{role}-root"
-        if not (mount.is_dir() and any(mount.iterdir())):
-            per_leg[rel] = {"role": role, "state": "not populated"}
-            continue
-        if not template.is_dir():
-            per_leg[rel] = {"role": role,
-                            "state": f"no templates/{role}-root/ to compare "
-                                     "against"}
-            continue
-        files: dict[str, str] = {}
-        for name in LEG_SHAPE_FILES:
-            here, there = mount / name, template / name
-            if not here.is_file():
-                files[name] = "absent"
-                missing.append((role, rel, name))
-            elif name in LEG_RENDERED:
-                files[name] = "rendered"
-            elif not there.is_file():
-                files[name] = "present (the template has none)"
-            elif here.read_bytes() == there.read_bytes():
-                files[name] = "identical"
-            else:
-                files[name] = "differs"
-        per_leg[rel] = {"role": role, "state": "compared", "files": files}
+        entry, absent = leg_shape_comparison(ctx, role, rel)
+        per_leg[rel] = entry
+        missing.extend(absent)
     detail = {"legs": per_leg, "compared": list(LEG_SHAPE_FILES)}
-    summary = "; ".join(
-        f"{rel}: " + (entry["state"] if entry["state"] != "compared" else
-                      ", ".join(f"{name} {state}"
-                                for name, state in entry["files"].items()))
-        for rel, entry in per_leg.items())
+    summary = "; ".join(leg_shape_summary(rel, entry)
+                        for rel, entry in per_leg.items())
     if missing:
         named = ", ".join(f"{leg}/{file}" for _, leg, file in missing)
-        # A COPY IS OFFERED ONLY FOR A FILE A COPY WOULD FIX -- `cp` for a
-        # POSIX reader and `Copy-Item -LiteralPath` for a PowerShell one,
-        # which is `copy_command`'s job (#105). The template's `AGENTS.md`
-        # and `README.md` carry `{{PLACEHOLDER}}`s the scaffold
-        # renders, so copying one verbatim leaves a leg holding literal
-        # `{{PROJECT_NAME}}` — a command that produces an invalid leg is
-        # worse than no command at all (Copilot, PR #96). For those the row
-        # says what the file IS, and the repair is a human's until the repair
-        # mode lands.
-        copyable = [entry for entry in missing if entry[2] not in LEG_RENDERED]
-        if copyable:
-            role, rel, name = copyable[0]
-            source = ctx.shape / "templates" / f"{role}-root" / name
-            fix = copy_command(source, ctx.root / rel / name)
-            if len(copyable) < len(missing):
-                fix += ("   # and the rest are RENDERED per project "
-                        "(placeholders): scaffold-project.py writes those, "
-                        "and copying a template verbatim would not")
-        else:
-            fix = (f"the missing file(s) are RENDERED per project from "
-                   f"templates/<role>-root/ — `{PYTHON} "
-                   f"{quote_arg(ctx.shape / 'scaffold-project.py')} --help` "
-                   "shows what writes them; copying a template verbatim "
-                   "would leave "
-                   "`{{PLACEHOLDER}}`s in the leg")
         # `note`, NOT `FINDING`. This is the row that printed `INVALID`
         # over a live estate whose every real gate was green, because
         # `templates/spec-root/.gitignore` entered the standard AFTER that
@@ -1240,7 +1296,8 @@ def check_leg_shape_files(ctx: Context) -> Row:
         # rule this standard never made. The difference is worth a reader's
         # eye and is not a verdict.
         return Row("leg-shape-files", LABEL_LEG_SHAPE_FILES, NOTE,
-                   f"{summary}  (missing: {named})", fix, detail)
+                   f"{summary}  (missing: {named})",
+                   missing_shape_file_fix(ctx, missing), detail)
     return Row("leg-shape-files", LABEL_LEG_SHAPE_FILES, OK, summary, None,
                detail)
 
