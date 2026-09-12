@@ -1282,7 +1282,8 @@ def test_every_classified_name_keeps_its_exact_answer(policy, name, role, pins,
         assert found is None, f"{name} unexpectedly classified as {found}"
         return
     assert found is not None, f"{name} classified as nothing"
-    assert (found.family, found.role, found.also_matches) == expected
+    actual = (found.family, found.role, found.also_matches)
+    assert actual == expected
 
 
 def test_the_policy_file_parses_under_the_projects_own_loader():
