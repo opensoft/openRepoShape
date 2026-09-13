@@ -950,6 +950,32 @@ def readme_shape_note(ctx: Context, us, repository: str, pinned: str,
             "that line; the next re-pin leaves them agreeing)")
 
 
+def what_a_re_pin_would_move(ctx: Context, us, repository: str,
+                             target: str) -> str:
+    """What `apply` would put in the commit, when no copied file differs.
+
+    A SECOND READING OF THE SAME LINE, AGAINST A SECOND COMMIT, because the
+    note and this clause do not ask the same question. `readme_shape_note`
+    weighs the README against the PIN — the authority on what revision this
+    root is a copy of — while what `apply` would DO is settled against the
+    TARGET it is about to re-pin onto. The commonest holder re-pin of all is
+    where the two part company: a README naming its own pin, with both of
+    them behind this standard, is `current` to the note and `stale` to
+    `apply`, so a row that read an empty note as "the README stays put"
+    would promise "the pin alone" about exactly the commit where that is
+    least true.
+
+    THE SAME DEFECT `update-shape.py check` CARRIED, fixed there by baa77d0
+    and missed in the doctor's copy of the wording, where it also read as a
+    self-contradiction: "`apply` would move the pin alone" with the note
+    appended to it said in one clause that the README moves too (#158).
+    """
+    readme = us.ReadmeShapeLine(ctx.root, repository, target)
+    if readme.state == us.README_STALE:
+        return f"the pin and {us.README}'s Shape: line"
+    return "the pin alone"
+
+
 def check_shape_currency(ctx: Context) -> Row:
     """`update-shape.py check`, summarised, against THIS checkout.
 
@@ -1027,9 +1053,15 @@ def check_shape_currency(ctx: Context) -> Row:
             # that contradicts its own verdict. It fires on both real estates
             # on this machine, so it is the common case and not an edge.
             detail["behind_pin_only"] = True
+            # AND WHAT ELSE IT WOULD MOVE. `apply` rewrites the README's
+            # `Shape:` line in the pin's own commit, so "the pin alone" both
+            # described a commit that could have a second file in it and
+            # contradicted the `note` printed right after it (#158).
+            moving = what_a_re_pin_would_move(ctx, us, upstream.repository,
+                                              target)
             return Row("shape-currency", LABEL_SHAPE_CURRENCY, FINDING,
                        "no copied file differs, but the pin names an older "
-                       f"commit, so `apply` would move the pin alone; "
+                       f"commit, so `apply` would move {moving}; "
                        f"{summary} ({where}){note}",
                        f"{PYTHON} "
                        f"{quote_arg(ctx.shape / 'update-shape.py')} check "
