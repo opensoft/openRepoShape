@@ -1,0 +1,14 @@
+# The lanes-edit.sh mutex — a directory created and removed per invocation.
+lanes/.lanes-edit.lock/
+
+# Pre-git register snapshots (the habit that git history replaced). Harmless
+# to leave lying about; never tracked.
+LANES.md.snap-*
+LANES.md.bak-*
+lanes/LANES.md.snap-*
+lanes/LANES.md.bak-*
+
+# Editor and OS scratch
+*.swp
+*~
+.DS_Store

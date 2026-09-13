@@ -1357,6 +1357,7 @@ templates/assembly-root/          the skeleton materialized for <Project>
 templates/family-root/            the skeleton for a FAMILY holder
 templates/spec-root/              the skeleton for <Project>-spec
 templates/code-root/              the skeleton for <Project>-code
+templates/workspace-root/         the skeleton for <user>-wip
 templates/*/AGENTS-shape.md       the rules of the shape, for an agent (PINNED)
 templates/*/.gitattributes        LF in every clone, so a copy digests as pinned
 AGENTS.md                         the procedure an AI assistant follows
