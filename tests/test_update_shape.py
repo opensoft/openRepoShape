@@ -1660,6 +1660,40 @@ def test_a_readme_checked_out_with_crlf_is_committed_and_keeps_its_endings(
     assert "README.md" in committed_files(root)
 
 
+def test_a_name_carrying_an_escape_is_not_a_line_this_tool_reads(
+        root, upstream_and_project):
+    r"""A README IS TEXT SOMEBODY ELSE WROTE, and both readers print the name
+    they read out of it straight back to whoever ran them.
+
+    The repository capture used to be `[^`\r\n]+` — anything that was not a
+    backtick, an ESC included — while `apply`'s `other-repository` line and
+    `check`'s row each echo `match["repository"]` to the terminal (Copilot,
+    PR #152). A README whose line named `` `<ESC>[2J...` `` would have played
+    terminal control sequences into that terminal, and `shape-doctor.py`
+    reads OTHER repositories' READMEs, so the file need not be one the
+    operator wrote.
+
+    The capture is the shape a repository name actually has now, so a crafted
+    one is not a `Shape:` line at all. `absent` is the right answer and not a
+    lesser one: the file is left exactly as it was, which is what this tool
+    does with every README it cannot account for.
+    """
+    a = upstream_and_project["a"]
+    crafted = f"Shape: `\x1b[2K{SHAPE_REPOSITORY}` @ `{a}`."
+    readme = give_readme(root, crafted)
+    before = readme.read_bytes()
+    assert readme_shape_lines(before.decode("utf-8")) == [], (
+        "a name with an escape character in it is not a repository name")
+
+    result = apply(root, upstream_and_project, "--branch", "shape/update-esc")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert readme.read_bytes() == before, "an `absent` README is not written"
+    assert "\x1b" not in result.stdout + result.stderr, (
+        "nothing out of that line reached the operator's terminal")
+    assert "no Shape: line, untouched" in result.stdout
+    assert "README.md" not in committed_files(root)
+
+
 def test_a_backtick_name_running_over_a_line_break_is_not_a_second_line(
         root, upstream_and_project):
     """`[^`]+` MATCHED NEWLINES, and `re.MULTILINE` does not stop it: only

@@ -287,12 +287,20 @@ PLACEHOLDER_RE = re.compile(r"\{\{[A-Z_]+\}\}")
 #: `readme_trailing_shape_line` is where that is decided, once, for both
 #: readers.
 #:
-#: `[^`\r\n]+` rather than `[^`]+` for the repository: under `re.MULTILINE`
-#: the `^` and `$` anchors are per line but a negated class is not, so a
-#: backtick-quoted name running over a line break used to match as ONE line
-#: spanning two — enough for a malformed example to count as a second `Shape:`
-#: line and leave a holder's real one `ambiguous` and unmoved (Copilot,
-#: PR #152).
+#: THE REPOSITORY IS THE SHAPE A REPOSITORY NAME HAS — an owner and a name of
+#: letters, digits, dots, hyphens and underscores with one slash between them
+#: — and not "anything that is not a backtick". Two defects closed by saying
+#: so, both found on PR #152. Under `re.MULTILINE` the `^` and `$` anchors are
+#: per line but a negated class is not, so a backtick-quoted name running over
+#: a line break matched as ONE line spanning two — enough for a malformed
+#: example to count as a second `Shape:` line and leave a holder's real one
+#: `ambiguous` and unmoved. And both readers PRINT the name they read back to
+#: whoever ran them (`update-shape.py`'s `other-repository` line does it
+#: twice), so a name carrying an ESC would have played terminal control
+#: sequences into that operator's terminal — out of a README this operator
+#: need not have written, since `shape-doctor.py` reads other repositories'.
+#: A crafted name is now not a `Shape:` line at all, which is `absent`:
+#: untouched, unprinted, and not a rewrite this tool was talked into.
 #:
 #: `\r?` before the end anchor: a README checked out on Windows with
 #: `core.autocrlf=true` holds CRLF, and the rewriter works on BYTES so that
@@ -300,7 +308,8 @@ PLACEHOLDER_RE = re.compile(r"\{\{[A-Z_]+\}\}")
 #: normalised the line endings instead would rewrite every line of the file
 #: to move one sha.
 README_SHAPE_LINE_RE = re.compile(
-    r"^Shape: `(?P<repository>[^`\r\n]+)` @ `(?P<commit>[0-9a-f]{40})`\.\r?$",
+    r"^Shape: `(?P<repository>[A-Za-z0-9._-]+/[A-Za-z0-9._-]+)` @ "
+    r"`(?P<commit>[0-9a-f]{40})`\.\r?$",
     re.MULTILINE)
 
 
