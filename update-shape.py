@@ -1062,13 +1062,13 @@ class ReadmeShapeLine:
     def _classify(self) -> str:
         """Which of the nine answers this README gives, read once.
 
-        NOTHING HERE RAISES, and that is not bookkeeping: this runs inside
-        `apply`, after the copies are on disk, so anything escaping it would
-        leave a half-written tree through the one arm of `cmd_apply` that
-        does not roll back. The `UnicodeDecodeError` branch has always been
-        that; an `OSError` — a README the OS will not hand over — is the same
-        hazard under another name (Copilot, PR #152). Both are READINGS
-        rather than failures: the file is left alone and the reason is said.
+        NOTHING HERE RAISES, and that is not bookkeeping: `check` and the
+        doctor read every root they are pointed at, and an exception escaping
+        into either is a traceback about somebody else's prose. The
+        `UnicodeDecodeError` branch has always been that; an `OSError` — a
+        README the OS will not hand over — is the same hazard under another
+        name (Copilot, PR #152). Both are READINGS rather than failures: the
+        file is left alone and the reason is said.
 
         THE GIT QUESTION IS ASKED LAST AND ONLY OF A LINE THAT WOULD MOVE, so
         the common answers cost no subprocess at all and a README nobody is
@@ -1779,14 +1779,36 @@ def _repin(root: Path, kind: Kind, ledger: Rollback, rows: list[Row],
           f"{pinned[:12]} -> {target[:12]}")
 
 
-def _rewrite_readme(root: Path, upstream: Upstream, target: str,
-                    ledger: Rollback) -> ReadmeShapeLine:
+def _read_readme(root: Path, upstream: Upstream,
+                 target: str) -> ReadmeShapeLine:
+    """Classify the README BEFORE the first copied byte lands (#158).
+
+    `.gitattributes` IS A PINNED COPY, and `readme_is_committed` asks git two
+    questions about `README.md` — `git status` and `git hash-object` — that
+    git answers through the attributes in the WORKING TREE. Read after
+    `_write_copies`, an upstream edit to `* text=auto eol=lf` would therefore
+    decide this root's README's fate: a CRLF working tree that hashes to its
+    own LF blob under the pinned attributes hashes to something else under a
+    new `README.md -text`, reads `uncommitted`, and keeps its stale line —
+    `apply` declining to move it for a reason that has nothing to do with the
+    README, and one no `check` run before the copies landed could have
+    predicted (Copilot, PR #152).
+
+    Root, repository and target are all known before the first copy, so the
+    READING is taken here. The WRITE stays where the ledger wants it, in
+    `_rewrite_readme` below.
+    """
+    return ReadmeShapeLine(root, upstream.repository, target)
+
+
+def _rewrite_readme(readme: ReadmeShapeLine, ledger: Rollback) -> None:
     """The README's `Shape:` line phase of `apply`, added for #148.
 
     AFTER THE PIN MOVE AND BEFORE THE VALIDATORS, which is where it belongs
     twice over: the line claims the commit `_repin` has just written, and the
     write goes through the same ledger, so `_refuse_red_validators` rolling
-    the copies back restores this too.
+    the copies back restores this too. Only the READING runs earlier, in
+    `_read_readme` — the ledger's order is what it was.
 
     Says what happened either way. A README with no such line, two of them,
     or one naming another repository is LEFT ALONE — and the reader is told
@@ -1802,7 +1824,6 @@ def _rewrite_readme(root: Path, upstream: Upstream, target: str,
     PR #152). Named as a refusal, the arm that already exists puts every byte
     back.
     """
-    readme = ReadmeShapeLine(root, upstream.repository, target)
     try:
         readme.rewrite(ledger)
     except OSError as exc:
@@ -1817,7 +1838,6 @@ def _rewrite_readme(root: Path, upstream: Upstream, target: str,
             "so a root that would rather keep it as it is can also take the "
             "line out and `apply` will say `absent` and move on.") from exc
     print(readme.said)
-    return readme
 
 
 def _refuse_red_validators(root: Path, kind: Kind) -> None:
@@ -1881,9 +1901,14 @@ def cmd_apply(args) -> int:
         _refuse_local_drift(rows, accepted)
         confirm(args, rows, taking, target)
         target_tree = upstream.tree_sha256(target)
+        # READ BEFORE THE COPIES, REWRITTEN AFTER THE PIN. `.gitattributes`
+        # is a pinned copy and the README's commit-state question is answered
+        # through it, so a classification taken after `_write_copies` would
+        # be made under the standard's NEW attributes (#158).
+        readme = _read_readme(root, upstream, target)
         copied = _write_copies(root, rows, taking, ledger)
         _repin(root, kind, ledger, rows, pinned, target, target_tree)
-        readme = _rewrite_readme(root, upstream, target, ledger)
+        _rewrite_readme(readme, ledger)
         _refuse_red_validators(root, kind)
         added = [add.path for add in taking]
         paths = sorted({row.path for row in copied} | set(added)

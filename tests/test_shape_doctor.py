@@ -3652,3 +3652,54 @@ def test_an_uncommitted_readme_line_is_nobodys_to_note(standard, project):
     row = rows_of(result)["shape-currency"]
     assert row["status"] == "ok", row
     assert "readme_shape_line" not in row["detail"]
+
+
+def test_the_pin_alone_clause_and_the_readme_note_never_say_opposite_things(
+        standard, project, tmp_path):
+    """THE ROW AND ITS NOTE ARE PRINTED AS ONE SENTENCE, so they have to
+    agree (#158).
+
+    `readme_shape_note` is appended to the `behind_pin_only` reason
+    unconditionally, and that reason used to promise "`apply` would move the
+    pin alone" whatever the note said next — a line claiming in one clause
+    that the pin moves by itself and in the next that the README moves with
+    it. `update-shape.py check` carried the same defect and baa77d0 took it
+    out; the doctor's copy of the wording was missed.
+
+    THE CLAUSE IS SETTLED AGAINST THE TARGET, NOT AGAINST THE NOTE, because
+    the two questions have different answers in both directions. A README
+    naming its own pin — the commonest holder re-pin of all — draws NO note
+    and is rewritten anyway; a README that has run ahead to the commit this
+    re-pin is about to record draws one and is left alone. Reading an empty
+    note as "the README stays put" would have kept the false promise in
+    precisely the case it is made most often.
+    """
+    pinned = git("rev-parse", "HEAD", cwd=standard).stdout.strip()
+    ahead = tmp_path / "standard-ahead"
+    shutil.copytree(standard, ahead, symlinks=True)
+    (ahead / "README.md").write_text(
+        (ahead / "README.md").read_text(encoding="utf-8") + "\nA fix.\n",
+        encoding="utf-8")
+    commit_all(ahead, "An upstream change to a file no project copies")
+    target = git("rev-parse", "HEAD", cwd=ahead).stdout.strip()
+    assert pinned != target, "fixture: the standard has moved past the pin"
+
+    readme = project / "README.md"
+    scaffolded = readme.read_text(encoding="utf-8")
+
+    readme.write_text(scaffolded + "\n" + rendered_shape_line(pinned) + "\n",
+                      encoding="utf-8")
+    commit_all(project, "The README names the shape it was cut from")
+    row = rows_of(doctor(ahead, project, "--json"))["shape-currency"]
+    assert row["detail"]["behind_pin_only"] is True, row
+    assert "note:" not in row["reason"], row
+    assert "`apply` would move the pin and README.md's Shape: line" \
+        in row["reason"], row
+
+    readme.write_text(scaffolded + "\n" + rendered_shape_line(target) + "\n",
+                      encoding="utf-8")
+    commit_all(project, "The README runs ahead of the pin")
+    row = rows_of(doctor(ahead, project, "--json"))["shape-currency"]
+    assert row["detail"]["behind_pin_only"] is True, row
+    assert "note:" in row["reason"], row
+    assert "`apply` would move the pin alone" in row["reason"], row

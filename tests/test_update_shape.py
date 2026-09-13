@@ -1487,6 +1487,51 @@ def test_a_readme_the_os_will_not_read_is_a_reading_rather_than_a_traceback(
         in checked.stdout
 
 
+def test_a_readme_that_is_not_utf_8_is_a_reading_no_platform_can_skip(
+        root, upstream_and_project):
+    """THE ARM DIRECTLY ABOVE, WITH NOTHING TO ARRANGE (#158).
+
+    `_classify` turns every way of failing to READ this file into a reading
+    rather than a raise, and the test above covers the `OSError` half of that
+    by taking a read away with `denied()` — which skips outright for root,
+    for a filesystem mounted without permission bits, and on Windows, where
+    there is no mode to take a read away with. So the `UnicodeDecodeError`
+    half, which is the older of the two and the one `check`, `apply` and the
+    doctor all lean on when they are pointed at somebody else's prose, had no
+    test that was guaranteed to run anywhere.
+
+    Bytes that are not UTF-8 need nobody's permission and skip nowhere. The
+    answer is the same one every README this tool cannot account for gets:
+    left alone, said out loud, and absent from the commit.
+    """
+    readme = root / "README.md"
+    # A rendered Shape: line with one byte corrupted. 0xFF begins no UTF-8
+    # sequence at all, so there is no locale and no platform on which this
+    # file decodes — and the corruption is in the one line a rewrite would
+    # otherwise move.
+    readme.write_bytes(
+        readme.read_text(encoding="utf-8").encode("utf-8") + b"\n"
+        + rendered_shape_line(upstream_and_project["a"]).encode("utf-8")
+        .replace(b"Shape", b"Sh\xffpe") + b"\n")
+    git("add", "--", "README.md", cwd=root)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m",
+        "The README picked up a byte on its way through an editor", "--",
+        "README.md", cwd=root)
+    before = readme.read_bytes()
+
+    result = apply(root, upstream_and_project, "--branch", "shape/update-utf8")
+    checked = check(root, upstream_and_project)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert readme.read_bytes() == before, (
+        "a README this tool cannot read is one it cannot be wrong about, so "
+        "it is not one it writes")
+    assert "README.md: not valid UTF-8, untouched" in result.stdout
+    assert "README.md" not in committed_files(root)
+    assert "readme-shape-line: unreadable (README.md is not valid UTF-8)" \
+        in checked.stdout
+
+
 def test_git_answers_three_ways_for_a_readme_and_one_of_them_is_committed(
         root, upstream_and_project, update_shape):
     """THE THREE READINGS BEHIND ONE BOOLEAN, side by side (Codex, PR #152).
@@ -1658,6 +1703,99 @@ def test_a_readme_checked_out_with_crlf_is_committed_and_keeps_its_endings(
     assert after == before[:at] + now + before[at + len(was):]
     assert after.count(b"\r\n") == before.count(b"\r\n")
     assert "README.md" in committed_files(root)
+
+
+#: The pinned attributes file every scaffolded project carries, and the one
+#: line commit C appends to the standard's copy of it. `-text` turns the
+#: check-in normalisation OFF for README.md, which is what makes the same
+#: working tree answer git's "is this committed?" question two different
+#: ways depending on whether the copy has landed yet.
+ATTRIBUTES = ".gitattributes"
+ATTRIBUTES_SOURCE = f"templates/assembly-root/{ATTRIBUTES}"
+ATTRIBUTES_FIX_LINE = "\nREADME.md -text\n"
+
+
+def test_an_upstream_attributes_change_does_not_decide_the_readmes_fate(
+        root, upstream_and_project, tmp_path):
+    """THE README IS CLASSIFIED BEFORE THE FIRST COPIED BYTE LANDS (#158).
+
+    `.gitattributes` IS A PINNED COPY, and `readme_is_committed` asks git two
+    questions about README.md — `git status` and `git hash-object` — that git
+    answers through the attributes in the WORKING TREE. Classified after
+    `_write_copies`, this root's README would therefore have its fate decided
+    by an upstream edit to `* text=auto eol=lf`: the CRLF working tree below
+    hashes to the LF blob it was committed as while the PINNED attributes are
+    on disk, and to something else the moment the standard's new
+    `README.md -text` replaces them. The line would have read `uncommitted`
+    and kept its stale sha — `apply` silently declining to move it for a
+    reason that has nothing to do with the README, and one no `check` run
+    before the copies landed could have predicted (Copilot, PR #152).
+
+    THE READING MOVES, THE WRITE DOES NOT. Root, repository and target are
+    all known before the first copy, so the classification is taken there;
+    the rewrite stays where the `Rollback` ledger wants it, after the pin
+    move and before the validators, so a red validator still puts this line
+    back with everything else.
+    """
+    a = upstream_and_project["a"]
+    # A PRIVATE copy of the upstream, back at A and advanced by a commit that
+    # changes ONE copied file: the attributes. A copy rather than a commit on
+    # the module-scoped fixture, for the reason `advanced_standard` gives —
+    # every other test here is a claim about a project cut from THAT upstream
+    # at THAT HEAD.
+    ahead = tmp_path / "openRepoShape-attributes"
+    shutil.copytree(upstream_and_project["upstream"], ahead, symlinks=True)
+    git("reset", "--hard", "-q", a, cwd=ahead)
+    target = commit_upstream_changes(
+        ahead, "The standard stops normalising README.md's line endings",
+        {ATTRIBUTES_SOURCE: ATTRIBUTES_FIX_LINE})
+
+    # A holder cloned on Windows: CRLF in the working tree, LF in the index,
+    # and a `git status` with nothing to say — written as bytes so no
+    # platform's newline translation has a hand in it.
+    readme = root / "README.md"
+    readme.write_bytes(
+        (readme.read_text(encoding="utf-8") + "\n"
+         + rendered_shape_line(a) + "\n").replace("\n", "\r\n")
+        .encode("utf-8"))
+    git("add", "--", "README.md", cwd=root)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m",
+        "The README came from a Windows editor", "--", "README.md", cwd=root)
+    before = readme.read_bytes()
+    head = git("rev-parse", "HEAD:README.md", cwd=root).stdout.strip()
+    assert b"\r\n" in before, "fixture: the working tree really is CRLF"
+    assert git("hash-object", "--", "README.md",
+               cwd=root).stdout.strip() == head, (
+        "fixture: under the PINNED `* text=auto eol=lf` this file hashes to "
+        "the LF blob it was committed as, so it is `committed`")
+    assert git("hash-object", "--no-filters", "--", "README.md",
+               cwd=root).stdout.strip() != head, (
+        "fixture: with that normalisation off — which is exactly what the "
+        "upstream's new `README.md -text` does — it does not, so the copy "
+        "landing first would have flipped the answer")
+
+    result = run_script(UPDATE, "apply", "--root", str(root), "--yes",
+                        "--upstream", str(ahead), "--at", target,
+                        "--branch", "shape/update-attributes")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert ATTRIBUTES_FIX_LINE.strip() in \
+        (root / ATTRIBUTES).read_text(encoding="utf-8"), (
+        "fixture: the run really did land the standard's new attributes")
+
+    after = readme.read_bytes()
+    # The scaffolded README names commit A in prose of its own a few lines
+    # up, so the expectation is built by index: only the LAST line is this
+    # tool's.
+    was, now = (rendered_shape_line(a).encode("utf-8"),
+                rendered_shape_line(target).encode("utf-8"))
+    at = before.rindex(was)
+    assert after == before[:at] + now + before[at + len(was):], (
+        "the line moved: the README was classified before the attributes it "
+        "is judged under were replaced"
+    )
+    assert after.count(b"\r\n") == before.count(b"\r\n")
+    assert "README.md" in committed_files(root)
+    assert "uncommitted" not in result.stdout, result.stdout
 
 
 def test_a_name_carrying_an_escape_is_not_a_line_this_tool_reads(
