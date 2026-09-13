@@ -1749,9 +1749,11 @@ def repo_basename(repository: str) -> str:
 # table. IT IS ALSO WHY `remote_local_path` STOPS WHERE IT DOES (#157): it
 # says which spelling names a path and what path it names, and the CALLER
 # that has the disk resolves it — `os.path.realpath` lives in
-# `siblings.py::local_spelling` and `shape-doctor.py::local_spelling`, never
+# `siblings.py::same_repository_here` and its twin in the doctor, never
 # here, because one directory reached through a symlink is a fact about a
-# machine and not about a string.
+# machine and not about a string. Those two ask THIS function first and the
+# disk only if it says no, so resolving can add an answer and never take one
+# away (Codex, PR #160).
 
 #: ANY `<scheme>://` prefix, by PATTERN rather than by a list of the schemes
 #: git happens to speak. Two reasons, in that order: a list has to be kept in
@@ -1786,8 +1788,20 @@ def _remote_body(url: str) -> str:
     at stake. What is left is a host and a path, git's scp `host:path`, or a
     path on its own — which is exactly the question `_remote_names_a_host`
     then answers.
+
+    AND THE EMPTY AUTHORITY IN FRONT OF A WINDOWS DRIVE GOES WITH THE SCHEME
+    (2026-09-13, #157, Copilot). `file:///D:/mirrors/Fam.git` is the file url
+    RFC 8089 blesses and git accepts, and taking `file://` off it leaves
+    `/D:/mirrors/Fam.git` — a leading `/` that belongs to the URL and not to
+    the path. Without this it is the one spelling of a Windows remote that
+    does not fold to `D:\\mirrors\\Fam.git`'s key, and a person who mounted a
+    member by its file url would be told their working clone is a stranger.
+    It comes off here, where every question below is asked, rather than in
+    whichever one noticed.
     """
     text = REMOTE_SCHEME_RE.sub("", url.strip().replace("\\", "/").rstrip("/"))
+    if text[:1] == "/" and REMOTE_DRIVE_RE.match(text[1:3]):
+        text = text[1:]                  # file:///D:/mirrors/Fam.git
     if "@" in text.split("/", 1)[0]:      # git@github.com:Org/Repo.git
         text = text.split("@", 1)[1]
     return text
@@ -1912,11 +1926,13 @@ def remote_local_path(url: str) -> str | None:
     before they compare. The string rule stays in one place either way (#155).
 
     A PATH IS THE SAME FOUR-WAY QUESTION `_remote_names_a_host` DECIDES, asked
-    once rather than twice, and the `file://` spelling loses its scheme on the
-    way out because `file:///srv/mirrors/Repo.git` and `/srv/mirrors/Repo.git`
-    name one directory. The separator it was written with survives:
-    `D:\\a\\remotes\\Fam.git` is handed back as it was read, which is what
-    Windows wants back.
+    once rather than twice, and what comes back is `_remote_body`'s spelling
+    of it — the scheme gone, `\\` folded to `/`, the empty authority in front
+    of a Windows drive dropped — which is the spelling every other question
+    here is asked of. `file:///srv/mirrors/Repo.git` and
+    `/srv/mirrors/Repo.git` name one directory, `file:///D:/mirrors/Fam.git`
+    and `D:\\mirrors\\Fam.git` name another, and Windows opens a path spelled
+    with either separator.
 
     NONE FOR A RELATIVE REMOTE, DELIBERATELY, though `./mirrors/Fam.git` is as
     much a path as an absolute one. `..` is resolved against the
@@ -1927,9 +1943,8 @@ def remote_local_path(url: str) -> str | None:
     """
     if _remote_names_a_host(url):
         return None
-    text = REMOTE_SCHEME_RE.sub("", url.strip())
-    flat = text.replace("\\", "/")
-    if flat.startswith("/") or REMOTE_DRIVE_RE.match(flat.split("/", 1)[0]):
+    text = _remote_body(url)
+    if text.startswith("/") or REMOTE_DRIVE_RE.match(text.split("/", 1)[0]):
         return text
     return None
 
@@ -2066,9 +2081,9 @@ def same_repository(one: str, two: str) -> bool:
     `/var/folders/…` and `/private/var/folders/…` are one temporary directory
     on macOS, only the machine holding that symlink can say so, and nothing in
     this module may ask a disk anything. `remote_local_path` above is the
-    string half, and `siblings.py::local_spelling` and
-    `shape-doctor.py::local_spelling` are the `os.path.realpath` half, applied
-    to both sides before this is asked.
+    string half, and `siblings.py::same_repository_here` and
+    `shape-doctor.py::same_repository_here` are the `os.path.realpath` half —
+    each of them THIS function first, and the disk only when it has said no.
 
     THE DEFINITION `make siblings` REFUSES BY AND THE DOCTOR REPORTS BY, one
     function imported by both: `templates/family-root/scripts/siblings.py`

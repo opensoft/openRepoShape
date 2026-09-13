@@ -1736,6 +1736,12 @@ def test_the_doctor_and_siblings_run_ONE_definition_of_one_repository(
         ("D:\\remotes\\Fam.git", "D:/remotes/Fam.git", True),
         ("/srv/mirrors/IRRS.git", "file:///srv/mirrors/IRRS.git", True),
         ("../mirrors/Repo.git", "../mirrors/Repo", True),
+        # ...including the WINDOWS FILE URL, which carries an empty authority
+        # AND a drive, so taking `file://` off it leaves a `/` that belongs
+        # to the url and not to the path (Copilot, PR #160)
+        ("file:///D:/mirrors/IRRS.git", "D:\\mirrors\\IRRS.git", True),
+        ("file:///D:/mirrors/IRRS.git", "D:/mirrors/IRRS.git", True),
+        ("file:///D:/mirrors/IRRS.git", "D:\\mirrors\\Other.git", False),
         # TWO PATHS ARE ONE REPOSITORY ONLY WHEN THEY ARE THE SAME PATH
         # (#157). The tail fallback threw the prefix away, and for a path the
         # prefix is the whole of what tells two bare repositories apart
@@ -1822,10 +1828,10 @@ def test_a_symlinked_prefix_is_ONE_directory_to_both_callers(tmp_path,
     ONLY A MACHINE CAN ANSWER THAT, so `scripts/repo_shape.py` does not:
     nothing in it may touch a disk, which is what lets
     `tests/test_windows_paths.py` ask the Windows questions from Linux. The
-    resolution belongs to the two callers that HAVE a disk --
-    `siblings.py::local_spelling` and `shape-doctor.py::local_spelling`,
-    three lines each over the same pure `remote_local_path` -- and this is
-    the test that they both do it, and do it the same way.
+    resolution belongs to the two callers that HAVE a disk, as
+    `same_repository_here` -- the same function in both, asking the STRING
+    rule first and the disk only when it has said no, so the disk can add an
+    answer and never take one away.
 
     THE SYMLINK IS A REAL ONE, so the question is asked wherever one can be
     made rather than only on the macOS runner where the estate would notice.
@@ -1845,7 +1851,7 @@ def test_a_symlinked_prefix_is_ONE_directory_to_both_callers(tmp_path,
     through_link = str(link / "remotes" / "IRRS.git")
 
     spec = importlib.util.spec_from_file_location(
-        "shape_doctor_local_spelling", REPO / DOCTOR)
+        "shape_doctor_same_repository_here", REPO / DOCTOR)
     doctor = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(doctor)
     assert doctor.remote_local_path is repo_shape.remote_local_path
@@ -1856,19 +1862,111 @@ def test_a_symlinked_prefix_is_ONE_directory_to_both_callers(tmp_path,
     assert repo_shape.same_repository(through_link, str(bare)) is False
     for tool in (doctor, siblings):
         name = tool.__name__
-        here, mount = tool.local_spelling(through_link), str(bare)
-        assert repo_shape.same_repository(
-            here, tool.local_spelling(mount)) is True, name
-        # The `file://` spelling of the same directory resolves with it.
-        assert tool.local_spelling(
-            "file://" + through_link.replace("\\", "/")) == here, name
-        # And a remote that names no path on THIS disk is handed back
-        # exactly as it was read, whatever it is.
-        for untouched in ("https://github.com/InkRouter/IRRS.git",
-                          "git@github.com:InkRouter/IRRS.git",
-                          "InkRouter/IRRS", "../remotes/IRRS.git",
-                          str(tmp_path / "nowhere" / "IRRS.git"), ""):
-            assert tool.local_spelling(untouched) == untouched, name
+        # ...the machine says yes, in either order, and through the `file://`
+        # spelling of the same directory
+        assert tool.same_repository_here(through_link, str(bare)) is True, name
+        assert tool.same_repository_here(str(bare), through_link) is True, name
+        assert tool.same_repository_here(
+            "file://" + through_link.replace("\\", "/"),
+            str(bare)) is True, name
+        # ...and every answer that does not need a disk is exactly the
+        # string rule's, which is what "first, and only then" means: a
+        # remote that names no path here, a relative one, a path that is not
+        # on this disk, and two directories that really are two
+        for one, two in (("https://github.com/InkRouter/IRRS.git",
+                          "InkRouter/IRRS"),
+                         ("git@github.com:InkRouter/IRRS.git", "irrs.git"),
+                         ("../remotes/IRRS.git", str(bare)),
+                         (str(tmp_path / "nowhere" / "IRRS.git"), str(bare)),
+                         (through_link, str(real / "Other.git")),
+                         ("", "InkRouter/IRRS")):
+            assert tool.same_repository_here(one, two) is \
+                repo_shape.same_repository(one, two), (name, one, two)
+
+
+def test_working_clone_and_verify_sibling_ACCEPT_a_symlinked_mirror(
+        tmp_path, siblings):
+    """THE TWO CALLERS THEMSELVES, OVER THE TWO SHAPES A SYMLINK MAKES.
+
+    `same_repository_here` has exactly two callers and this is the test of
+    THEM (Copilot, PR #160): either could resolve one side and not the other,
+    or ask the raw strings and nothing else, and a test that only called the
+    helper would pass through all of it.
+
+    THE TWO SHAPES PULL IN OPPOSITE DIRECTIONS, which is why both are here.
+    A mirror reached through a symlinked PREFIX must be ACCEPTED, and only
+    the disk can say so -- `/var/folders/...` and `/private/var/folders/...`
+    are one directory on macOS, and this suite's own fixtures reach one
+    through both. A mirror that IS a symlink onto a storage path whose own
+    tail is a serial number must be accepted too, through the row's
+    `repository: InkRouter/IRRS` -- a FORGE name, matched by the origin's
+    tail -- so the origin reaches that fallback exactly as git reported it
+    and resolving it first would throw the name away (Codex, PR #160).
+    """
+    spec = importlib.util.spec_from_file_location(
+        "shape_doctor_symlinked_mirror", REPO / DOCTOR)
+    doctor = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(doctor)
+
+    prefix = tmp_path / "A"
+    (prefix / "pool").mkdir(parents=True)
+    git("init", "--bare", str(prefix / "pool" / f"{FAMILY_MEMBER}.git"),
+        cwd=tmp_path)
+    serial = tmp_path / "B"
+    (serial / "storage").mkdir(parents=True)
+    (serial / "mirrors" / FAMILY_NAME).mkdir(parents=True)
+    git("init", "--bare", str(serial / "storage" / "uuid-123.git"),
+        cwd=tmp_path)
+    try:
+        os.symlink(prefix, tmp_path / "A-link")
+        os.symlink(serial / "storage" / "uuid-123.git",
+                   serial / "mirrors" / FAMILY_NAME / f"{FAMILY_MEMBER}.git")
+    except (AttributeError, NotImplementedError, OSError) as exc:
+        pytest.skip(f"this platform cannot create a symlink here: {exc}")
+
+    row = {"project": FAMILY_MEMBER, "id": "7c9f1b2d",
+           "repository": f"{FAMILY_NAME}/{FAMILY_MEMBER}"}
+    cases = [
+        # THE PREFIX CASE: the clone was made through the symlink and the
+        # mount names the directory it points at. The row's `repository:`
+        # cannot rescue this one -- the mirror is in a `pool/`, not under
+        # `InkRouter/` -- so only the resolved comparison can accept it.
+        ("through a symlinked prefix",
+         str(tmp_path / "A-link" / "pool" / f"{FAMILY_MEMBER}.git"),
+         str(prefix / "pool" / f"{FAMILY_MEMBER}.git")),
+        # THE SERIAL CASE: the mirror IS the symlink, its target's tail is a
+        # storage id, and the mount names a path that is not here at all.
+        # Only the row's `repository:` can accept this one, and only if the
+        # origin reaches it unresolved.
+        ("onto a storage path",
+         str(serial / "mirrors" / FAMILY_NAME / f"{FAMILY_MEMBER}.git"),
+         str(serial / "elsewhere" / f"{FAMILY_MEMBER}.git")),
+    ]
+    for index, (what, origin, mount) in enumerate(cases):
+        work = tmp_path / f"work-{index}" / FAMILY_MEMBER
+        work.mkdir(parents=True)
+        git("init", cwd=work)
+        git("remote", "add", "origin", origin, cwd=work)
+        (work / "project.yaml").write_text(
+            "kind: project-manifest\nid: 7c9f1b2d\n"
+            f"name: {FAMILY_MEMBER}\n", encoding="utf-8")
+
+        assert doctor.working_clone(work, row, mount) == (work.as_posix(),
+                                                          None), what
+        sibling = siblings.Sibling(FAMILY_MEMBER, work)
+        assert siblings.verify_sibling(
+            row, work, mount, row["repository"], sibling) is True, what
+        assert sibling.state == "?", what
+
+        # ...and a clone of something else at the same path is still refused
+        # by both, so this is not a test that accepts everything
+        git("remote", "set-url", "origin",
+            str(tmp_path / "stranger" / "Other.git"), cwd=work)
+        assert doctor.working_clone(work, row, mount)[0] is None, what
+        stranger = siblings.Sibling(FAMILY_MEMBER, work)
+        assert siblings.verify_sibling(
+            row, work, mount, row["repository"], stranger) is False, what
+        assert stranger.state == "WRONG ORIGIN", what
 
 
 # --- the adversarial review on #96 ------------------------------------------
