@@ -229,11 +229,14 @@ try:
     #: `siblings.py` in every family holder. `redacted` and `resolved_remote`
     #: are the rest of that arithmetic and came with it -- a row that quotes
     #: an `origin` must not publish a token, and a mount declared `../x.git`
-    #: is a url only against the root's own remote.
+    #: is a url only against the root's own remote. `remote_local_path` is the
+    #: string half of the one question that rule cannot finish on its own --
+    #: which spelling names a path on a disk -- and `local_spelling` below is
+    #: this file's half of it, because the symlink is on THIS machine (#157).
     from repo_shape import (  # noqa: E402
         COMMIT_RE, NamingPolicy, PYTHON, Refusal, accepts_role, git_out,
-        load_yaml, recorded_gitlink, redacted, resolved_remote,
-        same_repository,
+        load_yaml, recorded_gitlink, redacted, remote_local_path,
+        resolved_remote, same_repository,
     )
 except ImportError as exc:  # pragma: no cover - exercised as a subprocess
     sys.exit(not_in_the_standard(f"scripts/repo_shape.py ({exc})"))
@@ -2236,6 +2239,44 @@ def mounted_from(root: Path, rel: str, repository: str) -> str:
     return f"https://github.com/{repository}.git"
 
 
+def local_spelling(url: str) -> str:
+    """A remote naming a path ON THIS MACHINE, resolved through its symlinks.
+
+    THE HALF OF "IS THIS THE SAME REPOSITORY" A STRING CANNOT ANSWER (#157).
+    `repo_shape.same_repository` compares two filesystem paths by EXACT
+    equality -- the trailing `owner/repo` fallback used to call
+    `/srv/a/IRRS.git` and `/other/a/IRRS.git` one repository -- and nothing in
+    that module may touch a disk, so one directory reached through a SYMLINK
+    is two repositories to it: `/var/folders/...` and
+    `/private/var/folders/...` are the same temporary directory on macOS, and
+    a clone made through one spelling while `.gitmodules` records the other is
+    the member's working clone however it was reached.
+
+    THE SAME THREE LINES AS `siblings.py::local_spelling`, DELIBERATELY, and
+    for the reason the rest of this is shared and these are not: the STRING
+    rule is one function both files import (#155), while the half that asks a
+    disk belongs to whichever tool has one -- as `resolve_relative` does in
+    the holder and `origin_url` and `mounted_from` do here.
+
+    ONLY AN ABSOLUTE PATH THAT EXISTS HERE IS TOUCHED. `remote_local_path`
+    answers None for a host remote, which names no directory, and for a
+    relative one, which `realpath` would resolve against whatever directory
+    this process is standing in rather than against the root's own remote;
+    everything else is handed back exactly as it was read.
+
+    AND WHAT THE DISK SAYS IS WHAT THIS ROW REPORTS. A case-insensitive
+    filesystem hands back the spelling it stores (Windows does), so two
+    spellings that both open one directory can be one repository on THIS
+    machine while the string rule calls them two -- #149 is strict on every
+    platform because a string cannot know which it is, and this is the half
+    that is looking.
+    """
+    path = remote_local_path(url)
+    if path and os.path.exists(path):
+        return os.path.realpath(path)
+    return url
+
+
 def working_clone(sibling: Path, row: dict,
                   remote: str) -> tuple[str | None, str | None]:
     """`(the working clone beside the holder, what is there instead)`.
@@ -2271,6 +2312,14 @@ def working_clone(sibling: Path, row: dict,
     else `WRONG ORIGIN` whether or not the mount url resolved (Copilot, PR
     #147).
 
+    AND A PATH SPELLED UNDER ANOTHER PREFIX IS THE SAME PATH. One directory
+    reached through a symlink -- `/var/folders/...` and
+    `/private/var/folders/...` on macOS -- is one repository, and since #157
+    the rule compares two paths exactly, so both sides go through
+    `local_spelling` first. `siblings.py::verify_sibling` resolves the same
+    two sides the same way, which is what keeps the tool and this report
+    answering together about one directory (#146).
+
     THE ORIGIN IS REDACTED ON THE WAY OUT. The comparisons above are on the
     raw value; what a row prints and `--json` carries must not be somebody's
     token (Codex and Copilot, PR #147).
@@ -2279,8 +2328,9 @@ def working_clone(sibling: Path, row: dict,
         return None, None
     origin = origin_url(sibling)
     repository = str(row.get("repository") or "")
-    if origin and (same_repository(origin, remote)
-                   or (repository and same_repository(origin, repository))):
+    here, mount = local_spelling(origin), local_spelling(remote)
+    if origin and (same_repository(here, mount)
+                   or (repository and same_repository(here, repository))):
         return sibling.as_posix(), None
     return None, redacted(origin) if origin else "(no origin)"
 

@@ -1704,7 +1704,7 @@ def repo_basename(repository: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Is this the SAME REPOSITORY? (2026-09-12, #146, #155 and #149)
+# Is this the SAME REPOSITORY? (2026-09-12, #146, #155, #149 and #157)
 # ---------------------------------------------------------------------------
 #
 # ONE DEFINITION, BECAUSE TWO TOOLS ACT ON IT AND MUST NOT DISAGREE.
@@ -1732,14 +1732,26 @@ def repo_basename(repository: str) -> str:
 # remote that names a HOST and is PRESERVED for a filesystem path, so two bare
 # repositories on a case-sensitive disk that differ only in case stop being
 # called one repository. It is argued where it is decided, in
-# `_remote_names_a_host` below. Everything else answers exactly what the two
+# `_remote_names_a_host` below. Everything else answered exactly what the two
 # copies answered, spelling for spelling.
+#
+# ONE CHANGED AFTER IT, AND ONLY ONE (2026-09-13, #157): two remotes that are
+# BOTH filesystem paths are one repository only when their normalised keys are
+# EQUAL. The trailing `owner/repo` fallback used to match them too, which made
+# `/srv/a/IRRS.git` and `/other/a/IRRS.git` one repository — two bare
+# repositories under two roots, told apart by exactly the prefix the tail
+# throws away. It is argued where it is decided, in `same_repository` below.
 #
 # NOTHING HERE FETCHES ANYTHING, ASKS GIT ANYTHING OR TOUCHES A DISK. Every
 # function below is string arithmetic over remotes a caller has already read,
 # which is what lets `tests/test_windows_paths.py` ask the Windows questions
 # from Linux and `tests/test_shape_doctor.py` hold the whole rule to one
-# table.
+# table. IT IS ALSO WHY `remote_local_path` STOPS WHERE IT DOES (#157): it
+# says which spelling names a path and what path it names, and the CALLER
+# that has the disk resolves it — `os.path.realpath` lives in
+# `siblings.py::local_spelling` and `shape-doctor.py::local_spelling`, never
+# here, because one directory reached through a symlink is a fact about a
+# machine and not about a string.
 
 #: ANY `<scheme>://` prefix, by PATTERN rather than by a list of the schemes
 #: git happens to speak. Two reasons, in that order: a list has to be kept in
@@ -1884,6 +1896,44 @@ def remote_is_a_path(base: str) -> bool:
     return ":" not in head or REMOTE_DRIVE_RE.match(head) is not None
 
 
+def remote_local_path(url: str) -> str | None:
+    """The path on A MACHINE this remote names, or None when it names none.
+
+    THE STRING HALF OF A QUESTION THIS MODULE MAY NOT FINISH (2026-09-13,
+    #157). `same_repository` answers for two filesystem paths by exact
+    equality, so one directory reached through a SYMLINK — `/var/folders/…`
+    and `/private/var/folders/…` are the same temporary directory on macOS,
+    which is how this suite's own fixtures reach one — is two repositories to
+    it. Only the machine holding that symlink can say otherwise, and nothing
+    here is allowed to ask a disk anything. So this says which spelling names
+    a path and what path it names, and the two callers that HAVE a disk —
+    `templates/family-root/scripts/siblings.py::verify_sibling` and
+    `shape-doctor.py::working_clone` — resolve it with `os.path.realpath`
+    before they compare. The string rule stays in one place either way (#155).
+
+    A PATH IS THE SAME FOUR-WAY QUESTION `_remote_names_a_host` DECIDES, asked
+    once rather than twice, and the `file://` spelling loses its scheme on the
+    way out because `file:///srv/mirrors/Repo.git` and `/srv/mirrors/Repo.git`
+    name one directory. The separator it was written with survives:
+    `D:\\a\\remotes\\Fam.git` is handed back as it was read, which is what
+    Windows wants back.
+
+    NONE FOR A RELATIVE REMOTE, DELIBERATELY, though `./mirrors/Fam.git` is as
+    much a path as an absolute one. `..` is resolved against the
+    SUPERPROJECT'S REMOTE by git's own rule and by `join_remote` above — a
+    caller that handed it to `realpath` would resolve it against whatever
+    directory the process happens to be standing in, which is the trap
+    `siblings.py::resolve_relative` exists to avoid.
+    """
+    if _remote_names_a_host(url):
+        return None
+    text = REMOTE_SCHEME_RE.sub("", url.strip())
+    flat = text.replace("\\", "/")
+    if flat.startswith("/") or REMOTE_DRIVE_RE.match(flat.split("/", 1)[0]):
+        return text
+    return None
+
+
 def _up_one(flat: str) -> str | None:
     """`flat` with its last component dropped, or None when it has none.
 
@@ -1978,24 +2028,47 @@ def redacted(url: str) -> str:
 def same_repository(one: str, two: str) -> bool:
     """Do two remote spellings name the SAME repository?
 
-    The normalised identities, and failing that the TRAILING `owner/repo` of
-    the second: a manifest records `Org/Repo` with no host in it at all, and a
-    mirror or an enterprise host spells the same repository under a different
-    one. Only the second argument's tail is tried, because that is the
-    reference being matched against — the row, or the mount — and the first
-    is whatever a clone on somebody's disk happens to say.
+    The normalised identities, and failing that — when either side names a
+    FORGE — the TRAILING `owner/repo` of the second: a manifest records
+    `Org/Repo` with no host in it at all, and a mirror or an enterprise host
+    spells the same repository under a different one. Only the second
+    argument's tail is tried, because that is the reference being matched
+    against — the row, or the mount — and the first is whatever a clone on
+    somebody's disk happens to say.
 
-    THE TAIL IS A FORGE QUESTION UNLESS BOTH SIDES ARE PATHS, which is where
-    #149's rule stops (Copilot, PR #156). A mirror on disk at
-    `/srv/mirrors/InkRouter/IRRS.git` is matched against the row's bare
-    `InkRouter/IRRS` — a FORGE name, spelled by whoever wrote the manifest and
-    case-insensitive at the forge — so comparing that tail case-sensitively
-    would report a legitimate mirror clone as `WRONG ORIGIN` over a
-    capitalisation, which is the fault #149 is against, not for. When BOTH
-    sides are paths the filesystem is the only authority there is and the
-    comparison stays strict, so `/srv/mirrors/IRRS.git` and
-    `/srv/mirrors/irrs.git` are still two repositories however they are
-    reached.
+    THE TAIL IS A FORGE QUESTION, AND ONLY A FORGE QUESTION (2026-09-13,
+    #157). When BOTH sides are filesystem PATHS there is no tail match at all
+    and the normalised keys must be EQUAL, so `/srv/a/IRRS.git` and
+    `/other/a/IRRS.git` are two repositories — and so, still, are
+    `/srv/mirrors/IRRS.git` and `/srv/mirrors/irrs.git`, which is #149's case
+    rule arrived at the same way. THE DIFFERENCE IS NOT ARBITRARY: in a forge
+    name the two trailing components ARE the whole identity — `Org/Repo` is an
+    owner and a repository and there is nothing in front of it to lose —
+    while in a path everything in front of the tail is part of the identity,
+    and a fallback that drops it calls two bare repositories under two roots
+    one repository (Copilot, PR #156).
+
+    A PATH AGAINST A FORGE NAME KEEPS THE MATCH, DELIBERATELY, because that is
+    what the two callers below actually need: a member mounted from a MIRROR
+    has an `origin` that is a path — `/srv/mirrors/InkRouter/IRRS.git` — and
+    the reference it is matched against is either the bare `InkRouter/IRRS` a
+    `family.yaml` row is written as or the
+    `https://github.com/InkRouter/IRRS.git` that `siblings.py::clone_url`
+    derives from it. Dropping that match would call every clone in a
+    mirror-based estate `WRONG ORIGIN`, the InkRouter estate's own layout
+    included. It folds case for the same reason it exists: the row was typed
+    by a human and is case-insensitive at the forge, so comparing it strictly
+    would report a legitimate mirror clone as a stranger over a
+    capitalisation, which is the fault #149 is against and not for (Copilot
+    and Codex, PR #156).
+
+    WHICH LEAVES ONE DIRECTORY SPELLED TWO WAYS TO THE CALLERS, on purpose:
+    `/var/folders/…` and `/private/var/folders/…` are one temporary directory
+    on macOS, only the machine holding that symlink can say so, and nothing in
+    this module may ask a disk anything. `remote_local_path` above is the
+    string half, and `siblings.py::local_spelling` and
+    `shape-doctor.py::local_spelling` are the `os.path.realpath` half, applied
+    to both sides before this is asked.
 
     THE DEFINITION `make siblings` REFUSES BY AND THE DOCTOR REPORTS BY, one
     function imported by both: `templates/family-root/scripts/siblings.py`
@@ -2006,13 +2079,14 @@ def same_repository(one: str, two: str) -> bool:
     left, right = remote_key(one), remote_key(two)
     if left == right:
         return True
+    if not (_remote_names_a_host(one) or _remote_names_a_host(two)):
+        # TWO PATHS, AND THE KEYS ARE THE WHOLE ANSWER (#157).
+        return False
     tail = right.split("/")
     if len(tail) < 2:
         return False
     suffix = "/".join(tail[-2:])
-    if _remote_names_a_host(one) or _remote_names_a_host(two):
-        return left.lower().endswith(suffix.lower())
-    return left.endswith(suffix)
+    return left.lower().endswith(suffix.lower())
 
 
 # ---------------------------------------------------------------------------
