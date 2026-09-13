@@ -902,6 +902,54 @@ def check_manifest_kinds(ctx: Context) -> Row:
 LABEL_SHAPE_CURRENCY = "shape currency"
 
 
+def readme_shape_note(ctx: Context, us, repository: str, pinned: str,
+                      detail: dict) -> str:
+    """One clause about the root README's `Shape:` line, or nothing at all.
+
+    A NOTE, NEVER A FINDING, because a README is prose: the authority on what
+    revision this root is a copy of is `contracts/shape-pin.yaml`, and a
+    sentence that has fallen behind it is a difference worth a reader's eye
+    rather than a verdict about the repository (#148). It fires only on the
+    one unambiguous case — exactly one line, in the form
+    `templates/family-root/README.md` renders, naming THIS pin's upstream and
+    a different commit — because every other reading (no line, two of them,
+    another repository's name) is one `update-shape.py apply` leaves alone
+    too, and a note about a line nothing will ever rewrite is a chore with no
+    exit.
+
+    THE PIN, NOT THIS STANDARD'S HEAD, is what the line is compared against,
+    and that is the question the doctor is for: `contracts/shape-pin.yaml` is
+    the authority on what revision this root is a copy of, so a README that
+    disagrees with it is wrong ABOUT THIS TREE, today, whatever any upstream
+    has since done. Comparing against the target instead would fire on every
+    project that is merely behind — including one whose README names its own
+    pin perfectly — which is the `SHAPE BEHIND` verdict this row already
+    carries, said twice (Copilot, PR #152).
+
+    So the clause says what IS true rather than promising a rewrite: a README
+    that has run AHEAD of the pin to the commit a re-pin is about to record
+    is left alone by `apply` (it already names the target) and is still worth
+    a reader's eye here. Either way the next re-pin leaves the two agreeing.
+
+    The reader IS `update-shape.py`'s, loaded through `ctx.update_shape()`,
+    so the doctor and the tool that does the rewriting cannot disagree about
+    what the line says or about which readings are nobody's to touch.
+
+    RETURNS THE CLAUSE AND RECORDS THE EVIDENCE: the row's `detail` gains a
+    `readme_shape_line` entry on the same condition, because `--json` is what
+    a scheduled job reads and a note that existed only inside a prose line
+    would be invisible to it. Nothing is written to `detail` when there is no
+    note, so the key's presence IS the answer.
+    """
+    readme = us.ReadmeShapeLine(ctx.root, repository, pinned)
+    if readme.state != us.README_STALE:
+        return ""
+    detail["readme_shape_line"] = {"names": readme.named, "pin": pinned}
+    return (f"  (note: {us.README}'s Shape: line names "
+            f"{readme.named[:12]}, the pin {pinned[:12]} — `apply` owns "
+            "that line; the next re-pin leaves them agreeing)")
+
+
 def check_shape_currency(ctx: Context) -> Row:
     """`update-shape.py check`, summarised, against THIS checkout.
 
@@ -952,11 +1000,18 @@ def check_shape_currency(ctx: Context) -> Row:
                   "drifted": bool(counts.get(us.LOCALLY_MODIFIED)
                                   or counts.get(us.BOTH) or conflicts)}
         where = f"pinned {pinned[:12]}, this standard {target[:12]}"
+        note = readme_shape_note(ctx, us, upstream.repository, pinned, detail)
         moved = [row for row in reported if row.state != us.UNCHANGED]
         if not moved and pinned == target:
-            return Row("shape-currency", LABEL_SHAPE_CURRENCY, OK,
+            # `NOTE` RATHER THAN `OK` WHEN THE README DISAGREES, and `note` is
+            # the whole of what it is: `verdict_for` steps over a note row, so
+            # a prose line naming an old commit never fails a repository whose
+            # every pin is current. Same rule as `leg shape files`, which
+            # argues it at length; this is the second row to need it.
+            return Row("shape-currency", LABEL_SHAPE_CURRENCY,
+                       NOTE if note else OK,
                        f"the pin names this standard's commit; {summary} "
-                       f"({where})", None, detail)
+                       f"({where}){note}", None, detail)
         if not moved:
             # A PIN THAT NAMES AN OLDER COMMIT IS BEHIND, even when not one
             # copied byte differs. COMPLIANT is documented as "every row ok
@@ -975,7 +1030,7 @@ def check_shape_currency(ctx: Context) -> Row:
             return Row("shape-currency", LABEL_SHAPE_CURRENCY, FINDING,
                        "no copied file differs, but the pin names an older "
                        f"commit, so `apply` would move the pin alone; "
-                       f"{summary} ({where})",
+                       f"{summary} ({where}){note}",
                        f"{PYTHON} "
                        f"{quote_arg(ctx.shape / 'update-shape.py')} check "
                        f"--root {quote_arg(ctx.root)} --upstream "
@@ -990,7 +1045,7 @@ def check_shape_currency(ctx: Context) -> Row:
         if len(moved) > 4:
             named += f", and {len(moved) - 4} more"
         return Row("shape-currency", LABEL_SHAPE_CURRENCY, FINDING,
-                   f"{summary} ({where}): {named}",
+                   f"{summary} ({where}): {named}{note}",
                    f"{PYTHON} "
                    f"{quote_arg(ctx.shape / 'update-shape.py')} check --root "
                    f"{quote_arg(ctx.root)} --upstream {quote_arg(ctx.shape)}"

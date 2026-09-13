@@ -49,6 +49,10 @@ import repo_shape  # noqa: E402
 #: The lane a lane's run sets, imported from the file that owns that rule
 #: rather than retyped -- see `tests/test_commit_trailers.py`.
 from test_commit_trailers import LANE
+#: The renderer of the README line #148 taught `update-shape.py apply` to
+#: rewrite, imported from the module that owns its tests for the same reason:
+#: a test that retyped the form would pass against a line nothing renders.
+from test_update_shape import rendered_shape_line
 
 DOCTOR = "shape-doctor.py"
 ORG = "testorg"
@@ -3514,3 +3518,137 @@ def test_a_curly_apostrophe_in_the_root_survives_the_real_report(
     here = "nt" if os.name == "nt" else "posix"
     quoted_root = doctor_module(standard).quote_arg(curly_project, here)
     assert quoted_root in row["next"], row["next"]
+
+
+# --- the README's `Shape:` line, as a note (#148) ---------------------------
+#
+# A holder's README is rendered with the commit it was cut from and nothing
+# moved it afterwards, so InkRouter's read `6fe09a41535a` four re-pins after
+# the pin had moved. The doctor now READS that line — and says so as a
+# `note`, because the authority on what revision a root is a copy of is
+# `contracts/shape-pin.yaml`, and prose that has fallen behind it is a
+# difference worth a reader's eye rather than a verdict about the repository.
+
+
+def give_readme(root, *lines: str):
+    """Append Shape: lines to this root's README, COMMITTED.
+
+    Committed because that is what a holder's README is -- the line lands in
+    the scaffold's own commit -- and because `update-shape.py` refuses to
+    carry a README that has changes of its own (Copilot, PR #152), which the
+    doctor reads through the same classifier: an uncommitted line is one
+    `apply` would not move, and therefore one this row says nothing about.
+    """
+    readme = root / "README.md"
+    readme.write_text(readme.read_text(encoding="utf-8") + "\n"
+                      + "".join(line + "\n" for line in lines),
+                      encoding="utf-8")
+    commit_all(root, "The README names the shape it was cut from")
+    return readme
+
+
+def test_a_readme_naming_another_commit_is_a_note_and_not_a_verdict(
+        standard, project):
+    """COMPLIANT, exit 0, and the difference said out loud.
+
+    The row that would otherwise read `ok` reads `note` instead, which is
+    the same posture `leg shape files` takes: `verdict_for` steps over a note,
+    so a sentence cannot fail a repository whose every pin is current — and a
+    reader scanning the status column still sees that something is off.
+    """
+    give_readme(project, rendered_shape_line("0" * 40))
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["verdict"] == "COMPLIANT"
+    row = rows_of(result)["shape-currency"]
+    assert row["status"] == "note", row
+    assert "README.md's Shape: line names 000000000000" in row["reason"]
+    assert "`apply` owns that line" in row["reason"]
+    assert row["detail"]["readme_shape_line"]["names"] == "0" * 40
+    assert row["detail"]["readme_shape_line"]["pin"] == row["detail"]["pinned"]
+    assert row["next"] is None, (
+        "a note about prose offers no command: `apply` carries the line with "
+        "the next re-pin, and there is nothing here for a human to run")
+
+
+def test_a_readme_naming_the_pin_itself_says_nothing_at_all(standard,
+                                                            project):
+    """The holder case that is WELL, and the one every re-pin now leaves
+    behind: a note that fired whenever a README mentioned a commit would be
+    noise nobody could clear."""
+    pinned = git("rev-parse", "HEAD", cwd=standard).stdout.strip()
+    give_readme(project, rendered_shape_line(pinned))
+    row = rows_of(doctor(standard, project, "--json"))["shape-currency"]
+    assert row["status"] == "ok", row
+    assert "note:" not in row["reason"], row
+    assert "readme_shape_line" not in row["detail"]
+
+
+@pytest.mark.parametrize("lines", [
+    # Another standard's revision, in the same form: this doctor pins one
+    # repository and knows nothing about that one.
+    ["octo/Elsewhere"],
+    # Two of them: `apply` will not choose between a project's own
+    # sentences, so a note asking for a rewrite nothing performs would be a
+    # chore with no exit.
+    [None, None],
+])
+def test_a_line_apply_would_not_rewrite_draws_no_note(standard, project,
+                                                      lines):
+    """THE NOTE AND THE REWRITE ANSWER THE SAME QUESTION. Every reading the
+    tool leaves alone is one the doctor stays quiet about, or the report
+    would be asking for something no command does."""
+    give_readme(project, *[rendered_shape_line("0" * 40, repository=name)
+                           if name else rendered_shape_line("0" * 40)
+                           for name in lines])
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 0, result.stdout + result.stderr
+    row = rows_of(result)["shape-currency"]
+    assert row["status"] == "ok", row
+    assert "note:" not in row["reason"], row
+    assert "readme_shape_line" not in row["detail"]
+
+
+def test_a_behind_project_whose_readme_names_its_own_pin_draws_no_note(
+        advanced_standard, project):
+    """THE COMPARISON IS AGAINST THE PIN, NOT THIS STANDARD'S HEAD.
+
+    `contracts/shape-pin.yaml` is the authority on what revision this root is
+    a copy of, so a README naming it is RIGHT — the repository is merely
+    behind, which the row's own verdict already says. Comparing the line
+    against the target instead would put a note on every behind project in
+    the estate, and a note that fires on a correct file is one nobody can
+    clear (Copilot, PR #152).
+    """
+    before = rows_of(doctor(advanced_standard, project, "--json"))
+    pinned = before["shape-currency"]["detail"]["pinned"]
+    assert pinned != before["shape-currency"]["detail"]["standard"], (
+        "fixture: the standard has moved past this project's pin")
+
+    give_readme(project, rendered_shape_line(pinned))
+    result = doctor(advanced_standard, project, "--json")
+    assert result.returncode == 1, result.stdout + result.stderr
+    row = rows_of(result)["shape-currency"]
+    assert row["status"] == "FINDING", row
+    assert "note:" not in row["reason"], row
+    assert "readme_shape_line" not in row["detail"]
+    assert json.loads(result.stdout)["verdict"].startswith(
+        "COMPLIANT, SHAPE BEHIND"), result.stdout
+
+
+def test_an_uncommitted_readme_line_is_nobodys_to_note(standard, project):
+    """THE NOTE AND THE REWRITE ANSWER THE SAME QUESTION, and `apply` will
+    not carry a README that has changes of its own — committing somebody's
+    half-written paragraph into a shape re-pin is the sweep the tool's
+    explicit pathspecs exist to prevent. So a line that is behind in a file
+    nobody has committed draws no note either."""
+    readme = project / "README.md"
+    readme.write_text(readme.read_text(encoding="utf-8") + "\n"
+                      + rendered_shape_line("0" * 40) + "\n",
+                      encoding="utf-8")
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 0, result.stdout + result.stderr
+    row = rows_of(result)["shape-currency"]
+    assert row["status"] == "ok", row
+    assert "readme_shape_line" not in row["detail"]

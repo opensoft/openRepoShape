@@ -487,9 +487,20 @@ def test_agents_md_is_short_enough_to_be_read():
     `scripts/shape_materialize.py` and nowhere else. The one thing an
     assistant cannot infer on its own: that `--dry-run` now shows the
     trailers too, after the `old -> new` line it already prints, so reading
-    that line before running for real means reading the trailers as well."""
+    that line before running for real means reading the trailers as well.
+
+    2026-09-12: 439 -> 446 — the README's `Shape:` line (#148), landing
+    beside the point above on the same day. Seven lines, one numbered point
+    under "Updating a project's shape", and they buy the same thing that one
+    does: PERMISSION, and its withdrawal. A family holder's README is
+    rendered naming the commit it was cut from, and the only correction ever
+    made to a stale one was made BY HAND (InkRouter#18) — a day later it was
+    stale again, because a sha corrected outside the re-pin that moved the
+    pin is a sha nothing keeps. `apply` now carries it, so the point an
+    assistant needs is the one telling them not to reach for the file
+    themselves, and which readings the tool leaves alone."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 439, f"AGENTS.md is {len(lines)} lines; the cap is 439"
+    assert len(lines) <= 446, f"AGENTS.md is {len(lines)} lines; the cap is 446"
 
 
 def test_claude_md_points_at_agents_md():

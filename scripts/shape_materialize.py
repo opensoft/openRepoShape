@@ -266,6 +266,92 @@ FAMILY_EXECUTABLE = (
 
 PLACEHOLDER_RE = re.compile(r"\{\{[A-Z_]+\}\}")
 
+#: THE ONE READING OF THE LINE A FAMILY HOLDER'S README ENDS WITH.
+#: `templates/family-root/README.md` closes with ``Shape: `<repository>` @
+#: `<40 hex>`.`` — the standard the holder was cut from — and until #148
+#: nothing rewrote it after the scaffold, so it drifted silently from
+#: `contracts/shape-pin.yaml`: InkRouter's holder still named a commit four
+#: re-pins old. `update-shape.py apply` now moves that sha with the pin and
+#: `shape-doctor.py` reports a difference as a `note`, and BOTH read the line
+#: through this one compiled pattern. It lives here, beside the template
+#: lists that render it, because a change to the template's wording and a
+#: change to the readers of it have to be one edit;
+#: `tests/test_family.py` renders the template and asserts this matches
+#: exactly one of the rendered README's lines, so the two cannot drift apart
+#: in silence. The assembly-root README carries no such line and is expected
+#: to match nothing.
+#:
+#: A MATCH IS NOT BY ITSELF THE LINE: the form also appears where a README
+#: SHOWS the reader what a holder's last line looks like, and only the one
+#: the file ENDS with is this root's claim about its own pin.
+#: `readme_trailing_shape_line` is where that is decided, once, for both
+#: readers.
+#:
+#: THE REPOSITORY IS THE SHAPE A REPOSITORY NAME HAS — an owner and a name of
+#: letters, digits, dots, hyphens and underscores with one slash between them
+#: — and not "anything that is not a backtick". Two defects closed by saying
+#: so, both found on PR #152. Under `re.MULTILINE` the `^` and `$` anchors are
+#: per line but a negated class is not, so a backtick-quoted name running over
+#: a line break matched as ONE line spanning two — enough for a malformed
+#: example to count as a second `Shape:` line and leave a holder's real one
+#: `ambiguous` and unmoved. And both readers PRINT the name they read back to
+#: whoever ran them (`update-shape.py`'s `other-repository` line does it
+#: twice), so a name carrying an ESC would have played terminal control
+#: sequences into that operator's terminal — out of a README this operator
+#: need not have written, since `shape-doctor.py` reads other repositories'.
+#: A crafted name is now not a `Shape:` line at all, which is `absent`:
+#: untouched, unprinted, and not a rewrite this tool was talked into.
+#:
+#: `\r?` before the end anchor: a README checked out on Windows with
+#: `core.autocrlf=true` holds CRLF, and the rewriter works on BYTES so that
+#: everything but the 40 hex characters survives untouched — a reader that
+#: normalised the line endings instead would rewrite every line of the file
+#: to move one sha.
+README_SHAPE_LINE_RE = re.compile(
+    r"^Shape: `(?P<repository>[A-Za-z0-9._-]+/[A-Za-z0-9._-]+)` @ "
+    r"`(?P<commit>[0-9a-f]{40})`\.\r?$",
+    re.MULTILINE)
+
+
+def readme_shape_lines(text: str) -> list:
+    """Every line of `text` in that exact rendered form, in the order found.
+
+    A LIST, NOT THE FIRST MATCH, because "more than one" is one of the
+    answers a caller has to be able to give. A README carrying two such lines
+    is one no rewriter may touch — choosing between them would be the tool
+    deciding which of a project's own sentences is the true one — and the
+    caller can only say that if it is told how many there are.
+    """
+    return list(README_SHAPE_LINE_RE.finditer(text))
+
+
+def readme_trailing_shape_line(text: str) -> "re.Match | None":
+    """The one match a rewriter may move — the line the FILE ENDS WITH.
+
+    THE PATTERN IS ANCHORED TO A LINE, NOT TO THE END OF THE FILE, so it also
+    finds the form where a README is SHOWING the reader what a holder's last
+    line looks like. That example is prose ABOUT the standard, and a rewriter
+    that moved its sha would be editing an illustration into saying something
+    the illustration does not mean — the documentation equivalent of the drift
+    #148 is about, made by the fix (Copilot, PR #152). What separates the two
+    is position and only position: the template renders this line last, and
+    `tests/test_family.py` asserts that a real rendered holder ends with it.
+
+    TRAILING MEANS NOTHING BUT WHITESPACE AFTER IT. A text file ends with a
+    newline and an editor may leave a blank line under it; neither of those
+    makes the last sentence of a README a different sentence. Anything else —
+    a heading, a paragraph, the rest of a fenced block — does.
+
+    `None` when the README ends with something else, INCLUDING when it carries
+    such a line higher up: the caller's answer there is that the trailing line
+    is absent, not that it found one to move.
+    """
+    matches = readme_shape_lines(text)
+    if matches and not text[matches[-1].end():].strip():
+        return matches[-1]
+    return None
+
+
 #: The one line an existing assistant-instruction file needs, and the exact
 #: bytes of the pointer the templated `AGENTS.md` opens with.
 SHAPE_POINTER_LINE = ("Read AGENTS-shape.md first — the rules of this "
