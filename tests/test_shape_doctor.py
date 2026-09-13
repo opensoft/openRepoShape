@@ -1869,12 +1869,17 @@ def test_a_symlinked_prefix_is_ONE_directory_to_both_callers(tmp_path,
     for tool in (doctor, siblings):
         name = tool.__name__
         # ...the machine says yes, in either order, and through the `file://`
-        # spelling of the same directory
+        # spelling of the same directory. THE THIRD SLASH IS THE POINT ON
+        # WINDOWS (Copilot, PR #160): a file url's authority is empty, so a
+        # drive-letter path is `file:///C:/...` and `"file://" + path` would
+        # build `file://C:/...` -- a url with `C:` for an authority, which is
+        # not the spelling `_remote_body`'s fold is about, and this assertion
+        # would then pass on Windows without exercising it at all.
         assert tool.same_repository_here(through_link, str(bare)) is True, name
         assert tool.same_repository_here(str(bare), through_link) is True, name
-        assert tool.same_repository_here(
-            "file://" + through_link.replace("\\", "/"),
-            str(bare)) is True, name
+        as_file_url = "file:///" + through_link.replace("\\", "/").lstrip("/")
+        assert as_file_url.startswith("file:///"), as_file_url
+        assert tool.same_repository_here(as_file_url, str(bare)) is True, name
         # ...and every answer that does not need a disk is exactly the
         # string rule's, which is what "first, and only then" means: a
         # remote that names no path here, a relative one, a path that is not

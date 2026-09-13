@@ -1808,7 +1808,7 @@ def _remote_body(url: str) -> str:
     """
     stripped = url.strip().replace("\\", "/").rstrip("/")
     text = REMOTE_SCHEME_RE.sub("", stripped)
-    if text != stripped and text[:1] == "/" and REMOTE_DRIVE_RE.match(
+    if text != stripped and text.startswith("/") and REMOTE_DRIVE_RE.match(
             text[1:3]):
         text = text[1:]                  # file:///D:/mirrors/Fam.git
     if "@" in text.split("/", 1)[0]:      # git@github.com:Org/Repo.git
