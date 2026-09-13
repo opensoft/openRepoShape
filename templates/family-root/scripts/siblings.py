@@ -118,8 +118,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 # rule is one function both tools import — and `join_remote` is the
 # arithmetic `resolve_relative` hands git's relative-url rule to.
 from repo_shape import (  # noqa: E402
-    PYTHON, Refusal, find_repo_root, join_remote, load_yaml, repo_basename,
-    same_repository,
+    PYTHON, Refusal, find_repo_root, join_remote, load_yaml,
+    remote_local_path, repo_basename, same_repository,
 )
 # THE CREDENTIAL AND THE MEMBER ROWS ARE READ BY `bootstrap.py` ALREADY, and a
 # second definition of either is how the two start disagreeing about which
@@ -208,6 +208,58 @@ def resolve_relative(url: str, root: Path) -> str:
     if not base:
         return url
     return join_remote(base, url)
+
+
+def same_repository_here(one: str, two: str) -> bool:
+    """`same_repository`, with THIS MACHINE'S SYMLINKS allowed to answer too.
+
+    THE HALF OF "IS THIS THE SAME REPOSITORY" THAT NEEDS A MACHINE
+    (2026-09-13, #157), and it is here for the same reason `resolve_relative`
+    above is: `repo_shape.same_repository` is string arithmetic that may not
+    touch a disk, and a symlink is not a fact about a string. It answers for
+    two filesystem paths by EXACT equality now — the trailing `owner/repo`
+    fallback used to call `/srv/a/IRRS.git` and `/other/a/IRRS.git` one
+    repository — so one directory reached two ways would be two repositories
+    to it: `/var/folders/…` and `/private/var/folders/…` are the same
+    temporary directory on macOS, and a member cloned through one spelling
+    while `.gitmodules` records the other is exactly what `verify_sibling`
+    would otherwise refuse to fetch into.
+
+    THE STRING RULE IS ASKED FIRST AND THE DISK ONLY IF IT SAYS NO, so this
+    can ADD an answer and never take one away (Codex, PR #160) — which
+    matters, because a mirror is allowed to be a symlink onto a storage path
+    whose own tail is a serial number, and resolving one before comparing it
+    against a manifest's `Org/Repo` would throw the name away.
+
+    ONLY A PATH THAT IS ABSOLUTE HERE AND EXISTS HERE IS RESOLVED, and
+    everything else is compared exactly as it was read.
+    `repo_shape.remote_local_path` is the string half, imported rather than
+    re-spelled (#155): it says None for a host remote, which has no path to
+    resolve, and None for a relative one, because `../mirrors/Fam.git` handed
+    to `realpath` would resolve against whatever directory this process is
+    standing in — the trap `resolve_relative` exists to avoid. `isabs` is the
+    platform asking the same question of itself: `D:/mirrors/Fam.git` is a
+    path on Windows and a directory called `D:` under the process's own cwd
+    on POSIX, and only one of those is worth a `realpath` (Copilot, PR #160).
+
+    AND THE DISK'S ANSWER IS THE DISK'S, which is the whole reason one is
+    asked: a case-insensitive filesystem hands back the spelling it stores
+    (Windows does), so two spellings that both open one directory can be one
+    repository HERE while the string rule still calls them two. #149 is
+    strict on every platform because a STRING cannot know which it is; this
+    half is looking at the directory.
+    """
+    if same_repository(one, two):
+        return True
+    resolved = []
+    for url in (one, two):
+        path = remote_local_path(url)
+        if path and os.path.isabs(path) and os.path.exists(path):
+            path = os.path.realpath(path)
+        else:
+            path = url
+        resolved.append(path)
+    return same_repository(*resolved)
 
 
 def clone_url(root: Path, row: dict, urls: dict[str, str]) -> tuple[str, str]:
@@ -304,7 +356,13 @@ def verify_sibling(row: dict, target: Path, url: str, repository: str,
     origin = git_text(["remote", "get-url", "origin"], target) or ""
     identity = project_id(target)
     project = str(row.get("project") or "?")
-    if not same_repository(origin, url) and not (
+    # THE MOUNT COMPARISON MAY ASK THE DISK; THE MANIFEST'S NAME MAY NOT
+    # (#157). A mirror is allowed to be a symlink onto a storage path whose
+    # own tail is a serial number, and the row's `repository: Org/Repo` is
+    # matched BY that tail — so the origin goes to the `repository:` fallback
+    # exactly as git reported it, which is also the spelling the finding
+    # below quotes back to the human.
+    if not same_repository_here(origin, url) and not (
             repository and same_repository(origin, repository)):
         sibling.state = "WRONG ORIGIN"
         sibling.branch = branch_of(target)
