@@ -1848,7 +1848,11 @@ def test_a_symlinked_prefix_is_ONE_directory_to_both_callers(tmp_path,
     bare.mkdir()
     link = tmp_path / "var"
     try:
-        os.symlink(tmp_path / "private", link)
+        # `target_is_directory` is ignored on POSIX and is what makes this a
+        # DIRECTORY symlink on Windows; without it Windows builds a file
+        # symlink that `link/remotes` cannot be walked through, and the test
+        # would fail there rather than ask its question (Copilot, PR #160).
+        os.symlink(tmp_path / "private", link, target_is_directory=True)
     except (AttributeError, NotImplementedError, OSError) as exc:
         # Windows needs Developer Mode or an elevated shell to make one, and
         # a runner without either is not a reason to fail: the POSIX legs of
@@ -1929,9 +1933,13 @@ def test_working_clone_and_verify_sibling_ACCEPT_a_symlinked_mirror(
     git("init", "--bare", str(serial / "storage" / "uuid-123.git"),
         cwd=tmp_path)
     try:
-        os.symlink(prefix, tmp_path / "A-link")
+        # Both targets are DIRECTORIES -- a mirror tree and a bare repository
+        # -- and Windows needs to be told so or it writes a file symlink
+        # neither of them can be reached through (Copilot, PR #160).
+        os.symlink(prefix, tmp_path / "A-link", target_is_directory=True)
         os.symlink(serial / "storage" / "uuid-123.git",
-                   serial / "mirrors" / FAMILY_NAME / f"{FAMILY_MEMBER}.git")
+                   serial / "mirrors" / FAMILY_NAME / f"{FAMILY_MEMBER}.git",
+                   target_is_directory=True)
     except (AttributeError, NotImplementedError, OSError) as exc:
         pytest.skip(f"this platform cannot create a symlink here: {exc}")
 
