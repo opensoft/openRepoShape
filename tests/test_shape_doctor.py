@@ -1742,6 +1742,12 @@ def test_the_doctor_and_siblings_run_ONE_definition_of_one_repository(
         ("file:///D:/mirrors/IRRS.git", "D:\\mirrors\\IRRS.git", True),
         ("file:///D:/mirrors/IRRS.git", "D:/mirrors/IRRS.git", True),
         ("file:///D:/mirrors/IRRS.git", "D:\\mirrors\\Other.git", False),
+        # ...and ONLY the url's `/` comes off, because a remote with no
+        # scheme never had one: `/D:/mirrors/IRRS.git` as a PATH is a
+        # directory called `D:` under a POSIX root, which is not the Windows
+        # drive of the same three characters (Copilot, PR #160)
+        ("/D:/mirrors/IRRS.git", "D:/mirrors/IRRS.git", False),
+        ("/D:/mirrors/IRRS.git", "file:///D:/mirrors/IRRS.git", False),
         # TWO PATHS ARE ONE REPOSITORY ONLY WHEN THEY ARE THE SAME PATH
         # (#157). The tail fallback threw the prefix away, and for a path the
         # prefix is the whole of what tells two bare repositories apart

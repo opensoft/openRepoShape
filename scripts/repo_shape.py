@@ -1798,9 +1798,18 @@ def _remote_body(url: str) -> str:
     member by its file url would be told their working clone is a stranger.
     It comes off here, where every question below is asked, rather than in
     whichever one noticed.
+
+    ONLY WHEN A SCHEME WAS THERE TO LEAVE IT BEHIND, though, because that `/`
+    is the URL's and a remote with no scheme never had one (Copilot, PR
+    #160). `/D:/mirrors/IRRS.git` written as a PATH is a directory called
+    `D:` under a POSIX root — absurd, and somebody's — and folding it into
+    the Windows drive `D:/mirrors/IRRS.git` would report two paths that no
+    single machine could even both hold as one repository.
     """
-    text = REMOTE_SCHEME_RE.sub("", url.strip().replace("\\", "/").rstrip("/"))
-    if text[:1] == "/" and REMOTE_DRIVE_RE.match(text[1:3]):
+    stripped = url.strip().replace("\\", "/").rstrip("/")
+    text = REMOTE_SCHEME_RE.sub("", stripped)
+    if text != stripped and text[:1] == "/" and REMOTE_DRIVE_RE.match(
+            text[1:3]):
         text = text[1:]                  # file:///D:/mirrors/Fam.git
     if "@" in text.split("/", 1)[0]:      # git@github.com:Org/Repo.git
         text = text.split("@", 1)[1]
