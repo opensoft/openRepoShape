@@ -215,6 +215,38 @@ def test_the_root_and_both_templates_agree_about_the_rule():
     assert root == [EOL_RULE] == assembly == family
 
 
+def test_the_workspace_template_says_what_its_bytes_are():
+    """`workspace-root` ships no `contracts/` and no digest pin — clause (d)
+    of lane-collision-protocol Amendment 9 gives it no scripts, no manifest,
+    no CI — so it is not a third parameter on the two tests above. But
+    `openRepoTools wip init` still copies it byte for byte, the way
+    `scaffold-project.py` copies `assembly-root`, and the register it seeds,
+    `lanes/LANES.md`, is then edited a WHOLE LINE at a time by the installed
+    `lanes-edit.sh` — in the MATERIALIZED copy (a person's own `<user>-wip`,
+    a different repository from this one). A checkout of THAT repository
+    made CRLF turns `lanes-edit.sh`'s whole-line match blind or wrong, the
+    same failure shape `unname_everywhere()` has on a CRLF checkout of THIS
+    repository in `test_the_repository_root_carries_the_rule_too` above —
+    a different function, in a different repository, guarding the same
+    kind of line-matching edit. No digest pins this template's copies, so
+    nothing else would ever catch it (#154).
+    """
+    path = REPO / "templates" / "workspace-root" / ".gitattributes"
+    assert path.is_file(), (
+        "templates/workspace-root/ is copied byte for byte by `wip init` and "
+        "line-matched by lanes-edit.sh, and must say what its line endings "
+        "are")
+    data = path.read_bytes()
+    assert b"\r" not in data, "the file that says LF is itself LF"
+    text = data.decode("utf-8")
+    assert _only_rule_lines(text) == [EOL_RULE], (
+        f"templates/workspace-root/.gitattributes' only rule line must be "
+        f"`{EOL_RULE}`")
+    assert "#154" in text, (
+        "the rule is cited by the PR that added it, like every other ruling "
+        "here")
+
+
 def test_the_shape_pin_template_carries_a_files_block():
     text = (REPO / "templates" / "assembly-root" / "contracts" /
             "shape-pin.yaml").read_text()
@@ -1024,8 +1056,14 @@ def test_readme_is_short_enough_to_be_read():
     #   five rows and the command returns six, `placement` among them at
     #   `n/a`. A page that lists the rows and is short one is a page a reader
     #   checks their report against and finds a row nobody documented.
-    assert len(lines) <= 1375, (
-        f"README.md is {len(lines)} lines; the cap is 1375")
+    # 2026-09-12: 1375 -> 1376 — `templates/workspace-root/` (#154,
+    #   lane-collision-protocol Amendment 9, adoption act 1): the fifth
+    #   template, for `<user>-wip`. One line in the Layout block names it
+    #   beside `assembly-root`, `code-root`, `family-root` and `spec-root`,
+    #   the same row shape as the other four, so this page keeps listing
+    #   everything this repository ships rather than four out of five.
+    assert len(lines) <= 1376, (
+        f"README.md is {len(lines)} lines; the cap is 1376")
 
 
 @pytest.mark.parametrize("name", SHIPPED_BASH)
