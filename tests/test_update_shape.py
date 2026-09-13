@@ -1487,6 +1487,51 @@ def test_a_readme_the_os_will_not_read_is_a_reading_rather_than_a_traceback(
         in checked.stdout
 
 
+def test_a_readme_that_is_not_utf_8_is_a_reading_no_platform_can_skip(
+        root, upstream_and_project):
+    """THE ARM DIRECTLY ABOVE, WITH NOTHING TO ARRANGE (#158).
+
+    `_classify` turns every way of failing to READ this file into a reading
+    rather than a raise, and the test above covers the `OSError` half of that
+    by taking a read away with `denied()` — which skips outright for root,
+    for a filesystem mounted without permission bits, and on Windows, where
+    there is no mode to take a read away with. So the `UnicodeDecodeError`
+    half, which is the older of the two and the one `check`, `apply` and the
+    doctor all lean on when they are pointed at somebody else's prose, had no
+    test that was guaranteed to run anywhere.
+
+    Bytes that are not UTF-8 need nobody's permission and skip nowhere. The
+    answer is the same one every README this tool cannot account for gets:
+    left alone, said out loud, and absent from the commit.
+    """
+    readme = root / "README.md"
+    # A rendered Shape: line with one byte corrupted. 0xFF begins no UTF-8
+    # sequence at all, so there is no locale and no platform on which this
+    # file decodes — and the corruption is in the one line a rewrite would
+    # otherwise move.
+    readme.write_bytes(
+        readme.read_text(encoding="utf-8").encode("utf-8") + b"\n"
+        + rendered_shape_line(upstream_and_project["a"]).encode("utf-8")
+        .replace(b"Shape", b"Sh\xffpe") + b"\n")
+    git("add", "--", "README.md", cwd=root)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m",
+        "The README picked up a byte on its way through an editor", "--",
+        "README.md", cwd=root)
+    before = readme.read_bytes()
+
+    result = apply(root, upstream_and_project, "--branch", "shape/update-utf8")
+    checked = check(root, upstream_and_project)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert readme.read_bytes() == before, (
+        "a README this tool cannot read is one it cannot be wrong about, so "
+        "it is not one it writes")
+    assert "README.md: not valid UTF-8, untouched" in result.stdout
+    assert "README.md" not in committed_files(root)
+    assert "readme-shape-line: unreadable (README.md is not valid UTF-8)" \
+        in checked.stdout
+
+
 def test_git_answers_three_ways_for_a_readme_and_one_of_them_is_committed(
         root, upstream_and_project, update_shape):
     """THE THREE READINGS BEHIND ONE BOOLEAN, side by side (Codex, PR #152).
