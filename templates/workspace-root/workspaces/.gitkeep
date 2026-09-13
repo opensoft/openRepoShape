@@ -1,0 +1,3 @@
+# Git tracks no empty directory. `park` writes
+# `workspaces/<org>/<Family|Project>.yaml` into this directory and `resume`
+# reads them; neither file is ever hand-edited, and nothing reads this one.

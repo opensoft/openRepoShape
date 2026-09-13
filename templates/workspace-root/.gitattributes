@@ -1,0 +1,29 @@
+# THIS TEMPLATE'S BYTES ARE WHAT `wip init` COPIES, AND WHAT `lanes-edit.sh`
+# EDITS ONE LINE AT A TIME.
+#
+# `templates/workspace-root/` ships no `contracts/` and no digest pin —
+# lane-collision-protocol Amendment 9 clause (d) gives it no scripts, no
+# manifest, no CI, so there is nothing here for `scripts/validate-pins.py`
+# to check the way it checks `assembly-root` and `family-root`. But
+# `openRepoTools wip init` still copies this template byte for byte into a
+# fresh `<user>-wip` repository, the same way `scaffold-project.py` copies
+# `assembly-root` into a new project, and the register it seeds,
+# `lanes/LANES.md`, is then read and written a WHOLE LINE at a time by the
+# installed `lanes-edit.sh` (`append-row-status`, `replace-in-row`, and the
+# rest — see this template's own `AGENTS.md`, rule 1). Git for Windows'
+# installer default is `core.autocrlf=true`; a materialized workspace
+# checked out under it turns every `\n` here into `\r\n`, and a line-based
+# edit that expects to match or move exactly one line goes blind or wrong on
+# a file nobody told the owner was different — the same failure this
+# repository's OWN root `.gitattributes` (#63) exists to prevent for a clone
+# of openRepoShape itself.
+#
+# NO PATH IS LISTED BY NAME, for the same reason the other templates name
+# none: every file this template ships is text, so there is nothing for
+# git's binary heuristic to misjudge.
+#
+# openRepoShape #154 (Amendment 9 clause (d), the `templates/workspace-root/`
+# template); the pattern this rule follows: `templates/assembly-root/` and
+# `templates/family-root/`'s own copies, openRepoShape #51 (2026-09-05).
+
+* text=auto eol=lf
