@@ -22,8 +22,9 @@ is what you must and must not do inside it.
    same reason.
 2. **Reach the register through the installed command, not a raw edit of a
    symlink.** `lanes-edit.sh` finds this register through
-   `~/.agents/workspace.yaml`, wherever it is run from. An estate that
-   predates this repository keeps a `~/projects/<estate>/LANES.md` symlink to
+   `${AGENT_PROTOCOL_ROOT:-$HOME/.agents}/workspace.yaml` (default:
+   `~/.agents`), wherever it is run from. An estate that predates this
+   repository keeps a `~/projects/<estate>/LANES.md` symlink to
    `lanes/LANES.md` here, placed by `link-estates`. Plain `sed -i` REPLACES a
    symlink with a regular file and silently detaches the register from git;
    `sed -i --follow-symlinks`, a `>` or `>>` redirect, `cat tmp > LANES.md`

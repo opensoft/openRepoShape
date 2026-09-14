@@ -1515,7 +1515,8 @@ resume InkRouter                # on workstation B, and the estate is back</code
       setup:</p>
       <div class="code" data-lang="sh"><pre><code>resume InkRouter --workspace &lt;owner&gt;/&lt;your-wip-repo&gt;   # the FIRST time here</code></pre></div>
       <p>That flag is the only thing in this standard that writes
-      <code>~/.agents/workspace.yaml</code>, and it writes it only because you named the repository.
+      <code>${AGENT_PROTOCOL_ROOT:-$HOME/.agents}/workspace.yaml</code> (default:
+      <code>~/.agents</code>), and it writes it only because you named the repository.
       Afterwards <code>resume &lt;Name&gt;</code> needs no flag.</p>
       <p><strong>How the estate is found.</strong> <code>&lt;Name&gt;</code> is a folder under your
       projects directory: <code>~/projects/&lt;Name&gt;</code>, then
@@ -1568,7 +1569,8 @@ resume InkRouter                # on workstation B, and the estate is back</code
       no tests of its own, and the two would start disagreeing the first time either was fixed.</p>
       <p><strong>The record is the PERSON&rsquo;S, and lives in a repository they own.</strong> One
       manifest file per family or standalone project, in a private repository whose path is named
-      ONCE in <code>~/.agents/workspace.yaml</code> &mdash; not in <code>project.yaml</code>, not in
+      ONCE in <code>${AGENT_PROTOCOL_ROOT:-$HOME/.agents}/workspace.yaml</code> (default:
+      <code>~/.agents</code>) &mdash; not in <code>project.yaml</code>, not in
       the assembly root, not in <code>family.yaml</code>. Where somebody&rsquo;s unfinished work
       sits is theirs, and a shared tree is the wrong home for per-user state.</p>
       <p><strong>The repository is <code>&lt;user&gt;-wip</code>, one per person</strong>
@@ -1727,7 +1729,7 @@ resume InkRouter                # on workstation B, and the estate is back</code
       added (#97); the placement row and the plan it writes added (#99); the
       <code>templates/workspace-root/</code> row, the fifth template, added (#154) &mdash; a page
       cannot name the commit that contains it, and the blob below is the fact a test checks.
-      README.md blob 635980f6bfbc31571b25739485ca77fb47c6cee6. Every command, flag, exit code and
+      README.md blob 401cb98d687e58e1d76c12a9ccceb9ea71b65e4a. Every command, flag, exit code and
       file name on this page is quoted from that README and from AGENTS.md.</p>
     </footer>
   </main>

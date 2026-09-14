@@ -24,8 +24,9 @@ header.
 `opensoft/openRepoTools`'s `link-estates`, into `handoffs/<estate>` of
 whichever repository this estate's organisation resolves to (Addendum to
 Amendment 4, clauses (c)-(d)): `{{ORG}}/{{LOGIN}}-wip` at
-`~/projects/{{LOGIN}}-wip`, by default, unless `~/.agents/workspace.yaml`'s
-`orgs:` map points this estate's organisation at its own
+`~/projects/{{LOGIN}}-wip`, by default, unless
+`${AGENT_PROTOCOL_ROOT:-$HOME/.agents}/workspace.yaml`'s (default:
+`~/.agents`) `orgs:` map points this estate's organisation at its own
 `<org>/{{LOGIN}}-wip` instead — in which case the symlink is placed by
 running `link-estates` from that other checkout, and resolves there. Either
 way the old path,

@@ -419,11 +419,11 @@ make bootstrap && make resume     # on the other machine, after a clone
    `--force-with-lease=<branch>:<parked commit>` when retiring one is what
    they want, and running it is their act.
 4. **Never commit anything under `worktrees/`**, and never put the person's
-   workspace manifest in the project: it is theirs, in a repository they own,
-   named once in `~/.agents/workspace.yaml`. A holder's report is per member
-   — read those lines before telling anybody the estate is parked, because a
-   member that REFUSED is not parked and one SKIPPED for want of a working
-   clone (`make siblings` places one) was never asked.
+   workspace manifest in the project: it is theirs, in a repository they own, named
+   once in `${AGENT_PROTOCOL_ROOT:-$HOME/.agents}/workspace.yaml` (default:
+   `~/.agents`). A holder's report is per member — read those lines before telling
+   anybody the estate is parked, because a member that REFUSED is not parked and one
+   SKIPPED for want of a working clone (`make siblings` places one) was never asked.
 
 `park <Name>` and `resume <Name>` — those verbs as INSTALLED COMMANDS — are
 `opensoft/openRepoTools`' now; read its AGENTS.md before you drive either.

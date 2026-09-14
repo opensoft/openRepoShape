@@ -34,8 +34,9 @@ lanes/        LANES.md — the estate lane register (lane-collision-protocol
 
 ## How it is found
 
-Named **once**, in `~/.agents/workspace.yaml` — not in a `project.yaml`, not
-in an assembly root, not in a `family.yaml`:
+Named **once**, in `${AGENT_PROTOCOL_ROOT:-$HOME/.agents}/workspace.yaml`
+(default: `~/.agents`) — not in a `project.yaml`, not in an assembly root,
+not in a `family.yaml`:
 
 ```yaml
 repository: {{ORG}}/{{LOGIN}}-wip
@@ -58,9 +59,10 @@ placed idempotently by `opensoft/openRepoTools`'s `link-estates`, into
 whichever repository that estate's organisation resolves to (Addendum to
 Amendment 4, clauses (c)-(d): manifests and handoffs, not the register):
 this repository, by default, or the organisation's own `<org>/{{LOGIN}}-wip`
-where `~/.agents/workspace.yaml`'s `orgs:` map (above) names it instead — in
-which case `link-estates` run from that other checkout is what places the
-link below, not this one:
+where `${AGENT_PROTOCOL_ROOT:-$HOME/.agents}/workspace.yaml`'s (default:
+`~/.agents`) `orgs:` map (above) names it instead — in which case
+`link-estates` run from that other checkout is what places the link below,
+not this one:
 
 | the live path a lane already uses | points at, in this repository, by default |
 |---|---|
@@ -81,10 +83,11 @@ above runs through, so there is nowhere else it could resolve to.
 ## Adopting it on a second workstation
 
 Clone `{{ORG}}/{{LOGIN}}-wip`, write the same two lines shown above into
-`~/.agents/workspace.yaml` on that workstation (`path:` set to wherever the
-clone lives there), and run the installed `link-estates` to place this
-workstation's symlinks. Both steps are idempotent: run again, they change
-nothing that is already correct.
+`${AGENT_PROTOCOL_ROOT:-$HOME/.agents}/workspace.yaml` (default:
+`~/.agents`) on that workstation (`path:` set to wherever the clone lives
+there), and run the installed `link-estates` to place this workstation's
+symlinks. Both steps are idempotent: run again, they change nothing that is
+already correct.
 
 ## Direct commits to `main`
 

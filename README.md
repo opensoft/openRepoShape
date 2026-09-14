@@ -1218,8 +1218,8 @@ resume InkRouter --workspace <owner>/<your-wip-repo>   # the FIRST time here
 ```
 
 That flag is the only thing in this standard that writes
-`~/.agents/workspace.yaml`, and it writes it only because you named the
-repository. Afterwards `resume <Name>` needs no flag.
+`${AGENT_PROTOCOL_ROOT:-$HOME/.agents}/workspace.yaml` (default: `~/.agents`), and it
+writes it only because you named the repository. Afterwards `resume <Name>` needs no flag.
 
 **How the estate is found.** `<Name>` is a folder under your projects
 directory: `~/projects/<Name>`, then `~/Projects/<Name>` — people spell it
@@ -1268,11 +1268,11 @@ A Makefile that reimplemented half of the mechanics would be a second
 implementation with no tests of its own, and the two would start disagreeing
 the first time either was fixed.
 
-**The record is the PERSON'S, and lives in a repository they own.** One
-manifest file per family or standalone project, in a private repository whose
-path is named ONCE in `~/.agents/workspace.yaml` — not in `project.yaml`, not
-in the assembly root, not in `family.yaml`. Where somebody's unfinished work
-sits is theirs, and a shared tree is the wrong home for per-user state.
+**The record is the PERSON'S, and lives in a repository they own.** One manifest file
+per family or standalone project, in a private repository whose path is named ONCE in
+`${AGENT_PROTOCOL_ROOT:-$HOME/.agents}/workspace.yaml` (default: `~/.agents`) — not in
+`project.yaml`, not in the assembly root, not in `family.yaml`. Where somebody's
+unfinished work sits is theirs, and a shared tree is the wrong home for per-user state.
 
 **The repository is `<user>-wip`, one per person** (`opensoft/brett-wip`,
 `opensoft/scott-wip`) — private, org-owned so the index survives offboarding
@@ -1282,8 +1282,8 @@ person's home organisation, indexes work in every organisation with a folder
 per org inside it (`workspaces/<org>/…`, `handoffs/<estate>/…`); an
 organisation whose work must not be indexed outside it, even by name, is
 pointed at its own `<org>/<user>-wip` by the opt-in `orgs:` map in
-`~/.agents/workspace.yaml` (#81). On a machine that has none of it,
-`resume <Name> --workspace <owner>/<user>-wip` is how it is named, once.
+`${AGENT_PROTOCOL_ROOT:-$HOME/.agents}/workspace.yaml` (default: `~/.agents`; #81). On a machine
+that has none of it, `resume <Name> --workspace <owner>/<user>-wip` is how it is named, once.
 Nothing here CREATES one: a person makes their own, and this standard
 classifies the name and does no more with it.
 
