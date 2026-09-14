@@ -35,8 +35,9 @@ in**. Rule 6 lines carry the workstation on the session id:
 main` — and likewise LANDED, RESUMED and PAUSED.
 
 **How to write to this file**, through the installed `lanes-edit.sh` (found
-through `~/.agents/workspace.yaml`; the `sed -i` hazard in full, in
-README-lanes in `opensoft/openRepoTools`):
+through `${AGENT_PROTOCOL_ROOT:-$HOME/.agents}/workspace.yaml` (default:
+`~/.agents`); the `sed -i` hazard in full, in README-lanes in
+`opensoft/openRepoTools`):
 
 ```bash
 lanes-edit.sh verify-row        <lane>
