@@ -261,6 +261,15 @@ try:
 except ImportError as exc:  # pragma: no cover - exercised as a subprocess
     sys.exit(not_in_the_standard(f"scripts/path_classify.py ({exc})"))
 
+try:
+    #: THE TRIAD ADVISORY (openxFactory `prefer-triad-project-shape`, ratified
+    #: by Brett Heap on 2026-10-06). One module says it for all three tools
+    #: that may, and decides where it is silent, so this report, the scaffold
+    #: and the adoption cannot disagree about which repository is told.
+    import shape_advisory  # noqa: E402
+except ImportError as exc:  # pragma: no cover - exercised as a subprocess
+    sys.exit(not_in_the_standard(f"scripts/shape_advisory.py ({exc})"))
+
 #: The statuses a row can carry, and only ONE of them moves the verdict.
 #:
 #: `n/a` is a question this ROOT does not have -- a family has no legs -- or,
@@ -282,6 +291,16 @@ OK = "ok"
 NOTE = "note"
 FINDING = "FINDING"
 NA = "n/a"
+#: `advisory` is the TRIAD ADVISORY, and nothing else carries it: a
+#: repository that has not elected the Triad is told, in this one row, that
+#: the Triad is the preferred project shape and that it confers nothing.
+#: Ruled by Brett Heap on 2026-10-06 ("ratify 1249 as recommended",
+#: openxFactory `prefer-triad-project-shape`), which is also why it can never
+#: move the verdict: a project's shape is never a review input, so a row about
+#: it that changed an exit code would be the review warning that ruling
+#: rejects. `verdict_for` reads `FINDING` and nothing else, so this is stepped
+#: over exactly as `note` is -- and it is lowercase for the reason `note` is.
+ADVISORY = "advisory"
 
 #: Which kind of root this is. Read from the tree, never taken as a flag, the
 #: same rule `update-shape.py`'s `root_kind` follows and for the same reason.
@@ -555,6 +574,12 @@ class Check:
     and getting the human's yes -- the same posture `update-shape.py apply`
     takes, for the same reason: putting a repository back into shape rewrites
     somebody's tree.
+
+    `run` RETURNS ONE ROW, OR NONE FOR A CHECK THAT IS SILENT BY RULE. One
+    check is: the Triad advisory, which the ratified rule makes SILENT in an
+    elected Triad, a family holder, a `<user>-wip` workspace and a project
+    that recorded staying single -- and silent means no row at all, not a row
+    saying so. `run_checks` skips a None.
     """
 
     def __init__(self, check_id: str, label: str, applies_to: tuple,
@@ -2981,6 +3006,74 @@ def check_the_way_in(ctx: Context) -> Row:
                {"git_repository": is_repo, "suggested_project": project})
 
 
+#: Named once, like `LABEL_MANIFEST_KINDS` above: this function's three
+#: returns and the `CHECKS` entry below must all print the same row name.
+#: "Triad" because human-facing text says Triad (the ratified vocabulary);
+#: the row's `id` is a machine key and says what the row is.
+LABEL_TRIAD_ADVISORY = "Triad"
+
+
+def check_triad_advisory(ctx: Context) -> Row | None:
+    """The Triad advisory, once, for a repository that has not elected it.
+
+    RULED BY BRETT HEAP ON 2026-10-06: "ratify 1249 as recommended", which
+    ratified openxFactory's `prefer-triad-project-shape`. The Triad is the
+    PREFERRED project shape, it stays elective and confers nothing, and this
+    report is one of the three surfaces that MAY say so -- once, beside what
+    it already reports, and never on a verdict's account. So the row is
+    `advisory` and nothing else: `verdict_for` reads `FINDING` only, NOT A
+    SHAPE ROOT stays exit 2 exactly as it was, and an assembly root's verdict
+    is whatever its own rows make it. THE SHAPE IS NEVER A REVIEW INPUT, so no
+    required check, review lane or merge gate may be built on this row, as
+    none may be built on the NOT A SHAPE ROOT it sits beside.
+
+    WHERE IT IS SILENT, `scripts/shape_advisory.py` decides, from declared
+    facts only -- an elected Triad, a family holder, a `<user>-wip` workspace,
+    a `single-repository.yaml` of the right kind -- and this returns NO ROW
+    there. Two silences still have something to say, and say it as what it
+    is rather than as the advisory: a LEG CLONE gets the existing instruction
+    to work from its assembly root instead (`n/a`, because the leg is part of
+    a Triad and the advisory would be false there), and a staying-single
+    record that leaves a field out gets a `note` naming the field, because the
+    advisory is that record's only reader and this is where its reader says
+    what it found.
+
+    A RECORD THAT SILENCES NOTHING IS REPORTED IN THE ADVISORY ROW ITSELF:
+    one that does not parse, or declares another `kind`, is named with the
+    reason, and nothing fails on its account.
+
+    `next` IS EMPTY ON PURPOSE. Every other `next` here is the command that
+    fixes its row, and nothing is broken: the two ways on -- converting with
+    `adopt-project.py`, or recording staying single -- are named in the
+    sentence and are a person's to choose, and `the way in` row above already
+    carries the adoption command for this exact repository.
+    """
+    reading = shape_advisory.read(ctx.root, ctx.shape)
+    detail = reading.as_dict()
+    detail.update({"record": shape_advisory.RECORD_FILE,
+                   "schema": shape_advisory.RECORD_SCHEMA,
+                   "template": shape_advisory.RECORD_TEMPLATE})
+    if reading.advise:
+        said = shape_advisory.advisory_lines() + \
+            shape_advisory.record_report(reading.record_problems)
+        return Row("triad-advisory", LABEL_TRIAD_ADVISORY, ADVISORY,
+                   " ".join(said), None, detail)
+    if reading.state == shape_advisory.LEG_CLONE:
+        return Row("triad-advisory", LABEL_TRIAD_ADVISORY, NA,
+                   shape_advisory.leg_instruction(reading.leg), None, detail)
+    if reading.state == shape_advisory.RECORDED_SINGLE \
+            and reading.field_problems:
+        return Row("triad-advisory", LABEL_TRIAD_ADVISORY, NOTE,
+                   f"{shape_advisory.RECORD_FILE} records that this project "
+                   "stays a single repository, so no advisory is given; "
+                   "against its schema ("
+                   f"{shape_advisory.RECORD_SCHEMA}): "
+                   + "; ".join(reading.field_problems)
+                   + ". It stays silent either way; nothing fails on its "
+                   "account", None, detail)
+    return None
+
+
 # ---------------------------------------------------------------------------
 # The registry
 # ---------------------------------------------------------------------------
@@ -3008,6 +3101,14 @@ CHECKS = (
     Check("naming", "naming", (NOT_A_ROOT,), check_not_a_root_naming),
     Check("contents", "what is here", (NOT_A_ROOT,), check_what_is_here),
     Check("way-in", "the way in", (NOT_A_ROOT,), check_the_way_in),
+    # AFTER EVERYTHING ABOUT THE REPOSITORY AND BEFORE THE MACHINE, and on the
+    # two kinds of root that can be something other than an elected Triad: a
+    # directory with no manifest, and a `project.yaml` that declares fewer
+    # than two legs. A family holder is never advised, so it is not asked.
+    # The row is `advisory` -- or absent where the rule makes it silent --
+    # and never moves the verdict; see `check_triad_advisory`.
+    Check("triad-advisory", LABEL_TRIAD_ADVISORY, (PROJECT, NOT_A_ROOT),
+          check_triad_advisory),
     # LAST, AND ON EVERY KIND OF ROOT. It reports the machine rather than
     # the repository, so it is `n/a` by status and never moves the verdict
     # -- see `check_machine`. It reads last because it is about the
@@ -3023,7 +3124,9 @@ def run_checks(ctx: Context) -> list[Row]:
         if ctx.kind not in check.applies_to:
             continue
         try:
-            rows.append(check.run(ctx))
+            row = check.run(ctx)
+            if row is not None:
+                rows.append(row)
         except Refusal as exc:
             rows.append(Row(check.id, check.label, FINDING,
                             f"refused: {exc.detail}", exc.remediation or None,

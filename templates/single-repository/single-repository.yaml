@@ -1,0 +1,40 @@
+schema_version: 1
+kind: single-repository-record
+
+# ===========================================================================
+# single-repository.yaml — this project STAYS A SINGLE REPOSITORY, recorded.
+#
+# OPTIONAL, AND NEVER OWED. The Triad — an assembly root with a spec leg and
+# a code leg — is the PREFERRED project shape (openxFactory
+# `prefer-triad-project-shape`, ratified by Brett Heap on 2026-10-06), and a
+# person starting work here is told so once. This file is how a project that
+# has DECIDED to stay in one repository says so, once, and stops meeting that
+# advisory. A project that writes nothing owes nothing and is reviewed
+# identically.
+#
+# IT CONFERS NOTHING. No gate, no floor, no grant, no clearance eligibility,
+# no lifecycle state and no review difference. Its only reader is
+# openRepoShape's Triad advisory; no review lane, required check, validator,
+# floor, council or merge gate reads it.
+#
+# HOW TO USE IT. Copy this file to the repository's ROOT as
+# `single-repository.yaml`, replace every `{{PLACEHOLDER}}` below, and commit
+# it like any other change. `revisit_on:` is optional — delete its line if
+# there is nothing to revisit. The schema is openRepoShape's
+# `contracts/single-repository-record.yaml`. Converting to the Triad later is
+# `adopt-project.py`, run by a person deciding for the project; nothing
+# converts on this file's account, and nothing reads `revisit_on:` but people.
+# ===========================================================================
+
+# The person who decided, for this project, that it stays single.
+decided_by: "{{DECIDED_BY}}"
+
+# The day they decided it, as YYYY-MM-DD.
+decided_on: "{{DECIDED_ON}}"
+
+# Why, in a sentence: a configuration repository, an aggregation, a vendored
+# fork, a project too small to split.
+reason: "{{REASON}}"
+
+# OPTIONAL: a day the decision is worth looking at again, as YYYY-MM-DD.
+revisit_on: "{{REVISIT_ON}}"

@@ -1,0 +1,115 @@
+schema_version: 1
+kind: single-repository-record-schema
+
+# ===========================================================================
+# single-repository-record.yaml — the SCHEMA of `single-repository.yaml`, the
+# OPTIONAL record that a project is staying a single repository.
+#
+# WHY IT EXISTS. Ruled by Brett Heap on 2026-10-06: "ratify 1249 as
+# recommended", ratifying openxFactory's `prefer-triad-project-shape`. The
+# Triad — this standard's three-repository shape, an assembly root with a
+# spec leg and a code leg — is the PREFERRED project shape, and a person
+# starting work in a repository that has not elected it is told so once (see
+# `scripts/shape_advisory.py`). A project that has DECIDED to stay a single
+# repository can say so here, once, and stop meeting that advisory. That is
+# the record's whole purpose; the ruling on that change's OQ-1 put it in a
+# file of its own at the repository root, with this schema, owned here.
+#
+# OPTIONAL, AND NEVER OWED. A project that declines the Triad and writes
+# nothing owes nothing: it is reviewed identically and meets one advisory line
+# per session. Nothing in this standard writes the record on anybody's
+# behalf — not the advisory, not the doctor, not adopt — because staying
+# single is the decision of a person deciding for that project, as electing
+# the Triad would have been.
+#
+# IT CONFERS NOTHING. No gate, no floor, no grant, no clearance eligibility,
+# no lifecycle state and no review difference, exactly as `project.yaml`
+# confers nothing. A consumer deriving a permission from its presence, its
+# absence or any field of it is defective.
+#
+# ITS ONLY READER IS THE ADVISORY. `scripts/shape_advisory.py` reads it and
+# nothing else does — there is deliberately no validator script for it, and
+# no review lane, required check, floor, council or merge gate may read it.
+# `kind:` DECIDES, not the filename: a `single-repository.yaml` that parses
+# and declares `kind: single-repository-record` silences the advisory; one
+# that does not parse, or declares any other kind, silences nothing and is
+# reported beside the advisory, and nothing fails on its account. The fields
+# below are checked against what a record of the right kind carries, and a
+# record that leaves one out is still silent — `shape-doctor.py` says which
+# field, as a `note`.
+#
+# NEVER `project.yaml`, AND NEVER A FIELD OF IT. `project.yaml` declaring
+# `kind: project-manifest` with a spec and a code leg IS how every surface
+# detects a Triad — the shared agent protocol, the workstation bootstrap and
+# `shape-doctor.py`, whose NOT A SHAPE ROOT keys on that file's absence — so
+# a single repository carrying one would turn each of them from a presence
+# test into a content test. The two files never collide: their names differ
+# and their `kind`s differ.
+# ===========================================================================
+
+record_kind: single-repository-record
+
+# Where a project puts it: ITS OWN ROOT, which is where the root read that
+# looks for `project.yaml` already looks, so finding it costs no second walk.
+file: single-repository.yaml
+location: repository-root
+
+# A copy to fill in by hand. Nothing in this standard renders it: replace
+# every `{{PLACEHOLDER}}`, and a value still spelled that way is reported as
+# a field nobody wrote.
+template: templates/single-repository/single-repository.yaml
+
+# Every field a record may carry, in the order the template writes them. A
+# key not listed here is reported as not a field of the record. `type` is one
+# of `integer`, `string` and `date` (an ISO `YYYY-MM-DD`); `value`, where
+# present, is the one value the field may hold.
+fields:
+  - name: schema_version
+    required: true
+    type: integer
+    value: 1
+    description: >-
+      The version of THIS schema the record was written against.
+  - name: kind
+    required: true
+    type: string
+    value: single-repository-record
+    description: >-
+      What decides whether the file is the record at all. Any other value
+      silences nothing.
+  - name: decided_by
+    required: true
+    type: string
+    description: >-
+      The person who decided, for this project, that it stays a single
+      repository — the same person an election of the Triad would have named
+      in `project.yaml`'s `elected_by`.
+  - name: decided_on
+    required: true
+    type: date
+    description: >-
+      The day that decision was taken.
+  - name: reason
+    required: true
+    type: string
+    description: >-
+      Why, in a sentence: a configuration repository, an aggregation, a
+      vendored fork, a project too small to split. Read by people; nothing
+      parses it.
+  - name: revisit_on
+    required: false
+    type: date
+    description: >-
+      OPTIONAL. A day the decision is worth looking at again. Nothing acts on
+      it: the advisory stays silent past it, and reconsidering is a person's
+      act, as the decision was.
+
+# A complete record, filled in, for the reader who would rather copy an
+# example than a template. Validated by `tests/test_shape_advisory.py`.
+example:
+  schema_version: 1
+  kind: single-repository-record
+  decided_by: "Dana Okafor"
+  decided_on: 2026-10-06
+  reason: "A dotfiles repository: one person's configuration, with no specification to split from code."
+  revisit_on: 2027-04-01
