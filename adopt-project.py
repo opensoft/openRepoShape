@@ -1208,6 +1208,14 @@ def _mount_the_legs(assembly: Path, work_root: Path, names: dict, urls: dict,
     """
     for path in sorted(paths_for["spec"] + paths_for["code"] + paths_for["drop"]):
         run(["git", "rm", "-r", "-q", "--", path.rstrip("/")], cwd=assembly)
+    # Moving the source's .gitmodules leaves its deletion staged. Git refuses
+    # `submodule add` in that state, even though the original registrations
+    # have already been preserved in the extracted leg. Give the assembly a
+    # fresh, staged file for its own mounts; never replace registrations that
+    # the plan kept here.
+    if not (assembly / ".gitmodules").exists():
+        write_lf(assembly / ".gitmodules", "")
+        run(["git", "add", "--", ".gitmodules"], cwd=assembly)
     for role, path in (("spec", spec_path), ("code", code_path)):
         run(["git", *FILE_PROTOCOL, "submodule", "add", "-q",
              str(work_root / names[role]), path], cwd=assembly)
