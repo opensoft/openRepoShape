@@ -132,6 +132,12 @@ authority travels in the grants rather than in the layout. Asked to make
 `role: spec` mean "spec authority lives here", say no: that turns a layout into
 a governance boundary, which is the one thing this standard exists to prevent.
 
+This shape is the **Triad**, and the Triad is the PREFERRED project shape
+(openxFactory `prefer-triad-project-shape`, ratified by Brett Heap on
+2026-10-06). Preferred is not required and changes none of the above: never
+tell anyone that a project kept in one repository owes anything, and never
+make the shape a review input.
+
 ## Declaring descent
 
 A `<Domainx><Product>` name is a CLAIM of descent, and a claim needs a

@@ -509,7 +509,12 @@ def test_an_empty_git_repository_is_not_a_shape_root(standard, tmp_path):
     assert payload["verdict"] == "NOT A SHAPE ROOT"
     assert payload["note"].startswith("the machine check is")
     rows = rows_of(result)
-    assert set(rows) == {"naming", "contents", "way-in", "machine"}
+    # `triad-advisory` since #163: an empty repository has elected nothing
+    # and recorded nothing, so it hears the Triad advisory -- an `advisory`
+    # row that the verdict steps over, which the exit code above shows.
+    assert set(rows) == {"naming", "contents", "way-in", "triad-advisory",
+                         "machine"}
+    assert rows["triad-advisory"]["status"] == "advisory"
     assert "placement" not in rows, (
         "there are no legs here and no manifest declaring any, so there is "
         "no placement question to answer; the row is absent rather than n/a")
@@ -538,7 +543,10 @@ def test_a_root_named_like_an_option_still_gets_a_real_naming_verdict(
     payload = json.loads(result.stdout)
     assert payload["kind"] == "none"
     rows = rows_of(result)
-    assert set(rows) == {"naming", "contents", "way-in", "machine"}
+    # `triad-advisory` since #163, as for any repository that has not
+    # elected the Triad; it does not touch the naming row this test is about.
+    assert set(rows) == {"naming", "contents", "way-in", "triad-advisory",
+                         "machine"}
     row = rows["naming"]
     # The real verdict -- unclassified -- not the false OK argparse's own
     # help action used to produce.

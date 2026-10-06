@@ -440,6 +440,24 @@ That a `<user>-wip` workspace repository confers anything either: it holds no
 code, elects nothing and is membership of nothing — it is one person's index
 of their own unfinished work, and nothing here creates one.
 
+**What you DO tell them instead:** that the Triad — this shape, an assembly
+root with a spec leg and a code leg — is the PREFERRED project shape; that a
+project choosing a single repository is reviewed identically and owes no
+declaration; and that the shape still confers nothing (Brett Heap, 2026-10-06,
+openxFactory `prefer-triad-project-shape`). Preferred is not required.
+
+Starting work for a person in a repository that is not a Triad, say so ONCE in
+the session, in a line or two, then carry on with what you were asked:
+`adopt-project.py` converts a repository in place when a person deciding for it
+runs it, and a project that stays single can say so in
+`single-repository.yaml`. The doctor's `advisory` row and the `triad` lines the
+scaffold and `adopt-project.py plan`/`check` print are that sentence; relay
+them once. Say nothing in an assembly root, a family holder, a `<user>-wip`
+repository or one carrying `single-repository.yaml`; send a leg clone to its
+assembly root instead; say it everywhere else, without guessing a class. A
+subagent or an unattended run says nothing. Never convert, never write the
+record for them, never block, and never put the shape in a review or a gate.
+
 ## Testing your changes to this repository
 
 `python3 -m pytest tests -q`. The suite scaffolds into bare repositories in a
