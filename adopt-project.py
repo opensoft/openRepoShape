@@ -89,6 +89,7 @@ from shape_materialize import (  # noqa: E402
     election_date, env_commit, git_init_commit, materialize_assembly_root,
     naming_block, run, write_lf,
 )
+import shape_advisory  # noqa: E402
 
 #: The naming policy this tool classifies leg names against. One constant,
 #: because three spellings of the same path is how the second one goes stale.
@@ -607,6 +608,37 @@ def _checked_plan_inputs(args, source: Source,
     return names, pins
 
 
+def _print_triad_advisory(path: Path) -> None:
+    """The Triad advisory, once, about the repository this run reads.
+
+    RULED BY BRETT HEAP ON 2026-10-06 ("ratify 1249 as recommended",
+    openxFactory `prefer-triad-project-shape`): the Triad is the preferred
+    project shape, it stays elective and confers nothing, and this tool's
+    `plan` and `check` say so beside what they already print. THIS TOOL IS
+    THE CONVERSION, so it names the preference rather than sending anybody to
+    itself, and says what it does about it: nothing until `execute`, on a
+    person's word for this project. `scripts/shape_advisory.py` decides where
+    it is silent -- an elected Triad, a family holder, a `<user>-wip`
+    workspace, a project that recorded staying single -- and a leg clone gets
+    the existing instruction to work from its assembly root instead.
+
+    PRINTED, NEVER WRITTEN. Nothing goes into the plan file, the split commit
+    or the manifest on its account, and no exit code changes: the advisory is
+    a sentence said to a person and not a fact about their project.
+    """
+    reading = shape_advisory.read(path)
+    if reading.state == shape_advisory.LEG_CLONE:
+        print(f"NOTE {shape_advisory.leg_instruction(reading.leg)}")
+        return
+    if not reading.advise:
+        return
+    first, second = shape_advisory.adopt_lines()
+    print(f"triad      {first}")
+    print(f"           {second}")
+    for line in shape_advisory.record_report(reading.record_problems):
+        print(f"NOTE {line}")
+
+
 def _print_plan_report(args, source: Source, tree: list, entries: list,
                        follow_ups: list, out: Path) -> None:
     """What `plan` says to the terminal once the file is on disk.
@@ -620,6 +652,7 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
           f"{source.commit[:12]} ({source.branch}), "
           f"{len(tree)} files, {source.commit_count()} commits")
     print(f"project    {args.project} ({args.id}) in {args.org}, mode in-place")
+    _print_triad_advisory(source.path)
     _print_entries(entries)
     _print_summary(entries)
     print(f"\nfollow-ups ({len(follow_ups)}):")
@@ -964,6 +997,9 @@ def cmd_check(args) -> int:
     source = plan.open_source(args.source, work_root)
     naming = NamingPolicy.load(NAMING_POLICY)
     findings: list[str] = []
+    # FIRST, because it is said where work starts; it is never one of the
+    # findings below and never moves this command's exit code.
+    _print_triad_advisory(source.path)
 
     if plan.source_commit and source.commit != plan.source_commit:
         findings.append(

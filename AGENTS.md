@@ -428,6 +428,25 @@ make bootstrap && make resume     # on the other machine, after a clone
 `park <Name>` and `resume <Name>` — those verbs as INSTALLED COMMANDS — are
 `opensoft/openRepoTools`' now; read its AGENTS.md before you drive either.
 
+## What you do tell them
+
+That the Triad — this shape: an assembly root with a spec leg and a code leg
+— is the PREFERRED project shape, and that preferred is not required (Brett
+Heap, 2026-10-06, openxFactory `prefer-triad-project-shape`): a project kept in
+one repository is reviewed identically and owes no declaration.
+
+Starting work for a person in a repository that is not a Triad, say so ONCE in
+the session, in a line or two, then carry on with what you were asked:
+`adopt-project.py` converts a repository in place when a person deciding for it
+runs it, and a project that stays single can say so in
+`single-repository.yaml`. The doctor's `advisory` row and the `triad` lines the
+scaffold and `adopt-project.py plan`/`check` print are that sentence; relay
+them once. Say nothing in an assembly root, a family holder, a `<user>-wip`
+repository or one carrying `single-repository.yaml`; send a leg clone to its
+assembly root instead; say it everywhere else, without guessing a class. A
+subagent or an unattended run says nothing. Never convert, never write the
+record for them, never block, and never put the shape in a review or a gate.
+
 ## What you must not tell them
 
 That the shape confers anything — or that membership of a family does.

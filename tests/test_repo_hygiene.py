@@ -29,6 +29,7 @@ SHIPPED = [
     REPO / "scripts" / "repo_shape.py",
     REPO / "scripts" / "shape_materialize.py",
     REPO / "scripts" / "path_classify.py",
+    REPO / "scripts" / "shape_advisory.py",
     REPO / "scripts" / "validate-repository-naming.py",
     REPO / "scripts" / "family.py",
     REPO / "scripts" / "bump-leg.py",
@@ -53,8 +54,15 @@ SHIPPED = [
 #: fork that cannot install anything still has to be able to regenerate the
 #: reference after it changes a tool. The rule costs it nothing and the
 #: category it would otherwise sit in is "nothing checks this file".
+#:
+#: `scripts/shape_advisory.py` joins them on 2026-10-06 (#163): the Triad
+#: advisory, which `scaffold-project.py`, `adopt-project.py` and
+#: `shape-doctor.py` all import so that the three cannot disagree about where
+#: it is said. It is a local module in the same sense, and it reaches no
+#: scaffolded project either — it is in no copy list, deliberately, because
+#: `repo_shape.py` is a pinned copy and no project's own copy would call it.
 LOCAL_MODULES = {"repo_shape", "shape_materialize", "path_classify",
-                 "conftest", "bootstrap"}
+                 "shape_advisory", "conftest", "bootstrap"}
 
 #: The bash scripts a person runs BEFORE they have a checkout, or with no
 #: checkout in sight at all: the front door itself and the command that
@@ -530,9 +538,25 @@ def test_agents_md_is_short_enough_to_be_read():
     stale again, because a sha corrected outside the re-pin that moved the
     pin is a sha nothing keeps. `apply` now carries it, so the point an
     assistant needs is the one telling them not to reach for the file
-    themselves, and which readings the tool leaves alone."""
+    themselves, and which readings the tool leaves alone.
+
+    2026-10-06: 446 -> 465 — "What you do tell them" (#163), openxFactory's
+    `prefer-triad-project-shape`, ratified by Brett Heap the same day ("ratify
+    1249 as recommended"). Nineteen lines, one new section beside "What you
+    must not tell them", which stays word for word. They buy what that
+    section cannot: until now this file told an assistant only what NOT to
+    say about the shape, and the ruling gave it something it must say — once
+    per session, in a line or two, that the Triad is the preferred shape and
+    that preferred is not required. The rest of the lines are the limits an
+    assistant would otherwise get wrong in one of two expensive directions:
+    where it stays silent (an assembly root, a holder, a `<user>-wip`, a
+    recorded single repository, and a leg clone, which is sent to its root),
+    that it guesses no other class, that a subagent says nothing, and that it
+    never converts, writes the record, blocks, or puts the shape in a review
+    or a gate — the warning-in-CI the ratified text calls an amendment of the
+    doctrine rather than a realization of it."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 446, f"AGENTS.md is {len(lines)} lines; the cap is 446"
+    assert len(lines) <= 465, f"AGENTS.md is {len(lines)} lines; the cap is 465"
 
 
 def test_claude_md_points_at_agents_md():
@@ -1062,8 +1086,28 @@ def test_readme_is_short_enough_to_be_read():
     #   beside `assembly-root`, `code-root`, `family-root` and `spec-root`,
     #   the same row shape as the other four, so this page keeps listing
     #   everything this repository ships rather than four out of five.
-    assert len(lines) <= 1376, (
-        f"README.md is {len(lines)} lines; the cap is 1376")
+    # 2026-10-06: 1376 -> 1416 — the Triad is the PREFERRED shape (#163),
+    #   openxFactory's `prefer-triad-project-shape`, ratified by Brett Heap
+    #   the same day: "ratify 1249 as recommended". Ten lines extend the
+    #   `> [!IMPORTANT]` box the way the ratified rule demands — wherever the
+    #   preference is stated the posture is stated with it — so the box that
+    #   says "elective and confers nothing" also says "preferred, and still
+    #   confers nothing", with the ruling quoted in this file's own style.
+    #   Fourteen say where the advisory is given and where it is SILENT, and
+    #   that it is never a review input: the three tools, once, never a
+    #   block; the five silences; no class guessed. A reader who meets the
+    #   preference without its limits reads it as a gate, which is the one
+    #   reading the ruling forbids. Ten are the OPTIONAL
+    #   `single-repository.yaml` — its fields, its schema and template, that
+    #   nothing writes one for anybody, and that `kind:` decides — because a
+    #   record nobody can find the shape of is a record nobody writes, and
+    #   then every decided single repository meets the advisory for good.
+    #   Three name the doctor's new `advisory` status where the row list and
+    #   the status list are, since a status a page does not list is a status
+    #   a reader takes for a finding. Three are Layout rows for the schema,
+    #   the advisory module and the template.
+    assert len(lines) <= 1416, (
+        f"README.md is {len(lines)} lines; the cap is 1416")
 
 
 @pytest.mark.parametrize("name", SHIPPED_BASH)

@@ -29,6 +29,40 @@ both.
 > travels in the grants rather than in the layout. Review lanes and
 > wallet-carried authority are OVERLAYS an org adds later; a project with no
 > overlays is fully conformant.
+>
+> **The Triad is the PREFERRED shape, and still confers nothing.** The Triad is
+> this shape — an assembly root with a spec leg and a code leg; "three-leg" and
+> "three-repository project" mean the same, and no machine key changed. Ruled by
+> **Brett Heap on 2026-10-06**: *"ratify 1249 as recommended"*, ratifying
+> openxFactory's `prefer-triad-project-shape`. It is the recommended default for
+> a new project and the recommended target for an existing single repository.
+> Preferred is not required: electing it stays a person's decision per project,
+> converting stays `adopt-project.py` run by that person, and a project kept in
+> one repository is reviewed identically and owes no declaration.
+
+**Where the preference is said, and where it is not.** At the start of work,
+once, in a line or two, and never as a stop: `scaffold-project.py`'s plan names
+the Triad as what it creates, `adopt-project.py plan` and `check` say it about
+the repository they read, and `shape-doctor.py` gives a single repository one
+`advisory` row. None blocks, converts, writes or changes an exit status on its
+account, and nothing records that it was given. It is never a review input: no
+review lane, required check, validator, floor, council or merge gate reads the
+shape, and a check built on the doctor's `NOT A SHAPE ROOT` is defective. It is
+silent in an elected Triad's assembly root, a leg clone (which is told to work
+from its root instead), a family holder, a `<user>-wip` workspace repository
+and a repository carrying `single-repository.yaml`. Every other repository —
+an aggregation, a configuration repository, a vendored fork — hears it, because
+no class is guessed.
+
+**`single-repository.yaml` is OPTIONAL and never owed.** A project that has
+decided to stay a single repository may say so once, at its root, and stop
+hearing the advisory: `schema_version: 1`, `kind: single-repository-record`,
+`decided_by`, `decided_on`, `reason` and an optional `revisit_on`. Its schema
+is `contracts/single-repository-record.yaml` and its template
+`templates/single-repository/single-repository.yaml`; nothing here writes one
+for anybody. It confers nothing and the advisory is its only reader. `kind:`
+decides: one that does not parse, or declares another kind, silences nothing
+and is reported beside the advisory, and nothing fails on its account.
 
 - [Starting a project in a new organisation](#starting-a-project-in-a-new-organisation)
   - [Quick start for a first-time user](#quick-start-for-a-first-time-user)
@@ -1090,10 +1124,13 @@ every leg, against the path policy), **agent files**, and **machine**. A
 FAMILY holder gets **family**, **manifest kinds**, **shape currency**,
 **placement** (`n/a` — a holder has no legs of its own), **members** and
 **machine**; a directory that is neither gets what it is CALLED under the
-naming policy, what IS in it, and the way in.
+naming policy, what IS in it, and the way in. A repository that has not
+elected the Triad also gets the **Triad** row, status `advisory`: the
+preference said once, beside the rows, and stepped over by the verdict.
 
-Every row is `ok`, `note`, `FINDING` or `n/a`, and every one that is not
-`ok` names the exact command that fixes it. **Only a `FINDING` moves the
+Every row is `ok`, `note`, `FINDING` or `n/a` — or `advisory`, the Triad row
+alone — and every one that is not `ok` names the exact command that fixes it,
+except the advisory, which fixes nothing. **Only a `FINDING` moves the
 verdict**, and `FINDING` means exactly *something else asserts this* — a
 validator, a pin row, a manifest, a gitlink. A difference nothing asserts is
 a `note`: printed, in `--json`, and stepped over by the verdict. That line
@@ -1339,7 +1376,9 @@ only: a required check in the repository that owns the object is what confers.
 ```
 contracts/repository-naming.yaml  the six naming families, as data
 contracts/path-classification.yaml  which leg a path belongs in, as data
+contracts/single-repository-record.yaml  the staying-single record's schema
 scripts/repo_shape.py             shared helpers: YAML subset reader, digests
+scripts/shape_advisory.py         the Triad advisory: who hears it, and when not
 scripts/path_classify.py          the classifier over the path policy
 scripts/shape_materialize.py      the ONE materializer, used by both tools
 scripts/validate-repository-naming.py
@@ -1358,6 +1397,7 @@ templates/family-root/            the skeleton for a FAMILY holder
 templates/spec-root/              the skeleton for <Project>-spec
 templates/code-root/              the skeleton for <Project>-code
 templates/workspace-root/         the skeleton for <user>-wip
+templates/single-repository/      single-repository.yaml, to fill in by hand
 templates/*/AGENTS-shape.md       the rules of the shape, for an agent (PINNED)
 templates/*/.gitattributes        LF in every clone, so a copy digests as pinned
 AGENTS.md                         the procedure an AI assistant follows

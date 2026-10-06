@@ -18,8 +18,8 @@ kind: single-repository-record
 # floor, council or merge gate reads it.
 #
 # HOW TO USE IT. Copy this file to the repository's ROOT as
-# `single-repository.yaml`, replace every `{{PLACEHOLDER}}` below, and commit
-# it like any other change. `revisit_on:` is optional — delete its line if
+# `single-repository.yaml`, replace every value in double braces below, and
+# commit it like any other change. `revisit_on:` is optional — delete its line if
 # there is nothing to revisit. The schema is openRepoShape's
 # `contracts/single-repository-record.yaml`. Converting to the Triad later is
 # `adopt-project.py`, run by a person deciding for the project; nothing

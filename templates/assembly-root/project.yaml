@@ -16,6 +16,16 @@ kind: project-manifest
 # that declines this schema is reviewed identically to this one, because the
 # authority travels in the grants rather than in the layout. A consumer
 # deriving a permission from `role:` is defective.
+#
+# THE TRIAD IS THE PREFERRED SHAPE, AND THAT CHANGES NONE OF THE ABOVE. This
+# file is how a Triad — an assembly root with a spec leg and a code leg, also
+# called a three-leg or three-repository project — is declared, and the Triad
+# is the recommended default for a new project and the recommended target for
+# an existing single repository: ruled by Brett Heap on 2026-10-06, "ratify
+# 1249 as recommended" (openxFactory `prefer-triad-project-shape`). Preferred
+# is not required. Electing it is still a human's act per project, it
+# confers nothing, and a project kept in one repository is reviewed
+# identically and owes no declaration.
 # ===========================================================================
 
 id: {{PROJECT_ID}}

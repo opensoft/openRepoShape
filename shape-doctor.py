@@ -81,6 +81,19 @@ is NEITHER gets `naming` (what it is called, under the policy), `what is
 here`, `the way in` -- `adopt-project.py plan` for a repository that already
 exists, `setup.sh` for a new one -- and `machine`.
 
+AND ONE MORE ROW, `Triad`, WHERE THE RULE SAYS SO. Brett Heap, 2026-10-06:
+"ratify 1249 as recommended" (openxFactory `prefer-triad-project-shape`):
+the Triad -- this shape, an assembly root with a spec leg and a code leg --
+is the PREFERRED project shape, it stays elective and confers nothing, and
+this report MAY say so. A repository that has not elected it gets one row
+with the status `advisory`, saying it once; an elected Triad, a family
+holder, a `<user>-wip` workspace and a repository carrying a
+`single-repository.yaml` of the right kind get no row at all; a leg clone
+gets the instruction to work from its assembly root instead. The row never
+moves the verdict -- NOT A SHAPE ROOT is exit 2 with or without it -- because
+a project's shape is never a review input; `check_triad_advisory` says the
+rest.
+
 THE PLACEMENT ROW ASKS THE ADOPTION'S QUESTION OF A REPOSITORY ALREADY
 SPLIT. Brett Heap, 2026-09-10: "we have to look for code in spec and spec in
 code". `adopt-project.py plan` decides which leg every path of an UNSPLIT
@@ -122,8 +135,9 @@ command, because a refusal that does not say what to run is a refusal the
 reader improvises around -- which is the house rule the rest of this standard
 is built on.
 
-AND ONLY A `FINDING` MOVES THE VERDICT. A row is `ok`, `note`, `FINDING` or
-`n/a`, and `FINDING` means exactly "something ELSE asserts this" -- a
+AND ONLY A `FINDING` MOVES THE VERDICT. A row is `ok`, `note`, `FINDING`,
+`n/a` or -- the Triad row alone -- `advisory`, and `FINDING` means exactly
+"something ELSE asserts this" -- a
 validator, a pin row, a manifest, a gitlink. A difference nothing asserts is
 a `note`: it is printed, it is in `--json`, and the verdict steps over it.
 That line was drawn after this command printed `INVALID` over a live estate
@@ -2754,7 +2768,13 @@ def check_what_is_here(ctx: Context) -> Row:
                        ("spec", "a spec/ directory"),
                        ("code", "a code/ directory"),
                        (AGENTS_MD, "an AGENTS.md"),
-                       ("Makefile", "a Makefile")):
+                       ("Makefile", "a Makefile"),
+                       # The optional staying-single record. Named here as
+                       # a FILE THAT IS PRESENT, like the rest of this list,
+                       # and not read: its only reader is the Triad advisory,
+                       # whose row says what it found in it.
+                       (shape_advisory.RECORD_FILE,
+                        f"a {shape_advisory.RECORD_FILE}")):
         there = (root / name).exists()
         detail[name] = there
         if there:
