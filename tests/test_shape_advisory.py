@@ -115,6 +115,29 @@ def record_text(**fields) -> str:
     return "\n".join(lines) + "\n"
 
 
+def rendered_leg_agents(role: str) -> str:
+    """A leg's `AGENTS.md`, rendered from its template as the scaffold does."""
+    template = (REPO / "templates" / f"{role}-root" / "AGENTS.md").read_text(
+        encoding="utf-8")
+    return render(template, {
+        "PROJECT_NAME": "Atlas", "PROJECT_ID": "atlas",
+        "ASSEMBLY_REPOSITORY": "Northwind/Atlas",
+        "SPEC_REPOSITORY": "Northwind/Atlas-spec",
+        "CODE_REPOSITORY": "Northwind/Atlas-code",
+        "SPEC_PATH": "spec", "CODE_PATH": "code"}, "AGENTS.md")
+
+
+def no_traceback(result) -> bool:
+    return "Traceback" not in result.stdout + result.stderr
+
+
+def commit_all(path: Path, message: str) -> None:
+    """Commit everything in `path`'s working tree, whatever is there."""
+    git("add", "-A", "--", ".", cwd=path)
+    git("-c", "user.name=t", "-c", "user.email=t@t.invalid", "commit", "-q",
+        "-m", message, cwd=path)
+
+
 def adopt_plan(source: Path, out: Path, env: dict) -> subprocess.CompletedProcess:
     return run_script(ADOPT, "plan", "--source", str(source), "--project",
                       "Thing", "--org", "testorg", "--elected-by",
@@ -146,6 +169,18 @@ def test_a_single_repository_hears_it_once_and_its_exit_is_unchanged(
                      "Nothing here changes; work continues."):
         assert fragment in row["reason"], (fragment, row["reason"])
     assert row["detail"]["state"] == shape_advisory.ADVISE
+
+    # THE PRINTED REPORT, which is where a row can still do damage after the
+    # verdict is decided: `report()` prints `REFUSED shape-doctor-cannot-
+    # answer` for ANY row flagged as this checkout being unable to answer,
+    # whatever the kind of root (#164 review: a mutation setting that flag on
+    # this row survived every test until this assertion).
+    text = run_script(DOCTOR, "--root", str(here), env=quiet_env)
+    assert text.returncode == 2, text.stdout + text.stderr
+    assert "REFUSED" not in text.stderr and "Traceback" not in text.stderr, \
+        text.stderr
+    assert "CANNOT ANSWER" not in text.stdout, text.stdout
+    assert "  advisory  Triad" in text.stdout, text.stdout
 
     (here / RECORD).write_text(record_text(), encoding="utf-8")
     silent_code, silent_rows, _ = doctor_json(here, quiet_env)
@@ -332,6 +367,9 @@ def test_a_record_that_silences_nothing_is_reported_beside_the_advisory(
     assert f"{RECORD} does not silence this" in row["reason"], row["reason"]
     assert why in row["reason"], row["reason"]
 
+    # COMMITTED before `adopt-project.py` is asked, because it reads the
+    # commit it plans and not the working tree (see the planned-commit test).
+    commit_all(here, "Add a single-repository.yaml")
     result = adopt_plan(here, tmp_path / "plan.yaml", quiet_env)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "This is a single repository." in result.stdout
@@ -339,20 +377,53 @@ def test_a_record_that_silences_nothing_is_reported_beside_the_advisory(
         result.stdout
 
 
-def test_a_leg_clone_is_sent_to_its_root_instead(tmp_path, quiet_env):
-    """By its name: `Atlas-spec` is the spec-leg form of the naming policy."""
-    here = repository(tmp_path / "Atlas-spec")
+@pytest.mark.parametrize("name", ["Atlas-spec", "billing-code"])
+def test_a_leg_known_by_name_alone_is_told_so_with_a_hedge(tmp_path,
+                                                          quiet_env, name):
+    """By its name alone: silenced, sent to a root, and not over-claimed.
+
+    `billing-code` is a leg under the naming policy, which is a declared fact
+    and silences the advisory; whether a `billing` mounts it is not something
+    a name can say, so the sentence says "named as" and "if it is one" rather
+    than calling an unrelated repository a clone of somebody's leg (#164
+    review). And `the way in` offers no adoption: a leg split into two more
+    legs is the one adoption nobody wants, and offering it two rows above
+    "work from its assembly root" would be the report contradicting itself.
+    """
+    project, role = name.rsplit("-", 1)
+    here = repository(tmp_path / name)
     reading = shape_advisory.read(here)
     assert reading.state == shape_advisory.LEG_CLONE
+    assert reading.leg["by"] == "name"
     _code, rows, _payload = doctor_json(here, quiet_env)
     row = rows[ROW]
     assert row["status"] == "n/a", row
     assert "This is a single repository." not in row["reason"]
-    assert "work from its assembly root `Atlas`" in row["reason"], \
-        row["reason"]
+    assert f"`{name}` is named as the {role} leg of `{project}`" in \
+        row["reason"], row["reason"]
+    assert f"if it is one, work from its assembly root `{project}`" in \
+        row["reason"], row["reason"]
+    assert "this is a clone of" not in row["reason"], row["reason"]
+    way_in = rows["way-in"]
+    assert way_in["next"] is None, way_in
+    assert "adopt-project.py" not in (way_in["next"] or "")
+    assert "AS A LEG" in way_in["reason"], way_in["reason"]
     result = adopt_plan(here, tmp_path / "plan.yaml", quiet_env)
     assert "This is a single repository." not in result.stdout
-    assert "NOTE this is a clone of the spec leg of a Triad" in result.stdout
+    assert f"NOTE `{name}` is named as the {role} leg" in result.stdout, \
+        result.stdout
+
+
+def test_a_leg_that_says_so_is_sent_to_the_root_it_names(tmp_path, quiet_env):
+    """By its own `AGENTS.md`, the primary route: plain, and naming the root."""
+    here = repository(tmp_path / "renamed-clone",
+                      {"AGENTS.md": rendered_leg_agents("spec")})
+    _code, rows, _payload = doctor_json(here, quiet_env)
+    row = rows[ROW]
+    assert row["status"] == "n/a", row
+    assert "this is a clone of the spec leg of a Triad" in row["reason"]
+    assert "work from its assembly root `Northwind/Atlas`" in row["reason"]
+    assert rows["way-in"]["next"] is None, rows["way-in"]
 
 
 @pytest.mark.parametrize("role", ["spec", "code"])
@@ -364,18 +435,12 @@ def test_the_leg_templates_are_what_the_advisory_reads(tmp_path, role):
     held to the templates: reword a template without the module and this is
     red, rather than a leg that quietly starts being advised.
     """
-    template = (REPO / "templates" / f"{role}-root" / "AGENTS.md").read_text(
-        encoding="utf-8")
-    text = render(template, {
-        "PROJECT_NAME": "Atlas", "PROJECT_ID": "atlas",
-        "ASSEMBLY_REPOSITORY": "Northwind/Atlas",
-        "SPEC_REPOSITORY": "Northwind/Atlas-spec",
-        "CODE_REPOSITORY": "Northwind/Atlas-code",
-        "SPEC_PATH": "spec", "CODE_PATH": "code"}, "AGENTS.md")
-    here = repository(tmp_path / "renamed-clone", {"AGENTS.md": text})
+    here = repository(tmp_path / "renamed-clone",
+                      {"AGENTS.md": rendered_leg_agents(role)})
     reading = shape_advisory.read(here)
     assert reading.state == shape_advisory.LEG_CLONE, reading.as_dict()
     assert reading.leg["role"] == role
+    assert reading.leg["by"] == "agents"
     assert reading.leg["assembly"] == "Northwind/Atlas"
 
 
@@ -402,6 +467,163 @@ def test_no_class_is_guessed(tmp_path, quiet_env, name):
     assert shape_advisory.read(here).advise
     _code, rows, _payload = doctor_json(here, quiet_env)
     assert rows[ROW]["status"] == "advisory"
+
+
+def test_a_broken_assembly_root_is_not_called_a_single_repository(tmp_path,
+                                                                   quiet_env):
+    """A `project.yaml` short of a Triad gets its `manifest` finding, no row.
+
+    Not a Triad by the detector, and not "a single repository" either: it is
+    a project root whose manifest is wrong, which the doctor's own rows
+    explain. So the `Triad` row is not asked there (#164 review), and the
+    verdict and exit are the same whether or not a valid record would have
+    silenced it -- the advisory has nothing to do with a project root's
+    verdict, in either direction.
+    """
+    here = repository(tmp_path / "Half", {
+        "project.yaml": "schema_version: 1\nkind: project-manifest\n"
+                        "schema: project-repo-schema\nlegs:\n"
+                        "  - role: assembly\n    path: \".\"\n"
+                        "  - role: spec\n    path: spec\n"})
+    code, rows, payload = doctor_json(here, quiet_env)
+    assert payload["kind"] == "project", payload
+    assert ROW not in rows, rows.get(ROW)
+    (here / RECORD).write_text(record_text(), encoding="utf-8")
+    recorded_code, recorded_rows, recorded = doctor_json(here, quiet_env)
+    assert ROW not in recorded_rows, recorded_rows.get(ROW)
+    assert (recorded_code, recorded["verdict"]) == (code, payload["verdict"])
+
+
+# --- it cannot fail the run that says it ------------------------------------
+
+#: Three `single-repository.yaml` bodies a person, an editor or a script can
+#: produce, each of which raised out of the advisory before #164's review
+#: round, and what the doctor now says about each instead.
+UNREADABLE = {
+    "undecodable": (b"schema_version: 1\nkind: \xff\xfe record\n",
+                    "it could not be read (UnicodeDecodeError)"),
+    "nested-past-the-recursion-limit": (
+        ("kind: " + "[" * 600 + "]" * 600 + "\n").encode("ascii"),
+        "it could not be read (RecursionError)"),
+    "non-ascii-kind-on-an-ascii-console": (
+        'schema_version: 1\nkind: "café—record"\n'.encode("utf-8"),
+        "it declares kind 'caf"),
+}
+
+
+@pytest.mark.parametrize("case", sorted(UNREADABLE))
+def test_a_record_nobody_can_read_fails_nothing(tmp_path, quiet_env, case):
+    """Reported beside the advisory; every exit the same; no traceback.
+
+    Run under `PYTHONIOENCODING=ascii`, the console a Windows code page or a
+    plain pipe gives: a `kind:` the console cannot encode is a person's text
+    reaching `print`, and it must cost one `?`, not the run.
+    """
+    body, said = UNREADABLE[case]
+    env = {**quiet_env, "PYTHONIOENCODING": "ascii"}
+    here = repository(tmp_path / "Thing")
+    (here / RECORD).write_bytes(body)
+    commit_all(here, "Add a single-repository.yaml")
+
+    code, rows, _payload = doctor_json(here, env)
+    assert code == 2
+    row = rows[ROW]
+    assert row["status"] == "advisory", row
+    assert f"{RECORD} does not silence this: {said}" in row["reason"], \
+        row["reason"]
+    text = run_script(DOCTOR, "--root", str(here), env=env)
+    assert text.returncode == 2 and no_traceback(text), \
+        text.stdout + text.stderr
+    assert "advisory  Triad" in text.stdout, text.stdout
+
+    result = adopt_plan(here, tmp_path / "plan.yaml", env)
+    assert result.returncode == 0 and no_traceback(result), \
+        result.stdout + result.stderr
+    assert "This is a single repository." in result.stdout, result.stdout
+    assert f"NOTE {RECORD} does not silence this: {said}" in result.stdout, \
+        result.stdout
+
+
+def test_a_workspace_path_no_machine_can_hold_fails_nothing(tmp_path,
+                                                            quiet_env):
+    """A NUL byte in the person's `workspace.yaml` names nothing, and only it.
+
+    `Path.resolve` raises `ValueError` on an embedded NUL. The person's own
+    configuration is the one input here that is not this repository's, so it
+    costs exactly its own entry: the `orgs:` entry beside it still names its
+    checkout, and every other repository still hears the advisory with the
+    exit it always had.
+    """
+    config = Path(quiet_env["AGENT_PROTOCOL_ROOT"]) / "workspace.yaml"
+    mine = repository(tmp_path / "medx-notes")
+    other = repository(tmp_path / "Thing")
+    config.write_bytes(
+        b"repository: opensoft/brett-wip\npath: /nowhere/\x00/brett-wip\n"
+        b"orgs:\n  MedxSoft:\n    repository: MedxSoft/brett-wip\n"
+        b"    path: " + json.dumps(str(mine)).encode("utf-8") + b"\n")
+    assert shape_advisory.read(mine, env=quiet_env).state \
+        == shape_advisory.WORKSPACE
+    for here, row_expected in ((mine, False), (other, True)):
+        result = run_script(DOCTOR, "--root", str(here), env=quiet_env)
+        assert result.returncode == 2 and no_traceback(result), \
+            result.stdout + result.stderr
+        assert ("advisory  Triad" in result.stdout) is row_expected, \
+            result.stdout
+    result = adopt_plan(other, tmp_path / "plan.yaml", quiet_env)
+    assert result.returncode == 0 and no_traceback(result), \
+        result.stdout + result.stderr
+    assert "This is a single repository." in result.stdout
+
+
+def test_a_byte_order_mark_is_the_editors_and_not_the_persons(tmp_path,
+                                                              quiet_env):
+    """A UTF-8 BOM ahead of the first key changes no answer.
+
+    Left in, it turns `schema_version` into a key nobody declared -- a valid
+    record that names a field problem, and a leg whose `AGENTS.md` no longer
+    opens with the leg's sentence, so it is advised to become what it is.
+    """
+    bom = "﻿"
+    here = repository(tmp_path / "dotfiles", {RECORD: bom + record_text()})
+    reading = shape_advisory.read(here, env=quiet_env)
+    assert reading.state == shape_advisory.RECORDED_SINGLE, reading.as_dict()
+    assert reading.field_problems == (), reading.field_problems
+    _code, rows, _payload = doctor_json(here, quiet_env)
+    assert ROW not in rows, rows.get(ROW)
+    result = adopt_plan(here, tmp_path / "plan.yaml", quiet_env)
+    assert "This is a single repository." not in result.stdout
+    assert "does not silence this" not in result.stdout, result.stdout
+
+    leg = repository(tmp_path / "renamed-clone",
+                     {"AGENTS.md": bom + rendered_leg_agents("code")})
+    reading = shape_advisory.read(leg, env=quiet_env)
+    assert reading.state == shape_advisory.LEG_CLONE, reading.as_dict()
+    assert reading.leg["by"] == "agents"
+
+
+def test_adopt_reads_the_commit_it_plans_and_the_doctor_reads_the_disk(
+        tmp_path, quiet_env):
+    """An uncommitted record is not in the repository being split.
+
+    `adopt-project.py plan` writes its plan against one commit of the
+    default branch, so a `single-repository.yaml` that exists only in the
+    working tree says nothing about that commit, and the advisory is still
+    said. The doctor reports the tree in front of the person, so it is
+    silent about the same checkout -- and both stop once it is committed.
+    """
+    here = repository(tmp_path / "Thing")
+    (here / RECORD).write_text(record_text(), encoding="utf-8")
+    _code, rows, _payload = doctor_json(here, quiet_env)
+    assert ROW not in rows, rows.get(ROW)
+    result = adopt_plan(here, tmp_path / "plan.yaml", quiet_env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.count("This is a single repository.") == 1, \
+        result.stdout
+
+    commit_all(here, "Record staying single")
+    result = adopt_plan(here, tmp_path / "plan-2.yaml", quiet_env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "This is a single repository." not in result.stdout, result.stdout
 
 
 # --- the record, its schema and its template agree --------------------------

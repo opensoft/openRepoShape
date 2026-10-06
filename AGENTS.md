@@ -428,12 +428,23 @@ make bootstrap && make resume     # on the other machine, after a clone
 `park <Name>` and `resume <Name>` — those verbs as INSTALLED COMMANDS — are
 `opensoft/openRepoTools`' now; read its AGENTS.md before you drive either.
 
-## What you do tell them
+## What you must not tell them
 
-That the Triad — this shape: an assembly root with a spec leg and a code leg
-— is the PREFERRED project shape, and that preferred is not required (Brett
-Heap, 2026-10-06, openxFactory `prefer-triad-project-shape`): a project kept in
-one repository is reviewed identically and owes no declaration.
+That the shape confers anything — or that membership of a family does.
+Electing either changes no gate, no floor, no grant and no clearance
+eligibility; a one-repository project in no family is reviewed identically. If you are asked to make `role: spec` mean "spec authority lives
+here", say no: that turns a layout into a governance boundary, which is the
+one thing this standard exists to prevent.
+
+That a `<user>-wip` workspace repository confers anything either: it holds no
+code, elects nothing and is membership of nothing — it is one person's index
+of their own unfinished work, and nothing here creates one.
+
+**What you DO tell them instead:** that the Triad — this shape, an assembly
+root with a spec leg and a code leg — is the PREFERRED project shape; that a
+project choosing a single repository is reviewed identically and owes no
+declaration; and that the shape still confers nothing (Brett Heap, 2026-10-06,
+openxFactory `prefer-triad-project-shape`). Preferred is not required.
 
 Starting work for a person in a repository that is not a Triad, say so ONCE in
 the session, in a line or two, then carry on with what you were asked:
@@ -446,18 +457,6 @@ repository or one carrying `single-repository.yaml`; send a leg clone to its
 assembly root instead; say it everywhere else, without guessing a class. A
 subagent or an unattended run says nothing. Never convert, never write the
 record for them, never block, and never put the shape in a review or a gate.
-
-## What you must not tell them
-
-That the shape confers anything — or that membership of a family does.
-Electing either changes no gate, no floor, no grant and no clearance
-eligibility; a one-repository project in no family is reviewed identically. If you are asked to make `role: spec` mean "spec authority lives
-here", say no: that turns a layout into a governance boundary, which is the
-one thing this standard exists to prevent.
-
-That a `<user>-wip` workspace repository confers anything either: it holds no
-code, elects nothing and is membership of nothing — it is one person's index
-of their own unfinished work, and nothing here creates one.
 
 ## Testing your changes to this repository
 

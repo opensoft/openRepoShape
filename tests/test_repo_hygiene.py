@@ -540,23 +540,28 @@ def test_agents_md_is_short_enough_to_be_read():
     assistant needs is the one telling them not to reach for the file
     themselves, and which readings the tool leaves alone.
 
-    2026-10-06: 446 -> 465 — "What you do tell them" (#163), openxFactory's
-    `prefer-triad-project-shape`, ratified by Brett Heap the same day ("ratify
-    1249 as recommended"). Nineteen lines, one new section beside "What you
-    must not tell them", which stays word for word. They buy what that
-    section cannot: until now this file told an assistant only what NOT to
-    say about the shape, and the ruling gave it something it must say — once
-    per session, in a line or two, that the Triad is the preferred shape and
-    that preferred is not required. The rest of the lines are the limits an
-    assistant would otherwise get wrong in one of two expensive directions:
-    where it stays silent (an assembly root, a holder, a `<user>-wip`, a
-    recorded single repository, and a leg clone, which is sent to its root),
-    that it guesses no other class, that a subagent says nothing, and that it
-    never converts, writes the record, blocks, or puts the shape in a review
-    or a gate — the warning-in-CI the ratified text calls an amendment of the
-    doctrine rather than a realization of it."""
+    2026-10-06: 446 -> 464 — "What you DO tell them instead" (#163),
+    openxFactory's `prefer-triad-project-shape`, ratified by Brett Heap the
+    same day ("ratify 1249 as recommended"). Eighteen lines, all of them
+    INSIDE "What you must not tell them", whose existing two paragraphs stay
+    word for word: task 5.2 says that section "must still forbid saying the
+    shape confers anything and must gain what to tell them", so the gain
+    lives there rather than in a sibling a reader could meet without the
+    prohibition. They buy what that section could not say before: until now
+    this file told an assistant only what NOT to say about the shape, and
+    the ruling gave it something it must say -- once per session, in a line
+    or two -- that the Triad is the preferred shape, that a project choosing
+    a single repository is reviewed identically, and that the shape still
+    confers nothing. The rest are the limits an assistant would otherwise get
+    wrong in one of two expensive directions: where it stays silent (an
+    assembly root, a holder, a `<user>-wip`, a recorded single repository,
+    and a leg clone, which is sent to its root), that it guesses no other
+    class, that a subagent says nothing, and that it never converts, writes
+    the record, blocks, or puts the shape in a review or a gate -- the
+    warning-in-CI the ratified text calls an amendment of the doctrine
+    rather than a realization of it."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 465, f"AGENTS.md is {len(lines)} lines; the cap is 465"
+    assert len(lines) <= 464, f"AGENTS.md is {len(lines)} lines; the cap is 464"
 
 
 def test_claude_md_points_at_agents_md():

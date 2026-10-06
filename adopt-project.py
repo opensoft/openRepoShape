@@ -608,7 +608,7 @@ def _checked_plan_inputs(args, source: Source,
     return names, pins
 
 
-def _print_triad_advisory(path: Path) -> None:
+def _print_triad_advisory(path: Path, commit: str | None = None) -> None:
     """The Triad advisory, once, about the repository this run reads.
 
     RULED BY BRETT HEAP ON 2026-10-06 ("ratify 1249 as recommended",
@@ -625,18 +625,35 @@ def _print_triad_advisory(path: Path) -> None:
     PRINTED, NEVER WRITTEN. Nothing goes into the plan file, the split commit
     or the manifest on its account, and no exit code changes: the advisory is
     a sentence said to a person and not a fact about their project.
+
+    ABOUT THE COMMIT BEING PLANNED. `commit` is the one this plan is written
+    against, and the record, the manifests and a leg's `AGENTS.md` are read
+    out of it rather than out of the working tree: a `single-repository.yaml`
+    that exists only on a feature branch, or only uncommitted, is not in the
+    repository being split and silences nothing about it.
+
+    AND IT CANNOT FAIL THE RUN. Every line is flattened to ASCII first, as
+    `shape-doctor.py` flattens its rows -- a record's `kind:` is a person's
+    text, and a console that cannot encode it would otherwise raise in the
+    middle of `plan`, after the plan file is already written -- and anything
+    left is swallowed: a run that lost the advisory has lost one optional
+    sentence, and one that crashed on it would have changed an exit status,
+    which the ratified rule forbids.
     """
-    reading = shape_advisory.read(path)
-    if reading.state == shape_advisory.LEG_CLONE:
-        print(f"NOTE {shape_advisory.leg_instruction(reading.leg)}")
+    try:
+        reading = shape_advisory.read(path, commit=commit)
+        if reading.state == shape_advisory.LEG_CLONE:
+            lines = [f"NOTE {shape_advisory.leg_instruction(reading.leg)}"]
+        elif reading.advise:
+            first, second = shape_advisory.adopt_lines()
+            lines = [f"triad      {first}", f"           {second}"]
+            lines += [f"NOTE {line}" for line in
+                      shape_advisory.record_report(reading.record_problems)]
+        else:
+            return
+        print("\n".join(shape_advisory.printable(line) for line in lines))
+    except Exception:  # noqa: BLE001 - see the docstring
         return
-    if not reading.advise:
-        return
-    first, second = shape_advisory.adopt_lines()
-    print(f"triad      {first}")
-    print(f"           {second}")
-    for line in shape_advisory.record_report(reading.record_problems):
-        print(f"NOTE {line}")
 
 
 def _print_plan_report(args, source: Source, tree: list, entries: list,
@@ -652,7 +669,7 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
           f"{source.commit[:12]} ({source.branch}), "
           f"{len(tree)} files, {source.commit_count()} commits")
     print(f"project    {args.project} ({args.id}) in {args.org}, mode in-place")
-    _print_triad_advisory(source.path)
+    _print_triad_advisory(source.path, source.commit)
     _print_entries(entries)
     _print_summary(entries)
     print(f"\nfollow-ups ({len(follow_ups)}):")
@@ -999,7 +1016,8 @@ def cmd_check(args) -> int:
     findings: list[str] = []
     # FIRST, because it is said where work starts; it is never one of the
     # findings below and never moves this command's exit code.
-    _print_triad_advisory(source.path)
+    _print_triad_advisory(source.path,
+                          plan.source_commit or source.commit)
 
     if plan.source_commit and source.commit != plan.source_commit:
         findings.append(

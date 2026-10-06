@@ -1124,14 +1124,14 @@ every leg, against the path policy), **agent files**, and **machine**. A
 FAMILY holder gets **family**, **manifest kinds**, **shape currency**,
 **placement** (`n/a` — a holder has no legs of its own), **members** and
 **machine**; a directory that is neither gets what it is CALLED under the
-naming policy, what IS in it, and the way in. A repository that has not
-elected the Triad also gets the **Triad** row, status `advisory`: the
-preference said once, beside the rows, and stepped over by the verdict.
+naming policy, what IS in it, and the way in — and a repository the advisory
+is not silent about gets the **Triad** row, status `advisory`: the preference
+said once and stepped over by the verdict (a leg gets its assembly root).
 
 Every row is `ok`, `note`, `FINDING` or `n/a` — or `advisory`, the Triad row
 alone — and every one that is not `ok` names the exact command that fixes it,
-except the advisory, which fixes nothing. **Only a `FINDING` moves the
-verdict**, and `FINDING` means exactly *something else asserts this* — a
+except the Triad row, which names none in any status. **Only a `FINDING`
+moves the verdict**, and `FINDING` means exactly *something else asserts this* — a
 validator, a pin row, a manifest, a gitlink. A difference nothing asserts is
 a `note`: printed, in `--json`, and stepped over by the verdict. That line
 was drawn after this command answered `INVALID` about a live estate whose

@@ -95,7 +95,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from repo_shape import NamingPolicy, Refusal, git_out, load_yaml  # noqa: E402
+from repo_shape import (  # noqa: E402
+    NamingPolicy, Refusal, git_out, load_yaml, parse_yaml,
+)
 
 #: The checkout of the standard this file sits in. The naming policy and the
 #: record's schema are read from HERE, exactly as the doctor compares a
@@ -127,8 +129,16 @@ LEG_CLONE = "leg-clone"
 WORKSPACE = "workspace"
 RECORDED_SINGLE = "recorded-single"
 NOT_A_REPOSITORY = "not-a-repository"
+#: THE ADVISORY COULD NOT BE READ HERE, AND SAYS NOTHING RATHER THAN FAIL
+#: ANYTHING. The ratified rule is absolute -- the advisory SHALL NOT change an
+#: exit status on its account -- and a sentence that is optional by
+#: construction is the one thing in a run that must never be the reason it
+#: crashed. So whatever `read()` meets that it did not expect (a record nested
+#: past the interpreter's recursion limit, a NUL in a configured path) ends
+#: here: silent, with the exception's NAME in `why` for `--json`.
+NOT_ANSWERED = "not-answered"
 STATES = (ADVISE, TRIAD_ROOT, FAMILY_HOLDER, LEG_CLONE, WORKSPACE,
-          RECORDED_SINGLE, NOT_A_REPOSITORY)
+          RECORDED_SINGLE, NOT_A_REPOSITORY, NOT_ANSWERED)
 
 #: The two leg roles. A name the naming policy classifies as `project-leg` in
 #: either of them is a leg's name by this standard's own declaration.
@@ -149,6 +159,30 @@ LEG_ROOT_RE = re.compile(r"They are in the assembly root `([^`\s]+)`")
 #: template here, and a value still spelled that way is a field nobody wrote.
 PLACEHOLDER_RE = re.compile(r"\{\{[A-Z_]+\}\}")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+#: A UTF-8 byte-order mark, which an editor on Windows may put at the top of a
+#: file a person wrote by hand. It is not part of the first key: left in, it
+#: turns `schema_version` into a key nobody declared.
+BOM = "\ufeff"
+
+
+def printable(text: str) -> str:
+    """`text` as ASCII, so printing it can never be what fails a run.
+
+    THE SAME FLATTENING `shape-doctor.py`'s `ascii_text` applies to every row,
+    for the same reason, here for the two tools that print the advisory
+    themselves: a record's `kind:` is a person's text and may carry anything,
+    and a console in an ANSI code page -- or a `PYTHONIOENCODING=ascii`
+    pipe -- raises `UnicodeEncodeError` on the first character it cannot
+    write. The typography this repository writes is spelled out; anything
+    else becomes `?` rather than an exception.
+    """
+    for source, target in (("—", "--"), ("–", "-"),
+                           ("‘", "'"), ("’", "'"),
+                           ("“", '"'), ("”", '"'),
+                           ("…", "..."), (" ", " ")):
+        text = text.replace(source, target)
+    return text.encode("ascii", "replace").decode("ascii")
 
 # ---------------------------------------------------------------------------
 # What is said
@@ -228,15 +262,29 @@ def leg_instruction(leg: dict) -> str:
     It is the leg templates' own "Clone the assembly root, not this
     repository", said by the tool that found the leg. The leg IS part of a
     Triad, so advising it to become one would be false.
+
+    IT SAYS AS MUCH AS IT KNOWS AND NO MORE. A leg whose own `AGENTS.md` is
+    the leg template's has said so itself, and names its root, so the
+    sentence is plain. A leg known by its NAME alone -- `billing-spec`, with
+    no leg `AGENTS.md` -- is a leg under the naming policy, which is a
+    declared fact and silences the advisory; but whether some `billing`
+    actually mounts it is not something a name can settle, so the sentence
+    says "named as" and "if it is one" rather than telling an unrelated
+    repository it is a clone of somebody's leg.
     """
     root = leg.get("assembly")
     named = f"`{root}`" if root else "the assembly root that mounts it"
-    return (f"this is a clone of the {leg['role']} leg of a Triad "
-            f"({leg['how']}), so the Triad advisory does not apply here: work "
-            f"from its assembly root {named}, cloned with `git clone "
+    work = (f"work from its assembly root {named}, cloned with `git clone "
             "--recurse-submodules` and `make bootstrap`, where the manifest "
             "and both legs are -- rather than adopting or scaffolding this "
             "leg")
+    if leg.get("by") == "name":
+        return (f"`{leg['name']}` is named as the {leg['role']} leg of "
+                f"{named} under {NAMING_POLICY}, so the Triad advisory is not "
+                f"given here; if it is one, {work}")
+    return (f"this is a clone of the {leg['role']} leg of a Triad "
+            f"({leg['how']}), so the Triad advisory does not apply here: "
+            f"{work}")
 
 
 # ---------------------------------------------------------------------------
@@ -276,18 +324,68 @@ class Reading:
                 "leg": self.leg}
 
 
-def _read_mapping(path: Path):
-    """`path` as a YAML mapping, or None -- never a refusal.
+class Tree:
+    """The files of one repository's root, read from the disk or a commit.
+
+    THE DOCTOR READS WHAT IS ON THE DISK, which is its whole contract: a
+    report about the tree in front of the person. `adopt-project.py` does
+    not -- its plan is written against ONE COMMIT of the default branch, so
+    a `single-repository.yaml` sitting uncommitted in the working tree, or
+    committed only on a feature branch, is not in the repository being
+    planned and must not silence the advisory about it. With `commit` the
+    same questions are asked of that commit's own objects, through the git
+    the plan itself reads.
+
+    `kind()` is "file", "dir" (anything there that is not a file) or None; `text()` is the decoded bytes of a
+    file, or None when there is no file to read. An undecodable file RAISES
+    `UnicodeDecodeError`, because "it is there and could not be read" is a
+    different answer from "it is not there", and the record reports the
+    first.
+    """
+
+    def __init__(self, root: Path, commit: str | None = None):
+        self.root = Path(root)
+        self.commit = commit
+
+    def kind(self, rel: str) -> str | None:
+        if self.commit is None:
+            path = self.root / rel
+            if path.is_file():
+                return "file"
+            return "dir" if path.exists() else None
+        try:
+            found = git_out(["cat-file", "-t", f"{self.commit}:{rel}"],
+                            cwd=self.root)
+        except (Refusal, OSError):
+            return None
+        # A tree, or a gitlink (`commit`), is there and is not a file.
+        return "file" if found == "blob" else "dir"
+
+    def text(self, rel: str) -> str | None:
+        if self.kind(rel) != "file":
+            return None
+        if self.commit is None:
+            raw = (self.root / rel).read_bytes()
+        else:
+            raw = git_out(["cat-file", "blob", f"{self.commit}:{rel}"],
+                          cwd=self.root, binary=True)
+        return raw.decode("utf-8")
+
+
+def _read_mapping(tree: Tree, rel: str):
+    """`rel` as a YAML mapping, or None -- never a refusal, never a crash.
 
     The advisory is a sentence, not a check, so a manifest it cannot read is
     a manifest it does not see; the doctor's own rows are where a broken
-    manifest is a finding.
+    manifest is a finding. EVERY exception is that answer, not only the
+    three this file expects: a manifest nested past the recursion limit is
+    as unreadable as one that does not parse, and the ratified rule is that
+    the advisory never changes an exit status.
     """
-    if not path.is_file():
-        return None
     try:
-        data = load_yaml(path)
-    except (Refusal, OSError, UnicodeDecodeError):
+        text = tree.text(rel)
+        data = parse_yaml(text.lstrip(BOM)) if text is not None else None
+    except Exception:  # noqa: BLE001 - see the docstring
         return None
     return data if isinstance(data, dict) else None
 
@@ -356,31 +454,47 @@ def _naming_policy(shape: Path) -> NamingPolicy | None:
 
 
 def _leg_by_name(names: list[str], policy: NamingPolicy | None) -> dict | None:
-    """A leg named as one: `<Project>-spec` or `<Project>-code`."""
+    """A leg NAMED as one: `<Project>-spec` or `<Project>-code`.
+
+    The second route, and the weaker: the naming policy is a declared fact,
+    so the name alone silences the advisory, but it cannot say that a
+    `<Project>` mounts this repository -- which is why `leg_instruction`
+    words a name-only match as "named as ... if it is one".
+    """
     if policy is None:
         return None
     for name in names:
         found = policy.classify(name)
         if found is not None and found.family == "project-leg" \
                 and found.role in LEG_ROLES:
-            return {"role": found.role,
+            return {"role": found.role, "by": "name", "name": name,
                     "assembly": name[:-len(f"-{found.role}")],
                     "how": f"`{name}` is the {found.role}-leg form of "
                            f"{NAMING_POLICY}"}
     return None
 
 
-def _leg_by_agents_md(root: Path) -> dict | None:
-    """A leg that says so in its own `AGENTS.md`, as the templates write it."""
+def _leg_by_agents_md(tree: Tree) -> dict | None:
+    """A leg that says so in its own `AGENTS.md`, as the templates write it.
+
+    THE FIRST ROUTE, the one design D4 of the ratified change names: every
+    leg `templates/spec-root/` and `templates/code-root/` seeds carries an
+    `AGENTS.md` that opens by saying which leg it is and names the assembly
+    root it belongs to.
+    """
     try:
-        text = (root / AGENTS_MD).read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+        text = tree.text(AGENTS_MD)
+    except Exception:  # noqa: BLE001 - an unreadable file says nothing
         return None
+    if text is None:
+        return None
+    text = text.lstrip(BOM)
     opening = LEG_OPENING_RE.match(text)
     if opening is None:
         return None
     named = LEG_ROOT_RE.search(" ".join(text.split()))
-    return {"role": opening.group(1),
+    return {"role": opening.group(1), "by": "agents",
+            "name": tree.root.name,
             "assembly": named.group(1) if named else None,
             "how": f"its {AGENTS_MD} is the {opening.group(1)} leg's, as "
                    f"templates/{opening.group(1)}-root/ writes it"}
@@ -393,12 +507,19 @@ def workspace_paths(env=None) -> list[Path]:
     README says names a person's `<user>-wip` -- carries a top-level `path:`
     and, optionally, an `orgs:` map whose entries carry a `path:` of their
     own (the shape `opensoft/openRepoTools`' `resume` reads). Read only;
-    a file that is absent or does not parse names nothing.
+    a file that is absent or does not parse names nothing, and AN ENTRY THAT
+    CANNOT BE A PATH ON THIS MACHINE -- a NUL byte in it, a `~user` nobody
+    has -- names nothing either, without costing the entries beside it. The
+    person's configuration is the one input here that is not this
+    repository's, and it is the last thing that should fail a run.
     """
     env = os.environ if env is None else env
-    base = env.get("AGENT_PROTOCOL_ROOT") or os.path.join(
-        os.path.expanduser("~"), ".agents")
-    config = _read_mapping(Path(base) / "workspace.yaml")
+    try:
+        base = Path(env.get("AGENT_PROTOCOL_ROOT") or os.path.join(
+            os.path.expanduser("~"), ".agents"))
+    except Exception:  # noqa: BLE001 - see the docstring
+        return []
+    config = _read_mapping(Tree(base), "workspace.yaml")
     if config is None:
         return []
     raw = [config.get("path")]
@@ -412,7 +533,7 @@ def workspace_paths(env=None) -> list[Path]:
             continue
         try:
             found.append(Path(os.path.expanduser(value.strip())).resolve())
-        except (OSError, RuntimeError):
+        except Exception:  # noqa: BLE001 - `\0` raises ValueError here
             continue
     return found
 
@@ -428,7 +549,7 @@ def _workspace(root: Path, names: list[str], policy: NamingPolicy | None,
                         f"{NAMING_POLICY}")
     try:
         here = root.resolve()
-    except (OSError, RuntimeError):
+    except Exception:  # noqa: BLE001 - a root this machine cannot resolve
         return None
     if here in workspace_paths(env):
         return ("the person's own workspace.yaml names this checkout as "
@@ -506,26 +627,32 @@ def field_problems(record: dict, shape: Path = SHAPE_ROOT) -> list[str]:
     return problems
 
 
-def read_record(root: Path, shape: Path = SHAPE_ROOT) -> tuple:
+def read_record(root, shape: Path = SHAPE_ROOT,
+                commit: str | None = None) -> tuple:
     """`(what the record comes to, why it silences nothing, its field notes)`.
 
     `kind:` DECIDES. A file that parses as a mapping declaring
     `single-repository-record` silences the advisory, and its field problems
-    are notes. Anything else that is present -- unreadable, unparsable, not a
+    are notes. Anything else that is present -- unreadable, undecodable,
+    unparsable, nested past the interpreter's recursion limit, not a
     mapping, another kind, not a file at all -- silences nothing and says
-    why, so the person who wrote it learns that it is not being read.
+    why, so the person who wrote it learns that it is not being read; and
+    NOTHING about it raises, because a record that confers nothing must not
+    be able to fail the run that reads it. A leading UTF-8 byte-order mark is
+    an editor's, not the person's, and is dropped before the first key.
+
+    `root` is a path, or a `Tree` -- which is how `adopt-project.py` asks
+    this of the commit it plans rather than of the working tree.
     """
-    path = root / RECORD_FILE
-    if not path.exists():
-        return RECORD_ABSENT, [], []
-    if not path.is_file():
-        return RECORD_SILENCES_NOTHING, ["it is not a file"], []
+    tree = root if isinstance(root, Tree) else Tree(Path(root), commit)
     try:
-        data = load_yaml(path)
-    except Refusal as exc:
-        return RECORD_SILENCES_NOTHING, [f"it could not be read "
-                                         f"({exc.code})"], []
-    except (OSError, UnicodeDecodeError) as exc:
+        kind = tree.kind(RECORD_FILE)
+        if kind is None:
+            return RECORD_ABSENT, [], []
+        if kind != "file":
+            return RECORD_SILENCES_NOTHING, ["it is not a file"], []
+        data = parse_yaml(tree.text(RECORD_FILE).lstrip(BOM))
+    except Exception as exc:  # noqa: BLE001 - see the docstring
         return RECORD_SILENCES_NOTHING, [f"it could not be read "
                                          f"({type(exc).__name__})"], []
     if not isinstance(data, dict):
@@ -540,7 +667,8 @@ def read_record(root: Path, shape: Path = SHAPE_ROOT) -> tuple:
 # -- the reading -------------------------------------------------------------
 
 
-def read(root, shape: Path = SHAPE_ROOT, env=None) -> Reading:
+def read(root, shape: Path = SHAPE_ROOT, env=None,
+         commit: str | None = None) -> Reading:
     """Is the advisory given in `root`, and if not, which declared fact says so?
 
     THE ORDER IS THE RATIFIED LIST'S, and only the advisory's own sentence
@@ -548,13 +676,36 @@ def read(root, shape: Path = SHAPE_ROOT, env=None) -> Reading:
     record is read LAST because a repository that is already a Triad, a
     holder, a leg or a workspace has the shape question answered whatever a
     stray `single-repository.yaml` in it says.
+
+    `commit` READS THE TREE OF THAT COMMIT instead of the working tree --
+    `adopt-project.py` passes the commit its plan is written against, so the
+    advisory is about the repository being planned. The `.git`, the names
+    and the person's own configuration are read from the disk either way:
+    they are facts about the checkout and the person, not about a commit.
+
+    AND IT NEVER RAISES. Anything `_read` meets that it did not expect makes
+    this answer `NOT_ANSWERED`, which is silent: the ratified rule is that
+    the advisory changes no exit status, and a crash is an exit status.
+    `KeyboardInterrupt` and `SystemExit` are not `Exception`s and still
+    propagate, because a person stopping a run is not the advisory's to
+    swallow.
     """
-    root = Path(root)
-    project = _read_mapping(root / PROJECT_MANIFEST)
+    try:
+        return _read(Path(root), shape, env, commit)
+    except Exception as exc:  # noqa: BLE001 - see the docstring
+        return Reading(NOT_ANSWERED, f"the advisory could not be read here "
+                                     f"({type(exc).__name__}), so it says "
+                                     "nothing")
+
+
+def _read(root: Path, shape: Path, env, commit: str | None) -> Reading:
+    """`read()`'s body: every silence in the ratified list, then the record."""
+    tree = Tree(root, commit)
+    project = _read_mapping(tree, PROJECT_MANIFEST)
     if is_triad(project):
         return Reading(TRIAD_ROOT, f"{PROJECT_MANIFEST} declares the Triad: "
                                    "the schema, a spec leg and a code leg")
-    family = _read_mapping(root / FAMILY_MANIFEST)
+    family = _read_mapping(tree, FAMILY_MANIFEST)
     if (family or {}).get("kind") == "family-manifest" \
             and (project or {}).get("kind") != "project-manifest":
         return Reading(FAMILY_HOLDER, f"{FAMILY_MANIFEST} declares a family "
@@ -565,13 +716,15 @@ def read(root, shape: Path = SHAPE_ROOT, env=None) -> Reading:
                                          "advise about")
     policy = _naming_policy(shape)
     names = repository_names(root)
-    leg = _leg_by_name(names, policy) or _leg_by_agents_md(root)
+    # THE LEG'S OWN `AGENTS.md` FIRST: it is the route design D4 of the
+    # ratified change names, and the one that can name the assembly root.
+    leg = _leg_by_agents_md(tree) or _leg_by_name(names, policy)
     if leg is not None:
         return Reading(LEG_CLONE, leg["how"], leg=leg)
     workspace = _workspace(root, names, policy, env)
     if workspace is not None:
         return Reading(WORKSPACE, workspace)
-    state, silences_nothing, notes = read_record(root, shape)
+    state, silences_nothing, notes = read_record(tree, shape)
     if state == RECORD_SILENCES:
         return Reading(RECORDED_SINGLE, f"{RECORD_FILE} records that this "
                                         "project stays a single repository",

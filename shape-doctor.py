@@ -85,14 +85,15 @@ AND ONE MORE ROW, `Triad`, WHERE THE RULE SAYS SO. Brett Heap, 2026-10-06:
 "ratify 1249 as recommended" (openxFactory `prefer-triad-project-shape`):
 the Triad -- this shape, an assembly root with a spec leg and a code leg --
 is the PREFERRED project shape, it stays elective and confers nothing, and
-this report MAY say so. A repository that has not elected it gets one row
-with the status `advisory`, saying it once; an elected Triad, a family
-holder, a `<user>-wip` workspace and a repository carrying a
-`single-repository.yaml` of the right kind get no row at all; a leg clone
-gets the instruction to work from its assembly root instead. The row never
-moves the verdict -- NOT A SHAPE ROOT is exit 2 with or without it -- because
-a project's shape is never a review input; `check_triad_advisory` says the
-rest.
+this report MAY say so. A repository with no manifest gets one row with the
+status `advisory`, saying it once; a family holder, a `<user>-wip` workspace
+and a repository carrying a `single-repository.yaml` of the right kind get
+no row at all; a leg clone gets the instruction to work from its assembly
+root instead, and `the way in` offers it no adoption. An assembly root --
+an elected Triad, or a broken one its `manifest` row already explains -- is
+not asked. The row never moves the verdict -- NOT A SHAPE ROOT is exit 2
+with or without it -- because a project's shape is never a review input;
+`check_triad_advisory` says the rest.
 
 THE PLACEMENT ROW ASKS THE ADOPTION'S QUESTION OF A REPOSITORY ALREADY
 SPLIT. Brett Heap, 2026-09-10: "we have to look for code in spec and spec in
@@ -2975,6 +2976,21 @@ def project_token_for(name: str, policy: NamingPolicy) -> str:
     return derived if re.match(r"^[A-Za-z]", derived) else "Project"
 
 
+def leg_clone(ctx: Context) -> bool:
+    """Does the Triad advisory read this directory as a leg clone?
+
+    ASKED OF `shape_advisory`, never answered a second time here, so `the
+    way in` and the `Triad` row cannot disagree about one directory. False
+    when the advisory cannot answer at all -- `the way in` then says what it
+    always said.
+    """
+    try:
+        return shape_advisory.read(ctx.root, ctx.shape).state \
+            == shape_advisory.LEG_CLONE
+    except Exception:  # noqa: BLE001 - the advisory never fails the report
+        return False
+
+
 def check_the_way_in(ctx: Context) -> Row:
     """The two ways a directory becomes a shape root, and who decides.
 
@@ -3007,7 +3023,17 @@ def check_the_way_in(ctx: Context) -> Row:
     policy = NamingPolicy.load(ctx.shape / "contracts" /
                                "repository-naming.yaml")
     project = project_token_for(identity, policy)
-    if is_repo:
+    if is_repo and leg_clone(ctx):
+        # A LEG IS NOT ADOPTED. Splitting a spec or code leg into two more
+        # legs is the one adoption nobody wants, and offering it two rows
+        # above a `Triad` row that says "work from its assembly root" would
+        # be this report contradicting itself (#164 review). No `next` here:
+        # the Triad row names the root to work from.
+        fix = None
+        reason = ("this is a git repository with no shape manifest, NAMED OR "
+                  "WRITTEN AS A LEG: a leg is not adopted or scaffolded on "
+                  "its own -- see the Triad row for its assembly root")
+    elif is_repo:
         fix = (f"{PYTHON} {quote_arg(ctx.shape / 'adopt-project.py')} "
                f"plan --source {quote_arg(root)} --project "
                f"{quote_arg(project)}")
@@ -3062,12 +3088,36 @@ def check_triad_advisory(ctx: Context) -> Row | None:
     one that does not parse, or declares another `kind`, is named with the
     reason, and nothing fails on its account.
 
-    `next` IS EMPTY ON PURPOSE. Every other `next` here is the command that
-    fixes its row, and nothing is broken: the two ways on -- converting with
-    `adopt-project.py`, or recording staying single -- are named in the
-    sentence and are a person's to choose, and `the way in` row above already
-    carries the adoption command for this exact repository.
+    `next` IS EMPTY ON PURPOSE, in all three statuses. Every other `next`
+    here is the command that fixes its row, and nothing is broken: the two
+    ways on -- converting with `adopt-project.py`, or recording staying
+    single -- are named in the sentence and are a person's to choose, and
+    for any repository that is not a leg `the way in` row above already
+    carries the adoption command for it (a leg is offered none: it is sent
+    to its assembly root).
+
+    ONLY WHERE THERE IS NO MANIFEST. An assembly root whose `project.yaml`
+    declares fewer than two legs is not a Triad by the detector, but it is
+    not "a single repository" either -- it is a broken project root, and the
+    `manifest` row's finding is the guidance there. So the row is asked only
+    of a directory with neither manifest, which is also the one kind of root
+    whose verdict reads no row at all: nothing here could move a verdict even
+    if it tried.
+
+    AND IT NEVER FAILS THE REPORT. `shape_advisory.read` already answers
+    rather than raises; this says nothing rather than a traceback for
+    whatever is left -- a row nobody needed is the cheapest thing in the
+    report to lose, and the ratified rule is that the advisory changes no
+    exit status.
     """
+    try:
+        return _triad_advisory_row(ctx)
+    except Exception:  # noqa: BLE001 - see the docstring
+        return None
+
+
+def _triad_advisory_row(ctx: Context) -> Row | None:
+    """`check_triad_advisory`'s body: the row, or no row where it is silent."""
     reading = shape_advisory.read(ctx.root, ctx.shape)
     detail = reading.as_dict()
     detail.update({"record": shape_advisory.RECORD_FILE,
@@ -3121,13 +3171,13 @@ CHECKS = (
     Check("naming", "naming", (NOT_A_ROOT,), check_not_a_root_naming),
     Check("contents", "what is here", (NOT_A_ROOT,), check_what_is_here),
     Check("way-in", "the way in", (NOT_A_ROOT,), check_the_way_in),
-    # AFTER EVERYTHING ABOUT THE REPOSITORY AND BEFORE THE MACHINE, and on the
-    # two kinds of root that can be something other than an elected Triad: a
-    # directory with no manifest, and a `project.yaml` that declares fewer
-    # than two legs. A family holder is never advised, so it is not asked.
+    # AFTER EVERYTHING ABOUT THE REPOSITORY AND BEFORE THE MACHINE, and only
+    # where there is no manifest at all. A family holder is never advised; an
+    # assembly root whose manifest is short of a Triad is a broken root, which
+    # its `manifest` row says better than "this is a single repository" would.
     # The row is `advisory` -- or absent where the rule makes it silent --
     # and never moves the verdict; see `check_triad_advisory`.
-    Check("triad-advisory", LABEL_TRIAD_ADVISORY, (PROJECT, NOT_A_ROOT),
+    Check("triad-advisory", LABEL_TRIAD_ADVISORY, (NOT_A_ROOT,),
           check_triad_advisory),
     # LAST, AND ON EVERY KIND OF ROOT. It reports the machine rather than
     # the repository, so it is `n/a` by status and never moves the verdict
