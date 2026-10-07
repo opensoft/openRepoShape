@@ -139,6 +139,10 @@ ADOPT_BRANCH = "adopt/three-repo-shape"
 COLLISION_DIR = "shape"
 LEG_VALUES = ("spec", "code", "root", "drop")
 FILE_PROTOCOL = ["-c", "protocol.file.allow=always"]
+#: The file `git submodule add` records a mount in. `_mount_the_legs` checks,
+#: writes, stages and edits it -- named once so those four uses cannot
+#: spell it differently.
+GITMODULES = ".gitmodules"
 
 #: THE SPEC-ONLY CASE. A repository can honestly have nothing for one leg —
 #: InkRouter's IRRS and IRSS are specifications with no implementation yet
@@ -1267,13 +1271,13 @@ def _mount_the_legs(assembly: Path, work_root: Path, names: dict, urls: dict,
     # have already been preserved in the extracted leg. Give the assembly a
     # fresh, staged file for its own mounts; never replace registrations that
     # the plan kept here.
-    if not (assembly / ".gitmodules").exists():
-        write_lf(assembly / ".gitmodules", "")
-        run(["git", "add", "--", ".gitmodules"], cwd=assembly)
+    if not (assembly / GITMODULES).exists():
+        write_lf(assembly / GITMODULES, "")
+        run(["git", "add", "--", GITMODULES], cwd=assembly)
     for role, path in (("spec", spec_path), ("code", code_path)):
         run(["git", *FILE_PROTOCOL, "submodule", "add", "-q",
              str(work_root / names[role]), path], cwd=assembly)
-        run(["git", "config", "-f", ".gitmodules", f"submodule.{path}.url",
+        run(["git", "config", "-f", GITMODULES, f"submodule.{path}.url",
              urls[role]], cwd=assembly)
         run(["git", "remote", "set-url", "origin", urls[role]],
             cwd=assembly / path)
