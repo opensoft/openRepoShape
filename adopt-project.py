@@ -139,6 +139,10 @@ ADOPT_BRANCH = "adopt/three-repo-shape"
 COLLISION_DIR = "shape"
 LEG_VALUES = ("spec", "code", "root", "drop")
 FILE_PROTOCOL = ["-c", "protocol.file.allow=always"]
+#: The file `git submodule add` records a mount in. `_mount_the_legs` checks,
+#: writes, stages and edits it -- named once so those four uses cannot
+#: spell it differently.
+GITMODULES = ".gitmodules"
 
 #: THE SPEC-ONLY CASE. A repository can honestly have nothing for one leg —
 #: InkRouter's IRRS and IRSS are specifications with no implementation yet
@@ -1260,12 +1264,29 @@ def _mount_the_legs(assembly: Path, work_root: Path, names: dict, urls: dict,
     then rewritten to the canonical remote, exactly as the scaffold does: the
     adoption never depends on a push having propagated.
     """
-    for path in sorted(paths_for["spec"] + paths_for["code"] + paths_for["drop"]):
-        run(["git", "rm", "-r", "-q", "--", path.rstrip("/")], cwd=assembly)
+    removed = sorted((p.rstrip("/") for p in (paths_for["spec"]
+                                              + paths_for["code"]
+                                              + paths_for["drop"])),
+                     key=lambda p: (p != GITMODULES, p))
+    for path in removed:
+        run(["git", "rm", "-r", "-q", "--", path], cwd=assembly)
+    # The plan moved (or dropped) the source's own .gitmodules, so its deletion
+    # is staged, and `git submodule add` refuses to write into a file the index
+    # says is going away. Give the assembly a fresh, EMPTY, staged one for its
+    # two mounts: `-f` because a source `.gitignore` such as `.*` would hide it
+    # from `git add`, and only in this case, so a source with no submodules is
+    # mounted exactly as it was before. It is removed FIRST above because
+    # `git rm` of a submodule edits the file that registers it. Whether the
+    # registrations it held went to the same leg as the gitlinks they name is
+    # the plan's question, not this mount's (#166); a .gitmodules the plan KEPT
+    # here is verified byte for byte today and fails (#165).
+    if GITMODULES in removed:
+        write_lf(assembly / GITMODULES, "")
+        run(["git", "add", "-f", "--", GITMODULES], cwd=assembly)
     for role, path in (("spec", spec_path), ("code", code_path)):
         run(["git", *FILE_PROTOCOL, "submodule", "add", "-q",
              str(work_root / names[role]), path], cwd=assembly)
-        run(["git", "config", "-f", ".gitmodules", f"submodule.{path}.url",
+        run(["git", "config", "-f", GITMODULES, f"submodule.{path}.url",
              urls[role]], cwd=assembly)
         run(["git", "remote", "set-url", "origin", urls[role]],
             cwd=assembly / path)
