@@ -58,6 +58,7 @@ from shape_materialize import (  # noqa: E402
     copy_tree, default_reference, descendant_note, election_date, env_commit,
     git_init_commit, materialize_assembly_root, naming_block, run,
 )
+from shape_advisory import scaffold_lines  # noqa: E402
 
 #: The pin argument: `openGlass@<40 hex>`, optionally organisation-qualified.
 PIN_ARG_RE = re.compile(r"^(?P<name>[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?)@(?P<commit>[0-9a-fA-F]{40})$")
@@ -599,6 +600,16 @@ def _print_plan(args, values: dict, names: dict, repositories: dict,
     """
     print(f"project      {values['PROJECT_NAME']} ({values['PROJECT_ID']})   "
           f"topic {values['TOPIC']}")
+    # THE TRIAD, OFFERED FIRST (openxFactory `prefer-triad-project-shape`,
+    # ratified by Brett Heap on 2026-10-06). This tool has no
+    # single-repository mode -- every run creates an assembly root and two
+    # legs -- so the offer is the tool itself, and the plan a person reads
+    # before typing yes names it as the preferred shape with the posture
+    # beside it. Printed once, in a dry run and a real one alike; it changes
+    # nothing this run does and no exit code.
+    first, second = scaffold_lines()
+    print(f"triad        {first}")
+    print(f"             {second}")
     print(f"shape        {SHAPE_REPOSITORY} @ {values['SHAPE_COMMIT'][:12]} "
           f"(tree {values['SHAPE_TREE_SHA256'][:12]}…)")
     print(f"elected by   {values['ELECTED_BY']} on {values['ELECTED_ON']}")

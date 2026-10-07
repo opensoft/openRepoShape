@@ -89,6 +89,7 @@ from shape_materialize import (  # noqa: E402
     election_date, env_commit, git_init_commit, materialize_assembly_root,
     naming_block, run, write_lf,
 )
+import shape_advisory  # noqa: E402
 
 #: The naming policy this tool classifies leg names against. One constant,
 #: because three spellings of the same path is how the second one goes stale.
@@ -607,6 +608,54 @@ def _checked_plan_inputs(args, source: Source,
     return names, pins
 
 
+def _print_triad_advisory(path: Path, commit: str | None = None) -> None:
+    """The Triad advisory, once, about the repository this run reads.
+
+    RULED BY BRETT HEAP ON 2026-10-06 ("ratify 1249 as recommended",
+    openxFactory `prefer-triad-project-shape`): the Triad is the preferred
+    project shape, it stays elective and confers nothing, and this tool's
+    `plan` and `check` say so beside what they already print. THIS TOOL IS
+    THE CONVERSION, so it names the preference rather than sending anybody to
+    itself, and says what it does about it: nothing until `execute`, on a
+    person's word for this project. `scripts/shape_advisory.py` decides where
+    it is silent -- an elected Triad, a family holder, a `<user>-wip`
+    workspace, a project that recorded staying single -- and a leg clone gets
+    the existing instruction to work from its assembly root instead.
+
+    PRINTED, NEVER WRITTEN. Nothing goes into the plan file, the split commit
+    or the manifest on its account, and no exit code changes: the advisory is
+    a sentence said to a person and not a fact about their project.
+
+    ABOUT THE COMMIT BEING PLANNED. `commit` is the one this plan is written
+    against, and the record, the manifests and a leg's `AGENTS.md` are read
+    out of it rather than out of the working tree: a `single-repository.yaml`
+    that exists only on a feature branch, or only uncommitted, is not in the
+    repository being split and silences nothing about it.
+
+    AND IT CANNOT FAIL THE RUN. Every line is flattened to ASCII first, as
+    `shape-doctor.py` flattens its rows -- a record's `kind:` is a person's
+    text, and a console that cannot encode it would otherwise raise in the
+    middle of `plan`, after the plan file is already written -- and anything
+    left is swallowed: a run that lost the advisory has lost one optional
+    sentence, and one that crashed on it would have changed an exit status,
+    which the ratified rule forbids.
+    """
+    try:
+        reading = shape_advisory.read(path, commit=commit)
+        if reading.state == shape_advisory.LEG_CLONE:
+            lines = [f"NOTE {shape_advisory.leg_instruction(reading.leg)}"]
+        elif reading.advise:
+            first, second = shape_advisory.adopt_lines()
+            lines = [f"triad      {first}", f"           {second}"]
+            lines += [f"NOTE {line}" for line in
+                      shape_advisory.record_report(reading.record_problems)]
+        else:
+            return
+        print("\n".join(shape_advisory.printable(line) for line in lines))
+    except Exception:  # noqa: BLE001 - see the docstring
+        return
+
+
 def _print_plan_report(args, source: Source, tree: list, entries: list,
                        follow_ups: list, out: Path) -> None:
     """What `plan` says to the terminal once the file is on disk.
@@ -620,6 +669,7 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
           f"{source.commit[:12]} ({source.branch}), "
           f"{len(tree)} files, {source.commit_count()} commits")
     print(f"project    {args.project} ({args.id}) in {args.org}, mode in-place")
+    _print_triad_advisory(source.path, source.commit)
     _print_entries(entries)
     _print_summary(entries)
     print(f"\nfollow-ups ({len(follow_ups)}):")
@@ -964,6 +1014,10 @@ def cmd_check(args) -> int:
     source = plan.open_source(args.source, work_root)
     naming = NamingPolicy.load(NAMING_POLICY)
     findings: list[str] = []
+    # FIRST, because it is said where work starts; it is never one of the
+    # findings below and never moves this command's exit code.
+    _print_triad_advisory(source.path,
+                          plan.source_commit or source.commit)
 
     if plan.source_commit and source.commit != plan.source_commit:
         findings.append(

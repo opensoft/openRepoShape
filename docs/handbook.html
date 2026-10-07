@@ -555,7 +555,38 @@ openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
         three-repository project are reviewed identically, because the authority travels in the
         grants rather than in the layout. Review lanes and wallet-carried authority are OVERLAYS an
         org adds later; a project with no overlays is fully conformant.</p>
+        <p><strong>The Triad is the PREFERRED shape, and still confers nothing.</strong> The Triad
+        is this shape &mdash; an assembly root with a spec leg and a code leg; &ldquo;three-leg&rdquo;
+        and &ldquo;three-repository project&rdquo; mean the same, and no machine key changed. Ruled by
+        <strong>Brett Heap on 2026-10-06</strong>: <em>&ldquo;ratify 1249 as recommended&rdquo;</em>,
+        ratifying openxFactory&rsquo;s <code>prefer-triad-project-shape</code>. It is the
+        recommended default for a new project and the recommended target for an existing single
+        repository. Preferred is not required: electing it stays a person&rsquo;s decision per
+        project, converting stays <code>adopt-project.py</code> run by that person, and a project
+        kept in one repository is reviewed identically and owes no declaration.</p>
       </div>
+      <p><strong>Where the preference is said, and where it is not.</strong> At the start of work,
+      once, in a line or two, and never as a stop: <code>scaffold-project.py</code>&rsquo;s plan
+      names the Triad as what it creates, <code>adopt-project.py plan</code> and
+      <code>check</code> say it about the repository they read, and
+      <a href="#doctor"><code>shape-doctor.py</code></a> gives a single repository one
+      <code>advisory</code> row. None blocks, converts, writes or changes an exit status on its
+      account, and nothing records that it was given. It is never a review input: no review lane,
+      required check, validator, floor, council or merge gate reads the shape, and a check built on
+      the doctor&rsquo;s <code>NOT A SHAPE ROOT</code> is defective. It is silent in an elected
+      Triad&rsquo;s assembly root, a leg clone (which is told to work from its root instead), a
+      family holder, a <code>&lt;user&gt;-wip</code> workspace repository and a repository carrying
+      <code>single-repository.yaml</code>. Every other repository &mdash; an aggregation, a
+      configuration repository, a vendored fork &mdash; hears it, because no class is guessed.</p>
+      <p><strong><code>single-repository.yaml</code> is OPTIONAL and never owed.</strong> A project
+      that has decided to stay a single repository may say so once, at its root, and stop hearing
+      the advisory: <code>schema_version: 1</code>, <code>kind: single-repository-record</code>,
+      <code>decided_by</code>, <code>decided_on</code>, <code>reason</code> and an optional
+      <code>revisit_on</code>. Its schema is <code>contracts/single-repository-record.yaml</code> and
+      its template <code>templates/single-repository/single-repository.yaml</code>; nothing here
+      writes one for anybody. It confers nothing and the advisory is its only reader.
+      <code>kind:</code> decides: one that does not parse, or declares another kind, silences
+      nothing and is reported beside the advisory, and nothing fails on its account.</p>
       <p class="aside">Ruled by <strong>Brett Heap on 2026-09-02</strong>: the name
       <code>openRepoShape</code>, PUBLIC visibility, Apache-2.0; and that the ASSEMBLY leg
       <strong>is</strong> the per-project root repository &mdash; the one an engineer clones. The
@@ -1394,10 +1425,14 @@ openRepoShape --doctor                 # the repository you are standing in
       kinds</strong>, <strong>shape currency</strong>, <strong>placement</strong>
       (<code>n/a</code> &mdash; a holder has no legs of its own), <strong>members</strong> and
       <strong>machine</strong>; a directory that is neither gets what it is CALLED under the naming
-      policy, what IS in it, and the way in.</p>
+      policy, what IS in it, and the way in &mdash; and a repository the advisory is not silent
+      about gets the <strong>Triad</strong> row, status <code>advisory</code>: the
+      <a href="#confers">preference</a> said once and stepped over by the verdict (a leg gets its
+      assembly root).</p>
       <p>Every row is <code>ok</code>, <code>note</code>, <code>FINDING</code> or
-      <code>n/a</code>, and every one that is not <code>ok</code> names the exact command that
-      fixes it. <strong>Only a <code>FINDING</code> moves the verdict</strong>, and
+      <code>n/a</code> &mdash; or <code>advisory</code>, the Triad row alone &mdash; and every one
+      that is not <code>ok</code> names the exact command that fixes it, except the Triad row,
+      which names none in any status. <strong>Only a <code>FINDING</code> moves the verdict</strong>, and
       <code>FINDING</code> means exactly <em>something else asserts this</em> &mdash; a validator,
       a pin row, a manifest, a gitlink. A difference nothing asserts is a <code>note</code>:
       printed, in <code>--json</code>, and stepped over by the verdict. That line was drawn after
@@ -1635,7 +1670,9 @@ resume InkRouter                # on workstation B, and the estate is back</code
       <dl class="files">
         <dt>contracts/repository-naming.yaml</dt><dd>the six naming families, as data</dd>
         <dt>contracts/path-classification.yaml</dt><dd>which leg a path belongs in, as data</dd>
+        <dt>contracts/single-repository-record.yaml</dt><dd>the staying-single record&rsquo;s schema</dd>
         <dt>scripts/repo_shape.py</dt><dd>shared helpers: YAML subset reader, digests</dd>
+        <dt>scripts/shape_advisory.py</dt><dd>the Triad advisory: who hears it, and when not</dd>
         <dt>scripts/path_classify.py</dt><dd>the classifier over the path policy</dd>
         <dt>scripts/shape_materialize.py</dt><dd>the ONE materializer, used by both tools</dd>
         <dt>scripts/validate-repository-naming.py</dt><dd>answers the naming question for one name</dd>
@@ -1654,6 +1691,7 @@ resume InkRouter                # on workstation B, and the estate is back</code
         <dt>templates/spec-root/</dt><dd>the skeleton for &lt;Project&gt;-spec</dd>
         <dt>templates/code-root/</dt><dd>the skeleton for &lt;Project&gt;-code</dd>
         <dt>templates/workspace-root/</dt><dd>the skeleton for &lt;user&gt;-wip</dd>
+        <dt>templates/single-repository/</dt><dd>single-repository.yaml, to fill in by hand</dd>
         <dt>templates/*/AGENTS-shape.md</dt><dd>the rules of the shape, for an agent (PINNED)</dd>
         <dt>templates/*/.gitattributes</dt><dd>LF in every clone, so a copy digests as pinned</dd>
         <dt>AGENTS.md</dt><dd>the procedure an AI assistant follows</dd>
@@ -1717,6 +1755,15 @@ resume InkRouter                # on workstation B, and the estate is back</code
       are asked to make <code>role: spec</code> mean &ldquo;spec authority lives here&rdquo;, say no:
       that turns a layout into a governance boundary, which is the one thing this standard exists to
       prevent.</p>
+      <p><strong>What you DO tell them instead:</strong> that the Triad is the
+      <a href="#confers">preferred</a> project shape; that a project choosing a single repository
+      is reviewed identically and owes no declaration; and that the shape still confers nothing.
+      Starting work for a person in a repository that is not a Triad, say so ONCE in the session,
+      in a line or two, and carry on: <code>adopt-project.py</code> converts a repository in place
+      when a person deciding for it runs it, and a project that stays single can say so in
+      <code>single-repository.yaml</code>. Say nothing where the advisory is silent, send a leg
+      clone to its assembly root, and never convert, write the record, block, or put the shape in
+      a review or a gate.</p>
       <a class="src" href="https://github.com/opensoft/openRepoShape/blob/main/AGENTS.md">Full text &mdash; AGENTS.md</a>
     </section>
 
@@ -1727,9 +1774,12 @@ resume InkRouter                # on workstation B, and the estate is back</code
       the repository doctor added at 2986031 (#95); the CLI reference, the <code>docs/</code>
       rows and the <code>shape-doctor.py</code> row the layout list had never gained,
       added (#97); the placement row and the plan it writes added (#99); the
-      <code>templates/workspace-root/</code> row, the fifth template, added (#154) &mdash; a page
+      <code>templates/workspace-root/</code> row, the fifth template, added (#154); the Triad as
+      the preferred shape, where the advisory is said and where it is silent, the optional
+      <code>single-repository.yaml</code>, the doctor&rsquo;s <code>advisory</code> row and the
+      assistant&rsquo;s &ldquo;what you do tell them&rdquo; added (#163) &mdash; a page
       cannot name the commit that contains it, and the blob below is the fact a test checks.
-      README.md blob 401cb98d687e58e1d76c12a9ccceb9ea71b65e4a. Every command, flag, exit code and
+      README.md blob 095a1b9e60743fc8f8d26bd11247572956a3f144. Every command, flag, exit code and
       file name on this page is quoted from that README and from AGENTS.md.</p>
     </footer>
   </main>
