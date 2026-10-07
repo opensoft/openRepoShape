@@ -140,9 +140,13 @@ COLLISION_DIR = "shape"
 LEG_VALUES = ("spec", "code", "root", "drop")
 FILE_PROTOCOL = ["-c", "protocol.file.allow=always"]
 #: The file `git submodule add` records a mount in. `_mount_the_legs` checks,
-#: writes, stages and edits it -- named once so those four uses cannot
-#: spell it differently.
+#: writes, stages and edits it, and `check` and `execute` ask which leg the
+#: plan gave the source's own -- named once so those uses cannot spell it
+#: differently.
 GITMODULES = ".gitmodules"
+#: The mode `git ls-tree` reports for a SUBMODULE: a commit of another
+#: repository, recorded in this tree as a gitlink rather than as a file.
+GITLINK_MODE = "160000"
 
 #: THE SPEC-ONLY CASE. A repository can honestly have nothing for one leg —
 #: InkRouter's IRRS and IRSS are specifications with no implementation yet
@@ -975,6 +979,103 @@ def _leg_findings(plan: Plan) -> list[str]:
     return findings
 
 
+#: What a plan that splits a source's own submodules is told to do instead.
+#: Said once, by `execute`'s refusal; `check` states the same problems as
+#: findings and the `.gitmodules` entry's `question:` states the rule.
+SUBMODULE_REMEDIATION = (
+    "Remediation: send `.gitmodules` and every submodule it registers to ONE "
+    "leg, spec or code, or `drop` them together. To be rid of ONE of several "
+    "registered submodules, adopt it with the others and `git rm` it in the "
+    "leg afterwards, which takes its registration with it. The assembly root "
+    "never keeps a submodule of the source's: `execute` writes it a fresh "
+    "`.gitmodules` for its two mounts, and its `validate` workflow reads every "
+    "URL in that file as a leg.")
+
+
+def _answered_legs(entries: list, paths: list[str]) -> dict:
+    """`{path: (leg, entry)}` for each path ONE answered plan entry covers.
+
+    A path covered by no entry or by two, or by an entry whose `leg:` is null
+    or not one of the four words, is LEFT OUT. Each of those is already a
+    finding of its own -- `plan-uncovered`, `plan-covered-twice`,
+    `plan-unresolved`, `plan-bad-leg` -- and a question nobody has answered
+    yet cannot have been answered inconsistently.
+    """
+    entry_paths = [str(e.get("path")) for e in entries]
+    legs = {str(e.get("path")): str(e.get("leg")) for e in entries}
+    out: dict[str, tuple[str, str]] = {}
+    for path in paths:
+        covering = _covering(entry_paths, path)
+        if len(covering) == 1 and legs[covering[0]] in LEG_VALUES:
+            out[path] = (legs[covering[0]], covering[0])
+    return out
+
+
+def _as_entry(path: str, entry: str) -> str:
+    """`path`, and the plan entry to edit when that is a directory above it."""
+    return path if entry == path else f"{path} (entry {entry})"
+
+
+def submodule_plan_problems(entries: list, tree: list) -> list[tuple[str, str]]:
+    """`(code, detail)` for each way the plan splits the source's OWN submodules.
+
+    ONE DEFINITION, asked by `check` for findings and by `execute` for a
+    refusal, so that the plan `check` passes is the plan `execute` will run
+    (#166). `tree` is `Source.tree()`: a gitlink is visible only by its mode,
+    which no path glob in `contracts/path-classification.yaml` can see.
+
+    A SUBMODULE IS ONE FACT IN TWO PLACES: the gitlink in the tree and its
+    registration in `.gitmodules`. A plan that sent the two to different legs
+    used to run to the end and say `adoption verified` -- every blob was
+    accounted for -- and leave an assembly whose `git clone
+    --recurse-submodules` exits 128 on `No url found for submodule path`. So:
+
+      * `root` is not an answer for `.gitmodules` or for any gitlink. The
+        assembly root has exactly two mounts, `execute` writes it a FRESH
+        `.gitmodules` for them, and the shape's own `validate.yml` reads every
+        URL in that file as a leg; a root `.gitmodules` the plan kept fails
+        verification today whatever it registers (#165).
+      * When the source HAS a `.gitmodules`, every gitlink the plan KEEPS, in
+        the spec or the code leg, goes where `.gitmodules` goes -- which is
+        also why `.gitmodules` cannot be dropped while one is kept.
+      * A gitlink DROPPED beside a `.gitmodules` that went to a leg is
+        allowed. Its registration stays behind in that leg, inert: git walks
+        the gitlinks in the INDEX and looks each one up in `.gitmodules`,
+        never the other way round, so a registration with no gitlink is never
+        cloned and never fails. Dropping all of them with the file is allowed
+        too.
+      * A source with gitlinks and NO `.gitmodules` is held to the first rule
+        only. Its orphan gitlinks were already unclonable in the source and
+        are no worse in a leg; refusing them would refuse plans that adopted
+        before this check existed.
+
+    A source with neither -- the common case -- returns nothing at once, so
+    `check` and `execute` say exactly what they said before.
+    """
+    gitlinks = [path for path, mode, _, _ in tree if mode == GITLINK_MODE]
+    registry = [path for path, _, _, _ in tree if path == GITMODULES]
+    if not gitlinks and not registry:
+        return []
+    answered = _answered_legs(entries, registry + gitlinks)
+    problems = [
+        ("plan-submodule-root",
+         f"{_as_entry(path, entry)} has leg: root, and the assembly root keeps "
+         "no submodule of the source's: `execute` writes it a fresh "
+         f"{GITMODULES} for its two leg mounts")
+        for path, (leg, entry) in answered.items() if leg == "root"]
+    if GITMODULES in answered:
+        registry_leg = answered[GITMODULES][0]
+        problems += [
+            ("plan-submodule-split",
+             f"the submodule {_as_entry(path, entry)} has leg: {leg} but the "
+             f"source's {GITMODULES} has leg: {registry_leg}, so the leg that "
+             "holds the gitlink holds no URL for it and the assembly's "
+             "recursive clone fails there")
+            for path, (leg, entry) in answered.items()
+            if leg in EXTRACTED_LEGS and leg != registry_leg]
+    return problems
+
+
 def _topics_line(topic: str, local: bool) -> str:
     """The `topics` plan line, the one `scaffold-project.py` also prints.
 
@@ -1032,9 +1133,12 @@ def cmd_check(args) -> int:
             "split.")
 
     entry_paths = [str(e.get("path")) for e in plan.entries]
-    tree_paths = [path for path, _, _, _ in source.tree()]
+    tree = source.tree()
+    tree_paths = [path for path, _, _, _ in tree]
     findings.extend(_coverage_findings(entry_paths, tree_paths))
     findings.extend(_leg_findings(plan))
+    findings.extend(f"FINDING {code}: {detail}" for code, detail
+                    in submodule_plan_problems(plan.entries, tree))
 
     names = plan.names()
     pins = set(plan.pins)
@@ -1117,11 +1221,15 @@ def _confirm(args, plan: Plan, names: dict) -> None:
 
 
 def _refuse_an_unrunnable_plan(plan: Plan, source: Source) -> None:
-    """The two states a plan can be in that must not be executed.
+    """The three states a plan can be in that must not be executed.
 
     An unanswered question is never an implicit `root`, and a plan written
     against a tree that has since moved proves nothing about the tree that
-    would be split — which is how a path goes missing.
+    would be split — which is how a path goes missing. And a plan that
+    splits a submodule from its registration, or keeps one in the root,
+    builds an assembly that cannot be cloned: refused HERE, before either leg
+    exists, because once `_create_leg_remotes` has run, a re-run with the
+    corrected plan meets two legs that already exist (#166).
     """
     unresolved = [e for e in plan.entries if e.get("leg") is None]
     if unresolved:
@@ -1140,6 +1248,13 @@ def _refuse_an_unrunnable_plan(plan: Plan, source: Source) -> None:
             "Remediation: re-run `plan`, re-answer anything new, then "
             "`check`. Splitting a tree the plan has not seen is how a path "
             "goes missing.")
+    problems = submodule_plan_problems(plan.entries, source.tree())
+    if problems:
+        details = [detail for _, detail in problems[:8]]
+        if len(problems) > 8:
+            details.append(f"and {len(problems) - 8} more")
+        raise Refusal(problems[0][0], "; ".join(details),
+                      SUBMODULE_REMEDIATION)
 
 
 def _create_leg_remotes(plan: Plan, names: dict, repositories: dict,

@@ -93,6 +93,31 @@ rules:
       Is this notebook an executable part of the implementation (code) or a
       worked argument supporting a decision (spec)?
 
+  # A SUBMODULE IS ONE FACT IN TWO PLACES: the gitlink in the tree and its
+  # registration in this file. Sent to different legs, the leg holding the
+  # gitlink has no URL for it, and the assembly's `git clone
+  # --recurse-submodules` exits 128 after an adoption that verified every
+  # blob (#166). No glob here can tell a gitlink from a file -- only its mode
+  # in `git ls-tree` can -- so the question is asked on the one file every
+  # registration lives in, and `adopt-project.py check` holds the gitlinks to
+  # the answer. Without this rule the default asked it as if `.gitmodules`
+  # were any other file, and `root` looked like an answer.
+  - id: ambiguous-gitmodules
+    paths:
+      - ".gitmodules"
+    leg: ambiguous
+    reason: >-
+      The repository registers submodules of its own. `.gitmodules` and the
+      gitlinks it names are one fact recorded in two places, and which leg
+      those dependencies belong to is a fact about this repository.
+    question: >-
+      A source's own `.gitmodules` goes to the SAME leg as every submodule it
+      registers; `execute` writes the assembly root a fresh one for its two
+      mounts. Which leg owns the submodules, spec or code? Send `.gitmodules`
+      there and every submodule path with it, or drop them all together.
+      `root` is not an answer for this file or for any submodule: `check`
+      finds it and `execute` refuses it, as they do a plan that splits them.
+
   # -- the assembly root ----------------------------------------------------
 
   - id: root-spec-kit

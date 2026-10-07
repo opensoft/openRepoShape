@@ -246,3 +246,229 @@ def test_mount_removes_gitmodules_before_a_submodule_that_sorts_ahead(
         "spec", "code")
     assert registrations(assembly) == LEG_REGISTRATIONS
     assert git("ls-files", "--", ".deps", cwd=assembly).stdout == ""
+
+
+# --- the plan's own answer: one leg for a submodule and its registration ----
+#
+# #166. `check` and `execute` read the SAME `submodule_plan_problems`, so a
+# plan `check` passes is a plan `execute` runs. None of these needs
+# `git filter-repo` but the one that reaches `execute` past its preflight.
+
+#: The two ids, as `check` prints them and `execute` raises them.
+SPLIT = "plan-submodule-split"
+ROOT = "plan-submodule-root"
+
+#: A source whose plan asks nothing but the submodule's questions: `specs/`
+#: and `src/` classify themselves and `README.md` stays in the root.
+SMALL_TREE = {"README.md": "# Thing\n", "src/app/util.py": "VALUE = 1\n",
+              "specs/001-feature/tasks.md": "- [ ] one\n"}
+
+
+def registered_source(base: Path, registered=("upstream/dependency",),
+                      orphan: str | None = None) -> Path:
+    """A source registering a real dependency at each of `registered`.
+
+    `orphan` adds a gitlink at that path with NO registration, written
+    straight into the index as `git add` of an embedded clone would write it,
+    so that a source with a submodule and no `.gitmodules` is planned too.
+    """
+    dependency = make_source_repo(base / "dependency",
+                                  tree={"value.txt": "dependency\n"}, edits=())
+    source = make_source_repo(base / "Thing", tree=SMALL_TREE)
+    for path in registered:
+        git(*FILE_PROTOCOL, "submodule", "add", "-q", str(dependency), path,
+            cwd=source)
+    if orphan:
+        head = git("rev-parse", "HEAD", cwd=dependency).stdout.strip()
+        git("update-index", "--add", "--cacheinfo", f"160000,{head},{orphan}",
+            cwd=source)
+    git("-c", "user.name=Source Human", "-c",
+        "user.email=source@invalid.example", "commit", "-qm",
+        "Register dependencies", cwd=source)
+    return source
+
+
+@pytest.fixture(scope="module")
+def registered_plan(tmp_path_factory):
+    """ONE source with `upstream/dependency` registered, and its plan.
+
+    Each check test answers a COPY of the plan; the source is only ever read.
+    """
+    base = tmp_path_factory.mktemp("registered")
+    source = registered_source(base)
+    plan = base / "adoption-plan.yaml"
+    written = write_plan(source, plan)
+    assert written.returncode == 0, written.stderr + written.stdout
+    return plan, written
+
+
+def answered(plan: Path, tmp_path: Path, answers) -> Path:
+    """A copy of `plan` with each `(path, leg)` in `answers` resolved; a leg
+    of None leaves that entry's question unanswered."""
+    copy = tmp_path / "adoption-plan.yaml"
+    copy.write_text(plan.read_text(encoding="utf-8"), encoding="utf-8")
+    for path, leg in answers:
+        if leg is not None:
+            resolve(copy, path, leg)
+    return copy
+
+
+def finding_codes(stderr: str) -> list[str]:
+    return [line.split(":", 1)[0].split()[1] for line in stderr.splitlines()
+            if line.startswith("FINDING ")]
+
+
+def test_plan_asks_the_submodule_question_on_gitmodules(registered_plan):
+    plan, written = registered_plan
+    rows = {str(row["path"]): row for row in load_yaml(plan)["paths"]}
+    row = rows[".gitmodules"]
+    assert row["leg"] is None
+    assert row["review_required"] is True
+    assert row["rule"] == "ambiguous-gitmodules"
+    assert ("A source's own `.gitmodules` goes to the SAME leg as every "
+            "submodule it registers; `execute` writes the assembly root a "
+            "fresh one for its two mounts.") in row["question"]
+    assert "`root` is not an answer" in row["question"]
+    # Printed with the other unresolved paths, which is where it is read.
+    assert "goes to the SAME leg as every submodule" in written.stdout
+
+
+@pytest.mark.parametrize("modules_leg, dependency_leg, expected", [
+    ("code", "code", []),
+    ("spec", "spec", []),
+    # A dropped gitlink leaves its registration behind, inert.
+    ("code", "drop", []),
+    ("drop", "drop", []),
+    ("code", "spec", [SPLIT]),
+    ("drop", "code", [SPLIT]),
+    ("root", "root", [ROOT, ROOT]),
+    ("spec", "root", [ROOT]),
+    ("root", "code", [ROOT, SPLIT]),
+    # An unanswered `.gitmodules` is `plan-unresolved`'s, and is not also
+    # reported as a split; a gitlink kept in the root is refused regardless.
+    (None, "code", ["plan-unresolved"]),
+    (None, "root", ["plan-unresolved", ROOT]),
+])
+def test_check_holds_a_submodule_to_the_leg_of_its_registration(
+        registered_plan, tmp_path, modules_leg, dependency_leg, expected):
+    plan = answered(registered_plan[0], tmp_path,
+                    ((".gitmodules", modules_leg),
+                     ("upstream/", dependency_leg)))
+    result = run_script(ADOPT, "check", "--plan", str(plan))
+    assert finding_codes(result.stderr) == expected, result.stderr
+    if not expected:
+        assert result.returncode == 0, result.stderr
+        assert "plan ok" in result.stdout
+        return
+    assert result.returncode == 1
+    assert f"{len(expected)} finding(s) in {plan}" in result.stderr
+    if SPLIT in expected:
+        assert (f"FINDING {SPLIT}: the submodule "
+                f"upstream/dependency (entry upstream/) has leg: "
+                f"{dependency_leg} but the source's .gitmodules has leg: "
+                f"{modules_leg}") in result.stderr
+    if modules_leg == "root":
+        assert f"FINDING {ROOT}: .gitmodules has leg: root" in result.stderr
+    if dependency_leg == "root":
+        assert (f"FINDING {ROOT}: upstream/dependency (entry upstream/) has "
+                "leg: root") in result.stderr
+
+
+def test_check_finds_a_submodule_a_rule_classified_silently(tmp_path):
+    """`tools/dep` is under `tools/**`, so `plan` calls it code and asks
+    nothing; only `.gitmodules` is asked. Answered `spec`, the two split."""
+    source = registered_source(tmp_path, registered=("tools/dep",))
+    plan = tmp_path / "plan" / "adoption-plan.yaml"
+    plan.parent.mkdir()
+    assert write_plan(source, plan).returncode == 0
+    rows = {str(row["path"]): row for row in load_yaml(plan)["paths"]}
+    assert rows["tools/"]["leg"] == "code"
+    resolve(plan, ".gitmodules", "spec")
+    result = run_script(ADOPT, "check", "--plan", str(plan))
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert (f"FINDING {SPLIT}: the submodule tools/dep (entry tools/) has "
+            "leg: code but the source's .gitmodules has leg: spec") \
+        in result.stderr
+
+
+@pytest.mark.parametrize("leg, expected", [
+    ("code", []),
+    ("root", [ROOT]),
+])
+def test_an_orphan_gitlink_may_go_to_a_leg_but_not_the_root(tmp_path, leg,
+                                                            expected):
+    """No `.gitmodules` at all: the gitlink was unclonable in the source too,
+    and a leg is no worse a place for it. The root is still not one."""
+    source = registered_source(tmp_path, registered=(),
+                               orphan="upstream/orphan")
+    assert git("ls-tree", "HEAD", "--", ".gitmodules",
+               cwd=source).stdout == ""
+    plan = tmp_path / "plan" / "adoption-plan.yaml"
+    plan.parent.mkdir()
+    assert write_plan(source, plan).returncode == 0
+    resolve(plan, "upstream/", leg)
+    result = run_script(ADOPT, "check", "--plan", str(plan))
+    assert finding_codes(result.stderr) == expected, result.stderr
+    assert result.returncode == (1 if expected else 0)
+
+
+@pytest.fixture(scope="module")
+def adopter():
+    """`adopt-project.py` as a module, for the refusal `execute` makes."""
+    module_spec = importlib.util.spec_from_file_location("adopt_refusals",
+                                                         ADOPT)
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("modules_leg, dependency_leg, code", [
+    ("code", "spec", SPLIT),
+    ("drop", "code", SPLIT),
+    ("root", "root", ROOT),
+    ("spec", "spec", None),
+    ("code", "drop", None),
+])
+def test_execute_refuses_what_check_finds(adopter, registered_plan, tmp_path,
+                                          modules_leg, dependency_leg, code):
+    plan_path = answered(registered_plan[0], tmp_path,
+                         ((".gitmodules", modules_leg),
+                          ("upstream/", dependency_leg)))
+    plan = adopter.Plan.load(plan_path)
+    source = plan.open_source(None, tmp_path / "work")
+    if code is None:
+        adopter._refuse_an_unrunnable_plan(plan, source)
+        return
+    with pytest.raises(adopter.Refusal) as refused:
+        adopter._refuse_an_unrunnable_plan(plan, source)
+    assert refused.value.code == code
+    assert "upstream/dependency" in refused.value.detail
+    assert "`git rm` it in the leg afterwards" in refused.value.remediation
+    assert "never keeps a submodule" in refused.value.remediation
+
+
+@needs_filter_repo
+def test_execute_refuses_a_split_submodule_before_any_leg_exists(tmp_path):
+    """Before #166 this plan was extracted, mounted, pushed and verified, and
+    its assembly's recursive clone then exited 128. Refused now, and refused
+    before `_create_leg_remotes`: a re-run must not meet two legs that a
+    refused plan already made."""
+    source = registered_source(tmp_path)
+    head = git("rev-parse", "HEAD", cwd=source).stdout.strip()
+    plan = tmp_path / "plan" / "adoption-plan.yaml"
+    plan.parent.mkdir()
+    assert write_plan(source, plan).returncode == 0
+    resolve(plan, ".gitmodules", "code")
+    resolve(plan, "upstream/", "spec")
+    remotes = tmp_path / "remotes"
+    result = run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
+                        "--local-remote-dir", str(remotes),
+                        "--work-dir", str(tmp_path / "work"))
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert (f"REFUSED {SPLIT}: the submodule upstream/dependency (entry "
+            "upstream/) has leg: spec but the source's .gitmodules has leg: "
+            "code") in result.stderr
+    assert "creating the leg repositories" not in result.stdout
+    assert list(remotes.glob("*.git")) == [], "a refused plan made a leg"
+    assert git("rev-parse", "HEAD", cwd=source).stdout.strip() == head
+    assert git("branch", "--list", "adopt/*", cwd=source).stdout == ""
