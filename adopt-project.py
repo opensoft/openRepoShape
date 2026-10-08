@@ -1569,7 +1569,7 @@ def cmd_execute(args) -> int:
 
     # ---- (d) verification, by blob sha ------------------------------------
     verified = _verify(source, assembly, work_root, names, paths_for,
-                       split_commit, seeded)
+                       split_commit, spec_path, code_path, seeded)
     if verified:
         return verified   # a verification mismatch outranks a missing topic
     return 2 if topics_failed else 0
@@ -1674,7 +1674,8 @@ def _split_message(names, paths_for, leg_commits, spec_path, code_path,
 
 
 def _verify(source: Source, assembly: Path, work_root: Path, names,
-            paths_for, split_commit: str, seeded=()) -> int:
+            paths_for, split_commit: str, spec_path: str, code_path: str,
+            seeded=()) -> int:
     """Every source blob is in exactly one place afterwards, or this fails.
 
     THE ONE CHECK THAT MAKES THE REST TRUSTWORTHY. Counting paths would pass a
@@ -1687,6 +1688,13 @@ def _verify(source: Source, assembly: Path, work_root: Path, names,
     added, exactly like the manifest and the pins. The leg's row therefore
     reads `0 of N source paths (seeded from template)` — which is the honest
     number, and still leaves every source path to be accounted for somewhere.
+
+    ONLY THE TWO LEG MOUNTS ARE PASSED OVER, never every gitlink (#165). The
+    legs' own trees account for what is behind `spec_path` and `code_path`;
+    any OTHER gitlink in the root tree is a path like a blob, and skipping
+    them all hid a source submodule kept here (reported lost), one the split
+    failed to remove (in a leg AND here, never seen twice) and one nobody
+    asked for (not even counted as added). `_land_the_root_tree` says which.
     """
     print("\nVERIFICATION — every source path at "
           f"{source.commit[:12]}, by blob sha")
@@ -1695,10 +1703,9 @@ def _verify(source: Source, assembly: Path, work_root: Path, names,
     for role in ("spec", "code"):
         for path, _, oid, _ in _tree_of(work_root / names[role], "HEAD"):
             after.setdefault(path, []).append(f"{role}:{oid}")
-    for path, mode, oid, _ in _tree_of(assembly, split_commit):
-        if mode == "160000":
-            continue
-        after.setdefault(path, []).append(f"root:{oid}")
+    root_findings = _land_the_root_tree(
+        after, _tree_of(assembly, split_commit), before,
+        {spec_path: "spec", code_path: "code"})
 
     counts, findings = _account_for(before, after, paths_for["drop"])
     added = sorted(set(after) - set(before))
@@ -1708,6 +1715,7 @@ def _verify(source: Source, assembly: Path, work_root: Path, names,
               f"paths{note}")
     print(f"  added  {len(added):>5} new paths (manifest, pins, shape files"
           + (", seeded leg" if seeded else "") + ")")
+    findings += root_findings
     for finding in findings:
         print(finding, file=sys.stderr)
     if findings:
@@ -1746,6 +1754,72 @@ def _account_for(before: dict, after: dict, drops: list[str]) -> tuple[dict, lis
             findings.append(f"FINDING adopt-lost: {path} ({oid[:12]}) is in no "
                             "leg, not in the root tree, and not listed as drop")
     return counts, findings
+
+
+#: What a root-tree gitlink finding tells its reader to do. No answer in a
+#: plan adds a gitlink, removes a mount or changes a submodule's commit, so a
+#: re-run with an edited plan is not the exit these two findings have.
+SPLIT_DEFECT = ("no plan answer does that, so the split itself is wrong: do "
+                f"not merge it, and report it to {SHAPE_REPOSITORY}")
+
+
+def _land_the_root_tree(after: dict, tree: list, before: dict,
+                        mounts: dict[str, str]) -> list[str]:
+    """Land the split commit's tree in `after` as `root`; return what is wrong.
+
+    `mounts` is `{spec_path: "spec", code_path: "code"}`. THE SHAPE ADDS
+    EXACTLY TWO GITLINKS to the root, and those two are the only entries
+    passed over. Every other gitlink lands like a blob, so a source submodule
+    the root kept at its own commit is counted `root` and one the split
+    failed to remove is `adopt-duplicated` with its leg. Two findings are
+    this function's own, because no source path can ever report them:
+
+      * `adopt-unexpected-gitlink`: a gitlink that is neither a mount nor the
+        source's own submodule at the SAME commit. Matching the path alone
+        would pass a submodule moved to another commit, which is as foreign
+        to the source as one at a new path.
+      * `adopt-mount-missing`: a mount path holding no gitlink. The root
+        pins a leg it does not mount, and its recursive clone gets no leg.
+
+    THE ROOT `.gitmodules` IS STILL COMPARED BYTE FOR BYTE, deliberately, and
+    not by its registrations. The source's own cannot reach here: `check`
+    finds, and `execute` refuses, a plan that keeps it in the root (#166).
+    The fresh one `_mount_the_legs` writes is the SHAPE'S file, not a source
+    landing: it is counted as added in a source that had none, and beside a
+    source `.gitmodules` the plan moved or dropped it matches no source blob
+    and is passed over. Accounting registrations would verify a path no plan
+    takes.
+    """
+    findings: list[str] = []
+    mounted: set[str] = set()
+    for path, mode, oid, _ in tree:
+        gitlink = mode == "160000"
+        if gitlink and path in mounts:
+            mounted.add(path)
+            continue
+        after.setdefault(path, []).append(f"root:{oid}")
+        if gitlink and before.get(path) != oid:
+            findings.append(
+                f"FINDING adopt-unexpected-gitlink: {path} is a gitlink to "
+                f"{oid[:12]} in the root tree, and neither a leg mount ("
+                + ", ".join(sorted(mounts)) + ") nor the source's own "
+                f"submodule at that commit; {SPLIT_DEFECT}")
+    findings += [f"FINDING adopt-mount-missing: the root tree has "
+                 f"{_what_is_at(tree, path)} at {path}, where the gitlink "
+                 f"that mounts the {role} leg belongs; {SPLIT_DEFECT}"
+                 for path, role in sorted(mounts.items())
+                 if path not in mounted]
+    return findings
+
+
+def _what_is_at(tree: list, path: str) -> str:
+    """What a mount path holds instead of its gitlink, for the finding."""
+    for entry, mode, _, _ in tree:
+        if entry == path:
+            return f"a blob (mode {mode})"
+        if entry.startswith(path + "/"):
+            return "a directory"
+    return "nothing"
 
 
 def _tree_of(repo: Path, rev: str) -> list[tuple[str, str, str, int]]:
