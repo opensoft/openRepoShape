@@ -27,7 +27,9 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            (`spec`, `legs/spec`; never `spec/` or `./spec`, a name Git or
            Windows keeps for itself such as `.git` or `CON`, or a value
            `execute` would refuse; the two never equal or nested, in any
-           case). It prints what will happen and changes nothing.
+           case; neither equal to, around or inside a path the shape writes
+           into the root, `shape/`, or a source path the plan keeps there).
+           It prints what will happen and changes nothing.
   execute  creates the two legs, extracts them with `git filter-repo`, makes
            the one split commit on a branch of the source, sets the
            `xf-project-<id>` topic on all three (skipped for local remotes),
@@ -90,8 +92,8 @@ from repo_shape import (  # noqa: E402
 )
 from shape_materialize import (  # noqa: E402
     ADOPT_MAKEFILE_BLOCK, RULESET_HINT, SHAPE_REPOSITORY,
-    CommandFailed, Materialized, collision_follow_up, copy_tree,
-    default_reference, election_date, env_commit, git_init_commit,
+    CommandFailed, Materialized, assembly_root_paths, collision_follow_up,
+    copy_tree, default_reference, election_date, env_commit, git_init_commit,
     materialize_assembly_root, naming_block, run, write_lf,
 )
 import shape_advisory  # noqa: E402
@@ -842,6 +844,176 @@ def _plan_leg_paths(plan: Plan) -> tuple[tuple, tuple]:
             ("legs.code_path", _plan_leg_path(plan, "code")))
 
 
+# ---------------------------------------------------------------------------
+# A leg's mount path overlaps nothing the assembly root holds (#172)
+# ---------------------------------------------------------------------------
+#
+# `--spec-path contracts` is canonical, so #169 passed it and `check` said
+# `plan ok`. `execute` then made and pushed both legs, mounted one at
+# `contracts`, wrote the shape's `contracts/spec-pin.yaml` INTO the mounted
+# leg, and died staging the split: `Pathspec 'contracts/spec-pin.yaml' is in
+# submodule 'contracts'`. `--code-path scripts`, `.github` and `shape` died
+# the same way. `--code-path project.yaml` was worse: the shape's manifest
+# went beside the mount as `shape/project.yaml`, "the source already has
+# project.yaml" (it had not), the run said `adoption verified`, and the
+# doctor calls the assembly it made NOT A SHAPE ROOT. A mount at a path the
+# PLAN keeps in the root (`--spec-path src`, `src/` kept) died at `git
+# submodule add`, also after both legs were pushed.
+#
+# So a leg's mount path is refused when it EQUALS, CONTAINS or LIES INSIDE
+#
+#   * a path the shape writes into the assembly root: `assembly_root_paths`,
+#     read from the materializer's own lists, and `COLLISION_DIR`, where
+#     `execute` writes the shape's copy of a file the root already holds; or
+#   * a SOURCE PATH the plan keeps in the root, a path of the source tree a
+#     `leg: root` entry covers. A mount inside a kept DIRECTORY that holds
+#     nothing at the mount (`docs/spec`, with `docs/` kept and no `docs/spec`
+#     in the source) overlaps no source path. It mounts, verifies and
+#     bootstraps on `main`, and it is not refused here.
+#
+# Compared WITHOUT REGARD TO CASE, as #169 compares the two legs: a macOS or
+# Windows disk keeps `Scripts` and `scripts` as one directory.
+#
+# `plan` refuses the first half, which it knows before a plan exists. The
+# second half is a question about the plan's answers, which are edited after
+# `plan` writes them, so `check` reports both halves as
+# `plan-leg-path-collides` and `execute` refuses them with every other
+# finding of `check`'s, before any leg exists (#168).
+
+#: Said where an overlap holds only once case is ignored.
+CASE_ASIDE = " once case is ignored, as a macOS or Windows disk does"
+#: The exit every collision has; a root-kept one has a second.
+MOVE_THE_LEG = "choose another path for the leg"
+
+LEG_COLLISION_REMEDIATION = (
+    "Remediation: nothing here picks a path for you, so pass another one "
+    "yourself. A leg path neither is, holds nor lies inside, whatever the "
+    "case, a path the shape writes into the assembly root ("
+    + ", ".join(f"`{path}`" for path in assembly_root_paths())
+    + f") or `{COLLISION_DIR}`, where the shape writes its copy of a file the "
+    "root already holds. The defaults `spec` and `code` pass. `check` then "
+    "asks the same of every source path the plan keeps in the root."
+)
+
+
+def _overlap(leg: str, other: str) -> tuple[str, str] | None:
+    """How the mount path `leg` stands to the path `other`: `(relation,
+    aside)`, the relation `is`, `contains` or `is inside`, and the aside
+    `CASE_ASIDE` when it holds only once case is ignored. None when the two
+    do not overlap at all."""
+    for mine, theirs, aside in ((leg, other, ""),
+                                (leg.casefold(), other.casefold(), CASE_ASIDE)):
+        if mine == theirs:
+            return "is", aside
+        if theirs.startswith(mine + "/"):
+            return "contains", aside
+        if mine.startswith(theirs + "/"):
+            return "is inside", aside
+    return None
+
+
+def _first_and_more(paths: list[str]) -> str:
+    """`a` or `a` and 2 more: one path named, the rest counted."""
+    more = f" and {len(paths) - 1} more" if len(paths) > 1 else ""
+    return f"`{paths[0]}`{more}"
+
+
+def _shape_collisions(what: str, value: str) -> list[str]:
+    """Where the mount path `value` overlaps what the shape writes."""
+    out: list[str] = []
+    files = [path for path in assembly_root_paths() if _overlap(value, path)]
+    if files:
+        relation, aside = _overlap(value, files[0])
+        them = "them" if len(files) > 1 else "it"
+        out.append(
+            f"{what} {value!r} {relation} {_first_and_more(files)}{aside}. "
+            f"The shape writes {them} into the assembly root, and `execute` "
+            f"would write {them} into the mounted leg or beside it under "
+            f"`{COLLISION_DIR}/`, leaving the root without {them}: "
+            f"{MOVE_THE_LEG}.")
+    beside = _overlap(value, COLLISION_DIR)
+    if beside:
+        relation, aside = beside
+        example = assembly_root_paths()[0]
+        out.append(
+            f"{what} {value!r} {relation} `{COLLISION_DIR}`{aside}. `execute` "
+            f"writes there the shape's copy of each of its files the assembly "
+            f"root already holds (`{example}` as "
+            f"`{COLLISION_DIR}/{example}`), so the leg's mount and those "
+            f"copies would share it: {MOVE_THE_LEG}.")
+    return out
+
+
+def _kind_of(mode: str) -> str:
+    """What a source tree entry of `mode` is, in a reader's words: a file, a
+    symlink, or else a submodule, the only other entry a recursive `ls-tree`
+    lists (mode 160000, a gitlink)."""
+    if mode in FILE_MODES:
+        return "the file"
+    return "the symlink" if mode == SYMLINK_MODE else "the submodule"
+
+
+def _kept_collisions(what: str, value: str, kept: list) -> list[str]:
+    """Where the mount path `value` overlaps a source path the plan keeps in
+    the root: one sentence per `leg: root` entry, naming its first such path
+    and counting the rest."""
+    hits: dict[str, list[tuple[str, str]]] = {}
+    for path, mode, entry in kept:
+        if _overlap(value, path):
+            hits.setdefault(entry, []).append((path, mode))
+    out: list[str] = []
+    for entry, found in hits.items():
+        path, mode = found[0]
+        relation, aside = _overlap(value, path)
+        named = _first_and_more([p for p, _ in found])
+        them = "them" if len(found) > 1 else "it"
+        under = "" if entry == path else f" under the entry `{entry}`"
+        out.append(
+            f"{what} {value!r} {relation} {_kind_of(mode)} {named}{aside}. "
+            f"The plan keeps {them} in the assembly root{under}, and Git "
+            "cannot mount a leg at a path the root's own tree holds, or "
+            "beyond a file, symlink or submodule it holds on the way there: "
+            f"{MOVE_THE_LEG}, or send `{entry}` to a leg or `drop` it.")
+    return out
+
+
+def leg_path_collisions(legs: tuple, kept=()) -> list[str]:
+    """Everything each leg's mount path overlaps in the assembly root, as
+    sentences; `[]` when nothing.
+
+    `legs` is the two `(what, value)` pairs `leg_path_problems` takes, each
+    already a canonical path: an overlap is a statement about two paths. `kept`
+    is `(path, mode, entry)` for each source path the plan keeps in the root
+    (`_kept_in_root`); with none, only the shape's own paths are asked about,
+    which is all `plan` knows.
+    """
+    out: list[str] = []
+    for what, value in legs:
+        out += _shape_collisions(what, value)
+        out += _kept_collisions(what, value, kept)
+    return out
+
+
+def _kept_in_root(entries: list, tree) -> list[tuple[str, str, str]]:
+    """`(path, mode, entry)` for each path of `tree` (`Source.tree()`'s rows)
+    that a `leg: root` entry of the plan covers, with that entry's path."""
+    roots = assigned_paths(entries)["root"]
+    kept = []
+    for path, mode, _, _ in tree:
+        covering = _covering(roots, path)
+        if covering:
+            kept.append((path, mode, covering[0]))
+    return kept
+
+
+def _leg_collision_findings(plan: Plan, tree) -> list[str]:
+    """`leg_path_collisions` over the plan's two mount paths, as `check`
+    prints them. Asked only of a plan whose mount paths are canonical."""
+    return [f"FINDING plan-leg-path-collides: {collision}"
+            for collision in leg_path_collisions(
+                _plan_leg_paths(plan), _kept_in_root(plan.entries, tree))]
+
+
 def _checked_plan_inputs(args, source: Source,
                          naming: NamingPolicy) -> tuple[dict, list]:
     """Every value the plan will RECORD, defaulted and checked before one of
@@ -860,9 +1032,15 @@ def _checked_plan_inputs(args, source: Source,
     # spelling to retype, before a plan that `check` and `execute` would have
     # to refuse again is ever written. `checked_value` still runs after it: it
     # is the gate that hands back the text.
-    _refuse_bad_leg_paths("adopt-bad-leg-path",
-                          ("--spec-path", args.spec_path),
-                          ("--code-path", args.code_path))
+    legs = (("--spec-path", args.spec_path), ("--code-path", args.code_path))
+    _refuse_bad_leg_paths("adopt-bad-leg-path", *legs)
+    # Then the paths the shape writes, which are known before any plan is
+    # (#172). A path the plan keeps in the root is `check`'s to find: the
+    # plan's answers are edited after this writes them.
+    collisions = leg_path_collisions(legs)
+    if collisions:
+        raise Refusal("adopt-leg-path-collides", " ".join(collisions),
+                      LEG_COLLISION_REMEDIATION)
     args.spec_path = checked_value("--spec-path", args.spec_path)
     args.code_path = checked_value("--code-path", args.code_path)
     args.id = args.id or args.project.lower()
@@ -1236,13 +1414,15 @@ def _coverage_findings(entry_paths: list[str], tree_paths: list[str]) -> list[st
     return findings
 
 
-def _leg_findings(plan: Plan) -> list[str]:
-    """`leg:` is answered with one of the four words, and each leg's mount
-    path is canonical (#169).
+def _leg_findings(plan: Plan, tree=()) -> list[str]:
+    """`leg:` is answered with one of the four words, each leg's mount path
+    is canonical (#169), and neither overlaps a path the assembly root holds
+    (#172).
 
     The path findings live HERE, and not in `cmd_check`, so that whatever
     reads this function reports a bad path from the one place that knows what
-    a canonical one is.
+    a canonical one is. `tree` is the source's, as `Source.tree()` lists it:
+    the paths the plan keeps in the root are read out of it.
     """
     findings: list[str] = []
     # Only a `legs:` MAPPING has mount paths to check. The doctor's PLACEMENT
@@ -1252,6 +1432,10 @@ def _leg_findings(plan: Plan) -> list[str]:
     if isinstance(plan.legs, dict):
         findings = [f"FINDING plan-bad-leg-path: {problem}"
                     for problem in leg_path_problems(*_plan_leg_paths(plan))]
+        # An overlap is a statement about two PATHS, so it is asked only of
+        # canonical ones, as #169 compares the two legs only then.
+        if not findings:
+            findings = _leg_collision_findings(plan, tree)
     for entry in plan.entries:
         leg = entry.get("leg")
         if leg is None:
@@ -1322,10 +1506,11 @@ def cmd_check(args) -> int:
             "tree that has moved proves nothing about the tree that will be "
             "split.")
 
+    tree = source.tree()
     entry_paths = [str(e.get("path")) for e in plan.entries]
-    tree_paths = [path for path, _, _, _ in source.tree()]
+    tree_paths = [path for path, _, _, _ in tree]
     findings.extend(_coverage_findings(entry_paths, tree_paths))
-    findings.extend(_leg_findings(plan))
+    findings.extend(_leg_findings(plan, tree))
 
     names = plan.names()
     pins = set(plan.pins)
@@ -1675,7 +1860,10 @@ def _refuse_what_check_finds(plan: Plan, source: Source) -> None:
     lists, so the two commands cannot disagree about what a plan covers. The
     refusal's code is the FIRST finding's own (`plan-uncovered`, ...); its
     detail is every finding as `check` prints it, capped at
-    `REFUSED_FINDINGS_SHOWN` with an "and N more" tail.
+    `REFUSED_FINDINGS_SHOWN` with an "and N more" tail. A leg mount path that
+    overlaps a path the root holds is one of them, `plan-leg-path-collides`
+    from `_leg_findings` (#172): on `main` it was refused only by `git`, after
+    both legs were pushed, or not at all.
 
     THE ORDER IS PART OF THE FIX. This runs AFTER `_refuse_an_unrunnable_plan`:
     `_leg_findings` also reports `plan-unresolved`, which that function has
@@ -1698,10 +1886,11 @@ def _refuse_what_check_finds(plan: Plan, source: Source) -> None:
     findings. That is deliberately not done here, so that the two branches do
     not edit the same functions and conflict.
     """
+    tree = source.tree()
     entry_paths = [str(e.get("path")) for e in plan.entries]
-    tree_paths = [path for path, _, _, _ in source.tree()]
+    tree_paths = [path for path, _, _, _ in tree]
     findings = (_coverage_findings(entry_paths, tree_paths)
-                + _leg_findings(plan))
+                + _leg_findings(plan, tree))
     if not findings:
         return
     # `FINDING <code>: <detail>` is the one shape both functions write.
@@ -1714,9 +1903,10 @@ def _refuse_what_check_finds(plan: Plan, source: Source) -> None:
     raise Refusal(
         code, "\n".join(lines),
         "Remediation: no leg repository was created and nothing was pushed. "
-        "Correct the plan -- answer each entry's `leg:` and cover every "
-        "source path exactly once -- and run `check` until it prints `plan "
-        "ok`, then run `execute` again. A leg made from a plan `check` "
+        "Correct the plan -- answer each entry's `leg:`, cover every source "
+        "path exactly once, and mount neither leg over a path the assembly "
+        "root holds -- and run `check` until it prints `plan ok`, then run "
+        "`execute` again. A leg made from a plan `check` "
         "rejects is one the corrected plan cannot make again: under "
         "`--local-remote-dir` it meets `leg-remote-exists`.")
 
