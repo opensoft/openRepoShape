@@ -27,7 +27,12 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            (`spec`, `legs/spec`; never `spec/` or `./spec`, a name Git or
            Windows keeps for itself such as `.git` or `CON`, or a value
            `execute` would refuse; the two never equal or nested, in any
-           case). It prints what will happen and changes nothing.
+           case), and no symlink kept in the root that a path the shape
+           writes runs through and cannot be written through (one that
+           dangles, loops, or leads out of the root or into a leg, or one
+           that carries the shape's scripts anywhere but one directory
+           directly under the root). It prints what will happen and
+           changes nothing.
   execute  creates the two legs, extracts them with `git filter-repo`, makes
            the one split commit on a branch of the source, sets the
            `xf-project-<id>` topic on all three (skipped for local remotes),
