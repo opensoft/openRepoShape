@@ -1464,7 +1464,12 @@ def _build_the_legs(source: Source, names: dict, repositories: dict,
     """(b) Each leg, extracted with its history or seeded from the template.
 
     Returns `(leg_commits, leg_digests)`, or None when a `git` or `gh` command
-    failed — `run` has already said which and why. Split out of `cmd_execute`
+    failed, having printed which and why. `run` only RAISES; it says nothing,
+    so this is the one place a failed `git filter-repo` (or clone, checkout or
+    seeding commit) is ever reported, and an `execute` that stopped here after
+    both leg remotes exist must not exit 2 with an empty stderr (#171). A
+    refused PUSH is the one failure its own leg builder already printed, with
+    the ruleset hint, so it is not printed twice. Split out of `cmd_execute`
     for #138.
     """
     leg_commits: dict[str, str] = {}
@@ -1480,7 +1485,13 @@ def _build_the_legs(source: Source, names: dict, repositories: dict,
                     role, source, work_root / names[role], paths_for[role],
                     work_root / f"{role}-paths.txt", branch, urls[role],
                     tracking, repositories[role])
-        except CommandFailed:
+        except CommandFailed as exc:
+            # `_extract_leg` and `_seed_leg` print their own refused push and
+            # re-raise it; a second block for the same command would bury the
+            # ruleset hint under a copy of what it just said.
+            if exc.args_list[:2] != ["git", "push"]:
+                verb = "seeding" if role in seeded else "extracting"
+                print(exc.loudly(f"{verb} the {role} leg"), file=sys.stderr)
             return None
     return leg_commits, leg_digests
 
