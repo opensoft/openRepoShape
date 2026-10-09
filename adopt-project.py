@@ -820,8 +820,17 @@ def _plan_leg_path(plan: Plan, role: str):
     `execute` has always read it. An EXPLICIT empty value is not a missing
     one: it comes back as it stands and is refused, where it used to be read
     quietly as the default -- a value nobody chose.
+
+    `legs:` is read only when it is a mapping. The doctor's PLACEMENT plan
+    (`shape-doctor.py --placement-plan`) writes `legs:` as a LIST of the
+    mounted legs it audited and is handed to `Plan` and `_leg_findings` by
+    `tests/test_shape_doctor.py`; a list carries no `spec_path`, and `.get` on
+    it is an `AttributeError`, not an answer. For anything that is not a
+    mapping nothing is read, so the role's own name comes back, as it does for
+    a key the plan does not carry.
     """
-    value = plan.legs.get(f"{role}_path")
+    legs = plan.legs
+    value = legs.get(f"{role}_path") if isinstance(legs, dict) else None
     return role if value is None else value
 
 
@@ -1235,9 +1244,14 @@ def _leg_findings(plan: Plan) -> list[str]:
     reads this function reports a bad path from the one place that knows what
     a canonical one is.
     """
-    path_problems = leg_path_problems(*_plan_leg_paths(plan))
-    findings: list[str] = [f"FINDING plan-bad-leg-path: {problem}"
-                           for problem in path_problems]
+    findings: list[str] = []
+    # Only a `legs:` MAPPING has mount paths to check. The doctor's PLACEMENT
+    # plan is the caller whose `legs:` is a LIST (one record per audited leg,
+    # no `spec_path`), and it asks this function only about its entries; a
+    # finding about leg paths there would name a key the plan never had.
+    if isinstance(plan.legs, dict):
+        findings = [f"FINDING plan-bad-leg-path: {problem}"
+                    for problem in leg_path_problems(*_plan_leg_paths(plan))]
     for entry in plan.entries:
         leg = entry.get("leg")
         if leg is None:

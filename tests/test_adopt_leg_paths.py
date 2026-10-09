@@ -550,6 +550,32 @@ def test_check_names_the_default_mount_paths_when_the_plan_has_no_keys(edited):
     assert "None" not in result.stdout
 
 
+@pytest.mark.parametrize("legs", [
+    [{"role": "spec", "path": "spec", "state": "audited"},
+     {"role": "code", "path": "code", "state": "audited"}],
+    ["spec", "code"],
+    "spec",
+], ids=["records", "strings", "scalar"])
+def test_a_plan_whose_legs_is_not_a_mapping_gets_no_leg_path_finding(
+        adopter, legs):
+    """The doctor's PLACEMENT plan writes `legs:` as a LIST, and
+    `tests/test_shape_doctor.py` hands it to `Plan` and `_leg_findings` to
+    prove its entries are adoption-plan entries. `plan.legs.get(...)` on that
+    list was an `AttributeError`; a list has no mount paths, so the leg-path
+    check reads nothing and says nothing, and the entries are still judged."""
+    plan = adopter.Plan(Path("placement-plan.yaml"), {
+        "kind": "adoption-plan", "mode": "in-place", "legs": legs,
+        "paths": [{"path": "spec/examples/", "leg": None,
+                   "question": "is this acceptance evidence?"}]})
+    findings = adopter._leg_findings(plan)
+    assert [f.split(":")[0] for f in findings] == ["FINDING plan-unresolved"], \
+        findings
+    assert adopter._plan_leg_paths(plan) == (("legs.spec_path", "spec"),
+                                             ("legs.code_path", "code"))
+    plan.entries[0]["leg"] = "spec"
+    assert adopter._leg_findings(plan) == []
+
+
 # --- `_checked_plan_values`, which is what `execute` asks ------------------
 
 @ROLES
