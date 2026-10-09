@@ -56,9 +56,10 @@ from repo_shape import (  # noqa: E402
 from shape_materialize import (  # noqa: E402
     RULESET_HINT, SHAPE_REPOSITORY, CommandFailed,
     copy_tree, default_reference, descendant_note, election_date, env_commit,
-    git_init_commit, materialize_assembly_root, naming_block,
-    refuse_bad_leg_paths, run,
+    git_init_commit, materialize_assembly_root, naming_block, run,
 )
+# The leg-path rule `adopt-project.py` asks of its own paths (#179).
+from shape_materialize import refuse_bad_leg_paths  # noqa: E402
 from shape_advisory import scaffold_lines  # noqa: E402
 
 #: The pin argument: `openGlass@<40 hex>`, optionally organisation-qualified.

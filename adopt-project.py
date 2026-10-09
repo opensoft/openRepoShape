@@ -90,16 +90,19 @@ from repo_shape import (  # noqa: E402
 )
 from shape_materialize import (  # noqa: E402
     ADOPT_MAKEFILE_BLOCK, RULESET_HINT, SHAPE_REPOSITORY,
-    WINDOWS_ABSOLUTE_RE, CommandFailed, Materialized, collision_follow_up,
-    copy_tree, default_reference, election_date, env_commit,
-    git_init_commit, leg_path_problems, materialize_assembly_root,
-    naming_block, refuse_bad_leg_paths as _refuse_bad_leg_paths, run,
-    write_lf,
+    CommandFailed, Materialized, collision_follow_up, copy_tree,
+    default_reference, election_date, env_commit, git_init_commit,
+    materialize_assembly_root, naming_block, run, write_lf,
 )
-# Not used here: `tests/test_adopt_leg_paths.py` asks the helper through
-# this module, as it did when the helper was defined in it, which is what
-# shows the move changed no behaviour.
-from shape_materialize import leg_path_problem  # noqa: E402,F401
+# The leg-path rule (#179) is `scaffold-project.py`'s as much as adopt's, so it
+# is imported as one unit and not listed among the materializer's names above.
+# `leg_path_problem` is not called here: `tests/test_adopt_leg_paths.py` asks
+# it through this module, as it did when the rule was defined in it, which is
+# what shows the move changed no behaviour.
+from shape_materialize import (  # noqa: E402
+    WINDOWS_ABSOLUTE_RE, leg_path_problem, leg_path_problems,
+    refuse_bad_leg_paths as _refuse_bad_leg_paths,
+)
 import shape_advisory  # noqa: E402
 
 #: The naming policy this tool classifies leg names against. One constant,
