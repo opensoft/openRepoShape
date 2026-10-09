@@ -515,9 +515,43 @@ def env_commit(work: Path, message: str) -> None:
                             proc.stderr + proc.stdout)
 
 
-def git_init_commit(work: Path, message: str, branch: str) -> str:
-    run(["git", "init", "-q", "-b", branch, str(work)])
+def stage_written(work: Path, written=()) -> None:
+    """Stage the tree, then FORCE every path in `written` past any ignore rule.
+
+    `git add -A -- .` HONOURS THE OPERATOR'S IGNORE RULES — a global
+    `core.excludesFile`, `.git/info/exclude` — and a scaffold run on a machine
+    whose excludes say `.*`, `contracts/` or `scripts/` exited 0 with a first
+    commit that lacked `.gitattributes`, `.github/`, `.gitignore`,
+    `contracts/*` and `scripts/*`, so the new project's first `make bootstrap`
+    failed (#175, the scaffold side of #167). The files this tool wrote are
+    therefore staged BY NAME with `-f`, after `-A` has staged everything else.
+
+    ONLY THOSE PATHS, NEVER `-f .`: a file somebody else put in the tree and
+    an ignore rule hides stays out, because forcing the whole tree would
+    stage exactly what an ignore rule is written to keep out of a commit.
+    `written` is what `place()` and `copy_tree` return — each path where it
+    landed, in `root_key`'s POSIX spelling, which `git` takes as a pathspec
+    on Windows too. Empty, this is `git add -A -- .` and nothing else.
+
+    ONE HELPER, THREE CALLERS: `git_init_commit` (the scaffold's two legs),
+    the scaffold's assembly root and `family.py init`'s holder.
+    """
     run(["git", "add", "-A", "--", "."], cwd=work)
+    paths = list(written)
+    if paths:
+        run(["git", "add", "-f", "--", *paths], cwd=work)
+
+
+def git_init_commit(work: Path, message: str, branch: str,
+                    written=()) -> str:
+    """`git init`, stage, commit; returns the new HEAD.
+
+    `written` is what `stage_written` forces past an ignore rule: the list
+    `copy_tree` returned. A caller that passes none stages exactly what `git
+    add -A` stages, and no more.
+    """
+    run(["git", "init", "-q", "-b", branch, str(work)])
+    stage_written(work, written)
     env_commit(work, message)
     return run(["git", "rev-parse", "HEAD"], cwd=work)
 
@@ -829,8 +863,13 @@ def render(text: str, values: dict[str, str], source: str) -> str:
     return out
 
 
-def copy_tree(src: Path, dst: Path, values: dict[str, str]) -> None:
-    """Copy a template tree, substituting placeholders in every text file."""
+def copy_tree(src: Path, dst: Path, values: dict[str, str]) -> list[str]:
+    """Copy a template tree, substituting placeholders in every text file.
+
+    Returns every path it wrote, relative to `dst` and spelled by `root_key`,
+    which is the list `git_init_commit` forces past an ignore rule (#175).
+    """
+    written: list[str] = []
     for path in sorted(src.rglob("*")):
         if path.is_dir():
             continue
@@ -838,6 +877,8 @@ def copy_tree(src: Path, dst: Path, values: dict[str, str]) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
         write_lf(target, render(path.read_text(encoding="utf-8"), values,
                                 str(path)))
+        written.append(root_key(target, dst))
+    return written
 
 
 def naming_block(policy: NamingPolicy, name: str, role: str,
