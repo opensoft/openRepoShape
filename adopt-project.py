@@ -1552,17 +1552,69 @@ def _seed_leg(role: str, work: Path, values: dict, branch: str, url: str,
 INDEX_ENTRY_KINDS = {0o160000: "a submodule", 0o120000: "a symlink"}
 
 #: Both mount refusals come at the same point of the run, so they say the
-#: same thing about what exists and how to start again.
+#: same thing about what exists and how to start again. The work directory is
+#: named because the refused run leaves its clones of both legs in it, and
+#: `_build_the_legs` clones into `<work>/<name>`: a re-run over them cannot,
+#: and has by then made two new, empty leg repositories.
 MOUNT_REMEDIATION = (
     "Remediation: both leg repositories were made and pushed before the "
-    "mount, and nothing was committed to the source or pushed to it. Mount "
-    "the legs at two different paths that nothing the plan keeps in the root "
-    "holds, with no symlink or submodule it keeps there on the way to them: "
-    "change `legs.spec_path` or `legs.code_path`, or the `leg:` of the entry "
-    "in the way. Then delete the two legs this run made, or choose an "
-    "empty `--local-remote-dir`, before `execute` runs again: a leg that "
-    "already exists meets `leg-remote-exists`, or a `gh repo create` that "
-    "finds the name taken.")
+    "mount, and nothing was committed to the source or pushed to it. Change "
+    "`legs.spec_path` or `legs.code_path`, or the `leg:` of the entry in the "
+    "way, so that the legs mount at two different paths that nothing the "
+    "plan keeps in the root holds, with no file, symlink or submodule it "
+    "keeps there on the way to them. Then run `execute` again with fresh "
+    "leg repositories (delete the two this run made, or choose an empty "
+    "`--local-remote-dir`: a leg that already exists meets "
+    "`leg-remote-exists`, or a `gh repo create` that finds the name taken) "
+    "and an empty `--work-dir`, or none: a `--work-dir` this run was given "
+    "still holds its clones of both legs, and the next run cannot clone "
+    "into them.")
+
+#: How the index is described in the refusals below.
+ASSEMBLY_INDEX = "the assembly's index"
+
+
+def _index_entries(assembly: Path,
+                   pathspecs: list[str]) -> list[tuple[str, str]]:
+    """`(kind, path)` of every index entry the `pathspecs` select.
+
+    A pathspec selects the entry AT it and every entry under it, which is why
+    the caller compares paths. Always `--icase-pathspecs`, whatever this
+    disk's `core.ignorecase` says: the assembly is cloned on macOS and Windows
+    too, where `Spec` and `spec` are ONE path, so it is refused on every disk,
+    as #169 refuses case-only twins of the two leg paths. `-z`, for a path
+    git would otherwise quote.
+    """
+    raw = git_out(["--icase-pathspecs", "ls-files", "-s", "-z", "--",
+                   *pathspecs], cwd=assembly, binary=True)
+    entries = []
+    for record in raw.split(b"\x00"):
+        if record:
+            head, _, name = record.partition(b"\t")
+            kind = INDEX_ENTRY_KINDS.get(int(head.split()[0], 8), "a file")
+            entries.append((kind, name.decode("utf-8", "replace")))
+    return entries
+
+
+def _entry_named(entry: tuple[str, str]) -> str:
+    kind, name = entry
+    return f"`{name}` ({kind})"
+
+
+def _occupied(detail: str) -> Refusal:
+    return Refusal("adopt-mount-occupied", detail, MOUNT_REMEDIATION)
+
+
+def _refusal_for_held(path: str, held: list[tuple[str, str]]) -> Refusal:
+    """The refusal for the entries AT or UNDER the mount path. An entry at it
+    is named first; with only entries under it, the path is a directory the
+    root keeps files in, and the first of them is named."""
+    at_it = [entry for entry in held if entry[1].casefold() == path.casefold()]
+    named = _entry_named((at_it or held)[0])
+    more = f" and {len(held) - 1} more" if len(held) > 1 else ""
+    where = (f"the leg mount path {path}" if at_it
+             else f"paths under {path}, the leg mount path")
+    return _occupied(f"{ASSEMBLY_INDEX} already holds {where}: {named}{more}")
 
 
 def _refuse_an_unmountable_path(assembly: Path, path: str) -> None:
@@ -1570,7 +1622,8 @@ def _refuse_an_unmountable_path(assembly: Path, path: str) -> None:
 
     `--force` is what gets a mount past a source `.gitignore` (see the loop
     in `_mount_the_legs`), and it also turns off two of git's own refusals.
-    Each is made here instead, BEFORE the add, as a named refusal:
+    Each is made here instead, BEFORE the add, as a named refusal, and the
+    index is asked a third question that git answers only in a raw failure:
 
     - A path the index already holds. Without `--force` git refuses any
       entry there; with it, only one that is NOT a gitlink, and when a
@@ -1579,35 +1632,40 @@ def _refuse_an_unmountable_path(assembly: Path, path: str) -> None:
       spec leg, mounted a moment before: the code leg was never mounted and
       the run said `adoption verified`, where without `--force` it died at
       the second add. So ANY entry at the path, or under it, is refused
-      here, with what holds it. A disk that ignores case is one where `Spec`
-      holds `spec`; git records it as `core.ignorecase`, and `ls-files`
-      still matches case-sensitively there, so the question is then asked
-      with `--icase-pathspecs`.
+      here, with what holds it. The question is asked case-insensitively on
+      every disk (`_index_entries`), so a root-kept `SPEC/notes.md` beside a
+      `spec` mount is refused on Linux as it would be on a macOS clone.
     - git's own `git add --dry-run` of the path, made before it clones the
       leg. That is what refuses a path beyond a symlink or inside a
       submodule; without it, `legs/spec` under a root-kept `legs ->
       /elsewhere` had the leg cloned THROUGH the link, outside the work
       directory, before git refused. The dry run is made here with `-f`,
       so an ignore rule still passes it.
+    - A FILE on the way: `docs` kept in the root as a file, with `spec_path:
+      docs/spec`. The dry run passes it, and git dies after both legs are
+      pushed, "could not create leading directories", with or without
+      `--force`. An entry that is exactly a proper prefix of the path is
+      refused whatever its kind; one that only has paths under it (a
+      root-kept `docs/`) is a directory, and a mount beside its files is
+      what `docs/spec` asks for.
 
     Equal and nested leg paths are the plan's to refuse, before any leg
-    exists (#169). This is the same answer where the mount is made, for a
-    run that got here anyway, and it also covers what the two path values
-    alone cannot show: an entry the plan keeps in the root at the path, and
-    a symlink on the way to it.
+    exists (#169), so with the plan's own paths this guard is defence in
+    depth. It is the same answer where the mount is made, for a run that got
+    here anyway, and it also covers what the two path values alone cannot
+    show: an entry the plan keeps in the root at or on the way to the path,
+    and a symlink on the way to it.
     """
-    icase = git_out(["config", "--type=bool", "--default=false",
-                     "core.ignorecase"], cwd=assembly) == "true"
-    held = git_out([*(["--icase-pathspecs"] if icase else []), "ls-files",
-                    "-s", "--", path], cwd=assembly).splitlines()
+    parts = path.split("/")
+    on_the_way = {"/".join(parts[:end]).casefold()
+                  for end in range(1, len(parts))}
+    entries = _index_entries(assembly, [path, *sorted(on_the_way)])
+    wanted = path.casefold()
+    held = [entry for entry in entries
+            if entry[1].casefold() == wanted
+            or entry[1].casefold().startswith(wanted + "/")]
     if held:
-        kind = INDEX_ENTRY_KINDS.get(int(held[0].split()[0], 8), "a file")
-        more = f" and {len(held) - 1} more" if len(held) > 1 else ""
-        raise Refusal(
-            "adopt-mount-occupied",
-            f"the assembly's index already holds the leg mount path {path}, "
-            f"with {kind}: `{held[0]}`{more}",
-            MOUNT_REMEDIATION)
+        raise _refusal_for_held(path, held)
     try:
         run(["git", "add", "--dry-run", "--ignore-missing", "-f",
              "--no-warn-embedded-repo", "--", path], cwd=assembly)
@@ -1616,6 +1674,11 @@ def _refuse_an_unmountable_path(assembly: Path, path: str) -> None:
             "adopt-mount-unaddable",
             f"git will not add the leg mount path {path}: {exc.output}",
             MOUNT_REMEDIATION) from exc
+    for entry in entries:
+        if entry[1].casefold() in on_the_way:
+            raise _occupied(f"{ASSEMBLY_INDEX} holds {_entry_named(entry)} "
+                            f"where the leg mount path {path} needs a "
+                            "directory")
 
 
 def _mount_the_legs(assembly: Path, work_root: Path, names: dict, urls: dict,
