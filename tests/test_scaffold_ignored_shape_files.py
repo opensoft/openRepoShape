@@ -11,9 +11,12 @@ included -- so the new project's first `make bootstrap` failed. It is the
 scaffold side of #167, with the same fix: `-A`, then `git add -f` over exactly
 the paths the materializer wrote (`shape_materialize.stage_written`).
 
-Three groups: the scaffold and the family holder end to end under those
-excludes; a file nobody asked the shape to write staying out; and the helper
-itself, under an `info/exclude` rule. Every repository is a bare repository in
+Four groups: the scaffold and the family holder end to end under those
+excludes; a file nobody asked the shape to write staying out; the helper
+itself, under an `info/exclude` rule; and the converse, that forcing what
+`copy_tree` wrote must not force an operator's own artifact out of a checkout
+of the tool (a locally ignored `.vscode/settings.json` in `templates/`), which
+the Codex review of PR #185 found. Every repository is a bare repository in
 a temporary directory; no network is used and `gh` is never invoked. The
 excludes reach git through `GIT_CONFIG_GLOBAL`, pointed at a file each test
 writes, so no run reads the global configuration of whoever runs the suite.
@@ -23,6 +26,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -54,16 +58,19 @@ STRAY = {".env": "TOKEN=not-for-the-commit\n",
          "scripts/stray.py": "print('not the shape')\n"}
 
 
-def excluding(base: Path) -> dict:
-    """The environment of an operator whose GLOBAL excludes are EXCLUDES.
+def excluding(base: Path, rules: bytes = EXCLUDES) -> dict:
+    """The environment of an operator whose GLOBAL excludes are `rules`.
 
     `GIT_CONFIG_GLOBAL` (git 2.32) stands in for `~/.gitconfig` for every git
     the run starts. The path is written POSIX-style and quoted, because a
     backslash in a git config value is an escape character, and the bytes are
     written as they are, because a CRLF would be part of every pattern.
+    `rules=b""` is an operator with NO excludes that still names the file, so
+    git does not fall back to `~/.config/git/ignore` of whoever runs the suite.
     """
+    base.mkdir(parents=True, exist_ok=True)
     excludes = base / "excludes"
-    excludes.write_bytes(EXCLUDES)
+    excludes.write_bytes(rules)
     config = base / "gitconfig"
     config.write_bytes(
         f'[core]\n\texcludesFile = "{excludes.as_posix()}"\n'.encode())
@@ -371,3 +378,242 @@ def test_stage_written_forces_exactly_the_list_and_never_the_tree(
         ["git", "add", "-f", "--", ".gitattributes", PIN],
         ["git", "add", "-A", "--", "."],
     ]
+
+
+# ---------------------------------------------------------------------------
+# A file the tool's own checkout does not track is not a template input
+# ---------------------------------------------------------------------------
+#
+# `copy_tree` walks a template directory of a CHECKOUT, and that checkout is
+# somebody's working copy: an editor writes `.vscode/settings.json` into
+# `templates/spec-root/`, a test run writes `__pycache__/x.pyc`. Forcing
+# whatever `copy_tree` wrote (#175) turned each such file into a commit in a
+# new leg and a push (Codex, PR #185), and a `.pyc` into a UTF-8 crash. The
+# tests below keep the discriminator honest in both directions: untracked AND
+# ignored in the tool's own checkout is skipped; everything else, the tracked
+# dot-file a global `.*` hides included, is still copied and still forced.
+
+VALUES = {"PROJECT_NAME": "Atlas"}
+#: A spec-leg-like template: its own `.gitignore` hides the editor
+#: directories, as `templates/spec-root/.gitignore` does, and `README.md`
+#: carries a placeholder so a copy that did not render would show.
+SPEC_TEMPLATE = {".gitignore": ".DS_Store\n*.swp\n.idea/\n.vscode/\n",
+                 "README.md": "# {{PROJECT_NAME}}\n",
+                 "requirements/.gitkeep": ""}
+#: What the tool's own `.gitignore` says, `__pycache__/` and `*.py[cod]`.
+TOOL_GITIGNORE = "__pycache__/\n*.py[cod]\n.pytest_cache/\n"
+#: An editor's file the TEMPLATE's `.gitignore` hides, and a compiled file the
+#: TOOL's `.gitignore` hides, which is not UTF-8 and so cannot be read as text.
+EDITOR_STRAY = {".vscode/settings.json": b'{"editor.tabSize": 2}\n'}
+COMPILED_STRAY = {"__pycache__/x.pyc": b"\xff\xfe\x00\x01 not utf-8 \x80"}
+LOCAL_STRAYS = {**EDITOR_STRAY, **COMPILED_STRAY}
+
+
+def strew(src: Path, strays: dict) -> None:
+    """Drop `strays` (name -> bytes) under `src`, as an editor would."""
+    for name, body in strays.items():
+        target = src / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(body)
+
+
+def write_template(src: Path, template: dict) -> None:
+    for name, body in template.items():
+        (src / name).parent.mkdir(parents=True, exist_ok=True)
+        (src / name).write_bytes(body.encode())
+
+
+def commit_everything(root: Path, env: dict) -> None:
+    """`git init`, `add -A` and one commit, under `env` and a fixed identity."""
+    who = {"GIT_AUTHOR_NAME": "openRepoShape tests",
+           "GIT_AUTHOR_EMAIL": "tests@openreposhape.invalid",
+           "GIT_COMMITTER_NAME": "openRepoShape tests",
+           "GIT_COMMITTER_EMAIL": "tests@openreposhape.invalid"}
+    env = {**env, **who}
+    git_under(env, "init", "-q", "-b", "main", str(root), cwd=root.parent)
+    git_under(env, "add", "-A", "--", ".", cwd=root)
+    git_under(env, "commit", "-q", "-m", "The tool's checkout", cwd=root)
+
+
+def tracked_under(root: Path, directory: str) -> set:
+    """What `root` tracks under `directory`, relative to it."""
+    listing = git_under({}, "ls-files", "-z", "--", directory, cwd=root)
+    return {name[len(directory) + 1:] for name in listing.stdout.split("\0")
+            if name}
+
+
+@pytest.fixture
+def checkout(tmp_path, monkeypatch) -> SimpleNamespace:
+    """A fake checkout of the tool: a git repository at the SHAPE ROOT whose
+    `templates/spec-root/` holds SPEC_TEMPLATE, committed, under a global
+    configuration with no excludes (every later `git` of the test reads it,
+    `copy_tree`'s included). `dst` is where a leg would be written."""
+    for key, value in excluding(tmp_path / "quiet", rules=b"").items():
+        monkeypatch.setenv(key, value)
+    root = tmp_path / "shape"
+    write_template(root / "templates" / "spec-root", SPEC_TEMPLATE)
+    (root / ".gitignore").write_bytes(TOOL_GITIGNORE.encode())
+    commit_everything(root, {})
+    return SimpleNamespace(root=root, src=root / "templates" / "spec-root",
+                           dst=tmp_path / "leg")
+
+
+def test_a_locally_ignored_stray_in_the_template_is_neither_copied_nor_forced(
+        checkout):
+    """An editor's `.vscode/settings.json` and a binary `__pycache__/x.pyc`,
+    untracked and ignored in the tool's checkout, are not template inputs:
+    `copy_tree` writes neither, returns neither and does not die on the
+    `.pyc`, so `git add -f` has nothing of the operator's to force (#175, Codex
+    review of PR #185). The shape's own files are all still there."""
+    strew(checkout.src, LOCAL_STRAYS)
+    for name in LOCAL_STRAYS:
+        assert ignored(checkout.root, f"templates/spec-root/{name}", {}), (
+            f"{name} is not hidden, so this test no longer runs the defect")
+
+    written = copy_tree(checkout.src, checkout.dst, VALUES)
+
+    assert sorted(written) == sorted(SPEC_TEMPLATE)
+    assert (checkout.dst / "README.md").read_text(
+        encoding="utf-8") == "# Atlas\n"
+    for name in LOCAL_STRAYS:
+        assert name not in written
+        assert not (checkout.dst / name).exists(), name
+
+
+def test_a_tracked_dot_file_a_global_dot_exclude_hides_is_still_forced(
+        checkout, monkeypatch, tmp_path):
+    """#175 still holds under the stray filter. The operator's global excludes
+    say `.*`; the template's `.gitignore` is TRACKED in the tool's checkout, so
+    it is no stray, and `git_init_commit` still commits it past those rules --
+    while the strays beside it, hidden by the same rules, stay out."""
+    for key, value in excluding(tmp_path / "operator").items():
+        monkeypatch.setenv(key, value)
+    strew(checkout.src, LOCAL_STRAYS)
+    git_under({}, "init", "-q", "-b", "main", str(checkout.dst), cwd=tmp_path)
+    assert ignored(checkout.dst, ".gitignore", {}), (
+        "the excludes no longer hide the template's `.gitignore`, so this "
+        "test no longer runs the #175 defect")
+
+    written = copy_tree(checkout.src, checkout.dst, VALUES)
+    head = git_init_commit(checkout.dst, "Seed the leg\n", "main", written)
+
+    assert ".gitignore" in written
+    tree = set(git("ls-tree", "-r", "--name-only", head,
+                   cwd=checkout.dst).stdout.splitlines())
+    assert tree == set(SPEC_TEMPLATE)
+
+
+def test_an_untracked_template_file_nothing_ignores_is_still_copied(checkout):
+    """A template file a developer has added and not committed yet is no
+    stray: nothing in the tool's checkout ignores it, so it is copied and
+    returned, and a stray beside it is still left out (#175, PR #185)."""
+    (checkout.src / "NEW.md").write_text("# New\n", encoding="utf-8")
+    strew(checkout.src, EDITOR_STRAY)
+    untracked = git_under({}, "ls-files", "--error-unmatch", "--",
+                          "templates/spec-root/NEW.md", cwd=checkout.root,
+                          check=False)
+    assert untracked.returncode != 0, "NEW.md is tracked, so the test is moot"
+
+    written = copy_tree(checkout.src, checkout.dst, VALUES)
+
+    assert sorted(written) == sorted([*SPEC_TEMPLATE, "NEW.md"])
+    assert (checkout.dst / "NEW.md").read_text(encoding="utf-8") == "# New\n"
+    assert not (checkout.dst / ".vscode").exists()
+
+
+def test_outside_any_git_work_tree_everything_is_copied(tmp_path,
+                                                         monkeypatch):
+    """A tarball install has no repository to ask, and `git` says so with an
+    exit status rather than a stray list: `copy_tree` neither raises nor
+    guesses, and copies every file as it did before the filter, a
+    `.vscode/settings.json` included (#175, PR #185). The ceiling keeps `git`
+    from finding a repository ABOVE the temporary directory."""
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    src = tmp_path / "tarball" / "templates" / "spec-root"
+    write_template(src, SPEC_TEMPLATE)
+    strew(src, EDITOR_STRAY)
+    asked = git_under({}, "rev-parse", "--show-toplevel", cwd=src, check=False)
+    assert asked.returncode != 0, "src is inside a repository after all"
+
+    written = copy_tree(src, tmp_path / "leg", VALUES)
+
+    assert sorted(written) == sorted([*SPEC_TEMPLATE, *EDITOR_STRAY])
+
+
+def test_inside_a_foreign_repository_everything_is_copied(tmp_path,
+                                                           monkeypatch):
+    """A tool vendored inside some OTHER repository: the git top level is that
+    repository's, not the shape root, and its ignore rules are not this
+    tool's to apply, so every file is copied (#175, PR #185). The premise is
+    checked: asked from `src`, git WOULD name the `.vscode/settings.json`."""
+    for key, value in excluding(tmp_path / "quiet", rules=b"").items():
+        monkeypatch.setenv(key, value)
+    outer = tmp_path / "outer"
+    git_under({}, "init", "-q", "-b", "main", str(outer), cwd=tmp_path)
+    (outer / ".gitignore").write_bytes(b".vscode/\n")
+    src = outer / "vendor" / "shape" / "templates" / "spec-root"
+    write_template(src, SPEC_TEMPLATE)
+    strew(src, EDITOR_STRAY)
+    top = git_under({}, "rev-parse", "--show-toplevel", cwd=src).stdout.strip()
+    assert not os.path.samefile(top, src.parent.parent)
+    listed = git_under({}, "ls-files", "-z", "--others", "--ignored",
+                       "--exclude-standard", "--", ".", cwd=src).stdout
+    assert ".vscode/settings.json" in listed.split("\0")
+
+    written = copy_tree(src, tmp_path / "leg", VALUES)
+
+    assert sorted(written) == sorted([*SPEC_TEMPLATE, *EDITOR_STRAY])
+
+
+def tool_checkout(base: Path) -> Path:
+    """A private copy of this repository's tracked files, `tests/` left out, as
+    a git repository of its own: a tool checkout a test may litter without
+    touching the shared one, with a real `HEAD` the scaffold can pin."""
+    root = base / "tool"
+    listing = git("ls-files", "-z", cwd=REPO).stdout
+    for name in sorted(name for name in listing.split("\0") if name):
+        source = REPO / name
+        if name.startswith("tests/") or not source.is_file():
+            continue
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, root / name, follow_symlinks=False)
+    commit_everything(root, excluding(base / "quiet", rules=b""))
+    return root
+
+
+def test_a_stray_in_the_tools_checkout_stays_out_of_both_new_legs(
+        tmp_path, monkeypatch, capsys):
+    """End to end, under the operator's `.*` excludes: the scaffold is run
+    against a private copy of the tool made a git repository, with an editor
+    file and a compiled file littered under BOTH `templates/spec-root/` and
+    `templates/code-root/`. Each leg's first commit holds exactly what the
+    tool's checkout tracks there, the dot-files the excludes hide included,
+    and none of the strays (#175, Codex review of PR #185)."""
+    tool = tool_checkout(tmp_path)
+    roles = (("spec", "spec-root"), ("code", "code-root"))
+    for _, template in roles:
+        strew(tool / "templates" / template, LOCAL_STRAYS)
+        for name in LOCAL_STRAYS:
+            assert ignored(tool, f"templates/{template}/{name}", {}), name
+    scaffold = load(SCAFFOLD, "scaffold_stray_templates")
+    monkeypatch.setattr(scaffold, "SHAPE_ROOT", tool)
+    clear_ambient_pin_sources(monkeypatch)
+    for key, value in excluding(tmp_path / "operator").items():
+        monkeypatch.setenv(key, value)
+    remotes, work = tmp_path / "remotes", tmp_path / "work"
+
+    code = scaffold.main([
+        "--org", ORG, "--project", PROJECT, "--elected-by", "Test Human",
+        "--elected-on", "2026-09-02", "--local-remote-dir", str(remotes),
+        "--work-dir", str(work)])
+
+    seen = capsys.readouterr()
+    assert code == 0, seen.err + seen.out
+    for leg, (_, template) in zip(LEGS, roles):
+        bare = remotes / f"{leg}.git"
+        first_commit_only(bare)
+        tree = committed(bare)
+        assert ".gitignore" in tree, f"{leg}: the forced add did not run"
+        assert tree == tracked_under(tool, f"templates/{template}"), leg
+        for name in LOCAL_STRAYS:
+            assert not (work / leg / name).exists(), f"{leg}: {name} copied"
