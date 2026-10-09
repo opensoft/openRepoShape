@@ -244,6 +244,9 @@ SUBMODULE_KEY_RE = re.compile(r"submodule\.(?P<name>.*)\.(?P<key>path|url)")
 #: The `git` subcommand that reads and writes a config file: a source's
 #: `.gitmodules`, a leg mount's url, the elector's name.
 GIT_CONFIG = "config"
+#: The `git` subcommand that prints one object: a source's `.gitmodules`,
+#: and in the split commit a symlink's target and the shape pin.
+GIT_CAT_FILE = "cat-file"
 
 
 def _git_path(raw: bytes) -> str:
@@ -267,42 +270,84 @@ def _a_name_git_ignores(name: str) -> bool:
     return not name or ".." in re.split(r"[/\\]", name)
 
 
-def _registrations(listed: bytes) -> frozenset[str] | str:
-    """The paths `git config -z --list` output registers with a url, read as
-    git's submodule reader reads them (submodule-config.c, `parse_config`);
-    or, for a `path` or `url` with no value at all, what that reader dies on.
+class Registrations:
+    """What git's submodule reader (submodule-config.c, `parse_config`) makes
+    of a `.gitmodules`: `path in registrations` when the file registers that
+    path WITH a url, and `why_not(path)` when an entry names it and git
+    registers nothing there.
 
-    In the order git applies them: a name it ignores registers nothing; a
-    `path` or `url` with no `=` is fatal to it (`-z` prints such a key with
-    no newline); a value starting with `-` is ignored and the one before it
-    stands; a later value overrides an earlier one for its name, and a path
-    belongs to the LAST name given it. git keeps that path-to-name map by
-    path, so a name moved to another path removes whatever its old path
-    held, even when a later name had taken the path over -- the `pop` below,
-    which is git's `cache_remove_path`.
+    `read` takes each `submodule.<name>.path` or `.url` value in the file's
+    order and applies it as git does: a name git ignores registers nothing; a
+    value starting with `-` is ignored and the one before it stands; a later
+    value overrides an earlier one for its name, and a path belongs to the
+    LAST name given it. git keeps that path-to-name map by path, so a name
+    moved to another path removes whatever its old path held, even when a
+    later name had taken the path over -- `_move`'s `pop`, which is git's
+    `cache_remove_path`. How a named path came to register nothing is kept
+    in words: the person told that a submodule is not registered is looking
+    at an entry for it, and is told why git ignores that entry (#166).
     """
-    path_of: dict[str, str] = {}
-    name_at: dict[str, str] = {}
-    url_of: dict[str, str] = {}
+
+    def __init__(self) -> None:
+        self._path_of: dict[str, str] = {}
+        self._name_at: dict[str, str] = {}
+        self._url_of: dict[str, str] = {}
+        self._lost: dict[str, str] = {}
+
+    def __contains__(self, path: str) -> bool:
+        name = self._name_at.get(path)
+        return name is not None and bool(self._url_of.get(name))
+
+    def why_not(self, path: str) -> str | None:
+        """Why git registers nothing at `path` though an entry names it;
+        None when no entry of the file does."""
+        name = self._name_at.get(path)
+        if name is not None:
+            return (f"its {GITMODULES} entry {_spelled(name)} has no url git "
+                    "reads")
+        return self._lost.get(path)
+
+    def read(self, name: str, key: str, value: str) -> None:
+        if _a_name_git_ignores(name):
+            self._lose(key, value, f"git ignores its {GITMODULES} entry "
+                                   f"{_spelled(name)} as a suspicious name")
+        elif value.startswith("-"):
+            self._lose(key, value, f"git ignores its {GITMODULES} path, which "
+                                   "starts with `-`")
+        elif key == "url":
+            self._url_of[name] = value
+        else:
+            self._move(name, value)
+
+    def _lose(self, key: str, path: str, why: str) -> None:
+        if key == "path":
+            self._lost[path] = why
+
+    def _move(self, name: str, path: str) -> None:
+        old = self._path_of.get(name)
+        if old is not None and self._name_at.pop(old, None) is not None:
+            self._lost[old] = (f"git dropped its path when the {GITMODULES} "
+                               f"entry {_spelled(name)} moved to "
+                               f"{_spelled(path)}")
+        self._path_of[name] = path
+        self._name_at[path] = name
+
+
+def _registrations(listed: bytes) -> Registrations | str:
+    """`git config -z --list` output, read by `Registrations`; or, for a
+    `path` or `url` with no value at all, what git's submodule reader dies
+    on. `-z` prints such a key with no newline, and git looks for its value
+    after it has filtered the name and before it filters the value."""
+    registrations = Registrations()
     for record in listed.split(b"\x00"):
         key, newline, value = _git_path(record).partition("\n")
         match = SUBMODULE_KEY_RE.fullmatch(key)
-        if not match or _a_name_git_ignores(match["name"]):
+        if not match:
             continue
-        if not newline:
+        if not newline and not _a_name_git_ignores(match["name"]):
             return f"missing value for '{key}'"
-        if value.startswith("-"):
-            continue
-        name = match["name"]
-        if match["key"] == "url":
-            url_of[name] = value
-            continue
-        if name in path_of:
-            name_at.pop(path_of[name], None)
-        path_of[name] = value
-        name_at[value] = name
-    return frozenset(path for path, name in name_at.items()
-                     if url_of.get(name))
+        registrations.read(match["name"], match["key"], value)
+    return registrations
 
 
 class Source:
@@ -366,10 +411,10 @@ class Source:
             del kind
         return sorted(out)
 
-    def registered_submodules(self, tree: list) -> frozenset[str] | str:
-        """Each path the `.gitmodules` at the pinned commit registers WITH a
-        url; or, as a string, what git says when it cannot read that file
-        for its submodules.
+    def registered_submodules(self, tree: list) -> Registrations | str:
+        """What the `.gitmodules` at the pinned commit registers, each path
+        WITH a url; or, as a string, what git says when it cannot read that
+        file for its submodules.
 
         A REGISTRATION is a `submodule.<name>.path` and a non-empty
         `submodule.<name>.url` under the same name: the path is what git
@@ -395,12 +440,20 @@ class Source:
         come back as one that registers nothing. `--list` exits 0 on any file
         it parsed, empty or not, and 128 on one it could not, and git's words
         come back instead of paths: a read that failed is not an answer
-        (#166), and the person told so is told why.
+        (#166), and the person told so is told why. git calls the file it
+        read through `--file -` "standard input"; they are told `.gitmodules`.
+
+        A KEY WITH NO VALUE -- `path` or `url` with nothing after it -- is
+        fatal to git's submodule reader alone, and git runs that reader only
+        for a gitlink. So in a tree that holds none, nothing ever reads the
+        file that way, the assembly's clone and `execute` pass over it as
+        main always did, and it registers nothing (#166's S3). A line git
+        cannot parse at all is another matter: every reader dies on it.
         """
         if not any(path == GITMODULES for path, _, _, _ in tree):
-            return frozenset()
+            return Registrations()
         blob = subprocess.run(
-            ["git", "cat-file", "blob", f"{self.commit}:{GITMODULES}"],
+            ["git", GIT_CAT_FILE, "blob", f"{self.commit}:{GITMODULES}"],
             cwd=self.path, capture_output=True, check=False)
         # A `.gitmodules` that is no blob -- a gitlink, say -- leaves nothing
         # for `git config` to read, and what `cat-file` said is the answer.
@@ -409,8 +462,13 @@ class Source:
              "--list"], cwd=self.path, input=blob.stdout, capture_output=True,
             check=False)
         if listed.returncode:
-            return _one_line(listed.stderr.decode(errors="replace"))
-        return _registrations(listed.stdout)
+            return _one_line(listed.stderr.decode(errors="replace")).replace(
+                "standard input", GITMODULES)
+        read = _registrations(listed.stdout)
+        if isinstance(read, str) and not any(
+                mode == GITLINK_MODE for _, mode, _, _ in tree):
+            return Registrations()
+        return read
 
     def commit_count(self) -> int:
         return int(git_out(["rev-list", "--count", self.commit], cwd=self.path))
@@ -518,11 +576,12 @@ def ask_about_submodules(policy: PathPolicy, entries: list[Entry],
     classified by. The ruling still roots the FILES under those paths, and
     one of several submodules may be dropped on its own, so an entry holding
     more than one path NAMES THE ENTRIES THAT REPLACE IT, each submodule one
-    of its own (`_own_entries`): splitting it is the only edit that answers
-    those paths apart, because an entry added beside it for a path it
-    already covers is `plan-covered-twice`. `walk`'s folding is left alone;
-    only the covering entry is replaced. A source with no gitlink, the
-    common case, gets its entries back untouched.
+    of its own (`_own_entries`), or past SPLIT_ENTRIES_NAMED says how to
+    make them: splitting it is the only edit that answers those paths
+    apart, because an entry added beside it for a path it already covers is
+    `plan-covered-twice`. `walk`'s folding is left alone; only the covering
+    entry is replaced. A source with no gitlink, the common case, gets its
+    entries back untouched.
     """
     gitlinks = [path for path, mode, _, _ in tree if mode == GITLINK_MODE]
     if not gitlinks:
@@ -564,23 +623,78 @@ def _child_of(directory: str, path: str) -> str:
     return directory + head + slash
 
 
+#: How many of the entries that replace a directory entry holding a
+#: submodule its question names one by one. Past it, the question says
+#: which directories' paths they are and counts them, as `plan-unresolved`
+#: names eight paths and counts the rest: four hundred files beside one
+#: submodule would otherwise be four hundred names on one line of the plan,
+#: and again in `check`'s `plan-unresolved` finding (#166's R5-2).
+SPLIT_ENTRIES_NAMED = 8
+
+
 def _asked_about(entry: Entry, held: list[str], asked: Verdict,
                  own: list[str]) -> Entry:
     """`entry` as `ask_about_submodules` writes it: the `.gitmodules`
     verdict, whose `leg:` is null, and its question naming `held` and, when
-    it holds more than one path, the `own` entries that replace it."""
+    it holds more than one path, the `own` entries that replace it. Each
+    path is `_spelled`, because the question is a line of the plan."""
     question = (f"{asked.question or ''} This entry holds the submodule(s) "
-                f"{', '.join(held)}: it is asked this question, not "
+                f"{_listed(held)}: it is asked this question, not "
                 f"classified by its rule `{entry.rule}`.")
     if len(own) > 1:
-        listed = ", ".join(f"`{path}`" for path in own)
         question += (" Split the entry if its paths do not all belong in one "
-                     f"leg: replace it with an entry for each of {listed}, "
-                     "each with its own `leg:`. An entry added beside this "
-                     "one for a path it covers is `plan-covered-twice`.")
+                     f"leg: replace it with "
+                     f"{_replacements(entry.path, held, own)}, each with its "
+                     "own `leg:`. An entry added beside this one for a path "
+                     "it covers is `plan-covered-twice`.")
     return Entry(entry.path, Verdict(None, asked.rule, asked.reason,
                                      asked.confidence, question),
                  entry.files, entry.bytes)
+
+
+def _replacements(entry: str, held: list[str], own: list[str]) -> str:
+    """The entries `own` that replace the directory entry `entry`, as its
+    question names them: each one while there are few, and past
+    SPLIT_ENTRIES_NAMED the directories they are the paths of -- `entry`
+    and each one `_own_entries` opened on the way to a submodule in `held`,
+    which are no entries themselves -- and how many there are."""
+    if len(own) <= SPLIT_ENTRIES_NAMED:
+        return f"an entry for each of {_listed(own)}"
+    opened = sorted({path[:end + 1] for path in held
+                     for end in range(len(entry) - 1, len(path))
+                     if path[end] == "/"})
+    where = (_listed(opened) if len(opened) == 1 else
+             f"one of {_listed(opened)}, other than those directories")
+    return f"an entry for each path directly in {where}, {len(own)} in all"
+
+
+def _listed(paths: list[str]) -> str:
+    return ", ".join(_spelled(path) for path in paths)
+
+
+def _spelled(path: str) -> str:
+    """`path` between backticks, as a question or a finding names it.
+
+    The plan is UTF-8 text, one value to a line, and a path is bytes:
+    `Source.tree` keeps one that is not UTF-8 as a surrogate, which no UTF-8
+    file can hold -- written raw, it raised mid-write and left `--out` empty
+    (#166's NEW-2) -- and a name may hold a newline, which would end the
+    line. So a character that is not printable is spelled with a backslash,
+    `\\xe9` for the byte 0xE9 and `\\n` for a newline, and so are a
+    backslash and a backtick, so that the spelling reads one way only and
+    the backticks still delimit it.
+    """
+    return "`" + "".join(map(_spelled_character, path)) + "`"
+
+
+def _spelled_character(char: str) -> str:
+    if char in "\\`":
+        return "\\" + char
+    if char.isprintable():
+        return char
+    if "\udc80" <= char <= "\udcff":
+        return f"\\x{ord(char) - 0xDC00:02x}"
+    return ascii(char)[1:-1]
 
 
 def cross_leg_references(source: "Source", entries: list["Entry"],
@@ -702,7 +816,8 @@ def assigned_paths(entries) -> dict[str, list[str]]:
 
 
 def render_plan(args, source: Source, entries: list[Entry], names: dict,
-                pins: list[str], follow_ups: list[str]) -> str:
+                pins: list[str], follow_ups: list[str],
+                seeded: list[str]) -> str:
     lines = [
         "schema_version: 1",
         f"kind: {PLAN_KIND}",
@@ -752,7 +867,6 @@ def render_plan(args, source: Source, entries: list[Entry], names: dict,
               "# its `open<Product>` is listed here (2026-09-02).",
               "pins: [" + ", ".join(pins) + "]", ""]
 
-    seeded = seeded_legs(assigned_paths(entries))
     lines += [
         "# A leg that NO entry below assigns a path to is SEEDED from the",
         "# shape's own leg template as one initial commit, instead of being",
@@ -1141,7 +1255,7 @@ def _print_triad_advisory(path: Path, commit: str | None = None) -> None:
 
 
 def _print_plan_report(args, source: Source, tree: list, entries: list,
-                       follow_ups: list, out: Path) -> None:
+                       follow_ups: list, seeded: list, out: Path) -> None:
     """What `plan` says to the terminal once the file is on disk.
 
     Split out of `cmd_plan` for #138. THE UNRESOLVED PATHS ARE LAST on
@@ -1159,8 +1273,7 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
     print(f"\nfollow-ups ({len(follow_ups)}):")
     for item in follow_ups:
         print(f"  - {item}")
-    for line in seeding_warnings(seeded_legs(assigned_paths(entries)),
-                                 set(args.allow_empty_leg or [])):
+    for line in seeding_warnings(seeded, set(args.allow_empty_leg or [])):
         print(line)
     unresolved = [e for e in entries if e.leg is None]
     print(f"\nplan written to {out}")
@@ -1180,16 +1293,26 @@ def cmd_plan(args) -> int:
     names, pins = _checked_plan_inputs(args, source, naming)
 
     tree = source.tree()
-    entries = ask_about_submodules(
-        policy, walk(policy, [(path, size) for path, _, _, size in tree]),
-        tree)
-    materialized = _predict_collisions(entries)
-    follow_ups = follow_ups_for(source, entries, names, args.spec_path,
+    # WHAT THE RULES IMPLY is read from `walk`'s entries, BEFORE
+    # `ask_about_submodules` asks again on the ones that hold a submodule: the
+    # shape files a rooted path will collide with, the follow-ups, and the
+    # legs a split would seed. Asking takes back no rule's answer for the
+    # files under such an entry; read after it, a `leg: null` dropped main's
+    # follow-up for a harness under `src/` that reads `contracts/`, and
+    # called the code leg empty, so the plan recorded it as seeded and told
+    # the person to re-run with `--allow-empty-leg code`, which it never
+    # needed (#166's NEW-1). A source with no submodule plans as it did.
+    ruled = walk(policy, [(path, size) for path, _, _, size in tree])
+    materialized = _predict_collisions(ruled)
+    follow_ups = follow_ups_for(source, ruled, names, args.spec_path,
                                 args.code_path, materialized)
+    seeded = seeded_legs(assigned_paths(ruled))
+    entries = ask_about_submodules(policy, ruled, tree)
     out = Path(args.out)
-    write_lf(out, render_plan(args, source, entries, names, pins, follow_ups))
+    write_lf(out, render_plan(args, source, entries, names, pins, follow_ups,
+                              seeded))
 
-    _print_plan_report(args, source, tree, entries, follow_ups, out)
+    _print_plan_report(args, source, tree, entries, follow_ups, seeded, out)
     return 0
 
 
@@ -1485,7 +1608,8 @@ SUBMODULE_REMEDIATION = (
     "assembly's clone fails on it inside the leg. `drop` it, or register it "
     "in the source (that entry, committed) and re-run `plan`; a "
     "`.gitmodules` git cannot read for its submodules is repaired in the "
-    "source and re-planned the same way, or dropped with every submodule. "
+    "source and re-planned the same way (in a source with no submodule, "
+    "dropping it is enough). "
     "To answer a submodule apart from the rest of the directory entry that "
     "holds it, REPLACE that entry with an entry for each of its children, "
     "the submodule's own path among them, as that entry's `question:` lists "
@@ -1499,6 +1623,18 @@ SUBMODULE_REMEDIATION = (
 #: words by the two rules that find one.
 NO_URL_IN_THE_LEG = ("so the leg that holds the gitlink holds no URL for it "
                      "and the assembly's recursive clone fails there")
+#: Why a kept gitlink is not registered, when no entry of `.gitmodules`
+#: names its path at all; `Registrations.why_not` says it otherwise.
+NO_ENTRY_NAMES_IT = (f"no {GITMODULES} entry in the source registers its "
+                     "path with a url")
+#: Where git fails on a `.gitmodules` it cannot read for its submodules:
+#: the two ends of `_where_git_fails`, each said only where it is true.
+FAILS_IN_THE_EXTRACTION = (
+    "and the source holds a submodule, so `git filter-repo` fails on that "
+    "file when `execute` extracts a leg, wherever the plan sends the two")
+FAILS_IN_THE_CLONE = (
+    "so which submodules it registers is unknown, and the plan keeps it or a "
+    "submodule in a leg, where the assembly's recursive clone fails on it")
 
 
 def _answered_legs(entries: list, paths: list[str]) -> dict:
@@ -1528,22 +1664,21 @@ def _as_entry(path: str, entry: str) -> str:
 
 
 def submodule_plan_problems(entries: list, tree: list,
-                            registered: frozenset | str
+                            registered: Registrations | str
                             ) -> list[tuple[str, str]]:
     """`(code, detail)` for each way the plan splits the source's OWN submodules.
 
-    ONE DEFINITION, asked by `check` for findings and by `execute` for a
-    refusal, so that `execute` refuses every SUBMODULE problem `check` finds
-    (#166). An entry `check` rejects for another reason -- uncovered, covered
-    twice, a misspelled leg -- is left out here (see `_answered_legs`):
-    `check` reports it by its own finding, and `execute` refuses it in
-    #168's `_refuse_what_check_finds`. `tree` is
-    `Source.tree()`: a gitlink is visible only by its mode,
+    ONE DEFINITION, in the one list of findings `check` prints and `execute`
+    refuses (`_entry_findings`), so that `execute` refuses every SUBMODULE
+    problem `check` finds, in its words (#166). An entry `check` rejects for
+    another reason -- uncovered, covered twice, a misspelled leg -- is left
+    out here (see `_answered_legs`): it is in that list by its own finding.
+    `tree` is `Source.tree()`: a gitlink is visible only by its mode,
     which no path glob in `contracts/path-classification.yaml` can see.
-    `registered` is `Source.registered_submodules(tree)`: the gitlink paths
-    the source's `.gitmodules` names with a url, or, as a string, what git
-    said when it could not read that file for its submodules. The caller
-    reads both, so this is a function of its arguments alone.
+    `registered` is `Source.registered_submodules(tree)`: what the source's
+    `.gitmodules` registers, or, as a string, what git said when it could
+    not read that file for its submodules. The caller reads both, so this is
+    a function of its arguments alone.
 
     A SUBMODULE IS ONE FACT IN TWO PLACES: the gitlink in the tree and its
     registration in `.gitmodules`. A plan that sent the two to different legs
@@ -1561,10 +1696,10 @@ def submodule_plan_problems(entries: list, tree: list,
         registers (#165).
       * A `.gitmodules` git cannot read for its submodules is never taken to
         register nothing (`plan-gitmodules-unreadable`, saying what git
-        said). It is a problem when the plan
-        keeps the file in a leg, where git fails on it when the assembly's
-        clone recurses there, or keeps any gitlink in a leg, whose
-        registration then cannot be checked.
+        said, and where git fails on it: `_where_git_fails`). Beside a
+        submodule it fails the extraction of either leg, wherever the plan
+        sends the two; otherwise it is a problem where the plan keeps it, or
+        a gitlink, in a leg the assembly's clone then recurses into.
       * Every gitlink the plan KEEPS, in the spec or the code leg, must be
         REGISTERED (`plan-submodule-unregistered`). A leg is WORSE than the
         source for one that is not: a top-level `git clone
@@ -1583,7 +1718,7 @@ def submodule_plan_problems(entries: list, tree: list,
         cloned and never fails. Dropping all of them with the file is allowed
         too.
 
-    THE ORDER IS THE ORDER TO FIX THEM IN, and `execute`'s refusal is named
+    THE ORDER IS THE ORDER TO FIX THEM IN, and a refusal they begin is named
     by the first: a `.gitmodules` in the root makes every registered gitlink
     kept in a leg a split, an unreadable one hides which gitlinks are
     registered, and an unregistered gitlink may be fixed in the SOURCE, by a
@@ -1606,17 +1741,51 @@ def submodule_plan_problems(entries: list, tree: list,
         for path, (leg, entry) in answered.items() if leg == "root"]
     registry_leg = answered.get(GITMODULES, (None, None))[0]
     kept = _kept_in_a_leg(answered, gitlinks)
-    if isinstance(registered, frozenset):
+    if not isinstance(registered, str):
         return problems + _kept_submodule_problems(kept, registered,
                                                    registry_leg)
-    if kept or registry_leg in EXTRACTED_LEGS:
+    failure = _where_git_fails(entries, tree, registry_leg, kept)
+    if failure:
         problems.append((
             "plan-gitmodules-unreadable",
             f"git cannot read the source's {GITMODULES} for its submodules "
-            f"({registered}), so which submodules it registers is unknown, "
-            "and the plan keeps it or a submodule in a leg, where the "
-            "assembly's recursive clone fails on it"))
+            f"({registered}), {failure}"))
     return problems
+
+
+def _where_git_fails(entries: list, tree: list, registry_leg: str | None,
+                     kept: list) -> str | None:
+    """Where git fails on a source `.gitmodules` it cannot read for its
+    submodules, as the plan answers it; None where nothing reads it so.
+
+    Measured end to end with git 2.43 (#166's S3), the first failure first:
+
+      * `git filter-repo` runs `git fast-export`, which reads the CHECKED-OUT
+        `.gitmodules` for each gitlink in the history it exports. So such a
+        FILE in a source that holds a submodule fails the extraction of
+        either leg, wherever the plan sends the two -- after both leg
+        repositories were made. A plan that extracts no leg, every path
+        rooted or dropped, is the only one that escapes it.
+      * Otherwise the assembly's recursive clone fails in a leg the plan
+        keeps the file in, or a gitlink: on a line git cannot parse, even
+        with no gitlink in the leg, and on a `.gitmodules` that is itself a
+        gitlink, which the clone checks out as a directory and which
+        registers nothing.
+
+    A key with no value is fatal to git's submodule reader alone, which
+    git runs only for a gitlink, so `Source.registered_submodules` reads it
+    as registering nothing in a tree with none, and it never reaches here
+    without one.
+    """
+    a_file = any(path == GITMODULES and mode in FILE_MODES
+                 for path, mode, _, _ in tree)
+    beside = any(mode == GITLINK_MODE for _, mode, _, _ in tree)
+    if a_file and beside and any(str(e.get("leg")) in EXTRACTED_LEGS
+                                 for e in entries):
+        return FAILS_IN_THE_EXTRACTION
+    if kept or registry_leg in EXTRACTED_LEGS:
+        return FAILS_IN_THE_CLONE
+    return None
 
 
 def _kept_in_a_leg(answered: dict, gitlinks: list[str]) -> list[tuple]:
@@ -1625,7 +1794,7 @@ def _kept_in_a_leg(answered: dict, gitlinks: list[str]) -> list[tuple]:
             if path in answered and answered[path][0] in EXTRACTED_LEGS]
 
 
-def _kept_submodule_problems(kept: list, registered: frozenset,
+def _kept_submodule_problems(kept: list, registered: Registrations,
                              registry_leg: str | None
                              ) -> list[tuple[str, str]]:
     """The last two rules of `submodule_plan_problems`, for the gitlinks the
@@ -1633,13 +1802,16 @@ def _kept_submodule_problems(kept: list, registered: frozenset,
 
     A gitlink is unregistered or split, never both. With no registration it
     has no URL in ANY leg, and moving `.gitmodules` would not give it one.
-    `registry_leg` is None when `.gitmodules` is absent or not yet answered,
-    which leaves no leg for a gitlink to be split from.
+    An unregistered one is told why: an entry of `.gitmodules` may name its
+    path and still register nothing, and saying "no entry" beside it would
+    send the person looking for one that is there. `registry_leg` is None
+    when `.gitmodules` is absent or not yet answered, which leaves no leg
+    for a gitlink to be split from.
     """
     problems = [
         ("plan-submodule-unregistered",
-         f"the submodule {_as_entry(path, entry)} has leg: {leg} but no "
-         f"{GITMODULES} entry in the source registers its path with a url, "
+         f"the submodule {_as_entry(path, entry)} has leg: {leg} but "
+         f"{registered.why_not(path) or NO_ENTRY_NAMES_IT}, "
          + NO_URL_IN_THE_LEG)
         for path, leg, entry in kept if path not in registered]
     if registry_leg is not None:
@@ -1664,6 +1836,28 @@ def _submodule_findings(plan: Plan, source: Source,
              in submodule_plan_problems(plan.entries, tree,
                                         source.registered_submodules(tree))]
     return found, [SUBMODULE_REMEDIATION] if found else []
+
+
+def _entry_findings(plan: Plan, source: Source
+                    ) -> tuple[list[str], list[str]]:
+    """Every FINDING `check` prints about the plan's ENTRIES, in its order,
+    and what it prints once after them: coverage, then each entry's `leg:`,
+    then the source's own submodules.
+
+    ONE LIST, read by `check` and by `execute`'s `_refuse_what_check_finds`.
+    #168 and #166 each added findings to `check` and a refusal to `execute`
+    while both were open, and composed them separately so as not to edit the
+    same lines; three compositions then disagreed, and a plan `check`
+    rejected as uncovered AND split was refused by `execute` for the split
+    alone, to be refused again for the rest once that was fixed. Composed
+    once, the two commands cannot differ about a plan.
+    """
+    tree = source.tree()
+    findings = (_coverage_findings([str(e.get("path")) for e in plan.entries],
+                                   [path for path, _, _, _ in tree])
+                + _leg_findings(plan))
+    submodule_findings, remediation = _submodule_findings(plan, source, tree)
+    return findings + submodule_findings, remediation
 
 
 def _topics_line(topic: str, local: bool) -> str:
@@ -1723,13 +1917,8 @@ def cmd_check(args) -> int:
             "tree that has moved proves nothing about the tree that will be "
             "split.")
 
-    entry_paths = [str(e.get("path")) for e in plan.entries]
-    tree = source.tree()
-    tree_paths = [path for path, _, _, _ in tree]
-    findings.extend(_coverage_findings(entry_paths, tree_paths))
-    findings.extend(_leg_findings(plan))
-    submodule_findings, remediation = _submodule_findings(plan, source, tree)
-    findings.extend(submodule_findings)
+    entry_findings, remediation = _entry_findings(plan, source)
+    findings.extend(entry_findings)
 
     names = plan.names()
     pins = set(plan.pins)
@@ -1812,23 +2001,11 @@ def _confirm(args, plan: Plan, names: dict) -> None:
 
 
 def _refuse_an_unrunnable_plan(plan: Plan, source: Source) -> None:
-    """The three states a plan can be in that must not be executed.
+    """The two states a plan can be in that must not be executed.
 
     An unanswered question is never an implicit `root`, and a plan written
     against a tree that has since moved proves nothing about the tree that
-    would be split — which is how a path goes missing. And a plan that
-    splits a submodule from its registration, keeps one nothing registers,
-    or keeps one in the root, builds an assembly that cannot be cloned:
-    refused HERE, before either leg exists, because once
-    `_create_leg_remotes` has run, a re-run with the corrected plan meets two
-    legs that already exist (#166). The refusal is named by the FIRST
-    problem, which `submodule_plan_problems` lists in the order to fix them
-    in, and its detail names up to eight of them and counts the rest.
-
-    So `execute` refuses every SUBMODULE problem `check` finds, in `check`'s
-    words. A path no entry covers, or two do, or whose entry has a
-    misspelled leg, passes here and is refused by #168's
-    `_refuse_what_check_finds`, which `cmd_execute` runs next.
+    would be split — which is how a path goes missing.
     """
     unresolved = [e for e in plan.entries if e.get("leg") is None]
     if unresolved:
@@ -1847,15 +2024,6 @@ def _refuse_an_unrunnable_plan(plan: Plan, source: Source) -> None:
             "Remediation: re-run `plan`, re-answer anything new, then "
             "`check`. Splitting a tree the plan has not seen is how a path "
             "goes missing.")
-    tree = source.tree()
-    problems = submodule_plan_problems(plan.entries, tree,
-                                       source.registered_submodules(tree))
-    if problems:
-        details = [detail for _, detail in problems[:8]]
-        if len(problems) > 8:
-            details.append(f"and {len(problems) - 8} more")
-        raise Refusal(problems[0][0], "; ".join(details),
-                      SUBMODULE_REMEDIATION)
 
 
 def _create_leg_remotes(plan: Plan, names: dict, repositories: dict,
@@ -1995,8 +2163,8 @@ def _mount_the_legs(assembly: Path, work_root: Path, names: dict, urls: dict,
     # `git rm` of a submodule edits the file that registers it. #166 ruled
     # that the assembly root keeps no submodule of the source's: a plan that
     # keeps `.gitmodules` or a gitlink here, or splits one from its
-    # registration, is a `check` finding and an `execute` refusal before this
-    # runs, and #168 refuses every other finding of `check` there too.
+    # registration, is a `check` finding, and `execute` refuses every
+    # finding of `check` before this runs (#168).
     # Appending the mounts to a `.gitmodules` left here, rather than
     # replacing it, is MOUNT DEFENCE IN DEPTH for a plan that slipped past
     # both, not a shape a plan may choose; such a file still fails
@@ -2101,11 +2269,13 @@ def _refuse_what_check_finds(plan: Plan, source: Source) -> None:
     say yes after `check`, but `execute` is the one gate that cannot be
     skipped, so it says no to the same findings.
 
-    THE FINDINGS ARE `check`'S OWN: the same two functions over the same two
-    lists, so the two commands cannot disagree about what a plan covers. The
-    refusal's code is the FIRST finding's own (`plan-uncovered`, ...); its
-    detail is every finding as `check` prints it, capped at
-    `REFUSED_FINDINGS_SHOWN` with an "and N more" tail.
+    THE FINDINGS ARE `check`'S OWN: `_entry_findings`, the one list `check`
+    prints, so the two commands cannot disagree about what a plan covers.
+    The refusal's code is the FIRST finding's own (`plan-uncovered`, ...);
+    its detail is every finding as `check` prints it, capped at
+    `REFUSED_FINDINGS_SHOWN` with an "and N more" tail; its remediation is
+    this one, then whatever `check` prints after its findings -- #166's
+    submodule remediation, when one of them is a submodule problem.
 
     THE ORDER IS PART OF THE FIX. This runs AFTER `_refuse_an_unrunnable_plan`:
     `_leg_findings` also reports `plan-unresolved`, which that function has
@@ -2122,16 +2292,16 @@ def _refuse_what_check_finds(plan: Plan, source: Source) -> None:
     already made the work directory and an `org/repo` source has already been
     cloned into it: they come first, and neither is a leg.)
 
-    ONE LIST, LATER. #166 adds `submodule_plan_problems` to `check` and to
-    `_refuse_an_unrunnable_plan`. Once both branches have merged, `check`,
-    `_refuse_an_unrunnable_plan` and this function can read ONE shared list of
-    findings. That is deliberately not done here, so that the two branches do
-    not edit the same functions and conflict.
+    ONE LIST. While #168 and #166 were both open, each composed its own
+    findings, so that the two branches would not edit the same functions;
+    #166 refused its submodule problems in `_refuse_an_unrunnable_plan`.
+    With both merged, `check` and this function read `_entry_findings` and
+    nothing else, and `_refuse_an_unrunnable_plan` is back to its two
+    states: a plan `check` rejects as uncovered and split is refused for
+    both at once, and a submodule problem is refused here like any other,
+    after `_leg_paths` has checked every path as a `git` argument.
     """
-    entry_paths = [str(e.get("path")) for e in plan.entries]
-    tree_paths = [path for path, _, _, _ in source.tree()]
-    findings = (_coverage_findings(entry_paths, tree_paths)
-                + _leg_findings(plan))
+    findings, remediation = _entry_findings(plan, source)
     if not findings:
         return
     # `FINDING <code>: <detail>` is the one shape both functions write.
@@ -2142,13 +2312,14 @@ def _refuse_what_check_finds(plan: Plan, source: Source) -> None:
     if len(findings) > REFUSED_FINDINGS_SHOWN:
         lines.append(f"  and {len(findings) - REFUSED_FINDINGS_SHOWN} more")
     raise Refusal(
-        code, "\n".join(lines),
-        "Remediation: no leg repository was created and nothing was pushed. "
-        "Correct the plan -- answer each entry's `leg:` and cover every "
-        "source path exactly once -- and run `check` until it prints `plan "
-        "ok`, then run `execute` again. A leg made from a plan `check` "
-        "rejects is one the corrected plan cannot make again: under "
-        "`--local-remote-dir` it meets `leg-remote-exists`.")
+        code, "\n".join(lines), "\n".join([
+            "Remediation: no leg repository was created and nothing was "
+            "pushed. Correct the plan -- answer each entry's `leg:` and cover "
+            "every source path exactly once -- and run `check` until it "
+            "prints `plan ok`, then run `execute` again. A leg made from a "
+            "plan `check` rejects is one the corrected plan cannot make "
+            "again: under `--local-remote-dir` it meets `leg-remote-exists`.",
+            *remediation]))
 
 
 def _refuse_unconsented_seeding(args, plan: Plan, seeded: list) -> None:
@@ -2649,7 +2820,7 @@ class _SplitTree:
                         for path, mode, oid, _ in _tree_of(assembly, commit)}
         #: The mounted legs: a directory in a checkout, so `..` may leave one.
         self.mounts = {path for path, (mode, _) in self.entries.items()
-                       if mode == "160000"}
+                       if mode == GITLINK_MODE}
         self._dirs: set[str] | None = None
 
     def blob_at(self, path: str) -> str:
@@ -2717,7 +2888,7 @@ class _SplitTree:
         mode, oid = self.entries.get(at, ("", ""))
         if mode != SYMLINK_MODE:
             return None
-        return git_out(["cat-file", "blob", oid], cwd=self.assembly,
+        return git_out([GIT_CAT_FILE, "blob", oid], cwd=self.assembly,
                        binary=True).decode("utf-8", "surrogateescape")
 
 
@@ -2730,7 +2901,8 @@ def _pinned_shape_paths(assembly: Path, pin: str) -> list[str] | None:
     the one outcome it exists to prevent.
     """
     try:
-        loaded = parse_yaml(git_out(["cat-file", "blob", pin], cwd=assembly))
+        loaded = parse_yaml(git_out([GIT_CAT_FILE, "blob", pin],
+                                    cwd=assembly))
     except (YamlError, UnicodeDecodeError):
         return None
     rows = loaded.get("files") if isinstance(loaded, dict) else None

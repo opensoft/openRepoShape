@@ -9,7 +9,9 @@ from __future__ import annotations
 import importlib.util
 import re
 import shutil
+import subprocess
 import sys
+from argparse import Namespace
 from pathlib import Path
 
 import pytest
@@ -76,7 +78,7 @@ def test_adopt_moves_existing_gitmodules_with_its_dependency(tmp_path,
     checked = adopt("check", plan)
     assert checked.returncode == 0, checked.stderr + checked.stdout
     result = adopt("execute", plan, "--yes",
-                   "--local-remote-dir", str(tmp_path / "remotes"),
+                   "--local-remote-dir", str(tmp_path / REMOTES),
                    "--work-dir", str(tmp_path / "work"))
     assert result.returncode == 0, result.stderr + result.stdout
 
@@ -162,7 +164,7 @@ def mount_world(tmp_path):
         for path in registered:
             add_submodule(source, dependency, path)
         if registered:
-            commit_as_source_human(source, "Register dependencies")
+            commit_as_source_human(source, REGISTER)
         work = tmp_path / "work"
         work.mkdir()
         names = {role: f"Northwind-{role}" for role in ("spec", "code")}
@@ -241,7 +243,7 @@ def test_mount_stages_gitmodules_past_a_gitignore_that_hides_it(
     none to replace and `git submodule add` writes its own; a source whose
     file the plan moved gets a fresh one, staged with `-f`.
     """
-    tree = {"README.md": "# Thing\n", ".gitignore": IGNORE_DOTFILES,
+    tree = {README: "# Thing\n", ".gitignore": IGNORE_DOTFILES,
             "src/app.py": "VALUE = 1\n"}
     adopter, source, work, names, urls = mount_world(registered, tree)
     assert git("check-ignore", "-q", "--no-index", ".gitmodules",
@@ -273,13 +275,13 @@ def test_mount_removes_gitmodules_before_a_submodule_that_sorts_ahead(
 
 # --- the plan's own answer: one leg for a submodule and its registration ----
 #
-# #166. `check` and `execute` read the SAME `submodule_plan_problems`, so
-# `execute` refuses every submodule problem `check` finds (and #168 every
-# other finding), and `plan` asks the question on every entry that holds a
-# submodule, so it never proposes what `check` refuses. `check` reads the
-# source's `.gitmodules` as git's own submodule reader will read it in the
-# leg. None of these needs `git filter-repo` but the ones that reach
-# `execute` past its preflight.
+# #166. `check` and `execute` read the SAME list of findings, so `execute`
+# refuses every submodule problem `check` finds beside every other one (#168),
+# and `plan` asks the question on every entry that holds a submodule, so it
+# never proposes what `check` refuses. `check` reads the source's
+# `.gitmodules` as git's own submodule reader will read it in the leg. None
+# of these needs `git filter-repo` but the ones that reach `execute` past its
+# preflight.
 
 #: The ids, as `check` prints them and `execute` raises them.
 SPLIT = "plan-submodule-split"
@@ -317,6 +319,18 @@ def registration(name: str = DEPENDENCY, url: str = "../dependency") -> str:
 #: code, and a file a directory holding a submodule may hold beside it.
 VENDORED = "src/vendored"
 DOCS_INDEX = "docs/index.md"
+#: The paths the questions below name, each in more than two of them.
+APP = "src/app/"
+DOCS = "docs/"
+THEME_README = "docs/theme/README.md"
+THEME_SUB = "docs/theme/sub"
+README = "README.md"
+#: A later section that gives `registration()`'s path to a name with no url.
+SHADOWING = '[submodule "b"]\n\tpath = upstream/dependency\n'
+#: The commit a source registers its dependencies in.
+REGISTER = "Register dependencies"
+#: Where `execute` makes the legs' bare remotes, under a test's own directory.
+REMOTES = "remotes"
 #: A section that moves `registration()`'s name to another path.
 MOVED_ELSEWHERE = '[submodule "upstream/dependency"]\n\tpath = elsewhere\n'
 
@@ -327,7 +341,7 @@ RESERVED = "is reserved for its two leg mounts"
 
 #: A source whose plan asks nothing but the submodule's questions: `specs/`
 #: and `src/` classify themselves and `README.md` stays in the root.
-SMALL_TREE = {"README.md": "# Thing\n", "src/app/util.py": "VALUE = 1\n",
+SMALL_TREE = {README: "# Thing\n", "src/app/util.py": "VALUE = 1\n",
               "specs/001-feature/tasks.md": "- [ ] one\n"}
 
 # The sources these tests answer plans for, as `registered_source`
@@ -384,7 +398,7 @@ def registered_source(base: Path, registered=(DEPENDENCY,),
         (source / GITMODULES).write_bytes(raw.replace(
             THE_DEPENDENCY.encode(), dependency.as_posix().encode()))
         git("add", "--", GITMODULES, cwd=source)
-    commit_as_source_human(source, "Register dependencies")
+    commit_as_source_human(source, REGISTER)
     return source
 
 
@@ -501,7 +515,7 @@ def test_plan_asks_the_submodule_question_on_gitmodules(plan_of):
     ((".cursor",), {}, ".cursor", "root-assistant-instructions", ()),
     # Asked already, but whether it is root: `.gitmodules`' question instead.
     ((".agents",), {}, ".agents", "ambiguous-assistant-project-memory", ()),
-    (("docs/theme",), {DOCS_INDEX: "# Docs\n"}, "docs/",
+    (("docs/theme",), {DOCS_INDEX: "# Docs\n"}, DOCS,
      "spec-governance", (DOCS_INDEX, "docs/theme")),
     ((DEPENDENCY,), {}, UPSTREAM, "default", ()),
     # Nothing but submodules, and still split, to drop one on its own.
@@ -509,12 +523,10 @@ def test_plan_asks_the_submodule_question_on_gitmodules(plan_of):
      ("vendor/a", "vendor/b")),
     # Under a rule that would have called it code, unasked (#166's N3).
     ((VENDORED,), {}, "src/", "code-source-and-tests",
-     ("src/app/", VENDORED)),
+     (APP, VENDORED)),
     # Deeper than one level: only the directory holding it is opened.
-    (("docs/theme/sub",), {DOCS_INDEX: "# Docs\n",
-                           "docs/theme/README.md": "# Theme\n"},
-     "docs/", "spec-governance",
-     (DOCS_INDEX, "docs/theme/README.md", "docs/theme/sub")),
+    ((THEME_SUB,), {DOCS_INDEX: "# Docs\n", THEME_README: "# Theme\n"},
+     DOCS, "spec-governance", (DOCS_INDEX, THEME_README, THEME_SUB)),
 ], ids=["specify-vendored", "cursor", "agents", "docs-theme", "upstream",
         "two-in-one-entry", "src-vendored", "nested"])
 def test_plan_asks_on_every_entry_that_holds_a_submodule(
@@ -533,8 +545,9 @@ def test_plan_asks_on_every_entry_that_holds_a_submodule(
     expected = {**rows[GITMODULES], "path": entry, "files": row["files"],
                 "bytes": row["bytes"]}
     expected["question"] += (
-        f" This entry holds the submodule(s) {', '.join(gitlinks)}: it is "
-        f"asked this question, not classified by its rule `{rule}`.")
+        " This entry holds the submodule(s) "
+        + ", ".join(f"`{path}`" for path in gitlinks)
+        + f": it is asked this question, not classified by its rule `{rule}`.")
     if own:
         expected["question"] += (
             " Split the entry if its paths do not all belong in one leg: "
@@ -630,7 +643,7 @@ def test_the_split_the_question_names_is_the_edit_that_works(tmp_path):
                                      orphan=VENDORED), tmp_path)[0]
     named = REPLACE_WITH_RE.search(plan_rows(plan)["src/"]["question"])
     own = re.findall(r"`([^`]+)`", named[1])
-    assert own == ["src/app/", VENDORED]
+    assert own == [APP, VENDORED]
     beside = answered(plan, tmp_path, {"src/": "code"})
     edited(beside, None, {VENDORED: "drop"})
     assert finding_codes(check_plan(beside).stderr) == ["plan-covered-twice"]
@@ -642,6 +655,164 @@ def test_the_split_the_question_names_is_the_edit_that_works(tmp_path):
     result = check_plan(split)
     assert result.returncode == 0, result.stderr
     assert "plan ok" in result.stdout
+
+
+def children(source: Path, directory: str) -> list[str]:
+    """The plan entries for what is directly in `directory` at HEAD: a
+    directory with its slash, anything else as it is."""
+    listed = git("ls-tree", "HEAD", "--", directory, cwd=source).stdout
+    return [path + "/" if kind == "tree" else path
+            for kind, path in (line.split()[1::2]
+                               for line in listed.splitlines())]
+
+
+@pytest.mark.parametrize("gitlink, extra, entry, opened, where", [
+    (VENDORED, {f"src/f{i:02}.py": "x\n" for i in range(12)}, "src/",
+     ("src/",), "`src/`, 14 in all"),
+    # Deeper than one level: each directory on the way is opened.
+    (THEME_SUB, {**{f"docs/f{i}.md": "x\n" for i in range(8)},
+                 THEME_README: "# Theme\n"}, DOCS, (DOCS, "docs/theme/"),
+     "one of `docs/`, `docs/theme/`, other than those directories, "
+     "10 in all"),
+], ids=["one-directory", "nested"])
+def test_a_long_split_is_described_not_listed(adopter, tmp_path, gitlink,
+                                              extra, entry, opened, where):
+    """#166's R5-2. Past SPLIT_ENTRIES_NAMED the question does not name the
+    entries that replace a directory, one by one, on one line of the plan
+    and again in `check`'s finding: it says which directories they are the
+    paths of and counts them, and that edit is the one `check` passes."""
+    source = registered_source(tmp_path, registered=(gitlink,), extra=extra)
+    plan = planned(source, tmp_path)[0]
+    question = plan_rows(plan)[entry]["question"]
+    assert question.endswith(
+        " Split the entry if its paths do not all belong in one leg: replace "
+        f"it with an entry for each path directly in {where}, each with its "
+        "own `leg:`. An entry added beside this one for a path it covers is "
+        "`plan-covered-twice`.")
+    assert "f00" not in question and "f0." not in question
+    own = [path for directory in opened for path in children(source, directory)
+           if path not in opened]
+    assert len(own) > adopter.SPLIT_ENTRIES_NAMED
+    split = answered(plan, tmp_path, {GITMODULES: "code"})
+    edited(split, entry, {path: "code" for path in own})
+    result = check_plan(split)
+    assert result.returncode == 0, result.stderr
+
+
+#: A harness under `src/` that reads `contracts/`: `plan` names it in a
+#: follow-up, and the root Makefile's `CONTRACTS_DIR` in another.
+HARNESS = {"contracts/api.yaml": "kind: api\n",
+           "src/app/harness.py": "SCHEMA = 'contracts/api.yaml'\n"}
+
+
+@pytest.mark.parametrize("gitlink, entry", [
+    ("src/vendor/dep", "src/"),
+    ("contracts/vendor/x", "contracts/"),
+])
+def test_a_submodule_takes_nothing_from_what_the_rules_imply(tmp_path,
+                                                             gitlink, entry):
+    """#166's NEW-1. The entry holding the submodule is asked, and what the
+    RULES imply about the rest of the source is what it is without one: the
+    harness follow-up and the `CONTRACTS_DIR` line, the seeding record, and
+    no SEEDED warning. Read after the question, `src/: null` lost the first
+    and called the code leg empty, and `contracts/: null` lost both."""
+    plain = make_source_repo(tmp_path / "plain",
+                             tree={**SMALL_TREE, **HARNESS})
+    without = load_yaml(planned(plain, tmp_path)[0])
+    held = tmp_path / "held"
+    plan, written = planned(registered_source(held, registered=(gitlink,),
+                                              extra=HARNESS), held)
+    assert plan_rows(plan)[entry]["leg"] is None
+    data = load_yaml(plan)
+    follow_ups = data["follow_ups"]
+    assert follow_ups == without["follow_ups"]
+    assert [item.split(" ", 1)[0] for item in follow_ups
+            if "`contracts/`" in item or "CONTRACTS_DIR" in item] \
+        == ["code/src/app/harness.py", "the"], follow_ups
+    assert data["seeding"] == without["seeding"] == {
+        "spec": {"seeded_from_template": False},
+        "code": {"seeded_from_template": False}}
+    assert "will be SEEDED" not in written.stdout
+
+
+def git_bytes(source: Path, *args: str, stdin: bytes) -> bytes:
+    """`git <args>` in `source`, fed and answering BYTES."""
+    done = subprocess.run(["git", *args], cwd=source, input=stdin,
+                          capture_output=True, check=False)
+    if done.returncode:
+        # Where git will not record such a name -- Windows refuses a newline
+        # in a path -- the case cannot be built there, and is not a failure.
+        pytest.skip(f"git {args[0]} refuses it here: {done.stderr!r}")
+    return done.stdout
+
+
+def raw_source(base: Path, gitlink: bytes, beside: bytes | None) -> Path:
+    """A source with the submodule `gitlink`, registered, and a file at
+    `beside`: names given as BYTES and put straight into the index, as `git
+    add` records them, so that a name no UTF-8 file or line can hold is
+    built with no filesystem that has to hold it."""
+    dependency = make_source_repo(base / "dependency", tree=DEPENDENCY_TREE,
+                                  edits=())
+    source = make_source_repo(base / "raw-source", tree=SMALL_TREE)
+    head = git("rev-parse", "HEAD", cwd=dependency).stdout.strip()
+    index = b"160000 " + head.encode() + b"\t" + gitlink + b"\x00"
+    if beside:
+        blob = git_bytes(source, "hash-object", "-w", "--stdin",
+                         stdin=b"x\n").strip()
+        index += b"100644 " + blob + b"\t" + beside + b"\x00"
+    git_bytes(source, "update-index", "-z", "--index-info", stdin=index)
+    # Quoted as git config quotes a value: a bare backslash is an escape.
+    quoted = gitlink.replace(b"\\", b"\\\\").replace(b'"', b'\\"')
+    (source / GITMODULES).write_bytes(
+        b'[submodule "dep"]\n\tpath = "' + quoted + b'"\n\turl = '
+        + dependency.as_posix().encode() + b"\n")
+    git("add", "--", GITMODULES, cwd=source)
+    commit_as_source_human(source, REGISTER)
+    return source
+
+
+@pytest.mark.parametrize("gitlink, beside, entry, named", [
+    # Not UTF-8: `Source.tree` keeps the byte as a surrogate, which no UTF-8
+    # plan can hold.
+    (b"upstream/d\xe9p", None, UPSTREAM,
+     " This entry holds the submodule(s) `upstream/d\\xe9p`: it is asked"),
+    (b"src/vendored", b"src/caf\xe9.py", "src/",
+     "an entry for each of `src/app/`, `src/caf\\xe9.py`, `src/vendored`,"),
+    # A newline would end the plan's line, and read back as a space.
+    (b"src/vendored", b"src/a\nb.py", "src/",
+     "an entry for each of `src/a\\nb.py`, `src/app/`, `src/vendored`,"),
+    # A backtick, and a backslash, would break the backticks around a name.
+    (b"src/ven`d\\or", None, "src/",
+     "an entry for each of `src/app/`, `src/ven\\`d\\\\or`,"),
+], ids=["non-utf8-submodule", "non-utf8-file-beside", "newline-beside",
+        "backtick-and-backslash"])
+def test_a_name_no_plan_line_can_hold_is_spelled_in_the_question(
+        tmp_path, gitlink, beside, entry, named):
+    """#166's NEW-2 and R5-1. A name that is not UTF-8, or that holds a
+    newline or a backtick, is SPELLED in the question with a backslash, and
+    `plan` writes its plan over the one `--out` held -- where it used to raise
+    mid-write and leave that file empty."""
+    source = raw_source(tmp_path, gitlink, beside)
+    plan = tmp_path / PLAN_FILE
+    plan.write_text("a plan answered before this run\n", encoding="utf-8")
+    written = write_plan(source, plan)
+    assert written.returncode == 0, written.stderr
+    assert named in plan_rows(plan)[entry]["question"]
+
+
+def test_a_newline_spelled_in_the_question_is_the_entry_to_write(tmp_path):
+    """The spelling is the entry: `src/a\\nb.py` between double quotes is a
+    YAML scalar holding the newline, so the split the question names covers
+    the file, where the name read back as `src/a b.py` covered nothing."""
+    source = raw_source(tmp_path, b"src/vendored", b"src/a\nb.py")
+    plan = planned(source, tmp_path)[0]
+    named = REPLACE_WITH_RE.search(plan_rows(plan)["src/"]["question"])
+    own = re.findall(r"`([^`]+)`", named[1])
+    assert own == ["src/a\\nb.py", APP, VENDORED]
+    split = answered(plan, tmp_path, {GITMODULES: "code"})
+    edited(split, "src/", {f'"{path}"': "code" for path in own})
+    result = check_plan(split)
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.parametrize("leg, expected", [
@@ -723,9 +894,9 @@ UPPER_CASE_KEYS = ('[Submodule "upstream/dependency"]\n'
     (registration(url="-oops"), [UNREGISTERED]),
     (registration() + "\tpath = -upstream/dependency\n", []),
     # A path belongs to the LAST name given it, url or none.
-    (registration() + '[submodule "b"]\n\tpath = upstream/dependency\n',
+    (registration() + SHADOWING,
      [UNREGISTERED]),
-    ('[submodule "b"]\n\tpath = upstream/dependency\n' + registration(), []),
+    (SHADOWING + registration(), []),
     # ...and a name moved elsewhere takes its old path's registration with
     # it, even one a later name holds (git keeps that map BY PATH).
     (registration() + registration("b") + MOVED_ELSEWHERE, [UNREGISTERED]),
@@ -754,25 +925,123 @@ def test_a_registration_is_a_named_path_with_a_url(tmp_path, gitmodules,
     assert result.returncode == (1 if expected else 0)
 
 
+#: The submodule most of these sources hold, as a finding names it.
+NAMED_DEPENDENCY = f"{DEPENDENCY} (entry {UPSTREAM})"
+#: Both of them kept in code.
+BOTH_IN_CODE = {GITMODULES: "code", UPSTREAM: "code"}
+#: What `why_not` says of an entry that holds the path and no url.
+NO_URL_READ = "its .gitmodules entry `{}` has no url git reads"
+
+
+@pytest.mark.parametrize("source, answers, submodule, why", [
+    ({"gitmodules": '[submodule "upstream/dependency"]\n'
+                    "\tpath = upstream/dependency\n"},
+     BOTH_IN_CODE, NAMED_DEPENDENCY, NO_URL_READ.format(DEPENDENCY)),
+    ({"gitmodules": registration(url="-oops")}, BOTH_IN_CODE,
+     NAMED_DEPENDENCY, NO_URL_READ.format(DEPENDENCY)),
+    # Shadowed: the path belongs to the LAST name given it.
+    ({"gitmodules": registration() + SHADOWING},
+     BOTH_IN_CODE, NAMED_DEPENDENCY, NO_URL_READ.format("b")),
+    ({"gitmodules": registration("../escape")}, BOTH_IN_CODE,
+     NAMED_DEPENDENCY,
+     "git ignores its .gitmodules entry `../escape` as a suspicious name"),
+    ({"gitmodules": registration() + MOVED_ELSEWHERE}, BOTH_IN_CODE,
+     NAMED_DEPENDENCY, "git dropped its path when the .gitmodules entry "
+                       "`upstream/dependency` moved to `elsewhere`"),
+    ({"gitmodules": registration() + registration("b") + MOVED_ELSEWHERE},
+     BOTH_IN_CODE, NAMED_DEPENDENCY,
+     "git dropped its path when the .gitmodules entry "
+     "`upstream/dependency` moved to `elsewhere`"),
+    ({"registered": (), "orphan": "-dep",
+      "gitmodules": '[submodule "d"]\n\tpath = -dep\n\turl = ../dep\n'},
+     {GITMODULES: "code", '"-dep"': "code"}, "-dep",
+     "git ignores its .gitmodules path, which starts with `-`"),
+    # No entry names it: what was said before.
+    ({"gitmodules": '[submodule "elsewhere"]\n'
+                    "\tpath = elsewhere/dependency\n\turl = ../dependency\n"},
+     BOTH_IN_CODE, NAMED_DEPENDENCY,
+     "no .gitmodules entry in the source registers its path with a url"),
+], ids=["no-url", "url-option-like", "shadowed-by-a-later-name",
+        "suspicious-name", "moved-off-its-path", "moved-under-a-later-name",
+        "path-option-like", "no-entry"])
+def test_an_unregistered_submodule_is_told_why_git_ignores_its_entry(
+        adopter, tmp_path, source, answers, submodule, why):
+    """#166's N2. An entry of `.gitmodules` that names the submodule's path
+    and that git ignores is named, with the reason, rather than "no entry"
+    beside an entry the person can see."""
+    plan = answered(planned(registered_source(tmp_path, **source),
+                            tmp_path)[0], tmp_path, answers)
+    assert findings(check_plan(plan).stderr) == [(
+        UNREGISTERED, f"the submodule {submodule} has leg: code but {why}, "
+                      + adopter.NO_URL_IN_THE_LEG)]
+
+
 @pytest.mark.parametrize("modules_leg, dependency_leg, expected", [
     ("code", "code", [UNREADABLE]),
-    # The file alone, kept, fails the leg's recursive clone on its own.
     ("code", "drop", [UNREADABLE]),
     ("drop", "spec", [UNREADABLE]),
-    ("drop", "drop", []),
-    ("root", "drop", [ROOT]),
+    # Beside a submodule `git filter-repo` fails on it, wherever the two go.
+    ("drop", "drop", [UNREADABLE]),
+    ("root", "drop", [ROOT, UNREADABLE]),
 ])
 def test_a_gitmodules_git_cannot_read_is_not_one_that_registers_nothing(
-        plan_of, tmp_path, modules_leg, dependency_leg, expected):
+        adopter, plan_of, tmp_path, modules_leg, dependency_leg, expected):
     plan = answered(plan_of(UNREADABLE_FILE)[0], tmp_path,
                     {GITMODULES: modules_leg, UPSTREAM: dependency_leg})
     result = check_plan(plan)
     assert finding_codes(result.stderr) == expected, result.stderr
-    assert result.returncode == (1 if expected else 0)
-    if UNREADABLE in expected:
-        assert (f"FINDING {UNREADABLE}: git cannot read the source's "
-                ".gitmodules for its submodules (fatal: bad config line") \
-            in result.stderr
+    assert result.returncode == 1
+    assert (f"FINDING {UNREADABLE}: git cannot read the source's "
+            ".gitmodules for its submodules (fatal: bad config line 2 in "
+            f".gitmodules), {adopter.FAILS_IN_THE_EXTRACTION}\n") \
+        in result.stderr
+
+
+#: A `.gitmodules` whose one defect is a key with no value, which only git's
+#: SUBMODULE reader dies on, and git runs that for a gitlink alone.
+BARE_KEY = '[submodule "b"]\n\tpath\n'
+#: A line no git reader can parse, and nothing else.
+BAD_LINE = UNREADABLE_FILE["gitmodules"]
+
+
+@pytest.mark.parametrize("source, answers, legs, where", [
+    # S3: beside no submodule a key with no value is read by nothing, and
+    # main adopts and clones it.
+    ({"registered": (), "gitmodules": BARE_KEY}, {GITMODULES: "code"}, {},
+     None),
+    ({"registered": (), "gitmodules": '[submodule "d"]\n\tpath = d\n\turl\n'},
+     {GITMODULES: "code"}, {}, None),
+    # Every reader dies on a bad line: in a leg, the assembly's clone.
+    ({"registered": (), "gitmodules": BAD_LINE}, {GITMODULES: "code"}, {},
+     "FAILS_IN_THE_CLONE"),
+    ({"registered": (), "gitmodules": BAD_LINE}, {GITMODULES: "drop"}, {},
+     None),
+    # Beside a submodule, a key with no value fails `git filter-repo` too...
+    ({"gitmodules": registration() + BARE_KEY},
+     {GITMODULES: "drop", UPSTREAM: "drop"}, {}, "FAILS_IN_THE_EXTRACTION"),
+    # ...unless no leg is extracted at all.
+    (UNREADABLE_FILE, {GITMODULES: "drop", UPSTREAM: "drop"},
+     {"src/": "drop", "specs/": "drop"}, None),
+], ids=["no-path-value-beside-no-submodule",
+        "no-url-value-beside-no-submodule",
+        "bad-line-beside-no-submodule-kept",
+        "bad-line-beside-no-submodule-dropped",
+        "no-value-beside-a-dropped-submodule", "no-leg-extracted"])
+def test_git_fails_on_a_gitmodules_it_cannot_read_where_it_reads_it(
+        adopter, plan_of, tmp_path, source, answers, legs, where):
+    """#166's S3, measured end to end on main and this branch alike: the
+    finding is made where git would fail, and says where that is -- the
+    extraction, for a file beside a submodule, or else the clone of a leg
+    that keeps it."""
+    plan = answered(plan_of(source)[0], tmp_path, answers)
+    for path, leg in legs.items():
+        edited(plan, path, {path: leg})
+    found = findings(check_plan(plan).stderr)
+    if where is None:
+        assert found == [], found
+        return
+    assert [code for code, _ in found] == [UNREADABLE], found
+    assert found[0][1].endswith(getattr(adopter, where)), found
 
 
 @pytest.mark.parametrize("where, expected", [
@@ -800,7 +1069,8 @@ def test_git_follows_no_include_in_a_gitmodules(tmp_path, where, expected):
 
 
 @pytest.mark.parametrize("source, said", [
-    (UNREADABLE_FILE, "fatal: bad config line"),
+    # git calls the file it read from `--file -` "standard input".
+    (UNREADABLE_FILE, "fatal: bad config line 2 in .gitmodules)"),
     # `git config --list` lists both; git's submodule reader dies on each.
     ({"gitmodules": registration() + '[submodule "b"]\n\tpath\n'},
      "missing value for 'submodule.b.path'"),
@@ -917,14 +1187,19 @@ def adopter():
 
 
 def refused_by_execute(adopter, plan_path: Path, tmp_path: Path):
-    """What `_refuse_an_unrunnable_plan` raises for `plan_path`, or None."""
+    """What `_refuse_what_check_finds` raises for `plan_path`, or None."""
     plan = adopter.Plan.load(plan_path)
     source = plan.open_source(None, tmp_path / "work")
     try:
-        adopter._refuse_an_unrunnable_plan(plan, source)
+        adopter._refuse_what_check_finds(plan, source)
     except adopter.Refusal as refusal:
         return refusal
     return None
+
+
+def as_refused(found: list[tuple[str, str]]) -> list[str]:
+    """`check`'s findings as `execute`'s refusal lists them, one a line."""
+    return [f"  FINDING {code}: {detail}" for code, detail in found]
 
 
 @pytest.mark.parametrize("source, answers, code", [
@@ -935,6 +1210,7 @@ def refused_by_execute(adopter, plan_path: Path, tmp_path: Path):
      UNREGISTERED),
     (LONE_ORPHAN, {UPSTREAM: "code"}, UNREGISTERED),
     (UNREADABLE_FILE, {GITMODULES: "code", UPSTREAM: "code"}, UNREADABLE),
+    (UNREADABLE_FILE, {GITMODULES: "drop", UPSTREAM: "drop"}, UNREADABLE),
     (REGISTERED, {GITMODULES: "spec", UPSTREAM: "spec"}, None),
     (REGISTERED, {GITMODULES: "code", UPSTREAM: "drop"}, None),
     (BESIDE, {GITMODULES: "code", UPSTREAM: "code", EXTRA: "drop"}, None),
@@ -942,7 +1218,7 @@ def refused_by_execute(adopter, plan_path: Path, tmp_path: Path):
 ])
 def test_execute_refuses_what_check_finds(adopter, plan_of, tmp_path,
                                           source, answers, code):
-    """The refusal `execute` makes, asked of `_refuse_an_unrunnable_plan`
+    """The refusal `execute` makes, asked of `_refuse_what_check_finds`
     directly; that `cmd_execute` makes it before any leg exists is pinned by
     the end-to-end refusal below, which needs `git filter-repo`."""
     plan = answered(plan_of(source)[0], tmp_path, answers)
@@ -951,11 +1227,11 @@ def test_execute_refuses_what_check_finds(adopter, plan_of, tmp_path,
     if code is None:
         assert found == [] and refusal is None, (found, refusal)
         return
-    # ONE definition: the refusal is what `check` found, in its words.
+    # ONE list: the refusal is what `check` found, in its words.
     assert refusal is not None, found
     assert refusal.code == found[0][0] == code
-    assert refusal.detail == "; ".join(detail for _, detail in found)
-    assert refusal.remediation == adopter.SUBMODULE_REMEDIATION
+    assert refusal.detail.splitlines()[1:] == as_refused(found)
+    assert refusal.remediation.endswith("\n" + adopter.SUBMODULE_REMEDIATION)
     # No stricter than the rule: one submodule may be dropped by itself.
     assert ("Any one submodule may also be dropped on its own: its "
             "registration stays behind") in refusal.remediation
@@ -978,7 +1254,8 @@ def test_a_mixed_refusal_is_named_by_the_problem_to_fix_first(
     """`.gitmodules` and `extra/orphan` in code, `d1/` to `d9/` split to
     spec, and `d0/` in the root or not: eleven problems or ten, listed root,
     then unregistered, then split. The refusal takes the FIRST one's code
-    and names eight of them, then counts the rest."""
+    and names as many as `execute` names of any findings, then counts the
+    rest."""
     answers = {GITMODULES: "code", EXTRA: "code", "d0/": first_leg,
                **{f"d{i}/": "spec" for i in range(1, 10)}}
     plan = answered(plan_of(CROWDED)[0], tmp_path, answers)
@@ -987,40 +1264,85 @@ def test_a_mixed_refusal_is_named_by_the_problem_to_fix_first(
         [ROOT] * (first_leg == "root") + [UNREGISTERED] + [SPLIT] * 9)
     refusal = refused_by_execute(adopter, plan, tmp_path)
     assert refusal.code == code
-    assert refusal.detail.split("; ") == (
-        [detail for _, detail in found[:8]] + [f"and {len(found) - 8} more"])
+    shown = adopter.REFUSED_FINDINGS_SHOWN
+    assert refusal.detail.splitlines()[1:] == (
+        as_refused(found[:shown]) + [f"  and {len(found) - shown} more"])
+
+
+def test_execute_refuses_every_finding_check_prints_at_once(
+        adopter, plan_of, tmp_path, monkeypatch):
+    """#166's NEW-3. `check` lists an uncovered path and a split submodule;
+    `execute` used to refuse the split alone, in a function of its own, and
+    the uncovered path only once that was fixed. Through `cmd_execute`, as a
+    person meets it: one refusal naming both, before any leg exists, with
+    #168's remedy and the submodule one."""
+    plan = answered(plan_of(REGISTERED)[0], tmp_path,
+                    {GITMODULES: "code", UPSTREAM: "spec"})
+    edited(plan, README, {})
+    found = findings(check_plan(plan).stderr)
+    assert [code for code, _ in found] == [UNCOVERED, SPLIT], found
+    # Every refusal here comes before the tool would be used.
+    monkeypatch.setattr(adopter, "_require_filter_repo", lambda: None)
+    remotes = tmp_path / REMOTES
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter.cmd_execute(Namespace(
+            plan=str(plan), source=None, local_remote_dir=remotes,
+            allow_empty_leg=[], yes=True, work_dir=tmp_path / "work"))
+    refusal = caught.value
+    assert refusal.code == UNCOVERED
+    assert refusal.detail.splitlines()[1:] == as_refused(found)
+    assert "no leg repository was created" in refusal.remediation
+    assert refusal.remediation.endswith("\n" + adopter.SUBMODULE_REMEDIATION)
+    assert not remotes.exists()
 
 
 def execute_in(plan: Path, base: Path):
     """`execute --yes` of `plan`, its leg remotes under `base/remotes` and its
     work in `base/work`: `(result, remotes, work)`."""
-    remotes, work = base / "remotes", base / "work"
+    remotes, work = base / REMOTES, base / "work"
     return adopt("execute", plan, "--yes", "--local-remote-dir", str(remotes),
                  "--work-dir", str(work)), remotes, work
 
 
+def clone_the_split(source: Path, tmp_path: Path):
+    """`git clone --recurse-submodules` of the branch `execute` pushed the
+    split to, into `tmp_path/clone`: what a person runs next."""
+    return git(*FILE_PROTOCOL, "clone", "-q", "--recurse-submodules", "-b",
+               "adopt/three-repo-shape", str(source), str(tmp_path / "clone"),
+               cwd=tmp_path, check=False)
+
+
 def source_state(source: Path) -> list[str]:
     """HEAD, every ref and `git status`: what a refused `execute` must not
-    move."""
+    move. Submodules are ignored by the status, which otherwise reads
+    `.gitmodules` for them and dies on one it cannot read."""
     return [git(*args, cwd=source).stdout for args in (
-        ("rev-parse", "HEAD"), ("for-each-ref",), ("status", "--porcelain"))]
+        ("rev-parse", "HEAD"), ("for-each-ref",),
+        ("status", "--porcelain", "--ignore-submodules=all"))]
 
 
 @needs_filter_repo
-@pytest.mark.parametrize("source, answers, refused", [
-    (REGISTERED, {GITMODULES: "code", UPSTREAM: "spec"},
-     f"REFUSED {SPLIT}: the submodule upstream/dependency (entry upstream/) "
-     "has leg: spec but the source's .gitmodules has leg: code"),
-    (LONE_ORPHAN, {UPSTREAM: "code"},
-     f"REFUSED {UNREGISTERED}: the submodule upstream/orphan (entry "
-     "upstream/) has leg: code but no .gitmodules entry in the source "
-     "registers its path with a url"),
-], ids=["split", "unregistered-orphan"])
+@pytest.mark.parametrize("source, answers, code, refused", [
+    (REGISTERED, {GITMODULES: "code", UPSTREAM: "spec"}, SPLIT,
+     "the submodule upstream/dependency (entry upstream/) has leg: spec but "
+     "the source's .gitmodules has leg: code"),
+    (LONE_ORPHAN, {UPSTREAM: "code"}, UNREGISTERED,
+     "the submodule upstream/orphan (entry upstream/) has leg: code but no "
+     ".gitmodules entry in the source registers its path with a url"),
+    # Both dropped, and `git filter-repo` still fails on the file: on main
+    # that was after both leg remotes existed (#166's S3).
+    (UNREADABLE_FILE, {GITMODULES: "drop", UPSTREAM: "drop"}, UNREADABLE,
+     "git cannot read the source's .gitmodules for its submodules (fatal: "
+     "bad config line 2 in .gitmodules), and the source holds a submodule, "
+     "so `git filter-repo` fails on that file when `execute` extracts a "
+     "leg"),
+], ids=["split", "unregistered-orphan", "unreadable-beside-a-dropped-one"])
 def test_execute_refuses_a_submodule_plan_before_anything_exists(
-        tmp_path, source, answers, refused):
-    """Before #166 both plans were extracted, mounted, pushed and verified,
-    and each assembly's recursive clone then exited 128 -- the orphan's
-    although the source's own recursive clone exits 0. Refused now, and
+        tmp_path, source, answers, code, refused):
+    """Before #166 each plan was extracted, mounted, pushed and verified,
+    and the assembly's recursive clone then exited 128 -- the orphan's
+    although the source's own recursive clone exits 0 -- or, for the file
+    git cannot read, `execute` died extracting a leg. Refused now, and
     refused before `_create_leg_remotes`: a re-run must not meet two legs
     that a refused plan already made."""
     thing = registered_source(tmp_path, **source)
@@ -1028,7 +1350,8 @@ def test_execute_refuses_a_submodule_plan_before_anything_exists(
     plan = answered(planned(thing, tmp_path)[0], tmp_path, answers)
     result, remotes, work = execute_in(plan, tmp_path)
     assert result.returncode == 2, result.stderr + result.stdout
-    assert refused in result.stderr
+    assert f"REFUSED {code}: 1 finding(s) in " in result.stderr
+    assert f"\n  FINDING {code}: {refused}" in result.stderr
     assert "creating the leg repositories" not in result.stdout
     # Nothing was made but the empty work directory `--work-dir` names.
     assert not remotes.exists(), "a refused plan made the remotes directory"
@@ -1066,9 +1389,7 @@ def test_an_accepted_submodule_plan_adopts_clones_and_bootstraps(
     assert "adoption verified" in result.stdout
 
     clone = tmp_path / "clone"
-    cloned = git(*FILE_PROTOCOL, "clone", "-q", "--recurse-submodules", "-b",
-                 "adopt/three-repo-shape", str(thing), str(clone),
-                 cwd=tmp_path, check=False)
+    cloned = clone_the_split(thing, tmp_path)
     assert cloned.returncode == 0, cloned.stderr
     bootstrapped = run_script(clone / "scripts/bootstrap.py", cwd=clone)
     assert bootstrapped.returncode == 0, (bootstrapped.stderr
@@ -1088,3 +1409,23 @@ def test_an_accepted_submodule_plan_adopts_clones_and_bootstraps(
     # Cloned into the leg, at the commit the source pinned.
     assert {name: (leg / DEPENDENCY / name).read_text(encoding="utf-8")
             for name in DEPENDENCY_TREE} == DEPENDENCY_TREE
+
+
+@needs_filter_repo
+def test_a_key_with_no_value_beside_no_submodule_adopts_and_clones(tmp_path):
+    """#166's S3, end to end: a `.gitmodules` whose one defect is a key with
+    no value, in a source with no submodule, kept in a leg. git runs its
+    submodule reader for a gitlink alone, so nothing reads the file that way:
+    main adopted and cloned it, and `check` no longer refuses it."""
+    thing = registered_source(tmp_path, registered=(), gitmodules=BARE_KEY)
+    plan = answered(planned(thing, tmp_path)[0], tmp_path,
+                    {GITMODULES: "code"})
+    checked = check_plan(plan)
+    assert checked.returncode == 0, checked.stderr + checked.stdout
+    result = execute_in(plan, tmp_path)[0]
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "adoption verified" in result.stdout
+    clone = tmp_path / "clone"
+    cloned = clone_the_split(thing, tmp_path)
+    assert cloned.returncode == 0, cloned.stderr
+    assert (clone / "code" / GITMODULES).read_bytes() == BARE_KEY.encode()
