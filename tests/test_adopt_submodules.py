@@ -6,7 +6,10 @@ All repositories and remotes are local fixtures; no network is used.
 
 from __future__ import annotations
 
+import builtins
+import contextlib
 import importlib.util
+import io
 import re
 import shutil
 import subprocess
@@ -453,7 +456,8 @@ def edited(plan: Path, removed: str | None, added: dict) -> None:
     """`plan` with the entry for `removed` deleted, and an entry `path: leg`
     for each of `added` put first, as a hand edit would leave it -- a careless
     one, or one that splits an entry. Bytes, because `plan` writes LF on
-    every platform."""
+    every platform, and `conftest.resolve` keeps it so: an entry is found
+    by its LF-ended lines."""
     lines = plan.read_bytes().splitlines(keepends=True)
     if removed:
         start = lines.index(f"  - path: {removed}\n".encode())
@@ -476,6 +480,46 @@ def findings(stderr: str) -> list[tuple[str, str]]:
 
 def finding_codes(stderr: str) -> list[str]:
     return [code for code, _ in findings(stderr)]
+
+
+@contextlib.contextmanager
+def windows_text_mode():
+    """Text mode as Windows has it: a file opened for writing as text, with
+    no `newline=` named, gets CRLF for every `\\n` it is given. Only the
+    Windows job ever saw that, so it is put here where every platform does.
+    A context and not a fixture, so that it covers the one call it is for:
+    `plan_of` caches what it builds for the whole module."""
+    real_open = io.open
+
+    def open_as_windows(file, mode="r", buffering=-1, encoding=None,
+                        errors=None, newline=None, *rest, **named):
+        if newline is None and "b" not in mode and set(mode) & set("wax+"):
+            newline = "\r\n"
+        return real_open(file, mode, buffering, encoding, errors, newline,
+                         *rest, **named)
+
+    # `Path.write_text` opens through `io.open`; a bare `open` is `builtins`'.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(io, "open", open_as_windows)
+        patch.setattr(builtins, "open", open_as_windows)
+        yield
+
+
+def test_a_plan_answered_where_text_mode_writes_crlf_is_still_edited(
+        plan_of, tmp_path):
+    """PR #194's `tests-windows`, ten failures: `conftest.resolve` wrote the
+    answered plan with `Path.write_text`, which on Windows turns every LF
+    into CRLF, and `edited` -- which reads the LF `plan` writes on every
+    platform -- found neither `paths:` nor `  - path: <entry>` in it."""
+    asked = plan_of(REGISTERED)[0]
+    with windows_text_mode():
+        plan = answered(asked, tmp_path,
+                        {GITMODULES: "code", UPSTREAM: "code"})
+    assert b"\r" not in plan.read_bytes()
+    edited(plan, UPSTREAM, {DEPENDENCY: "spec"})
+    rows = plan_rows(plan)
+    assert UPSTREAM not in rows
+    assert rows[DEPENDENCY]["leg"] == "spec"
 
 
 def test_plan_asks_the_submodule_question_on_gitmodules(plan_of):
@@ -740,26 +784,35 @@ def git_bytes(source: Path, *args: str, stdin: bytes) -> bytes:
     done = subprocess.run(["git", *args], cwd=source, input=stdin,
                           capture_output=True, check=False)
     if done.returncode:
-        # Where git will not record such a name -- Windows refuses a newline
-        # in a path -- the case cannot be built there, and is not a failure.
+        # Where git fails outright on a name it will not record, the case
+        # cannot be built there, and is not a failure. `update-index` does
+        # not fail on one: it ignores it and exits 0, which `raw_source`
+        # finds by reading the tree back.
         pytest.skip(f"git {args[0]} refuses it here: {done.stderr!r}")
     return done.stdout
+
+
+#: Ends a name in `-z` output, and in what `update-index -z` is given.
+NUL = b"\x00"
 
 
 def raw_source(base: Path, gitlink: bytes, beside: bytes | None) -> Path:
     """A source with the submodule `gitlink`, registered, and a file at
     `beside`: names given as BYTES and put straight into the index, as `git
     add` records them, so that a name no UTF-8 file or line can hold is
-    built with no filesystem that has to hold it."""
+    built with no filesystem that has to hold it. Skipped where git does not
+    keep a name in the tree, which only git can say: `update-index` ignores a
+    path it will not record, and exits 0 (on the Windows runner it left out a
+    backslash and a newline)."""
     dependency = make_source_repo(base / "dependency", tree=DEPENDENCY_TREE,
                                   edits=())
     source = make_source_repo(base / "raw-source", tree=SMALL_TREE)
     head = git("rev-parse", "HEAD", cwd=dependency).stdout.strip()
-    index = b"160000 " + head.encode() + b"\t" + gitlink + b"\x00"
+    index = b"160000 " + head.encode() + b"\t" + gitlink + NUL
     if beside:
         blob = git_bytes(source, "hash-object", "-w", "--stdin",
                          stdin=b"x\n").strip()
-        index += b"100644 " + blob + b"\t" + beside + b"\x00"
+        index += b"100644 " + blob + b"\t" + beside + NUL
     git_bytes(source, "update-index", "-z", "--index-info", stdin=index)
     # Quoted as git config quotes a value: a bare backslash is an escape.
     quoted = gitlink.replace(b"\\", b"\\\\").replace(b'"', b'\\"')
@@ -768,6 +821,12 @@ def raw_source(base: Path, gitlink: bytes, beside: bytes | None) -> Path:
         + dependency.as_posix().encode() + b"\n")
     git("add", "--", GITMODULES, cwd=source)
     commit_as_source_human(source, REGISTER)
+    held = subprocess.run(
+        ["git", "ls-tree", "-r", "-z", "--name-only", "HEAD"], cwd=source,
+        capture_output=True, check=True).stdout.split(NUL)
+    missing = [name for name in (gitlink, beside) if name and name not in held]
+    if missing:
+        pytest.skip(f"git does not keep {missing!r} in a tree here")
     return source
 
 
@@ -813,6 +872,23 @@ def test_a_newline_spelled_in_the_question_is_the_entry_to_write(tmp_path):
     edited(split, "src/", {f'"{path}"': "code" for path in own})
     result = check_plan(split)
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("gitlink, beside", [
+    (b".git/vendored", None),
+    (b"src/vendored", b".git/x"),
+], ids=["submodule", "file-beside"])
+def test_a_source_whose_name_git_will_not_record_is_skipped_not_failed(
+        tmp_path, gitlink, beside):
+    """PR #194's `tests-windows`, the three name failures: the runner's git
+    left a backslash and a newline out of the source's tree, and the question
+    never named them. `git update-index --index-info` exits 0 for a path it
+    will not record and says `Ignoring path`; every platform does it for a
+    `.git` component, which is how Linux runs this. Asked of the tree the
+    tool reads, `raw_source` skips that case where it used to fail."""
+    with pytest.raises(pytest.skip.Exception,
+                       match=r"git does not keep .*\.git/"):
+        raw_source(tmp_path, gitlink, beside)
 
 
 @pytest.mark.parametrize("leg, expected", [

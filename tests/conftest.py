@@ -365,11 +365,18 @@ def write_plan(source: Path, out: Path, project: str = "Northwind",
 
 def resolve(plan_path: Path, path: str, leg: str,
             why: str = "answered by the test") -> None:
-    """Answer one `review_required` entry the way a human or an AI would."""
+    """Answer one `review_required` entry the way a human or an AI would.
+
+    The plan goes back LF, as `plan` wrote it: `Path.write_text` translates
+    every `\\n` to CRLF on Windows, and a helper that reads the plan as bytes
+    afterwards (`edited` in `test_adopt_submodules.py`) then finds none of its
+    lines. `open` with `newline`, because `write_text` has no such parameter
+    before 3.10 and this standard runs on 3.9.
+    """
     text = plan_path.read_text(encoding="utf-8")
     needle = f"  - path: {path}\n    leg: null\n"
     assert needle in text, f"{path} is not an unresolved entry in the plan"
-    plan_path.write_text(
-        text.replace(needle, f"  - path: {path}\n    leg: {leg}\n"
-                             f"    resolution: \"{why}\"\n", 1),
-        encoding="utf-8")
+    with plan_path.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(text.replace(
+            needle, f"  - path: {path}\n    leg: {leg}\n"
+                    f"    resolution: \"{why}\"\n", 1))
