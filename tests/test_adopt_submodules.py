@@ -176,12 +176,22 @@ def mount_world(tmp_path):
 
 @pytest.fixture
 def mount_fixture(mount_world):
-    """Two registrations in the source: one kept in the assembly, one moved."""
+    """Two registrations in the source: one left in the assembly, one moved.
+    Since #166 a plan cannot leave one there; the mount is driven directly."""
     return mount_world()
 
 
 def test_mount_preserves_registration_kept_in_assembly(mount_fixture,
                                                        tmp_path):
+    """MOUNT DEFENCE IN DEPTH, for a plan `check` and `execute` now refuse.
+
+    #166 ruled that the assembly root keeps no submodule of the source's:
+    `.gitmodules` and `upstream/kept` left in the root are `plan-submodule-
+    root` findings and an `execute` refusal before the mount is reached.
+    Should such a plan slip past them (until #168, an entry `check` rejects
+    for another reason does), the mount still appends its two legs to the
+    registrations it finds rather than replacing them.
+    """
     adopter, source, work, names, urls = mount_fixture
     assembly = clone_assembly(source, tmp_path)
     kept = git("rev-parse", "HEAD:upstream/kept", cwd=source).stdout.strip()
@@ -262,15 +272,23 @@ def test_mount_removes_gitmodules_before_a_submodule_that_sorts_ahead(
 
 # --- the plan's own answer: one leg for a submodule and its registration ----
 #
-# #166. `check` and `execute` read the SAME `submodule_plan_problems`, so a
-# plan `check` passes is a plan `execute` runs. None of these needs
-# `git filter-repo` but the one that reaches `execute` past its preflight.
+# #166. `check` and `execute` read the SAME `submodule_plan_problems`, so
+# `execute` refuses every submodule problem `check` finds (#168 extends that
+# to every finding), and `plan` asks the question on every entry that holds
+# a submodule, so it never proposes what `check` refuses. None of these
+# needs `git filter-repo` but the ones that reach `execute` past its
+# preflight.
 
 #: The ids, as `check` prints them and `execute` raises them.
 SPLIT = "plan-submodule-split"
 ROOT = "plan-submodule-root"
 UNREGISTERED = "plan-submodule-unregistered"
 UNREADABLE = "plan-gitmodules-unreadable"
+SUBMODULE_CODES = (ROOT, UNREADABLE, UNREGISTERED, SPLIT)
+#: `check`'s own ids for an entry it rejects before asking about submodules.
+UNRESOLVED = "plan-unresolved"
+UNCOVERED = "plan-uncovered"
+BAD_LEG = "plan-bad-leg"
 
 #: The plan entries these sources ask about, and the file every plan below is
 #: written to, each in a directory of its own.
@@ -278,6 +296,10 @@ GITMODULES = ".gitmodules"
 UPSTREAM = "upstream/"
 EXTRA = "extra/"
 PLAN_FILE = "adoption-plan.yaml"
+#: The submodule most of these sources register, under UPSTREAM, and the
+#: one file in the repository it is a commit of.
+DEPENDENCY = "upstream/dependency"
+DEPENDENCY_TREE = {"value.txt": "dependency\n"}
 
 #: What the assembly root's `.gitmodules` is, in the `plan-submodule-root`
 #: detail and in the remediation: true whether or not `.gitmodules` is the
@@ -303,22 +325,32 @@ UNREADABLE_FILE = {"gitmodules": '[submodule "upstream/dependency"\n'
                                  "\tpath = upstream/dependency\n"}
 #: `d0/s0` to `d9/s9` registered, and `extra/orphan` beside them not:
 CROWDED = {**BESIDE, "registered": tuple(f"d{i}/s{i}" for i in range(10))}
+#: `upstream/dependency` and `extra/second`, both registered:
+TWO = {"registered": (DEPENDENCY, "extra/second")}
+#: `dep`, registered at the top level, so it is a plan entry of its own:
+TOP = {"registered": ("dep",)}
+#: A `.gitmodules` registering a submodule the tree no longer holds, and no
+#: gitlink anywhere:
+STALE = {"registered": (), "gitmodules": '[submodule "gone"]\n'
+                                         "\tpath = gone\n\turl = ../gone\n"}
 
 
-def registered_source(base: Path, registered=("upstream/dependency",),
+def registered_source(base: Path, registered=(DEPENDENCY,),
                       orphan: str | None = None,
-                      gitmodules: str | None = None) -> Path:
+                      gitmodules: str | None = None,
+                      extra: dict | None = None) -> Path:
     """A source registering a real dependency at each of `registered`.
 
     `orphan` adds a gitlink at that path with NO registration, written
     straight into the index as `git add` of an embedded clone would write it,
     so that a source with a submodule and no `.gitmodules` is planned too.
     `gitmodules`, when given, replaces the file `git submodule add` wrote, as
-    a hand edit would.
+    a hand edit would. `extra` adds files to SMALL_TREE.
     """
-    dependency = make_source_repo(base / "dependency",
-                                  tree={"value.txt": "dependency\n"}, edits=())
-    source = make_source_repo(base / "Thing", tree=SMALL_TREE)
+    dependency = make_source_repo(base / "dependency", tree=DEPENDENCY_TREE,
+                                  edits=())
+    source = make_source_repo(base / "Thing",
+                              tree={**SMALL_TREE, **(extra or {})})
     for path in registered:
         add_submodule(source, dependency, path)
     if orphan:
@@ -379,6 +411,24 @@ def check_plan(plan: Path):
     return adopt("check", plan)
 
 
+def carelessly_edited(plan: Path, removed: str | None,
+                      added: str | None) -> None:
+    """`plan` with the entry for `removed` deleted, and an entry `added:
+    spec` put first, as a careless hand edit would leave it. Bytes, because
+    `plan` writes LF on every platform."""
+    lines = plan.read_bytes().splitlines(keepends=True)
+    if removed:
+        start = lines.index(f"  - path: {removed}\n".encode())
+        end = start + 1
+        while lines[end].startswith(b"    "):
+            end += 1
+        del lines[start:end]
+    if added:
+        first = lines.index(b"paths:\n") + 1
+        lines[first:first] = [f"  - path: {added}\n    leg: spec\n".encode()]
+    plan.write_bytes(b"".join(lines))
+
+
 def findings(stderr: str) -> list[tuple[str, str]]:
     """`(code, detail)` for each `FINDING <code>: <detail>` line `check`
     printed, in its order."""
@@ -402,6 +452,9 @@ def test_plan_asks_the_submodule_question_on_gitmodules(plan_of):
             "fresh one for its two mounts.") in question
     assert ("A submodule it does not register with a path and a url cannot "
             "be kept in a leg at all") in question
+    # No stricter than the rule: one submodule may be dropped by itself.
+    assert ("Any one submodule may also be dropped on its own; its "
+            "registration stays behind in that leg, inert.") in question
     # `shape-doctor.py --placement-plan` prints this question too, for a file
     # no `check` or `execute` ever reads: the TOOL refuses, true in both.
     assert ("`root` is not an answer for this file or for any submodule, and "
@@ -411,6 +464,45 @@ def test_plan_asks_the_submodule_question_on_gitmodules(plan_of):
         "`.gitmodules` is where a repository registers its submodules.")
     # Printed with the other unresolved paths, which is where it is read.
     assert "goes to the SAME leg as every submodule" in written.stdout
+
+
+@pytest.mark.parametrize("gitlinks, extra, entry, rule", [
+    # The 2026-09-02 ruling roots `.specify/` and the assistant directories,
+    # and still roots their FILES; a SUBMODULE there is asked instead.
+    ((".specify/vendored",), {".specify/memory/constitution.md": "# c\n"},
+     ".specify/", "root-spec-kit"),
+    ((".cursor",), {}, ".cursor", "root-assistant-instructions"),
+    # Asked already, but whether it is root: `.gitmodules`' question instead.
+    ((".agents",), {}, ".agents", "ambiguous-assistant-project-memory"),
+    (("docs/theme",), {"docs/index.md": "# Docs\n"}, "docs/",
+     "spec-governance"),
+    ((DEPENDENCY,), {}, UPSTREAM, "default"),
+    (("vendor/a", "vendor/b"), {}, "vendor/", "default"),
+], ids=["specify-vendored", "cursor", "agents", "docs-theme", "upstream",
+        "two-in-one-entry"])
+def test_plan_asks_on_every_entry_that_holds_a_submodule(
+        plan_of, tmp_path, gitlinks, extra, entry, rule):
+    """`plan` never proposes what `check` refuses: the entry covering a
+    gitlink is asked `.gitmodules`' question, whatever rule matched it, and
+    names its submodules; the untouched plan is then UNRESOLVED there, never
+    a submodule kept in the root."""
+    plan = plan_of({"registered": gitlinks, "extra": extra})[0]
+    rows = plan_rows(plan)
+    row = rows[entry]
+    # Everything `.gitmodules` is asked -- `leg: null`, `review_required`,
+    # its rule, reason and question -- and only its own size besides.
+    expected = {**rows[GITMODULES], "path": entry, "files": row["files"],
+                "bytes": row["bytes"]}
+    expected["question"] += (
+        f" This entry holds the submodule(s) {', '.join(gitlinks)}: it is "
+        f"asked this question, not classified by its rule `{rule}`."
+        + (" Split the entry if its other paths belong in a different leg "
+           "from the submodules." if extra else ""))
+    assert row == expected
+    assert (row["leg"], row["rule"]) == (None, "ambiguous-gitmodules")
+    result = check_plan(answered(plan, tmp_path, {}))
+    assert set(finding_codes(result.stderr)) == {UNRESOLVED}, result.stderr
+    assert f"FINDING {UNRESOLVED}: {entry} still has" in result.stderr
 
 
 @pytest.mark.parametrize("modules_leg, dependency_leg, expected", [
@@ -426,15 +518,23 @@ def test_plan_asks_the_submodule_question_on_gitmodules(plan_of):
     ("root", "code", [ROOT, SPLIT]),
     # An unanswered `.gitmodules` is `plan-unresolved`'s, and is not also
     # reported as a split; a gitlink kept in the root is refused regardless.
-    (None, "code", ["plan-unresolved"]),
-    (None, "root", ["plan-unresolved", ROOT]),
+    (None, "code", [UNRESOLVED]),
+    (None, "root", [UNRESOLVED, ROOT]),
 ])
 def test_check_holds_a_submodule_to_the_leg_of_its_registration(
-        plan_of, tmp_path, modules_leg, dependency_leg, expected):
+        adopter, plan_of, tmp_path, modules_leg, dependency_leg, expected):
     plan = answered(plan_of(REGISTERED)[0], tmp_path,
                     {GITMODULES: modules_leg, UPSTREAM: dependency_leg})
     result = check_plan(plan)
     assert finding_codes(result.stderr) == expected, result.stderr
+    # The remediation, ONCE after the last finding and before the count,
+    # when any of them is a submodule problem: `check` says how to fix it.
+    told = result.stderr.count(adopter.SUBMODULE_REMEDIATION)
+    assert told == (1 if set(expected) & set(SUBMODULE_CODES) else 0)
+    if told:
+        at = result.stderr.index(adopter.SUBMODULE_REMEDIATION)
+        assert result.stderr.rindex("FINDING ") < at \
+            < result.stderr.index(" finding(s) in ")
     if not expected:
         assert result.returncode == 0, result.stderr
         assert "plan ok" in result.stdout
@@ -456,11 +556,14 @@ def test_check_holds_a_submodule_to_the_leg_of_its_registration(
 
 
 def test_check_finds_a_submodule_a_rule_classified_silently(tmp_path):
-    """`tools/dep` is under `tools/**`, so `plan` calls it code and asks
-    nothing; only `.gitmodules` is asked. Answered `spec`, the two split."""
+    """`tools/dep` is under `tools/**`, which a plan written before #166
+    called code without asking; `plan` asks there now. Answered as that rule
+    would have it, with `.gitmodules` in spec, the two split, and `check`
+    finds it however the plan came to say so."""
     plan = planned(registered_source(tmp_path, registered=("tools/dep",)),
                    tmp_path)[0]
-    assert plan_rows(plan)["tools/"]["leg"] == "code"
+    assert plan_rows(plan)["tools/"]["review_required"] is True
+    resolve(plan, "tools/", "code")
     resolve(plan, GITMODULES, "spec")
     result = check_plan(plan)
     assert result.returncode == 1, result.stderr + result.stdout
@@ -561,6 +664,87 @@ def test_a_gitmodules_git_cannot_read_is_not_one_that_registers_nothing(
                 "source's .gitmodules") in result.stderr
 
 
+@pytest.mark.parametrize("modules_leg, expected", [
+    ("code", []),
+    ("spec", []),
+    ("drop", []),
+    ("root", [ROOT]),
+])
+def test_a_gitmodules_with_no_submodule_beside_it(plan_of, tmp_path,
+                                                  modules_leg, expected):
+    """A `.gitmodules` whose one registration names no gitlink in the tree:
+    in a leg it registers nothing git will look up, so it goes anywhere but
+    the root, whose `.gitmodules` is the two mounts'."""
+    plan = answered(plan_of(STALE)[0], tmp_path, {GITMODULES: modules_leg})
+    result = check_plan(plan)
+    assert finding_codes(result.stderr) == expected, result.stderr
+    assert result.returncode == (1 if expected else 0)
+
+
+@pytest.mark.parametrize("upstream_leg, extra_leg, split", [
+    ("code", "code", []),
+    ("code", "spec", ["extra/second (entry extra/) has leg: spec"]),
+    ("spec", "code", ["upstream/dependency (entry upstream/) has leg: spec"]),
+    ("spec", "spec", ["extra/second (entry extra/) has leg: spec",
+                      "upstream/dependency (entry upstream/) has leg: spec"]),
+])
+def test_check_finds_each_submodule_split_from_its_registration(
+        plan_of, tmp_path, upstream_leg, extra_leg, split):
+    """Two registered submodules and `.gitmodules` in code: each one kept
+    away from it is its own `plan-submodule-split`, and only those."""
+    plan = answered(plan_of(TWO)[0], tmp_path,
+                    {GITMODULES: "code", UPSTREAM: upstream_leg,
+                     EXTRA: extra_leg})
+    found = findings(check_plan(plan).stderr)
+    assert [code for code, _ in found] == [SPLIT] * len(split), found
+    assert [detail.split(" but ")[0] for _, detail in found] \
+        == [f"the submodule {where}" for where in split]
+
+
+@pytest.mark.parametrize("dep_leg, expected", [
+    ("code", []),
+    ("spec", [(SPLIT, "the submodule dep has leg: spec but the source's "
+                      ".gitmodules has leg: code")]),
+    ("root", [(ROOT, "dep has leg: root, and the assembly root keeps no "
+                     "submodule of the source's")]),
+])
+def test_a_submodule_that_is_its_own_entry_is_named_alone(plan_of, tmp_path,
+                                                          dep_leg, expected):
+    """`dep` is a top-level gitlink, so its entry is itself: the finding
+    names it with no `(entry ...)` to point at."""
+    plan = answered(plan_of(TOP)[0], tmp_path, {GITMODULES: "code",
+                                                "dep": dep_leg})
+    found = findings(check_plan(plan).stderr)
+    assert [code for code, _ in found] == [code for code, _ in expected]
+    for (_, detail), (_, start) in zip(found, expected):
+        assert detail.startswith(start), detail
+
+
+@pytest.mark.parametrize("answers, removed, added, own", [
+    ({GITMODULES: "code"}, UPSTREAM, None, UNCOVERED),
+    ({UPSTREAM: "code"}, GITMODULES, None, UNCOVERED),
+    ({GITMODULES: "code", UPSTREAM: "code"}, None, DEPENDENCY,
+     "plan-covered-twice"),
+    ({GITMODULES: "code", UPSTREAM: "Code"}, None, None, BAD_LEG),
+    ({GITMODULES: "Code", UPSTREAM: "code"}, None, None, BAD_LEG),
+], ids=["gitlink-uncovered", "gitmodules-uncovered", "gitlink-covered-twice",
+        "gitlink-bad-leg", "gitmodules-bad-leg"])
+def test_the_submodule_rule_leaves_a_rejected_entry_to_its_own_finding(
+        adopter, plan_of, tmp_path, answers, removed, added, own):
+    """An entry `check` already rejects is not ALSO a submodule problem: the
+    helper skips it, and `check` reports it once, by its own finding."""
+    plan = answered(plan_of(REGISTERED)[0], tmp_path, answers)
+    carelessly_edited(plan, removed, added)
+    result = check_plan(plan)
+    assert finding_codes(result.stderr) == [own], result.stderr
+    assert adopter.SUBMODULE_REMEDIATION not in result.stderr
+    loaded = adopter.Plan.load(plan)
+    source = loaded.open_source(None, tmp_path / "work")
+    tree = source.tree()
+    assert adopter.submodule_plan_problems(
+        loaded.entries, tree, source.registered_submodules(tree)) == []
+
+
 @pytest.fixture(scope="module")
 def adopter():
     """`adopt-project.py` as a module, for the refusal `execute` makes."""
@@ -597,6 +781,9 @@ def refused_by_execute(adopter, plan_path: Path, tmp_path: Path):
 ])
 def test_execute_refuses_what_check_finds(adopter, plan_of, tmp_path,
                                           source, answers, code):
+    """The refusal `execute` makes, asked of `_refuse_an_unrunnable_plan`
+    directly; that `cmd_execute` makes it before any leg exists is pinned by
+    the end-to-end refusal below, which needs `git filter-repo`."""
     plan = answered(plan_of(source)[0], tmp_path, answers)
     found = findings(check_plan(plan).stderr)
     refusal = refused_by_execute(adopter, plan, tmp_path)
@@ -607,7 +794,10 @@ def test_execute_refuses_what_check_finds(adopter, plan_of, tmp_path,
     assert refusal is not None, found
     assert refusal.code == found[0][0] == code
     assert refusal.detail == "; ".join(detail for _, detail in found)
-    assert "`git rm` it in the leg afterwards" in refusal.remediation
+    assert refusal.remediation == adopter.SUBMODULE_REMEDIATION
+    # No stricter than the rule: one submodule may be dropped by itself.
+    assert ("Any one submodule may also be dropped on its own: its "
+            "registration stays behind") in refusal.remediation
     assert "never keeps a submodule" in refusal.remediation
     assert RESERVED in refusal.remediation
     assert ("cannot be kept in a leg at all" in refusal.remediation
@@ -634,6 +824,14 @@ def test_a_mixed_refusal_is_named_by_the_problem_to_fix_first(
     assert refusal.code == code
     assert refusal.detail.split("; ") == (
         [detail for _, detail in found[:8]] + [f"and {len(found) - 8} more"])
+
+
+def execute_in(plan: Path, base: Path):
+    """`execute --yes` of `plan`, its leg remotes under `base/remotes` and its
+    work in `base/work`: `(result, remotes, work)`."""
+    remotes, work = base / "remotes", base / "work"
+    return adopt("execute", plan, "--yes", "--local-remote-dir", str(remotes),
+                 "--work-dir", str(work)), remotes, work
 
 
 def source_state(source: Path) -> list[str]:
@@ -663,9 +861,7 @@ def test_execute_refuses_a_submodule_plan_before_anything_exists(
     thing = registered_source(tmp_path, **source)
     before = source_state(thing)
     plan = answered(planned(thing, tmp_path)[0], tmp_path, answers)
-    remotes, work = tmp_path / "remotes", tmp_path / "work"
-    result = adopt("execute", plan, "--yes", "--local-remote-dir",
-                   str(remotes), "--work-dir", str(work))
+    result, remotes, work = execute_in(plan, tmp_path)
     assert result.returncode == 2, result.stderr + result.stdout
     assert refused in result.stderr
     assert "creating the leg repositories" not in result.stdout
@@ -673,3 +869,49 @@ def test_execute_refuses_a_submodule_plan_before_anything_exists(
     assert not remotes.exists(), "a refused plan made the remotes directory"
     assert list(work.iterdir()) == [], "a refused plan wrote into its work"
     assert source_state(thing) == before
+
+
+@needs_filter_repo
+@pytest.mark.parametrize("modules_leg, dependency_leg", [
+    ("code", "code"),
+    ("spec", "spec"),
+    # Dropped on its own: its registration stays behind in the leg, inert.
+    ("code", "drop"),
+], ids=["both-code", "both-spec", "dropped-on-its-own"])
+def test_an_accepted_submodule_plan_adopts_clones_and_bootstraps(
+        tmp_path, modules_leg, dependency_leg):
+    """The plans the refusals above leave legal really adopt: `execute`
+    verifies, and the assembly's `git clone --recurse-submodules` and its
+    `bootstrap.py` both exit 0, which a split plan's clone did not (#166)."""
+    thing = registered_source(tmp_path)
+    plan = answered(planned(thing, tmp_path)[0], tmp_path,
+                    {GITMODULES: modules_leg, UPSTREAM: dependency_leg})
+    checked = check_plan(plan)
+    assert checked.returncode == 0, checked.stderr + checked.stdout
+    result = execute_in(plan, tmp_path)[0]
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "adoption verified" in result.stdout
+
+    clone = tmp_path / "clone"
+    cloned = git(*FILE_PROTOCOL, "clone", "-q", "--recurse-submodules", "-b",
+                 "adopt/three-repo-shape", str(thing), str(clone),
+                 cwd=tmp_path, check=False)
+    assert cloned.returncode == 0, cloned.stderr
+    bootstrapped = run_script(clone / "scripts/bootstrap.py", cwd=clone)
+    assert bootstrapped.returncode == 0, (bootstrapped.stderr
+                                          + bootstrapped.stdout)
+    assert "bootstrap ok" in bootstrapped.stdout
+    leg = clone / modules_leg
+    gitlink = git("ls-tree", "HEAD", "--", DEPENDENCY, cwd=leg).stdout
+    # The registration travels with `.gitmodules`, whether or not its
+    # gitlink did.
+    assert git("config", "-f", GITMODULES, "--get",
+               f"submodule.{DEPENDENCY}.path", cwd=leg).stdout.strip() \
+        == DEPENDENCY
+    if dependency_leg == "drop":
+        assert gitlink == "" and not (leg / UPSTREAM).exists()
+        return
+    assert gitlink.startswith("160000 commit ")
+    # Cloned into the leg, at the commit the source pinned.
+    assert {name: (leg / DEPENDENCY / name).read_text(encoding="utf-8")
+            for name in DEPENDENCY_TREE} == DEPENDENCY_TREE
