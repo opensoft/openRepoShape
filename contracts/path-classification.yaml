@@ -112,7 +112,9 @@ rules:
   # file, and `root` looked like an answer. `shape-doctor.py --placement-plan`
   # prints this `reason:` and `question:` too, for a project already split
   # and a file no `check` or `execute` ever reads, so what refuses a wrong
-  # answer is named as the tool and not as those two subcommands.
+  # answer is named as the tool and not as those two subcommands, and what
+  # `execute` does is said of a repository WHEN IT IS ADOPTED, which is true
+  # of a leg already split as well.
   - id: ambiguous-gitmodules
     paths:
       - ".gitmodules"
@@ -123,16 +125,16 @@ rules:
       places, and which leg those dependencies belong to is a fact about this
       repository.
     question: >-
-      A source's own `.gitmodules` goes to the SAME leg as every submodule it
-      registers; `execute` writes the assembly root a fresh one for its two
-      mounts. Which leg owns the submodules, spec or code? Send `.gitmodules`
-      there and every submodule path with it, or drop them all together. A
-      submodule it does not register with a path and a url cannot be kept in
-      a leg at all: drop it, or register it first. Any one submodule may also
-      be dropped on its own; its registration stays behind in that leg,
-      inert. `root` is not an answer for this file or for any submodule, and
-      `adopt-project.py` refuses a plan that gives it, as it does a plan that
-      splits them.
+      When a repository is adopted, a source's own `.gitmodules` goes to the
+      SAME leg as every submodule it registers; `execute` writes the assembly
+      root a fresh one for its two mounts. Which leg owns the submodules, spec
+      or code? Send `.gitmodules` there and every submodule path with it, or
+      drop them all together. A submodule it does not register with a path
+      and a url cannot be kept in a leg at all: drop it, or register it
+      first. Any one submodule may also be dropped on its own; its
+      registration stays behind in that leg, inert. `root` is not an answer
+      for this file or for any submodule, and `adopt-project.py` refuses a
+      plan that gives it, as it does a plan that splits them.
 
   # -- the assembly root ----------------------------------------------------
 
