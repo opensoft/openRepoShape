@@ -1231,9 +1231,17 @@ def _seed_leg(role: str, work: Path, values: dict, branch: str, url: str,
     `branch` is accepted and ignored on purpose — a seeded leg has no branch of
     the source to reset to. `tracking` is the branch it is pushed to, exactly
     as an extracted leg is.
+
+    THE TEMPLATE'S FILES ARE STAGED BY NAME (#175). `git add -A` honours the
+    operator's own excludes, and a machine whose global ones say `.*` or `src/`
+    committed and pushed a seeded leg without its `.gitignore` or its
+    `src/.gitkeep`, files the template ships and the leg needs. So the list
+    `copy_tree` returns goes to `git_init_commit`, which forces exactly those
+    paths past an exclude rule; see `shape_materialize.stage_written`. The
+    split's commit is another path (`_commit_the_split`, #167), not touched.
     """
     del branch
-    copy_tree(SHAPE_ROOT / SEED_TEMPLATE[role], work, values)
+    written = copy_tree(SHAPE_ROOT / SEED_TEMPLATE[role], work, values)
     commit = git_init_commit(
         work,
         f"Seed the {role} leg of {display}\n\n"
@@ -1244,7 +1252,7 @@ def _seed_leg(role: str, work: Path, values: dict, branch: str, url: str,
         "not an empty repository.\n\nIt carries no history from the adopted "
         "repository because there was none to carry. The assembly root mounts "
         "and pins it exactly as it does the extracted leg.\n",
-        tracking).lower()
+        tracking, written).lower()
     try:
         run(["git", "push", "-q", url, f"HEAD:refs/heads/{tracking}"], cwd=work)
     except CommandFailed as exc:

@@ -533,8 +533,9 @@ def stage_written(work: Path, written=()) -> None:
     landed, in `root_key`'s POSIX spelling, which `git` takes as a pathspec
     on Windows too. Empty, this is `git add -A -- .` and nothing else.
 
-    ONE HELPER, THREE CALLERS: `git_init_commit` (the scaffold's two legs),
-    the scaffold's assembly root and `family.py init`'s holder.
+    ONE HELPER, THREE CALLERS: `git_init_commit` (the scaffold's two legs and
+    `adopt-project.py`'s seeded leg), the scaffold's assembly root and
+    `family.py init`'s holder.
     """
     run(["git", "add", "-A", "--", "."], cwd=work)
     paths = list(written)
