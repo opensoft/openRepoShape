@@ -268,6 +268,15 @@ def test_the_manifest_and_pins_describe_the_legs_that_were_created(adopted,
         assert gitlink == tip, "the gitlink and the pin move together or not"
 
 
+def test_a_source_with_no_submodule_gets_no_submodule_record(adopted_clone):
+    """`execute` records the leg of each source submodule it keeps (#189),
+    and this source has none: its manifest gains no `submodules:` and no
+    comment about one, and is the manifest every adoption wrote before."""
+    manifest = adopted_clone / "project.yaml"
+    assert "submodules" not in load_yaml(manifest)
+    assert "#189" not in manifest.read_text(encoding="utf-8")
+
+
 # --- verification ----------------------------------------------------------
 
 def test_verification_accounts_for_every_source_path(adopted):

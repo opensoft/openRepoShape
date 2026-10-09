@@ -49,6 +49,12 @@ WHAT IS CHECKED
     A link of the chain is VERIFIED against that link's own manifest when its
     tree is beside this root, and reported as `declared-unverified` — a
     WARNING, not a finding — when it is not. The whole check is OFFLINE.
+  - `submodules`, OPTIONAL: the record an adoption writes of the leg each
+    source submodule was answered into (#189). Absent is fine, because a
+    project with no source submodule has none, and nor does one adopted
+    before the record existed. Present, each row names a `path` inside its
+    leg and a `leg` of `spec` or `code`, at most once per path, with an
+    optional `resolution` text and an optional 40-hex `source_commit`.
 
 EXIT CODES: 0 valid · 1 findings · 2 refusal (the file is missing or unreadable)
 """
@@ -624,6 +630,85 @@ def _leg_findings(leg, policy: NamingPolicy, pins: set[str], root,
     return out
 
 
+#: The legs a source submodule may be recorded in (#189). The assembly is not
+#: one of them: the root keeps no submodule but its two legs.
+SUBMODULE_LEGS = ("spec", "code")
+
+
+def _submodule_path_problem(path, seen: set) -> str | None:
+    """Why one recorded `path` is not a submodule's path inside its leg, or
+    None. Records a good one in `seen`, so a second row for it is named."""
+    if not isinstance(path, str) or not path or path == "." \
+            or path.startswith("/") or ".." in Path(path).parts:
+        return (f"path is {path!r}; it is the submodule's path inside its "
+                "leg, relative and without `..`")
+    if path in seen:
+        return f"path {path!r} is recorded twice"
+    seen.add(path)
+    return None
+
+
+def _submodule_row_findings(index: int, row, seen: set) -> list[str]:
+    """One row of the `submodules:` record.
+
+    Split from `_submodules_findings` so that each reads as one question.
+    """
+    where = f"submodules[{index}]"
+    if not isinstance(row, dict):
+        return [_finding(
+            "manifest-submodules",
+            f"{where} is {row!r}, expected a mapping with `path:` and "
+            "`leg:`")]
+    out = []
+    problem = _submodule_path_problem(row.get("path"), seen)
+    if problem:
+        out.append(_finding("manifest-submodule-path", f"{where}: {problem}"))
+    if row.get("leg") not in SUBMODULE_LEGS:
+        out.append(_finding(
+            "manifest-submodule-leg",
+            f"{where}: leg is {row.get('leg')!r}, expected one of "
+            f"{list(SUBMODULE_LEGS)}: the assembly root keeps no submodule "
+            "but its legs"))
+    resolution = row.get("resolution")
+    if resolution is not None and not isinstance(resolution, str):
+        out.append(_finding(
+            "manifest-submodule-resolution",
+            f"{where}: resolution is {resolution!r}, expected the text the "
+            "adoption plan gave"))
+    commit = row.get("source_commit")
+    if commit is not None and not COMMIT_RE.match(str(commit)):
+        out.append(_finding(
+            "manifest-submodule-commit",
+            f"{where}: source_commit is {commit!r}, not 40 hex"))
+    return out
+
+
+def _submodules_findings(manifest: dict) -> list[str]:
+    """`submodules`, OPTIONAL: the leg each source submodule was answered
+    into when this project was adopted (#189).
+
+    A RECORD IS CHECKED BECAUSE SOMETHING READS IT. `shape-doctor.py` holds
+    every submodule a leg keeps to the row naming its path, and calls one in
+    the other leg MISPLACED; a row it could not read would leave that
+    submodule unchecked, and nothing would say so. Absent is fine: a project
+    with no submodule of its source's has nothing to record, and nor does
+    one adopted before the record was written.
+    """
+    rows = manifest.get("submodules")
+    if rows is None:
+        return []
+    if not isinstance(rows, list):
+        return [_finding(
+            "manifest-submodules",
+            f"submodules is {rows!r}, expected a list of `path:` and `leg:` "
+            "records")]
+    seen: set[str] = set()
+    out: list[str] = []
+    for index, row in enumerate(rows):
+        out.extend(_submodule_row_findings(index, row, seen))
+    return out
+
+
 def _owners_span_finding(owners: set[str]) -> list[str]:
     """Do the legs span more than one organisation?
 
@@ -649,6 +734,7 @@ def _findings(manifest: dict, policy: NamingPolicy, root=None) -> list[str]:
     out.extend(_reference_finding(manifest))
     out.extend(_visibility_finding(manifest))
     out.extend(_shape_findings(manifest))
+    out.extend(_submodules_findings(manifest))
 
     legs = manifest.get("legs")
     if not isinstance(legs, list) or not legs:

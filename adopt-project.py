@@ -35,7 +35,9 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            the one split commit on a branch of the source, sets the
            `xf-project-<id>` topic on all three (skipped for local remotes),
            and then VERIFIES by blob sha that every source path landed in
-           exactly one place.
+           exactly one place. The split's `project.yaml` records the leg
+           each source submodule kept in a leg was answered into, under
+           `submodules:`, for `shape-doctor.py` to check it against.
 
 THE PLAN IS AN ARTIFACT A HUMAN OR AN AI EDITS. That is why it is YAML with
 reasons in it rather than a pipe between two processes: the classifier is
@@ -2490,6 +2492,112 @@ def _where_it_landed(assembly: Path, written: str) -> str | None:
         if landed.is_relative_to(root) else None
 
 
+#: The key `execute` appends to the assembly's `project.yaml` (#189). The
+#: doctor reads it by this name through the module it loads, and the
+#: project's own `validate-manifest.py`, which imports nothing of this tool's,
+#: spells it once more.
+SUBMODULE_RECORD = "submodules"
+
+#: The comment above that block, in the manifest itself, because the
+#: manifest is read by people who never saw the plan it came from.
+SUBMODULE_RECORD_PREAMBLE = (
+    "",
+    "# THE SOURCE'S OWN SUBMODULES, and the leg each one was ANSWERED into",
+    "# when this repository was adopted (#189). Written once, by",
+    "# `adopt-project.py execute`, from the adoption plan: one row per",
+    "# submodule the split kept in a leg, its path inside that leg, the",
+    "# `resolution:` the plan gave the entry that covered it, and the source",
+    "# commit the plan was answered at. `shape-doctor.py` checks each",
+    "# submodule a leg holds against it. Like every field here, it confers",
+    "# nothing.",
+    f"{SUBMODULE_RECORD}:",
+)
+
+
+def _quoted(text: str) -> str:
+    """`text` as a double-quoted scalar of `repo_shape.parse_yaml`'s subset.
+
+    ALWAYS QUOTED, unlike `y`: a submodule may sit at `null`, `true` or
+    `0001`, which a plain scalar would read back as something that is not
+    a path. A newline and a tab are escaped as the reader resolves them,
+    and any other character that is not printable is SPELLED, `\\x07` or
+    `\\xe9` for a byte that is not UTF-8, because `write_lf` writes UTF-8
+    and a surrogate in the text would stop `execute` after both legs exist.
+    A spelled path is one the doctor does not read either: it reports such
+    a name as one no report can carry.
+    """
+    out = []
+    for char in text:
+        if char in '\\"':
+            out.append("\\" + char)
+        elif char in "\n\t":
+            out.append("\\n" if char == "\n" else "\\t")
+        elif char.isprintable():
+            out.append(char)
+        elif "\udc80" <= char <= "\udcff":
+            out.append(f"\\x{ord(char) - 0xDC00:02x}")
+        else:
+            out.append(ascii(char)[1:-1])
+    return '"' + "".join(out) + '"'
+
+
+def submodule_record(entries: list, tree: list, commit: str) -> str:
+    """The `submodules:` block `execute` appends to `project.yaml`, or ""
+    when the split keeps no submodule of the source's in a leg (#189).
+
+    WHY THE ANSWER IS WRITTEN DOWN. Which leg holds a source submodule is a
+    human's answer under #166 -- `plan` asks it of every entry that covers a
+    gitlink, whatever rule its name matches -- and the plan that carries the
+    answer is not committed anywhere. Without a record, the assembly holds
+    `.cursor` in the code leg and nothing else, and `shape-doctor.py` cannot
+    tell that answer from a submodule added by hand, so the most it can say
+    is a note. With one, a submodule in the leg recorded is placed and one in
+    the other leg is MISPLACED, with the manifest as the evidence.
+
+    ONE ROW PER GITLINK KEPT IN A LEG, from `_answered_legs`, the reading
+    `check` holds the plan to: by the time `execute` calls this,
+    `_refuse_what_check_finds` has refused a gitlink no entry covers, one
+    covered twice, one left unanswered and one answered `root`. A gitlink
+    answered `drop` is in no leg, so nothing can be checked against it, and
+    one added at that path later is a gitlink no record covers. The path is
+    the gitlink's path in the source, which `git filter-repo` keeps as its
+    path in the leg. `resolution:` is written when the plan's entry has one;
+    a directory entry's answer covers every gitlink under it, so each row
+    carries that entry's line.
+
+    A SOURCE WITH NO SUBMODULE GETS "" and so the `project.yaml` -- and the
+    split -- it always got, byte for byte.
+    """
+    gitlinks = [path for path, mode, _, _ in tree if mode == GITLINK_MODE]
+    kept = _kept_in_a_leg(_answered_legs(entries, gitlinks), gitlinks)
+    if not kept:
+        return ""
+    resolutions = {str(e.get("path")): _resolution_text(e.get("resolution"))
+                   for e in entries}
+    lines = list(SUBMODULE_RECORD_PREAMBLE)
+    for path, leg, entry in kept:
+        lines.append(f"  - path: {_quoted(path)}")
+        lines.append(f"    leg: {leg}")
+        if resolutions.get(entry):
+            lines.append(f"    resolution: {_quoted(resolutions[entry])}")
+        lines.append(f'    source_commit: "{commit}"')
+    return "\n".join(lines) + "\n"
+
+
+def _resolution_text(resolution) -> str | None:
+    """A plan entry's `resolution:` as the text the record carries, or None.
+
+    A scalar is written as the plan's reader returned it. A blank one is no
+    reason, and a mapping or a list under the key is not one line of text,
+    so neither is written: the record's `resolution:` is optional, and a row
+    without one still says where the submodule was answered into.
+    """
+    if resolution is None or isinstance(resolution, (dict, list)):
+        return None
+    text = str(resolution)
+    return text if text.strip() else None
+
+
 def _commit_the_split(plan: Plan, source: Source, assembly: Path,
                       names: dict, urls: dict, values: dict, work_root: Path,
                       paths_for: dict, seeded: list, spec_path: str,
@@ -2506,9 +2614,16 @@ def _commit_the_split(plan: Plan, source: Source, assembly: Path,
     _mount_the_legs(assembly, work_root, names, urls, paths_for, spec_path,
                     code_path)
 
+    # The plan's submodule answers outlive the plan only here (#189). An
+    # empty record appends nothing, so a source with no submodule gets the
+    # manifest it always got.
+    append = {"Makefile": ADOPT_MAKEFILE_BLOCK}
+    record = submodule_record(plan.entries, source.tree(), source.commit)
+    if record:
+        append["project.yaml"] = record
     materialized = materialize_assembly_root(
         SHAPE_ROOT, assembly, values, collision_dir=COLLISION_DIR,
-        append={"Makefile": ADOPT_MAKEFILE_BLOCK})
+        append=append)
     for intended, actual in materialized.collisions:
         print(f"  beside  {actual} (the source already has {intended}; nothing "
               "was overwritten)")

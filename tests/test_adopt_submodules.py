@@ -20,7 +20,7 @@ from conftest import (ADOPT, FILE_PROTOCOL, REPO, git, make_source_repo,
                       resolve, run_script, write_plan)
 
 sys.path.insert(0, str(REPO / "scripts"))
-from repo_shape import load_yaml  # noqa: E402
+from repo_shape import load_yaml, parse_yaml  # noqa: E402
 
 
 #: What the end-to-end test needs and the mount tests below do not: they call
@@ -101,6 +101,11 @@ def test_adopt_moves_existing_gitmodules_with_its_dependency(tmp_path,
                        r"^submodule\..*\.path$", cwd=clone).stdout.splitlines()
     assert sorted(root_modules) == ["submodule.code.path code",
                                     "submodule.spec.path spec"]
+    # The answer outlives the plan (#189): the split's manifest records the
+    # leg the dependency was answered into, for the doctor to check it by.
+    assert load_yaml(clone / "project.yaml")["submodules"] == [{
+        "path": "upstream/dependency", "leg": dependency_leg,
+        "resolution": "answered by the test", "source_commit": source_head}]
     assert git("rev-parse", "HEAD", cwd=source).stdout.strip() == source_head
     assert git("status", "--porcelain", cwd=source).stdout == ""
 
@@ -1434,3 +1439,98 @@ def test_a_key_with_no_value_beside_no_submodule_adopts_and_clones(tmp_path):
     cloned = clone_the_split(thing, tmp_path)
     assert cloned.returncode == 0, cloned.stderr
     assert (clone / "code" / GITMODULES).read_bytes() == BARE_KEY.encode()
+
+
+# --- the record of the answers, which the doctor reads (#189) ---------------
+#
+# `execute` appends to the split's `project.yaml` one row per source submodule
+# it keeps in a leg: the path, the leg, the plan's `resolution:` and the
+# source commit. These read the block `submodule_record` writes back with the
+# reader every manifest goes through, so that what the doctor reads is the
+# answer the plan gave.
+
+BLOB_MODE = "100644"
+GITLINK = "160000"
+#: The object every row below names: no row's record depends on it.
+ANY_OID = "0" * 40
+SOURCE_COMMIT = "ab" * 20
+
+
+def tree_of(*rows: tuple) -> list:
+    """`Source.tree()`'s shape, sorted as it is: `(path, mode)` each."""
+    return sorted((path, mode, ANY_OID, 0) for path, mode in rows)
+
+
+def test_the_record_names_each_submodule_a_leg_keeps_with_its_answer(
+        adopter):
+    """ONE ROW PER GITLINK KEPT IN A LEG, AND NONE FOR ONE DROPPED.
+
+    A directory entry's answer covers every gitlink under it, so both of
+    `upstream/`'s carry its `resolution:`; an entry with none gives none; a
+    dropped gitlink is in no leg, so nothing can be checked against it.
+    """
+    entries = [
+        {"path": GITMODULES, "leg": "code", "resolution": "with them"},
+        {"path": UPSTREAM, "leg": "code",
+         "resolution": "what the code builds against"},
+        {"path": "vendor/old", "leg": "drop", "resolution": "unused"},
+        {"path": "docs/theme", "leg": "spec"},
+        {"path": "src/", "leg": "code"},
+    ]
+    tree = tree_of((GITMODULES, BLOB_MODE), ("docs/theme", GITLINK),
+                   ("src/a.py", BLOB_MODE), (DEPENDENCY, GITLINK),
+                   ("upstream/second", GITLINK), ("vendor/old", GITLINK))
+    text = adopter.submodule_record(entries, tree, SOURCE_COMMIT)
+    assert text.startswith("\n# THE SOURCE'S OWN SUBMODULES"), text
+    answer = "what the code builds against"
+    assert parse_yaml(text) == {"submodules": [
+        {"path": "docs/theme", "leg": "spec",
+         "source_commit": SOURCE_COMMIT},
+        {"path": DEPENDENCY, "leg": "code", "resolution": answer,
+         "source_commit": SOURCE_COMMIT},
+        {"path": "upstream/second", "leg": "code", "resolution": answer,
+         "source_commit": SOURCE_COMMIT},
+    ]}
+
+
+@pytest.mark.parametrize("tree, entries", [
+    (tree_of((README, BLOB_MODE)), [{"path": README, "leg": "root"}]),
+    (tree_of(("vendor/old", GITLINK)), [{"path": "vendor/old",
+                                         "leg": "drop"}]),
+], ids=["no-submodule", "every-submodule-dropped"])
+def test_a_source_with_no_submodule_kept_gets_no_record(adopter, tree,
+                                                        entries):
+    """NOTHING TO APPEND, so the manifest and the split are what they were."""
+    assert adopter.submodule_record(entries, tree, SOURCE_COMMIT) == ""
+
+
+@pytest.mark.parametrize("name", [
+    "null", "0001", "true", "a: b", "#hash", 'say "hi"', "back\\slash",
+    "tab\there", "- dash", "ends:", "caf\u00e9",
+])
+def test_a_recorded_name_reads_back_as_that_name(adopter, name):
+    """A NAME YAML WOULD READ AS SOMETHING ELSE IS STILL THAT NAME.
+
+    A submodule may sit at `null` or `0001`, which a plain scalar reads back
+    as nothing or as a number, and a path or a `resolution:` may hold a
+    colon, a hash, a quote, a backslash or a tab. Each is written quoted and
+    escaped, and reads back as itself.
+    """
+    entries = [{"path": name, "leg": "code", "resolution": name}]
+    text = adopter.submodule_record(entries, tree_of((name, GITLINK)),
+                                    SOURCE_COMMIT)
+    [row] = parse_yaml(text)["submodules"]
+    assert (row["path"], row["resolution"]) == (name, name), text
+
+
+def test_a_name_that_is_not_utf8_is_spelled_and_still_written(adopter):
+    """A BYTE THAT IS NOT UTF-8 IS SPELLED, so `write_lf` can write the
+    manifest at all: the surrogate a path read with `surrogateescape` holds
+    for it would stop `execute` after both legs exist."""
+    name = "caf\udce9"
+    text = adopter.submodule_record(
+        [{"path": name, "leg": "code"}], tree_of((name, GITLINK)),
+        SOURCE_COMMIT)
+    text.encode("utf-8")
+    [row] = parse_yaml(text)["submodules"]
+    assert row["path"] == "caf\\xe9", text

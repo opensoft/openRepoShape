@@ -486,3 +486,75 @@ def test_an_install_form_is_a_leg_of_nothing(project):
     result = validate(project)
     assert result.returncode == 1
     assert "naming-not-a-leg" in result.stderr
+
+
+# --- the record of the source's own submodules (#189) ----------------------
+#
+# `adopt-project.py execute` appends a `submodules:` block to the manifest,
+# one row per source submodule it kept in a leg, and `shape-doctor.py` holds
+# each submodule a leg keeps to the row naming its path. A row the doctor
+# could not read would leave that submodule unchecked, so the project's own
+# validator names it.
+
+#: A record as `execute` writes it: two rows, one with the plan's
+#: `resolution:` and one without, and the source commit on each.
+SUBMODULE_RECORD = (
+    "\n# THE SOURCE'S OWN SUBMODULES (#189)\n"
+    "submodules:\n"
+    '  - path: ".cursor"\n'
+    "    leg: code\n"
+    '    resolution: "editor rules the code leg reads"\n'
+    '    source_commit: "0123456789abcdef0123456789abcdef01234567"\n'
+    '  - path: "docs/theme"\n'
+    "    leg: spec\n"
+    '    source_commit: "0123456789abcdef0123456789abcdef01234567"\n'
+)
+
+
+def append_record(project, text: str = SUBMODULE_RECORD) -> None:
+    manifest = project / "project.yaml"
+    manifest.write_bytes((manifest.read_text() + text).encode("utf-8"))
+
+
+def test_a_submodule_record_is_accepted(project):
+    append_record(project)
+    result = validate(project)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "manifest ok" in result.stdout
+
+
+@pytest.mark.parametrize("old, new, code", [
+    ("    leg: code\n", "    leg: root\n", "manifest-submodule-leg"),
+    ("    leg: code\n", "    leg: drop\n", "manifest-submodule-leg"),
+    ('  - path: ".cursor"\n', '  - path: "/etc/.cursor"\n',
+     "manifest-submodule-path"),
+    ('  - path: ".cursor"\n', '  - path: "../.cursor"\n',
+     "manifest-submodule-path"),
+    ('  - path: ".cursor"\n', '  - path: ""\n', "manifest-submodule-path"),
+    ('  - path: "docs/theme"\n', '  - path: ".cursor"\n',
+     "manifest-submodule-path"),
+    ('    resolution: "editor rules the code leg reads"\n',
+     "    resolution: 3\n", "manifest-submodule-resolution"),
+    ('    source_commit: "0123456789abcdef0123456789abcdef01234567"\n',
+     '    source_commit: "main"\n', "manifest-submodule-commit"),
+    ('  - path: ".cursor"\n    leg: code\n'
+     '    resolution: "editor rules the code leg reads"\n'
+     '    source_commit: "0123456789abcdef0123456789abcdef01234567"\n',
+     '  - ".cursor"\n', "manifest-submodules"),
+], ids=["leg-root", "leg-drop", "absolute-path", "dotdot-path", "empty-path",
+        "path-twice", "resolution-not-text", "commit-not-hex",
+        "row-not-a-mapping"])
+def test_a_submodule_record_row_that_says_nothing_is_a_finding(project, old,
+                                                              new, code):
+    assert old in SUBMODULE_RECORD, f"fixture drift: {old!r}"
+    append_record(project, SUBMODULE_RECORD.replace(old, new, 1))
+    result = validate(project)
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert code in result.stderr, result.stderr
+
+
+def test_a_submodule_record_that_is_not_a_list_is_a_finding(project):
+    append_record(project, "\nsubmodules: .cursor\n")
+    result = validate(project)
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert "manifest-submodules" in result.stderr, result.stderr
