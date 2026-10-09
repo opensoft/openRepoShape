@@ -37,7 +37,8 @@ THE PLAN IS AN ARTIFACT A HUMAN OR AN AI EDITS. That is why it is YAML with
 reasons in it rather than a pipe between two processes: the classifier is
 right about `openspec/` and cannot be right about `examples/golden-run/`
 without knowing whether the specification cites it. `execute` REFUSES while
-any `leg:` is still null.
+any `leg:` is still null, and on every other finding `check` reports, before
+it has created a leg repository or pushed anything.
 
 WHY `git filter-repo` AND NOT A VENDORED COPY. Extracting history correctly is
 a solved problem with one correct implementation, and a vendored copy of it
@@ -1670,6 +1671,88 @@ def _leg_paths(plan: Plan) -> dict:
             for leg in LEG_VALUES}
 
 
+#: How many of `check`'s findings the one refusal below spells out; the rest
+#: are a count, as `plan-unresolved` names eight paths and not every one.
+REFUSED_FINDINGS_SHOWN = 8
+
+
+def _refuse_what_check_finds(plan: Plan, source: Source) -> None:
+    """Refuse a plan `check` rejects, BEFORE a leg repository exists (#168).
+
+    Of `check`'s findings, `execute` used to refuse only `plan-unresolved`,
+    `plan-stale` and the naming findings (`_check_names`). A plan `check`
+    rejected for any other reason -- `plan-uncovered`, `plan-bad-leg`,
+    `plan-covered-twice`, `plan-duplicate-path`, `plan-empty-entry` -- went on
+    into `_create_leg_remotes`, which made both legs. As reproduced for #168
+    on main at 7f84ca4, it then ended one of three ways:
+
+    - `plan-uncovered` and `plan-bad-leg`, on a source with no submodule: the
+      run VERIFIED and exited 0, the uncovered paths, or the paths whose
+      `leg:` is not one of the four words, left in the assembly root;
+    - `plan-covered-twice`, `plan-duplicate-path` and `plan-empty-entry`: the
+      run died at `git rm` of the offending entry, after both legs were
+      pushed;
+    - a source with a submodule, #168's three cases (the submodule's entry
+      deleted; the submodule's entry, or `.gitmodules`, given a `leg:` that is
+      not one of the four words): the verification failed as `adopt-lost`.
+
+    In every one the legs existed afterwards, so the corrected plan could not
+    make them again: it met `leg-remote-exists` under `--local-remote-dir`,
+    and without it asked `gh repo create` for names the first run had already
+    taken. There is no `--force`, deliberately. AGENTS.md step 4 has a human
+    say yes after `check`, but `execute` is the one gate that cannot be
+    skipped, so it says no to the same findings.
+
+    THE FINDINGS ARE `check`'S OWN: the same two functions over the same two
+    lists, so the two commands cannot disagree about what a plan covers. The
+    refusal's code is the FIRST finding's own (`plan-uncovered`, ...); its
+    detail is every finding as `check` prints it, capped at
+    `REFUSED_FINDINGS_SHOWN` with an "and N more" tail.
+
+    THE ORDER IS PART OF THE FIX. This runs AFTER `_refuse_an_unrunnable_plan`:
+    `_leg_findings` also reports `plan-unresolved`, which that function has
+    already refused in its own words, and a plan written against a tree that
+    has since moved is `plan-stale`, not whatever its stale coverage happens
+    to lack. And it runs AFTER `_leg_paths` has checked, as a safe `git`
+    argument, the path of every entry whose `leg:` is one of the four words,
+    because a path that is an option is `unsafe-value` and must stay that, not
+    become an uncovered file. An entry with any other `leg:` is not checked
+    there and reaches no `git` command; it is refused here, under whichever
+    finding `check` lists first. It runs BEFORE `_refuse_unconsented_seeding`,
+    `_confirm` and `_create_leg_remotes`, so no leg repository is created and
+    nothing is pushed until every refusal has passed. (`_work_root` has
+    already made the work directory and an `org/repo` source has already been
+    cloned into it: they come first, and neither is a leg.)
+
+    ONE LIST, LATER. #166 adds `submodule_plan_problems` to `check` and to
+    `_refuse_an_unrunnable_plan`. Once both branches have merged, `check`,
+    `_refuse_an_unrunnable_plan` and this function can read ONE shared list of
+    findings. That is deliberately not done here, so that the two branches do
+    not edit the same functions and conflict.
+    """
+    entry_paths = [str(e.get("path")) for e in plan.entries]
+    tree_paths = [path for path, _, _, _ in source.tree()]
+    findings = (_coverage_findings(entry_paths, tree_paths)
+                + _leg_findings(plan))
+    if not findings:
+        return
+    # `FINDING <code>: <detail>` is the one shape both functions write.
+    code = findings[0].split()[1].rstrip(":")
+    lines = [f"{len(findings)} finding(s) in {plan.path}, as `check` prints "
+             "them:"]
+    lines += [f"  {finding}" for finding in findings[:REFUSED_FINDINGS_SHOWN]]
+    if len(findings) > REFUSED_FINDINGS_SHOWN:
+        lines.append(f"  and {len(findings) - REFUSED_FINDINGS_SHOWN} more")
+    raise Refusal(
+        code, "\n".join(lines),
+        "Remediation: no leg repository was created and nothing was pushed. "
+        "Correct the plan -- answer each entry's `leg:` and cover every "
+        "source path exactly once -- and run `check` until it prints `plan "
+        "ok`, then run `execute` again. A leg made from a plan `check` "
+        "rejects is one the corrected plan cannot make again: under "
+        "`--local-remote-dir` it meets `leg-remote-exists`.")
+
+
 def _refuse_unconsented_seeding(args, plan: Plan, seeded: list) -> None:
     """A leg with no path is SEEDED, and seeding takes a human's word.
 
@@ -1841,6 +1924,7 @@ def cmd_execute(args) -> int:
     spec_path, code_path, branch, tracking = _checked_plan_values(plan)
     local, repositories, urls = _repository_urls(args, plan, names, source)
     paths_for = _leg_paths(plan)
+    _refuse_what_check_finds(plan, source)
 
     seeded = seeded_legs(paths_for)
     _refuse_unconsented_seeding(args, plan, seeded)
