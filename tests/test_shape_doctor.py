@@ -3281,13 +3281,22 @@ def stage_unmerged(leg: Path, name: str, kinds: dict) -> None:
     not 0, and it writes the index and nothing else -- the leg's HEAD stays at
     its pin, as `stage` and `stage_gitlink` leave it. A gitlink's second
     commit is a child of HEAD made with `commit-tree`, which moves no ref.
+
+    Both pipes into git carry BYTES, not text. A text-mode pipe writes each
+    LF as `os.linesep`, which is CR LF on Windows, so git read the path as
+    `.cursor` plus a CR, accepted it (a CR is a legal byte in a path), staged
+    the entries there and exited 0: `check=True` passed, `ls-files --stage
+    .cursor` listed nothing, and the three tests that read it failed on the
+    Windows job alone. NUL-terminated records (`update-index -z`) were not
+    chosen: encoding them is what takes the translation out, on every system,
+    and it leaves them in the very lines `ls-files --stage` prints.
     """
     commit = git("rev-parse", "HEAD", cwd=leg).stdout.strip()
     child = git("commit-tree", f"{commit}^{{tree}}", "-p", commit, "-m",
                 "the other side", cwd=leg).stdout.strip()
     blob = subprocess.run(["git", "hash-object", "-w", "--stdin"],
-                          cwd=str(leg), input="x\n", capture_output=True,
-                          text=True, check=True).stdout.strip()
+                          cwd=str(leg), input=b"x\n", capture_output=True,
+                          check=True).stdout.decode("utf-8").strip()
     lines = ""
     for number, kind in kinds.items():
         if kind == "file":
@@ -3296,7 +3305,8 @@ def stage_unmerged(leg: Path, name: str, kinds: dict) -> None:
             mode, obj = "160000", commit if number == 2 else child
         lines += f"{mode} {obj} {number}\t{name}\n"
     subprocess.run(["git", "update-index", "--index-info"], cwd=str(leg),
-                   input=lines, text=True, capture_output=True, check=True)
+                   input=lines.encode("utf-8"), capture_output=True,
+                   check=True)
 
 
 @pytest.mark.parametrize("kinds", [
