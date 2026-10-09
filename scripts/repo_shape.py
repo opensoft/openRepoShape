@@ -622,10 +622,27 @@ def parse_yaml(text: str) -> Any:
 
 
 def load_yaml(path: Path) -> Any:
+    """Read and parse one YAML file, or raise a `Refusal` that names the file.
+
+    `UnicodeDecodeError` is caught on its own, beside `OSError` and not under
+    it, because it is a `ValueError`: `read_text` opens the file successfully
+    and only then fails to decode it, so the `OSError` clause never sees it
+    and, uncaught, it left every reader as a Python traceback (#192) rather
+    than the `REFUSED yaml-unreadable` line a missing file already gets.
+    """
     try:
         text = Path(path).read_text(encoding="utf-8")
     except OSError as exc:
         raise Refusal("yaml-unreadable", f"{path}: {exc}") from exc
+    except UnicodeDecodeError as exc:
+        raise Refusal(
+            "yaml-unreadable",
+            f"{path}: not UTF-8 at byte {exc.start} ({exc.reason})",
+            "Remediation: every YAML file this tool reads must be UTF-8. "
+            f"Byte {exc.start}, counting from 0 at the start of the file, is "
+            "the first one that is not: re-save the file as UTF-8, or replace "
+            "that byte with the character it was meant to be, and run the "
+            "command again.") from exc
     try:
         return parse_yaml(text)
     except YamlError as exc:
