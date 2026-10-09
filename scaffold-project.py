@@ -56,7 +56,8 @@ from repo_shape import (  # noqa: E402
 from shape_materialize import (  # noqa: E402
     RULESET_HINT, SHAPE_REPOSITORY, CommandFailed,
     copy_tree, default_reference, descendant_note, election_date, env_commit,
-    git_init_commit, materialize_assembly_root, naming_block, run,
+    git_init_commit, materialize_assembly_root, naming_block,
+    refuse_bad_leg_paths, run,
 )
 from shape_advisory import scaffold_lines  # noqa: E402
 
@@ -853,8 +854,20 @@ def _scaffold(args) -> int:
     project = checked_value("--project", args.project)
     args.tracking_branch = checked_value("--tracking-branch",
                                          args.tracking_branch)
-    args.spec_path = checked_value("--spec-path", args.spec_path)
-    args.code_path = checked_value("--code-path", args.code_path)
+    # The leg paths are asked the ONE question `adopt-project.py` asks of its
+    # own -- canonical, mountable, two different places, then the alphabet
+    # `checked_value` allows -- BEFORE `checked_value` is asked alone, because
+    # it lets `spec/` through: Git records that mount at `spec` while the
+    # `.gitmodules` write in `_build_assembly_root` names a second section,
+    # `spec/`, so the project's recursive clone fails once this work
+    # directory is gone (#179). Asked first, the answer for `legs\spec` is the
+    # spelling to retype, where the alphabet check alone would only say no.
+    # Refused before a work directory or a remote exists, and by `--dry-run`.
+    spec_leg = ("--spec-path", args.spec_path)
+    code_leg = ("--code-path", args.code_path)
+    refuse_bad_leg_paths("scaffold-bad-leg-path", spec_leg, code_leg)
+    args.spec_path = checked_value(*spec_leg)
+    args.code_path = checked_value(*code_leg)
     args.org = checked_value("--org", args.org)
     args.pin_owner = checked_value("--pin-owner", args.pin_owner)
     project_id, display, elected_on, reference, elected_by = _identity(
