@@ -1270,6 +1270,77 @@ def _seed_leg(role: str, work: Path, values: dict, branch: str, url: str,
     return commit, tree_digest(work, commit)
 
 
+#: What an index entry's mode, an octal number, says holds a path, for
+#: `adopt-mount-occupied`. Any other mode is a file's.
+INDEX_ENTRY_KINDS = {0o160000: "a submodule", 0o120000: "a symlink"}
+
+#: Both mount refusals come at the same point of the run, so they say the
+#: same thing about what exists and how to start again.
+MOUNT_REMEDIATION = (
+    "Remediation: both leg repositories were made and pushed before the "
+    "mount, and nothing was committed to the source or pushed to it. Mount "
+    "the legs at two different paths that nothing the plan keeps in the root "
+    "holds, with no symlink or submodule it keeps there on the way to them: "
+    "change `legs.spec_path` or `legs.code_path`, or the `leg:` of the entry "
+    "in the way. Then delete the two legs this run made, or choose an "
+    "empty `--local-remote-dir`, before `execute` runs again: a leg that "
+    "already exists meets `leg-remote-exists`, or a `gh repo create` that "
+    "finds the name taken.")
+
+
+def _refuse_an_unmountable_path(assembly: Path, path: str) -> None:
+    """Refuse a mount path `git submodule add --force` would misuse (#174).
+
+    `--force` is what gets a mount past a source `.gitignore` (see the loop
+    in `_mount_the_legs`), and it also turns off two of git's own refusals.
+    Each is made here instead, BEFORE the add, as a named refusal:
+
+    - A path the index already holds. Without `--force` git refuses any
+      entry there; with it, only one that is NOT a gitlink, and when a
+      repository is already checked out at the path it is REUSED, not
+      cloned. With `spec_path` equal to `code_path` that repository is the
+      spec leg, mounted a moment before: the code leg was never mounted and
+      the run said `adoption verified`, where without `--force` it died at
+      the second add. So ANY entry at the path, or under it, is refused
+      here, with what holds it. A disk that ignores case is one where `Spec`
+      holds `spec`; git records it as `core.ignorecase`, and `ls-files`
+      still matches case-sensitively there, so the question is then asked
+      with `--icase-pathspecs`.
+    - git's own `git add --dry-run` of the path, made before it clones the
+      leg. That is what refuses a path beyond a symlink or inside a
+      submodule; without it, `legs/spec` under a root-kept `legs ->
+      /elsewhere` had the leg cloned THROUGH the link, outside the work
+      directory, before git refused. The dry run is made here with `-f`,
+      so an ignore rule still passes it.
+
+    Equal and nested leg paths are the plan's to refuse, before any leg
+    exists (#169). This is the same answer where the mount is made, for a
+    run that got here anyway, and it also covers what the two path values
+    alone cannot show: an entry the plan keeps in the root at the path, and
+    a symlink on the way to it.
+    """
+    icase = git_out(["config", "--type=bool", "--default=false",
+                     "core.ignorecase"], cwd=assembly) == "true"
+    held = git_out([*(["--icase-pathspecs"] if icase else []), "ls-files",
+                    "-s", "--", path], cwd=assembly).splitlines()
+    if held:
+        kind = INDEX_ENTRY_KINDS.get(int(held[0].split()[0], 8), "a file")
+        more = f" and {len(held) - 1} more" if len(held) > 1 else ""
+        raise Refusal(
+            "adopt-mount-occupied",
+            f"the assembly's index already holds the leg mount path {path}, "
+            f"with {kind}: `{held[0]}`{more}",
+            MOUNT_REMEDIATION)
+    try:
+        run(["git", "add", "--dry-run", "--ignore-missing", "-f",
+             "--no-warn-embedded-repo", "--", path], cwd=assembly)
+    except CommandFailed as exc:
+        raise Refusal(
+            "adopt-mount-unaddable",
+            f"git will not add the leg mount path {path}: {exc.output}",
+            MOUNT_REMEDIATION) from exc
+
+
 def _mount_the_legs(assembly: Path, work_root: Path, names: dict, urls: dict,
                     paths_for: dict, spec_path: str, code_path: str) -> None:
     """(c, first half) `git rm` what moved, then mount the two legs.
@@ -1305,11 +1376,15 @@ def _mount_the_legs(assembly: Path, work_root: Path, names: dict, urls: dict,
         # were pushed, so a corrected re-run met `leg-remote-exists` (#174).
         # That source is a legitimate one to adopt, not one to refuse, and a
         # gitlink once added is tracked, so the rule never touches it again.
-        # The rest of what `--force` does cannot make a bad mount pass: this
-        # fresh clone has no `.git/modules/<name>` for it to reuse, a path
-        # the index already holds is still refused, and a newer git's
-        # renaming of a name already in use can only meet a `.gitmodules`
-        # the plan KEPT here, which verification never passes (#165).
+        # `--force` also lets through a path the index holds with a gitlink,
+        # reusing the repository there, and skips git's check for a path
+        # beyond a symlink: `_refuse_an_unmountable_path` refuses both first.
+        # With that, the two paths are distinct, so the second mount's name
+        # has no `.git/modules/<name>` in this fresh clone for `--force` to
+        # reactivate; and a newer git's renaming of a name already in use
+        # can only meet a `.gitmodules` the plan KEPT here, which
+        # verification never passes (#165).
+        _refuse_an_unmountable_path(assembly, path)
         run(["git", *FILE_PROTOCOL, "submodule", "add", "--force", "-q",
              str(work_root / names[role]), path], cwd=assembly)
         run(["git", "config", "-f", GITMODULES, f"submodule.{path}.url",
