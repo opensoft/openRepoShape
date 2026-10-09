@@ -134,6 +134,22 @@ one. And a submodule at a path the doctor never judges for a file -- under
 `.github/**`, say -- is named all the same, because the row's promise is that
 no gitlink a leg keeps goes unreported.
 
+THE NOTE SAYS WHICH KIND OF PLACEMENT IT FOUND (Codex review on #186, round
+2). Which leg a submodule belongs in is the adoption plan's answer:
+`adopt-project.py plan` asks it of every entry that holds a gitlink (#166).
+But nothing in the assembly records that anyone answered it. A project adopted
+before that question, or one with a submodule added by hand, has its gitlink
+in whichever leg it landed in, and the doctor cannot tell those from an
+answered one. So the row says what it CAN tell. A gitlink whose name no rule
+names, a root rule names, or the rule of the leg it is in names, is `kept`:
+the root keeps no source submodule, so a leg holds it. A gitlink whose name a
+rule assigns to the OTHER leg -- `docs/theme` in the code leg, under
+`spec-governance` -- is `unverifiable`: named with the rule and the leg, in
+the row, in `--json` (`placement`, `rule`) and in the plan, with the words
+"confirm against the plan, or move it". Both stay a `note`, never MISPLACED,
+because a human's answer under #166 looks exactly like the second, and
+MISPLACED would put back the false positive #176 removed.
+
 AND THE DOCTOR STILL MOVES NOTHING. A path changing legs is a pull request on
 the leg it leaves, a pull request on the leg it joins, and one pin bump in the
 assembly root -- a human's act, with a human's review. So the row's next
@@ -414,9 +430,21 @@ GITLINK_MODE = "160000"
 #: Asked again of a project already split, it would be an answered question
 #: put back on every run, and the one its name draws from this policy is
 #: `default`'s, which offers `root` -- not an answer for a submodule.
-KEPT_SUBMODULE = ("a submodule (a gitlink), kept in its leg because the "
-                  "assembly root keeps no submodule but its legs; the path "
-                  "policy reads names, so it does not judge one")
+#:
+#: TWO CLASSES, SAID APART (Codex review on #186, round 2). A submodule's leg
+#: is the adoption plan's answer, and nothing in the assembly records that
+#: anyone gave it, so the row says only what the policy can tell it. `kept` is
+#: a submodule whose name no rule claims, a root rule claims, or the rule of
+#: the leg it is in claims: the root keeps no source submodule, so a leg holds
+#: it, and there is nothing to check it against. `unverifiable` is one whose
+#: name a rule assigns to the OTHER leg: that may be the person adopting
+#: having answered the question the other way, and may be nobody having
+#: answered it, and the doctor cannot tell. Neither is MISPLACED -- that is the
+#: false positive #176 removed.
+SUBMODULE_KEPT = "kept"
+SUBMODULE_UNVERIFIABLE = "unverifiable"
+KEPT_SUBMODULE = ("a submodule; the assembly root keeps no source submodule "
+                  "(#166), so a leg holds it")
 
 #: What belongs to EVERY repository, so the `placement` row never calls it
 #: misplaced in a leg.
@@ -1643,20 +1671,84 @@ def named_offenders(rows: list) -> str:
     return "; ".join(named) + " (" + ", ".join(totals) + ")"
 
 
-def kept_submodules(kept: list) -> str:
-    """The clause naming the submodules the legs keep, the first three of
-    them, and why none of them is judged (#176).
-
-    ONE CLAUSE, IN EVERY BRANCH THAT CAN MEET ONE, so that a submodule beside
-    a misplaced file, or beside a question, is said exactly as it is said on
-    its own.
+def named_submodules(kept: list) -> str:
+    """The first three submodules of one class, each with the rule that named
+    it where one did (Codex review on #186, round 2).
     """
-    named = ", ".join(item["path"] for item in kept[:3])
+    def one(item: dict) -> str:
+        if item["rule"] is None:
+            return item["path"]
+        return f"{item['path']} (rule {item['rule']})"
+
+    named = ", ".join(one(item) for item in kept[:3])
     if len(kept) > 3:
         named += f", and {len(kept) - 3} more"
-    return (f"{len(kept)} submodule(s) the path policy does not judge, kept "
-            "in a leg because the assembly root keeps no submodule but its "
-            f"legs: {named}")
+    return named
+
+
+def kept_submodules(kept: list) -> str:
+    """The clauses naming the submodules the legs keep, one for each class,
+    and why none of them is judged (#176).
+
+    ONE CLAUSE FOR EACH CLASS PRESENT, IN EVERY BRANCH THAT CAN MEET ONE, so
+    that a submodule beside a misplaced file, or beside a question, is said
+    exactly as it is said on its own. The two classes are SAID APART because
+    they are not the same claim: `kept` is a submodule the root cannot hold,
+    and `unverifiable` is one in the leg a rule says it does not belong in,
+    which the doctor cannot check against the answer the adoption plan gave
+    (Codex review on #186, round 2). The second asks for a human's look in so
+    many words, and is still no finding.
+    """
+    placed = [item for item in kept if item["placement"] == SUBMODULE_KEPT]
+    asked = [item for item in kept
+             if item["placement"] == SUBMODULE_UNVERIFIABLE]
+    clauses = []
+    if placed:
+        clauses.append(
+            f"{len(placed)} submodule(s) the path policy does not judge, "
+            "which a leg holds because the assembly root keeps no source "
+            f"submodule (#166): {named_submodules(placed)}")
+    if asked:
+        clauses.append(
+            f"{len(asked)} submodule(s) at a path a rule assigns to the "
+            "other leg, which the doctor cannot verify here because a "
+            "submodule's leg is the adoption plan's answer (confirm against "
+            f"the plan, or move it): {named_submodules(asked)}")
+    return "; ".join(clauses)
+
+
+def submodule_placement(policy, role: str, path: str) -> dict:
+    """What the policy can say about the leg a submodule is in, and no more
+    (Codex review on #186, round 2).
+
+    THE RULE THAT NAMES THE PATH, AND WHICH LEG IT ASSIGNS. `rule_for` is the
+    policy's own first-match lookup and nothing else: a submodule is judged by
+    no extension majority and no `default`, which read what a FILE looks like.
+    A rule that assigns the OTHER leg makes the placement `unverifiable`; one
+    that assigns this leg, assigns the root, or leaves the leg to a human
+    (`ambiguous`) -- or no rule at all -- leaves it `kept`. Neither is a
+    finding: the leg of a submodule is the adoption plan's answer under #166,
+    the assembly records no such answer, and a gitlink in the other leg looks
+    the same whether somebody chose it or nobody did.
+
+    The rule's id is in the result whenever one matched, in either class, so
+    that a reader is told which rule the doctor did NOT apply to a submodule.
+    """
+    rule = policy.rule_for(path)
+    if rule is None:
+        return {"placement": SUBMODULE_KEPT, "rule": None,
+                "note": KEPT_SUBMODULE}
+    name = str(rule["id"])
+    leg = rule["leg"]
+    if leg in LEG_ROLES and leg != role:
+        return {"placement": SUBMODULE_UNVERIFIABLE, "rule": name,
+                "note": (f"a submodule at a path rule `{name}` assigns to "
+                         f"the {leg} leg; a submodule's leg is the adoption "
+                         "plan's answer and the doctor cannot verify it "
+                         "here: confirm against the plan, or move it")}
+    return {"placement": SUBMODULE_KEPT, "rule": name,
+            "note": (f"{KEPT_SUBMODULE} (rule `{name}` matches its name, and "
+                     "the doctor does not apply it to a submodule)")}
 
 
 def placement_row(status: str, reason: str, next_command=None,
@@ -1711,6 +1803,12 @@ def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
     before the paths the doctor never judges are set aside -- a submodule at
     `.github/actions` or `LICENSE` is dropped from the walk like a file
     there, and is still one a leg keeps, so it is still named.
+
+    AND EACH ONE IS CLASSIFIED AS WHAT THE DOCTOR CAN KNOW OF IT, NOT JUDGED
+    (Codex review on #186, round 2). `submodule_placement` reads the rule the
+    policy names its path by: a rule that assigns the OTHER leg makes the
+    submodule `unverifiable`, because its leg is the adoption plan's answer
+    and the assembly records none. The `note` is still a note.
     """
     entry = {"role": role, "path": rel}
     mount = root / rel
@@ -1780,7 +1878,8 @@ def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
                   "misplaced": len(misplaced),
                   "review_required": len(review)})
     submodules = [{"path": f"{rel}/{path}", "leg": role,
-                   "path_in_leg": path, "note": KEPT_SUBMODULE}
+                   "path_in_leg": path,
+                   **submodule_placement(policy, role, path)}
                   for path in held]
     return entry, misplaced, review, submodules
 
@@ -1863,12 +1962,16 @@ def placement_verdict(detail: dict, audited: str, plan: str) -> Row:
     nothing above it may fall through to it.
 
     A SUBMODULE NEVER MOVES THIS ROW ON ITS OWN ACCOUNT. Beside a misplaced
-    path or a question it adds one clause to the sentence those already make,
-    and on its own it is the `note` that keeps the row off `ok`: a gitlink is
-    a tracked path the policy did not classify, so "every tracked path
-    classifies as the leg it is in" would not be true of it. Its `next` is
-    the plan's only where a misplaced path or a question already offers one,
-    because a note with nothing to resolve has no command to run.
+    path or a question it adds one clause per class to the sentence those
+    already make, and on its own it is the `note` that keeps the row off `ok`:
+    a gitlink is a tracked path the policy did not classify, so "every tracked
+    path classifies as the leg it is in" would not be true of it. That holds
+    for the `unverifiable` class too, which names the rule and asks for a
+    human's look (Codex review on #186, round 2): it is not MISPLACED, because
+    a person adopting under #166 answered that leg, and the doctor cannot tell
+    that answer from none. Its `next` is the plan's only where a misplaced
+    path or a question already offers one, because the confirmation it asks
+    for is against the ADOPTION plan, a document this row cannot name.
 
     Reads what it needs out of `detail` rather than taking the same six
     numbers a second time: the row prints that dictionary, so a count this
@@ -1950,7 +2053,10 @@ def check_placement(ctx: Context) -> Row:
     unanswered question is never a finding and never an implicit anything.
     And a SUBMODULE a leg keeps is classified by nothing and is a `note`
     naming it (#176): the policy reads names, a gitlink is not the file its
-    name looks like, and the assembly root keeps no submodule but its legs.
+    name looks like, and the assembly root keeps no source submodule (#166).
+    The note says which of two it is: `kept`, or `unverifiable` when a rule
+    assigns the path to the other leg and so the doctor cannot confirm the
+    adoption plan's answer.
 
     AND NOTHING MOVES. The row's next command writes a plan; the plan is the
     human's to resolve and a later `--fix` is the thing that would carry it
@@ -2188,6 +2294,13 @@ def placement_plan_submodules(adopt, kept: list) -> list:
     it was not judged, because what a report declined to judge belongs in the
     report.
 
+    EACH ONE CARRIES THE CLASS THE ROW GAVE IT (Codex review on #186, round
+    2): `placement: kept`, or `placement: unverifiable` where a rule assigns
+    its path to the other leg, with `rule:` -- the id, or null where none
+    matched. `unverifiable` is not a question either: it is the doctor saying
+    it cannot check the answer the adoption plan gave, so the file carries
+    the instruction and nothing to fill in.
+
     NOTHING AT ALL WHEN NO LEG KEEPS ONE, so the plan of every project
     without a submodule is the file it always was.
     """
@@ -2196,12 +2309,18 @@ def placement_plan_submodules(adopt, kept: list) -> list:
     lines = ["",
              "# Kept in a leg and NOT JUDGED: a submodule is a gitlink, which",
              "# the path policy cannot tell from a file of the same name, and",
-             "# the assembly root keeps no submodule but its legs. Nothing",
+             "# the assembly root keeps no source submodule (#166). Nothing",
              "# here is to resolve, and no entry under `paths:` covers one.",
+             "# `placement: unverifiable` is a submodule at a path a rule",
+             "# assigns to the OTHER leg: its leg is the adoption plan's",
+             "# answer, which the doctor cannot verify here, so confirm it",
+             "# against the plan, or move it.",
              "submodules:"]
     for item in kept:
         lines.append(f"  - path: {adopt.y(item['path'])}")
         adopt.emit(lines, "in_leg", item["leg"], 4)
+        adopt.emit(lines, "placement", item["placement"], 4)
+        adopt.emit(lines, "rule", item["rule"], 4)
         adopt.emit(lines, "note", item["note"], 4)
     return lines
 

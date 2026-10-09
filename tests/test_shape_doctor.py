@@ -2786,6 +2786,22 @@ def test_a_tracked_symlink_is_never_followed_out_of_the_leg(standard, project,
 # 1, over a placement `adopt-project.py` had required.
 
 
+#: What a `kept` submodule's note says, spelt out here and not imported from
+#: the doctor: the wording is the coordinator's, and a test that read it back
+#: from the thing under test would pass whatever it said (Codex review on
+#: #186, round 2).
+KEPT_NOTE = ("a submodule; the assembly root keeps no source submodule "
+             "(#166), so a leg holds it")
+
+
+def unverifiable_note(rule: str, leg: str) -> str:
+    """What an `unverifiable` submodule's note says: a path the rule `rule`
+    assigns to the `leg` leg, which the submodule is not in."""
+    return (f"a submodule at a path rule `{rule}` assigns to the {leg} leg; "
+            "a submodule's leg is the adoption plan's answer and the doctor "
+            "cannot verify it here: confirm against the plan, or move it")
+
+
 def stage_gitlink(leg: Path, name: str) -> None:
     """Record a SUBMODULE at `name` in a leg's index, as `stage` does a file.
 
@@ -2846,11 +2862,21 @@ def test_a_submodule_a_leg_keeps_under_a_root_ruled_path_is_a_note(
     assert kept["path"] == f"code/{name}", kept
     assert kept["leg"] == "code"
     assert kept["path_in_leg"] == name
-    assert "keeps no submodule but its legs" in kept["note"], kept
+    assert kept["placement"] == "kept", (
+        "a root rule names this path, and the root keeps no source submodule: "
+        "a leg holds it", kept)
+    assert kept["rule"] == rule, kept
+    assert kept["note"].startswith(KEPT_NOTE), kept
+    assert f"`{rule}`" in kept["note"], (
+        "the rule the doctor did not apply to a submodule is named", kept)
     assert row["detail"]["counts"]["submodules"] == 1
     assert f"code/{name}" in row["reason"], row["reason"]
-    assert "the assembly root keeps no submodule but its legs" in \
-        row["reason"], row["reason"]
+    assert ("the assembly root keeps no source submodule (#166)"
+            in row["reason"]), row["reason"]
+    assert f"(rule {rule})" in row["reason"], row["reason"]
+    assert "cannot verify" not in row["reason"], (
+        "a submodule at a root-ruled path is not one a rule puts in the "
+        "other leg", row["reason"])
     assert "root by rule" not in row["reason"], row["reason"]
     assert row["next"] is None, (
         "a note with nothing to resolve names no command to run")
@@ -2923,19 +2949,32 @@ def test_a_submodule_at_a_path_no_rule_claims_leaves_the_verdict_alone(
     assert row["status"] == "note", row
     assert row["detail"]["misplaced"] == []
     assert row["detail"]["review_required"] == []
-    assert [kept["path"] for kept in row["detail"]["submodules"]] == \
-        ["code/vendor/lib"]
+    [kept] = row["detail"]["submodules"]
+    assert kept["path"] == "code/vendor/lib", kept
+    assert kept["placement"] == "kept", kept
+    assert kept["rule"] is None, (
+        "no rule names this path, so none is named", kept)
+    assert kept["note"] == KEPT_NOTE, kept
+    assert "cannot verify" not in row["reason"], row["reason"]
 
 
-def test_a_submodule_the_policy_sends_to_the_other_leg_is_a_note_too(
+def test_a_submodule_the_policy_sends_to_the_other_leg_is_unverifiable(
         standard, project):
-    """WHATEVER RULE MATCHED THE NAME, as the adoption asks it (#166).
+    """A PLACEMENT THE DOCTOR CANNOT VERIFY, NAMING THE RULE (#166, Codex
+    review on #186, round 2).
 
     `adopt-project.py plan` asks the `.gitmodules` question of every entry
     that holds a gitlink, not only the root-ruled ones, so a theme submodule
     at `docs/theme` -- `spec` by `spec-governance` -- may be answered `code`
     by the person adopting, and was. Reporting it as spec in the code leg
-    would be the same defect one rule along.
+    would be the same defect one rule along. But a project adopted before
+    that question, or with a submodule added by hand, has the same gitlink in
+    the same leg and NOBODY's answer behind it, and the assembly records
+    which of the two this is nowhere. So the row says exactly that: it names
+    the rule, says the doctor cannot verify the leg, and asks for it to be
+    confirmed against the plan or moved. It is still a `note` and the verdict
+    is still COMPLIANT: MISPLACED would call the answered case a finding,
+    which is #176 over again.
     """
     verdict = path_policy(standard).classify_file("docs/theme")
     assert (verdict.leg, verdict.rule) == ("spec", "spec-governance")
@@ -2946,8 +2985,140 @@ def test_a_submodule_the_policy_sends_to_the_other_leg_is_a_note_too(
     row = rows_of(result)["placement"]
     assert row["status"] == "note", row
     assert row["detail"]["misplaced"] == []
-    assert [kept["path"] for kept in row["detail"]["submodules"]] == \
-        ["code/docs/theme"]
+    assert row["detail"]["review_required"] == []
+    [kept] = row["detail"]["submodules"]
+    assert kept["path"] == "code/docs/theme", kept
+    assert kept["leg"] == "code"
+    assert kept["placement"] == "unverifiable", kept
+    assert kept["rule"] == "spec-governance", kept
+    assert kept["note"] == unverifiable_note("spec-governance", "spec"), kept
+    assert row["detail"]["counts"]["submodules"] == 1
+    assert "code/docs/theme (rule spec-governance)" in row["reason"], (
+        row["reason"])
+    for phrase in ("assigns to the other leg", "cannot verify",
+                   "adoption plan's answer",
+                   "confirm against the plan, or move it"):
+        assert phrase in row["reason"], (phrase, row["reason"])
+    assert "keeps no source submodule" not in row["reason"], (
+        "the kept sentence is not said of a submodule it does not describe",
+        row["reason"])
+    assert "root by rule" not in row["reason"], row["reason"]
+    assert row["next"] is None, row
+
+    text = doctor(standard, project)
+    assert text.returncode == 0, text.stdout + text.stderr
+    assert verdict_line(text).startswith("COMPLIANT   (exit 0)"), text.stdout
+    assert "MISPLACED" not in text.stdout, text.stdout
+    assert "confirm against the plan, or move it" in text.stdout, text.stdout
+
+
+def test_a_submodule_in_the_leg_its_rule_assigns_is_kept_and_names_the_rule(
+        standard, project):
+    """THE SAME GITLINK IN THE LEG THE RULE ASSIGNS READS AS KEPT.
+
+    `docs/theme` is `spec` by `spec-governance`, and in the SPEC leg there is
+    nothing for the doctor to say it cannot verify: the leg agrees with the
+    rule, and the root keeps no source submodule either way. It gets the
+    `kept` wording, with the rule named, and not the unverifiable one.
+    """
+    stage_gitlink(project / "spec", "docs/theme")
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout)["verdict"] == "COMPLIANT"
+    row = rows_of(result)["placement"]
+    assert row["status"] == "note", row
+    assert row["detail"]["misplaced"] == []
+    [kept] = row["detail"]["submodules"]
+    assert kept["path"] == "spec/docs/theme", kept
+    assert kept["leg"] == "spec"
+    assert kept["placement"] == "kept", kept
+    assert kept["rule"] == "spec-governance", kept
+    assert kept["note"].startswith(KEPT_NOTE), kept
+    assert "`spec-governance`" in kept["note"], kept
+    assert ("spec/docs/theme (rule spec-governance)" in row["reason"]), (
+        row["reason"])
+    assert ("the assembly root keeps no source submodule (#166)"
+            in row["reason"]), row["reason"]
+    assert "cannot verify" not in row["reason"], row["reason"]
+
+
+def test_a_code_rule_makes_a_submodule_in_the_spec_leg_unverifiable(
+        standard, project):
+    """THE OTHER WAY ROUND: a `code` rule, the gitlink in the SPEC leg.
+
+    `src/vendored` is `code` by `code-source-and-tests`. In the spec leg it is
+    a placement the doctor cannot verify, and it says the rule and `code` --
+    the other leg is the rule's, not a fixed one.
+    """
+    verdict = path_policy(standard).classify_file("src/vendored")
+    assert (verdict.leg, verdict.rule) == ("code", "code-source-and-tests")
+    stage_gitlink(project / "spec", "src/vendored")
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout)["verdict"] == "COMPLIANT"
+    row = rows_of(result)["placement"]
+    assert row["status"] == "note", row
+    [kept] = row["detail"]["submodules"]
+    assert kept["path"] == "spec/src/vendored", kept
+    assert kept["placement"] == "unverifiable", kept
+    assert kept["rule"] == "code-source-and-tests", kept
+    assert kept["note"] == unverifiable_note("code-source-and-tests", "code")
+    assert "cannot verify" in row["reason"], row["reason"]
+
+
+def test_both_classes_are_said_apart_in_one_row(standard, project):
+    """A KEPT SUBMODULE AND AN UNVERIFIABLE ONE, each in its own clause.
+
+    `.cursor` is rooted by a rule, so a leg holds it; `docs/theme` is spec's,
+    in the code leg, so the doctor cannot verify it. One row names both in
+    their own words, each submodule once, and neither moves the verdict.
+    """
+    stage_gitlink(project / "code", ".cursor")
+    stage_gitlink(project / "code", "docs/theme")
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout)["verdict"] == "COMPLIANT"
+    row = rows_of(result)["placement"]
+    assert row["status"] == "note", row
+    by_path = {kept["path"]: kept for kept in row["detail"]["submodules"]}
+    assert sorted(by_path) == ["code/.cursor", "code/docs/theme"], by_path
+    assert by_path["code/.cursor"]["placement"] == "kept"
+    assert by_path["code/docs/theme"]["placement"] == "unverifiable"
+    assert row["detail"]["counts"]["submodules"] == 2
+    reason = row["reason"]
+    assert reason.count("submodule(s)") == 2, reason
+    kept_clause, apart, unverified_clause = reason.partition(
+        "; 1 submodule(s) at a path a rule assigns")
+    assert apart, ("the unverifiable clause follows the kept one", reason)
+    assert "code/.cursor (rule root-assistant-instructions)" in kept_clause, (
+        reason)
+    assert "code/docs/theme" not in kept_clause, reason
+    assert "cannot verify" in unverified_clause, reason
+    assert "code/docs/theme (rule spec-governance)" in unverified_clause, (
+        reason)
+    assert "code/.cursor" not in unverified_clause, reason
+
+
+def test_an_unverifiable_submodule_beside_a_misplaced_file_adds_its_clause(
+        standard, project):
+    """BESIDE A FINDING, THE CLAUSE IS ADDED AND THE VERDICT IS THE FILE'S.
+
+    The misplaced file alone sets MISPLACED and its `next`. The submodule the
+    doctor cannot verify adds its clause to that sentence and moves neither.
+    """
+    stage_gitlink(project / "code", "docs/theme")
+    stage(project / "spec", "tool.py", "VALUE = 1\n")
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert json.loads(result.stdout)["verdict"] == "MISPLACED (1 path)"
+    row = rows_of(result)["placement"]
+    assert row["status"] == "FINDING", row
+    assert [entry["path"] for entry in row["detail"]["misplaced"]] == [
+        "spec/tool.py"]
+    assert "cannot verify" in row["reason"], row["reason"]
+    assert "code/docs/theme (rule spec-governance)" in row["reason"], (
+        row["reason"])
+    assert "--placement-plan" in row["next"], row
 
 
 #: The placement row's `--json` keys before #176, which a project with no
@@ -3036,17 +3207,59 @@ def test_the_placement_plan_lists_a_kept_submodule_and_asks_nothing(
     assert [entry["path"] for entry in data["paths"]] == ["spec/tool.py"], (
         "a submodule a leg keeps is not a path to resolve")
     [kept] = data["submodules"]
-    assert set(kept) == {"path", "in_leg", "note"}, (
+    assert set(kept) == {"path", "in_leg", "placement", "rule", "note"}, (
         "no `leg:`, no `question:` and no `resolution:`: nothing is asked",
         kept)
     assert kept["path"] == "code/.cursor"
     assert kept["in_leg"] == "code"
-    assert "keeps no submodule but its legs" in kept["note"], kept
+    assert kept["placement"] == "kept", kept
+    assert kept["rule"] == "root-assistant-instructions", kept
+    assert kept["note"].startswith(KEPT_NOTE), kept
     as_plan = dict(data)
     as_plan["kind"], as_plan["mode"] = adopt.PLAN_KIND, "in-place"
     plan = adopt.Plan(out, as_plan)
     assert [entry["path"] for entry in plan.entries] == ["spec/tool.py"]
     assert adopt._leg_findings(plan) == []
+
+
+def test_the_placement_plan_carries_the_class_of_each_submodule(
+        standard, project, tmp_path):
+    """THE PLAN SAYS `kept` OR `unverifiable`, AND THE RULE, AS `--json` DOES.
+
+    Three submodules in the code leg, one of each way the doctor can tell
+    them: a root rule's, the other leg's rule's, and no rule's. The plan
+    names the class and the rule on each, `null` where no rule matched, and
+    still asks nothing: the adoption's own reader sees no entry to resolve.
+    """
+    for name in (".cursor", "docs/theme", "vendor/lib"):
+        stage_gitlink(project / "code", name)
+    out = tmp_path / "placement-plan.yaml"
+    result = doctor(standard, project, "--placement-plan", str(out))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert verdict_line(result).startswith("COMPLIANT   (exit 0)"), \
+        result.stdout
+
+    adopt = adoption_module(standard)
+    data = adopt.load_yaml(out)
+    assert data["paths"] == [], data
+    by_path = {kept["path"]: kept for kept in data["submodules"]}
+    assert sorted(by_path) == ["code/.cursor", "code/docs/theme",
+                               "code/vendor/lib"], by_path
+    for kept in by_path.values():
+        assert set(kept) == {"path", "in_leg", "placement", "rule", "note"}
+        assert kept["in_leg"] == "code"
+    assert by_path["code/.cursor"]["placement"] == "kept"
+    assert by_path["code/.cursor"]["rule"] == "root-assistant-instructions"
+    theme = by_path["code/docs/theme"]
+    assert theme["placement"] == "unverifiable", theme
+    assert theme["rule"] == "spec-governance", theme
+    assert theme["note"] == unverifiable_note("spec-governance", "spec"), (
+        theme)
+    assert by_path["code/vendor/lib"]["placement"] == "kept"
+    assert by_path["code/vendor/lib"]["rule"] is None
+    assert by_path["code/vendor/lib"]["note"] == KEPT_NOTE
+    assert "confirm it" in out.read_text(encoding="utf-8"), (
+        "the plan's own comment says what `unverifiable` asks of a reader")
 
 
 # --- placement: what the gitlink rule must not swallow (Codex, PR #186) ------
