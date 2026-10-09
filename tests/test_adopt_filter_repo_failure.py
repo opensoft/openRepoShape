@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""`execute` says why a leg could not be built, after both leg remotes exist (#171).
+"""`execute` says why a leg failed and what it left behind (#171).
 
 `run` (`scripts/shape_materialize.py`) only RAISES `CommandFailed`; it prints
 nothing. `_build_the_legs` caught that exception and returned None on the
@@ -10,8 +10,9 @@ created, exit 2 and an EMPTY stderr, and the corrected re-run met
 exactly that, with a `.gitmodules` that git's `--list` reads and git's
 submodule reader dies on: a second section whose `path` has no value.
 
-The first three tests need no `git filter-repo`: they stub the extraction, or
-run a real seeded leg against a remote that does not exist, and call
+Everything but the last test needs no `git filter-repo`: the unit tests stub
+the leg builders, or run a real leg builder against a remote that does not
+exist (the extraction skips only the filter itself), and call
 `_build_the_legs` in this process. The last runs `adopt-project.py execute`
 for real and is skipped on a machine without the tool.
 
@@ -23,6 +24,7 @@ from __future__ import annotations
 
 import importlib.util
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -35,10 +37,17 @@ UNIT_ROLES = (SPEC, CODE)
 ASSEMBLY = "Northwind"
 REMOTES = "remotes"
 REFUSED = "REFUSED"
+ROLLED_BACK = "NOTHING has been rolled back"
 FILTER_REPO = ["git", "filter-repo", "--paths-from-file", "spec-paths.txt",
                "--force"]
-FILTER_REPO_LINE = " ".join(FILTER_REPO)
+SEEDING_COMMIT = ["git", "commit", "-q", "-F", "-"]
 GIT_COMPLAINT = "fatal: bad config line 5 in file .gitmodules"
+
+#: One case per way a leg is built: what `_build_the_legs` is told is seeded,
+#: the verb it should name, and the command that leg's builder would die on.
+LEG_FAILURES = [([], "extracting", FILTER_REPO),
+                ([SPEC], "seeding", SEEDING_COMMIT)]
+LEG_FAILURE_IDS = ["extracted-leg", "seeded-leg"]
 
 #: A second section whose `path` has no value. `git config --list` accepts the
 #: file, and git's submodule reader, which `git filter-repo` runs through
@@ -50,6 +59,21 @@ needs_filter_repo = pytest.mark.skipif(
     reason="git filter-repo is not installed: `pip install git-filter-repo`")
 
 
+class Stream:
+    """A text stream that records, in one shared list, when it was used."""
+
+    def __init__(self, name: str, events: list):
+        self.name = name
+        self.events = events
+
+    def write(self, text: str) -> int:
+        self.events.append((self.name, "write"))
+        return len(text)
+
+    def flush(self) -> None:
+        self.events.append((self.name, "flush"))
+
+
 @pytest.fixture(scope="module")
 def adopter():
     spec = importlib.util.spec_from_file_location("adopt_filter_repo_failure",
@@ -59,20 +83,23 @@ def adopter():
     return module
 
 
-def legs_arguments(tmp_path: Path, seeded: list, remote: Path | None = None):
+def legs_arguments(tmp_path: Path, seeded: list, source=None,
+                   remote: Path | None = None):
     """What `cmd_execute` hands `_build_the_legs`, for two legs and no plan.
 
-    `remote` is where every leg would be pushed; the unit tests that stub the
-    leg builders never reach it.
+    Each leg has its own URL, because the notice for a failed leg must name
+    both. `remote`, when given, is where EVERY leg would be pushed; the unit
+    tests that stub the leg builders never reach it.
     """
-    url = str(remote or tmp_path / REMOTES / "leg.git")
+    urls = {role: str(remote or tmp_path / REMOTES / f"{ASSEMBLY}-{role}.git")
+            for role in UNIT_ROLES}
     names = {role: f"{ASSEMBLY}-{role}" for role in UNIT_ROLES}
     names["assembly"] = ASSEMBLY
     return dict(
-        source=None,
+        source=source,
         names=names,
         repositories={role: f"testorg/{names[role]}" for role in UNIT_ROLES},
-        urls={role: url for role in UNIT_ROLES},
+        urls=urls,
         values={},
         work_root=tmp_path / "work",
         paths_for={role: [f"{role}/file.md"] for role in UNIT_ROLES},
@@ -81,49 +108,111 @@ def legs_arguments(tmp_path: Path, seeded: list, remote: Path | None = None):
         tracking="main")
 
 
-@pytest.mark.parametrize("seeded, verb", [([], "extracting"),
-                                          ([SPEC], "seeding")])
-def test_a_failed_leg_is_printed_with_its_command_and_its_output(
-        adopter, monkeypatch, capsys, tmp_path, seeded, verb):
-    """`run` raised and printed nothing, so this function is the only place
-    that can say what the human is waiting to read."""
+def refuse_every_leg(adopter, monkeypatch, command: list, cwd: Path) -> None:
+    """Make both leg builders raise what `run` raises, and print nothing."""
     def refused(*_args):
-        raise adopter.CommandFailed(FILTER_REPO, tmp_path, 1, GIT_COMPLAINT)
+        raise adopter.CommandFailed(command, cwd, 1, GIT_COMPLAINT)
 
     monkeypatch.setattr(adopter, "_extract_leg", refused)
     monkeypatch.setattr(adopter, "_seed_leg", refused)
+
+
+@pytest.mark.parametrize("seeded, verb, command", LEG_FAILURES,
+                         ids=LEG_FAILURE_IDS)
+def test_a_failed_leg_is_printed_with_its_command_and_its_output(
+        adopter, monkeypatch, capsys, tmp_path, seeded, verb, command):
+    """`run` raised and printed nothing, so this function is the only place
+    that can say what the human is waiting to read."""
+    refuse_every_leg(adopter, monkeypatch, command, tmp_path)
 
     legs = adopter._build_the_legs(**legs_arguments(tmp_path, seeded))
 
     assert legs is None
     err = capsys.readouterr().err
     assert f"{REFUSED} {verb} the {SPEC} leg." in err
-    assert FILTER_REPO_LINE in err
+    assert " ".join(command) in err
     assert "exit 1" in err
     assert GIT_COMPLAINT in err
 
 
+@pytest.mark.parametrize("seeded, command",
+                         [(seeded, command) for seeded, _, command
+                          in LEG_FAILURES], ids=LEG_FAILURE_IDS)
+def test_a_failed_leg_names_both_leg_repositories_and_what_to_do(
+        adopter, monkeypatch, capsys, tmp_path, seeded, command):
+    """Both leg repositories exist by now, and one may even be pushed. The
+    human reads the failure, fixes the plan and re-runs; the re-run meets
+    `leg-remote-exists`, so the notice says that BEFORE it happens, and names
+    the two repositories to delete or to replace."""
+    refuse_every_leg(adopter, monkeypatch, command, tmp_path)
+    arguments = legs_arguments(tmp_path, seeded)
+
+    assert adopter._build_the_legs(**arguments) is None
+
+    notice = capsys.readouterr().err.split("--- end output ---", 1)[1]
+    assert ROLLED_BACK in notice
+    for role in UNIT_ROLES:
+        assert arguments["urls"][role] in notice
+    assert "leg-remote-exists" in notice
+    assert "--local-remote-dir" in notice
+    assert len(notice.strip().splitlines()) == 1
+
+
+def test_stdout_is_flushed_before_the_failure_is_written_to_stderr(
+        adopter, monkeypatch, tmp_path):
+    """`execute` announces each bare leg repository on stdout. Piped, that is
+    block-buffered, so without a flush a log that merges the two streams shows
+    the failure BEFORE the lines that explain what it is about."""
+    events: list = []
+    monkeypatch.setattr(sys, "stdout", Stream("stdout", events))
+    monkeypatch.setattr(sys, "stderr", Stream("stderr", events))
+    refuse_every_leg(adopter, monkeypatch, FILTER_REPO, tmp_path)
+
+    assert adopter._build_the_legs(**legs_arguments(tmp_path, [])) is None
+
+    assert ("stdout", "flush") in events
+    assert (events.index(("stdout", "flush"))
+            < events.index(("stderr", "write")))
+
+
+@pytest.mark.parametrize("seeded", [[], [SPEC]],
+                         ids=["extracted-leg-push", "seeded-leg-push"])
 def test_a_refused_push_is_reported_once_with_its_ruleset_hint(
-        adopter, monkeypatch, capsys, tmp_path):
-    """A refused push is the one failure `_seed_leg` (and `_extract_leg`)
-    already print, with `RULESET_HINT`, before they re-raise it. A second
-    block for the same command is noise that buries the hint, so the leg
-    builder's own report is the only one."""
+        adopter, monkeypatch, capsys, tmp_path, seeded):
+    """A refused push is the one failure `_extract_leg` and `_seed_leg` print
+    themselves, with `RULESET_HINT`, before they re-raise it. A second block
+    for the same command, or the notice for a leg that failed some other way,
+    is noise that buries the hint, so the leg builder's own report is the only
+    one. Real leg builders, real `git`, a remote that does not exist; the
+    extraction skips only `git filter-repo`, which this test is not about."""
     def write_one_file(_template, work, _values):
         work.mkdir(parents=True, exist_ok=True)
         (work / "README.md").write_text("seeded\n", encoding="utf-8")
 
+    real_run = adopter.run
+
+    def without_the_filter(args, *rest, **keywords):
+        if args[:2] == ["git", "filter-repo"]:
+            return ""
+        return real_run(args, *rest, **keywords)
+
     monkeypatch.setattr(adopter, "copy_tree", write_one_file)
+    monkeypatch.setattr(adopter, "run", without_the_filter)
+    origin = make_source_repo(tmp_path / "Thing")
+    head = git("rev-parse", "HEAD", cwd=origin).stdout.strip()
+    source = adopter.Source(origin, None, "main", head)
     nowhere = tmp_path / REMOTES / "does-not-exist.git"
 
-    legs = adopter._build_the_legs(
-        **legs_arguments(tmp_path, [SPEC], remote=nowhere))
+    legs = adopter._build_the_legs(**legs_arguments(
+        tmp_path, seeded, source=source, remote=nowhere))
 
     assert legs is None
     err = capsys.readouterr().err
+    pushing = f"pushing the {'seeded ' if seeded else ''}{SPEC} leg"
     assert err.count(REFUSED) == 1
-    assert f"{REFUSED} pushing the seeded {SPEC} leg" in err
-    assert "NOTHING has been rolled back" in err
+    assert f"{REFUSED} {pushing}" in err
+    assert err.count(ROLLED_BACK) == 1
+    assert "leg-remote-exists" not in err
 
 
 @needs_filter_repo
@@ -140,10 +229,12 @@ def test_a_failed_git_filter_repo_names_itself_on_stderr(tmp_path):
     source = make_source_repo(tmp_path / "Thing")
     git(*FILE_PROTOCOL, "submodule", "add", "-q", str(dependency_remote),
         "upstream/dependency", cwd=source)
-    (source / ".gitmodules").write_text(
-        f'[submodule "a"]\n\tpath = upstream/dependency\n'
-        f"\turl = {dependency_remote}\n{BARE_PATH_SECTION}",
-        encoding="utf-8")
+    # Append to what `git submodule add` wrote rather than writing the url
+    # again: a Windows path in a hand-written `.gitmodules` needs git's own
+    # escaping for the backslash. LF, as git wrote it, on every platform.
+    with (source / ".gitmodules").open("a", encoding="utf-8",
+                                       newline="\n") as handle:
+        handle.write(BARE_PATH_SECTION)
     git("-c", "user.name=Source Human", "-c",
         "user.email=source@invalid.example", "commit", "-qam",
         "Pin existing dependency", cwd=source)
@@ -164,4 +255,8 @@ def test_a_failed_git_filter_repo_names_itself_on_stderr(tmp_path):
     assert result.returncode == 2, result.stderr + result.stdout
     assert REFUSED in result.stderr, result.stdout
     assert "git filter-repo --paths-from-file" in result.stderr
-    assert (tmp_path / REMOTES / f"{ASSEMBLY}-{SPEC}.git").is_dir()
+    for role in UNIT_ROLES:
+        bare = f"{ASSEMBLY}-{role}.git"
+        assert (tmp_path / REMOTES / bare).is_dir()
+        assert bare in result.stderr
+    assert "leg-remote-exists" in result.stderr

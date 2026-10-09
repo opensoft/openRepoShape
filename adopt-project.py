@@ -1211,6 +1211,7 @@ def _extract_leg(role: str, source: Source, work: Path, paths: list[str],
         print(exc.loudly(f"pushing the {role} leg"), file=sys.stderr)
         print(RULESET_HINT.format(work=work, repo=repository, role=role),
               file=sys.stderr)
+        exc.reported = True   # `_build_the_legs` must not say it again
         raise
     count = git_out(["rev-list", "--count", "HEAD"], cwd=work)
     print(f"  {role:<5} {len(paths):>3} path(s) -> {head[:12]} "
@@ -1251,6 +1252,7 @@ def _seed_leg(role: str, work: Path, values: dict, branch: str, url: str,
         print(exc.loudly(f"pushing the seeded {role} leg"), file=sys.stderr)
         print(RULESET_HINT.format(work=work, repo=repository, role=role),
               file=sys.stderr)
+        exc.reported = True   # `_build_the_legs` must not say it again
         raise
     print(f"  {role:<5}   0 path(s) -> {commit[:12]} (SEEDED from "
           f"{SEED_TEMPLATE[role]}/) -> {url}")
@@ -1463,14 +1465,16 @@ def _build_the_legs(source: Source, names: dict, repositories: dict,
                     tracking: str) -> tuple[dict, dict] | None:
     """(b) Each leg, extracted with its history or seeded from the template.
 
-    Returns `(leg_commits, leg_digests)`, or None when a `git` or `gh` command
+    Returns `(leg_commits, leg_digests)`, or None when a `git` command
     failed, having printed which and why. `run` only RAISES; it says nothing,
     so this is the one place a failed `git filter-repo` (or clone, checkout or
     seeding commit) is ever reported, and an `execute` that stopped here after
-    both leg remotes exist must not exit 2 with an empty stderr (#171). A
-    refused PUSH is the one failure its own leg builder already printed, with
-    the ruleset hint, so it is not printed twice. Split out of `cmd_execute`
-    for #138.
+    both leg remotes exist must not exit 2 with an empty stderr (#171). It
+    also names the two leg repositories, because nothing is rolled back and a
+    re-run of the corrected plan meets `leg-remote-exists`. A refused PUSH is
+    the one failure its own leg builder already printed, with the ruleset hint,
+    and marked `reported`, so it is not printed twice. Split out of
+    `cmd_execute` for #138.
     """
     leg_commits: dict[str, str] = {}
     leg_digests: dict[str, str] = {}
@@ -1486,12 +1490,21 @@ def _build_the_legs(source: Source, names: dict, repositories: dict,
                     work_root / f"{role}-paths.txt", branch, urls[role],
                     tracking, repositories[role])
         except CommandFailed as exc:
-            # `_extract_leg` and `_seed_leg` print their own refused push and
-            # re-raise it; a second block for the same command would bury the
-            # ruleset hint under a copy of what it just said.
-            if exc.args_list[:2] != ["git", "push"]:
+            # `_extract_leg` and `_seed_leg` print their own refused push, with
+            # the ruleset hint, and mark it `reported` before re-raising; a
+            # second block for the same command would bury that hint.
+            if not getattr(exc, "reported", False):
+                # The leg remotes were announced on stdout; flush it so a log
+                # that merges the two streams keeps the order things ran in.
+                sys.stdout.flush()
                 verb = "seeding" if role in seeded else "extracting"
                 print(exc.loudly(f"{verb} the {role} leg"), file=sys.stderr)
+                print(f"NOTHING has been rolled back: {urls['spec']} and "
+                      f"{urls['code']} may already exist, and one leg may "
+                      "already be pushed. A re-run of the corrected plan "
+                      "meets `leg-remote-exists` unless you delete them or "
+                      "use fresh ones (a new --local-remote-dir, or new leg "
+                      "repositories).", file=sys.stderr)
             return None
     return leg_commits, leg_digests
 
