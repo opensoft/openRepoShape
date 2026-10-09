@@ -1708,7 +1708,7 @@ def _verify(source: Source, assembly: Path, work_root: Path, names,
             after.setdefault(path, []).append(f"{role}:{oid}")
     root_findings = _land_the_root_tree(
         after, _tree_of(assembly, split_commit), before,
-        {spec_path: "spec", code_path: "code"})
+        dict(zip((spec_path, code_path), EXTRACTED_LEGS)))
 
     counts, findings = _account_for(before, after, paths_for["drop"])
     added = sorted(set(after) - set(before))
@@ -1725,7 +1725,8 @@ def _verify(source: Source, assembly: Path, work_root: Path, names,
         print(f"\n{len(findings)} verification finding(s). The legs and the "
               "branch exist; NOTHING was deleted from the source, so the exit "
               "is to fix the plan and re-run into a fresh --local-remote-dir "
-              "or fresh leg repositories.", file=sys.stderr)
+              "or fresh leg repositories, unless a finding above names "
+              "another exit.", file=sys.stderr)
         return 1
     print("\nadoption verified: every source path is in exactly one place")
     print(f"\nNEXT: review the pull request on {names['assembly']}, then\n"
@@ -1759,18 +1760,33 @@ def _account_for(before: dict, after: dict, drops: list[str]) -> tuple[dict, lis
     return counts, findings
 
 
-#: What a root-tree gitlink finding tells its reader to do. No answer in a
-#: plan adds a gitlink, removes a mount or changes a submodule's commit, so a
-#: re-run with an edited plan is not the exit these two findings have.
-SPLIT_DEFECT = ("no plan answer does that, so the split itself is wrong: do "
-                f"not merge it, and report it to {SHAPE_REPOSITORY}")
+#: What the two root-tree gitlink findings tell their reader to do. Either
+#: one means the split is wrong, and THE ONE WAY A PLAN GETS THERE IS ITS OWN
+#: MOUNT PATHS: `git submodule add` records a mount at the canonical spelling
+#: of its path, so a `legs.spec_path` of `spec/`, `./spec` or `legs//spec` --
+#: which `checked_value` accepts, and `plan --spec-path spec/` writes itself
+#: -- mounts the leg at `spec` or `legs/spec` and leaves nothing at the value
+#: as spelled. That fires BOTH findings, and its exit is `_verify`'s own: fix
+#: the plan and re-run. With both values canonical, nothing in a plan adds a
+#: gitlink, removes a mount or changes a submodule's commit, and only then is
+#: the exit a report. Refusing a non-canonical value before anything exists
+#: is the plan code's to do, and is not done here.
+SPLIT_DEFECT = (
+    "do not merge this split. Look at legs.spec_path and legs.code_path "
+    "first: git records a mount at its path's canonical spelling, so a value "
+    "such as `spec/` or `./code` mounts the leg at `spec` or `code` and "
+    "leaves nothing at the value as spelled; spell it that way in the plan "
+    "and re-run, as below. With both values already canonical, nothing in "
+    "the plan does this, so the split itself is wrong: report it to "
+    f"{SHAPE_REPOSITORY}")
 
 
 def _land_the_root_tree(after: dict, tree: list, before: dict,
                         mounts: dict[str, str]) -> list[str]:
     """Land the split commit's tree in `after` as `root`; return what is wrong.
 
-    `mounts` is `{spec_path: "spec", code_path: "code"}`. THE SHAPE ADDS
+    `mounts` maps each leg's mount path, AS THE PLAN SPELLS IT, to the leg:
+    `{spec_path: "spec", code_path: "code"}`. THE SHAPE ADDS
     EXACTLY TWO GITLINKS to the root, and those two are the only entries
     passed over. Every other gitlink lands like a blob, so a source submodule
     the root kept at its own commit is counted `root` and one the split
@@ -1784,14 +1800,17 @@ def _land_the_root_tree(after: dict, tree: list, before: dict,
       * `adopt-mount-missing`: a mount path holding no gitlink. The root
         pins a leg it does not mount, and its recursive clone gets no leg.
 
+    Both name the paths exactly as the plan spells them, because a spelling
+    git canonicalises is the one way a plan reaches them (`SPLIT_DEFECT`).
+
     THE ROOT `.gitmodules` IS STILL COMPARED BYTE FOR BYTE, deliberately, and
     not by its registrations. The source's own cannot reach here: `check`
-    finds, and `execute` refuses, a plan that keeps it in the root (#166).
-    The fresh one `_mount_the_legs` writes is the SHAPE'S file, not a source
-    landing: it is counted as added in a source that had none, and beside a
-    source `.gitmodules` the plan moved or dropped it matches no source blob
-    and is passed over. Accounting registrations would verify a path no plan
-    takes.
+    finds, and `execute` refuses, a plan that keeps it in the root (#166) or
+    leaves it in no entry at all (#168). The fresh one `_mount_the_legs`
+    writes is the SHAPE'S file, not a source landing: it is counted as added
+    in a source that had none, and beside a source `.gitmodules` the plan
+    moved or dropped it matches no source blob and is passed over. Accounting
+    registrations would verify a path no plan `execute` runs can take.
     """
     findings: list[str] = []
     mounted: set[str] = set()
@@ -1804,12 +1823,14 @@ def _land_the_root_tree(after: dict, tree: list, before: dict,
         if gitlink and before.get(path) != oid:
             findings.append(
                 f"FINDING adopt-unexpected-gitlink: {path} is a gitlink to "
-                f"{oid[:12]} in the root tree, and neither a leg mount ("
-                + ", ".join(sorted(mounts)) + ") nor the source's own "
-                f"submodule at that commit; {SPLIT_DEFECT}")
+                f"{oid[:12]} in the root tree, and neither a leg mount as "
+                "the plan spells their paths (" + ", ".join(sorted(mounts))
+                + ") nor the source's own submodule at that commit; "
+                + SPLIT_DEFECT)
     findings += [f"FINDING adopt-mount-missing: the root tree has "
-                 f"{_what_is_at(tree, path)} at {path}, where the gitlink "
-                 f"that mounts the {role} leg belongs; {SPLIT_DEFECT}"
+                 f"{_what_is_at(tree, path)} at {path} as the plan spells "
+                 f"it, where the gitlink that mounts the {role} leg belongs; "
+                 + SPLIT_DEFECT
                  for path, role in sorted(mounts.items())
                  if path not in mounted]
     return findings
