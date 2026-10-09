@@ -304,6 +304,28 @@ def test_an_unparsable_manifest_refuses(project):
     assert "yaml-unparsable" in result.stderr
 
 
+def test_a_manifest_that_is_not_utf8_refuses_rather_than_raising(project):
+    """A byte no UTF-8 text holds, in a value, as a hand edit or a tool that
+    writes Latin-1 leaves it (#192). `UnicodeDecodeError` is a `ValueError`
+    and `read_text` raises it after the open, so it once escaped `load_yaml`
+    as a traceback and exit 1: the code a FINDING has, and no line to read."""
+    manifest = project / "project.yaml"
+    data = manifest.read_bytes()
+    assert b"\xff" not in data, "fixture drift: 0xff must be the only bad byte"
+    broken = data.replace(b"kind: project-manifest",
+                          b"kind: project-man\xffifest", 1)
+    assert broken != data, "fixture drift: no `kind: project-manifest` line"
+    manifest.write_bytes(broken)
+    offset = broken.index(b"\xff")
+    result = validate(project)
+    assert result.returncode == 2, result.stderr
+    assert f"REFUSED yaml-unreadable: {manifest}" in result.stderr
+    assert f"not UTF-8 at byte {offset}" in result.stderr
+    assert "Remediation: " in result.stderr
+    assert "Traceback" not in result.stderr
+    assert "manifest ok" not in result.stdout
+
+
 # --- the ruling: a chain of pins may reach the referent (2026-09-05) --------
 #
 # "elect the shape for both, follow the pin chain, no family yet" — Brett Heap,

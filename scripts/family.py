@@ -78,8 +78,8 @@ from repo_shape import (  # noqa: E402
 )
 from shape_materialize import (  # noqa: E402
     RULESET_HINT, SHAPE_REPOSITORY, CommandFailed, check_program,
-    commit_trailers, env_commit, materialize_family_root, run, trailer_line,
-    write_lf,
+    commit_trailers, env_commit, materialize_family_root, run, stage_written,
+    trailer_line, write_lf,
 )
 
 NAMING_POLICY = SHAPE_ROOT / "contracts" / "repository-naming.yaml"
@@ -664,9 +664,11 @@ def _create_holder_worktree(args, work: Path, values: dict, shape_commit: str,
     git or gh command failed".
     """
     work.mkdir(parents=True, exist_ok=True)
-    materialize_family_root(SHAPE_ROOT, work, values)
+    materialized = materialize_family_root(SHAPE_ROOT, work, values)
     run(["git", "init", "-q", "-b", args.tracking_branch, str(work)])
-    run(["git", "add", "-A", "--", "."], cwd=work)
+    # Every file the materializer wrote is FORCED past the operator's own
+    # excludes (#175); see `stage_written`.
+    stage_written(work, materialized.written)
     env_commit(work,
                f"Create the {values['FAMILY_NAME']} family holder\n\n"
                f"A HOLDER, not a project: no spec leg, no code leg. It pins "

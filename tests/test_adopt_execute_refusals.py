@@ -426,6 +426,85 @@ def test_a_path_that_is_a_git_option_is_still_unsafe_not_uncovered(adopter,
     no_leg_was_created(world.tmp)
 
 
+# --- a plan that is not UTF-8 (#192) ----------------------------------------
+
+#: The byte `0xff` is in no UTF-8 text, so wherever it lands the file cannot be
+#: decoded. Three places, each a way a hand edit or a foreign writer puts one
+#: there: inside a value (the leg path of the issue's own probe), in a comment
+#: the parser would skip, and last in the file with no newline after it. The
+#: whole file is decoded before any of it is parsed, so all three are the same
+#: refusal.
+BAD_BYTE = b"\xff"
+NOT_UTF8_PLANS = {
+    "in-a-value": lambda data: data.replace(b"spec_path: spec",
+                                            b"spec_path: sp\xffec", 1),
+    "in-a-comment": lambda data: b"# caf" + BAD_BYTE + b"\n" + data,
+    "at-the-end": lambda data: data + b"# end" + BAD_BYTE,
+}
+ONE_PER_PLACE = pytest.mark.parametrize("place", sorted(NOT_UTF8_PLANS))
+
+
+def not_utf8_plan(world: World, place: str) -> tuple[Path, int]:
+    """`(path, offset)`: the world's answered plan with one `0xff` put in at
+    `place`, and the offset the refusal must name for it."""
+    data = world.answered.encode(UTF8)
+    broken = NOT_UTF8_PLANS[place](data)
+    assert broken != data, f"the {place} edit changed nothing"
+    assert broken.count(BAD_BYTE) == 1
+    path = world.tmp / EDITED
+    path.write_bytes(broken)
+    return path, broken.index(BAD_BYTE)
+
+
+def assert_refused_as_unreadable(result, path: Path, offset: int) -> None:
+    """The refusal a missing file already gets: a `REFUSED` line that names the
+    file and the byte, a remediation, exit 2, and no traceback."""
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert f"REFUSED yaml-unreadable: {path}: " in result.stderr
+    assert f"not UTF-8 at byte {offset}" in result.stderr
+    assert "Remediation: " in result.stderr
+    assert "must be UTF-8" in result.stderr
+    for output in (result.stderr, result.stdout):
+        assert "Traceback" not in output
+        assert "UnicodeDecodeError" not in output
+
+
+@ONE_PER_PLACE
+def test_check_refuses_a_plan_that_is_not_utf8(world, place):
+    """On main at f25d805 this was exit 1 and a `UnicodeDecodeError`
+    traceback, with no `FINDING` or `REFUSED` line to read."""
+    path, offset = not_utf8_plan(world, place)
+    assert_refused_as_unreadable(run_check(path), path, offset)
+
+
+@ONE_PER_PLACE
+def test_execute_refuses_a_plan_that_is_not_utf8_and_makes_nothing(world,
+                                                                    place):
+    """Refused where the plan is first read, so before the work directory, the
+    local remotes or a branch of the source exist. `--yes` is passed: nobody is
+    asked, and nothing is made."""
+    path, offset = not_utf8_plan(world, place)
+    remotes, work = world.tmp / REMOTES, world.tmp / WORK
+    result = run_script(ADOPT, "execute", "--plan", str(path), "--yes",
+                        "--local-remote-dir", str(remotes),
+                        "--work-dir", str(work))
+    assert_refused_as_unreadable(result, path, offset)
+    assert not remotes.exists(), "not even the directory the legs go in"
+    assert not work.exists(), "and nothing was cloned or read into a work dir"
+    no_leg_was_created(world.tmp)
+    assert source_branches(world.source) == ["main"]
+
+
+def test_execute_raises_the_refusal_not_the_decode_error(adopter, world):
+    """In process, the exception `main` turns into exit 2: a `Refusal`, which
+    is what the tests above wait for through the process boundary."""
+    path, offset = not_utf8_plan(world, "in-a-value")
+    refusal = refused_by(adopter, execute_args(world.tmp, path))
+    assert refusal.code == "yaml-unreadable"
+    assert f"not UTF-8 at byte {offset}" in refusal.detail
+    no_leg_was_created(world.tmp)
+
+
 # --- end to end ------------------------------------------------------------
 
 @needs_filter_repo
