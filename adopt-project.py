@@ -144,6 +144,9 @@ SHAPE_PIN = "contracts/shape-pin.yaml"
 #: The mode `git ls-tree` reports for a SYMLINK: its blob is the link's
 #: target. `_SplitTree` follows one the way a checkout of the split does.
 SYMLINK_MODE = "120000"
+#: The modes of a regular file in a tree, executable or not: what a
+#: checkout's `is_file()` finds, so the only thing a pinned path may lead to.
+FILE_MODES = ("100644", "100755")
 #: How many symlinks one lookup follows before it is a loop: Linux's own
 #: limit (MAXSYMLINKS), where `open()` in a checkout gives up with ELOOP.
 SYMLINK_HOPS = 40
@@ -1851,7 +1854,7 @@ class _SplitTree:
         self.commit = commit[:12]
         self.entries = {path: (mode, oid)
                         for path, mode, oid, _ in _tree_of(assembly, commit)}
-        #: The mounted legs: a directory in a checkout, never a pinned file.
+        #: The mounted legs: a directory in a checkout, so `..` may leave one.
         self.mounts = {path for path, (mode, _) in self.entries.items()
                        if mode == "160000"}
         self._dirs: set[str] | None = None
@@ -1859,11 +1862,12 @@ class _SplitTree:
     def blob_at(self, path: str) -> str:
         """The oid of the FILE `path` leads to; `_NotInTheSplitError` when it
         leads to none."""
-        resolved = self._resolve(path)
-        if resolved not in self.entries or resolved in self.mounts:
+        mode, oid = self.entries.get(self._resolve(path), ("", ""))
+        if mode not in FILE_MODES:
+            # Absent, or a mounted leg's gitlink: nothing `is_file()` finds.
             raise _NotInTheSplitError(
                 f"is not in the split commit {self.commit}")
-        return self.entries[resolved][1]
+        return oid
 
     def _resolve(self, path: str) -> str:
         """`path` with each symlink on the way followed, as `open()` does."""
