@@ -84,14 +84,14 @@ from path_classify import PathPolicy, Verdict  # noqa: E402
 from repo_shape import (  # noqa: E402
     free_plan_secret_hint,
     COMMIT_RE, NEUTRAL_PRODUCT_OWNER, PROJECT_ID_RE, TREE_DIGEST_DEFINITION,
-    VISIBILITY_CHOICES, NamingPolicy, Refusal, accepts_role, checked_value,
-    git_out, load_yaml, tree_digest,
+    VISIBILITY_CHOICES, NamingPolicy, Refusal, YamlError, accepts_role,
+    checked_value, git_out, load_yaml, parse_yaml, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
     ADOPT_MAKEFILE_BLOCK, RULESET_HINT, SHAPE_REPOSITORY,
-    CommandFailed, collision_follow_up, copy_tree, default_reference,
-    election_date, env_commit, git_init_commit, materialize_assembly_root,
-    naming_block, run, write_lf,
+    CommandFailed, Materialized, collision_follow_up, copy_tree,
+    default_reference, election_date, env_commit, git_init_commit,
+    materialize_assembly_root, naming_block, run, write_lf,
 )
 import shape_advisory  # noqa: E402
 
@@ -141,6 +141,19 @@ PLACEMENT_PLAN_KIND = "placement-plan"
 
 ADOPT_BRANCH = "adopt/three-repo-shape"
 COLLISION_DIR = "shape"
+#: The shape's own list of the files it copied into the assembly root.
+#: `_shape_file_findings` reads it out of the SPLIT COMMIT and checks every
+#: path it names against that commit's tree (#167).
+SHAPE_PIN = "contracts/shape-pin.yaml"
+#: The mode `git ls-tree` reports for a SYMLINK: its blob is the link's
+#: target. `_SplitTree` follows one the way a checkout of the split does.
+SYMLINK_MODE = "120000"
+#: The modes of a regular file in a tree, executable or not: what a
+#: checkout's `is_file()` finds, so the only thing a pinned path may lead to.
+FILE_MODES = ("100644", "100755")
+#: How many symlinks one lookup follows before it is a loop: Linux's own
+#: limit (MAXSYMLINKS), where `open()` in a checkout gives up with ELOOP.
+SYMLINK_HOPS = 40
 LEG_VALUES = ("spec", "code", "root", "drop")
 FILE_PROTOCOL = ["-c", "protocol.file.allow=always"]
 #: The file `git submodule add` records a mount in. `_mount_the_legs` checks,
@@ -1972,6 +1985,61 @@ def _set_the_topic(repositories: dict, topic: str) -> bool:
     return True
 
 
+def _stage_the_split(assembly: Path, materialized: Materialized) -> None:
+    """Stage what the mount removed or edited, then what the shape wrote.
+
+    `git add -A -- .` is what stages the deletions the mount made and any edit
+    to a tracked file, and it HONOURS THE SOURCE'S `.gitignore`: with the
+    common `.*` + `!.gitignore` it SKIPS every NEW file whose name starts with
+    a dot -- `.gitattributes` and `.github/workflows/validate.yml` among them
+    -- so the split used to land without files `contracts/shape-pin.yaml`
+    pins, `execute` said `adoption verified`, and the assembly's first `make
+    bootstrap` refused with `shape-copy-missing` (#167). The shape's own files
+    are therefore staged BY NAME with `-f`.
+
+    ONLY THOSE PATHS, NEVER `-f .`: a file the source itself ignored is the
+    source's decision, and forcing the whole tree would stage any ignored
+    file that is in it -- the build artefact or the secret a `.gitignore` is
+    written to keep out of a commit.
+    `written` carries each path where it LANDED -- a copy beside a source file
+    under `shape/`, and the Makefile with the adopt block appended -- and in
+    POSIX spelling on every platform (`root_key`), which is the spelling `git`
+    takes as a pathspec on Windows too.
+
+    THROUGH A SYMLINK, the path git tracks is not the one written. A source
+    whose plan keeps `.github -> ci` in the root has the shape's workflow
+    written through the link, to `ci/workflows/validate.yml`, and git refuses
+    the written spelling as a pathspec "beyond a symbolic link". So each path
+    is staged as `_where_it_landed` spells it, and one whose link leads OUT of
+    the assembly is not staged at all: it is not in this repository, and the
+    verification reports the pinned file missing.
+    """
+    run(["git", "add", "-A", "--", "."], cwd=assembly)
+    landed = (_where_it_landed(assembly, written)
+              for written in materialized.written)
+    run(["git", "add", "-f", "--", *(path for path in landed if path)],
+        cwd=assembly)
+
+
+def _where_it_landed(assembly: Path, written: str) -> str | None:
+    """`written` as git tracks it: the same path when no symlink is on the way
+    to it, else the path the symlinks inside the assembly lead to, and None
+    when they lead out of it.
+
+    A path with no symlink on the way is passed through as it is, never
+    resolved: resolving could only respell it (a short name, or a letter's
+    case, on Windows) and change what reaches git for nothing.
+    """
+    parts = written.split("/")
+    if not any(assembly.joinpath(*parts[:end]).is_symlink()
+               for end in range(1, len(parts) + 1)):
+        return written
+    root = assembly.resolve()
+    landed = (assembly / written).resolve()
+    return landed.relative_to(root).as_posix() \
+        if landed.is_relative_to(root) else None
+
+
 def _commit_the_split(plan: Plan, source: Source, assembly: Path,
                       names: dict, urls: dict, values: dict, work_root: Path,
                       paths_for: dict, seeded: list, spec_path: str,
@@ -1999,7 +2067,7 @@ def _commit_the_split(plan: Plan, source: Source, assembly: Path,
     message = _split_message(names, paths_for, leg_commits, spec_path,
                              code_path, follow_ups, materialized.collisions,
                              seeded)
-    run(["git", "add", "-A", "--", "."], cwd=assembly)
+    _stage_the_split(assembly, materialized)
     env_commit(assembly, message)
     split_commit = git_out(["rev-parse", "HEAD"], cwd=assembly).lower()
     try:
@@ -2215,6 +2283,7 @@ def _verify(source: Source, assembly: Path, work_root: Path, names,
         after.setdefault(path, []).append(f"root:{oid}")
 
     counts, findings = _account_for(before, after, paths_for["drop"])
+    findings += _shape_file_findings(assembly, split_commit)
     added = sorted(set(after) - set(before))
     for leg in ("spec", "code", "root", "drop"):
         note = " (seeded from template)" if leg in seeded else ""
@@ -2273,6 +2342,195 @@ def _tree_of(repo: Path, rev: str) -> list[tuple[str, str, str, int]]:
         out.append((path.decode("utf-8", "surrogateescape"), mode, oid, 0))
         del kind
     return out
+
+
+class _NotInTheSplitError(Exception):
+    """A pinned path that leads to no file of the split commit. Its text
+    finishes the finding's sentence about that path."""
+
+
+class _SplitTree:
+    """The split commit's tree, read the way a CHECKOUT of it reads (#167).
+
+    `validate-pins.py` opens each pinned path in a clone, and the filesystem
+    follows every symlink on the way, the last one included: a source whose
+    plan keeps `.github -> ci` in the root has the shape's workflow at
+    `ci/workflows/validate.yml`, and a clone finds it by its pinned name. A
+    lookup of that name in `git ls-tree` would call the file missing, so a
+    symlink entry here (mode 120000, its blob the target) is followed too --
+    inside the tree, and only there. A link that leads out of the tree, or
+    round a loop, does NOT lead to the file: a clone holds nothing outside
+    itself, and a checkout's `open()` gives up on a loop with ELOOP.
+    """
+
+    def __init__(self, assembly: Path, commit: str) -> None:
+        self.assembly = assembly
+        self.commit = commit[:12]
+        self.entries = {path: (mode, oid)
+                        for path, mode, oid, _ in _tree_of(assembly, commit)}
+        #: The mounted legs: a directory in a checkout, so `..` may leave one.
+        self.mounts = {path for path, (mode, _) in self.entries.items()
+                       if mode == "160000"}
+        self._dirs: set[str] | None = None
+
+    def blob_at(self, path: str) -> str:
+        """The oid of the FILE `path` leads to; `_NotInTheSplitError` when it
+        leads to none."""
+        mode, oid = self.entries.get(self._resolve(path), ("", ""))
+        if mode not in FILE_MODES:
+            # Absent, or a mounted leg's gitlink: nothing `is_file()` finds.
+            raise _NotInTheSplitError(
+                f"is not in the split commit {self.commit}")
+        return oid
+
+    def _resolve(self, path: str) -> str:
+        """`path` with each symlink on the way followed, as `open()` does."""
+        parts, done, via, hops = self._parts(path, ""), [], "", 0
+        while parts:
+            part = parts.pop(0)
+            if part == "..":
+                done = self._up(done, via)
+                continue
+            at = "/".join([*done, part])
+            target = self._target_of(at)
+            if target is None:
+                done.append(part)
+                continue
+            hops, via = hops + 1, f" at the symlink {at}"
+            if hops > SYMLINK_HOPS:
+                raise _NotInTheSplitError(
+                    f"runs round a symlink loop at {at} in the split commit "
+                    f"{self.commit}")
+            parts = self._parts(target, via) + parts
+        return "/".join(done)
+
+    def _parts(self, target: str, via: str) -> list[str]:
+        if target.startswith("/"):
+            raise _NotInTheSplitError(
+                f"leads out of the split commit {self.commit}{via}, to "
+                f"{target}")
+        return [part for part in target.split("/") if part not in ("", ".")]
+
+    def _up(self, done: list[str], via: str) -> list[str]:
+        """`..`, which a checkout takes from a directory, and never above the
+        root of the clone."""
+        if not done:
+            raise _NotInTheSplitError(
+                "climbs above the root of the split commit "
+                f"{self.commit}{via}")
+        here = "/".join(done)
+        if not self._is_dir(here):
+            raise _NotInTheSplitError(
+                f"passes through {here}, which is not a directory in the "
+                f"split commit {self.commit}")
+        return done[:-1]
+
+    def _is_dir(self, path: str) -> bool:
+        if self._dirs is None:
+            self._dirs = set(self.mounts)
+            for entry in self.entries:
+                parts = entry.split("/")
+                self._dirs.update("/".join(parts[:end])
+                                  for end in range(1, len(parts)))
+        return path in self._dirs
+
+    def _target_of(self, at: str) -> str | None:
+        mode, oid = self.entries.get(at, ("", ""))
+        if mode != SYMLINK_MODE:
+            return None
+        return git_out(["cat-file", "blob", oid], cwd=self.assembly,
+                       binary=True).decode("utf-8", "surrogateescape")
+
+
+def _pinned_shape_paths(assembly: Path, pin: str) -> list[str] | None:
+    """The `path:` of every row of the pin whose blob is `pin`, or None when
+    it is not a `files:` list of paths.
+
+    None is a FINDING for the caller and never an empty answer: a pin that
+    names nothing would otherwise make the check below vacuously pass, which is
+    the one outcome it exists to prevent.
+    """
+    try:
+        loaded = parse_yaml(git_out(["cat-file", "blob", pin], cwd=assembly))
+    except (YamlError, UnicodeDecodeError):
+        return None
+    rows = loaded.get("files") if isinstance(loaded, dict) else None
+    if not isinstance(rows, list) or not rows:
+        return None
+    paths = [row.get("path") if isinstance(row, dict) else None
+             for row in rows]
+    return paths if all(isinstance(path, str) and path for path in paths) \
+        else None
+
+
+#: What a shape-file finding tells the human to do. Once `_stage_the_split`
+#: forces the shape's files, a source `.gitignore` cannot keep one out; what
+#: still can is a PLAN ANSWER -- the source's own file at a shape path, or a
+#: symlink on the way to one, kept in the root -- and the exit for that is the
+#: one `_verify`'s footer and AGENTS.md give. Anything else is this tool's
+#: defect, which no plan answer and no hand edit of the split should paper
+#: over.
+SHAPE_FILE_EXIT = (
+    "If the plan kept in the root a file of the source's own at a shape "
+    f"file's path -- its own {SHAPE_PIN} most often, the shape's then beside "
+    f"it as {COLLISION_DIR}/{SHAPE_PIN} -- or a symlink on the way to one, "
+    "send that path to a leg or `drop` it, and re-run into fresh legs. "
+    "Otherwise the split itself is wrong: do not merge it, and report it to "
+    f"{SHAPE_REPOSITORY}")
+
+
+def _missing_shape_file(path: str, why: str, refusal: str) -> str:
+    """`refusal` is what the first bootstrap's `validate-pins.py` says about
+    it: `shape-pin-missing` for the pin itself, `shape-copy-missing` for a
+    file the pin names."""
+    return (f"FINDING adopt-shape-file-missing: {path} {why}, so the "
+            f"assembly's first `make bootstrap` refuses with {refusal}. "
+            + SHAPE_FILE_EXIT)
+
+
+def _pinned_file_finding(tree: _SplitTree, path: str) -> str | None:
+    try:
+        tree.blob_at(path)
+    except _NotInTheSplitError as why:
+        return _missing_shape_file(path, f"is named by {SHAPE_PIN} but {why}",
+                                   "shape-copy-missing")
+    return None
+
+
+def _shape_file_findings(assembly: Path, split_commit: str) -> list[str]:
+    """A FINDING for every file `contracts/shape-pin.yaml` names that the split
+    commit does not contain (#167).
+
+    `_account_for` accounts for the SOURCE's paths and never for the paths the
+    SHAPE ADDED, so a file a source `.gitignore` hid from `git add` was in no
+    count at all and the run said `adoption verified`. The pin is the shape's
+    own list of what it copied, so it is the list to check -- read out of the
+    SPLIT COMMIT and compared with that commit's tree, never with the disk: the
+    assembly's working tree still HAS the ignored file, which is exactly why a
+    disk check would pass over the gap. Presence only; `validate-pins.py`
+    recomputes the digests at the first bootstrap. Each path is looked up the
+    way that bootstrap opens it, through the tree's symlinks (`_SplitTree`),
+    so the two agree on the same assembly.
+
+    A pin that is absent from the commit, or that is not a `files:` list, is
+    one finding of its own and nothing else is checked: there is no list to
+    check against, and passing an unreadable one would be a silent success.
+    """
+    tree = _SplitTree(assembly, split_commit)
+    try:
+        pin = tree.blob_at(SHAPE_PIN)
+    except _NotInTheSplitError as why:
+        return [_missing_shape_file(
+            SHAPE_PIN, f"is the pin that lists the shape's files and {why}",
+            "shape-pin-missing")]
+    pinned = _pinned_shape_paths(assembly, pin)
+    if pinned is None:
+        return [f"FINDING adopt-shape-pin-unreadable: {SHAPE_PIN} in the split "
+                f"commit {split_commit[:12]} is not a `files:` list of paths, "
+                "so no file the shape wrote could be checked. "
+                + SHAPE_FILE_EXIT]
+    return [finding for finding in (_pinned_file_finding(tree, path)
+                                    for path in pinned) if finding]
 
 
 # ---------------------------------------------------------------------------
