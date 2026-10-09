@@ -34,7 +34,8 @@ THE PLAN IS AN ARTIFACT A HUMAN OR AN AI EDITS. That is why it is YAML with
 reasons in it rather than a pipe between two processes: the classifier is
 right about `openspec/` and cannot be right about `examples/golden-run/`
 without knowing whether the specification cites it. `execute` REFUSES while
-any `leg:` is still null.
+any `leg:` is still null, and on every other finding `check` reports, before
+it has created anything.
 
 WHY `git filter-repo` AND NOT A VENDORED COPY. Extracting history correctly is
 a solved problem with one correct implementation, and a vendored copy of it
@@ -1346,6 +1347,66 @@ def _leg_paths(plan: Plan) -> dict:
             for leg in LEG_VALUES}
 
 
+#: How many of `check`'s findings the one refusal below spells out; the rest
+#: are a count, as `plan-unresolved` names eight paths and not every one.
+REFUSED_FINDINGS_SHOWN = 8
+
+
+def _refuse_what_check_finds(plan: Plan, source: Source) -> None:
+    """Refuse a plan `check` rejects, BEFORE a leg repository exists (#168).
+
+    `execute` used to refuse only `plan-unresolved` and `plan-stale`. A plan
+    `check` rejects for any other reason -- `plan-uncovered`, `plan-bad-leg`,
+    `plan-covered-twice`, `plan-duplicate-path`, `plan-empty-entry` -- ran on
+    into `_create_leg_remotes`, pushed BOTH legs, and failed only at the
+    verification as `adopt-lost`. The corrected plan then met
+    `leg-remote-exists`, and there is no `--force`, deliberately. AGENTS.md
+    has a human say yes after `check`, but `execute` is the one gate that
+    cannot be skipped, so it says no to the same findings.
+
+    THE FINDINGS ARE `check`'S OWN: the same two functions over the same two
+    lists, so the two commands cannot disagree about what a plan covers. The
+    refusal's code is the FIRST finding's own (`plan-uncovered`, ...); its
+    detail is every finding as `check` prints it, capped at
+    `REFUSED_FINDINGS_SHOWN` with an "and N more" tail.
+
+    THE ORDER IS PART OF THE FIX. This runs AFTER `_refuse_an_unrunnable_plan`:
+    `_leg_findings` also reports `plan-unresolved`, which that function has
+    already refused in its own words, and a plan written against a tree that
+    has since moved is `plan-stale`, not whatever its stale coverage happens
+    to lack. And it runs AFTER `_leg_paths` has checked every entry path as a
+    safe `git` argument, because a path that is an option is `unsafe-value`
+    and must stay that, not become an uncovered file. Nothing is created
+    until all of them have passed.
+
+    ONE LIST, LATER. #166 adds `submodule_plan_problems` to `check` and to
+    `_refuse_an_unrunnable_plan`. Once both branches have merged, `check`,
+    `_refuse_an_unrunnable_plan` and this function can read ONE shared list of
+    findings. That is deliberately not done here, so that the two branches do
+    not edit the same functions and conflict.
+    """
+    entry_paths = [str(e.get("path")) for e in plan.entries]
+    tree_paths = [path for path, _, _, _ in source.tree()]
+    findings = (_coverage_findings(entry_paths, tree_paths)
+                + _leg_findings(plan))
+    if not findings:
+        return
+    # `FINDING <code>: <detail>` is the one shape both functions write.
+    code = findings[0].split()[1].rstrip(":")
+    lines = [f"{len(findings)} finding(s) in {plan.path}, as `check` prints "
+             "them:"]
+    lines += [f"  {finding}" for finding in findings[:REFUSED_FINDINGS_SHOWN]]
+    if len(findings) > REFUSED_FINDINGS_SHOWN:
+        lines.append(f"  and {len(findings) - REFUSED_FINDINGS_SHOWN} more")
+    raise Refusal(
+        code, "\n".join(lines),
+        "Remediation: no repository was created. Correct the plan -- answer "
+        "each entry's `leg:` and cover every source path exactly once -- and "
+        "run `check` until it prints `plan ok`, then run `execute` again. A "
+        "leg created from a plan `check` rejects is a leg the corrected plan "
+        "then meets as `leg-remote-exists`.")
+
+
 def _refuse_unconsented_seeding(args, plan: Plan, seeded: list) -> None:
     """A leg with no path is SEEDED, and seeding takes a human's word.
 
@@ -1517,6 +1578,7 @@ def cmd_execute(args) -> int:
     spec_path, code_path, branch, tracking = _checked_plan_values(plan)
     local, repositories, urls = _repository_urls(args, plan, names, source)
     paths_for = _leg_paths(plan)
+    _refuse_what_check_finds(plan, source)
 
     seeded = seeded_legs(paths_for)
     _refuse_unconsented_seeding(args, plan, seeded)
