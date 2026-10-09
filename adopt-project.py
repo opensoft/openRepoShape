@@ -23,9 +23,11 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            `leg: null`, `review_required: true` and the QUESTION to ask.
   check    validates a plan against the source: every path covered exactly
            once, no unresolved legs, leg names conforming to the naming
-           policy, and each leg's mount path canonical (`spec`, `legs/spec`;
-           never `spec/` or `./spec`; the two never equal or nested). It
-           prints what will happen and changes nothing.
+           policy, and each leg's mount path one `execute` can mount
+           (`spec`, `legs/spec`; never `spec/` or `./spec`, a name Git or
+           Windows keeps for itself such as `.git` or `CON`, or a value
+           `execute` would refuse; the two never equal or nested, in any
+           case). It prints what will happen and changes nothing.
   execute  creates the two legs, extracts them with `git filter-repo`, makes
            the one split commit on a branch of the source, sets the
            `xf-project-<id>` topic on all three (skipped for local remotes),
@@ -82,8 +84,8 @@ from path_classify import PathPolicy, Verdict  # noqa: E402
 from repo_shape import (  # noqa: E402
     free_plan_secret_hint,
     COMMIT_RE, NEUTRAL_PRODUCT_OWNER, PROJECT_ID_RE, TREE_DIGEST_DEFINITION,
-    VISIBILITY_CHOICES, NamingPolicy, Refusal, accepts_role, checked_value,
-    git_out, load_yaml, tree_digest,
+    SAFE_ARG_RE, VISIBILITY_CHOICES, NamingPolicy, Refusal, accepts_role,
+    checked_value, git_out, load_yaml, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
     ADOPT_MAKEFILE_BLOCK, RULESET_HINT, SHAPE_REPOSITORY,
@@ -599,32 +601,75 @@ def render_plan(args, source: Source, entries: list[Entry], names: dict,
 #   and neither `.` nor `..`: no leading `/` or `./` (nor a drive letter), no
 #   trailing `/`, no `//`, no backslash. The two legs also take DIFFERENT
 #   paths, neither inside the other (`legs` and `legs/spec`): Git records one
-#   gitlink at the outer path and cannot record a mount inside it.
+#   gitlink at the outer path and cannot record a mount inside it. Two paths
+#   that differ only in case are ONE path on a macOS or Windows disk, so
+#   `Spec` and `spec`, or `Legs/spec` and `legs`, are equal or nested too.
 #
-# The alphabet is not this check's business: `checked_value` still gates what
-# may reach a `git` command line, and runs after it.
+# A canonical path can still be one Git cannot mount a leg at, so it is also
+# refused, and offered no spelling (it names no place Git can record, and
+# picking another for the person is the rewrite this refuses):
+#
+#   * a segment that is `.git`, `git~1` (its Windows 8.3 short name) or
+#     `.gitmodules`, in any case. `git submodule add` refuses `.git`, `.GIT`,
+#     `git~1` and `.gitmodules`, and at `legs/.git` it exits 0 and records NO
+#     gitlink, so the run ends `adoption verified` over an assembly with no
+#     mount for that leg;
+#   * a segment Windows cannot check out as written: one ending in a dot or a
+#     space, which it strips, or a device name (`CON`, `PRN`, `AUX`, `NUL`,
+#     `COM1`-`COM9`, `LPT1`-`LPT9`, with or without an extension);
+#   * a value `checked_value` would refuse (whitespace, non-ASCII text, a
+#     leading `-`, `C:spec`, a shell metacharacter), so that `plan` and
+#     `check` say what `execute` was always going to say instead of `check`
+#     passing a plan `execute` then refuses. The alphabet is `checked_value`'s
+#     own (`SAFE_ARG_RE`): it is asked here, not copied.
+
+#: Git's own names, casefolded: a leg cannot be mounted at a segment spelled
+#: like one. `git~1` is how an NTFS disk shortens `.git`.
+GIT_OWN_NAMES = frozenset({".git", "git~1", ".gitmodules"})
+
+#: A Windows device name, with or without an extension: `CON`, `nul`,
+#: `COM1.txt`. A file or directory called one cannot be created there.
+WINDOWS_DEVICE_RE = re.compile(r"(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?",
+                               re.IGNORECASE)
+
+#: What a plan's non-text `spec_path` was read as. The YAML reader keeps no raw
+#: text (`007` is read as 7, `true` and `True` as one boolean, `1.50` as 1.5),
+#: so a sentence that echoed the parsed value would show something the file
+#: never said; it names the KIND the reader made of it instead.
+NOT_TEXT_KINDS = {bool: "true or false", int: "a number", float: "a number",
+                  list: "a list", dict: "a mapping"}
 
 LEG_PATH_REMEDIATION = (
     "Remediation: nothing here rewrites a path for you, so correct the value "
     "yourself. A leg path is relative and POSIX: one or more plain segments "
     "such as `spec` or `legs/spec`, with no leading `/` or `./`, no trailing "
-    "`/`, no `//`, no `..` and no backslash; and the two legs take different "
-    "paths, neither inside the other."
+    "`/`, no `//`, no `..` and no backslash; no segment is one of Git's own "
+    "names (`.git`, `git~1`, `.gitmodules`, in any case), ends in a dot or a "
+    "space, or is a Windows device name (`CON`, `PRN`, `AUX`, `NUL`, "
+    "`COM1`-`COM9`, `LPT1`-`LPT9`, with or without an extension); the whole "
+    f"value matches {SAFE_ARG_RE.pattern} and does not begin with `-`; and "
+    "the two legs take different paths, neither inside the other, whatever "
+    "the case."
 )
 
 
-def _leg_path_reason(text: str) -> str | None:
-    """Why `text` is not a canonical leg path, or None when it is one."""
+def _spelling_reason(text: str) -> str | None:
+    """Why `text` is not a CANONICAL spelling of a leg path, or None."""
     if not text:
         return "it is empty"
     if text.startswith("/") or WINDOWS_ABSOLUTE_RE.match(text):
-        return ("it is absolute, and a leg is mounted INSIDE the assembly "
-                "root, so its path is relative to it")
+        return ("it is absolute (`/spec` on every platform, `C:/spec` on "
+                "Windows), and a leg is mounted INSIDE the assembly root, so "
+                "its path is relative to it")
     if "\\" in text:
         return "it has a backslash, and a path here is written with `/`"
     segments = text.split("/")
     if ".." in segments:
-        return "it has a `..` segment, which climbs out of the assembly root"
+        return ("it has a `..` segment, so it names a different place than it "
+                "spells and can climb out of the assembly root")
+    if all(segment in ("", ".") for segment in segments):
+        return ("it names the assembly root itself, and a leg is mounted "
+                "INSIDE the root, not at it")
     if "" in segments or "." in segments:
         return ("Git records a mount without its `.` segments (a leading "
                 "`./`), a trailing `/` or a doubled `/`, so the mount and its "
@@ -632,14 +677,39 @@ def _leg_path_reason(text: str) -> str | None:
     return None
 
 
+def _unmountable_reason(text: str) -> str | None:
+    """Why a leg cannot be mounted at `text`, a path that is already
+    canonical: a name Git keeps for itself, or one Windows cannot check out as
+    written. None when it can."""
+    for segment in text.split("/"):
+        if segment.casefold() in GIT_OWN_NAMES:
+            return (f"`{segment}` is one of Git's own names (`.git`, its "
+                    "Windows short name `git~1`, `.gitmodules`, in any case), "
+                    "and Git either refuses to mount a leg at it or records "
+                    "no mount there")
+        if segment.endswith((".", " ")):
+            return (f"`{segment}` ends in a dot or a space, which Windows "
+                    "strips, so the mount would be checked out there under "
+                    "another name")
+        if WINDOWS_DEVICE_RE.fullmatch(segment):
+            return (f"`{segment}` is a Windows device name (with or without "
+                    "an extension), which cannot be created there")
+    return None
+
+
 def _canonical_spelling(text: str) -> str | None:
     """The canonical spelling of `text`, where one exists, else None.
 
-    Only a SPELLING is offered: dropping empty and `.` segments (and turning a
-    backslash into `/`) says the same relative path in the one form Git keeps.
-    An absolute path and one with a `..` have no such spelling -- they name
-    another place, and picking it for the person is the rewrite this refuses
-    -- and a result `checked_value` would refuse is not offered either.
+    Only a SPELLING is offered: dropping empty and `.` segments says the same
+    relative path in the one form Git keeps. A backslash becomes `/` because
+    that is the one thing a person who typed it can mean: on Git for Windows
+    it IS a separator, while on POSIX it is an ordinary filename character and
+    the same string names another path, so the `/` spelling is offered for
+    retyping and is not a claim that the two are equal everywhere. An absolute
+    path and one with a `..` have no such spelling -- they name another place,
+    and picking it for the person is the rewrite this refuses -- and neither
+    has a result this check, or `checked_value`, would itself refuse
+    (`./.git` is not answered `.git`, nor `-x/` `-x`).
     """
     if text.startswith(("/", "\\")):
         return None
@@ -647,37 +717,57 @@ def _canonical_spelling(text: str) -> str | None:
             if s not in ("", ".")]
     if not kept or ".." in kept:
         return None
+    candidate = "/".join(kept)
+    if _unmountable_reason(candidate) is not None:
+        return None
     try:
-        return checked_value("leg path", "/".join(kept))
+        return checked_value("leg path", candidate)
     except Refusal:
         return None
 
 
 def leg_path_problem(what: str, value) -> str | None:
-    """One leg's mount path: None when canonical, else the sentence that says
-    what is wrong with it and, where one exists, what to write instead.
+    """One leg's mount path: None when it is one `execute` will mount, else
+    the sentence that says what is wrong with it and, where one exists, what
+    to write instead.
+
+    Asked in this order: the SPELLING (canonical or not), then the NAMES Git
+    and Windows keep, then the alphabet `checked_value` allows on a command
+    line, so that `plan`, `check` and `execute` refuse the same values.
 
     `what` is how the caller names the value -- `--spec-path`, or
     `legs.spec_path` for one read out of a plan -- so the sentence points at
     the thing the person has in front of them.
     """
     if not isinstance(value, str):
-        return (f"{what} is {value!r}, which is not text: a path is written "
-                "as text, so quote it")
-    reason = _leg_path_reason(value)
-    if reason is None:
-        return None
-    spelling = _canonical_spelling(value)
-    return (f"{what} is {value!r}, which is not a canonical leg path: "
-            f"{reason}." + (f" Write {spelling!r}." if spelling else ""))
+        kind = NOT_TEXT_KINDS.get(type(value), "something that is not text")
+        return (f"{what} is not text: its value was read as {kind}, and a "
+                "path is written as text, so quote it")
+    spelling = _spelling_reason(value)
+    if spelling:
+        offered = _canonical_spelling(value)
+        return (f"{what} is {value!r}, which is not a canonical leg path: "
+                f"{spelling}." + (f" Write {offered!r}." if offered else ""))
+    unmountable = _unmountable_reason(value)
+    if unmountable:
+        return (f"{what} is {value!r}, which a leg cannot be mounted at: "
+                f"{unmountable}.")
+    try:
+        checked_value(what, value)
+    except Refusal as exc:
+        return f"{exc.detail}."
+    return None
 
 
 def leg_path_problems(spec: tuple, code: tuple) -> list[str]:
     """Everything wrong with the two leg paths, as sentences; `[]` when none.
 
     `spec` and `code` are `(what, value)` pairs. The pair is compared only
-    when each path is canonical on its own, because "equal" and "inside" are
+    when each path is fine on its own, because "equal" and "inside" are
     statements about paths and mean nothing for two strings that are not one.
+    They are compared WITHOUT regard to case: a macOS or Windows disk keeps
+    one of `Spec` and `spec`, and the second mount would collide there AFTER
+    both leg repositories exist.
     """
     problems = [p for p in (leg_path_problem(*spec), leg_path_problem(*code))
                 if p]
@@ -687,12 +777,18 @@ def leg_path_problems(spec: tuple, code: tuple) -> list[str]:
     if spec_path == code_path:
         return [f"{spec_what} and {code_what} are both {spec_path!r}, and two "
                 "legs cannot be mounted at one path."]
+    if spec_path.casefold() == code_path.casefold():
+        return [f"{spec_what} {spec_path!r} and {code_what} {code_path!r} "
+                "differ only in case, which a macOS or Windows disk keeps as "
+                "ONE path, so two legs cannot be mounted at them."]
     for (inner_what, inner), (outer_what, outer) in ((spec, code),
                                                     (code, spec)):
-        if inner.startswith(outer + "/"):
+        if inner.casefold().startswith(outer.casefold() + "/"):
+            aside = ("" if inner.startswith(outer + "/") else
+                     " once case is ignored, as a macOS or Windows disk does")
             return [f"{inner_what} {inner!r} is inside {outer_what} "
-                    f"{outer!r}, and Git records ONE gitlink at the outer "
-                    "path, so the inner leg cannot be mounted there."]
+                    f"{outer!r}{aside}, and Git records ONE gitlink at the "
+                    "outer path, so the inner leg cannot be mounted there."]
     return []
 
 
@@ -715,6 +811,14 @@ def _plan_leg_path(plan: Plan, role: str):
     return role if value is None else value
 
 
+def _plan_leg_paths(plan: Plan) -> tuple[tuple, tuple]:
+    """The two `(what, value)` pairs `leg_path_problems` takes, read out of the
+    plan: the ONE place that names them `legs.spec_path` and `legs.code_path`,
+    so `check` and `execute` cannot name them two ways."""
+    return (("legs.spec_path", _plan_leg_path(plan, "spec")),
+            ("legs.code_path", _plan_leg_path(plan, "code")))
+
+
 def _checked_plan_inputs(args, source: Source,
                          naming: NamingPolicy) -> tuple[dict, list]:
     """Every value the plan will RECORD, defaulted and checked before one of
@@ -728,9 +832,11 @@ def _checked_plan_inputs(args, source: Source,
     args.project = checked_value("--project", args.project)
     args.tracking_branch = checked_value("--tracking-branch",
                                          args.tracking_branch)
-    # CANONICAL FIRST, then the alphabet: `spec/` is refused here with the
+    # The ONE question first -- spelling, Git's and Windows's names, then the
+    # alphabet `checked_value` allows -- so `spec/` is refused here with the
     # spelling to retype, before a plan that `check` and `execute` would have
-    # to refuse again is ever written.
+    # to refuse again is ever written. `checked_value` still runs after it: it
+    # is the gate that hands back the text.
     _refuse_bad_leg_paths("adopt-bad-leg-path",
                           ("--spec-path", args.spec_path),
                           ("--code-path", args.code_path))
@@ -1115,9 +1221,7 @@ def _leg_findings(plan: Plan) -> list[str]:
     reads this function reports a bad path from the one place that knows what
     a canonical one is.
     """
-    path_problems = leg_path_problems(
-        ("legs.spec_path", _plan_leg_path(plan, "spec")),
-        ("legs.code_path", _plan_leg_path(plan, "code")))
+    path_problems = leg_path_problems(*_plan_leg_paths(plan))
     findings: list[str] = [f"FINDING plan-bad-leg-path: {problem}"
                            for problem in path_problems]
     for entry in plan.entries:
@@ -1161,7 +1265,8 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
               "assigned to it")
     print(f"  ONE split commit on branch {plan.get('adopt_branch', ADOPT_BRANCH)} "
           f"of {names['assembly']}: `git rm -r` those paths, mount the legs at "
-          f"{plan.legs.get('spec_path')}/ and {plan.legs.get('code_path')}/")
+          f"{_plan_leg_path(plan, 'spec')}/ and "
+          f"{_plan_leg_path(plan, 'code')}/")
     print(f"  {len(stays)} path(s) stay in the assembly root; "
           f"{len(drops)} dropped")
     print("  the source is never deleted, never renamed, never force-pushed")
@@ -1457,8 +1562,7 @@ def _checked_plan_values(plan: Plan) -> tuple[str, str, str, str]:
 
     Split out of `cmd_execute` for #138, in the order the refusals came in.
     """
-    spec_leg = ("legs.spec_path", _plan_leg_path(plan, "spec"))
-    code_leg = ("legs.code_path", _plan_leg_path(plan, "code"))
+    spec_leg, code_leg = _plan_leg_paths(plan)
     # Before ANY leg exists: `check` finds a bad path and `execute` refuses it
     # on its own account, not because `check` happened to be run first (#169).
     _refuse_bad_leg_paths("plan-bad-leg-path", spec_leg, code_leg)
