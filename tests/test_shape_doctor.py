@@ -3049,6 +3049,159 @@ def test_the_placement_plan_lists_a_kept_submodule_and_asks_nothing(
     assert adopt._leg_findings(plan) == []
 
 
+# --- placement: what the gitlink rule must not swallow (Codex, PR #186) ------
+#
+# Two ways the rule above could drop something it should not have. A path the
+# index holds in SEVERAL stages is a gitlink only if every stage is one; and a
+# submodule at a path the doctor never judges for a file is still a submodule
+# a leg keeps, which the row promises to name.
+
+
+def stage_unmerged(leg: Path, name: str, kinds: dict) -> None:
+    """Leave `name` UNMERGED in a leg's index, one stage per entry of `kinds`.
+
+    `kinds` maps a stage number to `"file"` or `"gitlink"`, so a test says
+    what each side of the conflict is: `{2: "file", 3: "gitlink"}` is the path
+    one side added as a file and the other as a submodule. `git update-index
+    --index-info` reads the `<mode> <object> <stage><TAB><path>` lines
+    `ls-files --stage` prints, which is the one way to write a stage that is
+    not 0, and it writes the index and nothing else -- the leg's HEAD stays at
+    its pin, as `stage` and `stage_gitlink` leave it. A gitlink's second
+    commit is a child of HEAD made with `commit-tree`, which moves no ref.
+    """
+    commit = git("rev-parse", "HEAD", cwd=leg).stdout.strip()
+    child = git("commit-tree", f"{commit}^{{tree}}", "-p", commit, "-m",
+                "the other side", cwd=leg).stdout.strip()
+    blob = subprocess.run(["git", "hash-object", "-w", "--stdin"],
+                          cwd=str(leg), input="x\n", capture_output=True,
+                          text=True, check=True).stdout.strip()
+    lines = ""
+    for number, kind in kinds.items():
+        if kind == "file":
+            mode, obj = "100644", blob
+        else:
+            mode, obj = "160000", commit if number == 2 else child
+        lines += f"{mode} {obj} {number}\t{name}\n"
+    subprocess.run(["git", "update-index", "--index-info"], cwd=str(leg),
+                   input=lines, text=True, capture_output=True, check=True)
+
+
+@pytest.mark.parametrize("kinds", [
+    {2: "file", 3: "gitlink"},
+    {2: "gitlink", 3: "file"},
+], ids=["file-then-gitlink", "gitlink-then-file"])
+def test_an_unmerged_path_with_a_file_stage_is_still_judged_as_a_file(
+        standard, project, kinds):
+    """A PATH IS A SUBMODULE ONLY IF EVERY STAGE IT HOLDS IS A GITLINK.
+
+    `git ls-files --stage` lists an unmerged `.cursor` once per stage, here
+    one side's file and the other's submodule. Keeping only the NAME of the
+    paths with a gitlink stage dropped both records from the classification,
+    so the file never reached the policy and the row said "a submodule" and
+    COMPLIANT where the 2026-09-02 ruling says the assistant instructions are
+    the root's. There is a file in the leg, and it is judged as one, in
+    either order of the two sides.
+    """
+    verdict = path_policy(standard).classify_file(".cursor")
+    assert (verdict.leg, verdict.rule) == (
+        "root", "root-assistant-instructions"), (
+        "the policy must still root this NAME, or this test proves nothing")
+    stage_unmerged(project / "code", ".cursor", kinds)
+    listed = git("ls-files", "--stage", ".cursor",
+                 cwd=project / "code").stdout.splitlines()
+    assert sorted(line.split()[0] for line in listed) == sorted(
+        "100644" if kind == "file" else "160000" for kind in kinds.values()
+    ), ("fixture: the index must hold both a file and a gitlink stage", listed)
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert json.loads(result.stdout)["verdict"].startswith("MISPLACED"), (
+        result.stdout)
+    row = rows_of(result)["placement"]
+    assert row["status"] == "FINDING", row
+    # `ls-files` lists an unmerged path once per stage, on main as here, so
+    # how many entries the one path gets is not what is under test: that
+    # every one of them is the file, judged by the rule that roots its name.
+    assert row["detail"]["misplaced"], row
+    for entry in row["detail"]["misplaced"]:
+        assert entry["path"] == "code/.cursor", entry
+        assert entry["rule"] == "root-assistant-instructions", entry
+    assert "submodules" not in row["detail"], (
+        "a path with a file in it is not a submodule a leg keeps",
+        row["detail"])
+    assert "root by rule root-assistant-instructions" in row["reason"], (
+        row["reason"])
+    assert "--placement-plan" in row["next"], row
+
+
+def test_an_unmerged_path_whose_every_stage_is_a_gitlink_is_one_submodule(
+        standard, project):
+    """THE OTHER SIDE OF THAT RULE: two gitlink stages are still a submodule.
+
+    Two sides that each moved a submodule to a different commit leave one
+    path in two stages, and neither is a file. It is exempt from the policy
+    exactly as a merged gitlink is, and named ONCE and not once per stage.
+    """
+    stage_unmerged(project / "code", ".cursor", {2: "gitlink", 3: "gitlink"})
+    listed = git("ls-files", "--stage", ".cursor",
+                 cwd=project / "code").stdout.splitlines()
+    assert [line.split()[0] for line in listed] == ["160000", "160000"], (
+        "fixture: two gitlink stages", listed)
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout)["verdict"] == "COMPLIANT"
+    row = rows_of(result)["placement"]
+    assert row["status"] == "note", row
+    assert row["detail"]["misplaced"] == []
+    assert [kept["path"] for kept in row["detail"]["submodules"]] == \
+        ["code/.cursor"]
+    assert row["detail"]["counts"]["submodules"] == 1
+
+
+@pytest.mark.parametrize("name,pattern", [
+    (".github/actions", ".github/**"),
+    ("COPYING", "COPYING"),
+], ids=["under-dot-github", "a-named-file"])
+def test_a_submodule_at_a_path_the_doctor_never_judges_is_still_named(
+        standard, project, tmp_path, name, pattern):
+    """EVERY GITLINK A LEG KEEPS IS REPORTED, WHATEVER ELSE MATCHES ITS NAME.
+
+    `.github/**` and `COPYING` are `everywhere`: a file there is carried by
+    every repository and the row never calls it misplaced. The exclusion is
+    for FILES, and applying it to the paths before the gitlinks were read
+    dropped a submodule at one of them without a word -- the row stayed `ok`,
+    and neither `--json` nor the plan named it. It is named in all three, and
+    on its own it is the `note` any kept submodule is.
+    """
+    first = rows_of(doctor(standard, project, "--json"))["placement"]
+    assert pattern in first["detail"]["everywhere"], (
+        "fixture: this name must match a path the doctor never judges",
+        first["detail"]["everywhere"])
+    stage_gitlink(project / "code", name)
+    out = tmp_path / "placement-plan.yaml"
+    result = doctor(standard, project, "--json", "--placement-plan", str(out))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout)["verdict"] == "COMPLIANT"
+    row = rows_of(result)["placement"]
+    assert row["status"] == "note", row
+    assert row["detail"]["misplaced"] == []
+    assert row["detail"]["review_required"] == []
+    [kept] = row["detail"]["submodules"]
+    assert kept["path"] == f"code/{name}", kept
+    assert kept["path_in_leg"] == name
+    assert row["detail"]["counts"]["submodules"] == 1
+    assert f"code/{name}" in row["reason"], row["reason"]
+
+    text = doctor(standard, project)
+    assert text.returncode == 0, text.stdout + text.stderr
+    assert f"code/{name}" in text.stdout, text.stdout
+    assert "submodule(s) the path policy does not judge" in text.stdout
+
+    data = adoption_module(standard).load_yaml(out)
+    assert [entry["path"] for entry in data["submodules"]] == [
+        f"code/{name}"], data
+    assert data["submodules"][0]["in_leg"] == "code"
+
+
 # --- the platform-aware quoter (#101) ---------------------------------------
 #
 # Copilot asked for shell quoting on PR #100, against the placement row. The

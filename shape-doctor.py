@@ -127,7 +127,12 @@ LEG (#166), and a row that called it `root by rule` would fail every project
 adopted that way. So the row reads each leg's index MODES in the same one
 `git ls-files`, keeps every gitlink out of the classification, and names each
 one in a `note`. The ruling still roots the FILES under those paths, and they
-are judged as before.
+are judged as before. A path is a submodule only when EVERY stage the index
+holds for it is a gitlink: an unmerged `.cursor` with a file on one side and
+a gitlink on the other still has a file in the leg, and it is classified as
+one. And a submodule at a path the doctor never judges for a file -- under
+`.github/**`, say -- is named all the same, because the row's promise is that
+no gitlink a leg keeps goes unreported.
 
 AND THE DOCTOR STILL MOVES NOTHING. A path changing legs is a pull request on
 the leg it leaves, a pull request on the leg it joins, and one pin bump in the
@@ -1530,15 +1535,19 @@ def leg_tracked_files(mount: Path) -> tuple:
     report or a plan without breaking one, as `repr`. See
     `UNWRITABLE_IN_A_PLAN`.
 
-    THE THIRD IS THE SET OF PATHS WHOSE MODE IS A GITLINK. They stay in the
-    first list, because they are tracked and the count of tracked paths is
+    THE THIRD IS THE SET OF PATHS WHOSE EVERY STAGE IS A GITLINK. They stay in
+    the first list, because they are tracked and the count of tracked paths is
     the same number it always was; the caller keeps them out of the
-    classification.
+    classification. A path with ANY stage that is not a gitlink is not in it:
+    an unmerged `.cursor` that is a file on one side and a submodule on the
+    other has a file in the leg, and a file is classified (Codex review on
+    #186). That is why the mode is kept per STAGE until the last record is
+    read, and not as the path's name alone.
     """
     raw = git_out(["ls-files", "--stage", "-z"], cwd=mount, binary=True)
     out = []
     unwritable = []
-    gitlinks = set()
+    modes: dict = {}
     for record in raw.split(b"\x00"):
         if not record:
             continue
@@ -1547,13 +1556,14 @@ def leg_tracked_files(mount: Path) -> tuple:
         if UNWRITABLE_IN_A_PLAN.search(path):
             unwritable.append(repr(path))
             continue
-        if head.split(b" ", 1)[0].decode("ascii", "replace") == GITLINK_MODE:
-            gitlinks.add(path)
+        modes.setdefault(path, set()).add(
+            head.split(b" ", 1)[0].decode("ascii", "replace"))
         try:
             size = (mount / path).lstat().st_size
         except OSError:
             size = 0
         out.append((path, size))
+    gitlinks = {path for path, seen in modes.items() if seen == {GITLINK_MODE}}
     return out, unwritable, gitlinks
 
 
@@ -1693,6 +1703,14 @@ def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
     every gitlink is taken out before the walk and returned on its own, to be
     named in a `note`; the FILES beside it are walked exactly as before, and
     a file under a root-ruled path is still misplaced.
+
+    A GITLINK IS A PATH WHOSE EVERY STAGE IS ONE, AND IT IS NAMED WHEREVER IT
+    IS (Codex review on #186). A path that is a file in one stage and a
+    gitlink in another is unmerged with a file in the leg, so it is walked as
+    that file. And the submodules are collected from EVERY tracked path,
+    before the paths the doctor never judges are set aside -- a submodule at
+    `.github/actions` or `LICENSE` is dropped from the walk like a file
+    there, and is still one a leg keeps, so it is still named.
     """
     entry = {"role": role, "path": rel}
     mount = root / rel
@@ -1719,13 +1737,16 @@ def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
         entry["state"] = f"git could not list it: {exc.detail}"
         return entry, [], [], []
     entry["unwritable"] = unwritable
-    judged = [(path, size) for path, size in files
-              if not any(regex.match(path) for regex in patterns)]
-    kept = [(path, size) for path, size in judged if path not in gitlinks]
     # Once each, in the index's own order: an unmerged gitlink is listed
-    # once per stage, and it is one submodule.
-    held = list(dict.fromkeys(path for path, _ in judged
+    # once per stage, and it is one submodule. From `files` and not from what
+    # is left after the `everywhere` patterns below: `.github/**` matches a
+    # submodule at `.github/actions` as it matches a file, and a gitlink kept
+    # there is no less one a leg keeps.
+    held = list(dict.fromkeys(path for path, _ in files
                               if path in gitlinks))
+    kept = [(path, size) for path, size in files
+            if path not in gitlinks
+            and not any(regex.match(path) for regex in patterns)]
     walked = adopt.walk(policy, kept)
     misplaced: list = []
     review: list = []
