@@ -23,6 +23,7 @@ import pytest
 
 from conftest import (ADOPT, FILE_PROTOCOL, REPO, git, make_source_repo,
                       resolve, run_script, write_plan)
+from test_scaffold_ignored_shape_files import excluding, ignored, tracked_under
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import load_yaml  # noqa: E402
@@ -48,6 +49,11 @@ SPEC_ONLY_TREE = {
     "examples/golden-run/expected.yaml": "result: ok\n",
 }
 ANSWERS = (("examples/", "spec"), (".claude/", "root"))
+
+#: An operator's own global excludes: every dot-file, and any `src/`. Between
+#: them they hide the two files of `templates/code-root/` that a plain `git
+#: add -A` skipped before #175, `.gitignore` and `src/.gitkeep`.
+SEED_EXCLUDES = b".*\nsrc/\n"
 
 #: The second and third commits, both on the specification side — there is no
 #: implementation to touch, which is the whole point.
@@ -199,6 +205,41 @@ def test_the_seeded_leg_is_one_commit_of_the_template(adopted, tmp_path):
     assert "SEEDED" in message
     assert "templates/code-root/" in message
     assert "carries no history" in message
+
+
+def test_the_seeded_leg_keeps_its_template_files_under_the_operators_excludes(
+        tmp_path):
+    """#175 for the fourth `git_init_commit` caller, `_seed_leg`.
+
+    `git add -A` honours a global `core.excludesFile`, so on a machine whose
+    excludes say `.*` and `src/` a seeded code leg was committed and pushed
+    without its `.gitignore` and `src/.gitkeep`: the scaffold's legs, its
+    root and `family.py init` already passed what `copy_tree` wrote to
+    `stage_written`, and adopt's seeded leg alone discarded that list. The
+    code leg a spec-only source gets is read back from the REMOTE it was
+    pushed to, and holds exactly what `templates/code-root/` ships, in one
+    commit. Only the split's commit is left alone here (#167's)."""
+    env = excluding(tmp_path / "operator", SEED_EXCLUDES)
+    _source, plan, _ = spec_only_plan(tmp_path, "--allow-empty-leg", "code")
+    result = run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
+                        "--local-remote-dir", str(tmp_path / "remotes"),
+                        "--work-dir", str(tmp_path / "work"), env=env)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+    shipped = tracked_under(REPO, "templates/code-root")
+    assert {".gitignore", "src/.gitkeep"} <= shipped
+    for name in (".gitignore", "src/.gitkeep"):
+        assert ignored(tmp_path / "work" / f"{PROJECT}-code", name, env), (
+            f"the excludes no longer hide {name}, so this test no longer "
+            "runs the defect")
+    bare = tmp_path / "remotes" / f"{PROJECT}-code.git"
+    assert int(git("--git-dir", str(bare), "rev-list", "--count", "main",
+                   cwd=bare).stdout) == 1
+    pushed = git("--git-dir", str(bare), "ls-tree", "-r", "--name-only",
+                 "main", cwd=bare).stdout.splitlines()
+    assert sorted(set(shipped) - set(pushed)) == [], (
+        "the pushed code leg's first commit lacks files the template ships")
+    assert sorted(pushed) == sorted(shipped)
 
 
 def test_the_spec_leg_still_carries_the_history(adopted, tmp_path):
