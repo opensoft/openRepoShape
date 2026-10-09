@@ -125,10 +125,13 @@ def hooks_everywhere(tmp_path: Path, ref_pattern: str) -> dict:
     return {"GIT_CONFIG_GLOBAL": str(config)}
 
 
-def seed_one_file(_template, work, _values) -> None:
-    """`copy_tree` for a seeded leg, without the template's placeholders."""
+def seed_one_file(_template, work, _values) -> list[str]:
+    """`copy_tree` for a seeded leg, without the template's placeholders. It
+    returns what it wrote, as `copy_tree` does, because `_seed_leg` hands
+    that list to `git_init_commit` to force past an ignore rule (#175)."""
     work.mkdir(parents=True, exist_ok=True)
     (work / "README.md").write_text("seeded\n", encoding="utf-8")
+    return ["README.md"]
 
 
 def printed_push(err: str) -> list[str]:

@@ -230,8 +230,10 @@ def test_a_refused_push_is_reported_once_with_its_ruleset_hint(
     builders, real `git`, a remote that does not exist; the extraction skips
     only `git filter-repo`, which this test is not about."""
     def write_one_file(_template, work, _values):
+        # What it wrote, as `copy_tree` returns it since #175.
         work.mkdir(parents=True, exist_ok=True)
         (work / "README.md").write_text("seeded\n", encoding="utf-8")
+        return ["README.md"]
 
     real_run = adopter.run
 
