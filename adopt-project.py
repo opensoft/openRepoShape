@@ -77,7 +77,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 SHAPE_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
@@ -89,10 +89,11 @@ from repo_shape import (  # noqa: E402
     accepts_role, checked_value, git_out, load_yaml, parse_yaml, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
-    ADOPT_MAKEFILE_BLOCK, RULESET_HINT, SHAPE_REPOSITORY,
-    CommandFailed, Materialized, collision_follow_up, copy_tree,
-    default_reference, election_date, env_commit, git_init_commit,
-    materialize_assembly_root, naming_block, run, write_lf,
+    ADOPT_MAKEFILE_BLOCK, BOOTSTRAP, RULESET_HINT, SHAPE_REPOSITORY,
+    SYMLINK_HOPS, CommandFailed, Materialized, assembly_root_paths,
+    collision_follow_up, copy_tree, default_reference, election_date,
+    env_commit, git_init_commit, materialize_assembly_root, naming_block, run,
+    write_lf,
 )
 import shape_advisory  # noqa: E402
 
@@ -152,9 +153,6 @@ SYMLINK_MODE = "120000"
 #: The modes of a regular file in a tree, executable or not: what a
 #: checkout's `is_file()` finds, so the only thing a pinned path may lead to.
 FILE_MODES = ("100644", "100755")
-#: How many symlinks one lookup follows before it is a loop: Linux's own
-#: limit (MAXSYMLINKS), where `open()` in a checkout gives up with ELOOP.
-SYMLINK_HOPS = 40
 LEG_VALUES = ("spec", "code", "root", "drop")
 FILE_PROTOCOL = ["-c", "protocol.file.allow=always"]
 #: The file `git submodule add` records a mount in. `_mount_the_legs` checks,
@@ -1303,6 +1301,302 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
         print(f"  follow-up: {item}")
 
 
+# ---------------------------------------------------------------------------
+# A symlink the plan keeps in the root, and the shape writes through (#178)
+# ---------------------------------------------------------------------------
+#
+# The shape's files are written into the assembly by plain path, so a symlink
+# the plan keeps in the root at or above one of those paths is followed.
+# Before #178, `check` asked nothing about such a link. One that led out of
+# the tree made `execute` write the shape's `validate.yml` outside the
+# assembly. One that led to nothing, into a leg, or round a loop made it die
+# in a traceback. Both happened AFTER both leg remotes had been pushed, so
+# the corrected plan then met `leg-remote-exists`.
+
+#: The finding for a symlink the plan keeps in the root that the shape cannot
+#: write through.
+ROOT_SYMLINK = "plan-root-symlink"
+#: The directory the shape's scripts are written to, read off the
+#: materializer's own name for one of them.
+SHAPE_SCRIPTS = PurePosixPath(BOOTSTRAP).parent.as_posix()
+#: The `leg:` answers that take a path out of the assembly root.
+NOT_IN_THE_ROOT = (*EXTRACTED_LEGS, "drop")
+
+
+class _Walk:
+    """One path the shape writes, followed through a `_PlannedRoot`: the
+    symlinks met on the way, in order, as `(path, target)`; where it landed;
+    and, once a symlink has been met, what stops it, or None."""
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+        self.links: list[tuple[str, str]] = []
+        self.landed = ""
+        self.problem: str | None = None
+
+
+class _PlannedRoot:
+    """The assembly root as the materializer will find it, read out of the
+    plan and the source tree BEFORE any leg exists (#178, #183).
+
+    It holds every source path the plan keeps in the root, each symlink with
+    the target its blob holds, and the two leg mounts. It does not hold a
+    path the plan sends to a leg or drops: the mount's `git rm` has removed
+    it by the time the shape is written.
+
+    A path is followed the way the materializer's `open()` and `mkdir` follow
+    it in a checkout: each symlink from its own directory, `..` only from a
+    directory, never above the root and never by an absolute target. A
+    symlink must lead to something this tree HOLDS. The shape cannot make the
+    directory a link leads to, and a file it writes through a dangling link
+    is only reachable through that link. Git reads `.gitattributes` and
+    `.gitignore` only as files, never through a symlink, so the shape's copy
+    there would do nothing.
+    """
+
+    def __init__(self, plan: Plan, source: Source, tree: list) -> None:
+        self.source = source
+        entry_paths = [str(e.get("path")) for e in plan.entries]
+        legs = {str(e.get("path")): str(e.get("leg")) for e in plan.entries}
+        self.kept: dict[str, tuple[str, str]] = {}
+        self.gone: dict[str, str] = {}
+        for path, mode, oid, _ in tree:
+            covering = _covering(entry_paths, path)
+            leg = legs[covering[0]] if len(covering) == 1 else ""
+            if leg in NOT_IN_THE_ROOT:
+                self.gone[path] = leg
+            else:
+                self.kept[path] = (mode, oid)
+        # A kept entry that is neither a file nor a symlink is a gitlink: a
+        # directory in a checkout, holding another repository.
+        self.mounts = {path: f"it enters {path}, a submodule the plan keeps "
+                             "in the root"
+                       for path, (mode, _) in self.kept.items()
+                       if mode not in (*FILE_MODES, SYMLINK_MODE)}
+        spec, code = _plan_leg_paths(plan)
+        if not leg_path_problems(spec, code):
+            for (_, path), role in ((spec, "spec"), (code, "code")):
+                self.mounts[path] = (f"it enters {path}, where the plan "
+                                     f"mounts the {role} leg")
+        self.dirs = {"/".join(parts[:end])
+                     for parts in (path.split("/")
+                                   for path in [*self.kept, *self.mounts])
+                     for end in range(1, len(parts))}
+        self._targets: dict[str, str] = {}
+        self._walks: list[_Walk] | None = None
+
+    def walks(self) -> list[_Walk]:
+        """Each path the shape writes, followed: the path itself, and its
+        copy under the collision directory where the path is already taken,
+        as the materializer decides it."""
+        if self._walks is None:
+            self._walks = []
+            for path in assembly_root_paths():
+                walk = self.walk(path)
+                self._walks.append(walk)
+                if walk.problem is None and self._holds(walk.landed):
+                    self._walks.append(self.walk(f"{COLLISION_DIR}/{path}"))
+        return self._walks
+
+    def walk(self, path: str) -> _Walk:
+        """`path` followed through this tree. Each part on the queue carries
+        the symlink whose target it came from, and, on the LAST part of a
+        target, the symlinks whose destination it completes."""
+        walk = _Walk(path)
+        queue = [(part, "", ()) for part in path.split("/")]
+        done: list[str] = []
+        while queue and walk.problem is None:
+            part, origin, ends = queue.pop(0)
+            at = "/".join([*done, part])
+            target = self._target_of(at, part)
+            if target is not None:
+                queue = self._through(walk, at, target, ends) + queue
+                continue
+            done = self._step(walk, done, part, origin, bool(queue))
+            if ends and walk.problem is None:
+                walk.problem = self._arrival(done, ends[0][0])
+        walk.landed = "/".join(done)
+        return walk
+
+    def _holds(self, path: str) -> bool:
+        return (not path or path in self.kept or path in self.dirs
+                or path in self.mounts)
+
+    def _target_of(self, at: str, part: str) -> str | None:
+        """The target of the symlink the plan keeps at `at`, or None."""
+        if part in ("", ".", ".."):
+            return None
+        mode, oid = self.kept.get(at, ("", ""))
+        if mode != SYMLINK_MODE:
+            return None
+        if at not in self._targets:
+            self._targets[at] = git_out(
+                ["cat-file", "blob", oid], cwd=self.source.path,
+                binary=True).decode("utf-8", "surrogateescape")
+        return self._targets[at]
+
+    @staticmethod
+    def _through(walk: _Walk, at: str, target: str, ends: tuple) -> list:
+        """The parts of the symlink `at`'s target, to be walked next; none,
+        and a problem, when it is the hop that makes a loop or absolute."""
+        walk.links.append((at, target))
+        if len(walk.links) > SYMLINK_HOPS:
+            walk.problem = f"it runs round a symlink loop at {at}"
+            return []
+        if target.startswith("/") or WINDOWS_ABSOLUTE_RE.match(target):
+            walk.problem = (f"the symlink {at} leads to {target}, an absolute "
+                            "path: a place on this machine, not in the "
+                            "assembly")
+            return []
+        parts = target.split("/")
+        return ([(part, at, ()) for part in parts[:-1]]
+                + [(parts[-1], at, ((at, target), *ends))])
+
+    def _step(self, walk: _Walk, done: list[str], part: str, origin: str,
+              more: bool) -> list[str]:
+        """`done` after one part that is not a symlink."""
+        if part in ("", "."):
+            return done
+        if part == "..":
+            here = "/".join(done)
+            if not done:
+                walk.problem = (f"at the symlink {origin} it climbs above the "
+                                "assembly root")
+            elif here not in self.dirs:
+                walk.problem = (f"it passes through {here}, which is not a "
+                                "directory in the assembly root")
+            return done[:-1]
+        done = [*done, part]
+        if walk.links:
+            walk.problem = self._entered("/".join(done), more)
+        return done
+
+    def _entered(self, here: str, more: bool) -> str | None:
+        """What is wrong with reaching `here` through a symlink, or None: a
+        mount, or a file the path goes on beneath."""
+        if here in self.mounts:
+            return self.mounts[here]
+        if more and here in self.kept:
+            return f"it passes through {here}, which is a file"
+        return None
+
+    def _arrival(self, done: list[str], at: str) -> str | None:
+        """None when the destination of the symlink `at` is in this tree;
+        else where it is instead: in a leg, dropped, or nowhere."""
+        here = "/".join(done)
+        if self._holds(here):
+            return None
+        legs = sorted({leg for path, leg in self.gone.items()
+                       if path == here or path.startswith(f"{here}/")})
+        where = " and ".join(f"to the {leg} leg" if leg in EXTRACTED_LEGS
+                             else f"to `{leg}`" for leg in legs)
+        return (f"the symlink {at} leads to {here}, which "
+                + (f"the plan sends {where}" if legs
+                   else "is not in the source tree"))
+
+
+def _misplaced_script(walk: _Walk) -> str | None:
+    """Why a shape script carried through a symlink cannot run where it
+    lands, or None.
+
+    Each script looks for the assembly root, and for
+    `contracts/repository-naming.yaml`, from the directory above its own
+    resolved location (`Path(__file__).resolve().parents[1]`). From two
+    directories down, `validate-repository-naming.py` reads the policy from
+    the wrong `contracts/`; from the root itself, `bootstrap.py` looks for
+    `.git` above the clone.
+    """
+    if not walk.links or not walk.path.startswith(f"{SHAPE_SCRIPTS}/"):
+        return None
+    where = PurePosixPath(walk.landed).parent
+    if len(where.parts) == 1:
+        return None
+    named = where.as_posix() if where.parts else "the root itself"
+    return (f"it lands at {walk.landed}, and the shape's scripts look for the "
+            "assembly root, and for contracts/repository-naming.yaml, from "
+            "the directory above their own, so they run only from a "
+            f"directory directly under the root, which {named} is not")
+
+
+def _root_symlink_findings(plan: Plan, source: Source) -> list[str]:
+    """A FINDING for each symlink the plan keeps in the root that a path the
+    shape writes runs through and cannot be written through (#178, #183).
+
+    One finding per symlink, naming the first shape path that meets it. A
+    symlink no shape path runs through is not this check's business: the
+    split keeps it exactly as the source had it.
+    """
+    findings: list[str] = []
+    seen: set[str] = set()
+    for walk in _PlannedRoot(plan, source, source.tree()).walks():
+        why = walk.problem or _misplaced_script(walk)
+        if why is None or walk.links[0][0] in seen:
+            continue
+        link, target = walk.links[0]
+        seen.add(link)
+        findings.append(
+            f"FINDING {ROOT_SYMLINK}: the plan keeps {link} in the root, a "
+            f"symlink to {target}, and the shape writes {walk.path} through "
+            f"it, but {why}. Send {link} to a leg or `drop` it, or change "
+            "where it points in the source and re-run `plan`.")
+    return findings
+
+
+def _checks_out_symlinks(work_root: Path) -> bool:
+    """Whether `git` checks a symlink out AS a symlink in a repository made
+    in `work_root`, which is where the assembly's clone is made (#183).
+
+    It asks a throwaway repository rather than the configuration alone.
+    `git init` writes `core.symlinks = false` into a repository whose
+    filesystem cannot hold a symlink, and a global, system or `GIT_CONFIG_*`
+    setting can say false on one that can.
+    """
+    probe = Path(tempfile.mkdtemp(prefix="symlinks-probe-", dir=work_root))
+    try:
+        run(["git", "init", "-q", str(probe)])
+        answer = subprocess.run(
+            ["git", "config", "--type=bool", "--get", "core.symlinks"],
+            cwd=str(probe), capture_output=True, text=True, check=False)
+    finally:
+        shutil.rmtree(probe, ignore_errors=True)
+    return answer.stdout.strip() != "false"
+
+
+def _refuse_symlinks_checked_out_as_files(plan: Plan, source: Source,
+                                          work_root: Path) -> None:
+    """Refuse, before any leg exists, a plan whose shape files are written
+    BENEATH a symlink the plan keeps, where `git` would check that symlink
+    out as a plain file (#183).
+
+    `core.symlinks=false` is Git for Windows' default, and what `git init`
+    writes on a filesystem that cannot hold a symlink. The assembly's clone
+    would then hold the link as a file, and the materializer cannot make a
+    directory where a file is. It used to die there in a traceback after
+    both legs were pushed. A symlink AT a shape path is unaffected: as a
+    file it is still taken, and the shape's copy goes beside it. The probe is
+    made only when a plan needs it, so an adoption with no such link runs
+    exactly as before.
+    """
+    beneath = [walk for walk in _PlannedRoot(plan, source,
+                                             source.tree()).walks()
+               if walk.links and walk.links[0][0] != walk.path]
+    if not beneath or _checks_out_symlinks(work_root):
+        return
+    walk = beneath[0]
+    link, target = walk.links[0]
+    raise Refusal(
+        "adopt-symlinks-off",
+        f"the plan keeps {link} in the root, a symlink to {target}, and the "
+        f"shape writes {walk.path} through it, but `git` here checks a "
+        "symlink out as a plain file: `core.symlinks` is false for a "
+        f"repository made in {work_root}. The assembly's clone would hold "
+        f"{link} as a file, and nothing can be written beneath a file.",
+        "Remediation: no leg repository was created and nothing was pushed. "
+        "Run `execute` where `git` checks a symlink out as a symlink -- "
+        "`core.symlinks` true, on a filesystem that can hold one -- or send "
+        f"{link} to a leg or `drop` it in the plan and run `check` again.")
+
+
 def cmd_check(args) -> int:
     plan = Plan.load(Path(args.plan))
     work_root = _work_root(args)
@@ -1337,6 +1631,7 @@ def cmd_check(args) -> int:
                   + (f"/{found.role}" if found.role else ""))
     except Refusal as exc:
         findings.append(f"FINDING {exc.code}: {exc.detail}")
+    findings.extend(_root_symlink_findings(plan, source))
 
     _print_what_will_happen(plan, source, names,
                             naming.topic_for(plan.project_id))
@@ -1672,7 +1967,9 @@ def _refuse_what_check_finds(plan: Plan, source: Source) -> None:
     skipped, so it says no to the same findings.
 
     THE FINDINGS ARE `check`'S OWN: the same two functions over the same two
-    lists, so the two commands cannot disagree about what a plan covers. The
+    lists, so the two commands cannot disagree about what a plan covers, and
+    `_root_symlink_findings` (#178), so they cannot disagree about a symlink
+    the plan keeps in the root and the shape writes through. The
     refusal's code is the FIRST finding's own (`plan-uncovered`, ...); its
     detail is every finding as `check` prints it, capped at
     `REFUSED_FINDINGS_SHOWN` with an "and N more" tail.
@@ -1702,6 +1999,7 @@ def _refuse_what_check_finds(plan: Plan, source: Source) -> None:
     tree_paths = [path for path, _, _, _ in source.tree()]
     findings = (_coverage_findings(entry_paths, tree_paths)
                 + _leg_findings(plan))
+    findings += _root_symlink_findings(plan, source)
     if not findings:
         return
     # `FINDING <code>: <detail>` is the one shape both functions write.
@@ -1948,6 +2246,7 @@ def cmd_execute(args) -> int:
     local, repositories, urls = _repository_urls(args, plan, names, source)
     paths_for = _leg_paths(plan)
     _refuse_what_check_finds(plan, source)
+    _refuse_symlinks_checked_out_as_files(plan, source, work_root)
 
     seeded = seeded_legs(paths_for)
     _refuse_unconsented_seeding(args, plan, seeded)

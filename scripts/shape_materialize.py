@@ -210,6 +210,10 @@ TEMPLATED = (
 NEUTRAL_PIN_TEMPLATE = "contracts/neutral-product-pin.yaml"
 EXECUTABLE = ("scripts/validate-pins.py", "scripts/validate-manifest.py",
               BOOTSTRAP, VALIDATE_NAMING)
+#: The copy pin, rendered LAST by `_materialize` over the copies it digests.
+#: Named once because `assembly_root_paths` lists it beside the lists above,
+#: and a second spelling is how that list would stop matching what is written.
+SHAPE_PIN = "contracts/shape-pin.yaml"
 
 # ---------------------------------------------------------------------------
 # The FAMILY root's own lists (2026-09-04)
@@ -953,6 +957,24 @@ def materialize_assembly_root(shape_root: Path, target: Path,
         collision_dir=collision_dir, append=append, neutral_pins=neutral_pins)
 
 
+def assembly_root_paths() -> tuple[str, ...]:
+    """Every path `materialize_assembly_root` writes when nothing is in the
+    way and no neutral-product pin is declared, in the order it writes them.
+
+    READ FROM THE LISTS THAT CALL HANDS `_materialize`, plus the pin it
+    writes last, never kept by hand: `adopt-project.py check` follows each of
+    these through the symlinks a plan keeps in the root before any leg exists
+    (#178), and a second list would let the shape gain a file that check
+    does not follow. `EXECUTABLE` adds no path (it marks paths the lists
+    already write), and a collision moves a path under the caller's
+    `collision_dir`, which is the caller's to name.
+    `tests/test_adopt_root_symlinks.py` materializes into an empty directory
+    and holds this to what was written.
+    """
+    return (*TEMPLATED, *COPIED_VERBATIM,
+            *(rel for _, rel in COPIED_FROM_SHAPE), SHAPE_PIN)
+
+
 def materialize_family_root(shape_root: Path, target: Path,
                             values: dict[str, str]) -> Materialized:
     """Write the FAMILY-root skeleton into `target`.
@@ -972,6 +994,120 @@ def materialize_family_root(shape_root: Path, target: Path,
         shape_root, shape_root / "templates" / "family-root", target, values,
         templated=FAMILY_TEMPLATED, verbatim=FAMILY_COPIED_VERBATIM,
         from_shape=FAMILY_COPIED_FROM_SHAPE, executable=FAMILY_EXECUTABLE)
+
+
+# ---------------------------------------------------------------------------
+# Writing only where the shape's files belong (#183)
+# ---------------------------------------------------------------------------
+#
+# An adoption materializes INTO a clone of the source, and the plan can keep a
+# symlink in the root at or above a path the shape writes. `.github -> ci`,
+# with `ci/` in the same tree, is followed, and the workflow lands in `ci/`.
+# A link that led out of the clone was followed too, and the shape's
+# `validate.yml` went into a directory nobody named. A link round a loop, a
+# link to nothing, or a checkout with `core.symlinks=false` (which writes each
+# symlink as a plain FILE) ended in a Python traceback after both legs had
+# been pushed. `adopt-project.py check` reports such a link before any leg
+# exists. The refusals below apply the same rule where the files are
+# written, for a caller that skipped `check`.
+
+#: How many symlinks one lookup follows before it is a loop: Linux's own
+#: limit (MAXSYMLINKS), where `open()` gives up with ELOOP. `adopt-project.py`
+#: follows the plan's tree and the split commit's by the same count.
+SYMLINK_HOPS = 40
+
+#: What each refusal below says to do. It is raised BEFORE the `mkdir` and the
+#: write, so nothing was written at the path it names.
+UNWRITABLE_REMEDIATION = (
+    "Remediation: nothing was written at that path. The shape writes its "
+    "files only inside the directory it is given, through a symlink only "
+    "when its relative target stays inside, and only beneath directories. "
+    "What is in the way is the source repository's own: when adopting, send "
+    "it to a leg or `drop` it in the plan -- `adopt-project.py check` names "
+    "it before any leg exists -- and re-run into fresh legs.")
+
+
+def _link_parts(here: Path, at: str, rel: str, target: Path,
+                hops: int) -> list[str]:
+    """The target of the symlink `here` (spelled `at`) as path parts, or a
+    refusal when it is the hop that makes a loop or it is absolute."""
+    if hops > SYMLINK_HOPS:
+        raise Refusal("materialize-symlink-loop",
+                      f"{rel} runs round a symlink loop at {at} in {target}",
+                      UNWRITABLE_REMEDIATION)
+    link = os.readlink(here)
+    if os.path.isabs(link) or os.path.splitdrive(link)[0]:
+        raise Refusal(
+            "materialize-outside",
+            f"{rel} would be written through the symlink {at}, which leads "
+            f"to the absolute path {link}; the shape follows only a symlink "
+            f"whose relative target stays inside {target}",
+            UNWRITABLE_REMEDIATION)
+    # Windows reads a link back in its own separator; a POSIX name may hold
+    # a backslash, so only the platform's own separator is translated.
+    return link.replace(os.sep, "/").split("/")
+
+
+def _followed(target: Path, rel: str) -> list[str]:
+    """`rel` under `target` with each symlink on the way followed, the way
+    `open()` follows them, as parts relative to `target`; a refusal when one
+    leads out of `target` or round a loop."""
+    parts, done, hops, via = rel.split("/"), [], 0, ""
+    while parts:
+        part = parts.pop(0)
+        if part == "..":
+            if not done:
+                raise Refusal(
+                    "materialize-outside",
+                    f"{rel} would be written outside {target}: at the "
+                    f"symlink {via} it climbs above it",
+                    UNWRITABLE_REMEDIATION)
+            done.pop()
+        elif part not in ("", "."):
+            here = target.joinpath(*done, part)
+            if here.is_symlink():
+                hops, via = hops + 1, root_key(here, target)
+                parts = _link_parts(here, via, rel, target, hops) + parts
+            else:
+                done.append(part)
+    return done
+
+
+def _blocker(target: Path, rel: str, landed: list[str]) -> str | None:
+    """What stands where `rel` needs a directory, or None.
+
+    `mkdir(parents=True)` makes a MISSING directory and everything below it,
+    and passes through a directory or a symlink to one. It cannot pass a
+    file, or a symlink that leads to no directory, and it raised a traceback
+    there. A symlink at `rel` itself is written through only into a
+    directory that is already there.
+    """
+    parts = rel.split("/")
+    for end in range(1, len(parts)):
+        above = target.joinpath(*parts[:end])
+        if above.is_dir():
+            continue
+        if above.is_symlink():
+            return (f"{root_key(above, target)} is a symlink to "
+                    f"{os.readlink(above)}, which is not a directory here")
+        if above.exists():
+            return f"{root_key(above, target)} is a file, not a directory"
+        return None
+    path = target / rel
+    if path.is_symlink() and not target.joinpath(*landed[:-1]).is_dir():
+        return (f"the symlink {rel} leads to {os.readlink(path)}, and there "
+                "is no directory there to write it in")
+    return None
+
+
+def _refuse_unwritable(target: Path, rel: str) -> None:
+    """Refuse, before the `mkdir` and the write, a path the shape must not
+    write at (outside `target`, or round a loop) or cannot (#183)."""
+    blocker = _blocker(target, rel, _followed(target, rel))
+    if blocker:
+        raise Refusal("materialize-blocked",
+                      f"{rel} cannot be written: {blocker}",
+                      UNWRITABLE_REMEDIATION)
 
 
 def _materialize(shape_root: Path, template_root: Path, target: Path,
@@ -1004,6 +1140,7 @@ def _materialize(shape_root: Path, template_root: Path, target: Path,
             actual = f"{collision_dir}/{rel}"
             result.collisions.append((rel, actual))
             path = target / actual
+        _refuse_unwritable(target, root_key(path, target))
         path.parent.mkdir(parents=True, exist_ok=True)
         write(path)
         rel_written = root_key(path, target)
@@ -1038,11 +1175,9 @@ def _materialize(shape_root: Path, template_root: Path, target: Path,
     # rendered LAST and over the paths they actually landed on.
     rows = "\n".join(f"  - path: {rel}\n    sha256: \"{file_sha256(target / rel)}\""
                      for rel in result.shape_files)
-    text = render((template_root / "contracts" / "shape-pin.yaml")
-                  .read_text(encoding="utf-8"),
-                  {**values, "SHAPE_FILES": rows}, "contracts/shape-pin.yaml")
-    place("contracts/shape-pin.yaml",
-          lambda p, t=text: write_lf(p, t))
+    text = render((template_root / SHAPE_PIN).read_text(encoding="utf-8"),
+                  {**values, "SHAPE_FILES": rows}, SHAPE_PIN)
+    place(SHAPE_PIN, lambda p, t=text: write_lf(p, t))
     return result
 
 
