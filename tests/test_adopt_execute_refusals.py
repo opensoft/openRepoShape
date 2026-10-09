@@ -1,26 +1,44 @@
 # SPDX-License-Identifier: Apache-2.0
 """`execute` refuses every finding `check` reports, before a leg exists (#168).
 
-It used to refuse only `plan-unresolved` and `plan-stale`. A plan `check`
-rejects as uncovered, with a bad leg, covered twice, with a duplicated path or
-with an empty entry ran on into `_create_leg_remotes`, pushed BOTH legs and
-failed only at the verification as `adopt-lost` -- and the corrected plan then
-met `leg-remote-exists`, which has no `--force`.
+Of `check`'s findings, `execute` used to refuse `plan-unresolved`,
+`plan-stale` and the naming findings. A plan `check` rejects as uncovered,
+with a bad leg, covered twice, with a duplicated path or with an empty entry
+went on and made both legs. On main at 7f84ca4 it then ended one of three
+ways:
+
+- uncovered and bad leg, on a source with no submodule: the run VERIFIED and
+  exited 0, with the uncovered paths, or the paths whose `leg:` is not one of
+  the four words, left in the assembly root;
+- covered twice, duplicated path and empty entry: the run died at `git rm`
+  of the offending entry, after both legs were pushed;
+- a source with a submodule, which is #168's own three cases: the
+  verification failed as `adopt-lost`.
+
+In every one the legs existed afterwards, so the corrected plan met them:
+`leg-remote-exists` under `--local-remote-dir`, which has no `--force`. This
+file builds a source with no submodule, so it holds the five classes
+themselves; #168's submodule cases are refused by the same function under the
+same two codes, `plan-uncovered` and `plan-bad-leg`.
 
 NO NETWORK, NO GITHUB, AND NO `git filter-repo` except in the one end-to-end
 test at the bottom. The rest load `adopt-project.py` through importlib and call
 `cmd_execute` in this process. Its probe for `git filter-repo` is stubbed,
-because every refusal under test is raised BEFORE the tool would be used; a
-`cmd_execute` that stopped refusing would carry on to create the legs, return
-an exit code instead of raising, and fail these tests the same way on a machine
-that has the tool and on one that has not.
+because every refusal under test is raised BEFORE the tool would be used. A
+`cmd_execute` that stopped refusing would carry on and make the legs, then
+either return an exit code or fail inside `git`; neither is the `Refusal` the
+tests below wait for, so they fail on a machine that has the tool and on one
+that has not.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import io
 import shutil
+import sys
 from argparse import Namespace
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -29,12 +47,20 @@ from conftest import (ADOPT, git, make_source_repo, resolve, run_script,
                       write_plan)
 
 PROJECT = "Northwind"
-ANSWERS = (("examples/", "spec"), (".claude/", "root"), ("release.yaml", "root"))
+UTF8 = "utf-8"
+UNCOVERED = "plan-uncovered"
+REMOTES = "remotes"
+WORK = "work"
+SPEC, CODE = "spec", "code"
+ROLES = (SPEC, CODE)
+ANSWERS = (("examples/", "spec"), (".claude/", "root"),
+           ("release.yaml", "root"))
 
 #: The entries the edits below work on: `src/` is one directory, two files, the
 #: code leg; `specs/` is the specification, and `Spec` is not one of the four
 #: words a `leg:` may be.
-SRC_ENTRY = "  - path: src/\n"
+SRC_DIR = "src/"
+SRC_ENTRY = f"  - path: {SRC_DIR}\n"
 SPECS_ENTRY = "  - path: specs/\n    leg: spec\n"
 SPECS_WRONG_CASE = "  - path: specs/\n    leg: Spec\n"
 
@@ -42,9 +68,10 @@ SPECS_WRONG_CASE = "  - path: specs/\n    leg: Spec\n"
 #: about it and `Plan.load` can read it.
 EDITED = "edited-plan.yaml"
 
-#: What `execute` needs and the rest of this file does not. Written out here
-#: rather than imported from a sibling test module, which is not a thing this
-#: suite does.
+#: What `execute` needs and the rest of this file does not.
+#: `test_adopt_e2e.py`, `test_adopt_spec_only.py` and
+#: `test_adopt_submodules.py` each declare the same skip in their own file,
+#: and so does this one.
 needs_filter_repo = pytest.mark.skipif(
     shutil.which("git-filter-repo") is None,
     reason="git filter-repo is not installed: `pip install git-filter-repo`")
@@ -62,6 +89,17 @@ SPEC_ONLY_TREE = {
 SPEC_ONLY_EDITS = (("specs/001-render/spec.md",
                     "# Render\n\nA second paragraph.\n",
                     "Extend the specification"),)
+
+
+@dataclass(frozen=True)
+class World:
+    """A source and the plan for it, with every question ANSWERED."""
+
+    source: Path
+    plan: Path
+    answered: str      # the plan `check` passes; each test edits a copy
+    unanswered: str    # the same plan as `plan` wrote it
+    tmp: Path
 
 
 @pytest.fixture(scope="module")
@@ -82,18 +120,18 @@ def no_filter_repo_probe(adopter, monkeypatch):
 
 
 @pytest.fixture
-def world(tmp_path) -> dict:
+def world(tmp_path) -> World:
     """A source, and a plan for it with every question ANSWERED: the plan
     `check` passes. Each test edits its own copy of the text."""
     source = make_source_repo(tmp_path / "Thing")
     plan = tmp_path / "adoption-plan.yaml"
     written = write_plan(source, plan, project=PROJECT)
     assert written.returncode == 0, written.stderr + written.stdout
-    unanswered = plan.read_text(encoding="utf-8")
+    unanswered = plan.read_text(encoding=UTF8)
     for path, leg in ANSWERS:
         resolve(plan, path, leg)
-    return {"source": source, "plan": plan, "answered": plan.read_text(
-        encoding="utf-8"), "unanswered": unanswered, "tmp": tmp_path}
+    return World(source=source, plan=plan, unanswered=unanswered,
+                 answered=plan.read_text(encoding=UTF8), tmp=tmp_path)
 
 
 def without_entry(text: str, path: str) -> str:
@@ -106,13 +144,15 @@ def without_entry(text: str, path: str) -> str:
     return "".join(lines[:start] + lines[end:])
 
 
-def execute_args(tmp_path: Path, plan: Path, *allowed: str) -> Namespace:
-    """What `main` hands `cmd_execute`: nothing but the plan, `--yes`, a local
-    remote directory that does not exist yet and a work directory."""
+def execute_args(tmp_path: Path, plan: Path, *allowed: str,
+                 yes: bool = True) -> Namespace:
+    """What `main` hands `cmd_execute`: the plan, `--yes` unless `yes` is
+    False, a local remote directory that does not exist yet and a work
+    directory."""
     return Namespace(plan=str(plan), source=None,
-                     local_remote_dir=tmp_path / "remotes",
-                     allow_empty_leg=list(allowed), yes=True,
-                     work_dir=tmp_path / "work")
+                     local_remote_dir=tmp_path / REMOTES,
+                     allow_empty_leg=list(allowed), yes=yes,
+                     work_dir=tmp_path / WORK)
 
 
 def refused_by(adopter, args):
@@ -123,41 +163,59 @@ def refused_by(adopter, args):
     return caught.value
 
 
-def nothing_was_created(tmp_path: Path) -> None:
-    """The strongest statement a refused run can make that is still true: the
-    directory the legs would have gone in was never even made, and no leg was
-    cloned for extraction. (`work/` itself is made first, empty, because the
-    source is opened inside it.)"""
-    assert not (tmp_path / "remotes").exists()
-    for role in ("spec", "code"):
-        assert not (tmp_path / "work" / f"{PROJECT}-{role}").exists()
+def source_branches(source: Path) -> list[str]:
+    """The source's local branches: a split branch would be one more."""
+    return git("branch", "--format=%(refname:short)",
+               cwd=source).stdout.split()
 
 
-def write_edited(world, text: str) -> Path:
+def no_leg_was_created(tmp_path: Path) -> None:
+    """What a refused run leaves undone: the directory the legs would have
+    gone in was never made, and no leg was cloned for extraction. (`work/`
+    itself is made first, whatever is refused, by `_work_root`; a source given
+    as `org/repo` is cloned into it and a local path is read in place. Neither
+    is a leg.)"""
+    assert not (tmp_path / REMOTES).exists()
+    for role in ROLES:
+        assert not (tmp_path / WORK / f"{PROJECT}-{role}").exists()
+
+
+def write_edited(world: World, text: str) -> Path:
     """`text` as a plan file beside the world's own, which it leaves alone."""
-    path = world["tmp"] / EDITED
-    path.write_text(text, encoding="utf-8")
+    path = world.tmp / EDITED
+    path.write_text(text, encoding=UTF8)
     return path
 
 
-def open_plan(adopter, world, text: str):
+def open_plan(adopter, world: World, text: str):
     """`(plan, source)` for `text`, the way `cmd_execute` opens them."""
     plan = adopter.Plan.load(write_edited(world, text))
-    return plan, plan.open_source(str(world["source"]), world["tmp"] / "read")
+    return plan, plan.open_source(str(world.source), world.tmp / "read")
+
+
+def run_check(plan: Path):
+    """`check --plan <plan>`, run as a person would."""
+    return run_script(ADOPT, "check", "--plan", str(plan))
 
 
 def check_findings(plan: Path) -> list[str]:
     """Every `FINDING` line `check` prints for `plan`, which must fail it."""
-    result = run_script(ADOPT, "check", "--plan", str(plan))
+    result = run_check(plan)
     assert result.returncode == 1, result.stderr + result.stdout
     return [line for line in result.stderr.splitlines()
             if line.startswith("FINDING ")]
 
 
+def spec_only_source(tmp_path: Path) -> Path:
+    """The repository `--allow-empty-leg code` exists for."""
+    return make_source_repo(tmp_path / "IRRS", SPEC_ONLY_TREE,
+                            edits=SPEC_ONLY_EDITS)
+
+
 #: The five finding classes `execute` did not refuse, each with a fragment its
 #: finding must carry. `EDITS` below makes the plan that has each one.
 CLASSES = {
-    "plan-uncovered": "src/app/main.py is in the source tree and in no plan",
+    UNCOVERED: "src/app/main.py is in the source tree and in no plan",
     "plan-bad-leg": "specs/ declares leg 'Spec'",
     "plan-covered-twice": "src/app/main.py is covered by",
     "plan-duplicate-path": "src/ appears 2 times",
@@ -165,7 +223,7 @@ CLASSES = {
 }
 
 EDITS = {
-    "plan-uncovered": lambda text: without_entry(text, "src/"),
+    UNCOVERED: lambda text: without_entry(text, SRC_DIR),
     "plan-bad-leg": lambda text: text.replace(SPECS_ENTRY,
                                               SPECS_WRONG_CASE, 1),
     "plan-covered-twice": lambda text: text.replace(
@@ -177,23 +235,28 @@ EDITS = {
 }
 
 
-def broken_text(world, code: str) -> str:
-    text = EDITS[code](world["answered"])
-    assert text != world["answered"], f"the {code} edit changed nothing"
+#: One test per finding class, the class's code as the test's `code`.
+ONE_PER_CLASS = pytest.mark.parametrize("code", sorted(CLASSES))
+
+
+def broken_text(world: World, code: str) -> str:
+    text = EDITS[code](world.answered)
+    assert text != world.answered, f"the {code} edit changed nothing"
     return text
 
 
 # --- the function itself ---------------------------------------------------
 
 def test_a_plan_check_passes_raises_no_refusal(adopter, world):
-    """THE CONTRACT THAT MUST NOT BREAK: what `check` passes, `execute` runs."""
-    checked = run_script(ADOPT, "check", "--plan", str(world["plan"]))
+    """THE CONTRACT THAT MUST NOT BREAK: what `check` passes, `execute`
+    runs."""
+    checked = run_check(world.plan)
     assert checked.returncode == 0, checked.stderr + checked.stdout
-    plan, source = open_plan(adopter, world, world["answered"])
+    plan, source = open_plan(adopter, world, world.answered)
     assert adopter._refuse_what_check_finds(plan, source) is None
 
 
-@pytest.mark.parametrize("code", sorted(CLASSES))
+@ONE_PER_CLASS
 def test_each_class_check_reports_is_refused_under_its_own_code(adopter, world,
                                                                 code):
     plan, source = open_plan(adopter, world, broken_text(world, code))
@@ -205,7 +268,7 @@ def test_each_class_check_reports_is_refused_under_its_own_code(adopter, world,
     assert f"FINDING {code}:" in refusal.detail
 
 
-@pytest.mark.parametrize("code", sorted(CLASSES))
+@ONE_PER_CLASS
 def test_the_refusal_carries_the_findings_check_prints(adopter, world, code):
     """Not a reading of `check` that happens to agree: every line `check`
     prints for the plan is in the refusal, word for word."""
@@ -221,12 +284,12 @@ def test_the_refusal_carries_the_findings_check_prints(adopter, world, code):
 
 
 def test_the_refusal_names_the_exit(adopter, world):
-    plan, source = open_plan(adopter, world, broken_text(world, "plan-uncovered"))
+    plan, source = open_plan(adopter, world, broken_text(world, UNCOVERED))
     with pytest.raises(adopter.Refusal) as caught:
         adopter._refuse_what_check_finds(plan, source)
     said = str(caught.value)
-    assert said.startswith("REFUSED plan-uncovered: ")
-    assert "no repository was created" in said
+    assert said.startswith(f"REFUSED {UNCOVERED}: ")
+    assert "no leg repository was created and nothing was pushed" in said
     assert "run `check` until it prints `plan ok`" in said
     assert "leg-remote-exists" in said
 
@@ -234,19 +297,19 @@ def test_the_refusal_names_the_exit(adopter, world):
 def test_the_code_is_the_first_findings_own(adopter, world):
     """Two classes at once: the refusal wears the first one `check` lists and
     still names the other, so nothing a plan is wrong about is left unsaid."""
-    text = without_entry(world["answered"].replace(SPECS_ENTRY,
-                                                   SPECS_WRONG_CASE, 1), "src/")
-    plan, source = open_plan(adopter, world, text)
+    wrong_case = world.answered.replace(SPECS_ENTRY, SPECS_WRONG_CASE, 1)
+    plan, source = open_plan(adopter, world,
+                             without_entry(wrong_case, SRC_DIR))
     with pytest.raises(adopter.Refusal) as caught:
         adopter._refuse_what_check_finds(plan, source)
-    assert caught.value.code == "plan-uncovered"
+    assert caught.value.code == UNCOVERED
     assert "FINDING plan-bad-leg:" in caught.value.detail
 
 
 def test_a_long_list_of_findings_is_capped_with_a_count(adopter, world):
-    text = world["answered"]
+    text = world.answered
     for path in ("contracts/", "docker/", "docs/", "openspec/", "pkg_core/",
-                 "specs/", "src/", "tests/"):
+                 "specs/", SRC_DIR, "tests/"):
         text = without_entry(text, path)
     total = len(check_findings(write_edited(world, text)))
     assert total > adopter.REFUSED_FINDINGS_SHOWN
@@ -264,76 +327,88 @@ def test_a_long_list_of_findings_is_capped_with_a_count(adopter, world):
 def test_a_leg_with_no_path_is_not_a_finding(adopter, tmp_path):
     """`--allow-empty-leg` seeding is unaffected: a leg no entry assigns a path
     to is a WARNING in `check` and a consent in `execute`, never a finding."""
-    source = make_source_repo(tmp_path / "IRRS", SPEC_ONLY_TREE,
-                              edits=SPEC_ONLY_EDITS)
+    repo = spec_only_source(tmp_path)
     plan_path = tmp_path / "plan.yaml"
-    written = write_plan(source, plan_path, project=PROJECT,
-                         extra=("--allow-empty-leg", "code"))
+    written = write_plan(repo, plan_path, project=PROJECT,
+                         extra=("--allow-empty-leg", CODE))
     assert written.returncode == 0, written.stderr + written.stdout
-    checked = run_script(ADOPT, "check", "--plan", str(plan_path))
+    checked = run_check(plan_path)
     assert checked.returncode == 0, checked.stderr + checked.stdout
     assert "WARNING the code leg will be SEEDED" in checked.stdout
     plan = adopter.Plan.load(plan_path)
-    seeded = plan.open_source(str(source), tmp_path / "read")
-    assert adopter._refuse_what_check_finds(plan, seeded) is None
+    opened = plan.open_source(str(repo), tmp_path / "read")
+    assert adopter._refuse_what_check_finds(plan, opened) is None
 
 
 # --- the wiring in `cmd_execute`, and what it leaves undone -----------------
 
-@pytest.mark.parametrize("code", sorted(CLASSES))
-def test_execute_refuses_each_class_and_creates_nothing(adopter, world, code):
-    world["plan"].write_text(broken_text(world, code), encoding="utf-8")
-    refusal = refused_by(adopter,
-                         execute_args(world["tmp"], world["plan"]))
+@ONE_PER_CLASS
+def test_execute_refuses_each_class_and_creates_no_leg(adopter, world, code):
+    world.plan.write_text(broken_text(world, code), encoding=UTF8)
+    refusal = refused_by(adopter, execute_args(world.tmp, world.plan))
     assert refusal.code == code
-    nothing_was_created(world["tmp"])
-    branches = git("branch", "--format=%(refname:short)",
-                   cwd=world["source"]).stdout.split()
-    assert branches == ["main"], "nothing was pushed to the source either"
+    no_leg_was_created(world.tmp)
+    assert source_branches(world.source) == ["main"], (
+        "nothing was pushed to the source either")
 
 
-def test_a_leg_with_no_path_is_still_refused_without_consent(adopter, tmp_path):
-    """The seeding refusal is where it was: this one passes the plan on to it."""
-    source = make_source_repo(tmp_path / "IRRS", SPEC_ONLY_TREE,
-                              edits=SPEC_ONLY_EDITS)
+@ONE_PER_CLASS
+def test_the_refusal_comes_before_anyone_is_asked_to_say_yes(
+        adopter, world, monkeypatch, code):
+    """WITHOUT `--yes`, on a stream that is not a terminal, the refusal is
+    still the finding's own. `_confirm` would answer `adopt-unconfirmed` (or
+    put a person through "Type yes to proceed" for a plan that is then
+    refused), so a call moved past it fails here."""
+    monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+    world.plan.write_text(broken_text(world, code), encoding=UTF8)
+    refusal = refused_by(adopter,
+                         execute_args(world.tmp, world.plan, yes=False))
+    assert refusal.code == code
+    no_leg_was_created(world.tmp)
+
+
+def test_a_leg_with_no_path_is_still_refused_without_consent(adopter,
+                                                             tmp_path):
+    """The seeding refusal is where it was: this one passes the plan on to
+    it."""
+    repo = spec_only_source(tmp_path)
     plan_path = tmp_path / "plan.yaml"
-    assert write_plan(source, plan_path, project=PROJECT).returncode == 0
+    assert write_plan(repo, plan_path, project=PROJECT).returncode == 0
     refusal = refused_by(adopter, execute_args(tmp_path, plan_path))
     assert refusal.code == "adopt-empty-leg-unconsented"
-    nothing_was_created(tmp_path)
+    no_leg_was_created(tmp_path)
 
 
 # --- the order of the refusals ---------------------------------------------
 
-def test_an_unresolved_question_is_still_reported_as_unresolved(adopter, world):
+def test_an_unresolved_question_is_still_reported_as_unresolved(adopter,
+                                                                world):
     """THE TWO ARE NOT REPORTED TWICE. This plan is unanswered AND uncovered;
     `_refuse_an_unrunnable_plan` speaks first, in its own words, and the
     coverage finding is what `check` will say once the questions are
     answered."""
-    world["plan"].write_text(without_entry(world["unanswered"], "src/"),
-                             encoding="utf-8")
-    refusal = refused_by(adopter,
-                         execute_args(world["tmp"], world["plan"]))
+    world.plan.write_text(without_entry(world.unanswered, SRC_DIR),
+                          encoding=UTF8)
+    refusal = refused_by(adopter, execute_args(world.tmp, world.plan))
     assert refusal.code == "plan-unresolved"
     assert "still have `leg: null`" in refusal.detail
     assert "never an implicit `root`" in refusal.remediation
-    nothing_was_created(world["tmp"])
+    no_leg_was_created(world.tmp)
 
 
 def test_a_stale_plan_is_still_reported_as_stale(adopter, world):
     """A plan written against an older commit is judged `plan-stale`, whatever
     the tree that moved has gained: `late/` is covered by NO entry, and the
     plan did not omit it, it never saw it."""
-    (world["source"] / "late").mkdir()
-    (world["source"] / "late" / "work.txt").write_text("later\n")
-    git("add", "-A", cwd=world["source"])
+    (world.source / "late").mkdir()
+    (world.source / "late" / "work.txt").write_text("later\n")
+    git("add", "-A", cwd=world.source)
     git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm",
-        "later work", cwd=world["source"])
-    world["plan"].write_text(world["answered"], encoding="utf-8")
-    refusal = refused_by(adopter,
-                         execute_args(world["tmp"], world["plan"]))
+        "later work", cwd=world.source)
+    world.plan.write_text(world.answered, encoding=UTF8)
+    refusal = refused_by(adopter, execute_args(world.tmp, world.plan))
     assert refusal.code == "plan-stale"
-    nothing_was_created(world["tmp"])
+    no_leg_was_created(world.tmp)
 
 
 def test_a_path_that_is_a_git_option_is_still_unsafe_not_uncovered(adopter,
@@ -343,13 +418,12 @@ def test_a_path_that_is_a_git_option_is_still_unsafe_not_uncovered(adopter,
     and would be refused as that, losing the reason it is dangerous, if the
     coverage refusal ran before them. (`test_adopt_e2e.py` has the same case
     behind `git filter-repo`; this one runs everywhere.)"""
-    world["plan"].write_text(world["answered"].replace(
+    world.plan.write_text(world.answered.replace(
         "  - path: specs/\n", "  - path: --output=never-written\n", 1),
-        encoding="utf-8")
-    refusal = refused_by(adopter,
-                         execute_args(world["tmp"], world["plan"]))
+        encoding=UTF8)
+    refusal = refused_by(adopter, execute_args(world.tmp, world.plan))
     assert refusal.code == "unsafe-value"
-    nothing_was_created(world["tmp"])
+    no_leg_was_created(world.tmp)
 
 
 # --- end to end ------------------------------------------------------------
@@ -358,27 +432,27 @@ def test_a_path_that_is_a_git_option_is_still_unsafe_not_uncovered(adopter,
 def test_an_uncovered_plan_creates_no_leg_and_the_corrected_plan_then_runs(
         world):
     """THE HARM, as a person met it: no leg is created, so the corrected plan
-    does not meet `leg-remote-exists` and the adoption goes through."""
-    tmp_path = world["tmp"]
-    remotes, work = tmp_path / "remotes", tmp_path / "work"
-    flags = ("--plan", str(world["plan"]), "--yes",
-             "--local-remote-dir", str(remotes), "--work-dir", str(work))
-    world["plan"].write_text(without_entry(world["answered"], "src/"),
-                             encoding="utf-8")
+    does not meet `leg-remote-exists` and the adoption goes through. The
+    refused run has no `--yes` and stdin is closed, so it also shows the
+    refusal is the finding's and not `adopt-unconfirmed`."""
+    remotes, work = world.tmp / REMOTES, world.tmp / WORK
+    flags = ("--plan", str(world.plan), "--local-remote-dir", str(remotes),
+             "--work-dir", str(work))
+    world.plan.write_text(without_entry(world.answered, SRC_DIR),
+                          encoding=UTF8)
     refused = run_script(ADOPT, "execute", *flags)
     assert refused.returncode == 2, refused.stderr + refused.stdout
-    assert "REFUSED plan-uncovered" in refused.stderr
+    assert f"REFUSED {UNCOVERED}" in refused.stderr
     assert "src/app/main.py" in refused.stderr
     assert "creating the leg repositories" not in refused.stdout
     assert not remotes.exists(), "not even the directory the legs go in"
-    for role in ("spec", "code"):
+    for role in ROLES:
         assert not (work / f"{PROJECT}-{role}").exists()
-    assert git("branch", "--format=%(refname:short)",
-               cwd=world["source"]).stdout.split() == ["main"]
+    assert source_branches(world.source) == ["main"]
 
-    world["plan"].write_text(world["answered"], encoding="utf-8")
-    corrected = run_script(ADOPT, "execute", *flags)
+    world.plan.write_text(world.answered, encoding=UTF8)
+    corrected = run_script(ADOPT, "execute", "--yes", *flags)
     assert corrected.returncode == 0, corrected.stderr + corrected.stdout
     assert "adoption verified" in corrected.stdout
-    for role in ("spec", "code"):
+    for role in ROLES:
         assert (remotes / f"{PROJECT}-{role}.git").is_dir()
