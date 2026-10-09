@@ -41,6 +41,7 @@ CODE_OF_REFUSAL = "REFUSED scaffold-bad-leg-path"
 OFFER = "Write '"
 
 SPEC, CODE = "--spec-path", "--code-path"
+WORK_FLAG = "--work-dir"
 SLASHED = "spec/"
 LEGS_SPEC, LEGS_CODE, IMPL_CODE = "legs/spec", "legs/code", "impl/code"
 
@@ -129,7 +130,7 @@ def scaffold(tmp_path: Path, *args: str, work: bool = False):
     scratch.mkdir(exist_ok=True)
     flags = [*IDENTITY, "--local-remote-dir", str(tmp_path / REMOTES), *args]
     if work:
-        flags += ["--work-dir", str(tmp_path / WORK)]
+        flags += [WORK_FLAG, str(tmp_path / WORK)]
     return run_script(SCAFFOLD, *flags, env={
         "TMPDIR": str(scratch), "TMP": str(scratch), "TEMP": str(scratch)})
 
@@ -211,7 +212,7 @@ def test_the_repro_of_issue_179_is_refused_and_no_project_exists_to_clone(
     result = run_script(
         SCAFFOLD, *IDENTITY, SPEC, SLASHED,
         "--local-remote-dir", str(tmp_path / REMOTES),
-        "--work-dir", str(tmp_path / WORK))
+        WORK_FLAG, str(tmp_path / WORK))
     assert result.returncode == 2, result.stderr + result.stdout
     assert f"{OFFER}spec'." in result.stderr
     assert not (tmp_path / REMOTES).exists()
@@ -234,7 +235,7 @@ def test_a_refused_leg_path_never_reaches_gh(tmp_path):
         """), encoding="utf-8")
     shim.chmod(shim.stat().st_mode | stat.S_IXUSR)
     result = run_script(
-        SCAFFOLD, *IDENTITY, SPEC, SLASHED, "--work-dir", str(tmp_path / WORK),
+        SCAFFOLD, *IDENTITY, SPEC, SLASHED, WORK_FLAG, str(tmp_path / WORK),
         env={"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
              "FAKE_GH_LOG": str(log)})
     assert result.returncode == 2, result.stderr + result.stdout
