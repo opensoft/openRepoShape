@@ -454,13 +454,13 @@ ACCEPTED = [
                  {GITHUB: TOOLS_UP, TOOLS_UP: "../ci/"},
                  {CI_DIR: ROOT, TOOLS_DIR: ROOT, GITHUB: ROOT},
                  id="D10-a-chain-through-dot-dot"),
-    pytest.param({CI_FILE: ON_PUSH}, {GITHUB: "ci"},
-                 {CI_DIR: ROOT, GITHUB: CODE},
-                 id="the-link-itself-sent-to-a-leg"),
 ]
 
 #: Links no path the shape writes runs through: main keeps each exactly as
-#: the source had it, and so must this.
+#: the source had it, and so must this. The last is D6's link out, sent to a
+#: leg instead of kept: the mount's `git rm` takes it out of the root before
+#: the shape is written, so where it leads is the leg's business, and a
+#: `check` that followed it would refuse a plan main adopts.
 UNRELATED = [
     pytest.param({NOTES_README: "n\n"}, {NOTES_UPSTREAM: ETC},
                  NOTES_KEPT, id="an-absolute-link"),
@@ -468,6 +468,8 @@ UNRELATED = [
                  NOTES_KEPT, id="a-dangling-link-out"),
     pytest.param({}, {LATEST: LATEST}, {LATEST: ROOT},
                  id="a-link-to-itself-no-shape-path-meets"),
+    pytest.param({}, {GITHUB: OUTSIDE_CI}, {GITHUB: CODE},
+                 id="the-link-itself-sent-to-a-leg"),
 ]
 
 
