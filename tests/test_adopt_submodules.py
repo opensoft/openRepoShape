@@ -1068,22 +1068,26 @@ def test_git_follows_no_include_in_a_gitmodules(tmp_path, where, expected):
     assert finding_codes(result.stderr) == expected, result.stderr
 
 
-@pytest.mark.parametrize("source, said", [
+@pytest.mark.parametrize("source, said, where", [
     # git calls the file it read from `--file -` "standard input".
-    (UNREADABLE_FILE, "fatal: bad config line 2 in .gitmodules)"),
+    (UNREADABLE_FILE, "fatal: bad config line 2 in .gitmodules)",
+     "FAILS_IN_THE_EXTRACTION"),
     # `git config --list` lists both; git's submodule reader dies on each.
-    ({"gitmodules": registration() + '[submodule "b"]\n\tpath\n'},
-     "missing value for 'submodule.b.path'"),
+    ({"gitmodules": registration() + BARE_KEY},
+     "missing value for 'submodule.b.path'", "FAILS_IN_THE_EXTRACTION"),
     ({"gitmodules": '[submodule "d"]\n\tpath = upstream/dependency\n\turl\n'},
-     "missing value for 'submodule.d.url'"),
-    # A `.gitmodules` that is itself a gitlink has no blob to read.
-    ({"registered": (), "orphan": GITMODULES}, "fatal: git cat-file"),
+     "missing value for 'submodule.d.url'", "FAILS_IN_THE_EXTRACTION"),
+    # A `.gitmodules` that is itself a gitlink has no blob to read, and no
+    # file for `git fast-export` to read either: the clone of its leg is
+    # where git fails on it.
+    ({"registered": (), "orphan": GITMODULES}, "fatal: git cat-file",
+     "FAILS_IN_THE_CLONE"),
 ], ids=["bad-config-line", "path-with-no-value", "url-with-no-value",
         "gitmodules-is-a-gitlink"])
-def test_a_gitmodules_git_cannot_read_says_what_git_said(plan_of, tmp_path,
-                                                         source, said):
+def test_a_gitmodules_git_cannot_read_says_what_git_said(
+        adopter, plan_of, tmp_path, source, said, where):
     """The finding names the file AND what git says about it, on the one
-    line `check` prints a finding on."""
+    line `check` prints a finding on, and where git fails on it."""
     plan = plan_of(source)[0]
     plan = answered(plan, tmp_path, {path: "code" for path in
                                      (GITMODULES, UPSTREAM)
@@ -1093,6 +1097,7 @@ def test_a_gitmodules_git_cannot_read_says_what_git_said(plan_of, tmp_path,
     assert found[0][1].startswith(
         "git cannot read the source's .gitmodules for its submodules ("
         + said), found
+    assert found[0][1].endswith(getattr(adopter, where)), found
 
 
 @pytest.mark.parametrize("modules_leg, expected", [
