@@ -310,8 +310,11 @@ DEPENDENCY_TREE = {"value.txt": "dependency\n"}
 THE_DEPENDENCY = "<the dependency>"
 
 
-def registration(name: str = DEPENDENCY, url: str = "../dependency") -> str:
-    """`DEPENDENCY` registered by hand, under `name`, with `url`."""
+def registration(name: str = DEPENDENCY, url: str = THE_DEPENDENCY) -> str:
+    """`DEPENDENCY` registered by hand, under `name`, with `url`: by
+    default the dependency's absolute path, because `check` finds a RELATIVE
+    url its leg resolves elsewhere (#190), and these sources have no remote
+    to resolve one alike from."""
     return f'[submodule "{name}"]\n\tpath = {DEPENDENCY}\n\turl = {url}\n'
 
 
@@ -863,7 +866,7 @@ def test_check_refuses_to_keep_a_gitlink_its_gitmodules_does_not_register(
 LATIN_1_COMMENT = b"# caf\xe9 \xff\xfe\n"
 #: Upper-case section and keys, which git lower-cases.
 UPPER_CASE_KEYS = ('[Submodule "upstream/dependency"]\n'
-                   "\tPATH = upstream/dependency\n\tURL = ../dependency\n")
+                   f"\tPATH = upstream/dependency\n\tURL = {THE_DEPENDENCY}\n")
 
 
 @pytest.mark.parametrize("gitmodules, expected", [
@@ -1372,7 +1375,7 @@ def test_execute_refuses_a_submodule_plan_before_anything_exists(
     ("code", "drop", None),
     # Hand-written registrations `check` reads as the leg's clone reads them:
     # upper-case keys, and two `git config --blob` refused.
-    ("code", "code", UPPER_CASE_KEYS.replace("../dependency", THE_DEPENDENCY)),
+    ("code", "code", UPPER_CASE_KEYS),
     ("code", "code",
      LATIN_1_COMMENT + registration(url=THE_DEPENDENCY).encode()),
     ("code", "code", registration(url=THE_DEPENDENCY)
