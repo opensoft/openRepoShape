@@ -194,7 +194,8 @@ FILTER_REPO_HINT = (
 # mappings, block sequences and single-line scalars. Everything it emits is
 # read back by `check`, and `tests/test_adopt_plan.py` round-trips a plan
 # through both, which is what keeps the writer and the reader honest about
-# each other.
+# each other. A string is written plain only where that reader gives the same
+# string back, and `y` asks the reader rather than a list of words (#181).
 
 _PLAIN_RE = re.compile(r"^[A-Za-z_.][A-Za-z0-9_./@:+-]*$")
 
@@ -202,6 +203,31 @@ _PLAIN_RE = re.compile(r"^[A-Za-z_.][A-Za-z0-9_./@:+-]*$")
 #: spelling. Recognised so that `--source` can tell a path the operator got
 #: wrong from a repository name; see `Source.open`.
 WINDOWS_ABSOLUTE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _reads_back_as_text(text: str) -> bool:
+    """Does the plan's own loader take `text`, written plain, back as `text`?
+
+    ASKED OF THE LOADER, NEVER OF A LIST OF WORDS (#181). `null`, `Null`,
+    `true` and `False` were written bare, so `plan --spec-path null` wrote
+    `spec_path: null`, which loads as "no value" and mounted the leg at the
+    default `spec`, and `--tracking-branch true` came back as a boolean. A
+    second, hand-kept list of the words `repo_shape._scalar` treats as
+    keywords is a list that goes stale the day that reader learns another one
+    (it reads no `yes`, `on` or `.inf` today, and a list copied from YAML 1.1
+    would quote them for nothing), so the candidate is round-tripped instead
+    and whatever the loader reads as something else gets quoted.
+
+    BOTH PLACES A VALUE IS WRITTEN are asked: after `key: `, and as a `- `
+    item, which the reader splits differently (`- a:` is a one-key mapping,
+    `k: a:` is not). A line the reader refuses is a value it does not read
+    back.
+    """
+    try:
+        return (parse_yaml(f"k: {text}\n") == {"k": text}
+                and parse_yaml(f"- {text}\n") == [text])
+    except YamlError:
+        return False
 
 
 def y(value) -> str:
@@ -214,7 +240,7 @@ def y(value) -> str:
     if isinstance(value, float):
         return f"{value:.4f}"
     text = str(value)
-    if text and _PLAIN_RE.match(text) and not text.endswith(":"):
+    if text and _PLAIN_RE.match(text) and _reads_back_as_text(text):
         return text
     escaped = text.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
@@ -543,11 +569,14 @@ def render_plan(args, source: Source, entries: list[Entry], names: dict,
     emit(lines, "code", names["code"], 2)
     emit(lines, "spec_path", args.spec_path, 2)
     emit(lines, "code_path", args.code_path, 2)
+    # A pin goes through `y` like every other string here: `--pin null` was
+    # written `pins: [null]`, which loads as a null that `Plan.load` drops, so
+    # the pin the human asked for vanished without a word (#181).
     lines += ["",
               "# Neutral products this project declares a pin on. A",
               "# `<Domainx><Product>` assembly root is a DESCENDANT only when",
               "# its `open<Product>` is listed here (2026-09-02).",
-              "pins: [" + ", ".join(pins) + "]", ""]
+              "pins: [" + ", ".join(y(pin) for pin in pins) + "]", ""]
 
     seeded = seeded_legs(assigned_paths(entries))
     lines += [
