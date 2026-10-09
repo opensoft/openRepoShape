@@ -143,6 +143,9 @@ FILE_PROTOCOL = ["-c", "protocol.file.allow=always"]
 #: writes, stages and edits it -- named once so those four uses cannot
 #: spell it differently.
 GITMODULES = ".gitmodules"
+#: The mode `git ls-tree` reports for a SUBMODULE: a commit of another
+#: repository, recorded in this tree as a gitlink rather than as a file.
+GITLINK_MODE = "160000"
 
 #: THE SPEC-ONLY CASE. A repository can honestly have nothing for one leg —
 #: InkRouter's IRRS and IRSS are specifications with no implementation yet
@@ -1793,7 +1796,7 @@ def _land_the_root_tree(after: dict, tree: list, before: dict,
     findings: list[str] = []
     mounted: set[str] = set()
     for path, mode, oid, _ in tree:
-        gitlink = mode == "160000"
+        gitlink = mode == GITLINK_MODE
         if gitlink and path in mounts:
             mounted.add(path)
             continue
