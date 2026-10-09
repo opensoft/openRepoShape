@@ -215,6 +215,23 @@ def emit(lines: list[str], key: str, value, indent: int = 0) -> None:
 # ---------------------------------------------------------------------------
 
 
+#: A `.gitmodules` key as `git config --list` prints it: the section and the
+#: variable lower-cased by git, the `<name>` exactly as written. A key with no
+#: `<name>` does not match, because git skips one when it clones.
+SUBMODULE_KEY_RE = re.compile(r"submodule\.(?P<name>.+)\.(?P<key>path|url)")
+#: The `git` subcommand that reads and writes a config file: a source's
+#: `.gitmodules`, a leg mount's url, the elector's name.
+GIT_CONFIG = "config"
+
+
+def _git_path(raw: bytes) -> str:
+    """A path git printed under `-z`, as `Source.tree()` spells it: UTF-8,
+    and a byte that is not UTF-8 kept as a surrogate rather than refused. A
+    gitlink and its `.gitmodules` registration are compared as strings, so
+    both are decoded here."""
+    return raw.decode("utf-8", "surrogateescape")
+
+
 class Source:
     """A repository being read, and nothing more. Nothing here writes to it."""
 
@@ -271,10 +288,47 @@ class Source:
                 continue
             head, _, path = record.partition(b"\t")
             mode, kind, oid, size = head.decode().split(maxsplit=3)
-            out.append((path.decode("utf-8", "surrogateescape"), mode, oid,
+            out.append((_git_path(path), mode, oid,
                         0 if size.strip() == "-" else int(size)))
             del kind
         return sorted(out)
+
+    def registered_submodules(self, tree: list) -> frozenset[str] | None:
+        """Each path the `.gitmodules` at the pinned commit registers WITH a
+        url, or None when `git config` cannot read that file.
+
+        A REGISTRATION is a `submodule.<name>.path` and a non-empty
+        `submodule.<name>.url` under the same name: the path is what git
+        looks a gitlink up by, and the url is what it must then find to clone
+        it. Matched exactly as git matches them, and a key with no `<name>`
+        is ignored as git ignores it. `tree` is `self.tree()`, which says
+        whether there is a file to read at all; with none, nothing is
+        registered.
+
+        `--list`, NOT `--get-regexp`: the second exits 1 both when no key
+        matches and on a `bad config line`, so a file git cannot read would
+        come back as one that registers nothing. `--list` exits 0 on any file
+        it parsed, empty or not, and 128 on one it could not, and None says
+        so: a read that failed is not an answer (#166).
+        """
+        if not any(path == GITMODULES for path, _, _, _ in tree):
+            return frozenset()
+        try:
+            raw = git_out([GIT_CONFIG, "-z", "--blob",
+                           f"{self.commit}:{GITMODULES}", "--list"],
+                          cwd=self.path, binary=True)
+        except Refusal:
+            return None
+        paths: dict[str, str] = {}
+        urls: dict[str, str] = {}
+        for record in raw.split(b"\x00"):
+            key, _, value = _git_path(record).partition("\n")
+            match = SUBMODULE_KEY_RE.fullmatch(key)
+            if match:
+                registry = paths if match["key"] == "path" else urls
+                registry[match["name"]] = value
+        return frozenset(path for name, path in paths.items()
+                         if urls.get(name))
 
     def commit_count(self) -> int:
         return int(git_out(["rev-list", "--count", self.commit], cwd=self.path))
@@ -986,10 +1040,21 @@ SUBMODULE_REMEDIATION = (
     "Remediation: send `.gitmodules` and every submodule it registers to ONE "
     "leg, spec or code, or `drop` them together. To be rid of ONE of several "
     "registered submodules, adopt it with the others and `git rm` it in the "
-    "leg afterwards, which takes its registration with it. The assembly root "
-    "never keeps a submodule of the source's: `execute` writes it a fresh "
-    "`.gitmodules` for its two mounts, and its `validate` workflow reads every "
-    "URL in that file as a leg.")
+    "leg afterwards, which takes its registration with it. A submodule the "
+    "source does not register -- no `.gitmodules` entry with its path and a "
+    "url -- cannot be kept in a leg at all: a top-level `git clone "
+    "--recurse-submodules` skips it, but the assembly's clone fails on it "
+    "inside the leg. `drop` it, or register it in the source (that entry, "
+    "committed) and re-run `plan`; a `.gitmodules` that `git config` cannot "
+    "read is repaired in the source and re-planned the same way, or dropped "
+    "with every submodule. The assembly root never keeps a submodule of the "
+    "source's: its `.gitmodules` is reserved for its two leg mounts, and its "
+    "`validate` workflow reads every URL in that file as a leg.")
+
+#: Why a kept gitlink with no URL beside it is refused, said in the same
+#: words by the two rules that find one.
+NO_URL_IN_THE_LEG = ("so the leg that holds the gitlink holds no URL for it "
+                     "and the assembly's recursive clone fails there")
 
 
 def _answered_legs(entries: list, paths: list[str]) -> dict:
@@ -1016,38 +1081,63 @@ def _as_entry(path: str, entry: str) -> str:
     return path if entry == path else f"{path} (entry {entry})"
 
 
-def submodule_plan_problems(entries: list, tree: list) -> list[tuple[str, str]]:
+def submodule_plan_problems(entries: list, tree: list,
+                            registered: frozenset | None
+                            ) -> list[tuple[str, str]]:
     """`(code, detail)` for each way the plan splits the source's OWN submodules.
 
     ONE DEFINITION, asked by `check` for findings and by `execute` for a
     refusal, so that the plan `check` passes is the plan `execute` will run
     (#166). `tree` is `Source.tree()`: a gitlink is visible only by its mode,
     which no path glob in `contracts/path-classification.yaml` can see.
+    `registered` is `Source.registered_submodules(tree)`, the gitlink paths
+    the source's `.gitmodules` names with a url, or None when `git config`
+    cannot read that file. The caller reads both, so this is a function of
+    its arguments alone.
 
     A SUBMODULE IS ONE FACT IN TWO PLACES: the gitlink in the tree and its
     registration in `.gitmodules`. A plan that sent the two to different legs
     used to run to the end and say `adoption verified` -- every blob was
     accounted for -- and leave an assembly whose `git clone
-    --recurse-submodules` exits 128 on `No url found for submodule path`. So:
+    --recurse-submodules` exits 128 on `No url found for submodule path`. So,
+    in the order the problems are listed:
 
-      * `root` is not an answer for `.gitmodules` or for any gitlink. The
-        assembly root has exactly two mounts, `execute` writes it a FRESH
-        `.gitmodules` for them, and the shape's own `validate.yml` reads every
-        URL in that file as a leg; a root `.gitmodules` the plan kept fails
-        verification today whatever it registers (#165).
-      * When the source HAS a `.gitmodules`, every gitlink the plan KEEPS, in
-        the spec or the code leg, goes where `.gitmodules` goes -- which is
-        also why `.gitmodules` cannot be dropped while one is kept.
+      * `root` is not an answer for `.gitmodules` or for any gitlink
+        (`plan-submodule-root`). The assembly root has exactly two mounts and
+        its `.gitmodules` is reserved for them -- `execute` writes a fresh one
+        when the source's moves to a leg or is dropped -- and the shape's own
+        `validate.yml` reads every URL in that file as a leg; a root
+        `.gitmodules` the plan kept fails verification today whatever it
+        registers (#165).
+      * A `.gitmodules` `git config` cannot read is never taken to register
+        nothing (`plan-gitmodules-unreadable`). It is a problem when the plan
+        keeps the file in a leg, where git fails on it when the assembly's
+        clone recurses there, or keeps any gitlink in a leg, whose
+        registration then cannot be checked.
+      * Every gitlink the plan KEEPS, in the spec or the code leg, must be
+        REGISTERED (`plan-submodule-unregistered`). A leg is WORSE than the
+        source for one that is not: a top-level `git clone
+        --recurse-submodules` of the source skips a gitlink with no URL, but
+        the assembly's clone recurses INTO the leg with `--init` and dies on
+        it. That holds for an orphan with no `.gitmodules` at all, as `git
+        add` of an embedded clone leaves one, and for a gitlink beside a
+        `.gitmodules` that registers other paths. Dropped, it is fine.
+      * Every REGISTERED gitlink the plan keeps goes where `.gitmodules` goes
+        (`plan-submodule-split`) -- which is also why `.gitmodules` cannot be
+        dropped while one is kept.
       * A gitlink DROPPED beside a `.gitmodules` that went to a leg is
         allowed. Its registration stays behind in that leg, inert: git walks
         the gitlinks in the INDEX and looks each one up in `.gitmodules`,
         never the other way round, so a registration with no gitlink is never
         cloned and never fails. Dropping all of them with the file is allowed
         too.
-      * A source with gitlinks and NO `.gitmodules` is held to the first rule
-        only. Its orphan gitlinks were already unclonable in the source and
-        are no worse in a leg; refusing them would refuse plans that adopted
-        before this check existed.
+
+    THE ORDER IS THE ORDER TO FIX THEM IN, and `execute`'s refusal is named
+    by the first: a `.gitmodules` in the root makes every registered gitlink
+    kept in a leg a split, an unreadable one hides which gitlinks are
+    registered, and an unregistered gitlink may be fixed in the SOURCE, by a
+    commit and a fresh `plan`, which discards any answer given to a split
+    before it.
 
     A source with neither -- the common case -- returns nothing at once, so
     `check` and `execute` say exactly what they said before.
@@ -1060,20 +1150,63 @@ def submodule_plan_problems(entries: list, tree: list) -> list[tuple[str, str]]:
     problems = [
         ("plan-submodule-root",
          f"{_as_entry(path, entry)} has leg: root, and the assembly root keeps "
-         "no submodule of the source's: `execute` writes it a fresh "
-         f"{GITMODULES} for its two leg mounts")
+         f"no submodule of the source's: its {GITMODULES} is reserved for its "
+         "two leg mounts")
         for path, (leg, entry) in answered.items() if leg == "root"]
-    if GITMODULES in answered:
-        registry_leg = answered[GITMODULES][0]
+    registry_leg = answered.get(GITMODULES, (None, None))[0]
+    kept = _kept_in_a_leg(answered, gitlinks)
+    if registered is not None:
+        return problems + _kept_submodule_problems(kept, registered,
+                                                   registry_leg)
+    if kept or registry_leg in EXTRACTED_LEGS:
+        problems.append((
+            "plan-gitmodules-unreadable",
+            f"`git config` cannot read the source's {GITMODULES}, so which "
+            "submodules it registers is unknown, and the plan keeps it or a "
+            "submodule in a leg, where the assembly's recursive clone fails "
+            "on it"))
+    return problems
+
+
+def _kept_in_a_leg(answered: dict, gitlinks: list[str]) -> list[tuple]:
+    """`(path, leg, entry)` for each gitlink `answered` keeps in a leg."""
+    return [(path, *answered[path]) for path in gitlinks
+            if path in answered and answered[path][0] in EXTRACTED_LEGS]
+
+
+def _kept_submodule_problems(kept: list, registered: frozenset,
+                             registry_leg: str | None
+                             ) -> list[tuple[str, str]]:
+    """The last two rules of `submodule_plan_problems`, for the gitlinks the
+    plan keeps in a leg: `(path, leg, entry)` each.
+
+    A gitlink is unregistered or split, never both. With no registration it
+    has no URL in ANY leg, and moving `.gitmodules` would not give it one.
+    `registry_leg` is None when `.gitmodules` is absent or not yet answered,
+    which leaves no leg for a gitlink to be split from.
+    """
+    problems = [
+        ("plan-submodule-unregistered",
+         f"the submodule {_as_entry(path, entry)} has leg: {leg} but no "
+         f"{GITMODULES} entry in the source registers its path with a url, "
+         + NO_URL_IN_THE_LEG)
+        for path, leg, entry in kept if path not in registered]
+    if registry_leg is not None:
         problems += [
             ("plan-submodule-split",
              f"the submodule {_as_entry(path, entry)} has leg: {leg} but the "
-             f"source's {GITMODULES} has leg: {registry_leg}, so the leg that "
-             "holds the gitlink holds no URL for it and the assembly's "
-             "recursive clone fails there")
-            for path, (leg, entry) in answered.items()
-            if leg in EXTRACTED_LEGS and leg != registry_leg]
+             f"source's {GITMODULES} has leg: {registry_leg}, "
+             + NO_URL_IN_THE_LEG)
+            for path, leg, entry in kept
+            if path in registered and leg != registry_leg]
     return problems
+
+
+def _submodule_findings(plan: Plan, source: Source, tree: list) -> list[str]:
+    """`submodule_plan_problems` as `check` prints them, one FINDING each."""
+    return [f"FINDING {code}: {detail}" for code, detail
+            in submodule_plan_problems(plan.entries, tree,
+                                       source.registered_submodules(tree))]
 
 
 def _topics_line(topic: str, local: bool) -> str:
@@ -1137,8 +1270,7 @@ def cmd_check(args) -> int:
     tree_paths = [path for path, _, _, _ in tree]
     findings.extend(_coverage_findings(entry_paths, tree_paths))
     findings.extend(_leg_findings(plan))
-    findings.extend(f"FINDING {code}: {detail}" for code, detail
-                    in submodule_plan_problems(plan.entries, tree))
+    findings.extend(_submodule_findings(plan, source, tree))
 
     names = plan.names()
     pins = set(plan.pins)
@@ -1226,10 +1358,13 @@ def _refuse_an_unrunnable_plan(plan: Plan, source: Source) -> None:
     An unanswered question is never an implicit `root`, and a plan written
     against a tree that has since moved proves nothing about the tree that
     would be split — which is how a path goes missing. And a plan that
-    splits a submodule from its registration, or keeps one in the root,
-    builds an assembly that cannot be cloned: refused HERE, before either leg
-    exists, because once `_create_leg_remotes` has run, a re-run with the
-    corrected plan meets two legs that already exist (#166).
+    splits a submodule from its registration, keeps one nothing registers,
+    or keeps one in the root, builds an assembly that cannot be cloned:
+    refused HERE, before either leg exists, because once
+    `_create_leg_remotes` has run, a re-run with the corrected plan meets two
+    legs that already exist (#166). The refusal is named by the FIRST
+    problem, which `submodule_plan_problems` lists in the order to fix them
+    in, and its detail names up to eight of them and counts the rest.
     """
     unresolved = [e for e in plan.entries if e.get("leg") is None]
     if unresolved:
@@ -1248,7 +1383,9 @@ def _refuse_an_unrunnable_plan(plan: Plan, source: Source) -> None:
             "Remediation: re-run `plan`, re-answer anything new, then "
             "`check`. Splitting a tree the plan has not seen is how a path "
             "goes missing.")
-    problems = submodule_plan_problems(plan.entries, source.tree())
+    tree = source.tree()
+    problems = submodule_plan_problems(plan.entries, tree,
+                                       source.registered_submodules(tree))
     if problems:
         details = [detail for _, detail in problems[:8]]
         if len(problems) > 8:
@@ -1401,7 +1538,7 @@ def _mount_the_legs(assembly: Path, work_root: Path, names: dict, urls: dict,
     for role, path in (("spec", spec_path), ("code", code_path)):
         run(["git", *FILE_PROTOCOL, "submodule", "add", "-q",
              str(work_root / names[role]), path], cwd=assembly)
-        run(["git", "config", "-f", GITMODULES, f"submodule.{path}.url",
+        run(["git", GIT_CONFIG, "-f", GITMODULES, f"submodule.{path}.url",
              urls[role]], cwd=assembly)
         run(["git", "remote", "set-url", "origin", urls[role]],
             cwd=assembly / path)
@@ -1914,7 +2051,7 @@ def _check_names(policy: NamingPolicy, names: dict[str, str],
 
 def _elector() -> str:
     try:
-        return git_out(["config", "user.name"], cwd=SHAPE_ROOT)
+        return git_out([GIT_CONFIG, "user.name"], cwd=SHAPE_ROOT)
     except Refusal:
         return ""
 
