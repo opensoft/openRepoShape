@@ -80,14 +80,14 @@ from path_classify import PathPolicy, Verdict  # noqa: E402
 from repo_shape import (  # noqa: E402
     free_plan_secret_hint,
     COMMIT_RE, NEUTRAL_PRODUCT_OWNER, PROJECT_ID_RE, TREE_DIGEST_DEFINITION,
-    VISIBILITY_CHOICES, NamingPolicy, Refusal, accepts_role, checked_value,
-    git_out, load_yaml, tree_digest,
+    VISIBILITY_CHOICES, NamingPolicy, Refusal, YamlError, accepts_role,
+    checked_value, git_out, load_yaml, parse_yaml, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
     ADOPT_MAKEFILE_BLOCK, RULESET_HINT, SHAPE_REPOSITORY,
-    CommandFailed, collision_follow_up, copy_tree, default_reference,
-    election_date, env_commit, git_init_commit, materialize_assembly_root,
-    naming_block, run, write_lf,
+    CommandFailed, Materialized, collision_follow_up, copy_tree,
+    default_reference, election_date, env_commit, git_init_commit,
+    materialize_assembly_root, naming_block, run, write_lf,
 )
 import shape_advisory  # noqa: E402
 
@@ -137,6 +137,10 @@ PLACEMENT_PLAN_KIND = "placement-plan"
 
 ADOPT_BRANCH = "adopt/three-repo-shape"
 COLLISION_DIR = "shape"
+#: The shape's own list of the files it copied into the assembly root.
+#: `_shape_file_findings` reads it out of the SPLIT COMMIT and checks every
+#: path it names against that commit's tree (#167).
+SHAPE_PIN = "contracts/shape-pin.yaml"
 LEG_VALUES = ("spec", "code", "root", "drop")
 FILE_PROTOCOL = ["-c", "protocol.file.allow=always"]
 #: The file `git submodule add` records a mount in. `_mount_the_legs` checks,
@@ -1459,6 +1463,31 @@ def _set_the_topic(repositories: dict, topic: str) -> bool:
     return True
 
 
+def _stage_the_split(assembly: Path, materialized: Materialized) -> None:
+    """Stage what the mount removed or edited, then what the shape wrote.
+
+    `git add -A -- .` is what stages the deletions the mount made and any edit
+    to a tracked file, and it HONOURS THE SOURCE'S `.gitignore`: with the
+    common `.*` + `!.gitignore` it SKIPS every NEW file whose name starts with
+    a dot -- `.gitattributes` and `.github/workflows/validate.yml` among them
+    -- so the split used to land without files `contracts/shape-pin.yaml`
+    pins, `execute` said `adoption verified`, and the assembly's first `make
+    bootstrap` refused with `shape-copy-missing` (#167). The shape's own files
+    are therefore staged BY NAME with `-f`.
+
+    ONLY THOSE PATHS, NEVER `-f .`: a file the source itself ignored is the
+    source's decision, and forcing the whole tree would stage any ignored
+    file that is in it -- the build artefact or the secret a `.gitignore` is
+    written to keep out of a commit.
+    `written` carries each path where it LANDED -- a copy beside a source file
+    under `shape/`, and the Makefile with the adopt block appended -- and in
+    POSIX spelling on every platform (`root_key`), which is the spelling `git`
+    takes as a pathspec on Windows too.
+    """
+    run(["git", "add", "-A", "--", "."], cwd=assembly)
+    run(["git", "add", "-f", "--", *materialized.written], cwd=assembly)
+
+
 def _commit_the_split(plan: Plan, source: Source, assembly: Path,
                       names: dict, urls: dict, values: dict, work_root: Path,
                       paths_for: dict, seeded: list, spec_path: str,
@@ -1486,7 +1515,7 @@ def _commit_the_split(plan: Plan, source: Source, assembly: Path,
     message = _split_message(names, paths_for, leg_commits, spec_path,
                              code_path, follow_ups, materialized.collisions,
                              seeded)
-    run(["git", "add", "-A", "--", "."], cwd=assembly)
+    _stage_the_split(assembly, materialized)
     env_commit(assembly, message)
     split_commit = git_out(["rev-parse", "HEAD"], cwd=assembly).lower()
     try:
@@ -1701,6 +1730,7 @@ def _verify(source: Source, assembly: Path, work_root: Path, names,
         after.setdefault(path, []).append(f"root:{oid}")
 
     counts, findings = _account_for(before, after, paths_for["drop"])
+    findings += _shape_file_findings(assembly, split_commit)
     added = sorted(set(after) - set(before))
     for leg in ("spec", "code", "root", "drop"):
         note = " (seeded from template)" if leg in seeded else ""
@@ -1759,6 +1789,71 @@ def _tree_of(repo: Path, rev: str) -> list[tuple[str, str, str, int]]:
         out.append((path.decode("utf-8", "surrogateescape"), mode, oid, 0))
         del kind
     return out
+
+
+def _pinned_shape_paths(assembly: Path, split_commit: str) -> list[str] | None:
+    """The `path:` of every row of the split commit's pin, or None when the pin
+    is not a `files:` list of paths.
+
+    None is a FINDING for the caller and never an empty answer: a pin that
+    names nothing would otherwise make the check below vacuously pass, which is
+    the one outcome it exists to prevent.
+    """
+    try:
+        pin = parse_yaml(git_out(["show", f"{split_commit}:{SHAPE_PIN}"],
+                                 cwd=assembly))
+    except (YamlError, UnicodeDecodeError):
+        return None
+    rows = pin.get("files") if isinstance(pin, dict) else None
+    if not isinstance(rows, list) or not rows:
+        return None
+    paths = [row.get("path") if isinstance(row, dict) else None
+             for row in rows]
+    return paths if all(isinstance(path, str) and path for path in paths) \
+        else None
+
+
+def _missing_shape_file(path: str, why: str) -> str:
+    return (f"FINDING adopt-shape-file-missing: {path} {why}. A `.gitignore` "
+            "in the source most likely hid it from `git add`: stage it with "
+            f"`git add -f -- {path}`, commit, and push the split branch again "
+            "before it is merged, or the assembly's first `make bootstrap` "
+            "refuses with shape-copy-missing")
+
+
+def _shape_file_findings(assembly: Path, split_commit: str) -> list[str]:
+    """A FINDING for every file `contracts/shape-pin.yaml` names that the split
+    commit does not contain (#167).
+
+    `_account_for` accounts for the SOURCE's paths and never for the paths the
+    SHAPE ADDED, so a file a source `.gitignore` hid from `git add` was in no
+    count at all and the run said `adoption verified`. The pin is the shape's
+    own list of what it copied, so it is the list to check -- read out of the
+    SPLIT COMMIT and compared with that commit's tree, never with the disk: the
+    assembly's working tree still HAS the ignored file, which is exactly why a
+    disk check would pass over the gap. Presence only; `validate-pins.py`
+    recomputes the digests at the first bootstrap.
+
+    A pin that is absent from the commit, or that is not a `files:` list, is
+    one finding of its own and nothing else is checked: there is no list to
+    check against, and passing an unreadable one would be a silent success.
+    """
+    present = {path for path, mode, _, _ in _tree_of(assembly, split_commit)
+               if mode != "160000"}
+    where = f"is not in the split commit {split_commit[:12]}"
+    if SHAPE_PIN not in present:
+        return [_missing_shape_file(
+            SHAPE_PIN, f"is the pin that lists the shape's files and {where}")]
+    pinned = _pinned_shape_paths(assembly, split_commit)
+    if pinned is None:
+        return [f"FINDING adopt-shape-pin-unreadable: {SHAPE_PIN} in the split "
+                f"commit {split_commit[:12]} is not a `files:` list of paths, "
+                "so no file the shape wrote could be checked. Read it there: a "
+                "source with a pin of its own at that path has the shape's "
+                f"beside it as {COLLISION_DIR}/{SHAPE_PIN}, which this check "
+                "does not read"]
+    return [_missing_shape_file(path, f"is named by {SHAPE_PIN} but {where}")
+            for path in pinned if path not in present]
 
 
 # ---------------------------------------------------------------------------
