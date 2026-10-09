@@ -1470,11 +1470,13 @@ def _build_the_legs(source: Source, names: dict, repositories: dict,
     so this is the one place a failed `git filter-repo` (or clone, checkout or
     seeding commit) is ever reported, and an `execute` that stopped here after
     both leg remotes exist must not exit 2 with an empty stderr (#171). It
-    also names the two leg repositories, because nothing is rolled back and a
-    re-run of the corrected plan meets `leg-remote-exists`. A refused PUSH is
-    the one failure its own leg builder already printed, with the ruleset hint,
-    and marked `reported`, so it is not printed twice. Split out of
-    `cmd_execute` for #138.
+    also names the two leg repositories, because nothing is rolled back and
+    `_create_leg_remotes` refuses a re-run while they exist:
+    `leg-remote-exists` under `--local-remote-dir`, a `gh repo create` that
+    finds the name taken against GitHub. A refused PUSH is the one failure its
+    own leg builder already printed, with the ruleset hint, and marked
+    `reported`, so it is not printed twice. Split out of `cmd_execute` for
+    #138.
     """
     leg_commits: dict[str, str] = {}
     leg_digests: dict[str, str] = {}
@@ -1501,10 +1503,12 @@ def _build_the_legs(source: Source, names: dict, repositories: dict,
                 print(exc.loudly(f"{verb} the {role} leg"), file=sys.stderr)
                 print(f"NOTHING has been rolled back: {urls['spec']} and "
                       f"{urls['code']} may already exist, and one leg may "
-                      "already be pushed. A re-run of the corrected plan "
-                      "meets `leg-remote-exists` unless you delete them or "
-                      "use fresh ones (a new --local-remote-dir, or new leg "
-                      "repositories).", file=sys.stderr)
+                      "already be pushed. Re-running the corrected plan is "
+                      "refused until they are deleted or fresh ones are used "
+                      "(a new --local-remote-dir, or new leg repositories): "
+                      "under --local-remote-dir it meets `leg-remote-exists`, "
+                      "and against GitHub `gh repo create` finds the name "
+                      "already taken.", file=sys.stderr)
             return None
     return leg_commits, leg_digests
 

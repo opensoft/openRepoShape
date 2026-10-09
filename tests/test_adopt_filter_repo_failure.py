@@ -141,9 +141,10 @@ def test_a_failed_leg_is_printed_with_its_command_and_its_output(
 def test_a_failed_leg_names_both_leg_repositories_and_what_to_do(
         adopter, monkeypatch, capsys, tmp_path, seeded, command):
     """Both leg repositories exist by now, and one may even be pushed. The
-    human reads the failure, fixes the plan and re-runs; the re-run meets
-    `leg-remote-exists`, so the notice says that BEFORE it happens, and names
-    the two repositories to delete or to replace."""
+    human reads the failure, fixes the plan and re-runs; the re-run is refused
+    by `_create_leg_remotes`, so the notice says so BEFORE it happens, for
+    both kinds of remote, and names the two repositories to delete or to
+    replace."""
     refuse_every_leg(adopter, monkeypatch, command, tmp_path)
     arguments = legs_arguments(tmp_path, seeded)
 
@@ -153,9 +154,51 @@ def test_a_failed_leg_names_both_leg_repositories_and_what_to_do(
     assert ROLLED_BACK in notice
     for role in UNIT_ROLES:
         assert arguments["urls"][role] in notice
-    assert "leg-remote-exists" in notice
     assert "--local-remote-dir" in notice
+    assert "leg-remote-exists" in notice
+    assert "gh repo create" in notice
+    assert "already taken" in notice
     assert len(notice.strip().splitlines()) == 1
+
+
+def test_a_rerun_under_a_local_remote_dir_meets_leg_remote_exists(
+        adopter, tmp_path):
+    """The first half of what the notice promises, from the code that makes
+    it true: a leg repository that is already there is refused by name."""
+    arguments = legs_arguments(tmp_path, [])
+    Path(arguments["urls"][SPEC]).mkdir(parents=True)
+
+    with pytest.raises(adopter.Refusal) as refused:
+        adopter._create_leg_remotes({}, arguments["names"],
+                                    arguments["repositories"],
+                                    arguments["urls"], "main", True)
+
+    assert refused.value.code == "leg-remote-exists"
+
+
+def test_a_rerun_against_github_has_gh_repo_create_refused(
+        adopter, monkeypatch, tmp_path):
+    """The second half: against GitHub the first thing a re-run does is
+    `gh repo create` for the spec leg, and `run` raises when `gh` finds the
+    name taken. Nothing in `_create_leg_remotes` catches it, so the run stops
+    there, before the code leg is touched."""
+    arguments = legs_arguments(tmp_path, [])
+    arguments["repositories"]["assembly"] = f"testorg/{ASSEMBLY}"
+    calls: list = []
+
+    def name_taken(args, *_rest, **_keywords):
+        calls.append(args)
+        raise adopter.CommandFailed(args, None, 1, "name already exists")
+
+    monkeypatch.setattr(adopter, "run", name_taken)
+
+    with pytest.raises(adopter.CommandFailed):
+        adopter._create_leg_remotes({}, arguments["names"],
+                                    arguments["repositories"],
+                                    arguments["urls"], "main", False)
+
+    assert [call[:4] for call in calls] == [
+        ["gh", "repo", "create", arguments["repositories"][SPEC]]]
 
 
 def test_stdout_is_flushed_before_the_failure_is_written_to_stderr(
