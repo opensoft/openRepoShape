@@ -1298,7 +1298,19 @@ def _mount_the_legs(assembly: Path, work_root: Path, names: dict, urls: dict,
         write_lf(assembly / GITMODULES, "")
         run(["git", "add", "-f", "--", GITMODULES], cwd=assembly)
     for role, path in (("spec", spec_path), ("code", code_path)):
-        run(["git", *FILE_PROTOCOL, "submodule", "add", "-q",
+        # `--force`, git's documented way past an ignore rule, for the reason
+        # the fresh `.gitmodules` above is added with `-f` (#162): a source
+        # `.gitignore` of `*` + `!.gitignore`, or one naming `spec` or `code`,
+        # matches the MOUNT PATH, and git refused the mount AFTER both legs
+        # were pushed, so a corrected re-run met `leg-remote-exists` (#174).
+        # That source is a legitimate one to adopt, not one to refuse, and a
+        # gitlink once added is tracked, so the rule never touches it again.
+        # The rest of what `--force` does cannot make a bad mount pass: this
+        # fresh clone has no `.git/modules/<name>` for it to reuse, a path
+        # the index already holds is still refused, and a newer git's
+        # renaming of a name already in use can only meet a `.gitmodules`
+        # the plan KEPT here, which verification never passes (#165).
+        run(["git", *FILE_PROTOCOL, "submodule", "add", "--force", "-q",
              str(work_root / names[role]), path], cwd=assembly)
         run(["git", "config", "-f", GITMODULES, f"submodule.{path}.url",
              urls[role]], cwd=assembly)
