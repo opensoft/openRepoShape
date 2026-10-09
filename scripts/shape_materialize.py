@@ -1131,14 +1131,16 @@ def materialize_family_root(shape_root: Path, target: Path,
 SYMLINK_HOPS = 40
 
 #: What each refusal below says to do. It is raised BEFORE the `mkdir` and the
-#: write, so nothing was written at the path it names.
+#: write, so nothing was written at the path it names. It does not say that
+#: `adopt-project.py check` names what is in the way: `check` follows the
+#: plan's SYMLINKS, and a plain FILE kept where the shape needs a directory
+#: (a source file named `.github`) reaches this refusal with `check` silent.
 UNWRITABLE_REMEDIATION = (
     "Remediation: nothing was written at that path. The shape writes its "
     "files only inside the directory it is given, through a symlink only "
     "when its relative target stays inside, and only beneath directories. "
     "What is in the way is the source repository's own: when adopting, send "
-    "it to a leg or `drop` it in the plan -- `adopt-project.py check` names "
-    "it before any leg exists -- and re-run into fresh legs.")
+    "it to a leg or `drop` it in the plan, and re-run into fresh legs.")
 
 
 def _link_parts(here: Path, at: str, rel: str, target: Path,

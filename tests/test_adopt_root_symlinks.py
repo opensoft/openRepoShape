@@ -604,7 +604,12 @@ def refused_materializing(target: Path) -> Refusal:
 
 def test_a_file_where_the_shape_needs_a_directory_is_a_refusal(tmp_path):
     """What a `core.symlinks=false` checkout makes of `.github -> ci`: a
-    plain FILE holding `ci`. It used to be a NotADirectoryError traceback."""
+    plain FILE holding `ci`. It used to be a NotADirectoryError traceback.
+
+    A source that keeps a plain file named `.github` meets the same refusal
+    with both legs already made, and `check` says `plan ok` for it, because
+    `check` follows symlinks. So the remediation must not say that `check`
+    names what is in the way."""
     target = tmp_path / ASSEMBLY
     target.mkdir()
     (target / GITHUB).write_text("ci", encoding=UTF8)
@@ -613,6 +618,7 @@ def test_a_file_where_the_shape_needs_a_directory_is_a_refusal(tmp_path):
     assert refusal.detail == (f"{WORKFLOW} cannot be written: .github is a "
                               "file, not a directory")
     assert "nothing was written at that path" in refusal.remediation
+    assert "check" not in refusal.remediation
 
 
 #: `(links, files, code, detail)` of a target holding `links` and `files`. `{t}` is the target directory and `{o}`
