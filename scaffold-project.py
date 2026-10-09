@@ -57,6 +57,7 @@ from shape_materialize import (  # noqa: E402
     RULESET_HINT, SHAPE_REPOSITORY, CommandFailed,
     copy_tree, default_reference, descendant_note, election_date, env_commit,
     git_init_commit, materialize_assembly_root, naming_block, run,
+    stage_written,
 )
 # The leg-path rule `adopt-project.py` asks of its own paths (#179).
 from shape_materialize import refuse_bad_leg_paths  # noqa: E402
@@ -753,11 +754,11 @@ def _seed_legs(args, values: dict, names: dict, repositories: dict,
     leg_digests: dict[str, str] = {}
     for role, template in (("spec", "spec-root"), ("code", "code-root")):
         work = work_root / names[role]
-        copy_tree(SHAPE_ROOT / "templates" / template, work, values)
+        written = copy_tree(SHAPE_ROOT / "templates" / template, work, values)
         commit = git_init_commit(
             work, f"Seed the {role} leg of {display}\n\n"
                   f"Scaffolded from {SHAPE_REPOSITORY} @ {shape_commit}.",
-            args.tracking_branch)
+            args.tracking_branch, written)
         leg_commits[role] = commit.lower()
         leg_digests[role] = tree_digest(work, commit)
         run(["git", "remote", "add", "origin", urls[role]], cwd=work)
@@ -794,7 +795,8 @@ def _build_assembly_root(args, values: dict, names: dict, repositories: dict,
     # ONE materializer, shared with `adopt-project.py`. The scaffold builds
     # into a directory it made itself, so a collision here is a defect and
     # `collision_dir=None` says so by raising.
-    materialize_assembly_root(SHAPE_ROOT, assembly, values, neutral_pins=pins)
+    materialized = materialize_assembly_root(SHAPE_ROOT, assembly, values,
+                                             neutral_pins=pins)
 
     run(["git", "init", "-q", "-b", args.tracking_branch, str(assembly)])
     # `git submodule add` from the LEG WORKING TREE, then the recorded URL is
@@ -808,7 +810,9 @@ def _build_assembly_root(args, values: dict, names: dict, repositories: dict,
         run(["git", "remote", "set-url", "origin", urls[role]],
             cwd=assembly / path)
     run(["git", "submodule", "sync", "-q"], cwd=assembly)
-    run(["git", "add", "-A", "--", "."], cwd=assembly)
+    # Every file the materializer wrote is FORCED past the operator's own
+    # excludes (#175); see `stage_written`.
+    stage_written(assembly, materialized.written)
     env_commit(assembly,
                f"Scaffold {display}: manifest, two legs, three pins\n\n"
                f"Shape {SHAPE_REPOSITORY} @ {shape_commit}.\n"

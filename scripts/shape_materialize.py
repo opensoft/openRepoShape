@@ -516,9 +516,44 @@ def env_commit(work: Path, message: str) -> None:
                             proc.stderr + proc.stdout)
 
 
-def git_init_commit(work: Path, message: str, branch: str) -> str:
-    run(["git", "init", "-q", "-b", branch, str(work)])
+def stage_written(work: Path, written=()) -> None:
+    """Stage the tree, then FORCE every path in `written` past any ignore rule.
+
+    `git add -A -- .` HONOURS THE OPERATOR'S IGNORE RULES — a global
+    `core.excludesFile`, `.git/info/exclude` — and a scaffold run on a machine
+    whose excludes say `.*`, `contracts/` or `scripts/` exited 0 with a first
+    commit that lacked `.gitattributes`, `.github/`, `.gitignore`,
+    `contracts/*` and `scripts/*`, so the new project's first `make bootstrap`
+    failed (#175, the scaffold side of #167). The files this tool wrote are
+    therefore staged BY NAME with `-f`, after `-A` has staged everything else.
+
+    ONLY THOSE PATHS, NEVER `-f .`: a file somebody else put in the tree and
+    an ignore rule hides stays out, because forcing the whole tree would
+    stage exactly what an ignore rule is written to keep out of a commit.
+    `written` is what `place()` and `copy_tree` return — each path where it
+    landed, in `root_key`'s POSIX spelling, which `git` takes as a pathspec
+    on Windows too. Empty, this is `git add -A -- .` and nothing else.
+
+    ONE HELPER, THREE CALLERS: `git_init_commit` (the scaffold's two legs and
+    `adopt-project.py`'s seeded leg), the scaffold's assembly root and
+    `family.py init`'s holder.
+    """
     run(["git", "add", "-A", "--", "."], cwd=work)
+    paths = list(written)
+    if paths:
+        run(["git", "add", "-f", "--", *paths], cwd=work)
+
+
+def git_init_commit(work: Path, message: str, branch: str,
+                    written=()) -> str:
+    """`git init`, stage, commit; returns the new HEAD.
+
+    `written` is what `stage_written` forces past an ignore rule: the list
+    `copy_tree` returned. A caller that passes none stages exactly what `git
+    add -A` stages, and no more.
+    """
+    run(["git", "init", "-q", "-b", branch, str(work)])
+    stage_written(work, written)
     env_commit(work, message)
     return run(["git", "rev-parse", "HEAD"], cwd=work)
 
@@ -830,15 +865,94 @@ def render(text: str, values: dict[str, str], source: str) -> str:
     return out
 
 
-def copy_tree(src: Path, dst: Path, values: dict[str, str]) -> None:
-    """Copy a template tree, substituting placeholders in every text file."""
+def _local_strays(src: Path) -> frozenset[str]:
+    """The files under `src` that THIS CHECKOUT holds and does not track.
+
+    Each is named relative to `src` in POSIX spelling, and each is untracked
+    AND ignored here: `.vscode/settings.json` an editor wrote into
+    `templates/spec-root/`, a `__pycache__/x.pyc`. They are an operator's
+    local artifacts, not template inputs, and `copy_tree` skips them (#175,
+    Codex review of PR #185).
+
+    WHY IT IS NEEDED NOW. Until `git_init_commit` began forcing what
+    `copy_tree` wrote past an ignore rule (#175), a stray was harmless by
+    accident: the template's own copied `.gitignore` made `git add -A` skip
+    it. Forcing every path `copy_tree` returns made the walk's width
+    matter. An unrestricted `rglob` copied the stray, put it in `written`,
+    and `git add -f` committed it into the new leg and pushed it; a binary
+    one, a `.pyc`, crashed the UTF-8 read before it got that far.
+
+    THE DISCRIMINATOR IS THIS CHECKOUT'S OWN VIEW OF THE FILE. `git
+    ls-files --others --ignored --exclude-standard` applies the tool's
+    `.gitignore`, the template's nested one, `.git/info/exclude` and the
+    operator's global excludes AS SEEN FROM THE TOOL'S CHECKOUT, and a file
+    that checkout refuses to track is not an input of the template. A
+    TRACKED file is never listed under `--others`, so the dot-file a global
+    `.*` would hide (the template's `.gitignore`, #175's own case) is still
+    copied and still forced; an untracked file nothing ignores, such as a
+    template file a developer has not committed yet, is still copied.
+
+    ONLY WHEN THIS CHECKOUT IS THE SHAPE'S. The rules are applied only when
+    `src`'s git top level IS the shape root (`templates/<role>/` is two
+    levels under it). Outside a work tree at all (a tarball install) git
+    answers nothing and everything is copied, as before. Vendored inside
+    some other repository, the top level is that repository's, whose ignore
+    rules are not this tool's to apply, and everything is copied.
+
+    NOT CHOSEN. `git add -f .`, forcing the tree: it stages exactly what an
+    ignore rule is there to keep out, which `stage_written` already refuses.
+    Filtering by the template's own `.gitignore`: that file is precisely
+    what #175 forces past an operator's `.*`, so a copy filtered by it would
+    drop the dot-files the shape ships. Building the list from `git
+    ls-files` alone: it would leave out a template file that is not yet
+    committed, and a tarball install has no index to ask.
+
+    `git` failing to say where the top level is returns no strays, and so
+    never raises; one that has found the top level and then cannot list the
+    others raises `CommandFailed` rather than guess, because a guess is
+    either a stray committed or a template file dropped.
+    """
+    toplevel = ["git", "-C", str(src), "rev-parse", "--show-toplevel"]
+    check_program(toplevel)
+    try:
+        asked = subprocess.run(toplevel, capture_output=True, check=False)
+        if asked.returncode != 0 or not os.path.samefile(
+                os.fsdecode(asked.stdout.rstrip(b"\r\n")), src.parent.parent):
+            return frozenset()
+    except OSError:
+        return frozenset()
+    others = ["git", "-C", str(src), "ls-files", "-z", "--others",
+              "--ignored", "--exclude-standard", "--", "."]
+    check_program(others)
+    listed = subprocess.run(others, capture_output=True, check=False)
+    if listed.returncode != 0:
+        raise CommandFailed(others, src, listed.returncode,
+                            listed.stderr.decode("utf-8", "replace"))
+    return frozenset(os.fsdecode(name) for name in listed.stdout.split(b"\x00")
+                     if name)
+
+
+def copy_tree(src: Path, dst: Path, values: dict[str, str]) -> list[str]:
+    """Copy a template tree, substituting placeholders in every text file.
+
+    Returns every path it wrote, relative to `dst` and spelled by `root_key`,
+    which is the list `git_init_commit` forces past an ignore rule (#175).
+
+    A file this checkout holds untracked AND ignored (`_local_strays`) is
+    neither copied nor returned, so an operator's `.vscode/settings.json` in
+    `templates/spec-root/` is never forced into a new leg.
+    """
+    strays = _local_strays(src)
+    written: list[str] = []
     for path in sorted(src.rglob("*")):
-        if path.is_dir():
+        if path.is_dir() or path.relative_to(src).as_posix() in strays:
             continue
         target = dst / path.relative_to(src)
         target.parent.mkdir(parents=True, exist_ok=True)
         write_lf(target, render(path.read_text(encoding="utf-8"), values,
                                 str(path)))
+        written.append(root_key(target, dst))
+    return written
 
 
 def naming_block(policy: NamingPolicy, name: str, role: str,
