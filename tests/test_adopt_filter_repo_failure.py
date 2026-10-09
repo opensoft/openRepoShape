@@ -223,11 +223,12 @@ def test_stdout_is_flushed_before_the_failure_is_written_to_stderr(
 def test_a_refused_push_is_reported_once_with_its_ruleset_hint(
         adopter, monkeypatch, capsys, tmp_path, seeded):
     """A refused push is the one failure `_extract_leg` and `_seed_leg` print
-    themselves, with `RULESET_HINT`, before they re-raise it. A second block
-    for the same command, or the notice for a leg that failed some other way,
-    is noise that buries the hint, so the leg builder's own report is the only
-    one. Real leg builders, real `git`, a remote that does not exist; the
-    extraction skips only `git filter-repo`, which this test is not about."""
+    themselves, with the adoption's ruleset hint, before they re-raise it. A
+    second block for the same command is noise that buries the hint, so the
+    leg builder's own report is the only one. The notice still follows the
+    hint, once, because the hint no longer says what exists (#177). Real leg
+    builders, real `git`, a remote that does not exist; the extraction skips
+    only `git filter-repo`, which this test is not about."""
     def write_one_file(_template, work, _values):
         work.mkdir(parents=True, exist_ok=True)
         (work / "README.md").write_text("seeded\n", encoding="utf-8")
@@ -255,7 +256,7 @@ def test_a_refused_push_is_reported_once_with_its_ruleset_hint(
     assert err.count(REFUSED) == 1
     assert f"{REFUSED} {pushing}" in err
     assert err.count(ROLLED_BACK) == 1
-    assert "leg-remote-exists" not in err
+    assert err.index("legitimate exits") < err.index(ROLLED_BACK)
 
 
 @needs_filter_repo

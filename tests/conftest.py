@@ -166,7 +166,8 @@ def clear_ambient_pin_sources(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def run_script(script: Path, *args: str, cwd: Path | None = None,
                env: dict | None = None, input: str | None = None,
-               stdin: int | None = None) -> subprocess.CompletedProcess:
+               stdin: int | None = None,
+               merge_stderr: bool = False) -> subprocess.CompletedProcess:
     """Run one tool under test, with stdin closed by default.
 
     A test in this suite is often asserting what a tool does when nobody is
@@ -182,6 +183,11 @@ def run_script(script: Path, *args: str, cwd: Path | None = None,
     something else entirely — a real pty, say — passes `stdin=` explicitly;
     `subprocess.run` itself refuses to accept `input` together with `stdin`,
     so there is nothing to reconcile between the two here.
+
+    `merge_stderr` sends stderr into the same pipe as stdout, as `> log 2>&1`
+    does, and leaves `stderr` None. A tool's piped stdout is block-buffered
+    and its stderr is not, so this is the only way a test sees the order a
+    person reading that log sees.
     """
     asked = env or {}
     env = {**os.environ, **asked}
@@ -218,7 +224,10 @@ def run_script(script: Path, *args: str, cwd: Path | None = None,
     if input is None and stdin is None:
         stdin = subprocess.DEVNULL
     return subprocess.run([sys.executable, str(script), *args],
-                          cwd=str(cwd) if cwd else None, capture_output=True,
+                          cwd=str(cwd) if cwd else None,
+                          stdout=subprocess.PIPE,
+                          stderr=(subprocess.STDOUT if merge_stderr
+                                  else subprocess.PIPE),
                           text=True, check=False, env=env, input=input,
                           stdin=stdin)
 

@@ -71,6 +71,7 @@ verification mismatch) · 2 a refusal — the question could not be asked.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as _dt
 import re
 import shutil
@@ -89,7 +90,7 @@ from repo_shape import (  # noqa: E402
     accepts_role, checked_value, git_out, load_yaml, parse_yaml, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
-    ADOPT_MAKEFILE_BLOCK, RULESET_HINT, SHAPE_REPOSITORY,
+    ADOPT_MAKEFILE_BLOCK, SHAPE_REPOSITORY,
     CommandFailed, Materialized, collision_follow_up, copy_tree,
     default_reference, election_date, env_commit, git_init_commit,
     materialize_assembly_root, naming_block, run, write_lf,
@@ -1433,6 +1434,69 @@ def _refuse_an_unrunnable_plan(plan: Plan, source: Source) -> None:
             "goes missing.")
 
 
+#: The adoption's own ruleset hint (#177). `RULESET_HINT` is the scaffold's,
+#: and it stays the scaffold's word for word: the scaffold pushes from a clone
+#: whose `origin` it added itself. Here nothing has one. `git filter-repo`
+#: removes `origin` from the clone it rewrites, and a seeded leg is a fresh
+#: `git init`, so its `push -u origin main:seed/scaffold` failed with `'origin'
+#: does not appear to be a git repository`. This pushes HEAD, the commit that
+#: was refused, to the leg's own URL. And an adoption cannot be re-run while
+#: its leg repositories exist, so exit (1) says so, and the notice printed
+#: after this hint (`_nothing_rolled_back`) names them.
+ADOPT_RULESET_HINT = """
+If the organisation applies a ruleset requiring changes to arrive by pull
+request, a direct push to the default branch is refused BY DESIGN and must not
+be worked around. Two legitimate exits:
+
+  (1) have an operator holding the bypass right re-run this adoption, once the
+      leg repositories named below are deleted or replaced; or
+  (2) push the {role} leg as a seed BRANCH and open a pull request:
+          git -C {work} push {url} HEAD:refs/heads/seed/adopt
+          gh pr create --repo {repo} --base {tracking} --head seed/adopt \\
+              --title 'Seed the {role} leg' --body 'Adopted shape.'
+"""
+
+
+def _flush_stdout() -> None:
+    """Flush stdout before a failure is written to stderr (#171, #177, #188).
+
+    `execute` announces each leg repository, each pushed leg and the split on
+    stdout. Piped, stdout is block-buffered and stderr is not, so without
+    this a log that merges the two (`> log 2>&1`) shows the failure BEFORE the
+    lines it is about. A stdout nobody reads any more, such as a closed pipe,
+    must not turn the report into a BrokenPipeError, so that error is
+    swallowed: the report on stderr is what the human needs.
+    """
+    with contextlib.suppress(OSError):
+        sys.stdout.flush()
+
+
+def _nothing_rolled_back(urls: dict, pushed: list) -> str:
+    """The one notice for a failure after both leg repositories exist.
+
+    `_create_leg_remotes` refuses a re-run while they exist:
+    `leg-remote-exists` under `--local-remote-dir`, and a `gh repo create`
+    that finds the name taken against GitHub. Every failure after it
+    therefore names the two repositories, says which legs are already pushed
+    (`pushed`, the roles in the order they were pushed), and gives the way
+    out. One wording covers every such failure: a leg that cannot be built
+    (#171), a leg push that is refused (#177), and a split that cannot be
+    mounted, committed or pushed (#188).
+    """
+    if not pushed:
+        state = "neither leg is pushed"
+    elif len(pushed) == 1:
+        state = f"the {pushed[0]} leg is pushed"
+    else:
+        state = "both legs are pushed"
+    return (f"NOTHING has been rolled back: {urls['spec']} and {urls['code']} "
+            f"exist, and {state}. Re-running the adoption is refused until "
+            "they are deleted or fresh ones are used (a new "
+            "--local-remote-dir, or new leg repositories): under "
+            "--local-remote-dir it meets `leg-remote-exists`, and against "
+            "GitHub `gh repo create` finds the name already taken.")
+
+
 def _create_leg_remotes(plan: Plan, names: dict, repositories: dict,
                         urls: dict, tracking: str, local: bool) -> None:
     """(a) The two NEW repositories. The assembly root is never created here."""
@@ -1498,8 +1562,10 @@ def _extract_leg(role: str, source: Source, work: Path, paths: list[str],
     try:
         run(["git", "push", "-q", url, f"HEAD:refs/heads/{tracking}"], cwd=work)
     except CommandFailed as exc:
+        _flush_stdout()
         print(exc.loudly(f"pushing the {role} leg"), file=sys.stderr)
-        print(RULESET_HINT.format(work=work, repo=repository, role=role),
+        print(ADOPT_RULESET_HINT.format(work=work, url=url, repo=repository,
+                                        role=role, tracking=tracking),
               file=sys.stderr)
         exc.reported = True   # `_build_the_legs` must not say it again
         raise
@@ -1539,8 +1605,10 @@ def _seed_leg(role: str, work: Path, values: dict, branch: str, url: str,
     try:
         run(["git", "push", "-q", url, f"HEAD:refs/heads/{tracking}"], cwd=work)
     except CommandFailed as exc:
+        _flush_stdout()
         print(exc.loudly(f"pushing the seeded {role} leg"), file=sys.stderr)
-        print(RULESET_HINT.format(work=work, repo=repository, role=role),
+        print(ADOPT_RULESET_HINT.format(work=work, url=url, repo=repository,
+                                        role=role, tracking=tracking),
               file=sys.stderr)
         exc.reported = True   # `_build_the_legs` must not say it again
         raise
@@ -1766,9 +1834,10 @@ def _build_the_legs(source: Source, names: dict, repositories: dict,
     `_create_leg_remotes` refuses a re-run while they exist:
     `leg-remote-exists` under `--local-remote-dir`, a `gh repo create` that
     finds the name taken against GitHub. A refused PUSH is the one failure its
-    own leg builder already printed, with the ruleset hint, and marked
-    `reported`, so it is not printed twice. Split out of `cmd_execute` for
-    #138.
+    own leg builder already printed, with the adoption's ruleset hint, and
+    marked `reported`, so it is not printed twice; the notice still follows
+    it, because that hint no longer says what exists (#177). Split out of
+    `cmd_execute` for #138.
     """
     leg_commits: dict[str, str] = {}
     leg_digests: dict[str, str] = {}
@@ -1790,17 +1859,11 @@ def _build_the_legs(source: Source, names: dict, repositories: dict,
             if not getattr(exc, "reported", False):
                 # The leg remotes were announced on stdout; flush it so a log
                 # that merges the two streams keeps the order things ran in.
-                sys.stdout.flush()
+                _flush_stdout()
                 verb = "seeding" if role in seeded else "extracting"
                 print(exc.loudly(f"{verb} the {role} leg"), file=sys.stderr)
-                print(f"NOTHING has been rolled back: {urls['spec']} and "
-                      f"{urls['code']} may already exist, and one leg may "
-                      "already be pushed. Re-running the corrected plan is "
-                      "refused until they are deleted or fresh ones are used "
-                      "(a new --local-remote-dir, or new leg repositories): "
-                      "under --local-remote-dir it meets `leg-remote-exists`, "
-                      "and against GitHub `gh repo create` finds the name "
-                      "already taken.", file=sys.stderr)
+            print(_nothing_rolled_back(urls, list(leg_commits)),
+                  file=sys.stderr)
             return None
     return leg_commits, leg_digests
 
@@ -1822,6 +1885,7 @@ def _open_the_pull_request(repositories: dict, names: dict, tracking: str,
                    "--body", message])
         print(f"  pull request {url}")
     except CommandFailed as exc:
+        _flush_stdout()   # the pushed split is announced on stdout (#188)
         print(exc.loudly("opening the pull request"), file=sys.stderr)
         print("The branch IS pushed. Open the pull request by hand:\n"
               f"    gh pr create --repo {repositories['assembly']} "
@@ -1851,6 +1915,7 @@ def _set_the_topic(repositories: dict, topic: str) -> bool:
                  topic])
         print(f"  topic     {topic} set on all three")
     except CommandFailed as exc:
+        _flush_stdout()   # the pull request is announced on stdout (#188)
         print(exc.loudly("setting the project topic"), file=sys.stderr)
         print("The split IS pushed and the pull request IS open. Set the "
               "topic by hand:\n"
@@ -1917,6 +1982,11 @@ def _where_it_landed(assembly: Path, written: str) -> str | None:
         if landed.is_relative_to(root) else None
 
 
+#: What `_commit_the_split` was doing when its push failed: the one step whose
+#: report says more than the notice does.
+SPLIT_PUSH = "pushing the split branch"
+
+
 def _commit_the_split(plan: Plan, source: Source, assembly: Path,
                       names: dict, urls: dict, values: dict, work_root: Path,
                       paths_for: dict, seeded: list, spec_path: str,
@@ -1925,33 +1995,60 @@ def _commit_the_split(plan: Plan, source: Source, assembly: Path,
     """(c) ONE split commit on a branch of the source, pushed.
 
     Returns `(split_commit, message)` — the message travels on because it is
-    also the pull request's body — or None when the push was REFUSED, having
-    already said so. Split out of `cmd_execute` for #138.
+    also the pull request's body — or None when a `git` command failed,
+    having printed which, why and what it leaves behind. Split out of
+    `cmd_execute` for #138.
+
+    BOTH LEGS ARE PUSHED BY NOW, so a split that cannot be cloned, mounted,
+    committed or pushed leaves the same two leg repositories a leg that
+    cannot be built does, and gets the same report (#188). It used to print
+    a bare `REFUSED pushing the split branch`, or `main`'s generic `a git or
+    gh command failed`, ahead of the `bare` lines in a merged log, and
+    nothing told the human why the re-run then met `leg-remote-exists`.
+    `step` names what was being done, because the command alone does not say
+    it: `git push` is also how a leg is pushed. The exit is still 2.
     """
-    run(["git", *FILE_PROTOCOL, "clone", "-q", str(source.path), str(assembly)])
-    run(["git", "checkout", "-q", "-B", branch, source.commit], cwd=assembly)
-    _mount_the_legs(assembly, work_root, names, urls, paths_for, spec_path,
-                    code_path)
-
-    materialized = materialize_assembly_root(
-        SHAPE_ROOT, assembly, values, collision_dir=COLLISION_DIR,
-        append={"Makefile": ADOPT_MAKEFILE_BLOCK})
-    for intended, actual in materialized.collisions:
-        print(f"  beside  {actual} (the source already has {intended}; nothing "
-              "was overwritten)")
-
-    follow_ups = [str(f) for f in plan.get("follow_ups", [])]
-    message = _split_message(names, paths_for, leg_commits, spec_path,
-                             code_path, follow_ups, materialized.collisions,
-                             seeded)
-    _stage_the_split(assembly, materialized)
-    env_commit(assembly, message)
-    split_commit = git_out(["rev-parse", "HEAD"], cwd=assembly).lower()
+    step = "cloning the source for the split"
     try:
+        run(["git", *FILE_PROTOCOL, "clone", "-q", str(source.path),
+             str(assembly)])
+        run(["git", "checkout", "-q", "-B", branch, source.commit],
+            cwd=assembly)
+        step = "mounting the legs"
+        _mount_the_legs(assembly, work_root, names, urls, paths_for,
+                        spec_path, code_path)
+
+        step = "committing the split"
+        materialized = materialize_assembly_root(
+            SHAPE_ROOT, assembly, values, collision_dir=COLLISION_DIR,
+            append={"Makefile": ADOPT_MAKEFILE_BLOCK})
+        for intended, actual in materialized.collisions:
+            print(f"  beside  {actual} (the source already has {intended}; "
+                  "nothing was overwritten)")
+
+        follow_ups = [str(f) for f in plan.get("follow_ups", [])]
+        message = _split_message(names, paths_for, leg_commits, spec_path,
+                                 code_path, follow_ups,
+                                 materialized.collisions, seeded)
+        _stage_the_split(assembly, materialized)
+        env_commit(assembly, message)
+        split_commit = git_out(["rev-parse", "HEAD"], cwd=assembly).lower()
+        step = SPLIT_PUSH
         run(["git", "push", "-q", urls["assembly"],
              f"HEAD:refs/heads/{branch}"], cwd=assembly)
     except CommandFailed as exc:
-        print(exc.loudly("pushing the split branch"), file=sys.stderr)
+        _flush_stdout()
+        print(exc.loudly(step), file=sys.stderr)
+        print(_nothing_rolled_back(urls, list(leg_commits)), file=sys.stderr)
+        if step == SPLIT_PUSH:
+            # Fresh legs alone do not get past this push when an earlier run
+            # (one whose verification failed, say) left the branch behind: a
+            # new split commit is never a fast-forward of the old one, so the
+            # re-run would make and push two more legs and stop here again.
+            print(f"If an earlier run left {branch} on {urls['assembly']}, "
+                  "this push is refused as not a fast-forward, and so is "
+                  "every re-run's until that branch is deleted.",
+                  file=sys.stderr)
         return None
     print(f"\n  split {split_commit[:12]} on {branch} -> {urls['assembly']}")
     return split_commit, message
@@ -2533,12 +2630,18 @@ def main(argv: list[str] | None = None) -> int:
     execute.set_defaults(func=cmd_execute)
 
     args = parser.parse_args(argv)
+    # Whatever reaches these two handlers was reported by no step of its own,
+    # and stdout may still hold what ran before it: the leg repositories
+    # `execute` announced, say, before a `gh repo create` or a `git_out`
+    # failed. Flushed first, so a merged log keeps the order (#188).
     try:
         return args.func(args)
     except Refusal as exc:
+        _flush_stdout()
         print(str(exc), file=sys.stderr)
         return 2
     except CommandFailed as exc:
+        _flush_stdout()
         print(exc.loudly("a git or gh command failed"), file=sys.stderr)
         return 2
 
