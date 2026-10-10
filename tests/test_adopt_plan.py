@@ -79,20 +79,27 @@ def test_the_path_policy_loads_and_declares_four_classes():
     (".cursor/rules.md", "root"),
     (".roo/config.md", "root"),
     ("Makefile", "root"),
+    # Only the TOP-LEVEL `.gitmodules` registers anything, so only that one is
+    # asked the submodule question; a nested one is content of its directory.
+    ("docs/theme/.gitmodules", "spec"),
 ])
 def test_a_path_classifies_where_the_rulings_put_it(path, leg):
     verdict = PathPolicy.load(POLICY).classify_file(path)
     assert verdict.leg == leg, f"{path} -> {verdict.leg} ({verdict.rule})"
 
 
-@pytest.mark.parametrize("path", [
-    "examples/golden-run/expected.yaml",
-    ".claude/commands/ship.md",
-    "release.yaml",
-    "notebooks/explore.ipynb",
+@pytest.mark.parametrize("path,rule", [
+    ("examples/golden-run/expected.yaml", "ambiguous-examples"),
+    (".claude/commands/ship.md", "ambiguous-assistant-project-memory"),
+    ("release.yaml", "ambiguous-top-level-yaml"),
+    ("notebooks/explore.ipynb", "ambiguous-notebooks"),
+    # #166: its question states the one-leg rule, which `default`'s does not.
+    (".gitmodules", "ambiguous-gitmodules"),
 ])
-def test_an_ambiguous_path_carries_the_question_and_no_leg(path):
+def test_an_ambiguous_path_carries_the_question_and_no_leg(path, rule):
     verdict = PathPolicy.load(POLICY).classify_file(path)
+    assert verdict.rule == rule, (
+        "a NAMED question, not the default's: which leg owns this path?")
     assert verdict.leg is None
     assert verdict.review_required
     assert verdict.question, "an ambiguous path with no question is a shrug"
