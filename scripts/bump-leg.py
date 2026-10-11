@@ -752,7 +752,8 @@ def _apply_rewrite(root: Path, submodule: Path, commit: str, was: str,
         if isinstance(failure, (OSError, UnicodeError)):
             raise Refusal(
                 "bump-leg-rewrite-failed",
-                f"{type(failure).__name__} after the leg was moved: {failure}. "
+                f"{type(failure).__name__} while the bump was being applied: "
+                f"{failure}. "
                 + ("Every byte this command wrote has been rolled back — the "
                    "pin, the workflow files, the leg's checkout and the "
                    "index — and the tree is exactly as it was."
