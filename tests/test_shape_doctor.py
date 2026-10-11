@@ -3761,9 +3761,9 @@ def test_the_question_stays_where_the_record_does_not_place_every_submodule(
 #: Names the record cannot write raw -- `str.isprintable` refuses a character
 #: in each -- and the doctor still reads: none holds a control character or a
 #: byte that is not UTF-8, the names it reports as ones no report can carry.
-ESCAPED_NAMES = ("vendor/nb sp", "vendor/ideo　graphic",
-                 "vendor/zero​width", "vendor/soft­hyphen",
-                 "vendor/nel\u0085x", "vendor/line sep")
+ESCAPED_NAMES = ("vendor/nb\u00a0sp", "vendor/ideo\u3000graphic",
+                 "vendor/zero\u200bwidth", "vendor/soft\u00adhyphen",
+                 "vendor/nel\u0085x", "vendor/line\u2028sep")
 
 
 def held_placements(result) -> dict:
