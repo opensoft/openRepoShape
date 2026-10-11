@@ -922,8 +922,10 @@ def run_validator(ctx: Context, script: Path, args: list[str],
     not out of the template -- so when a row falls back to the template it
     must put `<shape>/scripts` on the path or the fallback dies on an
     ImportError that says nothing about the project being checked. The
-    standard's own scripts (naming, the machine's preflight) find
-    `repo_shape` themselves and are not given one either.
+    standard's own scripts (naming, the machine's preflight) are not given
+    one either: the naming script inserts its own directory ahead of its
+    `repo_shape` import, and the machine's preflight needs nothing from
+    `repo_shape` at all and never imports it (#238).
 
     A PASTED COMMAND IS A SECOND PROCESS, AND THIS `env` IS NOT IN IT. What a
     row prints as its NEXT is run later, by a person, in their own shell --
