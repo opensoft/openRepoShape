@@ -1076,14 +1076,16 @@ def assembly_root_paths() -> tuple[str, ...]:
     way and no neutral-product pin is declared, in the order it writes them.
 
     READ FROM THE LISTS THAT CALL HANDS `_materialize`, plus the pin it
-    writes last, never kept by hand: `adopt-project.py check` follows each of
-    these through the symlinks a plan keeps in the root before any leg exists
-    (#178), and a second list would let the shape gain a file that check
-    does not follow. `EXECUTABLE` adds no path (it marks paths the lists
-    already write), and a collision moves a path under the caller's
-    `collision_dir`, which is the caller's to name.
-    `tests/test_adopt_root_symlinks.py` materializes into an empty directory
-    and holds this to what was written.
+    writes last, never kept by hand: `adopt-project.py` refuses a leg mount
+    path that overlaps one of these (#172), and its `check` follows each of
+    them through the symlinks a plan keeps in the root before any leg exists
+    (#178). A second list would let the shape gain a file the refusal does
+    not know about, or one that check does not follow. `EXECUTABLE` adds no
+    path (it marks paths the lists already write), and a collision moves a
+    path under the caller's `collision_dir`, which is the caller's to name.
+    `tests/test_adopt_leg_path_collisions.py` and
+    `tests/test_adopt_root_symlinks.py` each materialize into an empty
+    directory and hold this to what was written.
     """
     return (*TEMPLATED, *COPIED_VERBATIM,
             *(rel for _, rel in COPIED_FROM_SHAPE), SHAPE_PIN)
