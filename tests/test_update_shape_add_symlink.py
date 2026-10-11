@@ -344,6 +344,15 @@ def test_add_refuses_a_link_by_name_before_it_writes_anything(
     before, elsewhere = snapshot(root), beyond(tmp_path)
 
     result = apply(root, standard, "--add", ADDED)
+    # THE INVARIANT FIRST, the wording after: this is the part that is wrong
+    # on main, and it is what a failure there should name. The link's end
+    # first of all — a file made THROUGH the link is the bug itself.
+    assert_the_target_is_as_it_was(target, held)
+    assert beyond(tmp_path) == elsewhere
+    assert_untouched(before, snapshot(root))
+    assert (root / ADDED).is_symlink()
+    assert os.readlink(root / ADDED) == link_text
+    assert ADDED not in pin_rows(root)
     assert result.returncode == 2, result.stdout + result.stderr
     assert "Traceback" not in result.stderr, result.stderr
     assert "REFUSED update-add-symlink" in result.stderr, result.stderr
@@ -356,12 +365,6 @@ def test_add_refuses_a_link_by_name_before_it_writes_anything(
     assert "ROLLED BACK" not in result.stderr, (
         "nothing was written, so nothing is rolled back")
     assert f"added    {ADDED}" not in result.stdout
-    assert (root / ADDED).is_symlink()
-    assert os.readlink(root / ADDED) == link_text
-    assert_untouched(before, snapshot(root))
-    assert beyond(tmp_path) == elsewhere
-    assert_the_target_is_as_it_was(target, held)
-    assert ADDED not in pin_rows(root)
 
 
 @WINDOWS_SKIP
@@ -374,12 +377,12 @@ def test_add_refuses_before_it_creates_the_branch_or_stages_anything(
 
     result = apply(root, standard, "--add", ADDED, "--branch",
                    "shape/add-link")
-    assert result.returncode == 2, result.stdout + result.stderr
-    assert "REFUSED update-add-symlink" in result.stderr, result.stderr
-    assert_untouched(before, snapshot(root))
     assert beyond(tmp_path) == elsewhere
+    assert_untouched(before, snapshot(root))
     assert "shape/add-link" not in git(
         "branch", "--list", cwd=root).stdout
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "REFUSED update-add-symlink" in result.stderr, result.stderr
 
 
 @WINDOWS_SKIP
@@ -392,11 +395,11 @@ def test_one_link_among_several_additions_refuses_them_all(
     before, elsewhere = snapshot(root), beyond(tmp_path)
 
     result = apply(root, standard, "--add", DIR_ADDED, "--add", ADDED)
+    assert not (root / DIR).exists()
+    assert beyond(tmp_path) == elsewhere
+    assert_untouched(before, snapshot(root))
     assert result.returncode == 2, result.stdout + result.stderr
     assert "REFUSED update-add-symlink" in result.stderr, result.stderr
-    assert not (root / DIR).exists()
-    assert_untouched(before, snapshot(root))
-    assert beyond(tmp_path) == elsewhere
 
 
 # --- a link ABOVE the path ---------------------------------------------------
@@ -449,16 +452,16 @@ def test_add_refuses_a_path_under_a_directory_link(
     before, elsewhere = snapshot(root), beyond(tmp_path)
 
     result = apply(root, standard, "--add", DIR_ADDED)
+    assert not target.exists(), f"{target} was created through the link"
+    assert beyond(tmp_path) == elsewhere
+    assert_untouched(before, snapshot(root))
+    assert (root / DIR).is_symlink()
+    assert DIR_ADDED not in pin_rows(root)
     assert result.returncode == 2, result.stdout + result.stderr
     assert "Traceback" not in result.stderr, result.stderr
     assert "REFUSED update-add-symlink" in result.stderr, result.stderr
     assert f"{DIR} in this root is a symlink, on the way to {DIR_ADDED}" \
         in result.stderr, "the refusal names the link, not only the path"
-    assert (root / DIR).is_symlink()
-    assert_untouched(before, snapshot(root))
-    assert beyond(tmp_path) == elsewhere
-    assert not target.exists(), f"{target} was created through the link"
-    assert DIR_ADDED not in pin_rows(root)
 
 
 # --- the controls ------------------------------------------------------------
