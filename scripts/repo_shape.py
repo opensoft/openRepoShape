@@ -169,6 +169,10 @@ class YamlError(Exception):
 # than one document. Each of those has a meaning this reader would have to
 # invent, and an invented meaning in a validator is a wrong answer with a
 # confident tone.
+#
+# A FLOW MAPPING READS AS ITS BLOCK TWIN (#252): an entry opening `? ` is an
+# explicit key and is refused as a block line opening `? ` is, and an empty
+# value (`{k: }`, `{k:}`) is null as a block `k:` is.
 
 _DASH_RE = re.compile(r"^-(\s+|$)")
 
@@ -375,8 +379,14 @@ def _scalar(raw: str) -> Any:
 
 
 def _flow_value(text: str) -> Any:
-    """A flow entry is itself a flow collection when it opens with `[` or `{`."""
-    return _flow(text) if text[:1] in "[{" else _scalar(text)
+    """A flow entry is itself a flow collection when it OPENS with `[` or `{`.
+
+    AN EMPTY ENTRY OPENS NOTHING (#252): `{a: }` and `{a:}` give this `''`,
+    and `'' in "[{"` is True for any string, so the test used to run `_flow`
+    on it and refuse `{a: }` as `not a flow collection: ''`, a text nobody
+    wrote. `_scalar('')` is the null a block `a:` reads.
+    """
+    return _flow(text) if text.startswith(("[", "{")) else _scalar(text)
 
 
 def _flow(text: str) -> Any:
@@ -405,7 +415,17 @@ def _split_key_flow(text: str) -> tuple[str, str] | None:
     after a backslash inside double quotes, so `{"a\\": b": 1}` read as the
     key `a\\` (#213). `_split_key` already lets the value open a flow -- it
     returns at the first top-level `:`, before any `[` or `{` after it.
+
+    AN ENTRY OPENING `? ` IS AN EXPLICIT KEY, AND IS REFUSED as the block
+    reader refuses it (`_refuse_unsupported`, which runs on block lines only):
+    an explicit key has a meaning this reader would have to invent, and
+    `? a: b` used to read as the literal key `? a` (#252). The block form
+    names its line, and a flow collection has none to name, so this names the
+    entry. A QUOTED key, `"? a"`, does not open with the `?`, and `?a` is not
+    the indicator, which needs a space after it: both read as they did.
     """
+    if text.startswith("? "):
+        raise YamlError(f"explicit keys are not supported: {text!r}")
     return _split_key(text)
 
 
