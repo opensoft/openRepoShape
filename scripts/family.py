@@ -886,8 +886,9 @@ def _nothing_to_record(root: Path, paths: list[str]) -> bool:
     them `git diff` finds something, and the commit goes ahead.
     `--ignore-submodules=dirty` is what `git commit` itself ignores: files the
     member holds untracked or modified are not a thing this commit records,
-    its HEAD is. Exit 1 is git's "there is a difference"; any other failure is
-    a real one and propagates.
+    its HEAD is. The caller has staged the gitlink first, as `_commit_one`
+    would, so a stray one in the index is not a difference. Exit 1 is git's
+    "there is a difference"; any other failure is a real one and propagates.
     """
     try:
         run(["git", "diff", "--quiet", "--ignore-submodules=dirty", "HEAD",
@@ -947,6 +948,16 @@ def cmd_bump(args) -> int:
             for r in family.members]
     original = family.path.read_bytes()
     family.write_members(rows)
+    # THE GITLINK IS RE-STAGED BEFORE GIT IS ASKED, as `_commit_one` does it
+    # first anyway. An index still holding a stray gitlink somebody staged and
+    # never committed makes `git diff HEAD` find a difference the commit then
+    # does not find, and a bump to the pinned commit ended in the refusal #210
+    # is about. `validate-family.py` reads the index first, reports
+    # `member-gitlink-mismatch` and names this very command as the repair. The
+    # checkout above already moved the member to `--to`, so this stages that
+    # and nothing else: a submodule path stages its gitlink, never the
+    # member's files, and the manifest's own index state is left as found.
+    run(["git", "add", "--", path], cwd=family.root)
     if _nothing_to_record(family.root, [path, MANIFEST]):
         # The same sentence `bump-leg.py` answers the same re-run with, and
         # exit 1, which is what this file's docstring says `nothing` is. The

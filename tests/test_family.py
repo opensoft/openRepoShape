@@ -767,6 +767,44 @@ def test_bump_to_the_commit_already_pinned_leaves_an_uncommitted_edit_alone(
     assert git("status", "--porcelain", cwd=holder).stdout == status
 
 
+def test_bump_to_the_pinned_commit_unstages_a_stray_gitlink_and_says_nothing(
+        holder):
+    """THE VALIDATOR'S OWN REMEDY, followed with the pinned commit. Somebody
+    moved the member and ran `git add members/IRRS` without committing:
+    `validate-family.py` reads the INDEX first, reports
+    `member-gitlink-mismatch` and names `family.py bump --member <Project> --to
+    <commit>` as the repair. `bump` checks the member out at the pinned commit,
+    which is HEAD's gitlink, but the index still differs from HEAD, so
+    `git diff HEAD` found something and `git commit` then did not: the refusal
+    #210 is about, exit 2, reached through the remedy. The gitlink is
+    re-staged before git is asked, the index agrees with HEAD again, and there
+    is nothing to record (#210)."""
+    member = holder / "members" / "IRRS"
+    pinned = git("rev-parse", "HEAD:members/IRRS", cwd=holder).stdout.strip()
+    stray = commit_in_member(member, "A stray move, staged and never committed")
+    git("add", "--", "members/IRRS", cwd=holder)
+    assert git("ls-files", "-s", "--", "members/IRRS",
+               cwd=holder).stdout.split()[1] == stray, "fixture drift"
+    broken = validate(holder)
+    assert broken.returncode == 1
+    assert "member-gitlink-mismatch" in broken.stderr
+    head = git("rev-parse", "HEAD", cwd=holder).stdout.strip()
+    before = (holder / "family.yaml").read_bytes()
+
+    result = run_script(FAMILY, "bump", "--family-root", str(holder),
+                        "--member", "IRRS", "--to", pinned)
+
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert nothing_to_do_line("IRRS", pinned) in result.stdout
+    assert "REFUSED" not in result.stdout + result.stderr
+    assert git("rev-parse", "HEAD", cwd=holder).stdout.strip() == head
+    assert git("ls-files", "-s", "--", "members/IRRS",
+               cwd=holder).stdout.split()[1] == pinned
+    assert git("status", "--porcelain", cwd=holder).stdout == ""
+    assert (holder / "family.yaml").read_bytes() == before
+    assert validate(holder).returncode == 0
+
+
 def test_bump_finishes_a_bump_an_earlier_run_staged_and_did_not_commit(holder):
     """THE MANIFEST ALREADY NAMES `--to`, and there is still something to
     commit: a run that wrote the row and staged both paths and then died
