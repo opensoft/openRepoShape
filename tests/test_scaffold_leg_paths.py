@@ -155,6 +155,9 @@ def test_a_leg_path_that_cannot_be_mounted_is_refused_before_anything_is_made(
     assert CODE_OF_REFUSAL in result.stderr
     # THE SAME SENTENCE `plan` says for the same value: one rule, two tools.
     assert adopter.leg_path_problem(flag, value) in result.stderr
+    # The remediation paragraph is the part that says what to write instead,
+    # and the sentence above does not include it.
+    assert shape_materialize.LEG_PATH_REMEDIATION in result.stderr
     if canonical is None:
         assert OFFER not in result.stderr
     else:
@@ -199,7 +202,7 @@ def test_a_dry_run_refuses_a_bad_leg_path_as_the_real_run_would(tmp_path):
     result = scaffold(tmp_path, "--dry-run", SPEC, SLASHED)
     assert result.returncode == 2, result.stderr + result.stdout
     assert CODE_OF_REFUSAL in result.stderr
-    assert "nothing was created" not in result.stdout
+    assert result.stdout == "", "a dry run printed a plan it then refused"
     assert_nothing_was_created(tmp_path)
 
 
