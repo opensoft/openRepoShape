@@ -169,28 +169,37 @@ class YamlError(Exception):
 # than one document. Each of those has a meaning this reader would have to
 # invent, and an invented meaning in a validator is a wrong answer with a
 # confident tone.
+#
+# A FLOW MAPPING READS AS ITS BLOCK TWIN (#252): an entry opening `? ` is an
+# explicit key and is refused as a block line opening `? ` is, and an empty
+# value (`{k: }`, `{k:}`) is null as a block `k:` is.
 
 _DASH_RE = re.compile(r"^-(\s+|$)")
 
-#: Marks a `_Rec` built from a block scalar, carrying its key and body
-#: instead of raw text, NUL-separated; spelled once because `python:S1192`
-#: counts three repeats of the same literal. A block scalar's KEY HOLDING A
-#: NUL COLLIDES WITH IT and is misread (`"a\x00b": |` reads as the key `a`
-#: with `b` and a NUL ahead of the body): a raw NUL, which YAML forbids and
-#: this reader does not refuse, and since #199 the escape `\x00` in a
-#: double-quoted key. No writer in this repository emits such a key: the
-#: plan writer writes no block scalar, and every key it writes is a literal.
-_BLOCK_SENTINEL = "\x00BLOCK\x00"
-
 
 class _Rec:
-    __slots__ = ("indent", "text", "dash", "line")
+    """One significant line, as `_parse_nodes` reads it.
 
-    def __init__(self, indent: int, text: str, dash: bool, line: int):
+    `block` is a block scalar's `(key, body)`, set on the record its header
+    makes and on no other, and its `text` is empty. THE PAIR IS NEVER JOINED
+    INTO ONE STRING, so no character a key can hold collides with the
+    record's own structure. It was joined, as a NUL-delimited marker + key +
+    NUL + body split again at the NULs (#248): a key holding a NUL -- the
+    escape `\\x00` in a double-quoted key since #199, or a raw NUL, which YAML
+    forbids and this reader takes -- was cut short there with the rest of it
+    read into the body, and an ordinary line whose text began with that
+    marker read as a block scalar it never was.
+    """
+
+    __slots__ = ("indent", "text", "dash", "line", "block")
+
+    def __init__(self, indent: int, text: str, dash: bool, line: int,
+                 block: tuple[str, str] | None = None):
         self.indent = indent
         self.text = text
         self.dash = dash
         self.line = line
+        self.block = block
 
 
 def _strip_comment(text: str) -> str:
@@ -375,8 +384,14 @@ def _scalar(raw: str) -> Any:
 
 
 def _flow_value(text: str) -> Any:
-    """A flow entry is itself a flow collection when it opens with `[` or `{`."""
-    return _flow(text) if text[:1] in "[{" else _scalar(text)
+    """A flow entry is itself a flow collection when it OPENS with `[` or `{`.
+
+    AN EMPTY ENTRY OPENS NOTHING (#252): `{a: }` and `{a:}` give this `''`,
+    and `'' in "[{"` is True for any string, so the test used to run `_flow`
+    on it and refuse `{a: }` as `not a flow collection: ''`, a text nobody
+    wrote. `_scalar('')` is the null a block `a:` reads.
+    """
+    return _flow(text) if text.startswith(("[", "{")) else _scalar(text)
 
 
 def _flow(text: str) -> Any:
@@ -405,7 +420,17 @@ def _split_key_flow(text: str) -> tuple[str, str] | None:
     after a backslash inside double quotes, so `{"a\\": b": 1}` read as the
     key `a\\` (#213). `_split_key` already lets the value open a flow -- it
     returns at the first top-level `:`, before any `[` or `{` after it.
+
+    AN ENTRY OPENING `? ` IS AN EXPLICIT KEY, AND IS REFUSED as the block
+    reader refuses it (`_refuse_unsupported`, which runs on block lines only):
+    an explicit key has a meaning this reader would have to invent, and
+    `? a: b` used to read as the literal key `? a` (#252). The block form
+    names its line, and a flow collection has none to name, so this names the
+    entry. A QUOTED key, `"? a"`, does not open with the `?`, and `?a` is not
+    the indicator, which needs a space after it: both read as they did.
     """
+    if text.startswith("? "):
+        raise YamlError(f"explicit keys are not supported: {text!r}")
     return _split_key(text)
 
 
@@ -618,11 +643,10 @@ def _tokenise(text: str) -> list[_Rec]:
         kv = _split_key(content)
         if _opens_block_scalar(kv):
             # A block scalar: swallow every following line more indented than
-            # the key, and keep it as one string.
+            # the key, and keep the key and the body as the record's pair.
             body, i = _block_scalar_body(raw_lines, i, indent)
-            recs.append(_Rec(indent, "", False, i))
-            recs[-1].text = (_BLOCK_SENTINEL + kv[0] + "\x00"
-                             + _block_scalar_text(kv[1], body))
+            recs.append(_Rec(indent, "", False, i,
+                             (kv[0], _block_scalar_text(kv[1], body))))
             continue
         recs.append(_Rec(indent, content, False, i))
     return recs
@@ -642,7 +666,7 @@ def _parse_sequence(recs: list[_Rec], i: int, indent: int) -> tuple[list[Any], i
         i += 1
         if i < len(recs) and recs[i].indent > indent:
             rec = recs[i]
-            if not rec.dash and not rec.text.startswith(_BLOCK_SENTINEL) \
+            if not rec.dash and rec.block is None \
                     and _split_key(rec.text) is None:
                 # A plain or flow SCALAR item (`- openAvatar`, `- [a, b]`).
                 value = _flow(rec.text) if rec.text[:1] in "[{" else _scalar(rec.text)
@@ -675,8 +699,8 @@ def _parse_mapping(recs: list[_Rec], i: int, indent: int) -> tuple[dict, int]:
     out: dict[str, Any] = {}
     while i < len(recs) and not recs[i].dash and recs[i].indent == indent:
         rec = recs[i]
-        if rec.text.startswith(_BLOCK_SENTINEL):
-            _empty, _marker, key, body = rec.text.split("\x00", 3)
+        if rec.block is not None:
+            key, body = rec.block
             out[key] = body
             i += 1
             continue
@@ -804,7 +828,10 @@ def tree_digest_from_gh(repository: str, commit: str) -> str:
     try:
         proc = subprocess.run(
             ["gh", "api", GH_TREE_API.format(repo=repository, commit=commit)],
-            capture_output=True, text=True, check=False)
+            # UTF-8 and STRICT, not `errors="replace"`: this JSON becomes a
+            # digest, and a replaced byte would be a wrong digest with a
+            # confident tone (#217).
+            capture_output=True, text=True, encoding="utf-8", check=False)
     except FileNotFoundError as exc:
         raise Refusal("gh-not-found",
                       f"the `gh` CLI is not on PATH: {exc}") from exc
@@ -872,7 +899,8 @@ def free_plan_secret_hint(org: str, repo: str, what: str) -> str | None:
     try:
         proc = subprocess.run(
             ["gh", "api", f"orgs/{org}", "--jq", ".plan.name"],
-            capture_output=True, text=True, check=False)
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", check=False)
     except OSError:  # FileNotFoundError (no `gh` on PATH) is already an OSError
         return None
     if proc.returncode != 0:

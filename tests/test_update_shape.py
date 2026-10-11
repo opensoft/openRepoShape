@@ -78,7 +78,8 @@ MAKEFILE = "Makefile"
 MAKEFILE_SOURCE = f"templates/assembly-root/{MAKEFILE}"
 
 
-def scaffold_upstream_and_project(tmp_path_factory, subdir: str):
+def scaffold_upstream_and_project(tmp_path_factory, subdir: str,
+                                  *scaffold_args: str):
     """A fresh clone of this repository at A, and `PROJECT` scaffolded from
     it into a recursive clone of its own — the part `upstream_and_project`
     and `adopted_upstream_and_project` share verbatim. They differ only in
@@ -86,6 +87,10 @@ def scaffold_upstream_and_project(tmp_path_factory, subdir: str):
     and returns the pieces rather than a finished fixture dict: a shared
     RETURN SHAPE across two fixtures is how the second one quietly drifts
     from the first.
+
+    `scaffold_args` are extra flags for `scaffold-project.py` — a
+    `--tracking-branch`, for the project whose pull requests must not be
+    told to land on `main` (#209).
     """
     base = tmp_path_factory.mktemp(subdir)
     upstream = base / "openRepoShape"
@@ -98,7 +103,7 @@ def scaffold_upstream_and_project(tmp_path_factory, subdir: str):
         upstream / "scaffold-project.py", "--org", ORG, "--project", PROJECT,
         "--elected-by", "Test Human", "--elected-on", "2026-09-02",
         "--local-remote-dir", str(base / "remotes"),
-        "--work-dir", str(base / "work"))
+        "--work-dir", str(base / "work"), *scaffold_args)
     assert result.returncode == 0, result.stderr + result.stdout
 
     clone = base / "clone" / PROJECT
@@ -1654,6 +1659,9 @@ def test_a_readme_the_os_will_not_write_refuses_and_rolls_the_tree_back(
 
     assert_refused_and_unpinned(result, root, upstream_and_project,
                                 "update-readme-unwritable", "README.md")
+    assert result.stderr.count("exactly as it was") == 1, (
+        "the rollback is claimed once, by the block listing what it put "
+        "back (#202), and not again in the refusal's own detail")
     assert readme.read_bytes() == before
     assert copied.read_bytes() == copied_before, (
         "the copies this command had already written are rolled back too")
