@@ -2511,12 +2511,13 @@ def _refuse_an_unmountable_path(assembly: Path, path: str) -> None:
       root-kept `docs/`) is a directory, and a mount beside its files is
       what `docs/spec` asks for.
 
-    Equal and nested leg paths are the plan's to refuse, before any leg
-    exists (#169), so with the plan's own paths this guard is defence in
-    depth. It is the same answer where the mount is made, for a run that got
-    here anyway, and it also covers what the two path values alone cannot
-    show: an entry the plan keeps in the root at or on the way to the path,
-    and a symlink on the way to it.
+    Every case above is the plan's to refuse, at `check` and in `execute`
+    before any leg exists: equal and nested leg paths by #169, and a mount
+    path that a path the plan keeps in the root is, holds or lies beyond --
+    a file, a symlink, a submodule, a case-only twin -- by #172
+    (`plan-leg-path-collides`). So this guard is defence in depth: the same
+    answer where the mount is made, for a run that got here anyway, after
+    both legs were pushed.
     """
     parts = path.split("/")
     on_the_way = {"/".join(parts[:end]).casefold()

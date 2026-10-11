@@ -18,12 +18,21 @@ mounts the spec leg only); and git's `add --dry-run` before the clone, which
 refuses a path beyond a symlink, and without which the leg was cloned through
 a root-kept symlink, outside the work directory. A root-kept FILE on the way to
 the path (`docs`, with `spec_path: docs/spec`) is refused by the same guard:
-git fails on it in its own words only after both legs were pushed. Those tests
-are here too.
+at the mount, git fails on it in its own words only after both legs were
+pushed. Those tests are here too.
+
+#169 and #172 refuse every such plan first, at `check` and in `execute`
+before any leg exists: equal and nested leg paths, and a mount path that a
+path the plan keeps in the root is, holds or lies beyond. So the guard is
+defence in depth, and `execute` never reaches it with these plans. The mount
+tests here ask the guard itself; the end-to-end tests say what `execute`
+does with the plans now. `tests/test_adopt_leg_path_collisions.py` reaches
+the guard end to end, past #172's root-kept half, and proves its refusal,
+what its remediation says of the run, and that its next step adopts.
 
 The mount tests call `_mount_the_legs` on hand-made repositories, so they need
 no `git filter-repo` and run on the Windows job, which installs none -- except
-the one that makes a symlink on the DISK, which skips there. The end-to-end
+the two that make a symlink on the DISK, which skip there. The end-to-end
 tests need `git filter-repo`. All repositories and remotes are local fixtures;
 no network is used.
 """
@@ -79,6 +88,8 @@ ANSWERS = (("examples/", SPEC), (".claude/", ROOT), ("release.yaml", ROOT))
 #: The two refusals the mount makes before `git submodule add --force`.
 OCCUPIED = "adopt-mount-occupied"
 UNADDABLE = "adopt-mount-unaddable"
+#: #172's refusal of the same plans, before any leg exists.
+COLLIDES = "plan-leg-path-collides"
 #: A root-kept directory symlink, and a mount path through it.
 LINK = "legs"
 THROUGH_LINK = f"{LINK}/{SPEC}"
@@ -554,6 +565,26 @@ def split_branch_exists(source: Path) -> bool:
                check=False).returncode == 0
 
 
+def empty_remote_dir(base: Path) -> None:
+    """The `--local-remote-dir` a run is given, made EMPTY first, so that a
+    run refused before any leg exists is seen to leave it empty."""
+    (base / REMOTES).mkdir()
+
+
+def what_was_made(base: Path, source: Path) -> SimpleNamespace:
+    """What a run left behind: the leg repositories in `--local-remote-dir`,
+    the legs' clones in `--work-dir` (which `execute` makes before it refuses
+    anything), and whether the source has a split branch."""
+    return SimpleNamespace(
+        legs=sorted(path.name for path in (base / REMOTES).iterdir()),
+        clones=sorted(path.name for path in (base / WORK).iterdir()),
+        split=split_branch_exists(source))
+
+
+#: What a run refused before any leg exists leaves behind.
+NOTHING_MADE = SimpleNamespace(legs=[], clones=[], split=False)
+
+
 @module_fixture
 def adopted(tmp_path_factory) -> SimpleNamespace:
     """One real adoption of a source whose `.gitignore` is `*` +
@@ -605,9 +636,9 @@ def test_execute_refuses_a_plan_that_mounts_both_legs_at_one_path(tmp_path):
     the only mount, at `code`. It is refused now, and nothing is split.
 
     The assertions do not name the refusal's code: #169 refuses equal leg
-    paths before any leg exists, under its own, and once it lands this plan
-    meets that refusal first. Either way it is refused and not split; the
-    mount tests above pin `adopt-mount-occupied` itself."""
+    paths before any leg exists, under its own, so this plan meets that
+    refusal first. Either way it is refused and not split; the mount tests
+    above pin `adopt-mount-occupied` itself."""
     source = make_source_repo(tmp_path / SOURCE)
     plan = planned(tmp_path, source)
     edited(plan, f"  spec_path: {SPEC}\n", f"  spec_path: {CODE}\n")
@@ -620,31 +651,54 @@ def test_execute_refuses_a_plan_that_mounts_both_legs_at_one_path(tmp_path):
     assert not split_branch_exists(source)
 
 
+# Before #172 the plans below reached the mount, after both legs were pushed,
+# and the guard refused them there. #172 refuses them first, so each test says
+# what `execute` does with the plan now, and names where the guard's own
+# refusal of it is still proved.
+
+
 @needs_filter_repo
 @needs_disk_symlinks
 def test_execute_refuses_a_mount_through_a_kept_symlink(tmp_path):
     """A root-kept `legs -> <a directory outside>` and `--spec-path
     legs/spec`. With `--force` alone the spec leg was cloned through the
-    link, outside `--work-dir`, before git refused the add."""
+    link, outside `--work-dir`, before git refused the add. #172 refuses the
+    plan before any leg exists now, so the empty `--local-remote-dir` stays
+    empty and the mount is never reached. The guard's refusal of this path,
+    `adopt-mount-unaddable`, is
+    `test_a_mount_path_beyond_a_kept_symlink_is_refused_before_the_clone`
+    above, and end to end, past #172,
+    `test_the_mount_guard_refuses_a_mount_through_a_kept_symlink` in
+    `tests/test_adopt_leg_path_collisions.py`."""
     outside = tmp_path / OUTSIDE
     source = linked_source(tmp_path / SOURCE, outside)
     plan = planned(tmp_path, source, "--spec-path", THROUGH_LINK,
                    answers=(*ANSWERS, (LINK, ROOT)))
+    empty_remote_dir(tmp_path)
 
     result = execute(tmp_path, plan)
 
     assert result.returncode == 2, result.stderr + result.stdout
-    assert f"REFUSED {UNADDABLE}: git will not add the leg mount path " \
-        f"{THROUGH_LINK}: " in result.stderr
+    assert f"REFUSED {COLLIDES}: " in result.stderr
+    assert f"FINDING {COLLIDES}: legs.spec_path '{THROUGH_LINK}' is inside " \
+        f"the symlink `{LINK}`." in result.stderr
+    assert UNADDABLE not in result.stderr
+    assert what_was_made(tmp_path, source) == NOTHING_MADE
     assert list(outside.iterdir()) == []
-    assert not split_branch_exists(source)
+
+
+#: What #172 says of `docs/spec` under the root-kept FILE `docs`.
+INSIDE_THE_FILE = (f"FINDING {COLLIDES}: legs.spec_path '{UNDER_FILE}' is "
+                   f"inside the file `{KEPT_FILE}`.")
 
 
 @module_fixture
 def refused_under_a_file(tmp_path_factory) -> SimpleNamespace:
-    """One real run of a plan `check` passes, whose `spec_path` is `docs/spec`
-    while `docs` is a file the plan keeps in the root. What it left behind is
-    recorded here, the instant it returned, so no test depends on another."""
+    """One real `check` and one real `execute`, into an EMPTY
+    `--local-remote-dir`, of a plan whose `spec_path` is `docs/spec` while
+    `docs` is a file the plan keeps in the root. What they said and what the
+    run left behind are recorded here, the instant it returned, so no test
+    depends on another."""
     base = tmp_path_factory.mktemp("file-on-the-way")
     tree = {path: body for path, body in SYNTHETIC_TREE.items()
             if path != ARCHITECTURE}
@@ -655,13 +709,12 @@ def refused_under_a_file(tmp_path_factory) -> SimpleNamespace:
     edited(plan, f"  - path: {KEPT_FILE}\n    leg: {SPEC}\n",
            f"  - path: {KEPT_FILE}\n    leg: {ROOT}\n    resolution: "
            '"kept in the root by the test"\n')
-    checked_ok(plan)
+    empty_remote_dir(base)
+    checked = run_script(ADOPT, "check", "--plan", str(plan))
     result = execute(base, plan)
-    return SimpleNamespace(
-        base=base, source=source, plan=plan, result=result,
-        split=split_branch_exists(source),
-        legs={role: (base / REMOTES / f"{PROJECT}-{role}.git").is_dir()
-              for role in ROLES})
+    return SimpleNamespace(base=base, source=source, plan=plan,
+                           checked=checked, result=result,
+                           made=what_was_made(base, source))
 
 
 @needs_filter_repo
@@ -669,41 +722,47 @@ def test_execute_refuses_a_mount_under_a_kept_file_in_its_own_words(
         refused_under_a_file):
     """It exited 2 at the mount with git's `could not create leading
     directories ... Not a directory` and no remediation, after both legs were
-    pushed. It is a named refusal now, with the remediation, and that
-    remediation's first claim is true: the legs exist, and nothing was split."""
+    pushed; the guard then refused it there by name. #172 refuses it first
+    now: `check` reports it, and `execute` refuses it in `check`'s words
+    before any leg exists, so the empty `--local-remote-dir` stays empty and
+    the mount is never reached. The guard's refusal of this path is
+    `test_a_mount_path_under_a_kept_file_is_refused_before_the_clone` above,
+    and end to end, past #172,
+    `test_the_mount_guard_refuses_a_kept_file_on_the_way_after_both_legs_exist`
+    in `tests/test_adopt_leg_path_collisions.py`."""
     state = refused_under_a_file
+    assert state.checked.returncode == 1, \
+        state.checked.stderr + state.checked.stdout
+    assert INSIDE_THE_FILE in state.checked.stderr
     assert state.result.returncode == 2, \
         state.result.stderr + state.result.stdout
-    assert f"REFUSED {OCCUPIED}: {INDEX} holds `{KEPT_FILE}` (a file) where " \
-        f"the leg mount path {UNDER_FILE} needs a directory" \
+    assert f"REFUSED {COLLIDES}: " in state.result.stderr
+    assert INSIDE_THE_FILE in state.result.stderr
+    assert "no leg repository was created and nothing was pushed" \
         in state.result.stderr
     assert "a git or gh command failed" not in state.result.stderr
-    assert "with no file, symlink or submodule it keeps there" \
-        in state.result.stderr
+    assert OCCUPIED not in state.result.stderr
     assert VERIFIED not in state.result.stdout
-    assert state.legs == {role: True for role in ROLES}
-    assert not state.split
+    assert state.made == NOTHING_MADE
 
 
 @needs_filter_repo
 def test_the_remediations_next_step_adopts_the_source(refused_under_a_file):
-    """The words of the refusal, followed: `legs.spec_path` changed, and the
-    plan run again with fresh leg repositories and an empty `--work-dir`.
-    Fresh repositories alone are not the way on, and the remediation says why:
-    the refused run's own `--work-dir` still holds its clones of both legs,
-    and the next run cannot clone into them."""
+    """The words of the refusal, followed: another path for the leg, and
+    `execute` run again. #172 refused before any leg existed, so the SAME
+    `--local-remote-dir` and `--work-dir` take the corrected run. The guard,
+    which refuses after both legs were pushed, sends a re-run to fresh ones
+    of both; `test_the_mount_guards_next_step_adopts_the_source` in
+    `tests/test_adopt_leg_path_collisions.py` follows those words."""
     state = refused_under_a_file
-    assert "an empty `--work-dir`, or none" in state.result.stderr
+    assert "choose another path for the leg" in state.result.stderr
     corrected = edited(state.plan, f"  spec_path: {UNDER_FILE}\n",
                        "  spec_path: specification\n",
                        state.base / "corrected-plan.yaml")
     checked_ok(corrected)
 
-    reused = execute(state.base, corrected, "reused-work-remotes", WORK)
-    again = execute(state.base, corrected, "fresh-remotes", "fresh-work")
+    again = execute(state.base, corrected)
 
-    assert reused.returncode != 0
-    assert VERIFIED not in reused.stdout
     assert again.returncode == 0, again.stderr + again.stdout
     assert VERIFIED in again.stdout
     assert split_branch_exists(state.source)
