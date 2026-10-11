@@ -2321,18 +2321,46 @@ def _refuse_an_occupied_work_dir(work_root: Path, names: dict) -> None:
             "one, each run makes a new one.")
 
 
+def _in_the_history_of(source: Source, tip: str) -> bool:
+    """Whether `tip` is the source commit or a commit behind it: the only
+    tips a split commit, made on top of the source commit, moves a branch
+    from without force (#188's review, N1).
+
+    `git merge-base --is-ancestor` exits 0 for exactly those; 1 for any
+    other commit the source holds, and 128 for one it does not hold, which
+    is not behind its commit either. A `tip` that is not a hexadecimal
+    object name -- `git ls-remote` prints nothing else -- is not asked, so
+    nothing it says reaches `git` as an option.
+    """
+    if not re.fullmatch(r"[0-9a-f]+", tip):
+        return False
+    asked = subprocess.run(["git", "merge-base", "--is-ancestor", tip,
+                            source.commit], cwd=str(source.path),
+                           capture_output=True, check=False)
+    return asked.returncode == 0
+
+
 def _refuse_a_split_branch_left_behind(source: Source, urls: dict,
                                        branch: str, local: bool) -> None:
     """Refuse a run whose split branch is already on the assembly, BEFORE a
     leg repository exists (#188 N1).
 
     An earlier `execute` leaves that branch behind whether its verification
-    passed or failed, and a new split commit is never a fast-forward of the
-    old one. So the re-run a failed verification prescribed, into fresh legs,
-    created and pushed two more legs and was then refused at the split push,
-    every time: against GitHub, two more real repositories per attempt. The
-    branch is asked of the very remote the split is pushed to, with
-    `git ls-remote`, so the answer is the push's own.
+    passed or failed, at a split commit made on top of the source commit.
+    A new split commit is never a fast-forward of the old one, so the re-run
+    a failed verification prescribed, into fresh legs, created and pushed
+    two more legs and was then refused at the split push, every time:
+    against GitHub, two more real repositories per attempt. The branch is
+    asked of the very remote the split is pushed to, with `git ls-remote`,
+    so the answer is the push's own.
+
+    ONLY A BRANCH THE PUSH CANNOT FAST-FORWARD IS REFUSED (#188's review,
+    N1). One at the source commit, or behind it, is moved forward by the
+    split push, and main always pushed over it and verified; it was
+    refused, with a reason that was false for it. The branch's name is a
+    plan value (`adopt_branch:`) a person may have pointed at a branch of
+    the source's own, so the remediation says what to do then too, and the
+    deletion it prints is offered only for an earlier run's branch.
 
     A leg repository that is still there under `--local-remote-dir` is
     `_create_leg_remotes`' to refuse, as `leg-remote-exists`, and it keeps
@@ -2345,19 +2373,26 @@ def _refuse_a_split_branch_left_behind(source: Source, urls: dict,
         return
     ref = f"refs/heads/{branch}"
     listed = run(["git", "ls-remote", urls["assembly"], ref])
-    if not any(line.split("\t")[-1] == ref for line in listed.splitlines()):
+    tips = [line.split("\t")[0] for line in listed.splitlines()
+            if line.split("\t")[-1] == ref]
+    if not tips or _in_the_history_of(source, tips[0]):
         return
     raise Refusal(
         "adopt-branch-exists",
         f"{urls['assembly']} already has {branch}, the branch this adoption "
-        "pushes its split commit to",
-        "Remediation: nothing was created. A branch of that name is what an "
-        "earlier `execute` leaves behind, whether it verified or not. If it "
-        "verified and its pull request is the adoption you want, review that "
-        "instead of re-running. Otherwise delete the branch, then run "
-        "`execute` again: a new split commit is never a fast-forward of the "
-        "old one, so this run would create and push both legs and then be "
-        "refused at the split push.\n    "
+        f"pushes its split commit to, at {tips[0][:12]}: neither the source "
+        f"commit {source.commit[:12]} nor a commit behind it",
+        "Remediation: no leg repository was created and nothing was pushed. "
+        "The split commit is made on top of the source commit, git moves a "
+        "branch to it without force only from that commit or one behind it, "
+        "and this tool never forces a push: a run that kept this branch "
+        "would make and push both legs before its split push met it. An "
+        "earlier `execute` leaves a branch of that name behind, whether it "
+        "verified or not. If it verified and its pull request is the "
+        "adoption you want, review that instead of re-running. If the branch "
+        "is not an earlier run's (the plan's `adopt_branch:` names one of "
+        "the source's own), give `adopt_branch:` a name no branch has. "
+        "Otherwise delete it, then run `execute` again:\n    "
         + _branch_deletion(source, urls, branch))
 
 

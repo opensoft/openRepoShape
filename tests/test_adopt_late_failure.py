@@ -62,6 +62,8 @@ ROLLED_BACK = "NOTHING has been rolled back"
 FIX_FIRST = "Once what failed above is fixed, re-run the adoption with"
 FRESH_WORK_DIR = "Use a fresh --work-dir as well, or none: "
 WORK_DIR_OCCUPIED = "adopt-work-dir-occupied"
+#: What `execute` prints once every source path is accounted for.
+VERIFIED = "adoption verified"
 BOTH_PUSHED = "both legs are pushed"
 MAIN_REF = "refs/heads/main"
 SPLIT_PUSH = "pushing the split branch"
@@ -789,9 +791,17 @@ def no_filter_repo_probe(adopter, monkeypatch) -> None:
     monkeypatch.setattr(adopter, "_require_filter_repo", lambda: None)
 
 
-def leave_a_split_branch(source: Path) -> None:
-    """What an earlier `execute` leaves on the source, verified or not."""
-    git("branch", BRANCH, cwd=source)
+def leave_a_split_branch(source: Path) -> str:
+    """What an earlier `execute` leaves on the source, verified or not: its
+    split branch, at a commit made on top of the source commit, as a split
+    commit is. Returns that commit."""
+    tree = git("rev-parse", "HEAD^{tree}", cwd=source).stdout.strip()
+    split = git("-c", "user.name=Earlier Run",
+                "-c", "user.email=earlier@run.invalid", "commit-tree", tree,
+                "-p", "HEAD", "-m", "Adopt the three-repository shape",
+                cwd=source).stdout.strip()
+    git("branch", BRANCH, split, cwd=source)
+    return split
 
 
 def no_leg_exists(tmp_path: Path) -> bool:
@@ -812,15 +822,19 @@ def test_a_split_branch_left_behind_is_refused_before_any_leg_exists(
     source = make_source_repo(tmp_path / "my source", tree=SMALL_TREE,
                               edits=())
     plan = planned(tmp_path, source)
-    leave_a_split_branch(source)
+    split = leave_a_split_branch(source)
 
     with pytest.raises(adopter.Refusal) as caught:
         adopter.cmd_execute(execute_args(tmp_path, plan))
 
     refusal = caught.value
     assert refusal.code == BRANCH_EXISTS
-    assert f"{source} already has {BRANCH}" in refusal.detail
-    assert refusal.remediation.startswith("Remediation: nothing was created.")
+    assert refusal.detail == (
+        f"{source} already has {BRANCH}, the branch this adoption pushes its "
+        f"split commit to, at {split[:12]}: neither the source commit "
+        f"{commit_of(source)[:12]} nor a commit behind it")
+    assert refusal.remediation.startswith(
+        "Remediation: no leg repository was created and nothing was pushed.")
     assert no_leg_exists(tmp_path)
 
     deleted = subprocess.run(printed_command(refusal.remediation,
@@ -871,6 +885,23 @@ def test_against_github_the_split_branch_is_asked_of_the_assembly(
                                                    False)
 
     assert caught.value.code == BRANCH_EXISTS
+
+
+@pytest.mark.parametrize("behind", [0, 2],
+                         ids=["at-the-source-commit", "behind-it"])
+def test_a_branch_the_split_push_fast_forwards_is_not_refused(
+        adopter, tmp_path, behind):
+    """#188's review, N1: a branch of that name at the source commit, or
+    behind it, is one the split push moves forward without force, and main
+    always pushed over it and verified. It was refused, as if it were an
+    earlier run's split, with a reason that was false for it."""
+    origin = make_source_repo(tmp_path / SOURCE)
+    git("branch", BRANCH, f"HEAD~{behind}", cwd=origin)
+    source = adopter.Source(origin, None, "main", commit_of(origin))
+
+    assert adopter._refuse_a_split_branch_left_behind(
+        source, {ROOT: str(origin), **leg_urls(tmp_path, leg_names())},
+        BRANCH, True) is None
 
 
 def test_a_refusal_from_the_substitution_table_leaves_no_leg_repository(
@@ -1048,7 +1079,25 @@ def test_a_refused_split_push_is_logged_after_the_legs_and_its_way_out_runs(
     rerun = execute(plan, tmp_path / "new remotes", tmp_path / "new work")
 
     assert rerun.returncode == 0, rerun.stderr + rerun.stdout
-    assert "adoption verified" in rerun.stdout
+    assert VERIFIED in rerun.stdout
+
+
+@needs_filter_repo
+def test_a_branch_at_the_source_commit_is_pushed_over_and_verifies(tmp_path):
+    """N1 end to end, as the review of #188 met it (its case F): a branch of
+    the split's name at the source commit, as `git branch` leaves one. The
+    split push fast-forwards it, onto a split commit whose parent is the
+    source commit, and the adoption verifies, as it did on main."""
+    source = make_source_repo(tmp_path / SOURCE, tree=SMALL_TREE, edits=())
+    plan = planned(tmp_path, source)
+    git("branch", BRANCH, cwd=source)
+
+    result = execute(plan, tmp_path / REMOTES, tmp_path / WORK)
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert VERIFIED in result.stdout
+    split = commit_of(source, f"refs/heads/{BRANCH}")
+    assert commit_of(source, f"{split}^") == commit_of(source)
 
 
 @needs_filter_repo
@@ -1132,4 +1181,4 @@ def test_a_failed_verification_is_flushed_and_its_way_out_runs(tmp_path):
     rerun = execute(plan, fresh_legs, new_work)
 
     assert rerun.returncode == 0, rerun.stderr + rerun.stdout
-    assert "adoption verified" in rerun.stdout
+    assert VERIFIED in rerun.stdout
