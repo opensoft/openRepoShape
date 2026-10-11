@@ -78,8 +78,8 @@ from repo_shape import (  # noqa: E402
 )
 from shape_materialize import (  # noqa: E402
     RULESET_HINT, SHAPE_REPOSITORY, CommandFailed, check_program,
-    commit_trailers, env_commit, materialize_family_root, run, stage_written,
-    trailer_line, write_lf,
+    commit_trailers, env_commit, escape_what_stdout_cannot_encode,
+    materialize_family_root, run, stage_written, trailer_line, write_lf,
 )
 
 NAMING_POLICY = SHAPE_ROOT / "contracts" / "repository-naming.yaml"
@@ -338,7 +338,9 @@ def _commit_one(root: Path, message: str, paths: list[str],
         if not env.get(key):
             env[key] = fallback
     proc = subprocess.run(args, cwd=str(root), input=message,
-                          capture_output=True, text=True, check=False, env=env)
+                          capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", check=False,
+                          env=env)
     if proc.returncode != 0:
         raise CommandFailed(args, root, proc.returncode,
                             proc.stderr + proc.stdout)
@@ -354,12 +356,14 @@ def _remote_is_empty(repository: str) -> bool | None:
     reliable signal — `size: 0` is also what a repository of small files says.
     """
     probe = subprocess.run(["gh", "repo", "view", repository, "--json", "name"],
-                           capture_output=True, text=True, check=False)
+                           capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", check=False)
     if probe.returncode != 0:
         return None
     commits = subprocess.run(
         ["gh", "api", f"repos/{repository}/commits?per_page=1"],
-        capture_output=True, text=True, check=False)
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        check=False)
     if commits.returncode != 0:
         if "empty" in (commits.stderr + commits.stdout).lower():
             return True
@@ -378,7 +382,8 @@ def _local_remote_is_empty(bare: Path) -> bool | None:
     if not bare.exists():
         return None
     out = subprocess.run(["git", "-C", str(bare), "rev-list", "--count",
-                          "--all"], capture_output=True, text=True, check=False)
+                          "--all"], capture_output=True, text=True,
+                         encoding="utf-8", errors="replace", check=False)
     if out.returncode != 0:
         raise Refusal("remote-unreadable",
                       f"{bare} exists but is not a git repository")
@@ -1107,6 +1112,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # FIRST, so that every `print` after it -- `--help` included -- escapes
+    # a name stdout cannot encode rather than raising on it (#214).
+    escape_what_stdout_cannot_encode()
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)
