@@ -64,8 +64,11 @@ import json
 import os
 import re
 import runpy
+import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 SHAPE_ROOT = Path(__file__).resolve().parents[1]
@@ -155,6 +158,25 @@ class Family:
         The block is LAST in the template precisely so this is a truncation
         and an append rather than a splice.
         """
+        text = self.rewritten(rows)
+        # LF, on every platform, like every other write this standard makes.
+        # `family.yaml` is not digest-pinned, so nothing would go red - which
+        # is exactly why it is worth saying: one tool rewriting a manifest
+        # with CRLF on Windows makes every `members:` edit a whole-file diff.
+        write_lf(self.path, text)
+        self.data["members"] = rows
+
+    def rewritten(self, rows: list[dict]) -> str:
+        """The manifest's text with the `members:` block replaced by `rows`,
+        or the refusal `write_members` would raise — and nothing written.
+
+        SPLIT OUT SO THE REFUSAL CAN BE ASKED EARLY (#203). `add` calls this
+        with the rows the manifest already has BEFORE it mounts anything, so
+        a manifest this tool will not rewrite is refused while the holder is
+        still exactly as the human left it, rather than after `git submodule
+        add` has staged a gitlink and a `.gitmodules` section that the
+        refusal would then leave behind.
+        """
         text = self.path.read_text(encoding="utf-8")
         lines = text.splitlines()
         out: list[str] = []
@@ -176,12 +198,7 @@ class Family:
                 "tool does not recognise. `members:` is the LAST block in the "
                 "file and everything below it belongs to this tool; fix it by "
                 "hand this once.")
-        # LF, on every platform, like every other write this standard makes.
-        # `family.yaml` is not digest-pinned, so nothing would go red - which
-        # is exactly why it is worth saying: one tool rewriting a manifest
-        # with CRLF on Windows makes every `members:` edit a whole-file diff.
-        write_lf(self.path, "\n".join(out) + "\n")
-        self.data["members"] = rows
+        return "\n".join(out) + "\n"
 
 
 def _member_lines(row: dict) -> list[str]:
@@ -266,13 +283,21 @@ def _classify_family_name(policy: NamingPolicy, name: str) -> None:
             "construction and cannot be declared into a holder.")
 
 
-def _read_member_project(path: Path, project: str, repository: str) -> str:
+def _read_member_project(path: Path, project: str, repository: str,
+                         shown: str | None = None) -> str:
     """The member's OWN `project.yaml` id, and that it is an assembly root.
 
     A FAMILY PINS ASSEMBLY ROOTS, never legs: the assembly root is the
     repository an engineer clones, and it is the only one of the three that
     knows what the whole project is. Reading its manifest here is what lets
     the row record an id the validator can check the mounted tree against.
+
+    `shown` IS THE NAME A REFUSAL GIVES THE FILE when `path` is not where a
+    human could find it: `add` reads the member's manifest out of a
+    throwaway clone before it mounts anything (#203), and a `load_yaml`
+    refusal naming that clone's temporary directory would name a file that
+    has been deleted by the time anybody reads the line. Every other word of
+    every refusal here is the same either way.
     """
     manifest_path = path / "project.yaml"
     if not manifest_path.is_file():
@@ -286,7 +311,13 @@ def _read_member_project(path: Path, project: str, repository: str) -> str:
             "a repository that already exists), then add it. Adding a leg — "
             f"`{project}-spec` or `{project}-code` — is never right: the legs "
             "belong to their own assembly root.")
-    manifest = load_yaml(manifest_path)
+    try:
+        manifest = load_yaml(manifest_path)
+    except Refusal as exc:
+        if shown is None:
+            raise
+        raise Refusal(exc.code, exc.detail.replace(str(manifest_path), shown),
+                      exc.remediation) from exc
     if not isinstance(manifest, dict):
         raise Refusal("member-manifest-unreadable",
                       f"{repository}: project.yaml is not a mapping")
@@ -773,11 +804,80 @@ def cmd_init(args) -> int:
 # ---------------------------------------------------------------------------
 # add
 # ---------------------------------------------------------------------------
+#
+# CHECK BEFORE MOUNT, UNWIND AFTER IT (#203). `add` used to run `git submodule
+# add` FIRST and only then ask whether `--at` was a commit and whether the
+# member had a `project.yaml`, and neither refusal undid the mount. A leg, or a
+# short `--at`, left a staged gitlink, a staged `.gitmodules` section and a
+# cached object store behind; the next `add` of a DIFFERENT member then
+# committed the refused one's `.gitmodules` section under its own title,
+# because `_commit_one` commits the working-tree state of `.gitmodules` whole,
+# and `validate-family.py` and the doctor both passed the result. So every
+# refusal `add` makes is now asked before the holder is touched — the
+# holder's own (`_checked_add_target`) and the member's (`_probe_member`, of a
+# throwaway clone) — and whatever still fails after the mount is undone by
+# `MountRollback`, which says what it put back.
 
 
-def cmd_add(args) -> int:
-    family = Family.open(args.family_root)
-    repository, project = _checked_member(args.member)
+#: Said when the member cannot be read, which is what a PRIVATE member looks
+#: like from a machine that has no credential for it.
+UNREADABLE_HINT = ("The member must be readable from here. If it is PRIVATE, "
+                   "check `gh auth status` or your SSH key; a family cannot "
+                   "pin what it cannot read.")
+
+
+def _rmtree(path: Path) -> None:
+    """`shutil.rmtree` that also works over a git object store on Windows.
+
+    Both trees `add` deletes are object stores — the throwaway clone, and the
+    `.git/modules/<path>` of a mount it is undoing — and git writes loose
+    objects and packs READ-ONLY, which Windows refuses to unlink: the plain
+    call raises PermissionError there and succeeds everywhere else. The
+    handler is the one `setup-project.py` carries, which a one-file installer
+    cannot share. `onexc` where it exists, because `onerror` is deprecated
+    from 3.12 and its warning would land on this command's own stderr;
+    `onerror` on the 3.9 this standard still runs on.
+    """
+    def clear_readonly(func, target, _exc):
+        os.chmod(target, stat.S_IWRITE)
+        func(target)
+
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=clear_readonly)
+    else:  # pragma: no cover - the spelling before 3.12
+        shutil.rmtree(path, onerror=clear_readonly)
+
+
+def _module_dir(root: Path, path: str) -> tuple[str, Path]:
+    """`(as git spells it, on disk)`: where the holder keeps the object store
+    of the submodule at `path`.
+
+    ASKED OF GIT, NOT ASSUMED (#203). `.git/modules/<path>` is right for a
+    holder that is an ordinary clone and wrong for one that is a LINKED
+    WORKTREE — a lane's usual way of opening a pull request — where `.git` is
+    a file and git keeps the store under `.git/worktrees/<name>/modules/`.
+    `git rev-parse --git-path` answers for both, so the refusal that names a
+    cached store and the unwind that deletes the one a refused run made look
+    where `git submodule add` writes. For an ordinary clone the answer is the
+    `.git/modules/<path>` this tool has always named.
+    """
+    shown = git_out(["rev-parse", "--git-path", f"modules/{path}"], cwd=root)
+    return shown, root / shown
+
+
+def _checked_add_target(family: Family, project: str, path: str,
+                        at: str | None) -> str | None:
+    """Every refusal `add` makes about the HOLDER and its own arguments,
+    asked before the member is read or anything is mounted. Returns `--at`
+    checked and lowercased, or None.
+
+    `--at`'s SHAPE IS ASKED HERE (#203). It used to be asked after the mount,
+    so `--at abc1234` — a short sha, the commonest typo there is — left the
+    member mounted and staged, and the corrected command was then refused
+    twice more (`member-path-taken`, `member-git-dir-cached`) before it could
+    run. Whether the commit is IN the member is `_probe_commit`'s question,
+    because only the member's own objects can answer it.
+    """
     if family.member(project) is not None:
         raise Refusal(
             "member-already-present",
@@ -785,7 +885,6 @@ def cmd_add(args) -> int:
             "Remediation: `family.py bump --member "
             f"{project} --to <commit>` moves an existing member; `remove` "
             "takes it out. Adding it twice is not a way to move it.")
-    path = f"{MEMBERS_DIR}/{project}"
     if (family.root / path).exists():
         raise Refusal(
             "member-path-taken",
@@ -801,7 +900,7 @@ def cmd_add(args) -> int:
     # taken.
     # NAMED IN POSIX: git spells this `.git/modules/<path>`, and so does the
     # human who retypes the remediation below.
-    cached = family.root / ".git" / "modules" / path
+    _, cached = _module_dir(family.root, path)
     if cached.exists():
         raise Refusal(
             "member-git-dir-cached",
@@ -813,41 +912,362 @@ def cmd_add(args) -> int:
             f"re-run:\n    rm -rf {cached.as_posix()}\nIt is left behind by "
             "`git rm` on purpose, which is why this tool will not remove it "
             "for you.")
+    # The pin is written into a `members:` block `write_members` has to be
+    # able to find; a manifest it would refuse is refused NOW, while there is
+    # nothing to undo.
+    family.rewritten(family.members)
+    if not at:
+        return None
+    commit = checked_value("--at", at)
+    if not COMMIT_RE.match(commit):
+        raise Refusal(
+            "member-at-not-a-commit",
+            f"--at {at!r} is not a 40-hex commit",
+            "Remediation: pass the full 40 characters. A tag can be moved "
+            "and a commit cannot, which is why a pin is never a tag.")
+    return commit.lower()
 
-    url = _member_url(repository, args.local_remote_dir)
-    protocol = FILE_PROTOCOL if args.local_remote_dir is not None else []
-    print(f"mounting {repository} at {path}")
+
+def _probe_member(url: str, protocol: list[str], repository: str,
+                  project: str, at: str | None) -> str:
+    """The commit `add` will pin, with every refusal about the MEMBER asked
+    of a throwaway clone BEFORE the holder is touched (#203).
+
+    A BARE CLONE IN A TEMPORARY DIRECTORY, OUTSIDE THE HOLDER. The commit is
+    resolved and the manifest read from the member's own objects — no
+    checkout, and nothing of the holder's: not its index, not `.gitmodules`,
+    not `.git/` — and the clone is deleted whatever the answer. Only a member
+    that passes is mounted.
+
+    TWO CLONES OF THE MEMBER, ON PURPOSE. A member is an assembly root, whose
+    legs are submodules a clone does not fetch, so the second clone is
+    small; and it buys a mount that `git submodule add` makes exactly as it
+    always has — on its branch, which is the state the doctor's `members`
+    row says a fresh `add` leaves. The mount is read again afterwards and
+    that reading is what the pin records, so a member that moved between the
+    two clones is pinned where the mount found it, or refused there and
+    unwound.
+    """
+    scratch = Path(tempfile.mkdtemp(prefix="openreposhape-member-"))
     try:
-        run(["git", *protocol, "submodule", "add", "-q", "--", url, path],
-            cwd=family.root)
-    except CommandFailed as exc:
-        print(exc.loudly(f"mounting {repository}"), file=sys.stderr)
-        print("The member must be readable from here. If it is PRIVATE, check "
-              "`gh auth status` or your SSH key; a family cannot pin what it "
-              "cannot read.", file=sys.stderr)
-        return 2
-    member = family.root / path
-    if args.at:
-        commit = checked_value("--at", args.at)
-        if not COMMIT_RE.match(commit):
-            raise Refusal(
-                "member-at-not-a-commit",
-                f"--at {args.at!r} is not a 40-hex commit",
-                "Remediation: pass the full 40 characters. A tag can be moved "
-                "and a commit cannot, which is why a pin is never a tag.")
+        clone = scratch / "member.git"
+        run(["git", *protocol, "clone", "-q", "--bare", "--", url, str(clone)])
+        commit = _probe_commit(clone, repository, at)
+        _probe_manifest(clone, commit, scratch / "project", project,
+                        repository)
+        return commit
+    finally:
         try:
-            run(["git", "checkout", "-q", commit.lower()], cwd=member)
-        except CommandFailed as exc:
-            print(exc.loudly(f"checking {repository} out at {commit[:12]}"),
-                  file=sys.stderr)
-            return 2
+            _rmtree(scratch)
+        except OSError as exc:
+            print(f"  note: the throwaway clone {scratch} could not be "
+                  f"deleted ({exc.strerror or exc}); nothing in the holder "
+                  "refers to it", file=sys.stderr)
+
+
+def _probe_commit(clone: Path, repository: str, at: str | None) -> str:
+    """`--at`, or the member's tip, as a commit of the member — or the
+    refusal saying which of the two it was not.
+
+    `^{commit}` PEELS: an annotated tag's own sha resolves to the commit it
+    tags, which is what checking it out pinned before; a tree's or a blob's
+    resolves to nothing and is refused. A clone fetches every branch and tag,
+    which is everything a mount of the member could ever check out.
+    """
+    wanted = at or "HEAD"
+    try:
+        return git_out(["rev-parse", "-q", "--verify", f"{wanted}^{{commit}}"],
+                       cwd=clone).lower()
+    except Refusal as exc:
+        missing = exc
+    if at is None:
+        raise Refusal(
+            "member-no-tip",
+            f"{repository} has no commit on its default branch to pin: it is "
+            "empty, or its HEAD names a branch it does not have",
+            "Remediation: a family pins a commit, so the member must have "
+            "one. Scaffold or adopt the project first, which gives it one, "
+            "or pass `--at <40-hex commit>` naming a commit it already "
+            "has.") from missing
+    raise Refusal(
+        "member-at-unknown",
+        f"--at {at} is not a commit any branch or tag of {repository} "
+        "reaches",
+        "Remediation: check the commit — it belongs to the member's ASSEMBLY "
+        "ROOT, not to one of its legs — and that it has been pushed. A pin "
+        "the rest of the world cannot fetch is a family the rest of the "
+        "world cannot bootstrap.") from missing
+
+
+def _probe_manifest(clone: Path, commit: str, scratch: Path, project: str,
+                    repository: str) -> None:
+    """`_read_member_project`, asked of the member's objects at `commit`
+    rather than of a checkout.
+
+    THE SAME FUNCTION, SO THE SAME REFUSALS. The one file is copied out of
+    the clone into a directory of its own and read by the function the mount
+    is read with, so `member-not-a-project`, `member-manifest-unreadable`,
+    `member-bad-id` and `load_yaml`'s own refusals are the ones a human has
+    always been given, word for word, with the file named as `<repository> @
+    <commit>:project.yaml` instead of by a temporary path. A `project.yaml`
+    that is a directory or a submodule is no file at all, which is what a
+    checkout's `is_file()` says about it too.
+
+    A SYMLINK IS LEFT TO THE MOUNT. A checkout reads THROUGH a link and an
+    object store holds only the link's text, so a linked `project.yaml` is
+    not judged here: the mount's own reading judges it, and a refusal there
+    is unwound like any other.
+    """
+    listed = git_out(["ls-tree", "-z", commit, "--", "project.yaml"],
+                     cwd=clone, binary=True)
+    mode, kind, oid = (listed.split(b"\t", 1)[0].split() + [b""] * 3)[:3]
+    if mode == b"120000":
+        return
+    scratch.mkdir()
+    if kind == b"blob":
+        (scratch / "project.yaml").write_bytes(
+            git_out(["cat-file", "blob", oid.decode("ascii")], cwd=clone,
+                    binary=True))
+    _read_member_project(scratch, project, repository,
+                         shown=f"{repository} @ {commit[:12]}:project.yaml")
+
+
+def _git_input(args: list[str], cwd: Path, data: bytes) -> None:
+    """`git <args>`, reading `data` on stdin as BYTES.
+
+    Bytes, never text: these are index records, and a text-mode pipe is
+    re-encoded and, on Windows, has its line endings rewritten on the way to
+    a program that reads every byte of a record as part of it.
+    """
+    command = ["git", *args]
+    check_program(command)
+    proc = subprocess.run(command, cwd=str(cwd), input=data,
+                          capture_output=True, check=False)
+    if proc.returncode != 0:
+        raise CommandFailed(command, cwd, proc.returncode,
+                            (proc.stderr + proc.stdout).decode("utf-8",
+                                                               "replace"))
+
+
+def _reason(exc: BaseException) -> str:
+    """One line saying why an unwind step failed, for the sentence that
+    names what is left to do by hand."""
+    if isinstance(exc, CommandFailed):
+        last = exc.output.splitlines()[-1:] or [f"exit {exc.code}"]
+        return f"`{' '.join(exc.args_list)}`: {last[0]}"
+    if isinstance(exc, Refusal):
+        return exc.detail
+    return getattr(exc, "strerror", None) or str(exc)
+
+
+def _ended(text: str) -> str:
+    """`text` ending in a full stop, so a sentence can follow it."""
+    text = text.rstrip()
+    return text if text.endswith((".", "!", "?")) else text + "."
+
+
+class MountRollback:
+    """Everything `add` changes in the holder once it mounts, and how to put
+    the holder back (#203).
+
+    ALL OF IT. `git submodule add` writes the member's working tree at
+    `members/<Project>` (making `members/` for the first member), its object
+    store under the holder's git directory, a staged gitlink, a staged
+    section in `.gitmodules` (making the file for the first member) and a
+    `submodule.<path>` registration in the holder's `.git/config`; `add` then
+    rewrites `family.yaml`, and `_commit_one` stages it. Each of those is
+    recorded BEFORE the mount and put back by `undo`, so a refusal after the
+    mount leaves no half-added member for the next `add`'s commit to carry.
+
+    ONLY WHAT THIS RUN MADE IS DELETED. A directory is removed only if it did
+    not exist when the record was taken — and `add` refuses before the mount
+    when either of the two does — and a parent only if it is empty, as
+    `update-shape.py`'s `Rollback` treats one: a directory that is not empty
+    holds something nobody here wrote. The two files go back to the bytes AND
+    the index entries they had, not to HEAD's, so whatever a human had
+    staged in either before running `add` is still staged after it.
+
+    NEVER OVER A COMMIT THAT LANDED. HEAD is recorded too, and if it has
+    moved the one commit happened: undoing the tree under it would leave a
+    working copy that contradicts its own history, so nothing is undone and
+    the sentence says so.
+    """
+
+    def __init__(self, root: Path, path: str) -> None:
+        self.root = root
+        self.path = path
+        #: What `add` was doing, for the loud block a failed git command
+        #: gets; `_mount_and_pin` moves it on before each step.
+        self.step = f"mounting {path}"
+        self.head = git_out(["rev-parse", "HEAD"], cwd=root)
+        self.gitlink = self._entries(path)
+        self.files = {name: (self._bytes(name), self._entries(name))
+                      for name in (GITMODULES, MANIFEST)}
+        self.registration = self._registration()
+        module_shown, module = _module_dir(root, path)
+        #: `(directory, as it is named, its parents that do not exist yet)`
+        #: for each of the two directories the mount makes, if it is absent
+        #: now. Parents nearest first, which is the order they empty in.
+        self.trees = [(tree, shown, [p for p in tree.parents
+                                     if not p.exists()])
+                      for tree, shown in ((root / path, path),
+                                          (module, module_shown))
+                      if not tree.exists()]
+
+    def _bytes(self, name: str) -> bytes | None:
+        target = self.root / name
+        return target.read_bytes() if target.is_file() else None
+
+    def _entries(self, name: str) -> list[bytes]:
+        """The index records for exactly `name`, one per stage, in the form
+        `git update-index --index-info` takes back — so a path that was
+        conflicted is put back conflicted."""
+        listed = git_out(["ls-files", "-s", "-z", "--", name], cwd=self.root,
+                         binary=True)
+        exact = name.encode("utf-8")
+        return [record for record in listed.split(b"\0")
+                if record.partition(b"\t")[2] == exact]
+
+    def _registration(self) -> list[tuple[str, str]]:
+        """The holder's own `submodule.<path>.*` keys and values, in order.
+
+        LISTED AND FILTERED HERE, NOT MATCHED BY A PATTERN: a member's name
+        may carry a `.`, so `submodule.members/IRQS.v2.url` belongs to a
+        different member that a prefix would take for this one. A variable
+        name is everything after a key's LAST dot, so the section is
+        everything before it.
+        """
+        listed = git_out(["config", "--local", "--list", "-z"],
+                         cwd=self.root, binary=True)
+        section = f"submodule.{self.path}"
+        found = []
+        for record in listed.split(b"\0"):
+            key, _, value = record.decode("utf-8",
+                                          "surrogateescape").partition("\n")
+            if key.rpartition(".")[0] == section:
+                found.append((key, value))
+        return found
+
+    def _undo_entries(self, name: str, entries: list[bytes]) -> bool:
+        if self._entries(name) == entries:
+            return False
+        run(["git", "update-index", "--force-remove", "--", name],
+            cwd=self.root)
+        if entries:
+            _git_input(["update-index", "-z", "--index-info"], self.root,
+                       b"".join(entry + b"\0" for entry in entries))
+        return True
+
+    def _undo_file(self, name: str, data: bytes | None,
+                   entries: list[bytes]) -> bool:
+        changed = self._bytes(name) != data
+        if changed and data is None:
+            (self.root / name).unlink()
+        elif changed:
+            (self.root / name).write_bytes(data)
+        return self._undo_entries(name, entries) or changed
+
+    def _undo_tree(self, tree: Path, parents: list[Path]) -> bool:
+        removed = tree.exists()
+        if removed:
+            _rmtree(tree)
+        for parent in parents:
+            if parent.is_dir() and not any(parent.iterdir()):
+                parent.rmdir()
+        return removed
+
+    def _undo_registration(self) -> bool:
+        now = self._registration()
+        if now == self.registration:
+            return False
+        if now:
+            run(["git", "config", "--local", "--remove-section",
+                 f"submodule.{self.path}"], cwd=self.root)
+        for key, value in self.registration:
+            run(["git", "config", "--local", "--add", key, value],
+                cwd=self.root)
+        return True
+
+    def undo(self) -> str:
+        """Put the holder back. Returns the sentence a refusal ends with:
+        what was put back, or — if any of it could not be — what is left."""
+        try:
+            landed = git_out(["rev-parse", "HEAD"], cwd=self.root) != self.head
+        except Refusal:
+            landed = False
+        if landed:
+            return (" The commit had already landed, so nothing was undone: "
+                    "`git log -1` in the holder shows it.")
+        steps = [(f"the gitlink at {self.path} unstaged", self._undo_entries,
+                  (self.path, self.gitlink))]
+        steps += [(f"{shown} removed", self._undo_tree, (tree, parents))
+                  for tree, shown, parents in self.trees]
+        steps += [((f"{name} restored byte for byte" if data is not None else
+                    f"{name} removed, as there was none before"),
+                   self._undo_file, (name, data, entries))
+                  for name, (data, entries) in self.files.items()]
+        steps.append((f"`submodule.{self.path}` dropped from the holder's "
+                      "git config", self._undo_registration, ()))
+        restored, failed = [], []
+        for said, action, arguments in steps:
+            try:
+                if action(*arguments):
+                    restored.append(said)
+            except (CommandFailed, Refusal, OSError) as exc:
+                failed.append(f"{said}: {_reason(exc)}")
+        if failed:
+            return (" The mount was undone only in part"
+                    + (" (" + ", ".join(restored) + ")" if restored else "")
+                    + "; NOT " + "; NOT ".join(failed) + ". Put those back "
+                    "by hand — `git status` shows what is left — before "
+                    "running `add` again.")
+        if restored:
+            return (" Nothing was added: the mount has been undone — "
+                    + ", ".join(restored) + " — and the holder is exactly as "
+                    "it was before this command.")
+        return " Nothing was added, and nothing in the holder had changed."
+
+
+def _mount_and_pin(family: Family, repository: str, project: str, path: str,
+                   url: str, protocol: list[str], at: str | None,
+                   rollback: MountRollback) -> tuple[str, str, str, str]:
+    """The part of `add` that writes: `git submodule add`, the pin and the
+    ONE commit. Returns `(commit, digest, project id, the new HEAD)`.
+
+    Every step runs inside the caller's `MountRollback` and moves its `step`
+    on first, so a git command that fails is named by what `add` was doing.
+    The member is read AGAIN here, from the mount, and this reading is what
+    the pin records: `_probe_member` asked the same questions moments ago, so
+    a refusal here means the member moved in between, and it is unwound like
+    any other.
+    """
+    rollback.step = f"mounting {repository}"
+    run(["git", *protocol, "submodule", "add", "-q", "--", url, path],
+        cwd=family.root)
+    member = family.root / path
+    if at:
+        rollback.step = f"checking {repository} out at {at[:12]}"
+        run(["git", "checkout", "-q", at], cwd=member)
     commit = git_out(["rev-parse", "HEAD"], cwd=member).lower()
     project_id = _read_member_project(member, project, repository)
     digest = tree_digest(member, commit)
     row = _member_row(project, project_id, repository, commit, digest)
     rows = sorted(family.members + [row], key=lambda r: str(r["project"]))
-    family.write_members(rows)
+    # A FAILED WRITE IS A REFUSAL, NEVER A TRACEBACK — the rule
+    # `update-shape.py` keeps for the same reason: the caller unwinds on a
+    # refusal, and an `OSError` reaching `main` would print a traceback over
+    # the one sentence that says the holder was put back.
+    try:
+        family.write_members(rows)
+    except OSError as exc:
+        raise Refusal(
+            "family-manifest-unwritable",
+            f"{MANIFEST} could not be rewritten with {project}'s pin: "
+            f"{exc.strerror or exc}",
+            f"Remediation: make {MANIFEST} writable, and check the disk has "
+            "room, then run the same command again.") from exc
 
+    rollback.step = f"committing {project} to the family"
     head = _commit_one(
         family.root,
         f"Add {project} to the {family.data.get('name')} family\n\n"
@@ -857,6 +1277,53 @@ def cmd_add(args) -> int:
         "project: its own assembly root, its own legs, its own gate. "
         "Membership confers nothing.\n",
         [GITMODULES, path, MANIFEST])
+    return commit, digest, project_id, head
+
+
+def cmd_add(args) -> int:
+    """Mount one member and pin it in ONE commit, or refuse and leave the
+    holder exactly as it was (#203).
+
+    IN THIS ORDER, AND ONLY THIS ORDER: the holder's refusals
+    (`_checked_add_target`), then the member's (`_probe_member`, of a
+    throwaway clone), and only then the mount, the pin and the commit
+    (`_mount_and_pin`), inside a `MountRollback` that puts the holder back
+    if anything still fails and says what it put back.
+    """
+    family = Family.open(args.family_root)
+    repository, project = _checked_member(args.member)
+    path = f"{MEMBERS_DIR}/{project}"
+    at = _checked_add_target(family, project, path, args.at)
+
+    url = _member_url(repository, args.local_remote_dir)
+    protocol = FILE_PROTOCOL if args.local_remote_dir is not None else []
+    # FLUSHED, so that in a log holding both streams the line saying what
+    # was being done comes before a refusal of it, not after.
+    print(f"checking {repository} before mounting it", flush=True)
+    try:
+        commit = _probe_member(url, protocol, repository, project, at)
+    except CommandFailed as exc:
+        print(exc.loudly(f"reading {repository}"), file=sys.stderr)
+        print(UNREADABLE_HINT, file=sys.stderr)
+        return 2
+
+    rollback = MountRollback(family.root, path)
+    print(f"mounting {repository} at {path}", flush=True)
+    try:
+        commit, digest, project_id, head = _mount_and_pin(
+            family, repository, project, path, url, protocol,
+            commit if at else None, rollback)
+    except Refusal as exc:
+        exc.detail = _ended(exc.detail) + rollback.undo()
+        raise
+    except CommandFailed as exc:
+        undone = rollback.undo()
+        print(exc.loudly(rollback.step), file=sys.stderr)
+        print(undone.strip(), file=sys.stderr)
+        return 2
+    except BaseException:
+        print(rollback.undo().strip(), file=sys.stderr)
+        raise
     print(f"  {project:<16} {commit[:12]} tree {digest[:12]}… "
           f"(project {project_id})")
     print(f"  committed {head[:12]}: .gitmodules, {path}, {MANIFEST}")
