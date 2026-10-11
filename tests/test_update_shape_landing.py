@@ -194,7 +194,8 @@ def test_a_failed_pull_request_is_named_and_its_next_line_is_the_command(
     assert f"pushed {BRANCH} to origin" in result.stdout
 
     calls = gh.calls()
-    assert len(calls) == 1 and calls[0][:2] == ["pr", "create"], calls
+    assert len(calls) == 1, calls
+    assert calls[0][:2] == ["pr", "create"], calls
     create = ["gh", *calls[0]]
     line = next_line_of(result.stdout)
     assert line == "NEXT  " + shlex.join(create)
@@ -222,9 +223,10 @@ def test_a_failed_pull_request_on_an_unpushed_branch_pushes_first(
     assert f"pushed {BRANCH}" not in result.stdout
 
     calls = gh.calls()
-    assert len(calls) == 1 and calls[0][:2] == ["pr", "create"], calls
-    push = shlex.join(["git", "-C", str(root.path), "push", "-u", "origin",
-                       BRANCH])
+    assert len(calls) == 1, calls
+    assert calls[0][:2] == ["pr", "create"], calls
+    push = shlex.join(["git", "-C", str(root.path), "push", "-u", "--",
+                       "origin", BRANCH])
     assert next_line_of(result.stdout) == (
         f"NEXT  {push} && " + shlex.join(["gh", *calls[0]]))
     the_commit_stands(root, project)
@@ -340,6 +342,8 @@ def test_a_failed_push_is_named_and_its_next_line_pushes_first(root, project,
     result = apply(root, project, "--branch", BRANCH, *flags)
     assert result.returncode == 2, result.stdout + result.stderr
     assert f"REFUSED pushing {BRANCH}" in result.stderr
+    assert f"git push -q -u -- origin {BRANCH}" in result.stderr, (
+        "`--` ends git's options before the branch")
     assert "committing the re-synced shape" not in result.stderr
     assert "origin does not have it yet" in result.stderr
     assert "nothing was rolled back" in result.stderr
@@ -347,8 +351,8 @@ def test_a_failed_push_is_named_and_its_next_line_pushes_first(root, project,
     assert f"pushed {BRANCH}" not in result.stdout
 
     line = next_line_of(result.stdout)
-    push = shlex.join(["git", "-C", str(root.path), "push", "-u", "origin",
-                       BRANCH])
+    push = shlex.join(["git", "-C", str(root.path), "push", "-u", "--",
+                       "origin", BRANCH])
     assert line.startswith(f"NEXT  {push} && gh pr create "), line
     if "--pr" in flags:
         assert f"--repo testorg/{PROJECT} --base main --head {BRANCH} " \
@@ -475,6 +479,56 @@ def test_a_rerun_naming_the_tracking_branch_pushes_nothing(root, project,
     assert gh.calls() == []
     assert git("rev-parse", "refs/heads/main",
                cwd=root.remote).stdout == landed, "nothing was pushed"
+
+
+# --- `--branch` is checked before anything runs ------------------------------
+
+ALPHABET = "must start with a letter or a digit"
+GIT_SAYS = "`git check-ref-format --branch` refuses it"
+
+
+@pytest.mark.parametrize("branch, why", [
+    ("-shape", ALPHABET),
+    ("--upload-pack=touch", ALPHABET),
+    ("shape/a b", ALPHABET),
+    ("shape/x@{1}", ALPHABET),
+    ("shape/a..b", GIT_SAYS),
+    ("shape/x.lock", GIT_SAYS),
+    ("shape/.x", GIT_SAYS),
+    ("shape//x", GIT_SAYS),
+    ("shape/x/", GIT_SAYS),
+], ids=["leading-dash", "option", "space", "at-brace", "dot-dot", "dot-lock",
+        "dot-part", "double-slash", "trailing-slash"])
+def test_a_branch_git_would_not_create_is_refused_before_anything_runs(
+        root, project, gh, branch, why):
+    """`--branch` BECOMES `git` AND `gh` ARGUMENTS and a word in a NEXT line
+    somebody pastes, the re-run's included, so `main` checks it before
+    anything is read, written or run: the alphabet first, so nothing that
+    reads as an option reaches git, then `git check-ref-format --branch`.
+    `--branch=<value>` is how a value starting with `-` gets past argparse."""
+    head = git("rev-parse", "HEAD", cwd=root.path).stdout
+    result = apply(root, project, f"--branch={branch}", "--push", "--pr",
+                   env=gh.env)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stderr.startswith(
+        f"REFUSED update-branch-invalid: --branch {branch!r} "), result.stderr
+    assert why in result.stderr
+    assert "Remediation: pass a branch name such as `shape/update-<sha>`" \
+        in result.stderr
+    assert result.stdout == "", "refused before anything was read or written"
+    assert git("rev-parse", "HEAD", cwd=root.path).stdout == head
+    assert git("status", "--porcelain", cwd=root.path).stdout == ""
+    assert git("for-each-ref", "--format=%(refname)", "refs/heads/",
+               cwd=root.path).stdout.split() == ["refs/heads/main"]
+    assert gh.calls() == []
+
+
+@pytest.mark.parametrize("branch", ["shape/update-landing", "shape/update-v1.2",
+                                    "lane-3/shape+fix@eagle", "x"])
+def test_a_branch_git_would_create_is_taken_as_written(update_shape, branch):
+    """A NAME WITH A `/` IS THE ORDINARY CASE, and so is the rest of the
+    alphabet `checked_value` always allowed: each is returned unchanged."""
+    assert update_shape.checked_branch(branch) == branch
 
 
 # --- the same two runs in-process, on every platform -------------------------

@@ -118,6 +118,13 @@ from shape_materialize import (  # noqa: E402
 #: `owner/repo`, the only remote spelling `--upstream` accepts.
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
+#: How `--branch` may be spelled: the alphabet `checked_value` already
+#: allowed it, less the `~` git refuses anyway, and a FIRST character that is
+#: a letter or a digit, so no value reads as an option (`--upload-pack=…`) or
+#: starts with a `/` or a `.`. `checked_branch` holds it to this, then to
+#: git's own rules.
+BRANCH_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/@+-]{0,254}")
+
 #: Where `adopt-project.py` puts a template file whose name the source
 #: repository already uses. Spelled here because this tool must map
 #: `shape/Makefile` back to the template it was cut from;
@@ -1447,6 +1454,54 @@ def current_branch(root: Path) -> str | None:
     return proc.stdout.strip() or None
 
 
+BRANCH_REMEDIATION = (
+    "Remediation: pass a branch name such as `shape/update-<sha>`. It starts "
+    "with a letter or a digit, holds only letters, digits and `. _ / @ + -`, "
+    "and is one `git check-ref-format --branch <name>` accepts: no `..`, no "
+    "`//`, no `@{`, no trailing `/` or `.`, and no part that starts with `.` "
+    "or ends in `.lock`.")
+
+
+def checked_branch(value: str) -> str:
+    """`--branch`, CHECKED ONCE, in `main`, before this tool reads, writes or
+    runs anything (#204).
+
+    The value becomes `git` arguments (the branch `apply` creates and pushes,
+    and the ref its re-run reads), `gh pr create --head`, and a word in the
+    NEXT line a human or an agent pastes and runs. A value that starts with
+    `-` is an option to whichever of those reads it first, so the alphabet
+    is checked before anything else, and only a value `BRANCH_RE` admits is
+    put to `git check-ref-format --branch`, which is the authority on what a
+    branch name is: it is asked, not copied. A spelling it would expand
+    rather than echo is refused too: `apply` names the branch it creates.
+    """
+    if not BRANCH_RE.fullmatch(value):
+        raise Refusal(
+            "update-branch-invalid",
+            f"--branch {value!r} is not a branch name this tool will put on a "
+            "`git` or `gh` command line: it must start with a letter or a "
+            "digit and hold only letters, digits and `. _ / @ + -`",
+            BRANCH_REMEDIATION)
+    try:
+        verdict = subprocess.run(["git", "check-ref-format", "--branch", value],
+                                 capture_output=True, text=True,
+                                 encoding="utf-8", errors="replace",
+                                 check=False)
+    except OSError as exc:
+        raise Refusal(
+            "update-branch-invalid",
+            f"--branch {value!r} could not be checked: `git check-ref-format "
+            f"--branch` could not be run ({exc})", BRANCH_REMEDIATION) from exc
+    if verdict.returncode != 0 or verdict.stdout.strip() != value:
+        said = (verdict.stderr or verdict.stdout).strip()
+        raise Refusal(
+            "update-branch-invalid",
+            f"--branch {value!r} is not a branch name git will create: `git "
+            "check-ref-format --branch` refuses it"
+            + (f" ({said})" if said else ""), BRANCH_REMEDIATION)
+    return value
+
+
 def branch_exists(root: Path, branch: str) -> bool:
     """Is `branch` a local branch of `root` — checked out or not?"""
     proc = subprocess.run(
@@ -1963,7 +2018,9 @@ def landing_failed(root: Path, args, exc: CommandFailed, act: str,
 
     WHAT STANDS IS READ FROM GIT, not from the flags: `push -u` moves
     `refs/remotes/origin/<branch>`, so "origin has it" is that ref agreeing
-    with HEAD, and a NEXT line that cannot vouch for the push carries it in
+    with HEAD. Git is asked which remote-tracking refs point at HEAD and the
+    branch is looked for in its answer, so the name is never a `git`
+    argument here. A NEXT line that cannot vouch for the push carries it in
     front of the `gh pr create` (a push origin already has is a no-op). The
     `gh pr create` is `create` itself, quoted to be pasted: under `--pr` the
     very command `--pr` runs, title and body included, so the pull request
@@ -1981,9 +2038,10 @@ def landing_failed(root: Path, args, exc: CommandFailed, act: str,
     """
     branch = args.branch
     head = (_git_answer(root, ["rev-parse", "HEAD"]) or "").strip()
-    remote = (_git_answer(root, ["rev-parse", "--verify", "--quiet",
-                                 f"refs/remotes/origin/{branch}"]) or "").strip()
-    pushed = bool(head) and remote == head
+    at_head = (_git_answer(root, ["for-each-ref", "--format=%(refname)",
+                                  "--points-at", "HEAD", "refs/remotes/origin/"])
+               or "").splitlines()
+    pushed = bool(head) and f"refs/remotes/origin/{branch}" in at_head
     sys.stdout.flush()
     print(exc.loudly(act), file=sys.stderr)
     left = ("its pull request: the NEXT line opens it" if pushed
@@ -2000,18 +2058,20 @@ def landing_failed(root: Path, args, exc: CommandFailed, act: str,
           f"is {left}{again}.", file=sys.stderr)
     sys.stderr.flush()
     push = ("" if pushed else shlex.join(["git", "-C", str(root), "push", "-u",
-                                          "origin", branch]) + " && ")
+                                          "--", "origin", branch]) + " && ")
     print()
     print(f"NEXT  {push}{shlex.join(create)}")
     return LandingIncomplete(act)
 
 
 def push_branch(root: Path, args, create: list[str]) -> None:
-    """`git push -u origin <branch>`, for the first run and for the re-run
-    alike. A refusal from origin is `landing_failed`'s (#204): the commit it
-    was pushing stands, so the step is named and nothing is rolled back."""
+    """`git push -u -- origin <branch>`, for the first run and for the re-run
+    alike, `--` ending git's options before the two positionals. A refusal
+    from origin is `landing_failed`'s (#204): the commit it was pushing
+    stands, so the step is named and nothing is rolled back."""
     try:
-        run(["git", "push", "-q", "-u", "origin", args.branch], cwd=root)
+        run(["git", "push", "-q", "-u", "--", "origin", args.branch],
+            cwd=root)
     except CommandFailed as exc:
         raise landing_failed(root, args, exc, f"pushing {args.branch}",
                              create) from exc
@@ -2259,6 +2319,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "check":
             return cmd_check(args)
+        if args.branch:
+            # BEFORE ANY USE (#204): every path below may run `git` or `gh`
+            # with it or print it in a NEXT line, the re-run's included,
+            # which never reaches the commit's own check.
+            args.branch = checked_branch(args.branch)
         # NAMED BY WHAT WAS ACTUALLY PASSED. The three fail for one
         # reason — there is no commit — and a refusal listing flags nobody
         # typed reads as a refusal of something else. `--trailer` joined them
