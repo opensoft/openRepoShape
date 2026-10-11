@@ -3671,6 +3671,58 @@ def test_where_two_rows_name_one_path_the_first_decides(standard, project,
     assert held.get("recorded_leg") == recorded_leg, held
 
 
+#: A leg's `.gitmodules` registering `.cursor`, as an adoption leaves one.
+CURSOR_GITMODULES = ('[submodule ".cursor"]\n\tpath = .cursor\n'
+                     "\turl = https://example.invalid/rules.git\n")
+
+#: What the row says of a `.gitmodules` whose question the record answered.
+ANSWERED_CLAUSE = ("project.yaml's `submodules:` answers the question the "
+                   "policy asks of code/.gitmodules: which leg owns the "
+                   "submodules it registers")
+
+
+@pytest.mark.parametrize("recorded, status, asked", [
+    ("code", "ok", []),
+    ("spec", "FINDING", ["code/.gitmodules"]),
+    (None, "note", ["code/.gitmodules"]),
+], ids=["recorded-in-this-leg", "recorded-in-the-other-leg", "no-record"])
+def test_the_record_answers_the_question_about_the_gitmodules_beside_it(
+        standard, project, recorded, status, asked):
+    """THE POLICY ASKS WHICH LEG OWNS THE SUBMODULES A `.gitmodules`
+    REGISTERS, AND THE RECORD SAYS (#189).
+
+    An adoption's leg always holds the `.gitmodules` that registers its
+    submodules, and rule `ambiguous-gitmodules` asks that of every one. In a
+    leg that keeps a submodule the record places there, the record is the
+    answer, and it is this leg: the file is placed, the row is `ok`, and the
+    reason says where the answer came from. Where the record puts the
+    submodule in the other leg, or there is no record, it says nothing about
+    this file, which stays the question it was.
+    """
+    stage(project / "code", ".gitmodules", CURSOR_GITMODULES)
+    stage_gitlink(project / "code", ".cursor")
+    if recorded:
+        record_submodules(project, (".cursor", recorded))
+    result = doctor(standard, project, "--json")
+    assert result.returncode == (1 if status == "FINDING" else 0), (
+        result.stdout + result.stderr)
+    row = rows_of(result)["placement"]
+    assert row["status"] == status, row
+    assert [item["path"] for item in row["detail"]["review_required"]] == (
+        asked), row["detail"]["review_required"]
+    code = [leg for leg in row["detail"]["legs"] if leg["role"] == "code"][0]
+    if asked:
+        assert "answered" not in code, code
+        assert ANSWERED_CLAUSE not in row["reason"], row["reason"]
+        return
+    assert code["answered"] == ["code/.gitmodules"], code
+    assert row["reason"] == (
+        "every tracked file classifies as the leg it is in; 1 submodule(s) "
+        "in the leg project.yaml's `submodules:` records for them (#189): "
+        f"code/.cursor; {ANSWERED_CLAUSE}  [{audited_legs(row)}]"), (
+        row["reason"])
+
+
 #: Names the record cannot write raw -- `str.isprintable` refuses a character
 #: in each -- and the doctor still reads: none holds a control character or a
 #: byte that is not UTF-8, the names it reports as ones no report can carry.
@@ -3841,7 +3893,9 @@ def test_an_adopted_submodule_is_recorded_and_placed(standard,
     The split's `project.yaml` carries one row for `.cursor`: its path in
     the leg, the leg answered, the plan's `resolution:` and the source
     commit. The doctor holds the code leg's `.cursor` to it: recorded, and
-    COMPLIANT.
+    COMPLIANT. And the row is `ok`: the code leg's `.gitmodules`, which
+    registers `.cursor`, is the policy's question about which leg owns that
+    submodule, and the record is its answer.
     """
     manifest = adoption_module(standard).load_yaml(
         cursor_clone / "project.yaml")
@@ -3852,10 +3906,13 @@ def test_an_adopted_submodule_is_recorded_and_placed(standard,
     assert result.returncode == 0, result.stdout + result.stderr
     assert verdict == "COMPLIANT"
     assert rows_of(result)["manifest"]["status"] == "ok"
+    assert row["status"] == "ok", row
+    assert row["detail"]["review_required"] == [], row["detail"]
     assert held["code/.cursor"]["placement"] == "recorded", held
     assert held["code/.cursor"]["resolution"] == CURSOR_ANSWER
     assert ("1 submodule(s) in the leg project.yaml's `submodules:` records "
             "for them (#189): code/.cursor") in row["reason"], row["reason"]
+    assert ANSWERED_CLAUSE in row["reason"], row["reason"]
     assert "keeps no source submodule" not in row["reason"], row["reason"]
 
 
