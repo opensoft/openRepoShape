@@ -34,6 +34,8 @@ WHAT IS CHECKED
       3. the mounted tree carries a `project.yaml` whose `id` is the `id` this
          row records — a repository at the right commit is not by itself the
          project the row claims.
+    and, across the rows, that no two record ONE `id`: that is one project
+    pinned twice, however each row spelled its repository (#206).
   - the COPIED shape files, each against its `sha256` row in
     `contracts/shape-pin.yaml`. Editing a copy in place is drift and the exit
     is to carry it upstream, never to update the digest.
@@ -518,6 +520,32 @@ def _check_shape_pin(root: Path, manifest: dict, report: Report) -> None:
     _check_shape_pin_files(root, pin, rel, report)
 
 
+def _check_member_ids_unique(members: list, report: Report) -> None:
+    """No two rows record ONE `id:` — that is one project pinned twice (#206).
+
+    `id` is the member's own `project.yaml` id, so two rows recording the same
+    one mount the same project twice, however each row spelled its repository:
+    GitHub resolves `InkRouter/IRRS` and `inkrouter/irrs` to one repository,
+    and a `family.py add` that compared the spelling used to write both rows
+    and pass this gate. A row with no `id:` is `member-id-absent`'s finding,
+    not this one's.
+    """
+    seen: dict[str, str] = {}
+    for row in members:
+        if not isinstance(row, dict) or not row.get("id"):
+            continue
+        member_id, project = str(row["id"]), str(row.get("project"))
+        if member_id not in seen:
+            seen[member_id] = project
+            continue
+        report.finding(
+            "member-duplicate-id",
+            f"{project} and {seen[member_id]} both record id {member_id!r}: "
+            "one project is pinned twice. A family pins each project once; "
+            f"`{PYTHON} scripts/family.py remove --member <Project>` takes "
+            "the extra row out.")
+
+
 def _check_members(root: Path, members: list, no_members: bool,
                   report: Report) -> None:
     """Every row in `members:`, or the `--no-members` skip line.
@@ -536,6 +564,7 @@ def _check_members(root: Path, members: list, no_members: bool,
                            f"a member is not a mapping: {row!r}")
             continue
         _check_member(root, row, seen, report)
+    _check_member_ids_unique(members, report)
     if not members:
         report.note("no members yet: a family with none is empty, not "
                     "wrong")

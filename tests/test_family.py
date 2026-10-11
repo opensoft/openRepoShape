@@ -21,6 +21,8 @@ a real family ever needs.
 
 from __future__ import annotations
 
+import importlib.util
+import json
 import os
 import shutil
 import subprocess
@@ -45,6 +47,7 @@ from shape_materialize import (  # noqa: E402
 )
 
 FAMILY = REPO / "scripts" / "family.py"
+DOCTOR = REPO / "shape-doctor.py"
 SCAFFOLD = REPO / "scaffold-project.py"
 UPDATE = REPO / "update-shape.py"
 ORG = "InkRouter"
@@ -120,6 +123,56 @@ def validate(root, *extra):
 
 def manifest(root) -> dict:
     return load_yaml(root / "family.yaml")
+
+
+def family_module():
+    """`scripts/family.py` as a module, for the lookups that touch no disk."""
+    spec = importlib.util.spec_from_file_location("family_under_test", FAMILY)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def rows_of(project_rows, root=REPO) -> object:
+    """A `Family` over in-memory rows: `member` and `holding` read no disk."""
+    return family_module().Family(
+        root, {"name": NAME, "members": list(project_rows)})
+
+
+def mount_twice(holder, remotes) -> None:
+    """Pin IRRS a SECOND time, under a row of its own (#206).
+
+    What a family holds after one project is mounted twice: a repository
+    renamed at the forge and added under both names, or — on a case-sensitive
+    host, before #206 — `add --member inkrouter/irrs` beside `InkRouter/IRRS`.
+    The second row is real in every way the gate asks about: mounted, pinned
+    at the commit it is mounted at, digested, and `project.yaml` inside it
+    says the id the row says. It is spelled `IRRS2` rather than `irrs` so the
+    fixture does not need two directories whose names differ only in case,
+    which macOS and Windows hold as one.
+    """
+    git("-c", "protocol.file.allow=always", "submodule", "add", "-q", "--",
+        str(remotes / "IRRS.git"), "members/IRRS2", cwd=holder)
+    mounted = holder / "members" / "IRRS2"
+    commit = git("rev-parse", "HEAD", cwd=mounted).stdout.strip()
+    text = (holder / "family.yaml").read_text(encoding="utf-8")
+    (holder / "family.yaml").write_text(
+        text.rstrip("\n") + "\n" + "\n".join([
+            "  - project: IRRS2",
+            "    id: irrs",
+            "    repository: InkRouter/IRRS2",
+            "    path: members/IRRS2",
+            "    pin:",
+            "      revision_kind: commit",
+            f'      commit: "{commit}"',
+            "      digest_algorithm: sha256",
+            "      digest_definition: sorted-ls-tree-r-v1",
+            f'      tree_sha256: "{tree_digest(mounted, commit)}"',
+        ]) + "\n", encoding="utf-8")
+    git("add", "--", ".gitmodules", "members/IRRS2", "family.yaml",
+        cwd=holder)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm",
+        "Pin IRRS a second time", cwd=holder)
 
 
 # --- init -------------------------------------------------------------------
@@ -436,6 +489,92 @@ def test_add_refuses_a_member_that_is_already_there(family, tmp_path):
     assert "bump" in result.stderr
 
 
+@pytest.mark.parametrize("spelling", [
+    "inkrouter/irrs",       # the whole name, folded: issue #206's own
+    "INKROUTER/IRRS",
+    "InkRouter/irrs",       # only the repository
+    "OtherOrg/Irrs",        # another owner: the project name is the row's too
+])
+def test_add_refuses_a_spelling_of_a_member_the_family_already_pins(
+        family, holder, spelling):
+    """GITHUB RESOLVES `owner/repo` CASE-INSENSITIVELY (#149, #206).
+    `--member inkrouter/irrs` on a family that pins `InkRouter/IRRS` named
+    the same repository, mounted it a second time and wrote a second row —
+    and both gates passed. It is `member-already-present`, naming the row
+    that is already there in the spelling the row uses, and nothing is
+    mounted, staged or written."""
+    head = git("rev-parse", "HEAD", cwd=holder).stdout
+    status = git("status", "--porcelain", cwd=holder).stdout
+    text = (holder / "family.yaml").read_bytes()
+    result = run_script(FAMILY, "add", "--family-root", str(holder),
+                        "--member", spelling,
+                        "--local-remote-dir", str(family["remotes"]))
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert "REFUSED member-already-present" in result.stderr
+    assert "the row IRRS pins InkRouter/IRRS" in result.stderr
+    assert "`family.py bump --member IRRS --to <commit>`" in result.stderr
+    assert "mounting" not in result.stdout
+    assert git("rev-parse", "HEAD", cwd=holder).stdout == head
+    assert git("status", "--porcelain", cwd=holder).stdout == status
+    assert (holder / "family.yaml").read_bytes() == text
+    # `listdir`, not `exists`: macOS and Windows hold `members/irrs` and
+    # `members/IRRS` as one directory, which is not what is being asked.
+    assert sorted(os.listdir(holder / "members")) == list(MEMBERS)
+
+
+def test_add_of_a_member_that_is_not_there_is_unchanged_by_the_case_rule(
+        family, holder):
+    """The comparison is a NAME, not a prefix and not a near miss: `IRQS` is
+    not `IRRS`, and it is mounted and recorded in the spelling it was given."""
+    result = run_script(FAMILY, "add", "--family-root", str(holder),
+                        "--member", f"{ORG}/{SPARE}",
+                        "--local-remote-dir", str(family["remotes"]))
+    assert result.returncode == 0, result.stderr + result.stdout
+    rows = {r["project"]: r for r in manifest(holder)["members"]}
+    assert sorted(rows) == sorted([*MEMBERS, SPARE])
+    assert rows[SPARE]["repository"] == f"{ORG}/{SPARE}"
+    assert rows[SPARE]["path"] == f"members/{SPARE}"
+    assert validate(holder).returncode == 0
+
+
+def test_member_and_holding_name_the_row_in_its_own_spelling():
+    """`Family.member` and `Family.holding`, over rows and no disk."""
+    irrs = {"project": "IRRS", "repository": "InkRouter/IRRS"}
+    irss = {"project": "IRSS", "repository": "InkRouter/IRSS"}
+    both = rows_of([irrs, irss])
+    assert both.member("IRRS") is irrs
+    assert both.member("irrs") is irrs, "the forge folds the case"
+    assert both.member("IRQS") is None
+    assert both.member("IRR") is None and both.member("IRRSS") is None
+    assert both.holding("inkrouter/irrs", "irrs") is irrs
+    assert both.holding("OtherOrg/IRRS", "IRRS") is irrs
+    assert both.holding(f"{ORG}/{SPARE}", SPARE) is None
+
+    # A ROW THAT NAMES ITS REPOSITORY UNDER ANOTHER PROJECT NAME — hand-made,
+    # which `validate-family.py` calls `member-repository-name` — still pins
+    # that repository, and `add` finds it by the repository alone.
+    alias = {"project": "Alias", "repository": "InkRouter/IRRS"}
+    assert rows_of([alias]).member("irrs") is None
+    assert rows_of([alias]).holding("inkrouter/irrs", "irrs") is alias
+
+
+def test_member_prefers_the_exact_spelling_and_refuses_to_guess_between_two():
+    """A family a pre-#206 `add` pinned twice holds `IRRS` AND `irrs`. Naming
+    either exactly reaches that row, which is how the extra one is removed;
+    a third spelling fits both, and bumping the wrong one is worse than
+    stopping."""
+    module = family_module()
+    upper = {"project": "IRRS", "repository": "InkRouter/IRRS"}
+    lower = {"project": "irrs", "repository": "inkrouter/irrs"}
+    twice = rows_of([upper, lower])
+    assert twice.member("IRRS") is upper
+    assert twice.member("irrs") is lower
+    with pytest.raises(module.Refusal) as refused:
+        twice.member("Irrs")
+    assert refused.value.code == "member-ambiguous"
+    assert "IRRS, irrs" in refused.value.detail
+
+
 def test_add_refuses_a_bare_member_name(family, tmp_path):
     holder = tmp_path / NAME
     shutil.copytree(family["root"], holder, symlinks=True)
@@ -587,6 +726,34 @@ def test_validate_finds_an_id_that_is_not_the_project_mounted_there(holder):
     assert "the source" in result.stderr
 
 
+def test_validate_finds_one_project_pinned_twice(family, holder):
+    """TWO ROWS, ONE `id:` — a project mounted twice, whichever way its
+    repository was spelled (#206). Everything else about the second row is
+    in order, so this is the only finding there is, and `--pins` (what
+    `make pins` runs) asks it too."""
+    assert validate(holder).returncode == 0
+    mount_twice(holder, family["remotes"])
+    result = validate(holder)
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert result.stderr.count("FINDING") == 1, result.stderr
+    assert "FINDING member-duplicate-id: IRRS2 and IRRS both record id " \
+        "'irrs'" in result.stderr
+    assert "one project is pinned twice" in result.stderr
+    assert "family.py remove --member <Project>" in result.stderr
+    assert validate(holder, "--pins").returncode == 1
+
+
+def test_the_doctor_reports_a_project_pinned_twice(family, holder):
+    """The doctor's `family` row IS the holder's own validator, so the
+    finding reaches it — it is not a second check somebody has to remember."""
+    mount_twice(holder, family["remotes"])
+    result = run_script(DOCTOR, "--root", str(holder), "--json")
+    assert result.returncode != 0, result.stdout
+    rows = {row["id"]: row for row in json.loads(result.stdout)["rows"]}
+    assert rows["family"]["status"] == "FINDING"
+    assert "validate-family.py" in rows["family"]["reason"]
+
+
 def test_validate_finds_an_edited_shape_copy(holder):
     copy = holder / "scripts" / "validate-family.py"
     copy.write_text(copy.read_text() + "\n# edited in place\n")
@@ -656,6 +823,31 @@ def test_bump_refuses_a_member_that_is_not_there(holder):
                         "--member", "Nope", "--to", "0" * 40)
     assert result.returncode == 2
     assert "member-unknown" in result.stderr
+
+
+def test_bump_finds_a_member_in_any_case_and_keeps_the_rows_spelling(
+        family, holder):
+    """`bump --member irss` used to refuse `member-unknown` and recommend
+    `family.py add --member <org>/irss` — which is the duplicate (#206). The
+    row is found, and the row's spelling is the one written and mounted."""
+    older = git("rev-parse", "main~1",
+                cwd=family["remotes"] / "IRSS.git").stdout.strip()
+    was = {r["project"]: r for r in manifest(holder)["members"]}["IRSS"]
+    assert was["pin"]["commit"] != older
+    result = run_script(FAMILY, "bump", "--family-root", str(holder),
+                        "--member", "irss", "--to", older)
+    assert result.returncode == 0, result.stderr + result.stdout
+    rows = {r["project"]: r for r in manifest(holder)["members"]}
+    assert sorted(rows) == list(MEMBERS), "no second row, in either spelling"
+    assert rows["IRSS"]["pin"]["commit"] == older
+    assert rows["IRSS"]["path"] == "members/IRSS"
+    assert git("rev-parse", "HEAD:members/IRSS",
+               cwd=holder).stdout.strip() == older
+    assert message_of(holder).startswith("Bump IRSS to ")
+    assert set(git("show", "--name-only", "--format=", "HEAD",
+                   cwd=holder).stdout.split()) == {"members/IRSS",
+                                                   "family.yaml"}
+    assert validate(holder).returncode == 0
 
 
 def test_bump_refuses_a_tag(holder):
@@ -750,6 +942,30 @@ def test_remove_unmounts_the_member_and_touches_nothing_else(family, tmp_path):
     bare = family["remotes"] / "IRSS.git"
     assert bare.is_dir()
     assert git("rev-parse", "main", cwd=bare).stdout.strip()
+
+
+def test_remove_finds_a_member_in_any_case(family, holder):
+    result = run_script(FAMILY, "remove", "--family-root", str(holder),
+                        "--member", "irss")
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "removed IRSS (InkRouter/IRSS) from members/IRSS" in result.stdout
+    assert [r["project"] for r in manifest(holder)["members"]] == ["IRRS"]
+    assert sorted(os.listdir(holder / "members")) == ["IRRS"]
+    assert message_of(holder).startswith("Remove IRSS from ")
+    assert validate(holder).returncode == 0
+
+
+def test_remove_takes_the_extra_row_out_of_a_family_pinned_twice(family,
+                                                                 holder):
+    """The way out for a holder that already pins one project twice: name the
+    row to drop, and the gate goes green again."""
+    mount_twice(holder, family["remotes"])
+    assert validate(holder).returncode == 1
+    result = run_script(FAMILY, "remove", "--family-root", str(holder),
+                        "--member", "IRRS2")
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert [r["project"] for r in manifest(holder)["members"]] == list(MEMBERS)
+    assert validate(holder).returncode == 0
 
 
 def test_remove_leaves_the_object_store_and_says_so(family, tmp_path):
