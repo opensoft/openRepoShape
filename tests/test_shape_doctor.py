@@ -3638,6 +3638,39 @@ def test_a_record_row_the_validator_refuses_decides_nothing(standard,
     assert "recorded_leg" not in held, held
 
 
+@pytest.mark.parametrize("legs, placement, recorded_leg", [
+    (("code", "spec"), "recorded", "code"),
+    (("spec", "code"), "misplaced", "spec"),
+    (("root", "code"), "kept", None),
+], ids=["code-then-spec", "spec-then-code", "refused-leg-then-code"])
+def test_where_two_rows_name_one_path_the_first_decides(standard, project,
+                                                        legs, placement,
+                                                        recorded_leg):
+    """TWO ROWS FOR ONE PATH: THE FIRST DECIDES, AND THE VERDICT IS RED.
+
+    The project's own validator accepts the first row and names the second
+    as `recorded twice`, so the doctor holds `.cursor` to the first, as it
+    ignores every row the validator refuses -- and where it refuses the
+    first row's `leg: root`, nothing decides, and the second row does not
+    stand in for it. `execute` writes one row per gitlink, so only an edit
+    makes two; whichever row decides, the `manifest` row is a FINDING and
+    the doctor exits 1.
+    """
+    stage_gitlink(project / "code", ".cursor")
+    record_submodules(project, *((".cursor", leg) for leg in legs))
+    named = run_script(project / "scripts" / "validate-manifest.py",
+                       cwd=project)
+    assert "submodules[1]: path '.cursor' is recorded twice" in (
+        named.stderr), named.stderr
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 1, result.stdout + result.stderr
+    rows = rows_of(result)
+    assert rows["manifest"]["status"] == "FINDING", rows["manifest"]
+    [held] = rows["placement"]["detail"]["submodules"]
+    assert held["placement"] == placement, held
+    assert held.get("recorded_leg") == recorded_leg, held
+
+
 #: Names the record cannot write raw -- `str.isprintable` refuses a character
 #: in each -- and the doctor still reads: none holds a control character or a
 #: byte that is not UTF-8, the names it reports as ones no report can carry.

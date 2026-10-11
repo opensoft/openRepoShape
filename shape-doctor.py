@@ -1848,8 +1848,16 @@ def recorded_submodules(adopt, manifest) -> dict:
     `path:`, or names a leg that is not `spec` or `code` decides nothing
     here: the project's own `validate-manifest.py` names each of those, in
     the `manifest` row, and a submodule whose row cannot be read is one no
-    record covers. Where two rows name one path the first decides; the
-    validator names the second.
+    record covers. A path spelled as Git records no path (`./x`, `x/`) is
+    one the validator names too, and no gitlink is ever at it.
+
+    WHERE TWO ROWS NAME ONE PATH, THE FIRST DECIDES, because the validator
+    accepts the first and names the second as `recorded twice` -- the same
+    reading, so no row it refuses decides anything here. That holds when it
+    refuses the first row's `leg:` as well: the path is that row's, it
+    decides nothing, and the second does not stand in for it. `execute`
+    writes one row per gitlink, so only an edit makes two, and whichever
+    row decides, the `manifest` row is a FINDING and the verdict red.
 
     Read by the key `adopt-project.py execute` writes, through the module
     this row has already loaded, so that the writer and this reader spell it
@@ -1857,10 +1865,14 @@ def recorded_submodules(adopt, manifest) -> dict:
     """
     rows = (manifest or {}).get(adopt.SUBMODULE_RECORD)
     record: dict = {}
+    claimed: set = set()
     for row in rows if isinstance(rows, list) else []:
-        if isinstance(row, dict) and isinstance(row.get("path"), str) \
-                and row.get("leg") in LEG_ROLES:
-            record.setdefault(row["path"], row)
+        path = row.get("path") if isinstance(row, dict) else None
+        if not isinstance(path, str) or path in claimed:
+            continue
+        claimed.add(path)
+        if row.get("leg") in LEG_ROLES:
+            record[path] = row
     return record
 
 
