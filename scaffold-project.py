@@ -8,7 +8,9 @@ WHAT IT DOES
   1. Validates the three names — `<Project>`, `<Project>-spec`,
      `<Project>-code` — against `contracts/repository-naming.yaml` BEFORE it
      creates anything, so a naming mistake costs a message rather than three
-     repositories and a rename.
+     repositories and a rename. A leg path that is, holds or lies inside a
+     path the shape writes into the assembly root (`contracts`,
+     `project.yaml`) is refused just as early, for the same reason (#197).
   2. Creates the three remotes: `gh repo create` normally, or three BARE
      repositories in a directory with `--local-remote-dir`, which is the test
      path and touches no network.
@@ -59,6 +61,11 @@ from shape_materialize import (  # noqa: E402
     git_init_commit, materialize_assembly_root, naming_block, run,
 )
 from shape_advisory import scaffold_lines  # noqa: E402
+# The shape half of the leg-path collision rule, which `adopt-project.py`
+# asks of its own mount paths (#172), imported as one unit (#197).
+from shape_materialize import (  # noqa: E402
+    assembly_root_paths, shape_path_collisions,
+)
 
 #: The pin argument: `openGlass@<40 hex>`, optionally organisation-qualified.
 PIN_ARG_RE = re.compile(r"^(?P<name>[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?)@(?P<commit>[0-9a-fA-F]{40})$")
@@ -389,6 +396,49 @@ def _exists_remedy(role: str, empty: bool, reuse_flag: bool) -> str:
             "<org>/<repo> --project <Project>` to convert it in place, which "
             "keeps its name, its identity and its history. There is no "
             "--force.")
+
+
+#: What a leg-path collision tells the person to do. The paths are
+#: `assembly_root_paths()`, the materializer's own list, never a copy of it.
+LEG_COLLISION_REMEDIATION = (
+    "Remediation: nothing was created, and nothing here picks a path for "
+    "you, so pass another one yourself. A leg path neither is, holds nor "
+    "lies inside, whatever the case, a path the shape writes into the "
+    "assembly root ("
+    + ", ".join(f"`{path}`" for path in assembly_root_paths())
+    + "). The defaults `spec` and `code` pass."
+)
+
+
+def _refuse_colliding_leg_paths(spec_path: str, code_path: str) -> None:
+    """Neither leg is mounted over a path the shape writes into the assembly
+    root, or this refuses (#197).
+
+    `_build_assembly_root` writes the shape into the root FIRST and mounts
+    the legs after it, so a leg path the shape had just written was met only
+    by `git submodule add`. On main at f25d805, `--spec-path contracts` and
+    `--code-path project.yaml` planned under `--dry-run`, then created all
+    three repositories, pushed both legs, left the root empty and exited 2
+    (`'contracts' already exists and is not a valid git repo`).
+    `--code-path Makefile/code` died the same way, and `--spec-path
+    Contracts` exited 0 with a gitlink beside the shape's `contracts/`,
+    which a macOS or Windows disk keeps as one path. Against GitHub, each
+    left three repositories for a run that made no project.
+
+    THE QUESTION IS `adopt-project.py`'s (#172), asked through the one
+    definition both tools import: `shape_path_collisions` over
+    `assembly_root_paths()`, so a file the shape gains is refused here
+    without anybody editing this tool. It is asked with no collision
+    directory, because the scaffold hands the materializer none and writes
+    nothing under adopt's `shape/`.
+    """
+    collisions = [sentence
+                  for what, value in (("--spec-path", spec_path),
+                                      ("--code-path", code_path))
+                  for sentence in shape_path_collisions(what, value)]
+    if collisions:
+        raise Refusal("scaffold-leg-path-collision", " ".join(collisions),
+                      LEG_COLLISION_REMEDIATION)
 
 
 def _elector(args) -> str:
@@ -857,6 +907,13 @@ def _scaffold(args) -> int:
     args.code_path = checked_value("--code-path", args.code_path)
     args.org = checked_value("--org", args.org)
     args.pin_owner = checked_value("--pin-owner", args.pin_owner)
+    # THE LEG PATHS AGAINST THE SHAPE'S OWN, before anything else runs
+    # (#197): `_identity` may read git's config, `_declaration` asks `gh api`
+    # for a `--pin` with no `--pin-source`, `_leg_visibility` asks `gh repo
+    # view` about a reused root, and `--dry-run` returns only after all of
+    # them. Refused here, a dry run refuses exactly as the real run would,
+    # and no process has been started.
+    _refuse_colliding_leg_paths(args.spec_path, args.code_path)
     project_id, display, elected_on, reference, elected_by = _identity(
         args, project)
 
