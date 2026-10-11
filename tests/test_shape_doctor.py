@@ -701,6 +701,18 @@ BREAKAGES = {
         b'name: "Atlas"', b'name: "Atl\xe9s"', 1), "yaml-unreadable"),
 }
 
+#: The same three ways for a holder's `family.yaml`, which carries the same
+#: indented `revision_kind:` in its `shape:` block. The conflict is in its
+#: LAST `commit:` line, a member's pin, because two bumps of one member are
+#: what leave one there; the byte goes into the family's own name.
+FAMILY_BREAKAGES = {
+    **BREAKAGES,
+    "merge-conflict": (lambda body: conflicted(body, -1), "yaml-unparsable"),
+    "not-utf8": (lambda body: body.replace(
+        b'name: "' + FAMILY_NAME.encode() + b'"',
+        b'name: "' + FAMILY_NAME.encode() + b'\xe9"', 1), "yaml-unreadable"),
+}
+
 
 def break_manifest(path: Path, edit, code: str) -> repo_shape.Refusal:
     """Break the manifest at `path` and return what `load_yaml` says of it.
@@ -726,20 +738,59 @@ def loader_line(refusal: repo_shape.Refusal) -> str:
     return f"REFUSED {refusal.code}: {refusal.detail}"
 
 
-def no_adoption_offered(whole: str, rows: dict | None = None) -> None:
-    """No `adopt-project.py plan`, and no row but `machine` naming the tool.
+#: The `machine` row's own line in the text report -- two spaces, its
+#: status, its label -- which is the one line `no_adoption_offered` reads
+#: around.
+MACHINE_LINE = re.compile(r"^  \S+ +machine  ")
 
-    The `machine` row is the one exception, and it is UNCHANGED by #205: on a
-    workstation without `git-filter-repo` -- the Windows CI job, by design --
-    it says that only `adopt-project.py` needs it. That is a sentence about
-    the machine, and never an offer to adopt anything.
+
+def no_adoption_offered(text: str = "", rows: dict | None = None,
+                        payload: dict | None = None) -> None:
+    """Not one `adopt-project.py` anywhere in the report, but a machine fact.
+
+    THE `machine` ROW IS THE ONE PLACE THE NAME MAY APPEAR, and it is
+    UNCHANGED by #205 (`machine_row_unchanged`): on a workstation without
+    `git-filter-repo` -- the Windows CI job, by design -- it says that only
+    `adopt-project.py` needs that tool, in a COMPLIANT report exactly as
+    here. That is a sentence about the machine and never an offer to adopt
+    anything, so the text report is read around that row's one line, and the
+    row itself may name the tool only while the tool is missing. Everything
+    else -- the kind line, every reason, every NEXT, every `detail`, the
+    verdict -- names it not at all, `plan` or no `plan`.
     """
-    assert "adopt-project.py plan" not in whole, whole
+    outside = "\n".join(line for line in text.splitlines()
+                        if not MACHINE_LINE.match(line))
+    assert "adopt-project.py" not in outside, outside
     for name, row in (rows or {}).items():
+        said = json.dumps(row)
         if name == "machine":
+            assert "adopt-project.py" not in said or \
+                row["detail"]["git-filter-repo"] is None, row
             continue
-        said = (row["reason"] or "") + (row["next"] or "")
         assert "adopt-project.py" not in said, (name, row)
+    if payload is not None:
+        rest = {key: value for key, value in payload.items() if key != "rows"}
+        assert "adopt-project.py" not in json.dumps(rest), rest
+
+
+def machine_row_unchanged(before: dict, after: dict) -> None:
+    """The `machine` row is the row the same root had before it broke.
+
+    It is about the workstation, so nothing in a manifest can move it, and
+    #205 is held to that rather than trusted with it. ONE PART IS NOT THIS
+    TEST'S TO HOLD STILL: the preflight asks `gh`, which answers from its
+    host, so where `gh` answered the two runs differently only the parts that
+    do not come from it are compared. Where it answered the same, the whole
+    row must be the same, byte for byte.
+    """
+    for key in ("id", "label", "status"):
+        assert after[key] == before[key], (key, before, after)
+    for key in ("preflight", "git-filter-repo"):
+        assert after["detail"].get(key) == before["detail"].get(key), \
+            (key, before, after)
+    if all(after["detail"].get(key) == before["detail"].get(key)
+           for key in ("exit", "report")):
+        assert after == before, (before, after)
 
 
 @pytest.mark.parametrize("case", sorted(BREAKAGES))
@@ -779,7 +830,10 @@ def test_the_json_report_of_an_unloaded_manifest_is_the_same_report(
     waits on in `detail.waits_on`; `manifest kinds` does not list the same
     file a second time under a next command that says to remove it. And the
     text report says every one of those reasons and next commands, verbatim.
+    The `machine` row is the row the same root had before its manifest
+    broke.
     """
+    intact = rows_of(doctor(standard, project, "--json"))["machine"]
     edit, code = BREAKAGES[case]
     refusal = break_manifest(project.resolve() / "project.yaml", edit, code)
     result = doctor(standard, project, "--json")
@@ -792,7 +846,7 @@ def test_the_json_report_of_an_unloaded_manifest_is_the_same_report(
     assert set(rows) == PROJECT_ROWS, sorted(rows)
     for absent in NOT_A_ROOT_ROWS:
         assert absent not in rows, rows.get(absent)
-    no_adoption_offered(result.stdout, rows)
+    no_adoption_offered(rows=rows, payload=payload)
 
     manifest = rows["manifest"]
     assert manifest["status"] == "FINDING", manifest
@@ -820,11 +874,13 @@ def test_the_json_report_of_an_unloaded_manifest_is_the_same_report(
     assert kinds["detail"]["reported_by"] == {"project.yaml": "manifest"}
     assert "project.yaml" not in kinds["detail"]["unreadable"], kinds
     assert rows["machine"]["status"] == "n/a", rows["machine"]
+    machine_row_unchanged(intact, rows["machine"])
 
     text = doctor(standard, project)
     assert text.returncode == payload["exit"], text.stdout + text.stderr
     assert verdict_line(text) == \
         f"{payload['verdict']}   (exit {payload['exit']})", text.stdout
+    no_adoption_offered(text.stdout + text.stderr)
     for name, row in rows.items():
         if name == "machine":
             continue  # it asks `gh`, which need not answer twice the same
@@ -859,30 +915,35 @@ def test_the_manifest_rows_next_command_refuses_the_same_file_the_same_way(
     assert refusal.detail[len(str(path)):] in said, (refusal.detail, said)
 
 
+@pytest.mark.parametrize("case", sorted(FAMILY_BREAKAGES))
 def test_a_family_yaml_that_does_not_load_is_invalid_and_not_absent(
-        standard, holder, tmp_path):
+        standard, holder, tmp_path, case):
     """(c) A holder whose `family.yaml` does not load is still a holder.
 
     Before #205 it was NOT A SHAPE ROOT, offered `adopt-project.py plan
     --project InkRouter` and called "a single repository". Now the `family`
     row quotes the loader and names `validate-family.py` and the file, and
     `members` waits on it -- rather than saying "no members yet", an `ok`
-    about an empty family, of a holder whose members nobody could read.
+    about an empty family, of a holder whose members nobody could read. The
+    same three breakages as an assembly root's, the same report in text and
+    in `--json`, and the `machine` row the row the holder had before.
     """
     root = tmp_path / FAMILY_NAME
     shutil.copytree(holder["root"], root, symlinks=True)
+    intact = rows_of(doctor(standard, root, "--json"))["machine"]
+    edit, code = FAMILY_BREAKAGES[case]
     path = root.resolve() / "family.yaml"
-    refusal = break_manifest(path, lambda body: conflicted(body, -1),
-                             "yaml-unparsable")
+    refusal = break_manifest(path, edit, code)
     result = doctor(standard, root, "--json")
     assert result.returncode == 1, result.stdout + result.stderr
     payload = json.loads(result.stdout)
     assert (payload["kind"], payload["verdict"], payload["exit"]) == \
         ("family", "INVALID (family)", 1), payload
+    assert payload["note"] is None and payload["placement_plan"] is None
     rows = rows_of(result)
     assert set(rows) == {"family", "manifest-kinds", "shape-currency",
                          "placement", "agent-files", "members", "machine"}
-    no_adoption_offered(result.stdout, rows)
+    no_adoption_offered(rows=rows, payload=payload)
     family = rows["family"]
     assert family["status"] == "FINDING", family
     assert family["reason"] == \
@@ -897,14 +958,25 @@ def test_a_family_yaml_that_does_not_load_is_invalid_and_not_absent(
     assert "each member is an assembly root" in rows["placement"]["reason"]
     assert rows["manifest-kinds"]["detail"]["reported_by"] == \
         {"family.yaml": "family"}
+    assert rows["machine"]["status"] == "n/a", rows["machine"]
+    machine_row_unchanged(intact, rows["machine"])
 
     text = doctor(standard, root)
-    assert text.returncode == 1, text.stdout + text.stderr
+    whole = text.stdout + text.stderr
+    assert text.returncode == 1, whole
     assert verdict_line(text) == "INVALID (family)   (exit 1)", text.stdout
-    assert "kind        family holder (family.yaml, which does not load" in \
-        text.stdout, text.stdout
-    for never in ("NOT A SHAPE ROOT", "single repository", "the way in"):
-        assert never not in text.stdout, (never, text.stdout)
+    assert "kind        family holder (family.yaml, which does not load: " \
+        "see the `family` row)" in text.stdout, text.stdout
+    no_adoption_offered(whole)
+    for never in ("NOT A SHAPE ROOT", "single repository", "the way in",
+                  "what is here", "remove the file", "git submodule"):
+        assert never not in whole, (never, whole)
+    for name, row in rows.items():
+        if name == "machine":
+            continue  # it asks `gh`, which need not answer twice the same
+        assert row["reason"] in text.stdout, (name, row["reason"])
+        if row["next"]:
+            assert row["next"] in text.stdout, (name, row["next"])
 
     command = family["next"].split("#")[0].split()
     proc = subprocess.run(command, capture_output=True, text=True,
@@ -925,7 +997,8 @@ def test_a_manifest_that_is_absent_is_still_not_a_shape_root(standard,
     rather than broken is a git repository with no manifest, and is offered
     the adoption; a directory that is not a repository is offered the
     scaffold. Those are the two ways in AGENTS.md names, each where it
-    applies, and #205 changed neither.
+    applies -- between the two cases, both commands -- and #205 changed
+    neither, in `--json` or in the text report.
     """
     if where == "a-repository":
         (project / "project.yaml").unlink()
@@ -943,7 +1016,14 @@ def test_a_manifest_that_is_absent_is_still_not_a_shape_root(standard,
     rows = rows_of(result)
     assert way_in in rows["way-in"]["next"], rows["way-in"]
     assert rows["contents"]["detail"]["project_yaml"] is False
-    assert "manifest" not in rows, rows.get("manifest")
+    assert rows["contents"]["detail"]["family_yaml"] is False
+    assert not set(rows) & (PROJECT_ROWS - {"naming", "machine"}), sorted(rows)
+
+    text = doctor(standard, here)
+    assert text.returncode == 2, text.stdout + text.stderr
+    assert "kind        not a shape root" in text.stdout, text.stdout
+    assert "NOT A SHAPE ROOT   (exit 2)" in text.stdout, text.stdout
+    assert rows["way-in"]["next"] in text.stdout, text.stdout
 
 
 def test_a_manifest_that_declares_its_kind_outranks_one_that_does_not_load(
