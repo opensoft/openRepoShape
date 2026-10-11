@@ -35,7 +35,8 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            the one split commit on a branch of the source, sets the
            `xf-project-<id>` topic on all three (skipped for local remotes),
            and then VERIFIES by blob sha that every source path landed in
-           exactly one place.
+           exactly one place, and that the root's only submodules are the
+           two leg mounts.
 
 THE PLAN IS AN ARTIFACT A HUMAN OR AN AI EDITS. That is why it is YAML with
 reasons in it rather than a pipe between two processes: the classifier is
@@ -1691,9 +1692,11 @@ def submodule_plan_problems(entries: list, tree: list,
         (`plan-submodule-root`). The assembly root has exactly two mounts and
         its `.gitmodules` is reserved for them -- `execute` writes a fresh one
         when the source's moves to a leg or is dropped -- and the shape's own
-        `validate.yml` reads every URL in that file as a leg; a root
-        `.gitmodules` the plan kept fails verification today whatever it
-        registers (#165).
+        `validate.yml` reads every URL in that file as a leg. A plan that
+        slipped one past this would still fail verification whatever it
+        registers, which compares a root-kept `.gitmodules` byte for byte
+        after the mount has appended to it, and finds every submodule of the
+        source's the root keeps (#165).
       * A `.gitmodules` git cannot read for its submodules is never taken to
         register nothing (`plan-gitmodules-unreadable`, saying what git
         said, and where git fails on it: `_where_git_fails`). Beside a
@@ -2175,8 +2178,9 @@ def _mount_the_legs(assembly: Path, work_root: Path, names: dict, urls: dict,
     # finding of `check` before this runs (#168).
     # Appending the mounts to a `.gitmodules` left here, rather than
     # replacing it, is MOUNT DEFENCE IN DEPTH for a plan that slipped past
-    # both, not a shape a plan may choose; such a file still fails
-    # verification (#165).
+    # both, not a shape a plan may choose: the verification fails such a
+    # split, on that file's bytes (`adopt-lost`) and on every submodule of
+    # the source's the root keeps (`adopt-root-submodule`, #165).
     if GITMODULES in removed:
         write_lf(assembly / GITMODULES, "")
         run(["git", "add", "-f", "--", GITMODULES], cwd=assembly)
@@ -2734,7 +2738,10 @@ def _verify(source: Source, assembly: Path, work_root: Path, names,
     any OTHER gitlink in the root tree is a path like a blob, and skipping
     them all hid a source submodule kept here (reported lost), one the split
     failed to remove (in a leg AND here, never seen twice) and one nobody
-    asked for (not even counted as added). `_land_the_root_tree` says which.
+    asked for (not even counted as added). Each is also a finding of its own,
+    because the root keeps no gitlink but the two mounts: this check fails
+    closed on one, and does not lean on `check`'s refusals to keep it out.
+    `_land_the_root_tree` says which.
     """
     print("\nVERIFICATION — every source path at "
           f"{source.commit[:12]}, by blob sha")
@@ -2798,25 +2805,28 @@ def _account_for(before: dict, after: dict, drops: list[str]) -> tuple[dict, lis
     return counts, findings
 
 
-#: What the two root-tree gitlink findings tell their reader to do. Either
-#: one means the split is wrong, and THE ONE WAY A PLAN GETS THERE IS ITS OWN
-#: MOUNT PATHS: `git submodule add` records a mount at the canonical spelling
-#: of its path, so a `legs.spec_path` of `spec/`, `./spec` or `legs//spec` --
-#: which `checked_value` accepts, and `plan --spec-path spec/` writes itself
-#: -- mounts the leg at `spec` or `legs/spec` and leaves nothing at the value
-#: as spelled. That fires BOTH findings, and its exit is `_verify`'s own: fix
-#: the plan and re-run. With both values canonical, nothing in a plan adds a
-#: gitlink, removes a mount or changes a submodule's commit, and only then is
-#: the exit a report. Refusing a non-canonical value before anything exists
-#: is the plan code's to do, and is not done here.
+#: How each root-tree gitlink finding ends. EVERY ONE MEANS THE SPLIT IS
+#: WRONG: the plan values known to reach them are refused by `execute`
+#: before any leg exists, so the person is not sent back to the plan.
+#: `git submodule add` records a mount at its path's canonical spelling, so a
+#: `legs.spec_path` of `spec/` once mounted the leg at `spec` and fired both
+#: mount findings; since #169 that value is `plan-bad-leg-path`. A source
+#: submodule kept in the root is `plan-submodule-root` since #166, and one
+#: left with no leg is `plan-uncovered` or `plan-bad-leg` since #168
+#: (`plan-unresolved` always was).
+SPLIT_IS_WRONG = ("so the split itself is wrong: do not merge it, and report "
+                  f"it to {SHAPE_REPOSITORY}")
+#: The exit of `adopt-unexpected-gitlink` and `adopt-mount-missing`.
 SPLIT_DEFECT = (
-    "do not merge this split. Look at legs.spec_path and legs.code_path "
-    "first: git records a mount at its path's canonical spelling, so a value "
-    "such as `spec/` or `./code` mounts the leg at `spec` or `code` and "
-    "leaves nothing at the value as spelled; spell it that way in the plan "
-    "and re-run, as below. With both values already canonical, nothing in "
-    "the plan does this, so the split itself is wrong: report it to "
-    f"{SHAPE_REPOSITORY}")
+    "this is not how the plan spells its leg paths: `execute` refuses "
+    "before any leg exists a leg path git would record at another spelling "
+    f"(`plan-bad-leg-path`), {SPLIT_IS_WRONG}")
+#: The exit of `adopt-root-submodule`.
+ROOT_SUBMODULE_DEFECT = (
+    "`execute` refuses before any leg exists a plan that keeps a submodule "
+    "of the source's in the root (`plan-submodule-root`) or leaves one with "
+    "no leg (`plan-unresolved`, `plan-uncovered`, `plan-bad-leg`), "
+    f"{SPLIT_IS_WRONG}")
 
 
 def _land_the_root_tree(after: dict, tree: list, before: dict,
@@ -2828,18 +2838,23 @@ def _land_the_root_tree(after: dict, tree: list, before: dict,
     EXACTLY TWO GITLINKS to the root, and those two are the only entries
     passed over. Every other gitlink lands like a blob, so a source submodule
     the root kept at its own commit is counted `root` and one the split
-    failed to remove is `adopt-duplicated` with its leg. Two findings are
-    this function's own, because no source path can ever report them:
+    failed to remove is `adopt-duplicated` with its leg. Three findings are
+    this function's own, because no source path can report them:
 
-      * `adopt-unexpected-gitlink`: a gitlink that is neither a mount nor the
-        source's own submodule at the SAME commit. Matching the path alone
-        would pass a submodule moved to another commit, which is as foreign
-        to the source as one at a new path.
+      * EVERY OTHER GITLINK, whatever it is (`_root_gitlink_finding`): the
+        source's own submodule at its own commit (`adopt-root-submodule`),
+        or anything else (`adopt-unexpected-gitlink`). The root keeps no
+        gitlink but the two mounts (#166), and this check FAILS CLOSED on
+        the rest rather than trusting the plan checks before it to have
+        refused them. Counting the source's own as a `root` landing and
+        nothing more says `adoption verified` over an assembly whose fresh
+        `.gitmodules` does not register it: its recursive clone leaves that
+        directory empty, and `git submodule status` exits 128.
       * `adopt-mount-missing`: a mount path holding no gitlink. The root
         pins a leg it does not mount, and its recursive clone gets no leg.
 
-    Both name the paths exactly as the plan spells them, because a spelling
-    git canonicalises is the one way a plan reaches them (`SPLIT_DEFECT`).
+    They name the mount paths as the plan spells them, which since #169 is
+    the one spelling git records a mount at.
 
     THE ROOT `.gitmodules` IS STILL COMPARED BYTE FOR BYTE, deliberately, and
     not by its registrations. The source's own cannot reach here: `check`
@@ -2848,7 +2863,9 @@ def _land_the_root_tree(after: dict, tree: list, before: dict,
     writes is the SHAPE'S file, not a source landing: it is counted as added
     in a source that had none, and beside a source `.gitmodules` the plan
     moved or dropped it matches no source blob and is passed over. Accounting
-    registrations would verify a path no plan `execute` runs can take.
+    registrations would verify a path no plan `execute` runs can take, and
+    would read the source's registrations into a file the shape reserves for
+    its two mounts.
     """
     findings: list[str] = []
     mounted: set[str] = set()
@@ -2858,13 +2875,8 @@ def _land_the_root_tree(after: dict, tree: list, before: dict,
             mounted.add(path)
             continue
         after.setdefault(path, []).append(f"root:{oid}")
-        if gitlink and before.get(path) != oid:
-            findings.append(
-                f"FINDING adopt-unexpected-gitlink: {path} is a gitlink to "
-                f"{oid[:12]} in the root tree, and neither a leg mount as "
-                "the plan spells their paths (" + ", ".join(sorted(mounts))
-                + ") nor the source's own submodule at that commit; "
-                + SPLIT_DEFECT)
+        if gitlink:
+            findings.append(_root_gitlink_finding(path, oid, before, mounts))
     findings += [f"FINDING adopt-mount-missing: the root tree has "
                  f"{_what_is_at(tree, path)} at {path} as the plan spells "
                  f"it, where the gitlink that mounts the {role} leg belongs; "
@@ -2872,6 +2884,27 @@ def _land_the_root_tree(after: dict, tree: list, before: dict,
                  for path, role in sorted(mounts.items())
                  if path not in mounted]
     return findings
+
+
+def _root_gitlink_finding(path: str, oid: str, before: dict,
+                          mounts: dict[str, str]) -> str:
+    """The finding for a gitlink in the root tree at a path no leg is
+    mounted at. There is one for EVERY such gitlink (#165); this says which.
+
+    The source's own submodule is matched by path AND commit. Matching the
+    path alone would call a submodule moved to another commit the source's
+    own, when it is as foreign to the source as one at a new path.
+    """
+    if before.get(path) == oid:
+        return (f"FINDING adopt-root-submodule: {path} is a gitlink to "
+                f"{oid[:12]} in the root tree, the source's own submodule at "
+                "its own commit, and the assembly root keeps no submodule of "
+                f"the source's: its {GITMODULES} is reserved for its two leg "
+                f"mounts; {ROOT_SUBMODULE_DEFECT}")
+    return (f"FINDING adopt-unexpected-gitlink: {path} is a gitlink to "
+            f"{oid[:12]} in the root tree, and neither a leg mount as the "
+            f"plan spells their paths ({', '.join(sorted(mounts))}) nor the "
+            f"source's own submodule at that commit; {SPLIT_DEFECT}")
 
 
 def _what_is_at(tree: list, path: str) -> str:

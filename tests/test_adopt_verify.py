@@ -5,14 +5,19 @@
 two, the mounts at `spec_path` and `code_path`; any other one is a path like a
 blob, and skipping it hid a source submodule the root kept (reported lost),
 one the split failed to remove (in a leg AND the root, counted once) and one
-nobody asked for (not even counted as added).
+nobody asked for (not even counted as added). Every other one is also a
+finding of its own: the root keeps no gitlink but the two mounts, so the
+check FAILS CLOSED on one rather than trusting `check`'s refusals to have
+kept it out.
 
-EVERY REPOSITORY HERE BUT ONE IS A HAND-MADE COMMIT, its gitlinks written with
-`git update-index --cacheinfo 160000,...`, and `_verify` is called directly. No
-`git filter-repo` is involved, so the Windows job, which installs none, runs
-all of those. The one exception is the run of `execute` at the bottom, which
-proves `cmd_execute` hands `_verify` the PLAN'S mount paths: it needs `git
-filter-repo` and is skipped without it, as every `execute` test is.
+EVERY TEST BUT THE LAST TWO CALLS `_verify` DIRECTLY on hand-made commits,
+their gitlinks written with `git update-index --cacheinfo 160000,...`. No `git
+filter-repo` is involved, so the Windows job, which installs none, runs all of
+those. The last two run `execute`, so they need `git filter-repo` and are
+skipped without it, as every `execute` test is: one proves `cmd_execute` hands
+`_verify` the PLAN'S mount paths and that the assembly clones and bootstraps
+from them, the other that a source submodule a broken plan check let into the
+root fails the run.
 """
 
 from __future__ import annotations
@@ -20,12 +25,13 @@ from __future__ import annotations
 import importlib.util
 import shutil
 import sys
+from argparse import Namespace
 from pathlib import Path
 
 import pytest
 
-from conftest import (ADOPT, REPO, git, make_source_repo, resolve,
-                      run_script, write_plan)
+from conftest import (ADOPT, FILE_PROTOCOL, REPO, git, make_source_repo,
+                      resolve, run_script, write_plan)
 
 sys.path.insert(0, str(REPO / "scripts"))
 from shape_materialize import SHAPE_REPOSITORY  # noqa: E402
@@ -39,11 +45,15 @@ SUBMODULE = "upstream/dependency"
 
 NAMES = {"assembly": "Northwind", "spec": "Northwind-spec",
          "code": "Northwind-code"}
+#: The source file the plan sends to the code leg.
+APP = "src/app.py"
 SOURCE_FILES = {"README.md": "# Thing\n", "specs/a.md": "# A\n",
-                "src/app.py": "VALUE = 1\n"}
+                APP: "VALUE = 1\n"}
 #: Each leg holds the source path the plan moved to it, at the same bytes.
 LEG_FILES = {"spec": {"specs/a.md": "# A\n"},
-             "code": {"src/app.py": "VALUE = 1\n"}}
+             "code": {APP: "VALUE = 1\n"}}
+#: The line `_verify` prints only when it found nothing.
+VERIFIED = "adoption verified"
 #: The split commit's own files: the README it kept, and three it ADDED. A
 #: real split always carries `contracts/shape-pin.yaml`, and #167's check of
 #: the shape's files reads it out of the split commit, so this one carries a
@@ -59,15 +69,29 @@ DEFAULT_MOUNTS = {"spec": "spec", "code": "code"}
 #: spelled `spec` and `code` itself instead of reading the plan is caught.
 NESTED_MOUNTS = {"spec": "legs/spec", "code": "impl/code"}
 
-#: What both root-tree gitlink findings end with, spelled out here rather than
-#: read from adopt-project.py, so a change to it fails this file.
-EXIT = ("do not merge this split. Look at legs.spec_path and legs.code_path "
-        "first: git records a mount at its path's canonical spelling, so a "
-        "value such as `spec/` or `./code` mounts the leg at `spec` or `code` "
-        "and leaves nothing at the value as spelled; spell it that way in the "
-        "plan and re-run, as below. With both values already canonical, "
-        "nothing in the plan does this, so the split itself is wrong: report "
-        f"it to {SHAPE_REPOSITORY}")
+#: How every root-tree gitlink finding ends, spelled out here rather than read
+#: from adopt-project.py, so a change to it fails this file.
+SPLIT_IS_WRONG = ("so the split itself is wrong: do not merge it, and report "
+                  f"it to {SHAPE_REPOSITORY}")
+#: `adopt-unexpected-gitlink` and `adopt-mount-missing`: since #169 a leg path
+#: git would record at another spelling never reaches a leg.
+EXIT = ("this is not how the plan spells its leg paths: `execute` refuses "
+        "before any leg exists a leg path git would record at another "
+        f"spelling (`plan-bad-leg-path`), {SPLIT_IS_WRONG}")
+#: `adopt-root-submodule`: since #166 and #168 no plan `execute` runs keeps
+#: one of the source's submodules in the root.
+ROOT_EXIT = ("`execute` refuses before any leg exists a plan that keeps a "
+             "submodule of the source's in the root (`plan-submodule-root`) "
+             "or leaves one with no leg (`plan-unresolved`, "
+             f"`plan-uncovered`, `plan-bad-leg`), {SPLIT_IS_WRONG}")
+
+
+def root_submodule(path: str, sha: str) -> str:
+    """The `adopt-root-submodule` finding for the source's own `path`."""
+    return (f"FINDING adopt-root-submodule: {path} is a gitlink to {sha[:12]} "
+            "in the root tree, the source's own submodule at its own commit, "
+            "and the assembly root keeps no submodule of the source's: its "
+            f".gitmodules is reserved for its two leg mounts; {ROOT_EXIT}")
 
 
 def commit(repo: Path, files: dict, gitlinks: dict | None = None) -> str:
@@ -88,7 +112,17 @@ def commit(repo: Path, files: dict, gitlinks: dict | None = None) -> str:
 
 
 @pytest.fixture
-def verify(tmp_path, capsys):
+def adopter():
+    """`adopt-project.py` as a module, to call `_verify` and `cmd_execute`."""
+    module_spec = importlib.util.spec_from_file_location("adopt_verify",
+                                                         ADOPT)
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture
+def verify(adopter, tmp_path, capsys):
     """A factory: build the source, both legs and the split, then `_verify`.
 
     `source`, `code` and `root` are the gitlinks each one carries beyond its
@@ -98,11 +132,6 @@ def verify(tmp_path, capsys):
     gitlink the root does NOT get, and `root_files` adds to the root's files.
     Returns `(exit, out, err)`.
     """
-    module_spec = importlib.util.spec_from_file_location("adopt_verify",
-                                                         ADOPT)
-    adopter = importlib.util.module_from_spec(module_spec)
-    module_spec.loader.exec_module(adopter)
-
     def run(source=None, code=None, root=None, unmount=(), root_files=None,
             drop=(), mounts=DEFAULT_MOUNTS, mounted_at=None):
         source_path = tmp_path / "source"
@@ -147,18 +176,24 @@ def test_the_two_mounts_are_passed_over_and_every_source_path_counted(verify):
         "root       1 of 3 source paths", "drop       0 of 3 source paths"]
     # project.yaml, the pin and .gitmodules, and NOT the two mounts.
     assert row(out, "added").startswith("added      3 new paths")
-    assert "adoption verified" in out
+    assert VERIFIED in out
     assert err == ""
 
 
-def test_a_source_submodule_the_root_keeps_at_its_commit_lands_as_root(
+def test_a_source_submodule_the_root_keeps_at_its_commit_is_a_finding(
         verify):
-    """Same path, same commit: a `root` landing, as a blob would be."""
+    """Same path, same commit: counted `root`, where it is, AND refused.
+
+    The fixture's root `.gitmodules` registers `spec` alone, as the fresh one
+    `execute` writes registers only the two mounts: an assembly like this
+    clones with that directory empty. It used to verify.
+    """
     verified, out, err = verify(source={SUBMODULE: DEPENDENCY},
                                 root={SUBMODULE: DEPENDENCY})
-    assert verified == 0, err
+    assert verified == 1
     assert row(out, "root") == "root       2 of 4 source paths"
-    assert err == ""
+    assert findings(err) == [root_submodule(SUBMODULE, DEPENDENCY)]
+    assert VERIFIED not in out
 
 
 def test_a_source_submodule_in_no_place_is_lost(verify):
@@ -177,27 +212,35 @@ def test_a_dropped_source_submodule_is_counted_as_dropped(verify):
 
 
 def test_a_source_submodule_in_a_leg_and_the_root_is_duplicated(verify):
-    """The split failed to remove it: two owners for one submodule."""
+    """The split failed to remove it: two owners for one submodule, and a
+    submodule of the source's in the root besides. Two facts, two findings:
+    neither rule covers the other, since a blob can be duplicated too and a
+    submodule can sit in the root alone."""
     verified, _, err = verify(source={SUBMODULE: DEPENDENCY},
                               code={SUBMODULE: DEPENDENCY},
                               root={SUBMODULE: DEPENDENCY})
     assert verified == 1
     assert findings(err) == [f"FINDING adopt-duplicated: {SUBMODULE} is in "
-                             f"code:{DEPENDENCY}, root:{DEPENDENCY}"]
+                             f"code:{DEPENDENCY}, root:{DEPENDENCY}",
+                             root_submodule(SUBMODULE, DEPENDENCY)]
 
 
 @pytest.mark.parametrize("path, world", [
     ("vendor/extra", {}),
     (SUBMODULE, {"source": {SUBMODULE: DEPENDENCY},
                  "code": {SUBMODULE: DEPENDENCY}}),
+    (APP, {}),
 ], ids=["at-a-path-the-source-never-had",
-        "at-the-source-submodule-path-at-another-commit"])
+        "at-the-source-submodule-path-at-another-commit",
+        "at-a-path-where-the-source-had-a-blob"])
 def test_a_gitlink_the_shape_did_not_add_is_a_finding(verify, path, world):
     """Neither a mount nor the source's submodule at its own commit.
 
-    The second case moved the source's submodule to the code leg, so every
-    source path is accounted for: only the root's gitlink is wrong, and a
-    rule that matched the PATH alone would pass it.
+    The second case moved the source's submodule to the code leg, and the
+    third holds a gitlink where the source had the file the code leg took,
+    so every source path is accounted for: only the root's gitlink is wrong,
+    and a rule that matched the PATH alone would call either the source's
+    own submodule.
     """
     verified, _, err = verify(root={path: ELSEWHERE}, **world)
     assert verified == 1
@@ -248,11 +291,11 @@ def test_a_spec_gitlink_not_where_the_plan_spells_the_mount_is_two_findings(
     """The spec leg's own gitlink sits at `spec`; the plan spells its mount
     another way.
 
-    `spec/` is the case `execute` reaches: `plan --spec-path spec/` writes it,
-    and `git submodule add` records the mount at `spec`. Both findings fire,
-    and their exit is the closing paragraph's, to fix the plan and re-run.
-    `legs/spec` with the gitlink at `spec` is what a `_verify` that knew only
-    the default would pass.
+    `spec/` is the case `execute` reached until #169: `git submodule add`
+    records that mount at `spec`. `plan`, `check` and `execute` now refuse
+    the spelling before any leg exists, and `_verify`, asked it directly,
+    still fires both findings. `legs/spec` with the gitlink at `spec` is
+    what a `_verify` that knew only the default would pass.
     """
     verified, _, err = verify(mounts=mounts, mounted_at={"spec": "spec"})
     head = git("rev-parse", "HEAD",
@@ -272,7 +315,7 @@ def test_a_spec_gitlink_not_where_the_plan_spells_the_mount_is_two_findings(
         "above names another exit.")
 
 
-#: `execute` REQUIRES `git filter-repo`; without it, the one test below is
+#: `execute` REQUIRES `git filter-repo`; without it, the two tests below are
 #: skipped, as every `execute` test in this suite is.
 needs_filter_repo = pytest.mark.skipif(
     shutil.which("git-filter-repo") is None,
@@ -282,14 +325,28 @@ needs_filter_repo = pytest.mark.skipif(
 #: tests/test_adopt_e2e.py answers them.
 ANSWERS = (("examples/", "spec"), (".claude/", "root"),
            ("release.yaml", "root"))
+#: The branch `execute` pushes the split to.
+SPLIT_BRANCH = "adopt/three-repo-shape"
+
+
+def clone_the_split(source: Path, tmp_path: Path):
+    """`git clone --recurse-submodules` of the split branch into
+    `tmp_path/clone`: what the NEXT lines tell the human to run."""
+    return git(*FILE_PROTOCOL, "clone", "-q", "--recurse-submodules", "-b",
+               SPLIT_BRANCH, str(source), str(tmp_path / "clone"),
+               cwd=tmp_path, check=False)
 
 
 @needs_filter_repo
 def test_execute_verifies_the_mounts_where_the_plan_puts_them(tmp_path):
-    """`plan --spec-path legs/spec --code-path impl/code`, then `execute`.
+    """`plan --spec-path legs/spec --code-path impl/code`, then `execute`,
+    then the two commands its NEXT lines name.
 
     `cmd_execute` must hand `_verify` the PLAN'S two paths: one that passed
-    `spec` and `code` would fail this correct adoption on four findings.
+    `spec` and `code` would fail this correct adoption on four findings. The
+    work directory is moved away before the clone, so the clone fetches each
+    leg from the URL the root `.gitmodules` records, and not from the
+    working copy the mount was made from.
     """
     source = make_source_repo(tmp_path / "Thing")
     plan = tmp_path / "adoption-plan.yaml"
@@ -305,8 +362,65 @@ def test_execute_verifies_the_mounts_where_the_plan_puts_them(tmp_path):
                         "--local-remote-dir", str(tmp_path / "remotes"),
                         "--work-dir", str(tmp_path / "work"))
     assert result.returncode == 0, result.stderr + result.stdout
-    assert "adoption verified" in result.stdout
-    tree = git("ls-tree", "-r", "adopt/three-repo-shape", cwd=source).stdout
+    assert VERIFIED in result.stdout
+    tree = git("ls-tree", "-r", SPLIT_BRANCH, cwd=source).stdout
     gitlinks = sorted(line.split("\t", 1)[1] for line in tree.splitlines()
                       if line.startswith("160000 "))
     assert gitlinks == sorted(NESTED_MOUNTS.values())
+
+    (tmp_path / "work").rename(tmp_path / "work-moved-away")
+    cloned = clone_the_split(source, tmp_path)
+    assert cloned.returncode == 0, cloned.stderr
+    clone = tmp_path / "clone"
+    assert (clone / NESTED_MOUNTS["spec"] / "specs/001-feature/spec.md") \
+        .is_file()
+    assert (clone / NESTED_MOUNTS["code"] / "src/app/util.py").is_file()
+    bootstrapped = run_script(clone / "scripts/bootstrap.py", cwd=clone)
+    assert bootstrapped.returncode == 0, \
+        bootstrapped.stderr + bootstrapped.stdout
+    assert "NOT INITIALIZED" not in bootstrapped.stdout
+
+
+@needs_filter_repo
+def test_execute_fails_a_source_submodule_the_plan_checks_let_into_the_root(
+        adopter, tmp_path, capsys, monkeypatch):
+    """THE CHECK FAILS CLOSED: it does not lean on the plan checks before it.
+
+    `.gitmodules` to the code leg and `upstream/` to the root is
+    `plan-submodule-root`, which `check` finds and `execute` refuses before
+    any leg exists (#166, #168). With that refusal taken away, as a
+    regression in either would take it, the run goes on to a split whose
+    root keeps the source's submodule beside a fresh `.gitmodules` that does
+    not register it, and the verification must refuse it rather than say
+    `adoption verified`.
+    """
+    dependency = make_source_repo(tmp_path / "dependency",
+                                  tree={"value.txt": "dependency\n"},
+                                  edits=())
+    source = make_source_repo(tmp_path / "Thing")
+    git(*FILE_PROTOCOL, "submodule", "add", "-q", str(dependency), SUBMODULE,
+        cwd=source)
+    git("-c", "user.name=Source Human", "-c",
+        "user.email=source@invalid.example", "commit", "-qm",
+        "Pin a dependency", cwd=source)
+    pinned = git("rev-parse", f"HEAD:{SUBMODULE}", cwd=source).stdout.strip()
+    plan = tmp_path / "adoption-plan.yaml"
+    written = write_plan(source, plan)
+    assert written.returncode == 0, written.stderr + written.stdout
+    for path, leg in (*ANSWERS, (".gitmodules", "code"),
+                      ("upstream/", "root")):
+        resolve(plan, path, leg)
+    checked = run_script(ADOPT, "check", "--plan", str(plan))
+    assert checked.returncode == 1
+    assert (f"FINDING plan-submodule-root: {SUBMODULE} (entry upstream/) "
+            "has leg: root") in checked.stderr
+
+    monkeypatch.setattr(adopter, "_refuse_what_check_finds",
+                        lambda *_: None)
+    exit_code = adopter.cmd_execute(Namespace(
+        plan=str(plan), source=None, local_remote_dir=tmp_path / "remotes",
+        allow_empty_leg=[], yes=True, work_dir=tmp_path / "work"))
+    out, err = capsys.readouterr()
+    assert exit_code == 1, out + err
+    assert findings(err) == [root_submodule(SUBMODULE, pinned)]
+    assert VERIFIED not in out
