@@ -1311,8 +1311,8 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
       commits ONCE with explicit pathspecs.</p>
       <p><span class="refuses">Refuses</span> a <code>--to</code> that is not exactly 40 hex; a
       commit no branch of the leg&rsquo;s remote contains (a pin the rest of the world cannot fetch
-      is a root it cannot bootstrap); a dirty root; an untracked or ignored workflow file that names
-      the leg; a root standing on its own tracking branch (the next step is a pull request, never a
+      is a root it cannot bootstrap); a dirty root; an untracked or ignored workflow file it would
+      rewrite; a root standing on its own tracking branch (the next step is a pull request, never a
       push to the default branch); and a validator that goes red &mdash; rolling the pin, the
       workflow files, the leg&rsquo;s checkout and the index back first, so a refusal leaves the
       tree exactly as it was found.</p>
@@ -1779,10 +1779,10 @@ resume InkRouter                # on workstation B, and the estate is back</code
       the preferred shape, where the advisory is said and where it is silent, the optional
       <code>single-repository.yaml</code>, the doctor&rsquo;s <code>advisory</code> row and the
       assistant&rsquo;s &ldquo;what you do tell them&rdquo; added (#163); <code>bump-leg.py</code>
-      rewriting tracked workflow files only, and refusing an untracked or ignored one that names
-      the leg, added (#207) &mdash; a page cannot name the commit that contains it, and the blob
+      rewriting tracked workflow files only, and refusing an untracked or ignored one it would
+      rewrite, added (#207) &mdash; a page cannot name the commit that contains it, and the blob
       below is the fact a test checks.
-      README.md blob 4aef38fdc041dfbda497481e4c0dce0df3906cf2. Every command, flag, exit code and
+      README.md blob 491b9f9b492e9f3ad144b94e336772bbb59f7b32. Every command, flag, exit code and
       file name on this page is quoted from that README and from AGENTS.md.</p>
     </footer>
   </main>

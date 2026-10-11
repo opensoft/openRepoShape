@@ -981,8 +981,8 @@ included — then runs the project's own `validate-pins.py` and
 It REFUSES a `--to` that is not exactly 40 hex, a commit no branch of the leg's
 remote contains (including one committed inside the mount and never pushed — a
 pin the rest of the world cannot fetch is a root it cannot bootstrap), a dirty
-root, an untracked or ignored workflow file that names the leg, a root standing
-on its own tracking branch (the next step is a pull request, never a push to the
+root, an untracked or ignored workflow file it would rewrite, a root standing on
+its own tracking branch (the next step is a pull request, never a push to the
 default branch), and a validator that goes red — rolling the pin, the workflow
 files, the leg's checkout and the index back first, so a refusal leaves the tree
 exactly as it was found. The leg is left DETACHED at the new commit; `make

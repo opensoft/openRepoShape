@@ -472,6 +472,45 @@ def test_an_ignored_workflow_with_nothing_to_move_is_untouched(
     assert validate(project).returncode == 0
 
 
+def test_a_tracked_workflow_with_a_non_ascii_name_is_not_taken_for_untracked(
+        project, scaffolded, advanced):
+    """The tracked set is read NUL-separated (`git ls-files -z`), and this is
+    what that buys. Asked in the plain form, git QUOTES a name holding a byte
+    outside ASCII (`core.quotePath`, on by default) as
+    `".github/workflows/l\\303\\251gs.yml"`, which is not the path the
+    directory walk yields; a tracked `l\u00e9gs.yml` that names the leg would
+    then be refused as untracked, and "commit it first" could never clear it,
+    because it is already committed. Non-ASCII is the one quoted character
+    every platform this suite runs on can spell in a file name.
+    """
+    was = git("rev-parse", "HEAD:spec", cwd=project).stdout.strip()
+    name = "l\u00e9gs.yml"
+    relative = f".github/workflows/{name}"
+    path = project / ".github" / "workflows" / name
+    path.write_text(DRAFT.format(uses=spec_ref(was)), encoding="utf-8")
+    git("add", "--", relative, cwd=project)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm",
+        "Add a workflow with an accented name", cwd=project)
+    branched(project)
+    plain = git("-c", "core.quotePath=true", "ls-files", "--",
+                ".github/workflows", cwd=project).stdout
+    assert "\\303\\251" in plain, (
+        "this test only means something while git quotes the name in the "
+        f"plain listing: {plain!r}")
+
+    result = bump(project, scaffolded, advanced)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "bump-leg-workflow-untracked" not in result.stderr
+    assert f"@{advanced}" in path.read_text(encoding="utf-8")
+    assert was not in path.read_text(encoding="utf-8")
+    # Bytes, not text: the names come back from `-z` as git stores them.
+    names = subprocess.run(
+        ["git", "show", "--name-only", "-z", "--format=", "HEAD"],
+        cwd=str(project), capture_output=True, check=True).stdout.split(b"\0")
+    assert relative.encode("utf-8") in names
+    assert validate(project).returncode == 0
+
+
 # --- --dry-run --------------------------------------------------------------
 
 def test_dry_run_prints_the_move_and_changes_nothing(project, scaffolded,
