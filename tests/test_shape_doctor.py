@@ -789,6 +789,40 @@ def test_gitlinks_under_lists_one_directory_and_nothing_above_it(project):
     assert module.gitlinks_under(project, "spec") == []
 
 
+def test_gitlinks_under_reads_names_unquoted_and_stage_0_only(project):
+    """`-z` and stage 0, the two things `gitlinks_under` says it reads by.
+
+    A member whose name is not ASCII is listed ONCE, as itself: without
+    `-z`, `ls-files` prints it quoted and octal-escaped (`core.quotePath`),
+    and a row naming it would then report it as a gitlink no row names. A
+    gitlink left CONFLICTED under the directory -- stages 1, 2 and 3 and no
+    stage 0, which is what a merge that disagreed about a submodule leaves
+    -- is nobody's next commit and is not listed, rather than listed three
+    times. Non-ASCII is the one character git quotes that every platform's
+    index takes.
+
+    Both are written with `update-index --index-info` from BYTES: a
+    text-mode pipe on Windows turns each LF into CR LF and git stages the
+    path with a CR on it (see `stage_unmerged`), and bytes also keep the
+    name off a command line whose encoding differs by platform.
+    """
+    module = doctor_module(REPO)
+    commit = git("rev-parse", "HEAD", cwd=project).stdout.strip()
+    unquoted = "members/Ünï"
+    lines = f"160000 {commit} 0\t{unquoted}\n" + "".join(
+        f"160000 {commit} {stage}\tmembers/Conflicted\n"
+        for stage in (1, 2, 3))
+    subprocess.run(["git", "update-index", "--index-info"],
+                   cwd=str(project), input=lines.encode("utf-8"),
+                   capture_output=True, check=True)
+    staged = subprocess.run(["git", "ls-files", "-s", "-z", "--", "members"],
+                            cwd=str(project), capture_output=True,
+                            check=True).stdout.decode("utf-8")
+    assert sorted(record.split()[2] for record in staged.split("\0")
+                  if record) == ["0", "1", "2", "3"], staged
+    assert module.gitlinks_under(project, "members") == [unquoted]
+
+
 # --- not a shape root -------------------------------------------------------
 
 def test_a_git_repository_with_no_manifest_says_adopt(standard, tmp_path):
