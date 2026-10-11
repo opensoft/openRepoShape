@@ -101,6 +101,7 @@ from shape_materialize import (  # noqa: E402
     CommandFailed, Materialized, assembly_root_paths, collision_follow_up,
     copy_tree, default_reference, election_date, env_commit, git_init_commit,
     materialize_assembly_root, naming_block, run, write_lf,
+    write_paths_listing,
 )
 import shape_advisory  # noqa: E402
 
@@ -208,8 +209,11 @@ FILTER_REPO_HINT = (
 # the reader's own escape tables. A name holding a line break (the macOS
 # `Icon\r`), a control character or a byte that is not UTF-8 is one line the
 # reader gives back unchanged, and `check` can name it (#199);
-# `tests/test_adopt_plan_escapes.py` proves that round trip for every string,
-# not only for the strings a plan happens to hold. Everything it emits is
+# `tests/test_adopt_plan_escapes.py` proves that round trip for every code
+# point to U+02FF and a sample above it, and for a seeded sample of strings
+# of them, not only for the strings a plan happens to hold; not for a bare
+# YAML keyword (`null`, `true`, `false`), which `y` writes unquoted and the
+# reader takes as None or a bool, #181's to fix. Everything it emits is
 # read back by `check`, and `tests/test_adopt_plan.py` round-trips a plan
 # through both, which is what keeps the writer and the reader honest about
 # each other.
@@ -694,20 +698,25 @@ def _spelled(path: str) -> str:
     line. So a character that is not printable is spelled with a backslash,
     `\\xe9` for the byte 0xE9 and `\\n` for a newline, and so are a
     backslash and a backtick, so that the spelling reads one way only and
-    the backticks still delimit it.
+    the backticks still delimit it. The plan's own `path:` spells that byte
+    `\\udce9`, not `\\xe9` (`repo_shape.double_quoted`), because in YAML
+    `\\xe9` is the character U+00E9, which is another name: a question or a
+    report that says `caf\\xe9` is the entry `"caf\\udce9"` in the plan.
     """
     return "`" + "".join(map(_spelled_character, path)) + "`"
 
 
 def _shown(path: str) -> str:
-    """`path` in `plan`'s terminal report: as it is, unless a character in it
-    is not printable, and then `_spelled`. The plan file holds such a name
-    escaped (`repo_shape.double_quoted`); printed raw, a carriage return
-    sends the cursor back over the row and hides the name, a line break
-    splits the row, and a byte that is not UTF-8 (a surrogate here) raised
-    `UnicodeEncodeError` on a terminal strict about its encoding -- macOS,
-    a UTF-8 Linux locale, a Windows code page -- after the plan was written
-    (#199). Every other name prints exactly as it did."""
+    """`path` in `plan`'s and `check`'s terminal report: as it is, unless a
+    character in it is not printable, and then `_spelled`. The plan file
+    holds such a name escaped (`repo_shape.double_quoted`); printed raw, a
+    carriage return sends the cursor back over the row and hides the name, a
+    line break splits the row, and a byte that is not UTF-8 (a surrogate
+    here) raised `UnicodeEncodeError` on a terminal strict about its
+    encoding -- macOS, a UTF-8 Linux locale, a Windows code page -- after the
+    plan was written (#199). The same holds for the source directory a local
+    `--source` names, which the report prints too. Every other name prints
+    exactly as it did."""
     return path if path.isprintable() else _spelled(path)
 
 
@@ -1515,7 +1524,7 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
     a question printed above a summary table is a question that gets scrolled
     past.
     """
-    print(f"source     {source.repository or source.path} @ "
+    print(f"source     {source.repository or _shown(str(source.path))} @ "
           f"{source.commit[:12]} ({source.branch}), "
           f"{len(tree)} files, {source.commit_count()} commits")
     print(f"project    {args.project} ({args.id}) in {args.org}, mode in-place")
@@ -2158,8 +2167,8 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
     stays = [e for e in plan.entries if str(e.get("leg")) == "root"]
     drops = [e for e in plan.entries if str(e.get("leg")) == "drop"]
     seeded = seeded_legs(assigned_paths(plan.entries))
-    print(f"\nWHAT WILL HAPPEN, against {source.repository or source.path} @ "
-          f"{source.commit[:12]}:")
+    where = source.repository or _shown(str(source.path))
+    print(f"\nWHAT WILL HAPPEN, against {where} @ {source.commit[:12]}:")
     print(f"  create {names['spec']} and {names['code']} "
           f"({plan.get('visibility', 'private')})")
     print(f"  extract {len(moved)} path(s) with `git filter-repo`, history "
@@ -2365,7 +2374,9 @@ def _extract_leg(role: str, source: Source, work: Path, paths: list[str],
     # path contains - so on Windows every pattern would match nothing, the
     # filter would succeed, and the leg would be pushed EMPTY. A silent
     # extraction of nothing is the worst shape this failure could take.
-    write_lf(listing, "\n".join(paths) + "\n")
+    # And byte-exact: a path that is not UTF-8 is written as the bytes
+    # git records, where `write_lf` raised after both legs existed.
+    write_paths_listing(listing, paths)
     run(["git", "filter-repo", "--paths-from-file", str(listing), "--force"],
         cwd=work)
     head = git_out(["rev-parse", "HEAD"], cwd=work).lower()

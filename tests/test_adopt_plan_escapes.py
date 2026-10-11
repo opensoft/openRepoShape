@@ -17,6 +17,10 @@ ONE TABLE, SHARED. `repo_shape.DOUBLE_QUOTED_ESCAPES` and
 (`double_quoted`, which `y` calls), so the two cannot disagree. The tests
 below prove the round trip for the names that broke it, for every code point
 up to U+02FF and a sample above, and for seeded random strings of them.
+
+The same bytes reach two more places, tested at the end: the source
+directory `plan` and `check` print (spelled, as a name is), and the path
+listing `git filter-repo` reads (byte-exact, the bytes git records).
 """
 
 from __future__ import annotations
@@ -24,14 +28,16 @@ from __future__ import annotations
 import importlib.util
 import os
 import random
+import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from conftest import (ADOPT, REPO, blank_unnamed_pin_sources, git,
-                      make_source_repo, resolve, write_plan)
+                      make_source_repo, resolve)
 
 sys.path.insert(0, str(REPO / "scripts"))
 import repo_shape  # noqa: E402
@@ -39,6 +45,7 @@ from repo_shape import (  # noqa: E402
     CODE_POINT_ESCAPES, DOUBLE_QUOTED_ESCAPES, double_quoted, load_yaml,
     parse_yaml,
 )
+from shape_materialize import write_lf, write_paths_listing  # noqa: E402
 
 PATHS = "paths"
 PLAN_FILE = "adoption-plan.yaml"
@@ -231,12 +238,20 @@ ODD_NAMES = [
 ]
 
 
+#: `core.protectNTFS`, on by default on Windows, makes `update-index` skip a
+#: path holding a byte below 0x20 (`Icon\r`) with "Ignoring path" and exit
+#: 0, so the headline name would skip there. Off for the two calls that
+#: write the name into git's index and tree: nothing here checks it out, so
+#: no filesystem is ever asked to hold it.
+NTFS_UNGUARDED = ("-c", "core.protectNTFS=false")
+
+
 def git_bytes(source: Path, *args: str, stdin: bytes) -> bytes:
     """`git <args>` in `source`, fed and answering BYTES."""
     done = subprocess.run(["git", *args], cwd=str(source), input=stdin,
                           capture_output=True, check=False)
     if done.returncode:
-        pytest.skip(f"git {args[0]} refuses it here: {done.stderr!r}")
+        pytest.skip(f"git {' '.join(args)} refuses it here: {done.stderr!r}")
     return done.stdout
 
 
@@ -251,9 +266,10 @@ def odd_source(base: Path, name: bytes) -> Path:
     blob = git_bytes(source, "hash-object", "-w", "--stdin",
                      stdin=b"an icon\n").strip()
     names = [name, b"docs/" + name]
-    git_bytes(source, "update-index", "-z", "--index-info", stdin=b"".join(
-        b"100644 " + blob + b"\t" + each + NUL for each in names))
-    git("-c", "user.name=Source Human", "-c",
+    git_bytes(source, *NTFS_UNGUARDED, "update-index", "-z", "--index-info",
+              stdin=b"".join(b"100644 " + blob + b"\t" + each + NUL
+                             for each in names))
+    git(*NTFS_UNGUARDED, "-c", "user.name=Source Human", "-c",
         "user.email=source@invalid.example", "commit", "-qm",
         "Add a folder icon", cwd=source)
     held = git_bytes(source, "ls-tree", "-r", "-z", "--name-only", "HEAD",
@@ -264,13 +280,28 @@ def odd_source(base: Path, name: bytes) -> Path:
     return source
 
 
-def checked(plan: Path) -> subprocess.CompletedProcess:
-    """`check`, answered in BYTES: a FINDING that names `Icon\\r` raw would
-    read as `Icon\\n` through text mode, which turns a lone `\\r` into one."""
-    env = blank_unnamed_pin_sources({**os.environ, "LANES_LANE": ""}, {})
-    return subprocess.run(
-        [sys.executable, str(ADOPT), "check", "--plan", str(plan)],
-        capture_output=True, env=env, stdin=subprocess.DEVNULL, check=False)
+def adopted(*args: str, **asked: str) -> subprocess.CompletedProcess:
+    """`adopt-project.py <args>`, with `asked` set in its environment,
+    answered in BYTES: a name printed raw, `Icon\\r`, would read as
+    `Icon\\n` through text mode, which turns a lone `\\r` into one."""
+    env = blank_unnamed_pin_sources(
+        {**os.environ, "LANES_LANE": "", **asked}, asked)
+    return subprocess.run([sys.executable, str(ADOPT), *args],
+                          capture_output=True, env=env,
+                          stdin=subprocess.DEVNULL, check=False)
+
+
+def planned(source: Path, plan: Path, **asked: str
+            ) -> subprocess.CompletedProcess:
+    """`plan`, as `conftest.write_plan` runs it, answered in bytes."""
+    return adopted("plan", "--source", str(source), "--project", "Northwind",
+                   "--org", "testorg", "--elected-by", "Test Human",
+                   "--elected-on", "2026-09-02", "--out", str(plan), **asked)
+
+
+def checked(plan: Path, **asked: str) -> subprocess.CompletedProcess:
+    """`check`, answered in bytes."""
+    return adopted("check", "--plan", str(plan), **asked)
 
 
 #: The coverage findings, any one of which would mean the escaped entry did
@@ -298,11 +329,18 @@ def test_plan_writes_the_name_as_one_entry_check_parses(adopter, tmp_path,
     source = odd_source(tmp_path, name)
     text_name = name.decode("utf-8", "surrogateescape")
     plan = tmp_path / PLAN_FILE
-    written = write_plan(source, plan)
+    written = planned(source, plan)
     assert written.returncode == 0, written.stderr + written.stdout
-    assert "Traceback" not in written.stderr
-    # Printed in the terminal report the way a question spells it.
-    assert adopter._spelled(text_name) in written.stdout
+    assert b"Traceback" not in written.stderr
+    # No line of the report prints the name raw, which only the bytes show.
+    assert name not in written.stdout, written.stdout
+    # Printed the way a question spells it: in the entries table, and, when
+    # `plan` asks about it, in the list of questions that ends the report,
+    # which the table row alone would not prove.
+    report = written.stdout.decode("utf-8", "replace").replace("\r\n", "\n")
+    assert adopter._spelled(text_name) in report
+    if asks:
+        assert f"\n  {adopter._spelled(text_name)}\n      " in report, report
 
     raw = plan.read_bytes()
     assert raw.count(f"\n  - path: {spelled}\n".encode()) == 1
@@ -322,6 +360,10 @@ def test_plan_writes_the_name_as_one_entry_check_parses(adopter, tmp_path,
     assert said.count(UNRESOLVED) == len(ANSWERS) + asks, said
     if name == b"Icon\r":
         # Bytes, and ASCII on every platform's stderr: the FINDING names it.
+        # RAW, and that is a defect this line pins: `check` prints a FINDING's
+        # path unspelled, and a terminal hides it behind the carriage return.
+        # Filed as #212 (lane 3, `fix/adopt-spell-finding-paths`), whose fix
+        # edits this line to the spelled name.
         assert UNRESOLVED + b"Icon\r still has `leg: null`" in said
     if asks:
         resolve(plan, spelled, "root")
@@ -341,3 +383,93 @@ def test_plan_writes_the_name_as_one_entry_check_parses(adopter, tmp_path,
 def test_the_reader_module_is_the_one_the_writer_imports(adopter):
     """`y` quotes with `repo_shape.double_quoted` itself, not a copy."""
     assert adopter.double_quoted is repo_shape.double_quoted
+
+
+# --- a source directory that is not UTF-8 ----------------------------------
+
+def test_a_source_directory_that_is_not_utf8_is_shown_spelled(adopter,
+                                                             tmp_path):
+    """`plan` writes such a directory into `local_path:` escaped, and `check`
+    reads it back; but the report printed it raw, `source     <path> @`, and
+    so did `check`'s `WHAT WILL HAPPEN, against <path> @`, and each raised
+    `UnicodeEncodeError` on a strict UTF-8 stdout after the plan was written.
+    Both show it spelled now. Skipped where no directory can be named with
+    the byte 0xE9 (Windows, macOS's APFS) or git will not work in one."""
+    try:
+        parent = Path(os.fsdecode(os.path.join(os.fsencode(tmp_path),
+                                               b"caf\xe9")))
+        parent.mkdir()
+    except (OSError, UnicodeError) as exc:
+        pytest.skip(f"no directory here is named b'caf\\xe9': {exc!r}")
+    try:
+        source = make_source_repo(parent / "Thing")
+    except AssertionError as exc:
+        pytest.skip(f"git will not work under b'caf\\xe9' here: {exc}")
+    shown = adopter._spelled(str(source.resolve()))
+    assert "\\xe9" in shown
+    plan = tmp_path / PLAN_FILE
+    strict = {"PYTHONIOENCODING": "utf-8:strict"}
+
+    written = planned(source, plan, **strict)
+    assert written.returncode == 0, written.stderr + written.stdout
+    assert b"Traceback" not in written.stderr
+    assert f"source     {shown} @ ".encode() in written.stdout, written.stdout
+    assert load_yaml(plan)["source"]["local_path"] == str(source.resolve())
+
+    result = checked(plan, **strict)
+    said = result.stdout + result.stderr
+    # 1: `SYNTHETIC_TREE`'s questions are still to be answered.
+    assert result.returncode == 1, said
+    assert b"Traceback" not in said
+    assert said.count(b"FINDING ") == said.count(UNRESOLVED) == len(ANSWERS)
+    assert f"WHAT WILL HAPPEN, against {shown} @ ".encode() in result.stdout
+
+
+# --- the listing `git filter-repo` reads -----------------------------------
+
+def test_the_paths_listing_is_written_byte_exact(tmp_path):
+    """`_extract_leg` wrote `--paths-from-file` through `write_lf`, strict
+    UTF-8, so a path holding a byte that is not UTF-8 (a surrogate, as
+    `Source.tree` keeps it) raised after both leg repositories existed. The
+    listing is that byte again, LF, one path to a line and nothing else on
+    it; and a listing of UTF-8 paths is exactly what `write_lf` wrote."""
+    listing = tmp_path / "paths"
+    write_paths_listing(listing, ["caf\udce9.txt", "docs/"])
+    assert listing.read_bytes() == b"caf\xe9.txt\ndocs/\n"
+    for paths in (["docs/", "src/run.py", ".claude/", "release.yaml"],
+                  ["caf\u00e9 \u65e5\u672c.md", "a b/"]):
+        write_paths_listing(listing, paths)
+        written = tmp_path / "written"
+        write_lf(written, "\n".join(paths) + "\n")
+        assert listing.read_bytes() == written.read_bytes() == (
+            "\n".join(paths) + "\n").encode("utf-8")
+
+
+@pytest.mark.skipif(
+    shutil.which("git-filter-repo") is None,
+    reason="git filter-repo is not installed: `pip install git-filter-repo`")
+def test_a_leg_extracts_a_path_that_is_not_utf8(adopter, tmp_path):
+    """`_extract_leg` itself, given an entry path holding the byte 0xE9:
+    the leg holds the name byte for byte. On this branch `execute` refuses
+    such an entry before any leg exists (`SAFE_ARG_RE`); a `check` that
+    lets it through (#196) reaches this, so the extraction is tested here,
+    directly. Skipped where no file can be named with that byte (Windows,
+    macOS's APFS): filter-repo works in a clone, which checks the name out."""
+    try:
+        probe = Path(os.fsdecode(os.path.join(os.fsencode(tmp_path),
+                                              b"caf\xe9.txt")))
+        probe.write_bytes(b"")
+        probe.unlink()
+    except (OSError, UnicodeError) as exc:
+        pytest.skip(f"no file here is named b'caf\\xe9.txt': {exc!r}")
+    source = odd_source(tmp_path, b"caf\xe9.txt")
+    commit = git("rev-parse", "HEAD", cwd=source).stdout.strip()
+    remote = tmp_path / "Northwind-code.git"
+    git("init", "-q", "--bare", str(remote), cwd=tmp_path)
+    adopter._extract_leg(
+        "code", SimpleNamespace(path=source, commit=commit),
+        tmp_path / "work", ["caf\udce9.txt"], tmp_path / "code-paths.txt",
+        "adopt", str(remote), "adopt", "testorg/Northwind-code")
+    held = git_bytes(remote, "ls-tree", "-r", "-z", "--name-only", "adopt",
+                     stdin=b"").split(NUL)
+    assert [each for each in held if each] == [b"caf\xe9.txt"]

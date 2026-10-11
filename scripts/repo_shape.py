@@ -173,9 +173,13 @@ class YamlError(Exception):
 _DASH_RE = re.compile(r"^-(\s+|$)")
 
 #: Marks a `_Rec` built from a block scalar, carrying its key and body
-#: instead of raw text. A NUL byte never appears in this reader's input (YAML
-#: is text), so it cannot collide with a real key or value; spelled once
-#: because `python:S1192` counts three repeats of the same literal.
+#: instead of raw text, NUL-separated; spelled once because `python:S1192`
+#: counts three repeats of the same literal. A block scalar's KEY HOLDING A
+#: NUL COLLIDES WITH IT and is misread (`"a\x00b": |` reads as the key `a`
+#: with `b` and a NUL ahead of the body): a raw NUL, which YAML forbids and
+#: this reader does not refuse, and since #199 the escape `\x00` in a
+#: double-quoted key. No writer in this repository emits such a key: the
+#: plan writer writes no block scalar, and every key it writes is a literal.
 _BLOCK_SENTINEL = "\x00BLOCK\x00"
 
 
@@ -247,9 +251,12 @@ def _unquote_key(key: str) -> str:
 #: (`_unescape`) and the writer (`double_quoted`) both read, so that a plan
 #: `adopt-project.py` writes is a plan this reader takes back unchanged
 #: (#199). Each is YAML's own spelling with YAML's meaning, so the file is
-#: still YAML that any other reader takes the same way. Anything else after a
-#: backslash keeps its backslash, because inventing a meaning for `\q` is how
-#: a reader starts disagreeing with the writer.
+#: still YAML another reader takes the same way -- except a lone surrogate's
+#: `\udce9`, which libyaml (PyYAML's `CSafeLoader`) refuses as an invalid
+#: escape, while PyYAML's pure-Python `SafeLoader` reads it back as this
+#: reader does. Anything else after a backslash keeps its backslash, because
+#: inventing a meaning for `\q` is how a reader starts disagreeing with the
+#: writer.
 DOUBLE_QUOTED_ESCAPES = {"n": "\n", "r": "\r", "t": "\t", '"': '"', "\\": "\\"}
 
 #: YAML's CODE-POINT escapes, by how many hex digits each takes: `\xNN`,
@@ -272,17 +279,19 @@ def double_quoted(text: str) -> str:
     the adoption plan and for `shape-doctor.py`'s placement plan. It escapes
     a backslash and a double quote, which would bend or end the quoting;
     `\\n`, `\\r` and `\\t` by name; and every other character `str.isprintable`
-    refuses by its code point. THAT CLASS IS WHAT THE READER CANNOT TAKE RAW.
-    It reads a file line by line with `str.splitlines`, which ends a line
-    at `\\n` and `\\r` -- the macOS folder icon is a file named `Icon\\r` --
-    and also at `\\x0b`, `\\x0c`, `\\x1c`-`\\x1e`, `\\x85`, `\\u2028` and
-    `\\u2029`, and not one of them is printable. The same rule spells what a
-    file could hold but a person reading the plan could not see (a NUL, an
-    ESC, a zero-width or bidirectional control), and a lone surrogate, which
-    is how `adopt-project.py` keeps a name's byte that is not UTF-8
-    (`surrogateescape`): no UTF-8 file can hold one raw, and `\\udce9` reads
-    back as that same surrogate, so `check` finds the entry's name in the
-    tree. Whatever the string, the scalar is one line of printable text.
+    refuses by its code point. PART OF THAT CLASS THE READER CANNOT TAKE
+    RAW. It reads a file line by line with `str.splitlines`, which ends a
+    line at `\\n` and `\\r` -- the macOS folder icon is a file named
+    `Icon\\r` -- and also at `\\x0b`, `\\x0c`, `\\x1c`-`\\x1e`, `\\x85`,
+    `\\u2028` and `\\u2029`: ten characters, not one of them printable. And
+    no UTF-8 file can hold a lone surrogate raw, which is how
+    `adopt-project.py` keeps a name's byte that is not UTF-8
+    (`surrogateescape`); `\\udce9` reads back as that same surrogate, so
+    `check` finds the entry's name in the tree. THE REST A PERSON CANNOT
+    SEE: the reader takes a raw TAB, NUL, ESC or DEL, or a zero-width or
+    bidirectional control, inside the quotes, but a person reading the plan
+    could not tell it was there, so the same rule spells it. Whatever the
+    string, the scalar is one line of printable text.
     """
     return '"' + "".join(map(_escaped, text)) + '"'
 
