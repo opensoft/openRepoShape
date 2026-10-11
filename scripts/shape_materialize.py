@@ -936,6 +936,22 @@ def _local_strays(src: Path) -> frozenset[str]:
                      if name)
 
 
+def template_files(src: Path) -> list[str]:
+    """Every file `copy_tree` copies out of the template tree `src`, in its
+    order, relative to `src` in POSIX spelling: what a leg seeded from `src`
+    holds.
+
+    ONE LISTING, read by `copy_tree` and by `adopt-project.py check`, which
+    follows a symlink the plan keeps into a seeded leg's mount and must find
+    there what `execute` will have written (#183).
+    """
+    strays = _local_strays(src)
+    return [rel for rel in (path.relative_to(src).as_posix()
+                            for path in sorted(src.rglob("*"))
+                            if not path.is_dir())
+            if rel not in strays]
+
+
 def copy_tree(src: Path, dst: Path, values: dict[str, str]) -> list[str]:
     """Copy a template tree, substituting placeholders in every text file.
 
@@ -946,12 +962,9 @@ def copy_tree(src: Path, dst: Path, values: dict[str, str]) -> list[str]:
     neither copied nor returned, so an operator's `.vscode/settings.json` in
     `templates/spec-root/` is never forced into a new leg.
     """
-    strays = _local_strays(src)
     written: list[str] = []
-    for path in sorted(src.rglob("*")):
-        if path.is_dir() or path.relative_to(src).as_posix() in strays:
-            continue
-        target = dst / path.relative_to(src)
+    for rel in template_files(src):
+        path, target = src / rel, dst / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         write_lf(target, render(path.read_text(encoding="utf-8"), values,
                                 str(path)))
@@ -1127,6 +1140,13 @@ def materialize_family_root(shape_root: Path, target: Path,
 # been pushed. `adopt-project.py check` reports such a link before any leg
 # exists. The refusals below apply the same rule where the files are
 # written, for a caller that skipped `check`.
+#
+# A symlink AT a path the shape writes, whose destination is already there,
+# is never written through: `place` sees the path taken and writes the
+# shape's copy beside it, under the collision directory. A symlink at or above
+# that COPY was followed, and the copy landed on whatever it led to: over the
+# source's own `README.md` for `shape -> .`, or into a directory, in a
+# traceback. So a path reached through a symlink must lead where nothing is.
 
 #: How many symlinks one lookup follows before it is a loop: Linux's own
 #: limit (MAXSYMLINKS), where `open()` gives up with ELOOP. `adopt-project.py`
@@ -1138,23 +1158,44 @@ SYMLINK_HOPS = 40
 #: `adopt-project.py check` names what is in the way: `check` follows the
 #: plan's SYMLINKS, and a plain FILE kept where the shape needs a directory
 #: (a source file named `.github`) reaches this refusal with `check` silent.
+#: It names the work directory as #200's mount remediation does: by now
+#: `execute` has cloned both legs into it, and a re-run cannot clone there.
 UNWRITABLE_REMEDIATION = (
     "Remediation: nothing was written at that path. The shape writes its "
-    "files only inside the directory it is given, through a symlink only "
-    "when its relative target stays inside, and only beneath directories. "
-    "What is in the way is the source repository's own: when adopting, send "
-    "it to a leg or `drop` it in the plan, and re-run into fresh legs.")
+    "files only inside the directory it is given, only beneath directories, "
+    "and through a symlink only when its relative target stays inside and "
+    "leads where nothing is yet. What is in the way is the source "
+    "repository's own: when adopting, send it to a leg or `drop` it in the "
+    "plan, and run `execute` again with fresh leg repositories and an empty "
+    "`--work-dir`, or none: a `--work-dir` this run was given still holds "
+    "its clones of both legs, and the next run cannot clone into them.")
+
+#: The parts of a path that name no entry of their own: `open()` takes each
+#: of them only from a directory that is there.
+NOT_A_NAME = ("", ".", "..")
+
+#: The refusal for a path something in the way stops the shape writing.
+BLOCKED = "materialize-blocked"
 
 
 def _link_parts(here: Path, at: str, rel: str, target: Path,
-                hops: int) -> list[str]:
-    """The target of the symlink `here` (spelled `at`) as path parts, or a
-    refusal when it is the hop that makes a loop or it is absolute."""
+                hops: int) -> list[tuple[str, str]]:
+    """The target of the symlink `here` (spelled `at`) as path parts, each
+    with `at`, or a refusal when it is the hop that makes a loop, it is
+    empty, or it is absolute.
+
+    An empty target is not `.`: `open()` finds nothing through it, and the
+    parts below would read it as the directory the link is in."""
     if hops > SYMLINK_HOPS:
         raise Refusal("materialize-symlink-loop",
                       f"{rel} runs round a symlink loop at {at} in {target}",
                       UNWRITABLE_REMEDIATION)
     link = os.readlink(here)
+    if not link:
+        raise Refusal(BLOCKED,
+                      f"{rel} cannot be written: the symlink {at} has an "
+                      "empty target, which leads nowhere",
+                      UNWRITABLE_REMEDIATION)
     if os.path.isabs(link) or os.path.splitdrive(link)[0]:
         raise Refusal(
             "materialize-outside",
@@ -1164,42 +1205,73 @@ def _link_parts(here: Path, at: str, rel: str, target: Path,
             UNWRITABLE_REMEDIATION)
     # Windows reads a link back in its own separator; a POSIX name may hold
     # a backslash, so only the platform's own separator is translated.
-    return link.replace(os.sep, "/").split("/")
+    return [(part, at) for part in link.replace(os.sep, "/").split("/")]
 
 
-def _followed(target: Path, rel: str) -> list[str]:
-    """`rel` under `target` with each symlink on the way followed, the way
-    `open()` follows them, as parts relative to `target`; a refusal when one
-    leads out of `target` or round a loop."""
-    parts, done, hops, via = rel.split("/"), [], 0, ""
-    while parts:
-        part = parts.pop(0)
+def _from_a_directory(target: Path, rel: str, done: list[str], part: str,
+                      via: str) -> None:
+    """Refuse `part`, a `..`, `.` or empty part of the target of the symlink
+    `via`, where `open()` cannot take it: `..` above `target`, or any of
+    them after something that is not a directory. `open()` takes them
+    physically, so `a/..` fails where `a` is missing (FileNotFoundError) or
+    a file (NotADirectoryError), and `ci/` where `ci` is missing
+    (IsADirectoryError): each was a traceback after both legs."""
+    if not done:
         if part == "..":
-            if not done:
-                raise Refusal(
-                    "materialize-outside",
-                    f"{rel} would be written outside {target}: at the "
-                    f"symlink {via} it climbs above it",
-                    UNWRITABLE_REMEDIATION)
-            done.pop()
-        elif part not in ("", "."):
-            here = target.joinpath(*done, part)
-            if here.is_symlink():
-                hops, via = hops + 1, root_key(here, target)
-                parts = _link_parts(here, via, rel, target, hops) + parts
-            else:
-                done.append(part)
-    return done
+            raise Refusal(
+                "materialize-outside",
+                f"{rel} would be written outside {target}: at the symlink "
+                f"{via} it climbs above it", UNWRITABLE_REMEDIATION)
+        return
+    here = target.joinpath(*done)
+    if not here.is_dir():
+        raise Refusal(
+            BLOCKED,
+            f"{rel} cannot be written: the target of the symlink {via} goes "
+            f"on from {root_key(here, target)}, which is not a directory here",
+            UNWRITABLE_REMEDIATION)
 
 
-def _blocker(target: Path, rel: str, landed: list[str]) -> str | None:
-    """What stands where `rel` needs a directory, or None.
+def _followed(target: Path, rel: str) -> tuple[list[str], int]:
+    """`rel` under `target` with each symlink on the way followed, the way
+    `open()` follows them: the parts it lands on, relative to `target`, and
+    how many symlinks led there. A refusal when one leads out of `target`,
+    round a loop, or on from something that is not a directory."""
+    parts = [(part, "") for part in rel.split("/")]
+    done: list[str] = []
+    hops = 0
+    while parts:
+        part, via = parts.pop(0)
+        if part in NOT_A_NAME:
+            _from_a_directory(target, rel, done, part, via)
+            if part == "..":
+                done.pop()
+            continue
+        here = target.joinpath(*done, part)
+        if here.is_symlink():
+            hops += 1
+            parts = _link_parts(here, root_key(here, target), rel, target,
+                                hops) + parts
+        else:
+            done.append(part)
+    return done, hops
+
+
+def _blocker(target: Path, rel: str, landed: list[str],
+             hops: int) -> str | None:
+    """What stands where `rel` needs a directory, or where a symlink leads
+    it, or None.
 
     `mkdir(parents=True)` makes a MISSING directory and everything below it,
     and passes through a directory or a symlink to one. It cannot pass a
     file, or a symlink that leads to no directory, and it raised a traceback
     there. A symlink at `rel` itself is written through only into a
-    directory that is already there.
+    directory that is already there. And a path reached through a symlink
+    must land where nothing is: only a collision COPY gets this far with
+    something there, and it was written over a file, or raised
+    IsADirectoryError on a directory. A copy with NO symlink on the way that
+    lands on a file is still written there: that is `place`'s own question,
+    not a symlink's.
     """
     parts = rel.split("/")
     for end in range(1, len(parts)):
@@ -1216,15 +1288,21 @@ def _blocker(target: Path, rel: str, landed: list[str]) -> str | None:
     if path.is_symlink() and not target.joinpath(*landed[:-1]).is_dir():
         return (f"the symlink {rel} leads to {os.readlink(path)}, and there "
                 "is no directory there to write it in")
+    there = target.joinpath(*landed)
+    if hops and there.exists():
+        where = root_key(there, target) if landed else str(target)
+        what = "a directory" if there.is_dir() else "a file"
+        return (f"a symlink on the way leads it to {where}, {what} that is "
+                "already there")
     return None
 
 
 def _refuse_unwritable(target: Path, rel: str) -> None:
     """Refuse, before the `mkdir` and the write, a path the shape must not
     write at (outside `target`, or round a loop) or cannot (#183)."""
-    blocker = _blocker(target, rel, _followed(target, rel))
+    blocker = _blocker(target, rel, *_followed(target, rel))
     if blocker:
-        raise Refusal("materialize-blocked",
+        raise Refusal(BLOCKED,
                       f"{rel} cannot be written: {blocker}",
                       UNWRITABLE_REMEDIATION)
 
@@ -1369,9 +1447,11 @@ def copy_out(src: Path, dst: Path) -> None:
 
 #: `D:\work\Thing` or `D:/work/Thing` — a Windows absolute path, in either
 #: spelling. `_spelling_reason` below asks it whether a leg path is a drive
-#: letter's. adopt-project.py imports it too, for its own `--source` flag:
-#: `Source.open` there tells a path the operator got wrong from a repository
-#: name. `--source` and `Source.open` are adopt-project.py's, not this file's.
+#: letter's. adopt-project.py imports it too, for two questions of its own:
+#: `Source.open` tells a `--source` path the operator got wrong from a
+#: repository name, and `_PlannedRoot` tells a symlink the plan keeps that
+#: leads to a place on a Windows machine. Both are adopt-project.py's, not
+#: this file's.
 WINDOWS_ABSOLUTE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 
 #: Git's own names, casefolded: a leg cannot be mounted at a segment spelled

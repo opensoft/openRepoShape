@@ -10,14 +10,25 @@ ended in a Python traceback; one that leaves the tree had the shape's
 `validate.yml` WRITTEN OUTSIDE the assembly. Either way the corrected plan met
 `leg-remote-exists`.
 
-Four groups of tests:
+The groups of tests:
 
 - `check` reports each such link, and `execute` refuses it under #168's one
   list of `check`'s findings, before any leg exists. The links are put in
   the source's TREE (`update-index --cacheinfo`), which is all either command
   reads, so these need no symlink privilege and run on Windows too.
 - What must NOT be refused: a link whose target the root keeps (followed end
-  to end since #167), and one no shape path runs through.
+  to end since #167), one whose destination is there by the time the shape
+  writes through it, and one no shape path runs through.
+- A link AT a path the shape writes is decided by what `place` will find
+  (#183's review, B1): where something is already there, the shape's copy
+  goes beside it under `shape/` and the link is kept, as on main; where
+  nothing is, the shape would write through it, and it is refused. Outside
+  the assembly that is a question for this machine's disk, which `check` and
+  `execute` each ask.
+- The shape's copy under `shape/` is written without asking again, so a link
+  that leads the copy onto something already there is refused (B2).
+- A case twin, `.GitHub` for `.github`, is followed as a macOS or Windows
+  disk follows it, and refused on every disk (S1).
 - `core.symlinks=false` (#183): `execute` refuses, before any leg, a link the
   shape would write beneath, because the assembly's clone holds it as a file.
 - The materializer's own refusals, for a caller that skipped `check`.
@@ -70,6 +81,7 @@ GITHUB = ".github"
 SCRIPTS = "scripts"
 CONTRACTS = "contracts"
 SHAPE_DIR = "shape"
+SHAPE_README = f"{SHAPE_DIR}/{README}"
 TOOLS = "tools"
 TOOLS_DIR = "tools/"
 TOOLS_UP = "tools/up"
@@ -86,21 +98,45 @@ ETC = "/etc"
 OUTSIDE_CI = "../outside-ci"
 LATEST = "latest"
 BOOTSTRAP_PY = "scripts/bootstrap.py"
+AGENTS = "AGENTS.md"
+CLAUDE = "CLAUDE.md"
+MAKEFILE = "Makefile"
+DOCS_DIR = "docs/"
+DOCS_AGENTS = "docs/agents.md"
+VENDOR_DIR = "vendor/"
 SPEC = "spec"
 CODE = "code"
 THING = "Thing"
 PLAN_FILE = "adoption-plan.yaml"
 PLAN_FLAG = "--plan"
+WORK_FLAG = "--work-dir"
 READ = "read"
 ASSEMBLY = "assembly"
+OUTSIDE_DIR = "outside"
 BLOCKED = "materialize-blocked"
 OUTSIDE = "materialize-outside"
 CONFIG_VALUE = "GIT_CONFIG_VALUE_0"
+#: Case twins of paths the shape writes, as a macOS or Windows disk reads
+#: them (S1), and the rest of what several cases name.
+GITHUB_TWIN = ".GitHub"
+GITIGNORE_TWIN = ".GITIGNORE"
+NOWHERE_GITIGNORE = "nowhere/gitignore"
+BUILD_MAKEFILE = "build/Makefile"
+GIT_INFO = ".git/info"
+SPEC_OTHER = "spec/docs/other.md"
+VENDOR = "vendor"
+PERSONAL = "a personal file\n"
+VERIFIED = "adoption verified"
+MODULE = "module"
 #: `plan` cannot classify a `notes/` holding a link and a readme as one, and
 #: lists the two; the readme is answered here and the link with the rest.
 NOTES_KEPT = {NOTES_README: ROOT}
 #: The arguments every case of a planned source takes.
-PLANNED = ("files", "links", "legs")
+FILES, LINKS = "files", "links"
+PLANNED = (FILES, LINKS, "legs")
+#: What `check` adds to a finding that holds only on a disk that ignores
+#: case: #198's `CASE_ASIDE`, word for word.
+CASE_ASIDE = " once case is ignored, as a macOS or Windows disk does"
 
 #: The source every case starts from. `make_source_repo`'s later commits edit
 #: the specification and `src/app/main.py`, so both are here.
@@ -115,8 +151,12 @@ SYMLINKS_OFF = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.symlinks",
                 CONFIG_VALUE: "false"}
 SYMLINKS_ON = {**SYMLINKS_OFF, CONFIG_VALUE: "true"}
 
+#: What this runner lacks, if anything, for the end-to-end tests.
+NO_FILTER_REPO = shutil.which("git-filter-repo") is None
+ON_WINDOWS = sys.platform == "win32"
+
 needs_filter_repo = pytest.mark.skipif(
-    shutil.which("git-filter-repo") is None,
+    NO_FILTER_REPO,
     reason="git filter-repo is not installed: `pip install git-filter-repo`")
 
 #: What the tests with a symlink ON THE DISK need, as in
@@ -124,7 +164,7 @@ needs_filter_repo = pytest.mark.skipif(
 #: symlink out as a plain file unless `core.symlinks` is on, and a runner may
 #: make one only in Developer Mode or elevated.
 needs_disk_symlinks = pytest.mark.skipif(
-    sys.platform == "win32",
+    ON_WINDOWS,
     reason="a tracked symlink is a plain file in a Windows checkout")
 
 
@@ -137,7 +177,7 @@ def symlink(link: Path, target: str) -> None:
         pytest.skip(f"this platform cannot create a symlink here: {exc}")
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope=MODULE)
 def adopter():
     spec = importlib.util.spec_from_file_location("adopt_root_symlinks", ADOPT)
     module = importlib.util.module_from_spec(spec)
@@ -157,14 +197,15 @@ def commit_index(repo: Path, message: str) -> None:
 
 
 def commit_tree_entries(repo: Path, links: dict, gitlinks: tuple = ()) -> None:
-    """Each `links` path as a symlink (its target the blob) and each
-    `gitlinks` path as a submodule, in the source's TREE only."""
+    """Each `links` path as a symlink (its target the blob, text or bytes)
+    and each `gitlinks` path as a submodule, in the source's TREE only."""
     for link, target in links.items():
+        raw = target if isinstance(target, bytes) else target.encode(UTF8)
         blob = subprocess.run(
             ["git", "hash-object", "-w", "--stdin"], cwd=str(repo),
-            input=target, capture_output=True, text=True, check=True)
+            input=raw, capture_output=True, check=True)
         git("update-index", "--add", "--cacheinfo",
-            f"{SYMLINK},{blob.stdout.strip()},{link}", cwd=repo)
+            f"{SYMLINK},{blob.stdout.decode().strip()},{link}", cwd=repo)
     head = git("rev-parse", "HEAD", cwd=repo).stdout.strip()
     for path in gitlinks:
         git("update-index", "--add", "--cacheinfo", f"{GITLINK},{head},{path}",
@@ -206,8 +247,8 @@ def planned(base: Path, files: dict, links: dict, legs: dict,
     return source, plan
 
 
-def check(plan: Path):
-    return run_script(ADOPT, "check", PLAN_FLAG, str(plan))
+def check(plan: Path, *extra: str):
+    return run_script(ADOPT, "check", PLAN_FLAG, str(plan), *extra)
 
 
 def symlink_findings(result) -> list[str]:
@@ -236,12 +277,53 @@ def no_leg_was_created(base: Path) -> None:
         assert not (base / WORK / f"{PROJECT}-{role}").exists()
 
 
-def finding(link: str, target: str, shape_path: str, why: str) -> str:
+def ticked(path: str) -> str:
+    """A path as a finding spells it (`_spelled`): between backticks."""
+    return f"`{path}`"
+
+
+def finding(link: str, target: str, shape_path: str, why: str,
+            aside: str = "") -> str:
     """The line `check` prints, and `execute`'s refusal carries."""
-    return (f"{FINDING}the plan keeps {link} in the root, a symlink to "
-            f"{target}, and the shape writes {shape_path} through it, but "
-            f"{why}. Send {link} to a leg or `drop` it, or change where it "
-            "points in the source and re-run `plan`.")
+    return (f"{FINDING}the plan keeps {ticked(link)} in the root, a symlink "
+            f"to {ticked(target)}, and {ticked(shape_path)}, a path the shape "
+            f"writes, runs through it{aside}, but {why}. Send {ticked(link)} "
+            "to a leg or `drop` it, or change where it points in the source "
+            "and re-run `plan`.")
+
+
+def leads(link: str, here: str, which: str) -> str:
+    """Why a symlink's destination is not in the planned root."""
+    return f"the symlink {ticked(link)} leads to {ticked(here)}, which {which}"
+
+
+def climbs(link: str) -> str:
+    return f"at the symlink {ticked(link)} it climbs above the assembly root"
+
+
+def refused_alike(adopter, base: Path, plan: Path, line: str,
+                  *extra: str) -> None:
+    """`check` exits 1 with exactly `line`, and `execute` refuses with the
+    same line, word for word, before any leg exists."""
+    checked = check(plan, *extra)
+    assert checked.returncode == 1, checked.stderr + checked.stdout
+    assert symlink_findings(checked) == [line], checked.stderr
+    refusal = refused_by(adopter, execute_args(base, plan))
+    assert refusal.code == ROOT_SYMLINK
+    assert f"  {line}" in refusal.detail.splitlines()
+    assert "no leg repository was created" in refusal.remediation
+    no_leg_was_created(base)
+
+
+def passed_alike(adopter, base: Path, plan: Path, *extra: str) -> None:
+    """`check` says `plan ok`, and `execute`'s refusal of `check`'s
+    findings passes."""
+    checked = check(plan, *extra)
+    assert checked.returncode == 0, checked.stderr + checked.stdout
+    assert "plan ok" in checked.stdout
+    loaded = adopter.Plan.load(plan)
+    source = loaded.open_source(None, base / WORK)
+    assert adopter._refuse_what_check_finds(loaded, source) is None
 
 
 @pytest.fixture
@@ -254,9 +336,10 @@ def no_filter_repo_probe(adopter, monkeypatch):
 # Refused by `check`, and by `execute` before any leg exists
 # ---------------------------------------------------------------------------
 
-NOT_IN_THE_TREE = "which is not in the source tree"
-CLIMBS = "it climbs above the assembly root"
-SPEC_MOUNT = "it enters spec, where the plan mounts the spec leg"
+NOT_IN_THE_TREE = "is not in the source tree"
+SPEC_MOUNT = "it enters `spec`, where the plan mounts the spec leg"
+ON_THIS_MACHINE = ("an absolute path: a place on this machine, not in the "
+                   "assembly")
 #: Why the shape's scripts cannot run from where a link puts them; `{}` is
 #: the directory they land in.
 SCRIPTS_MISPLACED = (
@@ -264,41 +347,39 @@ SCRIPTS_MISPLACED = (
     "contracts/repository-naming.yaml, from the directory above their own, "
     "so they run only from a directory directly under the root, which {} is "
     "not")
+OVER_IT = "which is already there, so the shape's copy would be written over it"
 LINK_TO_GH = {"tooling/gh/workflows/build.yml": "on: push\n"}
 
-#: `(*PLANNED, (link, target, shape path, why))`. The first ten are
+#: `(*PLANNED, (link, target, shape path, why[, aside]))`. The first ten are
 #: lane 2's table for #178 (D3-D12) and #183's loop; the rest are the other
 #: ways a link the shape writes through cannot be written through.
 REFUSED = [
     pytest.param({}, {ATTRIBUTES: NOWHERE_ATTRS}, {ATTRIBUTES: ROOT},
                  (ATTRIBUTES, NOWHERE_ATTRS, ATTRIBUTES,
-                  f"the symlink {ATTRIBUTES} leads to nowhere/attrs, "
-                  f"{NOT_IN_THE_TREE}"), id="D4-a-dangling-file-link"),
+                  leads(ATTRIBUTES, NOWHERE_ATTRS, NOT_IN_THE_TREE)),
+                 id="D4-a-dangling-file-link"),
     pytest.param({"config/readme.md": "c\n"}, {ATTRIBUTES: CONFIG_ATTRS},
                  {CONFIG_DIR: ROOT, ATTRIBUTES: ROOT},
                  (ATTRIBUTES, CONFIG_ATTRS, ATTRIBUTES,
-                  f"the symlink {ATTRIBUTES} leads to config/attrs, "
-                  f"{NOT_IN_THE_TREE}"),
+                  leads(ATTRIBUTES, CONFIG_ATTRS, NOT_IN_THE_TREE)),
                  id="D3-a-dangling-file-link-in-a-kept-directory"),
     pytest.param(LINK_TO_GH, {GITHUB: TOOLING_GH},
                  {"tooling/": CODE, GITHUB: ROOT},
                  (GITHUB, TOOLING_GH, WORKFLOW,
-                  "the symlink .github leads to tooling/gh, which the plan "
-                  "sends to the code leg"), id="D5-into-a-path-sent-to-a-leg"),
+                  leads(GITHUB, TOOLING_GH, "the plan sends to the code leg")),
+                 id="D5-into-a-path-sent-to-a-leg"),
     pytest.param(LINK_TO_GH, {GITHUB: TOOLING_GH},
                  {"tooling/": "drop", GITHUB: ROOT},
                  (GITHUB, TOOLING_GH, WORKFLOW,
-                  "the symlink .github leads to tooling/gh, which the plan "
-                  "sends to `drop`"), id="into-a-dropped-path"),
+                  leads(GITHUB, TOOLING_GH, "the plan sends to `drop`")),
+                 id="into-a-dropped-path"),
     pytest.param({}, {GITHUB: OUTSIDE_CI}, {GITHUB: ROOT},
-                 (GITHUB, OUTSIDE_CI, WORKFLOW,
-                  f"at the symlink .github {CLIMBS}"),
+                 (GITHUB, OUTSIDE_CI, WORKFLOW, climbs(GITHUB)),
                  id="D6-a-relative-link-out"),
     pytest.param({}, {GITHUB: "/srv/ci"}, {GITHUB: ROOT},
                  (GITHUB, "/srv/ci", WORKFLOW,
-                  "the symlink .github leads to /srv/ci, an absolute path: a "
-                  "place on this machine, not in the assembly"),
-                 id="D6b-an-absolute-link"),
+                  f"the symlink `.github` leads to `/srv/ci`, "
+                  f"{ON_THIS_MACHINE}"), id="D6b-an-absolute-link"),
     pytest.param({}, {GITHUB: "spec/ci"}, {GITHUB: ROOT},
                  (GITHUB, "spec/ci", WORKFLOW, SPEC_MOUNT),
                  id="D7-into-a-mount"),
@@ -307,69 +388,106 @@ REFUSED = [
                  id="D7b-at-a-mount"),
     pytest.param({}, {GITHUB: "code/ci"}, {GITHUB: ROOT},
                  (GITHUB, "code/ci", WORKFLOW,
-                  "it enters code, where the plan mounts the code leg"),
+                  "it enters `code`, where the plan mounts the code leg"),
                  id="into-the-other-mount"),
-    pytest.param({}, {GITHUB: ".git/info"}, {GITHUB: ROOT},
-                 (GITHUB, ".git/info", WORKFLOW,
-                  f"the symlink .github leads to .git/info, {NOT_IN_THE_TREE}"),
+    pytest.param({}, {GITHUB: GIT_INFO}, {GITHUB: ROOT},
+                 (GITHUB, GIT_INFO, WORKFLOW,
+                  leads(GITHUB, GIT_INFO, NOT_IN_THE_TREE)),
                  id="D9-into-dot-git"),
     pytest.param({}, {GITHUB: "../Northwind/ci"}, {GITHUB: ROOT},
-                 (GITHUB, "../Northwind/ci", WORKFLOW,
-                  f"at the symlink .github {CLIMBS}"),
+                 (GITHUB, "../Northwind/ci", WORKFLOW, climbs(GITHUB)),
                  id="D12-out-and-back-by-name"),
     pytest.param({}, {GITHUB: GITHUB}, {GITHUB: ROOT},
                  (GITHUB, GITHUB, WORKFLOW,
-                  "it runs round a symlink loop at .github"),
+                  "it runs round a symlink loop at `.github`"),
                  id="a-link-to-itself"),
     pytest.param({}, {GITHUB: LOOP, LOOP: GITHUB},
                  {GITHUB: ROOT, LOOP: ROOT},
                  (GITHUB, LOOP, WORKFLOW,
-                  "it runs round a symlink loop at .github"),
+                  "it runs round a symlink loop at `.github`"),
                  id="a-loop-of-two"),
     pytest.param({}, {GITHUB: README}, {GITHUB: ROOT},
                  (GITHUB, README, WORKFLOW,
-                  f"it passes through {README}, which is a file"),
+                  f"it passes through {ticked(README)}, which is a file"),
                  id="to-a-file-the-shape-writes-beneath"),
     pytest.param({CI_FILE: ON_PUSH}, {GITHUB: "nowhere/../ci"},
                  {CI_DIR: ROOT, GITHUB: ROOT},
                  (GITHUB, "nowhere/../ci", WORKFLOW,
-                  "it passes through nowhere, which is not a directory in "
+                  "it passes through `nowhere`, which is not a directory in "
                   "the assembly root"), id="dot-dot-from-nowhere"),
     pytest.param({RUN_SH: ECHO}, {GITHUB: TOOLS_UP,
                                   TOOLS_UP: "../../x"},
                  {TOOLS_DIR: ROOT, GITHUB: ROOT},
-                 (GITHUB, TOOLS_UP, WORKFLOW,
-                  f"at the symlink tools/up {CLIMBS}"),
+                 (GITHUB, TOOLS_UP, WORKFLOW, climbs(TOOLS_UP)),
                  id="a-chain-whose-second-link-leaves"),
     pytest.param({}, {SHAPE_DIR: "../elsewhere"}, {SHAPE_DIR: ROOT},
-                 (SHAPE_DIR, "../elsewhere", f"shape/{README}",
-                  f"at the symlink shape {CLIMBS}"),
+                 (SHAPE_DIR, "../elsewhere", SHAPE_README, climbs(SHAPE_DIR)),
                  id="the-collision-directory-leaves"),
     pytest.param({"tools/sub/run.sh": ECHO}, {SCRIPTS: TOOLS_SUB},
                  {TOOLS_DIR: ROOT, SCRIPTS: ROOT},
                  (SCRIPTS, TOOLS_SUB, VALIDATE_PINS,
-                  "it lands at tools/sub/validate-pins.py, "
-                  + SCRIPTS_MISPLACED.format(TOOLS_SUB)),
+                  "it lands at `tools/sub/validate-pins.py`, "
+                  + SCRIPTS_MISPLACED.format(ticked(TOOLS_SUB))),
                  id="R2-scripts-two-directories-down"),
     pytest.param({}, {SCRIPTS: "."}, {SCRIPTS: ROOT},
                  (SCRIPTS, ".", VALIDATE_PINS,
-                  "it lands at validate-pins.py, "
+                  "it lands at `validate-pins.py`, "
                   + SCRIPTS_MISPLACED.format("the root itself")),
                  id="R6-scripts-in-the-root-itself"),
     pytest.param({RUN_SH: ECHO}, {SCRIPTS: "tools/.."},
                  {TOOLS_DIR: ROOT, SCRIPTS: ROOT},
                  (SCRIPTS, "tools/..", VALIDATE_PINS,
-                  "it lands at validate-pins.py, "
+                  "it lands at `validate-pins.py`, "
                   + SCRIPTS_MISPLACED.format("the root itself")),
                  id="R9-scripts-in-the-root-by-dot-dot"),
     pytest.param({"scripts/own.sh": ECHO, RUN_SH: ECHO},
                  {BOOTSTRAP_PY: "../tools/bootstrap.py"},
                  {TOOLS_DIR: ROOT, "scripts/": ROOT},
-                 (BOOTSTRAP_PY, "../tools/bootstrap.py",
-                  BOOTSTRAP_PY,
-                  "the symlink scripts/bootstrap.py leads to "
-                  f"tools/bootstrap.py, {NOT_IN_THE_TREE}"),
+                 (BOOTSTRAP_PY, "../tools/bootstrap.py", BOOTSTRAP_PY,
+                  leads(BOOTSTRAP_PY, "tools/bootstrap.py", NOT_IN_THE_TREE)),
                  id="R10-one-script-apart-from-the-rest"),
+    # The shape writes AGENTS.md before CLAUDE.md, so AGENTS.md still
+    # dangles when the shape writes through it.
+    pytest.param({}, {AGENTS: CLAUDE}, {AGENTS: ROOT},
+                 (AGENTS, CLAUDE, AGENTS,
+                  leads(AGENTS, CLAUDE, NOT_IN_THE_TREE)),
+                 id="a-link-to-what-the-shape-writes-only-later"),
+    pytest.param({DOCS_AGENTS: "a\n"}, {AGENTS: SPEC_OTHER},
+                 {DOCS_DIR: SPEC, AGENTS: ROOT},
+                 (AGENTS, SPEC_OTHER, AGENTS,
+                  leads(AGENTS, SPEC_OTHER,
+                        "the spec leg, mounted at `spec`, does not hold")),
+                 id="at-a-path-into-a-leg-that-lacks-it"),
+    # B2: the copy under `shape/` lands on something already there.
+    pytest.param({}, {SHAPE_DIR: "."}, {SHAPE_DIR: ROOT},
+                 (SHAPE_DIR, ".", SHAPE_README,
+                  f"it lands on {ticked(README)}, {OVER_IT}"),
+                 id="the-collision-directory-is-the-root"),
+    pytest.param({"vendor/README.md": "vendor's own\n"}, {SHAPE_DIR: VENDOR},
+                 {VENDOR_DIR: ROOT, SHAPE_DIR: ROOT},
+                 (SHAPE_DIR, VENDOR, SHAPE_README,
+                  f"it lands on `vendor/README.md`, {OVER_IT}"),
+                 id="the-collision-directory-holds-the-name"),
+    pytest.param({"sub/README.md/x.txt": "x\n"}, {SHAPE_DIR: "sub"},
+                 {"sub/": ROOT, SHAPE_DIR: ROOT},
+                 (SHAPE_DIR, "sub", SHAPE_README,
+                  "it lands on `sub/README.md`, a directory that is already "
+                  "there, where the shape's copy cannot be written"),
+                 id="the-collision-directory-holds-a-directory-of-the-name"),
+    pytest.param({"notes.md": "n\n"}, {SHAPE_README: "../notes.md"},
+                 {"notes.md": ROOT, "shape/": ROOT},
+                 (SHAPE_README, "../notes.md", SHAPE_README,
+                  f"it lands on `notes.md`, {OVER_IT}"),
+                 id="a-link-at-the-copy-itself"),
+    # S1: a case twin is followed as a disk that ignores case follows it.
+    pytest.param({}, {GITHUB_TWIN: OUTSIDE_CI}, {GITHUB_TWIN: ROOT},
+                 (GITHUB_TWIN, OUTSIDE_CI, WORKFLOW, climbs(GITHUB_TWIN),
+                  CASE_ASIDE), id="a-case-twin-above-a-shape-path"),
+    pytest.param({}, {GITIGNORE_TWIN: NOWHERE_GITIGNORE},
+                 {GITIGNORE_TWIN: ROOT},
+                 (GITIGNORE_TWIN, NOWHERE_GITIGNORE, ".gitignore",
+                  leads(GITIGNORE_TWIN, NOWHERE_GITIGNORE, NOT_IN_THE_TREE),
+                  CASE_ASIDE), id="a-case-twin-at-a-shape-path"),
 ]
 
 
@@ -381,28 +499,18 @@ def test_check_reports_the_link_and_execute_refuses_it_before_any_leg(
     through it; `execute` refuses with the same line, word for word, and
     makes no leg, so the corrected plan does not meet `leg-remote-exists`."""
     _, plan = planned(tmp_path, files, links, legs)
-    line = finding(*expected)
-
-    checked = check(plan)
-    assert checked.returncode == 1, checked.stderr + checked.stdout
-    assert symlink_findings(checked) == [line], checked.stderr
-
-    refusal = refused_by(adopter, execute_args(tmp_path, plan))
-    assert refusal.code == ROOT_SYMLINK
-    assert f"  {line}" in refusal.detail.splitlines()
-    assert "no leg repository was created" in refusal.remediation
-    no_leg_was_created(tmp_path)
+    refused_alike(adopter, tmp_path, plan, finding(*expected))
 
 
 def test_a_link_into_a_submodule_kept_in_the_root_is_reported(tmp_path):
     """A gitlink is a directory in a checkout, holding another repository:
     a link into it is not a link into `a file`."""
     _, plan = planned(tmp_path, {}, {GITHUB: "vendor/lib/ci"},
-                      {GITHUB: ROOT, "vendor/": ROOT},
+                      {GITHUB: ROOT, VENDOR_DIR: ROOT},
                       gitlinks=("vendor/lib",))
     checked = check(plan)
     assert finding(GITHUB, "vendor/lib/ci", WORKFLOW,
-                   "it enters vendor/lib, a submodule the plan keeps in the "
+                   "it enters `vendor/lib`, a submodule the plan keeps in the "
                    "root") in symlink_findings(checked), checked.stderr
 
 
@@ -415,8 +523,160 @@ def test_one_finding_per_link_however_many_shape_paths_run_through_it(
     findings = symlink_findings(check(plan))
     assert findings == [finding(
         CONTRACTS, "/srv", "contracts/spec-pin.yaml",
-        "the symlink contracts leads to /srv, an absolute path: a place on "
-        "this machine, not in the assembly")]
+        f"the symlink `contracts` leads to `/srv`, {ON_THIS_MACHINE}")]
+
+
+#: An empty target, and two that are not plain text: a byte that is not
+#: UTF-8, and a newline that would end the one-line FINDING.
+SPELLED = [
+    pytest.param(b"nowhere\xff", "nowhere\\xff", id="not-utf-8"),
+    pytest.param(b"a\nb", "a\\nb", id="a-newline"),
+]
+
+
+@pytest.mark.parametrize(("raw", "spelled"), SPELLED)
+def test_a_target_that_is_not_plain_text_is_spelled(tmp_path, raw, spelled):
+    """As #166's findings spell a path: between backticks, a byte that is
+    not UTF-8 as `\\xff` and a newline as `\\n`, so the finding is one line
+    that reads one way."""
+    _, plan = planned(tmp_path, {}, {GITHUB: raw}, {GITHUB: ROOT})
+    checked = check(plan)
+    assert symlink_findings(checked) == [finding(
+        GITHUB, spelled, WORKFLOW, leads(GITHUB, spelled, NOT_IN_THE_TREE))]
+
+
+def test_a_link_with_an_empty_target_is_fixed_in_the_source(
+        adopter, no_filter_repo_probe, tmp_path):
+    """Linux cannot hold a symlink to nothing: `git clone` there stops with
+    `unable to create symlink`, so on main `execute` made both legs and then
+    exited 2 with nothing said. Every clone `execute` makes of the source
+    checks the link out, wherever the plan sends it, so the finding says to
+    fix it in the source. (Where `core.symlinks` is false the clone holds a
+    plain file instead, so the finding claims no more than that.)"""
+    _, plan = planned(tmp_path, {}, {GITHUB: ""}, {GITHUB: ROOT})
+    line = (f"{FINDING}the plan keeps `.github` in the root, a symlink to "
+            f"``, and {ticked(WORKFLOW)}, a path the shape writes, runs "
+            "through it, but the symlink `.github` has an empty target, "
+            "which leads nowhere. Give `.github` a target in the source, or "
+            "remove it there, and re-run `plan`: Linux cannot hold a symlink "
+            "to nothing, and every clone `execute` makes of the source checks "
+            "it out, wherever the plan sends it.")
+    refused_alike(adopter, tmp_path, plan, line)
+
+
+# ---------------------------------------------------------------------------
+# A link AT a path the shape writes, leading out of the assembly (B1)
+# ---------------------------------------------------------------------------
+#
+# `place` writes the shape's copy beside such a link when its destination is
+# there, and keeps the link as the source had it: `CLAUDE.md` linked to a
+# personal global file. Where nothing is there, the shape would write its
+# file THROUGH the link, outside the assembly, as main does. Whether
+# something is there is a fact of the machine running the command.
+
+#: `(links, legs, files, (link, target, culprit, culprit's target, path))`,
+#: each a link AT a shape path whose destination is an absolute path: `{o}`
+#: is a directory outside the source, and the destination is
+#: `{o}/<path>`. The culprit is the link whose target is absolute.
+AT_OUTSIDE = [
+    pytest.param({CLAUDE: f"{{o}}/{CLAUDE}"}, {CLAUDE: ROOT}, {},
+                 (CLAUDE, f"{{o}}/{CLAUDE}", CLAUDE, f"{{o}}/{CLAUDE}",
+                  CLAUDE), id="direct"),
+    pytest.param({MAKEFILE: BUILD_MAKEFILE,
+                  BUILD_MAKEFILE: f"{{o}}/{MAKEFILE}"},
+                 {MAKEFILE: ROOT, BUILD_MAKEFILE: ROOT},
+                 {"build/x.txt": "x\n"},
+                 (MAKEFILE, BUILD_MAKEFILE, BUILD_MAKEFILE,
+                  f"{{o}}/{MAKEFILE}", MAKEFILE), id="a-two-link-chain"),
+]
+
+
+#: The arguments every `AT_OUTSIDE` case takes.
+AT_OUTSIDE_ARGS = (LINKS, "legs", FILES, "names")
+
+
+def outside_plan(base: Path, links: dict, legs: dict,
+                 files: dict) -> tuple[Path, Path]:
+    """`(the directory outside, the plan)` for an `AT_OUTSIDE` case."""
+    outside = base / OUTSIDE_DIR
+    outside.mkdir()
+    _, plan = planned(base, files, {link: target.format(o=outside.as_posix())
+                                    for link, target in links.items()}, legs)
+    return outside, plan
+
+
+@pytest.mark.parametrize(AT_OUTSIDE_ARGS, AT_OUTSIDE)
+def test_a_link_at_a_path_to_a_place_outside_that_is_there_is_kept(
+        adopter, tmp_path, links, legs, files, names):
+    """(b) Main writes the shape's copy beside it as `shape/<path>`, and
+    keeps the link exactly as the source had it."""
+    outside, plan = outside_plan(tmp_path, links, legs, files)
+    (outside / names[-1]).write_text(PERSONAL, encoding=UTF8)
+    passed_alike(adopter, tmp_path, plan)
+
+
+@pytest.mark.parametrize(AT_OUTSIDE_ARGS, AT_OUTSIDE)
+def test_a_link_at_a_path_to_a_place_outside_that_is_not_there_is_refused(
+        adopter, no_filter_repo_probe, tmp_path, links, legs, files, names):
+    """(a) Where nothing is there, main writes the shape's file THROUGH the
+    link, onto this machine outside the assembly."""
+    outside, plan = outside_plan(tmp_path, links, legs, files)
+    link, target, culprit, place, path = (
+        name.format(o=outside.as_posix()) for name in names)
+    refused_alike(adopter, tmp_path, plan, finding(
+        link, target, path, f"the symlink {ticked(culprit)} leads to "
+        f"{ticked(place)}, {ON_THIS_MACHINE}, and nothing is there"))
+    assert list(outside.iterdir()) == []
+
+
+def test_execute_asks_its_own_disk_before_any_leg(adopter,
+                                                  no_filter_repo_probe,
+                                                  tmp_path):
+    """`check` passed while the file was there; `execute` finds it gone and
+    refuses before any leg, rather than trusting what `check` saw."""
+    outside, plan = outside_plan(tmp_path, {CLAUDE: f"{{o}}/{CLAUDE}"},
+                                 {CLAUDE: ROOT}, {})
+    personal = outside / CLAUDE
+    personal.write_text(PERSONAL, encoding=UTF8)
+    assert check(plan).returncode == 0
+    personal.unlink()
+    refusal = refused_by(adopter, execute_args(tmp_path, plan))
+    assert refusal.code == ROOT_SYMLINK
+    assert "and nothing is there" in refusal.detail
+    no_leg_was_created(tmp_path)
+
+
+def test_a_link_at_a_path_that_climbs_into_the_work_directory(
+        adopter, no_filter_repo_probe, tmp_path):
+    """`execute` makes the assembly's clone in its work directory, so `..`
+    above the root leads there: refused while nothing is there, kept, as on
+    main, once something is. `check` asks the same directory when it is
+    given the same `--work-dir`."""
+    _, plan = planned(tmp_path, {}, {MAKEFILE: "../shared/Makefile"},
+                      {MAKEFILE: ROOT})
+    work = tmp_path / WORK
+    place = f"{work.resolve().as_posix()}/shared/Makefile"
+    refused_alike(adopter, tmp_path, plan, finding(
+        MAKEFILE, "../shared/Makefile", MAKEFILE,
+        f"{climbs(MAKEFILE)}, to {ticked(place)}, where nothing is"),
+        WORK_FLAG, str(work))
+    (work / "shared").mkdir()
+    (work / "shared" / MAKEFILE).write_text("all:\n", encoding=UTF8)
+    passed_alike(adopter, tmp_path, plan, WORK_FLAG, str(work))
+
+
+def test_a_link_at_a_path_into_what_execute_makes_beside_the_assembly(
+        adopter, no_filter_repo_probe, tmp_path):
+    """The spec leg's clone is made in the work directory only after this
+    check, so the disk cannot answer for it yet."""
+    _, plan = planned(tmp_path, {}, {AGENTS: "../Northwind-spec/agents.md"},
+                      {AGENTS: ROOT})
+    work = tmp_path / WORK
+    made = f"{work.resolve().as_posix()}/Northwind-spec"
+    refused_alike(adopter, tmp_path, plan, finding(
+        AGENTS, "../Northwind-spec/agents.md", AGENTS,
+        f"{climbs(AGENTS)} into {ticked(made)}, where `execute` makes the "
+        "spec leg's clone after this check"), WORK_FLAG, str(work))
 
 
 # ---------------------------------------------------------------------------
@@ -438,8 +698,8 @@ ACCEPTED = [
                  id="R4-github-to-the-root"),
     pytest.param({}, {CONTRACTS: "."}, {CONTRACTS: ROOT},
                  id="R5-contracts-to-the-root"),
-    pytest.param({"vendor/keep.txt": "k\n"}, {SHAPE_DIR: "vendor"},
-                 {"vendor/": ROOT, SHAPE_DIR: ROOT},
+    pytest.param({"vendor/keep.txt": "k\n"}, {SHAPE_DIR: VENDOR},
+                 {VENDOR_DIR: ROOT, SHAPE_DIR: ROOT},
                  id="R7-the-collision-directory-elsewhere"),
     pytest.param({"ci/workflows/validate.yml": ON_PUSH}, {GITHUB: "ci"},
                  {CI_DIR: ROOT, GITHUB: ROOT},
@@ -454,6 +714,29 @@ ACCEPTED = [
                  {GITHUB: TOOLS_UP, TOOLS_UP: "../ci/"},
                  {CI_DIR: ROOT, TOOLS_DIR: ROOT, GITHUB: ROOT},
                  id="D10-a-chain-through-dot-dot"),
+    # Where the shape has written the destination itself by the time it
+    # writes the path: main writes CLAUDE.md's copy beside the link, and
+    # the workflow into the `scripts/` the shape made.
+    pytest.param({}, {CLAUDE: AGENTS}, {CLAUDE: ROOT},
+                 id="a-link-to-what-the-shape-writes-first"),
+    pytest.param({}, {GITHUB: SCRIPTS}, {GITHUB: ROOT},
+                 id="a-directory-the-shape-makes-first"),
+    # A link AT a path into a mounted leg that holds its destination, or
+    # onto the mount itself: the copy goes beside, as on main.
+    pytest.param({DOCS_AGENTS: "a\n"}, {AGENTS: "spec/docs/agents.md"},
+                 {DOCS_DIR: SPEC, AGENTS: ROOT},
+                 id="at-a-path-into-a-leg-that-holds-it"),
+    pytest.param({}, {AGENTS: SPEC}, {AGENTS: ROOT},
+                 id="at-a-path-onto-a-mount"),
+    pytest.param({}, {CLAUDE: "code/CLAUDE.md"},
+                 {CLAUDE: ROOT, "src/": "drop"},
+                 id="at-a-path-into-a-seeded-leg"),
+    pytest.param({DOCS_AGENTS: "a\n"}, {AGENTS: "../Northwind/docs/agents.md"},
+                 {DOCS_DIR: ROOT, AGENTS: ROOT},
+                 id="at-a-path-back-into-the-assembly-by-its-name"),
+    pytest.param({CI_FILE: ON_PUSH}, {GITHUB_TWIN: "ci"},
+                 {CI_DIR: ROOT, GITHUB_TWIN: ROOT},
+                 id="a-case-twin-that-stays-inside"),
 ]
 
 #: Links no path the shape writes runs through: main keeps each exactly as
@@ -477,12 +760,7 @@ UNRELATED = [
 def test_a_link_the_shape_can_write_through_or_never_meets_is_not_refused(
         adopter, tmp_path, files, links, legs):
     _, plan = planned(tmp_path, files, links, legs)
-    checked = check(plan)
-    assert checked.returncode == 0, checked.stderr + checked.stdout
-    assert "plan ok" in checked.stdout
-    loaded = adopter.Plan.load(plan)
-    source = loaded.open_source(None, tmp_path / READ)
-    assert adopter._refuse_what_check_finds(loaded, source) is None
+    passed_alike(adopter, tmp_path, plan)
 
 
 # ---------------------------------------------------------------------------
@@ -507,15 +785,36 @@ def test_execute_refuses_a_link_it_would_check_out_as_a_file(
     assert refusal.code == "adopt-symlinks-off"
     work = (tmp_path / WORK).resolve()
     assert refusal.detail == (
-        f"the plan keeps .github in the root, a symlink to ci, and the shape "
-        f"writes {WORKFLOW} through it, but `git` here checks a symlink out "
-        "as a plain file: `core.symlinks` is false for a repository made in "
-        f"{work}. The assembly's clone would hold .github as a file, and "
-        "nothing can be written beneath a file.")
+        f"the plan keeps `.github` in the root, a symlink to `ci`, and "
+        f"{ticked(WORKFLOW)}, a path the shape writes, runs through it, but "
+        "`git` here checks a symlink out as a plain file: `core.symlinks` is "
+        f"false for a repository made in {work}. The assembly's clone would "
+        "hold `.github` as a file, and nothing can be written beneath a "
+        "file.")
     assert "no leg repository was created" in refusal.remediation
-    assert "send .github to a leg or `drop` it" in refusal.remediation
+    assert "send `.github` to a leg or `drop` it" in refusal.remediation
     no_leg_was_created(tmp_path)
     assert list(work.iterdir()) == []
+
+
+def test_a_case_twin_checked_out_as_a_file_is_named_as_one(
+        adopter, no_filter_repo_probe, tmp_path, monkeypatch):
+    """On a disk that ignores case, `.github/workflows/` runs through the
+    kept `.GitHub`, which this checkout would hold as a file. On a disk that
+    keeps case it does not run through it at all, so the refusal says which
+    disk it means, as `check`'s finding does (S1)."""
+    _, plan = planned(tmp_path, {CI_FILE: ON_PUSH}, {GITHUB_TWIN: "ci"},
+                      {CI_DIR: ROOT, GITHUB_TWIN: ROOT})
+    for key, value in SYMLINKS_OFF.items():
+        monkeypatch.setenv(key, value)
+    refusal = refused_by(adopter, execute_args(tmp_path, plan))
+    assert refusal.code == "adopt-symlinks-off"
+    assert refusal.detail.startswith(
+        f"the plan keeps `.GitHub` in the root, a symlink to `ci`, and "
+        f"{ticked(WORKFLOW)}, a path the shape writes, runs through "
+        f"it{CASE_ASIDE}, but `git` here checks a symlink out as a plain "
+        "file: "), refusal.detail
+    no_leg_was_created(tmp_path)
 
 
 def test_the_probe_answers_what_git_would_do(adopter, tmp_path, monkeypatch):
@@ -529,7 +828,7 @@ def test_the_probe_answers_what_git_would_do(adopter, tmp_path, monkeypatch):
 
 def test_with_symlinks_on_the_same_plan_passes_the_probe(adopter, tmp_path,
                                                          monkeypatch):
-    source, plan = github_to_ci(tmp_path)
+    _, plan = github_to_ci(tmp_path)
     for key, value in SYMLINKS_ON.items():
         monkeypatch.setenv(key, value)
     loaded = adopter.Plan.load(plan)
@@ -609,7 +908,8 @@ def test_a_file_where_the_shape_needs_a_directory_is_a_refusal(tmp_path):
     A source that keeps a plain file named `.github` meets the same refusal
     with both legs already made, and `check` says `plan ok` for it, because
     `check` follows symlinks. So the remediation must not say that `check`
-    names what is in the way."""
+    names what is in the way; it names the work directory, which by then
+    holds both legs' clones."""
     target = tmp_path / ASSEMBLY
     target.mkdir()
     (target / GITHUB).write_text("ci", encoding=UTF8)
@@ -619,10 +919,14 @@ def test_a_file_where_the_shape_needs_a_directory_is_a_refusal(tmp_path):
                               "file, not a directory")
     assert "nothing was written at that path" in refusal.remediation
     assert "check" not in refusal.remediation
+    assert ("an empty `--work-dir`, or none: a `--work-dir` this run was "
+            "given still holds its clones of both legs, and the next run "
+            "cannot clone into them") in refusal.remediation
 
 
-#: `(links, files, code, detail)` of a target holding `links` and `files`. `{t}` is the target directory and `{o}`
-#: the directory beside it that a link out of it reaches.
+#: `(links, files, code, detail)` of a target holding `links` and `files`.
+#: `{t}` is the target directory and `{o}` the directory beside it that a
+#: link out of it reaches.
 UNWRITABLE = [
     pytest.param({GITHUB: "../outside"}, (), OUTSIDE,
                  f"{WORKFLOW} would be written outside {{t}}: at the symlink "
@@ -633,7 +937,7 @@ UNWRITABLE = [
                  "only a symlink whose relative target stays inside {t}",
                  id="an-absolute-link"),
     pytest.param({SHAPE_DIR: "../outside"}, (README,), OUTSIDE,
-                 f"shape/{README} would be written outside {{t}}: at the "
+                 f"{SHAPE_README} would be written outside {{t}}: at the "
                  "symlink shape it climbs above it",
                  id="the-collision-directory-out"),
     pytest.param({GITHUB: GITHUB}, (), "materialize-symlink-loop",
@@ -655,20 +959,45 @@ UNWRITABLE = [
                  f"{ATTRIBUTES} cannot be written: the symlink {ATTRIBUTES} "
                  "leads to nowhere/attrs, and there is no directory there to "
                  "write it in", id="a-dangling-file-link"),
+    # S2: `open()` takes `..`, `.` and a trailing `/` only from a directory.
+    pytest.param({MAKEFILE: "ci/"}, (), BLOCKED,
+                 "Makefile cannot be written: the target of the symlink "
+                 "Makefile goes on from ci, which is not a directory here",
+                 id="a-file-link-spelled-as-a-directory"),
+    pytest.param({MAKEFILE: "a/.."}, (), BLOCKED,
+                 "Makefile cannot be written: the target of the symlink "
+                 "Makefile goes on from a, which is not a directory here",
+                 id="dot-dot-after-nothing"),
+    pytest.param({MAKEFILE: "README.md/.."}, (README,), BLOCKED,
+                 "Makefile cannot be written: the target of the symlink "
+                 "Makefile goes on from README.md, which is not a directory "
+                 "here", id="dot-dot-after-a-file"),
+    # B2: the copy under `shape/` led onto something already there.
+    pytest.param({SHAPE_DIR: "."}, (README,), BLOCKED,
+                 f"{SHAPE_README} cannot be written: a symlink on the way "
+                 "leads it to README.md, a file that is already there",
+                 id="the-copy-onto-a-file"),
+    pytest.param({SHAPE_DIR: ".", MAKEFILE: "docs"}, ("docs/x.md",), BLOCKED,
+                 "shape/Makefile cannot be written: a symlink on the way "
+                 "leads it to docs, a directory that is already there",
+                 id="the-copy-into-a-directory"),
 ]
 
 
 @needs_disk_symlinks
-@pytest.mark.parametrize(("links", "files", CODE, "detail"), UNWRITABLE)
+@pytest.mark.parametrize((LINKS, FILES, CODE, "detail"), UNWRITABLE)
 def test_the_materializer_refuses_before_it_writes(tmp_path, links, files,
                                                    code, detail):
-    """Never a write outside the target and never a traceback. On main the
-    two links out wrote `validate.yml` into `outside/`, and the rest raised
-    OSError, FileExistsError or FileNotFoundError."""
-    target, outside = tmp_path / ASSEMBLY, tmp_path / "outside"
+    """A symlink in the way is a named refusal: never a write outside the
+    target, never one over what is already there, never a traceback. On main
+    the two links out wrote `validate.yml` into `outside/`, the copies wrote
+    over README.md or raised IsADirectoryError, and the rest raised OSError,
+    FileExistsError, FileNotFoundError or NotADirectoryError."""
+    target, outside = tmp_path / ASSEMBLY, tmp_path / OUTSIDE_DIR
     target.mkdir()
     outside.mkdir()
     for name in files:
+        (target / name).parent.mkdir(parents=True, exist_ok=True)
         (target / name).write_text("the source's own\n", encoding=UTF8)
     for link, to in links.items():
         symlink(target / link, to.format(o=outside))
@@ -676,6 +1005,37 @@ def test_the_materializer_refuses_before_it_writes(tmp_path, links, files,
     assert (refusal.code, refusal.detail) == (
         code, detail.format(t=target, o=outside))
     assert list(outside.iterdir()) == [], "written outside the target"
+    for name in files:
+        assert (target / name).read_text(encoding=UTF8) == "the source's own\n"
+
+
+#: `(link, the path the refusal names)`: a symlink with an empty target
+#: above a path the shape writes, and at one.
+TO_NOTHING = [
+    pytest.param(GITHUB, WORKFLOW, id="above-a-shape-path"),
+    pytest.param(ATTRIBUTES, ATTRIBUTES, id="at-a-shape-path"),
+]
+
+
+@needs_disk_symlinks
+@pytest.mark.parametrize(("link", "path"), TO_NOTHING)
+def test_the_materializer_refuses_a_link_to_nothing(tmp_path, monkeypatch,
+                                                    link, path):
+    """Linux cannot make a symlink with an empty target, so the link is made
+    to a placeholder and read back empty, as a disk that holds one answers.
+    `open()` finds nothing through such a link. Read as `.`, it was taken
+    for the directory it is in, and the refusal named the wrong thing."""
+    target = tmp_path / ASSEMBLY
+    target.mkdir()
+    symlink(target / link, "placeholder")
+    real = os.readlink
+    monkeypatch.setattr(os, "readlink",
+                        lambda here: "" if Path(here).name == link
+                        else real(here))
+    refusal = refused_materializing(target)
+    assert (refusal.code, refusal.detail) == (
+        BLOCKED, f"{path} cannot be written: the symlink {link} has an empty "
+                 "target, which leads nowhere")
 
 
 @needs_disk_symlinks
@@ -693,6 +1053,20 @@ def test_the_materializer_still_writes_through_a_link_that_stays_inside(
     written = materialize(target).written
     assert WORKFLOW in written
     assert (target / "ci" / "workflows" / "validate.yml").is_file()
+
+
+@needs_disk_symlinks
+def test_the_materializer_writes_beside_a_link_to_something_there(tmp_path):
+    """A link AT a path whose destination is there is never written
+    through: the copy goes beside it, and what it leads to is untouched."""
+    target, outside = tmp_path / ASSEMBLY, tmp_path / OUTSIDE_DIR
+    target.mkdir()
+    outside.mkdir()
+    (outside / CLAUDE).write_text(PERSONAL, encoding=UTF8)
+    symlink(target / CLAUDE, str(outside / CLAUDE))
+    result = materialize(target)
+    assert (CLAUDE, f"{SHAPE_DIR}/{CLAUDE}") in result.collisions
+    assert (outside / CLAUDE).read_text(encoding=UTF8) == PERSONAL
 
 
 # ---------------------------------------------------------------------------
@@ -720,7 +1094,7 @@ def disk_source(base: Path, files: dict, links: dict, legs: dict) -> tuple:
 def execute(base: Path, plan: Path):
     return run_script(ADOPT, "execute", PLAN_FLAG, str(plan), "--yes",
                       "--local-remote-dir", str(base / REMOTES),
-                      "--work-dir", str(base / WORK))
+                      WORK_FLAG, str(base / WORK))
 
 
 def split_modes(source: Path) -> dict:
@@ -729,10 +1103,19 @@ def split_modes(source: Path) -> dict:
             for line in listing.splitlines()}
 
 
-@pytest.fixture(scope="module")
+def bootstraps(source: Path, base: Path) -> None:
+    """A recursive clone of the split, and its bootstrap, exit 0."""
+    clone = base / PROJECT
+    git(*FILE_PROTOCOL, "clone", "-q", "--recurse-submodules", "-b", BRANCH,
+        str(source), str(clone), cwd=base)
+    booted = run_script(clone / SCRIPTS / "bootstrap.py", cwd=clone)
+    assert booted.returncode == 0, booted.stderr + booted.stdout
+
+
+@pytest.fixture(scope=MODULE)
 def scripts_through_a_link(tmp_path_factory) -> SimpleNamespace:
     """One real adoption of a source that keeps `scripts -> tools`."""
-    if sys.platform == "win32" or shutil.which("git-filter-repo") is None:
+    if ON_WINDOWS or NO_FILTER_REPO:
         pytest.skip("needs git filter-repo and a disk that holds symlinks")
     base = tmp_path_factory.mktemp("scripts-link")
     source, plan = disk_source(base, {RUN_SH: ECHO}, {SCRIPTS: TOOLS},
@@ -750,7 +1133,7 @@ def test_a_link_the_root_keeps_and_the_shape_writes_through_adopts(
     leads; `_verify` finds each pinned script through it."""
     result = scripts_through_a_link.result
     assert result.returncode == 0, result.stderr + result.stdout
-    assert "adoption verified" in result.stdout
+    assert VERIFIED in result.stdout
     modes = split_modes(scripts_through_a_link.source)
     assert modes[SCRIPTS] == SYMLINK
     assert {"tools/bootstrap.py", "tools/repo_shape.py", RUN_SH} <= set(modes)
@@ -761,11 +1144,52 @@ def test_a_link_the_root_keeps_and_the_shape_writes_through_adopts(
 @needs_disk_symlinks
 def test_that_assembly_bootstraps(scripts_through_a_link, tmp_path):
     assert scripts_through_a_link.result.returncode == 0
-    clone = tmp_path / PROJECT
-    git(*FILE_PROTOCOL, "clone", "-q", "--recurse-submodules", "-b", BRANCH,
-        str(scripts_through_a_link.source), str(clone), cwd=tmp_path)
-    booted = run_script(clone / SCRIPTS / "bootstrap.py", cwd=clone)
-    assert booted.returncode == 0, booted.stderr + booted.stdout
+    bootstraps(scripts_through_a_link.source, tmp_path)
+
+
+@pytest.fixture(scope=MODULE)
+def claude_md_outside(tmp_path_factory) -> SimpleNamespace:
+    """One real adoption of a source that keeps `CLAUDE.md` linked to a
+    personal file outside it, which this machine has (B1)."""
+    if ON_WINDOWS or NO_FILTER_REPO:
+        pytest.skip("needs git filter-repo and a disk that holds symlinks")
+    base = tmp_path_factory.mktemp("claude-outside")
+    personal = base / OUTSIDE_DIR / CLAUDE
+    personal.parent.mkdir()
+    personal.write_text("a personal global CLAUDE.md\n", encoding=UTF8)
+    source, plan = disk_source(base, {}, {CLAUDE: str(personal)},
+                               {CLAUDE: ROOT})
+    return SimpleNamespace(base=base, source=source, personal=personal,
+                           result=execute(base, plan))
+
+
+@needs_filter_repo
+@needs_disk_symlinks
+def test_a_link_at_a_path_to_a_file_outside_adopts_beside_it(
+        claude_md_outside):
+    """As on main: the copy goes beside the link as `shape/CLAUDE.md`, the
+    split keeps the link exactly as the source had it, and the file it
+    leads to is untouched."""
+    result = claude_md_outside.result
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert VERIFIED in result.stdout
+    assert (f"  beside  {SHAPE_DIR}/{CLAUDE} (the source already has "
+            f"{CLAUDE}; nothing was overwritten)") in result.stdout
+    source = claude_md_outside.source
+    modes = split_modes(source)
+    assert modes[CLAUDE] == SYMLINK
+    assert modes[f"{SHAPE_DIR}/{CLAUDE}"] == "100644"
+    assert git("show", f"{BRANCH}:{CLAUDE}",
+               cwd=source).stdout == str(claude_md_outside.personal)
+    assert claude_md_outside.personal.read_text(encoding=UTF8) == (
+        "a personal global CLAUDE.md\n")
+
+
+@needs_filter_repo
+@needs_disk_symlinks
+def test_that_assembly_bootstraps_too(claude_md_outside, tmp_path):
+    assert claude_md_outside.result.returncode == 0
+    bootstraps(claude_md_outside.source, tmp_path)
 
 
 @needs_filter_repo
@@ -777,7 +1201,7 @@ def test_an_unrelated_absolute_link_in_the_root_still_adopts(tmp_path):
                                {NOTES_UPSTREAM: ETC}, NOTES_KEPT)
     result = execute(tmp_path, plan)
     assert result.returncode == 0, result.stderr + result.stdout
-    assert "adoption verified" in result.stdout
+    assert VERIFIED in result.stdout
     assert split_modes(source)[NOTES_UPSTREAM] == SYMLINK
     assert git("show", f"{BRANCH}:notes/upstream",
                cwd=source).stdout == ETC
@@ -805,7 +1229,7 @@ def test_a_caller_that_skips_check_meets_the_materializer_refusal(
                         lambda plan, source: None)
     code = adopter.main(["execute", PLAN_FLAG, str(plan), "--yes",
                          "--local-remote-dir", str(tmp_path / REMOTES),
-                         "--work-dir", str(tmp_path / WORK)])
+                         WORK_FLAG, str(tmp_path / WORK)])
     seen = capsys.readouterr()
     assert code == 2, seen.err + seen.out
     assert "REFUSED materialize-outside: " in seen.err

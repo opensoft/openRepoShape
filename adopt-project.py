@@ -34,11 +34,13 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            into the root, `shape/`, or a source path the plan keeps there),
            the source's own submodules kept on one leg with their
            `.gitmodules`, registered there and never in the root, and no
-           symlink kept in the root that a path the shape writes runs
-           through and cannot be written through (one that dangles, loops,
-           or leads out of the root or into a leg, or one that carries the
-           shape's scripts anywhere but one directory directly under the
-           root). It prints what will happen and changes nothing.
+           symlink kept in the root that the shape would write one of its
+           files, or that file's copy under `shape/`, through where it
+           cannot (one that dangles, loops, or leads out of the root or
+           into a leg, one that leads the copy onto something already
+           there, or one that carries the shape's scripts anywhere but one
+           directory directly under the root), whether the disk keeps case
+           or ignores it. It prints what will happen and changes nothing.
   execute  creates the two legs, extracts them with `git filter-repo`, makes
            the one split commit on a branch of the source, sets the
            `xf-project-<id>` topic on all three (skipped for local remotes),
@@ -84,6 +86,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import os
 import re
 import shutil
 import subprocess
@@ -105,7 +108,7 @@ from shape_materialize import (  # noqa: E402
     SYMLINK_HOPS, CommandFailed, Materialized, assembly_root_paths,
     collision_follow_up, copy_tree, default_reference, election_date,
     env_commit, git_init_commit, materialize_assembly_root, naming_block, run,
-    write_lf,
+    template_files, write_lf,
 )
 # The leg-path rule (#179) is `scaffold-project.py`'s as much as adopt's, so it
 # is imported as one unit and not listed among the materializer's names above.
@@ -366,11 +369,16 @@ class Source:
     """A repository being read, and nothing more. Nothing here writes to it."""
 
     def __init__(self, path: Path, repository: str | None, branch: str,
-                 commit: str):
+                 commit: str, work_root: Path | None = None):
         self.path = path
         self.repository = repository
         self.branch = branch
         self.commit = commit
+        #: The work directory this run opened the source in: where a named
+        #: repository is cloned to be read, and where `execute` makes the
+        #: assembly's clone, so where a symlink the plan keeps in the root
+        #: leads when it climbs above the root (#183).
+        self.work_root = work_root
 
     @classmethod
     def open(cls, spec: str, work_root: Path) -> "Source":
@@ -406,7 +414,7 @@ class Source:
                     "name, or clone it yourself and pass the path.") from exc
         branch = _default_branch(path)
         commit = git_out(["rev-parse", branch], cwd=path).lower()
-        return cls(path, repository, branch, commit)
+        return cls(path, repository, branch, commit, work_root)
 
     def tree(self) -> list[tuple[str, str, str, int]]:
         """(path, mode, blob sha, size) for every file at the pinned commit."""
@@ -1972,6 +1980,25 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
 # assembly. One that led to nothing, into a leg, or round a loop made it die
 # in a traceback. Both happened AFTER both leg remotes had been pushed, so
 # the corrected plan then met `leg-remote-exists`.
+#
+# WHAT THE MATERIALIZER WILL DO decides each path, in the order it writes
+# them (#183's review, B1). `place` first asks whether something is already
+# at the path, following every symlink on the way. Where something is, the
+# shape's copy goes beside it under `shape/`, and the link is never written
+# through: `CLAUDE.md -> /home/me/CLAUDE.md`, on a machine that has that
+# file, is adopted exactly as `main` adopts it. Where nothing is, the shape
+# writes through every link on the way, so a link that dangles, loops or
+# leads out of the assembly is refused. A symlink ABOVE a path the shape
+# writes is a directory the shape writes into, so it must lead to a
+# directory the root holds, whatever this machine holds elsewhere. And the
+# shape's copy under `shape/` is written without asking again, so a symlink
+# that leads the COPY onto something already there is refused too (B2).
+#
+# Whether something is at a place OUTSIDE the assembly is a fact of the
+# machine, so `check` and `execute` each ask their own disk: an absolute
+# target as it stands, and a climb above the root from the work directory,
+# where `execute` makes the assembly's clone. Each says what is true where it
+# runs, and `execute` asks before any leg exists.
 
 #: The finding for a symlink the plan keeps in the root that the shape cannot
 #: write through.
@@ -1981,17 +2008,29 @@ ROOT_SYMLINK = "plan-root-symlink"
 SHAPE_SCRIPTS = PurePosixPath(BOOTSTRAP).parent.as_posix()
 #: The `leg:` answers that take a path out of the assembly root.
 NOT_IN_THE_ROOT = (*EXTRACTED_LEGS, "drop")
+#: What a symlink with an absolute target leads to.
+ON_THIS_MACHINE = ("an absolute path: a place on this machine, not in the "
+                   "assembly")
+#: The parts of a path that name no entry, and leave a walk where it is.
+HERE = ("", ".")
 
 
 class _Walk:
-    """One path the shape writes, followed through a `_PlannedRoot`: the
-    symlinks met on the way, in order, as `(path, target)`; where it landed;
-    and, once a symlink has been met, what stops it, or None."""
+    """One path the shape writes, followed through a `_PlannedRoot` as the
+    materializer's `open()` will follow it: the symlinks met on the way, in
+    order, as `(path, target)`; where it lands, and whether that is outside
+    the assembly; whether something is already there, so that `place`
+    writes the shape's copy beside it under `shape/`; the symlink with an
+    empty target it met, if any; and, once a symlink has been met, what
+    stops it, or None."""
 
     def __init__(self, path: str) -> None:
         self.path = path
         self.links: list[tuple[str, str]] = []
         self.landed = ""
+        self.outside = False
+        self.taken = False
+        self.empty = ""
         self.problem: str | None = None
 
 
@@ -2000,159 +2039,363 @@ class _PlannedRoot:
     plan and the source tree BEFORE any leg exists (#178, #183).
 
     It holds every source path the plan keeps in the root, each symlink with
-    the target its blob holds, and the two leg mounts. It does not hold a
-    path the plan sends to a leg or drops: the mount's `git rm` has removed
-    it by the time the shape is written.
+    the target its blob holds; the `.gitmodules` the mounts write; each leg's
+    mount, holding what that leg will hold (the source paths the plan sends
+    to it, at their own paths, or the shape's template for a seeded leg); and
+    an empty directory for each submodule, because the assembly's clone is
+    not recursive. It does not hold a path the plan sends to a leg or drops:
+    the mount's `git rm` has removed it by the time the shape is written.
+    `walks` adds what the shape itself writes, path by path, as `place` does,
+    so `CLAUDE.md -> AGENTS.md` finds the `AGENTS.md` the shape wrote first.
 
-    A path is followed the way the materializer's `open()` and `mkdir` follow
-    it in a checkout: each symlink from its own directory, `..` only from a
-    directory, never above the root and never by an absolute target. A
-    symlink must lead to something this tree HOLDS. The shape cannot make the
-    directory a link leads to, and a file it writes through a dangling link
-    is only reachable through that link. Git reads `.gitattributes` and
-    `.gitignore` only as files, never through a symlink, so the shape's copy
-    there would do nothing.
+    A path is followed the way `open()` follows it in a checkout: each
+    symlink from its own directory, `..` only from a directory, and a link
+    out of the assembly onto this machine's disk. A file the shape writes
+    through a dangling link is only reachable through that link, and Git
+    reads `.gitattributes` and `.gitignore` only as files, never through a
+    symlink, so the shape's copy there would do nothing: such a link is
+    refused, as one that leads out of the assembly is.
+
+    `fold` follows paths as a macOS or Windows disk does, where `.GitHub`
+    and `.github` are one name. `_root_symlink_findings` asks both ways, so
+    a case twin is refused on every disk, as #169, #198 and #200 refuse
+    theirs.
     """
 
-    def __init__(self, plan: Plan, source: Source, tree: list) -> None:
+    def __init__(self, plan: Plan, source: Source, tree: list, *,
+                 fold: bool = False) -> None:
         self.source = source
+        self.fold = fold
+        self.entries: dict[str, tuple[str, str]] = {
+            GITMODULES: (FILE_MODES[0], "")}
+        self.gone: dict[str, str] = {}
+        self.mounts: dict[str, str] = {}
+        self.legs: dict[str, str] = {}
+        self._keep(plan, tree)
+        self._mount(plan, tree)
+        self.dirs: set[str] = set()
+        self._folded: dict[str, str] = {}
+        for path in [*self.entries, *self.mounts]:
+            self._add(path)
+        self.dirs.update(self.mounts)
+        self.dirs.update(path for path, (mode, _) in self.entries.items()
+                         if mode == GITLINK_MODE)
+        self.assembly, self.beside = _work_dir_names(plan)
+        self._targets: dict[str, str] = {}
+        self._walks: list[_Walk] | None = None
+
+    def _keep(self, plan: Plan, tree: list) -> None:
+        """Each source path: kept in the root, or gone to a leg or `drop`."""
         entry_paths = [str(e.get("path")) for e in plan.entries]
         legs = {str(e.get("path")): str(e.get("leg")) for e in plan.entries}
-        self.kept: dict[str, tuple[str, str]] = {}
-        self.gone: dict[str, str] = {}
         for path, mode, oid, _ in tree:
             covering = _covering(entry_paths, path)
             leg = legs[covering[0]] if len(covering) == 1 else ""
             if leg in NOT_IN_THE_ROOT:
                 self.gone[path] = leg
             else:
-                self.kept[path] = (mode, oid)
+                self.entries[path] = (mode, oid)
         # A kept entry that is neither a file nor a symlink is a gitlink: a
         # directory in a checkout, holding another repository.
-        self.mounts = {path: f"it enters {path}, a submodule the plan keeps "
-                             "in the root"
-                       for path, (mode, _) in self.kept.items()
+        self.mounts = {path: f"it enters {_spelled(path)}, a submodule the "
+                             "plan keeps in the root"
+                       for path, (mode, _) in self.entries.items()
                        if mode not in (*FILE_MODES, SYMLINK_MODE)}
+
+    def _mount(self, plan: Plan, tree: list) -> None:
+        """Each leg's mount, and what the leg will hold under it."""
         spec, code = _plan_leg_paths(plan)
-        if not leg_path_problems(spec, code):
-            for (_, path), role in ((spec, "spec"), (code, "code")):
-                self.mounts[path] = (f"it enters {path}, where the plan "
-                                     f"mounts the {role} leg")
-        self.dirs = {"/".join(parts[:end])
-                     for parts in (path.split("/")
-                                   for path in [*self.kept, *self.mounts])
-                     for end in range(1, len(parts))}
-        self._targets: dict[str, str] = {}
-        self._walks: list[_Walk] | None = None
+        if leg_path_problems(spec, code):
+            return
+        seeded = seeded_legs(assigned_paths(plan.entries))
+        for (_, mount), role in ((spec, "spec"), (code, "code")):
+            self.mounts[mount] = (f"it enters {_spelled(mount)}, where the "
+                                  f"plan mounts the {role} leg")
+            self.legs[mount] = role
+            held = ([(rel, FILE_MODES[0], "") for rel in template_files(
+                SHAPE_ROOT / SEED_TEMPLATE[role])] if role in seeded else
+                    [(path, mode, oid) for path, mode, oid, _ in tree
+                     if self.gone.get(path) == role])
+            for path, mode, oid in held:
+                self.entries[f"{mount}/{path}"] = (mode, oid)
+
+    def _add(self, path: str) -> None:
+        """`path` and the directories above it, as lookups find them."""
+        parts = path.split("/")
+        for end in range(1, len(parts) + 1):
+            here = "/".join(parts[:end])
+            if end < len(parts):
+                self.dirs.add(here)
+            self._folded.setdefault(here.casefold(), here)
 
     def walks(self) -> list[_Walk]:
-        """Each path the shape writes, followed: the path itself, and its
-        copy under the collision directory where the path is already taken,
-        as the materializer decides it."""
+        """Each path the shape writes, followed, in the order `place` writes
+        them: the path itself, and its copy under the collision directory
+        where the path is already taken."""
         if self._walks is None:
             self._walks = []
             for path in assembly_root_paths():
-                walk = self.walk(path)
-                self._walks.append(walk)
-                if walk.problem is None and self._holds(walk.landed):
-                    self._walks.append(self.walk(f"{COLLISION_DIR}/{path}"))
+                self._place(path)
         return self._walks
+
+    def _place(self, path: str) -> None:
+        """What `place` will do with `path`: follow it, or, where something
+        is already there, follow the shape's copy of it under the collision
+        directory. What it writes is added to this tree."""
+        walk = self.walk(path)
+        self._walks.append(walk)
+        if walk.problem is None and walk.taken:
+            walk = self.walk(f"{COLLISION_DIR}/{path}")
+            self._walks.append(walk)
+            if walk.problem is None and walk.links and walk.taken:
+                walk.problem = self._over(walk)
+        if walk.problem is None and not walk.taken:
+            self.entries[walk.landed] = (FILE_MODES[0], "")
+            self._add(walk.landed)
 
     def walk(self, path: str) -> _Walk:
         """`path` followed through this tree. Each part on the queue carries
-        the symlink whose target it came from, and, on the LAST part of a
+        the symlink whose target it came from; whether that symlink is the
+        LAST thing the path is followed through, so that the shape writes AT
+        its destination rather than beneath it; and, on the last part of a
         target, the symlinks whose destination it completes."""
         walk = _Walk(path)
-        queue = [(part, "", ()) for part in path.split("/")]
+        queue = [(part, "", False, ()) for part in path.split("/")]
         done: list[str] = []
         while queue and walk.problem is None:
-            part, origin, ends = queue.pop(0)
-            at = "/".join([*done, part])
-            target = self._target_of(at, part)
-            if target is not None:
-                queue = self._through(walk, at, target, ends) + queue
-                continue
-            done = self._step(walk, done, part, origin, bool(queue))
-            if ends and walk.problem is None:
-                walk.problem = self._arrival(done, ends[0][0])
-        walk.landed = "/".join(done)
+            done, queue = self._next(walk, done, queue.pop(0), queue)
+        if not walk.outside:
+            walk.landed = "/".join(done)
+            walk.taken = self._has(walk.landed)
         return walk
 
-    def _holds(self, path: str) -> bool:
-        return (not path or path in self.kept or path in self.dirs
-                or path in self.mounts)
+    def _next(self, walk: _Walk, done: list[str], item: tuple,
+              queue: list) -> tuple[list[str], list]:
+        """`done` and the queue after one part of the path."""
+        part, origin, last, ends = item
+        link = self._link("/".join([*done, part]), part)
+        if link is not None:
+            return done, self._through(walk, link, ends, queue)
+        if part == ".." and not done:
+            return done, self._above(walk, origin, last, queue)
+        done = self._step(walk, done, part, last, bool(queue))
+        if ends and walk.problem is None:
+            walk.problem = self._arrival(done, ends[0][0], queue)
+        return done, queue
 
-    def _target_of(self, at: str, part: str) -> str | None:
-        """The target of the symlink the plan keeps at `at`, or None."""
-        if part in ("", ".", ".."):
+    def _real(self, path: str) -> str | None:
+        """How this tree spells `path`, or None where nothing is there: the
+        path itself, or, folding case, the twin a disk that ignores case
+        would find."""
+        if not path or path in self.entries or path in self.dirs:
+            return path
+        return self._folded.get(path.casefold()) if self.fold else None
+
+    def _has(self, path: str) -> bool:
+        """Whether something is at `path`, as `Path.exists()` would say."""
+        return self._real(path) is not None
+
+    def _is_dir(self, path: str) -> bool:
+        real = self._real(path)
+        return real is not None and (not real or real in self.dirs)
+
+    def _is_file(self, path: str) -> bool:
+        mode = self.entries.get(self._real(path) or "", ("", ""))[0]
+        return mode in FILE_MODES
+
+    def _link(self, at: str, part: str) -> tuple[str, str] | None:
+        """The symlink this tree holds at `at`, as `(its path, its target)`,
+        or None."""
+        if part in (*HERE, ".."):
             return None
-        mode, oid = self.kept.get(at, ("", ""))
+        real = self._real(at)
+        mode, oid = self.entries.get(real or "", ("", ""))
         if mode != SYMLINK_MODE:
             return None
-        if at not in self._targets:
-            self._targets[at] = git_out(
+        if real not in self._targets:
+            self._targets[real] = _git_path(git_out(
                 [GIT_CAT_FILE, "blob", oid], cwd=self.source.path,
-                binary=True).decode("utf-8", "surrogateescape")
-        return self._targets[at]
+                binary=True))
+        return real, self._targets[real]
 
-    @staticmethod
-    def _through(walk: _Walk, at: str, target: str, ends: tuple) -> list:
-        """The parts of the symlink `at`'s target, to be walked next; none,
-        and a problem, when it is the hop that makes a loop or absolute."""
-        walk.links.append((at, target))
+    def _through(self, walk: _Walk, link: tuple[str, str], ends: tuple,
+                 queue: list) -> list:
+        """The parts of the symlink's target, to be walked next; none, and
+        a problem or a place outside, when it is the hop that makes a loop,
+        has nothing to lead to, or leaves the assembly."""
+        at, target = link
+        walk.links.append(link)
         if len(walk.links) > SYMLINK_HOPS:
-            walk.problem = f"it runs round a symlink loop at {at}"
+            walk.problem = f"it runs round a symlink loop at {_spelled(at)}"
             return []
+        if not target:
+            walk.empty = at
+            walk.problem = (f"the symlink {_spelled(at)} has an empty target, "
+                            "which leads nowhere")
+            return []
+        last = not queue
         if target.startswith("/") or WINDOWS_ABSOLUTE_RE.match(target):
-            walk.problem = (f"the symlink {at} leads to {target}, an absolute "
-                            "path: a place on this machine, not in the "
-                            "assembly")
+            leads = (f"the symlink {_spelled(at)} leads to "
+                     f"{_spelled(target)}, {ON_THIS_MACHINE}")
+            if last:
+                self._outside(walk, target, f"{leads}, and nothing is there")
+            else:
+                walk.problem = leads
             return []
         parts = target.split("/")
-        return ([(part, at, ()) for part in parts[:-1]]
-                + [(parts[-1], at, ((at, target), *ends))])
+        return ([(part, at, last, ()) for part in parts[:-1]]
+                + [(parts[-1], at, last, ((at, target), *ends))] + queue)
 
-    def _step(self, walk: _Walk, done: list[str], part: str, origin: str,
+    @staticmethod
+    def _outside(walk: _Walk, place: str, missing: str) -> None:
+        """`walk` leaves the assembly for `place` on this machine's disk:
+        taken where something is there, else `missing` is what stops it.
+        A drive letter's path is somewhere only on Windows, which also
+        spells a place with backslashes; it is named with slashes, as every
+        other path is."""
+        walk.outside, walk.landed = True, Path(place).as_posix()
+        elsewhere = WINDOWS_ABSOLUTE_RE.match(place) and os.name != "nt"
+        walk.taken = not elsewhere and os.path.exists(place)
+        if not walk.taken:
+            walk.problem = missing
+
+    def _above(self, walk: _Walk, origin: str, last: bool,
+               queue: list) -> list:
+        """The queue after a `..` that climbs above the assembly root, from
+        the target of the symlink `origin`. Beneath a path the shape writes,
+        that is a directory outside the assembly. AT one, it leads into the
+        work directory: back into the assembly's own clone by its name, into
+        something else `execute` makes there after this check, or onto the
+        disk."""
+        climbs = f"at the symlink {_spelled(origin)} it climbs above the " \
+                 "assembly root"
+        work = self.source.work_root
+        if not last or work is None:
+            walk.problem = climbs
+            return []
+        names = [part for part, *_ in queue]
+        skip = next((n for n, part in enumerate(names) if part not in HERE),
+                    len(names))
+        name = names[skip] if skip < len(names) else ""
+        if self._named(name, self.assembly):
+            return queue[skip + 1:]
+        made = next((what for made, what in self.beside.items()
+                     if self._named(name, made)), None)
+        if made:
+            walk.problem = (f"{climbs} into "
+                            f"{_spelled((work / name).as_posix())}, {made}")
+            return []
+        # Joined as text, not as a `Path`: a `Path` drops a trailing `/`,
+        # which `open()` takes only from a directory.
+        place = os.path.join(str(work), *names)
+        self._outside(walk, place, f"{climbs}, to "
+                      f"{_spelled(Path(place).as_posix())}, where nothing is")
+        return []
+
+    def _named(self, name: str, made: str) -> bool:
+        """Whether `name` is `made`, as this tree compares names."""
+        if not name or not made:
+            return False
+        return name == made or (self.fold
+                                and name.casefold() == made.casefold())
+
+    def _step(self, walk: _Walk, done: list[str], part: str, last: bool,
               more: bool) -> list[str]:
         """`done` after one part that is not a symlink."""
-        if part in ("", "."):
+        if part in HERE:
             return done
         if part == "..":
             here = "/".join(done)
-            if not done:
-                walk.problem = (f"at the symlink {origin} it climbs above the "
-                                "assembly root")
-            elif here not in self.dirs:
-                walk.problem = (f"it passes through {here}, which is not a "
-                                "directory in the assembly root")
+            if not self._is_dir(here):
+                walk.problem = (f"it passes through {_spelled(here)}, which "
+                                "is not a directory in the assembly root")
             return done[:-1]
         done = [*done, part]
         if walk.links:
-            walk.problem = self._entered("/".join(done), more)
+            walk.problem = self._entered("/".join(done), last, more)
         return done
 
-    def _entered(self, here: str, more: bool) -> str | None:
-        """What is wrong with reaching `here` through a symlink, or None: a
-        mount, or a file the path goes on beneath."""
-        if here in self.mounts:
-            return self.mounts[here]
-        if more and here in self.kept:
-            return f"it passes through {here}, which is a file"
+    def _entered(self, here: str, last: bool, more: bool) -> str | None:
+        """What is wrong with going on beneath `here` through a symlink, or
+        None: a submodule, a file, or a leg's mount, which only a symlink the
+        shape writes AT may enter, since the shape then writes nothing in
+        it where something is already there."""
+        if not more:
+            return None
+        real = self._real(here) or ""
+        if real in self.mounts and not (last and real in self.legs):
+            return self.mounts[real]
+        if self._is_file(here):
+            return f"it passes through {_spelled(here)}, which is a file"
         return None
 
-    def _arrival(self, done: list[str], at: str) -> str | None:
-        """None when the destination of the symlink `at` is in this tree;
-        else where it is instead: in a leg, dropped, or nowhere."""
+    def _arrival(self, done: list[str], link: str,
+                 queue: list) -> str | None:
+        """None when the destination of the symlink `link` is in this tree,
+        a directory where the path goes on beneath it; else where it is
+        instead."""
         here = "/".join(done)
-        if self._holds(here):
-            return None
+        held = self._is_dir(here) if queue else self._has(here)
+        return None if held else self._dangling(link, here)
+
+    def _dangling(self, link: str, here: str) -> str:
+        """Where the destination `here` of the symlink `link` is, instead of
+        in this tree: past what a leg's mount holds, in a leg, dropped, or
+        nowhere."""
+        lead = (f"the symlink {_spelled(link)} leads to {_spelled(here)}, "
+                "which ")
+        mount = next((mount for mount in self.legs
+                      if self._under(here, mount)), None)
+        if mount:
+            return (f"{lead}the {self.legs[mount]} leg, mounted at "
+                    f"{_spelled(mount)}, does not hold")
         legs = sorted({leg for path, leg in self.gone.items()
-                       if path == here or path.startswith(f"{here}/")})
-        where = " and ".join(f"to the {leg} leg" if leg in EXTRACTED_LEGS
-                             else f"to `{leg}`" for leg in legs)
-        return (f"the symlink {at} leads to {here}, which "
-                + (f"the plan sends {where}" if legs
-                   else "is not in the source tree"))
+                       if self._under(path, here)})
+        where = [f"to the {leg} leg" if leg in EXTRACTED_LEGS
+                 else f"to `{leg}`" for leg in legs]
+        if where:
+            return (f"{lead}the plan sends "
+                    + (f"{', '.join(where[:-1])} and {where[-1]}"
+                       if len(where) > 1 else where[0]))
+        return f"{lead}is not in the source tree"
+
+    def _under(self, path: str, top: str) -> bool:
+        """Whether `path` is `top` or lies beneath it, as this tree compares
+        paths."""
+        if self.fold:
+            path, top = path.casefold(), top.casefold()
+        return f"{path}/".startswith(f"{top}/")
+
+    def _over(self, walk: _Walk) -> str:
+        """Why the shape's copy cannot be written where a symlink leads it:
+        onto something already there, which `place` writes over without
+        asking again."""
+        landed = _spelled(walk.landed)
+        if (os.path.isdir(walk.landed) if walk.outside
+                else self._is_dir(walk.landed)):
+            return (f"it lands on {landed}, a directory that is already "
+                    "there, where the shape's copy cannot be written")
+        return (f"it lands on {landed}, which is already there, so the "
+                "shape's copy would be written over it")
+
+
+def _work_dir_names(plan: Plan) -> tuple[str, dict[str, str]]:
+    """The name of the assembly's clone in `execute`'s work directory, and
+    of everything else `execute` makes there after `check` and before the
+    shape is written, with what it is: each leg's clone, and the path list
+    each leg is extracted with. Nothing where the plan's names are not ones
+    `execute` takes: `check` refuses those on its own."""
+    try:
+        names = plan.names()
+    except Refusal:
+        return "", {}
+    made: dict[str, str] = {}
+    for role in EXTRACTED_LEGS:
+        made[names[role]] = (f"where `execute` makes the {role} leg's clone "
+                             "after this check")
+        made[f"{role}-paths.txt"] = (f"where `execute` writes the {role} "
+                                     "leg's path list after this check")
+    return names["assembly"], made
 
 
 def _misplaced_script(walk: _Walk) -> str | None:
@@ -2164,18 +2407,21 @@ def _misplaced_script(walk: _Walk) -> str | None:
     resolved location (`Path(__file__).resolve().parents[1]`). From two
     directories down, `validate-repository-naming.py` reads the policy from
     the wrong `contracts/`; from the root itself, `bootstrap.py` looks for
-    `.git` above the clone.
+    `.git` above the clone. A script whose path is taken is not written
+    there at all: its copy goes under `shape/`.
     """
-    if not walk.links or not walk.path.startswith(f"{SHAPE_SCRIPTS}/"):
+    if (not walk.links or walk.taken
+            or not walk.path.startswith(f"{SHAPE_SCRIPTS}/")):
         return None
     where = PurePosixPath(walk.landed).parent
     if len(where.parts) == 1:
         return None
-    named = where.as_posix() if where.parts else "the root itself"
-    return (f"it lands at {walk.landed}, and the shape's scripts look for the "
-            "assembly root, and for contracts/repository-naming.yaml, from "
-            "the directory above their own, so they run only from a "
-            f"directory directly under the root, which {named} is not")
+    named = _spelled(where.as_posix()) if where.parts else "the root itself"
+    return (f"it lands at {_spelled(walk.landed)}, and the shape's scripts "
+            "look for the assembly root, and for "
+            "contracts/repository-naming.yaml, from the directory above "
+            "their own, so they run only from a directory directly under "
+            f"the root, which {named} is not")
 
 
 def _root_symlink_findings(plan: Plan, source: Source,
@@ -2185,23 +2431,49 @@ def _root_symlink_findings(plan: Plan, source: Source,
 
     One finding per symlink, naming the first shape path that meets it. A
     symlink no shape path runs through is not this check's business: the
-    split keeps it exactly as the source had it. `tree` is `Source.tree()`,
-    read once by `_entry_findings` for every finding it composes.
+    split keeps it exactly as the source had it. The paths are followed as a
+    disk that keeps case does, and again as one that ignores it; what only
+    the second refuses says so. `tree` is `Source.tree()`, read once by
+    `_entry_findings` for every finding it composes.
     """
     findings: list[str] = []
+    if not any(mode == SYMLINK_MODE for _, mode, _, _ in tree):
+        return findings
     seen: set[str] = set()
-    for walk in _PlannedRoot(plan, source, tree).walks():
-        why = walk.problem or _misplaced_script(walk)
-        if why is None or walk.links[0][0] in seen:
-            continue
-        link, target = walk.links[0]
-        seen.add(link)
-        findings.append(
-            f"FINDING {ROOT_SYMLINK}: the plan keeps {link} in the root, a "
-            f"symlink to {target}, and the shape writes {walk.path} through "
-            f"it, but {why}. Send {link} to a leg or `drop` it, or change "
-            "where it points in the source and re-run `plan`.")
+    for fold in (False, True):
+        for walk in _PlannedRoot(plan, source, tree, fold=fold).walks():
+            why = walk.problem or _misplaced_script(walk)
+            if why is None or walk.links[0][0] in seen:
+                continue
+            seen.add(walk.links[0][0])
+            findings.append(_root_symlink_finding(
+                walk, why, CASE_ASIDE if fold else ""))
     return findings
+
+
+def _root_symlink_finding(walk: _Walk, why: str, aside: str) -> str:
+    """The line `check` prints for a symlink `walk` cannot be written
+    through, and what to do.
+
+    A symlink with an empty target is fixed in the source. Both of the
+    clones `execute` makes of the source check every path out, wherever the
+    plan sends it, and Linux cannot hold a symlink to nothing: there `git
+    clone` stops at it ("unable to create symlink") after the leg
+    repositories exist. Where `core.symlinks` is false the clone holds a
+    plain file instead, so the sentence says only what is true on every
+    disk."""
+    link, target = walk.links[0]
+    fix = (f"Give {_spelled(walk.empty)} a target in the source, or remove "
+           "it there, and re-run `plan`: Linux cannot hold a symlink to "
+           "nothing, and every clone `execute` makes of the source checks it "
+           "out, wherever the plan sends it."
+           if walk.empty else
+           f"Send {_spelled(link)} to a leg or `drop` it, or change where it "
+           "points in the source and re-run `plan`.")
+    return (f"FINDING {ROOT_SYMLINK}: the plan keeps {_spelled(link)} in the "
+            f"root, a symlink to {_spelled(target)}, and "
+            f"{_spelled(walk.path)}, a path the shape writes, runs through "
+            f"it{aside}, but {why}. {fix}")
 
 
 def _checks_out_symlinks(work_root: Path) -> bool:
@@ -2239,24 +2511,34 @@ def _refuse_symlinks_checked_out_as_files(plan: Plan, source: Source,
     made only when a plan needs it, so an adoption with no such link runs
     exactly as before.
     """
-    beneath = [walk for walk in _PlannedRoot(plan, source,
-                                             source.tree()).walks()
-               if walk.links and walk.links[0][0] != walk.path]
+    tree = source.tree()
+    if not any(mode == SYMLINK_MODE for _, mode, _, _ in tree):
+        return
+    # A case twin is met only by the walk that ignores case, and is named
+    # with `check`'s own aside: on a disk that keeps case the shape path
+    # does not run through it at all.
+    beneath = [(walk, CASE_ASIDE if fold else "") for fold in (False, True)
+               for walk in _PlannedRoot(plan, source, tree, fold=fold).walks()
+               if walk.links
+               and walk.links[0][0].casefold() != walk.path.casefold()]
     if not beneath or _checks_out_symlinks(work_root):
         return
-    walk = beneath[0]
+    walk, aside = beneath[0]
     link, target = walk.links[0]
     raise Refusal(
         "adopt-symlinks-off",
-        f"the plan keeps {link} in the root, a symlink to {target}, and the "
-        f"shape writes {walk.path} through it, but `git` here checks a "
-        "symlink out as a plain file: `core.symlinks` is false for a "
-        f"repository made in {work_root}. The assembly's clone would hold "
-        f"{link} as a file, and nothing can be written beneath a file.",
+        f"the plan keeps {_spelled(link)} in the root, a symlink to "
+        f"{_spelled(target)}, and {_spelled(walk.path)}, a path the shape "
+        f"writes, runs through it{aside}, but `git` here checks a symlink out "
+        "as a plain file: "
+        f"`core.symlinks` is false for a repository made in {work_root}. The "
+        f"assembly's clone would hold {_spelled(link)} as a file, and nothing "
+        "can be written beneath a file.",
         "Remediation: no leg repository was created and nothing was pushed. "
         "Run `execute` where `git` checks a symlink out as a symlink -- "
         "`core.symlinks` true, on a filesystem that can hold one -- or send "
-        f"{link} to a leg or `drop` it in the plan and run `check` again.")
+        f"{_spelled(link)} to a leg or `drop` it in the plan and run `check` "
+        "again.")
 
 
 def cmd_check(args) -> int:
