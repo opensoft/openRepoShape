@@ -498,6 +498,17 @@ def env_commit(work: Path, message: str) -> None:
     A scaffold that fails on a machine with no `user.email` configured fails
     for a reason that has nothing to do with the project being scaffolded, so
     a fallback identity is supplied rather than assumed.
+
+    THE MESSAGE GOES TO GIT AS UTF-8, whatever the locale (#196). Text-mode
+    stdin encodes with the locale's codec unless Python runs in UTF-8 mode
+    -- cp1252 on a Windows without `PYTHONUTF8=1`, ASCII under a POSIX `C`
+    locale with that mode off -- and git keeps the bytes it is given. An
+    adoption's split message already carried an em dash, which reached git
+    there as a cp1252 byte, and it names each entry path as the source spells
+    it: `Übersicht.md` would land as another byte that is not UTF-8, and
+    `文書.md` would raise `UnicodeEncodeError` after both legs are pushed.
+    `errors="replace"` so that git's own output, decoded the same way, cannot
+    raise either.
     """
     env = dict(os.environ)
     for key, fallback in (("GIT_AUTHOR_NAME", "openRepoShape scaffold"),
@@ -509,7 +520,8 @@ def env_commit(work: Path, message: str) -> None:
             env[key] = fallback
     check_program(COMMIT_COMMAND)
     proc = subprocess.run(COMMIT_COMMAND, cwd=str(work), input=message,
-                          capture_output=True, text=True, check=False, env=env)
+                          capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", check=False, env=env)
     if proc.returncode != 0:
         raise CommandFailed(COMMIT_COMMAND, work, proc.returncode,
                             proc.stderr + proc.stdout)

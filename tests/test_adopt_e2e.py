@@ -317,7 +317,9 @@ def test_the_tool_never_touches_the_source_working_tree(adopted):
 
 def test_a_plan_path_that_is_a_git_option_is_refused(source_repo, tmp_path):
     """THE PLAN IS UNTRUSTED INPUT: it is edited between `plan` and `execute`,
-    by a human or by an AI, and every path in it becomes a git argument."""
+    by a human or by an AI, and every path in it reaches git. An entry's path
+    that begins with `-` is `check`'s finding `plan-unsafe-path` (#196), and
+    `execute` refuses it before any leg exists."""
     plan = tmp_path / "plan.yaml"
     assert write_plan(source_repo, plan, project=PROJECT).returncode == 0
     for path, leg in ANSWERS:
@@ -328,5 +330,5 @@ def test_a_plan_path_that_is_a_git_option_is_refused(source_repo, tmp_path):
                         "--local-remote-dir", str(tmp_path / "remotes"),
                         "--work-dir", str(tmp_path / "work"))
     assert result.returncode == 2
-    assert "unsafe-value" in result.stderr
+    assert "REFUSED plan-unsafe-path" in result.stderr
     assert not (tmp_path / "remotes").exists()
