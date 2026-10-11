@@ -351,6 +351,29 @@ def test_plan_refuses_a_path_the_shape_writes_and_writes_nothing(
     assert not out.exists(), "a refused plan must leave no file behind"
 
 
+#: Why everything at or under `shape/` is refused, said by the finding and by
+#: the remediation alike.
+RESERVED = ("`shape/` is reserved for the shape's own copies of files the "
+            "root already holds")
+
+
+def test_shape_dir_is_reserved_even_where_no_copy_would_land(world,
+                                                             tmp_path):
+    """The review's P3-3: on main `--spec-path shape/x` adopted, verified and
+    bootstrapped, because no copy of the shape's landed beside it. The policy
+    stays -- everything at or under `shape/` is refused, so whether a path
+    there collides never depends on which files a source holds -- and the
+    finding and the remediation both say why: the directory is reserved."""
+    result = write_plan(world["source"], tmp_path / "plan.yaml",
+                        project=PROJECT, extra=("--spec-path", "shape/x"))
+    assert result.returncode == 2, result.stdout + result.stderr
+    detail, _, remediation = result.stderr.partition("\nRemediation: ")
+    assert detail.startswith(
+        f"{PLAN_REFUSAL}: --spec-path 'shape/x' is inside `shape`.")
+    assert f"{RESERVED}, so no leg is mounted at or under it" in detail
+    assert f"{RESERVED}, so a leg path there is refused" in remediation
+
+
 def test_plan_refuses_dot_github_and_still_writes_legs_dot_github(world,
                                                                   tmp_path):
     """The brief's question, answered both ways: `.github` holds the shape's

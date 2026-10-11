@@ -1206,14 +1206,22 @@ CASE_ASIDE = " once case is ignored, as a macOS or Windows disk does"
 #: The exit every collision has; a root-kept one has a second.
 MOVE_THE_LEG = "choose another path for the leg"
 
+#: Why a mount at or under `COLLISION_DIR` is refused where no copy would land
+#: there (#172's review, P3-3): the directory is the shape's, whatever this
+#: source needs today, so whether a path there collides never depends on
+#: which of the root's files the source happens to hold.
+SHAPE_DIR_RESERVED = (f"`{COLLISION_DIR}/` is reserved for the shape's own "
+                      "copies of files the root already holds")
+
 LEG_COLLISION_REMEDIATION = (
     "Remediation: nothing here picks a path for you, so pass another one "
     "yourself. A leg path neither is, holds nor lies inside, whatever the "
     "case, a path the shape writes into the assembly root ("
     + ", ".join(f"`{path}`" for path in assembly_root_paths())
-    + f") or `{COLLISION_DIR}`, where the shape writes its copy of a file the "
-    "root already holds. The defaults `spec` and `code` pass. `check` then "
-    "asks the same of every source path the plan keeps in the root."
+    + f") or `{COLLISION_DIR}`. {SHAPE_DIR_RESERVED}, so a leg path there is "
+    "refused even where this source needs no copy. The defaults `spec` and "
+    "`code` pass. `check` then asks the same of every source path the plan "
+    "keeps in the root."
 )
 
 
@@ -1260,8 +1268,9 @@ def _shape_collisions(what: str, value: str) -> list[str]:
             f"{what} {value!r} {relation} `{COLLISION_DIR}`{aside}. `execute` "
             f"writes there the shape's copy of each of its files the assembly "
             f"root already holds (`{example}` as "
-            f"`{COLLISION_DIR}/{example}`), so the leg's mount and those "
-            f"copies would share it: {MOVE_THE_LEG}.")
+            f"`{COLLISION_DIR}/{example}`), and {SHAPE_DIR_RESERVED}, so no "
+            f"leg is mounted at or under it, even where this source needs no "
+            f"copy: {MOVE_THE_LEG}.")
     return out
 
 
