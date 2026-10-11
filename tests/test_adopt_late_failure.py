@@ -47,7 +47,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import ADOPT, git, make_source_repo, run_script, write_plan
+from conftest import (ADOPT, REPO, git, make_source_repo, run_script,
+                      write_plan)
 
 SPEC, CODE = "spec", "code"
 LEGS = (SPEC, CODE)
@@ -1082,6 +1083,22 @@ def test_a_default_new_or_empty_work_dir_is_never_refused(
 
     with pytest.raises(ReachedTheConfirmation):
         adopter.cmd_execute(args)
+
+
+def test_agents_md_step_7_names_the_exit_the_tool_prints():
+    """AGENTS.md step 7 is what an assistant reads when the verification
+    fails. It said the exit was "to fix the plan and re-run into fresh
+    legs", which `execute` now refuses, as `adopt-branch-exists` or
+    `adopt-work-dir-occupied`, before it makes anything (#188's review,
+    F3). It names the exit the tool prints: the plan, the split branch, and
+    fresh legs with a fresh work directory."""
+    agents = (REPO / "AGENTS.md").read_text(encoding=UTF8)
+    step = agents.split("7. **Read the verification table back to them.**",
+                        1)[1].split("\n\n", 1)[0]
+    said = " ".join(step.split())
+    for part in ("fix the plan", "delete the split branch",
+                 "re-run into fresh legs and a fresh `--work-dir`, or none"):
+        assert part in said, said
 
 
 # ---- end to end, with `git filter-repo` -------------------------------------

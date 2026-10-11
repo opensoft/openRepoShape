@@ -135,8 +135,8 @@ order, and step 4 is the one you must not skip.
 7. **Read the verification table back to them.** It accounts for every source
    path at the source commit, by blob sha, in exactly one of {spec leg, code
    leg, root tree} or as `drop`. If it exits non-zero, STOP and relay it: the
-   source is untouched — nothing is deleted, `main` is where it was, the split
-   is on a branch — so the exit is to fix the plan and re-run into fresh legs.
+   source lost nothing, and the exit it prints is to fix the plan, delete the
+   split branch, and re-run into fresh legs and a fresh `--work-dir`, or none.
 
 `execute` opens a pull request, because these organisations are pull-request
 only. Never suggest a direct push to the default branch, and never `--admin`.
