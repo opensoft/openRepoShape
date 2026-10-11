@@ -39,6 +39,11 @@ WHAT IT REFUSES, and why each is a refusal rather than a warning:
   * a validator that goes red after the rewrite. Every byte is rolled back
     first — the pin file, the workflow files, the leg's checkout and the index
     — so a refusal leaves the tree exactly as it was found.
+  * any other failure once the first byte has moved — a workflow file it cannot
+    write, a stdout that cannot encode what a validator printed — is rolled
+    back the same way and then reported, as a refusal naming the exception
+    for an `OSError` or a `UnicodeError`, and as itself for anything else
+    (an interrupt included), so no failure leaves a half-applied bump.
 
 EXIT CODES: 0 the commit was made, or a `--dry-run` printed a move it would
 make · 1 NOTHING TO DO — every fact already names that commit, under
@@ -53,6 +58,7 @@ import os
 import re
 import subprocess
 import sys
+from functools import partial
 from pathlib import Path
 
 SHAPE_ROOT = Path(__file__).resolve().parents[1]
@@ -614,6 +620,62 @@ def _print_trailers(trailers: list[str]) -> None:
         print("trailers     none")
 
 
+def _restore_file(target: Path, original: bytes) -> None:
+    """Write `original` back, but only over a file that no longer holds it.
+
+    A write that never opened the file — a read-only attribute, a permission
+    the operator does not have — changed nothing, and writing the same bytes
+    back would meet the same refusal and report a rollback failure for a file
+    that was never touched.
+    """
+    if target.read_bytes() != original:
+        target.write_bytes(original)
+
+
+def _put_back(what: str, undo) -> bool:
+    """Attempt ONE step of a rollback; say so, and carry on, if it fails.
+
+    Each step is attempted whatever the steps before it did, and none of them
+    raises: a rollback that stopped at the first byte it could not restore
+    would leave the leg moved and the index staged behind a file the operator
+    cannot write. Returns whether the step succeeded.
+    """
+    try:
+        undo()
+    except CommandFailed as exc:
+        print(exc.loudly("rolling the bump back"), file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001 - nothing may escape a rollback
+        print(f"REFUSED rolling the bump back. {what} could not be put back: "
+              f"{type(exc).__name__}: {exc}", file=sys.stderr)
+    else:
+        return True
+    return False
+
+
+def _roll_back(root: Path, submodule: Path, placement: str | None, was: str,
+               staged: list[str], written: dict[Path, bytes],
+               moved_leg: bool) -> bool:
+    """Put back every byte `_apply_rewrite` changed: the files it wrote, the
+    leg's checkout and the index, in that order. Returns whether ALL of it
+    went back.
+
+    THE ROLLBACK NEVER RAISES OVER THE FAILURE THAT STARTED IT. Whatever it
+    cannot put back is printed and the original failure is still the one the
+    caller re-raises: a rollback failure that replaced the validator's finding
+    would leave a person with a changed tree and no idea what the gate
+    objected to.
+    """
+    steps = [(target.relative_to(root).as_posix(),
+              partial(_restore_file, target, original))
+             for target, original in written.items()]
+    if moved_leg:
+        steps.append((f"the checkout of {submodule.name}/",
+                      partial(restore_leg, submodule, placement, was)))
+    steps.append(("the index", partial(
+        run, ["git", "reset", "-q", "HEAD", "--", *staged], cwd=root)))
+    return all([_put_back(what, undo) for what, undo in steps])
+
+
 def _apply_rewrite(root: Path, submodule: Path, commit: str, was: str,
                    pin_path: Path, pin_text: str, digest: str, plans: list,
                    staged: list[str]) -> None:
@@ -626,8 +688,17 @@ def _apply_rewrite(root: Path, submodule: Path, commit: str, was: str,
     its order are unchanged: the leg is checked out detached BEFORE any
     file is written, the rewritten files are staged AFTER they are all
     written and BEFORE the validators run (`recorded_gitlink` reads the
-    INDEX), and a caught `Refusal` or `CommandFailed` rolls every byte back
-    before it is re-raised, never swallowed.
+    INDEX), and a failure of ANY kind rolls every byte back before it is
+    re-raised, never swallowed (#253: the handler named `Refusal` and
+    `CommandFailed` alone, so a `PermissionError` on a workflow file, a
+    `UnicodeError` from the validator echo or an interrupt left the pin
+    rewritten, the leg on the new commit and the index changed).
+
+    A `Refusal` and a `CommandFailed` leave as they are. An `OSError` or a
+    `UnicodeError` leaves as a `Refusal` naming it — the repository's own
+    answer to a write that could not happen, `update-shape.py`'s
+    `update-readme-unwritable`, never a traceback — and anything else, an
+    interrupt included, is re-raised as itself once the tree is back.
     """
     written: dict[Path, bytes] = {}
     placement = leg_placement(submodule)
@@ -672,19 +743,27 @@ def _apply_rewrite(root: Path, submodule: Path, commit: str, was: str,
                     "Remediation: read the finding above. A tool that left a "
                     "project red would have moved the cost from this command "
                     "to somebody else's pull request.")
-    except (Refusal, CommandFailed):
-        # THE ROLLBACK NEVER RAISES OVER THE REFUSAL. Whatever it cannot put
-        # back is printed and the original exit is re-raised: a rollback
-        # failure that replaced the validator's finding would leave a person
-        # with a changed tree and no idea what the gate objected to.
-        for target, original in written.items():
-            target.write_bytes(original)
-        try:
-            if moved_leg:
-                restore_leg(submodule, placement, was)
-            run(["git", "reset", "-q", "HEAD", "--", *staged], cwd=root)
-        except CommandFailed as undo:
-            print(undo.loudly("rolling the bump back"), file=sys.stderr)
+    except BaseException as failure:
+        # `BaseException`, NOT `Exception`: an interrupt during the checkout
+        # or the validators is the failure a person causes on purpose, and it
+        # leaves the same half-applied bump as any other.
+        rolled_back = _roll_back(root, submodule, placement, was, staged,
+                                 written, moved_leg)
+        if isinstance(failure, (OSError, UnicodeError)):
+            raise Refusal(
+                "bump-leg-rewrite-failed",
+                f"{type(failure).__name__} after the leg was moved: {failure}. "
+                + ("Every byte this command wrote has been rolled back — the "
+                   "pin, the workflow files, the leg's checkout and the "
+                   "index — and the tree is exactly as it was."
+                   if rolled_back else
+                   "THE ROLLBACK WAS NOT COMPLETE: what it could not put "
+                   "back is named above, so read `git status` before "
+                   "anything else."),
+                "Remediation: fix what the exception names — a file this "
+                "command cannot write, a stdout that cannot encode what a "
+                "validator printed — and run the same command again. "
+                "Nothing was committed.") from failure
         raise
 
 
