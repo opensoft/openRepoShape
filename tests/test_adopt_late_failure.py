@@ -89,6 +89,7 @@ MOUNT = "_mount_the_legs"
 MATERIALIZE = "materialize_assembly_root"
 EXTRACT = "_extract_leg"
 COPY_TREE = "copy_tree"
+TREE_OF = "_tree_of"
 PLAN_FLAG = "--plan"
 
 #: A source small enough that `plan` asks no question, so `execute` runs on
@@ -500,7 +501,7 @@ def test_a_verification_that_cannot_be_made_is_refused_with_the_notice(
                                           f"{repo} exited 128: fatal: not a "
                                           "tree object")
 
-    monkeypatch.setattr(adopter, "_tree_of", unlistable)
+    monkeypatch.setattr(adopter, TREE_OF, unlistable)
     events, stderr = recorded_streams(monkeypatch)
     arguments = verify_arguments(tmp_path, source_of(adopter, tmp_path))
     built_by_this_run(arguments[ROOT])
@@ -526,7 +527,7 @@ def test_an_interrupted_verification_still_says_what_the_run_left(
     def interrupted(*_args):
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(adopter, "_tree_of", interrupted)
+    monkeypatch.setattr(adopter, TREE_OF, interrupted)
 
     with pytest.raises(KeyboardInterrupt):
         adopter._verify(**verify_arguments(tmp_path,
@@ -604,6 +605,83 @@ def test_an_interrupted_split_still_says_what_it_left(
     notice = the_notice(err)
     assert BOTH_PUSHED in notice
     assert FIX_FIRST not in notice
+
+
+# ---- a defect is not an interrupt (#188's re-verification, R2) --------------
+
+#: How the notice opens for a run that was interrupted: nothing failed.
+RERUN_ONLY = "Re-run the adoption with"
+
+
+def stand_in(kind: type):
+    """A step that raises a NEW `kind` each time it is called, because
+    `_report_late` marks the exception it has reported."""
+    def raised(*_args, **_kw):
+        raise kind()
+    return raised
+
+
+def at_the_code_leg_repository(adopter, monkeypatch, tmp_path, step) -> None:
+    """#188 N4's point: the spec leg's repository is made, then the code
+    leg's raises. A bare repository on disk stands in for GitHub's."""
+    create = adopter._create_leg_remote
+
+    def the_code_legs_raises(*args):
+        if args[-1] == CODE:
+            step()
+        create(*args)
+
+    monkeypatch.setattr(adopter, "_create_leg_remote", the_code_legs_raises)
+    names = leg_names()
+    adopter._create_leg_remotes({}, names, {}, leg_urls(tmp_path, names),
+                                "main", True, tmp_path / WORK)
+
+
+def in_a_leg(adopter, monkeypatch, tmp_path, step) -> None:
+    monkeypatch.setattr(adopter, EXTRACT, step)
+    adopter._build_the_legs(**legs_arguments(tmp_path))
+
+
+def in_the_split(adopter, monkeypatch, tmp_path, step) -> None:
+    monkeypatch.setattr(adopter, MOUNT, step)
+    adopter._commit_the_split(**split_arguments(
+        tmp_path, source_of(adopter, tmp_path)))
+
+
+def in_the_verification(adopter, monkeypatch, tmp_path, step) -> None:
+    monkeypatch.setattr(adopter, TREE_OF, step)
+    adopter._verify(**verify_arguments(tmp_path,
+                                       source_of(adopter, tmp_path)))
+
+
+@pytest.mark.parametrize("act, step",
+                         [(at_the_code_leg_repository,
+                           f"creating the {CODE} leg repository"),
+                          (in_a_leg, f"extracting the {SPEC} leg"),
+                          (in_the_split, "mounting the legs"),
+                          (in_the_verification, "verifying the split")],
+                         ids=["code-leg-repository", "leg", "split",
+                              "verification"])
+@pytest.mark.parametrize("kind, opening",
+                         [(TypeError, FIX_FIRST),
+                          (KeyboardInterrupt, RERUN_ONLY)],
+                         ids=["defect", "interrupt"])
+def test_only_an_interrupt_is_told_to_re_run_with_nothing_to_fix(
+        adopter, monkeypatch, capsys, tmp_path, act, step, kind, opening):
+    """#188's re-verification, R2. What a step does not anticipate is
+    re-raised after the notice, and that notice said only "Re-run" for all
+    of it, as for Ctrl-C, which failed at nothing. A defect -- this
+    `TypeError` -- fails the same way on every re-run, so following that
+    made one more pair of leg repositories per attempt. It is told to fix
+    what failed first, as a refusal is; only an interrupt is not."""
+    with pytest.raises(kind):
+        act(adopter, monkeypatch, tmp_path, stand_in(kind))
+
+    err = capsys.readouterr().err
+    assert f"STOPPED {step} by {kind.__name__}." in err
+    notice = the_notice(err)
+    other = RERUN_ONLY if opening == FIX_FIRST else FIX_FIRST
+    assert opening in notice and other not in notice, notice
 
 
 @pytest.mark.parametrize("seeded", [[], [SPEC]],

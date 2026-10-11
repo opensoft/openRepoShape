@@ -2141,6 +2141,18 @@ def _flush_stdout() -> None:
         sys.stdout.flush()
 
 
+def _interrupted(exc: BaseException) -> bool:
+    """Whether `exc` stopped a run that failed at nothing: Ctrl-C.
+
+    Its notice says only to re-run. Anything else that no step anticipates
+    -- a defect, a `TypeError` say -- fails the same way on every re-run, so
+    its notice says to fix it first, as a refusal's does: "Re-run" alone
+    made one more pair of leg repositories per attempt (#188's
+    re-verification, R2).
+    """
+    return isinstance(exc, KeyboardInterrupt)
+
+
 #: What a run builds in its work directory, `<work_root>/<name>` each, in the
 #: order it builds them: each leg, cloned or seeded by `_build_the_legs`, then
 #: the split, which `_commit_the_split` clones the source into. Both come
@@ -2178,7 +2190,7 @@ def _and_listed(items: list[str]) -> str:
 
 def _nothing_rolled_back(urls: dict, pushed: list, work_root: Path,
                          names: dict, made=EXTRACTED_LEGS, *,
-                         stopped: bool = False) -> str:
+                         interrupted: bool = False) -> str:
     """The one notice for a failure once a leg repository exists.
 
     `_create_leg_remotes` refuses a re-run while they exist:
@@ -2195,8 +2207,9 @@ def _nothing_rolled_back(urls: dict, pushed: list, work_root: Path,
     THE WAY OUT STARTS WITH THE CAUSE (#188's review, F2). A re-run into
     fresh legs while what failed is still there fails the same way, with one
     more pair of leg repositories behind it, so the re-run comes once that
-    is fixed. A run that was STOPPED, by Ctrl-C say, failed at nothing, and
-    is told only how to re-run.
+    is fixed. A run that was INTERRUPTED, by Ctrl-C, failed at nothing, and
+    is told only how to re-run; a defect fails again on every re-run, and is
+    told to fix it first, as any failure is (`_interrupted`).
 
     THE WAY OUT NAMES THE WORK DIRECTORY when this run built something in it
     (#184 P2-1, and N2 of #188's review): each leg is built in
@@ -2220,7 +2233,8 @@ def _nothing_rolled_back(urls: dict, pushed: list, work_root: Path,
     named = urls[made[0]] if one else f"{urls['spec']} and {urls['code']}"
     exist, them, fresh = (("exists", "it", "a fresh one") if one
                           else ("exist", "them", "fresh ones"))
-    rerun = "Re-run" if stopped else "Once what failed above is fixed, re-run"
+    rerun = ("Re-run" if interrupted
+             else "Once what failed above is fixed, re-run")
     notice = (f"NOTHING has been rolled back: {named} {exist}, and {state}. "
               f"{rerun} the adoption with {them} deleted or with {fresh} (a "
               "new --local-remote-dir, or new leg repositories): a re-run "
@@ -2431,7 +2445,7 @@ def _create_leg_remotes(plan: Plan, names: dict, repositories: dict,
                 _report_late(f"creating the {role} leg repository", exc,
                              _nothing_rolled_back(
                                  urls, [], work_root, names, made,
-                                 stopped=not isinstance(exc, LATE_FAILURES)))
+                                 interrupted=_interrupted(exc)))
             raise
         made.append(role)
 
@@ -2991,7 +3005,8 @@ def _build_the_legs(source: Source, names: dict, repositories: dict,
             return None
         except BaseException as exc:
             _report_late(step, exc, _nothing_rolled_back(
-                urls, list(leg_commits), work_root, names, stopped=True))
+                urls, list(leg_commits), work_root, names,
+                interrupted=_interrupted(exc)))
             raise
     return leg_commits, leg_digests
 
@@ -3177,7 +3192,8 @@ def _commit_the_split(plan: Plan, source: Source, assembly: Path,
         return None
     except BaseException as exc:
         _report_late(step, exc, _nothing_rolled_back(
-            urls, list(leg_commits), work_root, names, stopped=True))
+            urls, list(leg_commits), work_root, names,
+            interrupted=_interrupted(exc)))
         raise
     print(f"\n  split {split_commit[:12]} on {branch} -> {urls['assembly']}")
     return split_commit, message
@@ -3421,7 +3437,8 @@ def _verify(source: Source, assembly: Path, work_root: Path, names,
         return 2
     except BaseException as exc:
         _report_late(step, exc, _left_by_the_split(
-            source, urls, names, work_root, branch, stopped=True))
+            source, urls, names, work_root, branch,
+            interrupted=_interrupted(exc)))
         raise
     if findings:
         _flush_stdout()   # the table above, and every leg line, is stdout's
@@ -3472,13 +3489,13 @@ def _accounted_for(source: Source, assembly: Path, work_root: Path, names,
 
 def _left_by_the_split(source: Source, urls: dict, names: dict,
                        work_root: Path, branch: str, *,
-                       stopped: bool = False) -> str:
+                       interrupted: bool = False) -> str:
     """What a run whose split is pushed leaves, and the way out: the notice,
     then the split branch with the command that deletes it, which a re-run
     meets as `adopt-branch-exists`. Said by `_verify` after its findings,
     and after a failure to verify at all."""
     return (_nothing_rolled_back(urls, list(EXTRACTED_LEGS), work_root,
-                                 names, stopped=stopped)
+                                 names, interrupted=interrupted)
             + f"\nThe split is pushed to {urls['assembly']} too, as "
             f"{branch}, and a re-run is refused (`adopt-branch-exists`) "
             "until that branch is deleted:\n    "
