@@ -1160,13 +1160,10 @@ class MountRollback:
         #: None in a holder with NO COMMIT YET (#203), which `add` gives its
         #: root commit exactly as it always has: `-q --verify` exits 1 there
         #: without a word, where a bare `rev-parse HEAD` refused the whole
-        #: add as `git-failed`. `undo` then reads any HEAD at all as the one
-        #: commit having landed, and still no HEAD as nothing having landed.
-        try:
-            self.head = git_out(["rev-parse", "-q", "--verify",
-                                 "HEAD^{commit}"], cwd=root)
-        except Refusal:
-            self.head = None
+        #: add as `git-failed`. `undo` reads HEAD through the same `_head`
+        #: and takes a commit it names now, and did not then, as the one
+        #: commit having landed.
+        self.head = self._head()
         self.gitlink = self._entries(path)
         self.files = {name: (self._bytes(name), self._entries(name))
                       for name in (GITMODULES, MANIFEST)}
@@ -1180,6 +1177,24 @@ class MountRollback:
                       for tree, shown in ((root / path, path),
                                           (module, module_shown))
                       if not tree.exists()]
+
+    def _head(self) -> str | None:
+        """The commit HEAD names, or None if it names none — read ONE way,
+        so what `undo` compares is what the constructor recorded.
+
+        `-q --verify HEAD^{commit}` PEELS and VERIFIES: it answers with the
+        commit an annotated tag names, and with nothing at all for a branch
+        that does not exist yet or names an object that is missing. A bare
+        `rev-parse HEAD` answers with the tag's own sha, or with the missing
+        object's, and the two readings then differ in a holder nothing has
+        committed to: `undo` took that for the one commit having landed, said
+        so, and left the half-added member staged (#203).
+        """
+        try:
+            return git_out(["rev-parse", "-q", "--verify", "HEAD^{commit}"],
+                           cwd=self.root)
+        except Refusal:
+            return None
 
     def _bytes(self, name: str) -> bytes | None:
         target = self.root / name
@@ -1261,13 +1276,12 @@ class MountRollback:
     def undo(self) -> str:
         """Put the holder back. Returns the sentence a refusal ends with:
         what was put back, or — if any of it could not be — what is left."""
-        try:
-            landed = git_out(["rev-parse", "HEAD"], cwd=self.root) != self.head
-        except Refusal:
-            # No HEAD to read: a holder with no commit yet still has none,
-            # so the commit did not land.
-            landed = False
-        if landed:
+        # NO HEAD IS NOT A COMMIT THAT LANDED: a holder with no commit yet
+        # reads None before and after, and so does one whose HEAD names no
+        # readable commit. Only a commit HEAD now names and did not before
+        # is the one commit having landed.
+        now = self._head()
+        if now is not None and now != self.head:
             return (" The commit had already landed, so nothing was undone: "
                     "`git log -1` in the holder shows it.")
         steps = [(f"the gitlink at {self.path} unstaged", self._undo_entries,

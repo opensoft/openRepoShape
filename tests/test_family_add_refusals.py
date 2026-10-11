@@ -66,6 +66,12 @@ LEG_REMEDIATION = (
 
 NEXT = "NEXT  git -C {root} push -u origin <branch> && open a pull request"
 
+#: What an `--at` naming a tree or a blob, or a tag of one, is told to do.
+AT_NAMES_NO_COMMIT_REMEDIATION = (
+    "Remediation: pass the commit itself — `git log --format=%H` in the "
+    "member lists them. A tree's or a blob's sha is part of a commit and "
+    "never one, and a pin is a commit or it is nothing.")
+
 #: What a refused pin write tells the human to do, whatever made it fail.
 UNWRITABLE_REMEDIATION = (
     "Remediation: make family.yaml writable, and check the disk has room, "
@@ -130,8 +136,11 @@ def holder(family, tmp_path) -> Path:
     return target
 
 
-def snapshot(root: Path) -> dict:
-    """Everything a refused `add` must leave exactly as it found it."""
+def snapshot(root: Path, *, status: bool = True) -> dict:
+    """Everything a refused `add` must leave exactly as it found it.
+
+    `status=False` for a holder with no `git status` to ask: one whose HEAD
+    names a missing object answers `fatal: bad object HEAD`."""
     def read(name: str) -> bytes | None:
         target = root / name
         return target.read_bytes() if target.is_file() else None
@@ -145,7 +154,8 @@ def snapshot(root: Path) -> dict:
         "HEAD": git("rev-parse", "-q", "--verify", "HEAD", cwd=root,
                     check=False).stdout,
         "index": git("ls-files", "-s", cwd=root).stdout,
-        "status": git("status", "--porcelain", "--ignored", cwd=root).stdout,
+        "status": (git("status", "--porcelain", "--ignored", cwd=root).stdout
+                   if status else None),
         "config": git("config", "--local", "--list", cwd=root).stdout,
         ".gitmodules": read(".gitmodules"),
         "family.yaml": read("family.yaml"),
@@ -165,12 +175,14 @@ def registration(config: str, member: str) -> list[str]:
             if line.partition("=")[0].rpartition(".")[0] == section]
 
 
-def assert_unchanged(root: Path, before: dict, member: str) -> None:
+def assert_unchanged(root: Path, before: dict, member: str, *,
+                     status: bool = True) -> None:
     """The holder is the one `before` recorded, and carries no trace of
     `member` it did not carry before: the three things #203 found left
-    behind, named one by one."""
-    assert git("status", "--porcelain", cwd=root).stdout == ""
-    assert snapshot(root) == before
+    behind, named one by one. `status` as for `snapshot`."""
+    if status:
+        assert git("status", "--porcelain", cwd=root).stdout == ""
+    assert snapshot(root, status=status) == before
     assert not (root / "members" / member).exists()
     assert not (root / ".git" / "modules" / "members" / member).exists()
     assert registration(git("config", "--local", "--list", cwd=root).stdout,
@@ -453,11 +465,66 @@ def test_an_at_that_names_a_tree_or_a_blob_is_refused_as_one(family, holder,
     assert result.stdout == f"checking {ORG}/{SPARE} before mounting it\n"
     assert refusal(result.stderr) == (
         f"REFUSED member-at-unknown: --at {at} names a {kind} in "
-        f"{ORG}/{SPARE}, not a commit",
-        "Remediation: pass the commit itself — `git log --format=%H` in the "
-        "member lists them. A tree's or a blob's sha is part of a commit and "
-        "never one, and a pin is a commit or it is nothing.")
+        f"{ORG}/{SPARE}, not a commit", AT_NAMES_NO_COMMIT_REMEDIATION)
     assert_unchanged(holder, before, SPARE)
+    offline.assert_left_nothing()
+
+
+def tagged_remote(family, tmp_path: Path, target: str) -> tuple[Path, str]:
+    """A COPY of the member's remote with one ANNOTATED tag on `target` (any
+    revision of it), in a directory of remotes of its own: `(that directory,
+    the tag object's own sha)`. The session's remotes are not written to."""
+    remotes = tmp_path / "remotes"
+    remotes.mkdir()
+    bare = remotes / f"{SPARE}.git"
+    shutil.copytree(family["remotes"] / f"{SPARE}.git", bare, symlinks=True)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "tag", "-a", "-m",
+        "an annotated tag", "v-annotated", target, cwd=bare)
+    at = git("rev-parse", "v-annotated", cwd=bare).stdout.strip()
+    assert git("cat-file", "-t", at, cwd=bare).stdout.strip() == "tag"
+    return remotes, at
+
+
+@pytest.mark.parametrize("kind", ["tree", "blob"])
+def test_an_at_that_is_a_tag_of_a_tree_or_a_blob_is_named_for_what_it_tags(
+        family, holder, offline, tmp_path, kind):
+    """THE `^{}` IN `cat-file -t <at>^{}`. The sha of an ANNOTATED TAG is the
+    tag object's own, and `cat-file -t` of it is `tag` — neither a tree nor a
+    blob — so without the peel a tag of a tree is refused as a commit no
+    branch or tag reaches, the very wording the tree and blob refusal exists
+    to avoid. With it the tag is named by what it tags."""
+    remotes, at = tagged_remote(
+        family, tmp_path,
+        "main^{tree}" if kind == "tree" else "main:project.yaml")
+    before = snapshot(holder)
+    result = offline.add(holder, SPARE, "--at", at, remotes=remotes)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stdout == f"checking {ORG}/{SPARE} before mounting it\n"
+    assert refusal(result.stderr) == (
+        f"REFUSED member-at-unknown: --at {at} names a {kind} in "
+        f"{ORG}/{SPARE}, not a commit", AT_NAMES_NO_COMMIT_REMEDIATION)
+    assert_unchanged(holder, before, SPARE)
+    offline.assert_left_nothing()
+
+
+def test_an_at_that_is_a_tag_of_a_commit_pins_the_commit_it_tags(
+        family, holder, offline, tmp_path):
+    """The other half of the same peel: an annotated tag's own sha is not a
+    commit, but it names one, and `add` pins THAT — the commit the tag is on,
+    which is not the tip — exactly as checking the tag out always did."""
+    remotes, at = tagged_remote(family, tmp_path, "main~1")
+    bare = remotes / f"{SPARE}.git"
+    commit = git("rev-parse", "main~1", cwd=bare).stdout.strip()
+    tip = git("rev-parse", "main", cwd=bare).stdout.strip()
+    assert at != commit != tip
+    result = offline.add(holder, SPARE, "--at", at, remotes=remotes)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stderr == ""
+    row = {r["project"]: r for r in manifest(holder)["members"]}[SPARE]
+    assert row["pin"]["commit"] == commit
+    assert git("rev-parse", f"HEAD:members/{SPARE}",
+               cwd=holder).stdout.strip() == commit
+    assert git("status", "--porcelain", cwd=holder).stdout == ""
     offline.assert_left_nothing()
 
 
@@ -1100,6 +1167,53 @@ def test_a_refused_add_in_a_holder_with_no_commit_leaves_it_with_none(
     assert not (root / ".gitmodules").exists()
     assert not (root / "members").exists()
     assert not (root / ".git" / "modules").exists()
+    offline.assert_left_nothing()
+
+
+@pytest.mark.parametrize("state", ["an annotated tag", "a missing object"])
+def test_a_head_that_names_no_readable_commit_is_unwound_like_any_other(
+        family, holder, offline, family_module, monkeypatch, capsys, state):
+    """HEAD IS READ ONE WAY, BEFORE AND AFTER. `MountRollback` records it with
+    `rev-parse -q --verify HEAD^{commit}` and `undo` reads it the same way. A
+    bare `rev-parse HEAD` is not the same answer where HEAD is a symbolic ref
+    to an ANNOTATED TAG (the tag's own sha, not the commit's) or where
+    `refs/heads/main` names a MISSING OBJECT (that object's sha, where the
+    other says there is none): `undo` took the difference for the one commit
+    having landed, said "nothing was undone" and left the half-added member
+    staged, in a holder it had unwound before. The two states are corrupt, so
+    they are built with git's own plumbing and a loose ref, and the holder
+    must still come back as it was."""
+    if state == "an annotated tag":
+        git("-c", "user.name=t", "-c", "user.email=t@t", "tag", "-a", "-m",
+            "an annotated tag", "v1", cwd=holder)
+        git("symbolic-ref", "HEAD", "refs/tags/v1", cwd=holder)
+    else:
+        ref = holder / ".git" / "refs" / "heads" / "main"
+        ref.parent.mkdir(parents=True, exist_ok=True)
+        ref.write_bytes(b"deadbeef" * 5 + b"\n")
+        if git("rev-parse", "HEAD", cwd=holder, check=False).stdout.strip() \
+                != "deadbeef" * 5:
+            pytest.skip("this git does not read a loose ref file over its "
+                        "own ref store, so the state cannot be made here")
+    # The state this test exists for: the two readings DISAGREE in it.
+    commit = git("rev-parse", "-q", "--verify", "HEAD^{commit}", cwd=holder,
+                 check=False).stdout.strip()
+    assert git("rev-parse", "HEAD", cwd=holder).stdout.strip() != commit
+    # `git status` is a fatal error over a missing HEAD object.
+    status = state == "an annotated tag"
+    monkeypatch.setattr(family_module, "write_lf", full_disk)
+    before = snapshot(holder, status=status)
+    code = add_in_process(family_module, monkeypatch, offline, holder, SPARE,
+                          family["remotes"])
+    out, err = capsys.readouterr()
+    assert code == 2, out + err
+    assert refusal(err) == (
+        "REFUSED family-manifest-unwritable: family.yaml could not be "
+        f"rewritten with {SPARE}'s pin: No space left on device. "
+        + mount_undone(SPARE), UNWRITABLE_REMEDIATION)
+    assert_unchanged(holder, before, SPARE, status=status)
+    assert git("ls-files", "-s", "--", f"members/{SPARE}", cwd=holder
+               ).stdout == ""
     offline.assert_left_nothing()
 
 
