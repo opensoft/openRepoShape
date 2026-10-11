@@ -1215,7 +1215,7 @@ def copy_out(src: Path, dst: Path) -> None:
 #
 # IT LIVES HERE AND NOT IN `scripts/repo_shape.py`, which is a SHAPE COPY:
 # the materializer writes it into every project and
-# `contracts/shape-pin.yaml` digests it, so about two hundred lines added
+# `contracts/shape-pin.yaml` digests it, so about 250 lines added
 # there would put an `upstream-changed scripts/repo_shape.py` row in front
 # of every project in the estate for a rule no project's own copy ever
 # asks (see "Commit trailers" above for the same argument). This module
@@ -1248,8 +1248,10 @@ def copy_out(src: Path, dst: Path) -> None:
 #     own (`SAFE_ARG_RE`): it is asked here, not copied.
 
 #: `D:\work\Thing` or `D:/work/Thing` — a Windows absolute path, in either
-#: spelling. Recognised so that `--source` can tell a path the operator got
-#: wrong from a repository name; see `Source.open`.
+#: spelling. `_spelling_reason` below asks it whether a leg path is a drive
+#: letter's. adopt-project.py imports it too, for its own `--source` flag:
+#: `Source.open` there tells a path the operator got wrong from a repository
+#: name. `--source` and `Source.open` are adopt-project.py's, not this file's.
 WINDOWS_ABSOLUTE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 
 #: Git's own names, casefolded: a leg cannot be mounted at a segment spelled
