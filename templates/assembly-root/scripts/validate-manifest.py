@@ -52,9 +52,21 @@ WHAT IS CHECKED
   - `submodules`, OPTIONAL: the record an adoption writes of the leg each
     source submodule was answered into (#189). Absent is fine, because a
     project with no source submodule has none, and nor does one adopted
-    before the record existed. Present, each row names a `path` inside its
-    leg and a `leg` of `spec` or `code`, at most once per path, with an
-    optional `resolution` text and an optional 40-hex `source_commit`.
+    before the record existed. Present, it is a list of mappings, one per
+    submodule a leg keeps:
+      `path`           the submodule's path inside its leg, spelled the one
+                       way Git records a path -- relative, `/` between
+                       segments, none empty, `.` or `..` -- and named by one
+                       row only. A backslash or a drive letter is a
+                       character of the name, which Git records on POSIX.
+      `leg`            `spec` or `code`: the assembly root keeps no
+                       submodule but its legs.
+      `resolution`     OPTIONAL text: the reason the adoption plan gave.
+      `source_commit`  OPTIONAL, 40 hex: the source commit it was answered
+                       at.
+    `adopt-project.py execute` writes it, once, from the adoption plan, and
+    `shape-doctor.py` holds each submodule a leg keeps to the row naming its
+    path. A row whose `path` or `leg` is refused here holds nothing there.
 
 EXIT CODES: 0 valid · 1 findings · 2 refusal (the file is missing or unreadable)
 """
@@ -68,10 +80,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from repo_shape import (  # noqa: E402
-    CHAIN_RECORD_FIELD, COMMIT_RE, PROJECT_ID_RE, SHA256_RE,
-    TREE_DIGEST_DEFINITION, VISIBILITY_CHOICES, NamingPolicy, Refusal,
-    accepts_role, find_repo_root, link_pins_from_trees, load_yaml,
-    repo_basename,
+    CHAIN_RECORD_FIELD, COMMIT_RE, PATH_NOT_CANONICAL, PROJECT_ID_RE,
+    SHA256_RE, TREE_DIGEST_DEFINITION, VISIBILITY_CHOICES, NamingPolicy,
+    Refusal, accepts_role, find_repo_root, link_pins_from_trees, load_yaml,
+    path_spelling_fault, repo_basename,
 )
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -635,13 +647,30 @@ def _leg_findings(leg, policy: NamingPolicy, pins: set[str], root,
 SUBMODULE_LEGS = ("spec", "code")
 
 
+#: What a recorded `path` is, said beside one that is not.
+SUBMODULE_PATH = ("it is the submodule's path inside its leg, relative and "
+                  "without `..`")
+
+
 def _submodule_path_problem(path, seen: set) -> str | None:
     """Why one recorded `path` is not a submodule's path inside its leg, or
-    None. Records a good one in `seen`, so a second row for it is named."""
-    if not isinstance(path, str) or not path or path == "." \
-            or path.startswith("/") or ".." in Path(path).parts:
-        return (f"path is {path!r}; it is the submodule's path inside its "
-                "leg, relative and without `..`")
+    None. Records a good one in `seen`, so a second row for it is named.
+
+    SPELLED THE ONE WAY GIT RECORDS A PATH (`repo_shape.path_spelling_fault`,
+    the rule a leg's mount path is held to as well). The doctor finds a
+    submodule by the path its leg's index records, and Git records none with
+    a leading `./`, a trailing `/`, a doubled `/` or a `.` segment, so a row
+    spelled that way would name nothing the doctor could ever hold to it.
+    A backslash or a drive letter is accepted: on POSIX each is a character
+    of a name Git records, and an adoption records a submodule at one.
+    """
+    fault = path_spelling_fault(path) if isinstance(path, str) else None
+    if fault == PATH_NOT_CANONICAL:
+        return (f"path is {path!r}; Git records no path with a `.` segment, "
+                "a trailing `/` or a doubled `/`, so no submodule is ever at "
+                "it")
+    if fault is not None or not isinstance(path, str):
+        return f"path is {path!r}; {SUBMODULE_PATH}"
     if path in seen:
         return f"path {path!r} is recorded twice"
     seen.add(path)

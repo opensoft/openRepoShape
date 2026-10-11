@@ -20,6 +20,8 @@ WHAT THIS MODULE OWNS
   - `file_sha256` — the per-file digest used by the shape pin's `files:` block,
     mirroring `neutral-product-pin`'s per-file `sha256` rows.
   - `NamingPolicy` — the classifier over `contracts/repository-naming.yaml`.
+  - `path_spelling_fault` — whether a path is spelled the one way Git
+    records it, asked of a leg's mount path and of a recorded submodule's.
   - `same_repository` and the remote-url arithmetic under it — the ONE
     definition of whether two remote spellings name one repository, which
     `shape-doctor.py` reports by and `scripts/siblings.py` refuses by.
@@ -1710,6 +1712,55 @@ def checked_value(what: str, value, pattern: re.Pattern = SAFE_ARG_RE) -> str:
             "arguments (`--upload-pack=…` is a command, not a branch); the "
             f"rest must match {pattern.pattern}.")
     return text
+
+
+# ---------------------------------------------------------------------------
+# A path spelled the one way Git records it (#179, #189)
+# ---------------------------------------------------------------------------
+#
+# Git records a path in exactly one spelling: relative to the top of its
+# repository, `/` between segments, and no segment empty, `.` or `..`.
+# `git update-index` refuses `./x`, `x/`, `a//b`, `a/./b`, `a/../b`, `/x` and
+# `.` alike as `Invalid path`, so a record that names a path in any other
+# spelling names one no tree holds, and nothing is ever found at it.
+#
+# TWO RULES ASK IT. The leg-path rule in `shape_materialize.py` asks it of a
+# leg's mount path (#179), and a project's own `validate-manifest.py` asks it
+# of each path `project.yaml`'s `submodules:` records (#189) -- which is why
+# it lives HERE: a project carries this file and not `shape_materialize.py`.
+# Each says the answer in its own sentence, about a leg or about a submodule.
+#
+# A BACKSLASH AND A DRIVE LETTER ARE NOT ASKED. On POSIX each is an ordinary
+# character of a name -- Git records `vendor/a\b` and `C:/x` there, refusing
+# them only on Windows -- and an adoption records a source submodule at
+# either. They are faults only in a path a PERSON types for commands that
+# Windows also runs, which is the leg-path rule's own question.
+
+#: The ways a path can fail to be spelled as Git records it, in the order
+#: `path_spelling_fault` asks: empty, absolute, climbing out with `..`,
+#: naming the top itself, and any other empty or `.` segment.
+PATH_EMPTY = "empty"
+PATH_ABSOLUTE = "absolute"
+PATH_CLIMBS = "climbs"
+PATH_ITSELF = "itself"
+PATH_NOT_CANONICAL = "not-canonical"
+
+
+def path_spelling_fault(text: str) -> str | None:
+    """Why `text` is not one path spelled as Git records it, as one of the
+    `PATH_*` codes above, or None when it is."""
+    if not text:
+        return PATH_EMPTY
+    if text.startswith("/"):
+        return PATH_ABSOLUTE
+    segments = text.split("/")
+    if ".." in segments:
+        return PATH_CLIMBS
+    if all(segment in ("", ".") for segment in segments):
+        return PATH_ITSELF
+    if "" in segments or "." in segments:
+        return PATH_NOT_CANONICAL
+    return None
 
 
 def accepts_role(found, role: str) -> bool:

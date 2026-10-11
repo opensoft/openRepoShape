@@ -3652,6 +3652,21 @@ def held_placements(result) -> dict:
             rows_of(result)["placement"]["detail"].get("submodules") or []}
 
 
+def append_written_record(standard: Path, project: Path, names,
+                          leg: str = "code") -> str:
+    """The record the adoption's OWN writer makes for `names` in `leg`,
+    appended to `project.yaml` as bytes, and returned."""
+    adopt = adoption_module(standard)
+    block = adopt.submodule_record(
+        [{"path": name, "leg": leg} for name in names],
+        sorted((name, adopt.GITLINK_MODE, RECORDED_AT, 0) for name in names),
+        RECORDED_AT)
+    manifest = project / "project.yaml"
+    manifest.write_bytes((manifest.read_text(encoding="utf-8")
+                          + block).encode("utf-8"))
+    return block
+
+
 def test_a_name_the_record_spells_with_an_escape_still_names_its_submodule(
         standard, project):
     """THE ROW READS BACK AS THE NAME, so the submodule is held to it (#189).
@@ -3663,18 +3678,11 @@ def test_a_name_the_record_spells_with_an_escape_still_names_its_submodule(
     the reader kept the backslash, no row named any of them: they were
     `kept`, and the move was COMPLIANT.
     """
-    adopt = adoption_module(standard)
-    block = adopt.submodule_record(
-        [{"path": name, "leg": "code"} for name in ESCAPED_NAMES],
-        sorted((name, adopt.GITLINK_MODE, RECORDED_AT, 0)
-               for name in ESCAPED_NAMES), RECORDED_AT)
+    block = append_written_record(standard, project, ESCAPED_NAMES)
     spelled = [line for line in block.splitlines() if "- path:" in line]
     assert len(spelled) == len(ESCAPED_NAMES), block
     assert all("\\" in line for line in spelled), (
         "each name must be one the record spells with an escape", block)
-    manifest = project / "project.yaml"
-    manifest.write_bytes((manifest.read_text(encoding="utf-8")
-                          + block).encode("utf-8"))
     for name in ESCAPED_NAMES:
         stage_gitlink(project / "code", name)
     placed = doctor(standard, project, "--json")
@@ -3692,6 +3700,29 @@ def test_a_name_the_record_spells_with_an_escape_still_names_its_submodule(
         f"MISPLACED ({len(ESCAPED_NAMES)} paths)")
     assert held_placements(moved) == {
         f"spec/{name}": "misplaced" for name in ESCAPED_NAMES}
+
+
+@pytest.mark.skipif(os.name == "nt",
+                    reason="Git for Windows records no path with a backslash")
+def test_a_recorded_name_with_a_backslash_is_valid_and_placed(standard,
+                                                              project):
+    """A BACKSLASH IS A CHARACTER OF THE NAME, and the record may hold it.
+
+    On POSIX Git records `vendor/a\\b`, an adoption of a source with a
+    submodule there records it, and the doctor holds the gitlink to that
+    row. So the project's own validator accepts the row: the spelling rule
+    it holds a recorded path to is the one Git records paths by (#189), and
+    the leg-path rule's refusal of a backslash, which a person TYPING a path
+    for Windows gets wrong, is not part of it.
+    """
+    name = "vendor/a\\b"
+    append_written_record(standard, project, [name])
+    stage_gitlink(project / "code", name)
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert rows_of(result)["manifest"]["status"] == "ok", (
+        rows_of(result)["manifest"])
+    assert held_placements(result) == {f"code/{name}": "recorded"}
 
 
 # --- the record, written by a real adoption and read by the doctor (#189) ---
