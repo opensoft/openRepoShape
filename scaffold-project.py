@@ -56,8 +56,8 @@ from repo_shape import (  # noqa: E402
 from shape_materialize import (  # noqa: E402
     RULESET_HINT, SHAPE_REPOSITORY, CommandFailed,
     copy_tree, default_reference, descendant_note, election_date, env_commit,
-    git_init_commit, materialize_assembly_root, naming_block, run,
-    stage_written,
+    escape_what_stdout_cannot_encode, git_init_commit,
+    materialize_assembly_root, naming_block, run, stage_written,
 )
 from shape_advisory import scaffold_lines  # noqa: E402
 
@@ -228,6 +228,9 @@ def local_remote_is_empty(bare: Path) -> bool | None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # FIRST, so that every `print` after it -- `--help` included -- escapes
+    # a name stdout cannot encode rather than raising on it (#214).
+    escape_what_stdout_cannot_encode()
     parser = argparse.ArgumentParser(
         description=__doc__.splitlines()[0],
         formatter_class=argparse.RawDescriptionHelpFormatter)

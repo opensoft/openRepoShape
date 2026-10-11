@@ -62,8 +62,8 @@ from repo_shape import (  # noqa: E402
     recorded_gitlink, repo_basename, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
-    CommandFailed, check_program, commit_trailers, run, trailer_line,
-    write_lf,
+    CommandFailed, check_program, commit_trailers,
+    escape_what_stdout_cannot_encode, run, trailer_line, write_lf,
 )
 
 MANIFEST = "project.yaml"
@@ -792,6 +792,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # FIRST, so that every `print` after it -- `--help` included -- escapes
+    # a name stdout cannot encode rather than raising on it (#214).
+    escape_what_stdout_cannot_encode()
     args = build_parser().parse_args(argv)
     try:
         return cmd_bump(args)

@@ -81,6 +81,50 @@ def write_lf(path: Path, text: str) -> None:
     with path.open("w", encoding="utf-8", newline="\n") as handle:
         handle.write(text)
 
+
+def escape_what_stdout_cannot_encode(stream=None) -> None:
+    """A character `stream` cannot encode is printed escaped, never raised on.
+
+    WHAT WAS WRONG (#214). The tools that call this print names a person
+    chose -- a source file, a `--source`, `--root`, `--out` or `--work-dir`
+    path, a `--name`, an `--elected-by` -- with a plain `print`, and a stdout
+    whose encoding cannot hold one raised `UnicodeEncodeError` in the middle
+    of the report. On Windows that is any stdout that is not the console
+    itself (a file, a pipe to `tee`, CI, an agent running the tool): Python
+    gives it the ANSI code page, cp1252 on a Western-European install, and a
+    Japanese file name is not in it. `adopt-project.py plan` had already
+    written the plan, then exited 1 with a traceback before `plan written
+    to` and before the questions it exists to ask.
+
+    ONLY THE HANDLER THAT RAISES IS CHANGED. `strict` becomes
+    `backslashreplace`, the handler Python already gives stderr: it writes
+    what `strict` would have written, byte for byte, and differs only where
+    `strict` would have raised, so no run that succeeded prints anything
+    different. Every other handler is left as it was, `surrogateescape` --
+    UTF-8 mode's and the POSIX locale's, which writes a name that is not
+    UTF-8 back as its own bytes -- included. The ENCODING is never changed:
+    a character the code page holds is still written in it.
+
+    `backslashreplace` AND NOT `replace`: `\\u65e5\\u672c.md` still says which
+    file it is, and two names that differ only outside the code page do not
+    both print as `??.md`. ONCE, AT THE START OF `main()`, and not at each
+    `print`: `shape-doctor.py`'s `ascii_text` and `shape_advisory.printable`
+    flatten their own text to ASCII on every console, which a name cannot
+    afford -- it would change what a UTF-8 terminal shows -- and a guard at
+    each site is a guard the next `print` goes without.
+
+    GUARDED, because failing to set a handler is no reason to refuse the
+    run: a stream a caller replaced may have no `reconfigure`, and `pythonw`
+    has no stdout at all.
+    """
+    stream = sys.stdout if stream is None else stream
+    if getattr(stream, "errors", None) != "strict":
+        return
+    try:
+        stream.reconfigure(errors="backslashreplace")
+    except (AttributeError, ValueError, OSError):
+        pass
+
 # ---------------------------------------------------------------------------
 # The `reference:` an election followed, and why one default cannot serve
 # ---------------------------------------------------------------------------

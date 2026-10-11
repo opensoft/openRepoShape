@@ -107,7 +107,8 @@ from repo_shape import (  # noqa: E402
 from shape_materialize import (  # noqa: E402
     COPIED_FROM_SHAPE, COPIED_VERBATIM, FAMILY_COPIED_FROM_SHAPE,
     FAMILY_COPIED_VERBATIM, SHAPE_REPOSITORY, CommandFailed, check_program,
-    commit_trailers, lane_trailer_argument, readme_shape_lines,
+    commit_trailers, escape_what_stdout_cannot_encode, lane_trailer_argument,
+    readme_shape_lines,
     readme_trailing_shape_line, run, trailer_line,
 )
 
@@ -2039,6 +2040,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # FIRST, so that every `print` after it -- `--help` included -- escapes
+    # a name stdout cannot encode rather than raising on it (#214).
+    escape_what_stdout_cannot_encode()
     args = build_parser().parse_args(argv)
     try:
         if args.command == "check":

@@ -98,7 +98,8 @@ from repo_shape import (  # noqa: E402
 from shape_materialize import (  # noqa: E402
     ADOPT_MAKEFILE_BLOCK, RULESET_HINT, SHAPE_REPOSITORY,
     CommandFailed, Materialized, assembly_root_paths, collision_follow_up,
-    copy_tree, default_reference, election_date, env_commit, git_init_commit,
+    copy_tree, default_reference, election_date, env_commit,
+    escape_what_stdout_cannot_encode, git_init_commit,
     materialize_assembly_root, naming_block, run, write_lf,
 )
 import shape_advisory  # noqa: E402
@@ -3308,6 +3309,9 @@ def _work_root(args) -> Path:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # FIRST, so that every `print` after it -- `--help` included -- escapes
+    # a name stdout cannot encode rather than raising on it (#214).
+    escape_what_stdout_cannot_encode()
     parser = argparse.ArgumentParser(
         description=__doc__.splitlines()[0],
         formatter_class=argparse.RawDescriptionHelpFormatter)
