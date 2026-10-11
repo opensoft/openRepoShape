@@ -336,7 +336,8 @@ def open_upstream(spec: str) -> Upstream:
     url = f"https://github.com/{spec}.git"
     args = ["git", "clone", "--quiet", "--bare", url, str(temporary / "shape.git")]
     check_program(args)
-    proc = subprocess.run(args, capture_output=True, text=True, check=False)
+    proc = subprocess.run(args, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", check=False)
     if proc.returncode != 0:
         shutil.rmtree(temporary, ignore_errors=True)
         raise Refusal(
@@ -1533,7 +1534,7 @@ def current_branch(root: Path) -> str | None:
     """
     proc = subprocess.run(["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
                           cwd=str(root), capture_output=True, text=True,
-                          check=False)
+                          encoding="utf-8", errors="replace", check=False)
     return proc.stdout.strip() or None
 
 
@@ -1671,7 +1672,9 @@ def commit_on_branch(root: Path, branch: str, paths: list[str], target: str,
     args = ["git", "commit", "-q", "-F", "-", *trailer_args, "--", *paths]
     check_program(args)
     proc = subprocess.run(args, cwd=str(root), input=message,
-                          capture_output=True, text=True, check=False, env=env)
+                          capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", check=False,
+                          env=env)
     if proc.returncode != 0:
         raise CommandFailed(args, root, proc.returncode,
                             proc.stderr + proc.stdout)
