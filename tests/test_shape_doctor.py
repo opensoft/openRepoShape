@@ -478,6 +478,317 @@ def test_a_family_holder_gets_the_family_rows(standard, holder):
         [FAMILY_MEMBER]
 
 
+# --- a family.yaml beside project.yaml (#211) -------------------------------
+#
+# `Context` reads ONE manifest per root and `project.yaml` wins, so a
+# `family.yaml` committed beside it -- hand-copied or mis-merged; no tool here
+# writes both -- was listed among the manifests whose kind "has a registered
+# validator", and the root was COMPLIANT, exit 0. That validator,
+# `validate-family.py`, never runs on an assembly root, and run there by hand
+# it refuses the same tree.
+
+
+#: The words the `manifest kinds` row opens with for a holder's one-member
+#: `family.yaml` beside an assembly root's `project.yaml`, spelt out here and
+#: not imported from the doctor: a test that read the wording back from the
+#: thing under test would pass whatever it said.
+FAMILY_BESIDE_OPENING = (
+    "family.yaml (family-manifest) sits beside project.yaml "
+    "(project-manifest), and validate-family.py, the validator that kind is "
+    "registered to, never runs on an assembly root -- a family holder is not "
+    "a project -- so nothing checks the 1 member(s) it pins")
+
+#: The row's next command. NOT `family.py add`, which is what
+#: `validate-family.py`'s own refusal offers: run in an assembly root it would
+#: mount the members inside a project.
+FAMILY_BESIDE_NEXT = (
+    "an assembly root is not a family holder: take family.yaml out of this "
+    "root, or move the membership to a holder of its own (`family.py init`, "
+    "then `family.py add` there), as the human decides -- never `family.py "
+    "add` here, which would mount the members inside a project")
+
+#: The `manifest kinds` row's `--json` keys before #211, which every root
+#: without a family.yaml beside its project.yaml must still get exactly.
+MANIFEST_KINDS_DETAIL_KEYS = {"validated", "unregistered", "unreadable",
+                              "registered_kinds"}
+
+#: The next command an unregistered kind has always carried, byte for byte.
+UNREGISTERED_NEXT = ("register the kind in shape-doctor.py's "
+                     "MANIFEST_VALIDATORS, beside the check that validates "
+                     "it, or remove the file from the root")
+
+
+def family_beside(project: Path, holder: dict) -> str:
+    """Commit the holder's `family.yaml` into an assembly root, beside its
+    `project.yaml` -- the hand copy #211 was filed about -- and return the
+    40-hex commit it pins its one member at, read out of the file itself."""
+    shutil.copy2(holder["root"] / "family.yaml", project / "family.yaml")
+    commit_all(project, "A hand-copied family.yaml")
+    [row] = repo_shape.load_yaml(project / "family.yaml")["members"]
+    assert row["project"] == FAMILY_MEMBER, row
+    return str(row["pin"]["commit"])
+
+
+def record_gitlink(root: Path, path: str, commit: str) -> None:
+    """A gitlink at `path` in the root's INDEX, at `commit`, and nothing else.
+
+    `stage_gitlink` below does this in a leg at the leg's own HEAD; here the
+    commit is the argument, because whether it equals the pin is the question.
+    The index is what `recorded_gitlink` asks first and what `ls-files` lists,
+    so no commit and no working tree under it are needed.
+    """
+    git("update-index", "--add", "--cacheinfo", f"160000,{commit},{path}",
+        cwd=root)
+
+
+def beside_row(result) -> dict:
+    """The `manifest kinds` row of a `--json` run, asserted to be the #211
+    finding and to be the only row that is."""
+    rows = rows_of(result)
+    row = rows["manifest-kinds"]
+    assert row["status"] == "FINDING", row
+    assert row["reason"].startswith(FAMILY_BESIDE_OPENING), row["reason"]
+    assert row["next"] == FAMILY_BESIDE_NEXT, row["next"]
+    assert set(row["detail"]) == MANIFEST_KINDS_DETAIL_KEYS | {
+        "family_beside"}, row["detail"]
+    validated = row["detail"]["validated"]
+    assert "family.yaml (family-manifest)" not in validated, (
+        "a manifest whose gate never runs here is not counted validated",
+        validated)
+    others = {name: other["status"] for name, other in rows.items()
+              if other["status"] == "FINDING" and name != "manifest-kinds"}
+    assert others == {}, others
+    return row
+
+
+def test_a_family_yaml_whose_members_are_all_at_their_pins_is_still_invalid(
+        standard, project, holder):
+    """DELIBERATELY A FINDING, even with every member recorded at its pin.
+
+    A family holder is not a project -- no `project.yaml`, no legs (README,
+    "Families"; AGENTS.md, "Creating a family") -- and the gate registered
+    for `family-manifest`, `validate-family.py`, is run by the `family` check,
+    which applies to a holder and to nothing else. So a root declaring both
+    is a manifest travelling with no gate behind it: the case
+    `check_manifest_kinds` exists to report, whether or not its rows happen
+    to agree with the gitlinks today. The issue asked for no verdict better
+    than INVALID, and this is it: the row says each member is at its pin,
+    and still names the exit.
+    """
+    pinned = family_beside(project, holder)
+    record_gitlink(project, f"members/{FAMILY_MEMBER}", pinned)
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 1, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["kind"] == "project"
+    assert payload["verdict"] == "INVALID (manifest-kinds)", payload["verdict"]
+    row = beside_row(result)
+    assert row["reason"] == (FAMILY_BESIDE_OPENING
+                             + ", though each is recorded at its pin today")
+    assert row["detail"]["family_beside"] == {
+        "manifest": "family.yaml",
+        "members": [{"project": FAMILY_MEMBER,
+                     "path": f"members/{FAMILY_MEMBER}", "pin": pinned,
+                     "gitlink": pinned, "state": "at-pin"}],
+        "undeclared_gitlinks": []}
+    text = doctor(standard, project)
+    assert text.returncode == 1, text.stdout + text.stderr
+    assert verdict_line(text).startswith(
+        "INVALID (manifest-kinds)   (exit 1)"), text.stdout
+
+
+def test_a_family_yaml_whose_member_has_no_gitlink_names_it(standard,
+                                                            project, holder):
+    """THE DEFECT #211 WAS FILED FOR: a member pinned and not mounted.
+
+    `validate-family.py` refuses this tree `member-gitlink-absent`, exit 2;
+    the doctor said COMPLIANT, exit 0, and listed `family.yaml` among the
+    manifests whose kind has a registered validator. It names the member and
+    the mode now, and the verdict is INVALID.
+    """
+    pinned = family_beside(project, holder)
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert json.loads(result.stdout)["verdict"] == "INVALID (manifest-kinds)"
+    row = beside_row(result)
+    assert row["reason"] == (
+        f"{FAMILY_BESIDE_OPENING}: members/{FAMILY_MEMBER} has no gitlink "
+        "(mode 160000)"), row["reason"]
+    [entry] = row["detail"]["family_beside"]["members"]
+    assert entry == {"project": FAMILY_MEMBER,
+                     "path": f"members/{FAMILY_MEMBER}", "pin": pinned,
+                     "gitlink": None, "state": "no-gitlink"}, entry
+
+
+def test_a_family_yaml_whose_member_is_off_its_pin_names_both_commits(
+        standard, project, holder):
+    """A gitlink at a commit the row does not pin: `validate-family.py`'s
+    `member-gitlink-mismatch`, said here with both commits."""
+    pinned = family_beside(project, holder)
+    elsewhere = git("rev-parse", "HEAD", cwd=project).stdout.strip().lower()
+    assert elsewhere != pinned, "fixture: a commit that is not the pin"
+    record_gitlink(project, f"members/{FAMILY_MEMBER}", elsewhere)
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert json.loads(result.stdout)["verdict"] == "INVALID (manifest-kinds)"
+    row = beside_row(result)
+    assert row["reason"] == (
+        f"{FAMILY_BESIDE_OPENING}: members/{FAMILY_MEMBER} records gitlink "
+        f"{elsewhere[:12]} where family.yaml pins {pinned[:12]}"), \
+        row["reason"]
+    [entry] = row["detail"]["family_beside"]["members"]
+    assert (entry["gitlink"], entry["pin"], entry["state"]) == (
+        elsewhere, pinned, "off-pin"), entry
+
+
+def test_a_family_yaml_whose_pin_is_not_40_hex_says_so(standard, project,
+                                                       holder):
+    """A `pin.commit` that is a branch name is not a commit to compare a
+    gitlink against, so the row says the pin is missing rather than calling
+    the member off it -- the reading `member_state` gives a holder's row."""
+    pinned = family_beside(project, holder)
+    manifest = project / "family.yaml"
+    manifest.write_text(manifest.read_text(encoding="utf-8").replace(
+        pinned, "main"), encoding="utf-8")
+    commit_all(project, "A pin that is a branch name")
+    # AFTER the commit: `git add -A` would stage a gitlink with no working
+    # tree under it as a deletion.
+    record_gitlink(project, f"members/{FAMILY_MEMBER}", pinned)
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert json.loads(result.stdout)["verdict"] == "INVALID (manifest-kinds)"
+    row = beside_row(result)
+    assert row["reason"] == (
+        f"{FAMILY_BESIDE_OPENING}: {FAMILY_MEMBER}'s row carries no 40-hex "
+        "`pin.commit` to compare against"), row["reason"]
+    [entry] = row["detail"]["family_beside"]["members"]
+    assert (entry["gitlink"], entry["pin"], entry["state"]) == (
+        pinned, None, "no-pin"), entry
+
+
+def test_a_gitlink_under_members_that_no_row_names_is_named(standard,
+                                                            project, holder):
+    """The state `family.py add` refuses to mount over (`member-path-taken`):
+    a submodule under the members directory that the manifest says nothing
+    about. The member the row DOES name is at its pin, so the stray is the
+    whole of what the sentence lists."""
+    pinned = family_beside(project, holder)
+    record_gitlink(project, f"members/{FAMILY_MEMBER}", pinned)
+    record_gitlink(project, "members/Stray", pinned)
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert json.loads(result.stdout)["verdict"] == "INVALID (manifest-kinds)"
+    row = beside_row(result)
+    assert row["reason"] == (
+        f"{FAMILY_BESIDE_OPENING}: members/Stray is a gitlink no family.yaml "
+        "row names"), row["reason"]
+    beside = row["detail"]["family_beside"]
+    assert beside["undeclared_gitlinks"] == ["members/Stray"], beside
+    assert [entry["state"] for entry in beside["members"]] == ["at-pin"]
+
+
+def test_the_text_report_and_json_carry_the_same_family_beside_row(
+        standard, project, holder):
+    """`--json` is the same report as one object: the row's reason and its
+    next command are printed verbatim in the table, under the same label,
+    and the verdict line is the JSON's verdict."""
+    family_beside(project, holder)
+    result = doctor(standard, project, "--json")
+    payload = json.loads(result.stdout)
+    row = beside_row(result)
+    text = doctor(standard, project)
+    assert text.returncode == payload["exit"] == 1
+    lines = text.stdout.splitlines()
+    [at] = [index for index, line in enumerate(lines)
+            if "manifest kinds" in line]
+    assert lines[at].split()[:3] == ["FINDING", "manifest", "kinds"], \
+        lines[at]
+    assert lines[at].endswith("  " + row["reason"]), lines[at]
+    assert lines[at + 1].split()[0] == "NEXT", lines[at + 1]
+    assert lines[at + 1].endswith("  " + row["next"]), lines[at + 1]
+    assert verdict_line(text) == f"{payload['verdict']}   (exit 1)"
+
+
+def test_a_family_yaml_beside_an_unregistered_kind_says_both(
+        standard, project, holder):
+    """Two reasons in one row, each with its own exit, in the order the row
+    has always listed them: the unregistered kind first."""
+    family_beside(project, holder)
+    (project / "contracts" / "inventory.yaml").write_text(
+        "schema_version: 1\nkind: service-inventory\nservices: []\n",
+        encoding="utf-8")
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 1, result.stdout + result.stderr
+    row = rows_of(result)["manifest-kinds"]
+    assert row["status"] == "FINDING", row
+    assert row["reason"] == (
+        "no validator registered for kind contracts/inventory.yaml "
+        f"(service-inventory); {FAMILY_BESIDE_OPENING}: "
+        f"members/{FAMILY_MEMBER} has no gitlink (mode 160000)"), \
+        row["reason"]
+    assert row["next"] == f"{UNREGISTERED_NEXT}; {FAMILY_BESIDE_NEXT}", \
+        row["next"]
+    assert row["detail"]["unregistered"] == [
+        "contracts/inventory.yaml (service-inventory)"]
+
+
+def test_a_root_with_no_family_yaml_beside_gets_the_row_it_always_got(
+        standard, project, holder):
+    """NOTHING CHANGES WITHOUT A family.yaml BESIDE project.yaml, byte for
+    byte: an assembly root, the same root with an unregistered kind, and a
+    family holder -- whose own `family.yaml` is the manifest its `family`
+    row validates, and stays `validated` here. The row's detail carries
+    exactly the keys it carried, and the sentences are the ones it printed.
+    """
+    row = rows_of(doctor(standard, project, "--json"))["manifest-kinds"]
+    assert row["status"] == "ok", row
+    assert set(row["detail"]) == MANIFEST_KINDS_DETAIL_KEYS, row["detail"]
+    assert row["reason"] == (
+        f"{len(row['detail']['validated'])} manifest(s), every declared kind "
+        "has a registered validator"), row["reason"]
+    assert row["next"] is None
+    assert "family" not in json.dumps(row["detail"]["validated"]), row
+
+    (project / "contracts" / "inventory.yaml").write_text(
+        "schema_version: 1\nkind: service-inventory\nservices: []\n",
+        encoding="utf-8")
+    row = rows_of(doctor(standard, project, "--json"))["manifest-kinds"]
+    assert row["status"] == "FINDING", row
+    assert set(row["detail"]) == MANIFEST_KINDS_DETAIL_KEYS, row["detail"]
+    assert row["reason"] == ("no validator registered for kind "
+                             "contracts/inventory.yaml (service-inventory)")
+    assert row["next"] == UNREGISTERED_NEXT, row["next"]
+
+    result = doctor(standard, holder["root"], "--json")
+    assert result.returncode == 0, result.stdout + result.stderr
+    row = rows_of(result)["manifest-kinds"]
+    assert row["status"] == "ok", row
+    assert set(row["detail"]) == MANIFEST_KINDS_DETAIL_KEYS, row["detail"]
+    assert "family.yaml (family-manifest)" in row["detail"]["validated"], row
+
+
+def test_gitlinks_under_lists_one_directory_and_nothing_above_it(project):
+    """`gitlinks_under` is asked for the members directory a hand-edited
+    manifest names, so an empty one, an absolute one and one that climbs
+    list nothing -- never every gitlink in the root, the two legs included."""
+    module = doctor_module(REPO)
+    commit = git("rev-parse", "HEAD", cwd=project).stdout.strip()
+    record_gitlink(project, "members/One", commit)
+    record_gitlink(project, "members/sub/Two", commit)
+    assert module.gitlinks_under(project, "members") == [
+        "members/One", "members/sub/Two"]
+    assert module.gitlinks_under(project, "members/") == [
+        "members/One", "members/sub/Two"]
+    assert module.gitlinks_under(project, "members/sub") == [
+        "members/sub/Two"]
+    for directory in ("", ".", "/", "/members", "\\members", "..",
+                      "members/..", "../members", "C:/members",
+                      str(project / "members")):
+        assert module.gitlinks_under(project, directory) == [], directory
+    # A leg is a gitlink AT its directory, not under it.
+    assert module.gitlinks_under(project, "spec") == []
+
+
 # --- not a shape root -------------------------------------------------------
 
 def test_a_git_repository_with_no_manifest_says_adopt(standard, tmp_path):
