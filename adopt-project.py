@@ -1098,7 +1098,7 @@ def _kept_collisions(what: str, value: str, kept: list) -> list[str]:
     for entry, found in hits.items():
         path, mode = found[0]
         relation, aside = _overlap(value, path)
-        named = _first_and_more([p for p, _ in found])
+        named = _first_and_more([p for p, _ in found], _spelled)
         them = "them" if len(found) > 1 else "it"
         under = ("" if entry == path else
                  f" under the entry {_spelled(entry)}")
