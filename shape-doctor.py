@@ -969,6 +969,21 @@ def validator_row(ctx: Context, check_id: str, label: str, own: str,
 MANIFEST_ROW = {PROJECT: "manifest", FAMILY: "family"}
 
 
+def refusal_line(refusal: Refusal) -> str:
+    """`REFUSED <code>: <detail>`: a refusal's own `str()`, less its remedy.
+
+    `Refusal.__str__` is the one place that line is spelled, and the one
+    the project's own validators print it from, so the row quotes it from
+    there rather than spelling it a second time (#205, review N2). It is
+    `str(refusal)` with the `\\n<remediation>` trailer taken OFF THE END, not
+    the text up to its first newline: `detail` opens with the path the
+    loader was given, and a root whose directory name holds a newline would
+    be cut after its first line and quoted short -- a different report from
+    the one this row has always printed, with no error to say so.
+    """
+    return str(refusal).removesuffix("\n" + refusal.remediation)
+
+
 def unloaded_manifest_row(ctx: Context, check_id: str, label: str, own: str,
                           template: str) -> Row:
     """The `manifest` (or `family`) row for a manifest that is THERE and does
@@ -999,7 +1014,7 @@ def unloaded_manifest_row(ctx: Context, check_id: str, label: str, own: str,
     refusal = ctx.manifest_refusal
     name = ctx.manifest_path.name
     used, _which = validator_for(ctx, own, template)
-    reason = f"{name} does not load: REFUSED {refusal.code}: {refusal.detail}"
+    reason = f"{name} does not load: {refusal_line(refusal)}"
     detail = {"validator": used.as_posix(),
               "own_copy": (ctx.root / own).is_file(), "manifest": name,
               "refusal": {"code": refusal.code, "detail": refusal.detail}}

@@ -670,10 +670,12 @@ WAITING_ROWS = ("naming", "pins", "legs", "leg-shape-files", "placement")
 def conflicted(body: bytes, nth: int = 0) -> bytes:
     """`body` with its `nth` `commit:` line inside a merge conflict.
 
-    What a hand merge leaves when two branches each moved one pin -- two
-    shape updates in an assembly root, two bumps of one member in a holder --
-    and the case #205 was found by. Bytes in and out, with the file's own
-    `\\n`, so the edit is the same on every platform.
+    What a hand edit, or a merge that touches that one manifest alone,
+    leaves in it: a conflict marker its reader will not take, and the case
+    #205 was found by. It builds ONE conflicted file and nothing else in
+    the tree; what a root reads where other files conflict as well -- the
+    shape pin, say -- is not built here and not asserted. Bytes in and out,
+    with the file's own `\\n`, so the edit is the same on every platform.
     """
     lines = body.split(b"\n")
     hits = [index for index, line in enumerate(lines)
@@ -736,6 +738,31 @@ def break_manifest(path: Path, edit, code: str) -> repo_shape.Refusal:
 def loader_line(refusal: repo_shape.Refusal) -> str:
     """The line the loader's refusal prints first, and the gate prints too."""
     return f"REFUSED {refusal.code}: {refusal.detail}"
+
+
+def assert_next_runs_the_roots_own(row: dict, root: Path, script: str) -> None:
+    """The row's NEXT runs `<root>/scripts/<script>` itself, on `<root>`.
+
+    THE PROJECT'S OWN COPY, AS A PATH, because a substring cannot say it:
+    `"scripts/validate-manifest.py --root" in next` is just as true of the
+    standard's template copy, so a NEXT that named the template passed it
+    (review N1 on #205). The words are compared as paths, both sides
+    RESOLVED, so a temporary directory reached through a symlink (macOS) or
+    spelled with `\\` (Windows) is one path and not two. `detail.validator`
+    is the same file by another route and is held to the same one.
+
+    The file must be there, or the claim is empty: the root of these tests
+    carries its own copy, a different file from the standard's.
+    """
+    own = root / "scripts" / script
+    assert own.is_file(), own
+    command = row["next"].split("#")[0].split()
+    assert command[2] == "--root", command
+    assert Path(command[1]).resolve() == own.resolve(), (
+        f"the NEXT names {command[1]}, not the root's own {own}")
+    assert Path(command[3]).resolve() == root.resolve(), command
+    assert Path(row["detail"]["validator"]).resolve() == own.resolve(), \
+        row["detail"]
 
 
 #: The `machine` row's own line in the text report -- two spaces, its
@@ -856,8 +883,7 @@ def test_the_json_report_of_an_unloaded_manifest_is_the_same_report(
                                              "detail": refusal.detail}
     assert manifest["detail"]["manifest"] == "project.yaml"
     assert manifest["detail"]["own_copy"] is True
-    assert "scripts/validate-manifest.py --root" in \
-        manifest["next"].replace("\\", "/"), manifest["next"]
+    assert_next_runs_the_roots_own(manifest, project, "validate-manifest.py")
     assert "the file to fix is" in manifest["next"], manifest["next"]
     assert "project.yaml" in manifest["next"].split("#", 1)[1]
 
@@ -903,9 +929,8 @@ def test_the_manifest_rows_next_command_refuses_the_same_file_the_same_way(
     path = project.resolve() / "project.yaml"
     refusal = break_manifest(path, edit, code)
     row = rows_of(doctor(standard, project, "--json"))["manifest"]
+    assert_next_runs_the_roots_own(row, project, "validate-manifest.py")
     command = row["next"].split("#")[0].split()
-    assert Path(command[1]).is_file(), command
-    assert Path(command[1]).name == "validate-manifest.py", command
     proc = subprocess.run(command, capture_output=True, text=True,
                           check=False, env={**os.environ,
                                             "PYTHONDONTWRITEBYTECODE": "1"})
@@ -913,6 +938,40 @@ def test_the_manifest_rows_next_command_refuses_the_same_file_the_same_way(
     assert proc.returncode == 2, said
     assert f"REFUSED {refusal.code}: " in said, said
     assert refusal.detail[len(str(path)):] in said, (refusal.detail, said)
+
+
+def test_the_quoted_refusal_line_is_the_refusals_own_less_its_remediation():
+    """One spelling of `REFUSED <code>: <detail>`, and it is the loader's.
+
+    The `manifest` and `family` rows quote it through `refusal_line`, which
+    takes it from `Refusal.__str__` instead of spelling it again (review N2
+    on #205). It is `str(refusal)` less the remediation trailer, which is
+    not the same as its first line: `detail` opens with the path the loader
+    was given, and a path may hold a newline, where "up to the first
+    newline" quotes it short. So the line is held to every shape a refusal
+    takes -- the loader's default remedy, a one-line remedy of its own (the
+    non-UTF-8 refusal has one), a remedy of several lines -- and to a path
+    with a newline in it, here as a value and not as a file, because a
+    Windows filesystem refuses the name. The expected line is spelled out
+    in the test, apart from the code under test, so that moving it is a
+    red test.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "shape_doctor_refusal_line", REPO / DOCTOR)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    remedies = (repo_shape.REMEDIATION, "Remediation: re-save it as UTF-8.",
+                "Remediation: first line.\nsecond line.\nthird line.")
+    for path in ("/r/Atlas/project.yaml", "/r/At\nlas/project.yaml"):
+        for remedy in remedies:
+            refusal = repo_shape.Refusal(
+                "yaml-unparsable", f"{path}: line 77: merge keys are not "
+                "supported", remedy)
+            line = module.refusal_line(refusal)
+            assert line == ("REFUSED yaml-unparsable: " + path
+                            + ": line 77: merge keys are not supported"), line
+            assert str(refusal) == line + "\n" + remedy, str(refusal)
+            assert remedy not in line, line
 
 
 @pytest.mark.parametrize("case", sorted(FAMILY_BREAKAGES))
@@ -948,7 +1007,7 @@ def test_a_family_yaml_that_does_not_load_is_invalid_and_not_absent(
     assert family["status"] == "FINDING", family
     assert family["reason"] == \
         f"family.yaml does not load: {loader_line(refusal)}", family
-    assert "validate-family.py --root" in family["next"].replace("\\", "/")
+    assert_next_runs_the_roots_own(family, root, "validate-family.py")
     assert "family.yaml" in family["next"].split("#", 1)[1]
     members = rows["members"]
     assert members["status"] == "n/a", members
