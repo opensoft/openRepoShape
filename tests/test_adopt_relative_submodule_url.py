@@ -230,15 +230,22 @@ def passes(result) -> None:
     (HTTPS_ORIGIN, GITHUB_DEPENDENCY),
     (SCP_ORIGIN, "git@github.com:testorg/dependency"),
     (SCP_OTHER_CASE, "git@github.com:TestOrg/dependency"),
-], ids=["https", "scp", "scp-other-case"])
+    # A port, and GitHub's SSH-over-the-HTTPS-port host: GitHub all the same.
+    ("ssh://git@github.com:22/testorg/Thing.git",
+     "ssh://git@github.com:22/testorg/dependency"),
+    ("ssh://git@ssh.github.com:443/testorg/Thing.git",
+     "ssh://git@ssh.github.com:443/testorg/dependency"),
+], ids=["https", "scp", "scp-other-case", "ssh-port", "ssh-github-443"])
 def test_check_keeps_a_relative_url_its_github_leg_resolves_alike(
         adopter, tmp_path, origin, resolved):
     """(a) Legs in the source's own organisation sit beside its dependency
     on GitHub, so `../dependency` names one repository from both, however
-    the source's `origin` spells it: no finding, and the NOTE says which
-    remotes `check` asked. In another organisation it names another
-    repository, and that is found, with the submodule, its url, the leg's
-    remote and both resolutions, and the remediation once after it."""
+    the source's `origin` spells it, a port and `ssh.github.com` included:
+    no finding, and the NOTE says which remotes `check` asked. In another
+    organisation it names another repository, and that is found, with the
+    submodule, its url, the leg's remote and both resolutions, and the
+    remediation once after it. A url with a scheme is printed through
+    `redacted`, which hides its user too (`ssh://***@github.com:22/...`)."""
     source = source_with(tmp_path, SIBLING, origin)
     same = check(planned(source, tmp_path))
     passes(same)
@@ -248,8 +255,8 @@ def test_check_keeps_a_relative_url_its_github_leg_resolves_alike(
     result = check(planned(source, tmp_path, OTHER_ORG))
     assert result.returncode == 1, result.stderr + result.stdout
     assert found(result.stderr) == [(RELATIVE, moved(
-        adopter, SIBLING, origin, ITS_ORIGIN, f"to `{resolved}`",
-        CODE_LEG.format(org=OTHER_ORG),
+        adopter, SIBLING, adopter.redacted(origin), ITS_ORIGIN,
+        f"to `{adopter.redacted(resolved)}`", CODE_LEG.format(org=OTHER_ORG),
         "to `https://github.com/otherorg/dependency`"))]
     assert notes(result.stdout) == []
     # Said once, after the findings, and it is not #166's remediation.
