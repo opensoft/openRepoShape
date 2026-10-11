@@ -60,6 +60,10 @@ INSIDE = "./dependency"
 TWO_UP = "../../dependency"
 #: The second submodule's url, beside whatever holds `.gitmodules`.
 SECOND_SIBLING = "../second"
+#: SIBLING with Windows' separator. git takes `..\` for a relative url on
+#: every platform and strips it only where `\` separates directories, so on
+#: Windows this is #190's own case.
+BACKSLASH = "..\\dependency"
 #: The source's own name for its remote, beside the repositories it makes.
 THING_REMOTE = "Thing.git"
 #: Where each test's `execute` works, and what a verified one says.
@@ -195,18 +199,19 @@ def alike(org: str, *resolved: tuple[str, str, str]) -> str:
             "it creates any leg, a url that names another repository.")
 
 
-#: `from the code leg, at `<remote>`, to `<url>`; ` in a finding.
+#: `from the <leg> leg, at `<remote>`, to `<url>`; ` in a finding.
 LEG_RESOLUTION_RE = re.compile(
-    r"from the code leg, at `(?:[^`\\]|\\.)*`, to `((?:[^`\\]|\\.)*)`; ")
+    r"from the (spec|code) leg, at `(?:[^`\\]|\\.)*`, "
+    r"to `((?:[^`\\]|\\.)*)`; ")
 
 
-def resolved_from_the_leg(detail: str) -> Path:
-    """The url git resolved from the code leg, as the path it names: the
+def resolved_from_the_leg(detail: str, leg: str = "code") -> Path:
+    """The url git resolved from `leg`, as the path it names: the
     spelling's backslash escapes undone, so the comparison is a Path's and
     holds whichever separator git joined it with."""
     spelled = LEG_RESOLUTION_RE.search(detail)
-    assert spelled, detail
-    return Path(re.sub(r"\\(.)", r"\1", spelled[1]))
+    assert spelled and spelled[1] == leg, detail
+    return Path(re.sub(r"\\(.)", r"\1", spelled[2]))
 
 
 def passes(result) -> None:
@@ -538,23 +543,29 @@ def clone_the_split(source: Path, clone: Path):
 
 
 @needs_filter_repo
-@pytest.mark.parametrize("url, there", [
+@pytest.mark.parametrize("url, leg, there", [
     # #190 itself: the re-verifier's `relative-url` case.
-    (SIBLING, "remotes/dependency"),
-    (INSIDE, "remotes/Northwind-code.git/dependency"),
-    (TWO_UP, "dependency"),
-], ids=["dotdot", "dot-slash", "dotdot-dotdot"])
+    (SIBLING, "code", "remotes/dependency"),
+    (INSIDE, "code", "remotes/Northwind-code.git/dependency"),
+    (TWO_UP, "code", "dependency"),
+    # The SPEC leg's own remote, which `./` names from inside.
+    (INSIDE, "spec", "remotes/Northwind-spec.git/dependency"),
+    # Where `\` separates nothing, git appends `..\dependency` whole.
+    (BACKSLASH, "code",
+     "remotes/dependency" if sys.platform == "win32"
+     else "remotes/Northwind-code.git/..\\dependency"),
+], ids=["dotdot", "dot-slash", "dotdot-dotdot", "spec-leg", "backslash"])
 def test_execute_refuses_a_relative_url_its_leg_resolves_elsewhere(
-        tmp_path, url, there):
+        tmp_path, url, leg, there):
     """A source with no remote of its own, as the re-verifier built it:
     `check` finds it from GitHub's remotes, and `execute --local-remote-dir`
     from the bare ones it would make. On main both passed, `execute` said
     `adoption verified`, and the assembly's recursive clone exited 1. Now
     `execute` exits 2 before the remotes directory exists, and the source
-    is untouched."""
+    is untouched -- from either leg, and for `..\\` as for `../`."""
     source = source_with(tmp_path, url)
     head = git("rev-parse", "HEAD", cwd=source).stdout
-    plan = planned(source, tmp_path)
+    plan = planned(source, tmp_path, answers={GITMODULES: leg, UPSTREAM: leg})
     assert [code for code, _ in found(check(plan).stderr)] == [RELATIVE]
     remotes, work = tmp_path / REMOTES, tmp_path / WORK
     result = execute(plan, work, remotes)
@@ -562,7 +573,7 @@ def test_execute_refuses_a_relative_url_its_leg_resolves_elsewhere(
     assert f"REFUSED {RELATIVE}: 1 finding(s) in " in result.stderr
     [detail] = [line.split(": ", 1)[1] for line in result.stderr.splitlines()
                 if line.startswith(f"  FINDING {RELATIVE}: ")]
-    assert resolved_from_the_leg(detail) == tmp_path.resolve() / there
+    assert resolved_from_the_leg(detail, leg) == tmp_path.resolve() / there
     assert "creating the leg repositories" not in result.stdout
     assert VERIFIED not in result.stdout
     assert not remotes.exists(), "a refused plan made the remotes directory"
