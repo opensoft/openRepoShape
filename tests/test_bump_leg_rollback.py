@@ -16,16 +16,26 @@ index records, `git diff --cached --quiet`, the leg's HEAD and the branch the
 leg stood on. A rollback that put the pin back and forgot the index is the
 bug, so a test that read only the pin could not fail for it.
 
-The failures that need an operating system (a read-only file, a stdout that
-cannot encode what a validator printed) run `bump-leg.py` as a subprocess.
-The ones that need a failure at an exact step (a write that dies half way, an
-interrupt, a rollback step that itself fails) call `main` in-process with ONE
-module attribute replaced, and everything else, git included, real.
+The failure that needs the operating system (a read-only file) runs
+`bump-leg.py` as a subprocess. The ones that need a failure at an exact step
+(a write that dies half way, a validator's output that cannot be decoded or
+echoed, an interrupt, a rollback step that itself fails) call `main`
+in-process with ONE module attribute replaced, and everything else, git
+included, real.
+
+THE ECHO IS A STREAM THAT RAISES, NOT A CODEC SETTING. A real `strict` stdout
+(`PYTHONIOENCODING=cp1252`) is what #253 was found with, but
+`escape_what_stdout_cannot_encode` (#214) reconfigures exactly that stream to
+`backslashreplace` at the top of `main`, so a test built on it would stop
+meaning anything the day #214 lands. A stream that raises
+`UnicodeEncodeError` from `write` stays a failure in the echo whichever of
+those fixes are in.
 """
 
 from __future__ import annotations
 
 import errno
+import io
 import os
 import stat
 import subprocess
@@ -38,23 +48,13 @@ from conftest import PROJECT, git
 # A fixture is used by being named in this module's namespace, which is what
 # the import of `bump_leg_module` is for.
 from test_bump_leg import (  # noqa: F401
-    BUMP, branched, bump, bump_leg_module, reference_both_legs,
+    branched, bump, bump_leg_module, reference_both_legs,
 )
 
 #: Where the advanced spec commit is pushed. Not `test_bump_leg.py`'s branch:
 #: both modules share the session's bare remotes, and a second, different
 #: commit pushed to the same branch name would be refused as non-fast-forward.
 ADVANCE_BRANCH = "bump-leg-rollback-advance"
-
-#: Both validators the bump runs are the project's own copies. This one prints
-#: a character no Windows ANSI code page or Latin-1 terminal can show, as
-#: UTF-8 bytes straight to the pipe so the child's own stdout encoding has
-#: no say in it.
-CHATTY_VALIDATOR = '''\
-import sys
-
-sys.stdout.buffer.write("validator says: \\u0394 changed\\n".encode("utf-8"))
-'''
 
 
 @pytest.fixture(scope="module")
@@ -119,6 +119,15 @@ def raiser(exc: BaseException):
     return raise_it
 
 
+class CannotEncode(io.StringIO):
+    """A stdout that holds what cp1252 holds and raises on anything else, as a
+    redirected Windows stdout does: `…` is fine, U+FFFD is not."""
+
+    def write(self, text):
+        text.encode("cp1252")
+        return super().write(text)
+
+
 # --- the operating system's failures, run for real --------------------------
 
 def test_a_workflow_file_the_operator_cannot_write_is_refused_and_put_back(
@@ -148,35 +157,6 @@ def test_a_workflow_file_the_operator_cannot_write_is_refused_and_put_back(
     assert_nothing_changed(project, before)
 
 
-def test_a_validator_line_the_stdout_cannot_encode_is_refused_and_put_back(
-        project, scaffolded, advanced):
-    """The echo is the statement after the validator ran, with the index
-    already staged: the crash #230's `errors="replace"` moves the decode error
-    to. UTF-8 in, a Latin-1 stdout out, on every platform."""
-    (project / "scripts" / "validate-pins.py").write_text(
-        CHATTY_VALIDATOR, encoding="utf-8")
-    git("add", "--", "scripts/validate-pins.py", cwd=project)
-    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm",
-        "A validator with something to say", cwd=project)
-    before = prepared(project)
-
-    # READ AS BYTES: the tool's own stdout is cp1252 here, so the suite's
-    # UTF-8 `text=True` reading would fail on the `…` it prints before the
-    # validators run, for a reason that has nothing to do with the tool.
-    result = subprocess.run(
-        [sys.executable, str(BUMP), "--root", str(project), "--leg", "spec",
-         "--to", advanced, "--local-remote-dir", str(scaffolded["remotes"])],
-        capture_output=True, check=False, stdin=subprocess.DEVNULL,
-        env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "cp1252"})
-    stderr = result.stderr.decode("cp1252", errors="replace")
-
-    assert result.returncode == 2, stderr
-    assert "REFUSED bump-leg-rewrite-failed" in stderr
-    assert "UnicodeEncodeError" in stderr
-    assert "Traceback" not in stderr
-    assert_nothing_changed(project, before)
-
-
 # --- a failure at an exact step, called in-process --------------------------
 
 def test_a_write_that_dies_half_way_leaves_the_file_as_it_was(
@@ -200,6 +180,36 @@ def test_a_write_that_dies_half_way_leaves_the_file_as_it_was(
     assert code == 2
     assert "REFUSED bump-leg-rewrite-failed" in err
     assert os.strerror(errno.ENOSPC) in err
+    assert_nothing_changed(project, before)
+
+
+@pytest.mark.parametrize("what", ["decoded", "echoed"])
+def test_a_validator_output_that_cannot_be_decoded_or_echoed_is_refused_and_put_back(
+        what, project, scaffolded, advanced, bump_leg_module, monkeypatch,
+        capsys):
+    """The statement after the leg moved, the files were written and the
+    index was staged: reading the validator's output (the decode error #230
+    turns into a replacement character) and writing it to a stdout that
+    cannot hold that character (the crash it moves to)."""
+    before = prepared(project)
+    if what == "decoded":
+        monkeypatch.setattr(bump_leg_module, "run_validator", raiser(
+            UnicodeDecodeError("utf-8", b"\x85", 0, 1, "invalid start byte")))
+        expected = "UnicodeDecodeError"
+    else:
+        monkeypatch.setattr(
+            bump_leg_module, "run_validator",
+            lambda root, script: (0, "validator says: \ufffd\n"))
+        monkeypatch.setattr(sys, "stdout", CannotEncode())
+        expected = "UnicodeEncodeError"
+
+    code = run_main(bump_leg_module, project, scaffolded, advanced)
+
+    err = capsys.readouterr().err
+    assert code == 2
+    assert "REFUSED bump-leg-rewrite-failed" in err
+    assert expected in err
+    assert "rolled back" in err
     assert_nothing_changed(project, before)
 
 
