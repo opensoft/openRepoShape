@@ -1138,18 +1138,22 @@ def first_and_more(paths: list[str]) -> str:
 
 
 def shape_path_collisions(what: str, value: str,
-                          collision_dir: str) -> list[str]:
+                          collision_dir: str | None = None) -> list[str]:
     """Where the mount path `value` overlaps a path of `assembly_root_paths`:
     one sentence, naming the first path it overlaps and counting the rest,
     or none. `what` names the value as its caller does (`--spec-path`,
     `legs.spec_path`).
 
-    `collision_dir` IS THE ONE THE CALLER HANDS `materialize_assembly_root`.
+    `collision_dir` IS THE ONE THE CALLER HANDS `materialize_assembly_root`,
+    so the two callers differ here by the argument they differ by there.
     `adopt-project.py execute` passes `shape/`: it mounts the legs FIRST and
     materializes over them, so a shape file at a mount goes into the mounted
     leg or beside it under that directory, and the sentence names `execute`
     because it is the caller that passes one. Whether `value` overlaps
     `collision_dir` itself is the caller's question, not this one's.
+    `scaffold-project.py` passes none (#197): it materializes into an empty
+    directory and mounts the legs AFTER, so `git submodule add` meets a path
+    the shape already wrote.
     """
     out: list[str] = []
     files = [path for path in assembly_root_paths()
@@ -1157,11 +1161,19 @@ def shape_path_collisions(what: str, value: str,
     if files:
         relation, aside = path_overlap(value, files[0])
         them = "them" if len(files) > 1 else "it"
+        if collision_dir is None:
+            consequence = (
+                " before the legs are mounted, and Git cannot mount a leg at "
+                "a path the root already holds, or beyond a file it holds on "
+                "the way there")
+        else:
+            consequence = (
+                f", and `execute` would write {them} into the mounted leg or "
+                f"beside it under `{collision_dir}/`, leaving the root "
+                f"without {them}")
         out.append(
             f"{what} {value!r} {relation} {first_and_more(files)}{aside}. "
-            f"The shape writes {them} into the assembly root, and `execute` "
-            f"would write {them} into the mounted leg or beside it under "
-            f"`{collision_dir}/`, leaving the root without {them}: "
+            f"The shape writes {them} into the assembly root{consequence}: "
             f"{MOVE_THE_LEG}.")
     return out
 
