@@ -11,7 +11,8 @@ dependency, and one dependency is one more than "clone it and run it" allows.
 
 WHAT THIS MODULE OWNS
   - `parse_yaml` / `load_yaml` — a deliberately SMALL, fail-closed reader for
-    the YAML subset this standard's own files are written in.
+    the YAML subset this standard's own files are written in, and
+    `double_quoted`, the writer's half of its double-quoted escapes (#199).
   - `tree_digest` — the ONE definition of what "the digest of a commit" means
     here (see `TREE_DIGEST_DEFINITION` below; the choice is argued in README).
   - `tree_digest_from_gh` — the SAME definition, read from the forge's
@@ -168,13 +169,21 @@ class YamlError(Exception):
 # than one document. Each of those has a meaning this reader would have to
 # invent, and an invented meaning in a validator is a wrong answer with a
 # confident tone.
+#
+# A FLOW MAPPING READS AS ITS BLOCK TWIN (#252): an entry opening `? ` is an
+# explicit key and is refused as a block line opening `? ` is, and an empty
+# value (`{k: }`, `{k:}`) is null as a block `k:` is.
 
 _DASH_RE = re.compile(r"^-(\s+|$)")
 
 #: Marks a `_Rec` built from a block scalar, carrying its key and body
-#: instead of raw text. A NUL byte never appears in this reader's input (YAML
-#: is text), so it cannot collide with a real key or value; spelled once
-#: because `python:S1192` counts three repeats of the same literal.
+#: instead of raw text, NUL-separated; spelled once because `python:S1192`
+#: counts three repeats of the same literal. A block scalar's KEY HOLDING A
+#: NUL COLLIDES WITH IT and is misread (`"a\x00b": |` reads as the key `a`
+#: with `b` and a NUL ahead of the body): a raw NUL, which YAML forbids and
+#: this reader does not refuse, and since #199 the escape `\x00` in a
+#: double-quoted key. No writer in this repository emits such a key: the
+#: plan writer writes no block scalar, and every key it writes is a literal.
 _BLOCK_SENTINEL = "\x00BLOCK\x00"
 
 
@@ -242,14 +251,88 @@ def _unquote_key(key: str) -> str:
     return key
 
 
-#: The escape sequences a double-quoted scalar may carry, and the only ones
-#: this reader resolves. Anything else keeps its backslash, because inventing
-#: a meaning for `\q` is how a reader starts disagreeing with the writer.
-DOUBLE_QUOTED_ESCAPES = {"n": "\n", "t": "\t", '"': '"', "\\": "\\"}
+#: THE ESCAPES OF A DOUBLE-QUOTED SCALAR: the one table the reader
+#: (`_unescape`) and the writer (`double_quoted`) both read, so that a plan
+#: `adopt-project.py` writes is a plan this reader takes back unchanged
+#: (#199). Each is YAML's own spelling with YAML's meaning, so the file is
+#: still YAML another reader takes the same way -- except a lone surrogate's
+#: `\udce9`, which libyaml (PyYAML's `CSafeLoader`) refuses as an invalid
+#: escape, while PyYAML's pure-Python `SafeLoader` reads it back as this
+#: reader does. Anything else after a backslash keeps its backslash, because
+#: inventing a meaning for `\q` is how a reader starts disagreeing with the
+#: writer.
+DOUBLE_QUOTED_ESCAPES = {"n": "\n", "r": "\r", "t": "\t", '"': '"', "\\": "\\"}
+
+#: YAML's CODE-POINT escapes, by how many hex digits each takes: `\xNN`,
+#: `\uNNNN` and `\UNNNNNNNN` each name the code point those digits spell, so
+#: `\x85` is U+0085 and never the byte 0x85. The writer takes the shortest
+#: that holds the character; the reader resolves exactly that many hex digits
+#: and keeps the backslash of one with fewer, or past U+10FFFF.
+CODE_POINT_ESCAPES = {"x": 2, "u": 4, "U": 8}
+
+#: The writer's half of `DOUBLE_QUOTED_ESCAPES`: each character to its escape.
+_ESCAPE_OF = {char: "\\" + letter
+              for letter, char in DOUBLE_QUOTED_ESCAPES.items()}
+_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
+
+
+def double_quoted(text: str) -> str:
+    """`text` as a double-quoted scalar `_scalar` reads back as `text`.
+
+    The subset's one writer quotes with this: `adopt-project.py`'s `y`, for
+    the adoption plan and for `shape-doctor.py`'s placement plan. It escapes
+    a backslash and a double quote, which would bend or end the quoting;
+    `\\n`, `\\r` and `\\t` by name; and every other character `str.isprintable`
+    refuses by its code point. PART OF THAT CLASS THE READER CANNOT TAKE
+    RAW. It reads a file line by line with `str.splitlines`, which ends a
+    line at `\\n` and `\\r` -- the macOS folder icon is a file named
+    `Icon\\r` -- and also at `\\x0b`, `\\x0c`, `\\x1c`-`\\x1e`, `\\x85`,
+    `\\u2028` and `\\u2029`: ten characters, not one of them printable. And
+    no UTF-8 file can hold a lone surrogate raw, which is how
+    `adopt-project.py` keeps a name's byte that is not UTF-8
+    (`surrogateescape`); `\\udce9` reads back as that same surrogate, so
+    `check` finds the entry's name in the tree. THE REST A PERSON CANNOT
+    SEE: the reader takes a raw TAB, NUL, ESC or DEL, or a zero-width or
+    bidirectional control, inside the quotes, but a person reading the plan
+    could not tell it was there, so the same rule spells it. Whatever the
+    string, the scalar is one line of printable text.
+    """
+    return '"' + "".join(map(_escaped, text)) + '"'
+
+
+def _escaped(char: str) -> str:
+    """One character of a `double_quoted` body."""
+    named = _ESCAPE_OF.get(char)
+    if named is not None:
+        return named
+    if char.isprintable():
+        return char
+    code = ord(char)
+    letter, digits = next((letter, digits)
+                          for letter, digits in CODE_POINT_ESCAPES.items()
+                          if code < 16 ** digits)
+    return f"\\{letter}{code:0{digits}x}"
+
+
+def _escape_at(body: str, index: int) -> tuple[str, int] | None:
+    """What the backslash at `body[index]` and what follows it stand for,
+    and how many characters that escape spans; None for one this reader does
+    not resolve, which then keeps its backslash."""
+    letter = body[index + 1:index + 2]
+    if letter in DOUBLE_QUOTED_ESCAPES:
+        return DOUBLE_QUOTED_ESCAPES[letter], 2
+    digits = CODE_POINT_ESCAPES.get(letter, 0)
+    spelled = body[index + 2:index + 2 + digits]
+    if not digits or len(spelled) != digits or not _HEX_DIGITS.issuperset(
+            spelled) or int(spelled, 16) > sys.maxunicode:
+        return None
+    return chr(int(spelled, 16)), 2 + digits
 
 
 def _unescape(body: str) -> str:
-    """A double-quoted scalar's body, ONE PASS, LEFT TO RIGHT.
+    """A double-quoted scalar's body, ONE PASS, LEFT TO RIGHT, resolving the
+    escapes `double_quoted` writes: `DOUBLE_QUOTED_ESCAPES` and
+    `CODE_POINT_ESCAPES`, and no others.
 
     NOT A CHAIN OF `str.replace` CALLS, and the reason is a Windows path. An
     adoption plan escapes each backslash it writes, so the source directory
@@ -257,21 +340,20 @@ def _unescape(body: str) -> str:
     before the two-character `\\\\` matches the SECOND backslash of that pair
     and turns a directory named `t` into a TAB — the path then does not
     exist, and `adopt-project.py check` refuses a plan it wrote itself.
-    Consuming the backslash and the character it escapes together is the only
-    spelling that cannot read one escape's output as another escape's input.
+    Consuming the backslash and the characters it escapes together is the
+    only spelling that cannot read one escape's output as another escape's
+    input -- `\\\\x41` is a backslash and `x41`, never a backslash and `A`.
     """
     out: list[str] = []
     index = 0
     while index < len(body):
-        char = body[index]
-        replacement = (DOUBLE_QUOTED_ESCAPES.get(body[index + 1])
-                       if char == "\\" and index + 1 < len(body) else None)
-        if replacement is None:
-            out.append(char)
+        escape = _escape_at(body, index) if body[index] == "\\" else None
+        if escape is None:
+            out.append(body[index])
             index += 1
         else:
-            out.append(replacement)
-            index += 2
+            out.append(escape[0])
+            index += escape[1]
     return "".join(out)
 
 
@@ -297,8 +379,14 @@ def _scalar(raw: str) -> Any:
 
 
 def _flow_value(text: str) -> Any:
-    """A flow entry is itself a flow collection when it opens with `[` or `{`."""
-    return _flow(text) if text[:1] in "[{" else _scalar(text)
+    """A flow entry is itself a flow collection when it OPENS with `[` or `{`.
+
+    AN EMPTY ENTRY OPENS NOTHING (#252): `{a: }` and `{a:}` give this `''`,
+    and `'' in "[{"` is True for any string, so the test used to run `_flow`
+    on it and refuse `{a: }` as `not a flow collection: ''`, a text nobody
+    wrote. `_scalar('')` is the null a block `a:` reads.
+    """
+    return _flow(text) if text.startswith(("[", "{")) else _scalar(text)
 
 
 def _flow(text: str) -> Any:
@@ -320,28 +408,44 @@ def _flow(text: str) -> Any:
 
 
 def _split_key_flow(text: str) -> tuple[str, str] | None:
-    """`_split_key` for a flow-mapping entry, where the value MAY open a flow."""
-    quote = None
-    for i, ch in enumerate(text):
-        if quote:
-            if ch == quote:
-                quote = None
-            continue
-        if ch in "\"'":
-            quote = ch
-        elif ch in "[{":
-            return None
-        elif ch == ":" and (i + 1 == len(text) or text[i + 1] in " \t"):
-            return _unquote_key(text[:i].strip()), text[i + 1:].strip()
-    return None
+    """`_split_key` for a flow-mapping entry, where the value MAY open a flow.
+
+    IT IS `_split_key`, and not a second scanner, because it used to be one:
+    the same loop spelled again, minus the step that skips the character
+    after a backslash inside double quotes, so `{"a\\": b": 1}` read as the
+    key `a\\` (#213). `_split_key` already lets the value open a flow -- it
+    returns at the first top-level `:`, before any `[` or `{` after it.
+
+    AN ENTRY OPENING `? ` IS AN EXPLICIT KEY, AND IS REFUSED as the block
+    reader refuses it (`_refuse_unsupported`, which runs on block lines only):
+    an explicit key has a meaning this reader would have to invent, and
+    `? a: b` used to read as the literal key `? a` (#252). The block form
+    names its line, and a flow collection has none to name, so this names the
+    entry. A QUOTED key, `"? a"`, does not open with the `?`, and `?a` is not
+    the indicator, which needs a space after it: both read as they did.
+    """
+    if text.startswith("? "):
+        raise YamlError(f"explicit keys are not supported: {text!r}")
+    return _split_key(text)
 
 
 def _split_flow(body: str) -> list[str]:
+    """A flow collection's body, split at its top-level commas.
+
+    Inside a DOUBLE-quoted item the character after a backslash is taken
+    with it, as `_strip_comment` and `_split_key` take it, so `\\"` neither
+    ends the item nor lets a `,` or `]` after it read as structure (#213). A
+    single-quoted item has no backslash escape: its `''` is two quotes, and
+    the toggle reads it.
+    """
     parts, depth, quote, cur = [], 0, None, []
-    for ch in body:
+    chars = iter(body)
+    for ch in chars:
         if quote:
             cur.append(ch)
-            if ch == quote:
+            if ch == "\\" and quote == '"':
+                cur.append(next(chars, ""))
+            elif ch == quote:
                 quote = None
             continue
         if ch in "\"'":
@@ -720,7 +824,10 @@ def tree_digest_from_gh(repository: str, commit: str) -> str:
     try:
         proc = subprocess.run(
             ["gh", "api", GH_TREE_API.format(repo=repository, commit=commit)],
-            capture_output=True, text=True, check=False)
+            # UTF-8 and STRICT, not `errors="replace"`: this JSON becomes a
+            # digest, and a replaced byte would be a wrong digest with a
+            # confident tone (#217).
+            capture_output=True, text=True, encoding="utf-8", check=False)
     except FileNotFoundError as exc:
         raise Refusal("gh-not-found",
                       f"the `gh` CLI is not on PATH: {exc}") from exc
@@ -788,7 +895,8 @@ def free_plan_secret_hint(org: str, repo: str, what: str) -> str | None:
     try:
         proc = subprocess.run(
             ["gh", "api", f"orgs/{org}", "--jq", ".plan.name"],
-            capture_output=True, text=True, check=False)
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", check=False)
     except OSError:  # FileNotFoundError (no `gh` on PATH) is already an OSError
         return None
     if proc.returncode != 0:
