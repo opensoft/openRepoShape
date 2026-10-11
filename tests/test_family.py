@@ -24,6 +24,8 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -739,8 +741,64 @@ def test_validate_finds_one_project_pinned_twice(family, holder):
     assert "FINDING member-duplicate-id: IRRS2 and IRRS both record id " \
         "'irrs'" in result.stderr
     assert "one project is pinned twice" in result.stderr
-    assert "family.py remove --member <Project>" in result.stderr
+    assert "--member IRRS2` takes the later row, IRRS2, out" in result.stderr
     assert validate(holder, "--pins").returncode == 1
+
+
+def test_validate_finds_one_project_pinned_twice_under_no_members(family,
+                                                                  holder):
+    """`--no-members` is what a private family's CI runs when its members
+    cannot be checked out. Two rows with one `id:` is a fact of `family.yaml`
+    alone, so that run still finds it, beside the members it skips."""
+    mount_twice(holder, family["remotes"])
+    result = validate(holder, "--no-members")
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert result.stderr.count("FINDING") == 1, result.stderr
+    assert "FINDING member-duplicate-id: IRRS2 and IRRS both record id " \
+        "'irrs'" in result.stderr
+    assert "member(s) SKIPPED (--no-members)" in result.stdout
+
+
+def test_the_duplicate_id_remediation_runs_as_printed(family, holder):
+    """The finding names a command, and that command is the repair: typed
+    from a checkout of openRepoShape exactly as printed, it takes the later
+    row out and the gate goes green. It carries the `--family-root` that
+    `remove` requires and the row's own spelling, not a placeholder."""
+    mount_twice(holder, family["remotes"])
+    found = validate(holder)
+    assert found.returncode == 1, found.stderr + found.stdout
+    commands = re.findall(r"`([^`]*scripts/family\.py remove [^`]*)`",
+                          found.stderr)
+    assert len(commands) == 1, found.stderr
+    argv = shlex.split(commands[0])
+    assert argv[0] in ("python3", "python"), commands[0]
+    assert argv[1] == "scripts/family.py", commands[0]
+    assert argv[argv.index("--member") + 1] == "IRRS2", commands[0]
+    assert os.path.samefile(argv[argv.index("--family-root") + 1], holder)
+    removed = run_script(REPO / argv[1], *argv[2:], cwd=REPO)
+    assert removed.returncode == 0, removed.stderr + removed.stdout
+    assert [r["project"] for r in manifest(holder)["members"]] == list(MEMBERS)
+    assert validate(holder).returncode == 0
+
+
+def test_an_exact_duplicate_row_is_one_finding(family, holder):
+    """One row written twice, byte for byte, is `member-duplicate`'s finding
+    and only that. `member-duplicate-id` saying it too would be one fault
+    reported twice, and its `remove` would take out BOTH rows, because
+    `remove` drops every row spelled the way it was given."""
+    family_root = family_module().Family.open(holder)
+    rows = family_root.members
+    irrs = next(row for row in rows if row["project"] == "IRRS")
+    family_root.write_members([*rows, dict(irrs)])
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam",
+        "Write IRRS's row twice", cwd=holder)
+    for extra in ((), ("--pins",)):
+        result = validate(holder, *extra)
+        assert result.returncode == 1, result.stderr + result.stdout
+        assert result.stderr.count("FINDING") == 1, result.stderr
+        assert "FINDING member-duplicate: IRRS appears more than once" \
+            in result.stderr
+        assert "member-duplicate-id" not in result.stderr
 
 
 def test_the_doctor_reports_a_project_pinned_twice(family, holder):
