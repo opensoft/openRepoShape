@@ -512,8 +512,18 @@ def env_commit(work: Path, message: str) -> None:
     there as a cp1252 byte, and it names each entry path as the source spells
     it: `Übersicht.md` would land as another byte that is not UTF-8, and
     `文書.md` would raise `UnicodeEncodeError` after both legs are pushed.
-    `errors="replace"` so that git's own output, decoded the same way, cannot
-    raise either.
+    Every caller's message goes the same way: `scaffold-project.py`'s
+    assembly commit, `scripts/family.py`'s holder commit, and each first
+    commit `git_init_commit` makes (a scaffolded leg, a seeded one).
+
+    `errors="replace"` works BOTH WAYS. Decoding, git's own output cannot
+    raise. Encoding, a character UTF-8 cannot carry is written as `?`: the
+    one such character a message can hold is a lone surrogate, the byte of a
+    name that is not UTF-8 as `Source.tree` keeps it. `adopt-project.py`
+    refuses one in a path it extracts (`entry_path_problem`), but a `root`
+    or `drop` entry holding one is listed in the split message, so there the
+    message names it with a `?` in place of that byte, a path that does not
+    exist, rather than raising after both legs are pushed.
     """
     env = dict(os.environ)
     for key, fallback in (("GIT_AUTHOR_NAME", "openRepoShape scaffold"),

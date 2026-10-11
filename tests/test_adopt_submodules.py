@@ -879,11 +879,11 @@ def test_a_newline_spelled_in_the_question_is_the_entry_to_write(tmp_path):
     edited(split, "src/", {f'"{path}"': "code" for path in own})
     result = check_plan(split)
     assert findings(result.stderr) == [(
-        "plan-unsafe-path", "`src/a\\nb.py` has leg: code and cannot be "
-        "extracted into a leg: it holds the control character `\\n`, which no "
-        "entry path may: a line break would end its line of the path list "
-        "`git filter-repo` reads, and the rest would be read as a line of its "
-        "own")], result.stderr
+        "plan-unsafe-path", "`src/a\\nb.py` has leg: code, and `execute` "
+        "will not extract it into a leg: it holds a line feed (`\\n`), "
+        "which ends its line of the path list `git filter-repo` reads, so "
+        "the rest of the name would be read as a line of its own")], \
+        result.stderr
     newline_entry = f'"{own[0]}"'
     edited(split, newline_entry, {newline_entry: "drop"})
     result = check_plan(split)
@@ -1089,8 +1089,8 @@ def test_an_unregistered_submodule_is_told_why_git_ignores_its_entry(
     plan = answered(planned(registered_source(tmp_path, **source),
                             tmp_path)[0], tmp_path, answers)
     unsafe = [("plan-unsafe-path",
-               f"`{submodule}` has leg: code and cannot be extracted into a "
-               f"leg: {adopter.entry_path_problem(submodule)}")
+               f"`{submodule}` has leg: code, and `execute` will not extract "
+               f"it into a leg: {adopter.entry_path_problem(submodule)}")
               ] if submodule.startswith("-") else []
     assert findings(check_plan(plan).stderr) == unsafe + [(
         UNREGISTERED, f"the submodule {submodule} has leg: code but {why}, "

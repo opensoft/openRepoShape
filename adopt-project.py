@@ -1888,20 +1888,26 @@ def _submodule_findings(plan: Plan, source: Source,
 
 
 #: The answers that never extract an entry into a leg. A path answered
-#: `root` stays in the assembly root and reaches no `git` command; one answered
-#: `drop` reaches only `git rm`, as a literal path after `--`. Neither is ever
+#: `root` stays in the assembly root and reaches no `git` command but as a
+#: line of the split commit's message; one answered `drop` reaches only
+#: `git rm`, as a literal path after `--`, and that message. Neither is ever
 #: a line of the path list `git filter-repo` reads, so `entry_path_problem`
 #: does not judge them (#196).
 NOT_EXTRACTED = ("root", "drop")
 
-#: A line break in Python's sense, and so in `repo_shape.parse_yaml`'s, which
-#: splits a plan with `str.splitlines`: besides the control characters, the
-#: Unicode line and paragraph separators.
+#: Two characters Python's `str.splitlines` ends a line at that are not
+#: control characters. `entry_path_problem` refuses them with the control
+#: characters, as policy.
 LINE_SEPARATORS = "\u2028\u2029"
+
+#: What every policy refusal says of git and `git filter-repo`, because it is
+#: true of each of them, measured: a policy refusal is not a misreading.
+TAKEN_LITERALLY = "though git and `git filter-repo` would take it literally"
 
 
 def entry_path_problem(path: str) -> str | None:
-    """Why `execute` cannot extract the entry path `path` into a leg, or None.
+    """Why `execute` will not extract the entry path `path` into a leg, or
+    None.
 
     ONE TEST, asked by `check`, which reports what it finds as the finding
     `plan-unsafe-path`, and by `execute`, which refuses that finding in
@@ -1914,8 +1920,9 @@ def entry_path_problem(path: str) -> str | None:
     from the tree, and a tree legitimately holds a space, a letter outside
     ASCII, `#`, `$`, `(`, `'`, `"`, `;`, `&`, `[`, `*`: none of them is the
     threat, as `repo_shape.SAFE_PATH_RE` says of a path the operator names.
-    Every command is argv with `shell=False`, and an entry's path reaches
-    `git` in two places, each spelled so git reads it LITERALLY:
+    Every command is argv with `shell=False`, and in `execute` an entry's
+    path reaches `git` in two places, each spelled so git reads it
+    LITERALLY:
 
       * as one `literal:` line of the path list `git filter-repo
         --paths-from-file` reads (`_extract_leg`). Without the prefix a line
@@ -1927,15 +1934,38 @@ def entry_path_problem(path: str) -> str | None:
         a pathspec: `*` and `?` are wildcards and a leading `:` is magic, and
         `git rm -- ':!keep.md'` removes every other path in the tree.
 
-    So only what neither can carry is refused. Measured with git 2.43 and
-    git-filter-repo 2.47.0:
+    Two kinds of path are refused, and each finding says which kind, and
+    why. First, `_misread`: a path one of those two places, or this tool's
+    own write of the list, would NOT carry as it stands. Then
+    `_refused_by_policy`: a path both would carry, measured, that this tool
+    still will not move into a leg. A path with a reason of each kind is
+    told the misreading.
 
-      * an empty path, or one that is nothing but whitespace, which names
-        nothing a person can read back;
-      * a control character (C0, DEL, C1) or a line separator: a line break
-        ends the path's line in the filter's list and the rest is read as a
-        line of its own -- `docs\\nregex:.*` would keep every path in the
-        leg -- and the reader of the plan itself splits a line there (#199);
+    THE VALUES THAT ARE OPTIONS ARE ANOTHER MATTER: a leg's mount path, a
+    branch, a repository name, the organisation. They stay under
+    `checked_value`'s narrow alphabet and are refused as `unsafe-value`
+    (#168, #169).
+    """
+    return _misread(path) or _refused_by_policy(path)
+
+
+def _misread(path: str) -> str | None:
+    """Why `path`, as a `literal:` line or a literal pathspec, would not reach
+    git or `git filter-repo` as the path it is. Measured with git 2.43 and
+    git-filter-repo 2.47.0, whose `get_paths_from_file` reads its list a line
+    at a time, strips `\\r` and `\\n` from each line's end, skips a blank
+    line, and looks for `==>` before anything else:
+
+      * an empty path: a `literal:` line with nothing after it matches every
+        path, and the leg took the whole tree (and `git rm` refuses an empty
+        pathspec);
+      * a line feed, anywhere: it ends the path's line, and the rest is read
+        as a line of its own -- `docs\\nregex:.*` kept every path;
+      * a carriage return at the END: stripped, so `Icon\\r` -- the macOS
+        folder-icon file -- was read as `Icon`, and the leg took that file
+        instead. A carriage return elsewhere is carried, and is policy's;
+      * a NUL, which no command line can carry (`subprocess` raises), and
+        which git records in no path;
       * a byte that is not UTF-8, which `Source.tree` keeps as a lone
         surrogate (category Cs, U+D800 to U+DFFF): `_extract_leg` writes
         the path list as UTF-8 text, which cannot carry one. Before #199 no
@@ -1944,27 +1974,29 @@ def entry_path_problem(path: str) -> str | None:
         the two merged `check` said `plan ok` and `execute` raised
         `UnicodeEncodeError` there, after both leg repositories existed;
       * `==>`, which `git filter-repo` reads as a RENAME wherever it is on a
-        line, before it looks for `literal:`, and which nothing escapes;
-      * a leading `-`. Both places above fence a path off from git's options
-        already, so this one is the threat model's first rule held anyway
-        (`repo_shape.checked_value`): git reads an argument that begins with
-        `-` as its own option.
-
-    THE VALUES THAT ARE OPTIONS ARE ANOTHER MATTER: a leg's mount path, a
-    branch, a repository name, the organisation. They stay under
-    `checked_value`'s narrow alphabet and are refused as `unsafe-value`
-    (#168, #169).
+        line, before it looks for `literal:`, and which nothing escapes:
+        `literal:a==>b.md` beside `literal:keep.md` extracted only
+        `keep.md`.
     """
-    if not path.strip():
-        return "it is empty or nothing but whitespace, and names no path"
+    if not path:
+        return ("it is empty: a `literal:` line with nothing after it "
+                "matches every path, so `git filter-repo` would put the "
+                "whole tree in the leg")
+    if "\n" in path:
+        return ("it holds a line feed (`\\n`), which ends its line of the "
+                "path list `git filter-repo` reads, so the rest of the name "
+                "would be read as a line of its own")
+    if path.endswith("\r"):
+        rest = path.rstrip("\r")
+        named = (f"would name {_spelled(rest)}, another path" if rest
+                 else "would be blank, which the filter skips")
+        return ("it ends in a carriage return (`\\r`), which `git "
+                "filter-repo` strips from the end of each line of the path "
+                f"list it reads, so its line {named}")
+    if "\x00" in path:
+        return ("it holds a NUL (`\\x00`), which no command line can carry "
+                "and git records in no path")
     for char in path:
-        if ord(char) < 0x20 or 0x7F <= ord(char) <= 0x9F \
-                or char in LINE_SEPARATORS:
-            return (f"it holds the control character "
-                    f"`{_spelled_character(char)}`, which no entry path may: "
-                    "a line break would end its line of the path list `git "
-                    "filter-repo` reads, and the rest would be read as a "
-                    "line of its own")
         if "\ud800" <= char <= "\udfff":
             return (f"it holds `{_spelled_character(char)}`, which is not "
                     "UTF-8: the path list `git filter-repo` reads is written "
@@ -1974,9 +2006,50 @@ def entry_path_problem(path: str) -> str | None:
         return ("it holds `==>`, which `git filter-repo --paths-from-file` "
                 "reads as a rename wherever it is on the line, and nothing "
                 "on the line escapes it")
+    return None
+
+
+def _refused_by_policy(path: str) -> str | None:
+    """Why this tool will not move `path` into a leg although git and `git
+    filter-repo` would take it literally. MEASURED, each as one `literal:`
+    line and as `git --literal-pathspecs rm -r -q -- <path>`: a tab, `\\x01`,
+    ESC, DEL, `\\x85`, `\\x0b`, `\\x0c`, `\\x1c`, U+2028, a carriage return
+    that does not end the name, `-n.md`, ` ` and three spaces were each
+    extracted, and removed, as exactly that path and nothing else. So each
+    finding below says it is policy, and never that a line would break:
+
+      * a name that is nothing but whitespace, which shows as blank wherever
+        a name is printed. (`git commit` even strips a line of spaces from
+        the split commit's message, which lists the moved paths.)
+      * a control character (C0, DEL, C1) or a line separator: a name that
+        holds one is almost never meant, and printed as it stands -- as
+        `git log` prints a commit message, ESC and `\\x01` raw, measured --
+        it cannot be seen for what it is;
+      * a leading `-`, the threat model's first rule
+        (`repo_shape.checked_value`), held although neither place in
+        `entry_path_problem` takes it as an option: a line of the filter's
+        path list is none, and `git rm` is given it after `--`.
+    """
+    if not path.strip():
+        return ("it is nothing but whitespace, which `execute` refuses as "
+                f"policy, {TAKEN_LITERALLY}: such a name shows as blank "
+                "wherever a name is printed")
+    for char in path:
+        if ord(char) < 0x20 or 0x7F <= ord(char) <= 0x9F \
+                or char in LINE_SEPARATORS:
+            kind = ("line separator" if char in LINE_SEPARATORS
+                    else "control character")
+            return (f"it holds the {kind} `{_spelled_character(char)}`, "
+                    f"which `execute` refuses as policy, {TAKEN_LITERALLY}: "
+                    "a name that holds one is almost never meant, and "
+                    "printed as it stands, as `git log` prints a commit "
+                    "message, it cannot be seen for what it is")
     if path.startswith("-"):
-        return ("it begins with `-`, and git reads an argument that begins "
-                "with `-` as an option of its own")
+        return ("it begins with `-`, which `execute` refuses as policy, "
+                f"{TAKEN_LITERALLY} (a line of the filter's path list is no "
+                "option, and `git rm` is given it after `--`): no value this "
+                "tool hands git may begin with `-`, the threat model's first "
+                "rule")
     return None
 
 
@@ -2008,8 +2081,8 @@ def _unsafe_path_findings(plan: Plan) -> tuple[list[str], list[str]]:
         problem = entry_path_problem(path)
         if problem:
             found.append(f"FINDING plan-unsafe-path: {_spelled(path)} has "
-                         f"leg: {y(entry.get('leg'))} and cannot be extracted "
-                         f"into a leg: {problem}")
+                         f"leg: {y(entry.get('leg'))}, and `execute` will "
+                         f"not extract it into a leg: {problem}")
     return found, [UNSAFE_PATH_REMEDIATION] if found else []
 
 

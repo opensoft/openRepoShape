@@ -129,24 +129,40 @@ ADMITTED = [
     "x==y.md",
 ]
 
-REFUSED = [
-    ("", "empty or nothing but whitespace"),
-    ("   ", "empty or nothing but whitespace"),
-    ("-dash.md", "begins with `-`"),
-    ("--output=never-written", "begins with `-`"),
-    ("tab\there.md", "control character `\\t`"),
-    ("docs\nregex:.*", "control character `\\n`"),
-    ("Icon\r", "control character `\\r`"),
-    ("nul\x00", "control character `\\x00`"),
-    ("esc\x1b[31m.md", "control character `\\x1b`"),
-    ("del\x7f.md", "control character `\\x7f`"),
-    ("nel\x85.md", "control character `\\x85`"),
-    ("line\u2028sep.md", "control character `\\u2028`"),
+#: What git or `git filter-repo` would NOT take as the path it is, with what
+#: the finding says: the misreadings `entry_path_problem` refuses.
+MISREAD = [
+    ("", "it is empty: a `literal:` line with nothing after it matches"),
+    ("docs\nregex:.*", "line feed (`\\n`), which ends its line"),
+    ("Icon\r", "ends in a carriage return (`\\r`), which `git filter-repo` "
+                "strips from the end of each line of the path list it reads, "
+                "so its line would name `Icon`, another path"),
+    ("\r", "so its line would be blank"),
+    ("nul\x00", "NUL (`\\x00`), which no command line can carry"),
     ("caf\udce9.md", "`\\xe9`, which is not UTF-8"),
     ("docs/\udcff/", "`\\xff`, which is not UTF-8"),
     ("\ud800.md", "`\\ud800`, which is not UTF-8"),
     ("a==>b.md", "`==>`"),
     ("docs/a==>b/", "`==>`"),
+    # A misreading is told before a policy reason the same name also has.
+    ("tab\t==>b.md", "`==>`"),
+]
+
+#: What git and `git filter-repo` take literally -- measured, each as one
+#: `literal:` line and as `git --literal-pathspecs rm` -- and this tool still
+#: refuses to move into a leg, as policy, with what the finding says.
+POLICY = [
+    ("   ", "nothing but whitespace"),
+    (" ", "nothing but whitespace"),
+    ("-dash.md", "begins with `-`"),
+    ("--output=never-written", "begins with `-`"),
+    ("tab\there.md", "control character `\\t`"),
+    ("a\rb.md", "control character `\\r`"),
+    ("esc\x1b[31m.md", "control character `\\x1b`"),
+    ("del\x7f.md", "control character `\\x7f`"),
+    ("nel\x85.md", "control character `\\x85`"),
+    ("vt\x0b.md", "control character `\\x0b`"),
+    ("line\u2028sep.md", "line separator `\\u2028`"),
 ]
 
 
@@ -159,10 +175,28 @@ def test_what_a_source_tree_holds_is_admitted(adopter, path):
     assert adopter.entry_path_problem(path) is None
 
 
-@pytest.mark.parametrize("path,said", REFUSED)
-def test_only_what_git_cannot_take_is_refused(adopter, path, said):
+@pytest.mark.parametrize("path,said", MISREAD)
+def test_what_git_or_filter_repo_would_misread_is_refused(adopter, path,
+                                                           said):
+    """Each finding says what would be misread, and never calls it policy."""
     problem = adopter.entry_path_problem(path)
     assert problem is not None and said in problem
+    assert "as policy" not in problem
+
+
+@pytest.mark.parametrize("path,said", POLICY)
+def test_what_policy_refuses_says_it_is_policy_and_not_a_misreading(
+        adopter, path, said):
+    """A name git and `git filter-repo` take literally is refused as policy,
+    and the finding says so: it must not give a misreading's reason, as it
+    did when a tab was told that a line break would end its line."""
+    problem = adopter.entry_path_problem(path)
+    assert problem is not None and said in problem
+    assert ("which `execute` refuses as policy, though git and `git "
+            "filter-repo` would take it literally") in problem
+    for misreading in ("line of its own", "ends its line", "strips",
+                       "matches every path", "rename"):
+        assert misreading not in problem
 
 
 # --- `check` and `execute` agree -------------------------------------------
@@ -198,8 +232,8 @@ def test_a_source_with_spaces_and_letters_beyond_ascii_checks_ok_and_runs(
 #: `literal:` line would be worst: `git filter-repo` matches an empty path
 #: against every path, so the leg would take the whole tree.
 HAND_EDITS = {
-    "empty": ('""', "``", "empty or nothing but whitespace"),
-    "whitespace-only": ('"   "', "`   `", "empty or nothing but whitespace"),
+    "empty": ('""', "``", "it is empty"),
+    "whitespace-only": ('"   "', "`   `", "nothing but whitespace"),
     "leading-dash": ("--output=never-written", "`--output=never-written`",
                      "begins with `-`"),
     "control-character": ('"spe\\tcs/"', "`spe\\tcs/`",
@@ -273,10 +307,10 @@ def test_an_entry_answered_root_or_drop_is_not_judged(adopter, tmp_path,
                                       "docs/spec.md": "# spec\n"})
     findings = [line for line in run_check(plan).stderr.splitlines()
                 if line.startswith(f"FINDING {UNSAFE}:")]
-    assert findings == [f"FINDING {UNSAFE}: `-notes.md` has leg: spec and "
-                        "cannot be extracted into a leg: it begins with `-`, "
-                        "and git reads an argument that begins with `-` as an "
-                        "option of its own"]
+    assert findings == [f"FINDING {UNSAFE}: `-notes.md` has leg: spec, and "
+                        "`execute` will not extract it into a leg: "
+                        f"{adopter.entry_path_problem('-notes.md')}"]
+    assert "refuses as policy" in findings[0]
     answer(plan, '"-notes.md"', "spec", answered)
     checked = run_check(plan)
     assert checked.returncode == 0, checked.stderr + checked.stdout
@@ -361,10 +395,11 @@ def with_a_name_that_is_not_utf8(adopter, tmp_path: Path):
 #: The finding `check` must print first for `NOT_UTF8`, spelled as
 #: `_spelled` spells a byte that is not UTF-8.
 NOT_UTF8_FINDING = (
-    f"FINDING {UNSAFE}: `docs/caf\\xe9.md` has leg: spec and cannot be "
-    "extracted into a leg: it holds `\\xe9`, which is not UTF-8: the path "
-    "list `git filter-repo` reads is written as UTF-8 text, which cannot "
-    "carry it, and the write would fail after both leg repositories exist")
+    f"FINDING {UNSAFE}: `docs/caf\\xe9.md` has leg: spec, and `execute` "
+    "will not extract it into a leg: it holds `\\xe9`, which is not UTF-8: "
+    "the path list `git filter-repo` reads is written as UTF-8 text, which "
+    "cannot carry it, and the write would fail after both leg repositories "
+    "exist")
 
 
 def test_a_byte_that_is_not_utf8_is_found_and_refused_before_any_leg(
