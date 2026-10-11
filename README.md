@@ -973,20 +973,20 @@ python3 scripts/bump-leg.py --root <path-to-the-project> --leg spec \
 It fetches the commit into the leg, checks the leg out AT it, recomputes the
 `sorted-ls-tree-r-v1` digest from the leg's own objects, rewrites `commit:`
 and `digests.tree_sha256` in `contracts/<role>-pin.yaml`, rewrites every
-`.github/workflows/*.yml` `@<sha>` naming THAT leg's repository — and none
-naming anything else, `actions/checkout@<sha>` and the sibling leg included —
-then runs the project's own `validate-pins.py` and `validate-manifest.py` and
-commits ONCE with explicit pathspecs.
+TRACKED `.github/workflows/*.yml` `@<sha>` naming THAT leg's repository — and
+none naming anything else, `actions/checkout@<sha>` and the sibling leg
+included — then runs the project's own `validate-pins.py` and
+`validate-manifest.py` and commits ONCE with explicit pathspecs.
 
-It REFUSES a `--to` that is not exactly 40 hex, a commit no branch of the
-leg's remote contains (including one committed inside the mount and never
-pushed — a pin the rest of the world cannot fetch is a root it cannot
-bootstrap), a dirty root, a root standing on its own tracking branch (the next
-step is a pull request, never a push to the default branch), and a validator
-that goes red — rolling the pin, the workflow files, the leg's checkout and
-the index back first, so a refusal leaves the tree exactly as it was found.
-The leg is left DETACHED at the new commit; `make bootstrap` re-places it on
-its tracking branch AT the new pin.
+It REFUSES a `--to` that is not exactly 40 hex, a commit no branch of the leg's
+remote contains (including one committed inside the mount and never pushed — a
+pin the rest of the world cannot fetch is a root it cannot bootstrap), a dirty
+root, an untracked or ignored workflow file that names the leg, a root standing
+on its own tracking branch (the next step is a pull request, never a push to the
+default branch), and a validator that goes red — rolling the pin, the workflow
+files, the leg's checkout and the index back first, so a refusal leaves the tree
+exactly as it was found. The leg is left DETACHED at the new commit; `make
+bootstrap` re-places it on its tracking branch AT the new pin.
 
 ## Bootstrap is COPIED into the project, not fetched
 
