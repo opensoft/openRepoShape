@@ -390,6 +390,90 @@ def test_a_rerun_after_a_failed_push_pushes_and_opens_the_pull_request(
     assert commits_on_the_branch(root) == 1
 
 
+# --- a failure BEFORE the commit is still rolled back (#202) ----------------
+
+def refuse_the_commit(root) -> None:
+    """A pre-commit hook that says no, as `test_update_shape_add_ignored.py`
+    injects it: `core.hooksPath` in the repository's own config, and a
+    shebang script, which Git for Windows runs through its own `sh`."""
+    hooks = root.path / ".git" / "refusing-hooks"
+    hooks.mkdir()
+    hook = hooks / "pre-commit"
+    hook.write_bytes(b"#!/bin/sh\necho 'pre-commit: not this commit' >&2\n"
+                     b"exit 1\n")
+    hook.chmod(0o755)
+    git("config", "core.hooksPath", hooks.as_posix(), cwd=root.path)
+
+
+def test_a_failure_before_the_commit_under_push_and_pr_is_rolled_back(
+        root, project, gh):
+    """THE COMMIT IS WHERE ROLLING BACK STOPS, FROM BOTH SIDES. #202 rolls
+    back a branch, a stage or a commit that fails; this PR keeps the commit
+    when a push or a pull request fails after it. With `--push --pr` passed,
+    a commit a hook refuses is still #202's: the copies, the pin and the
+    branch are put back and the step is named, and nothing of the landing
+    happens — no push, no `gh`, no NEXT line, no re-run promised — because
+    there is no commit for any of it to finish. `gh` is never reached, so
+    this runs on every platform."""
+    refuse_the_commit(root)
+    head = git("rev-parse", "HEAD", cwd=root.path).stdout
+
+    result = apply(root, project, "--branch", BRANCH, "--push", "--pr",
+                   env=gh.env)
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert f"REFUSED committing the re-synced shape on {BRANCH}" \
+        in result.stderr, result.stderr
+    assert ("ROLLED BACK: every byte this command wrote has been put back"
+            in result.stderr), result.stderr
+    for rel in (PIN, "project.yaml", CHANGED):
+        assert f"restored  {rel}" in result.stderr, result.stderr
+    assert "switched  HEAD back to main" in result.stderr, result.stderr
+    assert f"deleted   {BRANCH}" in result.stderr, result.stderr
+    assert "nothing was rolled back" not in result.stderr
+    assert "run again" not in result.stderr
+    assert f"committed on {BRANCH}" not in result.stdout
+    assert "pushed" not in result.stdout
+    assert "NEXT" not in result.stdout, result.stdout
+    assert gh.calls() == []
+    assert on_the_remote(root) is None
+    assert git("rev-parse", "HEAD", cwd=root.path).stdout == head
+    assert git("symbolic-ref", "--short", "HEAD",
+               cwd=root.path).stdout.strip() == "main"
+    assert git("status", "--porcelain", cwd=root.path).stdout == ""
+    assert git("for-each-ref", "--format=%(refname)", "refs/heads/",
+               cwd=root.path).stdout.split() == ["refs/heads/main"]
+
+
+@WINDOWS_SKIP
+def test_the_same_command_after_a_rolled_back_commit_lands_and_opens(
+        root, project, gh):
+    """ROLLED BACK, THE NEXT RUN IS THE FIRST RUN AGAIN. With the hook gone
+    the same `apply --branch --push --pr` has work to write, so it is not
+    the re-run `_awaits_its_pull_request` recognises: it commits once,
+    pushes, and opens the pull request with the one `gh pr create` the first
+    run path makes, asking `gh pr list` nothing."""
+    refuse_the_commit(root)
+    failed = apply(root, project, "--branch", BRANCH, "--push", "--pr",
+                   env=gh.env)
+    assert failed.returncode == 2, failed.stdout + failed.stderr
+    git("config", "--unset", "core.hooksPath", cwd=root.path)
+
+    result = apply(root, project, "--branch", BRANCH, "--push", "--pr",
+                   env=gh.env)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "nothing to" not in result.stdout
+    assert f"committed on {BRANCH}" in result.stdout
+    assert f"pushed {BRANCH} to origin" in result.stdout
+    assert f"pull request {URL}" in result.stdout
+    assert next_line_of(result.stdout) == PR_OPEN_NEXT
+    assert [call[:2] for call in gh.calls()] == [["pr", "create"]]
+    head = the_commit_stands(root, project)
+    assert commits_on_the_branch(root) == 1
+    assert on_the_remote(root) == head
+
+
 # --- what does not change ---------------------------------------------------
 
 @pytest.mark.parametrize("flags", [(), ("--push",)], ids=["branch", "push"])
