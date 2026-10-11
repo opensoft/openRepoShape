@@ -50,6 +50,10 @@ SEEDING_COMMIT = ["git", "commit", "-q", "-F", "-"]
 GIT_COMPLAINT = "fatal: bad config line 5 in file .gitmodules"
 LIVE_LEG = "leg-remote-exists"
 README = "README.md"
+UTF8 = "utf-8"
+#: Where `legs_arguments` puts the work directory `_build_the_legs` is
+#: handed, and the notice names.
+WORK_ROOT = "work_root"
 FILTER_REPO_TOOL = "git-filter-repo"
 #: The names `Stream` records its events under.
 STDOUT, STDERR, FLUSH = "stdout", "stderr", "flush"
@@ -171,9 +175,9 @@ def test_a_failed_leg_names_both_leg_repositories_and_what_to_do(
     arguments = legs_arguments(tmp_path, seeded)
     # What the spec leg's builder leaves when its filter or its commit
     # fails: its clone, or the template it seeded, in the work directory.
-    spec_work = arguments["work_root"] / f"{ASSEMBLY}-{SPEC}"
+    spec_work = arguments[WORK_ROOT] / f"{ASSEMBLY}-{SPEC}"
     spec_work.mkdir(parents=True)
-    (spec_work / README).write_text("built\n", encoding="utf-8")
+    (spec_work / README).write_text("built\n", encoding=UTF8)
 
     assert adopter._build_the_legs(**arguments) is None
 
@@ -189,7 +193,7 @@ def test_a_failed_leg_names_both_leg_repositories_and_what_to_do(
     # The work directory too, which holds what this run built: a re-run that
     # kept it looped (#184 P2-1), and `execute` now refuses it.
     assert (f"Use a fresh --work-dir as well, or none: "
-            f"{arguments['work_root']} holds {ASSEMBLY}-{SPEC} from this "
+            f"{arguments[WORK_ROOT]} holds {ASSEMBLY}-{SPEC} from this "
             "run") in notice
     assert len(notice.strip().splitlines()) == 1
 
@@ -205,7 +209,7 @@ def test_a_rerun_under_a_local_remote_dir_meets_leg_remote_exists(
         adopter._create_leg_remotes({}, arguments["names"],
                                     arguments["repositories"],
                                     arguments["urls"], "main", True,
-                                    arguments["work_root"])
+                                    arguments[WORK_ROOT])
 
     assert refused.value.code == LIVE_LEG
     # Its own way out names the work directory as well: an empty
@@ -234,7 +238,7 @@ def test_a_rerun_against_github_has_gh_repo_create_refused(
     with pytest.raises(adopter.CommandFailed):
         adopter._create_leg_remotes({}, arguments["names"], repositories,
                                     arguments["urls"], "main", False,
-                                    arguments["work_root"])
+                                    arguments[WORK_ROOT])
 
     assert [call[:4] for call in calls] == [
         ["gh", "repo", "create", repositories[SPEC]]]
@@ -271,7 +275,7 @@ def test_a_refused_push_is_reported_once_with_its_ruleset_hint(
     def write_one_file(_template, work, _values):
         # What it wrote, as `copy_tree` returns it since #175.
         work.mkdir(parents=True, exist_ok=True)
-        (work / README).write_text("seeded\n", encoding="utf-8")
+        (work / README).write_text("seeded\n", encoding=UTF8)
         return [README]
 
     real_run = adopter.run
@@ -319,7 +323,7 @@ def failing_filter_repo(tmp_path) -> dict:
     binary = tmp_path / "stub-bin"
     binary.mkdir()
     stub = binary / FILTER_REPO_TOOL
-    with stub.open("w", encoding="utf-8", newline="\n") as handle:
+    with stub.open("w", encoding=UTF8, newline="\n") as handle:
         handle.write(f"#!/bin/sh\necho '{STUB_COMPLAINT}' >&2\nexit 1\n")
     stub.chmod(0o755)
     return {"PATH": f"{binary}{os.pathsep}{os.environ['PATH']}"}

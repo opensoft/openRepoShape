@@ -75,6 +75,8 @@ END_OUTPUT = "--- end output ---"
 DELETE_COMMAND = "git -C "
 NEITHER_PUSHED = "neither leg is pushed"
 GIT_FAILED = "git-failed"
+#: What the operating system says of a program that is not there.
+NO_SUCH_FILE = "No such file or directory"
 UTF8 = "utf-8"
 README = "README.md"
 SOURCE = "Thing"
@@ -412,7 +414,7 @@ def permission_denied(_adopter):
 
 
 def git_not_found(_adopter):
-    return FileNotFoundError(2, "No such file or directory", "git")
+    return FileNotFoundError(2, NO_SUCH_FILE, "git")
 
 
 def not_utf8(_adopter):
@@ -674,7 +676,7 @@ def code_leg_gh_cannot_run(adopter, monkeypatch, tmp_path) -> tuple:
     which `main` must then exit 2, as it says, and not with a traceback."""
     return code_leg_repository_fails(
         adopter, monkeypatch, tmp_path,
-        FileNotFoundError(2, "No such file or directory", "gh"))
+        FileNotFoundError(2, NO_SUCH_FILE, "gh"))
 
 
 @pytest.mark.parametrize("scenario",
@@ -751,7 +753,7 @@ def gh_refused(adopter, args):
 
 
 def gh_not_found(_adopter, _args):
-    return FileNotFoundError(2, "No such file or directory", "gh")
+    return FileNotFoundError(2, NO_SUCH_FILE, "gh")
 
 
 @pytest.mark.parametrize("fail", [pull_request_fails, topic_fails],
@@ -854,6 +856,11 @@ def no_filter_repo_probe(adopter, monkeypatch) -> None:
     monkeypatch.setattr(adopter, "_require_filter_repo", lambda: None)
 
 
+def branch_at(repo: Path, commit: str = "HEAD") -> None:
+    """A branch of the split's name in `repo`, at `commit`."""
+    git("branch", BRANCH, commit, cwd=repo)
+
+
 def leave_a_split_branch(source: Path) -> str:
     """What an earlier `execute` leaves on the source, verified or not: its
     split branch, at a commit made on top of the source commit, as a split
@@ -863,7 +870,7 @@ def leave_a_split_branch(source: Path) -> str:
                 "-c", "user.email=earlier@run.invalid", "commit-tree", tree,
                 "-p", "HEAD", "-m", "Adopt the three-repository shape",
                 cwd=source).stdout.strip()
-    git("branch", BRANCH, split, cwd=source)
+    branch_at(source, split)
     return split
 
 
@@ -959,7 +966,7 @@ def test_a_branch_the_split_push_fast_forwards_is_not_refused(
     always pushed over it and verified. It was refused, as if it were an
     earlier run's split, with a reason that was false for it."""
     origin = make_source_repo(tmp_path / SOURCE)
-    git("branch", BRANCH, f"HEAD~{behind}", cwd=origin)
+    branch_at(origin, f"HEAD~{behind}")
     source = adopter.Source(origin, None, "main", commit_of(origin))
 
     assert adopter._refuse_a_split_branch_left_behind(
@@ -1169,7 +1176,7 @@ def test_a_branch_at_the_source_commit_is_pushed_over_and_verifies(tmp_path):
     source commit, and the adoption verifies, as it did on main."""
     source = make_source_repo(tmp_path / SOURCE, tree=SMALL_TREE, edits=())
     plan = planned(tmp_path, source)
-    git("branch", BRANCH, cwd=source)
+    branch_at(source)
 
     result = execute(plan, tmp_path / REMOTES, tmp_path / WORK)
 
