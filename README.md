@@ -1070,7 +1070,7 @@ MedxScribe and the InkRouter members were cut — reached none of them. `check`
 therefore also reports **`upstream-added`**: a path the UPSTREAM's copy lists
 name AT THE TARGET COMMIT (read out of that commit's own
 `shape_materialize.py`, so the answer is the target's lists and not this
-checkout's) that the pin has no row for and the root holds nothing at. It counts
+checkout's) that the pin has no row for and the root has no file at. It counts
 as something to do, so `check` still exits 1. `apply` writes NONE of them
 unless `--add <path>` names one, per file: `apply --at <commit> --yes --add
 AGENTS-shape.md` copies it, chmods it if the materializer would, appends its
@@ -1079,13 +1079,8 @@ whole if a validator goes red. Without `--add` it says `not added; pass --add
 <path>` and re-pins the rest. `--add` refuses a path that is already pinned,
 one the target's lists do not name — and one the root ALREADY has a file at,
 because two files with one name is a merge and this command copies bytes. A
-symlink at the path, or on the way to it, is the operator's own and is refused
-by name as `update-add-symlink` — dangling or live, since a write there would
-go THROUGH it to wherever it points, outside the root included — before
-anything is written; `check` does not offer a path the root holds a link at,
-and the remedy is to remove or move the link and run the same `--add` again. A
 project that declines an addition has no way to say so yet: it will be reported
-by every `check` until it is taken or a file or a link arrives at that path.
+by every `check` until it is taken or a file arrives at that path.
 
 `--upstream` takes a path to a clone (offline, and what the tests use) or an
 `owner/repo` it bare-clones itself; it defaults to the repository the pin
