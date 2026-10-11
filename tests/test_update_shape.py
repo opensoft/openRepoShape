@@ -426,6 +426,204 @@ def test_apply_with_no_shape_block_names_this_kinds_own_manifest_validator(
         == upstream_and_project["a"], "a refused apply writes nothing at all"
 
 
+# --- the manifest's own indentation (#208) ----------------------------------
+
+#: Indentations of the `shape:` block that `load_yaml` and both validators
+#: accept, as (direct children, `digests:` children). `(2, 4)` is what the
+#: scaffold writes; the rest are what a hand re-indent or an editor's
+#: formatter leaves. The reader asks only that a level nest deeper than its
+#: parent, so every one of these is a manifest this project may hold.
+SHAPE_INDENTS = [(2, 4), (4, 6), (3, 6), (1, 2), (8, 12), (4, 5), (2, 6),
+                 (3, 4)]
+
+
+def indent_shape_block(text: str, child: int, grandchild: int) -> str:
+    """`text` with ONLY its `shape:` block re-indented: each direct child at
+    `child` spaces, each `digests:` child at `grandchild`. Every other line,
+    the comments above the block included, is left as it was."""
+    out, inside = [], False
+    for line in text.split("\n"):
+        if line.rstrip() == "shape:":
+            inside = True
+        elif inside and line.strip() and not line.startswith(" "):
+            inside = False
+        elif inside and line.strip():
+            depth = grandchild if line.startswith("    ") else child
+            line = " " * depth + line.strip()
+        out.append(line)
+    return "\n".join(out)
+
+
+def commit_manifest(root, text: str, message: str) -> None:
+    """Write `project.yaml` as exactly these bytes and commit it. Bytes, not
+    `write_text`, so the line endings under test are the ones written on
+    every platform."""
+    (root / "project.yaml").write_bytes(text.encode("utf-8"))
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m",
+        message, "--", "project.yaml", cwd=root)
+
+
+@pytest.mark.parametrize("child, grandchild", SHAPE_INDENTS)
+def test_the_manifest_rewrite_moves_two_values_and_keeps_every_indent(
+        update_shape, upstream_and_project, tmp_path, child, grandchild):
+    """ONLY THE TWO VALUES MOVE (#208). The lines were found at any
+    indentation and written back at a fixed two and four spaces, so a block
+    indented four spaces came back with `commit:` at two among siblings at
+    four — YAML the same reader refuses. The expected text here is the input
+    with the two quoted values substituted and nothing else, which for
+    `(2, 4)` is byte for byte what the fixed-indent rewrite wrote before."""
+    a = upstream_and_project["a"]
+    scaffolded = (upstream_and_project["clone"] / "project.yaml").read_text(
+        encoding="utf-8")
+    text = indent_shape_block(scaffolded, child, grandchild)
+    (tmp_path / "before.yaml").write_bytes(text.encode("utf-8"))
+    old_tree = load_yaml(tmp_path / "before.yaml")["shape"]["digests"][
+        "tree_sha256"]
+    commit, tree = "c" * 40, "d" * 64
+
+    new = update_shape.rewrite_manifest(text, commit, tree,
+                                        update_shape.PROJECT_KIND)
+
+    assert new == (text.replace(f'commit: "{a}"', f'commit: "{commit}"')
+                   .replace(f'tree_sha256: "{old_tree}"',
+                            f'tree_sha256: "{tree}"'))
+    (tmp_path / "after.yaml").write_bytes(new.encode("utf-8"))
+    shape = load_yaml(tmp_path / "after.yaml")["shape"]
+    assert (shape["commit"], shape["digests"]["tree_sha256"]) == (commit, tree)
+
+
+#: A family holder's manifest, cut down to the lines that matter here: a
+#: member row carrying a `commit:` of its own BEFORE the block, and a key
+#: after it, so the block's two bounds are both exercised. `family.yaml`'s
+#: `shape:` block has the shape `project.yaml`'s has, and goes through the
+#: same `rewrite_manifest`.
+FAMILY_MANIFEST = """schema_version: 1
+kind: family-manifest
+
+members:
+  - name: Atlas
+    commit: "{member}"
+
+shape:
+  repository: opensoft/openRepoShape
+  revision_kind: commit
+  commit: "{commit}"
+  digest_algorithm: sha256
+  digests:
+    tree_sha256: "{tree}"
+
+visibility: private
+"""
+
+
+@pytest.mark.parametrize("child, grandchild", [(2, 4), (4, 6), (3, 6)])
+def test_the_family_manifest_rewrite_keeps_its_indent_and_its_members_pin(
+        update_shape, tmp_path, child, grandchild):
+    """THE FAMILY HOLDER IS THE SAME REWRITE (#208). `family.yaml` carries
+    the same `shape:` block, so the same two lines move and nothing else does:
+    not the member row's own `commit:`, which sits above the block and spells
+    the key the same way."""
+    member, old_commit, old_tree = "a" * 40, "b" * 40, "e" * 64
+    text = indent_shape_block(
+        FAMILY_MANIFEST.format(member=member, commit=old_commit,
+                               tree=old_tree), child, grandchild)
+    commit, tree = "c" * 40, "d" * 64
+
+    new = update_shape.rewrite_manifest(text, commit, tree,
+                                        update_shape.FAMILY_KIND)
+
+    assert new == (text.replace(f'commit: "{old_commit}"',
+                                f'commit: "{commit}"')
+                   .replace(f'tree_sha256: "{old_tree}"',
+                            f'tree_sha256: "{tree}"'))
+    assert f'commit: "{member}"' in new
+    (tmp_path / "family.yaml").write_bytes(new.encode("utf-8"))
+    loaded = load_yaml(tmp_path / "family.yaml")
+    assert (loaded["shape"]["commit"],
+            loaded["shape"]["digests"]["tree_sha256"]) == (commit, tree)
+
+
+@pytest.mark.parametrize("child, grandchild", [(4, 6), (3, 4), (2, 6)])
+def test_apply_leaves_a_manifest_indented_its_own_way_green_and_indented(
+        root, upstream_and_project, child, grandchild):
+    """The issue's reproduction, end to end: a project whose `shape:` block
+    is indented four spaces (`tree_sha256:` at six) takes the update, both
+    validators stay green, and the diff to `project.yaml` is the two values.
+    `(3, 4)` nests by one space; `(2, 6)` is the scaffold's own two with
+    `digests:` nested by four, which the fixed-indent rewrite did not break
+    but silently re-indented."""
+    a, target = upstream_and_project["a"], upstream_and_project["b"]
+    upstream = upstream_and_project["upstream"]
+    manifest = root / "project.yaml"
+    commit_manifest(root, indent_shape_block(
+        manifest.read_text(encoding="utf-8"), child, grandchild),
+        "Re-indent the shape block")
+    validators_are_green(root)
+    before = manifest.read_text(encoding="utf-8")
+    old_tree = load_yaml(manifest)["shape"]["digests"]["tree_sha256"]
+
+    result = apply(root, upstream_and_project)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    tree = tree_digest(upstream, target)
+    assert manifest.read_text(encoding="utf-8") == (
+        before.replace(f'commit: "{a}"', f'commit: "{target}"')
+        .replace(f'tree_sha256: "{old_tree}"', f'tree_sha256: "{tree}"'))
+    shape = load_yaml(manifest)["shape"]
+    assert shape["commit"].lower() == target
+    assert shape["digests"]["tree_sha256"].lower() == tree
+    validators_are_green(root)
+
+
+def test_a_layout_the_rewrite_cannot_carry_is_refused_as_its_own_fault(
+        root, upstream_and_project):
+    """A VALUE ON THE LINE BELOW ITS KEY reads, and validates, and is the
+    one layout a line rewrite cannot move: it replaces the key's line and
+    leaves the value's line behind, which the reader then refuses. Before
+    #208 that reached the validators, and `apply` relayed their lockstep
+    remedy — advance the gitlink — over a manifest the project had not
+    broken. The read-back refuses it first, by this tool's name, and the
+    tree is rolled back to the byte."""
+    a = upstream_and_project["a"]
+    manifest = root / "project.yaml"
+    text = manifest.read_text(encoding="utf-8")
+    folded = text.replace(f'  commit: "{a}"\n', f"  commit: >-\n    {a}\n", 1)
+    assert folded != text, "fixture: the scaffold's commit line was found"
+    commit_manifest(root, folded, "Fold the shape commit onto its own line")
+    validators_are_green(root)
+
+    result = apply(root, upstream_and_project)
+
+    assert_refused_and_unpinned(result, root, upstream_and_project,
+                                "update-manifest-unrecognised",
+                                "the fault is this tool's line rewrite",
+                                "unexpected indentation")
+    assert "update-validators-red" not in result.stderr
+    assert "advance the gitlink" not in result.stderr
+    assert manifest.read_bytes() == folded.encode("utf-8")
+    assert git("status", "--porcelain", cwd=root).stdout == ""
+
+
+def test_a_manifest_that_did_not_read_before_is_left_to_its_validators(
+        update_shape, upstream_and_project):
+    """THE READ-BACK BLAMES THIS TOOL ONLY WHEN THE FAULT IS ITS OWN. A
+    manifest the reader refused before a byte was rewritten was red before
+    `apply` ran; refusing it as `update-manifest-unrecognised` would blame
+    the rewrite for the project's own line. It is rewritten as before and
+    left to the validators, which name that line."""
+    text = (upstream_and_project["clone"] / "project.yaml").read_text(
+        encoding="utf-8")
+    broken = text.replace("\nkind: project-manifest\n",
+                          "\nkind: project-manifest\n\tstray: tab\n", 1)
+    assert broken != text, "fixture: the line to break was found"
+
+    new = update_shape.rewrite_manifest(broken, "c" * 40, "d" * 64,
+                                        update_shape.PROJECT_KIND)
+
+    assert '  commit: "' + "c" * 40 + '"' in new
+    assert "\tstray: tab" in new
+
+
 # --- drift the project introduced ------------------------------------------
 
 def edit_locally(root, rel: str) -> None:
@@ -1461,6 +1659,9 @@ def test_a_readme_the_os_will_not_write_refuses_and_rolls_the_tree_back(
 
     assert_refused_and_unpinned(result, root, upstream_and_project,
                                 "update-readme-unwritable", "README.md")
+    assert result.stderr.count("exactly as it was") == 1, (
+        "the rollback is claimed once, by the block listing what it put "
+        "back (#202), and not again in the refusal's own detail")
     assert readme.read_bytes() == before
     assert copied.read_bytes() == copied_before, (
         "the copies this command had already written are rolled back too")
