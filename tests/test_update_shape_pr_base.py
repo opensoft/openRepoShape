@@ -26,13 +26,14 @@ one seam `update-shape.py` reaches it by — nothing here touches a network.
 from __future__ import annotations
 
 import importlib.util
+import shlex
 import shutil
-import sys
 from types import SimpleNamespace
 
 import pytest
 
-from conftest import ORG, REPO, git
+from conftest import ORG, REPO, git, run_script
+from test_family import upstream_clone
 from test_update_shape import (CHANGED_SOURCE, PROJECT, UPSTREAM_FIX_LINE,
                                apply, commit_upstream_changes, next_line_of,
                                scaffold_upstream_and_project)
@@ -145,7 +146,9 @@ def gh_calls(update_shape, monkeypatch) -> list:
 def test_the_next_line_names_the_roots_tracking_branch_as_the_base(case,
                                                                    flags):
     """Both forms of the `gh pr create` the run prints: the bare `--branch`
-    one, which pushes first, and the `--branch --push` one, which has."""
+    one, which pushes first, and the `--branch --push` one, which has. Each
+    names the project's own repository as well, since the bare form's `gh`
+    runs wherever the line was pasted."""
     root = case.copy()
     branch = f"shape/base-{case.id}-{'push' if flags else 'plain'}"
     result = apply(root, case.project, "--branch", branch, *flags)
@@ -153,7 +156,8 @@ def test_the_next_line_names_the_roots_tracking_branch_as_the_base(case,
     line = next_line_of(result.stdout)
     assert "gh pr create" in line
     assert line.count("--base") == 1, line
-    assert line.endswith(f"--base {case.base} --head {branch}"), line
+    assert line.endswith(f"gh pr create --repo {ORG}/{PROJECT} --base "
+                         f"{case.base} --head {branch}"), line
 
 
 def test_the_next_line_after_a_push_names_the_repository_not_a_placeholder(
@@ -201,7 +205,8 @@ def test_the_pull_request_is_opened_against_the_base_the_next_line_names(
     assert opened_against == case.base
     assert opened_in == f"{ORG}/{PROJECT}"
     plain, branch = printed[()]
-    assert plain.endswith(f"--base {opened_against} --head {branch}"), plain
+    assert plain.endswith(f" && gh pr create --repo {opened_in} --base "
+                          f"{opened_against} --head {branch}"), plain
     pushed, branch = printed[("--push",)]
     assert pushed == (f"NEXT  gh pr create --repo {opened_in} --base "
                       f"{opened_against} --head {branch}"), pushed
@@ -260,10 +265,14 @@ def test_the_repository_is_read_where_open_pull_request_reads_it(
     assert update_shape.pull_request_repository(
         update_shape.load_yaml(tmp_path / kind.manifest), kind)[0] == repository
 
-    args = SimpleNamespace(branch="shape/x", push=True, pr=False)
-    update_shape.next_line(tmp_path, args, [], "0" * 40, [], kind)
-    assert capsys.readouterr().out.strip() == (
-        f"NEXT  gh pr create --repo {repository} --base main --head shape/x")
+    for push in (True, False):
+        args = SimpleNamespace(branch="shape/x", push=push, pr=False)
+        update_shape.next_line(tmp_path, args, [], "0" * 40, [], kind)
+        line = capsys.readouterr().out.strip()
+        assert line.endswith(f"gh pr create --repo {repository} --base main "
+                             "--head shape/x"), line
+        assert line.startswith("NEXT  gh pr create" if push else
+                               "NEXT  git -C "), line
 
 
 @pytest.mark.parametrize("kind_name, manifest_text, refusal", [
@@ -301,6 +310,10 @@ def test_a_manifest_naming_no_repository_refuses_pr_and_leaves_the_placeholder(
     update_shape.next_line(tmp_path, args, [], "0" * 40, [], kind)
     assert capsys.readouterr().out.strip() == (
         "NEXT  gh pr create --repo <org>/<Project> --base main --head shape/x")
+    args = SimpleNamespace(branch="shape/x", push=False, pr=False)
+    update_shape.next_line(tmp_path, args, [], "0" * 40, [], kind)
+    assert capsys.readouterr().out.strip().endswith(
+        " && gh pr create --base main --head shape/x")
 
 
 def test_nothing_in_the_next_line_names_a_base_when_the_pull_request_is_open(
@@ -311,3 +324,76 @@ def test_nothing_in_the_next_line_names_a_base_when_the_pull_request_is_open(
     update_shape.next_line(tmp_path, args, [], "0" * 40, [])
     assert capsys.readouterr().out.strip() == (
         "NEXT  the pull request is open; ask a human to review and merge it")
+
+
+@pytest.mark.parametrize("push", [True, False], ids=["branch-push", "branch"])
+def test_a_value_the_manifest_holds_is_quoted_for_the_shell_that_reads_the_line(
+        update_shape, tmp_path, capsys, push):
+    """The base and the repository come out of a manifest a human may have
+    edited, and the line is pasted into a shell. `validate-manifest.py` never
+    looks at `tracking_branch:`, so `a&b` reaches the line, and an unquoted
+    `&` would end the command there. What a shell READS from the line is
+    compared, not the text, so any quoting that says the same thing passes."""
+    (tmp_path / "project.yaml").write_text(
+        'tracking_branch: "a&b"\n'
+        "legs:\n"
+        "  - role: assembly\n"
+        '    repository: "acme/It\'s here"\n', encoding="utf-8")
+    args = SimpleNamespace(branch="shape/x", push=push, pr=False)
+    update_shape.next_line(tmp_path, args, [], "0" * 40, [])
+    line = capsys.readouterr().out.strip()
+    command = line.partition(" && ")[2] if not push else line[len("NEXT  "):]
+    assert shlex.split(command) == [
+        "gh", "pr", "create", "--repo", "acme/It's here", "--base", "a&b",
+        "--head", "shape/x"], line
+
+
+FAMILY_SOURCE = "templates/family-root/scripts/validate-family.py"
+FAMILY_FIX_LINE = "\n# An upstream fix that must reach every family.\n"
+HOLDER = "Contoso"
+
+
+@pytest.fixture(scope="module")
+def trunk_holder(tmp_path_factory) -> dict:
+    """A real family holder cut with `--tracking-branch trunk` into a local
+    bare repository, and an upstream that has since moved to B: the same
+    `upstream` / `b` shape `apply` from `test_update_shape.py` takes."""
+    base = tmp_path_factory.mktemp("pr-base-family")
+    created = run_script(
+        REPO / "scripts" / "family.py", "init", "--org", ORG,
+        "--family", HOLDER, "--created-by", "Test Human",
+        "--created-on", "2026-09-09", "--tracking-branch", "trunk",
+        "--local-remote-dir", str(base / "remotes"),
+        "--work-dir", str(base / "work"))
+    assert created.returncode == 0, created.stderr + created.stdout
+    upstream = upstream_clone(base / "openRepoShape")
+    commit_b = commit_upstream_changes(upstream, "Fix the family validator",
+                                       {FAMILY_SOURCE: FAMILY_FIX_LINE})
+    return {"upstream": upstream, "clone": base / "work" / HOLDER,
+            "b": commit_b}
+
+
+@pytest.mark.parametrize("flags", [(), ("--push",)],
+                         ids=["branch", "branch-push"])
+def test_a_family_holder_is_asked_in_its_own_manifest_after_the_commit(
+        trunk_holder, tmp_path, flags):
+    """`apply --branch` END TO END ON A HOLDER, which has `family.yaml` and no
+    `project.yaml`. `next_line` runs after the commit, inside the arm that
+    undoes the tree on a refusal; one that looked for `project.yaml` would
+    commit (and push), then refuse, and roll the working tree back under the
+    commit it had made. Here the run succeeds, prints the holder's own
+    repository and its own tracking branch, and leaves the tree clean."""
+    holder = tmp_path / HOLDER
+    shutil.copytree(trunk_holder["clone"], holder, symlinks=True)
+    branch = f"shape/family-{'push' if flags else 'plain'}"
+    result = apply(holder, trunk_holder, "--branch", branch, *flags)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"committed on {branch}" in result.stdout, result.stdout
+    line = next_line_of(result.stdout)
+    assert line.endswith(f"gh pr create --repo {ORG}/{HOLDER} --base trunk "
+                         f"--head {branch}"), line
+    assert line.startswith("NEXT  git -C " if not flags else
+                           "NEXT  gh pr create"), line
+    assert git("status", "--porcelain", cwd=holder).stdout == ""
+    assert git("rev-parse", "--abbrev-ref", "HEAD",
+               cwd=holder).stdout.strip() == branch

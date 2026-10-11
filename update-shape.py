@@ -2002,15 +2002,22 @@ def next_line(root: Path, args, paths: list[str], target: str,
         # opened lands on, read the way `open_pull_request` reads them (#209).
         manifest = load_yaml(root / kind.manifest)
         base = shlex.quote(tracking_branch_of(manifest))
+        repository, _ = pull_request_repository(manifest, kind)
+        # `--repo` in BOTH forms: the bare one's `gh` runs wherever the line
+        # is pasted, and `check`'s own NEXT line sends a human to paste from
+        # the openRepoShape checkout, whose `origin` is not this project's.
+        # Where the manifest names no repository, `--push` keeps the
+        # placeholder it always printed and the bare form leaves `--repo` off.
+        if repository:
+            where = f" --repo {shlex.quote(repository)}"
+        else:
+            where = " --repo <org>/<Project>" if args.push else ""
+        create = f"gh pr create{where} --base {base} --head {args.branch}"
         if args.push:
-            repository, _ = pull_request_repository(manifest, kind)
-            repository = shlex.quote(repository) if repository else \
-                "<org>/<Project>"
-            print(f"NEXT  gh pr create --repo {repository} --base {base} "
-                  f"--head {args.branch}")
-            return
-        print(f"NEXT  git -C {root} push -u origin {args.branch} && gh pr "
-              f"create --base {base} --head {args.branch}")
+            print(f"NEXT  {create}")
+        else:
+            print(f"NEXT  git -C {root} push -u origin {args.branch} && "
+                  f"{create}")
         return
     # A `git add` for the ADDITIONS only. A hint that a human pastes has to
     # work when they paste it, and `git commit -- <path>` refuses a path git
