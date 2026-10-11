@@ -1979,10 +1979,10 @@ def cmd_check(args) -> int:
     if plan.source_commit and source.commit != plan.source_commit:
         findings.append(
             f"FINDING plan-stale: the plan was written against "
-            f"{plan.source_commit[:12]} but {source.branch} is now at "
-            f"{source.commit[:12]}. Re-run `plan`: a coverage check against a "
-            "tree that has moved proves nothing about the tree that will be "
-            "split.")
+            f"{plan.source_commit[:12]} but {_spelled(source.branch)} is now "
+            f"at {source.commit[:12]}. Re-run `plan`: a coverage check "
+            "against a tree that has moved proves nothing about the tree that "
+            "will be split.")
 
     entry_findings, remediation = _entry_findings(plan, source)
     findings.extend(entry_findings)
@@ -2087,7 +2087,7 @@ def _refuse_an_unrunnable_plan(plan: Plan, source: Source) -> None:
         raise Refusal(
             "plan-stale",
             f"the plan was written against {plan.source_commit[:12]} and "
-            f"{source.branch} is now at {source.commit[:12]}",
+            f"{_spelled(source.branch)} is now at {source.commit[:12]}",
             "Remediation: re-run `plan`, re-answer anything new, then "
             "`check`. Splitting a tree the plan has not seen is how a path "
             "goes missing.")
@@ -2251,7 +2251,10 @@ def _index_entries(assembly: Path,
     disk's `core.ignorecase` says: the assembly is cloned on macOS and Windows
     too, where `Spec` and `spec` are ONE path, so it is refused on every disk,
     as #169 refuses case-only twins of the two leg paths. `-z`, for a path
-    git would otherwise quote.
+    git would otherwise quote. A name that is not UTF-8 keeps each byte as a
+    surrogate, as `Source.tree` keeps it, so the refusal spells the byte 0xFF
+    `\\xff`, as every other finding does (#212). Decoded with `replace`,
+    `a<0xFF>` and `a<0xFE>` both read `a<U+FFFD>`.
     """
     raw = git_out(["--icase-pathspecs", "ls-files", "-s", "-z", "--",
                    *pathspecs], cwd=assembly, binary=True)
@@ -2260,7 +2263,8 @@ def _index_entries(assembly: Path,
         if record:
             head, _, name = record.partition(b"\t")
             kind = INDEX_ENTRY_KINDS.get(int(head.split()[0], 8), "a file")
-            entries.append((kind, name.decode("utf-8", "replace")))
+            entries.append((kind, name.decode("utf-8",
+                                              "surrogateescape")))
     return entries
 
 

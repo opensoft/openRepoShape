@@ -310,6 +310,31 @@ def test_adopt_mount_occupied_spells_the_kept_path_under_the_mount(
     assert_one_readable_line(refusal.detail, char)
 
 
+def test_adopt_mount_occupied_spells_a_byte_that_is_not_utf8(adopter,
+                                                             tmp_path):
+    """`_index_entries` reads the index as `Source.tree` reads a tree: a byte
+    that is not UTF-8 is kept, so the refusal spells 0xFE `\\xfe`, as
+    `plan-uncovered` would. Decoded with `replace`, `a<0xFE>` and `a<0xFF>`
+    both read `a<U+FFFD>`. The entries go in with `git update-index
+    --index-info`, fed bytes, so no filesystem has to hold them."""
+    repo = tmp_path / "assembly"
+    repo.mkdir()
+    git_out(repo, "init", "-q")
+    blob = git_out(repo, "hash-object", "-w", "--stdin", stdin=b"x\n").strip()
+    git_out(repo, "update-index", "--index-info", stdin=b"".join(
+        b"100644 " + blob + b"\t" + name + b"\n"
+        for name in (b"spec/a\xfe", b"spec/a\xff")))
+    assert [adopter._entry_named(entry) for entry in
+            adopter._index_entries(repo, ["spec"])] == [
+        "`spec/a\\xfe` (a file)", "`spec/a\\xff` (a file)"]
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter._refuse_an_unmountable_path(repo, "spec")
+    assert caught.value.code == "adopt-mount-occupied"
+    assert caught.value.detail == (
+        "the assembly's index already holds paths under spec, the leg mount "
+        "path: `spec/a\\xfe` (a file) and 1 more")
+
+
 #: The root tree's two leg mounts, as `_verify` passes them to
 #: `_land_the_root_tree`: each gitlink the shape adds, at the plan's path.
 MOUNTS = {"spec": "spec", "code": "code"}
@@ -575,3 +600,64 @@ def test_execute_refuses_on_the_lines_check_prints(adopter, world, tmp_path):
     assert f"  {world.uncovered}" in said
     assert f"  {world.covered_twice}" in said
     assert not remotes.exists(), "not even the directory the legs go in"
+
+
+# --- `plan-stale`: the branch it names ------------------------------------
+
+#: The two characters above that git's ref-name rules let into a branch
+#: name: they refuse every ASCII control character, so a carriage return, a
+#: line feed and an ESC never reach `plan-stale`.
+REF_CHARACTERS = {name: CHARACTERS[name]
+                  for name in ("next-line", "line-separator")}
+
+
+@EACH_CHARACTER
+def test_execute_refuses_a_stale_plan_spelling_the_branch(adopter, char,
+                                                         spelled):
+    """`_refuse_an_unrunnable_plan`'s `plan-stale` names the branch the
+    source is read from. It is not a path, but it is a name a person chose,
+    printed on the line beside the commits."""
+    plan = adopter.Plan(Path("adoption-plan.yaml"), {
+        "kind": adopter.PLAN_KIND, "mode": "in-place",
+        "source": {"commit": "a" * 40},
+        "legs": {"spec_path": "spec", "code_path": "code"},
+        "paths": [{"path": "README.md", "leg": "root"}]})
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter._refuse_an_unrunnable_plan(
+            plan, Namespace(commit="b" * 40, branch=f"ma{char}in"))
+    assert caught.value.code == "plan-stale"
+    assert caught.value.detail == (
+        f"the plan was written against {'a' * 12} and `ma{spelled}in` is now "
+        f"at {'b' * 12}")
+    assert_one_readable_line(caught.value.detail, char)
+
+
+@pytest.fixture(scope="module", params=list(REF_CHARACTERS.values()),
+                ids=list(REF_CHARACTERS))
+def stale_world(request, tmp_path_factory):
+    """A plan with every question answered, then the source's branch renamed
+    to `ma<char>in` and moved on by one commit: `(plan, head, char,
+    spelled)`."""
+    char, spelled = request.param
+    base = tmp_path_factory.mktemp("stale")
+    source = make_source_repo(base / "Thing")
+    plan = base / "adoption-plan.yaml"
+    written = write_plan(source, plan, project=PROJECT)
+    assert written.returncode == 0, written.stderr + written.stdout
+    for path, leg in ANSWERS:
+        resolve(plan, path, leg)
+    git_out(source, "branch", "-m", f"ma{char}in")
+    old = git_out(source, "rev-parse", "HEAD").strip().decode()
+    head = commit_tree(source, f"{old}^{{tree}}", (old,))
+    git_out(source, "update-ref", "HEAD", head)
+    return plan, head, char, spelled
+
+
+def test_check_spells_the_branch_a_stale_plan_names(stale_world, tmp_path):
+    plan, head, char, spelled = stale_world
+    done = check_bytes(plan, tmp_path / "work")
+    assert done.returncode == 1, done.stderr + done.stdout
+    [stale] = [line for line in printed_lines(done.stderr)
+               if line.startswith("FINDING plan-stale: ")]
+    assert f" but `ma{spelled}in` is now at {head[:12]}. " in stale, stale
+    assert_one_readable_line(stale, char)
