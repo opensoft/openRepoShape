@@ -291,6 +291,51 @@ def test_both_legs_are_asked(adopter):
                                                   "--code-path"]
 
 
+# --- `_leg_findings` is never without the tree (the #166 merge) ------------
+
+#: A source path a `leg: root` entry keeps, as `Source.tree()` lists it.
+KEPT_ROW = ("src/app/main.py", "100644", "0" * 40, 1)
+
+
+def adoption_plan(adopter, legs: dict):
+    """An adoption plan in memory that keeps `src/` in the root."""
+    return adopter.Plan(Path("adoption-plan.yaml"), {
+        "kind": "adoption-plan", "mode": "in-place", "legs": legs,
+        "paths": [{"path": "src/", "leg": "root"}]})
+
+
+def test_leg_findings_reads_the_tree_it_is_given(adopter):
+    plan = adoption_plan(adopter, {"spec_path": "src", "code_path": "code"})
+    found = adopter._leg_findings(plan, [KEPT_ROW])
+    assert [f.split(":")[0] for f in found] == [f"FINDING {COLLIDES}"], found
+    assert adopter._leg_findings(plan, []) == []
+
+
+def test_leg_findings_takes_no_default_tree(adopter):
+    """#166's `_entry_findings` called `_leg_findings(plan)`. With a default
+    tree that merge ran, and a mount at a path the plan keeps in the root
+    checked ok again (the review's P3-1). A lost argument now raises."""
+    plan = adoption_plan(adopter, {"spec_path": "src", "code_path": "code"})
+    with pytest.raises(TypeError):
+        adopter._leg_findings(plan)
+
+
+@pytest.mark.parametrize("spec_path", [
+    pytest.param("src", id="canonical"),
+    pytest.param("src/", id="not-canonical"),
+])
+def test_none_is_no_tree_and_is_refused_beside_mount_paths(adopter,
+                                                           spec_path):
+    """`None` is the placement plan's "no source tree". Beside a `legs:`
+    mapping it raises, rather than reading as a source that keeps nothing in
+    the root: whether or not the paths are canonical, so whether or not the
+    tree would have been read."""
+    plan = adoption_plan(adopter, {"spec_path": spec_path,
+                                   "code_path": "code"})
+    with pytest.raises(TypeError, match="needs the source tree"):
+        adopter._leg_findings(plan, None)
+
+
 # --- `plan` -----------------------------------------------------------------
 
 @pytest.mark.parametrize("role, value, relation, named", SHAPE_CASES)

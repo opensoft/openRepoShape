@@ -562,18 +562,20 @@ def test_a_plan_whose_legs_is_not_a_mapping_gets_no_leg_path_finding(
     `tests/test_shape_doctor.py` hands it to `Plan` and `_leg_findings` to
     prove its entries are adoption-plan entries. `plan.legs.get(...)` on that
     list was an `AttributeError`; a list has no mount paths, so the leg-path
-    check reads nothing and says nothing, and the entries are still judged."""
+    check reads nothing and says nothing, and the entries are still judged.
+    There is no source tree here, and `None` says so: `_leg_findings` takes
+    no default for it (#172's merge with #166)."""
     plan = adopter.Plan(Path("placement-plan.yaml"), {
         "kind": "adoption-plan", "mode": "in-place", "legs": legs,
         "paths": [{"path": "spec/examples/", "leg": None,
                    "question": "is this acceptance evidence?"}]})
-    findings = adopter._leg_findings(plan)
+    findings = adopter._leg_findings(plan, None)
     assert [f.split(":")[0] for f in findings] == ["FINDING plan-unresolved"], \
         findings
     assert adopter._plan_leg_paths(plan) == (("legs.spec_path", "spec"),
                                              ("legs.code_path", "code"))
     plan.entries[0]["leg"] = "spec"
-    assert adopter._leg_findings(plan) == []
+    assert adopter._leg_findings(plan, None) == []
 
 
 # --- `_checked_plan_values`, which is what `execute` asks ------------------

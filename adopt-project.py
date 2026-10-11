@@ -1742,7 +1742,7 @@ def _coverage_findings(entry_paths: list[str], tree_paths: list[str]) -> list[st
     return findings
 
 
-def _leg_findings(plan: Plan, tree=()) -> list[str]:
+def _leg_findings(plan: Plan, tree: list | None) -> list[str]:
     """`leg:` is answered with one of the four words, each leg's mount path
     is canonical (#169), and neither overlaps a path the assembly root holds
     (#172).
@@ -1751,6 +1751,15 @@ def _leg_findings(plan: Plan, tree=()) -> list[str]:
     reads this function reports a bad path from the one place that knows what
     a canonical one is. `tree` is the source's, as `Source.tree()` lists it:
     the paths the plan keeps in the root are read out of it.
+
+    `tree` HAS NO DEFAULT, on purpose. With one, `()`, #166's
+    `_entry_findings` called this with no tree, the merge of the two
+    branches ran, and the root-kept half went quiet: a mount at a path the
+    plan keeps in the root checked ok again (#172's review, P3-1). A lost
+    argument is now a `TypeError`. `None` says there is NO source tree,
+    which is true only of the doctor's PLACEMENT plan, whose `legs:` is a
+    list with no mount path to ask about; beside a `legs:` mapping it raises
+    too, rather than reading as a source that keeps nothing in the root.
     """
     findings: list[str] = []
     # Only a `legs:` MAPPING has mount paths to check. The doctor's PLACEMENT
@@ -1758,6 +1767,11 @@ def _leg_findings(plan: Plan, tree=()) -> list[str]:
     # no `spec_path`), and it asks this function only about its entries; a
     # finding about leg paths there would name a key the plan never had.
     if isinstance(plan.legs, dict):
+        if tree is None:
+            raise TypeError(
+                "_leg_findings: a plan with mount paths is asked about the "
+                "source paths it keeps in the root, so it needs the source "
+                "tree, and was given None")
         findings = [f"FINDING plan-bad-leg-path: {problem}"
                     for problem in leg_path_problems(*_plan_leg_paths(plan))]
         # An overlap is a statement about two PATHS, so it is asked only of
