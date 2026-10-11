@@ -878,13 +878,72 @@ def _build_assembly_root(args, values: dict, names: dict, repositories: dict,
     materialized = materialize_assembly_root(SHAPE_ROOT, assembly, values,
                                              neutral_pins=pins)
 
-    run(["git", "init", "-q", "-b", args.tracking_branch, str(assembly)])
+    # NO TEMPLATE (#229). `git init` copies the operator's template
+    # (`init.templateDir`, or `GIT_TEMPLATE_DIR`) into `.git`, and one that
+    # holds a `modules/<leg path>` store, as a copy of a working Triad root's
+    # `.git` does, plants `.git/modules/<leg path>`. `git submodule add
+    # --force` below REACTIVATES a store that is already there ("Reactivating
+    # local git directory") where it would refuse without `--force`, so the
+    # mount took the STRANGER's store: exit 0, a pushed root whose gitlink is
+    # that store's commit and not the leg's tip, and a recursive clone that
+    # fails. The empty `--template=` is git's documented way to use none. The
+    # root is a build directory this tool fills and pushes, so no template
+    # content belongs in it, and whoever clones the pushed root still gets
+    # their template from `git clone`.
+    run(["git", "init", "-q", "--template=", "-b", args.tracking_branch,
+         str(assembly)])
     # `git submodule add` from the LEG WORKING TREE, then the recorded URL is
     # rewritten to the canonical remote: this way the scaffold never depends on
     # a push having propagated, and `--no-push` produces the same tree.
     for role, path in (("spec", args.spec_path), ("code", args.code_path)):
+        # `--force`, git's documented way past an ignore rule (git's flag, not
+        # one of this tool's: it still has none), for the reason
+        # `stage_written` forces what the materializer wrote (#175). The root
+        # is a fresh `git init` the materializer has just filled, so two sets
+        # of rules reach the MOUNT PATH: the shape's own `.gitignore`, copied
+        # into the root (`__pycache__/`, `*.py[cod]`, `.venv/`, `.DS_Store`),
+        # and the operator's own excludes. A path either matches (`__pycache__`
+        # as `--code-path`, or the DEFAULT `spec` under a global
+        # `core.excludesFile` that names it) was refused HERE, after
+        # `_create_remotes` and `_seed_legs` had made all three repositories
+        # and pushed both legs: three repositories and no project, a corrected
+        # re-run met `scaffold-remote-exists`, and `--dry-run`, which asks no
+        # ignore rule anything, had planned it (#229; #174 and #200 for the
+        # same cure in `adopt-project.py`). A gitlink once added is TRACKED,
+        # so no rule touches it again.
+        # Besides the ignore rule, `--force` changes three things in git 2.43,
+        # and none can arise here, so there is no guard like adopt's
+        # `_refuse_an_unmountable_path`:
+        #   - a `.git/modules/<path>` already there is REACTIVATED instead of
+        #     refused. `_refuse_existing_trees` refuses a
+        #     `<work-dir>/<assembly>` that is not empty, so no `.git` was
+        #     there when the run began, and the root is `git init`ed with no
+        #     template (above), so `.git/modules` holds nothing before the
+        #     first mount and only that mount's store at the second.
+        #   - a GITLINK the index already holds at the path is accepted
+        #     instead of refused, and a repository already checked out there
+        #     is REUSED instead of the leg cloned. (A regular file or a
+        #     tracked directory there is refused either way.)
+        #     When the second mount runs, the index holds `.gitmodules` and
+        #     the first gitlink and nothing else (the materialized files are
+        #     staged after both, `stage_written`). No leg path can be
+        #     `.gitmodules`, which `refuse_bad_leg_paths` refuses (#201), and
+        #     the two paths are different and not nested, whatever the case
+        #     (#169, #179), so the second add meets neither.
+        #   - git's early dry run of the path is skipped. That dry run is what
+        #     refuses a path beyond a symlink or inside a submodule before
+        #     anything is cloned. With `--force` git still refuses both, but
+        #     later: a path beyond a symlink only at the last step, after the
+        #     leg has been cloned into the link's target. The materializer
+        #     writes only regular files, and a mount inside the other is the
+        #     nesting that was just refused.
+        # A leg AT a path the shape wrote (`contracts`, `project.yaml`) is a
+        # collision of another kind: refused up front by the collision check
+        # where there is one, and by git at the mount where there is not.
+        # `--force` changes neither.
         run(["git", "-c", "protocol.file.allow=always", "submodule", "add",
-             "-q", str(work_root / names[role]), path], cwd=assembly)
+             "--force", "-q", str(work_root / names[role]), path],
+            cwd=assembly)
         run(["git", "config", "-f", ".gitmodules", f"submodule.{path}.url",
              urls[role]], cwd=assembly)
         run(["git", "remote", "set-url", "origin", urls[role]],
