@@ -29,6 +29,17 @@ gate would have made the shape a dependency rather than a shape. The copies are
 digest-pinned in `contracts/shape-pin.yaml`, so "which openRepoShape is this a
 copy of, and has anyone edited it since" both have answers.
 
+WHAT THE NEW PROJECT MUST BE ABLE TO HOLD (#258, #261). The manifest is
+rendered from the values the run is about to use, read with the project's own
+YAML reader and put through the validator the template ships, BEFORE anything
+is created and under `--dry-run` alike. A value the reader turns into something
+else (`--id null`, `--tracking-branch true` or `007`: the template writes them
+bare) is refused as `scaffold-manifest-misread`, and one the validator refuses
+(a blank `--elected-by`, `--reference` or `--name`, an `--org` it cannot hold)
+as `scaffold-manifest-invalid`, in the validator's own words; an
+`--elected-on` is read in the validator's form only, on every Python. A name
+that cannot be a directory's is refused as `scaffold-name-too-long`.
+
 IDEMPOTENCY. It refuses to write into a remote or a working directory that
 already exists. There is no --force: re-running over a live project is not a
 scaffold, and the failure mode of getting it wrong is silent data loss.
@@ -64,6 +75,12 @@ from shape_materialize import (  # noqa: E402
 )
 # The leg-path rule `adopt-project.py` asks of its own paths (#179).
 from shape_materialize import refuse_bad_leg_paths  # noqa: E402
+# What the new project's own reader and `validate-manifest.py` would make of
+# the values written into its manifest, and whether a repository's name can
+# be a directory's: asked before anything is created (#258, #261).
+from shape_materialize import (  # noqa: E402
+    refuse_manifest_values, refuse_unstorable_names,
+)
 from shape_advisory import scaffold_lines  # noqa: E402
 # The shape half of the leg-path collision rule, which `adopt-project.py`
 # asks of its own mount paths (#172), imported as one unit (#197), with the
@@ -71,6 +88,15 @@ from shape_advisory import scaffold_lines  # noqa: E402
 from shape_materialize import (  # noqa: E402
     assembly_root_paths, neutral_pin_path, shape_path_collisions,
 )
+
+#: How a refusal names each value the manifest records (#258, #261). The leg
+#: paths are not here: `refuse_bad_leg_paths` asks for them (#179, #225).
+MANIFEST_FLAGS = {
+    "PROJECT_ID": "--id", "PROJECT_NAME": "--name",
+    "ELECTED_BY": "--elected-by", "ELECTED_ON": "--elected-on",
+    "REFERENCE": "--reference", "VISIBILITY": "--visibility",
+    "TRACKING_BRANCH": "--tracking-branch", "ORG": "--org",
+}
 
 #: The pin argument: `openGlass@<40 hex>`, optionally organisation-qualified.
 PIN_ARG_RE = re.compile(r"^(?P<name>[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?)@(?P<commit>[0-9a-fA-F]{40})$")
@@ -255,7 +281,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--org", required=True)
     parser.add_argument("--project", required=True,
                         help="the assembly-root name, e.g. Atlas")
-    parser.add_argument("--id", default=None, help="lowercase project id")
+    parser.add_argument("--id", default=None,
+                        help="lowercase project id (default: --project "
+                             "lowercased). One the project's YAML reader "
+                             "would read as another type -- `null`, `true`, "
+                             "`007` -- is refused.")
     parser.add_argument("--name", default=None, help="display name")
     parser.add_argument("--visibility", choices=VISIBILITY_CHOICES,
                         default=None,
@@ -272,7 +302,10 @@ def main(argv: list[str] | None = None) -> int:
                              "--pin itself (owner/openProduct@<sha>) to "
                              "override it for one pin without changing this "
                              "default for the others.")
-    parser.add_argument("--elected-by", default=None)
+    parser.add_argument("--elected-by", default=None,
+                        help="the human electing the shape (default: "
+                             "GIT_AUTHOR_NAME, then `git config user.name`); "
+                             "not blank")
     parser.add_argument("--elected-on", default=None, help="YYYY-MM-DD")
     parser.add_argument("--reference", default=None,
                         help="the document the election followed. Default: "
@@ -283,7 +316,11 @@ def main(argv: list[str] | None = None) -> int:
                              "--elected-on chooses it, and a back-dated "
                              "project does not claim it followed a document "
                              "that did not exist yet.")
-    parser.add_argument("--tracking-branch", default="main")
+    parser.add_argument("--tracking-branch", default="main",
+                        help="the branch every repository is created on "
+                             "(default: main). One the project's YAML reader "
+                             "would read as another type -- `null`, `true`, "
+                             "`007`, `2026` -- is refused.")
     parser.add_argument("--spec-path", default="spec")
     parser.add_argument("--code-path", default="code")
     parser.add_argument("--dry-run", action="store_true")
@@ -482,6 +519,35 @@ def _refuse_colliding_leg_paths(spec_path: str, code_path: str,
     if collisions:
         raise Refusal("scaffold-leg-path-collides", " ".join(collisions),
                       _leg_collision_remediation(neutral_pins))
+
+
+def _refuse_unholdable_manifest(args, values: dict, policy) -> None:
+    """The manifest this run would write is one the project can hold, or this
+    refuses (#258, #261), before a work directory or a remote exists and
+    under `--dry-run` alike.
+
+    `values` is the whole substitution table, so the project's own YAML
+    reader and `validate-manifest.py` are asked about the `project.yaml` the
+    run is about to write: a value the reader turns into something else
+    (`--id null`, `--tracking-branch 007`) is `scaffold-manifest-misread`, and
+    one the validator refuses (a blank `--elected-by`, `--org test+org`) is
+    `scaffold-manifest-invalid`. `shape_materialize.refuse_manifest_values`
+    asks both, and says why each is refused.
+
+    A value a flag did not supply is named by where it came from, so the
+    sentence does not point at a flag nobody typed.
+    """
+    flags = dict(MANIFEST_FLAGS)
+    for key, flag, given, source in (
+            ("PROJECT_ID", "--id", args.id, "--project lowercased"),
+            ("PROJECT_NAME", "--name", args.name, "--project"),
+            ("ELECTED_BY", "--elected-by", args.elected_by,
+             "GIT_AUTHOR_NAME or `git config user.name`")):
+        if not given:
+            flags[key] = f"{flag} (not given, so {source})"
+    refuse_manifest_values(
+        "scaffold", values, policy, flags,
+        "Nothing was created, and `--dry-run` refuses the same.")
 
 
 def _elector(args) -> str:
@@ -1038,6 +1104,13 @@ def _scaffold(args) -> int:
 
     names = {"assembly": project, "spec": f"{project}-spec",
              "code": f"{project}-code"}
+    # Each name is a directory's too, in the work directory and, under
+    # `--local-remote-dir`, as a bare `<name>.git` (#261): a `--project` of
+    # 247 to 250 characters died in `Path.exists` with a traceback, and one
+    # of 251 or more in the work directory, where adopt's `check` refused it.
+    refuse_unstorable_names(
+        "scaffold-name-too-long", list(names.values()),
+        list(names.values()) if args.local_remote_dir is not None else [])
     policy = NamingPolicy.load(SHAPE_ROOT / "contracts" / "repository-naming.yaml")
     if not PROJECT_ID_RE.match(project_id):
         raise Refusal("scaffold-bad-id",
@@ -1098,6 +1171,12 @@ def _scaffold(args) -> int:
         "SPEC_NAMING": naming_block(policy, names["spec"], "spec", declared_pins),
         "CODE_NAMING": naming_block(policy, names["code"], "code", declared_pins),
     }
+
+    # THE PROJECT MUST BE ABLE TO HOLD WHAT IS ABOUT TO BE WRITTEN (#258,
+    # #261): the manifest is rendered from this very table and put through
+    # the project's own reader and `validate-manifest.py`, so what its first
+    # bootstrap would refuse is refused here, before the plan is printed.
+    _refuse_unholdable_manifest(args, values, policy)
 
     _print_plan(args, values, names, repositories, urls, local, policy,
                 declared_pins, chain, link_pins, pins)

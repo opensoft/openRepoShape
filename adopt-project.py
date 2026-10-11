@@ -49,6 +49,17 @@ without knowing whether the specification cites it. `execute` REFUSES while
 any `leg:` is still null, and on every other finding `check` reports, before
 it has created a leg repository or pushed anything.
 
+THE NEW PROJECT MUST BE ABLE TO HOLD WHAT `execute` WRITES INTO IT (#261).
+`execute` puts the plan's values into the root's `project.yaml`, and the
+project's own `scripts/validate-manifest.py` judges them at its first
+bootstrap. So `plan` refuses, `check` finds and `execute` refuses a value that
+validator would refuse -- a blank `elected_by` or `reference`, an `elected_on`
+that is not `YYYY-MM-DD`, an organisation name it cannot hold, a `visibility`
+other than `private`, `public` or `internal` -- asking the validator itself,
+loaded from the template it ships, and not a copy of its rules. A name that
+cannot be a directory's (a `--project` that makes a repository name of 256
+bytes with its `.git`) is refused the same way.
+
 WHY `git filter-repo` AND NOT A VENDORED COPY. Extracting history correctly is
 a solved problem with one correct implementation, and a vendored copy of it
 would be a second implementation that drifts. It is a hard REQUIREMENT here,
@@ -121,6 +132,13 @@ import shape_advisory  # noqa: E402
 from shape_materialize import (  # noqa: E402
     MOVE_THE_LEG, first_and_more as _first_and_more, path_overlap as _overlap,
     shape_path_collisions,
+)
+# What the project's own `validate-manifest.py` would say of the values written
+# into its manifest, and whether a repository's name can be a directory's:
+# asked of the plan's values by `plan`, `check` and `execute` (#261).
+from shape_materialize import (  # noqa: E402
+    MANIFEST_INVALID_REMEDIATION, manifest_value_problems,
+    refuse_manifest_values, refuse_unstorable_names,
 )
 
 #: The naming policy this tool classifies leg names against. One constant,
@@ -1421,6 +1439,143 @@ def _checked_plan_inputs(args, source: Source,
     return names, pins
 
 
+# ---------------------------------------------------------------------------
+# The project must be able to hold what `execute` writes into it (#261)
+# ---------------------------------------------------------------------------
+#
+# `execute` puts the plan's values into the assembly root's `project.yaml`, and
+# the project's own `scripts/validate-manifest.py` then judges them at its
+# first bootstrap. Nothing here asked it first, so a blank `--elected-by` or
+# `--reference`, `--elected-on 2026-W41-6` or `20261011` (which
+# `date.fromisoformat` reads from Python 3.11), `--org test+org`, and a plan
+# edited to `visibility: secret` or `elected_by: null`, each ended
+# `adoption verified` over a project whose own gate was red, with both legs
+# already pushed; the way back was an edit to `project.yaml`, which AGENTS.md
+# tells an agent never to make to turn a row green.
+#
+# `plan` (a flag), `check` (a FINDING) and `execute` (a refusal, through
+# `_entry_findings`, before any leg exists) ask ONE question of the values: the
+# `project.yaml` `execute` would write from them, put through the validator the
+# template ships, through `shape_materialize.manifest_value_problems`, which
+# loads that validator rather than copying a rule of it. The plan is read the
+# way `execute` reads it (`_template_values`), so the table is the one `execute`
+# renders from. Only the validator's question is asked here: whether the
+# project's YAML reader reads a value back as the text it is -- `--id true`,
+# `--tracking-branch 007` -- is #181's, and the scaffold asks both.
+
+#: How `plan` names each value the manifest records: the flag a person typed.
+MANIFEST_FLAGS = {
+    "PROJECT_ID": "--id", "ELECTED_BY": "--elected-by",
+    "ELECTED_ON": "--elected-on", "REFERENCE": "--reference",
+    "VISIBILITY": "--visibility", "TRACKING_BRANCH": "--tracking-branch",
+    "ORG": "--org",
+}
+
+#: And how `check` and `execute` name the same value: its key in the plan.
+MANIFEST_PLAN_KEYS = {
+    "PROJECT_ID": "id", "ELECTED_BY": "elected_by",
+    "ELECTED_ON": "elected_on", "REFERENCE": "reference",
+    "VISIBILITY": "visibility", "TRACKING_BRANCH": "tracking_branch",
+    "ORG": "org",
+}
+
+
+def _flag_plan(args, names: dict, pins: list) -> "Plan":
+    """The plan `plan` is about to write, as `Plan` reads one: the values it
+    records, under the keys `render_plan` writes them to.
+
+    Built from the values and not read back from the file, which lists every
+    path of the source: `plan` asks what `check` will ask of the same keys,
+    before a file exists to read. `tests/test_adopt_manifest_values.py` holds
+    the two to the same keys.
+    """
+    return Plan(Path(args.out), {
+        "kind": PLAN_KIND, "mode": "in-place", "project": args.project,
+        "org": args.org, "id": args.id, "visibility": args.visibility,
+        "tracking_branch": args.tracking_branch,
+        "elected_by": args.elected_by, "elected_on": args.elected_on,
+        "reference": args.reference,
+        "legs": {**names, "spec_path": args.spec_path,
+                 "code_path": args.code_path},
+        "pins": list(pins)})
+
+
+def _manifest_values(plan: Plan, naming: NamingPolicy) -> dict | None:
+    """The substitution table `execute` renders the manifest from, as it
+    would build it from this plan; None where the plan's names are not ones
+    the naming policy classifies, which `check` and `execute` report in their
+    own words (`_check_names`) and the manifest cannot be rendered without, or
+    where this tool's own checkout cannot name its revision (below).
+
+    `_template_values` is asked, not copied, so the table cannot differ from
+    `execute`'s. The four leg commits and digests are not known before the
+    legs exist and are not in the manifest; a refusal of the plan's own names,
+    id, organisation or leg paths is raised here as it is by `check` and
+    `execute` a few lines later.
+    """
+    if not isinstance(plan.legs, dict):
+        # The doctor's PLACEMENT plan writes `legs:` as a list (see
+        # `_plan_leg_path`): it names no repositories, so there is no
+        # manifest to render from it.
+        return None
+    names = plan.names()
+    pins = set(plan.pins)
+    try:
+        _check_names(naming, names, pins)
+    except Refusal:
+        return None
+    org = checked_value("org", plan.get("org"))
+    repositories = {role: f"{org}/{name}" for role, name in names.items()}
+    (_, spec_path), (_, code_path) = _plan_leg_paths(plan)
+    try:
+        shape_commit = git_out(["rev-parse", "HEAD"], cwd=SHAPE_ROOT).lower()
+    except Refusal:
+        # No checkout to read a revision from: `execute` cannot run either,
+        # and says so in its own words where it reads one. `plan` and `check`
+        # never needed one and are not made to.
+        return None
+    return _template_values(
+        plan, names, repositories, {"assembly": ""}, str(spec_path),
+        str(code_path), str(plan.get("tracking_branch", "main")), {}, {},
+        shape_commit, pins, naming)
+
+
+def _manifest_findings(plan: Plan) -> tuple[list[str], list[str]]:
+    """What the project's own validator would refuse of this plan's values,
+    as `check` prints them (one FINDING each), and what it prints once after
+    them. `[]` and `[]` when it would pass, or when the plan's names are
+    refused in their own words (`_manifest_values`)."""
+    naming = NamingPolicy.load(NAMING_POLICY)
+    values = _manifest_values(plan, naming)
+    if values is None:
+        return [], []
+    problems = manifest_value_problems(values, naming, MANIFEST_PLAN_KEYS,
+                                       misreads=False)
+    if not problems:
+        return [], []
+    return ([f"FINDING plan-manifest-invalid: {sentence}"
+             for _, sentence in problems],
+            [f"{MANIFEST_INVALID_REMEDIATION} `execute` writes the plan's "
+             "values into the project's `project.yaml` as they stand, so "
+             "correct each one named here in the plan, or re-run `plan` with "
+             "a value the validator accepts."])
+
+
+def _refuse_unholdable_values(args, names: dict, pins: list,
+                              naming: NamingPolicy) -> None:
+    """`plan` refuses, before it writes a file, what `check` would find in the
+    plan it is about to write (#261): the three repository names it derives,
+    held to `checked_value` as `check` holds `legs:` (a `--project` of 251 to
+    255 characters planned, then `check` refused `legs.spec`), and the
+    manifest's values, through the one question `check` asks of them."""
+    plan = _flag_plan(args, names, pins)
+    values = _manifest_values(plan, naming)
+    if values is not None:
+        refuse_manifest_values(
+            "adopt", values, naming, MANIFEST_FLAGS,
+            "No plan was written.", misreads=False)
+
+
 def _print_triad_advisory(path: Path, commit: str | None = None) -> None:
     """The Triad advisory, once, about the repository this run reads.
 
@@ -1508,6 +1663,7 @@ def cmd_plan(args) -> int:
     naming = NamingPolicy.load(NAMING_POLICY)
 
     names, pins = _checked_plan_inputs(args, source, naming)
+    _refuse_unholdable_values(args, names, pins, naming)
 
     tree = source.tree()
     # WHAT THE RULES IMPLY is read from `walk`'s entries, BEFORE
@@ -2134,8 +2290,10 @@ def _entry_findings(plan: Plan, source: Source
     findings = (_coverage_findings([str(e.get("path")) for e in plan.entries],
                                    [path for path, _, _, _ in tree])
                 + _leg_findings(plan, tree))
+    value_findings, value_remediation = _manifest_findings(plan)
     submodule_findings, remediation = _submodule_findings(plan, source, tree)
-    return findings + submodule_findings, remediation
+    return (findings + value_findings + submodule_findings,
+            value_remediation + remediation)
 
 
 def _topics_line(topic: str, local: bool) -> str:
@@ -2653,6 +2811,14 @@ def _repository_urls(args, plan: Plan, names: dict,
     local = args.local_remote_dir is not None
     org = checked_value("org", plan.get("org"))
     repositories = {role: f"{org}/{name}" for role, name in names.items()}
+    # Each name is a directory's too: the work directory's for all three, and
+    # under `--local-remote-dir` a bare `<name>.git` for the two new legs. A
+    # name of 247 to 250 characters passed every check and died in
+    # `Path.exists` with `File name too long`, a traceback, before any leg
+    # existed (#261).
+    refuse_unstorable_names(
+        "adopt-name-too-long", list(names.values()),
+        [names["spec"], names["code"]] if local else [])
     if local:
         # NOT created yet: nothing exists on disk until the human has said
         # yes, so a refused run leaves the directory it would have used
@@ -3622,7 +3788,9 @@ def main(argv: list[str] | None = None) -> int:
     plan.add_argument("--id", default=None)
     plan.add_argument("--visibility", choices=VISIBILITY_CHOICES,
                       default="private")
-    plan.add_argument("--elected-by", default=None)
+    plan.add_argument("--elected-by", default=None,
+                      help="the human electing the shape (default: `git "
+                           "config user.name`); not blank")
     plan.add_argument("--elected-on", default=None, help="YYYY-MM-DD")
     plan.add_argument("--reference", default=None,
                       help="the document the election followed. Default: "
