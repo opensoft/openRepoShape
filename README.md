@@ -1114,19 +1114,19 @@ OWN `scripts/validate-manifest.py` and `scripts/validate-pins.py` when it
 carries them — they are the pinned copies, which is the point — else the
 template copies, and the row says which answered), **manifest kinds** (every
 `kind:`-bearing manifest in the root against a registry, so a `contracts/*.yaml`
-nothing validates is a finding by name rather than a silence), **shape
-currency** (`update-shape.py check`'s per-file verdicts, summarised),
-**legs** (each one mounted, and its checked-out commit against the pin, with
-no fetch), **leg shape files** (each leg's `AGENTS.md`, `CLAUDE.md` and
-`.gitignore` against `templates/<role>-root/` — a comparison and not a gate,
-because no leg file is pinned anywhere), **placement** (every tracked path of
-every leg, against the path policy), **agent files**, and **machine**. A
-FAMILY holder gets **family**, **manifest kinds**, **shape currency**,
-**placement** (`n/a` — a holder has no legs of its own), **members** and
-**machine**; a directory that is neither gets what it is CALLED under the
-naming policy, what IS in it, and the way in — and a repository the advisory
-is not silent about gets the **Triad** row, status `advisory`: the preference
-said once and stepped over by the verdict (a leg gets its assembly root).
+nothing validates is a finding by name rather than a silence, and so is a
+`family.yaml` beside `project.yaml`), **shape currency** (`update-shape.py
+check`'s per-file verdicts, summarised), **legs** (each one mounted, and its
+checked-out commit against the pin, with no fetch), **leg shape files** (each
+leg's `AGENTS.md`, `CLAUDE.md` and `.gitignore` against `templates/<role>-root/`
+— a comparison and not a gate: no leg file is pinned anywhere), **placement**
+(every tracked path of every leg, against the path policy), **agent files**, and
+**machine**. A FAMILY holder gets **family**, **manifest kinds**, **shape
+currency**, **placement** (`n/a` — a holder has no legs of its own), **members**
+and **machine**; a directory that is neither gets what it is CALLED under the
+naming policy, what IS in it, and the way in — and a repository the advisory is
+not silent about gets the **Triad** row, status `advisory`: the preference said
+once and stepped over by the verdict (a leg gets its assembly root).
 
 Every row is `ok`, `note`, `FINDING` or `n/a` — or `advisory`, the Triad row
 alone — and every one that is not `ok` names the exact command that fixes it,
