@@ -310,7 +310,9 @@ try:
     #: `scripts/family.py` -- the two tools that WRITE these trailers -- both
     #: import it already, and a next command that named a different lane than
     #: the commit it asks for would be worse than one that named none.
-    from shape_materialize import lane_trailer_argument  # noqa: E402
+    from shape_materialize import (  # noqa: E402
+        escape_what_stdout_cannot_encode, lane_trailer_argument,
+    )
 except ImportError as exc:  # pragma: no cover - exercised as a subprocess
     sys.exit(not_in_the_standard(f"scripts/shape_materialize.py ({exc})"))
 
@@ -990,6 +992,124 @@ def manifest_candidates(root: Path) -> list[Path]:
 LABEL_MANIFEST_KINDS = "manifest kinds"
 
 
+def gitlinks_under(root: Path, directory: str) -> list[str]:
+    """Every gitlink the index records under `directory/`, at stage 0.
+
+    THE INDEX, the listing `recorded_gitlink` asks first, and `-z` so a name
+    git would otherwise quote comes back as itself. A conflicted path is
+    skipped here for the reason that helper skips it: stages 1, 2 and 3 are
+    nobody's next commit. A `directory` that is empty, absolute -- in
+    either platform's spelling -- or climbs with `..` lists nothing, rather
+    than every gitlink in the root -- the two legs included -- under a
+    members directory that is not one.
+    """
+    clean = directory.strip().rstrip("/")
+    if (not clean or clean.startswith(("/", "\\"))
+            or re.match(r"[A-Za-z]:[\\/]", clean)
+            or any(part in ("", ".", "..") for part in clean.split("/"))):
+        return []
+    try:
+        listing = git_out(["ls-files", "-s", "-z", "--", clean], cwd=root)
+    except (Refusal, OSError, ValueError):
+        return []
+    found = []
+    for record in listing.split("\0"):
+        meta, _, name = record.partition("\t")
+        fields = meta.split()
+        if (len(fields) == 3 and fields[0] == GITLINK_MODE
+                and fields[2] == "0" and name.startswith(clean + "/")):
+            found.append(name)
+    return found
+
+
+def family_beside_project(ctx: Context, data: dict) -> tuple[str, dict]:
+    """A `family.yaml` an ASSEMBLY ROOT carries: the sentence, and the facts.
+
+    #211. `Context` reads ONE manifest per root and `project.yaml` wins, so
+    a `family.yaml` committed beside it -- hand-copied or mis-merged; no tool
+    here writes both -- was listed by `check_manifest_kinds` as a manifest
+    whose kind "has a registered validator". It has one, `validate-family.py`,
+    and NOTHING RUNS IT HERE: the `family` check applies to a holder, and an
+    assembly root's own gate is `validate-manifest.py` and `validate-pins.py`.
+    A family holder is not a project -- no `project.yaml`, no legs (README,
+    "Families") -- so a root declaring both is a manifest travelling with no
+    gate behind it, which is the very case this row exists to report. That
+    is why it is a FINDING even when every member below is in lockstep.
+
+    AND THE MEMBERS ARE ASKED WHAT THE FAMILY'S OWN TWO GATES ASK, with
+    their helper rather than a second reader. Each row it pins is looked up
+    with `recorded_gitlink` -- the function `validate-family.py` refuses a
+    row by (`member-gitlink-absent`, `member-gitlink-mismatch`) -- and each
+    gitlink under the members directory that no row names is the state
+    `family.py add` refuses to mount over (`member-path-taken`). That gate
+    stops at the first absent gitlink; this names every one, because a
+    reader told about IRRS and not IRSS fixes one and runs it again.
+
+    Rows and paths default exactly as `member_state` defaults them, so this
+    and the holder's `members` row cannot disagree about where a member is.
+    """
+    members = data.get("members")
+    rows = ([row for row in members if isinstance(row, dict)]
+            if isinstance(members, list) else [])
+    members_dir = str(data.get("members_dir") or "members")
+    entries: list[dict] = []
+    problems: list[str] = []
+    for row in rows:
+        project = str(row.get("project") or "?")
+        rel = str(row.get("path") or f"{members_dir}/{project}")
+        pin = row.get("pin") if isinstance(row.get("pin"), dict) else {}
+        pinned = str(pin.get("commit") or "").lower()
+        pinned = pinned if COMMIT_RE.match(pinned) else None
+        try:
+            gitlink = recorded_gitlink(ctx.root, rel)
+        except (OSError, ValueError):
+            gitlink = None
+        if gitlink is None:
+            state = "no-gitlink"
+            problems.append(f"{rel} has no gitlink (mode {GITLINK_MODE})")
+        elif pinned is None:
+            state = "no-pin"
+            problems.append(f"{project}'s row carries no 40-hex "
+                            "`pin.commit` to compare against")
+        elif gitlink != pinned:
+            state = "off-pin"
+            problems.append(f"{rel} records gitlink {gitlink[:12]} where "
+                            f"{FAMILY_MANIFEST} pins {pinned[:12]}")
+        else:
+            state = "at-pin"
+        entries.append({"project": project, "path": rel, "pin": pinned,
+                        "gitlink": gitlink, "state": state})
+    declared = {entry["path"] for entry in entries}
+    undeclared = [name for name in gitlinks_under(ctx.root, members_dir)
+                  if name not in declared]
+    problems += [f"{name} is a gitlink no {FAMILY_MANIFEST} row names"
+                 for name in undeclared]
+    sentence = (f"{FAMILY_MANIFEST} (family-manifest) sits beside "
+                f"{PROJECT_MANIFEST} (project-manifest), and validate-family"
+                ".py, the validator that kind is registered to, never runs "
+                "on an assembly root -- a family holder is not a project -- "
+                f"so nothing checks the {len(entries)} member(s) it pins")
+    if problems:
+        sentence += ": " + ", ".join(problems)
+    elif entries:
+        sentence += ", though each is recorded at its pin today"
+    return sentence, {"manifest": FAMILY_MANIFEST, "members": entries,
+                      "undeclared_gitlinks": undeclared}
+
+
+#: The `manifest kinds` row's next command for #211, named once so the row
+#: and `tests/test_shape_doctor.py` spell it the same way. NOT `family.py
+#: add`, which is what `validate-family.py`'s own refusal offers: run here,
+#: it would mount the members INSIDE a project, which is the one shape the
+#: family ruling rules out. Which of the two exits is right is a fact about
+#: the repository, so the line offers both and decides neither.
+FAMILY_BESIDE_FIX = (
+    "an assembly root is not a family holder: take family.yaml out of this "
+    "root, or move the membership to a holder of its own (`family.py init`, "
+    "then `family.py add` there), as the human decides -- never `family.py "
+    "add` here, which would mount the members inside a project")
+
+
 def check_manifest_kinds(ctx: Context) -> Row:
     """Every `kind:`-bearing manifest in this root, against the registry.
 
@@ -999,10 +1119,16 @@ def check_manifest_kinds(ctx: Context) -> Row:
     reporting on somebody else's data. What is reported is the other case --
     a file that DOES declare a kind that nothing here validates, which is a
     manifest travelling in a shape root with no gate behind it.
+
+    A REGISTERED KIND WHOSE GATE THIS ROOT NEVER RUNS IS THAT CASE TOO
+    (#211): a `family.yaml` declaring `family-manifest` in an assembly root.
+    It is not counted `validated`; `family_beside_project` says why, and
+    checks the members it pins against the gitlinks.
     """
     known: list[str] = []
     unknown: list[str] = []
     unreadable: list[str] = []
+    beside: tuple[str, dict] | None = None
     for path in manifest_candidates(ctx.root):
         data = Context._read(path)
         if not isinstance(data, dict):
@@ -1012,23 +1138,36 @@ def check_manifest_kinds(ctx: Context) -> Row:
         if not isinstance(kind, str) or not kind:
             continue
         rel = path.relative_to(ctx.root).as_posix()
+        if (ctx.kind == PROJECT and rel == FAMILY_MANIFEST
+                and kind == "family-manifest"):
+            beside = family_beside_project(ctx, data)
+            continue
         entry = MANIFEST_VALIDATORS.get(kind)
         (known if entry else unknown).append(f"{rel} ({kind})")
     detail = {"validated": known, "unregistered": unknown,
               "unreadable": unreadable,
               "registered_kinds": sorted(MANIFEST_VALIDATORS)}
-    if unknown or unreadable:
+    if beside is not None:
+        # ONLY WHEN THERE IS ONE, so every root without it reports the same
+        # row, byte for byte, as it did before #211.
+        detail["family_beside"] = beside[1]
+    if unknown or unreadable or beside is not None:
         parts = []
+        fixes = []
         if unknown:
             parts.append("no validator registered for kind "
                          + ", ".join(unknown))
         if unreadable:
             parts.append("unreadable as YAML: " + ", ".join(unreadable))
+        if unknown or unreadable:
+            fixes.append("register the kind in shape-doctor.py's "
+                         "MANIFEST_VALIDATORS, beside the check that "
+                         "validates it, or remove the file from the root")
+        if beside is not None:
+            parts.append(beside[0])
+            fixes.append(FAMILY_BESIDE_FIX)
         return Row("manifest-kinds", LABEL_MANIFEST_KINDS, FINDING,
-                   "; ".join(parts),
-                   "register the kind in shape-doctor.py's "
-                   "MANIFEST_VALIDATORS, beside the check that validates it, "
-                   "or remove the file from the root", detail)
+                   "; ".join(parts), "; ".join(fixes), detail)
     return Row("manifest-kinds", LABEL_MANIFEST_KINDS, OK,
                f"{len(known)} manifest(s), every declared kind has a "
                "registered validator", None, detail)
@@ -4118,6 +4257,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # FIRST, so that every `print` after it -- `--help` included -- escapes
+    # a name stdout cannot encode rather than raising on it (#214).
+    escape_what_stdout_cannot_encode()
     args = build_parser().parse_args(argv)
     if [marker for marker in SHAPE_MARKERS
             if not (SHAPE_ROOT / marker).exists()]:
