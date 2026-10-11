@@ -45,6 +45,11 @@ SUBMODULE = "upstream/dependency"
 
 NAMES = {"assembly": "Northwind", "spec": "Northwind-spec",
          "code": "Northwind-code"}
+#: Where `execute` pushed the two legs. `_verify` names them in the way out
+#: it prints after a finding (#188), with the split branch; nothing here is
+#: pushed to them.
+URLS = {role: f"https://github.com/testorg/{name}.git"
+        for role, name in NAMES.items()}
 #: The source file the plan sends to the code leg.
 APP = "src/app.py"
 SOURCE_FILES = {"README.md": "# Thing\n", "specs/a.md": "# A\n",
@@ -149,7 +154,8 @@ def verify(adopter, tmp_path, capsys):
             adopter.Source(source_path, None, "main", source_commit),
             tmp_path / "assembly", work, NAMES,
             {**PATHS_FOR, "drop": list(drop)}, split, mounts["spec"],
-            mounts["code"])
+            mounts["code"], urls=dict(URLS, assembly=str(source_path)),
+            branch=SPLIT_BRANCH)
         captured = capsys.readouterr()
         return verified, captured.out, captured.err
 
@@ -309,10 +315,12 @@ def test_a_spec_gitlink_not_where_the_plan_spells_the_mount_is_two_findings(
         f"FINDING adopt-mount-missing: the root tree has nothing at "
         f"{mounts['spec']} as the plan spells it, where the gitlink that "
         f"mounts the spec leg belongs; {EXIT}"]
-    assert err.rstrip("\n").endswith(
-        "the exit is to fix the plan and re-run into a fresh "
-        "--local-remote-dir or fresh leg repositories, unless a finding "
-        "above names another exit.")
+    # The exit is the plan's unless a finding names another, as these do.
+    # What the run left to clear first, the legs and the split branch,
+    # follows it (#188).
+    assert ("verification finding(s). NOTHING was deleted from the source, "
+            "so the exit is to fix the plan and re-run, unless a finding "
+            "above names another exit.\n") in err
 
 
 #: `execute` REQUIRES `git filter-repo`; without it, the two tests below are
