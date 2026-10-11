@@ -213,13 +213,14 @@ def spec_only_source(tmp_path: Path) -> Path:
 
 
 #: The five finding classes `execute` did not refuse, each with a fragment its
-#: finding must carry. `EDITS` below makes the plan that has each one.
+#: finding must carry, every path in it `_spelled` (#212). `EDITS` below makes
+#: the plan that has each one.
 CLASSES = {
-    UNCOVERED: "src/app/main.py is in the source tree and in no plan",
-    "plan-bad-leg": "specs/ declares leg 'Spec'",
-    "plan-covered-twice": "src/app/main.py is covered by",
-    "plan-duplicate-path": "src/ appears 2 times",
-    "plan-empty-entry": "nonexistent/ covers nothing",
+    UNCOVERED: "`src/app/main.py` is in the source tree and in no plan",
+    "plan-bad-leg": "`specs/` declares leg 'Spec'",
+    "plan-covered-twice": "`src/app/main.py` is covered by",
+    "plan-duplicate-path": "`src/` appears 2 times",
+    "plan-empty-entry": "`nonexistent/` covers nothing",
 }
 
 EDITS = {

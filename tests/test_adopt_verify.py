@@ -93,10 +93,11 @@ ROOT_EXIT = ("`execute` refuses before any leg exists a plan that keeps a "
 
 def root_submodule(path: str, sha: str) -> str:
     """The `adopt-root-submodule` finding for the source's own `path`."""
-    return (f"FINDING adopt-root-submodule: {path} is a gitlink to {sha[:12]} "
-            "in the root tree, the source's own submodule at its own commit, "
-            "and the assembly root keeps no submodule of the source's: its "
-            f".gitmodules is reserved for its two leg mounts; {ROOT_EXIT}")
+    return (f"FINDING adopt-root-submodule: `{path}` is a gitlink to "
+            f"{sha[:12]} in the root tree, the source's own submodule at its "
+            "own commit, and the assembly root keeps no submodule of the "
+            "source's: its .gitmodules is reserved for its two leg mounts; "
+            f"{ROOT_EXIT}")
 
 
 def commit(repo: Path, files: dict, gitlinks: dict | None = None) -> str:
@@ -206,8 +207,8 @@ def test_a_source_submodule_in_no_place_is_lost(verify):
     verified, _, err = verify(source={SUBMODULE: DEPENDENCY})
     assert verified == 1
     assert findings(err) == [
-        f"FINDING adopt-lost: {SUBMODULE} ({DEPENDENCY[:12]}) is in no leg, "
-        "not in the root tree, and not listed as drop"]
+        f"FINDING adopt-lost: `{SUBMODULE}` ({DEPENDENCY[:12]}) is in no "
+        "leg, not in the root tree, and not listed as drop"]
 
 
 def test_a_dropped_source_submodule_is_counted_as_dropped(verify):
@@ -226,7 +227,7 @@ def test_a_source_submodule_in_a_leg_and_the_root_is_duplicated(verify):
                               code={SUBMODULE: DEPENDENCY},
                               root={SUBMODULE: DEPENDENCY})
     assert verified == 1
-    assert findings(err) == [f"FINDING adopt-duplicated: {SUBMODULE} is in "
+    assert findings(err) == [f"FINDING adopt-duplicated: `{SUBMODULE}` is in "
                              f"code:{DEPENDENCY}, root:{DEPENDENCY}",
                              root_submodule(SUBMODULE, DEPENDENCY)]
 
@@ -251,7 +252,7 @@ def test_a_gitlink_the_shape_did_not_add_is_a_finding(verify, path, world):
     verified, _, err = verify(root={path: ELSEWHERE}, **world)
     assert verified == 1
     assert findings(err) == [
-        f"FINDING adopt-unexpected-gitlink: {path} is a gitlink to "
+        f"FINDING adopt-unexpected-gitlink: `{path}` is a gitlink to "
         f"{ELSEWHERE[:12]} in the root tree, and neither a leg mount as the "
         "plan spells their paths (code, spec) nor the source's own submodule "
         f"at that commit; {EXIT}"]
@@ -308,10 +309,10 @@ def test_a_spec_gitlink_not_where_the_plan_spells_the_mount_is_two_findings(
                cwd=tmp_path / "work" / NAMES["spec"]).stdout.strip()
     assert verified == 1
     assert findings(err) == [
-        f"FINDING adopt-unexpected-gitlink: spec is a gitlink to {head[:12]} "
-        "in the root tree, and neither a leg mount as the plan spells their "
-        f"paths ({mounts['code']}, {mounts['spec']}) nor the source's own "
-        f"submodule at that commit; {EXIT}",
+        "FINDING adopt-unexpected-gitlink: `spec` is a gitlink to "
+        f"{head[:12]} in the root tree, and neither a leg mount as the plan "
+        f"spells their paths ({mounts['code']}, {mounts['spec']}) nor the "
+        f"source's own submodule at that commit; {EXIT}",
         f"FINDING adopt-mount-missing: the root tree has nothing at "
         f"{mounts['spec']} as the plan spells it, where the gitlink that "
         f"mounts the spec leg belongs; {EXIT}"]
@@ -420,8 +421,8 @@ def test_execute_fails_a_source_submodule_the_plan_checks_let_into_the_root(
         resolve(plan, path, leg)
     checked = run_script(ADOPT, "check", "--plan", str(plan))
     assert checked.returncode == 1
-    assert (f"FINDING plan-submodule-root: {SUBMODULE} (entry upstream/) "
-            "has leg: root") in checked.stderr
+    assert (f"FINDING plan-submodule-root: `{SUBMODULE}` (entry "
+            "`upstream/`) has leg: root") in checked.stderr
 
     monkeypatch.setattr(adopter, "_refuse_what_check_finds",
                         lambda *_: None)
