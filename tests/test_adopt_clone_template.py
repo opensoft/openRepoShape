@@ -382,9 +382,20 @@ def make_legs(base: Path, advanced: tuple = ()) -> SimpleNamespace:
 
 
 def the_source(base: Path):
-    """A one-file source, and its `Source` for `_verify`."""
-    repo = make_source_repo(base / SOURCE, tree={"README.md": "# Thing\n"},
-                            edits=())
+    """A one-file source, and its `Source` for `_verify`.
+
+    Its README.md is written with `write_bytes`, as `split_of` writes the
+    split's, so the two are ONE blob on every OS, as in
+    `tests/test_adopt_verify.py`. `make_source_repo` writes with `write_text`,
+    which on Windows ends each line with CRLF, and the split's LF README.md
+    was then another blob: `adopt-lost` in every verification here."""
+    repo = base / SOURCE
+    repo.mkdir(parents=True)
+    git("init", "-q", "-b", "main", ".", cwd=repo)
+    (repo / "README.md").write_bytes(SPLIT_FILES["README.md"].encode("utf-8"))
+    git("add", "-A", "--", ".", cwd=repo)
+    git("-c", "user.name=Source Human", "-c", "user.email=human@source.invalid",
+        "commit", "-qm", "Initial import", cwd=repo)
     return repo, git("rev-parse", "HEAD", cwd=repo).stdout.strip()
 
 
