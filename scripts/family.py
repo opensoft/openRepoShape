@@ -99,6 +99,11 @@ FILE_PROTOCOL = ["-c", "protocol.file.allow=always"]
 #: organisation is an ordinary case (an estate's neutral products are).
 MEMBER_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
+#: The suffix a LEG's name carries after its assembly root's — the
+#: `(?:-spec|-code)?` that `contracts/repository-naming.yaml`'s leg pattern
+#: ends in, and nothing looser: `IRRS-spec` is the spec leg of `IRRS`.
+LEG_SUFFIX_RE = re.compile(r"-(?:spec|code)$")
+
 
 # ---------------------------------------------------------------------------
 # family.yaml: reading it, and rewriting the members block
@@ -301,6 +306,12 @@ def _read_member_project(path: Path, project: str, repository: str,
     """
     manifest_path = path / "project.yaml"
     if not manifest_path.is_file():
+        # A LEG IS NAMED BY ITS ROOT (#203). The commonest way here is
+        # `--member <org>/IRRS-spec`, and the legs of `IRRS-spec` are
+        # `IRRS-spec-spec` and `IRRS-spec-code`, which no naming rule makes
+        # and no repository is — so the sentence names the legs of the root
+        # the suffix came off, and that root, which is the one a family pins.
+        root = LEG_SUFFIX_RE.sub("", project)
         raise Refusal(
             "member-not-a-project",
             f"{repository} has no project.yaml at the commit being pinned, so "
@@ -309,8 +320,9 @@ def _read_member_project(path: Path, project: str, repository: str,
             "Remediation: a family pins ASSEMBLY ROOTS. Scaffold or adopt the "
             "project first (`scaffold-project.py`, or `adopt-project.py` for "
             "a repository that already exists), then add it. Adding a leg — "
-            f"`{project}-spec` or `{project}-code` — is never right: the legs "
-            "belong to their own assembly root.")
+            f"`{root}-spec` or `{root}-code` — is never right: the legs "
+            "belong to their own assembly root"
+            + (f", `{root}`." if root != project else "."))
     try:
         manifest = load_yaml(manifest_path)
     except Refusal as exc:
