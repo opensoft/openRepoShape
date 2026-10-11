@@ -486,7 +486,9 @@ options:
                         given, and needs --branch — there is no commit to put
                         a line on without one
   --push                push the branch to origin (needs --branch)
-  --pr                  open a pull request with `gh` (needs --branch)
+  --pr                  open a pull request with `gh` (needs --branch); a
+                        later run on that branch with nothing left to write
+                        opens it if it is still missing
 ```
 
 ### `shape-doctor.py`
