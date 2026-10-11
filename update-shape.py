@@ -727,18 +727,49 @@ class Addition(Row):
     rather than filtered away: `--add` on such a path must refuse BY NAME, and
     a refusal that cannot say which of three things went wrong sends a human to
     read this file's source.
+
+    A SYMLINK IS THE OPERATOR'S, AND IS NEVER "NOTHING THERE" (#239). `present`
+    is the root's own answer from `lstat`, which a dangling link gives where
+    `exists()` follows it and says no, and `link` names the first symlink on
+    the path's way down from the root — the path itself or a directory above
+    it — and where it points. A write at such a path goes THROUGH the link, to
+    wherever it leads, outside the root included.
     """
 
-    def __init__(self, copy: Copy, present: bool, target_bytes: bytes):
+    def __init__(self, copy: Copy, present: bool, target_bytes: bytes,
+                 link: tuple[str, str] | None = None):
         super().__init__(copy.path, "")
         self.source = copy.source
         self.executable = copy.executable
         self.present = present
+        self.link = link
         self.target_bytes = target_bytes
         self.digest = file_bytes_sha256(target_bytes)
         self.state = UPSTREAM_ADDED
         self.detail = ("the standard added this file after this pin; `apply` "
                        "writes it only when --add names that path")
+
+
+def symlink_on_the_way(root: Path, rel: str) -> tuple[str, str] | None:
+    """The first symlink on `rel`'s way down from `root`, `rel` itself
+    included, as `(its path inside the root, where it points)`; None when
+    nothing on that way is one (#239).
+
+    `lstat`, ONE COMPONENT AT A TIME, because every other question this file
+    asks of a path FOLLOWS a link: `Path.exists()` says no for a link whose
+    target is missing, and a write at the path or under a directory link then
+    creates what the link points at, which a root is free to point outside
+    itself. The component after the first missing one is missing too, so the
+    walk simply finds nothing past it.
+    """
+    here = root
+    walked: list[str] = []
+    for part in Path(rel).parts:
+        here = here / part
+        walked.append(part)
+        if here.is_symlink():
+            return "/".join(walked), os.readlink(here)
+    return None
 
 
 def find_additions(root: Path, rows: list[Row], upstream: Upstream,
@@ -749,6 +780,10 @@ def find_additions(root: Path, rows: list[Row], upstream: Upstream,
     its own name: that is where an in-place adoption's collision landed, so a
     root whose pin carries `shape/Makefile` has a row for the shape's Makefile
     and is not owed another one.
+
+    A PATH THE ROOT HOLDS ANYTHING AT IS PRESENT (#239): `lexists`, not
+    `exists`, so a symlink whose target is missing, and a symlink above the
+    path, are the operator's and not an absence this tool may write into.
     """
     pinned = {row.path for row in rows}
     additions: list[Addition] = []
@@ -761,7 +796,10 @@ def find_additions(root: Path, rows: list[Row], upstream: Upstream,
             # nothing to copy, and inventing a row for absent bytes is the one
             # thing a pin may never do.
             continue
-        additions.append(Addition(copy, (root / copy.path).exists(), data))
+        link = symlink_on_the_way(root, copy.path)
+        additions.append(Addition(
+            copy, link is not None or os.path.lexists(root / copy.path),
+            data, link))
     return additions
 
 
@@ -776,6 +814,11 @@ def resolve_additions(rows: list[Row], additions: list[Addition],
     And a path the ROOT ALREADY HAS A FILE AT is a merge: that is the
     `--accept-local` posture, taken for the same reason, because overwriting
     bytes no row records would delete somebody's work without saying so.
+
+    A FOURTH, ASKED BEFORE THAT ONE: a SYMLINK at the path, or above it, is
+    refused as its own answer (#239). It is not a file to merge — a dangling
+    one holds nothing — and a write there goes through the link to wherever it
+    points, so the remedy is the operator's own link, not a merge.
     """
     by_path = {add.path: add for add in additions}
     pinned = {row.path for row in rows}
@@ -800,6 +843,23 @@ def resolve_additions(rows: list[Row], additions: list[Addition],
                 f"`{UPSTREAM_ADDED}` path at that commit; a path in none of "
                 "them is not a shape copy there. Check the spelling, and the "
                 "commit.")
+        if add.link is not None:
+            name, points = add.link
+            above = "" if name == path else f", on the way to {path}"
+            raise Refusal(
+                "update-add-symlink",
+                f"--add {path} names a file the upstream's lists add, but "
+                f"{name} in this root is a symlink{above}, pointing at "
+                f"{points}. A write at {path} would go THROUGH it, to "
+                "wherever it leads — outside this root, if that is where it "
+                "points — and this command never writes through a link",
+                f"Remediation: if the link is yours to keep, leave {path} "
+                "alone: `check` stops reporting a path the root holds, and "
+                "the standard's file is yours to carry in whatever the link "
+                "leads to. To take the standard's file instead, remove or "
+                f"move {name} and run this command again with the same "
+                f"--add: with nothing at {path} it is written there, as for "
+                "any addition.")
         if add.present:
             raise Refusal(
                 "update-add-would-overwrite",
