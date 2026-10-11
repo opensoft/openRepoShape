@@ -115,6 +115,12 @@ from shape_materialize import (  # noqa: E402
     refuse_bad_leg_paths as _refuse_bad_leg_paths,
 )
 import shape_advisory  # noqa: E402
+# #172's shape half, shared with the scaffold since #197 (see that section
+# below), under the names this file has always called it by.
+from shape_materialize import (  # noqa: E402
+    MOVE_THE_LEG, first_and_more as _first_and_more, path_overlap as _overlap,
+    shape_path_collisions,
+)
 
 #: The naming policy this tool classifies leg names against. One constant,
 #: because three spellings of the same path is how the second one goes stale.
@@ -1025,10 +1031,13 @@ def _plan_leg_paths(plan: Plan) -> tuple[tuple, tuple]:
 # half for the `leg: root` answers it wrote itself, and refuses nothing for
 # it: those answers are the person's to change.
 
-#: Said where an overlap holds only once case is ignored.
-CASE_ASIDE = " once case is ignored, as a macOS or Windows disk does"
-#: The exit every collision has; a root-kept one has a second.
-MOVE_THE_LEG = "choose another path for the leg"
+# The question about `assembly_root_paths` -- `path_overlap`,
+# `first_and_more`, `shape_path_collisions` and the phrases they share --
+# moved to `scripts/shape_materialize.py` for #197, because
+# `scaffold-project.py` asks it of its own leg paths. `_shape_collisions`
+# below asks it with this tool's `COLLISION_DIR` and adds the `shape/` half,
+# and `leg_path_collisions` adds the root-kept half: only an adoption has
+# either.
 
 #: Why a mount at or under `COLLISION_DIR` is refused where no copy would land
 #: there (#172's review, P3-3): the directory is the shape's, whatever this
@@ -1049,41 +1058,12 @@ LEG_COLLISION_REMEDIATION = (
 )
 
 
-def _overlap(leg: str, other: str) -> tuple[str, str] | None:
-    """How the mount path `leg` stands to the path `other`: `(relation,
-    aside)`, the relation `is`, `contains` or `is inside`, and the aside
-    `CASE_ASIDE` when it holds only once case is ignored. None when the two
-    do not overlap at all."""
-    for mine, theirs, aside in ((leg, other, ""),
-                                (leg.casefold(), other.casefold(), CASE_ASIDE)):
-        if mine == theirs:
-            return "is", aside
-        if theirs.startswith(mine + "/"):
-            return "contains", aside
-        if mine.startswith(theirs + "/"):
-            return "is inside", aside
-    return None
-
-
-def _first_and_more(paths: list[str]) -> str:
-    """`a` or `a` and 2 more: one path named, the rest counted."""
-    more = f" and {len(paths) - 1} more" if len(paths) > 1 else ""
-    return f"`{paths[0]}`{more}"
-
-
 def _shape_collisions(what: str, value: str) -> list[str]:
-    """Where the mount path `value` overlaps what the shape writes."""
-    out: list[str] = []
-    files = [path for path in assembly_root_paths() if _overlap(value, path)]
-    if files:
-        relation, aside = _overlap(value, files[0])
-        them = "them" if len(files) > 1 else "it"
-        out.append(
-            f"{what} {value!r} {relation} {_first_and_more(files)}{aside}. "
-            f"The shape writes {them} into the assembly root, and `execute` "
-            f"would write {them} into the mounted leg or beside it under "
-            f"`{COLLISION_DIR}/`, leaving the root without {them}: "
-            f"{MOVE_THE_LEG}.")
+    """Where the mount path `value` overlaps what the shape writes: the
+    paths of `assembly_root_paths`, asked through the definition this tool
+    shares with `scaffold-project.py` (#197), then this tool's own
+    `COLLISION_DIR`, which only an adoption writes into."""
+    out = shape_path_collisions(what, value, COLLISION_DIR)
     beside = _overlap(value, COLLISION_DIR)
     if beside:
         relation, aside = beside
