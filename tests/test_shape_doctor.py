@@ -3723,6 +3723,41 @@ def test_the_record_answers_the_question_about_the_gitmodules_beside_it(
         row["reason"])
 
 
+@pytest.mark.parametrize("other, rows, status", [
+    ("vendor/lib", (), "note"),
+    ("docs/theme", (("docs/theme", "spec"),), "FINDING"),
+], ids=["one-no-row-names", "one-recorded-in-the-other-leg"])
+def test_the_question_stays_where_the_record_does_not_place_every_submodule(
+        standard, project, other, rows, status):
+    """THE RECORD ANSWERS FOR A `.gitmodules` ONLY WHERE IT PLACES EVERY
+    SUBMODULE THE LEG KEEPS (#189).
+
+    Beside the recorded `.cursor` the code leg keeps a second submodule,
+    registered in the same `.gitmodules` as `git submodule add` registers
+    one: added by hand, which no row names, or one the record puts in the
+    spec leg. The record does not say this leg owns everything the file
+    registers, so the file stays the policy's question, and the row never
+    says the record answered it; the note or the finding about the second
+    submodule is what it was.
+    """
+    stage(project / "code", ".gitmodules", CURSOR_GITMODULES + (
+        f'[submodule "{other}"]\n\tpath = {other}\n'
+        "\turl = https://example.invalid/other.git\n"))
+    stage_gitlink(project / "code", ".cursor")
+    stage_gitlink(project / "code", other)
+    record_submodules(project, (".cursor", "code"), *rows)
+    result = doctor(standard, project, "--json")
+    assert result.returncode == (1 if status == "FINDING" else 0), (
+        result.stdout + result.stderr)
+    row = rows_of(result)["placement"]
+    assert row["status"] == status, row
+    assert [item["path"] for item in row["detail"]["review_required"]] == [
+        "code/.gitmodules"], row["detail"]["review_required"]
+    code = [leg for leg in row["detail"]["legs"] if leg["role"] == "code"][0]
+    assert "answered" not in code, code
+    assert ANSWERED_CLAUSE not in row["reason"], row["reason"]
+
+
 #: Names the record cannot write raw -- `str.isprintable` refuses a character
 #: in each -- and the doctor still reads: none holds a control character or a
 #: byte that is not UTF-8, the names it reports as ones no report can carry.

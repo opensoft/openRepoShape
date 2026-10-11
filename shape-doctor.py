@@ -144,10 +144,10 @@ named in the row, and no reason to keep it off `ok`. One in the OTHER leg is
 `misplaced`, and it is a path in the wrong leg like any other -- a FINDING,
 counted in MISPLACED, an entry under `paths:` in the plan -- because the
 manifest asserts where it belongs, and a FINDING is exactly something else
-asserting it. The same record answers the policy's question about the
-`.gitmodules` beside a submodule it places -- which leg owns the submodules
-it registers -- so that file is placed too, and an adoption whose record
-places every submodule reads `ok`.
+asserting it. The same record answers the policy's question about a leg's
+`.gitmodules` -- which leg owns the submodules it registers -- where it
+places every submodule that leg keeps there, so that file is placed too,
+and an adoption whose record places every submodule reads `ok`.
 
 WHERE NO ROW NAMES IT, THE NOTE SAYS WHICH KIND OF PLACEMENT IT FOUND (Codex
 review on #186, round 2). A project adopted before the record, or one with a
@@ -1976,12 +1976,20 @@ def gitmodules_the_record_answers(adopt, submodules: list) -> str | None:
     An adoption answered it with the leg of every one of them -- `check`
     refuses a plan that sends `.gitmodules` to one leg and a submodule it
     registers to another (#166) -- and `execute` recorded that leg for each
-    submodule it kept. So in a leg that keeps a submodule the record places
-    there, the answer is in the record, and it is this leg: the file is
-    placed, and no question is left. In a leg that keeps none, the record
-    says nothing about its `.gitmodules`, and it stays the question it was.
+    submodule it kept. So where the record places EVERY submodule this leg
+    keeps in this leg, the answer is in the record, and it is this leg: the
+    file is placed, and no question is left.
+
+    EVERY ONE, NOT ANY ONE. Beside a recorded submodule a leg may keep one
+    added by hand, which `git submodule add` registers in this same file and
+    no row names, or one the record puts in the other leg. The record does
+    not say this leg owns that one, so it has not answered the question for
+    all the file registers: the file stays the question it was, beside the
+    note or the finding that names that submodule, and the row does not say
+    the record answered it. So does a leg that keeps no submodule at all.
     """
-    if any(item["placement"] == SUBMODULE_RECORDED for item in submodules):
+    if submodules and all(item["placement"] == SUBMODULE_RECORDED
+                          for item in submodules):
         return adopt.GITMODULES
     return None
 
@@ -2076,7 +2084,7 @@ def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
 
     THE RECORD IS CONSULTED BEFORE THE LEG'S QUESTIONS ARE COUNTED (#189).
     The policy asks which leg owns the submodules a `.gitmodules` registers,
-    and in a leg that keeps a submodule the record places there, the record
+    and in a leg whose every submodule the record places there, the record
     is that answer (`gitmodules_the_record_answers`): the file is placed,
     and the leg's entry names it under `answered` instead of as a question.
     Otherwise a real adoption, whose leg always holds the `.gitmodules` that
