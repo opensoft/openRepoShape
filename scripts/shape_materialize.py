@@ -40,7 +40,7 @@ from pathlib import Path, PurePath
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from repo_shape import (  # noqa: E402
     CHAIN_RECORD_FIELD, SAFE_ARG_RE, NamingPolicy, Refusal, checked_value,
-    file_sha256,
+    double_quoted, file_sha256,
 )
 
 SHAPE_REPOSITORY = "opensoft/openRepoShape"
@@ -926,8 +926,24 @@ def lane_trailer_argument(quote=None, env: dict | None = None) -> str:
 
 
 def render(text: str, values: dict[str, str], source: str) -> str:
+    """`text` with every `{{KEY}}` replaced by its value, or a refusal.
+
+    A VALUE BETWEEN A YAML TEMPLATE'S DOUBLE QUOTES, `"{{ELECTED_BY}}"`, is
+    spelled by `double_quoted`, the writer `repo_shape`'s reader takes back
+    unchanged. Pasted raw, `--elected-by 'Robert "Bob" Smith'` wrote
+    `"Robert "Bob" Smith"`, which is not YAML: the reader read it by
+    accident until it learned where a quoted scalar ends (#250), and then
+    refused the manifest of three repositories already created. A name ending
+    in a backslash closed no quote, and `C:\\new` or `x" # y` were misread.
+    The spelling is the value itself for any text without a quote, a
+    backslash or a character `str.isprintable` refuses -- a commit, a digest,
+    an ordinary name -- so no other template changes by a byte.
+    """
     out = text
+    yaml_file = source.endswith((".yaml", ".yml"))
     for key, value in values.items():
+        if yaml_file:
+            out = out.replace('"{{' + key + '}}"', double_quoted(str(value)))
         out = out.replace("{{" + key + "}}", str(value))
     left = PLACEHOLDER_RE.findall(out)
     if left:
