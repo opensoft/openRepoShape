@@ -2726,7 +2726,8 @@ def _checks_out_symlinks(work_root: Path) -> bool:
         run(["git", "init", "-q", str(probe)])
         answer = subprocess.run(
             ["git", "config", "--type=bool", "--get", "core.symlinks"],
-            cwd=str(probe), capture_output=True, text=True, check=False)
+            cwd=str(probe), capture_output=True, text=True,
+            encoding="utf-8", errors="replace", check=False)
     finally:
         shutil.rmtree(probe, ignore_errors=True)
     return answer.stdout.strip() != "false"
