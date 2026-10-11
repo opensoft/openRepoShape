@@ -1160,7 +1160,11 @@ way, with its own next command. `MISPLACED` sits between the two: a path in
 the wrong leg is a fact about the shape that no validator, pin or manifest
 here can see, while a red validator names itself in the table whether or not
 it also names the verdict line. `--json` is the same report as one object,
-each row carrying its `id`.
+each row carrying its `id`. A root's own `contracts/shape-pin.yaml` that does
+not read as a pin — a merge conflict in it, a `commit:` that is not 40 hex, a
+deleted file — is not exit 3, which is for a standard that cannot answer: it is
+a statement about the root, a `FINDING` on **shape currency** whose next
+command is `update-shape.py check`, and the verdict is `INVALID`, exit 1.
 
 **`placement` is the row that reads what is *inside* the legs.** Brett Heap,
 2026-09-10: *"we have to look for code in spec and spec in code"*. It runs the

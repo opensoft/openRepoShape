@@ -1081,6 +1081,64 @@ def what_a_re_pin_would_move(ctx: Context, us, repository: str,
     return "the pin alone"
 
 
+#: The root's own pin, as a path under the root: one spelling for the row's
+#: sentence, its `--json` detail and its next command (#237).
+SHAPE_PIN = "contracts/shape-pin.yaml"
+
+
+def unreadable_pin_row(ctx: Context, exc: Refusal) -> Row:
+    """The `shape currency` row for a root whose OWN pin does not read as one
+    (#237): a FINDING, the refusal quoted whole, and the file to put right.
+
+    A STATEMENT ABOUT THEIR REPOSITORY, NOT A FAILURE TO ASK. The pin is a
+    file in the root: a merge conflict left in it, a byte that is not UTF-8,
+    a `commit:` that is not 40 hex, a deleted file are what somebody did to
+    THEIR tree, and no `git fetch` in the standard changes any of them. So
+    this row carries no `environment`, which is the only thing that makes
+    `verdict_for` answer CANNOT ANSWER, exit 3, before it looks at a single
+    other row. The ladder then reaches the gates that are red -- `pins` and
+    `manifest kinds` say the same about the same file where they can read it,
+    and where neither can (a `digest_definition` this tool does not
+    recompute, which `validate-pins.py` passes) this row is the only red one
+    and the verdict is `INVALID (shape-currency)`.
+
+    THE REFUSAL, WHOLE, AND NOT ITS REMEDIATION. `REFUSED <code>: <detail>`
+    is what `read_pin` raised, in the spelling the project's own validator
+    prints for the same file, and it names the line or the field at fault.
+    Its `Remediation:` trailer is left off on purpose: `yaml-unparsable`
+    carries `repo_shape`'s default one, about submodules and the lockstep
+    invariant, which would send a person resolving a merge conflict to `git
+    submodule update`. This is the wording `unloaded_manifest_row` gives a
+    `project.yaml` that does not load, so the two files are answered alike.
+
+    THE NEXT IS THE TOOL THAT REFUSED, NOT THE VALIDATOR AND NEVER A FETCH.
+    `update-shape.py check` asks exactly the question this row could not
+    answer, so it refuses the same way until the file reads as a pin and
+    compares the copies the moment it does -- including for the refusals
+    `validate-pins.py` does not make, which is why it is not that script
+    named here (the `pins` row names it whenever it is red). The comment
+    names the file, because the file is the fix, and says what a fix is not:
+    which side of a merge conflict, what a hand edit meant, whether a deleted
+    pin is restored or the project was never pinned -- all of it a person's
+    call, and the doctor writes nothing.
+    """
+    pin = ctx.root / SHAPE_PIN
+    detail = {"error": exc.code, "pin": SHAPE_PIN,
+              "refusal": {"code": exc.code, "detail": exc.detail}}
+    return Row("shape-currency", LABEL_SHAPE_CURRENCY, FINDING,
+               f"the copies cannot be compared, because {SHAPE_PIN} does not "
+               f"read as a pin: REFUSED {exc.code}: {exc.detail}",
+               f"{PYTHON} {quote_arg(ctx.shape / 'update-shape.py')} check "
+               f"--root {quote_arg(ctx.root)} --upstream "
+               f"{quote_arg(ctx.shape)}   # the file at fault is "
+               f"{quote_arg(pin)}, and the line above says what is wrong "
+               "with it; this refuses it the same way until it reads as a "
+               "pin, and compares the copies the moment it does. What it "
+               "should say -- a merge conflict resolved, a deleted file "
+               "restored, a hand edit put right -- is the person's call",
+               detail)
+
+
 def check_shape_currency(ctx: Context) -> Row:
     """`update-shape.py check`, summarised, against THIS checkout.
 
@@ -1089,10 +1147,25 @@ def check_shape_currency(ctx: Context) -> Row:
     the shape this project is compared against is the checkout this file sits
     in, at its HEAD. What that costs is honesty about which standard answered,
     which is why both commits are in the row.
+
+    TWO KINDS OF REFUSAL, TOLD APART BY WHICH READ RAISED THEM (#237).
+    `prepare` asks two things: what does the ROOT's own pin say, and can THIS
+    checkout of the standard answer about the commit it names. A refusal from
+    the first is about their repository and is `unreadable_pin_row`'s; one
+    from the second is this checkout failing to ask and stays CANNOT ANSWER.
+    The pin is read here first, on its own, with `read_pin` -- the function
+    `prepare` calls for it -- so the split is made by what was being read and
+    not by a list of refusal codes or a match on their text, and a refusal
+    `read_pin` or `open_upstream` learns later lands on the right side
+    without this file being told.
     """
     us = ctx.update_shape()
     args = argparse.Namespace(root=str(ctx.root), upstream=str(ctx.shape),
                               at=None)
+    try:
+        us.read_pin(ctx.root)
+    except Refusal as exc:
+        return unreadable_pin_row(ctx, exc)
     try:
         _root, _pin, rows, additions, upstream, pinned, target, _kind = \
             us.prepare(args)

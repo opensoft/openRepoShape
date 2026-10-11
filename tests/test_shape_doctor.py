@@ -2206,6 +2206,228 @@ def test_a_pin_this_standard_cannot_resolve_is_exit_three(standard, project,
     assert "fetch --all" in plain.stderr
 
 
+# --- a root's OWN pin that does not read is the root's fault (#237) ---------
+#
+# `check_shape_currency` took EVERY refusal `update-shape.py prepare` raised
+# for this checkout failing to ask. Most of them are: the pin names a commit
+# this standard does not carry, the standard cannot be read. But `prepare`
+# also reads the ROOT's own `contracts/shape-pin.yaml`, and a merge conflict
+# in it, a `commit:` that is not 40 hex, a deleted file are somebody's repository
+# being wrong. They answered CANNOT ANSWER, exit 3, outranking every red
+# gate, with a NEXT that sent the reader to `git fetch --all` in the
+# standard. AGENTS.md says exit 3 is "never a statement about their
+# repository"; each case below is one, and is INVALID, exit 1.
+
+SHAPE_PIN = "contracts/shape-pin.yaml"
+
+
+def pin_with(old: str, new: str):
+    """A mutation of the pin's text: `old` (a regex, multiline) becomes `new`."""
+    return lambda text: re.sub(old, new, text, count=1,
+                               flags=re.MULTILINE).encode("utf-8")
+
+
+#: The pin with a merge conflict left in it where its `commit:` line was: the
+#: two sides of the realistic two-shape-update merge, markers and all.
+conflicted_pin = pin_with(
+    r'^commit: .*$',
+    '<<<<<<< HEAD\ncommit: "' + "1" * 40 + '"\n=======\n'
+    'commit: "' + "2" * 40 + '"\n>>>>>>> edit-a')
+
+#: The one fault `validate-pins.py` PASSES, so the shape-currency row is the
+#: only red one under it.
+other_digest_definition = pin_with(r'^digest_definition: .*$',
+                                   'digest_definition: other-v9')
+
+#: `(what the pin becomes, the refusal `read_pin` raises for it)`. A mutation
+#: returns the file's new bytes, or None to delete it. The code is asserted
+#: on every case so the case under test is the case reached.
+ROOT_PIN_FAULTS = [
+    pytest.param(conflicted_pin, "yaml-unparsable",
+                 id="a-merge-conflict-in-it"),
+    pytest.param(lambda text: b"\t: : [\n", "yaml-unparsable",
+                 id="not-yaml-at-all"),
+    pytest.param(lambda text: text.encode("utf-8") + b"\xff\xfe\n",
+                 "yaml-unreadable", id="a-byte-that-is-not-utf-8"),
+    pytest.param(lambda text: b"- one\n- two\n", "update-pin-unreadable",
+                 id="a-list-not-a-mapping"),
+    pytest.param(pin_with(r'^commit: .*$', 'commit: "zzzz"'),
+                 "update-pin-commit", id="a-commit-that-is-not-40-hex"),
+    pytest.param(other_digest_definition, "update-pin-digest-definition",
+                 id="another-digest-definition"),
+    pytest.param(pin_with(r'(?s)^files:.*\Z', 'files: []\n'),
+                 "update-pin-no-files", id="no-files-rows"),
+    pytest.param(pin_with(r'^  - path: .*$', '  - nopath: x'),
+                 "update-pin-row", id="a-row-with-no-path"),
+    pytest.param(lambda text: None, "update-pin-missing",
+                 id="a-deleted-pin"),
+]
+
+
+def break_the_pin(root: Path, mutation) -> None:
+    """Rewrite `root`'s `contracts/shape-pin.yaml` as `mutation` says.
+
+    BYTES, never `write_text`: a Windows `write_text` would turn the `\\n`s
+    into `\\r\\n` and make one more thing differ between the OSes than the
+    case is about.
+    """
+    pin = root / SHAPE_PIN
+    mutated = mutation(pin.read_text(encoding="utf-8"))
+    if mutated is None:
+        pin.unlink()
+    else:
+        pin.write_bytes(mutated)
+
+
+@pytest.mark.parametrize("mutation, code", ROOT_PIN_FAULTS)
+def test_a_root_pin_that_does_not_read_is_invalid_not_cannot_answer(
+        standard, project, mutation, code):
+    """Each way the ROOT's pin can fail `read_pin`: a finding, exit 1.
+
+    Asserted in both outputs, because the two are read by different people:
+    `--json` by a scheduled job (the verdict, the row's status and its
+    `detail`), the text by the person who follows the NEXT. Neither says
+    `environment`, and stderr carries no `REFUSED shape-doctor-cannot-answer`
+    and no `fetch --all` for it.
+    """
+    break_the_pin(project, mutation)
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 1, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["exit"] == 1
+    assert payload["verdict"].startswith("INVALID ("), payload["verdict"]
+    assert "CANNOT ANSWER" not in payload["verdict"]
+    row = rows_of(result)["shape-currency"]
+    assert row["status"] == "FINDING", row
+    assert row["detail"]["error"] == code, row["detail"]
+    assert row["detail"]["refusal"]["code"] == code
+    assert row["detail"]["pin"] == SHAPE_PIN
+    assert "environment" not in row["detail"], row["detail"]
+    # The loader's own words, whole -- and not its `Remediation:` trailer,
+    # which for a pin that does not parse is about submodules.
+    assert f"REFUSED {code}: " in row["reason"], row["reason"]
+    assert "Remediation" not in row["reason"]
+    assert "submodule" not in row["reason"]
+    # The NEXT is the tool that refused, with the file at fault named; it is
+    # not a fetch in the standard, which cannot change the pin.
+    assert "update-shape.py" in row["next"] and " check " in row["next"]
+    assert "shape-pin.yaml" in row["next"]
+    assert "fetch" not in row["next"]
+    plain = doctor(standard, project)
+    assert plain.returncode == 1, plain.stdout + plain.stderr
+    assert "CANNOT ANSWER" not in plain.stdout
+    assert "shape-doctor-cannot-answer" not in plain.stderr
+    assert "fetch --all" not in plain.stdout + plain.stderr
+    assert verdict_line(plain).startswith("INVALID (")
+
+
+def test_a_merge_conflict_in_the_pin_still_names_the_projects_own_validator(
+        standard, project):
+    """What the issue's reader saw and misread: the `pins` row was right.
+
+    The validator the project carries refuses the same file, in its own
+    words, and its row names it as the next command. The verdict names the
+    gates that are red -- it used to be one row that was wrong outranking the
+    two that were right -- and the shape-currency row is the third finding
+    about the one file, not the verdict's reason for being.
+    """
+    break_the_pin(project, conflicted_pin)
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 1, result.stdout + result.stderr
+    rows = rows_of(result)
+    assert rows["pins"]["status"] == "FINDING"
+    assert "validate-pins.py" in rows["pins"]["next"]
+    assert "yaml-unparsable" in rows["pins"]["reason"]
+    assert json.loads(result.stdout)["verdict"] == \
+        "INVALID (pins, manifest-kinds)"
+
+
+def test_a_pin_only_update_shape_refuses_is_the_one_red_row(standard,
+                                                            project):
+    """`digest_definition: other-v9` is what `validate-pins.py` PASSES.
+
+    So the shape-currency row is the only finding, and it is not on the
+    ladder's named list: the catch-all names it, `INVALID (shape-currency)`,
+    exit 1 -- which is why its NEXT is `update-shape.py check` and not the
+    validator, whose exit 0 would send this reader nowhere.
+    """
+    break_the_pin(project, other_digest_definition)
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 1, result.stdout + result.stderr
+    rows = rows_of(result)
+    assert rows["pins"]["status"] == "ok", rows["pins"]
+    assert rows["manifest-kinds"]["status"] == "ok"
+    assert [name for name, row in rows.items()
+            if row["status"] == "FINDING"] == ["shape-currency"]
+    assert json.loads(result.stdout)["verdict"] == "INVALID (shape-currency)"
+
+
+def stranger_standard(standard: Path, tmp_path: Path) -> Path:
+    """A standard whose history is not the one a project was scaffolded from,
+    so a pin naming the scaffold's commit is a commit it does not carry.
+    Built the way `test_a_pin_this_standard_cannot_resolve_is_exit_three`
+    builds it; that test is left exactly as it was."""
+    stranger = tmp_path / "stranger"
+    stranger.mkdir()
+    for name in ("contracts", "scripts", "templates"):
+        shutil.copytree(standard / name, stranger / name, symlinks=True)
+    for name in ("update-shape.py", "shape-doctor.py", "scaffold-project.py",
+                 "setup-project.py", "setup.sh", "openRepoShape"):
+        shutil.copy2(standard / name, stranger / name)
+    git("init", "-q", "-b", "main", ".", cwd=stranger)
+    commit_all(stranger, "A standard with a history of its own")
+    return stranger
+
+
+def test_what_decides_is_the_pin_and_not_the_standard(standard, project,
+                                                      tmp_path):
+    """The control, and the pair that separates the two kinds of refusal.
+
+    One standard that lacks the scaffold's commit. Asked about a root whose
+    pin is good it cannot answer -- CANNOT ANSWER, exit 3, `fetch --all`, as
+    on main, with `environment` in the row's `detail` and the standard's own
+    refusal as its error. Asked about the same root with a conflicted pin it
+    never gets as far as the commit: the file is wrong, so INVALID, exit 1.
+    """
+    stranger = stranger_standard(standard, tmp_path)
+    result = doctor(stranger, project, "--json")
+    assert result.returncode == 3, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["exit"] == 3
+    assert payload["verdict"].startswith("CANNOT ANSWER (shape currency:")
+    detail = rows_of(result)["shape-currency"]["detail"]
+    assert detail["environment"] is True
+    assert detail["error"] == "update-revision-unresolvable"
+    plain = doctor(stranger, project)
+    assert plain.returncode == 3
+    assert "REFUSED shape-doctor-cannot-answer" in plain.stderr
+    assert "fetch --all" in plain.stderr
+    break_the_pin(project, conflicted_pin)
+    broken = doctor(stranger, project, "--json")
+    assert broken.returncode == 1, broken.stdout + broken.stderr
+    assert json.loads(broken.stdout)["verdict"].startswith("INVALID (")
+    row = rows_of(broken)["shape-currency"]
+    assert row["detail"]["error"] == "yaml-unparsable"
+    assert "environment" not in row["detail"]
+    assert "shape-doctor-cannot-answer" not in broken.stderr
+
+
+def test_a_family_holders_conflicted_pin_is_invalid_too(standard, holder,
+                                                        tmp_path):
+    """The row is registered for both kinds of root, and answers alike."""
+    root = tmp_path / FAMILY_NAME
+    shutil.copytree(holder["root"], root, symlinks=True)
+    break_the_pin(root, conflicted_pin)
+    result = doctor(standard, root, "--json")
+    assert result.returncode == 1, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["kind"] == "family"
+    assert payload["verdict"].startswith("INVALID (")
+    row = rows_of(result)["shape-currency"]
+    assert row["status"] == "FINDING" and "environment" not in row["detail"]
+    assert row["detail"]["error"] == "yaml-unparsable"
+
+
 def test_the_doctor_writes_no_bytecode_into_the_standard(standard, project,
                                                          tmp_path):
     """"It writes nothing" has to be true of the STANDARD too.
