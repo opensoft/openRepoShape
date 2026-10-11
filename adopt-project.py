@@ -1035,9 +1035,9 @@ def _overlap(leg: str, other: str) -> tuple[str, str] | None:
 
 
 def _first_and_more(paths: list[str]) -> str:
-    """`a` or `a` and 2 more: one path named, the rest counted."""
+    """`a` or `a` and 2 more: one path named, `_spelled`, the rest counted."""
     more = f" and {len(paths) - 1} more" if len(paths) > 1 else ""
-    return f"`{paths[0]}`{more}"
+    return f"{_spelled(paths[0])}{more}"
 
 
 def _shape_collisions(what: str, value: str) -> list[str]:
@@ -1090,13 +1090,15 @@ def _kept_collisions(what: str, value: str, kept: list) -> list[str]:
         relation, aside = _overlap(value, path)
         named = _first_and_more([p for p, _ in found])
         them = "them" if len(found) > 1 else "it"
-        under = "" if entry == path else f" under the entry `{entry}`"
+        under = ("" if entry == path else
+                 f" under the entry {_spelled(entry)}")
         out.append(
             f"{what} {value!r} {relation} {_kind_of(mode)} {named}{aside}. "
             f"The plan keeps {them} in the assembly root{under}, and Git "
             "cannot mount a leg at a path the root's own tree holds, or "
             "beyond a file, symlink or submodule it holds on the way there: "
-            f"{MOVE_THE_LEG}, or send `{entry}` to a leg or `drop` it.")
+            f"{MOVE_THE_LEG}, or send {_spelled(entry)} to a leg or `drop` "
+            "it.")
     return out
 
 
@@ -1564,12 +1566,16 @@ def _coverage_findings(entry_paths: list[str], tree_paths: list[str]) -> list[st
     Both halves matter and they fail differently: an uncovered path is a file
     the split would silently drop, and an entry covering nothing is a plan
     describing a tree that no longer exists.
+
+    Every path is `_spelled`, as a question names it. Printed raw, a source
+    name holding a line break, an ESC or any other character
+    `str.isprintable` refuses split or overwrote the line it was on (#212).
     """
     findings: list[str] = []
     duplicates = sorted({p for p in entry_paths if entry_paths.count(p) > 1})
     for path in duplicates:
-        findings.append(f"FINDING plan-duplicate-path: {path} appears "
-                        f"{entry_paths.count(path)} times")
+        findings.append(f"FINDING plan-duplicate-path: {_spelled(path)} "
+                        f"appears {entry_paths.count(path)} times")
     uncovered, multiple = [], []
     for path in tree_paths:
         covering = _covering(entry_paths, path)
@@ -1578,18 +1584,18 @@ def _coverage_findings(entry_paths: list[str], tree_paths: list[str]) -> list[st
         elif len(covering) > 1:
             multiple.append((path, covering))
     for path in uncovered[:20]:
-        findings.append(f"FINDING plan-uncovered: {path} is in the source "
-                        "tree and in no plan entry")
+        findings.append(f"FINDING plan-uncovered: {_spelled(path)} is in the "
+                        "source tree and in no plan entry")
     if len(uncovered) > 20:
         findings.append(f"FINDING plan-uncovered: … and {len(uncovered) - 20} "
                         "more uncovered paths")
     for path, covering in multiple[:20]:
-        findings.append(f"FINDING plan-covered-twice: {path} is covered by "
-                        f"{covering}")
+        findings.append(f"FINDING plan-covered-twice: {_spelled(path)} is "
+                        f"covered by {_listed(covering)}")
     used = {p for path in tree_paths for p in _covering(entry_paths, path)}
     for path in sorted(set(entry_paths) - used):
-        findings.append(f"FINDING plan-empty-entry: {path} covers nothing in "
-                        "the source tree at this commit")
+        findings.append(f"FINDING plan-empty-entry: {_spelled(path)} covers "
+                        "nothing in the source tree at this commit")
     return findings
 
 
@@ -1631,14 +1637,15 @@ def _leg_findings(plan: Plan, tree: list | None) -> list[str]:
             findings = _leg_collision_findings(plan, tree)
     for entry in plan.entries:
         leg = entry.get("leg")
+        path = _spelled(str(entry.get("path")))
         if leg is None:
             findings.append(
-                f"FINDING plan-unresolved: {entry.get('path')} still has "
-                f"`leg: null`. The question was: {entry.get('question')}")
+                f"FINDING plan-unresolved: {path} still has `leg: null`. The "
+                f"question was: {entry.get('question')}")
         elif str(leg) not in LEG_VALUES:
             findings.append(
-                f"FINDING plan-bad-leg: {entry.get('path')} declares leg "
-                f"{leg!r}; it is one of {list(LEG_VALUES)}")
+                f"FINDING plan-bad-leg: {path} declares leg {leg!r}; it is "
+                f"one of {list(LEG_VALUES)}")
     return findings
 
 
@@ -1708,8 +1715,11 @@ def _answered_legs(entries: list, paths: list[str]) -> dict:
 
 
 def _as_entry(path: str, entry: str) -> str:
-    """`path`, and the plan entry to edit when that is a directory above it."""
-    return path if entry == path else f"{path} (entry {entry})"
+    """`path`, and the plan entry to edit when that is a directory above it,
+    each `_spelled`: a submodule's path is a source name, and the finding
+    that names it is one line (#212)."""
+    named = _spelled(path)
+    return named if entry == path else f"{named} (entry {_spelled(entry)})"
 
 
 def submodule_plan_problems(entries: list, tree: list,
@@ -2066,7 +2076,7 @@ def _refuse_an_unrunnable_plan(plan: Plan, source: Source) -> None:
         raise Refusal(
             "plan-unresolved",
             f"{len(unresolved)} path(s) still have `leg: null`: "
-            + ", ".join(str(e.get("path")) for e in unresolved[:8]),
+            + _listed([str(e.get("path")) for e in unresolved[:8]]),
             "Remediation: answer each entry's `question:` by setting `leg:` "
             "and adding a `resolution:` line, then run `check`. An unanswered "
             "question is never an implicit `root`.")
@@ -2252,8 +2262,10 @@ def _index_entries(assembly: Path,
 
 
 def _entry_named(entry: tuple[str, str]) -> str:
+    """The index entry and its kind. Its name is a source name the plan kept
+    in the root, so it is `_spelled`, as every path a finding names (#212)."""
     kind, name = entry
-    return f"`{name}` ({kind})"
+    return f"{_spelled(name)} ({kind})"
 
 
 def _occupied(detail: str) -> Refusal:
@@ -2988,13 +3000,14 @@ def _account_for(before: dict, after: dict, drops: list[str]) -> tuple[dict, lis
         if len(landings) == 1:
             counts[landings[0].split(":", 1)[0]] += 1
         elif landings:
-            findings.append(f"FINDING adopt-duplicated: {path} is in "
-                            + ", ".join(landings))
+            findings.append(f"FINDING adopt-duplicated: {_spelled(path)} is "
+                            "in " + ", ".join(landings))
         elif any(path == d or path.startswith(d + "/") for d in dropped):
             counts["drop"] += 1
         else:
-            findings.append(f"FINDING adopt-lost: {path} ({oid[:12]}) is in no "
-                            "leg, not in the root tree, and not listed as drop")
+            findings.append(f"FINDING adopt-lost: {_spelled(path)} "
+                            f"({oid[:12]}) is in no leg, not in the root "
+                            "tree, and not listed as drop")
     return counts, findings
 
 
@@ -3063,11 +3076,11 @@ class _SplitTree:
             if target is None:
                 done.append(part)
                 continue
-            hops, via = hops + 1, f" at the symlink {at}"
+            hops, via = hops + 1, f" at the symlink {_spelled(at)}"
             if hops > SYMLINK_HOPS:
                 raise _NotInTheSplitError(
-                    f"runs round a symlink loop at {at} in the split commit "
-                    f"{self.commit}")
+                    f"runs round a symlink loop at {_spelled(at)} in the "
+                    f"split commit {self.commit}")
             parts = self._parts(target, via) + parts
         return "/".join(done)
 
@@ -3075,7 +3088,7 @@ class _SplitTree:
         if target.startswith("/"):
             raise _NotInTheSplitError(
                 f"leads out of the split commit {self.commit}{via}, to "
-                f"{target}")
+                f"{_spelled(target)}")
         return [part for part in target.split("/") if part not in ("", ".")]
 
     def _up(self, done: list[str], via: str) -> list[str]:
@@ -3088,8 +3101,8 @@ class _SplitTree:
         here = "/".join(done)
         if not self._is_dir(here):
             raise _NotInTheSplitError(
-                f"passes through {here}, which is not a directory in the "
-                f"split commit {self.commit}")
+                f"passes through {_spelled(here)}, which is not a directory "
+                f"in the split commit {self.commit}")
         return done[:-1]
 
     def _is_dir(self, path: str) -> bool:
@@ -3150,9 +3163,10 @@ SHAPE_FILE_EXIT = (
 def _missing_shape_file(path: str, why: str, refusal: str) -> str:
     """`refusal` is what the first bootstrap's `validate-pins.py` says about
     it: `shape-pin-missing` for the pin itself, `shape-copy-missing` for a
-    file the pin names."""
-    return (f"FINDING adopt-shape-file-missing: {path} {why}, so the "
-            f"assembly's first `make bootstrap` refuses with {refusal}. "
+    file the pin names. `path` is `_spelled`, as every path a finding names
+    is, and so is each path `why` names (#212)."""
+    return (f"FINDING adopt-shape-file-missing: {_spelled(path)} {why}, so "
+            f"the assembly's first `make bootstrap` refuses with {refusal}. "
             + SHAPE_FILE_EXIT)
 
 
