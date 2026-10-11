@@ -78,8 +78,8 @@ from repo_shape import (  # noqa: E402
 )
 from shape_materialize import (  # noqa: E402
     RULESET_HINT, SHAPE_REPOSITORY, CommandFailed, check_program,
-    commit_trailers, env_commit, materialize_family_root, run, stage_written,
-    trailer_line, write_lf,
+    commit_trailers, env_commit, escape_what_stdout_cannot_encode,
+    materialize_family_root, run, stage_written, trailer_line, write_lf,
 )
 
 NAMING_POLICY = SHAPE_ROOT / "contracts" / "repository-naming.yaml"
@@ -1107,6 +1107,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # FIRST, so that every `print` after it -- `--help` included -- escapes
+    # a name stdout cannot encode rather than raising on it (#214).
+    escape_what_stdout_cannot_encode()
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)
