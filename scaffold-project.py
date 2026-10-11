@@ -423,7 +423,7 @@ def _exists_remedy(role: str, empty: bool, reuse_flag: bool) -> str:
 PIN_COLLISION_REMEDIATION = (
     "Remediation: nothing was created. A neutral product is named for the "
     "repository it pins, as `--pin openGlass@<40 hex commit>` names "
-    f"{NEUTRAL_PRODUCT_OWNER}/openGlass, and its pin is written at "
+    f"{NEUTRAL_PRODUCT_OWNER}/openGlass by default, and its pin is written at "
     f"`{neutral_pin_path('<openProduct>')}`, the name lowercased, beside the "
     "pins the shape writes for its two legs and for itself. Pass each product "
     "once, by the name of the repository it pins."
@@ -439,7 +439,7 @@ def _refuse_colliding_pins(pins, owner: str) -> None:
     before the copy pin, and a second file at one path is
     `materialize-collision`: a pin over a leg's pin, or the copy pin over a
     pin named `shape`, or a pin over another pin. So each was met only after
-    `_create_remotes` and `_seed_legs`. On #197's 87fd767, as on main, `--pin
+    `_create_remotes` and `_seed_legs`. On main through 39ac59c, `--pin
     spec@<sha>` (`Spec@`, `code@`, `MedxSoft/code@`, `shape@`) and `--pin
     openGlass@<sha> --pin OpenGlass@<sha>` planned under `--dry-run`, then
     created all three repositories, pushed both legs, left the root with no
@@ -470,7 +470,11 @@ def _refuse_colliding_pins(pins, owner: str) -> None:
     were three (#197's re-review, N1). Refused first, no pin path it lists
     is the shape's or listed twice.
     """
-    shape_files = set(assembly_root_paths())
+    # Folded on both sides, as `path_overlap` folds the leg paths: a future
+    # mixed-case shape file under `contracts/` is still one path with a
+    # lowercased pin on the case-insensitive disk of macOS and Windows.
+    shape_files = {shape_file.casefold()
+                   for shape_file in assembly_root_paths()}
     written: dict[str, list[tuple[str, str]]] = {}
     for raw in pins:
         product = parse_pin(raw, owner)[0]
@@ -478,14 +482,15 @@ def _refuse_colliding_pins(pins, owner: str) -> None:
         written.setdefault(path, []).append((raw, product))
     collisions = []
     for path, typed in written.items():
-        if path not in shape_files and len(typed) == 1:
+        in_shape = path.casefold() in shape_files
+        if not in_shape and len(typed) == 1:
             continue
         products = list(dict.fromkeys(product for _, product in typed))
         said = (" and ".join(f"--pin {raw!r}" for raw, _ in typed)
                 + (" writes the pin" if len(typed) == 1 else " write the pins")
                 + " of the product" + ("s" if len(products) > 1 else "") + " "
                 + " and ".join(f"`{product}`" for product in products))
-        if path in shape_files:
+        if in_shape:
             collisions.append(
                 f"{said} at `{path}`, a file the shape writes into the "
                 "assembly root itself: name the product for the repository it "

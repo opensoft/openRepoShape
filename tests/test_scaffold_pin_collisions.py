@@ -5,7 +5,7 @@
 `neutral_pin_path(product)`, `contracts/<product lowercased>-pin.yaml`, after
 the shape's own files and before the copy pin. Nothing asked whether that
 file was one the shape writes itself, or one another `--pin` writes. On main
-and on #197's 87fd767, `--pin spec@<sha>` (`Spec@`, `code@`, `<owner>/code@`,
+through 39ac59c, `--pin spec@<sha>` (`Spec@`, `code@`, `<owner>/code@`,
 `shape@`) and `--pin openGlass@<sha> --pin OpenGlass@<sha>` planned under
 `--dry-run`, exit 0. The real run then created all three repositories, pushed
 both legs, and died in the materializer (`materialize-collision`) with the
@@ -59,7 +59,7 @@ ONE_FILE = "which holds one pin: pass each product once."
 REMEDIATION = (
     "Remediation: nothing was created. A neutral product is named for the "
     "repository it pins, as `--pin openGlass@<40 hex commit>` names "
-    "opensoft/openGlass, and its pin is written at "
+    "opensoft/openGlass by default, and its pin is written at "
     "`contracts/<openproduct>-pin.yaml`, the name lowercased, beside the "
     "pins the shape writes for its two legs and for itself. Pass each "
     "product once, by the name of the repository it pins.")
@@ -349,7 +349,7 @@ def nothing_was_created(world) -> None:
 @pytest.mark.parametrize("values, said", REFUSED_CASES)
 def test_a_dry_run_refuses_exactly_as_the_real_run(glass, world, values,
                                                    said):
-    """On main the dry run said yes and the real run made three
+    """On main through 39ac59c the dry run said yes and the real run made three
     repositories and died in the materializer, or dropped a pin. Now both
     say the same no, word for word, and nothing exists afterwards."""
     args = (*BASE_ARGS, *pin_args(glass, values),
