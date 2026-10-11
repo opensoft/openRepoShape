@@ -89,7 +89,7 @@ def fetch_members(root: Path) -> bool:
     print(f"  credential source: {source}")
     sys.stdout.flush()
     proc = subprocess.run(args, cwd=str(root), capture_output=True, text=True,
-                          check=False)
+                          encoding="utf-8", errors="replace", check=False)
     if proc.returncode == 0:
         print("  every member and leg fetched")
         return True
