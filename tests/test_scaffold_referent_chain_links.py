@@ -13,7 +13,7 @@ repositories, pushed both legs and exited 0, and the project's own
 `yaml-unparsable`: the `#` began a comment. `it's` and `a]b` read back as one
 link swallowing the next, `"q"` as `q`, `null` as None and `007` as 7.
 
-A link past the first is read out of the link before it's
+A link past the first is read out of the link before its
 `neutral_product_pins:`, so it is a neutral product's NAME, and the naming
 policy spells one: the `neutral-product` family, `open<Product>`. A name of
 that form is one plain YAML word. The first and last links keep the checks
@@ -37,7 +37,7 @@ import pytest
 from conftest import REPO, SCAFFOLD, git, run_script
 
 sys.path.insert(0, str(REPO / "scripts"))
-from repo_shape import load_yaml  # noqa: E402
+from repo_shape import NamingPolicy, load_yaml  # noqa: E402
 
 PROJECT = "codexDox"
 ORG = "codexSoft"
@@ -50,7 +50,7 @@ BASE_ARGS = ("--org", ORG, "--project", PROJECT, "--elected-by", "Test Human",
 ANY_COMMIT = "1" * 40
 
 #: Middle links main wrote into the manifest as typed, with what each did
-#: there (`$S/implD/repro-base.txt` in the lane's notes). Each is refused now.
+#: there. Each is refused now.
 MALFORMED = [
     # The `#` began a comment: validate-manifest.py exited 2.
     pytest.param("a #b", id="hash"),
@@ -129,7 +129,7 @@ def test_a_middle_link_that_is_not_a_neutral_product_is_refused_first(
                           *(["--dry-run"] if dry_run else [])])
     out, err = capsys.readouterr()
     assert code == 2, out + err
-    assert f"{REFUSED}: --referent-chain {chain}: " in err
+    assert f"{REFUSED}: --referent-chain {chain!r}: " in err
     assert f"{link!r} is not the name of a neutral product" in err
     assert "\nRemediation: nothing was created." in err
     assert "`open<Product>`" in err and "e.g. openXdox" in err
@@ -149,6 +149,95 @@ def test_every_malformed_middle_link_is_named_in_one_refusal(
     assert code == 2
     assert "\"it's\", 'a #b' are not the name of a neutral product" in err
     assert "'openYdox'" not in err
+
+
+def test_a_padded_bad_link_is_named_as_it_is_recorded(scaffold, capsys,
+                                                      no_process):
+    """The check judges the links `_declaration` records, spaces stripped
+    (`referent_chain_links`), so the refusal names `'a #b'`, not `' a #b '`,
+    and the padded good link beside it is not judged malformed."""
+    code = scaffold.main([*BASE_ARGS, "--dry-run",
+                          "--pin", f"openXdox@{ANY_COMMIT}",
+                          "--referent-chain",
+                          "openXdox, openYdox , a #b ,openDox"])
+    _, err = capsys.readouterr()
+    assert code == 2
+    assert "'a #b' is not the name of a neutral product" in err
+    assert "' a #b '" not in err
+
+
+#: A character that would end the refusal's line, or move the cursor, or
+#: hide behind the terminal, with how the refusal must spell it.
+LINE_BREAKS = [
+    pytest.param("\n", "\\n", id="newline"),
+    pytest.param("\r", "\\r", id="carriage-return"),
+    pytest.param("\x1b", "\\x1b", id="escape"),
+    pytest.param("\u2028", "\\u2028", id="line-separator"),
+]
+
+
+@pytest.mark.parametrize("raw,spelled", LINE_BREAKS)
+def test_a_link_holding_a_line_break_is_refused_on_one_line(
+        scaffold, capsys, no_process, raw, spelled):
+    """The chain is the operator's own argument and the refusal prints it:
+    a link holding a newline must not end the refusal's line and begin a
+    second that reads as a refusal of its own."""
+    chain = f"openXdox,a{raw}REFUSED fake,openDox"
+    code = scaffold.main([*BASE_ARGS, "--dry-run",
+                          "--pin", f"openXdox@{ANY_COMMIT}",
+                          "--referent-chain", chain])
+    _, err = capsys.readouterr()
+    assert code == 2
+    lines = err.splitlines()
+    assert len(lines) == 2, f"the refusal and its remediation, no more: {lines!r}"
+    refusal, remediation = lines
+    assert refusal.startswith(f"{REFUSED}: --referent-chain ")
+    assert f"a{spelled}REFUSED fake" in refusal
+    assert raw not in refusal, "the character itself must not reach the line"
+    assert remediation.startswith("Remediation: nothing was created.")
+
+
+def test_the_remediation_quotes_the_policys_pattern_and_names_a_command(
+        scaffold, capsys, no_process):
+    """The remediation quotes the naming policy's own pattern for a link and
+    names `validate-repository-naming.py --explain <link>`."""
+    pattern = NamingPolicy.load(
+        REPO / "contracts" / "repository-naming.yaml").family(
+        "neutral-product")["pattern"]
+    assert pattern.startswith("^open"), pattern
+    code = scaffold.main([*BASE_ARGS, "--dry-run",
+                          "--pin", f"openXdox@{ANY_COMMIT}",
+                          "--referent-chain", "openXdox,a #b,openDox"])
+    _, err = capsys.readouterr()
+    assert code == 2
+    remediation = err.splitlines()[-1]
+    assert f"(the naming policy's `{pattern}`, e.g. openXdox)" in remediation
+    assert ("`validate-repository-naming.py --explain <link>` says which "
+            "form a name is.") in remediation
+
+
+def test_the_command_the_remediation_names_says_which_form_a_name_is():
+    """`--explain <link>` is the remediation's pointer, so it must answer."""
+    explained = run_script(REPO / "scripts" / "validate-repository-naming.py",
+                           "--explain", "openYdox")
+    assert explained.returncode == 0, explained.stderr + explained.stdout
+    assert "openYdox: neutral-product" in explained.stdout
+
+
+@pytest.mark.parametrize("raw,links", [
+    pytest.param("openXdox,openYdox,openDox",
+                 ("openXdox", "openYdox", "openDox"), id="plain"),
+    pytest.param("openXdox, openYdox ,\topenDox\n",
+                 ("openXdox", "openYdox", "openDox"), id="padded"),
+    pytest.param("openXdox,,openYdox, ,openDox,",
+                 ("openXdox", "openYdox", "openDox"), id="empty-links"),
+    pytest.param("", (), id="empty"),
+    pytest.param(" , ,", (), id="only-commas"),
+])
+def test_referent_chain_links_strips_each_link_and_drops_an_empty_one(
+        scaffold, raw, links):
+    """The one reading of the argument, for the check and for the manifest."""
+    assert scaffold.referent_chain_links(raw) == links
 
 
 @pytest.mark.parametrize("chain", ["openXdox,a #b,openDox",
@@ -171,10 +260,16 @@ def test_the_issue_reproduction_creates_no_repository(tmp_path, chain):
     assert not work.exists()
 
 
-@pytest.mark.parametrize("middle", ["openYdox", "opensoft/openYdox"],
-                         ids=["bare", "qualified"])
+@pytest.mark.parametrize("chain", [
+    pytest.param("openXdox,openYdox,openDox", id="bare"),
+    pytest.param("openXdox,opensoft/openYdox,openDox", id="qualified"),
+    # The commonest way to type the argument, and an empty link: both are
+    # read once (`referent_chain_links`), for the check and the manifest.
+    pytest.param("openXdox, openYdox ,openDox", id="padded"),
+    pytest.param("openXdox,,openYdox,openDox,", id="empty-links"),
+])
 def test_a_neutral_product_middle_link_scaffolds_and_validates(tmp_path,
-                                                               middle):
+                                                               chain):
     """The rule refuses only what is not a neutral product's name. A
     three-link chain whose every link is read from its own tree scaffolds,
     records the links as names, and passes the project's own gate."""
@@ -188,7 +283,7 @@ def test_a_neutral_product_middle_link_scaffolds_and_validates(tmp_path,
     result = run_script(SCAFFOLD, *BASE_ARGS,
                         "--pin", f"openXdox@{commit}",
                         "--pin-source", str(first),
-                        "--referent-chain", f"openXdox,{middle},openDox",
+                        "--referent-chain", chain,
                         "--local-remote-dir", str(remotes),
                         "--work-dir", str(work), env=trees)
     assert result.returncode == 0, result.stderr + result.stdout

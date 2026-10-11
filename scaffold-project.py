@@ -82,7 +82,7 @@ PIN_ARG_RE = re.compile(r"^(?P<name>[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?)@(?P<co
 GH_TREE_API = "repos/{repo}/git/trees/{commit}?recursive=1"
 
 #: The naming-policy form every link between a chain's first and last must
-#: classify as (#251). Each such link is an entry of the link before it's
+#: classify as (#251). Each such link is an entry of the link before its
 #: `neutral_product_pins:`, the key a link is verified by
 #: (`referent.chain.link_declared_by`), so it is a neutral product's name.
 CHAIN_LINK_FORM = "neutral-product"
@@ -551,7 +551,7 @@ def _refuse_malformed_chain_links(policy, chain: tuple) -> None:
     `007` were each recorded as a different chain than the one typed.
 
     THE NAMING POLICY ALREADY SAYS WHAT A LINK IS. Each link past the first is
-    read out of the link before it's `neutral_product_pins:`, so it is the
+    read out of the link before its `neutral_product_pins:`, so it is the
     name of a neutral product, and `CHAIN_LINK_FORM` is that family. A name of
     that form is one plain YAML word, so the manifest stays plain and reads
     back as typed. The link is judged at its basename, as `resolve_referent`
@@ -567,6 +567,12 @@ def _refuse_malformed_chain_links(policy, chain: tuple) -> None:
     Asked before `_declaration`, so before `gh api` reads a pin's tree and
     before `--dry-run` returns: a dry run refuses exactly as the real run
     does, and nothing has been created.
+
+    The chain and each bad link are quoted with `repr`, as `--pin` and `--id`
+    are in their refusals: a link is the operator's own argument, and one
+    that holds a newline, a carriage return or an escape byte prints as
+    `\\n`, `\\r` or `\\x1b`, so it cannot end the refusal's line and start
+    another that reads as a refusal of its own.
     """
     malformed = [link for link in chain[1:-1]
                  if CHAIN_LINK_FORM not in {family for family, _role
@@ -577,7 +583,7 @@ def _refuse_malformed_chain_links(policy, chain: tuple) -> None:
     form = (policy.family(CHAIN_LINK_FORM) or {}).get("pattern", "")
     raise Refusal(
         "chain-link-malformed",
-        f"--referent-chain {','.join(chain)}: "
+        f"--referent-chain {','.join(chain)!r}: "
         + ", ".join(repr(link) for link in malformed)
         + (" is not" if len(malformed) == 1 else " are not")
         + " the name of a neutral product. Every link between the first and "
