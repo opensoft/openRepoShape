@@ -24,7 +24,8 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            `leg: null`, `review_required: true` and the QUESTION to ask.
            A leg path over a path it keeps in the root itself is a NOTE,
            not a refusal: the answer is the person's to change.
-  check    validates a plan against the source: every path covered exactly
+  check    validates a plan against the source: each entry path bound for
+           a leg one `execute` will extract, every path covered exactly
            once, no unresolved legs, leg names conforming to the naming
            policy, each leg's mount path one `execute` can mount
            (`spec`, `legs/spec`; never `spec/` or `./spec`, a name Git or
@@ -1932,6 +1933,12 @@ NOT_EXTRACTED = ("root", "drop")
 #: characters, as policy.
 LINE_SEPARATORS = "\u2028\u2029"
 
+#: The surrogates `surrogateescape` reads a byte that is not UTF-8 as, and
+#: writes back as that byte (`Source.tree`, `write_paths_listing`): a path's
+#: byte 0x80 to 0xFF is one of these. `entry_path_problem` refuses them as
+#: policy, and every other surrogate as a misreading.
+NOT_UTF8_BYTES = frozenset(map(chr, range(0xDC80, 0xDD00)))
+
 #: What every policy refusal says of git and `git filter-repo`, because it is
 #: true of each of them, measured: a policy refusal is not a misreading.
 TAKEN_LITERALLY = "though git and `git filter-repo` would take it literally"
@@ -1995,16 +2002,18 @@ def _misread(path: str) -> str | None:
         as a line of its own -- `docs\\nregex:.*` kept every path;
       * a carriage return at the END: stripped, so `Icon\\r` -- the macOS
         folder-icon file -- was read as `Icon`, and the leg took that file
-        instead. A carriage return elsewhere is carried, and is policy's;
+        instead. A name of carriage returns alone leaves `literal:` with
+        nothing after it, which, as for the empty path, kept every path. A
+        carriage return elsewhere is carried, and is policy's;
       * a NUL, which no command line can carry (`subprocess` raises), and
         which git records in no path;
-      * a byte that is not UTF-8, which `Source.tree` keeps as a lone
-        surrogate (category Cs, U+D800 to U+DFFF): `_extract_leg` writes
-        the path list as UTF-8 text, which cannot carry one. Before #199 no
-        plan could hold one -- `plan` raised writing it -- but #199's writer
-        spells it `\\udce9` and its reader gives the surrogate back, and on
-        the two merged `check` said `plan ok` and `execute` raised
-        `UnicodeEncodeError` there, after both leg repositories existed;
+      * a lone surrogate (category Cs) outside U+DC80 to U+DCFF, such as a
+        hand-edited `\\ud800`. `Source.tree` reads a byte that is not UTF-8
+        as one of U+DC80 to U+DCFF (`surrogateescape`), so no path of the
+        source holds any other, and `_extract_leg`'s `write_paths_listing`
+        cannot write one: it raised `UnicodeEncodeError`, measured. (Such an
+        entry also covers nothing, so `check` reports `plan-empty-entry`
+        beside it.) A byte that is not UTF-8 is policy's;
       * `==>`, which `git filter-repo` reads as a RENAME wherever it is on a
         line, before it looks for `literal:`, and which nothing escapes:
         `literal:a==>b.md` beside `literal:keep.md` extracted only
@@ -2021,7 +2030,9 @@ def _misread(path: str) -> str | None:
     if path.endswith("\r"):
         rest = path.rstrip("\r")
         named = (f"would name {_spelled(rest)}, another path" if rest
-                 else "would be blank, which the filter skips")
+                 else "would be `literal:` alone, which matches every path, "
+                      "so `git filter-repo` would put the whole tree in the "
+                      "leg")
         return ("it ends in a carriage return (`\\r`), which `git "
                 "filter-repo` strips from the end of each line of the path "
                 f"list it reads, so its line {named}")
@@ -2029,11 +2040,11 @@ def _misread(path: str) -> str | None:
         return ("it holds a NUL (`\\x00`), which no command line can carry "
                 "and git records in no path")
     for char in path:
-        if "\ud800" <= char <= "\udfff":
-            return (f"it holds `{_spelled_character(char)}`, which is not "
-                    "UTF-8: the path list `git filter-repo` reads is written "
-                    "as UTF-8 text, which cannot carry it, and the write "
-                    "would fail after both leg repositories exist")
+        if "\ud800" <= char <= "\udfff" and char not in NOT_UTF8_BYTES:
+            return (f"it holds `{_spelled_character(char)}`, a surrogate no "
+                    "byte of a path is read as, so it names no path of the "
+                    "source, and the path list `git filter-repo` reads cannot "
+                    "be written with it")
     if "==>" in path:
         return ("it holds `==>`, which `git filter-repo --paths-from-file` "
                 "reads as a rename wherever it is on the line, and nothing "
@@ -2057,6 +2068,14 @@ def _refused_by_policy(path: str) -> str | None:
         holds one is almost never meant, and printed as it stands -- as
         `git log` prints a commit message, ESC and `\\x01` raw, measured --
         it cannot be seen for what it is;
+      * a byte that is not UTF-8, which `Source.tree` keeps as one of
+        U+DC80 to U+DCFF (`surrogateescape`). Since #199 (PR #247)
+        `write_paths_listing` writes it as that byte, and with this refusal
+        disabled a source holding `caf\\xe9.md` was extracted and verified,
+        the byte in the leg, measured. It is held until adopting such a name
+        end to end is measured on macOS and Windows: a name that holds one
+        prints as an escape, never as itself, and the split commit's message
+        lists it with a `?` for the byte (`env_commit`);
       * a leading `-`, the threat model's first rule
         (`repo_shape.checked_value`), held although neither place in
         `entry_path_problem` takes it as an option: a line of the filter's
@@ -2076,6 +2095,14 @@ def _refused_by_policy(path: str) -> str | None:
                     "a name that holds one is almost never meant, and "
                     "printed as it stands, as `git log` prints a commit "
                     "message, it cannot be seen for what it is")
+    for char in path:
+        if char in NOT_UTF8_BYTES:
+            return (f"it holds `{_spelled_character(char)}`, which is not "
+                    "UTF-8 and which `execute` refuses as policy, "
+                    f"{TAKEN_LITERALLY}: a name that holds one prints as an "
+                    "escape and never as itself, the split commit's message "
+                    "would list it with a `?` for that byte, and adopting "
+                    "one is not yet measured on macOS or Windows")
     if path.startswith("-"):
         return ("it begins with `-`, which `execute` refuses as policy, "
                 f"{TAKEN_LITERALLY} (a line of the filter's path list is no "

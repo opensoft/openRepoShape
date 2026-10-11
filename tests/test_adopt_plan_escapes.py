@@ -450,9 +450,9 @@ def test_the_paths_listing_is_written_byte_exact(tmp_path):
     reason="git filter-repo is not installed: `pip install git-filter-repo`")
 def test_a_leg_extracts_a_path_that_is_not_utf8(adopter, tmp_path):
     """`_extract_leg` itself, given an entry path holding the byte 0xE9:
-    the leg holds the name byte for byte. On this branch `execute` refuses
-    such an entry before any leg exists (`SAFE_ARG_RE`); a `check` that
-    lets it through (#196) reaches this, so the extraction is tested here,
+    the leg holds the name byte for byte. `execute` refuses such an entry
+    before any leg exists (as policy, `plan-unsafe-path`, since #196);
+    lifting that refusal reaches this, so the extraction is tested here,
     directly. Skipped where no file can be named with that byte (Windows,
     macOS's APFS): filter-repo works in a clone, which checks the name out."""
     try:

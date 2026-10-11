@@ -137,11 +137,17 @@ MISREAD = [
     ("Icon\r", "ends in a carriage return (`\\r`), which `git filter-repo` "
                 "strips from the end of each line of the path list it reads, "
                 "so its line would name `Icon`, another path"),
-    ("\r", "so its line would be blank"),
+    # Nothing is left once the carriage returns are stripped: the line is
+    # `literal:` alone, which matches every path, as the empty path's does.
+    ("\r", "so its line would be `literal:` alone, which matches every path, "
+            "so `git filter-repo` would put the whole tree in the leg"),
+    ("\r\r", "so its line would be `literal:` alone, which matches every"),
     ("nul\x00", "NUL (`\\x00`), which no command line can carry"),
-    ("caf\udce9.md", "`\\xe9`, which is not UTF-8"),
-    ("docs/\udcff/", "`\\xff`, which is not UTF-8"),
-    ("\ud800.md", "`\\ud800`, which is not UTF-8"),
+    # A surrogate no byte of a path is read as: `write_paths_listing` cannot
+    # write it. U+DC80 to U+DCFF, the bytes that are not UTF-8, are POLICY's.
+    ("\ud800.md", "`\\ud800`, a surrogate no byte of a path is read as"),
+    ("x\udc7f.md", "`\\udc7f`, a surrogate no byte of a path is read as"),
+    ("y\udd00.md", "`\\udd00`, a surrogate no byte of a path is read as"),
     ("a==>b.md", "`==>`"),
     ("docs/a==>b/", "`==>`"),
     # A misreading is told before a policy reason the same name also has.
@@ -163,6 +169,11 @@ POLICY = [
     ("nel\x85.md", "control character `\\x85`"),
     ("vt\x0b.md", "control character `\\x0b`"),
     ("line\u2028sep.md", "line separator `\\u2028`"),
+    # A byte that is not UTF-8, as `Source.tree` keeps it: since #199 the
+    # path list carries it byte-exact.
+    ("caf\udce9.md", "`\\xe9`, which is not UTF-8"),
+    ("docs/\udcff/", "`\\xff`, which is not UTF-8"),
+    ("\udc80.md", "`\\x80`, which is not UTF-8"),
 ]
 
 
@@ -396,20 +407,22 @@ def with_a_name_that_is_not_utf8(adopter, tmp_path: Path):
 #: `_spelled` spells a byte that is not UTF-8.
 NOT_UTF8_FINDING = (
     f"FINDING {UNSAFE}: `docs/caf\\xe9.md` has leg: spec, and `execute` "
-    "will not extract it into a leg: it holds `\\xe9`, which is not UTF-8: "
-    "the path list `git filter-repo` reads is written as UTF-8 text, which "
-    "cannot carry it, and the write would fail after both leg repositories "
-    "exist")
+    "will not extract it into a leg: it holds `\\xe9`, which is not UTF-8 "
+    "and which `execute` refuses as policy, though git and `git filter-repo` "
+    "would take it literally: a name that holds one prints as an escape and "
+    "never as itself, the split commit's message would list it with a `?` "
+    "for that byte, and adopting one is not yet measured on macOS or Windows")
 
 
 def test_a_byte_that_is_not_utf8_is_found_and_refused_before_any_leg(
         adopter, tmp_path, monkeypatch, capsys):
     """CATEGORY Cs. `Source.tree` keeps a byte that is not UTF-8 as a lone
-    surrogate, and `_extract_leg` writes the path list `git filter-repo`
-    reads as UTF-8 text. Measured on this branch merged with #199 before
-    the refusal: `check` said `plan ok`, and `execute` raised
-    `UnicodeEncodeError` writing that list, after both leg repositories
-    existed. Now `check` names it first, and `execute` refuses it in
+    surrogate. Before #199's `write_paths_listing`, on this branch merged
+    with #199's first head, `check` said `plan ok` and `execute` raised
+    `UnicodeEncodeError` writing the path list, after both leg repositories
+    existed. With it the name is extracted byte for byte, and it is still
+    refused, as policy, until adopting it end to end is measured on macOS
+    and Windows: `check` names it first, and `execute` refuses it in
     `check`'s words before any leg exists."""
     source, loaded = with_a_name_that_is_not_utf8(adopter, tmp_path)
     monkeypatch.setattr(adopter.Plan, "load", staticmethod(lambda _: loaded))
