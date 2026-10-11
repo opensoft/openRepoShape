@@ -21,27 +21,23 @@ submodule reader, through `git fast-export`, what it makes of a value.
 from __future__ import annotations
 
 import importlib.util
-import re
 import shutil
 import subprocess
-from argparse import Namespace
 from pathlib import Path
 
 import pytest
 
-from conftest import ADOPT, FILE_PROTOCOL, git, make_source_repo, resolve, \
-    run_script, write_plan
+from conftest import ADOPT, FILE_PROTOCOL, GITLINK, GITMODULES, as_human, \
+    exported_in_a_clone, findings, git, in_the_history, link, \
+    make_source_repo, planned, put_gitmodules, refused_before_any_leg, \
+    run_script
 
 needs_filter_repo = pytest.mark.skipif(
     shutil.which("git-filter-repo") is None,
     reason="git filter-repo is not installed: `pip install git-filter-repo`")
 
-PROJECT = "Northwind"
-GITMODULES = ".gitmodules"
 UNREADABLE = "plan-gitmodules-unreadable"
 REMOTES = "remotes"
-#: The submodule, registered under the name `b`.
-GITLINK = "vendor/b"
 REGISTRATION = '[submodule "b"]\n\tpath = vendor/b\n\turl = ../b\n'
 #: A source whose plan asks about `.gitmodules`, and about `vendor/` where
 #: the tip holds the submodule: `specs/` and `src/` classify themselves and
@@ -68,6 +64,25 @@ REFUSED = {
         "bad `submodule.b.fetchrecursesubmodules` argument: `bogus`, which "
         "is neither a boolean nor `on-demand`",
 }
+#: Numbers only some of the gits `execute` may run read as a boolean, and
+#: what the finding says of each: git 2.50 and later read the first two,
+#: and git 2.43 here refuses them (measured on c800efd, `check` 0 and
+#: `execute` 2 with both leg repositories left); a git built on glibc 2.38
+#: or later, as git 2.43 here is, reads the third. `check` refuses each
+#: with the gits that refuse it.
+ONLY_SOME_GITS_READ = {
+    "shallow = -2147483648":
+        "bad boolean config value `-2147483648` for `submodule.b.shallow`, "
+        "a number git 2.49 and older refuse, and 2.50 and later read",
+    "fetchRecurseSubmodules = -2g":
+        "bad `submodule.b.fetchrecursesubmodules` argument: `-2g`, a number "
+        "git 2.49 and older refuse, and 2.50 and later read",
+    "shallow = 0b1":
+        "bad boolean config value `0b1` for `submodule.b.shallow`, a `0b` "
+        "number, which only a git built on glibc 2.38 or later reads",
+}
+#: Every line `check` refuses beside a gitlink.
+CHECK_REFUSES = {**REFUSED, **ONLY_SOME_GITS_READ}
 #: The issue's table, the lines git reads, and three more: `ignore = bogus`
 #: only warns, `branch` takes any value, and the others are values git takes.
 #: Each adopted on main and still does.
@@ -84,33 +99,27 @@ def adopter():
     return module
 
 
-def as_human(*args: str, cwd: Path):
-    """`git <args>` with an identity, for the commits below."""
-    return git("-c", "user.name=Source Human",
-               "-c", "user.email=source@invalid.example", *args, cwd=cwd)
-
-
-def put_gitmodules(source: Path, text: str | bytes) -> None:
-    """`text` as the source's `.gitmodules`, staged: BYTES, so it is LF on
-    every platform, as a hand edit would leave it."""
-    (source / GITMODULES).write_bytes(
-        text if isinstance(text, bytes) else text.encode())
-    git("add", "--", GITMODULES, cwd=source)
-
-
-def link(source: Path) -> None:
-    """A gitlink at GITLINK, staged straight into the index, as `git add` of
-    an embedded clone records one; no checkout of it is needed."""
-    head = git("rev-parse", "main", cwd=source).stdout.strip()
-    git("update-index", "--add", "--cacheinfo", f"160000,{head},{GITLINK}",
-        cwd=source)
+def type_changes(source: Path) -> None:
+    """A file at GITLINK, then a gitlink in its place, then the file again:
+    two commits `git log --raw` shows as type changes, `T`, and no commit
+    that adds or removes a gitlink."""
+    (source / GITLINK).parent.mkdir()
+    (source / GITLINK).write_bytes(b"a file\n")
+    git("add", "--", GITLINK, cwd=source)
+    as_human("commit", "-qm", "vendor/b, a file", cwd=source)
+    git("rm", "-q", "--cached", "--", GITLINK, cwd=source)
+    link(source)
+    as_human("commit", "-qm", "vendor/b, a gitlink", cwd=source)
+    git("add", "--", GITLINK, cwd=source)
+    as_human("commit", "-qm", "vendor/b, a file again", cwd=source)
 
 
 def source_with(base: Path, gitmodules: str | bytes, where: str) -> Path:
     """A source whose `.gitmodules` at the tip is `gitmodules`, and whose
     submodule is `where`: at the `tip`; only in the `history`, added and
-    removed by two earlier commits under a well-formed `.gitmodules`; or
-    `nowhere`, in no commit at all."""
+    removed by two earlier commits under a well-formed `.gitmodules`;
+    entered and left by `type-changes` alone, which git's diff never asks
+    the submodule reader about; or `nowhere`, in no commit at all."""
     source = make_source_repo(base / "Thing", tree=SMALL_TREE, edits=())
     if where == "history":
         put_gitmodules(source, REGISTRATION)
@@ -118,6 +127,8 @@ def source_with(base: Path, gitmodules: str | bytes, where: str) -> Path:
         as_human("commit", "-qm", "Add vendor/b", cwd=source)
         git("rm", "-q", "--cached", "--", GITLINK, cwd=source)
         as_human("commit", "-qm", "Remove vendor/b", cwd=source)
+    elif where == "type-changes":
+        type_changes(source)
     put_gitmodules(source, gitmodules)
     if where == "tip":
         link(source)
@@ -132,40 +143,12 @@ def with_line(line: str) -> str:
     return REGISTRATION + f"\t{line}\n"
 
 
-#: Where the plan sends `.gitmodules`, and the submodule's entry where the
-#: tip holds one: to the code leg, as the issue's plan did.
+#: Where the plan sends `.gitmodules`, and the entry for `vendor/` where
+#: the tip holds something there: to the code leg, as the issue's plan did.
 ANSWERS = {"tip": {GITMODULES: "code", "vendor/": "code"},
-           "history": {GITMODULES: "code"}, "nowhere": {GITMODULES: "code"}}
-
-
-def planned(source: Path, base: Path, answers: dict) -> Path:
-    """`plan` for `source`, each entry `answers` names given its leg."""
-    plan = base / "plan" / "adoption-plan.yaml"
-    plan.parent.mkdir()
-    written = write_plan(source, plan, project=PROJECT)
-    assert written.returncode == 0, written.stderr + written.stdout
-    text = plan.read_bytes().decode()
-    for path, leg in answers.items():
-        entry = re.search(rf"  - path: {re.escape(path)}\n    leg: (\S+)\n",
-                          text)
-        assert entry, f"no entry {path} in the plan"
-        if entry[1] == "null":
-            resolve(plan, path, leg)
-            text = plan.read_bytes().decode()
-        else:
-            text = text.replace(entry[0],
-                                f"  - path: {path}\n    leg: {leg}\n", 1)
-    plan.write_bytes(text.encode())
-    return plan
-
-
-def findings(plan: Path) -> list[tuple[str, str]]:
-    result = run_script(ADOPT, "check", "--plan", str(plan))
-    found = [tuple(line.split(" ", 1)[1].split(": ", 1))
-             for line in result.stderr.splitlines()
-             if line.startswith("FINDING ")]
-    assert result.returncode == (1 if found else 0), result.stderr
-    return found
+           "history": {GITMODULES: "code"},
+           "type-changes": {GITMODULES: "code", "vendor/": "code"},
+           "nowhere": {GITMODULES: "code"}}
 
 
 def unreadable(said: str) -> str:
@@ -174,22 +157,17 @@ def unreadable(said: str) -> str:
             f"({said}), ")
 
 
-def in_the_history(adopter) -> re.Pattern:
-    """How the finding ends for a submodule only the history holds: the
-    commit that removed it, which `git log` meets first."""
-    return re.compile(re.escape(adopter.FAILS_IN_THE_HISTORY).replace(
-        re.escape("{}"), r"commit [0-9a-f]{12} removes `vendor/b`") + "$")
-
-
 # --- what `check` finds -----------------------------------------------------
 
 @pytest.mark.parametrize("where", ["tip", "history"])
-@pytest.mark.parametrize("line, said", REFUSED.items(), ids=list(REFUSED))
+@pytest.mark.parametrize("line, said", CHECK_REFUSES.items(),
+                         ids=list(CHECK_REFUSES))
 def test_check_finds_a_value_git_refuses(adopter, tmp_path, line, said,
                                          where):
     """Each row of the issue's table that git refuses, in both of its
     positions. On main each passed `check` and failed `execute` in `git
-    fast-export` after both leg repositories were made."""
+    fast-export` after both leg repositories were made. So do the numbers
+    only some gits read, refused with the gits that refuse them."""
     plan = planned(source_with(tmp_path, with_line(line), where), tmp_path,
                    ANSWERS[where])
     found = findings(plan)
@@ -213,7 +191,7 @@ def test_check_passes_a_value_git_reads(tmp_path, line, where):
     assert findings(plan) == []
 
 
-@pytest.mark.parametrize("line", REFUSED)
+@pytest.mark.parametrize("line", CHECK_REFUSES)
 def test_a_refused_value_beside_no_gitlink_anywhere_still_passes(tmp_path,
                                                                   line):
     """#166's S3, for a value: with no gitlink in the tree or its history,
@@ -221,6 +199,21 @@ def test_a_refused_value_beside_no_gitlink_anywhere_still_passes(tmp_path,
     cloned each of these."""
     plan = planned(source_with(tmp_path, with_line(line), "nowhere"),
                    tmp_path, ANSWERS["nowhere"])
+    assert findings(plan) == []
+
+
+@pytest.mark.parametrize("line", CHECK_REFUSES)
+def test_a_refused_value_beside_a_gitlink_only_type_changes_move_passes(
+        tmp_path, line):
+    """#195's type change, for a value: git's diff asks the submodule
+    reader about a changed path only when both of its sides are gitlinks,
+    so `git fast-export` in a clone of the source never reads this
+    `.gitmodules` and exits 0, and `check` passes it. Before #226's fix
+    round (f48c669) was merged here, `check` refused it."""
+    source = source_with(tmp_path, with_line(line), "type-changes")
+    exported = exported_in_a_clone(source, tmp_path)
+    assert exported.returncode == 0, exported.stderr
+    plan = planned(source, tmp_path, ANSWERS["type-changes"])
     assert findings(plan) == []
 
 
@@ -283,27 +276,16 @@ def test_the_key_and_the_value_are_spelled_on_one_line(adopter, tmp_path,
 # --- what `execute` refuses -------------------------------------------------
 
 @pytest.mark.parametrize("where", ["tip", "history"])
-@pytest.mark.parametrize("line", REFUSED)
+@pytest.mark.parametrize("line", CHECK_REFUSES)
 def test_execute_refuses_it_before_any_leg_exists(adopter, tmp_path,
                                                   monkeypatch, line, where):
     """The refusal is `check`'s finding, raised by `_refuse_what_check_finds`
     before `_create_leg_remotes`: the directory the legs go in is never
-    made."""
-    monkeypatch.setattr(adopter, "_require_filter_repo", lambda: None)
+    made (`refused_before_any_leg`)."""
     plan = planned(source_with(tmp_path, with_line(line), where), tmp_path,
                    ANSWERS[where])
-    found = findings(plan)
-    remotes = tmp_path / REMOTES
-    with pytest.raises(adopter.Refusal) as caught:
-        adopter.cmd_execute(Namespace(
-            plan=str(plan), source=None, local_remote_dir=remotes,
-            allow_empty_leg=[], yes=True, work_dir=tmp_path / "work"))
-    refusal = caught.value
+    refusal = refused_before_any_leg(adopter, monkeypatch, plan, tmp_path)
     assert refusal.code == UNREADABLE
-    assert refusal.detail.splitlines()[1:] == [
-        f"  FINDING {code}: {detail}" for code, detail in found]
-    assert "no leg repository was created" in refusal.remediation
-    assert not remotes.exists()
 
 
 # --- read as git reads it ---------------------------------------------------
@@ -311,7 +293,8 @@ def test_execute_refuses_it_before_any_leg_exists(adopter, tmp_path,
 #: Values whose reading is the same in git 2.39.5 through 2.51 and in every
 #: C library CI runs on. Left out: the four bounds git 2.50 moved below
 #: zero, which an older git refuses, and a `0b` number, which only glibc
-#: 2.38 and later reads; `test_the_numbers_check_reads_as_a_boolean` has those.
+#: 2.38 and later reads: `check` refuses those with the gits that refuse
+#: them, and `test_who_refuses_a_number_as_a_boolean` has them.
 BOOLEAN_VALUES = ["", "true", "Off", "YES", "maybe", "t", "1", "-1", "+1",
                   "007", "08", "0x10", "0x", "1k", "1G", "2g", "-1g",
                   "2097151k", "2097152k", "2147483647", "2147483648",
@@ -364,23 +347,30 @@ def test_check_reads_a_value_as_the_installed_git_reads_it(adopter, reader,
         read, exported.stderr.decode(errors="replace"))
 
 
-@pytest.mark.parametrize("value, read", [
-    # git 2.50 lets in one more number below zero, for each unit; an older
-    # git refuses it, and `check` leaves it to the extraction, as on main.
-    ("-2147483648", True), ("-2147483649", False),
-    ("-2097152k", True), ("-2097153k", False),
-    ("-2048m", True), ("-2049m", False), ("-2g", True), ("-3g", False),
-    ("-0x80000000", True),
+@pytest.mark.parametrize("value, refusers", [
+    # git 2.50 lets in one more number below zero, for each unit, and an
+    # older git refuses it: `check` refuses it with the older git, so that
+    # `execute` cannot die on it after both leg repositories exist.
+    ("-2147483648", "OLDER_GITS_REFUSE"), ("-2147483649", "EVERY_GIT"),
+    ("-2097152k", "OLDER_GITS_REFUSE"), ("-2097153k", "EVERY_GIT"),
+    ("-2048m", "OLDER_GITS_REFUSE"), ("-2049m", "EVERY_GIT"),
+    ("-2g", "OLDER_GITS_REFUSE"), ("-3g", "EVERY_GIT"),
+    ("-0x80000000", "OLDER_GITS_REFUSE"),
+    # One above each, every version reads.
+    ("-2147483647", None), ("-2097151k", None), ("-2047m", None),
+    ("-1g", None),
     # Above zero every version agrees.
-    ("2147483647", True), ("2147483648", False), ("1g", True),
-    ("2g", False),
+    ("2147483647", None), ("2147483648", "EVERY_GIT"), ("1g", None),
+    ("2g", "EVERY_GIT"),
     # Read as binary by a git built against glibc 2.38 or later (git 2.43
-    # here does), and refused elsewhere: not refused, so as not to refuse
-    # what git reads.
-    ("0b1", True), ("0B0", True), ("0b", False), ("0b2", False),
+    # here is), and refused by every other: `check` refuses it too.
+    ("0b1", "SOME_LIBRARIES_REFUSE"), ("0B0", "SOME_LIBRARIES_REFUSE"),
+    ("-0b1", "SOME_LIBRARIES_REFUSE"), ("0b", "EVERY_GIT"),
+    ("0b2", "EVERY_GIT"),
 ])
-def test_the_numbers_check_reads_as_a_boolean(adopter, value, read):
-    assert adopter._git_reads_as_a_boolean(value) is read
+def test_who_refuses_a_number_as_a_boolean(adopter, value, refusers):
+    expected = None if refusers is None else getattr(adopter, refusers)
+    assert adopter._who_refuses_a_boolean(value) == expected
 
 
 # --- end to end -------------------------------------------------------------
@@ -443,14 +433,15 @@ def test_a_value_git_reads_still_adopts(tmp_path, line, where):
 
 
 @needs_filter_repo
-def test_a_refused_value_beside_no_gitlink_anywhere_adopts_and_clones(
-        tmp_path):
-    """#166's S3, for a value, end to end: `update = bogus` in a source no
-    commit of which ever held a gitlink, kept in the code leg. Nothing runs
-    git's submodule reader on it: `execute` verifies, and the assembly's
-    `git clone --recurse-submodules` exits 0."""
-    source = source_with(tmp_path, with_line("update = bogus"), "nowhere")
-    plan = planned(source, tmp_path, ANSWERS["nowhere"])
+@pytest.mark.parametrize("where", ["nowhere", "type-changes"])
+def test_a_refused_value_git_never_reads_adopts_and_clones(tmp_path, where):
+    """#166's S3, for a value, end to end: `update = bogus`, kept in the
+    code leg, in a source no commit of which ever held a gitlink, or whose
+    gitlink only type changes moved (#195's fix round). Nothing runs git's
+    submodule reader on it: `execute` verifies, and the assembly's `git
+    clone --recurse-submodules` exits 0."""
+    source = source_with(tmp_path, with_line("update = bogus"), where)
+    plan = planned(source, tmp_path, ANSWERS[where])
     assert run_script(ADOPT, "check", "--plan", str(plan)).returncode == 0
     adopted = execute_in(plan, tmp_path)
     assert adopted.returncode == 0, adopted.stderr + adopted.stdout

@@ -374,36 +374,55 @@ GIT_INTEGER_RE = re.compile(
 UNIT_FACTORS = {"": 1, "k": 1 << 10, "m": 1 << 20, "g": 1 << 30}
 #: The `int` git reads a boolean's number into: 2**31 - 1 is its largest.
 GIT_INT_BITS = 31
+#: Who refuses a value as a boolean (`_who_refuses_a_boolean`): no git
+#: reads it, or only some of the gits `execute` may run do, and why.
+EVERY_GIT = "every git"
+OLDER_GITS_REFUSE = ("a number git 2.49 and older refuse, and 2.50 and later "
+                     "read")
+SOME_LIBRARIES_REFUSE = ("a `0b` number, which only a git built on glibc "
+                         "2.38 or later reads")
 
 
-def _git_reads_as_a_boolean(value: str) -> bool:
-    """Whether git takes `value` as a boolean (`git_parse_maybe_bool`):
-    empty, which is false; one of BOOLEAN_WORDS; or an integer
-    `git_parse_int` takes, which is true unless it is zero.
+def _who_refuses_a_boolean(value: str) -> str | None:
+    """None where every git takes `value` as a boolean
+    (`git_parse_maybe_bool`): empty, which is false; one of BOOLEAN_WORDS;
+    or an integer `git_parse_int` takes, which is true unless it is zero.
+    Otherwise EVERY_GIT where no git takes it, or why only some do.
 
-    The integer must fit an `int` once its unit is applied. git 2.50 moved
-    the bound below zero by one (`(-max - 1) / factor`, where 2.49 and
-    before had `-max / factor`), and the wider range is the one taken here,
-    so that nothing a newer git reads is refused. An older git refuses the
-    four values that move let in, -2147483648, -2097152k, -2048m and -2g,
-    however spelled; those are left to the extraction, as on main, and so
-    is a `0b` number, which git reads only where its C library does."""
+    The integer must fit an `int` once its unit is applied. Where gits
+    differ on one, `check` refuses it with the gits that refuse it: a
+    refusal there costs an edit to an absurd value, and a git that refuses
+    it in the extraction costs both leg repositories. git 2.50 moved the
+    bound below zero by one (`(-max - 1) / factor`, where 2.49 and before
+    have `-max / factor`), so -2147483648, -2097152k, -2048m and -2g,
+    however spelled, are OLDER_GITS_REFUSE: measured with git 2.43, each
+    passed `check` and `execute` died after both leg repositories were
+    made. A `0b` number, which git reads only where its C library's
+    `strtoimax` does, is SOME_LIBRARIES_REFUSE."""
     if not value or (value.isascii() and value.lower() in BOOLEAN_WORDS):
-        return True
+        return None
     number = GIT_INTEGER_RE.fullmatch(value)
     if number is None:
-        return False
+        return EVERY_GIT
     digits = number["digits"]
+    binary = digits[1:2] in ("b", "B")
     if digits[1:2] in ("x", "X"):
         size = int(digits[2:], 16)
-    elif digits[1:2] in ("b", "B"):
+    elif binary:
         size = int(digits[2:], 2)
     else:
         size = int(digits, 8 if digits.startswith("0") else 10)
     factor = UNIT_FACTORS[number["unit"].lower()]
-    if number["sign"] == "-":
-        return size <= (1 << GIT_INT_BITS) // factor
-    return size <= ((1 << GIT_INT_BITS) - 1) // factor
+    every_git_reads = ((1 << GIT_INT_BITS) - 1) // factor
+    newer_gits_read = ((1 << GIT_INT_BITS) // factor if number["sign"] == "-"
+                       else every_git_reads)
+    if size > newer_gits_read:
+        return EVERY_GIT
+    if binary:
+        return SOME_LIBRARIES_REFUSE
+    if size > every_git_reads:
+        return OLDER_GITS_REFUSE
+    return None
 
 
 def _refused_value(key: str, value: str) -> str | None:
@@ -415,7 +434,7 @@ def _refused_value(key: str, value: str) -> str | None:
     (submodule-config.c), which sets `overwrite`, so `parse_config` reads
     every value, a key given twice included, and dies on the first it
     refuses. Read in the source code of git 2.39.5 through 2.51.0, the
-    same in each but for the bound `_git_reads_as_a_boolean` names, and
+    same in each but for the bound `_who_refuses_a_boolean` names, and
     measured with git 2.43 over `git fast-export`:
 
       * `update`, `parse_submodule_update_strategy` (submodule.c): one of
@@ -427,7 +446,10 @@ def _refused_value(key: str, value: str) -> str | None:
       * `fetchrecursesubmodules`, `parse_fetch_recurse`, which dies on an
         error for the checked-out file (`die_on_error`): a boolean or
         `on-demand`, exactly; anything else ends it with `bad <key>
-        argument: <value>`."""
+        argument: <value>`.
+
+    A number only some gits read as a boolean is refused as the gits that
+    refuse it say, and the finding says which gits those are."""
     typed = SUBMODULE_TYPED_KEY_RE.fullmatch(key)
     if typed is None or _a_name_git_ignores(typed["name"]):
         return None
@@ -439,14 +461,17 @@ def _refused_value(key: str, value: str) -> str | None:
                if value.startswith("!") else
                f"which is not one of {_listed(list(UPDATE_STRATEGIES))}")
         return f"invalid value for {_spelled(key)}: {said}, {why}"
-    if _git_reads_as_a_boolean(value):
+    refusers = _who_refuses_a_boolean(value)
+    if refusers is None:
         return None
     if typed["key"] == "shallow":
-        return f"bad boolean config value {said} for {_spelled(key)}"
+        return (f"bad boolean config value {said} for {_spelled(key)}"
+                + ("" if refusers == EVERY_GIT else f", {refusers}"))
     if value == "on-demand":
         return None
-    return (f"bad {_spelled(key)} argument: {said}, which is neither a "
-            "boolean nor `on-demand`")
+    return (f"bad {_spelled(key)} argument: {said}, "
+            + ("which is neither a boolean nor `on-demand`"
+               if refusers == EVERY_GIT else refusers))
 
 
 def _registrations(listed: bytes) -> Registrations | str:
