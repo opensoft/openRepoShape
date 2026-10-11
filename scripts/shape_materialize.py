@@ -519,6 +519,29 @@ def env_commit(work: Path, message: str) -> None:
                             proc.stderr + proc.stdout)
 
 
+def force_stage(work: Path, paths=()) -> None:
+    """Stage exactly `paths`, FORCED past any ignore rule, and nothing else.
+
+    THE ONE SPELLING OF THE FORCED ADD. A file the shape wrote and pinned
+    has to reach the commit whatever the operator's own excludes say — a
+    global `core.excludesFile`, `.git/info/exclude`, a `.gitignore` the
+    project keeps — because a pin row naming a file the commit lacks is a
+    red `validate-pins.py` on the next clone (#175). `-f` over the NAMED
+    paths and never over `.`, for the reason `stage_written` gives.
+
+    TWO CALLERS, AND ONLY ONE OF THEM SWEEPS FIRST. `stage_written` runs
+    `git add -A` before it, because it stages a tree this tool has just
+    made. `update-shape.py apply --add` calls this ALONE (#202): it writes
+    into a checkout somebody may be working in, where `-A` would stage their
+    work beside the shape's, and its plain `git add --` died on an ignored
+    addition after the copies, the pin and the branch were already written.
+    Empty, this runs nothing.
+    """
+    paths = list(paths)
+    if paths:
+        run(["git", "add", "-f", "--", *paths], cwd=work)
+
+
 def stage_written(work: Path, written=()) -> None:
     """Stage the tree, then FORCE every path in `written` past any ignore rule.
 
@@ -539,12 +562,11 @@ def stage_written(work: Path, written=()) -> None:
 
     ONE HELPER, THREE CALLERS: `git_init_commit` (the scaffold's two legs and
     `adopt-project.py`'s seeded leg), the scaffold's assembly root and
-    `family.py init`'s holder.
+    `family.py init`'s holder. The forced half is `force_stage`, which
+    `update-shape.py apply --add` calls on its own (#202).
     """
     run(["git", "add", "-A", "--", "."], cwd=work)
-    paths = list(written)
-    if paths:
-        run(["git", "add", "-f", "--", *paths], cwd=work)
+    force_stage(work, written)
 
 
 def git_init_commit(work: Path, message: str, branch: str,
