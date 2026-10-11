@@ -788,13 +788,38 @@ def past_the_kept_half(adopter, monkeypatch):
     monkeypatch.setattr(adopter, "_kept_in_root", lambda entries, tree: [])
 
 
-def refused_at_the_mount(adopter, tmp_path: Path, plan: Path):
-    """The `Refusal` an in-process `execute` of `plan` raises. A
-    `CommandFailed` instead is git failing in its own words, after the guard
-    let the path through."""
-    with pytest.raises(adopter.Refusal) as caught:
-        adopter.cmd_execute(execute_args(tmp_path, plan))
-    return caught.value
+def refused_at_the_mount(adopter, monkeypatch, capsys, tmp_path: Path,
+                         plan: Path):
+    """The `Refusal` the guard raised in an in-process `execute` of `plan`.
+
+    It does not escape `execute`. Both legs are pushed by the time the guard
+    runs, so it is reported the way every failure is once a leg repository
+    exists (#188): the refusal's own code, detail and remediation, under the
+    step that raised it, then the notice of what the run left. `execute`
+    then exits 2, as `main` would have for the refusal. So the guard is asked
+    what it raised, and the report is checked to say exactly that. No
+    recorded refusal means git failed in its own words, after the guard let
+    the path through."""
+    raised = []
+    guard = adopter._refuse_an_unmountable_path
+
+    def recorded(assembly: Path, path: str) -> None:
+        try:
+            guard(assembly, path)
+        except adopter.Refusal as exc:
+            raised.append(exc)
+            raise
+
+    monkeypatch.setattr(adopter, "_refuse_an_unmountable_path", recorded)
+    assert adopter.cmd_execute(execute_args(tmp_path, plan)) == 2
+    assert len(raised) == 1, "the guard let the path through"
+    refusal = raised[0]
+    err = capsys.readouterr().err
+    assert (f"REFUSED mounting the legs. {refusal.code}: {refusal.detail}\n"
+            f"{refusal.remediation}\n") in err
+    assert err.rstrip().splitlines()[-1].startswith(
+        "NOTHING has been rolled back: "), err
+    return refusal
 
 
 def refs(repo: Path) -> str:
@@ -827,7 +852,7 @@ def executed(plan: Path, remotes: Path, work: Path):
 
 @needs_filter_repo
 def test_the_mount_guard_refuses_a_kept_file_on_the_way_after_both_legs_exist(
-        adopter, past_the_kept_half, tmp_path):
+        adopter, past_the_kept_half, monkeypatch, capsys, tmp_path):
     """`docs/spec` through a root-kept FILE `docs`. Before #174 git died at
     the mount, `could not create leading directories`, with no remediation.
     The guard names what is in the way, and its remediation's first claim is
@@ -836,7 +861,8 @@ def test_the_mount_guard_refuses_a_kept_file_on_the_way_after_both_legs_exist(
     source, plan = docs_a_file(tmp_path)
     before = refs(source)
 
-    refusal = refused_at_the_mount(adopter, tmp_path, plan)
+    refusal = refused_at_the_mount(adopter, monkeypatch, capsys, tmp_path,
+                                   plan)
 
     assert refusal.code == MOUNT_OCCUPIED
     assert refusal.detail == (
@@ -853,7 +879,7 @@ def test_the_mount_guard_refuses_a_kept_file_on_the_way_after_both_legs_exist(
 
 @needs_filter_repo
 def test_the_mount_guards_next_step_adopts_the_source(
-        adopter, past_the_kept_half, tmp_path):
+        adopter, past_the_kept_half, monkeypatch, capsys, tmp_path):
     """The guard's remediation, followed: another path for the leg, then
     `execute` again with fresh leg repositories AND an empty `--work-dir`.
     Fresh repositories alone are not the way on, and the remediation says
@@ -862,7 +888,8 @@ def test_the_mount_guards_next_step_adopts_the_source(
     the command in its own process, which this test's switch does not reach,
     so this whole rule asks the corrected plan."""
     source, plan = docs_a_file(tmp_path)
-    refusal = refused_at_the_mount(adopter, tmp_path, plan)
+    refusal = refused_at_the_mount(adopter, monkeypatch, capsys, tmp_path,
+                                   plan)
     assert "an empty `--work-dir`, or none" in refusal.remediation
     set_leg_path(plan, "spec", "specification")
     checked = check(plan)
@@ -881,7 +908,7 @@ def test_the_mount_guards_next_step_adopts_the_source(
 @needs_filter_repo
 @needs_disk_symlinks
 def test_the_mount_guard_refuses_a_mount_through_a_kept_symlink(
-        adopter, past_the_kept_half, tmp_path):
+        adopter, past_the_kept_half, monkeypatch, capsys, tmp_path):
     """`legs/spec` beyond a root-kept `legs -> <a directory outside>`. With
     `--force` alone the spec leg was cloned THROUGH the link, outside
     `--work-dir`, before git refused the add. The guard makes git's own dry
@@ -895,7 +922,8 @@ def test_the_mount_guard_refuses_a_mount_through_a_kept_symlink(
     keep_in_root(plan, LINK)
     set_leg_path(plan, "spec", THROUGH_LINK)
 
-    refusal = refused_at_the_mount(adopter, tmp_path, plan)
+    refusal = refused_at_the_mount(adopter, monkeypatch, capsys, tmp_path,
+                                   plan)
 
     assert refusal.code == MOUNT_UNADDABLE
     assert refusal.detail.startswith(
