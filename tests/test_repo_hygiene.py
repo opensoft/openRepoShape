@@ -559,9 +559,22 @@ def test_agents_md_is_short_enough_to_be_read():
     class, that a subagent says nothing, and that it never converts, writes
     the record, blocks, or puts the shape in a review or a gate -- the
     warning-in-CI the ratified text calls an amendment of the doctrine
-    rather than a realization of it."""
+    rather than a realization of it.
+
+    2026-10-11: 464 -> 472 — the adoption's `submodules:` record (#189).
+    Four lines and a blank one under "Adopting an existing repository" say
+    that `execute` now writes one more thing into the split: the plan's
+    answer for each source submodule a leg keeps, under `project.yaml`'s
+    `submodules:`, which nothing rewrites afterwards. Three lines end
+    "Checking"'s point 4, and they are the part an assistant would get
+    wrong: a MISPLACED submodule carries `rule: null` and `confidence:
+    recorded` because the record judged it and no rule did, so a row with
+    no rule id is not a broken row; and a submodule moved on purpose stays
+    MISPLACED against its row, which is the human's to change -- never a
+    manifest edit an assistant makes to turn the row green, the hand-edited
+    pin arriving through a new door."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 464, f"AGENTS.md is {len(lines)} lines; the cap is 464"
+    assert len(lines) <= 472, f"AGENTS.md is {len(lines)} lines; the cap is 472"
 
 
 def test_claude_md_points_at_agents_md():
