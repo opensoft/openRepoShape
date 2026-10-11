@@ -36,6 +36,7 @@ or no repository at all.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import io
 import shlex
@@ -715,13 +716,17 @@ def cloned_source(adopter, tmp_path: Path):
 
 
 @pytest.mark.parametrize("act", LATE_POINTS, ids=LATE_POINT_IDS)
+@pytest.mark.parametrize("kind", [PermissionError, TypeError],
+                         ids=["refused", "defect"])
 def test_the_notice_names_the_sources_own_clone_in_the_work_dir(
-        adopter, monkeypatch, capsys, tmp_path, act):
+        adopter, monkeypatch, capsys, tmp_path, act, kind):
     """Each point that prints the notice hands it the source, so that the
     clone is named wherever the run fails, first in the list: it is made
-    first. Any failure will do; a defect is raised alike at all four."""
-    with pytest.raises(TypeError):
-        act(adopter, monkeypatch, tmp_path, stand_in(TypeError),
+    first. A refusal (one of `LATE_FAILURES`) and a defect each have their
+    own handler at a leg and at the split, so both are raised; where a
+    point re-raises what it reported, that is let through."""
+    with contextlib.suppress(kind):
+        act(adopter, monkeypatch, tmp_path, stand_in(kind),
             cloned_source(adopter, tmp_path))
 
     notice = the_notice(capsys.readouterr().err)
