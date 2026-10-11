@@ -4,7 +4,7 @@ extraction (#195).
 
 `git filter-repo` runs `git fast-export --all` in a clone of the source, and
 git's submodule reader reads the clone's CHECKED-OUT `.gitmodules` for every
-gitlink a commit of any branch or tag adds, changes or removes. #166 asked
+gitlink a commit of any branch or tag adds, removes or moves. #166 asked
 the tip tree alone, so a source whose history once held a submodule, whose
 tip holds none, and whose tip `.gitmodules` has a key with no value
 (`[submodule "b"]` and a bare `path`) passed `check` as `plan ok`, and
@@ -178,6 +178,61 @@ def hidden_by_a_replacement(source: Path) -> None:
     git("replace", added, f"{added}~1", cwd=source)
 
 
+def hidden_by_a_graft(source: Path) -> None:
+    """The commit that removes it, grafted onto the root commit by
+    `info/grafts`, so that the commit that adds it is no ancestor: `git log`
+    honours the graft, `--no-replace-objects` or not, and a clone, which
+    copies no grafts file, does not."""
+    add_then_remove(source)
+    removed = git("rev-parse", "HEAD", cwd=source).stdout.strip()
+    root = git("rev-list", "--max-parents=0", "HEAD", cwd=source
+               ).stdout.strip()
+    grafts = source / ".git" / "info" / "grafts"
+    grafts.parent.mkdir(exist_ok=True)
+    grafts.write_bytes(f"{removed} {root}\n".encode())
+
+
+#: What GITLINK is before it is a gitlink, and after: a file, or a symlink.
+#: Each is staged straight into the index, so no symlink is made on disk.
+NOT_A_GITLINK = {"file": ("100644", b"a file\n"),
+                 "symlink": ("120000", b"../elsewhere")}
+
+
+def not_a_gitlink(source: Path, kind: str) -> None:
+    """GITLINK, staged as NOT_A_GITLINK's `kind`, in place of whatever the
+    index holds there."""
+    mode, body = NOT_A_GITLINK[kind]
+    blob = subprocess.run(["git", "hash-object", "-w", "--stdin"],
+                          cwd=source, input=body, capture_output=True,
+                          check=True).stdout.decode().strip()
+    git("update-index", "--add", "--cacheinfo", f"{mode},{blob},{GITLINK}",
+        cwd=source)
+
+
+def turned_gitlink(source: Path, kind: str = "file") -> None:
+    """GITLINK a file or a symlink, then a gitlink in its place: to `git
+    log --raw` a type change, `T`, and no add."""
+    not_a_gitlink(source, kind)
+    as_human("commit", "-qm", f"vendor/b, a {kind}", cwd=source)
+    link(source)
+    as_human("commit", "-qm", "vendor/b, a gitlink", cwd=source)
+
+
+def entering_by_a_type_change(source: Path) -> None:
+    """It enters by a type change, which git's submodule reader reads no
+    `.gitmodules` for, and leaves by a removal, which it does."""
+    turned_gitlink(source)
+    unlink(source)
+    as_human("commit", "-qm", "Remove vendor/b", cwd=source)
+
+
+def by_type_changes_alone(source: Path, kind: str) -> None:
+    """It enters and leaves by type changes alone: a `kind` again after."""
+    turned_gitlink(source, kind)
+    not_a_gitlink(source, kind)
+    as_human("commit", "-qm", f"vendor/b, a {kind} again", cwd=source)
+
+
 #: Where the history holds the submodule, and what the commit `git log`
 #: meets first does to it; the tip holds none in every one.
 HISTORIES = {
@@ -191,6 +246,8 @@ HISTORIES = {
     "in-a-root-commit-of-its-own": (in_a_root_commit_of_its_own, "adds"),
     "by-merges-alone": (by_merges_alone, "removes"),
     "hidden-by-a-replacement": (hidden_by_a_replacement, "removes"),
+    "hidden-by-a-graft": (hidden_by_a_graft, "removes"),
+    "entering-by-a-type-change": (entering_by_a_type_change, "removes"),
 }
 
 
@@ -217,6 +274,17 @@ def opened(adopter, source: Path, tmp_path: Path):
     return adopter.Source.open(str(source), tmp_path / "read")
 
 
+def exported_in_a_clone(source: Path, base: Path):
+    """`git fast-export --all` in a clone of `source`, as `git filter-repo`
+    runs it in the extraction's clone: the run whose failure the scan
+    foretells. It needs git alone, so it runs where `git filter-repo` is
+    not installed; bytes, because it exports the source's own content."""
+    clone = base / "export-clone"
+    git("clone", "-q", "--", str(source), str(clone), cwd=base)
+    return subprocess.run(["git", "fast-export", "--all"], cwd=clone,
+                          capture_output=True, check=False)
+
+
 # --- where the history holds a gitlink -------------------------------------
 
 @pytest.mark.parametrize("history, verb", HISTORIES.values(),
@@ -234,6 +302,43 @@ def test_the_history_is_read_where_the_extraction_reads_it(
     assert (source / GITMODULES).read_bytes() == BARE_PATH.encode()
     found = adopter._exported_gitlink(opened(adopter, source, tmp_path))
     assert re.fullmatch(named(verb), found), found
+
+
+def test_a_graft_hides_from_the_source_what_the_clone_exports(adopter,
+                                                              tmp_path):
+    """`--no-replace-objects` leaves grafts on: the source's own `git log`
+    with it walks past the commit that adds the gitlink, and `git
+    fast-export` in a clone of the source, which copies no grafts file,
+    exports that commit and dies on the tip `.gitmodules`. On main `check`
+    passed this, and `execute` failed after both leg repositories were
+    made. The scan names the commit the clone exports."""
+    source = history_source(tmp_path, hidden_by_a_graft)
+    seen = git("--no-replace-objects", "log", "--format=%s", "main",
+               cwd=source).stdout.splitlines()
+    assert "Add vendor/b" not in seen, seen
+    exported = exported_in_a_clone(source, tmp_path)
+    assert exported.returncode != 0
+    assert b"missing value for 'submodule.b.path'" in exported.stderr
+    found = adopter._exported_gitlink(opened(adopter, source, tmp_path))
+    assert re.fullmatch(named("removes"), found), found
+
+
+@pytest.mark.parametrize("kind", list(NOT_A_GITLINK))
+def test_a_gitlink_only_type_changes_move_is_not_read(adopter, tmp_path,
+                                                      kind):
+    """A file or a symlink becomes a gitlink and then what it was again.
+    git's diff asks the submodule reader about a changed path only when
+    both of its sides are gitlinks, so `git fast-export` in a clone of the
+    source never reads the tip `.gitmodules` for this one, and on main the
+    file case adopted: the scan finds no gitlink, and `check` passes it."""
+    source = history_source(
+        tmp_path, lambda source: by_type_changes_alone(source, kind))
+    exported = exported_in_a_clone(source, tmp_path)
+    assert exported.returncode == 0, exported.stderr
+    assert adopter._exported_gitlink(opened(adopter, source, tmp_path)) \
+        is None
+    plan = planned(source, tmp_path, {GITMODULES: "code", "vendor/": "code"})
+    assert findings(plan) == []
 
 
 def test_a_history_with_no_gitlink_is_read_to_its_root(adopter, tmp_path):

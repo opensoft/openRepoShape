@@ -79,6 +79,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import os
 import re
 import shutil
 import subprocess
@@ -503,15 +504,24 @@ def _exported_gitlink(source: "Source") -> str | None:
     `git fast-export --all` in the clone: every branch and tag of the source,
     which is what `git clone` copies, and the commit the plan names. It
     diffs each commit against its first parent, a root against nothing, and
-    for every gitlink one of those diffs adds, changes or removes, git's
-    submodule reader reads the clone's CHECKED-OUT `.gitmodules`: the plan's
-    commit's, whatever leg the plan gives it. Measured with git 2.43 and
-    `git filter-repo` 2.47.0, a tip `.gitmodules` that reader cannot read
-    failed the extraction, after both leg repositories were made, for a
-    gitlink in the history of the branch being adopted, on a side branch
-    merged into it, on a branch never merged, on a commit only a tag
-    reaches, in the root commit of a branch of its own, and one that two
-    merges alone added and removed.
+    for every gitlink one of those diffs adds, removes or moves to another
+    commit, git's submodule reader reads the clone's CHECKED-OUT
+    `.gitmodules`: the plan's commit's, whatever leg the plan gives it.
+    Measured with git 2.43 and `git filter-repo` 2.47.0, a tip `.gitmodules`
+    that reader cannot read failed the extraction, after both leg
+    repositories were made, for a gitlink in the history of the branch being
+    adopted, on a side branch merged into it, on a branch never merged, on a
+    commit only a tag reaches, in the root commit of a branch of its own,
+    one that two merges alone added and removed, and one the source's own
+    `git log` does not see for a replacement or a graft.
+
+    A TYPE CHANGE -- a file or a symlink becoming a gitlink, or a gitlink
+    becoming one -- is not read that way: git's diff asks the submodule
+    reader about a changed path only when both of its sides are gitlinks.
+    Measured, a gitlink that only ever entered and left by a type change
+    adopted on main beside the same `.gitmodules`, so `_first_gitlink`
+    passes a type change by; one that enters by a type change and leaves by
+    a removal is found at the removal.
 
     A BRANCH here is a `refs/heads/` ref of the source, as the clone takes
     it: an `org/repo` source, which `Source.open` clones, has its default
@@ -522,7 +532,8 @@ def _exported_gitlink(source: "Source") -> str | None:
     adopted on main beside the same `.gitmodules`.
 
     So `git log` is asked for those diffs, over those commits, and read
-    until the first gitlink in one: a `160000` mode on either side.
+    until the first gitlink in one: a `160000` mode on either side of a
+    change that is no type change.
     `--root` and `--diff-merges=first-parent` are fast-export's root and
     merge diffs, which `log.showRoot=false` and a plain `git log` leave out;
     `--no-renames`, its diffs, one path to a change. `--ignore-submodules=
@@ -530,35 +541,47 @@ def _exported_gitlink(source: "Source") -> str | None:
     checked-out `.gitmodules`, and died on the very file this is asked about
     (exit 128), and because `diff.ignoreSubmodules=all` hides every gitlink.
     `--no-replace-objects`, because a clone copies no `refs/replace/`, and a
-    replacement can hide the commit that holds one. `--no-show-signature`,
-    because `log.showSignature` runs gpg on every signed commit and writes
-    what it says into this output, ahead of the commit it names.
+    replacement can hide the commit that holds one. `GIT_GRAFT_FILE` naming
+    a file that does not exist, because a clone copies no `info/grafts`
+    either, a graft can hide that commit too, and `--no-replace-objects`
+    leaves grafts on. `--no-show-signature`, because `log.showSignature`
+    runs gpg on every signed commit and writes what it says into this
+    output, ahead of the commit it names.
 
     The output is read as it comes and the scan stopped at the first gitlink,
-    so a source that holds one is not read to its root; a source that holds
-    none is read once, end to end (5010 commits in 0.4 s here). A scan git
-    cannot finish is refused as `git-failed`, as `git_out` refuses: a history
-    that could not be read has not been shown to hold no gitlink.
+    so a source that holds one is not read to its root. A source that holds
+    none is read once, end to end, at about the cost of one `git fast-export
+    --no-data` over the same history, which the extraction runs and then
+    rewrites: measured here, 100,001 commits in 4.9 to 5.2 s against 4.2 to
+    4.5 s for that export, and 5010 commits in 0.15 s. A scan git cannot
+    finish is refused as `git-failed`, as `git_out` refuses: a history that
+    could not be read has not been shown to hold no gitlink.
     """
     command = ["git", *EXPORTED_DIFFS, source.commit, "--branches", "--tags",
                "--"]
-    with tempfile.TemporaryFile() as said, subprocess.Popen(
-            command, cwd=source.path, stdout=subprocess.PIPE,
-            stderr=said) as log:
-        found = _first_gitlink(log.stdout)
-        if found is not None:
-            log.kill()
-        elif log.wait():
-            said.seek(0)
-            raise Refusal("git-failed", "`{}` in {} exited {}: {}".format(
-                " ".join(command[1:]), source.path, log.returncode,
-                said.read().decode("utf-8", "replace").strip()))
+    with tempfile.TemporaryDirectory() as empty:
+        no_grafts = {**os.environ,
+                     "GIT_GRAFT_FILE": os.path.join(empty, "grafts")}
+        with tempfile.TemporaryFile() as said, subprocess.Popen(
+                command, cwd=source.path, stdout=subprocess.PIPE,
+                stderr=said, env=no_grafts) as log:
+            found = _first_gitlink(log.stdout)
+            if found is not None:
+                log.kill()
+            elif log.wait():
+                said.seek(0)
+                raise Refusal("git-failed", "`{}` in {} exited {}: {}".format(
+                    " ".join(command[1:]), source.path, log.returncode,
+                    said.read().decode("utf-8", "replace").strip()))
     return found
 
 
 #: How a finding says what a commit does to the gitlink it names: `git log
-#: --raw`'s status letter, a type change or a new commit being a change.
+#: --raw`'s status letter, a new commit being a change. A type change, `T`,
+#: is never named: `_first_gitlink` passes it by (`_exported_gitlink`).
 GITLINK_CHANGES = {"A": "adds", "D": "removes"}
+#: `git log --raw`'s status letter for a type change.
+TYPE_CHANGE = "T"
 
 
 def _first_gitlink(stream) -> str | None:
@@ -568,13 +591,15 @@ def _first_gitlink(stream) -> str | None:
     commit, then for each path it changes `:<mode> <mode> <oid> <oid>
     <status>` and the path, raw bytes. A newline before a commit or a
     change is not part of it. So a field after a change is a path, whatever
-    it spells, and any other is a commit or a change."""
+    it spells, and any other is a commit or a change. A type change to or
+    from a gitlink is no gitlink here: git's submodule reader never reads
+    `.gitmodules` for one."""
     commit, change, rest = "", None, b""
     for chunk in iter(lambda: stream.read(1 << 16), b""):
         *fields, rest = (rest + chunk).split(b"\x00")
         for field in fields:
             if change is not None:
-                if GITLINK_MODE in change[:2]:
+                if GITLINK_MODE in change[:2] and change[-1] != TYPE_CHANGE:
                     return (f"commit {commit[:12]} "
                             f"{GITLINK_CHANGES.get(change[-1], 'changes')} "
                             f"{_spelled(_git_path(field))}")
@@ -696,23 +721,23 @@ class Source:
         A KEY WITH NO VALUE -- one SUBMODULE_VALUED_KEY_RE names, with
         nothing after it -- is fatal to git's submodule reader alone, and git
         runs that reader only for a gitlink: the assembly's clone for one in
-        the tree it checks out, and `execute`'s extraction for one in ANY
-        commit `git fast-export` diffs, where the tip `.gitmodules` is the
-        file it reads (#195). So in a tree that holds none, the file is read
-        that way only when the history of the source's branches and tags
-        holds one (`_exported_gitlink`), and then the answer is git's words,
-        an `InTheHistory` naming where: on main, `check` passed such a file
-        as registering nothing and `execute` died in `git fast-export` with
-        `missing value for 'submodule.b.path'`, after both leg repositories
-        were made. Where the history holds none either, nothing ever reads
-        the file that way, and it registers nothing (#166's S3). A VALUE
-        git's submodule reader refuses -- `update = bogus`, `shallow =
-        maybe`, `_refused_value` -- is read the same way, wherever
-        the gitlink is (#215): `git config --list` exits 0 on it, and on
-        main `check` passed it while `execute` died in `git fast-export`
-        after both leg repositories were made. A line git cannot parse at
-        all is another matter: every reader dies on it, and the history says
-        only which reader dies first.
+        the tree it checks out, and `execute`'s extraction for one that ANY
+        commit `git fast-export` diffs adds, removes or moves, where the tip
+        `.gitmodules` is the file it reads (#195). So in a tree that holds
+        none, the file is read that way only when the history of the
+        source's branches and tags holds one (`_exported_gitlink`), and then
+        the answer is git's words, an `InTheHistory` naming where: on main,
+        `check` passed such a file as registering nothing and `execute` died
+        in `git fast-export` with `missing value for 'submodule.b.path'`,
+        after both leg repositories were made. Where the history holds none
+        either, nothing ever reads the file that way, and it registers
+        nothing (#166's S3). A VALUE git's submodule reader refuses --
+        `update = bogus`, `shallow = maybe`, `_refused_value` -- is read the
+        same way, wherever the gitlink is (#215): `git config --list` exits
+        0 on it, and on main `check` passed it while `execute` died in `git
+        fast-export` after both leg repositories were made. A line git
+        cannot parse at all is another matter: every reader dies on it, and
+        the history says only which reader dies first.
         """
         if not any(path == GITMODULES for path, _, _, _ in tree):
             return Registrations()
