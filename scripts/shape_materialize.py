@@ -40,7 +40,7 @@ from pathlib import Path, PurePath
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from repo_shape import (  # noqa: E402
     CHAIN_RECORD_FIELD, SAFE_ARG_RE, NamingPolicy, Refusal, checked_value,
-    file_sha256,
+    file_sha256, parse_yaml,
 )
 
 SHAPE_REPOSITORY = "opensoft/openRepoShape"
@@ -1421,6 +1421,30 @@ def copy_out(src: Path, dst: Path) -> None:
 #     `check` say what `execute` was always going to say instead of `check`
 #     passing a plan `execute` then refuses. The alphabet is `checked_value`'s
 #     own (`SAFE_ARG_RE`): it is asked here, not copied.
+#
+# LAST, A PATH THE PROJECT MUST READ BACK AS WRITTEN (#225). The templates
+# write a leg path BARE -- `path: {{SPEC_PATH}}` in `project.yaml`,
+# `submodule_path: {{SPEC_PATH}}` in `contracts/spec-pin.yaml`, the same for
+# the code leg -- and the project reads them with its own copy of
+# `repo_shape`'s YAML reader, which takes `null`, `~`, `true`, `False`, `2026`
+# and `1.5` as no value, a boolean or a number. Every one of those is in the
+# alphabet above, so `--spec-path 2026` scaffolded three repositories whose
+# first bootstrap then failed `manifest-leg-path: leg 'spec': path is 2026`,
+# and `adopt-project.py execute` said `adoption verified` before the same
+# bootstrap failed. Such a value is refused, with no spelling offered: there
+# is none that names the same directory.
+#
+#   * THE READER IS ASKED, through the line the template writes, and never a
+#     list of its words: a list is what goes stale the day the reader learns
+#     another one. `yes`, `0x1F`, `1e3` and `.inf` are text to this reader
+#     today (YAML 1.1 or 1.2 would read some of them otherwise), so they are
+#     paths here, and a reader that learned one would refuse it with no edit.
+#   * REFUSED RATHER THAN QUOTED IN THE TEMPLATES. Only the scaffold and
+#     `adopt-project.py execute` fill those placeholders, and both ask this
+#     rule before anything exists, so no value either writes there is read
+#     back as anything else. Quoting them as well would change the bytes of
+#     every new project's `project.yaml` and leg pins for values that can no
+#     longer reach them.
 
 #: `D:\work\Thing` or `D:/work/Thing` — a Windows absolute path, in either
 #: spelling. `_spelling_reason` below asks it whether a leg path is a drive
@@ -1453,9 +1477,11 @@ LEG_PATH_REMEDIATION = (
     "names (`.git`, `git~1`, `.gitmodules`, in any case), ends in a dot or a "
     "space, or is a Windows device name (`CON`, `PRN`, `AUX`, `NUL`, "
     "`COM1`-`COM9`, `LPT1`-`LPT9`, with or without an extension); the whole "
-    f"value matches {SAFE_ARG_RE.pattern} and does not begin with `-`; and "
-    "the two legs take different paths, neither inside the other, whatever "
-    "the case."
+    f"value matches {SAFE_ARG_RE.pattern} and does not begin with `-`; the "
+    "project's YAML reader reads it back as text where the project writes it "
+    "unquoted, which it does not for `null`, `~`, `true`, `False`, `2026` or "
+    "`1.5`; and the two legs take different paths, neither inside the other, "
+    "whatever the case."
 )
 
 
@@ -1503,6 +1529,41 @@ def _unmountable_reason(text: str) -> str | None:
     return None
 
 
+#: The line a template writes a leg path into, bare. `project.yaml`'s
+#: `path:` and a leg pin's `submodule_path:` are read alike, so one is asked.
+LEG_PATH_LINE = "path: {}\n"
+
+
+def _read_as(value) -> str:
+    """What the YAML reader made of a value, in words: `the number 1.5`."""
+    if value is None:
+        return "no value at all"
+    if isinstance(value, bool):
+        return f"the boolean {str(value).lower()}"
+    if isinstance(value, (int, float)):
+        return f"the number {value!r}"
+    return NOT_TEXT_KINDS.get(type(value), repr(value))
+
+
+def _misread_reason(text: str) -> str | None:
+    """Why the project would read a leg path written as `text` back as
+    something else, or None when it reads back `text`.
+
+    Asked of the reader the project ships (`parse_yaml`, which every
+    assembly root carries a copy of), through the line the template writes.
+    Asked after `checked_value`, whose alphabet holds no space, quote,
+    bracket, brace, `#`, `:`, `&`, `*` or `!`, so the line always parses and
+    its value is a plain scalar.
+    """
+    read = parse_yaml(LEG_PATH_LINE.format(text))["path"]
+    if read == text:
+        return None
+    return ("`project.yaml` and the leg's `contracts/` pin hold a leg path "
+            f"unquoted (`path: {text}`), and the project's own YAML reader "
+            f"reads that as {_read_as(read)}, so its first bootstrap would "
+            "fail")
+
+
 def _canonical_spelling(text: str) -> str | None:
     """The canonical spelling of `text`, where one exists, else None.
 
@@ -1515,7 +1576,7 @@ def _canonical_spelling(text: str) -> str | None:
     path and one with a `..` have no such spelling -- they name another place,
     and picking it for the person is the rewrite this refuses -- and neither
     has a result this check, or `checked_value`, would itself refuse
-    (`./.git` is not answered `.git`, nor `-x/` `-x`).
+    (`./.git` is not answered `.git`, nor `-x/` `-x`, nor `2026/` `2026`).
     """
     if text.startswith(("/", "\\")):
         return None
@@ -1527,9 +1588,10 @@ def _canonical_spelling(text: str) -> str | None:
     if _unmountable_reason(candidate) is not None:
         return None
     try:
-        return checked_value("leg path", candidate)
+        checked = checked_value("leg path", candidate)
     except Refusal:
         return None
+    return None if _misread_reason(checked) else checked
 
 
 def leg_path_problem(what: str, value) -> str | None:
@@ -1539,7 +1601,8 @@ def leg_path_problem(what: str, value) -> str | None:
 
     Asked in this order: the SPELLING (canonical or not), then the NAMES Git
     and Windows keep, then the alphabet `checked_value` allows on a command
-    line, so that `plan`, `check` and `execute` refuse the same values.
+    line, then whether the project reads it back as the text it is (#225),
+    so that `plan`, `check` and `execute` refuse the same values.
 
     `what` is how the caller names the value -- `--spec-path`, or
     `legs.spec_path` for one read out of a plan -- so the sentence points at
@@ -1562,6 +1625,10 @@ def leg_path_problem(what: str, value) -> str | None:
         checked_value(what, value)
     except Refusal as exc:
         return f"{exc.detail}."
+    misread = _misread_reason(value)
+    if misread:
+        return (f"{what} is {value!r}, which the project would not read back "
+                f"as text: {misread}.")
     return None
 
 
