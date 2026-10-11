@@ -36,6 +36,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -64,6 +65,15 @@ LEG_REMEDIATION = (
     "their own assembly root{named}.")
 
 NEXT = "NEXT  git -C {root} push -u origin <branch> && open a pull request"
+
+#: What a refused pin write tells the human to do, whatever made it fail.
+UNWRITABLE_REMEDIATION = (
+    "Remediation: make family.yaml writable, and check the disk has room, "
+    "then run the same command again.")
+
+#: What a held lock makes git say, with the path left to git: macOS and
+#: Windows spell a temporary directory their own way.
+INDEX_LOCKED = r"fatal: Unable to create '[^']*index\.lock': File exists"
 
 
 @dataclass
@@ -130,7 +140,10 @@ def snapshot(root: Path) -> dict:
         return sorted(os.listdir(directory)) if directory.is_dir() else None
 
     return {
-        "HEAD": git("rev-parse", "HEAD", cwd=root).stdout,
+        # `-q --verify`, so a holder with NO COMMIT YET records no HEAD
+        # rather than failing the snapshot.
+        "HEAD": git("rev-parse", "-q", "--verify", "HEAD", cwd=root,
+                    check=False).stdout,
         "index": git("ls-files", "-s", cwd=root).stdout,
         "status": git("status", "--porcelain", "--ignored", cwd=root).stdout,
         "config": git("config", "--local", "--list", cwd=root).stdout,
@@ -142,15 +155,26 @@ def snapshot(root: Path) -> dict:
     }
 
 
+def registration(config: str, member: str) -> list[str]:
+    """`member`'s own lines of a `git config --list`, BY SECTION — the part
+    of a key before its last dot — as `MountRollback` reads them: a
+    substring or a prefix would take `members/IRQS.v2`'s keys for
+    `members/IRQS`'s."""
+    section = f"submodule.members/{member}"
+    return [line for line in config.splitlines()
+            if line.partition("=")[0].rpartition(".")[0] == section]
+
+
 def assert_unchanged(root: Path, before: dict, member: str) -> None:
     """The holder is the one `before` recorded, and carries no trace of
-    `member`: the three things #203 found left behind, named one by one."""
+    `member` it did not carry before: the three things #203 found left
+    behind, named one by one."""
     assert git("status", "--porcelain", cwd=root).stdout == ""
     assert snapshot(root) == before
     assert not (root / "members" / member).exists()
     assert not (root / ".git" / "modules" / "members" / member).exists()
-    assert f"members/{member}" not in git(
-        "config", "--local", "--list", cwd=root).stdout
+    assert registration(git("config", "--local", "--list", cwd=root).stdout,
+                        member) == registration(before["config"], member)
 
 
 def refusal(stderr: str) -> tuple[str, str]:
@@ -187,6 +211,42 @@ def full_disk(path, text):
     """`write_lf` on a disk with no room left: the pin write fails AFTER the
     mount, in-process, which works as root and on every platform alike."""
     raise OSError(28, "No space left on device", str(path))
+
+
+def mount_undone(member: str, *,
+                 gitmodules: str = ".gitmodules restored byte for byte",
+                 registered: str = "dropped from the holder's git config",
+                 ) -> str:
+    """`UNDONE` for an unwind of everything the MOUNT made — the pin was
+    never written — in an ordinary clone, in `undo`'s order."""
+    return UNDONE.format(
+        restored=f"the gitlink at members/{member} unstaged, "
+                 f"members/{member} removed, "
+                 f".git/modules/members/{member} removed, {gitmodules}, "
+                 f"`submodule.members/{member}` {registered}")
+
+
+def add_in_process(module, monkeypatch, offline: Offline, root: Path,
+                   member: str, remotes: Path) -> int:
+    """`family.py add` run IN THIS PROCESS — for a failure no subprocess
+    can inject — in the same offline environment as `Offline.add`."""
+    monkeypatch.setattr(tempfile, "tempdir", str(offline.temp))
+    monkeypatch.setenv("PATH", offline.env["PATH"])
+    return module.main(["add", "--family-root", str(root),
+                        "--member", f"{ORG}/{member}",
+                        "--local-remote-dir", str(remotes)])
+
+
+def unborn_holder(tmp_path: Path) -> Path:
+    """A holder with NO COMMIT YET: `git init` and a hand-written
+    `family.yaml`, not even staged. `family.py init` always commits; a
+    holder made by hand does not."""
+    root = tmp_path / "Unborn"
+    git("init", "-q", str(root), cwd=tmp_path)
+    (root / "family.yaml").write_bytes(
+        b"schema_version: 1\nkind: family-manifest\nname: Unborn\n"
+        b"members: []\n")
+    return root
 
 
 # --- check before mount -----------------------------------------------------
@@ -373,6 +433,119 @@ def test_a_manifest_this_tool_will_not_rewrite_is_refused_before_the_mount(
         "does not recognise. `members:` is the LAST block in the file and "
         "everything below it belongs to this tool; fix it by hand this once.")
     assert_unchanged(holder, before, SPARE)
+    offline.assert_left_nothing()
+
+
+@pytest.mark.parametrize("kind", ["tree", "blob"])
+def test_an_at_that_names_a_tree_or_a_blob_is_refused_as_one(family, holder,
+                                                             offline, kind):
+    """A tree's or a blob's sha IS in the member — `git ls-tree` and `git
+    rev-parse <commit>:<path>` print them — so it is refused as what it
+    is, still `member-at-unknown` and still before the mount, and never as
+    a commit no branch reaches, which would send the human looking for a
+    push that is not missing."""
+    at = git("rev-parse",
+             "main^{tree}" if kind == "tree" else "main:project.yaml",
+             cwd=family["remotes"] / f"{SPARE}.git").stdout.strip()
+    before = snapshot(holder)
+    result = offline.add(holder, SPARE, "--at", at, remotes=family["remotes"])
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stdout == f"checking {ORG}/{SPARE} before mounting it\n"
+    assert refusal(result.stderr) == (
+        f"REFUSED member-at-unknown: --at {at} names a {kind} in "
+        f"{ORG}/{SPARE}, not a commit",
+        "Remediation: pass the commit itself — `git log --format=%H` in the "
+        "member lists them. A tree's or a blob's sha is part of a commit and "
+        "never one, and a pin is a commit or it is nothing.")
+    assert_unchanged(holder, before, SPARE)
+    offline.assert_left_nothing()
+
+
+def test_a_cached_store_in_a_linked_worktree_is_refused_where_git_keeps_it(
+        family, holder, offline, tmp_path):
+    """`member-git-dir-cached`, ASKED OF GIT. In a LINKED WORKTREE — a
+    lane's usual holder — `git rm` leaves a removed member's object store
+    under `.git/worktrees/<name>/modules/`, and `git submodule add` refuses
+    to write over it there just as it does under `.git/modules/`. The
+    refusal looks where git keeps it and names that, before anything is
+    read or mounted; looking only in `.git/modules/` would send the add on
+    into git's own refusal after the mount."""
+    lane = tmp_path / "lane"
+    git("worktree", "add", "-q", "-b", "readd-irqs", str(lane), cwd=holder)
+    added = offline.add(lane, SPARE, remotes=family["remotes"])
+    assert added.returncode == 0, added.stdout + added.stderr
+    removed = run_script(FAMILY, "remove", "--family-root", str(lane),
+                         "--member", SPARE, env=offline.env)
+    assert removed.returncode == 0, removed.stdout + removed.stderr
+    gitdir = Path(git("rev-parse", "--absolute-git-dir",
+                      cwd=lane).stdout.strip())
+    store = lane.resolve() / git("rev-parse", "--git-path",
+                                 f"modules/members/{SPARE}",
+                                 cwd=lane).stdout.strip()
+    # The case this test exists for: a store `.git/modules/<path>` is not.
+    assert gitdir.parent.name == "worktrees"
+    assert store.is_dir() and store.parent.parent == gitdir / "modules"
+
+    before = snapshot(lane)
+    result = offline.add(lane, SPARE, remotes=family["remotes"])
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stdout == ""
+    assert result.stderr.splitlines() == [
+        f"REFUSED member-git-dir-cached: {store.as_posix()} still holds the "
+        f"object store of a previously removed {SPARE}, and `git submodule "
+        "add` will not write over it",
+        "Remediation: if nothing unpushed lives in it — and nothing does "
+        "unless somebody committed inside the mount — delete it and re-run:",
+        f"    rm -rf {store.as_posix()}",
+        "It is left behind by `git rm` on purpose, which is why this tool "
+        "will not remove it for you.",
+    ]
+    assert_unchanged(lane, before, SPARE)
+    assert store.is_dir()
+    offline.assert_left_nothing()
+
+
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="a tracked symlink is a plain file in a Windows "
+                           "checkout")
+def test_a_linked_manifest_is_left_to_the_mount_which_reads_through_it(
+        holder, offline, tmp_path):
+    """A SYMLINK IS LEFT TO THE MOUNT. An object store holds only a link's
+    text and a checkout reads THROUGH the link, so a member whose
+    `project.yaml` links to its real manifest is not judged by the probe —
+    whose copy of the file would be the words `manifest/project.yaml` —
+    but by the mount, which reads the manifest it links to. It is added,
+    as it always was. (The link is built in the member's INDEX, not on a
+    disk.)"""
+    remotes = tmp_path / "remotes"
+    remotes.mkdir()
+    work = tmp_path / "IRLN-work"
+    git("init", "-q", str(work), cwd=tmp_path)
+    (work / "manifest").mkdir()
+    (work / "manifest" / "project.yaml").write_bytes(
+        b"schema_version: 1\nkind: project-manifest\nid: irln\nname: IRLN\n")
+    git("add", "--", "manifest/project.yaml", cwd=work)
+    link = subprocess.run(["git", "hash-object", "-w", "--stdin"],
+                          cwd=str(work), input=b"manifest/project.yaml",
+                          capture_output=True, check=True).stdout
+    git("update-index", "--add", "--cacheinfo",
+        f"120000,{link.decode('ascii').strip()},project.yaml", cwd=work)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm",
+        "A linked manifest", cwd=work)
+    git("clone", "-q", "--bare", str(work), str(remotes / "IRLN.git"),
+        cwd=tmp_path)
+    tip = git("rev-parse", "HEAD", cwd=remotes / "IRLN.git").stdout.strip()
+
+    result = offline.add(holder, "IRLN", remotes=remotes)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stderr == ""
+    row = {r["project"]: r for r in manifest(holder)["members"]}["IRLN"]
+    assert row["id"] == "irln"
+    assert row["pin"]["commit"] == tip
+    assert git("rev-parse", "HEAD:members/IRLN",
+               cwd=holder).stdout.strip() == tip
+    assert (holder / "members" / "IRLN" / "project.yaml").is_symlink()
+    assert git("status", "--porcelain", cwd=holder).stdout == ""
     offline.assert_left_nothing()
 
 
@@ -759,6 +932,177 @@ def test_a_failure_after_the_commit_landed_undoes_nothing(
     offline.assert_left_nothing()
 
 
+@pytest.mark.parametrize("raised", [
+    KeyboardInterrupt(), ValueError("injected after the mount")],
+    ids=["KeyboardInterrupt", "ValueError"])
+def test_an_exception_that_is_no_refusal_is_unwound_and_raised_unchanged(
+        family, holder, offline, family_module, monkeypatch, capsys, raised):
+    """NOT ONLY A REFUSAL OR A FAILED GIT COMMAND IS UNWOUND. Ctrl-C after
+    the mount, or an error nobody wrote a refusal for, would otherwise be
+    #203 by another road: the member staged and left for the next `add` to
+    commit. The holder is put back and the sentence says so; then the
+    exception goes on EXACTLY as raised — the same object — so Ctrl-C
+    still stops the program and a bug still shows its own traceback.
+    `tree_digest` runs after the mount and before the pin is written."""
+    def interrupted(repo, rev):
+        raise raised
+
+    monkeypatch.setattr(family_module, "tree_digest", interrupted)
+    before = snapshot(holder)
+    with pytest.raises(type(raised)) as caught:
+        add_in_process(family_module, monkeypatch, offline, holder, SPARE,
+                       family["remotes"])
+    assert caught.value is raised
+    out, err = capsys.readouterr()
+    assert out == (f"checking {ORG}/{SPARE} before mounting it\n"
+                   f"mounting {ORG}/{SPARE} at members/{SPARE}\n")
+    assert err == mount_undone(SPARE) + "\n"
+    assert_unchanged(holder, before, SPARE)
+    offline.assert_left_nothing()
+
+
+def test_a_dotted_neighbours_registration_is_left_as_it_was(
+        family, holder, offline, family_module, monkeypatch, capsys):
+    """THE HOLDER'S `submodule.<path>` KEYS, BY SECTION. A member's name may
+    carry a dot, so `submodule.members/IRQS.v2.url` is the registration of
+    the member at `members/IRQS.v2`; a prefix match would take it for
+    `members/IRQS`'s, and the unwind would then write a second copy of it
+    back. It and `members/IRQSX`'s are each left exactly as they were."""
+    neighbours = [(f"submodule.members/{SPARE}.v2.url", "/elsewhere/v2.git"),
+                  (f"submodule.members/{SPARE}X.url", "/elsewhere/x.git")]
+    for key, value in neighbours:
+        git("config", "--local", key, value, cwd=holder)
+    monkeypatch.setattr(family_module, "write_lf", full_disk)
+    before = snapshot(holder)
+    code = add_in_process(family_module, monkeypatch, offline, holder, SPARE,
+                          family["remotes"])
+    out, err = capsys.readouterr()
+    assert code == 2, out + err
+    assert refusal(err) == (
+        "REFUSED family-manifest-unwritable: family.yaml could not be "
+        f"rewritten with {SPARE}'s pin: No space left on device. "
+        + mount_undone(SPARE), UNWRITABLE_REMEDIATION)
+    assert_unchanged(holder, before, SPARE)
+    config = git("config", "--local", "--list", cwd=holder).stdout
+    for key, value in neighbours:
+        assert config.splitlines().count(f"{key}={value}") == 1
+    offline.assert_left_nothing()
+
+
+def test_a_registration_the_holder_already_had_is_put_back_as_it_was(
+        family, holder, offline, family_module, monkeypatch, capsys):
+    """A REGISTRATION LEFT BY A PLAIN `git rm`. Taking a member out by hand
+    — `git rm`, not `family.py remove` — keeps its `submodule.<path>` keys
+    in the holder's git config, and once the object store the refusal names
+    is deleted, `add` runs. `git submodule add` rewrites that `url` IN
+    PLACE, so an unwind that only dropped the section would lose what the
+    holder had: the old keys are put back, and the sentence says "restored",
+    not "dropped". (The keys are the config's last, where `--add` puts them
+    back, so the listing compares line for line.)"""
+    old = [(f"submodule.members/{SPARE}.url", "/where/it/used/to/live.git"),
+           (f"submodule.members/{SPARE}.active", "true")]
+    for key, value in old:
+        git("config", "--local", key, value, cwd=holder)
+    monkeypatch.setattr(family_module, "write_lf", full_disk)
+    before = snapshot(holder)
+    code = add_in_process(family_module, monkeypatch, offline, holder, SPARE,
+                          family["remotes"])
+    out, err = capsys.readouterr()
+    assert code == 2, out + err
+    assert refusal(err) == (
+        "REFUSED family-manifest-unwritable: family.yaml could not be "
+        f"rewritten with {SPARE}'s pin: No space left on device. "
+        + mount_undone(SPARE,
+                       registered="restored in the holder's git config"),
+        UNWRITABLE_REMEDIATION)
+    assert_unchanged(holder, before, SPARE)
+    assert registration(git("config", "--local", "--list",
+                            cwd=holder).stdout, SPARE) == [
+        f"{key}={value}" for key, value in old]
+    offline.assert_left_nothing()
+
+
+def test_a_held_index_lock_is_reported_half_by_half(
+        family, holder, offline, family_module, monkeypatch, capsys):
+    """A PARTIAL UNWIND SAYS EXACTLY WHAT IT DID. Another git process
+    holding `index.lock` refuses every index write and nothing else: the
+    unwind still puts `.gitmodules`'s BYTES back, removes both trees and
+    drops the registration, but cannot unstage the gitlink or put
+    `.gitmodules`'s index entry back. So the bytes are listed as restored
+    and the index entry as not — never `.gitmodules` as unrestored — and
+    git's reason is its `fatal:` line naming the lock, not the advice it
+    prints after it, with no doubled full stop."""
+    lock = holder / ".git" / "index.lock"
+
+    def locked_then_full(path, text):
+        lock.write_bytes(b"")
+        full_disk(path, text)
+
+    monkeypatch.setattr(family_module, "write_lf", locked_then_full)
+    before = snapshot(holder)
+    try:
+        code = add_in_process(family_module, monkeypatch, offline, holder,
+                              SPARE, family["remotes"])
+    finally:
+        if lock.exists():
+            lock.unlink()
+    out, err = capsys.readouterr()
+    assert code == 2, out + err
+    said, next_line = refusal(err)
+    assert re.fullmatch(
+        re.escape(
+            "REFUSED family-manifest-unwritable: family.yaml could not be "
+            f"rewritten with {SPARE}'s pin: No space left on device. The "
+            f"mount was undone only in part (members/{SPARE} removed, "
+            f".git/modules/members/{SPARE} removed, .gitmodules restored "
+            f"byte for byte, `submodule.members/{SPARE}` dropped from the "
+            f"holder's git config); NOT the gitlink at members/{SPARE} "
+            f"unstaged: `git update-index --force-remove -- "
+            f"members/{SPARE}`: ") + INDEX_LOCKED + re.escape(
+            "; NOT the index entry of .gitmodules put back as it was: `git "
+            "update-index --force-remove -- .gitmodules`: ") + INDEX_LOCKED
+        + re.escape(". Put those back by hand — `git status` shows what is "
+                    "left — before running `add` again."), said), said
+    assert next_line == UNWRITABLE_REMEDIATION
+    # What it says is what is there: every byte back, two index entries not.
+    after = snapshot(holder)
+    for key in ("HEAD", "config", ".gitmodules", "family.yaml", "members",
+                "modules", "modules/members"):
+        assert after[key] == before[key], key
+    assert git("diff", "--cached", "--name-only", cwd=holder).stdout.split() \
+        == [".gitmodules", f"members/{SPARE}"]
+    offline.assert_left_nothing()
+
+
+def test_a_refused_add_in_a_holder_with_no_commit_leaves_it_with_none(
+        family, offline, tmp_path, family_module, monkeypatch, capsys):
+    """NO HEAD IS NOT A COMMIT THAT LANDED. A holder with no commit yet has
+    no HEAD before the mount and still none after a failed pin write, and
+    the unwind reads that as nothing having landed: it puts the holder back
+    — `.gitmodules`, `members/` and `.git/modules/` all absent again, the
+    manifest untracked as the human left it — instead of claiming a
+    commit."""
+    root = unborn_holder(tmp_path)
+    monkeypatch.setattr(family_module, "write_lf", full_disk)
+    before = snapshot(root)
+    assert before["HEAD"] == "" and before["status"] == "?? family.yaml\n"
+    code = add_in_process(family_module, monkeypatch, offline, root, SPARE,
+                          family["remotes"])
+    out, err = capsys.readouterr()
+    assert code == 2, out + err
+    assert refusal(err) == (
+        "REFUSED family-manifest-unwritable: family.yaml could not be "
+        f"rewritten with {SPARE}'s pin: No space left on device. "
+        + mount_undone(SPARE,
+                       gitmodules=".gitmodules removed, as there was none "
+                                  "before"), UNWRITABLE_REMEDIATION)
+    assert snapshot(root) == before
+    assert not (root / ".gitmodules").exists()
+    assert not (root / "members").exists()
+    assert not (root / ".git" / "modules").exists()
+    offline.assert_left_nothing()
+
+
 # --- the happy path, unchanged ----------------------------------------------
 
 def test_a_good_add_is_one_commit_on_its_branch_as_before(family, holder,
@@ -797,4 +1141,28 @@ def test_a_good_add_is_one_commit_on_its_branch_as_before(family, holder,
         "refs/heads/main"
     assert git("status", "--porcelain", cwd=holder).stdout == ""
     assert validate(holder).returncode == 0
+    offline.assert_left_nothing()
+
+
+def test_the_first_add_to_a_holder_with_no_commit_makes_its_root_commit(
+        family, offline, tmp_path):
+    """`family.py init` always commits, but a holder made by hand — `git
+    init` and a `family.yaml` — has no HEAD until its first member, and
+    `add` has always given it that root commit. Recording HEAD for the
+    unwind must not turn "no commit yet" into `git-failed`."""
+    root = unborn_holder(tmp_path)
+    tip = git("rev-parse", "main",
+              cwd=family["remotes"] / f"{SPARE}.git").stdout.strip()
+    result = offline.add(root, SPARE, remotes=family["remotes"])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stderr == ""
+    assert git("rev-list", "--count", "HEAD", cwd=root).stdout.strip() == "1"
+    assert git("show", "--name-only", "--format=", "HEAD",
+               cwd=root).stdout.split() == [
+        ".gitmodules", "family.yaml", f"members/{SPARE}"]
+    assert git("rev-parse", f"HEAD:members/{SPARE}",
+               cwd=root).stdout.strip() == tip
+    row = {r["project"]: r for r in manifest(root)["members"]}[SPARE]
+    assert row["pin"]["commit"] == tip
+    assert git("status", "--porcelain", cwd=root).stdout == ""
     offline.assert_left_nothing()

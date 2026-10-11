@@ -985,6 +985,12 @@ def _probe_commit(clone: Path, repository: str, at: str | None) -> str:
     tags, which is what checking it out pinned before; a tree's or a blob's
     resolves to nothing and is refused. A clone fetches every branch and tag,
     which is everything a mount of the member could ever check out.
+
+    A TREE OR A BLOB IS NAMED AS ONE. Its sha is in the member — `git
+    ls-tree` and `git rev-parse <commit>:<path>` print them — so "not a
+    commit any branch or tag reaches" would send the human to look for a
+    push that is not missing. `^{}` peels any tag first, so a tag of a tree
+    is named by the tree it tags.
     """
     wanted = at or "HEAD"
     try:
@@ -1001,6 +1007,18 @@ def _probe_commit(clone: Path, repository: str, at: str | None) -> str:
             "one. Scaffold or adopt the project first, which gives it one, "
             "or pass `--at <40-hex commit>` naming a commit it already "
             "has.") from missing
+    try:
+        kind = git_out(["cat-file", "-t", f"{at}^{{}}"], cwd=clone)
+    except Refusal:
+        kind = None
+    if kind in ("tree", "blob"):
+        raise Refusal(
+            "member-at-unknown",
+            f"--at {at} names a {kind} in {repository}, not a commit",
+            "Remediation: pass the commit itself — `git log --format=%H` in "
+            "the member lists them. A tree's or a blob's sha is part of a "
+            "commit and never one, and a pin is a commit or it is "
+            "nothing.") from missing
     raise Refusal(
         "member-at-unknown",
         f"--at {at} is not a commit any branch or tag of {repository} "
@@ -1063,13 +1081,41 @@ def _git_input(args: list[str], cwd: Path, data: bytes) -> None:
 
 def _reason(exc: BaseException) -> str:
     """One line saying why an unwind step failed, for the sentence that
-    names what is left to do by hand."""
+    names what is left to do by hand — without a full stop of its own,
+    because that sentence supplies one after it.
+
+    GIT'S CAUSE, NOT ITS ADVICE. A lock git cannot take is reported as
+    `fatal: Unable to create '…/index.lock': File exists.` and then a
+    paragraph of advice ending `remove the file manually to continue.`, the
+    least informative line of them all. So the first `fatal:` or `error:`
+    line is the one quoted, and the last line only when git printed neither.
+    """
     if isinstance(exc, CommandFailed):
-        last = exc.output.splitlines()[-1:] or [f"exit {exc.code}"]
-        return f"`{' '.join(exc.args_list)}`: {last[0]}"
-    if isinstance(exc, Refusal):
-        return exc.detail
-    return getattr(exc, "strerror", None) or str(exc)
+        lines = [line.strip() for line in exc.output.splitlines()
+                 if line.strip()]
+        said = next((line for line in lines
+                     if line.startswith(("fatal:", "error:"))),
+                    lines[-1] if lines else f"exit {exc.code}")
+        text = f"`{' '.join(exc.args_list)}`: {said}"
+    elif isinstance(exc, Refusal):
+        text = exc.detail
+    else:
+        text = getattr(exc, "strerror", None) or str(exc)
+    return text.rstrip().rstrip(".")
+
+
+class _EntryNotRestored(Exception):
+    """A file `undo` put back ON DISK whose INDEX ENTRY it could not put
+    back — a held `index.lock` refuses the second and not the first — so
+    the sentence can say which half is left instead of calling the bytes
+    unrestored."""
+
+    def __init__(self, name: str, bytes_restored: bool,
+                 cause: BaseException) -> None:
+        super().__init__(name)
+        self.name = name
+        self.bytes_restored = bytes_restored
+        self.cause = cause
 
 
 def _ended(text: str) -> str:
@@ -1111,7 +1157,16 @@ class MountRollback:
         #: What `add` was doing, for the loud block a failed git command
         #: gets; `_mount_and_pin` moves it on before each step.
         self.step = f"mounting {path}"
-        self.head = git_out(["rev-parse", "HEAD"], cwd=root)
+        #: None in a holder with NO COMMIT YET (#203), which `add` gives its
+        #: root commit exactly as it always has: `-q --verify` exits 1 there
+        #: without a word, where a bare `rev-parse HEAD` refused the whole
+        #: add as `git-failed`. `undo` then reads any HEAD at all as the one
+        #: commit having landed, and still no HEAD as nothing having landed.
+        try:
+            self.head = git_out(["rev-parse", "-q", "--verify",
+                                 "HEAD^{commit}"], cwd=root)
+        except Refusal:
+            self.head = None
         self.gitlink = self._entries(path)
         self.files = {name: (self._bytes(name), self._entries(name))
                       for name in (GITMODULES, MANIFEST)}
@@ -1177,7 +1232,10 @@ class MountRollback:
             (self.root / name).unlink()
         elif changed:
             (self.root / name).write_bytes(data)
-        return self._undo_entries(name, entries) or changed
+        try:
+            return self._undo_entries(name, entries) or changed
+        except (CommandFailed, Refusal, OSError) as exc:
+            raise _EntryNotRestored(name, changed, exc) from exc
 
     def _undo_tree(self, tree: Path, parents: list[Path]) -> bool:
         removed = tree.exists()
@@ -1206,6 +1264,8 @@ class MountRollback:
         try:
             landed = git_out(["rev-parse", "HEAD"], cwd=self.root) != self.head
         except Refusal:
+            # No HEAD to read: a holder with no commit yet still has none,
+            # so the commit did not land.
             landed = False
         if landed:
             return (" The commit had already landed, so nothing was undone: "
@@ -1218,13 +1278,23 @@ class MountRollback:
                     f"{name} removed, as there was none before"),
                    self._undo_file, (name, data, entries))
                   for name, (data, entries) in self.files.items()]
-        steps.append((f"`submodule.{self.path}` dropped from the holder's "
-                      "git config", self._undo_registration, ()))
+        # A REGISTRATION THE HOLDER ALREADY HAD is put back, not dropped —
+        # `git submodule add` rewrites its `url` in place — and the sentence
+        # says which of the two happened.
+        steps.append(((f"`submodule.{self.path}` restored in the holder's "
+                       "git config" if self.registration else
+                       f"`submodule.{self.path}` dropped from the holder's "
+                       "git config"), self._undo_registration, ()))
         restored, failed = [], []
         for said, action, arguments in steps:
             try:
                 if action(*arguments):
                     restored.append(said)
+            except _EntryNotRestored as exc:
+                if exc.bytes_restored:
+                    restored.append(said)
+                failed.append(f"the index entry of {exc.name} put back as it "
+                              f"was: {_reason(exc.cause)}")
             except (CommandFailed, Refusal, OSError) as exc:
                 failed.append(f"{said}: {_reason(exc)}")
         if failed:
