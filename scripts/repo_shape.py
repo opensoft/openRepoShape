@@ -11,7 +11,8 @@ dependency, and one dependency is one more than "clone it and run it" allows.
 
 WHAT THIS MODULE OWNS
   - `parse_yaml` / `load_yaml` — a deliberately SMALL, fail-closed reader for
-    the YAML subset this standard's own files are written in.
+    the YAML subset this standard's own files are written in, and
+    `double_quoted`, the writer's half of its double-quoted escapes (#199).
   - `tree_digest` — the ONE definition of what "the digest of a commit" means
     here (see `TREE_DIGEST_DEFINITION` below; the choice is argued in README).
   - `tree_digest_from_gh` — the SAME definition, read from the forge's
@@ -242,14 +243,83 @@ def _unquote_key(key: str) -> str:
     return key
 
 
-#: The escape sequences a double-quoted scalar may carry, and the only ones
-#: this reader resolves. Anything else keeps its backslash, because inventing
-#: a meaning for `\q` is how a reader starts disagreeing with the writer.
-DOUBLE_QUOTED_ESCAPES = {"n": "\n", "t": "\t", '"': '"', "\\": "\\"}
+#: THE ESCAPES OF A DOUBLE-QUOTED SCALAR: the one table the reader
+#: (`_unescape`) and the writer (`double_quoted`) both read, so that a plan
+#: `adopt-project.py` writes is a plan this reader takes back unchanged
+#: (#199). Each is YAML's own spelling with YAML's meaning, so the file is
+#: still YAML that any other reader takes the same way. Anything else after a
+#: backslash keeps its backslash, because inventing a meaning for `\q` is how
+#: a reader starts disagreeing with the writer.
+DOUBLE_QUOTED_ESCAPES = {"n": "\n", "r": "\r", "t": "\t", '"': '"', "\\": "\\"}
+
+#: YAML's CODE-POINT escapes, by how many hex digits each takes: `\xNN`,
+#: `\uNNNN` and `\UNNNNNNNN` each name the code point those digits spell, so
+#: `\x85` is U+0085 and never the byte 0x85. The writer takes the shortest
+#: that holds the character; the reader resolves exactly that many hex digits
+#: and keeps the backslash of one with fewer, or past U+10FFFF.
+CODE_POINT_ESCAPES = {"x": 2, "u": 4, "U": 8}
+
+#: The writer's half of `DOUBLE_QUOTED_ESCAPES`: each character to its escape.
+_ESCAPE_OF = {char: "\\" + letter
+              for letter, char in DOUBLE_QUOTED_ESCAPES.items()}
+_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
+
+
+def double_quoted(text: str) -> str:
+    """`text` as a double-quoted scalar `_scalar` reads back as `text`.
+
+    The subset's one writer quotes with this: `adopt-project.py`'s `y`, for
+    the adoption plan and for `shape-doctor.py`'s placement plan. It escapes
+    a backslash and a double quote, which would bend or end the quoting;
+    `\\n`, `\\r` and `\\t` by name; and every other character `str.isprintable`
+    refuses by its code point. THAT CLASS IS WHAT THE READER CANNOT TAKE RAW.
+    It reads a file line by line with `str.splitlines`, which ends a line
+    at `\\n` and `\\r` -- the macOS folder icon is a file named `Icon\\r` --
+    and also at `\\x0b`, `\\x0c`, `\\x1c`-`\\x1e`, `\\x85`, `\\u2028` and
+    `\\u2029`, and not one of them is printable. The same rule spells what a
+    file could hold but a person reading the plan could not see (a NUL, an
+    ESC, a zero-width or bidirectional control), and a lone surrogate, which
+    is how `adopt-project.py` keeps a name's byte that is not UTF-8
+    (`surrogateescape`): no UTF-8 file can hold one raw, and `\\udce9` reads
+    back as that same surrogate, so `check` finds the entry's name in the
+    tree. Whatever the string, the scalar is one line of printable text.
+    """
+    return '"' + "".join(map(_escaped, text)) + '"'
+
+
+def _escaped(char: str) -> str:
+    """One character of a `double_quoted` body."""
+    named = _ESCAPE_OF.get(char)
+    if named is not None:
+        return named
+    if char.isprintable():
+        return char
+    code = ord(char)
+    letter, digits = next((letter, digits)
+                          for letter, digits in CODE_POINT_ESCAPES.items()
+                          if code < 16 ** digits)
+    return f"\\{letter}{code:0{digits}x}"
+
+
+def _escape_at(body: str, index: int) -> tuple[str, int] | None:
+    """What the backslash at `body[index]` and what follows it stand for,
+    and how many characters that escape spans; None for one this reader does
+    not resolve, which then keeps its backslash."""
+    letter = body[index + 1:index + 2]
+    if letter in DOUBLE_QUOTED_ESCAPES:
+        return DOUBLE_QUOTED_ESCAPES[letter], 2
+    digits = CODE_POINT_ESCAPES.get(letter, 0)
+    spelled = body[index + 2:index + 2 + digits]
+    if not digits or len(spelled) != digits or not _HEX_DIGITS.issuperset(
+            spelled) or int(spelled, 16) > sys.maxunicode:
+        return None
+    return chr(int(spelled, 16)), 2 + digits
 
 
 def _unescape(body: str) -> str:
-    """A double-quoted scalar's body, ONE PASS, LEFT TO RIGHT.
+    """A double-quoted scalar's body, ONE PASS, LEFT TO RIGHT, resolving the
+    escapes `double_quoted` writes: `DOUBLE_QUOTED_ESCAPES` and
+    `CODE_POINT_ESCAPES`, and no others.
 
     NOT A CHAIN OF `str.replace` CALLS, and the reason is a Windows path. An
     adoption plan escapes each backslash it writes, so the source directory
@@ -257,21 +327,20 @@ def _unescape(body: str) -> str:
     before the two-character `\\\\` matches the SECOND backslash of that pair
     and turns a directory named `t` into a TAB — the path then does not
     exist, and `adopt-project.py check` refuses a plan it wrote itself.
-    Consuming the backslash and the character it escapes together is the only
-    spelling that cannot read one escape's output as another escape's input.
+    Consuming the backslash and the characters it escapes together is the
+    only spelling that cannot read one escape's output as another escape's
+    input -- `\\\\x41` is a backslash and `x41`, never a backslash and `A`.
     """
     out: list[str] = []
     index = 0
     while index < len(body):
-        char = body[index]
-        replacement = (DOUBLE_QUOTED_ESCAPES.get(body[index + 1])
-                       if char == "\\" and index + 1 < len(body) else None)
-        if replacement is None:
-            out.append(char)
+        escape = _escape_at(body, index) if body[index] == "\\" else None
+        if escape is None:
+            out.append(body[index])
             index += 1
         else:
-            out.append(replacement)
-            index += 2
+            out.append(escape[0])
+            index += escape[1]
     return "".join(out)
 
 

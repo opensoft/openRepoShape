@@ -89,7 +89,8 @@ from repo_shape import (  # noqa: E402
     free_plan_secret_hint,
     COMMIT_RE, NEUTRAL_PRODUCT_OWNER, PROJECT_ID_RE, TREE_DIGEST_DEFINITION,
     SAFE_ARG_RE, VISIBILITY_CHOICES, NamingPolicy, Refusal, YamlError,
-    accepts_role, checked_value, git_out, load_yaml, parse_yaml, tree_digest,
+    accepts_role, checked_value, double_quoted, git_out, load_yaml,
+    parse_yaml, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
     ADOPT_MAKEFILE_BLOCK, RULESET_HINT, SHAPE_REPOSITORY,
@@ -198,12 +199,20 @@ FILTER_REPO_HINT = (
 # ---------------------------------------------------------------------------
 #
 # `repo_shape.parse_yaml` reads a SUBSET, so this writes the same subset: block
-# mappings, block sequences and single-line scalars. Everything it emits is
+# mappings, block sequences and single-line scalars: ONE line whatever the
+# string, because a quoted one is spelled by `repo_shape.double_quoted` from
+# the reader's own escape tables. A name holding a line break (the macOS
+# `Icon\r`), a control character or a byte that is not UTF-8 is one line the
+# reader gives back unchanged, and `check` can name it (#199);
+# `tests/test_adopt_plan_escapes.py` proves that round trip for every string,
+# not only for the strings a plan happens to hold. Everything it emits is
 # read back by `check`, and `tests/test_adopt_plan.py` round-trips a plan
 # through both, which is what keeps the writer and the reader honest about
 # each other.
 
-_PLAIN_RE = re.compile(r"^[A-Za-z_.][A-Za-z0-9_./@:+-]*$")
+#: Ends at `\Z`, not `$`: `$` also matches before a FINAL newline, and wrote a
+#: file named `Icon\n` bare, over two lines of the plan (#199).
+_PLAIN_RE = re.compile(r"^[A-Za-z_.][A-Za-z0-9_./@:+-]*\Z")
 
 #: `D:\work\Thing` or `D:/work/Thing` — a Windows absolute path, in either
 #: spelling. Recognised so that `--source` can tell a path the operator got
@@ -223,8 +232,7 @@ def y(value) -> str:
     text = str(value)
     if text and _PLAIN_RE.match(text) and not text.endswith(":"):
         return text
-    escaped = text.replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{escaped}"'
+    return double_quoted(text)
 
 
 def emit(lines: list[str], key: str, value, indent: int = 0) -> None:
@@ -685,6 +693,18 @@ def _spelled(path: str) -> str:
     the backticks still delimit it.
     """
     return "`" + "".join(map(_spelled_character, path)) + "`"
+
+
+def _shown(path: str) -> str:
+    """`path` in `plan`'s terminal report: as it is, unless a character in it
+    is not printable, and then `_spelled`. The plan file holds such a name
+    escaped (`repo_shape.double_quoted`); printed raw, a carriage return
+    sends the cursor back over the row and hides the name, a line break
+    splits the row, and a byte that is not UTF-8 (a surrogate here) raised
+    `UnicodeEncodeError` on a terminal strict about its encoding -- macOS,
+    a UTF-8 Linux locale, a Windows code page -- after the plan was written
+    (#199). Every other name prints exactly as it did."""
+    return path if path.isprintable() else _spelled(path)
 
 
 def _spelled_character(char: str) -> str:
@@ -1281,7 +1301,7 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
         print(f"{len(unresolved)} path(s) need a human or an AI to answer a "
               "question before `execute` will run:")
         for entry in unresolved:
-            print(f"  {entry.path}\n      {entry.question}")
+            print(f"  {_shown(entry.path)}\n      {entry.question}")
 
 
 def cmd_plan(args) -> int:
@@ -1351,7 +1371,7 @@ def seeding_warnings(seeded: list[str], allowed: set) -> list[str]:
 def _print_entries(entries: list[Entry]) -> None:
     print(f"\n{'path':<34} {'leg':<10} {'conf':<7} {'files':>6} {'rule'}")
     for entry in entries:
-        print(f"{entry.path:<34} {(entry.leg or 'REVIEW'):<10} "
+        print(f"{_shown(entry.path):<34} {(entry.leg or 'REVIEW'):<10} "
               f"{entry.confidence:<7} {entry.files:>6} {entry.rule}")
 
 
