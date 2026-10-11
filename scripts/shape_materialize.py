@@ -98,19 +98,20 @@ def escape_what_stdout_cannot_encode(stream=None) -> None:
     to` and before the questions it exists to ask.
 
     TWO HANDLERS RAISE ON SUCH A NAME, AND ONLY THOSE TWO ARE CHANGED.
-    - `strict` (a UTF-8 or other non-C POSIX locale, and any
+    - `strict` (a POSIX locale that is not C or POSIX and not one Python
+      coerces C to, so `en_US.UTF-8` but not `C.UTF-8`; and any
       `PYTHONIOENCODING=<codec>` that names no handler) becomes
       `backslashreplace`, the handler Python already gives stderr.
     - `surrogateescape` becomes `SURROGATEESCAPE_THEN_BACKSLASHREPLACE`,
       registered below. It is what CPython gives EVERY Windows stdout by
       default, the redirected cp1252 one included (`config_get_stdio_errors`
       in `Python/initconfig.c`: "On Windows, always use surrogateescape by
-      default", 3.9 to 3.14), and what UTF-8 mode and the C and POSIX
-      locales give. It covers only U+DC80..U+DCFF, the bytes a name that is
-      not UTF-8 was read in with, so `日本.md` raised there exactly as under
-      `strict`. The new handler writes such a byte back as that byte, which
-      is surrogateescape's own rule, and writes anything else the encoding
-      cannot hold as `backslashreplace` does.
+      default", 3.9 to 3.14), and what UTF-8 mode and the C, POSIX and
+      `C.UTF-8` locales give. It covers only U+DC80..U+DCFF, the bytes a
+      name that is not UTF-8 was read in with, so `日本.md` raised there
+      exactly as under `strict`. The new handler writes such a byte back as
+      that byte, which is surrogateescape's own rule, and writes anything
+      else the encoding cannot hold as `backslashreplace` does.
     Each replacement writes what the handler it replaces would have
     written, byte for byte, and differs only where that one would have
     raised, so no run that succeeded prints anything different. Every other
