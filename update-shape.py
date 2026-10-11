@@ -48,6 +48,12 @@ recording an identity, so this tool never records one it cannot justify:
   * Nothing is left red: the root's OWN `validate-pins.py` and
     `validate-manifest.py` run after the rewrite, and every byte is rolled
     back if either refuses.
+  * Nothing is left half-done either (#202). With `--branch`, a branch git
+    cannot create, an addition it cannot stage or a commit a hook refuses
+    puts back the copies, the pin, the README line, the index and the
+    branch, and the refusal names the step that failed and lists what it
+    put back. A re-run then finds the tree it found the first time, rather
+    than an uncommitted re-pin it would read as already done.
 
 ONLY THE PIN'S OWN ROWS ARE CONSIDERED. The set of shape files is read from
 `contracts/shape-pin.yaml`, never re-derived from this repository's copy
@@ -80,7 +86,8 @@ EXIT CODES
             1  updates are available, or drift a human must resolve
             2  a REFUSAL: no pin, an unresolvable upstream, an unreadable root
     apply   0  applied (or there was nothing to do)
-            2  a REFUSAL, including a validator that went red (rolled back)
+            2  a REFUSAL, including a validator that went red or a branch,
+               stage or commit that failed (rolled back)
 
 STANDARD LIBRARY ONLY, like everything else shipped here.
 """
@@ -92,6 +99,7 @@ import ast
 import hashlib
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -101,13 +109,14 @@ from pathlib import Path
 SHAPE_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
 from repo_shape import (  # noqa: E402
-    COMMIT_RE, PYTHON, TREE_DIGEST_DEFINITION, Refusal, checked_value, die,
-    file_sha256, git_out, load_yaml, tree_digest,
+    COMMIT_RE, PYTHON, TREE_DIGEST_DEFINITION, Refusal, YamlError,
+    checked_value, die, file_sha256, git_out, load_yaml, parse_yaml,
+    tree_digest,
 )
 from shape_materialize import (  # noqa: E402
     COPIED_FROM_SHAPE, COPIED_VERBATIM, FAMILY_COPIED_FROM_SHAPE,
     FAMILY_COPIED_VERBATIM, SHAPE_REPOSITORY, CommandFailed, check_program,
-    commit_trailers, lane_trailer_argument, readme_shape_lines,
+    commit_trailers, force_stage, lane_trailer_argument, readme_shape_lines,
     readme_trailing_shape_line, run, trailer_line,
 )
 
@@ -861,18 +870,33 @@ def rewrite_manifest(text: str, commit: str, tree: str, kind: Kind) -> str:
     Scoped to the block on purpose: `commit:` and `tree_sha256:` are spelled
     the same way in every pin, and a whole-file replacement would move a leg's
     pin while claiming to move the shape's.
+
+    EACH LINE KEEPS ITS OWN INDENTATION (#208). The two lines are FOUND by
+    their stripped text, so a block at any indentation `load_yaml` accepts is
+    recognised; they were then WRITTEN at a fixed two and four spaces, which
+    turned a block indented four spaces — accepted by the reader and by both
+    validators — into one the reader refuses, and the validators' refusal
+    that followed blamed the project for this tool's write. Only the value
+    after the key changes now; the whitespace in front of it is the line's.
+
+    WHAT IS RETURNED HAS BEEN READ BACK. A layout this line rewrite cannot
+    carry — a value on the line below its key — is refused HERE, as this
+    tool's failure, rather than by a validator after the fact
+    (`_refuse_unless_it_reads_back`).
     """
     lines = text.splitlines()
     start, end = _shape_block_bounds(lines, kind)
     seen = {"commit": 0, "tree": 0}
     for index in range(start + 1, end):
-        stripped = lines[index].strip()
+        line = lines[index]
+        stripped = line.strip()
+        indent = line[:len(line) - len(line.lstrip())]
         if stripped.startswith("commit:"):
             seen["commit"] += 1
-            lines[index] = f'  commit: "{commit}"'
+            lines[index] = f'{indent}commit: "{commit}"'
         elif stripped.startswith("tree_sha256:"):
             seen["tree"] += 1
-            lines[index] = f'    tree_sha256: "{tree}"'
+            lines[index] = f'{indent}tree_sha256: "{tree}"'
     for key, count in seen.items():
         if count != 1:
             raise Refusal(
@@ -881,7 +905,63 @@ def rewrite_manifest(text: str, commit: str, tree: str, kind: Kind) -> str:
                 "where exactly one was expected",
                 "Remediation: fix the block by hand this once; this tool will "
                 "not guess at a manifest it does not recognise.")
-    return "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+    rewritten = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+    _refuse_unless_it_reads_back(text, rewritten, commit, tree, kind)
+    return rewritten
+
+
+def _shape_pin_of(text: str) -> tuple[str, str]:
+    """`shape.commit` and `shape.digests.tree_sha256`, read out of a
+    manifest's text the way its validator reads them, or a `ValueError`
+    saying why they cannot be (#208)."""
+    try:
+        manifest = parse_yaml(text)
+    except YamlError as exc:
+        raise ValueError(str(exc)) from exc
+    shape = manifest.get("shape") if isinstance(manifest, dict) else None
+    digests = shape.get("digests") if isinstance(shape, dict) else None
+    commit = shape.get("commit") if isinstance(shape, dict) else None
+    tree = digests.get("tree_sha256") if isinstance(digests, dict) else None
+    if commit is None or tree is None:
+        raise ValueError("no `shape.commit` and `shape.digests.tree_sha256` "
+                         "where the validator reads them")
+    return str(commit), str(tree)
+
+
+def _refuse_unless_it_reads_back(before: str, after: str, commit: str,
+                                 tree: str, kind: Kind) -> None:
+    """Refuse a rewrite that does not read back to the target (#208).
+
+    THE REFUSAL IS THIS TOOL'S, SO IT IS RAISED ONLY WHEN THE FAULT IS. A
+    manifest that read correctly before the rewrite and does not after it
+    was broken by the rewrite, and the remedy says so. One that did not read
+    before — unparsable, or no pin where the validator looks — was red
+    before this command ran: that is left to the validators, which name the
+    project's own line, and blaming this tool for it would be the same wrong
+    answer turned around.
+    """
+    try:
+        found = _shape_pin_of(after)
+        if found == (commit, tree):
+            return
+        why = (f"it would read `commit: {found[0]}` and "
+               f"`tree_sha256: {found[1]}`")
+    except ValueError as exc:
+        why = f"the reader would refuse it: {exc}"
+    try:
+        _shape_pin_of(before)
+    except ValueError:
+        return
+    raise Refusal(
+        "update-manifest-unrecognised",
+        f"{kind.manifest}'s `shape:` block reads as it stands, but this "
+        f"tool's rewrite of it does not read back to the target ({why}), so "
+        "this tool will not write it",
+        "Remediation: the fault is this tool's line rewrite, not the "
+        "project's manifest. Put each of `commit:` and `tree_sha256:` on one "
+        "line with its quoted value, as the scaffold writes them, and run "
+        "the same command again; this tool will not guess at a manifest it "
+        "does not recognise.")
 
 
 def _shape_block_bounds(lines: list[str], kind: Kind) -> tuple[int, int]:
@@ -943,15 +1023,28 @@ def _git_answer(root: Path, args: list) -> "str | None":
     answer at all — a non-zero exit, no repository, no git on the path.
 
     None rather than an empty string because "git said nothing" and "git
-    could not be asked" are different facts and this file's one caller
-    treats them differently. `subprocess.run` is what raises when there is no
+    could not be asked" are different facts and `readme_is_committed`
+    treats them differently. `Rollback` reads HEAD through it too (#202),
+    where neither answer may raise over the refusal it is rolling back
+    for, and a missing one reads as "not where it was", which the rollback
+    then says. `subprocess.run` is what raises when there is no
     `git` binary, and `readme_is_committed` documents that case as NOT
     committed, so the raise is caught here rather than left to escape a
     classification that must not raise.
+
+    READ AS UTF-8, NEVER WITH THE LOCALE'S CODEC (#217). Git writes a branch
+    or path name as UTF-8 whatever the locale says. Where the codec is the
+    ANSI code page — Windows without `PYTHONUTF8=1` — `feature/café` came
+    back as `feature/cafÃ©`, so `Rollback` kept a start branch git has never
+    heard of and could not return HEAD to the real one, and a name holding a
+    byte that code page leaves undefined raised `UnicodeDecodeError` out of
+    the very answer that "may not raise". `errors="replace"` keeps a name
+    that is not UTF-8 at all from doing the same.
     """
     try:
         proc = subprocess.run(["git", *args], cwd=str(root),
-                              capture_output=True, text=True, check=False)
+                              capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", check=False)
     except OSError:
         return None
     return proc.stdout if proc.returncode == 0 else None
@@ -975,9 +1068,9 @@ def readme_is_committed(root: Path) -> bool:
     ignored would have read as clean, been rewritten, and then handed `git
     commit -- README.md` a pathspec git has never heard of — a failure
     arriving after every other byte was written, on the one path
-    `cmd_apply`'s `except CommandFailed` arm does not roll back (Copilot,
-    PR #152). Untracked-but-not-ignored was already caught; this is the same
-    hazard wearing the one hat `--porcelain` hides.
+    `cmd_apply`'s `except CommandFailed` arm did not roll back until #202
+    (Copilot, PR #152). Untracked-but-not-ignored was already caught; this is
+    the same hazard wearing the one hat `--porcelain` hides.
 
     TWO QUESTIONS, BECAUSE NEITHER ANSWERS THE OTHER. `git status` reads the
     INDEX, and `git update-index --assume-unchanged` / `--skip-worktree` tell
@@ -1463,7 +1556,8 @@ def tracking_branch_of(manifest: dict | None) -> str:
 
 def commit_on_branch(root: Path, branch: str, paths: list[str], target: str,
                      upstream: Upstream, count: int, kind: Kind,
-                     added: list[str] = (), trailers: list[str] = ()) -> None:
+                     added: list[str] = (), trailers: list[str] = (), *,
+                     ledger: Rollback) -> None:
     """A branch and ONE commit, with EXPLICIT PATHSPECS.
 
     `git commit -- <paths>` commits the working-tree state of exactly those
@@ -1477,6 +1571,22 @@ def commit_on_branch(root: Path, branch: str, paths: list[str], target: str,
     to git"). So the additions — and ONLY the additions, by name — are staged
     first. `git add -A` here would sweep in whatever else is in the tree, which
     is the very thing the explicit pathspecs exist to prevent.
+
+    AND THEY ARE STAGED FORCED, past the operator's own excludes
+    (`force_stage`, #202). A plain `git add` honours a global
+    `core.excludesFile` and `.git/info/exclude`, and one that named the path
+    refused it AFTER the copies, the pin and the branch were written. A
+    pinned copy the commit lacks is a red `validate-pins.py` on the next
+    clone, which is why #175 forces the scaffold's own files the same way.
+
+    EVERY ACT HERE GOES THROUGH `ledger`, and names itself first (#202):
+    creating the branch, staging the additions, committing. A failure in
+    any of them is rolled back by `cmd_apply` along with the copies and the
+    pin — the index entries put back, HEAD returned to where it was, the
+    branch this created deleted — and the refusal names the act that failed
+    instead of calling every one of them "committing the re-synced shape".
+    `ledger.land()` closes the ledger once the commit exists: from there on
+    the commit is the result, and nothing is put back.
 
     THREE POSTURES FOR `--branch <name>`, decided from git rather than
     assumed, because AGENTS.md's documented `both` exit needs the second one:
@@ -1527,9 +1637,13 @@ def commit_on_branch(root: Path, branch: str, paths: list[str], target: str,
                 f"{root} checkout {branch}` — if that is where the hand "
                 "merge AGENTS.md describes was already committed, or pass "
                 "a different --branch to create a new one.")
-        run(["git", "checkout", "-q", "-b", branch], cwd=root)
+        ledger.step = f"creating the branch {branch}"
+        ledger.new_branch(branch)
     if added:
-        run(["git", "add", "--", *added], cwd=root)
+        ledger.step = (f"staging the --add file(s) {', '.join(added)} on "
+                       f"{branch}")
+        ledger.stage(list(added))
+    ledger.step = f"committing the re-synced shape on {branch}"
     gained = (f"; {len(added)} new upstream file(s) added because --add named "
               "them" if added else "")
     # READ OFF THE PATHSPECS RATHER THAN PASSED IN: `README.md` is in `paths`
@@ -1560,10 +1674,12 @@ def commit_on_branch(root: Path, branch: str, paths: list[str], target: str,
     if proc.returncode != 0:
         raise CommandFailed(args, root, proc.returncode,
                             proc.stderr + proc.stdout)
+    ledger.land()
 
 
 class Rollback:
-    """Every byte `apply` writes, and how to put the tree back.
+    """Every byte `apply` writes, every change it makes to git before its
+    commit lands, and how to put all of it back.
 
     ONE LEDGER, TWO KINDS OF WRITE, because the undo differs. A file the root
     already had is restored from the original bytes kept here; a file `--add`
@@ -1572,11 +1688,38 @@ class Rollback:
     and the undo as two loops in an `except` arm — together about a third of
     the 47 Sonar scored that function at. Split out for #133, with the same
     writes in the same order and the same undo.
+
+    THE BRANCH AND THE INDEX ARE WRITES TOO (#202). `--branch` creates a
+    branch and checks it out, and `--add` stages its files, BEFORE the commit
+    both exist for. A failure between them — an addition the operator's
+    excludes ignore, a pre-commit hook that says no, a branch name git cannot
+    create — printed `REFUSED committing the re-synced shape` and returned
+    with the copies, the pin and the new branch all left in place, so the
+    next `check` read that uncommitted re-pin as the truth and said "nothing
+    to do". So both go through here, and `undo` puts them back with the rest.
+
+    UNTIL THE COMMIT LANDS, AND NEVER AFTER. `land` closes the ledger: from
+    then on the commit IS the result, and writing the old bytes back would
+    leave a tree that reverts it. A push or a pull request that fails after
+    that rolls nothing back (#204 is about what it says instead).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, root: Path) -> None:
+        self.root = root
         self.written: dict[Path, bytes] = {}
         self.created: list[Path] = []
+        #: The act `apply` is in, which is what a failed git command's
+        #: refusal names. `commit_on_branch` moves it before each act.
+        self.step = "re-syncing the shape"
+        #: `(the branch created, the branch HEAD was on — None when it was
+        #: detached — and the commit HEAD named)`, once `new_branch` has
+        #: been asked for, whether or not git then managed it.
+        self.branch: tuple[str, str | None, str] | None = None
+        #: The paths `stage` forced, and the index's `--stage` records for
+        #: them as they were before, NUL-terminated (`ls-files -s -z`).
+        self.staged: list[str] = []
+        self.index_before = b""
+        self.landed = False
 
     def write(self, path: Path, data: bytes) -> None:
         """Overwrite a file the root already has, keeping its first bytes.
@@ -1619,22 +1762,309 @@ class Rollback:
         if executable:
             path.chmod(0o755)
 
-    def undo(self) -> None:
-        """Put the tree back exactly as it was, and leave nothing behind.
+    def new_branch(self, branch: str) -> None:
+        """`git checkout -b <branch>`, remembered so `undo` can take it back.
 
-        Restores first, then unwinds the creations in reverse so a directory
-        is only considered after the file it was made for is gone. A directory
-        that is not empty is LEFT: something nobody here wrote is in it, and
-        removing that is not a rollback.
+        Recorded BEFORE git is asked, so a checkout that fails part way is
+        undone from what is actually there afterwards rather than from what
+        was hoped for. The branch HEAD was on is kept as git spells it under
+        `refs/heads/`, never `--short`'s answer: with a tag of the same name
+        that is `heads/main`, and `git checkout heads/main` DETACHES HEAD
+        rather than returning to the branch.
         """
+        head = _symbolic_head(self.root)
+        start = (head[len("refs/heads/"):]
+                 if head and head.startswith("refs/heads/") else None)
+        commit = run(["git", "rev-parse", "HEAD"], cwd=self.root)
+        self.branch = (branch, start, commit)
+        run(["git", "checkout", "-q", "-b", branch], cwd=self.root)
+
+    def stage(self, paths: list[str]) -> None:
+        """`force_stage` the additions, remembering what the index held for
+        each so `undo` can put exactly that back.
+
+        NOT `git reset -- <paths>` on the way back, which writes HEAD's entry
+        rather than the one that was there: a path somebody had staged as
+        DELETED would come back staged as present, and an index this tool
+        changed without being asked is the xFactory sweep `commit_on_branch`
+        exists to prevent, arriving the other way round.
+        """
+        self.index_before = self._index_entries(paths)
+        self.staged = list(paths)
+        force_stage(self.root, paths)
+
+    def land(self) -> None:
+        """The commit exists. It is the result now, and nothing is undone."""
+        self.landed = True
+
+    def undo(self) -> str | None:
+        """Put the tree back exactly as it was, and say what was put back.
+
+        Returns the lines a refusal prints, or None when there was nothing to
+        put back: no write had been made yet, or the commit landed and IS
+        the result.
+
+        LAST WRITE FIRST: the index, then the branch, then the bytes. The
+        branch this run created names the commit HEAD named, so returning to
+        the branch it started on moves HEAD and nothing else, and the bytes
+        are restored whichever branch is checked out. Restores, then unwinds
+        the creations in reverse so a directory is only considered after the
+        file it was made for is gone. A directory that is not empty is LEFT:
+        something nobody here wrote is in it, and removing that is not a
+        rollback.
+
+        THE GIT HALF NEVER RAISES OVER THE REFUSAL, which is the rule
+        `bump-leg.py`'s own rollback states: what it cannot put back is
+        NAMED, with the command that finishes it by hand, and the failure
+        that started the rollback is still the one reported. And each git
+        undo is judged by READING THE STATE AFTERWARDS rather than by git's
+        exit code — a `post-checkout` hook's exit status is `git checkout`'s
+        own, so a switch that happened can still exit non-zero.
+        """
+        if self.landed or not (self.written or self.created or self.branch
+                               or self.staged):
+            return None
+        done: list[str] = []
+        left: list[str] = []
+        self._undo_index(done, left)
+        self._undo_branch(done, left)
         for path, original in self.written.items():
             path.write_bytes(original)
+            done.append(f"restored  {self._name(path)}")
         for path in reversed(self.created):
             if path.is_dir():
-                if not any(path.iterdir()):
-                    path.rmdir()
+                if any(path.iterdir()):
+                    done.append(f"kept      {self._name(path)}/ (made to hold "
+                                "an --add file, and something this run did "
+                                "not write is in it now)")
+                    continue
+                path.rmdir()
+                done.append(f"removed   {self._name(path)}/ (made to hold an "
+                            "--add file)")
             elif path.exists():
                 path.unlink()
+                done.append(f"removed   {self._name(path)} (written by --add)")
+        return self._said(done, left)
+
+    def _name(self, path: Path) -> str:
+        try:
+            return path.relative_to(self.root).as_posix()
+        except ValueError:
+            return str(path)
+
+    def _index_entries(self, paths: list[str]) -> bytes:
+        """What the index records for `paths`, as `ls-files -s -z` prints
+        it — which is also the form `update-index --index-info` reads back.
+        BYTES, never text: a path is whatever bytes git holds, and Windows
+        must not translate a record on its way back to git. LITERALLY, as
+        `force_stage` names them: read as globs, `docs/guide[1].md` would
+        also record `docs/guide1.md`, an entry this run never touched."""
+        args = ["git", "--literal-pathspecs", "ls-files", "--stage", "-z",
+                "--", *paths]
+        check_program(args)
+        proc = subprocess.run(args, cwd=str(self.root), capture_output=True,
+                              check=False)
+        if proc.returncode != 0:
+            raise CommandFailed(args, self.root, proc.returncode,
+                                proc.stderr.decode("utf-8", "replace"))
+        return proc.stdout
+
+    def _undo_index(self, done: list[str], left: list[str]) -> None:
+        """Every path `stage` forced, back to the entry it had before:
+        removed, then the old record written back if there was one."""
+        if not self.staged:
+            return
+        names = " ".join(self.staged)
+        _git_quietly(["git", "update-index", "-z", "--force-remove",
+                      "--stdin"], self.root,
+                     b"".join(os.fsencode(path) + b"\0"
+                              for path in self.staged))
+        if self.index_before:
+            _git_quietly(["git", "update-index", "-z", "--index-info"],
+                         self.root, self.index_before)
+        try:
+            restored = self._index_entries(self.staged) == self.index_before
+        except CommandFailed:
+            restored = False
+        if restored:
+            done.append(f"unstaged  {names} (the index holds what it held "
+                        "before this run)")
+        else:
+            left.extend(_index_by_hand(self.root, self.staged,
+                                       self.index_before))
+
+    def _undo_branch(self, done: list[str], left: list[str]) -> None:
+        """HEAD back where it was, and the branch this run created gone —
+        but only while that branch still names the commit it was created
+        at, which `update-ref -d <ref> <old>` checks for itself, and never
+        while HEAD is still attached to it.
+
+        THE BRANCH HEAD IS ON IS NOT DELETED (#202). The switch back is a
+        `git checkout`, and it can fail — a `.git/index.lock` an editor's
+        `git status` holds for a moment is enough. `update-ref -d` does not
+        take that lock, so it went on to delete the branch under HEAD, which
+        then named no commit: `git status` said "No commits yet" and listed
+        every file as staged for a first commit, in a repository with a
+        history. The branch is LEFT and listed, with the switch and then
+        the deletion, in the order that works: git itself refuses `branch
+        -D` on the branch that is checked out.
+        """
+        if self.branch is None:
+            return
+        branch, start, commit = self.branch
+        ref = f"refs/heads/{branch}"
+        where = start or f"{commit[:12]} (detached)"
+        back = [start] if start else ["--detach", commit]
+        moved = _symbolic_head(self.root) == ref
+        if moved:
+            _git_quietly(["git", "checkout", "-q", start, "--"] if start
+                         else ["git", "checkout", "-q", "--detach", commit,
+                               "--"], self.root)
+        if self._head_is(start, commit):
+            done.append(f"switched  HEAD back to {where}" if moved
+                        else f"kept      HEAD on {where}, where it started")
+        else:
+            left.append(f"HEAD      is not back on {where}: "
+                        + _by_hand(self.root, "checkout", *back))
+        if not branch_exists(self.root, branch):
+            done.append(f"absent    {branch} (never created)")
+            return
+        if _symbolic_head(self.root) == ref:
+            left.append(f"branch    {branch}, which this run created, was not "
+                        "deleted because HEAD is still on it (HEAD would "
+                        "name no commit); switch first, then delete: "
+                        + _by_hand(self.root, "checkout", *back) + " && "
+                        + _by_hand(self.root, "branch", "-D", branch))
+            return
+        _git_quietly(["git", "update-ref", "-d", ref, commit], self.root)
+        if branch_exists(self.root, branch):
+            left.append(f"branch    {branch}, which this run created, is "
+                        "still there: "
+                        + _by_hand(self.root, "branch", "-D", branch))
+        else:
+            done.append(f"deleted   {branch} (this run created it; nothing "
+                        "was committed on it)")
+
+    def _head_is(self, start: str | None, commit: str) -> bool:
+        head = _symbolic_head(self.root)
+        if start:
+            return head == f"refs/heads/{start}"
+        named = _git_answer(self.root, ["rev-parse", "HEAD"])
+        return head is None and (named or "").strip() == commit
+
+    @staticmethod
+    def _said(done: list[str], left: list[str]) -> str:
+        """The block a refusal prints under its own first line."""
+        lines = (["ROLLED BACK IN PART: the tree is NOT as it was. Put back:"]
+                 if left else
+                 ["ROLLED BACK: every byte this command wrote has been put "
+                  "back, and the tree is exactly as it was:"])
+        lines += [f"    {line}" for line in done]
+        if left:
+            lines.append("  NOT put back — finish these by hand:")
+            lines += [f"    {line}" for line in left]
+        return "\n".join(lines)
+
+
+def _symbolic_head(root: Path) -> str | None:
+    """The FULL ref HEAD is attached to (`refs/heads/<name>`), or None when
+    it is detached — the spelling `Rollback` keeps, for the reason
+    `Rollback.new_branch` gives. Asked through `_git_answer`, as
+    `readme_is_committed` asks its own, rather than a second copy of it."""
+    answer = _git_answer(root, ["symbolic-ref", "--quiet", "HEAD"])
+    return (answer or "").strip() or None
+
+
+def _by_hand(root: Path, *args: str) -> str:
+    """`git -C <root> <args>` as a line a person pastes, every argument
+    quoted for a POSIX shell: a root or a name holding a space is one
+    argument there, not two (#202).
+
+    ALL THREE HAND FIXES A PARTIAL ROLLBACK PRINTS — the index's, HEAD's and
+    the branch's — are spelled here, so one block never quotes two ways.
+    `shlex`, the standard library's, because this tool has no quoter of its
+    own: the doctor's platform-aware `quote_arg` lives in `shape-doctor.py`
+    by that file's own contract. A value that needs no quoting comes back
+    exactly as it went in, so ON POSIX an ordinary root prints what it
+    always printed. ON WINDOWS IT DOES NOT: every root there holds a
+    backslash, which is outside `shlex`'s safe set, so `shlex.join` quotes
+    the root and a line that used to print it bare now prints it in single
+    quotes. That is deliberate, and not worth a second quoter: these are
+    lines for a POSIX shell — Git Bash is one, cmd.exe and PowerShell are
+    not — as this tool's other `NEXT` lines are too.
+    """
+    return shlex.join(["git", "-C", str(root), *args])
+
+
+def _index_by_hand(root: Path, paths: list[str], before: bytes) -> list[str]:
+    """What a partial rollback prints for an index it could not put back:
+    for each path `Rollback.stage` forced, the command that writes back
+    exactly the entry it had before this run — or none, when it had none.
+    `before` is `Rollback.index_before`, `ls-files --stage -z` records.
+
+    NEVER `git reset -- <path>`, which this used to print (#202). That
+    writes HEAD's entry rather than the one that was there — the hazard
+    `Rollback.stage` names — so a draft somebody had staged at the path
+    would have been "put back" as HEAD's, or as nothing, by the very line
+    that claimed to finish the rollback. So each path gets its own fix:
+    none before is `update-index --force-remove`; one staged entry before
+    is that entry, through `--cacheinfo` (with `--add`, because the undo
+    that failed may already have removed it); an UNMERGED path is its
+    stages, through `--index-info`, the only way git takes them back.
+    `update-index` reads a path literally, never as a pathspec, and
+    `_by_hand` quotes it, so the shell does not glob it either.
+    """
+    had: dict[str, list[tuple[str, str, str]]] = {}
+    for record in before.split(b"\0"):
+        if record:
+            meta, _, name = record.partition(b"\t")
+            mode, sha, stage = meta.decode("ascii").split(" ")
+            had.setdefault(os.fsdecode(name), []).append((mode, sha, stage))
+    lines = []
+    for path in paths:
+        entries = had.get(path, [])
+        said = f"index     {path} may still hold this run's entry; it "
+        if not entries:
+            lines.append(f"{said}had none before: " + _by_hand(
+                root, "update-index", "--force-remove", "--", path))
+        elif len(entries) == 1 and entries[0][2] == "0":
+            mode, sha, _ = entries[0]
+            lines.append(
+                f"{said}had {mode} {sha[:12]} staged before, and `git "
+                "reset` would write HEAD's entry in its place, which is "
+                "not necessarily that one: " + _by_hand(
+                    root, "update-index", "--add", "--cacheinfo",
+                    f"{mode},{sha},{path}"))
+        else:
+            fields = [field for mode, sha, stage in entries
+                      for field in (mode, sha, stage, path)]
+            lines.append(
+                f"{said}was unmerged before (stages "
+                f"{', '.join(stage for _, _, stage in entries)}), which "
+                "`git reset` would resolve to HEAD's: "
+                + _by_hand(root, "update-index", "--force-remove", "--", path)
+                + " && printf " + shlex.quote("%s %s %s\\t%s\\0") + " "
+                + shlex.join(fields) + " | "
+                + _by_hand(root, "update-index", "-z", "--index-info"))
+    return lines
+
+
+def _git_quietly(args: list[str], root: Path, data: bytes | None = None
+                 ) -> subprocess.CompletedProcess | None:
+    """`args` run in `root` for a rollback, with `data` as BYTES on stdin:
+    the completed process, or None when git could not be started at all.
+
+    Never raises on git's exit: a rollback that raised part way would leave
+    the tree half put back AND replace the refusal that explains why it was
+    rolled back with one about the rollback. Every caller reads the state
+    afterwards instead, and says what it found.
+    """
+    check_program(args)
+    try:
+        return subprocess.run(args, cwd=str(root), input=data,
+                              capture_output=True, check=False)
+    except OSError:
+        return None
 
 
 def _refuse_unknown_accept_local(rows: list[Row], accepted: set) -> None:
@@ -1822,7 +2252,8 @@ def _rewrite_readme(readme: ReadmeShapeLine, ledger: Rollback) -> None:
     An `OSError` escaping would leave that tree behind, because `cmd_apply`
     rolls back on `Refusal` and `CommandFailed` and on nothing else (Copilot,
     PR #152). Named as a refusal, the arm that already exists puts every byte
-    back.
+    back — and says so itself, listing what it put back under this detail
+    (`_rolled_back`, #202), so the detail does not claim it a second time.
     """
     try:
         readme.rewrite(ledger)
@@ -1830,9 +2261,7 @@ def _rewrite_readme(readme: ReadmeShapeLine, ledger: Rollback) -> None:
         raise Refusal(
             "update-readme-unwritable",
             f"the copies and the pin were written, but {README}'s Shape: "
-            f"line could not be: {exc.strerror or exc}. Every byte this "
-            "command wrote has been rolled back; the tree is exactly as it "
-            "was.",
+            f"line could not be: {exc.strerror or exc}.",
             f"Remediation: make {README} writable and run the same command "
             "again. The line is prose in a file this standard does not own, "
             "so a root that would rather keep it as it is can also take the "
@@ -1844,6 +2273,9 @@ def _refuse_red_validators(root: Path, kind: Kind) -> None:
     """Run the root's OWN validators over what was just written, and refuse
     if either goes red. Split out of `cmd_apply` for #133; the rollback is
     the caller's `except Refusal` arm, which is why this only has to raise.
+    That arm also SAYS what it put back, under this detail (`_rolled_back`,
+    #202), which is why the detail no longer claims the rollback itself: one
+    refusal made the same promise twice, in two spellings.
     """
     print(f"\nthe {kind.name}'s own validators")
     failed = [name for name in kind.validators
@@ -1851,27 +2283,28 @@ def _refuse_red_validators(root: Path, kind: Kind) -> None:
     if failed:
         raise Refusal(
             "update-validators-red",
-            "after the rewrite, " + " and ".join(failed) + " refused. "
-            "Every byte this command wrote has been rolled back; the tree "
-            "is exactly as it was.",
+            "after the rewrite, " + " and ".join(failed) + " refused.",
             "Remediation: read the finding above. A tool that left a "
             "project red would have moved the cost from this command to "
             "somebody else's pull request.")
 
 
 def _land(root: Path, args, paths: list[str], added: list[str], target: str,
-          upstream: Upstream, kind: Kind, count: int) -> None:
+          upstream: Upstream, kind: Kind, count: int,
+          ledger: Rollback) -> None:
     """The three optional acts after a clean rewrite — commit, push, open a
     pull request — each done only because a flag asked for it. Split out of
     `cmd_apply` for #133.
 
     Nested the way the flags are: `--push` and `--pr` have nothing to act on
     without `--branch`, which `main` refuses before this is ever reached.
+    The commit goes through `ledger` and closes it (#202), so a failure up
+    to and including the commit is rolled back and one after it is not.
     """
     if not args.branch:
         return
     commit_on_branch(root, args.branch, paths, target, upstream,
-                     count, kind, added, args.trailer)
+                     count, kind, added, args.trailer, ledger=ledger)
     print(f"\n  committed on {args.branch}: " + ", ".join(paths))
     if args.push:
         run(["git", "push", "-q", "-u", "origin", args.branch], cwd=root)
@@ -1884,7 +2317,7 @@ def cmd_apply(args) -> int:
     # `pin` (the raw mapping `read_pin` returned) is not read again below:
     # `pinned` is the commit string this command compares and writes back.
     root, _, rows, additions, upstream, pinned, target, kind = prepare(args)
-    ledger = Rollback()
+    ledger = Rollback(root)
     try:
         accepted = {str(path) for path in (args.accept_local or [])}
         _refuse_unknown_accept_local(rows, accepted)
@@ -1914,18 +2347,49 @@ def cmd_apply(args) -> int:
         paths = sorted({row.path for row in copied} | set(added)
                        | {"contracts/shape-pin.yaml", kind.manifest}
                        | ({README} if readme.rewritten else set()))
-        _land(root, args, paths, added, target, upstream, kind, len(copied))
+        _land(root, args, paths, added, target, upstream, kind, len(copied),
+              ledger)
         print()
         next_line(root, args, paths, target, added)
         return 0
-    except Refusal:
-        ledger.undo()
-        raise
-    except CommandFailed as exc:
-        print(exc.loudly("committing the re-synced shape"), file=sys.stderr)
-        return 2
+    except (Refusal, CommandFailed) as exc:
+        return _rolled_back(exc, ledger)
     finally:
         upstream.close()
+
+
+def _rolled_back(exc: Exception, ledger: Rollback) -> int:
+    """`apply`'s one failure arm: undo what `ledger` holds, then refuse,
+    saying which step failed and what was put back (#202).
+
+    A REFUSAL keeps its own id and remediation, and gains the list of what
+    was put back under its detail — every refusal raised after the first
+    write, not only the validators' — so nobody reads `copied` and
+    `re-pinned` above it and believes the copies are still there. A failed
+    GIT COMMAND is named by the step `ledger` was in (creating the branch,
+    staging the additions, committing) rather than always "committing".
+
+    NOTHING TO PUT BACK keeps the answer each exit always gave: a refusal
+    before the first write is re-raised as it was, and a git command that
+    fails after the commit landed — a push, a pull request — is #204's, and
+    prints the line it always printed.
+    """
+    undone = ledger.undo()
+    if undone is not None:
+        # The `copied` / `re-pinned` lines first, then the refusal: a log that
+        # merged the two streams would otherwise show the rollback before the
+        # writes it rolled back.
+        sys.stdout.flush()
+    if isinstance(exc, Refusal):
+        if undone is None:
+            raise exc
+        raise Refusal(exc.code, f"{exc.detail}\n{undone}",
+                      exc.remediation) from exc
+    if undone is None:
+        print(exc.loudly("committing the re-synced shape"), file=sys.stderr)
+        return 2
+    print(f"{exc.loudly(ledger.step)}\n{undone}", file=sys.stderr)
+    return 2
 
 
 def open_pull_request(root: Path, branch: str, target: str,
@@ -1978,11 +2442,25 @@ def next_line(root: Path, args, paths: list[str], target: str,
         return
     # A `git add` for the ADDITIONS only. A hint that a human pastes has to
     # work when they paste it, and `git commit -- <path>` refuses a path git
-    # has never heard of — which every file `--add` just wrote is.
-    stage = f"add -- {' '.join(added)} && git -C {root} " if added else ""
+    # has never heard of — which every file `--add` just wrote is. FORCED,
+    # as `commit_on_branch` stages them (#202): a plain `git add` refuses a
+    # path the operator's own excludes ignore, and a pinned copy left out of
+    # the commit is a red `validate-pins.py` on the next clone.
+    #
+    # QUOTED, AND LITERAL (#202). `-f` is what makes a glob dangerous here: a
+    # name holding `[`, pasted bare, is a pattern the SHELL expands to an
+    # ignored neighbour (`docs/guide[1].md` -> `docs/guide1.md`), and `-f`
+    # forces the neighbour in. Quoting stops the shell and not git, which
+    # reads the pathspec as a glob too, so the add also says
+    # `--literal-pathspecs`, as `force_stage` does. The commit's own list is
+    # quoted for the shell the same way, so the whole line pastes whole. No
+    # copy-list entry holds a glob character today; an ordinary name prints
+    # exactly as it did.
+    stage = (f"--literal-pathspecs add -f -- {shlex.join(added)} && git -C "
+             f"{root} " if added else "")
     print(f"NEXT  git -C {root} checkout -b shape/update-{target[:12]} && git "
           f"-C {root} {stage}commit -m 'Re-sync the shape @ {target[:12]}' -- "
-          + " ".join(paths))
+          + shlex.join(paths))
 
 
 # ---------------------------------------------------------------------------

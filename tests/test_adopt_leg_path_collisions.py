@@ -24,6 +24,11 @@ does on main.
 Everything but the end-to-end tests runs on a machine with no `git
 filter-repo`: `execute`'s probe for it is answered, because every refusal
 under test comes before the tool would be used.
+
+The last section reaches #174's mount guard, which stands behind the
+root-kept half of this rule, by switching that half off for one in-process
+`execute`. Its runs make and push both legs, so they need `git filter-repo`
+as the end-to-end tests do.
 """
 
 from __future__ import annotations
@@ -49,6 +54,12 @@ from shape_materialize import SHAPE_PIN as MATERIALIZER_SHAPE_PIN  # noqa: E402
 needs_filter_repo = pytest.mark.skipif(
     shutil.which("git-filter-repo") is None,
     reason="git filter-repo is not installed: `pip install git-filter-repo`")
+
+#: What a run that checks a symlink out ON THE DISK needs: Git for Windows
+#: checks a tracked symlink out as a plain file unless `core.symlinks` is on.
+needs_disk_symlinks = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="a tracked symlink is a plain file in a Windows checkout")
 
 PROJECT = "Northwind"
 UTF8 = "utf-8"
@@ -532,6 +543,11 @@ def with_files(files: dict) -> dict:
 
 #: The synthetic tree with a source path AT `docs/spec`, under `docs/`.
 DOCS_SPEC_HELD = with_files({"docs/spec/overview.md": "# Overview\n"})
+#: A FILE named `docs`, on the way to `docs/spec`, and the synthetic tree
+#: with it in place of the `docs/` directory.
+DOCS_FILE = "docs"
+DOCS_A_FILE = {**{k: v for k, v in SYNTHETIC_TREE.items()
+                  if not k.startswith("docs/")}, DOCS_FILE: "a file\n"}
 
 #: `(tree, kept entry, spec_path, the start of what the finding says)`.
 KEPT_CASES = [
@@ -546,9 +562,7 @@ KEPT_CASES = [
     pytest.param(with_files({"spec": "a file named spec\n"}), "spec", "spec",
                  "is the file `spec`. The plan keeps it in the assembly root,",
                  id="is-a-kept-file"),
-    pytest.param({**{k: v for k, v in SYNTHETIC_TREE.items()
-                     if not k.startswith("docs/")}, "docs": "a file\n"},
-                 "docs", DOCS_SPEC,
+    pytest.param(DOCS_A_FILE, DOCS_FILE, DOCS_SPEC,
                  "is inside the file `docs`. The plan keeps it in the "
                  "assembly root,", id="inside-a-kept-file"),
     pytest.param(with_files({"SPEC/notes.md": "notes\n"}), "SPEC/", "spec",
@@ -743,3 +757,149 @@ def test_execute_mounts_inside_a_kept_directory_only_where_it_holds_nothing(
         "ls-tree", "-r", SPLIT_BRANCH, cwd=empty_source).stdout.splitlines()
         if line.startswith("160000")]
     assert sorted(gitlinks) == ["code", DOCS_SPEC]
+
+
+# --- the mount guard behind this rule (#174) --------------------------------
+#
+# #174's `_refuse_an_unmountable_path` refuses, where each leg is mounted,
+# what this rule's root-kept half has already refused before any leg exists:
+# a file or a symlink the plan keeps in the root on the way to the mount
+# path. So no plan reaches it end to end. These runs switch that half off for
+# one in-process `execute` and prove what the guard still answers for a run
+# that gets there: its refusal in its own words, what its remediation says of
+# the run, and that the remediation's next step adopts.
+
+#: The guard's two refusals, made after both legs were pushed.
+MOUNT_OCCUPIED = "adopt-mount-occupied"
+MOUNT_UNADDABLE = "adopt-mount-unaddable"
+#: A root-kept directory symlink, and a mount path through it.
+LINK = "legs"
+THROUGH_LINK = f"{LINK}/spec"
+VERIFIED = "adoption verified"
+
+
+@pytest.fixture
+def past_the_kept_half(adopter, monkeypatch):
+    """This rule's root-kept half, switched off for one test. `execute` asks
+    `_kept_in_root` only for it (through `_leg_collision_findings`), so with
+    nothing kept as far as that half knows, every other finding of `check` --
+    the shape's own paths, #169's, #166's -- is still asked, and the run goes
+    on to make and push both legs and mount them."""
+    monkeypatch.setattr(adopter, "_kept_in_root", lambda entries, tree: [])
+
+
+def refused_at_the_mount(adopter, tmp_path: Path, plan: Path):
+    """The `Refusal` an in-process `execute` of `plan` raises. A
+    `CommandFailed` instead is git failing in its own words, after the guard
+    let the path through."""
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter.cmd_execute(execute_args(tmp_path, plan))
+    return caught.value
+
+
+def refs(repo: Path) -> str:
+    return git("for-each-ref", cwd=repo).stdout
+
+
+def both_legs_were_pushed(tmp_path: Path) -> None:
+    """The guard's remediation's first claim, true of the run: each leg
+    repository exists under `--local-remote-dir`, its tracking branch
+    pushed."""
+    for role in ROLES:
+        git("rev-parse", "--verify", "-q", "refs/heads/main",
+            cwd=tmp_path / REMOTES / f"{PROJECT}-{role}.git")
+
+
+def docs_a_file(tmp_path: Path) -> tuple[Path, Path]:
+    """A source that keeps the FILE `docs` in the root, and a plan that
+    mounts the spec leg at `docs/spec`, through it."""
+    source, plan = kept_source(tmp_path, DOCS_A_FILE, DOCS_FILE)
+    set_leg_path(plan, "spec", DOCS_SPEC)
+    return source, plan
+
+
+def executed(plan: Path, remotes: Path, work: Path):
+    """`execute` run as the command, in its own process."""
+    return run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
+                      "--local-remote-dir", str(remotes),
+                      "--work-dir", str(work))
+
+
+@needs_filter_repo
+def test_the_mount_guard_refuses_a_kept_file_on_the_way_after_both_legs_exist(
+        adopter, past_the_kept_half, tmp_path):
+    """`docs/spec` through a root-kept FILE `docs`. Before #174 git died at
+    the mount, `could not create leading directories`, with no remediation.
+    The guard names what is in the way, and its remediation's first claim is
+    true: both legs were made and pushed, and nothing was committed to the
+    source or pushed to it."""
+    source, plan = docs_a_file(tmp_path)
+    before = refs(source)
+
+    refusal = refused_at_the_mount(adopter, tmp_path, plan)
+
+    assert refusal.code == MOUNT_OCCUPIED
+    assert refusal.detail == (
+        f"the assembly's index holds `{DOCS_FILE}` (a file) where the leg "
+        f"mount path {DOCS_SPEC} needs a directory")
+    assert refusal.remediation.startswith(
+        "Remediation: both leg repositories were made and pushed before the "
+        "mount, and nothing was committed to the source or pushed to it.")
+    assert "with no file, symlink or submodule it keeps there on the way" \
+        in refusal.remediation
+    both_legs_were_pushed(tmp_path)
+    assert refs(source) == before
+
+
+@needs_filter_repo
+def test_the_mount_guards_next_step_adopts_the_source(
+        adopter, past_the_kept_half, tmp_path):
+    """The guard's remediation, followed: another path for the leg, then
+    `execute` again with fresh leg repositories AND an empty `--work-dir`.
+    Fresh repositories alone are not the way on, and the remediation says
+    why: the refused run's `--work-dir` still holds its clones of both legs,
+    and the next run cannot clone into them. The runs after the refusal are
+    the command in its own process, which this test's switch does not reach,
+    so this whole rule asks the corrected plan."""
+    source, plan = docs_a_file(tmp_path)
+    refusal = refused_at_the_mount(adopter, tmp_path, plan)
+    assert "an empty `--work-dir`, or none" in refusal.remediation
+    set_leg_path(plan, "spec", "specification")
+    checked = check(plan)
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+
+    reused = executed(plan, tmp_path / "reused-work-remotes", tmp_path / WORK)
+    again = executed(plan, tmp_path / "fresh-remotes", tmp_path / "fresh-work")
+
+    assert reused.returncode != 0
+    assert VERIFIED not in reused.stdout
+    assert again.returncode == 0, again.stdout + again.stderr
+    assert VERIFIED in again.stdout
+    assert git("branch", "--list", SPLIT_BRANCH, cwd=source).stdout.strip()
+
+
+@needs_filter_repo
+@needs_disk_symlinks
+def test_the_mount_guard_refuses_a_mount_through_a_kept_symlink(
+        adopter, past_the_kept_half, tmp_path):
+    """`legs/spec` beyond a root-kept `legs -> <a directory outside>`. With
+    `--force` alone the spec leg was cloned THROUGH the link, outside
+    `--work-dir`, before git refused the add. The guard makes git's own dry
+    run before the clone and refuses in git's words, and nothing is written
+    outside."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    source = make_source_repo(tmp_path / "Thing")
+    commit_tree_entry(source, "120000", LINK, blob(source, str(outside)))
+    plan = answered_plan(source, tmp_path / "plan.yaml")
+    keep_in_root(plan, LINK)
+    set_leg_path(plan, "spec", THROUGH_LINK)
+
+    refusal = refused_at_the_mount(adopter, tmp_path, plan)
+
+    assert refusal.code == MOUNT_UNADDABLE
+    assert refusal.detail.startswith(
+        f"git will not add the leg mount path {THROUGH_LINK}: ")
+    assert "beyond a symbolic link" in refusal.detail
+    assert list(outside.iterdir()) == []
+    both_legs_were_pushed(tmp_path)
