@@ -8,20 +8,29 @@ gives any stdout that is not the console itself: a file, a pipe to `tee`,
 CI, an agent running the tool. `plan` exited 1 with a traceback, after the
 plan was on disk and before `plan written to` and the questions it exists to
 ask. The same raise was in `check`, `shape-doctor.py`, `update-shape.py`,
-`scaffold-project.py`, `scripts/family.py` and `scripts/bump-leg.py`,
-wherever a path or a person's text was printed.
+`scaffold-project.py`, `scripts/family.py`, `scripts/bump-leg.py` and the
+`bootstrap` shim at the root of this repository, wherever a path or a
+person's text was printed.
 
 Each now calls `shape_materialize.escape_what_stdout_cannot_encode` first:
-a `strict` stdout becomes `backslashreplace`, which writes what `strict`
-would have written and escapes only what it would have raised on. Every run
-here is made twice, under `PYTHONIOENCODING=cp1252:strict` (the Windows code
-page, emulated: CI's own Windows job runs in UTF-8 mode and never sees it)
-and `utf-8:strict`, and answered in BYTES, decoded strictly in the encoding
-the run was given, so a byte the stdout could not have held fails the test.
+a `strict` stdout becomes `backslashreplace`, and a `surrogateescape` one
+becomes the handler registered beside it, which writes an escaped byte back
+as that byte and escapes the rest as `backslashreplace` does. Either one
+writes what the old handler would have written and escapes only what it
+would have raised on. Every run here is made under three
+`PYTHONIOENCODING`s, and answered in BYTES, decoded strictly in the encoding
+the run was given, so a byte the stdout could not have held fails the test:
+- `cp1252:surrogateescape`, what Windows gives a stdout that is not the
+  console: the ANSI code page, and the handler CPython gives every Windows
+  stdout by default (`config_get_stdio_errors` in `Python/initconfig.c`).
+  Emulated, because CI's own Windows job runs in UTF-8 mode and never sees it.
+- `cp1252:strict`, what `PYTHONIOENCODING=cp1252` gives, with no handler named.
+- `utf-8:strict`, the control: every name fits.
 """
 
 from __future__ import annotations
 
+import codecs
 import io
 import os
 import shutil
@@ -42,6 +51,7 @@ DOCTOR = REPO / "shape-doctor.py"
 UPDATE = REPO / "update-shape.py"
 FAMILY = REPO / "scripts" / "family.py"
 BUMP = REPO / "scripts" / "bump-leg.py"
+BOOTSTRAP = REPO / "bootstrap"
 
 #: In no Western code page: cp1252 holds `é` and `—`, and not this.
 NAME = "日本"
@@ -53,7 +63,7 @@ ASKED = "東京.ipynb"
 #: The first words of that question, from `contracts/path-classification.yaml`.
 NOTEBOOK_QUESTION = "Is this notebook"
 #: Every `PYTHONIOENCODING` the runs below are made under.
-ENCODINGS = ("cp1252:strict", "utf-8:strict")
+ENCODINGS = ("cp1252:surrogateescape", "cp1252:strict", "utf-8:strict")
 
 
 def shown(text: str, encoding: str) -> str:
@@ -63,16 +73,29 @@ def shown(text: str, encoding: str) -> str:
     return text.encode(codec, "backslashreplace").decode(codec)
 
 
-def run_tool(script: Path, *args: str, encoding: str,
-             tmp_path: Path) -> tuple[int, str, str]:
+def run_tool(script: Path, *args: str, encoding: str, tmp_path: Path,
+             cwd: Path | None = None) -> tuple[int, str, str]:
     """`(exit, stdout, stderr)` of one run with its stdout in `encoding`.
 
     BYTES, then decoded STRICTLY in that encoding: `conftest.run_script`
     decodes in the parent's own locale, which is not what the child was
-    told to write. The environment is `run_script`'s -- no lane, no
-    pin-source override, an identity git can commit with -- plus an empty
-    `AGENT_PROTOCOL_ROOT`, so a `workspace.yaml` on the machine running the
-    suite changes nothing here. Windows writes `\\r\\n`; read as `\\n`.
+    told to write. Windows writes `\\r\\n`; read as `\\n`.
+    """
+    code, stdout, stderr = run_tool_bytes(script, *args, encoding=encoding,
+                                          tmp_path=tmp_path, cwd=cwd)
+    codec = encoding.split(":")[0]
+    return (code, stdout.decode(codec).replace("\r\n", "\n"),
+            stderr.decode(codec, "replace").replace("\r\n", "\n"))
+
+
+def run_tool_bytes(script: Path, *args: str, encoding: str, tmp_path: Path,
+                   cwd: Path | None = None) -> tuple[int, bytes, bytes]:
+    """`(exit, stdout, stderr)` of one run, as the bytes the child wrote.
+
+    The environment is `run_script`'s -- no lane, no pin-source override,
+    an identity git can commit with -- plus an empty `AGENT_PROTOCOL_ROOT`,
+    so a `workspace.yaml` on the machine running the suite changes nothing
+    here.
     """
     env = blank_unnamed_pin_sources(
         {**os.environ, "LANES_LANE": "", "PYTHONIOENCODING": encoding,
@@ -85,11 +108,9 @@ def run_tool(script: Path, *args: str, encoding: str,
     (tmp_path / "agent-protocol").mkdir(exist_ok=True)
     proc = subprocess.run([sys.executable, str(script), *args],
                           capture_output=True, env=env,
+                          cwd=None if cwd is None else str(cwd),
                           stdin=subprocess.DEVNULL, check=False)
-    codec = encoding.split(":")[0]
-    stdout = proc.stdout.decode(codec).replace("\r\n", "\n")
-    stderr = proc.stderr.decode(codec, "replace").replace("\r\n", "\n")
-    return proc.returncode, stdout, stderr
+    return proc.returncode, proc.stdout, proc.stderr
 
 
 # --- the repro of #214 -------------------------------------------------------
@@ -99,8 +120,9 @@ def test_plan_reports_every_name_whatever_its_stdout_can_encode(tmp_path,
                                                                 encoding):
     """Exit 0, `plan written to`, both entries in the plan, and each name in
     the table and in the question list: as it is on a UTF-8 stdout, escaped
-    on a cp1252 one. On main the cp1252 run exited 1 in `_print_entries`,
-    two rows into the table."""
+    on a cp1252 one. On main both cp1252 runs exited 1 in `_print_entries`,
+    two rows into the table, and so did the `surrogateescape` one at
+    3006303, whose guard changed `strict` alone."""
     source = make_source_repo(tmp_path / "Thing", tree={
         "README.md": "# Thing\n", ANSWERED: "x\n", ASKED: "{}\n",
         "src/main.py": "x = 1\n"}, edits=())
@@ -126,6 +148,42 @@ def test_plan_reports_every_name_whatever_its_stdout_can_encode(tmp_path,
     if encoding.startswith("cp1252"):
         assert "\\u65e5\\u672c.md" in stdout, stdout
         assert NAME not in stdout, stdout
+
+
+@pytest.mark.parametrize("encoding", ("utf-8:surrogateescape",
+                                      "cp1252:surrogateescape"))
+def test_a_name_that_is_not_utf8_still_comes_out_as_its_own_bytes(tmp_path,
+                                                                   encoding):
+    """`plan --out` into a directory whose name holds byte 0xff, which is not
+    UTF-8: Python reads it in as U+DCFF, and a `surrogateescape` stdout
+    writes it back as 0xff. It still does, in the same report that shows
+    `日本.md` -- escaped on cp1252 -- where plain `backslashreplace` would
+    print `\\udcff` instead. POSIX only: neither Windows nor macOS holds a
+    file name that is not UTF-8."""
+    parent = os.path.join(os.fsencode(tmp_path), b"b\xffd")
+    try:
+        os.mkdir(parent)
+    except (OSError, UnicodeError) as exc:
+        pytest.skip(f"this filesystem holds no name that is not UTF-8: {exc}")
+    if b"b\xffd" not in os.listdir(os.fsencode(tmp_path)):
+        pytest.skip("this filesystem rewrote a name that is not UTF-8")
+    source = make_source_repo(tmp_path / "Thing", tree={
+        "README.md": "# Thing\n", ANSWERED: "x\n", "src/main.py": "x = 1\n"},
+        edits=())
+    out = Path(os.fsdecode(parent)) / "plan.yaml"
+    code, stdout, stderr = run_tool_bytes(
+        ADOPT, "plan", "--source", str(source), "--project", "Northwind",
+        "--org", ORG, "--elected-by", "Test Human",
+        "--elected-on", "2026-09-02", "--out", str(out),
+        encoding=encoding, tmp_path=tmp_path)
+    assert code == 0 and b"Traceback" not in stderr, stdout + stderr
+    written = [line for line in stdout.splitlines()
+               if line.startswith(b"plan written to ")]
+    assert len(written) == 1, stdout
+    assert written[0].endswith(b"/b\xffd/plan.yaml"), written
+    assert b"\\udcff" not in stdout, stdout
+    codec = encoding.split(":")[0]
+    assert shown(ANSWERED, encoding).encode(codec) in stdout, stdout
 
 
 # --- the same raise, in every other tool that printed a name ---------------
@@ -198,8 +256,21 @@ def _bump_leg_dry_run(tmp_path: Path, request) -> tuple:
                   "--dry-run")
 
 
+def _bootstrap_shim(tmp_path: Path, request) -> tuple:
+    """The `bootstrap` at this repository's root runs the canonical bootstrap
+    against the directory it is run FROM, and names that directory first. A
+    repository with no manifest, one that has not elected the schema, which
+    is what the shim is for. Not a shape copy: no project holds it, so it
+    calls the helper the six tools call, before it hands over."""
+    root = tmp_path / NAME
+    root.mkdir()
+    git("init", "-q", cwd=root)
+    return BOOTSTRAP, (), root
+
+
 OTHER_TOOLS = {
     "adopt-check": _adopt_check,
+    "bootstrap-shim": _bootstrap_shim,
     "bump-leg-dry-run": _bump_leg_dry_run,
     "shape-doctor": _doctor,
     "update-shape-check": _update_shape_check,
@@ -211,12 +282,12 @@ OTHER_TOOLS = {
 @pytest.mark.parametrize("tool", sorted(OTHER_TOOLS))
 def test_every_tool_exits_alike_whatever_its_stdout_can_encode(tmp_path,
                                                                request, tool):
-    """The same run under both encodings: the same exit, no traceback, and
+    """The same run under every encoding: the same exit, no traceback, and
     the name printed -- as it is under UTF-8, escaped under cp1252. On main
     every cp1252 run here exited 1 at its first `print` of the name."""
-    script, args = OTHER_TOOLS[tool](tmp_path, request)
+    script, args, *cwd = OTHER_TOOLS[tool](tmp_path, request)
     runs = {encoding: run_tool(script, *args, encoding=encoding,
-                               tmp_path=tmp_path)
+                               tmp_path=tmp_path, cwd=cwd[0] if cwd else None)
             for encoding in ENCODINGS}
     exits = {encoding: run[0] for encoding, run in runs.items()}
     for encoding, (_code, stdout, stderr) in runs.items():
@@ -241,16 +312,91 @@ def test_a_strict_stdout_escapes_only_what_it_cannot_encode():
     assert stream.buffer.getvalue() == b"\\u65e5\\u672c.md \xe9 \x97\n"
 
 
-def test_a_handler_that_does_not_raise_is_left_as_it_was():
-    """UTF-8 mode and the POSIX locale give stdout `surrogateescape`, which
-    writes a name that is not UTF-8 back as its own bytes; turning it into
-    `\\udcff` would change what a run that worked prints."""
-    stream = wrapper("utf-8", "surrogateescape")
+@pytest.mark.parametrize("encoding, written", (
+    ("utf-8", b"caf\xff\xe6\x97\xa5\xe6\x9c\xac.md \xc3\xa9 \xe2\x80\x94\n"),
+    ("cp1252", b"caf\xff\\u65e5\\u672c.md \xe9 \x97\n"),
+), ids=("utf-8", "cp1252"))
+def test_a_surrogateescape_stdout_keeps_its_raw_bytes_and_escapes_the_rest(
+        encoding, written):
+    """What Windows gives every stdout, and UTF-8 mode and the C locale give
+    too. A byte that was not UTF-8 when a name was read in (`caf\\xff`, held
+    as U+DCFF) is written back as that byte, as `surrogateescape` writes it;
+    a character the encoding cannot hold, right after it, is escaped as
+    `backslashreplace` escapes it, where `surrogateescape` raised; and the
+    encoding is kept. A second call changes nothing."""
+    stream = wrapper(encoding, "surrogateescape")
     shape_materialize.escape_what_stdout_cannot_encode(stream)
-    assert stream.errors == "surrogateescape"
-    stream.write("caf\udcff\n")
+    shape_materialize.escape_what_stdout_cannot_encode(stream)
+    assert stream.encoding == encoding
+    assert (stream.errors
+            == shape_materialize.SURROGATEESCAPE_THEN_BACKSLASHREPLACE)
+    stream.write(f"caf\udcff{ANSWERED} é —\n")
     stream.flush()
-    assert stream.buffer.getvalue() == b"caf\xff\n"
+    assert stream.buffer.getvalue() == written
+
+
+def test_the_handler_is_registered_once_under_a_name_of_this_repository(
+        monkeypatch):
+    """`reconfigure` takes a handler by name. Once it is registered, no
+    later call registers it again."""
+    shape_materialize.escape_what_stdout_cannot_encode(
+        wrapper("cp1252", "surrogateescape"))
+    name = shape_materialize.SURROGATEESCAPE_THEN_BACKSLASHREPLACE
+    assert name.startswith("openreposhape."), name
+    registered = codecs.lookup_error(name)
+    calls = []
+    monkeypatch.setattr(codecs, "register_error",
+                        lambda *args: calls.append(args))
+    for _ in range(3):
+        shape_materialize.escape_what_stdout_cannot_encode(
+            wrapper("cp1252", "surrogateescape"))
+    assert calls == []
+    assert codecs.lookup_error(name) is registered
+
+
+@pytest.mark.parametrize("errors", ("replace", "backslashreplace", "ignore",
+                                    "xmlcharrefreplace", "namereplace",
+                                    "surrogatepass"))
+def test_every_other_handler_is_left_as_it_was(errors):
+    """Only the two handlers that raise on a name are changed. Any other is
+    one somebody chose, and the encoding is never changed."""
+    stream = wrapper("cp1252", errors)
+    shape_materialize.escape_what_stdout_cannot_encode(stream)
+    assert (stream.encoding, stream.errors) == ("cp1252", errors)
+
+
+class _Unreconfigurable:
+    """A stdout a caller replaced, whose `reconfigure` raises `exception`."""
+
+    def __init__(self, errors: str, exception: type) -> None:
+        self.errors = errors
+        self.exception = exception
+
+    def reconfigure(self, **_changes) -> None:
+        raise self.exception("cannot reconfigure this stream")
+
+
+@pytest.mark.parametrize("errors", ("strict", "surrogateescape"))
+@pytest.mark.parametrize("exception", (ValueError, OSError),
+                         ids=lambda exception: exception.__name__)
+def test_a_reconfigure_that_raises_fails_nothing(errors, exception):
+    """`ValueError` and `OSError` each on its own: neither is
+    `io.UnsupportedOperation`, which is both and would let a guard that
+    caught only one of them pass."""
+    assert not (issubclass(exception, ValueError)
+                and issubclass(exception, OSError))
+    shape_materialize.escape_what_stdout_cannot_encode(
+        _Unreconfigurable(errors, exception))
+
+
+@pytest.mark.parametrize("errors", ("strict", "surrogateescape"))
+def test_a_closed_stdout_fails_nothing(errors):
+    """A closed wrapper still reports its handler, and its `reconfigure`
+    raises `ValueError`."""
+    stream = wrapper("cp1252", errors)
+    stream.close()
+    shape_materialize.escape_what_stdout_cannot_encode(stream)
+    assert stream.errors == errors
 
 
 def test_a_stdout_that_cannot_be_reconfigured_fails_nothing(monkeypatch):
@@ -258,6 +404,8 @@ def test_a_stdout_that_cannot_be_reconfigured_fails_nothing(monkeypatch):
     class Replaced:
         errors = "strict"
 
+    shape_materialize.escape_what_stdout_cannot_encode(Replaced())
+    Replaced.errors = "surrogateescape"
     shape_materialize.escape_what_stdout_cannot_encode(Replaced())
     monkeypatch.setattr(sys, "stdout", None)
     shape_materialize.escape_what_stdout_cannot_encode()
