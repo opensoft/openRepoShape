@@ -2104,7 +2104,10 @@ def _refuse_an_unrunnable_plan(plan: Plan, source: Source) -> None:
 #: (the other leg, the split) is made only by a re-run, into new legs. So an
 #: adoption names its one exit, a re-run by somebody holding the bypass right,
 #: and the notice printed after this hint (`_nothing_rolled_back`) names what
-#: that re-run must clear first.
+#: that re-run must clear first. The notice also says to fix what failed
+#: before the re-run, and under such a ruleset the bypass IS that fix: the
+#: hint says so last, or "fixed", read alone, would invite a change to the
+#: ruleset this hint forbids (#188's re-verification, R4).
 ADOPT_RULESET_HINT = """
 If the organisation applies a ruleset requiring changes to arrive by pull
 request, a direct push to the default branch is refused BY DESIGN and must not
@@ -2112,7 +2115,9 @@ be worked around. An adoption has ONE legitimate exit: have an operator
 holding the bypass right re-run it, once what the notice below names is
 cleared. The scaffold's other exit, a seed branch and a pull request, cannot
 finish an adoption: {repo} has no {tracking} for that pull request to target,
-and nothing would run the rest of this adoption after it was merged.
+and nothing would run the rest of this adoption after it was merged. Under
+such a ruleset, that bypass is the fix the notice below asks for, never a
+change to the ruleset.
 """
 
 #: What a step that runs once a leg repository exists reports as a REFUSAL,

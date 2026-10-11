@@ -925,6 +925,12 @@ def test_a_refused_leg_push_offers_an_adoption_its_one_exit(
     assert "An adoption has ONE legitimate exit: have an operator" in err
     assert f"{SPEC_REPOSITORY} has no main for that pull request" in err
     assert "re-run this scaffold" not in err
+    # The notice under the hint says to fix what failed first. Under a
+    # ruleset the hint says what that fix is, and that it is not a change to
+    # the ruleset, so the two read as one way out (the re-verification, R4).
+    assert ("Under such a ruleset, that bypass is the fix the notice below "
+            "asks for, never a change to the ruleset.") \
+        in " ".join(err.split())
     for command in ("git -C ", "gh pr create"):
         assert not any(line.strip().startswith(command)
                        for line in err.splitlines()), err
