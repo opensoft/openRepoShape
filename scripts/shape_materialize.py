@@ -210,6 +210,10 @@ TEMPLATED = (
 NEUTRAL_PIN_TEMPLATE = "contracts/neutral-product-pin.yaml"
 EXECUTABLE = ("scripts/validate-pins.py", "scripts/validate-manifest.py",
               BOOTSTRAP, VALIDATE_NAMING)
+#: The copy pin, rendered LAST by `_materialize` over the copies it digests.
+#: Named once because `assembly_root_paths` lists it beside the lists above,
+#: and a second spelling is how that list would stop matching what is written.
+SHAPE_PIN = "contracts/shape-pin.yaml"
 
 # ---------------------------------------------------------------------------
 # The FAMILY root's own lists (2026-09-04)
@@ -1067,6 +1071,23 @@ def materialize_assembly_root(shape_root: Path, target: Path,
         collision_dir=collision_dir, append=append, neutral_pins=neutral_pins)
 
 
+def assembly_root_paths() -> tuple[str, ...]:
+    """Every path `materialize_assembly_root` writes when nothing is in the
+    way and no neutral-product pin is declared, in the order it writes them.
+
+    READ FROM THE LISTS THAT CALL HANDS `_materialize`, plus the pin it
+    writes last, never kept by hand: `adopt-project.py` refuses a leg mount
+    path that overlaps one of these (#172), and a second list would let the
+    shape gain a file the refusal does not know about. `EXECUTABLE` adds no
+    path (it marks paths the lists already write), and a collision moves a
+    path under the caller's `collision_dir`, which is the caller's to name.
+    `tests/test_adopt_leg_path_collisions.py` materializes into an empty
+    directory and holds this to what was written.
+    """
+    return (*TEMPLATED, *COPIED_VERBATIM,
+            *(rel for _, rel in COPIED_FROM_SHAPE), SHAPE_PIN)
+
+
 def materialize_family_root(shape_root: Path, target: Path,
                             values: dict[str, str]) -> Materialized:
     """Write the FAMILY-root skeleton into `target`.
@@ -1152,11 +1173,9 @@ def _materialize(shape_root: Path, template_root: Path, target: Path,
     # rendered LAST and over the paths they actually landed on.
     rows = "\n".join(f"  - path: {rel}\n    sha256: \"{file_sha256(target / rel)}\""
                      for rel in result.shape_files)
-    text = render((template_root / "contracts" / "shape-pin.yaml")
-                  .read_text(encoding="utf-8"),
-                  {**values, "SHAPE_FILES": rows}, "contracts/shape-pin.yaml")
-    place("contracts/shape-pin.yaml",
-          lambda p, t=text: write_lf(p, t))
+    text = render((template_root / SHAPE_PIN).read_text(encoding="utf-8"),
+                  {**values, "SHAPE_FILES": rows}, SHAPE_PIN)
+    place(SHAPE_PIN, lambda p, t=text: write_lf(p, t))
     return result
 
 
