@@ -28,9 +28,12 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            (`spec`, `legs/spec`; never `spec/` or `./spec`, a name Git or
            Windows keeps for itself such as `.git` or `CON`, or a value
            `execute` would refuse; the two never equal or nested, in any
-           case), and the source's own submodules kept on one leg with
-           their `.gitmodules`, registered there and never in the root. It
-           prints what will happen and changes nothing.
+           case), the source's own submodules kept on one leg with their
+           `.gitmodules`, registered there and never in the root, and every
+           value `execute` writes into the project's YAML (`id`, the
+           branch, the leg paths, the pins, the election record) one its
+           loader reads back as that same text, never `null`, `true` or
+           `2026` (#181). It prints what will happen and changes nothing.
   execute  creates the two legs, extracts them with `git filter-repo`, makes
            the one split commit on a branch of the source, sets the
            `xf-project-<id>` topic on all three (skipped for local remotes),
@@ -92,7 +95,7 @@ from repo_shape import (  # noqa: E402
     accepts_role, checked_value, git_out, load_yaml, parse_yaml, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
-    ADOPT_MAKEFILE_BLOCK, RULESET_HINT, SHAPE_REPOSITORY,
+    ADOPT_MAKEFILE_BLOCK, RULESET_HINT, SHAPE_REPOSITORY, TEMPLATED,
     CommandFailed, Materialized, collision_follow_up, copy_tree,
     default_reference, election_date, env_commit, git_init_commit,
     materialize_assembly_root, naming_block, run, write_lf,
@@ -212,6 +215,26 @@ _PLAIN_RE = re.compile(r"^[A-Za-z_.][A-Za-z0-9_./@:+-]*$")
 WINDOWS_ABSOLUTE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 
 
+def loader_reading(line: str):
+    """What the loader makes of the one value on `line`: `key: <value>` or
+    `- <value>`, as a plan or a project's YAML spells it.
+
+    THE ONE QUESTION, asked by the plan writer (`_reads_back_as_text`) and by
+    the gate on what `execute` writes into the project (`manifest_misreads`),
+    of the one loader both are read with: `repo_shape`, which every assembly
+    root carries a copy of for its `bootstrap.py` and validators. The answer
+    is the value under the key, or the one item, as that loader reads it; a
+    line it will not read gives back the `YamlError` it raised, which is no
+    string at all.
+    """
+    try:
+        parsed = parse_yaml(line + "\n")
+    except YamlError as exc:
+        return exc
+    held = list(parsed.values()) if isinstance(parsed, dict) else parsed
+    return held[0] if isinstance(held, list) and len(held) == 1 else parsed
+
+
 def _reads_back_as_text(text: str) -> bool:
     """Does the plan's own loader take `text`, written plain, back as `text`?
 
@@ -230,11 +253,8 @@ def _reads_back_as_text(text: str) -> bool:
     `k: a:` is not). A line the reader refuses is a value it does not read
     back.
     """
-    try:
-        return (parse_yaml(f"k: {text}\n") == {"k": text}
-                and parse_yaml(f"- {text}\n") == [text])
-    except YamlError:
-        return False
+    return all(loader_reading(f"{place}{text}") == text
+               for place in ("k: ", "- "))
 
 
 def y(value) -> str:
@@ -993,11 +1013,13 @@ WINDOWS_DEVICE_RE = re.compile(r"(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?"
                                re.IGNORECASE)
 
 #: What a plan's non-text `spec_path` was read as. The YAML reader keeps no raw
-#: text (`007` is read as 7, `true` and `True` as one boolean, `1.50` as 1.5),
-#: so a sentence that echoed the parsed value would show something the file
-#: never said; it names the KIND the reader made of it instead.
+#: text (`007` is read as 7, `true` and `True` as one boolean, `1.50` as 1.5,
+#: and `null`, `~` and nothing at all as one None), so a sentence that echoed
+#: the parsed value would show something the file never said; it names the
+#: KIND the reader made of it instead.
 NOT_TEXT_KINDS = {bool: "true or false", int: "a number", float: "a number",
-                  list: "a list", dict: "a mapping"}
+                  list: "a list", dict: "a mapping",
+                  type(None): "no value at all"}
 
 LEG_PATH_REMEDIATION = (
     "Remediation: nothing here rewrites a path for you, so correct the value "
@@ -1100,9 +1122,14 @@ def leg_path_problem(what: str, value) -> str | None:
     the thing the person has in front of them.
     """
     if not isinstance(value, str):
+        # NOT "SO QUOTE IT" (#181). Quoted, the plan reads the same spelling
+        # back as text, and `execute` writes that text into `project.yaml`
+        # and the leg's pin as it stands, where `manifest_misreads` refuses
+        # every spelling the loader reads as one of these kinds.
         kind = NOT_TEXT_KINDS.get(type(value), "something that is not text")
         return (f"{what} is not text: its value was read as {kind}, and a "
-                "path is written as text, so quote it")
+                "leg path is text: write the path you mean, or remove the key "
+                "to mount the leg at its role's own name")
     spelling = _spelling_reason(value)
     if spelling:
         offered = _canonical_spelling(value)
@@ -1165,7 +1192,11 @@ def _plan_leg_path(plan: Plan, role: str):
     A key the plan does not carry is the default, the role's own name, as
     `execute` has always read it. An EXPLICIT empty value is not a missing
     one: it comes back as it stands and is refused, where it used to be read
-    quietly as the default -- a value nobody chose.
+    quietly as the default -- a value nobody chose. So is an explicit NULL
+    (`spec_path: null`, `~`, or the key with nothing after it), which comes
+    back as None (#181): before `y` quoted keywords, `plan --spec-path null`
+    wrote exactly that, the plan's own follow-ups said `null/contracts`, and
+    `check` passed it as a mount at `spec`.
 
     `legs:` is read only when it is a mapping. The doctor's PLACEMENT plan
     (`shape-doctor.py --placement-plan`) writes `legs:` as a LIST of the
@@ -1176,8 +1207,8 @@ def _plan_leg_path(plan: Plan, role: str):
     a key the plan does not carry.
     """
     legs = plan.legs
-    value = legs.get(f"{role}_path") if isinstance(legs, dict) else None
-    return role if value is None else value
+    key = f"{role}_path"
+    return legs[key] if isinstance(legs, dict) and key in legs else role
 
 
 def _plan_leg_paths(plan: Plan) -> tuple[tuple, tuple]:
@@ -1186,6 +1217,190 @@ def _plan_leg_paths(plan: Plan) -> tuple[tuple, tuple]:
     so `check` and `execute` cannot name them two ways."""
     return (("legs.spec_path", _plan_leg_path(plan, "spec")),
             ("legs.code_path", _plan_leg_path(plan, "code")))
+
+
+# ---------------------------------------------------------------------------
+# What `execute` writes into the project is read back as written (#181)
+# ---------------------------------------------------------------------------
+#
+# `y` makes the PLAN say what was typed. `execute` then puts the same values
+# into the assembly root's templates, and `project.yaml` and the leg pins
+# carry most of them bare: `id: {{PROJECT_ID}}`, `path: {{SPEC_PATH}}`,
+# `tracking_branch: {{TRACKING_BRANCH}}`. So once the plan kept `null` as the
+# text it was, `--spec-path null` ended `adoption verified` and the first
+# bootstrap failed on `path is None`, `--id true` on `id is True`, and
+# `--tracking-branch true` pushed the legs on `true` while bootstrap put them
+# on a local `True` with no upstream. `2026`, `1.5` and `~` already did the
+# same on `main` (#187's review).
+#
+# THE FIX IS TO REFUSE. `plan` (before the plan is written), `check` (a
+# FINDING) and `execute` (through `_entry_findings`, before any leg exists)
+# ask the ONE question below and refuse a value the project's loader would
+# read back as anything but that same text. Quoting the placeholders instead
+# was considered and not done: the same templates render every scaffolded
+# project as well as every adopted one.
+#
+# THE LOADER DECIDES, AND THE TEMPLATE SAYS WHERE. Each value is put into
+# every line of a templated YAML file that carries its placeholder, exactly
+# as `execute` would put it there, and `loader_reading` -- the question `y`
+# asks -- reads that line back. No list of words, and no list of which
+# placeholders are quoted: `elected_by: "{{ELECTED_BY}}"` is asked as the
+# quoted line it is, so `Null` reads back there and `CORP\tom` does not
+# (the loader makes the `\t` a tab).
+
+#: The assembly root's templated files that are YAML: what the project's own
+#: loader reads back out of the split commit. The materializer's list, so a
+#: templated YAML file added there is asked about here without an edit.
+ASSEMBLY_TEMPLATE = SHAPE_ROOT / "templates" / "assembly-root"
+TEMPLATED_YAML = tuple(rel for rel in TEMPLATED if rel.endswith(".yaml"))
+#: The manifest, which holds the one list `_template_values` writes itself.
+MANIFEST_YAML = "project.yaml"
+
+#: Each plan value `execute` writes into those files, by its key in the plan
+#: (and `plan`'s flag of the same name, dashed) and the `_template_values`
+#: placeholder that carries it. The id is asked about apart from these,
+#: because `execute` derives it when the plan has none; the leg paths are
+#: `legs.` keys; the pins are a list.
+MANIFEST_FIELDS = {"tracking_branch": "TRACKING_BRANCH",
+                   "visibility": "VISIBILITY", "elected_by": "ELECTED_BY",
+                   "elected_on": "ELECTED_ON", "reference": "REFERENCE"}
+LEG_PATH_PLACEHOLDERS = {"spec": "SPEC_PATH", "code": "CODE_PATH"}
+#: How `plan` fills a flag nobody passed, where the value it fills in can be
+#: one the loader misreads: a sentence about it names where it came from.
+FLAG_DEFAULTS = {"id": "--project lowercased",
+                 "elected_by": "`git config user.name`"}
+
+MANIFEST_MISREAD_REMEDIATION = (
+    "Remediation: choose another value for each one named. `execute` writes "
+    "these values into the project's `project.yaml` and leg pins as they "
+    "stand, and the loader the project's own `bootstrap.py` and validators "
+    "read those files with would take each one named here as something else: "
+    "the run would still end `adoption verified`, and the project would then "
+    "be bootstrapped and validated against what was read instead. Quoting it "
+    "in the plan does not help, because the plan is not what is misread.")
+
+
+def _pin_item(pin: str) -> str:
+    """One pin as `_template_values` writes it under `neutral_product_pins:`,
+    and as `manifest_misreads` asks about it."""
+    return f"  - {pin}"
+
+
+def _written(placeholder: str, value: str) -> list[tuple[str, str]]:
+    """`(file, line)` for each line of a templated YAML file that carries
+    `{{placeholder}}`: with `value` in its place, as `execute` writes it, and
+    without its indent, which says nothing about how the value is read."""
+    token = "{{" + placeholder + "}}"
+    return [(rel, line.strip().replace(token, value))
+            for rel in TEMPLATED_YAML
+            for line in (ASSEMBLY_TEMPLATE / rel).read_text(
+                encoding="utf-8").splitlines()
+            if token in line]
+
+
+def _field(what: str, placeholder: str, value) -> tuple[str, str, list]:
+    """`(what, value, written)` for a value `_template_values` writes as
+    `str(value)`, which is how a plan's non-text `elected_on` reaches it."""
+    text = str(value)
+    return what, text, _written(placeholder, text)
+
+
+def _pin_field(what: str, pin: str) -> tuple[str, str, list]:
+    return what, pin, [(f"{MANIFEST_YAML}'s neutral_product_pins",
+                        _pin_item(pin).strip())]
+
+
+def _the_loader_made(reading) -> str:
+    """What `loader_reading` gave back, in words. The parsed value is shown,
+    because the sentence it ends also shows the text it was read from."""
+    if isinstance(reading, YamlError):
+        return f"nothing: it refuses the line ({reading})"
+    if reading is None:
+        return "no value at all"
+    if isinstance(reading, bool):
+        return "the boolean " + ("true" if reading else "false")
+    if isinstance(reading, (int, float)):
+        return f"the number {reading!r}"
+    if isinstance(reading, str):
+        return f"the text {reading!r}"
+    return NOT_TEXT_KINDS.get(type(reading), "something that is not text")
+
+
+def _shown(line: str) -> str:
+    """`line` as a sentence quotes it: in backticks, or as Python spells it
+    when it holds a character a terminal shows as something else (a line
+    break, a tab), so that one FINDING stays one line."""
+    return f"`{line}`" if line.isprintable() else repr(line)
+
+
+def manifest_misreads(fields) -> list[str]:
+    """A sentence for each `(what, value, written)` whose `value` the
+    project's loader does not read back out of every line in `written`;
+    `[]` when it does for all of them.
+
+    `what` is how the caller names the value -- `--tracking-branch` to
+    `plan`, `tracking_branch` read out of a plan -- so the sentence points at
+    the thing the person has in front of them.
+    """
+    problems = []
+    for what, value, written in fields:
+        wrong = [(rel, line, loader_reading(line)) for rel, line in written]
+        wrong = [row for row in wrong if row[2] != value]
+        if wrong:
+            where = " and ".join(f"into {rel} as {_shown(line)}"
+                                 for rel, line, _ in wrong)
+            problems.append(
+                f"{what} is {value!r}, which `execute` writes {where}, where "
+                "the project's own YAML loader reads it back as "
+                f"{_the_loader_made(wrong[0][2])} and not as that text: "
+                "choose another value")
+    return problems
+
+
+def _flag_fields(args, given: set, pins: list[str]) -> list[tuple]:
+    """`plan`'s values as it is about to record them, each named by its flag,
+    and by where `plan` took it from when `given` says it was not passed."""
+    def flag(key: str) -> str:
+        spelled = "--" + key.replace("_", "-")
+        if key in FLAG_DEFAULTS and key not in given:
+            spelled += f" (not given, so {FLAG_DEFAULTS[key]})"
+        return spelled
+
+    fields = [_field(flag("id"), "PROJECT_ID", args.id)]
+    fields += [_field(flag(key), placeholder, getattr(args, key))
+               for key, placeholder in MANIFEST_FIELDS.items()]
+    fields += [_field(f"--{role}-path", placeholder,
+                      getattr(args, f"{role}_path"))
+               for role, placeholder in LEG_PATH_PLACEHOLDERS.items()]
+    return fields + [_pin_field("--pin", pin) for pin in pins]
+
+
+def _plan_fields(plan: Plan) -> list[tuple]:
+    """A plan's values as `_template_values` would write them, each named by
+    its key in the plan.
+
+    A key the plan does not carry is left out: `execute` fills it with a
+    default of this tool's own (`main`, `private`, today's date), and none of
+    those is misread. A leg path is asked about only when it is text with no
+    `plan-bad-leg-path` of its own, so one wrong value is one finding. An id
+    `Plan.project_id` refuses, or a refused leg name it is derived from, is
+    refused on its own account by `check` and `execute` alike.
+    """
+    fields: list[tuple] = []
+    try:
+        what = ("id" if plan.get("id") is not None else
+                "id (not in the plan, so legs.assembly lowercased)")
+        fields.append(_field(what, "PROJECT_ID", plan.project_id))
+    except Refusal:
+        pass
+    fields += [_field(key, placeholder, plan.get(key))
+               for key, placeholder in MANIFEST_FIELDS.items()
+               if plan.get(key) is not None]
+    for (what, value), placeholder in zip(_plan_leg_paths(plan),
+                                          LEG_PATH_PLACEHOLDERS.values()):
+        if isinstance(value, str) and leg_path_problem(what, value) is None:
+            fields.append(_field(what, placeholder, value))
+    return fields + [_pin_field("pins", pin) for pin in plan.pins]
 
 
 def _checked_plan_inputs(args, source: Source,
@@ -1198,6 +1413,9 @@ def _checked_plan_inputs(args, source: Source,
     refused an unparseable `--elected-on` would send a reader looking in the
     wrong place for the line that was wrong.
     """
+    # Which of the flags `plan` fills in by itself were passed: a value it
+    # filled in is named by where it came from, should it be refused below.
+    given = {key for key in FLAG_DEFAULTS if getattr(args, key)}
     args.project = checked_value("--project", args.project)
     args.tracking_branch = checked_value("--tracking-branch",
                                          args.tracking_branch)
@@ -1232,6 +1450,14 @@ def _checked_plan_inputs(args, source: Source,
     names = _names(args.project)
     pins = [_checked_pin_name(p) for p in (args.pin or []) if p.strip()]
     _check_names(naming, names, set(pins))
+    # LAST, over every value as the plan will record it: `execute` writes
+    # them into the project's own YAML, and one its loader would read as
+    # something else is refused before the plan exists (#181).
+    misread = manifest_misreads(_flag_fields(args, given, pins))
+    if misread:
+        raise Refusal("adopt-manifest-misread",
+                      " ".join(f"{problem}." for problem in misread),
+                      f"{MANIFEST_MISREAD_REMEDIATION} No plan was written.")
     return names, pins
 
 
@@ -1870,7 +2096,9 @@ def _submodule_findings(plan: Plan, source: Source,
 def _entry_findings(plan: Plan, source: Source
                     ) -> tuple[list[str], list[str]]:
     """Every FINDING `check` prints about the plan's ENTRIES, in its order,
-    and what it prints once after them: coverage, then each entry's `leg:`,
+    and what it prints once after them: coverage, then each entry's `leg:`
+    and the leg paths, then each value `execute` would write into the
+    project's YAML for its loader to read back as something else (#181),
     then the source's own submodules.
 
     ONE LIST, read by `check` and by `execute`'s `_refuse_what_check_finds`.
@@ -1885,8 +2113,12 @@ def _entry_findings(plan: Plan, source: Source
     findings = (_coverage_findings([str(e.get("path")) for e in plan.entries],
                                    [path for path, _, _, _ in tree])
                 + _leg_findings(plan))
+    misread = [f"FINDING plan-manifest-misread: {problem}."
+               for problem in manifest_misreads(_plan_fields(plan))]
     submodule_findings, remediation = _submodule_findings(plan, source, tree)
-    return findings + submodule_findings, remediation
+    return (findings + misread + submodule_findings,
+            ([MANIFEST_MISREAD_REMEDIATION] if misread else [])
+            + remediation)
 
 
 def _topics_line(topic: str, local: bool) -> str:
@@ -1915,10 +2147,14 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
     for role in seeded:
         print(f"  SEED the {role} leg from {SEED_TEMPLATE[role]}/ — no path is "
               "assigned to it")
+    # A leg path that is not text is a FINDING of its own, and its Python
+    # spelling (`None/`, `True/`) names no directory a leg would be mounted at.
+    mounts = [_plan_leg_path(plan, role) for role in EXTRACTED_LEGS]
+    where = (f" at {mounts[0]}/ and {mounts[1]}/"
+             if all(isinstance(mount, str) for mount in mounts) else "")
     print(f"  ONE split commit on branch {plan.get('adopt_branch', ADOPT_BRANCH)} "
-          f"of {names['assembly']}: `git rm -r` those paths, mount the legs at "
-          f"{_plan_leg_path(plan, 'spec')}/ and "
-          f"{_plan_leg_path(plan, 'code')}/")
+          f"of {names['assembly']}: `git rm -r` those paths, mount the "
+          f"legs{where}")
     print(f"  {len(stays)} path(s) stay in the assembly root; "
           f"{len(drops)} dropped")
     print("  the source is never deleted, never renamed, never force-pushed")
@@ -2687,7 +2923,7 @@ def _template_values(plan: Plan, names, repositories, urls, spec_path,
         "SPEC_TREE_SHA256": leg_digests.get("spec", ""),
         "CODE_TREE_SHA256": leg_digests.get("code", ""),
         "NEUTRAL_PRODUCT_PINS": ("[]" if not pins else
-                                 "\n" + "\n".join(f"  - {p}"
+                                 "\n" + "\n".join(_pin_item(p)
                                                   for p in sorted(pins))),
         "ASSEMBLY_NAMING": naming_block(naming, names["assembly"], "assembly",
                                         pins),

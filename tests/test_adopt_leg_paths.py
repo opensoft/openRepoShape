@@ -243,25 +243,34 @@ def test_a_non_canonical_path_is_named_with_its_canonical_spelling(
         assert problem.endswith(f"Write {spelling!r}.")
 
 
-#: What the YAML reader makes of `spec_path: 5`, `true`, `1.50`, `[spec]` and a
-#: block mapping. The reader keeps no raw text, so the sentence names the KIND
-#: and never echoes Python's repr of the parsed value: `007` is read as 7,
-#: `true` as True and `1.50` as 1.5, none of which the file ever said.
+#: What the YAML reader makes of `spec_path: 5`, `true`, `1.50`, `[spec]`, a
+#: block mapping and `null`. The reader keeps no raw text, so the sentence
+#: names the KIND and never echoes Python's repr of the parsed value: `007` is
+#: read as 7, `true` as True, `1.50` as 1.5 and `~` as None, none of which the
+#: file ever said.
 NOT_TEXT = [
     pytest.param(5, "a number", id="int"),
     pytest.param(True, "true or false", id="bool"),
     pytest.param(1.5, "a number", id="float"),
     pytest.param(["spec"], "a list", id="list"),
     pytest.param({"a": "b"}, "a mapping", id="mapping"),
+    pytest.param(None, "no value at all", id="null"),
 ]
 
 
 @pytest.mark.parametrize("value, kind", NOT_TEXT)
 def test_a_value_that_is_not_text_is_a_problem_that_does_not_echo_it(
         adopter, value, kind):
+    """And it does not say "quote it" (#181): quoted, every one of these
+    spellings is text `execute` writes bare into `project.yaml`, where the
+    loader reads the same kind again and `plan-manifest-misread` refuses
+    it."""
     problem = adopter.leg_path_problem("legs.spec_path", value)
     assert problem.startswith("legs.spec_path is not text: ")
-    assert f"was read as {kind}," in problem and "so quote it" in problem
+    assert problem.endswith(
+        f"was read as {kind}, and a leg path is text: write the path you "
+        "mean, or remove the key to mount the leg at its role's own name")
+    assert "quote" not in problem
     assert repr(value) not in problem, "the parsed value is not what was written"
 
 
