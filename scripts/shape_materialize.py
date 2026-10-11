@@ -1325,10 +1325,15 @@ def path_overlap(leg: str, other: str) -> tuple[str, str] | None:
     return None
 
 
-def first_and_more(paths: list[str]) -> str:
-    """`a` or `a` and 2 more: one path named, the rest counted."""
+def first_and_more(paths: list[str], spell=None) -> str:
+    """`a` or `a` and 2 more: one path named, the rest counted. `spell`
+    writes the named path, between backticks by default: the shape's own
+    paths need nothing more. `adopt-project.py` passes its `_spelled` for a
+    source path the plan keeps in the root, which can hold any character
+    (#212)."""
     more = f" and {len(paths) - 1} more" if len(paths) > 1 else ""
-    return f"`{paths[0]}`{more}"
+    named = spell(paths[0]) if spell else f"`{paths[0]}`"
+    return f"{named}{more}"
 
 
 def shape_path_collisions(what: str, value: str,
