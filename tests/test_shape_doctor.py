@@ -2547,7 +2547,9 @@ def test_the_placement_plans_entries_are_adoption_plan_entries(standard,
     data["kind"], data["mode"] = adopt.PLAN_KIND, "in-place"
     plan = adopt.Plan(out, data)
     assert len(plan.entries) == 2
-    findings = adopt._leg_findings(plan)
+    # A placement plan has no source tree, and `None` says so: its `legs:`
+    # is a list, with no mount path the tree would be read for.
+    findings = adopt._leg_findings(plan, None)
     assert [f.split(":")[0] for f in findings] == \
         ["FINDING plan-unresolved"], findings
     assert "spec/examples/" in findings[0]
@@ -2558,7 +2560,7 @@ def test_the_placement_plans_entries_are_adoption_plan_entries(standard,
     for entry in plan.entries:
         if entry.get("leg") is None:
             entry["leg"] = "spec"
-    assert adopt._leg_findings(plan) == []
+    assert adopt._leg_findings(plan, None) == []
 
 
 def test_the_adoption_tool_refuses_a_placement_plan_and_names_the_doctor(
@@ -3219,7 +3221,7 @@ def test_the_placement_plan_lists_a_kept_submodule_and_asks_nothing(
     as_plan["kind"], as_plan["mode"] = adopt.PLAN_KIND, "in-place"
     plan = adopt.Plan(out, as_plan)
     assert [entry["path"] for entry in plan.entries] == ["spec/tool.py"]
-    assert adopt._leg_findings(plan) == []
+    assert adopt._leg_findings(plan, None) == []
 
 
 def test_the_placement_plan_carries_the_class_of_each_submodule(
