@@ -161,12 +161,19 @@ def test_a_failed_leg_is_printed_with_its_command_and_its_output(
 def test_a_failed_leg_names_both_leg_repositories_and_what_to_do(
         adopter, monkeypatch, capsys, tmp_path, seeded, command):
     """Both leg repositories exist by now, and one may even be pushed. The
-    human reads the failure, fixes the plan and re-runs; the re-run is refused
-    by `_create_leg_remotes`, so the notice says so BEFORE it happens, for
-    both kinds of remote, and names the two repositories to delete or to
-    replace."""
+    human reads the failure, fixes it and re-runs; the re-run is refused by
+    `_create_leg_remotes`, so the notice says so BEFORE it happens, for both
+    kinds of remote, and names the two repositories to delete or to
+    replace. It says to fix what failed first: a cause that is still there
+    fails the re-run the same way, after two more leg repositories (#188's
+    review, F2)."""
     refuse_every_leg(adopter, monkeypatch, command, tmp_path)
     arguments = legs_arguments(tmp_path, seeded)
+    # What the spec leg's builder leaves when its filter or its commit
+    # fails: its clone, or the template it seeded, in the work directory.
+    spec_work = arguments["work_root"] / f"{ASSEMBLY}-{SPEC}"
+    spec_work.mkdir(parents=True)
+    (spec_work / README).write_text("built\n", encoding="utf-8")
 
     assert adopter._build_the_legs(**arguments) is None
 
@@ -178,10 +185,12 @@ def test_a_failed_leg_names_both_leg_repositories_and_what_to_do(
     assert LIVE_LEG in notice
     assert "gh repo create" in notice
     assert "already taken" in notice
-    # The work directory too: `git clone` refuses the one this run cloned
-    # into, so a re-run that kept it looped (#184 P2-1).
-    assert (f"Re-run with a fresh --work-dir as well, or with none, not "
-            f"{arguments['work_root']}: ") in notice
+    assert "Once what failed above is fixed, re-run the adoption" in notice
+    # The work directory too, which holds what this run built: a re-run that
+    # kept it looped (#184 P2-1), and `execute` now refuses it.
+    assert (f"Use a fresh --work-dir as well, or none: "
+            f"{arguments['work_root']} holds {ASSEMBLY}-{SPEC} from this "
+            "run") in notice
     assert len(notice.strip().splitlines()) == 1
 
 
@@ -382,7 +391,8 @@ def test_following_the_notice_after_a_failed_leg_ends_adoption_verified(
     assert named, notice
     assert [named["spec"], named["code"]] == [
         str(remotes / f"{ASSEMBLY}-{role}.git") for role in UNIT_ROLES]
-    assert f"not {work}: `git clone` refuses" in notice
+    assert (f"Use a fresh --work-dir as well, or none: {work} holds "
+            f"{ASSEMBLY}-{SPEC} from this run") in notice
 
     # What it says: delete the two repositories it names, and a fresh
     # --work-dir. The --local-remote-dir is the same one.

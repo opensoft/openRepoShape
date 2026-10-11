@@ -2132,8 +2132,44 @@ def _flush_stdout() -> None:
         sys.stdout.flush()
 
 
+#: What a run builds in its work directory, `<work_root>/<name>` each, in the
+#: order it builds them: each leg, cloned or seeded by `_build_the_legs`, then
+#: the split, which `_commit_the_split` clones the source into. Both come
+#: after `_create_leg_remotes` has made the two leg repositories.
+BUILT_IN = {"spec": "the spec leg", "code": "the code leg",
+            "assembly": "the split"}
+
+
+def _holds_something(path: Path) -> bool:
+    """Whether `path` is anything but absent or an empty directory: what `git
+    clone` refuses with `destination path ... already exists and is not an
+    empty directory`, and what a seeded leg's first commit would take in. A
+    directory that cannot be listed counts, as it does for git."""
+    if not (path.exists() or path.is_symlink()):
+        return False
+    try:
+        return not path.is_dir() or any(path.iterdir())
+    except OSError:
+        return True
+
+
+def _built_in(work_root: Path, names: dict) -> list[tuple[str, str]]:
+    """`(name, what)` for each directory of `BUILT_IN` that already holds
+    something in `work_root`: its name there, and what a run builds in it."""
+    return [(names[role], what) for role, what in BUILT_IN.items()
+            if _holds_something(work_root / names[role])]
+
+
+def _and_listed(items: list[str]) -> str:
+    """`a`, `a and b`, `a, b and c`: a few things, as a sentence names them."""
+    if len(items) < 2:
+        return "".join(items)
+    return f"{', '.join(items[:-1])} and {items[-1]}"
+
+
 def _nothing_rolled_back(urls: dict, pushed: list, work_root: Path,
-                         made=EXTRACTED_LEGS) -> str:
+                         names: dict, made=EXTRACTED_LEGS, *,
+                         stopped: bool = False) -> str:
     """The one notice for a failure once a leg repository exists.
 
     `_create_leg_remotes` refuses a re-run while they exist:
@@ -2147,14 +2183,21 @@ def _nothing_rolled_back(urls: dict, pushed: list, work_root: Path,
     cannot be cloned, mounted, committed or pushed, and a verification that
     fails (#188).
 
-    THE WAY OUT NAMES THE WORK DIRECTORY (#184 P2-1). Each leg is cloned into
-    `<work_root>/<leg>` and the split into `<work_root>/<assembly>`, and
-    `git clone` refuses a directory that is not empty. A re-run that kept
-    `--work-dir` therefore stopped at the spec leg's clone with `destination
-    path ... already exists`, after creating both leg repositories AGAIN, so
-    deleting them or a new `--local-remote-dir` looped, one pair of leg
-    repositories per attempt (real ones, against GitHub). Without `--work-dir`
-    every run makes its own, which is why "or with none" is a way out too.
+    THE WAY OUT STARTS WITH THE CAUSE (#188's review, F2). A re-run into
+    fresh legs while what failed is still there fails the same way, with one
+    more pair of leg repositories behind it, so the re-run comes once that
+    is fixed. A run that was STOPPED, by Ctrl-C say, failed at nothing, and
+    is told only how to re-run.
+
+    THE WAY OUT NAMES THE WORK DIRECTORY when this run built something in it
+    (#184 P2-1, and N2 of #188's review): each leg is built in
+    `<work_root>/<leg>` and the split cloned into `<work_root>/<assembly>`,
+    and `_refuse_an_occupied_work_dir` refuses a run whose work directory
+    already holds one, before it creates anything. It is read off the disk,
+    so a failure before anything was built (the code leg's repository, N4)
+    does not send the person away from a work directory a re-run can use.
+    Without `--work-dir` every run makes its own, which is why "or none" is a
+    way out too.
     """
     one = len(made) == 1
     if one:
@@ -2166,15 +2209,21 @@ def _nothing_rolled_back(urls: dict, pushed: list, work_root: Path,
     else:
         state = "both legs are pushed"
     named = urls[made[0]] if one else f"{urls['spec']} and {urls['code']}"
-    exist, they = ("exists", "it is") if one else ("exist", "they are")
-    return (f"NOTHING has been rolled back: {named} {exist}, and {state}. "
-            f"Re-running the adoption is refused until {they} deleted or "
-            "fresh ones are used (a new --local-remote-dir, or new leg "
-            "repositories): under --local-remote-dir it meets "
-            "`leg-remote-exists`, and against GitHub `gh repo create` finds "
-            "the name already taken. Re-run with a fresh --work-dir as well, "
-            f"or with none, not {work_root}: `git clone` refuses a directory "
-            "this run has already cloned into.")
+    exist, them, fresh = (("exists", "it", "a fresh one") if one
+                          else ("exist", "them", "fresh ones"))
+    rerun = "Re-run" if stopped else "Once what failed above is fixed, re-run"
+    notice = (f"NOTHING has been rolled back: {named} {exist}, and {state}. "
+              f"{rerun} the adoption with {them} deleted or with {fresh} (a "
+              "new --local-remote-dir, or new leg repositories): a re-run "
+              f"that meets {them} is refused, as `leg-remote-exists` under "
+              "--local-remote-dir, and against GitHub by `gh repo create`, "
+              "which finds the name already taken.")
+    built = [name for name, _ in _built_in(work_root, names)]
+    if built:
+        notice += (f" Use a fresh --work-dir as well, or none: {work_root} "
+                   f"holds {_and_listed(built)} from this run, and `execute` "
+                   "refuses a --work-dir that holds them.")
+    return notice
 
 
 def _failed_loudly(step: str, exc: BaseException) -> str:
@@ -2236,6 +2285,42 @@ def _branch_deletion(source: Source, urls: dict, branch: str) -> str:
                      shlex.quote(branch)])
 
 
+def _refuse_an_occupied_work_dir(work_root: Path, names: dict) -> None:
+    """Refuse a work directory that already holds one of the directories
+    this run builds in (`BUILT_IN`), BEFORE a leg repository exists (#188's
+    review, F1).
+
+    Each of them is built only after `_create_leg_remotes` has made both
+    leg repositories, and `git clone` refuses a directory that is not empty.
+    So a run into a `--work-dir` an earlier run had built in made two legs
+    (two real repositories, against GitHub) and then stopped at the clone.
+    The notice says not to reuse such a directory, but one printed way out
+    left it unsaid -- `adopt-branch-exists`'s "delete the branch, then run
+    `execute` again" -- and followed as written, it looped: a new pair of
+    leg repositories per attempt. Refused here, no way out leads past it.
+
+    It is the first refusal of what an earlier run left, before
+    `_refuse_a_split_branch_left_behind` and so before `leg-remote-exists`,
+    so the re-run either of their ways out leads to meets a work directory
+    that holds none of these.
+
+    NEVER A DEFAULT RUN: without `--work-dir`, `_work_root` makes a new,
+    empty directory, and a new or empty `--work-dir` holds nothing either.
+    """
+    built = _built_in(work_root, names)
+    if built:
+        raise Refusal(
+            "adopt-work-dir-occupied",
+            f"--work-dir {work_root} already holds "
+            f"{_and_listed([name for name, _ in built])}, where this run "
+            f"builds {_and_listed([what for _, what in built])}, and only "
+            "after it has made both leg repositories: `git clone` refuses a "
+            "directory that is not empty",
+            "Remediation: no leg repository was created and nothing was "
+            "pushed. Pass a --work-dir that is new or empty, or none: without "
+            "one, each run makes a new one.")
+
+
 def _refuse_a_split_branch_left_behind(source: Source, urls: dict,
                                        branch: str, local: bool) -> None:
     """Refuse a run whose split branch is already on the assembly, BEFORE a
@@ -2252,7 +2337,9 @@ def _refuse_a_split_branch_left_behind(source: Source, urls: dict,
     A leg repository that is still there under `--local-remote-dir` is
     `_create_leg_remotes`' to refuse, as `leg-remote-exists`, and it keeps
     that precedence: this refusal is for the re-run that has cleared its
-    legs and not the branch.
+    legs and not the branch. A work directory an earlier run built in is
+    refused before either (`_refuse_an_occupied_work_dir`), so "run `execute`
+    again" below meets one that is free.
     """
     if local and any(Path(urls[role]).exists() for role in EXTRACTED_LEGS):
         return
@@ -2298,7 +2385,9 @@ def _create_leg_remotes(plan: Plan, names: dict, repositories: dict,
         except BaseException as exc:
             if made:
                 _report_late(f"creating the {role} leg repository", exc,
-                             _nothing_rolled_back(urls, [], work_root, made))
+                             _nothing_rolled_back(
+                                 urls, [], work_root, names, made,
+                                 stopped=not isinstance(exc, LATE_FAILURES)))
             raise
         made.append(role)
 
@@ -2821,7 +2910,8 @@ def _build_the_legs(source: Source, names: dict, repositories: dict,
     stopped here after both leg repositories exist must not exit 2 with an
     empty stderr (#171). The notice names the two leg repositories, because
     nothing is rolled back and `_create_leg_remotes` refuses a re-run while
-    they exist, and the work directory a re-run must not reuse (#184 P2-1).
+    they exist, and, once a leg was built there, the work directory a re-run
+    must not reuse (#184 P2-1).
     A refused PUSH is the one failure its own leg builder already printed,
     with the adoption's ruleset hint, so only the notice follows it (#177).
 
@@ -2851,11 +2941,11 @@ def _build_the_legs(source: Source, names: dict, repositories: dict,
                     tracking, repositories[role])
         except LATE_FAILURES as exc:
             _report_late(step, exc, _nothing_rolled_back(
-                urls, list(leg_commits), work_root))
+                urls, list(leg_commits), work_root, names))
             return None
         except BaseException as exc:
             _report_late(step, exc, _nothing_rolled_back(
-                urls, list(leg_commits), work_root))
+                urls, list(leg_commits), work_root, names, stopped=True))
             raise
     return leg_commits, leg_digests
 
@@ -3037,11 +3127,11 @@ def _commit_the_split(plan: Plan, source: Source, assembly: Path,
              f"HEAD:refs/heads/{branch}"], cwd=assembly)
     except LATE_FAILURES as exc:
         _report_late(step, exc, _nothing_rolled_back(
-            urls, list(leg_commits), work_root))
+            urls, list(leg_commits), work_root, names))
         return None
     except BaseException as exc:
         _report_late(step, exc, _nothing_rolled_back(
-            urls, list(leg_commits), work_root))
+            urls, list(leg_commits), work_root, names, stopped=True))
         raise
     print(f"\n  split {split_commit[:12]} on {branch} -> {urls['assembly']}")
     return split_commit, message
@@ -3069,6 +3159,9 @@ def cmd_execute(args) -> int:
 
     seeded = seeded_legs(paths_for)
     _refuse_unconsented_seeding(args, plan, seeded)
+    # What an earlier run left, the work directory first: a refusal below
+    # whose way out is "run `execute` again" then meets one that is free.
+    _refuse_an_occupied_work_dir(work_root, names)
     _refuse_a_split_branch_left_behind(source, urls, branch, local)
     for line in plan.seeding_record_disagreements(seeded):
         print(line)
@@ -3290,7 +3383,8 @@ def _verify(source: Source, assembly: Path, work_root: Path, names,
         print(f"\n{len(findings)} verification finding(s). NOTHING was "
               "deleted from the source, so the exit is to fix the plan and "
               "re-run, unless a finding above names another exit.\n"
-              + _nothing_rolled_back(urls, list(EXTRACTED_LEGS), work_root)
+              + _nothing_rolled_back(urls, list(EXTRACTED_LEGS), work_root,
+                                     names)
               + f"\nThe split is pushed to {urls['assembly']} too, as "
               f"{branch}, and a re-run is refused (`adopt-branch-exists`) "
               "until that branch is deleted:\n    "
@@ -3577,16 +3671,18 @@ def _pinned_shape_paths(assembly: Path, pin: str) -> list[str] | None:
 #: forces the shape's files, a source `.gitignore` cannot keep one out; what
 #: still can is a PLAN ANSWER -- the source's own file at a shape path, or a
 #: symlink on the way to one, kept in the root -- and the exit for that is the
-#: one `_verify`'s footer and AGENTS.md give. Anything else is this tool's
-#: defect, which no plan answer and no hand edit of the split should paper
-#: over.
+#: one `_verify`'s footer and AGENTS.md give. It is pointed at, not repeated:
+#: "re-run into fresh legs" alone left out the work directory and the split
+#: branch, and followed as written it was refused, or made two more legs
+#: (#188's review, F1). Anything else is this tool's defect, which no plan
+#: answer and no hand edit of the split should paper over.
 SHAPE_FILE_EXIT = (
     "If the plan kept in the root a file of the source's own at a shape "
     f"file's path -- its own {SHAPE_PIN} most often, the shape's then beside "
     f"it as {COLLISION_DIR}/{SHAPE_PIN} -- or a symlink on the way to one, "
-    "send that path to a leg or `drop` it, and re-run into fresh legs. "
-    "Otherwise the split itself is wrong: do not merge it, and report it to "
-    f"{SHAPE_REPOSITORY}")
+    "send that path to a leg or `drop` it, and re-run as the end of this "
+    "report says. Otherwise the split itself is wrong: do not merge it, and "
+    f"report it to {SHAPE_REPOSITORY}")
 
 
 def _missing_shape_file(path: str, why: str, refusal: str) -> str:

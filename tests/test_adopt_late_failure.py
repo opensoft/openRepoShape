@@ -13,12 +13,14 @@ after it, and the re-run met `leg-remote-exists` with nothing having said why.
 
 The notice is now printed by every failure once a leg repository exists: the
 code leg's repository that cannot be created after the spec leg's was, a leg,
-the split, and a verification that fails. It names the work directory, which a
-re-run must not reuse, and a failed verification names the split branch and
-the command that deletes it; an `execute` that meets that branch refuses
-before it creates anything. A failure that is not a failed command -- a
-refusal on the way, a read-only directory, `git` gone, output that is not
-UTF-8 -- gets the same report instead of a traceback.
+the split, and a verification that fails. It says to fix what failed first,
+names the work directory a re-run must not reuse once this run built in it,
+and a failed verification names the split branch and the command that
+deletes it; an `execute` that meets that branch, or a work directory an
+earlier run built in, refuses before it creates anything. A failure that is
+not a failed command -- a refusal on the way, a read-only directory, `git`
+gone, output that is not UTF-8 -- gets the same report instead of a
+traceback.
 
 A refused LEG push printed `RULESET_HINT`, the scaffold's, whose second exit
 is `git -C <work> push -u origin main:seed/scaffold` (#177). That cannot run
@@ -55,6 +57,11 @@ REMOTES = "remotes"
 WORK = "work"
 REFUSED = "REFUSED"
 ROLLED_BACK = "NOTHING has been rolled back"
+#: The notice's way out once something failed, rather than stopped (#188's
+#: review, F2), and its work-directory sentence (#184 P2-1, its N2).
+FIX_FIRST = "Once what failed above is fixed, re-run the adoption with"
+FRESH_WORK_DIR = "Use a fresh --work-dir as well, or none: "
+WORK_DIR_OCCUPIED = "adopt-work-dir-occupied"
 BOTH_PUSHED = "both legs are pushed"
 MAIN_REF = "refs/heads/main"
 SPLIT_PUSH = "pushing the split branch"
@@ -260,10 +267,21 @@ def the_notice(err: str) -> str:
     return lines[0]
 
 
-def work_dir_named(notice: str, work_root: Path) -> bool:
-    """The notice tells a re-run to leave `work_root` alone (#184 P2-1)."""
-    return (f"Re-run with a fresh --work-dir as well, or with none, not "
-            f"{work_root}: `git clone` refuses" in notice)
+def work_dir_named(notice: str, work_root: Path, *built: str) -> bool:
+    """The notice tells a re-run to leave `work_root` alone, naming what this
+    run built there (#184 P2-1); with `built`, exactly those."""
+    sentence = f"{FRESH_WORK_DIR}{work_root} holds "
+    listed = (" and ".join([", ".join(built[:-1]), built[-1]])
+              if len(built) > 1 else "".join(built))
+    return sentence in notice and (
+        not built or f"{sentence}{listed} from this run" in notice)
+
+
+def built_by_this_run(work: Path) -> None:
+    """What a leg builder or the split's clone leaves in its directory: a
+    clone, here one file standing in for it."""
+    work.mkdir(parents=True)
+    (work / README).write_text("built\n", encoding=UTF8)
 
 
 # ---- one way for each step of the split to fail -----------------------------
@@ -348,7 +366,10 @@ def test_a_split_that_fails_names_its_step_and_both_pushed_legs(
         assert arguments["urls"][role] in notice
     assert BOTH_PUSHED in notice
     assert "leg-remote-exists" in notice
-    assert work_dir_named(notice, tmp_path / WORK)
+    assert FIX_FIRST in notice
+    # Read off the disk: the split's clone is there, and no leg's, because
+    # the legs here are stand-ins that were never built in it.
+    assert work_dir_named(notice, tmp_path / WORK, ASSEMBLY)
     # The notice is the whole way out. A refused split push used to add a
     # guess about a branch an earlier run left; `execute` now refuses that
     # branch before any leg exists, so this push is never refused for it.
@@ -425,9 +446,10 @@ def test_a_leg_that_fails_without_a_command_is_refused_with_the_notice(
     `execute` turns into exit 2."""
     exc = failure(adopter)
 
-    def build(role, *_args):
+    def build(role, _source, work, *_args):
         if role == CODE:
             raise exc
+        built_by_this_run(work)
         return "c" * 40, "d" * 64
 
     monkeypatch.setattr(adopter, EXTRACT, build)
@@ -445,7 +467,8 @@ def test_a_leg_that_fails_without_a_command_is_refused_with_the_notice(
     assert "validate-pins" not in err
     notice = the_notice(err)
     assert f"the {SPEC} leg is pushed" in notice
-    assert work_dir_named(notice, tmp_path / WORK)
+    assert FIX_FIRST in notice
+    assert work_dir_named(notice, tmp_path / WORK, f"{ASSEMBLY}-{SPEC}")
 
 
 def test_a_split_the_materializer_cannot_write_is_refused_with_the_notice(
@@ -488,7 +511,12 @@ def test_an_interrupted_leg_still_says_what_it_left(
     err = capsys.readouterr().err
     assert f"STOPPED extracting the {SPEC} leg by KeyboardInterrupt." in err
     assert REFUSED not in err
-    assert NEITHER_PUSHED in the_notice(err)
+    notice = the_notice(err)
+    assert NEITHER_PUSHED in notice
+    # Nothing failed, so there is nothing to fix before the re-run (F2).
+    assert "Re-run the adoption with them deleted or with fresh ones" \
+        in notice
+    assert FIX_FIRST not in notice
 
 
 @pytest.mark.parametrize("seeded", [[], [SPEC]],
@@ -567,11 +595,12 @@ def code_leg_repository_fails(adopter, monkeypatch, tmp_path,
     monkeypatch.setattr(adopter, "cmd_execute", create_the_legs)
     said = (f"{type(failure).__name__}: {failure}" if failure
             else "THE EXACT COMMAND WAS:")
+    # Nothing was built in the work directory yet, so the notice does not
+    # send the re-run away from it (#188's review, N2).
     return ([f"{REFUSED} creating the {CODE} leg repository. {said}",
              f"{ROLLED_BACK}: {urls[SPEC]} exists, and nothing is pushed to "
-             "it. Re-running the adoption is refused until it is deleted",
-             f"not {tmp_path / WORK}: "],
-            [urls[CODE]])
+             f"it. {FIX_FIRST} it deleted or with a fresh one"],
+            [urls[CODE], FRESH_WORK_DIR])
 
 
 def code_leg_gh_cannot_run(adopter, monkeypatch, tmp_path) -> tuple:
@@ -867,6 +896,101 @@ def test_a_refusal_from_the_substitution_table_leaves_no_leg_repository(
     assert no_leg_exists(tmp_path)
 
 
+# ---- the work directory an earlier run built in (#188's review, F1) ---------
+
+def listing(work: Path) -> list[str]:
+    return sorted(path.relative_to(work).as_posix()
+                  for path in work.rglob("*"))
+
+
+@pytest.mark.parametrize("role, as_file",
+                         [(SPEC, False), (CODE, False), (ROOT, False),
+                          (SPEC, True)],
+                         ids=["spec-leg", "code-leg", "split", "a-file"])
+def test_a_work_dir_an_earlier_run_built_in_is_refused_before_any_leg_exists(
+        adopter, monkeypatch, tmp_path, role, as_file):
+    """`adopt-branch-exists`'s way out, "delete the branch, then run
+    `execute` again", kept the `--work-dir` the earlier run had built in, so
+    the re-run made a new pair of leg repositories before `git clone`
+    refused that directory; against GitHub, two real ones per attempt. A work
+    directory holding anything where a run builds a leg or the split is now
+    refused before anything exists, and before the split branch the earlier
+    run left, so that refusal's own way out meets a free one. A FILE there is
+    refused too: `git clone` refuses it as well."""
+    no_filter_repo_probe(adopter, monkeypatch)
+    plan = planned(tmp_path, make_source_repo(tmp_path / SOURCE,
+                                              tree=SMALL_TREE, edits=()))
+    leave_a_split_branch(tmp_path / SOURCE)
+    work, name = tmp_path / WORK, leg_names()[role]
+    if as_file:
+        work.mkdir()
+        (work / name).write_text("a file\n", encoding=UTF8)
+    else:
+        built_by_this_run(work / name)
+    before = listing(work)
+
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter.cmd_execute(execute_args(tmp_path, plan))
+
+    refusal = caught.value
+    assert refusal.code == WORK_DIR_OCCUPIED
+    what = "the split" if role == ROOT else f"the {role} leg"
+    assert refusal.detail.startswith(
+        f"--work-dir {work} already holds {name}, where this run builds "
+        f"{what}, and only after it has made both leg repositories")
+    assert refusal.remediation == (
+        "Remediation: no leg repository was created and nothing was pushed. "
+        "Pass a --work-dir that is new or empty, or none: without one, each "
+        "run makes a new one.")
+    assert not (tmp_path / REMOTES).exists()
+    assert listing(work) == before
+
+
+class ReachedTheConfirmation(Exception):
+    """Raised where `_confirm` would ask: every refusal before it passed."""
+
+
+def no_work_dir(args: Namespace) -> None:
+    args.work_dir = None
+
+
+def a_new_work_dir(args: Namespace) -> None:
+    args.work_dir = args.work_dir.parent / "a new work dir"
+
+
+def empty_directories_where_a_run_builds(args: Namespace) -> None:
+    """What `git clone` takes: an empty directory at each name."""
+    for name in leg_names().values():
+        (args.work_dir / name).mkdir(parents=True)
+
+
+@pytest.mark.parametrize("arrange", [no_work_dir, a_new_work_dir,
+                                     empty_directories_where_a_run_builds],
+                         ids=["default", "new", "empty-directories"])
+def test_a_default_new_or_empty_work_dir_is_never_refused(
+        adopter, monkeypatch, tmp_path, arrange):
+    """F1's refusal must never meet a run that could have built: without
+    `--work-dir`, `_work_root` makes a new, empty directory (here under this
+    test's own temporary directory), a new path holds nothing, and an empty
+    directory at a leg's name is one `git clone` clones into."""
+    no_filter_repo_probe(adopter, monkeypatch)
+    plan = planned(tmp_path, make_source_repo(tmp_path / SOURCE,
+                                              tree=SMALL_TREE, edits=()))
+    temporary = tmp_path / "temporary"
+    temporary.mkdir()
+    monkeypatch.setattr(adopter.tempfile, "tempdir", str(temporary))
+
+    def reached(*_args):
+        raise ReachedTheConfirmation
+
+    monkeypatch.setattr(adopter, "_confirm", reached)
+    args = execute_args(tmp_path, plan)
+    arrange(args)
+
+    with pytest.raises(ReachedTheConfirmation):
+        adopter.cmd_execute(args)
+
+
 # ---- end to end, with `git filter-repo` -------------------------------------
 
 def adopt_with_hook(tmp_path: Path, ref_pattern: str):
@@ -951,10 +1075,15 @@ def test_a_failed_verification_is_flushed_and_its_way_out_runs(tmp_path):
     findings came first in a merged log, and its exit -- re-run into fresh
     legs -- made and pushed two more legs and then met the split branch this
     run had pushed. Now the findings come after every line the run printed,
-    the exit names the legs, the work directory and the branch with the
-    command that deletes it, a re-run that skips the branch is refused
-    before any leg exists, and the exit followed word for word ends in
-    `adoption verified`."""
+    and the exit names the legs, the work directory and the branch with the
+    command that deletes it.
+
+    Then the way out as the review of #188 followed it (F1): the plan fixed
+    and fresh legs, but the work directory and the branch kept. That re-run
+    is refused for the work directory first, before anything exists; its
+    way out, a new one, is refused for the branch; and that refusal's way
+    out, followed as written -- the deletion it prints, then `execute`
+    again -- ends in `adoption verified`."""
     source = make_source_repo(tmp_path / SOURCE, tree=OWN_PIN_TREE,
                               edits=())
     plan = planned(tmp_path, source)
@@ -977,23 +1106,30 @@ def test_a_failed_verification_is_flushed_and_its_way_out_runs(tmp_path):
     assert max(printed) < finding, failed.stdout
     notice = the_notice(failed.stdout)
     assert BOTH_PUSHED in notice
-    assert work_dir_named(notice, tmp_path / WORK)
+    assert FIX_FIRST in notice
+    assert work_dir_named(notice, tmp_path / WORK, f"{ASSEMBLY}-{SPEC}",
+                          f"{ASSEMBLY}-{CODE}", ASSEMBLY)
     assert f"The split is pushed to {source} too, as {BRANCH}" \
         in failed.stdout
     delete = printed_command(failed.stdout, DELETE_COMMAND)
 
-    skipped = execute(plan, tmp_path / "remotes 2", tmp_path / "work 2")
+    plan.write_text(answered, encoding=UTF8)
+    fresh_legs, new_work = tmp_path / "remotes 2", tmp_path / "work 2"
+    kept = execute(plan, fresh_legs, tmp_path / WORK)
+    assert kept.returncode == 2, kept.stderr + kept.stdout
+    assert f"{REFUSED} {WORK_DIR_OCCUPIED}" in kept.stderr
+    assert not fresh_legs.exists()
+
+    skipped = execute(plan, fresh_legs, new_work)
     assert skipped.returncode == 2, skipped.stderr + skipped.stdout
     assert f"{REFUSED} {BRANCH_EXISTS}" in skipped.stderr
-    assert not (tmp_path / "remotes 2").exists()
+    assert not fresh_legs.exists()
+    assert printed_command(skipped.stderr, DELETE_COMMAND) == delete
 
-    # The exit, word for word: fix the plan, delete the branch as printed,
-    # and re-run into fresh legs and a fresh work directory.
-    plan.write_text(answered, encoding=UTF8)
     deleted = subprocess.run(delete, capture_output=True, text=True,
                              check=False)
     assert deleted.returncode == 0, deleted.stderr
-    rerun = execute(plan, tmp_path / "remotes 3", tmp_path / "work 3")
+    rerun = execute(plan, fresh_legs, new_work)
 
     assert rerun.returncode == 0, rerun.stderr + rerun.stdout
     assert "adoption verified" in rerun.stdout

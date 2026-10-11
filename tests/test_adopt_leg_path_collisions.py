@@ -884,9 +884,11 @@ def test_the_mount_guards_next_step_adopts_the_source(
     `execute` again with fresh leg repositories AND an empty `--work-dir`.
     Fresh repositories alone are not the way on, and the remediation says
     why: the refused run's `--work-dir` still holds its clones of both legs,
-    and the next run cannot clone into them. The runs after the refusal are
-    the command in its own process, which this test's switch does not reach,
-    so this whole rule asks the corrected plan."""
+    and the next run cannot clone into them. That run is refused before it
+    makes a leg repository (#188's review, F1); it used to make two, then
+    die at the clone. The runs after the refusal are the command in its own
+    process, which this test's switch does not reach, so this whole rule
+    asks the corrected plan."""
     source, plan = docs_a_file(tmp_path)
     refusal = refused_at_the_mount(adopter, monkeypatch, capsys, tmp_path,
                                    plan)
@@ -895,11 +897,14 @@ def test_the_mount_guards_next_step_adopts_the_source(
     checked = check(plan)
     assert checked.returncode == 0, checked.stdout + checked.stderr
 
-    reused = executed(plan, tmp_path / "reused-work-remotes", tmp_path / WORK)
+    reused_remotes = tmp_path / "reused-work-remotes"
+    reused = executed(plan, reused_remotes, tmp_path / WORK)
     again = executed(plan, tmp_path / "fresh-remotes", tmp_path / "fresh-work")
 
     assert reused.returncode != 0
     assert VERIFIED not in reused.stdout
+    assert "REFUSED adopt-work-dir-occupied" in reused.stderr
+    assert not reused_remotes.exists()
     assert again.returncode == 0, again.stdout + again.stderr
     assert VERIFIED in again.stdout
     assert git("branch", "--list", SPLIT_BRANCH, cwd=source).stdout.strip()
