@@ -295,7 +295,9 @@ try:
     #: `scripts/family.py` -- the two tools that WRITE these trailers -- both
     #: import it already, and a next command that named a different lane than
     #: the commit it asks for would be worse than one that named none.
-    from shape_materialize import lane_trailer_argument  # noqa: E402
+    from shape_materialize import (  # noqa: E402
+        escape_what_stdout_cannot_encode, lane_trailer_argument,
+    )
 except ImportError as exc:  # pragma: no cover - exercised as a subprocess
     sys.exit(not_in_the_standard(f"scripts/shape_materialize.py ({exc})"))
 
@@ -3769,6 +3771,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # FIRST, so that every `print` after it -- `--help` included -- escapes
+    # a name stdout cannot encode rather than raising on it (#214).
+    escape_what_stdout_cannot_encode()
     args = build_parser().parse_args(argv)
     if [marker for marker in SHAPE_MARKERS
             if not (SHAPE_ROOT / marker).exists()]:

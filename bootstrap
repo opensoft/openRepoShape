@@ -27,5 +27,12 @@ SHAPE = Path(__file__).resolve().parent
 TARGET = SHAPE / "templates" / "assembly-root" / "scripts" / "bootstrap.py"
 
 sys.path.insert(0, str(SHAPE / "scripts"))
+# BEFORE the canonical copy runs, in this same process: its first line names
+# the directory this was run from, and a name stdout cannot encode is escaped
+# rather than raised on (#214). The copy itself is digest-pinned in every
+# project that holds it; this shim is not, so the call goes here.
+from shape_materialize import escape_what_stdout_cannot_encode  # noqa: E402
+
+escape_what_stdout_cannot_encode()
 sys.argv = ["bootstrap", "--root", str(Path.cwd()), *sys.argv[1:]]
 runpy.run_path(str(TARGET), run_name="__main__")

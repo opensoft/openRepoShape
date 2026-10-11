@@ -367,7 +367,8 @@ def test_git_init_commit_forces_what_copy_tree_wrote_past_info_exclude(
 def test_stage_written_forces_exactly_the_list_and_never_the_tree(
         monkeypatch):
     """What reaches `git`: `-A` over the tree, then `-f` over the written
-    paths alone -- and with none, no forced add at all, never a `-f .`."""
+    paths alone, each taken literally (`force_stage`, #202) -- and with
+    none, no forced add at all, never a `-f .`."""
     calls = []
     monkeypatch.setattr(shape_materialize, "run",
                         lambda args, cwd=None, capture=True: calls.append(args))
@@ -375,7 +376,8 @@ def test_stage_written_forces_exactly_the_list_and_never_the_tree(
     shape_materialize.stage_written(Path("root"), [])
     assert calls == [
         ["git", "add", "-A", "--", "."],
-        ["git", "add", "-f", "--", ".gitattributes", PIN],
+        ["git", "--literal-pathspecs", "add", "-f", "--", ".gitattributes",
+         PIN],
         ["git", "add", "-A", "--", "."],
     ]
 
