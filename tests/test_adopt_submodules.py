@@ -1631,9 +1631,10 @@ def test_a_recorded_name_reads_back_as_that_name(adopter, name):
     colon, a hash, a quote, a backslash or a tab. Each is written quoted and
     escaped, and reads back as itself. So does a name holding a character
     that is not printable -- a no-break, ideographic or zero-width space,
-    NEL, U+2028, a carriage return -- which is written as YAML's code-point
-    escape and resolved by the reader the doctor reads the record with
-    (#189); before, the reader kept the backslash, and the row named no
+    NEL, U+2028, a carriage return -- which `repo_shape.double_quoted`
+    writes as YAML's escape for it, `\\r` by name and the rest by code
+    point, and the reader the doctor reads the record with resolves (#189,
+    #199); before, the reader kept the backslash, and the row named no
     gitlink at all. A backslash already in a name is not read as the start
     of one.
     """

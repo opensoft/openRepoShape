@@ -94,8 +94,7 @@ sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
 from path_classify import PathPolicy, Verdict  # noqa: E402
 from repo_shape import (  # noqa: E402
     free_plan_secret_hint,
-    CODE_POINT_ESCAPES, COMMIT_RE, DOUBLE_QUOTED_ESCAPES,
-    NEUTRAL_PRODUCT_OWNER, PROJECT_ID_RE, TREE_DIGEST_DEFINITION,
+    COMMIT_RE, NEUTRAL_PRODUCT_OWNER, PROJECT_ID_RE, TREE_DIGEST_DEFINITION,
     VISIBILITY_CHOICES, NamingPolicy, Refusal, YamlError,
     accepts_role, checked_value, double_quoted, git_out, load_yaml,
     parse_yaml, tree_digest,
@@ -2767,51 +2766,6 @@ SUBMODULE_RECORD_PREAMBLE = (
 )
 
 
-#: The writer's half of `repo_shape.DOUBLE_QUOTED_ESCAPES`: each character
-#: the reader resolves an escape to, mapped to that escape.
-_NAMED_ESCAPES = {char: "\\" + letter
-                  for letter, char in DOUBLE_QUOTED_ESCAPES.items()}
-
-
-def _quoted(text: str) -> str:
-    """`text` as a double-quoted scalar `repo_shape.parse_yaml` reads back as
-    `text`, spelled with ONLY the escapes that reader resolves (#189).
-
-    ALWAYS QUOTED, unlike `y`: a submodule may sit at `null`, `true` or
-    `0001`, which a plain scalar would read back as something that is not
-    a path. A backslash and a double quote are escaped because they would
-    bend or end the quoting, and a newline and a tab by the reader's own
-    names for them (`DOUBLE_QUOTED_ESCAPES`). Every other character
-    `str.isprintable` refuses is spelled by its code point, in the shortest
-    of `CODE_POINT_ESCAPES` that holds it. That is what lets the record
-    carry the names it otherwise could not: NEL and U+2028 end a line for
-    the reader, a no-break or zero-width space is a different name from the
-    one it looks like, and the surrogate a byte that is not UTF-8 is kept
-    as cannot be written by `write_lf` at all -- `\\udce9` reads back as
-    that same surrogate, so the manifest is written after both legs exist.
-
-    EVERY NAME READS BACK AS ITSELF, so a row names the path the doctor
-    holds the submodule at to it. A name with a control character or a byte
-    that is not UTF-8 in it is one the doctor reads no further: it reports
-    it as a name no report can carry.
-    """
-    return '"' + "".join(map(_escaped, text)) + '"'
-
-
-def _escaped(char: str) -> str:
-    """One character of a `_quoted` body."""
-    named = _NAMED_ESCAPES.get(char)
-    if named is not None:
-        return named
-    if char.isprintable():
-        return char
-    code = ord(char)
-    letter, digits = next((letter, digits)
-                          for letter, digits in CODE_POINT_ESCAPES.items()
-                          if code < 16 ** digits)
-    return f"\\{letter}{code:0{digits}x}"
-
-
 def submodule_record(entries: list, tree: list, commit: str) -> str:
     """The `submodules:` block `execute` appends to `project.yaml`, or ""
     when the split keeps no submodule of the source's in a leg (#189).
@@ -2838,6 +2792,20 @@ def submodule_record(entries: list, tree: list, commit: str) -> str:
 
     A SOURCE WITH NO SUBMODULE GETS "" and so the `project.yaml` -- and the
     split -- it always got, byte for byte.
+
+    EVERY PATH AND REASON IS DOUBLE-QUOTED, by `repo_shape.double_quoted`,
+    the writer of the escapes the reader resolves (#199). Always quoted,
+    unlike `y`: a submodule may sit at `null`, `true` or `0001`, which a
+    plain scalar reads back as something that is not a path. And a character
+    `str.isprintable` refuses is spelled by its code point: NEL and U+2028
+    end a line for the reader, a no-break or zero-width space is another name
+    than the one it looks like, and the surrogate a byte that is not UTF-8 is
+    kept as cannot be written by `write_lf` at all, where `\\udce9` reads
+    back as that surrogate. So every row reads back as the name the doctor
+    holds the submodule at to it, and the manifest is written after both
+    legs exist. A name with a control character or a byte that is not UTF-8
+    in it is one the doctor reads no further: it reports it as a name no
+    report can carry.
     """
     gitlinks = [path for path, mode, _, _ in tree if mode == GITLINK_MODE]
     kept = _kept_in_a_leg(_answered_legs(entries, gitlinks), gitlinks)
@@ -2847,10 +2815,11 @@ def submodule_record(entries: list, tree: list, commit: str) -> str:
                    for e in entries}
     lines = list(SUBMODULE_RECORD_PREAMBLE)
     for path, leg, entry in kept:
-        lines.append(f"  - path: {_quoted(path)}")
+        lines.append(f"  - path: {double_quoted(path)}")
         lines.append(f"    leg: {leg}")
         if resolutions.get(entry):
-            lines.append(f"    resolution: {_quoted(resolutions[entry])}")
+            lines.append(
+                f"    resolution: {double_quoted(resolutions[entry])}")
         lines.append(f'    source_commit: "{commit}"')
     return "\n".join(lines) + "\n"
 

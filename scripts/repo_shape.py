@@ -278,10 +278,13 @@ def double_quoted(text: str) -> str:
     """`text` as a double-quoted scalar `_scalar` reads back as `text`.
 
     The subset's one writer quotes with this: `adopt-project.py`'s `y`, for
-    the adoption plan and for `shape-doctor.py`'s placement plan. It escapes
-    a backslash and a double quote, which would bend or end the quoting;
-    `\\n`, `\\r` and `\\t` by name; and every other character `str.isprintable`
-    refuses by its code point. PART OF THAT CLASS THE READER CANNOT TAKE
+    the adoption plan and for `shape-doctor.py`'s placement plan, and its
+    `submodule_record`, for the `submodules:` record `execute` appends to
+    `project.yaml`, which the doctor holds a submodule to only where a row
+    reads back as its path (#189). It escapes a backslash and a double
+    quote, which would bend or end the quoting; `\\n`, `\\r` and `\\t` by
+    name; and every other character `str.isprintable` refuses by its code
+    point. PART OF THAT CLASS THE READER CANNOT TAKE
     RAW. It reads a file line by line with `str.splitlines`, which ends a
     line at `\\n` and `\\r` -- the macOS folder icon is a file named
     `Icon\\r` -- and also at `\\x0b`, `\\x0c`, `\\x1c`-`\\x1e`, `\\x85`,
