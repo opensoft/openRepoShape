@@ -99,6 +99,7 @@ import ast
 import hashlib
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -950,8 +951,11 @@ def _git_answer(root: Path, args: list) -> "str | None":
     answer at all — a non-zero exit, no repository, no git on the path.
 
     None rather than an empty string because "git said nothing" and "git
-    could not be asked" are different facts and this file's one caller
-    treats them differently. `subprocess.run` is what raises when there is no
+    could not be asked" are different facts and `readme_is_committed`
+    treats them differently. `Rollback` reads HEAD through it too (#202),
+    where neither answer may raise over the refusal it is rolling back
+    for, and a missing one reads as "not where it was", which the rollback
+    then says. `subprocess.run` is what raises when there is no
     `git` binary, and `readme_is_committed` documents that case as NOT
     committed, so the raise is caught here rather than left to escape a
     classification that must not raise.
@@ -1770,8 +1774,11 @@ class Rollback:
         """What the index records for `paths`, as `ls-files -s -z` prints
         it — which is also the form `update-index --index-info` reads back.
         BYTES, never text: a path is whatever bytes git holds, and Windows
-        must not translate a record on its way back to git."""
-        args = ["git", "ls-files", "--stage", "-z", "--", *paths]
+        must not translate a record on its way back to git. LITERALLY, as
+        `force_stage` names them: read as globs, `docs/guide[1].md` would
+        also record `docs/guide1.md`, an entry this run never touched."""
+        args = ["git", "--literal-pathspecs", "ls-files", "--stage", "-z",
+                "--", *paths]
         check_program(args)
         proc = subprocess.run(args, cwd=str(self.root), capture_output=True,
                               check=False)
@@ -1801,8 +1808,8 @@ class Rollback:
             done.append(f"unstaged  {names} (the index holds what it held "
                         "before this run)")
         else:
-            left.append(f"index     {names} may still be staged: "
-                        f"git -C {self.root} reset -q -- {names}")
+            left.extend(_index_by_hand(self.root, self.staged,
+                                       self.index_before))
 
     def _undo_branch(self, done: list[str], left: list[str]) -> None:
         """HEAD back where it was, and the branch this run created gone —
@@ -1822,26 +1829,27 @@ class Rollback:
             done.append(f"switched  HEAD back to {where}" if moved
                         else f"kept      HEAD on {where}, where it started")
         else:
-            back = start or f"--detach {commit}"
-            left.append(f"HEAD      is not back on {where}: git -C "
-                        f"{self.root} checkout {back}")
+            back = [start] if start else ["--detach", commit]
+            left.append(f"HEAD      is not back on {where}: "
+                        + _by_hand(self.root, "checkout", *back))
         if not branch_exists(self.root, branch):
             done.append(f"absent    {branch} (never created)")
             return
         _git_quietly(["git", "update-ref", "-d", ref, commit], self.root)
         if branch_exists(self.root, branch):
             left.append(f"branch    {branch}, which this run created, is "
-                        f"still there: git -C {self.root} branch -D {branch}")
+                        "still there: "
+                        + _by_hand(self.root, "branch", "-D", branch))
         else:
             done.append(f"deleted   {branch} (this run created it; nothing "
                         "was committed on it)")
 
     def _head_is(self, start: str | None, commit: str) -> bool:
+        head = _symbolic_head(self.root)
         if start:
-            return _symbolic_head(self.root) == f"refs/heads/{start}"
-        head = _git_quietly(["git", "rev-parse", "HEAD"], self.root)
-        return (_symbolic_head(self.root) is None and head is not None
-                and head.stdout.decode("ascii", "replace").strip() == commit)
+            return head == f"refs/heads/{start}"
+        named = _git_answer(self.root, ["rev-parse", "HEAD"])
+        return head is None and (named or "").strip() == commit
 
     @staticmethod
     def _said(done: list[str], left: list[str]) -> str:
@@ -1860,11 +1868,78 @@ class Rollback:
 def _symbolic_head(root: Path) -> str | None:
     """The FULL ref HEAD is attached to (`refs/heads/<name>`), or None when
     it is detached — the spelling `Rollback` keeps, for the reason
-    `Rollback.new_branch` gives."""
-    proc = _git_quietly(["git", "symbolic-ref", "--quiet", "HEAD"], root)
-    if proc is None or proc.returncode != 0:
-        return None
-    return proc.stdout.decode("utf-8", "replace").strip() or None
+    `Rollback.new_branch` gives. Asked through `_git_answer`, as
+    `readme_is_committed` asks its own, rather than a second copy of it."""
+    answer = _git_answer(root, ["symbolic-ref", "--quiet", "HEAD"])
+    return (answer or "").strip() or None
+
+
+def _by_hand(root: Path, *args: str) -> str:
+    """`git -C <root> <args>` as a line a person pastes, every argument
+    quoted for a POSIX shell: a root or a name holding a space is one
+    argument there, not two (#202).
+
+    ALL THREE HAND FIXES A PARTIAL ROLLBACK PRINTS — the index's, HEAD's and
+    the branch's — are spelled here, so one block never quotes two ways.
+    `shlex`, the standard library's, because this tool has no quoter of its
+    own: the doctor's platform-aware `quote_arg` lives in `shape-doctor.py`
+    by that file's own contract. A value that needs no quoting comes back
+    exactly as it went in, so an ordinary root prints what it always
+    printed.
+    """
+    return shlex.join(["git", "-C", str(root), *args])
+
+
+def _index_by_hand(root: Path, paths: list[str], before: bytes) -> list[str]:
+    """What a partial rollback prints for an index it could not put back:
+    for each path `Rollback.stage` forced, the command that writes back
+    exactly the entry it had before this run — or none, when it had none.
+    `before` is `Rollback.index_before`, `ls-files --stage -z` records.
+
+    NEVER `git reset -- <path>`, which this used to print (#202). That
+    writes HEAD's entry rather than the one that was there — the hazard
+    `Rollback.stage` names — so a draft somebody had staged at the path
+    would have been "put back" as HEAD's, or as nothing, by the very line
+    that claimed to finish the rollback. So each path gets its own fix:
+    none before is `update-index --force-remove`; one staged entry before
+    is that entry, through `--cacheinfo` (with `--add`, because the undo
+    that failed may already have removed it); an UNMERGED path is its
+    stages, through `--index-info`, the only way git takes them back.
+    `update-index` reads a path literally, never as a pathspec, and
+    `_by_hand` quotes it, so the shell does not glob it either.
+    """
+    had: dict[str, list[tuple[str, str, str]]] = {}
+    for record in before.split(b"\0"):
+        if record:
+            meta, _, name = record.partition(b"\t")
+            mode, sha, stage = meta.decode("ascii").split(" ")
+            had.setdefault(os.fsdecode(name), []).append((mode, sha, stage))
+    lines = []
+    for path in paths:
+        entries = had.get(path, [])
+        said = f"index     {path} may still hold this run's entry; it "
+        if not entries:
+            lines.append(f"{said}had none before: " + _by_hand(
+                root, "update-index", "--force-remove", "--", path))
+        elif len(entries) == 1 and entries[0][2] == "0":
+            mode, sha, _ = entries[0]
+            lines.append(
+                f"{said}had {mode} {sha[:12]} staged before, which `git "
+                "reset` would replace with HEAD's: " + _by_hand(
+                    root, "update-index", "--add", "--cacheinfo",
+                    f"{mode},{sha},{path}"))
+        else:
+            fields = [field for mode, sha, stage in entries
+                      for field in (mode, sha, stage, path)]
+            lines.append(
+                f"{said}was unmerged before (stages "
+                f"{', '.join(stage for _, _, stage in entries)}), which "
+                "`git reset` would resolve to HEAD's: "
+                + _by_hand(root, "update-index", "--force-remove", "--", path)
+                + " && printf " + shlex.quote("%s %s %s\\t%s\\0") + " "
+                + shlex.join(fields) + " | "
+                + _by_hand(root, "update-index", "-z", "--index-info"))
+    return lines
 
 
 def _git_quietly(args: list[str], root: Path, data: bytes | None = None
@@ -2070,7 +2145,8 @@ def _rewrite_readme(readme: ReadmeShapeLine, ledger: Rollback) -> None:
     An `OSError` escaping would leave that tree behind, because `cmd_apply`
     rolls back on `Refusal` and `CommandFailed` and on nothing else (Copilot,
     PR #152). Named as a refusal, the arm that already exists puts every byte
-    back.
+    back — and says so itself, listing what it put back under this detail
+    (`_rolled_back`, #202), so the detail does not claim it a second time.
     """
     try:
         readme.rewrite(ledger)
@@ -2078,9 +2154,7 @@ def _rewrite_readme(readme: ReadmeShapeLine, ledger: Rollback) -> None:
         raise Refusal(
             "update-readme-unwritable",
             f"the copies and the pin were written, but {README}'s Shape: "
-            f"line could not be: {exc.strerror or exc}. Every byte this "
-            "command wrote has been rolled back; the tree is exactly as it "
-            "was.",
+            f"line could not be: {exc.strerror or exc}.",
             f"Remediation: make {README} writable and run the same command "
             "again. The line is prose in a file this standard does not own, "
             "so a root that would rather keep it as it is can also take the "
@@ -2092,6 +2166,9 @@ def _refuse_red_validators(root: Path, kind: Kind) -> None:
     """Run the root's OWN validators over what was just written, and refuse
     if either goes red. Split out of `cmd_apply` for #133; the rollback is
     the caller's `except Refusal` arm, which is why this only has to raise.
+    That arm also SAYS what it put back, under this detail (`_rolled_back`,
+    #202), which is why the detail no longer claims the rollback itself: one
+    refusal made the same promise twice, in two spellings.
     """
     print(f"\nthe {kind.name}'s own validators")
     failed = [name for name in kind.validators
@@ -2099,9 +2176,7 @@ def _refuse_red_validators(root: Path, kind: Kind) -> None:
     if failed:
         raise Refusal(
             "update-validators-red",
-            "after the rewrite, " + " and ".join(failed) + " refused. "
-            "Every byte this command wrote has been rolled back; the tree "
-            "is exactly as it was.",
+            "after the rewrite, " + " and ".join(failed) + " refused.",
             "Remediation: read the finding above. A tool that left a "
             "project red would have moved the cost from this command to "
             "somebody else's pull request.")

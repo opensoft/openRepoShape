@@ -443,6 +443,9 @@ def test_a_red_validator_rolls_the_added_file_back_out(root, standard):
     result = apply(root, standard, "--add", ADDED)
     assert result.returncode == 2, result.stdout
     assert "update-validators-red" in result.stderr
+    assert result.stderr.count("exactly as it was") == 1, (
+        "the rollback is claimed once, by the block listing what it put "
+        "back (#202), and not again in the refusal's own detail")
     assert not (root / ADDED).exists(), "every byte, including the new file"
     assert pin(root)["commit"].lower() == standard["c1"]
 

@@ -522,12 +522,22 @@ def env_commit(work: Path, message: str) -> None:
 def force_stage(work: Path, paths=()) -> None:
     """Stage exactly `paths`, FORCED past any ignore rule, and nothing else.
 
-    THE ONE SPELLING OF THE FORCED ADD. A file the shape wrote and pinned
-    has to reach the commit whatever the operator's own excludes say — a
-    global `core.excludesFile`, `.git/info/exclude`, a `.gitignore` the
-    project keeps — because a pin row naming a file the commit lacks is a
-    red `validate-pins.py` on the next clone (#175). `-f` over the NAMED
-    paths and never over `.`, for the reason `stage_written` gives.
+    THE FORCED ADD THE SCAFFOLD, `family.py init` AND `update-shape.py`
+    SHARE. A file the shape wrote and pinned has to reach the commit
+    whatever the operator's own excludes say — a global `core.excludesFile`,
+    `.git/info/exclude`, a `.gitignore` the project keeps — because a pin
+    row naming a file the commit lacks is a red `validate-pins.py` on the
+    next clone (#175). `-f` over the NAMED paths and never over `.`, for the
+    reason `stage_written` gives. (`adopt-project.py` still spells two forced
+    adds of its own, which predate this helper and do not call it.)
+
+    EACH NAME IS TAKEN LITERALLY (`--literal-pathspecs`, #202). A pathspec
+    is a glob to git, so a copy-list entry named `docs/guide[1].md` also
+    matched an operator's `docs/guide1.md`, and `-f` forced that ignored
+    file in beside it and into the commit — the "nothing else" this
+    promises, broken by the one flag that exists to stage the named paths.
+    No copy-list entry holds a glob character today; the day one does, it
+    stages itself and no neighbour.
 
     TWO CALLERS, AND ONLY ONE OF THEM SWEEPS FIRST. `stage_written` runs
     `git add -A` before it, because it stages a tree this tool has just
@@ -539,7 +549,8 @@ def force_stage(work: Path, paths=()) -> None:
     """
     paths = list(paths)
     if paths:
-        run(["git", "add", "-f", "--", *paths], cwd=work)
+        run(["git", "--literal-pathspecs", "add", "-f", "--", *paths],
+            cwd=work)
 
 
 def stage_written(work: Path, written=()) -> None:

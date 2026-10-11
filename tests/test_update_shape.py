@@ -1456,6 +1456,9 @@ def test_a_readme_the_os_will_not_write_refuses_and_rolls_the_tree_back(
 
     assert_refused_and_unpinned(result, root, upstream_and_project,
                                 "update-readme-unwritable", "README.md")
+    assert result.stderr.count("exactly as it was") == 1, (
+        "the rollback is claimed once, by the block listing what it put "
+        "back (#202), and not again in the refusal's own detail")
     assert readme.read_bytes() == before
     assert copied.read_bytes() == copied_before, (
         "the copies this command had already written are rolled back too")
