@@ -71,12 +71,20 @@ needs_filter_repo = pytest.mark.skipif(
 #: Spelled once each: the same word in a table, a loop and an assertion is one
 #: fact written three times, and `python:S1192` counts it.
 FALSE_WORD = "false"
+FALSE_TITLE = "False"
 OPEN_GLASS = "openGlass"
 SPLIT_BRANCH = "adopt/three-repo-shape"
 QUOTED_YES = '"yes"'
+QUOTED_TRUE = '"True"'
 PATHS = "paths"
 PLAN_FILE = "plan.yaml"
 UTF8 = "utf-8"
+#: The project the plans below adopt, and the directory of its source.
+PROJECT_NAME = "Northwind"
+SOURCE_NAME = "Thing"
+#: The reader's scalar function, which the tests that teach it a keyword
+#: replace.
+SCALAR_READER = "_scalar"
 
 #: Answered the way `test_adopt_plan.py` answers them, so `check` can pass.
 ANSWERS = (("examples/", "spec"), (".claude/", "root"),
@@ -117,7 +125,7 @@ ESCAPES = ['a"b', "a'b", '"q"', "'q'", "a\\b", "a\\\\b", "\\n", "\\t", '\\"',
 NON_ASCII = ["é", "日本", "emoji \U0001F600", " x"]
 #: What the plan is mostly made of. These were written bare before and are
 #: written bare now.
-ORDINARY = ["spec", "code", "legs/spec", "Northwind", "Northwind-spec",
+ORDINARY = ["spec", "code", "legs/spec", PROJECT_NAME, "Northwind-spec",
             SPLIT_BRANCH, "main", OPEN_GLASS, "opensoft/openGlass", "xf-project-northwind", "README.md",
             ".gitignore", ".github/", "a:b", "a@b", "a+b", "nullable",
             "trueish", "nul", "Nonesuch", "falsey", "notnull"]
@@ -132,7 +140,7 @@ CANDIDATES = list(dict.fromkeys([
 #: in `test_a_value_the_loader_reads_as_a_keyword_is_quoted`, whose point is
 #: that these exact strings are the ones that were wrong.
 READ_AS_A_KEYWORD = ["null", "Null", "NULL", "~", "", "true", "True", "TRUE",
-                     FALSE_WORD, "False", "FALSE"]
+                     FALSE_WORD, FALSE_TITLE, "FALSE"]
 
 SHAPES_OF_A_STRING = ["a value (`emit`)", "a list item", "an entry's path"]
 
@@ -288,7 +296,7 @@ def test_the_writer_follows_the_loader_when_the_loader_learns_a_keyword(
         return True if raw.strip() in ("yes", "on") else reads(raw)
 
     assert adopter.y("yes") == "yes" and adopter.y("on") == "on"
-    monkeypatch.setattr(repo_shape, "_scalar", learned)
+    monkeypatch.setattr(repo_shape, SCALAR_READER, learned)
     assert adopter.y("yes") == QUOTED_YES
     assert adopter.y("on") == '"on"'
     assert adopter.y("spec") == "spec"
@@ -308,7 +316,7 @@ def test_a_word_the_loader_refuses_is_quoted_not_raised(adopter, monkeypatch):
             raise repo_shape.YamlError("a word this reader does not take")
         return reads(raw)
 
-    monkeypatch.setattr(repo_shape, "_scalar", refusing)
+    monkeypatch.setattr(repo_shape, SCALAR_READER, refusing)
     assert adopter.y("yes") == QUOTED_YES
     assert adopter.y("spec") == "spec"
 
@@ -334,6 +342,9 @@ def test_a_value_is_asked_about_in_each_place_it_is_written(
 #: How `manifest_misreads` says the loader read a null, spelled once.
 NO_VALUE = "no value at all"
 TRUE_READ = "the boolean true"
+SEVEN_READ = "the number 7"
+#: An election date in the basic ISO form, which the loader reads as a number.
+DATE_DIGITS = "20260902"
 #: How `check` and `execute` begin the line about each one.
 MISREAD_FINDING = "FINDING plan-manifest-misread: "
 #: The plan keys the rows below name, and the flag `plan` takes each as.
@@ -346,12 +357,20 @@ TRACKING_FLAG = "--tracking-branch"
 PIN_FLAG = "--pin"
 ELECTED_BY_FLAG = "--elected-by"
 MANIFEST = "project.yaml"
+#: How a sentence names a plan key, where that is not the key itself: one of
+#: `pins:` is an item of a list, and what it was read as is the item's.
+NAMED = {PINS_KEY: "a pin in pins"}
+#: The `_template_values` placeholders the tests below fill.
+TRACKING_PLACEHOLDER = "TRACKING_BRANCH"
+ELECTED_BY_PLACEHOLDER = "ELECTED_BY"
+PINS_PLACEHOLDER = "NEUTRAL_PRODUCT_PINS"
 #: The leg path and the branch the accepted end-to-end run is given.
 LEGS_NULL = "legs/null"
 Q4_BRANCH = "2026-q4"
 #: A Windows `DOMAIN\user` name: between double quotes, the loader makes the
-#: `\t` a tab (`DOUBLE_QUOTED_ESCAPES`).
+#: `\t` a tab (`DOUBLE_QUOTED_ESCAPES`), which the sentence names as one.
 DOMAIN_USER = "CORP\\tom"
+DOMAIN_USER_READ = "the text `CORP`, then a tab, then `om`"
 
 #: `(flag, value, plan key, what the project's loader reads)`. At 76a6153
 #: each of the first fifteen went through `execute` to `adoption verified`
@@ -367,7 +386,7 @@ REFUSED = [
     (SPEC_FLAG, "NULL", SPEC_PATH_KEY, NO_VALUE),
     (SPEC_FLAG, "~", SPEC_PATH_KEY, NO_VALUE),
     (SPEC_FLAG, "true", SPEC_PATH_KEY, TRUE_READ),
-    (SPEC_FLAG, "False", SPEC_PATH_KEY, "the boolean false"),
+    (SPEC_FLAG, FALSE_TITLE, SPEC_PATH_KEY, "the boolean false"),
     (SPEC_FLAG, "2026", SPEC_PATH_KEY, "the number 2026"),
     (SPEC_FLAG, "1.5", SPEC_PATH_KEY, "the number 1.5"),
     ("--code-path", "null", "legs.code_path", NO_VALUE),
@@ -377,15 +396,16 @@ REFUSED = [
     ("--id", "null", "id", NO_VALUE),
     (PIN_FLAG, "null", PINS_KEY, NO_VALUE),
     (PIN_FLAG, "True", PINS_KEY, TRUE_READ),
-    (TRACKING_FLAG, "007", TRACKING_KEY, "the number 7"),
-    (ELECTED_BY_FLAG, DOMAIN_USER, ELECTED_BY_KEY, "the text 'CORP\\tom'"),
-    ("--reference", "docs\\new.md", "reference", "the text 'docs\\new.md'"),
+    (TRACKING_FLAG, "007", TRACKING_KEY, SEVEN_READ),
+    (ELECTED_BY_FLAG, DOMAIN_USER, ELECTED_BY_KEY, DOMAIN_USER_READ),
+    ("--reference", "docs\\new.md", "reference",
+     "the text `docs`, then a line break, then `ew.md`"),
 ]
 #: `(plan key, value, what the loader reads)` that only an edited plan can
 #: carry here: `plan` takes `--visibility` from a fixed choice, and reads
 #: `--elected-on 20260902` as a date only on Python 3.11 and later.
 EDITED_ONLY = [
-    ("elected_on", "20260902", "the number 20260902"),
+    ("elected_on", DATE_DIGITS, f"the number {DATE_DIGITS}"),
     ("visibility", "true", TRUE_READ),
 ]
 #: REFUSED as `plan` is given it, and as a plan carries it.
@@ -409,7 +429,7 @@ def executed(plan: Path, tmp_path: Path):
 
 
 def planned(tmp_path: Path, *extra: str, tree: dict | None = None) -> Path:
-    source = make_source_repo(tmp_path / "Thing", tree=tree)
+    source = make_source_repo(tmp_path / SOURCE_NAME, tree=tree)
     plan = tmp_path / PLAN_FILE
     written = write_plan(source, plan, extra=extra)
     assert written.returncode == 0, written.stderr + written.stdout
@@ -430,8 +450,12 @@ def answer(plan: Path, path: str, leg: str) -> None:
 
 def misread(what: str, value: str, reading: str) -> tuple[str, str]:
     """The two halves of the sentence `manifest_misreads` writes: who, and
-    what the loader made of it, with the fix."""
-    return (f"{what} is {value!r}, which `execute` writes into ",
+    what the loader made of it, with the fix. The value is shown as it is
+    typed, between backticks, never as `repr` spells it: `CORP\\tom` is not
+    `'CORP\\\\tom'` (review181's N1). Every value here is printable, which
+    is what lets this oracle be the backticks alone."""
+    assert value.isprintable(), value
+    return (f"{what} is `{value}`, which `execute` writes into ",
             f"reads it back as {reading} and not as that text: choose "
             "another value.")
 
@@ -442,7 +466,7 @@ def answered(tmp_path_factory) -> tuple[Path, str]:
     tests below to copy and edit. Nothing below writes into the source: a
     refused `check` or `execute` never reaches it, and `plan` only reads it."""
     base = tmp_path_factory.mktemp("misread")
-    source = make_source_repo(base / "Thing")
+    source = make_source_repo(base / SOURCE_NAME)
     plan = base / PLAN_FILE
     written = write_plan(source, plan)
     assert written.returncode == 0, written.stderr + written.stdout
@@ -509,13 +533,13 @@ def test_plan_names_an_elector_it_took_from_git(answered, tmp_path):
     source, _ = answered
     plan = tmp_path / PLAN_FILE
     result = run_script(
-        ADOPT, "plan", "--source", str(source), "--project", "Northwind",
+        ADOPT, "plan", "--source", str(source), "--project", PROJECT_NAME,
         "--org", "testorg", "--elected-on", "2026-09-02", "--out", str(plan),
         env={"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "user.name",
              "GIT_CONFIG_VALUE_0": DOMAIN_USER})
     assert result.returncode == 2, result.stdout + result.stderr
     who, what = misread("--elected-by (not given, so `git config "
-                        "user.name`)", DOMAIN_USER, "the text 'CORP\\tom'")
+                        "user.name`)", DOMAIN_USER, DOMAIN_USER_READ)
     assert who in result.stderr and what in result.stderr, result.stderr
     assert not plan.exists()
 
@@ -531,29 +555,115 @@ def test_check_reports_a_plan_carrying_one(adopter, answered, tmp_path, key,
     carrying(plan, text, key, adopter.y(value))
     result = checked(plan)
     assert result.returncode == 1, result.stdout + result.stderr
-    who, what = misread(key, value, reading)
+    who, what = misread(NAMED.get(key, key), value, reading)
     assert f"{MISREAD_FINDING}{who}" in result.stderr
     assert what in result.stderr, result.stderr
     assert result.stderr.count(adopter.MANIFEST_MISREAD_REMEDIATION) == 1
     assert "plan ok" not in result.stdout
 
 
-def test_check_names_an_id_it_derived_from_the_assembly(adopter, answered,
-                                                         tmp_path):
-    """A plan with no `id:` gets one from `execute`, which lowercases
-    `legs.assembly`: the finding says so, because the line to change is one
-    the plan does not have."""
+#: How a plan sets no id, each beside how it spells the assembly the id is
+#: then derived from. The first pair is what `main`'s
+#: `plan --project True --id null` writes: `id: null`, and a bare `True`
+#: its loader reads as a boolean. The rest are this branch's quoted `True`
+#: with `~`, nothing, and no `id:` line at all.
+NO_ID = [
+    pytest.param("id: null\n", "True", id="main-plan-project-True-id-null"),
+    pytest.param("id: ~\n", QUOTED_TRUE, id="tilde"),
+    pytest.param("id:\n", QUOTED_TRUE, id="nothing"),
+    pytest.param("", QUOTED_TRUE, id="no-id-line"),
+]
+
+
+@pytest.mark.parametrize("id_line, assembly", NO_ID)
+def test_check_names_an_id_it_derived_from_the_assembly(
+        answered, tmp_path, id_line, assembly):
+    """A plan that sets no id gets one from `execute`, which lowercases
+    `legs.assembly`: the finding says so, because the line to change is not
+    the one with the value. It says "not set in the plan" and not "not in
+    the plan": an `id: null` is in the plan and sets nothing (review181's
+    N3), and `Plan.get` reads it exactly as a missing key."""
     _, text = answered
-    without_id = re.sub(r"^id: .*\n", "", text, count=1, flags=re.MULTILINE)
+    without_id = re.sub(r"^id: .*\n", id_line, text, count=1,
+                        flags=re.MULTILINE)
     assert without_id != text, "no `id:` line in the plan"
     plan = tmp_path / PLAN_FILE
-    carrying(plan, without_id, "legs.assembly", adopter.y("True"))
+    carrying(plan, without_id, "legs.assembly", assembly)
     result = checked(plan)
     assert result.returncode == 1, result.stdout + result.stderr
-    who, what = misread("id (not in the plan, so legs.assembly lowercased)",
-                        "true", TRUE_READ)
+    who, what = misread("id (not set in the plan, so legs.assembly "
+                        "lowercased)", "true", TRUE_READ)
     assert f"{MISREAD_FINDING}{who}" in result.stderr
     assert what in result.stderr, result.stderr
+
+
+#: `(plan key, as a hand-edited plan spells it, what the plan's loader reads
+#: it as, the text `execute` writes for it)`. The loader reads each one as
+#: something that is not text, so the plan does not say what `str` of it
+#: says: `007` is read as 7, and `TRUE` as true. The sentence names what was
+#: READ, with its kind, and then the text `execute` writes (review181's N2).
+#: The project's loader reads that text back as the same kind again.
+READ_AS_NOT_TEXT = [
+    (TRACKING_KEY, "007", SEVEN_READ, "7"),
+    (TRACKING_KEY, "TRUE", TRUE_READ, "True"),
+    (TRACKING_KEY, "1.50", "the number 1.5", "1.5"),
+    (TRACKING_KEY, "[a]", "a list", "['a']"),
+    ("visibility", "{a: b}", "a mapping", "{'a': 'b'}"),
+    ("id", "007", SEVEN_READ, "7"),
+    (PINS_KEY, "TRUE", TRUE_READ, "True"),
+    ("elected_on", DATE_DIGITS, f"the number {DATE_DIGITS}", DATE_DIGITS),
+]
+
+
+@pytest.mark.parametrize("key, spelled, read_as, written", READ_AS_NOT_TEXT,
+                         ids=ids_of(READ_AS_NOT_TEXT, 0, 1))
+def test_check_names_a_plan_value_that_is_not_text_by_what_was_read(
+        answered, tmp_path, key, spelled, read_as, written):
+    """The finding said `tracking_branch is '7'` for a plan that says `007`,
+    and `'True'` for `TRUE`: `str` of what was read, which the plan never
+    said. It says what the plan's loader read, and the text `execute`
+    writes for it, which is `str` of that and is named as such."""
+    _, text = answered
+    plan = tmp_path / PLAN_FILE
+    carrying(plan, text, key, spelled)
+    result = checked(plan)
+    assert result.returncode == 1, result.stdout + result.stderr
+    named = NAMED.get(key, key)
+    assert (f"{MISREAD_FINDING}{named} was read out of the plan as {read_as}, "
+            "which `execute` writes into ") in result.stderr, result.stderr
+    assert (f"reads it back as {read_as} and not as the text `{written}`: "
+            "choose another value.") in result.stderr, result.stderr
+    assert f"{named} is " not in result.stderr, "`str` of it was echoed"
+
+
+#: `(placeholder, value, the manifest line `execute` writes, what the loader
+#: reads it back as)`: values the loader reads back as OTHER TEXT, through
+#: the double quotes the template writes around them.
+UNESCAPED = [
+    (ELECTED_BY_PLACEHOLDER, DOMAIN_USER, 'elected_by: "CORP\\tom"',
+     DOMAIN_USER_READ),
+    ("REFERENCE", "docs\\new.md", 'reference: "docs\\new.md"',
+     "the text `docs`, then a line break, then `ew.md`"),
+    (ELECTED_BY_PLACEHOLDER, "a\\\\b", 'elected_by: "a\\\\b"',
+     "the text `a\\b`"),
+    (ELECTED_BY_PLACEHOLDER, 'a\\"b', 'elected_by: "a\\"b"',
+     'the text `a"b`'),
+]
+
+
+@pytest.mark.parametrize("placeholder, value, line, reading", UNESCAPED,
+                         ids=ids_of(UNESCAPED, 0, 1))
+def test_text_the_loader_reads_as_other_text_is_shown_as_typed_and_read(
+        adopter, placeholder, value, line, reading):
+    """`repr` showed `CORP\\tom` with its backslash doubled, and the tab the
+    loader makes of it as `\\t`, so each looked like the other (review181's
+    N1). The value is shown as it is typed, and a character a terminal shows
+    as something else is named, so the difference is the one there is."""
+    assert adopter.manifest_misreads(
+        [adopter._field("x", placeholder, value)]) == [
+        f"x is `{value}`, which `execute` writes into {MANIFEST} as "
+        f"`{line}`, where the project's own YAML loader reads it back as "
+        f"{reading} and not as that text: choose another value"]
 
 
 @needs_filter_repo
@@ -570,7 +680,7 @@ def test_execute_refuses_a_plan_carrying_one_before_any_leg_exists(
     result = executed(plan, tmp_path)
     assert result.returncode == 2, result.stdout + result.stderr
     assert result.stderr.startswith("REFUSED plan-manifest-misread: ")
-    who, what = misread(key, value, reading)
+    who, what = misread(NAMED.get(key, key), value, reading)
     assert f"{MISREAD_FINDING}{who}" in result.stderr
     assert what in result.stderr
     assert adopter.MANIFEST_MISREAD_REMEDIATION in result.stderr
@@ -593,7 +703,7 @@ def test_what_is_still_accepted_adopts_clones_and_bootstraps(tmp_path):
     stopped short of: the recursive clone and the first bootstrap, which put
     each leg on the branch `execute` pushed it on, with that branch as its
     upstream, and read back every value the plan was given."""
-    source = make_source_repo(tmp_path / "Thing")
+    source = make_source_repo(tmp_path / SOURCE_NAME)
     plan = tmp_path / PLAN_FILE
     written = write_plan(source, plan, extra=ACCEPTED)
     assert written.returncode == 0, written.stderr + written.stdout
@@ -640,10 +750,10 @@ def test_the_gate_follows_the_loader_when_the_loader_learns_a_keyword(
     the real reader that `yes` is a boolean and both change with no edit:
     `y` quotes it, and a branch or an id called `yes` is refused."""
     reads = repo_shape._scalar
-    fields = [adopter._field(TRACKING_KEY, "TRACKING_BRANCH", "yes"),
+    fields = [adopter._field(TRACKING_KEY, TRACKING_PLACEHOLDER, "yes"),
               adopter._field("id", "PROJECT_ID", "yes")]
     assert adopter.manifest_misreads(fields) == []
-    monkeypatch.setattr(repo_shape, "_scalar",
+    monkeypatch.setattr(repo_shape, SCALAR_READER,
                         lambda raw: True if raw.strip() == "yes"
                         else reads(raw))
     assert adopter.y("yes") == QUOTED_YES
@@ -655,23 +765,23 @@ def test_the_template_line_says_whether_a_value_is_quoted(adopter):
     """No list in `adopt-project.py` says which placeholders the templates
     quote: the line is read. `Null` is a person's name between the quotes of
     `elected_by:`, and no branch at all after `tracking_branch:`."""
-    assert adopter._written("ELECTED_BY", "Null") == [
+    assert adopter._written(ELECTED_BY_PLACEHOLDER, "Null") == [
         (MANIFEST, 'elected_by: "Null"')]
     assert adopter.manifest_misreads(
-        [adopter._field(ELECTED_BY_KEY, "ELECTED_BY", "Null")]) == []
+        [adopter._field(ELECTED_BY_KEY, ELECTED_BY_PLACEHOLDER, "Null")]) == []
     assert adopter.manifest_misreads(
-        [adopter._field(TRACKING_KEY, "TRACKING_BRANCH", "Null")]) != []
+        [adopter._field(TRACKING_KEY, TRACKING_PLACEHOLDER, "Null")]) != []
 
 
 #: Where each placeholder lands in the RENDERED files, as their loader reads
 #: them: `(file, path into what it loads)`. The test's own oracle, written
 #: from the templates, never from `adopt-project.py`.
 LANDS = {
-    "TRACKING_BRANCH": [(MANIFEST, (TRACKING_KEY,))],
-    "ELECTED_BY": [(MANIFEST, (ELECTED_BY_KEY,))],
+    TRACKING_PLACEHOLDER: [(MANIFEST, (TRACKING_KEY,))],
+    ELECTED_BY_PLACEHOLDER: [(MANIFEST, (ELECTED_BY_KEY,))],
     "SPEC_PATH": [(MANIFEST, ("legs", 1, "path")),
                   ("contracts/spec-pin.yaml", ("submodule_path",))],
-    "NEUTRAL_PRODUCT_PINS": [(MANIFEST, ("neutral_product_pins", 0))],
+    PINS_PLACEHOLDER: [(MANIFEST, ("neutral_product_pins", 0))],
 }
 
 
@@ -682,9 +792,9 @@ def rendered_readings(adopter, placeholder: str, value: str) -> list:
     from shape_materialize import PLACEHOLDER_RE, render
     template = REPO / "templates" / "assembly-root"
     # A naming block is lines of its own, and an empty one is no lines.
-    values = {"NEUTRAL_PRODUCT_PINS": "[]", "ASSEMBLY_NAMING": "",
+    values = {PINS_PLACEHOLDER: "[]", "ASSEMBLY_NAMING": "",
               "SPEC_NAMING": "", "CODE_NAMING": ""}
-    if placeholder == "NEUTRAL_PRODUCT_PINS":
+    if placeholder == PINS_PLACEHOLDER:
         values[placeholder] = "\n" + adopter._pin_item(value)
     else:
         values[placeholder] = value
@@ -711,7 +821,7 @@ def test_the_gate_agrees_with_the_rendered_files_on_every_candidate(
     module generates: a value the gate passes comes back out of each place
     it lands, and one it refuses does not."""
     for value in CANDIDATES:
-        if placeholder == "NEUTRAL_PRODUCT_PINS":
+        if placeholder == PINS_PLACEHOLDER:
             field = adopter._pin_field(PINS_KEY, value)
         else:
             field = adopter._field("x", placeholder, value)
@@ -756,10 +866,10 @@ def test_the_plan_writer_quotes_a_pin_whatever_refuses_it_later(
     gate taken away: the pin is a string like any other in the plan."""
     source, _ = answered
     monkeypatch.setattr(adopter, "manifest_misreads", lambda _fields: [])
-    for pin in ("null", "Null", "NULL", "true", "False"):
+    for pin in ("null", "Null", "NULL", "true", FALSE_TITLE):
         plan = tmp_path / f"{pin}.yaml"
         assert adopter.main([
-            "plan", "--source", str(source), "--project", "Northwind",
+            "plan", "--source", str(source), "--project", PROJECT_NAME,
             "--org", "testorg", ELECTED_BY_FLAG, "Test Human",
             "--elected-on", "2026-09-02", PIN_FLAG, pin,
             "--work-dir", str(tmp_path / "work"), "--out", str(plan)]) == 0

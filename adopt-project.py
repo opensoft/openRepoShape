@@ -36,8 +36,9 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            `.gitmodules`, registered there and never in the root, and every
            value `execute` writes into the project's YAML (`id`, the
            branch, the leg paths, the pins, the election record) one its
-           loader reads back as that same text, never `null`, `true` or
-           `2026` (#181). It prints what will happen and changes nothing.
+           loader reads back as that same text, which `null`, `true` and
+           `2026` are not where a template writes them bare (#181). It
+           prints what will happen and changes nothing.
   execute  creates the two legs, extracts them with `git filter-repo`, makes
            the one split commit on a branch of the source, sets the
            `xf-project-<id>` topic on all three (skipped for local remotes),
@@ -83,6 +84,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import itertools
 import re
 import shutil
 import subprocess
@@ -110,7 +112,8 @@ from shape_materialize import (  # noqa: E402
 # `tests/test_adopt_leg_paths.py` asks `leg_path_problem` through this module,
 # as it did when the rule was defined in it, which is what shows the move
 # changed no behaviour; `_plan_fields` asks it too, and `_the_loader_made`
-# names what the loader read in `NOT_TEXT_KINDS`'s words (#181).
+# names a list or a mapping the loader read in `NOT_TEXT_KINDS`'s words, the
+# two kinds it has no words of its own for (#181).
 from shape_materialize import (  # noqa: E402
     NOT_TEXT_KINDS, WINDOWS_ABSOLUTE_RE, leg_path_problem, leg_path_problems,
     refuse_bad_leg_paths as _refuse_bad_leg_paths,
@@ -1249,9 +1252,10 @@ def _kept_collision_notes(args, entries: list, tree: list) -> list[str]:
 # THE FIX IS TO REFUSE. `plan` (before the plan is written), `check` (a
 # FINDING) and `execute` (through `_entry_findings`, before any leg exists)
 # ask the ONE question below and refuse a value the project's loader would
-# read back as anything but that same text. Quoting the placeholders instead
-# was considered and not done: the same templates render every scaffolded
-# project as well as every adopted one.
+# read back as anything but that same text. Quoting the placeholders is left
+# to a follow-up rather than done here: the same templates render every
+# scaffolded project, and `scaffold-project.py` writes these values bare
+# with no such gate, so quoting them changes both tools at once.
 #
 # THE LOADER DECIDES, AND THE TEMPLATE SAYS WHERE. Each value is put into
 # every line of a templated YAML file that carries its placeholder, exactly
@@ -1268,6 +1272,13 @@ ASSEMBLY_TEMPLATE = SHAPE_ROOT / "templates" / "assembly-root"
 TEMPLATED_YAML = tuple(rel for rel in TEMPLATED if rel.endswith(".yaml"))
 #: The manifest, which holds the one list `_template_values` writes itself.
 MANIFEST_YAML = "project.yaml"
+#: The plan's keys for the election record, as `_template_values` reads them
+#: out of the plan and as the tables below ask about them: one spelling.
+ELECTED_BY_KEY = "elected_by"
+ELECTED_ON_KEY = "elected_on"
+REFERENCE_KEY = "reference"
+#: The placeholder `execute` writes the project's id through.
+ID_PLACEHOLDER = "PROJECT_ID"
 
 #: Each plan value `execute` writes into those files, by its key in the plan
 #: (and `plan`'s flag of the same name, dashed) and the `_template_values`
@@ -1275,13 +1286,25 @@ MANIFEST_YAML = "project.yaml"
 #: because `execute` derives it when the plan has none; the leg paths are
 #: `legs.` keys; the pins are a list.
 MANIFEST_FIELDS = {"tracking_branch": "TRACKING_BRANCH",
-                   "visibility": "VISIBILITY", "elected_by": "ELECTED_BY",
-                   "elected_on": "ELECTED_ON", "reference": "REFERENCE"}
+                   "visibility": "VISIBILITY", ELECTED_BY_KEY: "ELECTED_BY",
+                   ELECTED_ON_KEY: "ELECTED_ON", REFERENCE_KEY: "REFERENCE"}
 LEG_PATH_PLACEHOLDERS = {"spec": "SPEC_PATH", "code": "CODE_PATH"}
 #: How `plan` fills a flag nobody passed, where the value it fills in can be
 #: one the loader misreads: a sentence about it names where it came from.
 FLAG_DEFAULTS = {"id": "--project lowercased",
-                 "elected_by": "`git config user.name`"}
+                 ELECTED_BY_KEY: "`git config user.name`"}
+#: How a sentence names the id `execute` derives when the plan sets none:
+#: when it has no `id:`, or an `id:` with no value (`null`, `~` or nothing,
+#: as `main`'s `plan --id null` wrote it), which `Plan.get` reads alike.
+DERIVED_ID = "id (not set in the plan, so legs.assembly lowercased)"
+#: How a sentence names one of a plan's `pins:`: the key holds a list, and a
+#: sentence about what one item was read as is about that item.
+PIN_IN_PLAN = "a pin in pins"
+#: What a sentence calls a character a terminal shows as something else, or
+#: not at all, which `_worded` names instead of printing.
+CHARACTER_NAMES = {"\t": "a tab", "\n": "a line break"}
+#: How a sentence joins the last of the things it names, spelled once.
+AND = " and "
 
 MANIFEST_MISREAD_REMEDIATION = (
     "Remediation: choose another value for each one named. `execute` writes "
@@ -1311,21 +1334,23 @@ def _written(placeholder: str, value: str) -> list[tuple[str, str]]:
             if token in line]
 
 
-def _field(what: str, placeholder: str, value) -> tuple[str, str, list]:
+def _field(what: str, placeholder: str, value) -> tuple[str, object, list]:
     """`(what, value, written)` for a value `_template_values` writes as
-    `str(value)`, which is how a plan's non-text `elected_on` reaches it."""
-    text = str(value)
-    return what, text, _written(placeholder, text)
+    `str(value)`. `value` is kept as it was read: out of a plan it need not
+    be text (`tracking_branch: 007` is read as 7), and a sentence about it
+    says what was read, never `str` of it, which the plan does not say."""
+    return what, value, _written(placeholder, str(value))
 
 
-def _pin_field(what: str, pin: str) -> tuple[str, str, list]:
+def _pin_field(what: str, pin) -> tuple[str, object, list]:
     return what, pin, [(f"{MANIFEST_YAML}'s neutral_product_pins",
-                        _pin_item(pin).strip())]
+                        _pin_item(str(pin)).strip())]
 
 
 def _the_loader_made(reading) -> str:
-    """What `loader_reading` gave back, in words. The parsed value is shown,
-    because the sentence it ends also shows the text it was read from."""
+    """What the loader made of a value, in words: a scalar as it was READ,
+    with its kind (`the number 7`, for a line or a plan that says `007`),
+    and a list or a mapping by its kind alone."""
     if isinstance(reading, YamlError):
         return f"nothing: it refuses the line ({reading})"
     if reading is None:
@@ -1335,8 +1360,47 @@ def _the_loader_made(reading) -> str:
     if isinstance(reading, (int, float)):
         return f"the number {reading!r}"
     if isinstance(reading, str):
-        return f"the text {reading!r}"
+        return f"the text {_worded(reading)}"
     return NOT_TEXT_KINDS.get(type(reading), "something that is not text")
+
+
+def _character_name(char: str) -> str:
+    return CHARACTER_NAMES.get(char, f"the character U+{ord(char):04X}")
+
+
+def _worded(text: str) -> str:
+    """`text` as a sentence shows it: between backticks as it is typed, with
+    each character a terminal shows as something else named outside them,
+    in order; `""` when it is empty.
+
+    NOT `repr`, and not `_spelled`, which spells a path so that it reads one
+    way only: both show the tab the loader makes of `"CORP\\tom"` as `\\t`,
+    the two characters the person typed, and show what they typed with its
+    backslash doubled, so each looks like the other. Named, the tab is
+    plainly a tab.
+    """
+    parts: list[str] = []
+    for printable, run in itertools.groupby(text, str.isprintable):
+        if printable:
+            parts.append(f"`{''.join(run)}`")
+        else:
+            parts += map(_character_name, run)
+    return ", then ".join(parts) or '""'
+
+
+def _named(what: str, value) -> tuple[str, str]:
+    """`(subject, text)` for a sentence about `value`: who and what it is,
+    and the text the loader does not read back.
+
+    A value read out of a plan that is not text is named by what its loader
+    READ, with its kind: `str` of it is not what the plan says
+    (`tracking_branch: 007` is read as 7, and `TRUE` as true), so the text is
+    then the one `execute` writes, named as such.
+    """
+    if isinstance(value, str):
+        return f"{what} is {_worded(value)}", "that text"
+    return (f"{what} was read out of the plan as {_the_loader_made(value)}",
+            f"the text {_worded(str(value))}")
 
 
 def _shown(line: str) -> str:
@@ -1347,9 +1411,9 @@ def _shown(line: str) -> str:
 
 
 def manifest_misreads(fields) -> list[str]:
-    """A sentence for each `(what, value, written)` whose `value` the
-    project's loader does not read back out of every line in `written`;
-    `[]` when it does for all of them.
+    """A sentence for each `(what, value, written)` whose value, written as
+    `str(value)`, the project's loader does not read back out of every line
+    in `written`; `[]` when it does for all of them.
 
     `what` is how the caller names the value -- `--tracking-branch` to
     `plan`, `tracking_branch` read out of a plan -- so the sentence points at
@@ -1357,15 +1421,17 @@ def manifest_misreads(fields) -> list[str]:
     """
     problems = []
     for what, value, written in fields:
+        text = str(value)
         wrong = [(rel, line, loader_reading(line)) for rel, line in written]
-        wrong = [row for row in wrong if row[2] != value]
+        wrong = [row for row in wrong if row[2] != text]
         if wrong:
-            where = " and ".join(f"into {rel} as {_shown(line)}"
-                                 for rel, line, _ in wrong)
+            where = AND.join(f"into {rel} as {_shown(line)}"
+                             for rel, line, _ in wrong)
+            subject, expected = _named(what, value)
             problems.append(
-                f"{what} is {value!r}, which `execute` writes {where}, where "
-                "the project's own YAML loader reads it back as "
-                f"{_the_loader_made(wrong[0][2])} and not as that text: "
+                f"{subject}, which `execute` writes {where}, where the "
+                "project's own YAML loader reads it back as "
+                f"{_the_loader_made(wrong[0][2])} and not as {expected}: "
                 "choose another value")
     return problems
 
@@ -1379,7 +1445,7 @@ def _flag_fields(args, given: set, pins: list[str]) -> list[tuple]:
             spelled += f" (not given, so {FLAG_DEFAULTS[key]})"
         return spelled
 
-    fields = [_field(flag("id"), "PROJECT_ID", args.id)]
+    fields = [_field(flag("id"), ID_PLACEHOLDER, args.id)]
     fields += [_field(flag(key), placeholder, getattr(args, key))
                for key, placeholder in MANIFEST_FIELDS.items()]
     fields += [_field(f"--{role}-path", placeholder,
@@ -1388,9 +1454,21 @@ def _flag_fields(args, given: set, pins: list[str]) -> list[tuple]:
     return fields + [_pin_field("--pin", pin) for pin in pins]
 
 
+def _id_field(plan: Plan) -> tuple:
+    """The id as `execute` writes it, named for where it comes from: the
+    plan's `id:` as its loader read it, or `legs.assembly` lowercased when
+    the plan sets none (`DERIVED_ID`). `Plan.project_id` raises the
+    `Refusal` of an id it refuses, which is reported on its own account."""
+    project_id = plan.project_id
+    set_id = plan.get("id")
+    if set_id is None:
+        return _field(DERIVED_ID, ID_PLACEHOLDER, project_id)
+    return _field("id", ID_PLACEHOLDER, set_id)
+
+
 def _plan_fields(plan: Plan) -> list[tuple]:
-    """A plan's values as `_template_values` would write them, each named by
-    its key in the plan.
+    """A plan's values as its loader read them, each named by its key in the
+    plan, with the lines `_template_values` would write them into.
 
     A key the plan does not carry is left out: `execute` fills it with a
     default of this tool's own (`main`, `private`, today's date), and none of
@@ -1401,9 +1479,7 @@ def _plan_fields(plan: Plan) -> list[tuple]:
     """
     fields: list[tuple] = []
     try:
-        what = ("id" if plan.get("id") is not None else
-                "id (not in the plan, so legs.assembly lowercased)")
-        fields.append(_field(what, "PROJECT_ID", plan.project_id))
+        fields.append(_id_field(plan))
     except Refusal:
         pass
     fields += [_field(key, placeholder, plan.get(key))
@@ -1413,7 +1489,10 @@ def _plan_fields(plan: Plan) -> list[tuple]:
                                           LEG_PATH_PLACEHOLDERS.values()):
         if isinstance(value, str) and leg_path_problem(what, value) is None:
             fields.append(_field(what, placeholder, value))
-    return fields + [_pin_field("pins", pin) for pin in plan.pins]
+    # Each pin as the loader read it, which `Plan.pins` has already made text
+    # (`TRUE` would be named as `True`); the same items, in the same order.
+    return fields + [_pin_field(PIN_IN_PLAN, pin)
+                     for pin in (plan.data.get("pins") or []) if pin]
 
 
 def _checked_plan_inputs(args, source: Source,
@@ -2815,9 +2894,9 @@ def _refuse_unconsented_seeding(args, plan: Plan, seeded: list) -> None:
         raise Refusal(
             "adopt-empty-leg-unconsented",
             "no path is assigned to the "
-            + " and ".join(f"{role} leg" for role in unconsented)
+            + AND.join(f"{role} leg" for role in unconsented)
             + ", so it would be SEEDED from "
-            + " and ".join(f"{SEED_TEMPLATE[role]}/" for role in unconsented)
+            + AND.join(f"{SEED_TEMPLATE[role]}/" for role in unconsented)
             + " instead of extracted, and no `--allow-empty-leg` says that is "
             "intended",
             "Remediation: a repository that genuinely has no "
@@ -3092,7 +3171,7 @@ def _template_values(plan: Plan, names, repositories, urls, spec_path,
                      shape_commit, pins, naming) -> dict[str, str]:
     project = names["assembly"]
     project_id = plan.project_id
-    elected_on = str(plan.get("elected_on", _dt.date.today().isoformat()))
+    elected_on = str(plan.get(ELECTED_ON_KEY, _dt.date.today().isoformat()))
     # `.get(role, "")` because this table is built BEFORE the legs exist, so
     # that a SEEDED leg's template can be rendered from it. The four values
     # are filled in by the caller as soon as each leg has a commit, and the
@@ -3109,9 +3188,9 @@ def _template_values(plan: Plan, names, repositories, urls, spec_path,
         # older than this rule — is resolved from ITS OWN `elected_on`, not
         # from the day `execute` happens to run. The plan carries the human's
         # act; the calendar of the machine running the split does not.
-        "REFERENCE": str(plan.get("reference")
+        "REFERENCE": str(plan.get(REFERENCE_KEY)
                          or default_reference(elected_on)),
-        "ELECTED_BY": str(plan.get("elected_by", "")),
+        "ELECTED_BY": str(plan.get(ELECTED_BY_KEY, "")),
         "ELECTED_ON": elected_on,
         "TRACKING_BRANCH": tracking,
         "SPEC_PATH": spec_path,
