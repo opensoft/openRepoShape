@@ -39,11 +39,16 @@ WHAT IT REFUSES, and why each is a refusal rather than a warning:
   * a validator that goes red after the rewrite. Every byte is rolled back
     first — the pin file, the workflow files, the leg's checkout and the index
     — so a refusal leaves the tree exactly as it was found.
-  * any other failure once the first byte has moved — a workflow file it cannot
-    write, a stdout that cannot encode what a validator printed — is rolled
-    back the same way and then reported, as a refusal naming the exception
-    for an `OSError` or a `UnicodeError`, and as itself for anything else
-    (an interrupt included), so no failure leaves a half-applied bump.
+  * any other failure once the leg has been asked to move, up to and
+    including a commit git refuses (a signing key that cannot sign, a
+    `commit-msg` hook) — a workflow file it cannot write, a stdout that
+    cannot encode what a validator printed, an interrupt — is rolled back
+    the same way and then reported: as a refusal naming the exception for an
+    `OSError` or a `UnicodeError`, and as itself for anything else, an
+    interrupt included, after a line saying whether the tree is back. No
+    report claims more than the rollback did: a step it could not do is
+    named, and the report says THE ROLLBACK WAS NOT COMPLETE. A failure
+    after the commit has landed rolls nothing back, and says so.
 
 EXIT CODES: 0 the commit was made, or a `--dry-run` printed a move it would
 make · 1 NOTHING TO DO — every fact already names that commit, under
@@ -620,6 +625,18 @@ def _print_trailers(trailers: list[str]) -> None:
         print("trailers     none")
 
 
+#: What a report says when the rollback put every byte back, and what it says
+#: when it did not. ONE SPELLING EACH: a refusal written before the rollback
+#: ran (`bump-leg-validators-red`) carries `ROLLED_BACK`, and the handler
+#: replaces exactly that sentence when the rollback did not earn it.
+ROLLED_BACK = ("Every byte this command wrote has been rolled back — the "
+               "pin, the workflow files, the leg's checkout and the index — "
+               "and the tree is exactly as it was.")
+NOT_ROLLED_BACK = ("THE ROLLBACK WAS NOT COMPLETE: what it could not put "
+                   "back is named above, so read `git status` before "
+                   "anything else.")
+
+
 def _restore_file(target: Path, original: bytes) -> None:
     """Write `original` back, but only over a file that no longer holds it.
 
@@ -639,11 +656,23 @@ def _put_back(what: str, undo) -> bool:
     raises: a rollback that stopped at the first byte it could not restore
     would leave the leg moved and the index staged behind a file the operator
     cannot write. Returns whether the step succeeded.
+
+    AN INTERRUPT IS CAUGHT HERE TOO. A second Ctrl-C while the rollback checks
+    a large leg out again is the likeliest next keystroke, and let through it
+    skipped every step after the one it landed in, leaving the new pin, the
+    new workflow and the new gitlink staged with nothing naming the index.
+    Caught per step rather than by a signal handler, which a library function
+    has no business installing: the step it landed in is named, the steps
+    after it (a file, the index: short ones) still run, and the first failure
+    is still the one re-raised.
     """
     try:
         undo()
     except CommandFailed as exc:
         print(exc.loudly("rolling the bump back"), file=sys.stderr)
+    except KeyboardInterrupt:
+        print(f"REFUSED rolling the bump back. {what} could not be put back: "
+              "interrupted", file=sys.stderr)
     except Exception as exc:  # noqa: BLE001 - nothing may escape a rollback
         print(f"REFUSED rolling the bump back. {what} could not be put back: "
               f"{type(exc).__name__}: {exc}", file=sys.stderr)
@@ -652,12 +681,32 @@ def _put_back(what: str, undo) -> bool:
     return False
 
 
+def _restore_leg_if_moved(submodule: Path, placement: str | None,
+                          was: str) -> None:
+    """Put the leg back where it stood, if it no longer stands there.
+
+    DECIDED FROM THE LEG, NOT FROM WHETHER THE CHECKOUT RETURNED. git moves
+    the leg's HEAD before it runs `post-checkout`, so a hook that exits
+    non-zero (git-lfs's does, with no `git-lfs` on PATH) fails a checkout
+    that has already moved the leg, and an interrupt can land while the
+    checkout is still being waited on after git has moved it. Either way the
+    leg is on the new commit and the checkout never returned. A leg that
+    still stands where it stood, on the same branch at the same commit, is
+    left alone, so a checkout that never moved it does not go through a
+    refusing hook a second time.
+    """
+    if (leg_placement(submodule) == placement
+            and git_out(["rev-parse", "HEAD"],
+                        cwd=submodule).lower() == was.lower()):
+        return
+    restore_leg(submodule, placement, was)
+
+
 def _roll_back(root: Path, submodule: Path, placement: str | None, was: str,
-               staged: list[str], written: dict[Path, bytes],
-               moved_leg: bool) -> bool:
+               staged: list[str], written: dict[Path, bytes]) -> bool:
     """Put back every byte `_apply_rewrite` changed: the files it wrote, the
-    leg's checkout and the index, in that order. Returns whether ALL of it
-    went back.
+    leg's checkout (when the leg no longer stands where it stood) and the
+    index, in that order. Returns whether ALL of it went back.
 
     THE ROLLBACK NEVER RAISES OVER THE FAILURE THAT STARTED IT. Whatever it
     cannot put back is printed and the original failure is still the one the
@@ -668,19 +717,56 @@ def _roll_back(root: Path, submodule: Path, placement: str | None, was: str,
     steps = [(target.relative_to(root).as_posix(),
               partial(_restore_file, target, original))
              for target, original in written.items()]
-    if moved_leg:
-        steps.append((f"the checkout of {submodule.name}/",
-                      partial(restore_leg, submodule, placement, was)))
+    steps.append((f"the checkout of {submodule.name}/",
+                  partial(_restore_leg_if_moved, submodule, placement, was)))
     steps.append(("the index", partial(
         run, ["git", "reset", "-q", "HEAD", "--", *staged], cwd=root)))
     return all([_put_back(what, undo) for what, undo in steps])
 
 
+def _head_guard(root: Path, head_before: str | None) -> str | None:
+    """None when the rollback is to run; otherwise the sentence the report
+    carries instead, saying why it must not.
+
+    THE ROOT'S HEAD DECIDES, NOT WHICH STATEMENT RAISED. Until the commit is
+    asked for (`head_before` is None) nothing can have been committed. Once
+    it has been, an unmoved HEAD means git refused the commit, and every
+    byte goes back as for any other failure. A moved HEAD means the bump IS
+    a commit and the failure came after it (the `git rev-parse` that reads
+    it back, an interrupt); putting the files, the leg and the index back
+    under that commit would leave a tree that contradicts it. A HEAD that
+    cannot be read is treated the same way, since a rollback over a commit
+    that landed is the worse of the two mistakes.
+    """
+    if head_before is None:
+        return None
+    try:
+        head = git_out(["rev-parse", "HEAD"], cwd=root).lower()
+    except BaseException as exc:  # noqa: BLE001 - an interrupt included
+        return ("Whether the commit landed could not be read "
+                f"({type(exc).__name__}), so nothing was rolled back: read "
+                "`git log -1` and `git status` before anything else.")
+    if head == head_before:
+        return None
+    return (f"The bump was committed as {head[:12]} before this failed, so "
+            "nothing was rolled back: that commit holds the whole bump, and "
+            "`git log -1` shows it.")
+
+
+def _with_verdict(detail: str, verdict: str) -> str:
+    """A refusal's `detail`, saying what the rollback actually did: in place
+    of the `ROLLED_BACK` it was written with, or else after it."""
+    if ROLLED_BACK in detail:
+        return detail.replace(ROLLED_BACK, verdict, 1)
+    return f"{detail}\n{verdict}"
+
+
 def _apply_rewrite(root: Path, submodule: Path, commit: str, was: str,
                    pin_path: Path, pin_text: str, digest: str, plans: list,
-                   staged: list[str]) -> None:
-    """Rewrite the pin and every workflow file, stage them and validate —
-    or roll every byte back and re-raise.
+                   staged: list[str], message: str,
+                   trailers: list[str]) -> str:
+    """Rewrite the pin and every workflow file, stage them, validate them and
+    commit them — or roll every byte back and re-raise. Returns the commit.
 
     Split from `cmd_bump` for #136: the whole rewrite-or-roll-back sequence
     is one question, asked once, instead of being the tail half of a
@@ -694,22 +780,35 @@ def _apply_rewrite(root: Path, submodule: Path, commit: str, was: str,
     `UnicodeError` from the validator echo or an interrupt left the pin
     rewritten, the leg on the new commit and the index changed).
 
-    A `Refusal` and a `CommandFailed` leave as they are. An `OSError` or a
-    `UnicodeError` leaves as a `Refusal` naming it — the repository's own
-    answer to a write that could not happen, `update-shape.py`'s
-    `update-readme-unwritable`, never a traceback — and anything else, an
-    interrupt included, is re-raised as itself once the tree is back.
+    THE COMMIT IS INSIDE IT TOO, as the last statement. A commit git refuses
+    (a signing key that cannot sign, a `commit-msg` hook) is a failure after
+    the leg moved like any other; made after this returned, it left the bump
+    staged and the leg on the new commit, and the operator's next act, the
+    same command once the signer was fixed, was refused as a dirty root. One
+    `git rev-parse HEAD` is read just before it, and `_head_guard` compares
+    the root's HEAD with that after any failure: a failure after the commit
+    landed is not rolled back.
+
+    WHAT IT REPORTS never claims more than the rollback did: every byte back
+    (`ROLLED_BACK`), THE ROLLBACK WAS NOT COMPLETE, or the commit landed and
+    nothing was rolled back. A `Refusal` carries that in its own text. An
+    `OSError` or a `UnicodeError` that nothing committed leaves as a
+    `Refusal` naming it — the repository's own answer to a write that could
+    not happen, `update-shape.py`'s `update-readme-unwritable`, never a
+    traceback. A `CommandFailed`, an interrupt and anything else leave as
+    themselves, after one line on stderr saying it, because neither
+    `main()`'s report of a git command nor a traceback says what became of
+    the tree.
     """
     written: dict[Path, bytes] = {}
     placement = leg_placement(submodule)
-    moved_leg = False
+    head_before: str | None = None
     try:
         # A BUMP LEAVES THE LEG AT THE COMMIT, detached, and does not move any
         # branch. `bootstrap.py` is what places a leg ON its tracking branch —
         # at the pin — and a bump that also moved `main` in the leg would be
         # this tool pushing somebody's branch around from inside a submodule.
         run(["git", "checkout", "-q", "--detach", commit], cwd=submodule)
-        moved_leg = True
         for target, data in [(pin_path, rewrite_pin(pin_text, commit, digest))
                              ] + [(wf_path, text) for wf_path, text, _ in plans]:
             written[target] = target.read_bytes()
@@ -733,38 +832,48 @@ def _apply_rewrite(root: Path, submodule: Path, commit: str, was: str,
             code, output = run_validator(root, script)
             sys.stdout.write(output)
             if code != 0:
+                # `ROLLED_BACK` is written before the rollback has run, and
+                # the handler below replaces it when the rollback did not
+                # earn it.
                 raise Refusal(
                     "bump-leg-validators-red",
-                    f"{script} exited {code} after the rewrite. Every byte "
-                    "this command wrote has been rolled back — the pin, the "
-                    "workflow files, the leg's checkout and the index — and "
-                    "the tree is exactly as it was.\n--- its output ---\n"
+                    f"{script} exited {code} after the rewrite. "
+                    f"{ROLLED_BACK}\n--- its output ---\n"
                     + output.rstrip() + "\n--- end output ---",
                     "Remediation: read the finding above. A tool that left a "
                     "project red would have moved the cost from this command "
                     "to somebody else's pull request.")
+
+        head_before = git_out(["rev-parse", "HEAD"], cwd=root).lower()
+        return commit_once(root, message, staged, trailers=trailers)
     except BaseException as failure:
         # `BaseException`, NOT `Exception`: an interrupt during the checkout
         # or the validators is the failure a person causes on purpose, and it
         # leaves the same half-applied bump as any other.
-        rolled_back = _roll_back(root, submodule, placement, was, staged,
-                                 written, moved_leg)
-        if isinstance(failure, (OSError, UnicodeError)):
+        landed = _head_guard(root, head_before)
+        if landed is None:
+            verdict = (ROLLED_BACK if _roll_back(root, submodule, placement,
+                                                 was, staged, written)
+                       else NOT_ROLLED_BACK)
+        else:
+            verdict = landed
+        if isinstance(failure, Refusal):
+            raise Refusal(failure.code, _with_verdict(failure.detail, verdict),
+                          failure.remediation) from failure
+        if landed is None and isinstance(failure, (OSError, UnicodeError)):
             raise Refusal(
                 "bump-leg-rewrite-failed",
                 f"{type(failure).__name__} while the bump was being applied: "
-                f"{failure}. "
-                + ("Every byte this command wrote has been rolled back — the "
-                   "pin, the workflow files, the leg's checkout and the "
-                   "index — and the tree is exactly as it was."
-                   if rolled_back else
-                   "THE ROLLBACK WAS NOT COMPLETE: what it could not put "
-                   "back is named above, so read `git status` before "
-                   "anything else."),
+                f"{failure}. {verdict}",
                 "Remediation: fix what the exception names — a file this "
                 "command cannot write, a stdout that cannot encode what a "
                 "validator printed — and run the same command again. "
                 "Nothing was committed.") from failure
+        lead = ("The command below failed"
+                if isinstance(failure, CommandFailed)
+                else type(failure).__name__)
+        print(f"{lead} while the bump was being applied. {verdict}",
+              file=sys.stderr)
         raise
 
 
@@ -812,12 +921,10 @@ def cmd_bump(args) -> int:
               "untouched.")
         return 0
 
-    # ---- the rewrite, remembered byte for byte so a red validator undoes it
+    # ---- the rewrite and the commit, remembered byte for byte so a failure
+    # anywhere up to the commit undoes them
     staged: list[str] = [path, pin_rel] + [
         wf_path.relative_to(root).as_posix() for wf_path, _, _ in plans]
-    _apply_rewrite(root, submodule, commit, was, pin_path, pin_text, digest,
-                   plans, staged)
-
     body = (
         f"{was[:12]} -> {commit[:12]}, tree {digest}.\n\n"
         + (f"{sum(count for _, _, count in plans)} workflow `@<sha>` "
@@ -832,9 +939,11 @@ def cmd_bump(args) -> int:
           "request, and on somebody else's change.\n\nWritten by "
           "openRepoShape's `scripts/bump-leg.py`; the digest is recomputed "
           "from the leg's own objects, not adjusted.\n")
-    head = commit_once(
-        root, f"Bump {role} leg to {commit[:12]} in {project.display_name}\n\n"
-        + body, staged, trailers=args.trailer)
+    head = _apply_rewrite(
+        root, submodule, commit, was, pin_path, pin_text, digest, plans,
+        staged,
+        f"Bump {role} leg to {commit[:12]} in {project.display_name}\n\n"
+        + body, args.trailer)
     print(f"\n  committed {head[:12]}: " + ", ".join(staged))
     print(f"  {path}/ is left DETACHED at {commit[:12]}; `make bootstrap` in "
           "the root re-places it on its tracking branch AT the new pin")

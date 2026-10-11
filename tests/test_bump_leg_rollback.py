@@ -3,12 +3,19 @@
 has moved puts every byte back (#253).
 
 `_apply_rewrite` checks the leg out, writes the pin and each workflow file,
-stages them and runs the validators. Its rollback used to be a handler for
-`Refusal` and `CommandFailed` alone, so a `PermissionError` on a workflow
-file, a `UnicodeError` from echoing a validator's output or an interrupt left
-the pin rewritten, the leg on the new commit and the index changed, behind a
-traceback. `tests/test_bump_leg.py` holds the red-validator rollback; this
-file holds the failures that rollback never saw.
+stages them, runs the validators and commits. Its rollback used to be a
+handler for `Refusal` and `CommandFailed` alone, so a `PermissionError` on a
+workflow file, a `UnicodeError` from echoing a validator's output or an
+interrupt left the pin rewritten, the leg on the new commit and the index
+changed, behind a traceback. `tests/test_bump_leg.py` holds the red-validator
+rollback; this file holds the failures that rollback never saw: those, a
+commit git refuses, a forward checkout that moved the leg and then failed,
+and a rollback step that fails or is interrupted itself. It also holds the
+one failure that must NOT be rolled back: one after the commit landed.
+
+A REPORT NEVER CLAIMS A TREE THE ROLLBACK DID NOT RESTORE. Every failure
+says, as a refusal's own text or as a line before the traceback, either that
+every byte is back or that THE ROLLBACK WAS NOT COMPLETE.
 
 EVERY TEST COMPARES THE WHOLE TREE, not the one thing its failure touched:
 the root's HEAD, the pin's bytes, every workflow's bytes, the gitlink the
@@ -55,6 +62,11 @@ from test_bump_leg import (  # noqa: F401
 #: both modules share the session's bare remotes, and a second, different
 #: commit pushed to the same branch name would be refused as non-fast-forward.
 ADVANCE_BRANCH = "bump-leg-rollback-advance"
+
+#: The two things a report may say about the tree, spelled here rather than
+#: imported, so a test reads what the operator reads.
+ROLLED_BACK = "and the tree is exactly as it was"
+NOT_COMPLETE = "THE ROLLBACK WAS NOT COMPLETE"
 
 
 @pytest.fixture(scope="module")
@@ -220,11 +232,15 @@ def test_a_validator_output_that_cannot_be_decoded_or_echoed_is_refused_and_put_
 ], ids=["interrupt-writing", "interrupt-validating", "defect-validating"])
 def test_any_other_failure_puts_every_byte_back_and_is_re_raised_as_itself(
         step, failure, project, scaffolded, advanced, bump_leg_module,
-        monkeypatch):
+        monkeypatch, capsys):
     """An interrupt, or a defect that is not the operator's to fix, is not
     made into a refusal: it reaches the interpreter as what it is, AFTER the
     tree is back. `write_lf` fails on the SECOND file, with the pin already
-    rewritten; `run_validator` fails with the index staged."""
+    rewritten; `run_validator` fails with the index staged.
+
+    The traceback alone does not say whether the tree is back, so one line
+    before it does: an operator who pressed Ctrl-C should not have to run
+    `git status` to learn that nothing is left half-applied."""
     before = prepared(project)
     if step == "write_lf":
         real_write = bump_leg_module.write_lf
@@ -242,15 +258,26 @@ def test_any_other_failure_puts_every_byte_back_and_is_re_raised_as_itself(
 
     assert raised.value is failure
     assert_nothing_changed(project, before)
+    err = capsys.readouterr().err
+    assert (f"{type(failure).__name__} while the bump was being applied"
+            in err), err
+    assert ROLLED_BACK in err, "the line says the tree is back"
+    assert NOT_COMPLETE not in err
 
 
-@pytest.mark.parametrize("failure", ["validators-red", "unwritable"])
+@pytest.mark.parametrize("failure",
+                         ["validators-red", "unwritable", "command-failed"])
 def test_a_rollback_step_that_fails_is_named_and_the_others_still_run(
         failure, project, scaffolded, advanced, bump_leg_module, monkeypatch,
         capsys):
     """THE ROLLBACK NEVER RAISES OVER THE FAILURE: with the leg's checkout the
     one step that cannot be put back, the files and the index still are, the
-    step is named, and the failure the person sees is the original one."""
+    step is named, and the failure the person sees is the original one.
+
+    AND NOTHING CLAIMS THE TREE IS BACK. A red validator's refusal, the
+    refusal an `OSError` becomes and the line printed above a git command
+    that failed all say THE ROLLBACK WAS NOT COMPLETE, and none of them says
+    the tree is exactly as it was."""
     before = prepared(project)
     monkeypatch.setattr(bump_leg_module, "restore_leg", raiser(
         OSError(errno.EIO, "the leg's checkout is gone")))
@@ -258,7 +285,7 @@ def test_a_rollback_step_that_fails_is_named_and_the_others_still_run(
         monkeypatch.setattr(bump_leg_module, "run_validator",
                             lambda root, script: (1, "pin-digest-mismatch\n"))
         original = "REFUSED bump-leg-validators-red"
-    else:
+    elif failure == "unwritable":
         real_write = bump_leg_module.write_lf
 
         def refused(path, text):
@@ -268,6 +295,16 @@ def test_a_rollback_step_that_fails_is_named_and_the_others_still_run(
             return real_write(path, text)
         monkeypatch.setattr(bump_leg_module, "write_lf", refused)
         original = "REFUSED bump-leg-rewrite-failed"
+    else:
+        real_run = bump_leg_module.run
+
+        def add_fails(args, *rest, **kwargs):
+            if args[:2] == ["git", "add"]:
+                raise bump_leg_module.CommandFailed(
+                    args, project, 128, "fatal: the index is locked")
+            return real_run(args, *rest, **kwargs)
+        monkeypatch.setattr(bump_leg_module, "run", add_fails)
+        original = "REFUSED advancing a leg"
 
     code = run_main(bump_leg_module, project, scaffolded, advanced)
 
@@ -276,12 +313,173 @@ def test_a_rollback_step_that_fails_is_named_and_the_others_still_run(
     assert original in err, "the original failure is the one reported"
     assert "the checkout of spec/ could not be put back" in err
     assert "the leg's checkout is gone" in err
-    if failure == "unwritable":
-        assert "THE ROLLBACK WAS NOT COMPLETE" in err, (
-            "a refusal does not claim a tree it did not restore")
+    assert NOT_COMPLETE in err, (
+        "a refusal does not claim a tree it did not restore")
+    assert ROLLED_BACK not in err, (
+        "and nothing says the tree is exactly as it was")
     after = snapshot(project)
     for key in ("head", "pin", "workflows", "gitlink"):
         assert after[key] == before[key], f"{key} is not as it was found"
     assert git("diff", "--cached", "--quiet", cwd=project,
                check=False).returncode == 0, (
         "the index was still put back, though the leg's step failed before it")
+
+
+def test_an_interrupt_inside_a_rollback_step_is_named_and_the_steps_after_it_still_run(
+        project, scaffolded, advanced, bump_leg_module, monkeypatch, capsys):
+    """A SECOND Ctrl-C, while the rollback checks the leg out again — the
+    likeliest next keystroke when a large leg is slow to check out. The step
+    it lands in is named as not put back; the index step after it still
+    runs, so the new pin, workflow and gitlink are not left staged; and the
+    failure reported is still the first one, saying the rollback was not
+    complete."""
+    before = prepared(project)
+    monkeypatch.setattr(bump_leg_module, "run_validator",
+                        lambda root, script: (1, "pin-digest-mismatch\n"))
+    monkeypatch.setattr(bump_leg_module, "restore_leg",
+                        raiser(KeyboardInterrupt()))
+
+    try:
+        code = run_main(bump_leg_module, project, scaffolded, advanced)
+    except KeyboardInterrupt:
+        pytest.fail("the interrupt in a rollback step escaped the rollback, "
+                    "so no step after it ran")
+
+    err = capsys.readouterr().err
+    assert code == 2
+    assert "REFUSED bump-leg-validators-red" in err
+    assert "the checkout of spec/ could not be put back: interrupted" in err
+    assert NOT_COMPLETE in err
+    assert ROLLED_BACK not in err
+    after = snapshot(project)
+    for key in ("head", "pin", "workflows", "gitlink"):
+        assert after[key] == before[key], f"{key} is not as it was found"
+    assert git("diff", "--cached", "--quiet", cwd=project,
+               check=False).returncode == 0, (
+        "the index step ran after the interrupted one")
+
+
+# --- the leg, decided from the leg ------------------------------------------
+
+def hook(repository: Path, hooks: Path, name: str, body: bytes) -> None:
+    """A hook for `repository`, set the way `test_update_shape_add_ignored.py`
+    sets one: `core.hooksPath` in the repository's own config, so a global
+    one cannot replace it; a shebang script, which Git for Windows runs
+    through its own `sh`; and a directory outside the tree, so `git status`
+    never sees it."""
+    hooks.mkdir(exist_ok=True)
+    script = hooks / name
+    script.write_bytes(b"#!/bin/sh\n" + body)
+    script.chmod(0o755)
+    git("config", "core.hooksPath", hooks.as_posix(), cwd=repository)
+
+
+@pytest.mark.parametrize("how", ["interrupted", "hook-failed"])
+def test_a_forward_checkout_that_moved_the_leg_and_then_failed_puts_it_back(
+        how, project, scaffolded, advanced, bump_leg_module, monkeypatch,
+        tmp_path):
+    """git moves the leg's HEAD BEFORE it runs `post-checkout`, so a checkout
+    can fail after the move: a hook that exits non-zero (git-lfs's, with no
+    `git-lfs` on PATH), or an interrupt that lands while the tool is still
+    waiting on git. Whether the leg is put back is read off the leg, not off
+    whether the checkout returned. The hook here refuses the NEW commit only,
+    so the checkout that puts the leg back is not refused too."""
+    before = prepared(project)
+    if how == "interrupted":
+        real_run = bump_leg_module.run
+
+        def moved_then_interrupted(args, *rest, **kwargs):
+            out = real_run(args, *rest, **kwargs)
+            if args[:4] == ["git", "checkout", "-q", "--detach"] and \
+                    args[-1] == advanced:
+                raise KeyboardInterrupt()
+            return out
+        monkeypatch.setattr(bump_leg_module, "run", moved_then_interrupted)
+        with pytest.raises(KeyboardInterrupt):
+            run_main(bump_leg_module, project, scaffolded, advanced)
+        assert_nothing_changed(project, before)
+        return
+
+    hook(project / "spec", tmp_path / "leg-hooks", "post-checkout",
+         b'[ "$2" = "' + advanced.encode("ascii") + b'" ] || exit 0\n'
+         b"echo 'post-checkout: git-lfs was not found on your path' >&2\n"
+         b"exit 1\n")
+    result = bump(project, scaffolded, advanced)
+
+    assert_nothing_changed(project, before)
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert "REFUSED advancing a leg" in result.stderr
+    assert f"checkout -q --detach {advanced}" in result.stderr
+    assert ROLLED_BACK in result.stderr, result.stderr
+
+
+# --- the commit, inside the rollback's reach --------------------------------
+
+@pytest.mark.parametrize("refusal", ["signing", "commit-msg"])
+def test_a_commit_git_refuses_puts_every_byte_back(
+        refusal, project, scaffolded, advanced, tmp_path):
+    """The validators were green, so everything was written, staged and
+    checked; then git refused the commit itself. A signing key that cannot
+    sign and a `commit-msg` hook are both common on a developer's machine,
+    and the operator's next act is to fix that and run the same command
+    again, which a root left with the bump staged refuses as dirty. The
+    signer is a program that does not exist, which needs no hook and runs
+    the same on every platform."""
+    before = prepared(project)
+    if refusal == "signing":
+        git("config", "commit.gpgsign", "true", cwd=project)
+        git("config", "gpg.program", (tmp_path / "no-signer").as_posix(),
+            cwd=project)
+    else:
+        hook(project, tmp_path / "root-hooks", "commit-msg",
+             b"echo 'commit-msg: not this message' >&2\nexit 1\n")
+
+    result = bump(project, scaffolded, advanced)
+
+    assert_nothing_changed(project, before)
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert "REFUSED advancing a leg" in result.stderr
+    assert "git commit" in result.stderr, "the refusal names the commit"
+    assert ROLLED_BACK in result.stderr, result.stderr
+    assert NOT_COMPLETE not in result.stderr
+
+
+@pytest.mark.parametrize("after", ["interrupt", "refusal"])
+def test_a_failure_after_the_commit_landed_rolls_nothing_back(
+        after, project, scaffolded, advanced, bump_leg_module, monkeypatch,
+        capsys):
+    """THE HEAD GUARD. Once the root's HEAD has moved, the bump IS a commit,
+    and putting the files, the leg and the index back under it would leave a
+    tree that contradicts the commit just made. An interrupt after `git
+    commit` returned, or the `git rev-parse HEAD` that reads it back failing,
+    rolls nothing back, and says the commit landed."""
+    before = prepared(project)
+    real_commit = bump_leg_module.commit_once
+    failure = (KeyboardInterrupt() if after == "interrupt" else
+               bump_leg_module.Refusal("git-failed",
+                                       "`git rev-parse HEAD` exited 128"))
+
+    def lands_then_fails(*args, **kwargs):
+        real_commit(*args, **kwargs)
+        raise failure
+    monkeypatch.setattr(bump_leg_module, "commit_once", lands_then_fails)
+
+    if after == "interrupt":
+        with pytest.raises(KeyboardInterrupt):
+            run_main(bump_leg_module, project, scaffolded, advanced)
+    else:
+        assert run_main(bump_leg_module, project, scaffolded, advanced) == 2
+
+    head = git("rev-parse", "HEAD", cwd=project).stdout.strip()
+    assert head != before["head"], "the commit landed"
+    assert git("rev-parse", "HEAD:spec", cwd=project).stdout.strip() == \
+        advanced
+    assert git("status", "--porcelain", cwd=project).stdout == "", (
+        "the tree agrees with the commit: nothing was rolled back under it")
+    assert git("rev-parse", "HEAD", cwd=project / "spec").stdout.strip() == \
+        advanced
+    err = capsys.readouterr().err
+    assert f"committed as {head[:12]}" in err, err
+    assert ROLLED_BACK not in err
+    if after == "refusal":
+        assert "REFUSED git-failed" in err
