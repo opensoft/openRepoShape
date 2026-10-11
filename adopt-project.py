@@ -100,7 +100,8 @@ from repo_shape import (  # noqa: E402
 from shape_materialize import (  # noqa: E402
     ADOPT_MAKEFILE_BLOCK, RULESET_HINT, SHAPE_REPOSITORY,
     CommandFailed, Materialized, assembly_root_paths, collision_follow_up,
-    copy_tree, default_reference, election_date, env_commit, git_init_commit,
+    copy_tree, default_reference, election_date, env_commit,
+    escape_what_stdout_cannot_encode, git_init_commit,
     materialize_assembly_root, naming_block, run, write_lf,
     write_paths_listing,
 )
@@ -2023,7 +2024,8 @@ def cmd_check(args) -> int:
 def _require_filter_repo() -> None:
     if shutil.which("git-filter-repo") is None:
         probe = subprocess.run(["git", "filter-repo", "--version"],
-                               capture_output=True, text=True, check=False)
+                               capture_output=True, text=True,
+                               encoding="utf-8", errors="replace", check=False)
         if probe.returncode != 0:
             raise Refusal(
                 "filter-repo-missing",
@@ -3391,6 +3393,9 @@ def _work_root(args) -> Path:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # FIRST, so that every `print` after it -- `--help` included -- escapes
+    # a name stdout cannot encode rather than raising on it (#214).
+    escape_what_stdout_cannot_encode()
     parser = argparse.ArgumentParser(
         description=__doc__.splitlines()[0],
         formatter_class=argparse.RawDescriptionHelpFormatter)
