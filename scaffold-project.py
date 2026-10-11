@@ -59,8 +59,8 @@ from repo_shape import (  # noqa: E402
 from shape_materialize import (  # noqa: E402
     RULESET_HINT, SHAPE_REPOSITORY, CommandFailed,
     copy_tree, default_reference, descendant_note, election_date, env_commit,
-    git_init_commit, materialize_assembly_root, naming_block, run,
-    stage_written,
+    escape_what_stdout_cannot_encode, git_init_commit,
+    materialize_assembly_root, naming_block, run, stage_written,
 )
 # The leg-path rule `adopt-project.py` asks of its own paths (#179).
 from shape_materialize import refuse_bad_leg_paths  # noqa: E402
@@ -138,7 +138,10 @@ def pin_digest_from_gh(repository: str, commit: str) -> str:
     """
     proc = subprocess.run(
         ["gh", "api", GH_TREE_API.format(repo=repository, commit=commit)],
-        capture_output=True, text=True, check=False)
+        # UTF-8 and STRICT, not `errors="replace"`: this JSON becomes a
+        # digest, and a replaced byte would be a wrong digest with a
+        # confident tone (#217).
+        capture_output=True, text=True, encoding="utf-8", check=False)
     if proc.returncode != 0:
         raise Refusal(
             "pin-unreadable",
@@ -186,12 +189,14 @@ def remote_is_empty(repository: str) -> bool | None:
     reliable signal — `size: 0` is also what a repository of small files says.
     """
     probe = subprocess.run(["gh", "repo", "view", repository, "--json", "name"],
-                           capture_output=True, text=True, check=False)
+                           capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", check=False)
     if probe.returncode != 0:
         return None
     commits = subprocess.run(
         ["gh", "api", f"repos/{repository}/commits?per_page=1"],
-        capture_output=True, text=True, check=False)
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        check=False)
     if commits.returncode != 0:
         blob = (commits.stderr + commits.stdout).lower()
         if "empty" in blob:
@@ -216,7 +221,8 @@ def remote_visibility(repository: str) -> str | None:
     """
     proc = subprocess.run(
         ["gh", "repo", "view", repository, "--json", "visibility"],
-        capture_output=True, text=True, check=False)
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        check=False)
     if proc.returncode != 0:
         return None
     try:
@@ -231,7 +237,8 @@ def local_remote_is_empty(bare: Path) -> bool | None:
     if not bare.exists():
         return None
     out = subprocess.run(["git", "-C", str(bare), "rev-list", "--count", "--all"],
-                         capture_output=True, text=True, check=False)
+                         capture_output=True, text=True,
+                         encoding="utf-8", errors="replace", check=False)
     if out.returncode != 0:
         raise Refusal("remote-unreadable",
                       f"{bare} exists but is not a git repository")
@@ -239,6 +246,9 @@ def local_remote_is_empty(bare: Path) -> bool | None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # FIRST, so that every `print` after it -- `--help` included -- escapes
+    # a name stdout cannot encode rather than raising on it (#214).
+    escape_what_stdout_cannot_encode()
     parser = argparse.ArgumentParser(
         description=__doc__.splitlines()[0],
         formatter_class=argparse.RawDescriptionHelpFormatter)

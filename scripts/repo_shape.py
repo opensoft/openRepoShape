@@ -804,7 +804,10 @@ def tree_digest_from_gh(repository: str, commit: str) -> str:
     try:
         proc = subprocess.run(
             ["gh", "api", GH_TREE_API.format(repo=repository, commit=commit)],
-            capture_output=True, text=True, check=False)
+            # UTF-8 and STRICT, not `errors="replace"`: this JSON becomes a
+            # digest, and a replaced byte would be a wrong digest with a
+            # confident tone (#217).
+            capture_output=True, text=True, encoding="utf-8", check=False)
     except FileNotFoundError as exc:
         raise Refusal("gh-not-found",
                       f"the `gh` CLI is not on PATH: {exc}") from exc
@@ -872,7 +875,8 @@ def free_plan_secret_hint(org: str, repo: str, what: str) -> str | None:
     try:
         proc = subprocess.run(
             ["gh", "api", f"orgs/{org}", "--jq", ".plan.name"],
-            capture_output=True, text=True, check=False)
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", check=False)
     except OSError:  # FileNotFoundError (no `gh` on PATH) is already an OSError
         return None
     if proc.returncode != 0:
