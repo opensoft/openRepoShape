@@ -53,7 +53,10 @@ implementation of it, `templates/family-root/scripts/siblings.py`, and this
 subcommand runs that file rather than a second copy of its logic.
 
 EXIT CODES: 0 done · 1 nothing (a dry run prints and exits 0) · 2 a refusal.
-`siblings` exits with the template script's own code, unchanged.
+`siblings` exits with the template script's own code, unchanged. A `bump` whose
+commit would record nothing — the member is already pinned at `--to`, in the
+gitlink and in `family.yaml` alike — is `nothing`: it says `nothing to do`, as
+`bump-leg.py` does for a leg, and writes no commit.
 """
 
 from __future__ import annotations
@@ -74,12 +77,12 @@ from repo_shape import (  # noqa: E402
     free_plan_secret_hint,
     COMMIT_RE, PROJECT_ID_RE, PYTHON, TREE_DIGEST_DEFINITION,
     VISIBILITY_CHOICES, NamingPolicy, Refusal, checked_value, git_out,
-    load_yaml, recorded_gitlink, repo_basename, tree_digest,
+    load_yaml, recorded_gitlink, repo_basename, same_repository, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
     RULESET_HINT, SHAPE_REPOSITORY, CommandFailed, check_program,
-    commit_trailers, env_commit, materialize_family_root, run, stage_written,
-    trailer_line, write_lf,
+    commit_trailers, env_commit, escape_what_stdout_cannot_encode,
+    materialize_family_root, run, stage_written, trailer_line, write_lf,
 )
 
 NAMING_POLICY = SHAPE_ROOT / "contracts" / "repository-naming.yaml"
@@ -138,8 +141,45 @@ class Family:
                 if isinstance(row, dict)]
 
     def member(self, project: str) -> dict | None:
+        """The row for `project`, compared the way the forge compares a name.
+
+        GitHub resolves an owner and a repository name case-insensitively
+        (`repo_shape.same_repository`, #149), so `irss` and `IRSS` are ONE
+        member and a row typed the other way is not a stranger (#206). The
+        row's own spelling is the one it keeps: callers read `row["project"]`
+        and `row["path"]` back, never the spelling they were handed. An EXACT
+        match wins, so a family a pre-#206 `add` pinned twice (`IRRS` and
+        `irrs`) can still be mended by naming the row to touch; any other
+        spelling that fits two rows is refused rather than guessed.
+        """
+        rows = [row for row in self.members
+                if str(row.get("project")).lower() == project.lower()]
+        for row in rows:
+            if str(row.get("project")) == project:
+                return row
+        if len(rows) > 1:
+            raise Refusal(
+                "member-ambiguous",
+                f"{project} fits {len(rows)} rows of {self.data.get('name')}: "
+                + ", ".join(str(row.get("project")) for row in rows),
+                "Remediation: name one of them in the spelling the row uses; "
+                "the family pins one project twice, and `remove` takes the "
+                "extra one out.")
+        return rows[0] if rows else None
+
+    def holding(self, repository: str, project: str) -> dict | None:
+        """The row that already pins this repository, or None (#206).
+
+        By name first (`member`), then by the row's `repository:` — the
+        forge's own identity, which `repo_shape.same_repository` folds for
+        case — so `inkrouter/irrs` finds the row that pins `InkRouter/IRRS`.
+        """
+        row = self.member(project)
+        if row is not None:
+            return row
         return next((row for row in self.members
-                     if str(row.get("project")) == project), None)
+                     if same_repository(repository,
+                                        str(row.get("repository")))), None)
 
     def tracking(self) -> str:
         return checked_value("tracking_branch",
@@ -338,7 +378,9 @@ def _commit_one(root: Path, message: str, paths: list[str],
         if not env.get(key):
             env[key] = fallback
     proc = subprocess.run(args, cwd=str(root), input=message,
-                          capture_output=True, text=True, check=False, env=env)
+                          capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", check=False,
+                          env=env)
     if proc.returncode != 0:
         raise CommandFailed(args, root, proc.returncode,
                             proc.stderr + proc.stdout)
@@ -354,12 +396,14 @@ def _remote_is_empty(repository: str) -> bool | None:
     reliable signal — `size: 0` is also what a repository of small files says.
     """
     probe = subprocess.run(["gh", "repo", "view", repository, "--json", "name"],
-                           capture_output=True, text=True, check=False)
+                           capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", check=False)
     if probe.returncode != 0:
         return None
     commits = subprocess.run(
         ["gh", "api", f"repos/{repository}/commits?per_page=1"],
-        capture_output=True, text=True, check=False)
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        check=False)
     if commits.returncode != 0:
         if "empty" in (commits.stderr + commits.stdout).lower():
             return True
@@ -378,7 +422,8 @@ def _local_remote_is_empty(bare: Path) -> bool | None:
     if not bare.exists():
         return None
     out = subprocess.run(["git", "-C", str(bare), "rev-list", "--count",
-                          "--all"], capture_output=True, text=True, check=False)
+                          "--all"], capture_output=True, text=True,
+                         encoding="utf-8", errors="replace", check=False)
     if out.returncode != 0:
         raise Refusal("remote-unreadable",
                       f"{bare} exists but is not a git repository")
@@ -778,13 +823,15 @@ def cmd_init(args) -> int:
 def cmd_add(args) -> int:
     family = Family.open(args.family_root)
     repository, project = _checked_member(args.member)
-    if family.member(project) is not None:
+    held = family.holding(repository, project)
+    if held is not None:
         raise Refusal(
             "member-already-present",
-            f"{project} is already a member of {family.data.get('name')}",
+            f"{project} is already a member of {family.data.get('name')}: "
+            f"the row {held.get('project')} pins {held.get('repository')}",
             "Remediation: `family.py bump --member "
-            f"{project} --to <commit>` moves an existing member; `remove` "
-            "takes it out. Adding it twice is not a way to move it.")
+            f"{held.get('project')} --to <commit>` moves an existing member; "
+            "`remove` takes it out. Adding it twice is not a way to move it.")
     path = f"{MEMBERS_DIR}/{project}"
     if (family.root / path).exists():
         raise Refusal(
@@ -870,6 +917,33 @@ def cmd_add(args) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _nothing_to_record(root: Path, paths: list[str]) -> bool:
+    """Whether `git commit -- <paths>` has nothing to record: the gitlink the
+    member stands at and the manifest as rewritten are what `HEAD` already has.
+
+    ASKED OF GIT, AFTER THE SAME REWRITE THE COMMIT WOULD CARRY (#210), and
+    not read off the pin alone. A row that names `--to` is not by itself a bump
+    with nothing in it: `validate-family.py` names `bump --to <commit>` as the
+    repair for a gitlink that disagrees with the pin and for a digest that does
+    not recompute, and both leave the row's commit equal to `--to`; and so does
+    a bump an earlier run wrote and staged but never committed. In each of
+    them `git diff` finds something, and the commit goes ahead.
+    `--ignore-submodules=dirty` is what `git commit` itself ignores: files the
+    member holds untracked or modified are not a thing this commit records,
+    its HEAD is. The caller has staged the gitlink first, as `_commit_one`
+    would, so a stray one in the index is not a difference. Exit 1 is git's
+    "there is a difference"; any other failure is a real one and propagates.
+    """
+    try:
+        run(["git", "diff", "--quiet", "--ignore-submodules=dirty", "HEAD",
+             "--", *paths], cwd=root)
+    except CommandFailed as exc:
+        if exc.code == 1:
+            return False
+        raise
+    return True
+
+
 def cmd_bump(args) -> int:
     family = Family.open(args.family_root)
     project = checked_value("--member", repo_basename(args.member))
@@ -880,6 +954,7 @@ def cmd_bump(args) -> int:
             f"{project} is not a member of {family.data.get('name')}",
             "Remediation: `family.py add --member <org>/" + project
             + "` puts it in the family first.")
+    project = str(row["project"])
     commit = checked_value("--to", args.to).lower()
     if not COMMIT_RE.match(commit):
         raise Refusal(
@@ -916,7 +991,30 @@ def cmd_bump(args) -> int:
     rows = [(_member_row(project, project_id, str(row["repository"]), commit,
                          digest) if str(r.get("project")) == project else r)
             for r in family.members]
+    original = family.path.read_bytes()
     family.write_members(rows)
+    # THE GITLINK IS RE-STAGED BEFORE GIT IS ASKED, as `_commit_one` does it
+    # first anyway. An index still holding a stray gitlink somebody staged and
+    # never committed makes `git diff HEAD` find a difference the commit then
+    # does not find, and a bump to the pinned commit ended in the refusal #210
+    # is about. `validate-family.py` reads the index first, reports
+    # `member-gitlink-mismatch` and names this very command as the repair. The
+    # checkout above already moved the member to `--to`, so this stages that
+    # and nothing else: a submodule path stages its gitlink, never the
+    # member's files, and the manifest's own index state is left as found.
+    run(["git", "add", "--", path], cwd=family.root)
+    if _nothing_to_record(family.root, [path, MANIFEST]):
+        # The same sentence `bump-leg.py` answers the same re-run with, and
+        # exit 1, which is what this file's docstring says `nothing` is. The
+        # manifest goes back byte for byte as it was found: the rewrite
+        # recorded nothing, and an uncommitted hand edit it happened to
+        # overwrite is not this run's to discard.
+        family.path.write_bytes(original)
+        print(f"  {project:<16} {was[:12]} -> {commit[:12]} tree "
+              f"{digest[:12]}…")
+        print(f"\nnothing to do: {row['repository']} is already pinned at "
+              f"{commit[:12]} and every fact agrees.")
+        return 1
 
     head = _commit_one(
         family.root,
@@ -948,6 +1046,7 @@ def cmd_remove(args) -> int:
             "Remediation: `validate-family.py` lists what is here. Removing "
             "something that is not a member is a no-op worth refusing, "
             "because the argument is usually a typo for something that is.")
+    project = str(row["project"])
     path = str(row.get("path") or f"{MEMBERS_DIR}/{project}")
     # THE MEMBER REPOSITORY IS NOT TOUCHED. Removing a member unmounts it from
     # this holder and nothing else: the project keeps its name, its history,
@@ -1107,6 +1206,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # FIRST, so that every `print` after it -- `--help` included -- escapes
+    # a name stdout cannot encode rather than raising on it (#214).
+    escape_what_stdout_cannot_encode()
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)

@@ -11,7 +11,9 @@ WHAT IT DOES
      repositories and a rename. A leg path that is, holds or lies inside a
      path the shape writes into the assembly root (`contracts`,
      `project.yaml`, a `--pin`'s `contracts/<product>-pin.yaml`) is refused
-     just as early, for the same reason (#197).
+     just as early, for the same reason (#197), and so is a `--referent-chain`
+     link between the first and the last that is not a neutral product's
+     name (#251).
   2. Creates the three remotes: `gh repo create` normally, or three BARE
      repositories in a directory with `--local-remote-dir`, which is the test
      path and touches no network.
@@ -54,13 +56,13 @@ from repo_shape import (  # noqa: E402
     free_plan_secret_hint,
     COMMIT_RE, NEUTRAL_PRODUCT_OWNER, PROJECT_ID_RE, TREE_DIGEST_DEFINITION,
     VISIBILITY_CHOICES, NamingPolicy, Refusal, accepts_role, checked_value,
-    git_out, link_pins_from_trees, tree_digest,
+    git_out, link_pins_from_trees, repo_basename, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
     RULESET_HINT, SHAPE_REPOSITORY, CommandFailed,
     copy_tree, default_reference, descendant_note, election_date, env_commit,
-    git_init_commit, materialize_assembly_root, naming_block, run,
-    stage_written,
+    escape_what_stdout_cannot_encode, git_init_commit,
+    materialize_assembly_root, naming_block, run, stage_written,
 )
 # The leg-path rule `adopt-project.py` asks of its own paths (#179).
 from shape_materialize import refuse_bad_leg_paths  # noqa: E402
@@ -78,6 +80,12 @@ PIN_ARG_RE = re.compile(r"^(?P<name>[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?)@(?P<co
 #: How a neutral product's tree is read when the pin is taken from the forge
 #: rather than from a clone on this machine.
 GH_TREE_API = "repos/{repo}/git/trees/{commit}?recursive=1"
+
+#: The naming-policy form every link between a chain's first and last must
+#: classify as (#251). Each such link is an entry of the link before its
+#: `neutral_product_pins:`, the key a link is verified by
+#: (`referent.chain.link_declared_by`), so it is a neutral product's name.
+CHAIN_LINK_FORM = "neutral-product"
 
 
 def parse_pin(raw: str, owner: str = NEUTRAL_PRODUCT_OWNER) -> tuple[str, str, str]:
@@ -138,7 +146,10 @@ def pin_digest_from_gh(repository: str, commit: str) -> str:
     """
     proc = subprocess.run(
         ["gh", "api", GH_TREE_API.format(repo=repository, commit=commit)],
-        capture_output=True, text=True, check=False)
+        # UTF-8 and STRICT, not `errors="replace"`: this JSON becomes a
+        # digest, and a replaced byte would be a wrong digest with a
+        # confident tone (#217).
+        capture_output=True, text=True, encoding="utf-8", check=False)
     if proc.returncode != 0:
         raise Refusal(
             "pin-unreadable",
@@ -186,12 +197,14 @@ def remote_is_empty(repository: str) -> bool | None:
     reliable signal — `size: 0` is also what a repository of small files says.
     """
     probe = subprocess.run(["gh", "repo", "view", repository, "--json", "name"],
-                           capture_output=True, text=True, check=False)
+                           capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", check=False)
     if probe.returncode != 0:
         return None
     commits = subprocess.run(
         ["gh", "api", f"repos/{repository}/commits?per_page=1"],
-        capture_output=True, text=True, check=False)
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        check=False)
     if commits.returncode != 0:
         blob = (commits.stderr + commits.stdout).lower()
         if "empty" in blob:
@@ -216,7 +229,8 @@ def remote_visibility(repository: str) -> str | None:
     """
     proc = subprocess.run(
         ["gh", "repo", "view", repository, "--json", "visibility"],
-        capture_output=True, text=True, check=False)
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        check=False)
     if proc.returncode != 0:
         return None
     try:
@@ -231,7 +245,8 @@ def local_remote_is_empty(bare: Path) -> bool | None:
     if not bare.exists():
         return None
     out = subprocess.run(["git", "-C", str(bare), "rev-list", "--count", "--all"],
-                         capture_output=True, text=True, check=False)
+                         capture_output=True, text=True,
+                         encoding="utf-8", errors="replace", check=False)
     if out.returncode != 0:
         raise Refusal("remote-unreadable",
                       f"{bare} exists but is not a git repository")
@@ -239,6 +254,9 @@ def local_remote_is_empty(bare: Path) -> bool | None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # FIRST, so that every `print` after it -- `--help` included -- escapes
+    # a name stdout cannot encode rather than raising on it (#214).
+    escape_what_stdout_cannot_encode()
     parser = argparse.ArgumentParser(
         description=__doc__.splitlines()[0],
         formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -300,11 +318,13 @@ def main(argv: list[str] | None = None) -> int:
                              "reaches its referent through, e.g. "
                              "--referent-chain openXdox,openDox. Its first "
                              "entry must be one of the --pin products (the "
-                             "pin this project actually holds) and its last "
-                             "must be the `open<Product>` the name claims; "
-                             "the manifest RECORDS it, which is what makes a "
-                             "descendant that pins a LAYER a descendant "
-                             "(2026-09-05).")
+                             "pin this project actually holds), its last "
+                             "must be the `open<Product>` the name claims, "
+                             "and every link between them must be a neutral "
+                             "product's name (`open<Product>`, e.g. "
+                             "openXdox); the manifest RECORDS it, which is "
+                             "what makes a descendant that pins a LAYER a "
+                             "descendant (2026-09-05).")
     parser.add_argument("--pin-source", type=Path, default=None,
                         help="a local clone to compute --pin digests from, "
                              "instead of reading the forge with `gh api` (the "
@@ -519,6 +539,73 @@ def _identity(args, project: str) -> tuple[str, str, str, str, str]:
     return project_id, display, elected_on, reference, _elector(args)
 
 
+def referent_chain_links(raw: str) -> tuple:
+    """`--referent-chain`'s links: split on commas, each stripped, an empty
+    one dropped. ONE reading, for `_declaration` and for the check below, so
+    the links that are judged are the links that are recorded."""
+    return tuple(link.strip() for link in raw.split(",") if link.strip())
+
+
+def _refuse_malformed_chain_links(policy, chain: tuple) -> None:
+    """Every link between the chain's first and last is a neutral product's
+    name, or this refuses (#251).
+
+    `naming_block` writes the chain into `project.yaml` as a plain flow
+    sequence, `[openXdox, openDox]`, and nothing else looked at a MIDDLE
+    link: `_chain_shape_problem` asks the length, a repeat, the first link and
+    the last, and a link whose tree is not on the disk is declared-unverified,
+    a warning. On main through 150c41d, `--referent-chain openXdox,a #b,openDox`
+    created all three repositories, pushed both legs and exited 0 with a
+    manifest the project's own `validate-manifest.py` refused as
+    `yaml-unparsable` (the `#` began a comment), and `it's`, `a]b`, `null` and
+    `007` were each recorded as a different chain than the one typed.
+
+    THE NAMING POLICY ALREADY SAYS WHAT A LINK IS. Each link past the first is
+    read out of the link before its `neutral_product_pins:`, so it is the
+    name of a neutral product, and `CHAIN_LINK_FORM` is that family. A name of
+    that form is one plain YAML word, so the manifest stays plain and reads
+    back as typed. The link is judged at its basename, as `resolve_referent`
+    reads it and `naming_block` records it.
+
+    The FIRST and LAST links are left to the checks that already anchor them:
+    the first must be a `--pin` product and the last the referent the name
+    claims, both compared casefolded because a pin names WHICH repository, not
+    how it was typed. Each must casefold to a name this run already holds
+    (`[A-Za-z0-9_.-]`, or `open<Product>`), so neither can carry a `#`, a
+    quote, a bracket, a comma or a space.
+
+    Asked before `_declaration`, so before `gh api` reads a pin's tree and
+    before `--dry-run` returns: a dry run refuses exactly as the real run
+    does, and nothing has been created.
+
+    The chain and each bad link are quoted with `repr`, as `--pin` and `--id`
+    are in their refusals: a link is the operator's own argument, and one
+    that holds a newline, a carriage return or an escape byte prints as
+    `\\n`, `\\r` or `\\x1b`, so it cannot end the refusal's line and start
+    another that reads as a refusal of its own.
+    """
+    malformed = [link for link in chain[1:-1]
+                 if CHAIN_LINK_FORM not in {family for family, _role
+                                            in policy.matches(
+                                                repo_basename(link))}]
+    if not malformed:
+        return
+    form = (policy.family(CHAIN_LINK_FORM) or {}).get("pattern", "")
+    raise Refusal(
+        "chain-link-malformed",
+        f"--referent-chain {','.join(chain)!r}: "
+        + ", ".join(repr(link) for link in malformed)
+        + (" is not" if len(malformed) == 1 else " are not")
+        + " the name of a neutral product. Every link between the first and "
+        "the last is a product the link before it pins, and the manifest "
+        "records each one as a name.",
+        "Remediation: nothing was created. Spell each link between the first "
+        "and the last as the neutral product's repository name, "
+        f"`open<Product>` (the naming policy's `{form}`, e.g. openXdox). "
+        "`validate-repository-naming.py --explain <link>` says which form a "
+        "name is.")
+
+
 def _declaration(args) -> tuple[dict, set, tuple, dict]:
     """(c) What the project DECLARES about itself: `(pins, declared_pins,
     chain, link_pins)`.
@@ -533,7 +620,7 @@ def _declaration(args) -> tuple[dict, set, tuple, dict]:
     """
     pins = declared_pin_values(args)
     declared_pins: set[str] = set(pins)
-    chain = tuple(c.strip() for c in args.referent_chain.split(",") if c.strip())
+    chain = referent_chain_links(args.referent_chain)
     link_pins = link_pins_from_trees(chain, None, {}, args.pin_source) \
         if chain else {}
     return pins, declared_pins, chain, link_pins
@@ -1051,6 +1138,11 @@ def _scaffold(args) -> int:
     # satisfies no leg form at all, offered as ANY leg; and either of the two
     # CamelCase forms offered as the `spec` or `code` leg, because those names
     # carry the lowercase suffix and are ordinary project legs.
+    #
+    # A chain's middle links are NAMES, judged before `_declaration` asks
+    # `gh api` or git for any pin's tree (#251).
+    _refuse_malformed_chain_links(policy,
+                                  referent_chain_links(args.referent_chain))
     pins, declared_pins, chain, link_pins = _declaration(args)
     _check_declared_names(policy, names, declared_pins, chain, link_pins)
     topic = policy.topic_for(project_id)
