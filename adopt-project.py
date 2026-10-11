@@ -96,13 +96,15 @@ from repo_shape import (  # noqa: E402
     free_plan_secret_hint, REMEDIATION,
     COMMIT_RE, NEUTRAL_PRODUCT_OWNER, PROJECT_ID_RE, TREE_DIGEST_DEFINITION,
     VISIBILITY_CHOICES, NamingPolicy, Refusal, YamlError,
-    accepts_role, checked_value, git_out, load_yaml, parse_yaml, tree_digest,
+    accepts_role, checked_value, double_quoted, git_out, load_yaml,
+    parse_yaml, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
     ADOPT_MAKEFILE_BLOCK, SHAPE_REPOSITORY,
     CommandFailed, Materialized, assembly_root_paths, collision_follow_up,
     copy_tree, default_reference, election_date, env_commit, git_init_commit,
     materialize_assembly_root, naming_block, run, write_lf,
+    write_paths_listing,
 )
 # The leg-path rule (#179) is `scaffold-project.py`'s as much as adopt's, so it
 # is imported as one unit and not listed among the materializer's names above.
@@ -114,6 +116,12 @@ from shape_materialize import (  # noqa: E402
     refuse_bad_leg_paths as _refuse_bad_leg_paths,
 )
 import shape_advisory  # noqa: E402
+# #172's shape half, shared with the scaffold since #197 (see that section
+# below), under the names this file has always called it by.
+from shape_materialize import (  # noqa: E402
+    MOVE_THE_LEG, first_and_more as _first_and_more, path_overlap as _overlap,
+    shape_path_collisions,
+)
 
 #: The naming policy this tool classifies leg names against. One constant,
 #: because three spellings of the same path is how the second one goes stale.
@@ -214,12 +222,23 @@ FILTER_REPO_HINT = (
 # ---------------------------------------------------------------------------
 #
 # `repo_shape.parse_yaml` reads a SUBSET, so this writes the same subset: block
-# mappings, block sequences and single-line scalars. Everything it emits is
+# mappings, block sequences and single-line scalars: ONE line whatever the
+# string, because a quoted one is spelled by `repo_shape.double_quoted` from
+# the reader's own escape tables. A name holding a line break (the macOS
+# `Icon\r`), a control character or a byte that is not UTF-8 is one line the
+# reader gives back unchanged, and `check` can name it (#199);
+# `tests/test_adopt_plan_escapes.py` proves that round trip for every code
+# point to U+02FF and a sample above it, and for a seeded sample of strings
+# of them, not only for the strings a plan happens to hold; not for a bare
+# YAML keyword (`null`, `true`, `false`), which `y` writes unquoted and the
+# reader takes as None or a bool, #181's to fix. Everything it emits is
 # read back by `check`, and `tests/test_adopt_plan.py` round-trips a plan
 # through both, which is what keeps the writer and the reader honest about
 # each other.
 
-_PLAIN_RE = re.compile(r"^[A-Za-z_.][A-Za-z0-9_./@:+-]*$")
+#: Ends at `\Z`, not `$`: `$` also matches before a FINAL newline, and wrote a
+#: file named `Icon\n` bare, over two lines of the plan (#199).
+_PLAIN_RE = re.compile(r"^[A-Za-z_.][A-Za-z0-9_./@:+-]*\Z")
 
 
 def y(value) -> str:
@@ -234,8 +253,7 @@ def y(value) -> str:
     text = str(value)
     if text and _PLAIN_RE.match(text) and not text.endswith(":"):
         return text
-    escaped = text.replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{escaped}"'
+    return double_quoted(text)
 
 
 def emit(lines: list[str], key: str, value, indent: int = 0) -> None:
@@ -693,9 +711,26 @@ def _spelled(path: str) -> str:
     line. So a character that is not printable is spelled with a backslash,
     `\\xe9` for the byte 0xE9 and `\\n` for a newline, and so are a
     backslash and a backtick, so that the spelling reads one way only and
-    the backticks still delimit it.
+    the backticks still delimit it. The plan's own `path:` spells that byte
+    `\\udce9`, not `\\xe9` (`repo_shape.double_quoted`), because in YAML
+    `\\xe9` is the character U+00E9, which is another name: a question or a
+    report that says `caf\\xe9` is the entry `"caf\\udce9"` in the plan.
     """
     return "`" + "".join(map(_spelled_character, path)) + "`"
+
+
+def _shown(path: str) -> str:
+    """`path` in `plan`'s and `check`'s terminal report: as it is, unless a
+    character in it is not printable, and then `_spelled`. The plan file
+    holds such a name escaped (`repo_shape.double_quoted`); printed raw, a
+    carriage return sends the cursor back over the row and hides the name, a
+    line break splits the row, and a byte that is not UTF-8 (a surrogate
+    here) raised `UnicodeEncodeError` on a terminal strict about its
+    encoding -- macOS, a UTF-8 Linux locale, a Windows code page -- after the
+    plan was written (#199). The same holds for the source directory a local
+    `--source` names, which the report prints too. Every other name prints
+    exactly as it did."""
+    return path if path.isprintable() else _spelled(path)
 
 
 def _spelled_character(char: str) -> str:
@@ -997,10 +1032,13 @@ def _plan_leg_paths(plan: Plan) -> tuple[tuple, tuple]:
 # half for the `leg: root` answers it wrote itself, and refuses nothing for
 # it: those answers are the person's to change.
 
-#: Said where an overlap holds only once case is ignored.
-CASE_ASIDE = " once case is ignored, as a macOS or Windows disk does"
-#: The exit every collision has; a root-kept one has a second.
-MOVE_THE_LEG = "choose another path for the leg"
+# The question about `assembly_root_paths` -- `path_overlap`,
+# `first_and_more`, `shape_path_collisions` and the phrases they share --
+# moved to `scripts/shape_materialize.py` for #197, because
+# `scaffold-project.py` asks it of its own leg paths. `_shape_collisions`
+# below asks it with this tool's `COLLISION_DIR` and adds the `shape/` half,
+# and `leg_path_collisions` adds the root-kept half: only an adoption has
+# either.
 
 #: Why a mount at or under `COLLISION_DIR` is refused where no copy would land
 #: there (#172's review, P3-3): the directory is the shape's, whatever this
@@ -1021,41 +1059,12 @@ LEG_COLLISION_REMEDIATION = (
 )
 
 
-def _overlap(leg: str, other: str) -> tuple[str, str] | None:
-    """How the mount path `leg` stands to the path `other`: `(relation,
-    aside)`, the relation `is`, `contains` or `is inside`, and the aside
-    `CASE_ASIDE` when it holds only once case is ignored. None when the two
-    do not overlap at all."""
-    for mine, theirs, aside in ((leg, other, ""),
-                                (leg.casefold(), other.casefold(), CASE_ASIDE)):
-        if mine == theirs:
-            return "is", aside
-        if theirs.startswith(mine + "/"):
-            return "contains", aside
-        if mine.startswith(theirs + "/"):
-            return "is inside", aside
-    return None
-
-
-def _first_and_more(paths: list[str]) -> str:
-    """`a` or `a` and 2 more: one path named, the rest counted."""
-    more = f" and {len(paths) - 1} more" if len(paths) > 1 else ""
-    return f"`{paths[0]}`{more}"
-
-
 def _shape_collisions(what: str, value: str) -> list[str]:
-    """Where the mount path `value` overlaps what the shape writes."""
-    out: list[str] = []
-    files = [path for path in assembly_root_paths() if _overlap(value, path)]
-    if files:
-        relation, aside = _overlap(value, files[0])
-        them = "them" if len(files) > 1 else "it"
-        out.append(
-            f"{what} {value!r} {relation} {_first_and_more(files)}{aside}. "
-            f"The shape writes {them} into the assembly root, and `execute` "
-            f"would write {them} into the mounted leg or beside it under "
-            f"`{COLLISION_DIR}/`, leaving the root without {them}: "
-            f"{MOVE_THE_LEG}.")
+    """Where the mount path `value` overlaps what the shape writes: the
+    paths of `assembly_root_paths`, asked through the definition this tool
+    shares with `scaffold-project.py` (#197), then this tool's own
+    `COLLISION_DIR`, which only an adoption writes into."""
+    out = shape_path_collisions(what, value, COLLISION_DIR)
     beside = _overlap(value, COLLISION_DIR)
     if beside:
         relation, aside = beside
@@ -1291,7 +1300,7 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
     a question printed above a summary table is a question that gets scrolled
     past.
     """
-    print(f"source     {source.repository or source.path} @ "
+    print(f"source     {source.repository or _shown(str(source.path))} @ "
           f"{source.commit[:12]} ({source.branch}), "
           f"{len(tree)} files, {source.commit_count()} commits")
     print(f"project    {args.project} ({args.id}) in {args.org}, mode in-place")
@@ -1311,7 +1320,7 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
         print(f"{len(unresolved)} path(s) need a human or an AI to answer a "
               "question before `execute` will run:")
         for entry in unresolved:
-            print(f"  {entry.path}\n      {entry.question}")
+            print(f"  {_shown(entry.path)}\n      {entry.question}")
 
 
 def cmd_plan(args) -> int:
@@ -1381,7 +1390,7 @@ def seeding_warnings(seeded: list[str], allowed: set) -> list[str]:
 def _print_entries(entries: list[Entry]) -> None:
     print(f"\n{'path':<34} {'leg':<10} {'conf':<7} {'files':>6} {'rule'}")
     for entry in entries:
-        print(f"{entry.path:<34} {(entry.leg or 'REVIEW'):<10} "
+        print(f"{_shown(entry.path):<34} {(entry.leg or 'REVIEW'):<10} "
               f"{entry.confidence:<7} {entry.files:>6} {entry.rule}")
 
 
@@ -1936,8 +1945,8 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
     stays = [e for e in plan.entries if str(e.get("leg")) == "root"]
     drops = [e for e in plan.entries if str(e.get("leg")) == "drop"]
     seeded = seeded_legs(assigned_paths(plan.entries))
-    print(f"\nWHAT WILL HAPPEN, against {source.repository or source.path} @ "
-          f"{source.commit[:12]}:")
+    where = source.repository or _shown(str(source.path))
+    print(f"\nWHAT WILL HAPPEN, against {where} @ {source.commit[:12]}:")
     print(f"  create {names['spec']} and {names['code']} "
           f"({plan.get('visibility', 'private')})")
     print(f"  extract {len(moved)} path(s) with `git filter-repo`, history "
@@ -2485,7 +2494,9 @@ def _extract_leg(role: str, source: Source, work: Path, paths: list[str],
     # path contains - so on Windows every pattern would match nothing, the
     # filter would succeed, and the leg would be pushed EMPTY. A silent
     # extraction of nothing is the worst shape this failure could take.
-    write_lf(listing, "\n".join(paths) + "\n")
+    # And byte-exact: a path that is not UTF-8 is written as the bytes
+    # git records, where `write_lf` raised after both legs existed.
+    write_paths_listing(listing, paths)
     run(["git", "filter-repo", "--paths-from-file", str(listing), "--force"],
         cwd=work)
     head = git_out(["rev-parse", "HEAD"], cwd=work).lower()
