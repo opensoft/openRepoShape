@@ -43,6 +43,7 @@ from conftest import (ADOPT, REPO, SYNTHETIC_TREE, git, make_source_repo,
 
 sys.path.insert(0, str(REPO / "scripts"))
 from shape_materialize import PLACEHOLDER_RE  # noqa: E402
+from shape_materialize import SHAPE_PIN as MATERIALIZER_SHAPE_PIN  # noqa: E402
 
 #: What the end-to-end tests need and nothing else here does.
 needs_filter_repo = pytest.mark.skipif(
@@ -247,6 +248,27 @@ def test_every_path_the_shape_writes_is_refused_as_a_mount(adopter):
         collisions = adopter.leg_path_collisions((("--code-path", path),))
         assert len(collisions) == 1, (path, collisions)
         assert collisions[0].startswith(f"--code-path {path!r} is `{path}`")
+
+
+def test_plan_predicts_a_collision_for_every_path_the_shape_writes(adopter):
+    """`plan`'s follow-ups read the same list: a source that keeps any one of
+    those paths in the root is told, before `execute`, that the shape's copy
+    goes beside it. The list `_predict_collisions` kept itself lacked
+    `contracts/shape-pin.yaml`, which `execute` writes beside a kept one all
+    the same."""
+    for path in adopter.assembly_root_paths():
+        kept = adopter.Entry(path, adopter.Verdict(
+            "root", "test", "kept by the test", "high"), 1, 1)
+        assert adopter._predict_collisions([kept]) == [
+            adopter.collision_follow_up(path, f"{SHAPE_DIR}/{path}")], path
+
+
+def test_adopt_names_the_shape_pin_as_the_materializer_does(adopter):
+    """#167 named `contracts/shape-pin.yaml` in adopt-project.py, and #172
+    named it again in the materializer, which `assembly_root_paths` reads.
+    The two stay apart so #167's lines stay as they landed; this holds them
+    to one spelling."""
+    assert adopter.SHAPE_PIN == MATERIALIZER_SHAPE_PIN
 
 
 # --- the rule ------------------------------------------------------------

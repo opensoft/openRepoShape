@@ -1609,13 +1609,15 @@ def _predict_collisions(entries: list[Entry]) -> list[str]:
     function `execute` reports its actual collisions through — including the
     one collision whose answer is not "merge": an `AGENTS.md` or `CLAUDE.md`
     the source already holds needs ONE LINE ADDED, not a merge.
+
+    The PATHS come from `assembly_root_paths`, the list #172's mount rule
+    reads, so the two cannot list different files. The list this function
+    kept itself lacked `contracts/shape-pin.yaml`, which `execute` also
+    writes beside a copy the source keeps, and names in the split commit.
     """
     surviving = {e.path for e in entries if e.leg == "root"}
-    from shape_materialize import COPIED_FROM_SHAPE, COPIED_VERBATIM, TEMPLATED
-    shape_paths = [dst for _, dst in COPIED_FROM_SHAPE] + \
-        list(COPIED_VERBATIM) + list(TEMPLATED)
     out = []
-    for path in sorted(set(shape_paths)):
+    for path in sorted(set(assembly_root_paths())):
         if path in surviving or f"{path.split('/')[0]}/" in surviving:
             out.append(collision_follow_up(path, f"{COLLISION_DIR}/{path}"))
     return out
