@@ -729,9 +729,11 @@ def cross_leg_references(source: "Source", entries: list["Entry"],
     leg, so `--literal-pathspecs`. `-l` C-quoted a name outside printable
     ASCII (`"src/\\303\\234bersicht.py"`), so `-z`, read as `Source.tree`
     reads names, and each hit is spelled as a question spells a path, with
-    no backticks: one line of UTF-8 whatever its bytes. `--no-color`,
-    because `color.grep=always` wraps each name in escapes. And a grep that
-    FAILS is said, never read as "no file names it".
+    no backticks: one line of UTF-8 whatever its bytes; so is the spec
+    directory's own name. `--no-color`, because `color.grep=always` wraps
+    each name in escapes. A grep that FAILS is said, never read as "no file
+    names it", and so is one that cannot be asked: `-F` splits a pattern at
+    a line feed.
     """
     code_paths = [e.path.rstrip("/") for e in entries if e.leg == "code"]
     spec_dirs = [e.path for e in entries
@@ -740,17 +742,23 @@ def cross_leg_references(source: "Source", entries: list["Entry"],
         return []
     out: list[str] = []
     for spec_dir in spec_dirs:
+        named = "".join(map(_spelled_character, spec_dir))
+        if "\n" in spec_dir:
+            # `-F` reads a pattern holding a line feed as one pattern per
+            # line: `a<LF>b/` was searched as `a` OR `b/` and named files
+            # that never mention it, the way `*` did.
+            out.append(_search_by_hand(
+                named, "`git grep` reads each line of a pattern as a pattern "
+                "of its own, so it cannot search for this name"))
+            continue
         proc = subprocess.run(
             ["git", "--literal-pathspecs", "grep", "--no-color", "-z", "-l",
              "-I", "-F", "-e", spec_dir, source.commit, "--", *code_paths],
             cwd=str(source.path), capture_output=True, check=False)
         if proc.returncode not in (0, 1):
             why = _one_line(proc.stderr.decode("utf-8", "replace"))[:300]
-            out.append(
-                f"git could not search the files moving to the code leg for "
-                f"`{spec_dir}` (`git grep` exited {proc.returncode}: {why}); "
-                f"find the ones that name it by hand: each must read across "
-                f"the assembly root once `{spec_dir}` moves to the spec leg")
+            out.append(_search_by_hand(
+                named, f"`git grep` exited {proc.returncode}: {why}"))
             continue
         # `<commit>:<path>` per record; the commit is hex, so the first `:`
         # ends it and the rest is the path, raw.
@@ -764,14 +772,23 @@ def cross_leg_references(source: "Source", entries: list["Entry"],
         for hit in hits[:8]:
             shown = "".join(map(_spelled_character, hit))
             out.append(
-                f"{code_path}/{shown} names `{spec_dir}`, which moves to the "
+                f"{code_path}/{shown} names `{named}`, which moves to the "
                 f"spec leg: it must read across the assembly root — "
-                f"`../{spec_path}/{spec_dir}` relative to `{code_path}/` — or "
+                f"`../{spec_path}/{named}` relative to `{code_path}/` — or "
                 "take the path from the environment")
         if len(hits) > 8:
             out.append(f"… and {len(hits) - 8} more file(s) under the code leg "
-                       f"naming `{spec_dir}`")
+                       f"naming `{named}`")
     return out
+
+
+def _search_by_hand(named: str, why: str) -> str:
+    """The follow-up for a spec directory git did not search for: the
+    reason, and what to look for instead."""
+    return (f"git could not search the files moving to the code leg for "
+            f"`{named}` ({why}); find the ones that name it by hand: each "
+            f"must read across the assembly root once `{named}` moves to the "
+            "spec leg")
 
 
 def follow_ups_for(source: "Source", entries: list["Entry"], names: dict,

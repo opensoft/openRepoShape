@@ -9,11 +9,12 @@ where git reads OPTIONS: `-notes/` was a usage error that left no follow-up,
 and `-O<cmd>/` was `--open-files-in-pager`, a command git runs through a
 shell. The code entries were PATHSPECS: `:cache` read as the magic `:` and
 `*` matched files in the spec leg. `-l` C-quoted a name outside printable
-ASCII, `color.ui=always` wrapped each name in escapes, and a grep that failed
-was read as "no file names it". Each of those is one test here, through
-`plan` itself except the failing grep, which `plan` cannot provoke, and each
-measured failing on main at a5b09c3; `notes/` and `s?c/` are the controls
-that already passed there.
+ASCII, `color.ui=always` wrapped each name in escapes, a grep that failed
+was read as "no file names it", and `-F` split a spec directory named across
+a line feed into two patterns. Each of those is one test here, through `plan`
+itself except the failing grep, which `plan` cannot provoke, and the line
+feed, whose plan is #199's to write; each measured failing on main at
+a5b09c3, and `notes/` and `s?c/` are the controls that already passed there.
 
 The split's forced `git add -f` asks the same question of a path the shape
 wrote THROUGH a symlink the plan kept in the root: where it landed is the
@@ -255,6 +256,47 @@ def test_a_grep_that_fails_is_said_and_never_read_as_no_file(adopter,
         "); find the ones that name it by hand: each must read across the "
         "assembly root once `notes/` moves to the spec leg"), said[0]
     assert "\n" not in said[0]
+
+
+@posix_only
+def test_a_spec_directory_with_a_line_feed_is_left_to_a_human(adopter,
+                                                              tmp_path):
+    """`git grep -F` reads a pattern holding a line feed as one pattern per
+    line, so on main `a<LF>b/` was searched as `a` OR `b/` and the follow-up
+    named `src/other.py`, whose only text is `a = 1`: a file that never
+    mentions the directory, the way `*` named one. Now no grep is asked for
+    that name, the follow-up says so with the name spelled, and `notes/`
+    beside it is searched as before. Asked of `cross_leg_references`, since
+    a plan holding that entry is #199's to write; the directory's files go
+    into the TREE and never on the disk."""
+    path = make_source_repo(
+        tmp_path / "Thing", edits=(),
+        tree={**NOTES, "src/reader.py": READER.format("notes/"),
+              "src/other.py": "a = 1\n"})
+    blob = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"], cwd=str(path),
+        input=b"# notes\n", capture_output=True,
+        check=True).stdout.decode().strip()
+    records = b"".join(b"100644 " + blob.encode() + b"\t" + name + b"\x00"
+                       for name in (b"a\nb/one.md", b"a\nb/two.md"))
+    subprocess.run(["git", "update-index", "-z", "--index-info"],
+                   cwd=str(path), input=records, check=True)
+    git("-c", "user.name=Source Human", "-c", "user.email=human@source.invalid",
+        "commit", "-qm", "A directory named across a line", cwd=path)
+    source = adopter.Source.open(str(path), tmp_path / "work")
+    entries = adopter.walk(adopter.PathPolicy.load(adopter.PATH_POLICY),
+                           [(name, size) for name, _, _, size in source.tree()])
+    assert {e.path: e.leg for e in entries}["a\nb/"] == "spec"
+
+    said = adopter.cross_leg_references(source, entries, SPEC_PATH, CODE_PATH)
+
+    assert said == [
+        "git could not search the files moving to the code leg for `a\\nb/` "
+        "(`git grep` reads each line of a pattern as a pattern of its own, so "
+        "it cannot search for this name); find the ones that name it by "
+        "hand: each must read across the assembly root once `a\\nb/` moves "
+        "to the spec leg",
+        follow_up("src/reader.py", "notes/")]
 
 
 # ---------------------------------------------------------------------------
