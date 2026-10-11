@@ -36,6 +36,20 @@ Three groups, each the half of the fix it pins:
     commit, and nothing the run did not write is swept into the index —
     not even an ignored file a glob character in an added name would match.
 
+And a fourth, the rollback's own reads and the line it ends with, each
+pinned where it could regress without any other test noticing:
+
+  * HEAD IS READ AS UTF-8. A start branch `feature/café` is returned to
+    under the ANSI code page too (simulated, so it runs on every platform;
+    and for real in a child under `LC_ALL=C`), because `_git_answer` names
+    its codec.
+  * THE BRANCH HEAD IS ON IS NEVER DELETED. A switch back that fails — an
+    `index.lock` held for a moment — leaves the branch and says switch
+    first, then delete.
+  * THE `NEXT` HINT PASTES WHOLE. Every path in it is quoted and the add is
+    `--literal-pathspecs`, so a name holding `[` stages itself and nothing
+    its glob matches, in the shell and in git.
+
 THE FIXTURE is `tests/test_update_shape.py`'s: a clone of this repository at
 A and `Atlas` scaffolded from it into bare repositories on disk, with a
 README that ends in a `Shape:` line naming A, so a run moves that line too.
@@ -55,6 +69,8 @@ No network is used and `gh` is never invoked.
 
 from __future__ import annotations
 
+import codecs
+import json
 import os
 import shlex
 import shutil
@@ -62,6 +78,7 @@ import stat
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -833,3 +850,327 @@ def test_force_stage_forces_exactly_the_named_paths_and_nothing_else(
     shape_materialize.force_stage(Path("root"), [])
     assert calls == [["git", "--literal-pathspecs", "add", "-f", "--",
                       ROOT_ADDED, SCRIPT_ADDED]]
+
+
+# ---------------------------------------------------------------------------
+# What the rollback reads from git, and the hint `apply` ends with
+# ---------------------------------------------------------------------------
+
+
+def a_repository_on(tmp_path: Path, env: dict, start: str) -> Path:
+    """A repository with one commit and HEAD on a branch called `start`.
+    The name is handed to git as the bytes it is, so a file system or a
+    command-line codec that is not UTF-8 cannot change which branch this is."""
+    work = tmp_path / "root"
+    work.mkdir()
+
+    def run(*args: str) -> bytes:
+        return git_bytes(env, *args, cwd=work)
+
+    run("init", "-q")
+    (work / "a.md").write_bytes(b"a\n")
+    run("add", "--", "a.md")
+    run("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m",
+        "one")
+    run("checkout", "-q", "-b", os.fsdecode(start.encode("utf-8")))
+    return work
+
+
+#: Names HEAD may be on that a locale codec misreads. `é` is `c3 a9` in
+#: UTF-8, which the ANSI code page (cp1252) reads as TWO letters, `Ã©`, so
+#: `feature/café` comes back as another branch's name; `Ý` is `c3 9d`, and
+#: cp1252 leaves `9d` undefined, so its strict decode RAISES. Both are legal
+#: file names on Windows, macOS and Linux, so both run everywhere.
+NON_ASCII_STARTS = [pytest.param("feature/café", id="read-as-other-letters"),
+                    pytest.param("Ýmir", id="read-as-an-error")]
+
+
+def under_the_ansi_code_page(patched) -> None:
+    """`subprocess.run(..., text=True)` as Windows runs it when
+    `PYTHONUTF8` is not set and no `encoding` is named: the ANSI code page,
+    strictly. CI's Windows job sets `PYTHONUTF8=1`, which HIDES the
+    difference, and Linux has no such default to switch to, so the codec is
+    imposed on every text-mode call that does not name its own — argument
+    encoding is left alone, which is what Windows does too (git receives
+    UTF-16 and converts it)."""
+    real = subprocess.run
+
+    def run(*args, **kwargs):
+        if (kwargs.get("text") or kwargs.get("universal_newlines")) \
+                and not kwargs.get("encoding"):
+            kwargs["encoding"] = "cp1252"
+        return real(*args, **kwargs)
+
+    patched.setattr(subprocess, "run", run)
+
+
+@pytest.mark.parametrize("start", NON_ASCII_STARTS)
+def test_a_non_ascii_start_branch_is_returned_to_under_the_ansi_code_page(
+        tmp_path, quiet, monkeypatch, start):
+    """HEAD IS READ AS UTF-8, NOT WITH THE LOCALE'S CODEC. `_symbolic_head`
+    asks `_git_answer`, which decoded with the locale: on Windows a start
+    branch `feature/café` was kept as `feature/cafÃ©`, the switch back named
+    a branch that does not exist, and the rollback deleted the branch HEAD
+    was on and printed a fix for the wrong name. The two names here fail two
+    ways under that codec, the second by raising out of an answer that must
+    not. The scenario is `apply --branch`'s failure at its smallest: the
+    branch is made, then the undo runs."""
+    for name, value in quiet.items():
+        monkeypatch.setenv(name, value)
+    update_shape = load(UPDATE, "update_shape_non_ascii_start")
+    work = a_repository_on(tmp_path, quiet, start)
+    new = "shape/update-x"
+    with monkeypatch.context() as patched:
+        under_the_ansi_code_page(patched)
+        try:
+            misread = subprocess.run(
+                ["git", "symbolic-ref", "HEAD"], cwd=str(work),
+                capture_output=True, text=True, check=False).stdout
+        except UnicodeDecodeError:
+            misread = None
+        assert misread != f"refs/heads/{start}\n", (
+            "the simulated code page reads the name correctly, so nothing "
+            "here would catch a decode that does not name UTF-8")
+
+        assert update_shape._symbolic_head(work) == f"refs/heads/{start}"
+        ledger = update_shape.Rollback(work)
+        ledger.new_branch(new)
+        assert ledger.branch[1] == start, ledger.branch
+        done: list[str] = []
+        left: list[str] = []
+
+        ledger._undo_branch(done, left)
+
+    assert left == [], left
+    assert f"switched  HEAD back to {start}" in done, done
+    assert any(line.startswith(f"deleted   {new}") for line in done), done
+    assert git_bytes(quiet, "symbolic-ref", "HEAD", cwd=work) \
+        == b"refs/heads/" + start.encode("utf-8") + b"\n"
+    assert subprocess.run(
+        ["git", "show-ref", "--quiet", "--verify", f"refs/heads/{new}"],
+        cwd=str(work), capture_output=True, check=False,
+        env={**os.environ, **quiet}).returncode != 0, (
+        "the branch this run created is gone")
+
+
+#: What the child does: load the tool the way the tests do and read HEAD
+#: through the function the rollback uses. It prints ONE line of ASCII JSON,
+#: so a stdout that cannot encode `é` is not what is being measured, and the
+#: branch's name travels back as `ascii()`'s escapes. A codec is fixed when
+#: an interpreter starts, so this process cannot reproduce a C locale by
+#: setting an environment variable afterwards.
+CHILD = r"""
+import importlib.util, json, locale, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("update_shape_c_locale", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+answer = {"codec": locale.getpreferredencoding(False)}
+try:
+    answer["head"] = ascii(module._symbolic_head(Path(sys.argv[2])))
+except Exception as exc:
+    answer["raised"] = type(exc).__name__ + ": " + str(exc)
+print(json.dumps(answer))
+"""
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="a C locale is a POSIX idea: Windows decodes with the ANSI code "
+           "page, which the in-process test above imposes on every platform")
+@pytest.mark.parametrize("start", NON_ASCII_STARTS)
+def test_head_is_read_as_utf8_by_an_interpreter_started_under_a_c_locale(
+        tmp_path, quiet, start):
+    """The same read, for real: a child started with `LC_ALL=C PYTHONUTF8=0`,
+    whose text mode is ASCII. Only HEAD's name is asked for — the switch back
+    itself cannot run in such a child on POSIX, where an `é` is not a
+    command-line argument — which is all `_git_answer` decides."""
+    work = a_repository_on(tmp_path, quiet, start)
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith(("LC_", "LANG", "PYTHONUTF8",
+                                  "PYTHONIOENCODING", "PYTHONCOERCE"))}
+    env.update(quiet)
+    env.update({"LC_ALL": "C", "PYTHONUTF8": "0",
+                "PYTHONDONTWRITEBYTECODE": "1"})
+    proc = subprocess.run(
+        [sys.executable, "-c", CHILD, str(UPDATE), str(work)],
+        capture_output=True, env=env, stdin=subprocess.DEVNULL, check=False)
+    stderr = proc.stderr.decode("utf-8", "replace")
+    assert proc.returncode == 0, f"the child died:\n{stderr}"
+    answer = json.loads(proc.stdout.decode("ascii"))
+    if codecs.lookup(answer["codec"]).name == "utf-8":
+        pytest.skip(f"this platform reads a child's output as "
+                    f"{answer['codec']} under LC_ALL=C PYTHONUTF8=0, so there "
+                    "is no non-UTF-8 locale to reproduce the failure in")
+    assert "raised" not in answer, (
+        f"`_symbolic_head` raised under {answer['codec']}: {answer['raised']}")
+    assert answer["head"] == ascii(f"refs/heads/{start}"), answer
+
+
+def hold_the_index_once_the_branch_exists(root) -> None:
+    """A `post-checkout` hook that takes `.git/index.lock` the first time it
+    runs and keeps it — an editor's `git status` caught holding the index.
+    `checkout -b` has finished with the index by the time the hook runs, so
+    the branch exists and HEAD is on it; the staging that follows then finds
+    the lock, and so does the switch back. One shot: the marker keeps the
+    hook from taking the lock again after the test has cleared it."""
+    hooks = root / ".git" / "refusing-hooks"
+    hooks.mkdir()
+    hook = hooks / "post-checkout"
+    hook.write_bytes(b"#!/bin/sh\n"
+                     b"[ -e .git/refusing-hooks/held ] && exit 0\n"
+                     b": > .git/refusing-hooks/held\n"
+                     b": > .git/index.lock\n"
+                     b"exit 0\n")
+    hook.chmod(0o755)
+    git("config", "core.hooksPath", hooks.as_posix(), cwd=root)
+
+
+def steps_of(command: str) -> list[list[str]]:
+    """A line of `&&`-joined commands, split the way a POSIX shell would."""
+    steps: list[list[str]] = [[]]
+    for word in shlex.split(command):
+        if word == "&&":
+            steps.append([])
+        else:
+            steps[-1].append(word)
+    return steps
+
+
+def test_a_switch_back_git_will_not_make_leaves_the_branch_head_is_on(
+        root, standard, quiet):
+    """THE BRANCH HEAD IS ON IS NOT DELETED. The failure here is the one the
+    review reproduced at the git level: the branch is made, then `.git/
+    index.lock` appears — a concurrent `git status` from an editor — so the
+    staging fails and the switch back exits 128. `update-ref -d` does not
+    take that lock, and used to delete the branch under HEAD all the same:
+    HEAD named a ref with no commit, and `git status` said "No commits yet"
+    over a repository with a history. Now the branch is left, HEAD is left
+    on it, both are listed, and the printed line switches FIRST — `git
+    branch -D` refuses the branch that is checked out — and then deletes;
+    run once the lock is gone, it makes the tree whole."""
+    hold_the_index_once_the_branch_exists(root)
+    operators_staged_work(root)
+    commit = git("rev-parse", "HEAD", cwd=root).stdout.strip()
+    checked = check(root, standard, quiet)
+    before = snapshot(root, quiet)
+
+    result = apply(root, standard, quiet, *ADD_ARGS, "--branch", BRANCH)
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert (f"REFUSED staging the --add file(s) {', '.join(ADDITIONS)} on "
+            f"{BRANCH}") in result.stderr, result.stderr
+    assert "index.lock" in result.stderr, (
+        "the failure injected is the held index, not some other one")
+    assert ("ROLLED BACK IN PART: the tree is NOT as it was. Put back:"
+            in result.stderr), result.stderr
+    assert f"deleted   {BRANCH}" not in result.stderr, result.stderr
+    assert git("symbolic-ref", "HEAD", cwd=root).stdout.strip() \
+        == f"refs/heads/{BRANCH}", "the switch back did fail"
+    assert git("rev-parse", "--verify", "--quiet", f"refs/heads/{BRANCH}",
+               cwd=root).stdout.strip() == commit, (
+        "HEAD is on a branch that still names the commit it was made at, "
+        "never on one that names nothing")
+
+    heading = "  NOT put back — finish these by hand:\n"
+    assert heading in result.stderr, result.stderr
+    left = [line.strip() for line in
+            result.stderr.split(heading, 1)[1].splitlines()
+            if line.startswith("    ")]
+    assert len(left) == 2, left
+    assert left[0].startswith("HEAD      is not back on main: "), left
+    said = (f"branch    {BRANCH}, which this run created, was not deleted "
+            "because HEAD is still on it (HEAD would name no commit); "
+            "switch first, then delete: ")
+    assert left[1].startswith(said), left
+    switch, delete = steps_of(left[1][len(said):])
+    assert Path(switch[2]).resolve() == root.resolve(), switch
+    assert (switch[:2], switch[3:]) == (["git", "-C"], ["checkout", "main"])
+    assert (delete[:2], delete[3:]) == (["git", "-C"],
+                                        ["branch", "-D", BRANCH])
+    assert steps_of(left[0].split(": ", 1)[1]) == [switch], (
+        "the HEAD line and the branch line switch the same way")
+
+    (root / ".git" / "index.lock").unlink()
+    for step in (switch, delete):
+        subprocess.run(step, check=True, capture_output=True,
+                       env={**os.environ, **quiet})
+    assert_same_tree(before, snapshot(root, quiet))
+    assert check(root, standard, quiet).stdout == checked.stdout
+
+
+def test_the_next_hint_quotes_every_path_and_adds_them_literally(capsys):
+    """THE HINT IS A LINE A PERSON PASTES. `add -f` is the dangerous word in
+    it: an added name holding `[` pasted bare is a pattern the shell expands
+    to an ignored neighbour, and `-f` forces that in. So each path is quoted
+    for the shell — the commit's list too, so the line pastes whole — and
+    the add is `--literal-pathspecs`, which `force_stage` passes for the same
+    reason and which quoting cannot replace: git reads a pathspec as a glob
+    itself. Taken apart the way a shell would, the line is exactly three
+    commands, whose words are exactly the names."""
+    update_shape = load(UPDATE, "update_shape_next_hint")
+    added = ["docs/guide[1].md", "docs/shape guide.md", "it's [x].md"]
+    paths = sorted({"contracts/shape-pin.yaml", "project.yaml", *added})
+    target = "ab" * 20
+    args = SimpleNamespace(branch=None, pr=False, push=False)
+
+    update_shape.next_line(Path("root"), args, paths, target, added)
+
+    line = capsys.readouterr().out.strip()
+    assert line.startswith("NEXT  "), line
+    assert steps_of(line[len("NEXT  "):]) == [
+        ["git", "-C", "root", "checkout", "-b", f"shape/update-{target[:12]}"],
+        ["git", "-C", "root", "--literal-pathspecs", "add", "-f", "--",
+         *added],
+        ["git", "-C", "root", "commit", "-m",
+         f"Re-sync the shape @ {target[:12]}", "--", *paths]], line
+
+    update_shape.next_line(Path("root"), args, paths, target, [])
+    plain = capsys.readouterr().out.strip()
+    assert [step[3] for step in steps_of(plain[len("NEXT  "):])] \
+        == ["checkout", "commit"], "nothing added, so nothing is staged"
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="the hint is a POSIX-shell line, which Windows' stock shells do "
+           "not run; the test above takes it apart on every platform")
+def test_the_next_hint_pasted_into_a_shell_commits_the_named_file_alone(
+        root, standard, quiet):
+    """THE REVIEW'S REPRODUCTION, WHOLE. An ignored `docs/guide1.md` sits
+    beside the added `docs/guide[1].md`, and the hint `apply` prints is
+    pasted into `sh` from the root, where a bare `docs/guide[1].md` would be
+    expanded to the neighbour. It makes the branch, force-stages the named
+    file and commits it — and the neighbour stays out of the index, out of
+    the commit and on the disk."""
+    exclude = root / ".git" / "info" / "exclude"
+    exclude.parent.mkdir(parents=True, exist_ok=True)
+    exclude.write_bytes((exclude.read_bytes() if exclude.is_file() else b"")
+                        + f"{GLOB_NEIGHBOUR}\n".encode())
+    write_stray(root, GLOB_NEIGHBOUR)
+    assert ignored(root, GLOB_NEIGHBOUR, quiet)
+    assert not ignored(root, GLOB_ADDED, quiet)
+    applied = apply(root, standard, quiet, "--add", GLOB_ADDED,
+                    at=standard["c"])
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    hints = [line for line in applied.stdout.splitlines()
+             if line.startswith("NEXT  ")]
+    assert len(hints) == 1, applied.stdout
+    hint = hints[0][len("NEXT  "):]
+    assert f"add -f -- '{GLOB_ADDED}' &&" in hint, hint
+
+    pasted = subprocess.run(
+        ["sh", "-c", hint], cwd=str(root), capture_output=True, text=True,
+        check=False, env={**os.environ, **quiet,
+                          "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                          "GIT_COMMITTER_NAME": "t",
+                          "GIT_COMMITTER_EMAIL": "t@t"})
+
+    assert pasted.returncode == 0, pasted.stderr + pasted.stdout
+    assert git("symbolic-ref", "--short", "HEAD", cwd=root).stdout.strip() \
+        == f"shape/update-{standard['c'][:12]}"
+    assert committed_files(root) == {CHANGED, PIN, MANIFEST, README,
+                                     GLOB_ADDED}, (
+        "the commit holds the named file and not its glob neighbour")
+    assert git("ls-files", "--", GLOB_NEIGHBOUR, cwd=root).stdout == ""
+    assert (root / GLOB_NEIGHBOUR).is_file()

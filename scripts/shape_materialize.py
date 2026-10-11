@@ -522,14 +522,16 @@ def env_commit(work: Path, message: str) -> None:
 def force_stage(work: Path, paths=()) -> None:
     """Stage exactly `paths`, FORCED past any ignore rule, and nothing else.
 
-    THE FORCED ADD THE SCAFFOLD, `family.py init` AND `update-shape.py`
-    SHARE. A file the shape wrote and pinned has to reach the commit
-    whatever the operator's own excludes say — a global `core.excludesFile`,
-    `.git/info/exclude`, a `.gitignore` the project keeps — because a pin
-    row naming a file the commit lacks is a red `validate-pins.py` on the
-    next clone (#175). `-f` over the NAMED paths and never over `.`, for the
-    reason `stage_written` gives. (`adopt-project.py` still spells two forced
-    adds of its own, which predate this helper and do not call it.)
+    THE FORCED ADD THE SCAFFOLD, `family.py init`, `adopt-project.py`'S
+    SEEDED LEG AND `update-shape.py` SHARE; the seeded leg reaches it
+    through `git_init_commit`, as `stage_written` says. A file the shape
+    wrote and pinned has to reach the commit whatever the operator's own
+    excludes say — a global `core.excludesFile`, `.git/info/exclude`, a
+    `.gitignore` the project keeps — because a pin row naming a file the
+    commit lacks is a red `validate-pins.py` on the next clone (#175). `-f`
+    over the NAMED paths and never over `.`, for the reason `stage_written`
+    gives. (`adopt-project.py` still spells two forced adds of its own,
+    which predate this helper and do not call it.)
 
     EACH NAME IS TAKEN LITERALLY (`--literal-pathspecs`, #202). A pathspec
     is a glob to git, so a copy-list entry named `docs/guide[1].md` also

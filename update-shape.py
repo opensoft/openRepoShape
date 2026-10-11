@@ -959,10 +959,20 @@ def _git_answer(root: Path, args: list) -> "str | None":
     `git` binary, and `readme_is_committed` documents that case as NOT
     committed, so the raise is caught here rather than left to escape a
     classification that must not raise.
+
+    READ AS UTF-8, NEVER WITH THE LOCALE'S CODEC (#217). Git writes a branch
+    or path name as UTF-8 whatever the locale says. Where the codec is the
+    ANSI code page — Windows without `PYTHONUTF8=1` — `feature/café` came
+    back as `feature/cafÃ©`, so `Rollback` kept a start branch git has never
+    heard of and could not return HEAD to the real one, and a name holding a
+    byte that code page leaves undefined raised `UnicodeDecodeError` out of
+    the very answer that "may not raise". `errors="replace"` keeps a name
+    that is not UTF-8 at all from doing the same.
     """
     try:
         proc = subprocess.run(["git", *args], cwd=str(root),
-                              capture_output=True, text=True, check=False)
+                              capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", check=False)
     except OSError:
         return None
     return proc.stdout if proc.returncode == 0 else None
@@ -1814,12 +1824,25 @@ class Rollback:
     def _undo_branch(self, done: list[str], left: list[str]) -> None:
         """HEAD back where it was, and the branch this run created gone —
         but only while that branch still names the commit it was created
-        at, which `update-ref -d <ref> <old>` checks for itself."""
+        at, which `update-ref -d <ref> <old>` checks for itself, and never
+        while HEAD is still attached to it.
+
+        THE BRANCH HEAD IS ON IS NOT DELETED (#202). The switch back is a
+        `git checkout`, and it can fail — a `.git/index.lock` an editor's
+        `git status` holds for a moment is enough. `update-ref -d` does not
+        take that lock, so it went on to delete the branch under HEAD, which
+        then named no commit: `git status` said "No commits yet" and listed
+        every file as staged for a first commit, in a repository with a
+        history. The branch is LEFT and listed, with the switch and then
+        the deletion, in the order that works: git itself refuses `branch
+        -D` on the branch that is checked out.
+        """
         if self.branch is None:
             return
         branch, start, commit = self.branch
         ref = f"refs/heads/{branch}"
         where = start or f"{commit[:12]} (detached)"
+        back = [start] if start else ["--detach", commit]
         moved = _symbolic_head(self.root) == ref
         if moved:
             _git_quietly(["git", "checkout", "-q", start, "--"] if start
@@ -1829,11 +1852,17 @@ class Rollback:
             done.append(f"switched  HEAD back to {where}" if moved
                         else f"kept      HEAD on {where}, where it started")
         else:
-            back = [start] if start else ["--detach", commit]
             left.append(f"HEAD      is not back on {where}: "
                         + _by_hand(self.root, "checkout", *back))
         if not branch_exists(self.root, branch):
             done.append(f"absent    {branch} (never created)")
+            return
+        if _symbolic_head(self.root) == ref:
+            left.append(f"branch    {branch}, which this run created, was not "
+                        "deleted because HEAD is still on it (HEAD would "
+                        "name no commit); switch first, then delete: "
+                        + _by_hand(self.root, "checkout", *back) + " && "
+                        + _by_hand(self.root, "branch", "-D", branch))
             return
         _git_quietly(["git", "update-ref", "-d", ref, commit], self.root)
         if branch_exists(self.root, branch):
@@ -1884,8 +1913,13 @@ def _by_hand(root: Path, *args: str) -> str:
     `shlex`, the standard library's, because this tool has no quoter of its
     own: the doctor's platform-aware `quote_arg` lives in `shape-doctor.py`
     by that file's own contract. A value that needs no quoting comes back
-    exactly as it went in, so an ordinary root prints what it always
-    printed.
+    exactly as it went in, so ON POSIX an ordinary root prints what it
+    always printed. ON WINDOWS IT DOES NOT: every root there holds a
+    backslash, which is outside `shlex`'s safe set, so `shlex.join` quotes
+    the root and a line that used to print it bare now prints it in single
+    quotes. That is deliberate, and not worth a second quoter: these are
+    lines for a POSIX shell — Git Bash is one, cmd.exe and PowerShell are
+    not — as this tool's other `NEXT` lines are too.
     """
     return shlex.join(["git", "-C", str(root), *args])
 
@@ -1924,8 +1958,9 @@ def _index_by_hand(root: Path, paths: list[str], before: bytes) -> list[str]:
         elif len(entries) == 1 and entries[0][2] == "0":
             mode, sha, _ = entries[0]
             lines.append(
-                f"{said}had {mode} {sha[:12]} staged before, which `git "
-                "reset` would replace with HEAD's: " + _by_hand(
+                f"{said}had {mode} {sha[:12]} staged before, and `git "
+                "reset` would write HEAD's entry in its place, which is "
+                "not necessarily that one: " + _by_hand(
                     root, "update-index", "--add", "--cacheinfo",
                     f"{mode},{sha},{path}"))
         else:
@@ -2339,10 +2374,21 @@ def next_line(root: Path, args, paths: list[str], target: str,
     # as `commit_on_branch` stages them (#202): a plain `git add` refuses a
     # path the operator's own excludes ignore, and a pinned copy left out of
     # the commit is a red `validate-pins.py` on the next clone.
-    stage = f"add -f -- {' '.join(added)} && git -C {root} " if added else ""
+    #
+    # QUOTED, AND LITERAL (#202). `-f` is what makes a glob dangerous here: a
+    # name holding `[`, pasted bare, is a pattern the SHELL expands to an
+    # ignored neighbour (`docs/guide[1].md` -> `docs/guide1.md`), and `-f`
+    # forces the neighbour in. Quoting stops the shell and not git, which
+    # reads the pathspec as a glob too, so the add also says
+    # `--literal-pathspecs`, as `force_stage` does. The commit's own list is
+    # quoted for the shell the same way, so the whole line pastes whole. No
+    # copy-list entry holds a glob character today; an ordinary name prints
+    # exactly as it did.
+    stage = (f"--literal-pathspecs add -f -- {shlex.join(added)} && git -C "
+             f"{root} " if added else "")
     print(f"NEXT  git -C {root} checkout -b shape/update-{target[:12]} && git "
           f"-C {root} {stage}commit -m 'Re-sync the shape @ {target[:12]}' -- "
-          + " ".join(paths))
+          + shlex.join(paths))
 
 
 # ---------------------------------------------------------------------------

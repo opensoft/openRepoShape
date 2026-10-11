@@ -379,9 +379,12 @@ def test_add_copies_the_file_appends_its_row_and_stays_green(root, standard):
     assert not (root / ADDED).stat().st_mode & 0o111, (
         "and only what it names")
     assert pin(root)["commit"].lower() == standard["c2"]
-    assert f"add -f -- {ADDED} {ADDED_SCRIPT} &&" in result.stdout, (
+    assert (f"--literal-pathspecs add -f -- {ADDED} {ADDED_SCRIPT} &&"
+            in result.stdout), (
         "the NEXT hint has to work when a human pastes it, and `git commit -- "
-        "<path>` refuses a path git has never heard of")
+        "<path>` refuses a path git has never heard of; and it forces the "
+        "names LITERALLY, as `force_stage` does, so an ordinary name prints "
+        "unquoted and one holding a glob character cannot pull in a neighbour")
     validators_are_green(root)
 
 
