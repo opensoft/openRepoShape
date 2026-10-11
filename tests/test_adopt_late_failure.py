@@ -586,6 +586,26 @@ def test_an_interrupted_leg_still_says_what_it_left(
     assert FIX_FIRST not in notice
 
 
+def test_an_interrupted_split_still_says_what_it_left(
+        adopter, monkeypatch, capsys, tmp_path):
+    """The same for the split: both legs are pushed, so the notice says so,
+    with nothing to fix first, and the interrupt is re-raised."""
+    def interrupted(*_args):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(adopter, MOUNT, interrupted)
+
+    with pytest.raises(KeyboardInterrupt):
+        adopter._commit_the_split(**split_arguments(
+            tmp_path, source_of(adopter, tmp_path)))
+
+    err = capsys.readouterr().err
+    assert "STOPPED mounting the legs by KeyboardInterrupt." in err
+    notice = the_notice(err)
+    assert BOTH_PUSHED in notice
+    assert FIX_FIRST not in notice
+
+
 @pytest.mark.parametrize("seeded", [[], [SPEC]],
                          ids=["extracted-leg", "seeded-leg"])
 def test_a_leg_is_pushed_last_so_the_notice_cannot_miscount_it(
@@ -905,6 +925,9 @@ def test_a_split_branch_left_behind_is_refused_before_any_leg_exists(
         f"{commit_of(source)[:12]} nor a commit behind it")
     assert refusal.remediation.startswith(
         "Remediation: no leg repository was created and nothing was pushed.")
+    # `adopt_branch:` is a plan value, and may name a branch of the source's
+    # own: the way out for that is not its deletion (#188's review, N1).
+    assert "give `adopt_branch:` a name no branch has" in refusal.remediation
     assert no_leg_exists(tmp_path)
 
     deleted = subprocess.run(printed_command(refusal.remediation,
@@ -1239,6 +1262,10 @@ def test_a_failed_verification_is_flushed_and_its_way_out_runs(tmp_path):
                if line.startswith((BARE_LINE, "  spec", "  code", "  split",
                                    "  added"))]
     assert max(printed) < finding, failed.stdout
+    # The finding's own exit points at the way out below, which "re-run
+    # into fresh legs" alone left out the work directory and the branch of.
+    assert ("send that path to a leg or `drop` it, and re-run as the end of "
+            "this report says") in lines[finding]
     notice = the_notice(failed.stdout)
     assert BOTH_PUSHED in notice
     assert FIX_FIRST in notice
