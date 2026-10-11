@@ -282,7 +282,7 @@ def leg_placement(submodule: Path) -> str | None:
     """
     proc = subprocess.run(["git", "symbolic-ref", "--quiet", "HEAD"],
                           cwd=str(submodule), capture_output=True, text=True,
-                          check=False)
+                          encoding="utf-8", errors="replace", check=False)
     return proc.stdout.strip() or None
 
 
@@ -298,7 +298,8 @@ def restore_leg(submodule: Path, placement: str | None, commit: str) -> None:
 def object_present(submodule: Path, commit: str) -> bool:
     proc = subprocess.run(
         ["git", "rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}"],
-        cwd=str(submodule), capture_output=True, text=True, check=False)
+        cwd=str(submodule), capture_output=True, text=True,
+        encoding="utf-8", errors="replace", check=False)
     return proc.returncode == 0
 
 
@@ -307,7 +308,8 @@ def on_a_remote_branch(submodule: Path, commit: str) -> bool:
     proc = subprocess.run(
         ["git", "for-each-ref", "--contains", commit, "--format=%(refname)",
          "refs/remotes/origin/"],
-        cwd=str(submodule), capture_output=True, text=True, check=False)
+        cwd=str(submodule), capture_output=True, text=True,
+        encoding="utf-8", errors="replace", check=False)
     return proc.returncode == 0 and bool(proc.stdout.strip())
 
 
@@ -387,8 +389,15 @@ def run_validator(root: Path, script: str) -> tuple[int, str]:
     """The ROOT's own copy of a validator, its output captured for a refusal."""
     if not (root / script).is_file():
         return 0, f"  {script} is absent; SKIPPED\n"
+    # `errors="replace"` and no `encoding=`: the child is a Python process,
+    # which writes its pipe in the locale's codec, so that codec is the one
+    # that reads it back (UTF-8 here would misread a Windows ANSI child).
+    # `replace` is for two interpreters that disagree (`-X utf8` on this one
+    # only): a refusal must not become a traceback on its way to printing the
+    # validator's words (#217).
     proc = subprocess.run([sys.executable, script], cwd=str(root),
-                          capture_output=True, text=True, check=False)
+                          capture_output=True, text=True, errors="replace",
+                          check=False)
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
 
@@ -430,7 +439,9 @@ def commit_once(root: Path, message: str, paths: list[str],
         if not env.get(key):
             env[key] = fallback
     proc = subprocess.run(args, cwd=str(root), input=message,
-                          capture_output=True, text=True, check=False, env=env)
+                          capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", check=False,
+                          env=env)
     if proc.returncode != 0:
         raise CommandFailed(args, root, proc.returncode,
                             proc.stderr + proc.stdout)
@@ -440,7 +451,7 @@ def commit_once(root: Path, message: str, paths: list[str],
 def current_branch(root: Path) -> str | None:
     proc = subprocess.run(["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
                           cwd=str(root), capture_output=True, text=True,
-                          check=False)
+                          encoding="utf-8", errors="replace", check=False)
     return proc.stdout.strip() or None
 
 

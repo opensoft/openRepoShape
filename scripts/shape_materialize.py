@@ -478,8 +478,14 @@ def check_program(args: list[str]) -> None:
 
 def run(args: list[str], cwd: Path | None = None, capture: bool = True) -> str:
     check_program(args)
+    # UTF-8, whatever the locale: git writes a path as UTF-8, and the locale's
+    # codec (ASCII under a POSIX `C` locale, the ANSI code page on Windows)
+    # raises `UnicodeDecodeError` out of `subprocess.run` on one it cannot
+    # read -- before `CommandFailed` exists, so the person gets a traceback
+    # where `REFUSED <step>` and the ruleset hint belong (#217).
     proc = subprocess.run(args, cwd=str(cwd) if cwd else None,
-                          capture_output=capture, text=True, check=False)
+                          capture_output=capture, text=True,
+                          encoding="utf-8", errors="replace", check=False)
     if proc.returncode != 0:
         raise CommandFailed(args, cwd, proc.returncode,
                             (proc.stderr or "") + (proc.stdout or ""))

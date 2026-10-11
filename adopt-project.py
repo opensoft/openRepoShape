@@ -2011,7 +2011,8 @@ def cmd_check(args) -> int:
 def _require_filter_repo() -> None:
     if shutil.which("git-filter-repo") is None:
         probe = subprocess.run(["git", "filter-repo", "--version"],
-                               capture_output=True, text=True, check=False)
+                               capture_output=True, text=True,
+                               encoding="utf-8", errors="replace", check=False)
         if probe.returncode != 0:
             raise Refusal(
                 "filter-repo-missing",
