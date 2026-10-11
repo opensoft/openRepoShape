@@ -3638,6 +3638,62 @@ def test_a_record_row_the_validator_refuses_decides_nothing(standard,
     assert "recorded_leg" not in held, held
 
 
+#: Names the record cannot write raw -- `str.isprintable` refuses a character
+#: in each -- and the doctor still reads: none holds a control character or a
+#: byte that is not UTF-8, the names it reports as ones no report can carry.
+ESCAPED_NAMES = ("vendor/nb sp", "vendor/ideo　graphic",
+                 "vendor/zero​width", "vendor/soft­hyphen",
+                 "vendor/nel\u0085x", "vendor/line sep")
+
+
+def held_placements(result) -> dict:
+    """`{path: placement}` of every submodule the `placement` row holds."""
+    return {held["path"]: held["placement"] for held in
+            rows_of(result)["placement"]["detail"].get("submodules") or []}
+
+
+def test_a_name_the_record_spells_with_an_escape_still_names_its_submodule(
+        standard, project):
+    """THE ROW READS BACK AS THE NAME, so the submodule is held to it (#189).
+
+    The adoption's own writer spells each of these names' unprintable
+    character by its code point -- `\\xa0`, `\\u3000`, `\\u2028` -- and the
+    reader resolves that escape. So in the leg recorded each submodule is
+    placed, and staged in the other leg instead each one is MISPLACED. When
+    the reader kept the backslash, no row named any of them: they were
+    `kept`, and the move was COMPLIANT.
+    """
+    adopt = adoption_module(standard)
+    block = adopt.submodule_record(
+        [{"path": name, "leg": "code"} for name in ESCAPED_NAMES],
+        sorted((name, adopt.GITLINK_MODE, RECORDED_AT, 0)
+               for name in ESCAPED_NAMES), RECORDED_AT)
+    spelled = [line for line in block.splitlines() if "- path:" in line]
+    assert len(spelled) == len(ESCAPED_NAMES), block
+    assert all("\\" in line for line in spelled), (
+        "each name must be one the record spells with an escape", block)
+    manifest = project / "project.yaml"
+    manifest.write_bytes((manifest.read_text(encoding="utf-8")
+                          + block).encode("utf-8"))
+    for name in ESCAPED_NAMES:
+        stage_gitlink(project / "code", name)
+    placed = doctor(standard, project, "--json")
+    assert placed.returncode == 0, placed.stdout + placed.stderr
+    assert rows_of(placed)["manifest"]["status"] == "ok"
+    assert held_placements(placed) == {
+        f"code/{name}": "recorded" for name in ESCAPED_NAMES}
+
+    for name in ESCAPED_NAMES:
+        git("rm", "-q", "--cached", "--", name, cwd=project / "code")
+        stage_gitlink(project / "spec", name)
+    moved = doctor(standard, project, "--json")
+    assert moved.returncode == 1, moved.stdout + moved.stderr
+    assert json.loads(moved.stdout)["verdict"] == (
+        f"MISPLACED ({len(ESCAPED_NAMES)} paths)")
+    assert held_placements(moved) == {
+        f"spec/{name}": "misplaced" for name in ESCAPED_NAMES}
+
+
 # --- the record, written by a real adoption and read by the doctor (#189) ---
 
 #: `execute` REQUIRES `git filter-repo`; see tests/test_adopt_e2e.py.

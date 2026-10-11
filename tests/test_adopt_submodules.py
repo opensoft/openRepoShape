@@ -1618,7 +1618,10 @@ def test_a_source_with_no_submodule_kept_gets_no_record(adopter, tree,
 
 @pytest.mark.parametrize("name", [
     "null", "0001", "true", "a: b", "#hash", 'say "hi"', "back\\slash",
-    "tab\there", "- dash", "ends:", "caf\u00e9",
+    "tab\there", "- dash", "ends:", "caf\u00e9", "\\x41",
+    # Characters `str.isprintable` refuses, spelled by their code points:
+    "nb\u00a0sp", "ideo\u3000graphic", "zero\u200bwidth", "soft\u00adhyphen",
+    "bom\ufeff", "nel\u0085x", "line\u2028sep", "cr\rx", "bell\x07",
 ])
 def test_a_recorded_name_reads_back_as_that_name(adopter, name):
     """A NAME YAML WOULD READ AS SOMETHING ELSE IS STILL THAT NAME.
@@ -1626,23 +1629,34 @@ def test_a_recorded_name_reads_back_as_that_name(adopter, name):
     A submodule may sit at `null` or `0001`, which a plain scalar reads back
     as nothing or as a number, and a path or a `resolution:` may hold a
     colon, a hash, a quote, a backslash or a tab. Each is written quoted and
-    escaped, and reads back as itself.
+    escaped, and reads back as itself. So does a name holding a character
+    that is not printable -- a no-break, ideographic or zero-width space,
+    NEL, U+2028, a carriage return -- which is written as YAML's code-point
+    escape and resolved by the reader the doctor reads the record with
+    (#189); before, the reader kept the backslash, and the row named no
+    gitlink at all. A backslash already in a name is not read as the start
+    of one.
     """
     entries = [{"path": name, "leg": "code", "resolution": name}]
     text = adopter.submodule_record(entries, tree_of((name, GITLINK)),
                                     SOURCE_COMMIT)
     [row] = parse_yaml(text)["submodules"]
     assert (row["path"], row["resolution"]) == (name, name), text
+    assert len(text.splitlines()) == text.count("\n"), (
+        "every row is whole lines: no name may break one")
 
 
 def test_a_name_that_is_not_utf8_is_spelled_and_still_written(adopter):
     """A BYTE THAT IS NOT UTF-8 IS SPELLED, so `write_lf` can write the
     manifest at all: the surrogate a path read with `surrogateescape` holds
-    for it would stop `execute` after both legs exist."""
+    for it would stop `execute` after both legs exist. It is spelled as that
+    surrogate's code point, `\\udce9`, and reads back as the name; `\\xe9`
+    would read back as U+00E9, which is another name (#189)."""
     name = "caf\udce9"
     text = adopter.submodule_record(
         [{"path": name, "leg": "code"}], tree_of((name, GITLINK)),
         SOURCE_COMMIT)
     text.encode("utf-8")
+    assert '  - path: "caf\\udce9"\n' in text, text
     [row] = parse_yaml(text)["submodules"]
-    assert row["path"] == "caf\\xe9", text
+    assert row["path"] == name, text

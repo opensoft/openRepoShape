@@ -94,7 +94,8 @@ sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
 from path_classify import PathPolicy, Verdict  # noqa: E402
 from repo_shape import (  # noqa: E402
     free_plan_secret_hint,
-    COMMIT_RE, NEUTRAL_PRODUCT_OWNER, PROJECT_ID_RE, TREE_DIGEST_DEFINITION,
+    CODE_POINT_ESCAPES, COMMIT_RE, DOUBLE_QUOTED_ESCAPES,
+    NEUTRAL_PRODUCT_OWNER, PROJECT_ID_RE, TREE_DIGEST_DEFINITION,
     VISIBILITY_CHOICES, NamingPolicy, Refusal, YamlError,
     accepts_role, checked_value, git_out, load_yaml, parse_yaml, tree_digest,
 )
@@ -2735,31 +2736,49 @@ SUBMODULE_RECORD_PREAMBLE = (
 )
 
 
+#: The writer's half of `repo_shape.DOUBLE_QUOTED_ESCAPES`: each character
+#: the reader resolves an escape to, mapped to that escape.
+_NAMED_ESCAPES = {char: "\\" + letter
+                  for letter, char in DOUBLE_QUOTED_ESCAPES.items()}
+
+
 def _quoted(text: str) -> str:
-    """`text` as a double-quoted scalar of `repo_shape.parse_yaml`'s subset.
+    """`text` as a double-quoted scalar `repo_shape.parse_yaml` reads back as
+    `text`, spelled with ONLY the escapes that reader resolves (#189).
 
     ALWAYS QUOTED, unlike `y`: a submodule may sit at `null`, `true` or
     `0001`, which a plain scalar would read back as something that is not
-    a path. A newline and a tab are escaped as the reader resolves them,
-    and any other character that is not printable is SPELLED, `\\x07` or
-    `\\xe9` for a byte that is not UTF-8, because `write_lf` writes UTF-8
-    and a surrogate in the text would stop `execute` after both legs exist.
-    A spelled path is one the doctor does not read either: it reports such
-    a name as one no report can carry.
+    a path. A backslash and a double quote are escaped because they would
+    bend or end the quoting, and a newline and a tab by the reader's own
+    names for them (`DOUBLE_QUOTED_ESCAPES`). Every other character
+    `str.isprintable` refuses is spelled by its code point, in the shortest
+    of `CODE_POINT_ESCAPES` that holds it. That is what lets the record
+    carry the names it otherwise could not: NEL and U+2028 end a line for
+    the reader, a no-break or zero-width space is a different name from the
+    one it looks like, and the surrogate a byte that is not UTF-8 is kept
+    as cannot be written by `write_lf` at all -- `\\udce9` reads back as
+    that same surrogate, so the manifest is written after both legs exist.
+
+    EVERY NAME READS BACK AS ITSELF, so a row names the path the doctor
+    holds the submodule at to it. A name with a control character or a byte
+    that is not UTF-8 in it is one the doctor reads no further: it reports
+    it as a name no report can carry.
     """
-    out = []
-    for char in text:
-        if char in '\\"':
-            out.append("\\" + char)
-        elif char in "\n\t":
-            out.append("\\n" if char == "\n" else "\\t")
-        elif char.isprintable():
-            out.append(char)
-        elif "\udc80" <= char <= "\udcff":
-            out.append(f"\\x{ord(char) - 0xDC00:02x}")
-        else:
-            out.append(ascii(char)[1:-1])
-    return '"' + "".join(out) + '"'
+    return '"' + "".join(map(_escaped, text)) + '"'
+
+
+def _escaped(char: str) -> str:
+    """One character of a `_quoted` body."""
+    named = _NAMED_ESCAPES.get(char)
+    if named is not None:
+        return named
+    if char.isprintable():
+        return char
+    code = ord(char)
+    letter, digits = next((letter, digits)
+                          for letter, digits in CODE_POINT_ESCAPES.items()
+                          if code < 16 ** digits)
+    return f"\\{letter}{code:0{digits}x}"
 
 
 def submodule_record(entries: list, tree: list, commit: str) -> str:

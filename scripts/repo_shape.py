@@ -242,14 +242,48 @@ def _unquote_key(key: str) -> str:
     return key
 
 
-#: The escape sequences a double-quoted scalar may carry, and the only ones
-#: this reader resolves. Anything else keeps its backslash, because inventing
-#: a meaning for `\q` is how a reader starts disagreeing with the writer.
+#: The NAMED escapes a double-quoted scalar may carry, each YAML's own
+#: spelling with YAML's meaning. With `CODE_POINT_ESCAPES` below they are the
+#: only ones this reader resolves: anything else after a backslash keeps its
+#: backslash, because inventing a meaning for `\q` is how a reader starts
+#: disagreeing with the writer.
 DOUBLE_QUOTED_ESCAPES = {"n": "\n", "t": "\t", '"': '"', "\\": "\\"}
+
+#: YAML's CODE-POINT escapes, by how many hex digits each takes: `\xNN`,
+#: `\uNNNN` and `\UNNNNNNNN` name the code point those digits spell, so `\xa0`
+#: is U+00A0, a no-break space, and never the byte 0xA0. They are read because
+#: a NAME may hold a character nobody can write raw on one line of this
+#: subset: NEL and U+2028 end a line for `str.splitlines`, a no-break space
+#: reads as a space and a zero-width one as nothing, and a byte that is not
+#: UTF-8 -- a lone surrogate in a path read with `surrogateescape` -- cannot
+#: be written to a UTF-8 file at all (`\udce9` reads back as that surrogate).
+#: `adopt-project.py execute` records a source submodule's path in
+#: `project.yaml` spelled that way, and `shape-doctor.py` holds the gitlink at
+#: that path to the row only if the row reads back as the path (#189). An
+#: escape with fewer digits than its letter takes, or past U+10FFFF, keeps its
+#: backslash.
+CODE_POINT_ESCAPES = {"x": 2, "u": 4, "U": 8}
+_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
+
+
+def _escape_at(body: str, index: int) -> tuple[str, int] | None:
+    """What the backslash at `body[index]` and what follows it stand for,
+    and how many characters that escape spans; None for one this reader does
+    not resolve, which then keeps its backslash."""
+    letter = body[index + 1:index + 2]
+    if letter in DOUBLE_QUOTED_ESCAPES:
+        return DOUBLE_QUOTED_ESCAPES[letter], 2
+    digits = CODE_POINT_ESCAPES.get(letter, 0)
+    spelled = body[index + 2:index + 2 + digits]
+    if not digits or len(spelled) != digits or not _HEX_DIGITS.issuperset(
+            spelled) or int(spelled, 16) > sys.maxunicode:
+        return None
+    return chr(int(spelled, 16)), 2 + digits
 
 
 def _unescape(body: str) -> str:
-    """A double-quoted scalar's body, ONE PASS, LEFT TO RIGHT.
+    """A double-quoted scalar's body, ONE PASS, LEFT TO RIGHT, resolving
+    `DOUBLE_QUOTED_ESCAPES` and `CODE_POINT_ESCAPES` and no others.
 
     NOT A CHAIN OF `str.replace` CALLS, and the reason is a Windows path. An
     adoption plan escapes each backslash it writes, so the source directory
@@ -257,21 +291,20 @@ def _unescape(body: str) -> str:
     before the two-character `\\\\` matches the SECOND backslash of that pair
     and turns a directory named `t` into a TAB — the path then does not
     exist, and `adopt-project.py check` refuses a plan it wrote itself.
-    Consuming the backslash and the character it escapes together is the only
-    spelling that cannot read one escape's output as another escape's input.
+    Consuming the backslash and the characters it escapes together is the
+    only spelling that cannot read one escape's output as another escape's
+    input -- `\\\\x41` is a backslash and `x41`, never a backslash and `A`.
     """
     out: list[str] = []
     index = 0
     while index < len(body):
-        char = body[index]
-        replacement = (DOUBLE_QUOTED_ESCAPES.get(body[index + 1])
-                       if char == "\\" and index + 1 < len(body) else None)
-        if replacement is None:
-            out.append(char)
+        escape = _escape_at(body, index) if body[index] == "\\" else None
+        if escape is None:
+            out.append(body[index])
             index += 1
         else:
-            out.append(replacement)
-            index += 2
+            out.append(escape[0])
+            index += escape[1]
     return "".join(out)
 
 
