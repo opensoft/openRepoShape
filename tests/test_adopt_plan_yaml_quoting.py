@@ -17,19 +17,19 @@ is how a second list of them would drift; the one test that does names a
 word the loader does NOT read today, to show the writer follows the reader
 when the reader changes.
 
-A LINE BREAK IS NOT IN THE GENERATED ALPHABET, on purpose. The reader takes a
-plan line by line (`str.splitlines`, which also splits on `\\r`, `\\x0b`,
-`\\x0c`, `\\x1c`-`\\x1e`, `\\x85`, `\\u2028` and `\\u2029`), a double-quoted scalar
-cannot span lines, and the loader resolves an escape for `\\n` and `\\t` only.
-A value carrying one is therefore not a question of quoting, #181 does not
-make one read back, and putting it in a generator would assert a rule this
-change does not make (#199 is the issue for it). The one visible difference:
-a name whose ONLY line break is a final one matched `_PLAIN_RE`, because `$`
-matches before it, and was written bare. On `main` the plan then read the
-entry back as the name WITHOUT its line break (`trail` for `trail\\n`), and
-`check` reported the file uncovered (`plan-uncovered`) and the entry empty
-(`plan-empty-entry`). It is quoted now, which splits the entry over two lines,
-and `check` refuses the plan as `yaml-unparsable`. Neither reads it back.
+A LINE BREAK IS NOT IN THE GENERATED ALPHABET, because it is #199's and not
+this change's. The reader takes a plan line by line (`str.splitlines`, which
+also splits on `\\r`, `\\x0b`, `\\x0c`, `\\x1c`-`\\x1e`, `\\x85`, `\\u2028` and
+`\\u2029`), so `y` quotes such a name with `repo_shape.double_quoted`, which
+spells every character `str.isprintable` refuses from the escape table the
+reader resolves, and the name is one line that reads back;
+`tests/test_adopt_plan_escapes.py` proves that for every code point to
+U+02FF and more. Before #199 a name whose ONLY line break was a final one
+matched `_PLAIN_RE`, because `$` matches before it, and was written bare:
+the plan read the entry back as the name WITHOUT its line break (`trail` for
+`trail\\n`), and `check` reported the file uncovered (`plan-uncovered`) and
+the entry empty (`plan-empty-entry`). `_PLAIN_RE` ends at `\\Z` now, and the
+name is written `"trail\\n"`, on one line.
 
 WHAT `execute` WRITES IS ASKED ABOUT TOO (lane 2's review of 76a6153). Once
 the plan said `null` and meant it, `execute` put it into `project.yaml` and
@@ -638,7 +638,10 @@ def test_check_names_a_plan_value_that_is_not_text_by_what_was_read(
 
 #: `(placeholder, value, the manifest line `execute` writes, what the loader
 #: reads it back as)`: values the loader reads back as OTHER TEXT, through
-#: the double quotes the template writes around them.
+#: the double quotes the template writes around them. The last two are
+#: escapes the loader resolves since #199 (`\\r`, and a code point's
+#: `\\xNN`), which the gate follows with no edit of its own: it asks the
+#: loader.
 UNESCAPED = [
     (ELECTED_BY_PLACEHOLDER, DOMAIN_USER, 'elected_by: "CORP\\tom"',
      DOMAIN_USER_READ),
@@ -648,6 +651,10 @@ UNESCAPED = [
      "the text `a\\b`"),
     (ELECTED_BY_PLACEHOLDER, 'a\\"b', 'elected_by: "a\\"b"',
      'the text `a"b`'),
+    (ELECTED_BY_PLACEHOLDER, "CORP\\ralph", 'elected_by: "CORP\\ralph"',
+     "the text `CORP`, then a carriage return, then `alph`"),
+    ("REFERENCE", "docs\\x41.md", 'reference: "docs\\x41.md"',
+     "the text `docsA.md`"),
 ]
 
 

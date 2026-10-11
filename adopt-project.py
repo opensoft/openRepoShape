@@ -228,13 +228,14 @@ FILTER_REPO_HINT = (
 # reader gives back unchanged, and `check` can name it (#199);
 # `tests/test_adopt_plan_escapes.py` proves that round trip for every code
 # point to U+02FF and a sample above it, and for a seeded sample of strings
-# of them, not only for the strings a plan happens to hold; not for a bare
-# YAML keyword (`null`, `true`, `false`), which `y` writes unquoted and the
-# reader takes as None or a bool, #181's to fix. Everything it emits is
-# read back by `check`, and `tests/test_adopt_plan.py` round-trips a plan
-# through both, which is what keeps the writer and the reader honest about
-# each other. A string is written plain only where that reader gives the same
-# string back, and `y` asks the reader rather than a list of words (#181).
+# of them, not only for the strings a plan happens to hold. A string is
+# written plain only where that reader gives the same string back, and `y`
+# asks the reader rather than a list of words, so a bare YAML keyword the
+# reader takes as None or a bool (`null`, `True`) is quoted as well (#181);
+# `tests/test_adopt_plan_yaml_quoting.py` proves that through the reader
+# too. Everything it emits is read back by `check`, and
+# `tests/test_adopt_plan.py` round-trips a plan through both, which is what
+# keeps the writer and the reader honest about each other.
 
 #: Ends at `\Z`, not `$`: `$` also matches before a FINAL newline, and wrote a
 #: file named `Icon\n` bare, over two lines of the plan (#199).
@@ -1331,7 +1332,8 @@ DERIVED_ID = "id (not set in the plan, so legs.assembly lowercased)"
 PIN_IN_PLAN = "a pin in pins"
 #: What a sentence calls a character a terminal shows as something else, or
 #: not at all, which `_worded` names instead of printing.
-CHARACTER_NAMES = {"\t": "a tab", "\n": "a line break"}
+CHARACTER_NAMES = {"\t": "a tab", "\n": "a line break",
+                   "\r": "a carriage return"}
 #: How a sentence joins the last of the things it names, spelled once.
 AND = " and "
 
@@ -1432,10 +1434,11 @@ def _named(what: str, value) -> tuple[str, str]:
             f"the text {_worded(str(value))}")
 
 
-def _shown(line: str) -> str:
+def _line_shown(line: str) -> str:
     """`line` as a sentence quotes it: in backticks, or as Python spells it
     when it holds a character a terminal shows as something else (a line
-    break, a tab), so that one FINDING stays one line."""
+    break, a tab), so that one FINDING stays one line. Not `_shown`, which
+    is #199's spelling of a PATH in the plan report, with no backticks."""
     return f"`{line}`" if line.isprintable() else repr(line)
 
 
@@ -1454,7 +1457,7 @@ def manifest_misreads(fields) -> list[str]:
         wrong = [(rel, line, loader_reading(line)) for rel, line in written]
         wrong = [row for row in wrong if row[2] != text]
         if wrong:
-            where = AND.join(f"into {rel} as {_shown(line)}"
+            where = AND.join(f"into {rel} as {_line_shown(line)}"
                              for rel, line, _ in wrong)
             subject, expected = _named(what, value)
             problems.append(
@@ -2309,11 +2312,11 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
     # A leg path that is not text is a FINDING of its own, and its Python
     # spelling (`None/`, `True/`) names no directory a leg would be mounted at.
     mounts = [_plan_leg_path(plan, role) for role in EXTRACTED_LEGS]
-    where = (f" at {mounts[0]}/ and {mounts[1]}/"
-             if all(isinstance(mount, str) for mount in mounts) else "")
+    mounted = (f" at {mounts[0]}/ and {mounts[1]}/"
+               if all(isinstance(mount, str) for mount in mounts) else "")
     print(f"  ONE split commit on branch {plan.get('adopt_branch', ADOPT_BRANCH)} "
           f"of {names['assembly']}: `git rm -r` those paths, mount the "
-          f"legs{where}")
+          f"legs{mounted}")
     print(f"  {len(stays)} path(s) stay in the assembly root; "
           f"{len(drops)} dropped")
     print("  the source is never deleted, never renamed, never force-pushed")
