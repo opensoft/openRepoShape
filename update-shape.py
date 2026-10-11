@@ -101,8 +101,9 @@ from pathlib import Path
 SHAPE_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
 from repo_shape import (  # noqa: E402
-    COMMIT_RE, PYTHON, TREE_DIGEST_DEFINITION, Refusal, checked_value, die,
-    file_sha256, git_out, load_yaml, tree_digest,
+    COMMIT_RE, PYTHON, TREE_DIGEST_DEFINITION, Refusal, YamlError,
+    checked_value, die, file_sha256, git_out, load_yaml, parse_yaml,
+    tree_digest,
 )
 from shape_materialize import (  # noqa: E402
     COPIED_FROM_SHAPE, COPIED_VERBATIM, FAMILY_COPIED_FROM_SHAPE,
@@ -861,18 +862,33 @@ def rewrite_manifest(text: str, commit: str, tree: str, kind: Kind) -> str:
     Scoped to the block on purpose: `commit:` and `tree_sha256:` are spelled
     the same way in every pin, and a whole-file replacement would move a leg's
     pin while claiming to move the shape's.
+
+    EACH LINE KEEPS ITS OWN INDENTATION (#208). The two lines are FOUND by
+    their stripped text, so a block at any indentation `load_yaml` accepts is
+    recognised; they were then WRITTEN at a fixed two and four spaces, which
+    turned a block indented four spaces — accepted by the reader and by both
+    validators — into one the reader refuses, and the validators' refusal
+    that followed blamed the project for this tool's write. Only the value
+    after the key changes now; the whitespace in front of it is the line's.
+
+    WHAT IS RETURNED HAS BEEN READ BACK. A layout this line rewrite cannot
+    carry — a value on the line below its key — is refused HERE, as this
+    tool's failure, rather than by a validator after the fact
+    (`_refuse_unless_it_reads_back`).
     """
     lines = text.splitlines()
     start, end = _shape_block_bounds(lines, kind)
     seen = {"commit": 0, "tree": 0}
     for index in range(start + 1, end):
-        stripped = lines[index].strip()
+        line = lines[index]
+        stripped = line.strip()
+        indent = line[:len(line) - len(line.lstrip())]
         if stripped.startswith("commit:"):
             seen["commit"] += 1
-            lines[index] = f'  commit: "{commit}"'
+            lines[index] = f'{indent}commit: "{commit}"'
         elif stripped.startswith("tree_sha256:"):
             seen["tree"] += 1
-            lines[index] = f'    tree_sha256: "{tree}"'
+            lines[index] = f'{indent}tree_sha256: "{tree}"'
     for key, count in seen.items():
         if count != 1:
             raise Refusal(
@@ -881,7 +897,63 @@ def rewrite_manifest(text: str, commit: str, tree: str, kind: Kind) -> str:
                 "where exactly one was expected",
                 "Remediation: fix the block by hand this once; this tool will "
                 "not guess at a manifest it does not recognise.")
-    return "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+    rewritten = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+    _refuse_unless_it_reads_back(text, rewritten, commit, tree, kind)
+    return rewritten
+
+
+def _shape_pin_of(text: str) -> tuple[str, str]:
+    """`shape.commit` and `shape.digests.tree_sha256`, read out of a
+    manifest's text the way its validator reads them, or a `ValueError`
+    saying why they cannot be (#208)."""
+    try:
+        manifest = parse_yaml(text)
+    except YamlError as exc:
+        raise ValueError(str(exc)) from exc
+    shape = manifest.get("shape") if isinstance(manifest, dict) else None
+    digests = shape.get("digests") if isinstance(shape, dict) else None
+    commit = shape.get("commit") if isinstance(shape, dict) else None
+    tree = digests.get("tree_sha256") if isinstance(digests, dict) else None
+    if commit is None or tree is None:
+        raise ValueError("no `shape.commit` and `shape.digests.tree_sha256` "
+                         "where the validator reads them")
+    return str(commit), str(tree)
+
+
+def _refuse_unless_it_reads_back(before: str, after: str, commit: str,
+                                 tree: str, kind: Kind) -> None:
+    """Refuse a rewrite that does not read back to the target (#208).
+
+    THE REFUSAL IS THIS TOOL'S, SO IT IS RAISED ONLY WHEN THE FAULT IS. A
+    manifest that read correctly before the rewrite and does not after it
+    was broken by the rewrite, and the remedy says so. One that did not read
+    before — unparsable, or no pin where the validator looks — was red
+    before this command ran: that is left to the validators, which name the
+    project's own line, and blaming this tool for it would be the same wrong
+    answer turned around.
+    """
+    try:
+        found = _shape_pin_of(after)
+        if found == (commit, tree):
+            return
+        why = (f"it would read `commit: {found[0]}` and "
+               f"`tree_sha256: {found[1]}`")
+    except ValueError as exc:
+        why = f"the reader would refuse it: {exc}"
+    try:
+        _shape_pin_of(before)
+    except ValueError:
+        return
+    raise Refusal(
+        "update-manifest-unrecognised",
+        f"{kind.manifest}'s `shape:` block reads as it stands, but this "
+        f"tool's rewrite of it does not read back to the target ({why}), so "
+        "this tool will not write it",
+        "Remediation: the fault is this tool's line rewrite, not the "
+        "project's manifest. Put each of `commit:` and `tree_sha256:` on one "
+        "line with its quoted value, as the scaffold writes them, and run "
+        "the same command again; this tool will not guess at a manifest it "
+        "does not recognise.")
 
 
 def _shape_block_bounds(lines: list[str], kind: Kind) -> tuple[int, int]:
