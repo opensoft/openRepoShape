@@ -1125,10 +1125,13 @@ def test_an_unregistered_submodule_is_told_why_git_ignores_its_entry(
     plan, and the reason git ignores the entry is still said after it."""
     plan = answered(planned(registered_source(tmp_path, **source),
                             tmp_path)[0], tmp_path, answers)
+    # `submodule` is spelled as a finding names it (#212); the entry's own
+    # path is the case's `orphan`, where it has one.
+    path = source.get("orphan", "")
     unsafe = [("plan-unsafe-path",
-               f"`{submodule}` has leg: code, and `execute` will not extract "
-               f"it into a leg: {adopter.entry_path_problem(submodule)}")
-              ] if submodule.startswith("-") else []
+               f"{submodule} has leg: code, and `execute` will not extract "
+               f"it into a leg: {adopter.entry_path_problem(path)}")
+              ] if path.startswith("-") else []
     assert findings(check_plan(plan).stderr) == unsafe + [(
         UNREGISTERED, f"the submodule {submodule} has leg: code but {why}, "
                       + adopter.NO_URL_IN_THE_LEG)]

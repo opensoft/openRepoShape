@@ -428,7 +428,7 @@ def test_a_path_that_is_a_git_option_is_still_unsafe_not_uncovered(adopter,
     refusal = refused_by(adopter, execute_args(world.tmp, world.plan))
     assert refusal.code == "plan-unsafe-path"
     assert "`--output=never-written` has leg: spec" in refusal.detail
-    assert "FINDING plan-uncovered: specs/" in refusal.detail
+    assert "FINDING plan-uncovered: `specs/" in refusal.detail
     no_leg_was_created(world.tmp)
 
 

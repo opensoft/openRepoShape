@@ -286,7 +286,7 @@ def test_check_reports_the_path_first_and_says_what_to_do(tmp_path, edit):
                 if line.startswith("FINDING ")]
     assert findings[0].startswith(f"FINDING {UNSAFE}: {named} has leg: spec")
     assert said in findings[0]
-    assert any(line.startswith("FINDING plan-uncovered: specs/")
+    assert any(line.startswith("FINDING plan-uncovered: `specs/")
                for line in findings)
     assert "Rename the path in the source, commit, and re-run `plan`" \
         in result.stderr
