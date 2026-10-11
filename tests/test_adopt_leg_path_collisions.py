@@ -382,9 +382,9 @@ def test_plan_refuses_a_bad_spelling_before_it_asks_about_collisions(
 
 def test_a_path_the_plan_keeps_in_the_root_is_checks_to_find(world,
                                                              tmp_path):
-    """`plan` asks only about the shape's paths: the plan's answers are
-    edited after it writes them. `.specify/` is one `plan` itself keeps in
-    the root, and `check` finds it."""
+    """`plan` refuses only the shape's paths: the plan's answers are edited
+    after it writes them. `.specify/` is one `plan` itself keeps in the
+    root; `plan` notes it (below), and `check` finds it."""
     out = answered_plan(world["source"], tmp_path / "plan.yaml",
                         extra=("--spec-path", ".specify"))
     findings = findings_of(check(out))
@@ -393,6 +393,67 @@ def test_a_path_the_plan_keeps_in_the_root_is_checks_to_find(world,
         f"{FINDING}legs.spec_path '.specify' contains the file "
         "`.specify/scripts/plan.sh` and 1 more. The plan keeps them in the "
         "assembly root under the entry `.specify/`")
+
+
+#: How `plan` starts a note about a leg path over a path it keeps itself.
+PLAN_NOTE = "NOTE --spec-path "
+
+
+def plan_notes(result) -> list[str]:
+    return [line for line in result.stdout.splitlines()
+            if line.startswith(PLAN_NOTE)]
+
+
+def test_plan_notes_a_path_it_keeps_in_the_root_and_still_writes_the_plan(
+        world, tmp_path):
+    """The review's P3-2: `plan --spec-path .specify` exited 0 with nothing
+    said, and `check` then rejected the plan for `plan`'s own `leg: root`.
+    Now `plan` says so, in `check`'s words, and still writes the plan: the
+    answer is the person's to change, so nothing is refused."""
+    out = tmp_path / "plan.yaml"
+    written = write_plan(world["source"], out, project=PROJECT,
+                         extra=("--spec-path", ".specify"))
+    assert written.returncode == 0, written.stdout + written.stderr
+    assert out.exists(), "a note refuses nothing"
+    note, = plan_notes(written)
+    assert note.startswith(
+        f"{PLAN_NOTE}'.specify' contains the file `.specify/scripts/plan.sh` "
+        "and 1 more. The plan keeps them in the assembly root under the "
+        "entry `.specify/`")
+    assert f"`check` reports this as `{COLLIDES}`" in written.stdout
+    for path, leg in ANSWERS:
+        resolve(out, path, leg)
+    finding, = findings_of(check(out))
+    assert finding == FINDING + note[len("NOTE "):].replace(
+        "--spec-path", "legs.spec_path", 1)
+
+
+@pytest.mark.parametrize("extra", [
+    pytest.param((), id="defaults"),
+    pytest.param(("--spec-path", ".specify/spec"),
+                 id="inside-a-kept-directory-where-it-holds-nothing"),
+])
+def test_plan_notes_nothing_where_no_leg_path_meets_a_kept_path(
+        world, tmp_path, extra):
+    written = write_plan(world["source"], tmp_path / "plan.yaml",
+                         project=PROJECT, extra=extra)
+    assert written.returncode == 0, written.stdout + written.stderr
+    assert plan_notes(written) == []
+    assert COLLIDES not in written.stdout
+
+
+def test_plan_notes_no_entry_it_asks_about_instead_of_keeping(tmp_path):
+    """An entry holding a submodule is ASKED (#166), `leg: null`, so the
+    plan keeps nothing in the root there and `check` finds `plan-unresolved`,
+    not a collision: `plan` notes what its file says, not what its rules
+    first proposed."""
+    source = make_source_repo(tmp_path / "Thing")
+    commit_tree_entry(source, "160000", ".specify/vendored", "1" * 40)
+    written = write_plan(source, tmp_path / "plan.yaml", project=PROJECT,
+                         extra=("--spec-path", ".specify"))
+    assert written.returncode == 0, written.stdout + written.stderr
+    assert "\n  .specify/\n" in written.stdout, "the entry is asked"
+    assert plan_notes(written) == []
 
 
 # --- `check` -----------------------------------------------------------------

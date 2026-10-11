@@ -22,6 +22,8 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            `adoption-plan.yaml`. Paths it cannot honestly call, and every
            path holding one of the source's own submodules, carry
            `leg: null`, `review_required: true` and the QUESTION to ask.
+           A leg path over a path it keeps in the root itself is a NOTE,
+           not a refusal: the answer is the person's to change.
   check    validates a plan against the source: every path covered exactly
            once, no unresolved legs, leg names conforming to the naming
            policy, each leg's mount path one `execute` can mount
@@ -1195,7 +1197,9 @@ def _plan_leg_paths(plan: Plan) -> tuple[tuple, tuple]:
 # second half is a question about the plan's answers, which are edited after
 # `plan` writes them, so `check` reports both halves as
 # `plan-leg-path-collides` and `execute` refuses them with every other
-# finding of `check`'s, before any leg exists (#168).
+# finding of `check`'s, before any leg exists (#168). `plan` NOTES the second
+# half for the `leg: root` answers it wrote itself, and refuses nothing for
+# it: those answers are the person's to change.
 
 #: Said where an overlap holds only once case is ignored.
 CASE_ASIDE = " once case is ignored, as a macOS or Windows disk does"
@@ -1323,12 +1327,52 @@ def _kept_in_root(entries: list, tree) -> list[tuple[str, str, str]]:
     return kept
 
 
+#: `check`'s finding for a collision, named once: `plan`'s note says which
+#: finding it foretells.
+LEG_COLLIDES = "plan-leg-path-collides"
+
+
 def _leg_collision_findings(plan: Plan, tree) -> list[str]:
     """`leg_path_collisions` over the plan's two mount paths, as `check`
     prints them. Asked only of a plan whose mount paths are canonical."""
-    return [f"FINDING plan-leg-path-collides: {collision}"
+    return [f"FINDING {LEG_COLLIDES}: {collision}"
             for collision in leg_path_collisions(
                 _plan_leg_paths(plan), _kept_in_root(plan.entries, tree))]
+
+
+def _flag_leg_paths(args) -> tuple[tuple, tuple]:
+    """The two `(what, value)` pairs `leg_path_problems` takes, read off
+    `plan`'s command line: the one place they are named `--spec-path` and
+    `--code-path` beside their values, as `_plan_leg_paths` names the
+    plan's."""
+    return (("--spec-path", args.spec_path), ("--code-path", args.code_path))
+
+
+def _kept_collision_notes(args, entries: list, tree: list) -> list[str]:
+    """What `plan` says when a leg path overlaps a source path that `plan`
+    ITSELF keeps in the root (#172's review, P3-2): one NOTE per collision,
+    in the words `check` will use, and a line saying what follows.
+
+    `plan` refuses only the shape's half: the plan's answers are edited
+    after it writes them, so a path the plan keeps is `check`'s to find. But
+    an answer `plan` wrote itself is one it already holds -- `--spec-path
+    .specify` beside the `.specify/` the rules keep in the root -- and a plan
+    that exits 0 only for `check` to reject its own default tells the person
+    nothing until the next command. Nothing is refused: the entry's answer is
+    theirs to change, and then nothing collides. `entries` are the ones the
+    plan file carries, so an entry asked about again for a submodule it holds
+    (`leg: null`) keeps nothing in the root and is not noted.
+    """
+    kept = _kept_in_root(entries, tree)
+    notes: list[str] = []
+    for what, value in _flag_leg_paths(args):
+        for collision in _kept_collisions(what, value, kept):
+            notes += [f"\nNOTE {collision}",
+                      f"     `check` reports this as `{LEG_COLLIDES}` while "
+                      "the leg path and that `leg: root` both stand; `plan` "
+                      "refuses nothing for it, because the answer is yours "
+                      "to change."]
+    return notes
 
 
 def _checked_plan_inputs(args, source: Source,
@@ -1349,17 +1393,18 @@ def _checked_plan_inputs(args, source: Source,
     # spelling to retype, before a plan that `check` and `execute` would have
     # to refuse again is ever written. `checked_value` still runs after it: it
     # is the gate that hands back the text.
-    legs = (("--spec-path", args.spec_path), ("--code-path", args.code_path))
+    spec, code = legs = _flag_leg_paths(args)
     _refuse_bad_leg_paths("adopt-bad-leg-path", *legs)
     # Then the paths the shape writes, which are known before any plan is
     # (#172). A path the plan keeps in the root is `check`'s to find: the
-    # plan's answers are edited after this writes them.
+    # plan's answers are edited after this writes them. `plan` only notes
+    # the ones it wrote itself (`_kept_collision_notes`).
     collisions = leg_path_collisions(legs)
     if collisions:
         raise Refusal("adopt-leg-path-collides", " ".join(collisions),
                       LEG_COLLISION_REMEDIATION)
-    args.spec_path = checked_value("--spec-path", args.spec_path)
-    args.code_path = checked_value("--code-path", args.code_path)
+    args.spec_path = checked_value(*spec)
+    args.code_path = checked_value(*code)
     args.id = args.id or args.project.lower()
     if not PROJECT_ID_RE.match(args.id):
         raise Refusal("adopt-bad-id",
@@ -1452,6 +1497,8 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
     for item in follow_ups:
         print(f"  - {item}")
     for line in seeding_warnings(seeded, set(args.allow_empty_leg or [])):
+        print(line)
+    for line in _kept_collision_notes(args, entries, tree):
         print(line)
     unresolved = [e for e in entries if e.leg is None]
     print(f"\nplan written to {out}")
