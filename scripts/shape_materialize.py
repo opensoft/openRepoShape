@@ -83,6 +83,23 @@ def write_lf(path: Path, text: str) -> None:
     with path.open("w", encoding="utf-8", newline="\n") as handle:
         handle.write(text)
 
+
+def write_paths_listing(path: Path, paths: list[str]) -> None:
+    """The listing `git filter-repo --paths-from-file` reads: one path to a
+    line, LF, BYTE-EXACT.
+
+    A path is bytes, and `adopt-project.py` keeps a byte of one that is not
+    UTF-8 as a lone surrogate (`surrogateescape`, as `Source.tree` decodes
+    it), which `write_lf`'s strict UTF-8 cannot encode: the write raised
+    `UnicodeEncodeError` inside `_extract_leg`, after both leg repositories
+    existed (#199). Encoded with `surrogateescape`, each such surrogate is
+    the byte it stands for again, and filter-repo reads the file as bytes,
+    so the line is the path git records. A path that is UTF-8 is written
+    exactly as `write_lf` wrote it: the same text, LF on every platform.
+    """
+    path.write_bytes(("\n".join(paths) + "\n").encode("utf-8",
+                                                      "surrogateescape"))
+
 # ---------------------------------------------------------------------------
 # The `reference:` an election followed, and why one default cannot serve
 # ---------------------------------------------------------------------------
