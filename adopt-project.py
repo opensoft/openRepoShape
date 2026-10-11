@@ -2753,7 +2753,11 @@ def _commit_the_split(plan: Plan, source: Source, assembly: Path,
     # pushed root still gets their template from their own `git clone`. Nothing
     # else `execute` makes needs it: the legs' bare remotes and work trees are
     # never mounted into, and the mounts only READ the work trees, a clone
-    # copying their objects and refs and never a `.git/modules`.
+    # copying their objects and refs and never a `.git/modules`. With no
+    # template the assembly has no `.git/hooks`, so HOOKS a template installs
+    # no longer run on the split's commit and push, as they did before #243;
+    # hooks set with `core.hooksPath` still do, and the legs keep their
+    # template's hooks.
     run(["git", *FILE_PROTOCOL, "clone", "-q", "--template=",
          str(source.path), str(assembly)])
     run(["git", "checkout", "-q", "-B", branch, source.commit], cwd=assembly)
