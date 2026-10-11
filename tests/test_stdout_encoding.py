@@ -193,6 +193,11 @@ def test_plan_reports_every_name_whatever_its_stdout_can_encode(tmp_path,
 
 @pytest.mark.parametrize("encoding", ("utf-8:surrogateescape",
                                       "cp1252:surrogateescape"))
+@pytest.mark.skipif(os.name == "nt",
+                    reason="Windows file names are UTF-16, and its "
+                           "`os.fsencode` and `os.fsdecode` are UTF-8, which "
+                           "has no byte 0xff, so the byte path below raises "
+                           "before any directory is made")
 def test_a_name_that_is_not_utf8_still_comes_out_as_its_own_bytes(tmp_path,
                                                                    encoding):
     """`plan --out` into a directory whose name holds byte 0xff, which is not
