@@ -117,8 +117,8 @@ from shape_materialize import (  # noqa: E402
     COPIED_FROM_SHAPE, COPIED_VERBATIM, FAMILY_COPIED_FROM_SHAPE,
     FAMILY_COPIED_VERBATIM, SHAPE_REPOSITORY, CommandFailed, check_program,
     commit_trailers, escape_what_stdout_cannot_encode, force_stage,
-    lane_trailer_argument, readme_shape_lines, readme_trailing_shape_line, run,
-    trailer_line,
+    inherited_child_environment, lane_trailer_argument, readme_shape_lines,
+    readme_trailing_shape_line, run, trailer_line,
 )
 
 #: `owner/repo`, the only remote spelling `--upstream` accepts.
@@ -1520,7 +1520,14 @@ def run_validator(root: Path, script: str) -> int:
         print(f"  {script} is absent; SKIPPED")
         return 0
     sys.stdout.flush()
-    proc = subprocess.run([sys.executable, script], cwd=str(root), check=False)
+    # The child writes straight into this process's stdout, and takes its
+    # encoding from its environment, not from the `reconfigure` `main()` did
+    # (#214): under a cp1252 stdout `validate-manifest.py` raised on a display
+    # name such as `日本` and this refused an `apply` the pins had no quarrel
+    # with (#254). So it is told this stdout's own encoding and a handler that
+    # cannot raise.
+    proc = subprocess.run([sys.executable, script], cwd=str(root), check=False,
+                          env=inherited_child_environment())
     sys.stdout.flush()
     return proc.returncode
 
