@@ -22,11 +22,14 @@ passes it before the clone and refuses after it (exit 128); a file rule
 (exit 1). Both kinds are here, the nested spelling of the first, and
 `--spec-path` as well as `--code-path`, which is the FIRST mount.
 
-`--force` also turns off two other refusals of git's, which `adopt-project.py`
-makes itself first (`_refuse_an_unmountable_path`) and the scaffold does not
-need to: a path the index already holds, and a path beyond a symlink or inside
-a submodule. A third is a `.git/modules/<leg path>` already there, which
-`--force` REACTIVATES instead of refusing ("A git directory for 'spec' is
+Besides the ignore rule, `--force` changes two things in git 2.43 that
+`adopt-project.py` guards against itself (`_refuse_an_unmountable_path`) and
+the scaffold does not need to: a gitlink the index already holds at the path is
+accepted instead of refused (a file or a tracked directory there is refused
+either way), and git's early dry run of the path, which refuses one beyond a
+symlink or inside a submodule before anything is cloned, is skipped (git still
+refuses both, later). A third is a `.git/modules/<leg path>` already there,
+which `--force` REACTIVATES instead of refusing ("A git directory for 'spec' is
 found locally ... use the '--force' option"). The root is a fresh `git init`,
 and `git init` copies the operator's template (`init.templateDir`, or
 `GIT_TEMPLATE_DIR`) into `.git`: a template that holds a `modules/spec` store,
@@ -119,8 +122,10 @@ CASES = [
 ]
 
 #: Paths the shape itself writes into the assembly root, which a leg must not
-#: be mounted at. `--force` changes nothing for them: git refuses each at the
-#: mount (exit 128), with and without it.
+#: be mounted at. Where #197's collision check is in force each is refused up
+#: front, as `scaffold-leg-path-collides`; where it is not, git refuses each at
+#: the mount (exit 128). `--force` changes neither, and the tests assert only
+#: exit 2 and no gitlink at the path, so they hold in both.
 SHAPE_PATHS = [
     pytest.param("README.md", id="readme-file"),
     pytest.param("scripts", id="scripts-dir"),
@@ -440,7 +445,8 @@ def test_a_clean_recursive_clone_of_that_root_succeeds_and_its_pins_hold(
         templated, tmp_path):
     """Cloned under the operator's excludes and NO template, so the clone
     itself is clean and a failure here is the root's. A root that mounted a
-    planted store fails it: `Fetched in submodule path 'spec', but it did not
-    contain` the planted commit."""
+    planted store fails it, naming a leg's path (the template plants `spec`
+    and `code`): `Fetched in submodule path '<path>', but it did not contain`
+    the planted commit."""
     clone_and_check(templated.root, templated.clean, tmp_path,
                     DEFAULT_SPEC, DEFAULT_CODE)
