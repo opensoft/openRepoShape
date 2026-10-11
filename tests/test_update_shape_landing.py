@@ -523,12 +523,72 @@ def test_a_branch_git_would_not_create_is_refused_before_anything_runs(
     assert gh.calls() == []
 
 
+def test_a_bad_branch_is_refused_even_with_nothing_to_write(root, project, gh):
+    """THE CHECK DOES NOT WAIT FOR WORK. Pinned at A and asked for A, main
+    answered "nothing to do" and exit 0 whatever `--branch` said; that path
+    can now push the branch and hand it to `gh`, so a value refused on a run
+    with work is refused on this one too."""
+    result = apply(root, project, "--branch=-shape", "--push", "--pr",
+                   env=gh.env, at=project["a"])
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stderr.startswith(
+        "REFUSED update-branch-invalid: --branch '-shape' "), result.stderr
+    assert result.stdout == ""
+    assert gh.calls() == []
+
+
 @pytest.mark.parametrize("branch", ["shape/update-landing", "shape/update-v1.2",
                                     "lane-3/shape+fix@eagle", "x"])
 def test_a_branch_git_would_create_is_taken_as_written(update_shape, branch):
     """A NAME WITH A `/` IS THE ORDINARY CASE, and so is the rest of the
     alphabet `checked_value` always allowed: each is returned unchanged."""
     assert update_shape.checked_branch(branch) == branch
+
+
+# --- `gh` is not installed ----------------------------------------------------
+
+GH_MISSING = "`gh` could not be started ("
+
+
+def test_a_gh_missing_from_path_is_the_step_that_failed_on_both_runs(
+        root, project):
+    """`gh` NOT INSTALLED is the likeliest way `gh pr create` fails on a
+    fresh machine, and `subprocess` raises for it instead of exiting: main
+    and the first cut of #204 both ended in a traceback, exit 1, after the
+    commit and the push. Now it is the named step, exit 127 in the block,
+    the NEXT line is the `gh pr create` to run once `gh` is installed, and a
+    re-run still without it says the same about its own first `gh` call.
+
+    PATH is git's directory and Python's, nothing else. Where `gh` lives
+    beside one of them (Linux runners put all three in /usr/bin) no PATH
+    can hide it, and the in-process test after this one covers both runs."""
+    git_dir = os.path.dirname(shutil.which("git"))
+    path = os.pathsep.join(dict.fromkeys(
+        [git_dir, os.path.dirname(sys.executable)]))
+    if shutil.which("gh", path=path):
+        pytest.skip("gh is installed beside git or Python here")
+    env = {"PATH": path}
+    first = apply(root, project, "--branch", BRANCH, "--push", "--pr",
+                  env=env)
+    assert first.returncode == 2, first.stdout + first.stderr
+    assert "Traceback" not in first.stderr, first.stderr
+    assert f"REFUSED opening the pull request for {BRANCH}" in first.stderr
+    assert GH_MISSING in first.stderr
+    assert "    exit 127" in first.stderr
+    line = next_line_of(first.stdout)
+    assert line.startswith(f"NEXT  gh pr create --repo testorg/{PROJECT} "
+                           f"--base main --head {BRANCH} --title "), line
+    head = the_commit_stands(root, project)
+    assert on_the_remote(root) == head
+
+    again = apply(root, project, "--branch", BRANCH, "--push", "--pr",
+                  env=env)
+    assert again.returncode == 2, again.stdout + again.stderr
+    assert "Traceback" not in again.stderr, again.stderr
+    assert f"REFUSED asking gh for {BRANCH}'s pull request" in again.stderr
+    assert GH_MISSING in again.stderr
+    assert next_line_of(again.stdout) == line
+    assert commits_on_the_branch(root) == 1
 
 
 # --- the same two runs in-process, on every platform -------------------------
@@ -587,4 +647,48 @@ def test_the_failed_pull_request_and_its_rerun_in_process(
     assert next_line_of(out) == PR_OPEN_NEXT, out + err
     assert calls[1] == ["gh", *listing()]
     assert calls[2] == calls[0]
+    assert commits_on_the_branch(root) == 1
+
+
+def test_a_gh_that_cannot_be_started_in_process(root, project, update_shape,
+                                                monkeypatch, capsys):
+    """THE WINDOWS JOB'S COVERAGE of a missing `gh`: `update_shape.run`
+    raises for every `gh` call exactly as `subprocess.run` does when the
+    program is not on PATH, and `git` runs for real. The first run and the
+    re-run each name their step and end on the same `gh pr create`."""
+    real = update_shape.run
+    calls: list = []
+
+    def run(command, *args, **kwargs):
+        if command[0] != "gh":
+            return real(command, *args, **kwargs)
+        calls.append(list(command))
+        raise FileNotFoundError(2, "No such file or directory", "gh")
+
+    monkeypatch.setattr(update_shape, "run", run)
+    for name, value in (("GIT_AUTHOR_NAME", "openRepoShape tests"),
+                        ("GIT_AUTHOR_EMAIL", "tests@openreposhape.invalid"),
+                        ("GIT_COMMITTER_NAME", "openRepoShape tests"),
+                        ("GIT_COMMITTER_EMAIL", "tests@openreposhape.invalid"),
+                        ("LANES_LANE", "")):
+        monkeypatch.setenv(name, value)
+    argv = ["apply", "--root", str(root.path), "--yes",
+            "--upstream", str(project["upstream"]), "--at", project["b"],
+            "--branch", BRANCH, "--push", "--pr"]
+
+    assert update_shape.main(argv) == 2
+    out, err = capsys.readouterr()
+    assert f"REFUSED opening the pull request for {BRANCH}" in err
+    assert GH_MISSING in err
+    assert "    exit 127" in err
+    assert next_line_of(out) == "NEXT  " + shlex.join(calls[0])
+    head = the_commit_stands(root, project)
+    assert on_the_remote(root) == head
+
+    assert update_shape.main(argv) == 2
+    out, err = capsys.readouterr()
+    assert f"REFUSED asking gh for {BRANCH}'s pull request" in err
+    assert GH_MISSING in err
+    assert calls[1] == ["gh", *listing()]
+    assert next_line_of(out) == "NEXT  " + shlex.join(calls[0])
     assert commits_on_the_branch(root) == 1

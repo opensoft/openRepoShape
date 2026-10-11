@@ -2064,14 +2064,32 @@ def landing_failed(root: Path, args, exc: CommandFailed, act: str,
     return LandingIncomplete(act)
 
 
+def _landing_run(command: list[str], root: Path) -> str:
+    """`run`, for the steps after the commit (#204), with a program that
+    cannot be started reported as the failed step it is. `gh` not installed,
+    or not on PATH, is the likeliest way `gh` fails on a fresh machine, and
+    `subprocess` raises `OSError` for it rather than returning an exit code,
+    so it escaped every arm as a traceback after the commit and the push had
+    landed. It becomes a `CommandFailed` with the exit 127 a shell gives a
+    command it cannot find, which `landing_failed` then names, NEXT line
+    included."""
+    try:
+        return run(command, cwd=root)
+    except OSError as exc:
+        raise CommandFailed(
+            command, root, 127,
+            f"`{command[0]}` could not be started "
+            f"({exc.strerror or exc}): is it installed and on PATH?") from exc
+
+
 def push_branch(root: Path, args, create: list[str]) -> None:
     """`git push -u -- origin <branch>`, for the first run and for the re-run
     alike, `--` ending git's options before the two positionals. A refusal
     from origin is `landing_failed`'s (#204): the commit it was pushing
     stands, so the step is named and nothing is rolled back."""
     try:
-        run(["git", "push", "-q", "-u", "--", "origin", args.branch],
-            cwd=root)
+        _landing_run(["git", "push", "-q", "-u", "--", "origin", args.branch],
+                     root)
     except CommandFailed as exc:
         raise landing_failed(root, args, exc, f"pushing {args.branch}",
                              create) from exc
@@ -2143,7 +2161,7 @@ def _finish_landing(root: Path, args, upstream: Upstream, target: str,
                "--state", "all", "--json", "state,url"]
     asking = f"asking gh for {branch}'s pull request"
     try:
-        answer = run(listing, cwd=root)
+        answer = _landing_run(listing, root)
     except CommandFailed as exc:
         raise landing_failed(root, args, exc, asking, create) from exc
     pulls = _pull_requests(answer)
@@ -2229,7 +2247,7 @@ def open_pull_request(root: Path, args, create: list[str]) -> None:
     refusal names this step, rolls nothing back, and ends on a NEXT line.
     """
     try:
-        url = run(create, cwd=root)
+        url = _landing_run(create, root)
     except CommandFailed as exc:
         raise landing_failed(root, args, exc,
                              f"opening the pull request for {args.branch}",
