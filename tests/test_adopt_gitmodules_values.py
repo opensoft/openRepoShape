@@ -79,7 +79,8 @@ ONLY_SOME_GITS_READ = {
         "git 2.49 and older refuse, and 2.50 and later read",
     "shallow = 0b1":
         "bad boolean config value `0b1` for `submodule.b.shallow`, a `0b` "
-        "number, which only a git built on glibc 2.38 or later reads",
+        "number, which a git reads only where its C library reads C23 binary "
+        "numbers (glibc 2.38 or later, for one)",
 }
 #: Every line `check` refuses beside a gitlink.
 CHECK_REFUSES = {**REFUSED, **ONLY_SOME_GITS_READ}
@@ -292,9 +293,10 @@ def test_execute_refuses_it_before_any_leg_exists(adopter, tmp_path,
 
 #: Values whose reading is the same in git 2.39.5 through 2.51 and in every
 #: C library CI runs on. Left out: the four bounds git 2.50 moved below
-#: zero, which an older git refuses, and a `0b` number, which only glibc
-#: 2.38 and later reads: `check` refuses those with the gits that refuse
-#: them, and `test_who_refuses_a_number_as_a_boolean` has them.
+#: zero, which an older git refuses, and a `0b` number, which only a C
+#: library that reads C23 binary numbers (glibc 2.38 or later) reads:
+#: `check` refuses those with the gits that refuse them, and
+#: `test_who_refuses_a_number_as_a_boolean` has them.
 BOOLEAN_VALUES = ["", "true", "Off", "YES", "maybe", "t", "1", "-1", "+1",
                   "007", "08", "0x10", "0x", "1k", "1G", "2g", "-1g",
                   "2097151k", "2097152k", "2147483647", "2147483648",
@@ -362,8 +364,9 @@ def test_check_reads_a_value_as_the_installed_git_reads_it(adopter, reader,
     # Above zero every version agrees.
     ("2147483647", None), ("2147483648", "EVERY_GIT"), ("1g", None),
     ("2g", "EVERY_GIT"),
-    # Read as binary by a git built against glibc 2.38 or later (git 2.43
-    # here is), and refused by every other: `check` refuses it too.
+    # Read as binary by a git whose C library reads C23 binary numbers
+    # (glibc 2.38 or later; git 2.43 here is one), and refused by any other:
+    # `check` refuses it too.
     ("0b1", "SOME_LIBRARIES_REFUSE"), ("0B0", "SOME_LIBRARIES_REFUSE"),
     ("-0b1", "SOME_LIBRARIES_REFUSE"), ("0b", "EVERY_GIT"),
     ("0b2", "EVERY_GIT"),

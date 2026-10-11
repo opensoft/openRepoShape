@@ -385,8 +385,9 @@ UPDATE_STRATEGIES = ("checkout", "rebase", "merge", "none")
 BOOLEAN_WORDS = ("true", "yes", "on", "false", "no", "off")
 #: An integer as `git_parse_signed` reads one: `strtoimax(value, &end, 0)`,
 #: which skips C whitespace and takes a sign and a hex, octal or decimal
-#: number -- and, built against glibc 2.38 or later, a `0b` binary one -- and
-#: then a unit, which is all that may follow.
+#: number -- and, where the C library reads C23 binary numbers (glibc 2.38
+#: or later, for one), a `0b` binary one -- and then a unit, which is all
+#: that may follow.
 GIT_INTEGER_RE = re.compile(
     r"[ \t\n\v\f\r]*(?P<sign>[+-]?)(?P<digits>0[xX][0-9a-fA-F]+|0[bB][01]+"
     r"|0[0-7]*|[1-9][0-9]*)(?P<unit>[kKmMgG]?)")
@@ -399,8 +400,9 @@ GIT_INT_BITS = 31
 EVERY_GIT = "every git"
 OLDER_GITS_REFUSE = ("a number git 2.49 and older refuse, and 2.50 and later "
                      "read")
-SOME_LIBRARIES_REFUSE = ("a `0b` number, which only a git built on glibc "
-                         "2.38 or later reads")
+SOME_LIBRARIES_REFUSE = ("a `0b` number, which a git reads only where its C "
+                         "library reads C23 binary numbers (glibc 2.38 or "
+                         "later, for one)")
 
 
 def _who_refuses_a_boolean(value: str) -> str | None:
