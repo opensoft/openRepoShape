@@ -53,7 +53,10 @@ implementation of it, `templates/family-root/scripts/siblings.py`, and this
 subcommand runs that file rather than a second copy of its logic.
 
 EXIT CODES: 0 done · 1 nothing (a dry run prints and exits 0) · 2 a refusal.
-`siblings` exits with the template script's own code, unchanged.
+`siblings` exits with the template script's own code, unchanged. A `bump` whose
+commit would record nothing — the member is already pinned at `--to`, in the
+gitlink and in `family.yaml` alike — is `nothing`: it says `nothing to do`, as
+`bump-leg.py` does for a leg, and writes no commit.
 """
 
 from __future__ import annotations
@@ -78,8 +81,8 @@ from repo_shape import (  # noqa: E402
 )
 from shape_materialize import (  # noqa: E402
     RULESET_HINT, SHAPE_REPOSITORY, CommandFailed, check_program,
-    commit_trailers, env_commit, materialize_family_root, run, stage_written,
-    trailer_line, write_lf,
+    commit_trailers, env_commit, escape_what_stdout_cannot_encode,
+    materialize_family_root, run, stage_written, trailer_line, write_lf,
 )
 
 NAMING_POLICY = SHAPE_ROOT / "contracts" / "repository-naming.yaml"
@@ -375,7 +378,9 @@ def _commit_one(root: Path, message: str, paths: list[str],
         if not env.get(key):
             env[key] = fallback
     proc = subprocess.run(args, cwd=str(root), input=message,
-                          capture_output=True, text=True, check=False, env=env)
+                          capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", check=False,
+                          env=env)
     if proc.returncode != 0:
         raise CommandFailed(args, root, proc.returncode,
                             proc.stderr + proc.stdout)
@@ -391,12 +396,14 @@ def _remote_is_empty(repository: str) -> bool | None:
     reliable signal — `size: 0` is also what a repository of small files says.
     """
     probe = subprocess.run(["gh", "repo", "view", repository, "--json", "name"],
-                           capture_output=True, text=True, check=False)
+                           capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", check=False)
     if probe.returncode != 0:
         return None
     commits = subprocess.run(
         ["gh", "api", f"repos/{repository}/commits?per_page=1"],
-        capture_output=True, text=True, check=False)
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        check=False)
     if commits.returncode != 0:
         if "empty" in (commits.stderr + commits.stdout).lower():
             return True
@@ -415,7 +422,8 @@ def _local_remote_is_empty(bare: Path) -> bool | None:
     if not bare.exists():
         return None
     out = subprocess.run(["git", "-C", str(bare), "rev-list", "--count",
-                          "--all"], capture_output=True, text=True, check=False)
+                          "--all"], capture_output=True, text=True,
+                         encoding="utf-8", errors="replace", check=False)
     if out.returncode != 0:
         raise Refusal("remote-unreadable",
                       f"{bare} exists but is not a git repository")
@@ -909,6 +917,33 @@ def cmd_add(args) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _nothing_to_record(root: Path, paths: list[str]) -> bool:
+    """Whether `git commit -- <paths>` has nothing to record: the gitlink the
+    member stands at and the manifest as rewritten are what `HEAD` already has.
+
+    ASKED OF GIT, AFTER THE SAME REWRITE THE COMMIT WOULD CARRY (#210), and
+    not read off the pin alone. A row that names `--to` is not by itself a bump
+    with nothing in it: `validate-family.py` names `bump --to <commit>` as the
+    repair for a gitlink that disagrees with the pin and for a digest that does
+    not recompute, and both leave the row's commit equal to `--to`; and so does
+    a bump an earlier run wrote and staged but never committed. In each of
+    them `git diff` finds something, and the commit goes ahead.
+    `--ignore-submodules=dirty` is what `git commit` itself ignores: files the
+    member holds untracked or modified are not a thing this commit records,
+    its HEAD is. The caller has staged the gitlink first, as `_commit_one`
+    would, so a stray one in the index is not a difference. Exit 1 is git's
+    "there is a difference"; any other failure is a real one and propagates.
+    """
+    try:
+        run(["git", "diff", "--quiet", "--ignore-submodules=dirty", "HEAD",
+             "--", *paths], cwd=root)
+    except CommandFailed as exc:
+        if exc.code == 1:
+            return False
+        raise
+    return True
+
+
 def cmd_bump(args) -> int:
     family = Family.open(args.family_root)
     project = checked_value("--member", repo_basename(args.member))
@@ -956,7 +991,30 @@ def cmd_bump(args) -> int:
     rows = [(_member_row(project, project_id, str(row["repository"]), commit,
                          digest) if str(r.get("project")) == project else r)
             for r in family.members]
+    original = family.path.read_bytes()
     family.write_members(rows)
+    # THE GITLINK IS RE-STAGED BEFORE GIT IS ASKED, as `_commit_one` does it
+    # first anyway. An index still holding a stray gitlink somebody staged and
+    # never committed makes `git diff HEAD` find a difference the commit then
+    # does not find, and a bump to the pinned commit ended in the refusal #210
+    # is about. `validate-family.py` reads the index first, reports
+    # `member-gitlink-mismatch` and names this very command as the repair. The
+    # checkout above already moved the member to `--to`, so this stages that
+    # and nothing else: a submodule path stages its gitlink, never the
+    # member's files, and the manifest's own index state is left as found.
+    run(["git", "add", "--", path], cwd=family.root)
+    if _nothing_to_record(family.root, [path, MANIFEST]):
+        # The same sentence `bump-leg.py` answers the same re-run with, and
+        # exit 1, which is what this file's docstring says `nothing` is. The
+        # manifest goes back byte for byte as it was found: the rewrite
+        # recorded nothing, and an uncommitted hand edit it happened to
+        # overwrite is not this run's to discard.
+        family.path.write_bytes(original)
+        print(f"  {project:<16} {was[:12]} -> {commit[:12]} tree "
+              f"{digest[:12]}…")
+        print(f"\nnothing to do: {row['repository']} is already pinned at "
+              f"{commit[:12]} and every fact agrees.")
+        return 1
 
     head = _commit_one(
         family.root,
@@ -1148,6 +1206,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # FIRST, so that every `print` after it -- `--help` included -- escapes
+    # a name stdout cannot encode rather than raising on it (#214).
+    escape_what_stdout_cannot_encode()
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)
