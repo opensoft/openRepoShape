@@ -640,6 +640,354 @@ def test_a_manifest_declaring_the_wrong_kind_is_not_a_root(standard,
     assert "declares neither" in rows["contents"]["reason"]
 
 
+# --- a manifest that is there and does not load (#205) ----------------------
+#
+# `Context` used to read a manifest `load_yaml` REFUSES exactly as a missing
+# one, so an assembly root with both legs mounted and a merge conflict in its
+# `project.yaml` was NOT A SHAPE ROOT, exit 2, its `the way in` row told the
+# reader to `adopt-project.py plan` it -- cutting two new legs out of a
+# repository that already has them -- and its Triad row called it "a single
+# repository". The project's own `validate-manifest.py` named the real fault
+# on the same file all along. A file that is there is not a file that is
+# absent: the filename names the kind, the `manifest` row quotes the loader
+# and names that validator, and the verdict is INVALID, exit 1.
+
+#: Every row an assembly root gets, whatever is wrong with it: the same ids
+#: `test_every_row_of_a_compliant_project_is_ok_or_na` holds a compliant one
+#: to. None of the three rows a directory with no manifest gets is among them.
+PROJECT_ROWS = {"naming", "manifest", "pins", "manifest-kinds",
+                "shape-currency", "legs", "leg-shape-files", "placement",
+                "agent-files", "machine"}
+NOT_A_ROOT_ROWS = ("contents", "way-in", "triad-advisory")
+
+#: The rows that read what `project.yaml` DECLARES, which wait on the
+#: `manifest` row while it does not load rather than answering a question
+#: they cannot ask ("declares no non-assembly leg", a second copy of the
+#: refusal under `validate-pins.py`'s lockstep remedy).
+WAITING_ROWS = ("naming", "pins", "legs", "leg-shape-files", "placement")
+
+
+def conflicted(body: bytes, nth: int = 0) -> bytes:
+    """`body` with its `nth` `commit:` line inside a merge conflict.
+
+    What a hand merge leaves when two branches each moved one pin -- two
+    shape updates in an assembly root, two bumps of one member in a holder --
+    and the case #205 was found by. Bytes in and out, with the file's own
+    `\\n`, so the edit is the same on every platform.
+    """
+    lines = body.split(b"\n")
+    hits = [index for index, line in enumerate(lines)
+            if line.lstrip().startswith(b'commit: "')]
+    line = lines[hits[nth]]
+    indent = line[:len(line) - len(line.lstrip())]
+    lines[hits[nth]:hits[nth] + 1] = [
+        b"<<<<<<< HEAD", line, b"=======",
+        indent + b'commit: "' + b"1" * 40 + b'"',
+        b">>>>>>> shape/update-1111"]
+    return b"\n".join(lines)
+
+
+#: Three ways a manifest stops loading, and the code `load_yaml` refuses
+#: each with: a merge conflict and a tab are YAML its reader will not take
+#: (`yaml-unparsable`), and a Latin-1 byte is not UTF-8 at all
+#: (`yaml-unreadable`, #192). The edit is asserted to change the file, so a
+#: scaffold that one day spells these lines differently is a red test and
+#: not a manifest that quietly still loads.
+BREAKAGES = {
+    "merge-conflict": (conflicted, "yaml-unparsable"),
+    "tab-indent": (lambda body: body.replace(
+        b"\n  revision_kind:", b"\n\trevision_kind:", 1), "yaml-unparsable"),
+    "not-utf8": (lambda body: body.replace(
+        b'name: "Atlas"', b'name: "Atl\xe9s"', 1), "yaml-unreadable"),
+}
+
+
+def break_manifest(path: Path, edit, code: str) -> repo_shape.Refusal:
+    """Break the manifest at `path` and return what `load_yaml` says of it.
+
+    THE EXPECTED TEXT IS THE LOADER'S OWN, asked of the same file, so the
+    doctor is held to repeating it rather than to a sentence this test made
+    up. `path` is RESOLVED, because the doctor resolves `--root` before it
+    names a file, and a temporary directory reached through a symlink would
+    otherwise be two spellings of one path.
+    """
+    body = path.read_bytes()
+    broken = edit(body)
+    assert broken != body, "the edit did not change the manifest"
+    path.write_bytes(broken)
+    with pytest.raises(repo_shape.Refusal) as caught:
+        repo_shape.load_yaml(path)
+    assert caught.value.code == code, caught.value
+    return caught.value
+
+
+def loader_line(refusal: repo_shape.Refusal) -> str:
+    """The line the loader's refusal prints first, and the gate prints too."""
+    return f"REFUSED {refusal.code}: {refusal.detail}"
+
+
+def no_adoption_offered(whole: str, rows: dict | None = None) -> None:
+    """No `adopt-project.py plan`, and no row but `machine` naming the tool.
+
+    The `machine` row is the one exception, and it is UNCHANGED by #205: on a
+    workstation without `git-filter-repo` -- the Windows CI job, by design --
+    it says that only `adopt-project.py` needs it. That is a sentence about
+    the machine, and never an offer to adopt anything.
+    """
+    assert "adopt-project.py plan" not in whole, whole
+    for name, row in (rows or {}).items():
+        if name == "machine":
+            continue
+        said = (row["reason"] or "") + (row["next"] or "")
+        assert "adopt-project.py" not in said, (name, row)
+
+
+@pytest.mark.parametrize("case", sorted(BREAKAGES))
+def test_a_manifest_that_does_not_load_is_invalid_and_not_absent(
+        standard, project, case):
+    """(a) INVALID, exit 1, the loader's own line, and no way in offered.
+
+    The root is still an assembly root: its kind line says so and says why
+    the filename decided it, no row a manifest-less directory gets is
+    printed -- not `the way in`, not the Triad row calling it "a single
+    repository" -- and the `machine` row is the row it always was.
+    """
+    edit, code = BREAKAGES[case]
+    refusal = break_manifest(project.resolve() / "project.yaml", edit, code)
+    result = doctor(standard, project)
+    whole = result.stdout + result.stderr
+    assert result.returncode == 1, whole
+    assert verdict_line(result) == "INVALID (manifest)   (exit 1)", whole
+    assert "kind        assembly root (project.yaml, which does not load: " \
+        "see the `manifest` row)" in result.stdout, result.stdout
+    assert f"project.yaml does not load: {loader_line(refusal)}" in \
+        result.stdout, result.stdout
+    no_adoption_offered(whole)
+    for never in ("NOT A SHAPE ROOT", "single repository", "the way in",
+                  "what is here", "remove the file", "git submodule"):
+        assert never not in whole, (never, whole)
+    assert "  n/a      machine  " in result.stdout, result.stdout
+
+
+@pytest.mark.parametrize("case", sorted(BREAKAGES))
+def test_the_json_report_of_an_unloaded_manifest_is_the_same_report(
+        standard, project, case):
+    """(b) `--json` carries the same verdict, exit and rows, by id.
+
+    The `manifest` row is the FINDING and carries the refusal as data; every
+    row that reads what the manifest declares is `n/a` and names the row it
+    waits on in `detail.waits_on`; `manifest kinds` does not list the same
+    file a second time under a next command that says to remove it. And the
+    text report says every one of those reasons and next commands, verbatim.
+    """
+    edit, code = BREAKAGES[case]
+    refusal = break_manifest(project.resolve() / "project.yaml", edit, code)
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 1, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert (payload["kind"], payload["verdict"], payload["exit"]) == \
+        ("project", "INVALID (manifest)", 1), payload
+    assert payload["note"] is None and payload["placement_plan"] is None
+    rows = rows_of(result)
+    assert set(rows) == PROJECT_ROWS, sorted(rows)
+    for absent in NOT_A_ROOT_ROWS:
+        assert absent not in rows, rows.get(absent)
+    no_adoption_offered(result.stdout, rows)
+
+    manifest = rows["manifest"]
+    assert manifest["status"] == "FINDING", manifest
+    assert manifest["reason"] == \
+        f"project.yaml does not load: {loader_line(refusal)}", manifest
+    assert manifest["detail"]["refusal"] == {"code": refusal.code,
+                                             "detail": refusal.detail}
+    assert manifest["detail"]["manifest"] == "project.yaml"
+    assert manifest["detail"]["own_copy"] is True
+    assert "scripts/validate-manifest.py --root" in \
+        manifest["next"].replace("\\", "/"), manifest["next"]
+    assert "the file to fix is" in manifest["next"], manifest["next"]
+    assert "project.yaml" in manifest["next"].split("#", 1)[1]
+
+    for name in WAITING_ROWS:
+        row = rows[name]
+        assert row["status"] == "n/a", (name, row)
+        assert row["detail"]["waits_on"] == "manifest", (name, row)
+        assert row["reason"].startswith("project.yaml does not load, so "), \
+            (name, row)
+        assert row["next"] is None, (name, row)
+    assert "declares no non-assembly leg" not in rows["legs"]["reason"]
+    kinds = rows["manifest-kinds"]
+    assert kinds["status"] == "ok", kinds
+    assert kinds["detail"]["reported_by"] == {"project.yaml": "manifest"}
+    assert "project.yaml" not in kinds["detail"]["unreadable"], kinds
+    assert rows["machine"]["status"] == "n/a", rows["machine"]
+
+    text = doctor(standard, project)
+    assert text.returncode == payload["exit"], text.stdout + text.stderr
+    assert verdict_line(text) == \
+        f"{payload['verdict']}   (exit {payload['exit']})", text.stdout
+    for name, row in rows.items():
+        if name == "machine":
+            continue  # it asks `gh`, which need not answer twice the same
+        assert row["reason"] in text.stdout, (name, row["reason"])
+        if row["next"]:
+            assert row["next"] in text.stdout, (name, row["next"])
+
+
+@pytest.mark.parametrize("case", sorted(BREAKAGES))
+def test_the_manifest_rows_next_command_refuses_the_same_file_the_same_way(
+        standard, project, case):
+    """The NEXT line is the project's own gate, and it says what the row said.
+
+    Pasted, it runs the project's own `validate-manifest.py`, which refuses
+    the file with the same code and the same words after its path -- the
+    path itself is the validator's spelling of the root, which is git's, and
+    is compared no further than that. Exit 2 is that validator's refusal.
+    """
+    edit, code = BREAKAGES[case]
+    path = project.resolve() / "project.yaml"
+    refusal = break_manifest(path, edit, code)
+    row = rows_of(doctor(standard, project, "--json"))["manifest"]
+    command = row["next"].split("#")[0].split()
+    assert Path(command[1]).is_file(), command
+    assert Path(command[1]).name == "validate-manifest.py", command
+    proc = subprocess.run(command, capture_output=True, text=True,
+                          check=False, env={**os.environ,
+                                            "PYTHONDONTWRITEBYTECODE": "1"})
+    said = proc.stdout + proc.stderr
+    assert proc.returncode == 2, said
+    assert f"REFUSED {refusal.code}: " in said, said
+    assert refusal.detail[len(str(path)):] in said, (refusal.detail, said)
+
+
+def test_a_family_yaml_that_does_not_load_is_invalid_and_not_absent(
+        standard, holder, tmp_path):
+    """(c) A holder whose `family.yaml` does not load is still a holder.
+
+    Before #205 it was NOT A SHAPE ROOT, offered `adopt-project.py plan
+    --project InkRouter` and called "a single repository". Now the `family`
+    row quotes the loader and names `validate-family.py` and the file, and
+    `members` waits on it -- rather than saying "no members yet", an `ok`
+    about an empty family, of a holder whose members nobody could read.
+    """
+    root = tmp_path / FAMILY_NAME
+    shutil.copytree(holder["root"], root, symlinks=True)
+    path = root.resolve() / "family.yaml"
+    refusal = break_manifest(path, lambda body: conflicted(body, -1),
+                             "yaml-unparsable")
+    result = doctor(standard, root, "--json")
+    assert result.returncode == 1, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert (payload["kind"], payload["verdict"], payload["exit"]) == \
+        ("family", "INVALID (family)", 1), payload
+    rows = rows_of(result)
+    assert set(rows) == {"family", "manifest-kinds", "shape-currency",
+                         "placement", "agent-files", "members", "machine"}
+    no_adoption_offered(result.stdout, rows)
+    family = rows["family"]
+    assert family["status"] == "FINDING", family
+    assert family["reason"] == \
+        f"family.yaml does not load: {loader_line(refusal)}", family
+    assert "validate-family.py --root" in family["next"].replace("\\", "/")
+    assert "family.yaml" in family["next"].split("#", 1)[1]
+    members = rows["members"]
+    assert members["status"] == "n/a", members
+    assert members["detail"]["waits_on"] == "family", members
+    assert "no members yet" not in members["reason"], members
+    assert rows["placement"]["status"] == "n/a"
+    assert "each member is an assembly root" in rows["placement"]["reason"]
+    assert rows["manifest-kinds"]["detail"]["reported_by"] == \
+        {"family.yaml": "family"}
+
+    text = doctor(standard, root)
+    assert text.returncode == 1, text.stdout + text.stderr
+    assert verdict_line(text) == "INVALID (family)   (exit 1)", text.stdout
+    assert "kind        family holder (family.yaml, which does not load" in \
+        text.stdout, text.stdout
+    for never in ("NOT A SHAPE ROOT", "single repository", "the way in"):
+        assert never not in text.stdout, (never, text.stdout)
+
+    command = family["next"].split("#")[0].split()
+    proc = subprocess.run(command, capture_output=True, text=True,
+                          check=False, env={**os.environ,
+                                            "PYTHONDONTWRITEBYTECODE": "1"})
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert refusal.detail[len(str(path)):] in proc.stdout + proc.stderr
+
+
+@pytest.mark.parametrize("where", ["a-repository", "a-plain-directory"])
+def test_a_manifest_that_is_absent_is_still_not_a_shape_root(standard,
+                                                             project,
+                                                             tmp_path,
+                                                             where):
+    """(d) Absent is unchanged: NOT A SHAPE ROOT, exit 2, and the way in.
+
+    The assembly root of the tests above with its `project.yaml` DELETED
+    rather than broken is a git repository with no manifest, and is offered
+    the adoption; a directory that is not a repository is offered the
+    scaffold. Those are the two ways in AGENTS.md names, each where it
+    applies, and #205 changed neither.
+    """
+    if where == "a-repository":
+        (project / "project.yaml").unlink()
+        here, way_in = project, "adopt-project.py plan"
+    else:
+        here = tmp_path / "Loose"
+        here.mkdir()
+        (here / "notes.txt").write_text("nothing to see\n", encoding="utf-8")
+        way_in = "setup-project.py" if os.name == "nt" else "setup.sh"
+    result = doctor(standard, here, "--json")
+    assert result.returncode == 2, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert (payload["kind"], payload["verdict"], payload["exit"]) == \
+        ("none", "NOT A SHAPE ROOT", 2), payload
+    rows = rows_of(result)
+    assert way_in in rows["way-in"]["next"], rows["way-in"]
+    assert rows["contents"]["detail"]["project_yaml"] is False
+    assert "manifest" not in rows, rows.get("manifest")
+
+
+def test_a_manifest_that_declares_its_kind_outranks_one_that_does_not_load(
+        standard, holder, tmp_path):
+    """A good `family.yaml` beside a broken stray `project.yaml` is a holder.
+
+    `kind:` decides first, as it always has; the filename decides only where
+    no file that loads declares a kind. So this root reads exactly as it did
+    before #205 -- a family holder whose `family` row passes -- rather than
+    as a broken assembly root.
+    """
+    root = tmp_path / FAMILY_NAME
+    shutil.copytree(holder["root"], root, symlinks=True)
+    (root / "project.yaml").write_bytes(
+        b"kind: project-manifest\n\tname: stray\n")
+    result = doctor(standard, root, "--json")
+    payload = json.loads(result.stdout)
+    assert payload["kind"] == "family", payload
+    rows = rows_of(result)
+    assert rows["family"]["status"] == "ok", rows["family"]
+    assert "manifest" not in rows, rows.get("manifest")
+    assert "project.yaml" in rows["manifest-kinds"]["detail"]["unreadable"]
+
+
+def test_a_manifest_that_does_not_load_writes_no_placement_plan(standard,
+                                                                project,
+                                                                tmp_path):
+    """There is no leg to write a plan about until the manifest loads.
+
+    The `placement` row is `n/a`, so `--placement-plan` refuses by name,
+    exit 3 -- the flag's question, as for a family holder -- says why in the
+    `placement` row's own words, and writes nothing.
+    """
+    break_manifest(project.resolve() / "project.yaml", conflicted,
+                   "yaml-unparsable")
+    out = tmp_path / "placement-plan.yaml"
+    result = doctor(standard, project, "--placement-plan", str(out))
+    assert result.returncode == 3, result.stdout + result.stderr
+    assert "REFUSED shape-doctor-no-placement-audit" in result.stderr
+    assert "project.yaml does not load, so there is no leg to classify" in \
+        result.stderr, result.stderr
+    assert not out.exists()
+
+
 # --- usage and environment --------------------------------------------------
 
 def test_a_path_that_is_not_there_is_exit_3(standard, tmp_path):
