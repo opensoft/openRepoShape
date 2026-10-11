@@ -1636,10 +1636,11 @@ def pull_request_repository(manifest: dict | None,
     project: its `repository:`, or its `org:` and `name:` joined where there
     is no `repository:`. An empty answer is the caller's to act on:
     `pull_request_target` refuses with `why_none` under `--pr`, before the
-    commit, since there is nothing to open a pull request against, and
+    commit, since there is nothing to open a pull request against;
     `next_line` keeps the placeholder it always printed, since it runs
     after the commit and a manifest that names no repository is no reason
-    to take that back.
+    to take that back; and `pull_request_line`'s bare form, the one a
+    failed `--push` prints, leaves `--repo` off (#204).
     """
     manifest = manifest or {}
     if kind is FAMILY_KIND:
@@ -2717,12 +2718,20 @@ def pull_request_line(root: Path, args, target: str, upstream: Upstream,
                       kind: Kind) -> list[str]:
     """The `gh pr create` that lands `--branch` (#204): under `--pr` the one
     `--pr` runs, title and body included, so the NEXT line a failure prints
-    is that same command; without it, the bare `--base`/`--head` form the
-    plain `--branch` NEXT line prints, against this root's own tracking
-    branch."""
+    is that same command; without it, the bare form the plain `--branch`
+    NEXT line prints (#209): `--repo` the manifest's repository, then
+    `--base`/`--head` against this root's own tracking branch.
+
+    WITHOUT `--pr` A MANIFEST NAMING NO REPOSITORY LEAVES `--repo` OFF rather
+    than refusing: nothing is opened, so nothing is wrong yet, and the
+    `<org>/<Project>` placeholder `next_line` prints would be one literal
+    argument in a line quoted to be pasted as an argv."""
     if not args.pr:
-        base = tracking_branch_of(load_yaml(root / kind.manifest))
-        return ["gh", "pr", "create", "--base", base, "--head", args.branch]
+        manifest = load_yaml(root / kind.manifest)
+        repository, _ = pull_request_repository(manifest, kind)
+        where = ["--repo", repository] if repository else []
+        return ["gh", "pr", "create", *where, "--base",
+                tracking_branch_of(manifest), "--head", args.branch]
     repository, base = pull_request_target(root, kind)
     return ["gh", "pr", "create", "--repo", repository, "--base", base,
             "--head", args.branch, "--title",

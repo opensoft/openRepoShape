@@ -359,7 +359,8 @@ def test_a_failed_push_is_named_and_its_next_line_pushes_first(root, project,
             "--title " in line
         assert f"`apply --push --pr` run again on {BRANCH}" in result.stderr
     else:
-        assert line.endswith(f"&& gh pr create --base main --head {BRANCH}")
+        assert line.endswith(f"&& gh pr create --repo testorg/{PROJECT} "
+                             f"--base main --head {BRANCH}"), line
         assert "run again" not in result.stderr, (
             "a re-run without --pr finishes nothing, so none is promised")
     the_commit_stands(root, project)
