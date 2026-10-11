@@ -39,7 +39,8 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            the one split commit on a branch of the source, sets the
            `xf-project-<id>` topic on all three (skipped for local remotes),
            and then VERIFIES by blob sha that every source path landed in
-           exactly one place.
+           exactly one place, and that the root's only submodules are the
+           two leg mounts.
 
 THE PLAN IS AN ARTIFACT A HUMAN OR AN AI EDITS. That is why it is YAML with
 reasons in it rather than a pipe between two processes: the classifier is
@@ -93,13 +94,15 @@ from repo_shape import (  # noqa: E402
     free_plan_secret_hint,
     COMMIT_RE, NEUTRAL_PRODUCT_OWNER, PROJECT_ID_RE, TREE_DIGEST_DEFINITION,
     VISIBILITY_CHOICES, NamingPolicy, Refusal, YamlError,
-    accepts_role, checked_value, git_out, load_yaml, parse_yaml, tree_digest,
+    accepts_role, checked_value, double_quoted, git_out, load_yaml,
+    parse_yaml, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
     ADOPT_MAKEFILE_BLOCK, RULESET_HINT, SHAPE_REPOSITORY,
     CommandFailed, Materialized, assembly_root_paths, collision_follow_up,
     copy_tree, default_reference, election_date, env_commit, git_init_commit,
     materialize_assembly_root, naming_block, run, write_lf,
+    write_paths_listing,
 )
 # The leg-path rule (#179) is `scaffold-project.py`'s as much as adopt's, so it
 # is imported as one unit and not listed among the materializer's names above.
@@ -211,12 +214,23 @@ FILTER_REPO_HINT = (
 # ---------------------------------------------------------------------------
 #
 # `repo_shape.parse_yaml` reads a SUBSET, so this writes the same subset: block
-# mappings, block sequences and single-line scalars. Everything it emits is
+# mappings, block sequences and single-line scalars: ONE line whatever the
+# string, because a quoted one is spelled by `repo_shape.double_quoted` from
+# the reader's own escape tables. A name holding a line break (the macOS
+# `Icon\r`), a control character or a byte that is not UTF-8 is one line the
+# reader gives back unchanged, and `check` can name it (#199);
+# `tests/test_adopt_plan_escapes.py` proves that round trip for every code
+# point to U+02FF and a sample above it, and for a seeded sample of strings
+# of them, not only for the strings a plan happens to hold; not for a bare
+# YAML keyword (`null`, `true`, `false`), which `y` writes unquoted and the
+# reader takes as None or a bool, #181's to fix. Everything it emits is
 # read back by `check`, and `tests/test_adopt_plan.py` round-trips a plan
 # through both, which is what keeps the writer and the reader honest about
 # each other.
 
-_PLAIN_RE = re.compile(r"^[A-Za-z_.][A-Za-z0-9_./@:+-]*$")
+#: Ends at `\Z`, not `$`: `$` also matches before a FINAL newline, and wrote a
+#: file named `Icon\n` bare, over two lines of the plan (#199).
+_PLAIN_RE = re.compile(r"^[A-Za-z_.][A-Za-z0-9_./@:+-]*\Z")
 
 
 def y(value) -> str:
@@ -231,8 +245,7 @@ def y(value) -> str:
     text = str(value)
     if text and _PLAIN_RE.match(text) and not text.endswith(":"):
         return text
-    escaped = text.replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{escaped}"'
+    return double_quoted(text)
 
 
 def emit(lines: list[str], key: str, value, indent: int = 0) -> None:
@@ -690,9 +703,26 @@ def _spelled(path: str) -> str:
     line. So a character that is not printable is spelled with a backslash,
     `\\xe9` for the byte 0xE9 and `\\n` for a newline, and so are a
     backslash and a backtick, so that the spelling reads one way only and
-    the backticks still delimit it.
+    the backticks still delimit it. The plan's own `path:` spells that byte
+    `\\udce9`, not `\\xe9` (`repo_shape.double_quoted`), because in YAML
+    `\\xe9` is the character U+00E9, which is another name: a question or a
+    report that says `caf\\xe9` is the entry `"caf\\udce9"` in the plan.
     """
     return "`" + "".join(map(_spelled_character, path)) + "`"
+
+
+def _shown(path: str) -> str:
+    """`path` in `plan`'s and `check`'s terminal report: as it is, unless a
+    character in it is not printable, and then `_spelled`. The plan file
+    holds such a name escaped (`repo_shape.double_quoted`); printed raw, a
+    carriage return sends the cursor back over the row and hides the name, a
+    line break splits the row, and a byte that is not UTF-8 (a surrogate
+    here) raised `UnicodeEncodeError` on a terminal strict about its
+    encoding -- macOS, a UTF-8 Linux locale, a Windows code page -- after the
+    plan was written (#199). The same holds for the source directory a local
+    `--source` names, which the report prints too. Every other name prints
+    exactly as it did."""
+    return path if path.isprintable() else _spelled(path)
 
 
 def _spelled_character(char: str) -> str:
@@ -1288,7 +1318,7 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
     a question printed above a summary table is a question that gets scrolled
     past.
     """
-    print(f"source     {source.repository or source.path} @ "
+    print(f"source     {source.repository or _shown(str(source.path))} @ "
           f"{source.commit[:12]} ({source.branch}), "
           f"{len(tree)} files, {source.commit_count()} commits")
     print(f"project    {args.project} ({args.id}) in {args.org}, mode in-place")
@@ -1308,7 +1338,7 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
         print(f"{len(unresolved)} path(s) need a human or an AI to answer a "
               "question before `execute` will run:")
         for entry in unresolved:
-            print(f"  {entry.path}\n      {entry.question}")
+            print(f"  {_shown(entry.path)}\n      {entry.question}")
 
 
 def cmd_plan(args) -> int:
@@ -1378,7 +1408,7 @@ def seeding_warnings(seeded: list[str], allowed: set) -> list[str]:
 def _print_entries(entries: list[Entry]) -> None:
     print(f"\n{'path':<34} {'leg':<10} {'conf':<7} {'files':>6} {'rule'}")
     for entry in entries:
-        print(f"{entry.path:<34} {(entry.leg or 'REVIEW'):<10} "
+        print(f"{_shown(entry.path):<34} {(entry.leg or 'REVIEW'):<10} "
               f"{entry.confidence:<7} {entry.files:>6} {entry.rule}")
 
 
@@ -1740,9 +1770,11 @@ def submodule_plan_problems(entries: list, tree: list,
         (`plan-submodule-root`). The assembly root has exactly two mounts and
         its `.gitmodules` is reserved for them -- `execute` writes a fresh one
         when the source's moves to a leg or is dropped -- and the shape's own
-        `validate.yml` reads every URL in that file as a leg; a root
-        `.gitmodules` the plan kept fails verification today whatever it
-        registers (#165).
+        `validate.yml` reads every URL in that file as a leg. A plan that
+        slipped one past this would still fail verification whatever it
+        registers, which compares a root-kept `.gitmodules` byte for byte
+        after the mount has appended to it, and finds every submodule of the
+        source's the root keeps (#165).
       * A `.gitmodules` git cannot read for its submodules is never taken to
         register nothing (`plan-gitmodules-unreadable`, saying what git
         said, and where git fails on it: `_where_git_fails`). Beside a
@@ -2138,8 +2170,8 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
     stays = [e for e in plan.entries if str(e.get("leg")) == "root"]
     drops = [e for e in plan.entries if str(e.get("leg")) == "drop"]
     seeded = seeded_legs(assigned_paths(plan.entries))
-    print(f"\nWHAT WILL HAPPEN, against {source.repository or source.path} @ "
-          f"{source.commit[:12]}:")
+    where = source.repository or _shown(str(source.path))
+    print(f"\nWHAT WILL HAPPEN, against {where} @ {source.commit[:12]}:")
     print(f"  create {names['spec']} and {names['code']} "
           f"({plan.get('visibility', 'private')})")
     print(f"  extract {len(moved)} path(s) with `git filter-repo`, history "
@@ -2350,7 +2382,9 @@ def _extract_leg(role: str, source: Source, work: Path, paths: list[str],
     # as that directive, so a source file named `#notes.md` was left out of
     # its leg after both legs existed. The prefix takes the rest of the line
     # as it stands; what no line can carry, `entry_path_problem` refuses.
-    write_lf(listing, "".join(f"literal:{path}\n" for path in paths))
+    # And byte-exact: a path that is not UTF-8 is written as the bytes
+    # git records, where `write_lf` raised after both legs existed.
+    write_paths_listing(listing, [f"literal:{path}" for path in paths])
     run(["git", "filter-repo", "--paths-from-file", str(listing), "--force"],
         cwd=work)
     head = git_out(["rev-parse", "HEAD"], cwd=work).lower()
@@ -2580,8 +2614,9 @@ def _mount_the_legs(assembly: Path, work_root: Path, names: dict, urls: dict,
     # finding of `check` before this runs (#168).
     # Appending the mounts to a `.gitmodules` left here, rather than
     # replacing it, is MOUNT DEFENCE IN DEPTH for a plan that slipped past
-    # both, not a shape a plan may choose; such a file still fails
-    # verification (#165).
+    # both, not a shape a plan may choose: the verification fails such a
+    # split, on that file's bytes (`adopt-lost`) and on every submodule of
+    # the source's the root keeps (`adopt-root-submodule`, #165).
     if GITMODULES in removed:
         write_lf(assembly / GITMODULES, "")
         run(["git", "add", "-f", "--", GITMODULES], cwd=assembly)
@@ -3044,7 +3079,7 @@ def cmd_execute(args) -> int:
 
     # ---- (d) verification, by blob sha ------------------------------------
     verified = _verify(source, assembly, work_root, names, paths_for,
-                       split_commit, seeded)
+                       split_commit, spec_path, code_path, seeded)
     if verified:
         return verified   # a verification mismatch outranks a missing topic
     return 2 if topics_failed else 0
@@ -3149,7 +3184,8 @@ def _split_message(names, paths_for, leg_commits, spec_path, code_path,
 
 
 def _verify(source: Source, assembly: Path, work_root: Path, names,
-            paths_for, split_commit: str, seeded=()) -> int:
+            paths_for, split_commit: str, spec_path: str, code_path: str,
+            seeded=()) -> int:
     """Every source blob is in exactly one place afterwards, or this fails.
 
     THE ONE CHECK THAT MAKES THE REST TRUSTWORTHY. Counting paths would pass a
@@ -3162,6 +3198,16 @@ def _verify(source: Source, assembly: Path, work_root: Path, names,
     added, exactly like the manifest and the pins. The leg's row therefore
     reads `0 of N source paths (seeded from template)` — which is the honest
     number, and still leaves every source path to be accounted for somewhere.
+
+    ONLY THE TWO LEG MOUNTS ARE PASSED OVER, never every gitlink (#165). The
+    legs' own trees account for what is behind `spec_path` and `code_path`;
+    any OTHER gitlink in the root tree is a path like a blob, and skipping
+    them all hid a source submodule kept here (reported lost), one the split
+    failed to remove (in a leg AND here, never seen twice) and one nobody
+    asked for (not even counted as added). Each is also a finding of its own,
+    because the root keeps no gitlink but the two mounts: this check fails
+    closed on one, and does not lean on `check`'s refusals to keep it out.
+    `_land_the_root_tree` says which.
     """
     print("\nVERIFICATION — every source path at "
           f"{source.commit[:12]}, by blob sha")
@@ -3170,10 +3216,9 @@ def _verify(source: Source, assembly: Path, work_root: Path, names,
     for role in ("spec", "code"):
         for path, _, oid, _ in _tree_of(work_root / names[role], "HEAD"):
             after.setdefault(path, []).append(f"{role}:{oid}")
-    for path, mode, oid, _ in _tree_of(assembly, split_commit):
-        if mode == "160000":
-            continue
-        after.setdefault(path, []).append(f"root:{oid}")
+    root_findings = _land_the_root_tree(
+        after, _tree_of(assembly, split_commit), before,
+        dict(zip((spec_path, code_path), EXTRACTED_LEGS)))
 
     counts, findings = _account_for(before, after, paths_for["drop"])
     findings += _shape_file_findings(assembly, split_commit)
@@ -3184,13 +3229,15 @@ def _verify(source: Source, assembly: Path, work_root: Path, names,
               f"paths{note}")
     print(f"  added  {len(added):>5} new paths (manifest, pins, shape files"
           + (", seeded leg" if seeded else "") + ")")
+    findings += root_findings
     for finding in findings:
         print(finding, file=sys.stderr)
     if findings:
         print(f"\n{len(findings)} verification finding(s). The legs and the "
               "branch exist; NOTHING was deleted from the source, so the exit "
               "is to fix the plan and re-run into a fresh --local-remote-dir "
-              "or fresh leg repositories.", file=sys.stderr)
+              "or fresh leg repositories, unless a finding above names "
+              "another exit.", file=sys.stderr)
         return 1
     print("\nadoption verified: every source path is in exactly one place")
     print(f"\nNEXT: review the pull request on {names['assembly']}, then\n"
@@ -3222,6 +3269,118 @@ def _account_for(before: dict, after: dict, drops: list[str]) -> tuple[dict, lis
             findings.append(f"FINDING adopt-lost: {path} ({oid[:12]}) is in no "
                             "leg, not in the root tree, and not listed as drop")
     return counts, findings
+
+
+#: How each root-tree gitlink finding ends. EVERY ONE MEANS THE SPLIT IS
+#: WRONG: the plan values known to reach them are refused by `execute`
+#: before any leg exists, so the person is not sent back to the plan.
+#: `git submodule add` records a mount at its path's canonical spelling, so a
+#: `legs.spec_path` of `spec/` once mounted the leg at `spec` and fired both
+#: mount findings; since #169 that value is `plan-bad-leg-path`. A source
+#: submodule kept in the root is `plan-submodule-root` since #166, and one
+#: left with no leg is `plan-uncovered` or `plan-bad-leg` since #168
+#: (`plan-unresolved` always was).
+SPLIT_IS_WRONG = ("so the split itself is wrong: do not merge it, and report "
+                  f"it to {SHAPE_REPOSITORY}")
+#: The exit of `adopt-unexpected-gitlink` and `adopt-mount-missing`.
+SPLIT_DEFECT = (
+    "this is not how the plan spells its leg paths: `execute` refuses "
+    "before any leg exists a leg path git would record at another spelling "
+    f"(`plan-bad-leg-path`), {SPLIT_IS_WRONG}")
+#: The exit of `adopt-root-submodule`.
+ROOT_SUBMODULE_DEFECT = (
+    "`execute` refuses before any leg exists a plan that keeps a submodule "
+    "of the source's in the root (`plan-submodule-root`) or leaves one with "
+    "no leg (`plan-unresolved`, `plan-uncovered`, `plan-bad-leg`), "
+    f"{SPLIT_IS_WRONG}")
+
+
+def _land_the_root_tree(after: dict, tree: list, before: dict,
+                        mounts: dict[str, str]) -> list[str]:
+    """Land the split commit's tree in `after` as `root`; return what is wrong.
+
+    `mounts` maps each leg's mount path, AS THE PLAN SPELLS IT, to the leg:
+    `{spec_path: "spec", code_path: "code"}`. THE SHAPE ADDS
+    EXACTLY TWO GITLINKS to the root, and those two are the only entries
+    passed over. Every other gitlink lands like a blob, so a source submodule
+    the root kept at its own commit is counted `root` and one the split
+    failed to remove is `adopt-duplicated` with its leg. Three findings are
+    this function's own, because no source path can report them:
+
+      * EVERY OTHER GITLINK, whatever it is (`_root_gitlink_finding`): the
+        source's own submodule at its own commit (`adopt-root-submodule`),
+        or anything else (`adopt-unexpected-gitlink`). The root keeps no
+        gitlink but the two mounts (#166), and this check FAILS CLOSED on
+        the rest rather than trusting the plan checks before it to have
+        refused them. Counting the source's own as a `root` landing and
+        nothing more says `adoption verified` over an assembly whose fresh
+        `.gitmodules` does not register it: its recursive clone leaves that
+        directory empty, and `git submodule status` exits 128.
+      * `adopt-mount-missing`: a mount path holding no gitlink. The root
+        pins a leg it does not mount, and its recursive clone gets no leg.
+
+    They name the mount paths as the plan spells them, which since #169 is
+    the one spelling git records a mount at.
+
+    THE ROOT `.gitmodules` IS STILL COMPARED BYTE FOR BYTE, deliberately, and
+    not by its registrations. The source's own cannot reach here: `check`
+    finds, and `execute` refuses, a plan that keeps it in the root (#166) or
+    leaves it in no entry at all (#168). The fresh one `_mount_the_legs`
+    writes is the SHAPE'S file, not a source landing: it is counted as added
+    in a source that had none, and beside a source `.gitmodules` the plan
+    moved or dropped it matches no source blob and is passed over. Accounting
+    registrations would verify a path no plan `execute` runs can take, and
+    would read the source's registrations into a file the shape reserves for
+    its two mounts.
+    """
+    findings: list[str] = []
+    mounted: set[str] = set()
+    for path, mode, oid, _ in tree:
+        gitlink = mode == GITLINK_MODE
+        if gitlink and path in mounts:
+            mounted.add(path)
+            continue
+        after.setdefault(path, []).append(f"root:{oid}")
+        if gitlink:
+            findings.append(_root_gitlink_finding(path, oid, before, mounts))
+    findings += [f"FINDING adopt-mount-missing: the root tree has "
+                 f"{_what_is_at(tree, path)} at {path} as the plan spells "
+                 f"it, where the gitlink that mounts the {role} leg belongs; "
+                 + SPLIT_DEFECT
+                 for path, role in sorted(mounts.items())
+                 if path not in mounted]
+    return findings
+
+
+def _root_gitlink_finding(path: str, oid: str, before: dict,
+                          mounts: dict[str, str]) -> str:
+    """The finding for a gitlink in the root tree at a path no leg is
+    mounted at. There is one for EVERY such gitlink (#165); this says which.
+
+    The source's own submodule is matched by path AND commit. Matching the
+    path alone would call a submodule moved to another commit the source's
+    own, when it is as foreign to the source as one at a new path.
+    """
+    if before.get(path) == oid:
+        return (f"FINDING adopt-root-submodule: {path} is a gitlink to "
+                f"{oid[:12]} in the root tree, the source's own submodule at "
+                "its own commit, and the assembly root keeps no submodule of "
+                f"the source's: its {GITMODULES} is reserved for its two leg "
+                f"mounts; {ROOT_SUBMODULE_DEFECT}")
+    return (f"FINDING adopt-unexpected-gitlink: {path} is a gitlink to "
+            f"{oid[:12]} in the root tree, and neither a leg mount as the "
+            f"plan spells their paths ({', '.join(sorted(mounts))}) nor the "
+            f"source's own submodule at that commit; {SPLIT_DEFECT}")
+
+
+def _what_is_at(tree: list, path: str) -> str:
+    """What a mount path holds instead of its gitlink, for the finding."""
+    for entry, mode, _, _ in tree:
+        if entry == path:
+            return f"a blob (mode {mode})"
+        if entry.startswith(path + "/"):
+            return "a directory"
+    return "nothing"
 
 
 def _tree_of(repo: Path, rev: str) -> list[tuple[str, str, str, int]]:
