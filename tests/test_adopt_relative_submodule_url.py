@@ -76,6 +76,9 @@ SMALL_TREE = {"README.md": "# Thing\n", "src/app/util.py": "VALUE = 1\n",
 ORG, OTHER_ORG = "testorg", "otherorg"
 #: Where each test's `execute` makes its leg remotes.
 REMOTES = "remotes"
+#: The source's remote beside them, as `git remote add origin
+#: ../remotes/Thing.git` writes it from `<tmp>/Thing`: RELATIVE.
+RELATIVE_ORIGIN = f"../{REMOTES}/{THING_REMOTE}"
 #: The code leg's GitHub remote, as `check` resolves from it.
 CODE_LEG = "https://github.com/{org}/Northwind-code.git"
 #: The code leg's bare remote, as `execute --local-remote-dir` names it.
@@ -528,6 +531,42 @@ def test_one_directory_through_a_symlink_is_one_repository(adopter,
     assert refusal is not None and refusal.code == RELATIVE
 
 
+@pytest.mark.parametrize("relative", [True, False],
+                         ids=["relative-origin", "absolute-origin"])
+def test_a_relative_origin_resolves_from_the_source_working_tree(
+        adopter, tmp_path, relative):
+    """git resolves `../dependency` against the RELATIVE origin
+    `../remotes/Thing.git` to `../remotes/dependency`, keeps it relative,
+    and the clone opens it from the source's working tree: the directory
+    beside the bare legs `execute --local-remote-dir` would make there,
+    which name it too, so nothing is refused, as on main. With the legs
+    anywhere else it names another repository and is refused, and the
+    finding names the directory git opens and says why. The same remote
+    spelled absolute resolves to an absolute path, said as before."""
+    remotes = tmp_path / REMOTES
+    origin = RELATIVE_ORIGIN if relative else str(remotes / THING_REMOTE)
+    source = source_with(tmp_path, SIBLING, origin, remotes / "dependency")
+    plan = planned(source, tmp_path)
+    assert refusal_of(adopter, plan, tmp_path, remotes) is None
+
+    elsewhere = tmp_path / "elsewhere"
+    refusal = refusal_of(adopter, plan, tmp_path, elsewhere)
+    assert refusal is not None and refusal.code == RELATIVE
+    [_, finding] = refusal.detail.splitlines()
+    if relative:
+        which = f"{ITS_ORIGIN}, relative to its working tree"
+        opened = (tmp_path.resolve() / "Thing"
+                  / f"../{REMOTES}/dependency").as_posix()
+    else:
+        # git keeps the base's own separators and joins with `/`.
+        which, opened = ITS_ORIGIN, f"{remotes}/dependency"
+    assert (f"from the source, at {adopter._spelled(origin)} ({which}), to "
+            f"{adopter._spelled(opened)}, and from the code leg, at ") \
+        in finding, finding
+    assert resolved_from_the_leg(finding) \
+        == elsewhere.resolve() / "dependency"
+
+
 def execute(plan: Path, work: Path, remotes: Path):
     return run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
                       "--local-remote-dir", str(remotes),
@@ -616,7 +655,9 @@ def test_the_remediation_adopts_and_clones(tmp_path):
     (SIBLING, THING_REMOTE, "."),
     # Two levels: the source's remote and the legs in sibling directories.
     (TWO_UP, f"sources/{THING_REMOTE}", "legs"),
-], ids=["dotdot", "dotdot-dotdot"])
+    # The first layout with the remote written relative to the source.
+    (SIBLING, RELATIVE_ORIGIN, "."),
+], ids=["dotdot", "dotdot-dotdot", "relative-origin"])
 def test_a_relative_url_its_leg_resolves_alike_adopts_and_clones(
         tmp_path, url, origin, legs):
     """(a) end to end. The source's `origin` and the legs are local, in a
@@ -625,10 +666,13 @@ def test_a_relative_url_its_leg_resolves_alike_adopts_and_clones(
     resolves from the ones it makes, adopts and verifies, and the assembly's
     `git clone --recurse-submodules` and `bootstrap.py` both exit 0 with the
     dependency checked out in the leg, whose `.gitmodules` still says what
-    the source committed."""
+    the source committed. An `origin` beginning `..` is written as it
+    stands, relative to the source's working tree; any other is a path in
+    the remotes directory."""
     remotes = tmp_path / REMOTES
     dependency = remotes / "dependency"
-    source = source_with(tmp_path, url, str(remotes / origin), dependency)
+    source = source_with(tmp_path, url, origin if origin.startswith("..")
+                         else str(remotes / origin), dependency)
     plan = planned(source, tmp_path)
     assert [code for code, _ in found(check(plan).stderr)] == [RELATIVE]
     result = execute(plan, tmp_path / WORK, remotes / legs)

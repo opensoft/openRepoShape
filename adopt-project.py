@@ -99,7 +99,7 @@ from repo_shape import (  # noqa: E402
     COMMIT_RE, NEUTRAL_PRODUCT_OWNER, PROJECT_ID_RE, TREE_DIGEST_DEFINITION,
     VISIBILITY_CHOICES, NamingPolicy, Refusal, YamlError,
     accepts_role, checked_value, git_out, load_yaml, parse_yaml, redacted,
-    remote_key, remote_local_path, tree_digest,
+    remote_is_a_path, remote_key, remote_local_path, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
     ADOPT_MAKEFILE_BLOCK, RULESET_HINT, SHAPE_REPOSITORY,
@@ -1958,9 +1958,10 @@ class _Resolution:
         `git@github.com:Org/Thing.git` and a leg's is
         `https://github.com/org/...`. It compares two filesystem paths by
         their text alone, so they are then asked of this machine, whose
-        symlinks may make two spellings one directory -- the order
-        `same_repository_here` asks them in, so the disk can add an answer
-        and never take one away.
+        symlinks -- and the `..` of a relative answer joined to the source's
+        working tree (`_default_remote`) -- may make two spellings one
+        directory: the order `same_repository_here` asks them in, so the
+        disk can add an answer and never take one away.
         """
         if self.url is None or other.url is None:
             return False
@@ -1996,20 +1997,35 @@ def _kept_relative_urls(entries: list, tree: list,
                  and RELATIVE_URL_RE.match(registered.url(path))]
 
 
-def _default_remote(source: Source) -> tuple[str, str]:
-    """`(base, which)`: what git resolves the source's relative urls against,
-    and how a finding names it. git's rule -- the checked-out branch's
-    remote, else `origin`; that remote's url, else, with none, the
-    repository's own directory -- asked of the branch being ADOPTED, which a
-    clone of the source checks out, and not of whatever branch this working
-    copy happens to have checked out."""
+def _default_remote(source: Source) -> tuple[str, str, Path | None]:
+    """`(base, which, working_tree)`: what git resolves the source's relative
+    urls against, how a finding names it, and where the clone opens git's
+    answer when that answer is a relative path. git's rule -- the
+    checked-out branch's remote, else `origin`; that remote's url, else,
+    with none, the repository's own directory -- asked of the branch being
+    ADOPTED, which a clone of the source checks out, and not of whatever
+    branch this working copy happens to have checked out.
+
+    A RELATIVE REMOTE GIVES A RELATIVE ANSWER. Against `../src/Thing.git`,
+    `git submodule init` resolves `../dependency` to `../src/dependency` and
+    keeps it so, and `git submodule update` opens that from the top of the
+    working tree. Compared as git leaves it, it equalled no leg's answer,
+    and a layout whose clone works was refused (#190, P3-2). So
+    `working_tree` is the source's own for such a remote -- a path, and not
+    an absolute one (`remote_local_path` names absolute paths only), which
+    is git's own test for the answers it leaves relative -- and None for
+    every other base."""
     name = _config_value(source.path, f"branch.{source.branch}.remote") \
         or "origin"
     url = _config_value(source.path, f"remote.{name}.url")
-    if url is not None:
-        return url, f"its remote {_spelled(name)}"
-    return (source.path.as_posix(),
-            f"its own directory, as it has no remote {_spelled(name)}")
+    if url is None:
+        return (source.path.as_posix(),
+                f"its own directory, as it has no remote {_spelled(name)}",
+                None)
+    if remote_is_a_path(url) and remote_local_path(url) is None:
+        return (url, f"its remote {_spelled(name)}, relative to its working "
+                "tree", source.path)
+    return url, f"its remote {_spelled(name)}", None
 
 
 def _config_value(repository: Path, key: str) -> str | None:
@@ -2020,11 +2036,13 @@ def _config_value(repository: Path, key: str) -> str | None:
     return None if got.returncode else _git_path(got.stdout.rstrip(b"\x00"))
 
 
-def _resolved(base: str, urls: list[str]) -> list[_Resolution]:
+def _resolved(base: str, urls: list[str],
+              working_tree: Path | None = None) -> list[_Resolution]:
     """Each of `urls` as `git submodule init` resolves it in a repository
     whose `origin` is `base`, in a scratch repository made for the purpose
-    and removed after it. A url git cannot resolve is what git said: that is
-    where the clone fails."""
+    and removed after it; and, given a `working_tree`, git's relative answer
+    joined to it, which is what the clone opens (`_default_remote`). A url
+    git cannot resolve is what git said: that is where the clone fails."""
     scratch = Path(tempfile.mkdtemp(prefix="openreposhape-url-"))
     try:
         run(["git", "init", "-q", str(scratch)])
@@ -2041,20 +2059,27 @@ def _resolved(base: str, urls: list[str]) -> list[_Resolution]:
                  f"{GITLINK_MODE},{oid},u{index}"], cwd=scratch)
         # One `init` per url, because git stops at the first it cannot
         # resolve and each finding names its own.
-        return [_resolution_of(scratch, f"u{index}")
+        return [_resolution_of(scratch, f"u{index}", working_tree)
                 for index in range(len(urls))]
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
 
 
-def _resolution_of(scratch: Path, name: str) -> _Resolution:
-    """`name`'s url, as `git submodule init` copies it into the config."""
+def _resolution_of(scratch: Path, name: str,
+                   working_tree: Path | None) -> _Resolution:
+    """`name`'s url, as `git submodule init` copies it into the config, and
+    joined to `working_tree` when there is one."""
     init = subprocess.run(["git", "submodule", "init", "-q", "--", name],
                           cwd=scratch, capture_output=True, check=False)
     if init.returncode:
         return _Resolution(None, _one_line(init.stderr.decode(
             errors="replace")))
-    return _Resolution(_config_value(scratch, f"submodule.{name}.url"))
+    url = _config_value(scratch, f"submodule.{name}.url")
+    if working_tree is None or url is None:
+        return _Resolution(url)
+    # Not normalised: `..` after a symlink is the disk's to resolve, and
+    # `same_as` asks the disk (`realpath`) for exactly that.
+    return _Resolution((working_tree / url).as_posix())
 
 
 def _relative_url_findings(plan: Plan, source: Source, tree: list,
@@ -2081,11 +2106,12 @@ def _relative_url_findings(plan: Plan, source: Source, tree: list,
         return [], []
     remote = _remote_urls(checked_value("org", plan.get("org")), plan.names(),
                           local_remote_dir, source)[leg]
-    base, which = _default_remote(source)
+    base, which, working_tree = _default_remote(source)
     urls = [url for _, _, url in kept]
     found, alike = [], []
-    for (path, entry, url), here, there in zip(kept, _resolved(base, urls),
-                                               _resolved(remote, urls)):
+    for (path, entry, url), here, there in zip(
+            kept, _resolved(base, urls, working_tree),
+            _resolved(remote, urls)):
         if here.same_as(there):
             alike.append(f"{_spelled(url)} of {_spelled(path)}, {there}")
             continue
