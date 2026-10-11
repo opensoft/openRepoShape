@@ -6,15 +6,19 @@ nothing. `_build_the_legs` caught that exception and returned None on the
 premise that `run` had already said which command failed and why, so an
 `execute` whose `git filter-repo` failed ended with both bare leg repositories
 created, exit 2 and an EMPTY stderr, and the corrected re-run met
-`leg-remote-exists`. On main at b18cca9 the end-to-end test below produces
-exactly that, with a `.gitmodules` that git's `--list` reads and git's
-submodule reader dies on: a second section whose `path` has no value.
+`leg-remote-exists`. On main at b18cca9 the issue's own source produced
+exactly that: a `.gitmodules` that git's `--list` reads and git's submodule
+reader dies on, a second section whose `path` has no value. Since #166
+`check` refuses that source before any leg exists, so the end-to-end tests
+below fail the extraction the way `check` can never foresee: a
+`git-filter-repo` first on PATH that exits 1 (#184 P1-1).
 
-Everything but the last test needs no `git filter-repo`: the unit tests stub
-the leg builders, or run a real leg builder against a remote that does not
-exist (the extraction skips only the filter itself), and call
-`_build_the_legs` in this process. The last runs `adopt-project.py execute`
-for real and is skipped on a machine without the tool.
+The unit tests need no `git filter-repo`: they stub the leg builders, or run
+a real leg builder against a remote that does not exist (the extraction
+skips only the filter itself), and call `_build_the_legs` in this process.
+The stub is a `#!/bin/sh` script, so the tests that put it on PATH skip on
+Windows; the one that then follows the notice into a real adoption needs the
+real tool as well.
 
 NO NETWORK AND NO GITHUB: every remote is a bare repository on disk, or no
 repository at all.
@@ -23,13 +27,15 @@ repository at all.
 from __future__ import annotations
 
 import importlib.util
+import os
+import re
 import shutil
 import sys
 from pathlib import Path
 
 import pytest
 
-from conftest import (ADOPT, FILE_PROTOCOL, git, make_source_repo, resolve,
+from conftest import (ADOPT, WINDOWS_SKIP, git, make_source_repo, rmtree,
                       run_script, write_plan)
 
 SPEC, CODE = "spec", "code"
@@ -42,6 +48,11 @@ FILTER_REPO = ["git", "filter-repo", "--paths-from-file", "spec-paths.txt",
                "--force"]
 SEEDING_COMMIT = ["git", "commit", "-q", "-F", "-"]
 GIT_COMPLAINT = "fatal: bad config line 5 in file .gitmodules"
+LIVE_LEG = "leg-remote-exists"
+README = "README.md"
+FILTER_REPO_TOOL = "git-filter-repo"
+#: The names `Stream` records its events under.
+STDOUT, STDERR, FLUSH = "stdout", "stderr", "flush"
 
 #: One case per way a leg is built: what `_build_the_legs` is told is seeded,
 #: the verb it should name, and the command that leg's builder would die on.
@@ -49,13 +60,22 @@ LEG_FAILURES = [([], "extracting", FILTER_REPO),
                 ([SPEC], "seeding", SEEDING_COMMIT)]
 LEG_FAILURE_IDS = ["extracted-leg", "seeded-leg"]
 
-#: A second section whose `path` has no value. `git config --list` accepts the
-#: file, and git's submodule reader, which `git filter-repo` runs through
-#: `git fast-export`, does not.
-BARE_PATH_SECTION = '[submodule "b"]\n\tpath\n'
+#: What the stub `git-filter-repo` says before it exits 1: the line the human
+#: must be shown, because `run` itself prints nothing.
+STUB_COMPLAINT = "fatal: stub git-filter-repo refuses this source"
+
+#: A source small enough that `plan` asks no question, so `execute` runs on
+#: the plan as written.
+SMALL_TREE = {README: "# Thing\n", "src/app/util.py": "VALUE = 1\n",
+              "specs/001-feature/tasks.md": "- [ ] one\n"}
+
+#: The notice's first sentence once both legs exist and neither is pushed:
+#: the two repositories it names, which a re-run must not meet again.
+NAMED = re.compile(r"rolled back: (?P<spec>.+?) and (?P<code>.+?) exist, and "
+                   r"neither leg is pushed\.")
 
 needs_filter_repo = pytest.mark.skipif(
-    shutil.which("git-filter-repo") is None,
+    shutil.which(FILTER_REPO_TOOL) is None,
     reason="git filter-repo is not installed: `pip install git-filter-repo`")
 
 
@@ -71,7 +91,7 @@ class Stream:
         return len(text)
 
     def flush(self) -> None:
-        self.events.append((self.name, "flush"))
+        self.events.append((self.name, FLUSH))
 
 
 @pytest.fixture(scope="module")
@@ -155,9 +175,13 @@ def test_a_failed_leg_names_both_leg_repositories_and_what_to_do(
     for role in UNIT_ROLES:
         assert arguments["urls"][role] in notice
     assert "--local-remote-dir" in notice
-    assert "leg-remote-exists" in notice
+    assert LIVE_LEG in notice
     assert "gh repo create" in notice
     assert "already taken" in notice
+    # The work directory too: `git clone` refuses the one this run cloned
+    # into, so a re-run that kept it looped (#184 P2-1).
+    assert (f"Re-run with a fresh --work-dir as well, or with none, not "
+            f"{arguments['work_root']}: ") in notice
     assert len(notice.strip().splitlines()) == 1
 
 
@@ -171,9 +195,14 @@ def test_a_rerun_under_a_local_remote_dir_meets_leg_remote_exists(
     with pytest.raises(adopter.Refusal) as refused:
         adopter._create_leg_remotes({}, arguments["names"],
                                     arguments["repositories"],
-                                    arguments["urls"], "main", True)
+                                    arguments["urls"], "main", True,
+                                    arguments["work_root"])
 
-    assert refused.value.code == "leg-remote-exists"
+    assert refused.value.code == LIVE_LEG
+    # Its own way out names the work directory as well: an empty
+    # --local-remote-dir alone met the clone the earlier run left (#184 P2-1).
+    assert "choose an empty --local-remote-dir, and a --work-dir" in \
+        refused.value.remediation
 
 
 def test_a_rerun_against_github_has_gh_repo_create_refused(
@@ -183,7 +212,8 @@ def test_a_rerun_against_github_has_gh_repo_create_refused(
     name taken. Nothing in `_create_leg_remotes` catches it, so the run stops
     there, before the code leg is touched."""
     arguments = legs_arguments(tmp_path, [])
-    arguments["repositories"]["assembly"] = f"testorg/{ASSEMBLY}"
+    repositories = arguments["repositories"]
+    repositories["assembly"] = f"testorg/{ASSEMBLY}"
     calls: list = []
 
     def name_taken(args, *_rest, **_keywords):
@@ -193,12 +223,12 @@ def test_a_rerun_against_github_has_gh_repo_create_refused(
     monkeypatch.setattr(adopter, "run", name_taken)
 
     with pytest.raises(adopter.CommandFailed):
-        adopter._create_leg_remotes({}, arguments["names"],
-                                    arguments["repositories"],
-                                    arguments["urls"], "main", False)
+        adopter._create_leg_remotes({}, arguments["names"], repositories,
+                                    arguments["urls"], "main", False,
+                                    arguments["work_root"])
 
     assert [call[:4] for call in calls] == [
-        ["gh", "repo", "create", arguments["repositories"][SPEC]]]
+        ["gh", "repo", "create", repositories[SPEC]]]
 
 
 def test_stdout_is_flushed_before_the_failure_is_written_to_stderr(
@@ -207,15 +237,15 @@ def test_stdout_is_flushed_before_the_failure_is_written_to_stderr(
     block-buffered, so without a flush a log that merges the two streams shows
     the failure BEFORE the lines that explain what it is about."""
     events: list = []
-    monkeypatch.setattr(sys, "stdout", Stream("stdout", events))
-    monkeypatch.setattr(sys, "stderr", Stream("stderr", events))
+    monkeypatch.setattr(sys, STDOUT, Stream(STDOUT, events))
+    monkeypatch.setattr(sys, STDERR, Stream(STDERR, events))
     refuse_every_leg(adopter, monkeypatch, FILTER_REPO, tmp_path)
 
     assert adopter._build_the_legs(**legs_arguments(tmp_path, [])) is None
 
-    assert ("stdout", "flush") in events
-    assert (events.index(("stdout", "flush"))
-            < events.index(("stderr", "write")))
+    assert (STDOUT, FLUSH) in events
+    assert (events.index((STDOUT, FLUSH))
+            < events.index((STDERR, "write")))
 
 
 @pytest.mark.parametrize("seeded", [[], [SPEC]],
@@ -232,8 +262,8 @@ def test_a_refused_push_is_reported_once_with_its_ruleset_hint(
     def write_one_file(_template, work, _values):
         # What it wrote, as `copy_tree` returns it since #175.
         work.mkdir(parents=True, exist_ok=True)
-        (work / "README.md").write_text("seeded\n", encoding="utf-8")
-        return ["README.md"]
+        (work / README).write_text("seeded\n", encoding="utf-8")
+        return [README]
 
     real_run = adopter.run
 
@@ -258,51 +288,107 @@ def test_a_refused_push_is_reported_once_with_its_ruleset_hint(
     assert err.count(REFUSED) == 1
     assert f"{REFUSED} {pushing}" in err
     assert err.count(ROLLED_BACK) == 1
-    assert err.index("legitimate exits") < err.index(ROLLED_BACK)
+    assert err.index("ONE legitimate exit") < err.index(ROLLED_BACK)
 
 
-@needs_filter_repo
-def test_a_failed_git_filter_repo_names_itself_on_stderr(tmp_path):
-    """The issue's reproduction: a source whose `.gitmodules` carries a section
-    with a bare `path`. `check` passes, both leg remotes are created, the
-    extraction fails, and `execute` must say which command and why."""
-    dependency = make_source_repo(
-        tmp_path / "dependency", tree={"value.txt": "first\n"},
-        edits=(("value.txt", "second\n", "Update dependency"),))
-    dependency_remote = tmp_path / "dependency.git"
-    git("clone", "-q", "--bare", str(dependency), str(dependency_remote),
-        cwd=tmp_path)
-    source = make_source_repo(tmp_path / "Thing")
-    git(*FILE_PROTOCOL, "submodule", "add", "-q", str(dependency_remote),
-        "upstream/dependency", cwd=source)
-    # Append to what `git submodule add` wrote rather than writing the url
-    # again: a Windows path in a hand-written `.gitmodules` needs git's own
-    # escaping for the backslash. LF, as git wrote it, on every platform.
-    with (source / ".gitmodules").open("a", encoding="utf-8",
-                                       newline="\n") as handle:
-        handle.write(BARE_PATH_SECTION)
-    git("-c", "user.name=Source Human", "-c",
-        "user.email=source@invalid.example", "commit", "-qam",
-        "Pin existing dependency", cwd=source)
+@pytest.fixture
+def failing_filter_repo(tmp_path) -> dict:
+    """The environment of an `execute` whose `git filter-repo` fails: a
+    `git-filter-repo` FIRST on PATH that prints `STUB_COMPLAINT` and exits
+    1, which `check` never runs and so can never foresee (#184 P1-1).
+
+    `git <command>` looks in git's own exec-path before PATH, so a tool
+    installed THERE would shadow the stub and extract for real; the test is
+    skipped rather than allowed to pass or fail for that reason. A `#!` line
+    is a POSIX kernel convention, so the tests that use it carry
+    `WINDOWS_SKIP`, as `tests/test_free_plan_hint.py`'s stub `gh` does.
+    """
+    exec_path = Path(git("--exec-path", cwd=tmp_path).stdout.strip())
+    if (exec_path / FILTER_REPO_TOOL).exists():
+        pytest.skip(f"{exec_path} holds a git-filter-repo, which a stub on "
+                    "PATH cannot shadow")
+    binary = tmp_path / "stub-bin"
+    binary.mkdir()
+    stub = binary / FILTER_REPO_TOOL
+    with stub.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(f"#!/bin/sh\necho '{STUB_COMPLAINT}' >&2\nexit 1\n")
+    stub.chmod(0o755)
+    return {"PATH": f"{binary}{os.pathsep}{os.environ['PATH']}"}
+
+
+def small_plan(tmp_path: Path) -> Path:
+    """A plan for a source with no submodule and no question to answer."""
+    source = make_source_repo(tmp_path / "Thing", tree=SMALL_TREE, edits=())
     plan = tmp_path / "adoption-plan.yaml"
-    written = write_plan(source, plan)
+    written = write_plan(source, plan, project=ASSEMBLY)
     assert written.returncode == 0, written.stderr + written.stdout
-    for path, leg in (("examples/", SPEC), (".claude/", "root"),
-                      ("release.yaml", "root"),
-                      (".gitmodules", CODE), ("upstream/", CODE)):
-        resolve(plan, path, leg)
     checked = run_script(ADOPT, "check", "--plan", str(plan))
     assert checked.returncode == 0, checked.stderr + checked.stdout
+    return plan
 
-    result = run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
-                        "--local-remote-dir", str(tmp_path / REMOTES),
-                        "--work-dir", str(tmp_path / "work"))
+
+def execute(plan: Path, remotes: Path, work: Path, env: dict | None = None):
+    return run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
+                      "--local-remote-dir", str(remotes), "--work-dir",
+                      str(work), env=env)
+
+
+@WINDOWS_SKIP
+def test_a_failed_git_filter_repo_names_itself_on_stderr(
+        tmp_path, failing_filter_repo):
+    """The issue, end to end: `check` passes, both leg remotes are created,
+    the extraction fails, and `execute` must say which command, where it
+    ran, its exit and its output, and then what it left behind. On main at
+    b18cca9 this was exit 2 and an empty stderr."""
+    plan = small_plan(tmp_path)
+    work = tmp_path / "work"
+
+    result = execute(plan, tmp_path / REMOTES, work, failing_filter_repo)
 
     assert result.returncode == 2, result.stderr + result.stdout
-    assert REFUSED in result.stderr, result.stdout
-    assert "git filter-repo --paths-from-file" in result.stderr
+    err = result.stderr
+    assert err.count(REFUSED) == 1, err
+    assert f"{REFUSED} extracting the {SPEC} leg." in err
+    listing = work / f"{SPEC}-paths.txt"
+    assert f"git filter-repo --paths-from-file {listing} --force" in err
+    assert f"(in {work / f'{ASSEMBLY}-{SPEC}'})" in err
+    assert "exit 1" in err
+    assert STUB_COMPLAINT in err
     for role in UNIT_ROLES:
-        bare = f"{ASSEMBLY}-{role}.git"
-        assert (tmp_path / REMOTES / bare).is_dir()
-        assert bare in result.stderr
-    assert "leg-remote-exists" in result.stderr
+        bare = tmp_path / REMOTES / f"{ASSEMBLY}-{role}.git"
+        assert bare.is_dir()
+        assert str(bare) in err
+    assert LIVE_LEG in err
+    assert "neither leg is pushed" in err
+
+
+@WINDOWS_SKIP
+@needs_filter_repo
+def test_following_the_notice_after_a_failed_leg_ends_adoption_verified(
+        tmp_path, failing_filter_repo):
+    """#184 P2-1: the notice's way out, followed word for word, must reach
+    `adoption verified`. It used to name the leg repositories alone, and a
+    re-run that deleted them and kept `--work-dir` met `destination path
+    .../Northwind-spec already exists` at the spec leg's clone, after making
+    both leg repositories again. The work directory here has a space in it,
+    as a person's often does, and the notice names it whole."""
+    plan = small_plan(tmp_path)
+    remotes, work = tmp_path / REMOTES, tmp_path / "my work"
+    failed = execute(plan, remotes, work, failing_filter_repo)
+    assert failed.returncode == 2, failed.stderr + failed.stdout
+    notice = next(line for line in failed.stderr.splitlines()
+                  if line.startswith(ROLLED_BACK))
+    named = NAMED.search(notice)
+    assert named, notice
+    assert [named["spec"], named["code"]] == [
+        str(remotes / f"{ASSEMBLY}-{role}.git") for role in UNIT_ROLES]
+    assert f"not {work}: `git clone` refuses" in notice
+
+    # What it says: delete the two repositories it names, and a fresh
+    # --work-dir. The --local-remote-dir is the same one.
+    for role in UNIT_ROLES:
+        rmtree(Path(named[role]))
+    rerun = execute(plan, remotes, tmp_path / "fresh work")
+
+    assert rerun.returncode == 0, rerun.stderr + rerun.stdout
+    assert "adoption verified" in rerun.stdout

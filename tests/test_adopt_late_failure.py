@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
-"""`execute` says what failed after both legs exist, and what it left (#188).
+"""`execute` says what failed once a leg repository exists, and what it left
+(#188, #177, #184's review).
 
 #171 made `_build_the_legs` report a leg that cannot be built: stdout flushed
 first, the exact command and its output, then a notice naming the two leg
@@ -10,13 +11,20 @@ by a pre-commit hook printed `main`'s generic `REFUSED a git or gh command
 failed`, a merged `> log 2>&1` showed REFUSED on line 0 and the `bare …` lines
 after it, and the re-run met `leg-remote-exists` with nothing having said why.
 
+The notice is now printed by every failure once a leg repository exists: the
+code leg's repository that cannot be created after the spec leg's was, a leg,
+the split, and a verification that fails. It names the work directory, which a
+re-run must not reuse, and a failed verification names the split branch and
+the command that deletes it; an `execute` that meets that branch refuses
+before it creates anything. A failure that is not a failed command -- a
+refusal on the way, a read-only directory, `git` gone, output that is not
+UTF-8 -- gets the same report instead of a traceback.
+
 A refused LEG push printed `RULESET_HINT`, the scaffold's, whose second exit
-is `git -C <work> push -u origin main:seed/scaffold` (#177). `git filter-repo`
-removes `origin` from the clone it rewrites, and a seeded leg is a fresh
-`git init` that never had one, so that command exits 128 with `'origin' does
-not appear to be a git repository`. Two tests here RUN the command the
-adoption prints, against a remote whose hook refuses only `main`, as a
-pull-request ruleset does.
+is `git -C <work> push -u origin main:seed/scaffold` (#177). That cannot run
+in a clone `git filter-repo` rewrote, and no seed exit can finish an adoption:
+the leg is a repository this run created, with no tracking branch for a pull
+request to target. An adoption's hint names its one exit.
 
 The tests that need `git filter-repo` run `adopt-project.py execute` with a
 merged stream; the rest call the functions in this process and need no
@@ -28,10 +36,11 @@ from __future__ import annotations
 
 import importlib.util
 import io
-import os
+import shlex
 import shutil
 import subprocess
 import sys
+from argparse import Namespace
 from pathlib import Path
 
 import pytest
@@ -47,18 +56,48 @@ WORK = "work"
 REFUSED = "REFUSED"
 ROLLED_BACK = "NOTHING has been rolled back"
 BOTH_PUSHED = "both legs are pushed"
-EARLIER_RUN = "If an earlier run left"
-SEED_BRANCH = "refs/heads/seed/adopt"
 MAIN_REF = "refs/heads/main"
 SPLIT_PUSH = "pushing the split branch"
+BRANCH_EXISTS = "adopt-branch-exists"
 ORG = "testorg"
 SPEC_REPOSITORY = f"{ORG}/{ASSEMBLY}-{SPEC}"
 END_OUTPUT = "--- end output ---"
+DELETE_COMMAND = "git -C "
+NEITHER_PUSHED = "neither leg is pushed"
+GIT_FAILED = "git-failed"
+UTF8 = "utf-8"
+README = "README.md"
+SOURCE = "Thing"
+ROOT = "assembly"
+BARE_LINE = "  bare"
+#: The names `Stream` records its events under.
+STDOUT, STDERR, FLUSH = "stdout", "stderr", "flush"
+#: The steps of `execute` the tests below stand in for.
+MOUNT = "_mount_the_legs"
+MATERIALIZE = "materialize_assembly_root"
+EXTRACT = "_extract_leg"
+COPY_TREE = "copy_tree"
+PLAN_FLAG = "--plan"
 
 #: A source small enough that `plan` asks no question, so `execute` runs on
 #: the plan as written.
-SMALL_TREE = {"README.md": "# Thing\n", "src/app/util.py": "VALUE = 1\n",
+SMALL_TREE = {README: "# Thing\n", "src/app/util.py": "VALUE = 1\n",
               "specs/001-feature/tasks.md": "- [ ] one\n"}
+
+#: A source with a `contracts/shape-pin.yaml` of its OWN, naming a file the
+#: plan sends to the code leg. Kept in the root, it is what the first
+#: bootstrap would read, so the verification fails; sent to the spec leg, as
+#: `plan` sends it, the adoption verifies.
+OWN_PIN = ("schema_version: 1\nkind: pinned_contract_manifest\nfiles:\n"
+           + "".join(f"  - path: {path}\n    sha256: \"{'0' * 64}\"\n"
+                     for path in (README, "src/app/main.py")))
+OWN_PIN_TREE = {README: "# Thing\n", ".gitignore": "__pycache__/\n",
+                "specs/001-feature/spec.md": "# The feature\n",
+                "src/app/main.py": "import contracts_reader\n",
+                "contracts/shape-pin.yaml": OWN_PIN}
+CONTRACTS_TO_SPEC = "  - path: contracts/\n    leg: spec\n"
+CONTRACTS_KEPT = ("  - path: contracts/\n    leg: root\n"
+                  "    resolution: \"kept beside the shape's own\"\n")
 
 needs_filter_repo = pytest.mark.skipif(
     shutil.which("git-filter-repo") is None,
@@ -74,18 +113,37 @@ def adopter():
 
 
 class Stream:
-    """A text stream that records, in one shared list, when it was used."""
+    """A text stream that records, in one shared list, when it was used, and
+    keeps what was written to it."""
 
     def __init__(self, name: str, events: list):
         self.name = name
         self.events = events
+        self.written: list[str] = []
 
     def write(self, text: str) -> int:
         self.events.append((self.name, "write"))
+        self.written.append(text)
         return len(text)
 
     def flush(self) -> None:
-        self.events.append((self.name, "flush"))
+        self.events.append((self.name, FLUSH))
+
+
+def recorded_streams(monkeypatch) -> tuple[list, Stream]:
+    """stdout and stderr replaced by `Stream`s: `(events, stderr)`."""
+    events: list = []
+    stderr = Stream(STDERR, events)
+    monkeypatch.setattr(sys, STDOUT, Stream(STDOUT, events))
+    monkeypatch.setattr(sys, STDERR, stderr)
+    return events, stderr
+
+
+def flushed_first(events: list) -> bool:
+    """stdout was flushed before anything reached stderr."""
+    return ((STDOUT, FLUSH) in events
+            and events.index((STDOUT, FLUSH))
+            < events.index((STDERR, "write")))
 
 
 class ClosedPipe(io.StringIO):
@@ -101,7 +159,7 @@ def write_refusing_hook(hooks: Path, ref_pattern: str) -> None:
     LF, because `sh` reads it on every platform."""
     hooks.mkdir(parents=True, exist_ok=True)
     hook = hooks / "pre-receive"
-    with hook.open("w", encoding="utf-8", newline="\n") as handle:
+    with hook.open("w", encoding=UTF8, newline="\n") as handle:
         handle.write("#!/bin/sh\n"
                      "while read old new ref; do\n"
                      f'  case "$ref" in {ref_pattern})\n'
@@ -121,7 +179,7 @@ def hooks_everywhere(tmp_path: Path, ref_pattern: str) -> dict:
     write_refusing_hook(hooks, ref_pattern)
     config = tmp_path / "gitconfig"
     config.write_text(f"[core]\n\thooksPath = {hooks.as_posix()}\n",
-                      encoding="utf-8")
+                      encoding=UTF8)
     return {"GIT_CONFIG_GLOBAL": str(config)}
 
 
@@ -130,16 +188,18 @@ def seed_one_file(_template, work, _values) -> list[str]:
     returns what it wrote, as `copy_tree` does, because `_seed_leg` hands
     that list to `git_init_commit` to force past an ignore rule (#175)."""
     work.mkdir(parents=True, exist_ok=True)
-    (work / "README.md").write_text("seeded\n", encoding="utf-8")
-    return ["README.md"]
+    (work / README).write_text("seeded\n", encoding=UTF8)
+    return [README]
 
 
-def printed_push(err: str) -> list[str]:
-    """The `git -C <work> push …` line of the ruleset hint, as argv."""
-    lines = [line.split() for line in err.splitlines()
-             if line.strip().startswith("git -C ")]
-    assert len(lines) == 1, err
-    return lines[0]
+def printed_command(text: str, start: str) -> list[str]:
+    """The one line of `text` that starts with `start`, as the argv a person
+    gets by pasting it into `sh`: through `shlex.split`, so a path the tool
+    failed to quote comes back in pieces (#188 N5)."""
+    lines = [line.strip() for line in text.splitlines()
+             if line.strip().startswith(start)]
+    assert len(lines) == 1, text
+    return shlex.split(lines[0])
 
 
 def commit_of(repo: Path, ref: str = "HEAD") -> str | None:
@@ -149,14 +209,14 @@ def commit_of(repo: Path, ref: str = "HEAD") -> str | None:
     return found.stdout.strip() if found.returncode == 0 else None
 
 
-def source_of(adopter, tmp_path: Path):
-    origin = make_source_repo(tmp_path / "Thing", tree=SMALL_TREE, edits=())
+def source_of(adopter, tmp_path: Path, name: str = SOURCE):
+    origin = make_source_repo(tmp_path / name, tree=SMALL_TREE, edits=())
     return adopter.Source(origin, None, "main", commit_of(origin))
 
 
 def leg_names() -> dict:
     names = {role: f"{ASSEMBLY}-{role}" for role in LEGS}
-    names["assembly"] = ASSEMBLY
+    names[ROOT] = ASSEMBLY
     return names
 
 
@@ -166,20 +226,44 @@ def leg_urls(tmp_path: Path, names: dict) -> dict:
             for role in LEGS}
 
 
+def legs_arguments(tmp_path: Path, source=None) -> dict:
+    """What `cmd_execute` hands `_build_the_legs`, for two extracted legs."""
+    names = leg_names()
+    return dict(source=source, names=names,
+                repositories={role: f"{ORG}/{names[role]}" for role in LEGS},
+                urls=leg_urls(tmp_path, names), values={},
+                work_root=tmp_path / WORK,
+                paths_for={role: [f"{role}/"] for role in LEGS}, seeded=[],
+                branch=BRANCH, tracking="main")
+
+
 def split_arguments(tmp_path: Path, source) -> dict:
     """What `cmd_execute` hands `_commit_the_split` once both legs are
     pushed. The leg commits are stand-ins: every step that would read them
     is either stubbed or fails before it does."""
     names = leg_names()
     urls = leg_urls(tmp_path, names)
-    urls["assembly"] = str(source.path)
+    urls[ROOT] = str(source.path)
     return dict(
         plan={}, source=source, assembly=tmp_path / WORK / ASSEMBLY,
         names=names, urls=urls, values={}, work_root=tmp_path / WORK,
-        paths_for={SPEC: ["specs/"], CODE: ["src/"], "root": ["README.md"],
+        paths_for={SPEC: ["specs/"], CODE: ["src/"], "root": [README],
                    "drop": []},
         seeded=[], spec_path=SPEC, code_path=CODE, branch=BRANCH,
         leg_commits={SPEC: "a" * 40, CODE: "b" * 40})
+
+
+def the_notice(err: str) -> str:
+    """The notice's one line."""
+    lines = [line for line in err.splitlines() if line.startswith(ROLLED_BACK)]
+    assert len(lines) == 1, err
+    return lines[0]
+
+
+def work_dir_named(notice: str, work_root: Path) -> bool:
+    """The notice tells a re-run to leave `work_root` alone (#184 P2-1)."""
+    return (f"Re-run with a fresh --work-dir as well, or with none, not "
+            f"{work_root}: `git clone` refuses" in notice)
 
 
 # ---- one way for each step of the split to fail -----------------------------
@@ -187,9 +271,9 @@ def split_arguments(tmp_path: Path, source) -> dict:
 def clone_fails(_adopter, _monkeypatch, arguments) -> None:
     """A work directory reused from an earlier run already holds the
     assembly clone, so `git clone` refuses it. Real git, no stub."""
-    arguments["assembly"].mkdir(parents=True)
-    (arguments["assembly"] / "left-over.txt").write_text("x\n",
-                                                         encoding="utf-8")
+    arguments[ROOT].mkdir(parents=True)
+    (arguments[ROOT] / "left-over.txt").write_text("x\n",
+                                                         encoding=UTF8)
 
 
 def mount_fails(adopter, monkeypatch, arguments) -> None:
@@ -197,16 +281,16 @@ def mount_fails(adopter, monkeypatch, arguments) -> None:
         raise adopter.CommandFailed(
             ["git", "submodule", "add", "-q",
              str(arguments["work_root"] / f"{ASSEMBLY}-{SPEC}"), SPEC],
-            arguments["assembly"], 128, "fatal: 'spec' already exists in "
+            arguments[ROOT], 128, "fatal: 'spec' already exists in "
                                         "the index")
-    monkeypatch.setattr(adopter, "_mount_the_legs", refused)
+    monkeypatch.setattr(adopter, MOUNT, refused)
 
 
 def commit_fails(adopter, monkeypatch, _arguments) -> None:
     """Nothing is mounted, written or staged, so the real `git commit` finds
     nothing to commit and exits 1."""
-    monkeypatch.setattr(adopter, "_mount_the_legs", lambda *_args: None)
-    monkeypatch.setattr(adopter, "materialize_assembly_root",
+    monkeypatch.setattr(adopter, MOUNT, lambda *_args: None)
+    monkeypatch.setattr(adopter, MATERIALIZE,
                         lambda *_args, **_kw: adopter.Materialized())
     monkeypatch.setattr(adopter, "_stage_the_split", lambda *_args: None)
 
@@ -216,20 +300,20 @@ def commit_for_real(adopter, monkeypatch) -> None:
     real and only its push is left to fail."""
     def write_one_file(_shape_root, target, *_args, **_kw):
         (target / "project.yaml").write_text("schema_version: 1\n",
-                                             encoding="utf-8")
+                                             encoding=UTF8)
         materialized = adopter.Materialized()
         materialized.written.append("project.yaml")
         return materialized
 
-    monkeypatch.setattr(adopter, "_mount_the_legs", lambda *_args: None)
-    monkeypatch.setattr(adopter, "materialize_assembly_root", write_one_file)
+    monkeypatch.setattr(adopter, MOUNT, lambda *_args: None)
+    monkeypatch.setattr(adopter, MATERIALIZE, write_one_file)
 
 
 def push_fails(adopter, monkeypatch, arguments) -> None:
     """The split commit is made for real; the source it is pushed back to is
     not there."""
     commit_for_real(adopter, monkeypatch)
-    arguments["urls"]["assembly"] = str(arguments["work_root"].parent
+    arguments["urls"][ROOT] = str(arguments["work_root"].parent
                                         / "gone.git")
 
 
@@ -246,9 +330,10 @@ def test_a_split_that_fails_names_its_step_and_both_pushed_legs(
         adopter, monkeypatch, capsys, tmp_path, arrange, step):
     """Each step of the split, failing for real or through a stub, ends with
     one REFUSED block naming the step, then the notice: both leg
-    repositories, both of them pushed, and why a re-run is refused. Before
-    #188 the mount and the commit fell through to `main`'s generic `a git or
-    gh command failed`, and none of the four said what was left."""
+    repositories, both of them pushed, why a re-run is refused, and the work
+    directory it must not reuse. Before #188 the mount and the commit fell
+    through to `main`'s generic `a git or gh command failed`, and none of the
+    four said what was left."""
     arguments = split_arguments(tmp_path, source_of(adopter, tmp_path))
     arrange(adopter, monkeypatch, arguments)
 
@@ -263,11 +348,15 @@ def test_a_split_that_fails_names_its_step_and_both_pushed_legs(
         assert arguments["urls"][role] in notice
     assert BOTH_PUSHED in notice
     assert "leg-remote-exists" in notice
-    assert (EARLIER_RUN in notice) == (step == SPLIT_PUSH)
+    assert work_dir_named(notice, tmp_path / WORK)
+    # The notice is the whole way out. A refused split push used to add a
+    # guess about a branch an earlier run left; `execute` now refuses that
+    # branch before any leg exists, so this push is never refused for it.
+    assert err.rstrip().splitlines()[-1].startswith(ROLLED_BACK)
 
 
 @pytest.mark.parametrize("failing, state",
-                         [(SPEC, "neither leg is pushed"),
+                         [(SPEC, NEITHER_PUSHED),
                           (CODE, f"the {SPEC} leg is pushed")],
                          ids=["first-leg", "second-leg"])
 def test_the_notice_says_which_legs_are_pushed(
@@ -281,95 +370,325 @@ def test_the_notice_says_which_legs_are_pushed(
                                         None, 1, "Error: fast-export failed")
         return "c" * 40, "d" * 64
 
-    monkeypatch.setattr(adopter, "_extract_leg", build)
-    names = leg_names()
-    urls = leg_urls(tmp_path, names)
+    monkeypatch.setattr(adopter, EXTRACT, build)
+    arguments = legs_arguments(tmp_path)
 
-    assert adopter._build_the_legs(
-        source=None, names=names,
-        repositories={role: f"{ORG}/{names[role]}" for role in LEGS},
-        urls=urls, values={}, work_root=tmp_path / WORK,
-        paths_for={role: [f"{role}/"] for role in LEGS}, seeded=[],
-        branch=BRANCH, tracking="main") is None
+    assert adopter._build_the_legs(**arguments) is None
 
     notice = capsys.readouterr().err.split(END_OUTPUT, 1)[1]
+    urls = arguments["urls"]
     assert f"{urls[SPEC]} and {urls[CODE]} exist, and {state}." in notice
 
 
-def test_a_split_push_refused_as_not_a_fast_forward_says_why(
+# ---- a failure that is not a failed command (#184 P3-1, #188 N3) ------------
+
+def permission_denied(_adopter):
+    return PermissionError(13, "Permission denied",
+                           f"/read-only/work/{ASSEMBLY}-{CODE}")
+
+
+def git_not_found(_adopter):
+    return FileNotFoundError(2, "No such file or directory", "git")
+
+
+def not_utf8(_adopter):
+    return UnicodeDecodeError(UTF8, b"\xe9", 0, 1,
+                              "invalid continuation byte")
+
+
+def refused_by_git_out(adopter):
+    """`git_out`'s refusal, with the validators' generic remediation."""
+    return adopter.Refusal(
+        GIT_FAILED, f"`git rev-parse HEAD` in {ASSEMBLY}-{CODE} exited "
+                    "128: fatal: ambiguous argument 'HEAD'")
+
+
+NOT_A_COMMAND = [permission_denied, git_not_found, not_utf8,
+                 refused_by_git_out]
+NOT_A_COMMAND_IDS = ["read-only", "no-git", "not-utf8", "git-out-refusal"]
+
+
+def said_as(adopter, exc) -> str:
+    """What the REFUSED line says of `exc` after the step."""
+    if isinstance(exc, adopter.Refusal):
+        return f"{exc.code}: {exc.detail}"
+    return f"{type(exc).__name__}: {exc}"
+
+
+@pytest.mark.parametrize("failure", NOT_A_COMMAND, ids=NOT_A_COMMAND_IDS)
+def test_a_leg_that_fails_without_a_command_is_refused_with_the_notice(
+        adopter, monkeypatch, tmp_path, failure):
+    """These escaped `_build_the_legs` to `main`: a traceback with exit 1, or
+    a refusal with no notice, both leg repositories left behind and the spec
+    leg already pushed. Now each is a REFUSED block naming the step, after
+    stdout is flushed, then the notice, and the build returns None, which
+    `execute` turns into exit 2."""
+    exc = failure(adopter)
+
+    def build(role, *_args):
+        if role == CODE:
+            raise exc
+        return "c" * 40, "d" * 64
+
+    monkeypatch.setattr(adopter, EXTRACT, build)
+    events, stderr = recorded_streams(monkeypatch)
+    arguments = legs_arguments(tmp_path)
+
+    assert adopter._build_the_legs(**arguments) is None
+
+    err = "".join(stderr.written)
+    assert flushed_first(events)
+    assert err.count(REFUSED) == 1, err
+    assert f"{REFUSED} extracting the {CODE} leg. {said_as(adopter, exc)}" \
+        in err
+    # `git_out`'s remediation is about pins; the notice is the way out here.
+    assert "validate-pins" not in err
+    notice = the_notice(err)
+    assert f"the {SPEC} leg is pushed" in notice
+    assert work_dir_named(notice, tmp_path / WORK)
+
+
+def test_a_split_the_materializer_cannot_write_is_refused_with_the_notice(
         adopter, monkeypatch, capsys, tmp_path):
-    """A verification that failed leaves the split branch on the source, and
-    the re-run AGENTS.md step 7 then prescribes, into fresh legs, makes and
-    pushes two more legs and is refused at this push: the new split commit is
-    not a fast-forward of the old one. Fresh legs alone would loop, so the
-    report says the branch must go too."""
-    source = source_of(adopter, tmp_path)
-    earlier = git("-c", "user.name=Earlier Run",
-                  "-c", "user.email=earlier@invalid.example",
-                  "commit-tree", "-p", source.commit, "-m",
-                  "an earlier run's split", f"{source.commit}^{{tree}}",
-                  cwd=source.path).stdout.strip()
-    git("update-ref", f"refs/heads/{BRANCH}", earlier, cwd=source.path)
-    arguments = split_arguments(tmp_path, source)
-    commit_for_real(adopter, monkeypatch)
+    """#188 N3 as lane 2 met it: a root-kept `.github -> .github` passes
+    `check`, and the materializer then dies on the loop with an `OSError`,
+    inside the step that commits the split, after both legs are pushed. It
+    was a traceback with exit 1; it is a REFUSED block naming the step, and
+    the notice."""
+    loop = OSError(f"[Errno 40] Too many levels of symbolic links: "
+                   f"'{tmp_path / WORK / ASSEMBLY / '.github'}'")
+
+    def walk_into_the_loop(*_args, **_kw):
+        raise loop
+
+    arguments = split_arguments(tmp_path, source_of(adopter, tmp_path))
+    monkeypatch.setattr(adopter, MOUNT, lambda *_args: None)
+    monkeypatch.setattr(adopter, MATERIALIZE, walk_into_the_loop)
 
     assert adopter._commit_the_split(**arguments) is None
 
     err = capsys.readouterr().err
-    assert f"{REFUSED} {SPLIT_PUSH}." in err
-    assert f"{EARLIER_RUN} {BRANCH} on {source.path}" in err
+    assert f"{REFUSED} committing the split. OSError: {loop}" in err
+    assert BOTH_PUSHED in the_notice(err)
 
 
-def pull_request_fails(adopter, monkeypatch, _tmp_path):
+def test_an_interrupted_leg_still_says_what_it_left(
+        adopter, monkeypatch, capsys, tmp_path):
+    """Ctrl-C, or a defect: not a refusal, so it is re-raised with its
+    traceback, but only after the notice, because both leg repositories
+    exist all the same."""
+    def interrupted(*_args):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(adopter, EXTRACT, interrupted)
+
+    with pytest.raises(KeyboardInterrupt):
+        adopter._build_the_legs(**legs_arguments(tmp_path))
+
+    err = capsys.readouterr().err
+    assert f"STOPPED extracting the {SPEC} leg by KeyboardInterrupt." in err
+    assert REFUSED not in err
+    assert NEITHER_PUSHED in the_notice(err)
+
+
+@pytest.mark.parametrize("seeded", [[], [SPEC]],
+                         ids=["extracted-leg", "seeded-leg"])
+def test_a_leg_is_pushed_last_so_the_notice_cannot_miscount_it(
+        adopter, monkeypatch, capsys, tmp_path, seeded):
+    """The notice says which legs are pushed from the builders that
+    returned. A read that failed AFTER the push would have it call a pushed
+    leg unpushed, so both builders read what they need first: here the
+    digest fails, and the remote is as the notice says."""
+    real_run = adopter.run
+
+    def without_the_filter(args, *rest, **keywords):
+        if args[:2] == ["git", "filter-repo"]:
+            return ""
+        return real_run(args, *rest, **keywords)
+
+    def unreadable(*_args):
+        raise adopter.Refusal(GIT_FAILED, "`git ls-tree -r -z HEAD` "
+                                          "exited 128: fatal: bad tree")
+
+    monkeypatch.setattr(adopter, "run", without_the_filter)
+    monkeypatch.setattr(adopter, "tree_digest", unreadable)
+    monkeypatch.setattr(adopter, COPY_TREE, seed_one_file)
+    arguments = legs_arguments(tmp_path, source=source_of(adopter, tmp_path))
+    arguments["seeded"] = seeded
+    for role in LEGS:
+        git("init", "-q", "--bare", "-b", "main", arguments["urls"][role],
+            cwd=tmp_path)
+
+    assert adopter._build_the_legs(**arguments) is None
+
+    assert NEITHER_PUSHED in the_notice(capsys.readouterr().err)
+    assert commit_of(Path(arguments["urls"][SPEC]), MAIN_REF) is None
+
+
+# ---- the leg repositories, and what `main` is left to report ----------------
+
+def refused_before_any_leg(adopter, monkeypatch, _tmp_path) -> tuple:
+    """A refusal no step reports: one raised before any leg repository
+    exists, once stdout has printed something (the topic line, say)."""
+    def announce_then_refuse(_args):
+        print("topics: NOT set (--local-remote-dir)")
+        raise adopter.Refusal(
+            GIT_FAILED, f"`git ls-tree -r -z HEAD` in {ASSEMBLY} exited "
+                        "128: fatal: not a valid object name HEAD")
+
+    monkeypatch.setattr(adopter, "cmd_execute", announce_then_refuse)
+    return ["REFUSED git-failed: "], [ROLLED_BACK]
+
+
+def code_leg_repository_fails(adopter, monkeypatch, tmp_path,
+                              failure=None) -> tuple:
+    """#188 N4, against GitHub: the spec leg's repository is created and
+    announced, then `gh repo create` fails for the code leg's. The re-run
+    meets the spec repository, so the failure names it, and only it.
+    `failure` is what `run` raises instead of the command failing."""
+    names = leg_names()
+    repositories = {role: f"{ORG}/{names[role]}" for role in LEGS}
+    repositories[ROOT] = f"{ORG}/{ASSEMBLY}"
+    urls = {role: f"https://github.com/{ORG}/{name}.git"
+            for role, name in names.items()}
+
+    def gh(args, *_rest, **_kw):
+        if args[:4] == ["gh", "repo", "create", repositories[CODE]]:
+            raise failure or adopter.CommandFailed(
+                args, None, 1, "GraphQL: Name already exists on this account")
+        return ""
+
+    def create_the_legs(_args):
+        adopter._create_leg_remotes({}, names, repositories, urls, "main",
+                                    False, tmp_path / WORK)
+        return 0
+
+    monkeypatch.setattr(adopter, "run", gh)
+    monkeypatch.setattr(adopter, "cmd_execute", create_the_legs)
+    said = (f"{type(failure).__name__}: {failure}" if failure
+            else "THE EXACT COMMAND WAS:")
+    return ([f"{REFUSED} creating the {CODE} leg repository. {said}",
+             f"{ROLLED_BACK}: {urls[SPEC]} exists, and nothing is pushed to "
+             "it. Re-running the adoption is refused until it is deleted",
+             f"not {tmp_path / WORK}: "],
+            [urls[CODE]])
+
+
+def code_leg_gh_cannot_run(adopter, monkeypatch, tmp_path) -> tuple:
+    """The same with `gh` gone from PATH between the two: an `OSError`,
+    which `_create_leg_remotes` reports as REFUSED with the notice, and on
+    which `main` must then exit 2, as it says, and not with a traceback."""
+    return code_leg_repository_fails(
+        adopter, monkeypatch, tmp_path,
+        FileNotFoundError(2, "No such file or directory", "gh"))
+
+
+@pytest.mark.parametrize("scenario",
+                         [refused_before_any_leg, code_leg_repository_fails,
+                          code_leg_gh_cannot_run],
+                         ids=["refusal", "command", "gh-cannot-run"])
+def test_main_flushes_stdout_before_a_failure_no_step_reported(
+        adopter, monkeypatch, tmp_path, scenario):
+    """What `main` is handed: a refusal no step reported, which it prints
+    after flushing stdout so a merged log keeps the order; or, since #188
+    N4, a code leg repository that failed after the spec leg's was created,
+    which `_create_leg_remotes` has reported with the notice naming the one
+    that exists, and which `main` must not print a second time: a failed
+    command or a `gh` that could not be run at all, exit 2 either way."""
+    events, stderr = recorded_streams(monkeypatch)
+    said, unsaid = scenario(adopter, monkeypatch, tmp_path)
+
+    assert adopter.main(["execute", PLAN_FLAG, "adoption-plan.yaml"]) == 2
+
+    err = "".join(stderr.written)
+    assert flushed_first(events)
+    assert err.count(REFUSED) == 1, err
+    for text in said:
+        assert text in err, err
+    for text in unsaid:
+        assert text not in err, err
+
+
+def test_stdout_is_flushed_before_a_late_failure_reaches_stderr_split(
+        adopter, monkeypatch, tmp_path):
+    """The split's own report comes after every line the run announced, in
+    a log that merges the two streams."""
+    events, _stderr = recorded_streams(monkeypatch)
+    arguments = split_arguments(tmp_path, source_of(adopter, tmp_path))
+    mount_fails(adopter, monkeypatch, arguments)
+
+    assert adopter._commit_the_split(**arguments) is None
+
+    assert flushed_first(events)
+
+
+def pull_request_fails(adopter, monkeypatch, failure):
     def refused(args, *_rest, **_kw):
-        raise adopter.CommandFailed(args, None, 1, "HTTP 502")
+        raise failure(args)
     monkeypatch.setattr(adopter, "run", refused)
     repositories = {role: f"{ORG}/{ASSEMBLY}-{role}" for role in LEGS}
-    repositories["assembly"] = f"{ORG}/{ASSEMBLY}"
+    repositories[ROOT] = f"{ORG}/{ASSEMBLY}"
     names = {role: f"{ASSEMBLY}-{role}" for role in LEGS}
     assert not adopter._open_the_pull_request(repositories, names, "main",
                                               BRANCH, "body")
+    return "opening the pull request", "Open the pull request by hand"
 
 
-def topic_fails(adopter, monkeypatch, _tmp_path):
+def topic_fails(adopter, monkeypatch, failure):
     def refused(args, *_rest, **_kw):
-        raise adopter.CommandFailed(args, None, 1, "HTTP 403")
+        raise failure(args)
     monkeypatch.setattr(adopter, "run", refused)
     repositories = {role: f"{ORG}/{ASSEMBLY}-{role}"
-                    for role in (*LEGS, "assembly")}
+                    for role in (*LEGS, ROOT)}
     assert not adopter._set_the_topic(repositories, "xf-project-northwind")
-
-
-def split_mount_fails(adopter, monkeypatch, tmp_path):
-    arguments = split_arguments(tmp_path, source_of(adopter, tmp_path))
-    mount_fails(adopter, monkeypatch, arguments)
-    assert adopter._commit_the_split(**arguments) is None
+    return "setting the project topic", "Set the topic by hand"
 
 
 def leg_push_fails(adopter, monkeypatch, tmp_path):
-    monkeypatch.setattr(adopter, "copy_tree", seed_one_file)
+    monkeypatch.setattr(adopter, COPY_TREE, seed_one_file)
     with pytest.raises(adopter.CommandFailed):
         adopter._seed_leg(SPEC, tmp_path / WORK / f"{ASSEMBLY}-{SPEC}", {},
                           BRANCH, str(tmp_path / "gone.git"), "main",
                           SPEC_REPOSITORY, ASSEMBLY)
 
 
-@pytest.mark.parametrize("fail", [split_mount_fails, leg_push_fails,
-                                  pull_request_fails, topic_fails],
-                         ids=["split", "leg-push", "pull-request", "topic"])
-def test_stdout_is_flushed_before_a_late_failure_reaches_stderr(
-        adopter, monkeypatch, tmp_path, fail):
-    """Every failure after the leg repositories exist is written to stderr
-    AFTER stdout is flushed, so a merged log keeps the order things ran in."""
-    events: list = []
-    monkeypatch.setattr(sys, "stdout", Stream("stdout", events))
-    monkeypatch.setattr(sys, "stderr", Stream("stderr", events))
+def gh_refused(adopter, args):
+    return adopter.CommandFailed(args, None, 1, "HTTP 502")
 
-    fail(adopter, monkeypatch, tmp_path)
 
-    assert ("stdout", "flush") in events
-    assert (events.index(("stdout", "flush"))
-            < events.index(("stderr", "write")))
+def gh_not_found(_adopter, _args):
+    return FileNotFoundError(2, "No such file or directory", "gh")
+
+
+@pytest.mark.parametrize("fail", [pull_request_fails, topic_fails],
+                         ids=["pull-request", "topic"])
+@pytest.mark.parametrize("failure", [gh_refused, gh_not_found],
+                         ids=["refused", "gh-not-found"])
+def test_a_gh_step_after_the_split_gets_its_by_hand_exit(
+        adopter, monkeypatch, fail, failure):
+    """After the split is pushed, `gh` failing is not a re-run: the exit is
+    the command that finishes the job by hand. Stdout is flushed before it,
+    and a `gh` that cannot be run at all gets the same exit as one that
+    refused, rather than a traceback (#188)."""
+    events, stderr = recorded_streams(monkeypatch)
+
+    step, by_hand = fail(adopter, monkeypatch,
+                         lambda args: failure(adopter, args))
+
+    err = "".join(stderr.written)
+    assert flushed_first(events)
+    assert f"{REFUSED} {step}." in err
+    assert by_hand in err
+
+
+def test_stdout_is_flushed_before_a_refused_leg_push_reaches_stderr(
+        adopter, monkeypatch, tmp_path):
+    """A leg builder reports its own refused push, so it flushes first."""
+    events, _stderr = recorded_streams(monkeypatch)
+
+    leg_push_fails(adopter, monkeypatch, tmp_path)
+
+    assert flushed_first(events)
 
 
 def test_a_closed_stdout_does_not_swallow_the_report(
@@ -378,73 +697,174 @@ def test_a_closed_stdout_does_not_swallow_the_report(
     nobody reads, flushing raises BrokenPipeError, and the REFUSED block and
     the notice must still reach stderr."""
     err = io.StringIO()
-    monkeypatch.setattr(sys, "stdout", ClosedPipe())
-    monkeypatch.setattr(sys, "stderr", err)
+    monkeypatch.setattr(sys, STDOUT, ClosedPipe())
+    monkeypatch.setattr(sys, STDERR, err)
+    arguments = split_arguments(tmp_path, source_of(adopter, tmp_path))
+    mount_fails(adopter, monkeypatch, arguments)
 
-    split_mount_fails(adopter, monkeypatch, tmp_path)
+    assert adopter._commit_the_split(**arguments) is None
 
     assert f"{REFUSED} mounting the legs." in err.getvalue()
     assert ROLLED_BACK in err.getvalue()
 
 
-def a_refusal(adopter):
-    return adopter.Refusal(
-        "git-failed", f"`git ls-tree -r -z HEAD` in {ASSEMBLY}-{SPEC} exited "
-                      "128: fatal: not a valid object name HEAD")
-
-
-def a_command_failure(adopter):
-    return adopter.CommandFailed(
-        ["gh", "repo", "create", f"{ORG}/{ASSEMBLY}-{CODE}", "--private"],
-        None, 1, "GraphQL: Name already exists on this account")
-
-
-@pytest.mark.parametrize("failure", [a_refusal, a_command_failure],
-                         ids=["refusal", "command"])
-def test_main_flushes_stdout_before_a_failure_no_step_reported(
-        adopter, monkeypatch, failure):
-    """What no step reports itself, `main` prints: a `Refusal` from
-    `git_out` once the legs exist, or a `gh repo create` that fails for the
-    code leg after the spec leg was created and announced. Stdout is flushed
-    first, so a merged log has the announcement before the report."""
-    events: list = []
-    monkeypatch.setattr(sys, "stdout", Stream("stdout", events))
-    monkeypatch.setattr(sys, "stderr", Stream("stderr", events))
-
-    def announce_then_fail(_args):
-        print(f"  gh    {SPEC_REPOSITORY}")
-        raise failure(adopter)
-
-    monkeypatch.setattr(adopter, "cmd_execute", announce_then_fail)
-
-    assert adopter.main(["execute", "--plan", "adoption-plan.yaml"]) == 2
-    assert ("stdout", "flush") in events
-    assert (events.index(("stdout", "flush"))
-            < events.index(("stderr", "write")))
-
-
-def test_the_printed_seed_push_runs_from_a_seeded_leg(
+def test_a_refused_leg_push_offers_an_adoption_its_one_exit(
         adopter, monkeypatch, capsys, tmp_path):
-    """#177 with no `git filter-repo`: a seeded leg is a fresh `git init` with
-    no `origin` either. Its push to `main` is refused by a hook standing in
-    for a ruleset; the command the hint prints is then RUN, and it lands the
-    leg's commit on the seed branch the hook allows."""
-    monkeypatch.setattr(adopter, "copy_tree", seed_one_file)
+    """#188 N2. The scaffold's second exit, a seed branch and a pull request,
+    cannot finish an adoption: the leg is a repository this run created, its
+    first push is the one refused, so it has no `main` for that pull request
+    to target, and nothing resumes the adoption from a merged one. The hint
+    names the one exit, and no command for the other. A seeded leg, pushed
+    to a bare remote whose hook refuses `main` as a ruleset does."""
+    monkeypatch.setattr(adopter, COPY_TREE, seed_one_file)
     remote = tmp_path / REMOTES / f"{ASSEMBLY}-{SPEC}.git"
     git("init", "-q", "--bare", "-b", "main", str(remote), cwd=tmp_path)
     write_refusing_hook(remote / "hooks", MAIN_REF)
-    work = tmp_path / WORK / f"{ASSEMBLY}-{SPEC}"
 
     with pytest.raises(adopter.CommandFailed):
-        adopter._seed_leg(SPEC, work, {}, BRANCH, str(remote), "main",
-                          SPEC_REPOSITORY, ASSEMBLY)
+        adopter._seed_leg(SPEC, tmp_path / WORK / f"{ASSEMBLY}-{SPEC}", {},
+                          BRANCH, str(remote), "main", SPEC_REPOSITORY,
+                          ASSEMBLY)
 
     err = capsys.readouterr().err
+    assert f"{REFUSED} pushing the seeded {SPEC} leg." in err
+    assert "An adoption has ONE legitimate exit: have an operator" in err
+    assert f"{SPEC_REPOSITORY} has no main for that pull request" in err
     assert "re-run this scaffold" not in err
-    pushed = run_git(printed_push(err), {})
-    assert pushed.returncode == 0, pushed.stderr
-    assert commit_of(remote, SEED_BRANCH) == commit_of(work)
-    assert commit_of(remote, MAIN_REF) is None
+    for command in ("git -C ", "gh pr create"):
+        assert not any(line.strip().startswith(command)
+                       for line in err.splitlines()), err
+    # What the hint says of the leg is so: the refused push left it empty.
+    assert git("for-each-ref", cwd=remote).stdout == ""
+
+
+# ---- the split branch an earlier run left (#188 N1) -------------------------
+
+def execute_args(tmp_path: Path, plan: Path) -> Namespace:
+    """What `main` hands `cmd_execute` for `--yes` into fresh remotes."""
+    return Namespace(plan=str(plan), source=None,
+                     local_remote_dir=tmp_path / REMOTES, allow_empty_leg=[],
+                     yes=True, work_dir=tmp_path / WORK)
+
+
+def planned(tmp_path: Path, source: Path) -> Path:
+    plan = tmp_path / "adoption-plan.yaml"
+    written = write_plan(source, plan, project=ASSEMBLY)
+    assert written.returncode == 0, written.stderr + written.stdout
+    return plan
+
+
+def no_filter_repo_probe(adopter, monkeypatch) -> None:
+    """`cmd_execute` asks for `git filter-repo` first, and the tests that
+    call it are about refusals made before it would be used."""
+    monkeypatch.setattr(adopter, "_require_filter_repo", lambda: None)
+
+
+def leave_a_split_branch(source: Path) -> None:
+    """What an earlier `execute` leaves on the source, verified or not."""
+    git("branch", BRANCH, cwd=source)
+
+
+def no_leg_exists(tmp_path: Path) -> bool:
+    return (not (tmp_path / REMOTES).exists()
+            and not any((tmp_path / WORK / f"{ASSEMBLY}-{role}").exists()
+                        for role in LEGS))
+
+
+def test_a_split_branch_left_behind_is_refused_before_any_leg_exists(
+        adopter, monkeypatch, tmp_path):
+    """A run whose verification failed leaves its split branch, and the
+    re-run into fresh legs then made and pushed two more legs before the
+    split push was refused as not a fast-forward, every time. `execute` now
+    asks the assembly first and refuses before anything exists. Its way out
+    is a command, quoted for `sh`: the source's path here has a space in it,
+    and the command, pasted, deletes the branch and nothing else."""
+    no_filter_repo_probe(adopter, monkeypatch)
+    source = make_source_repo(tmp_path / "my source", tree=SMALL_TREE,
+                              edits=())
+    plan = planned(tmp_path, source)
+    leave_a_split_branch(source)
+
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter.cmd_execute(execute_args(tmp_path, plan))
+
+    refusal = caught.value
+    assert refusal.code == BRANCH_EXISTS
+    assert f"{source} already has {BRANCH}" in refusal.detail
+    assert refusal.remediation.startswith("Remediation: nothing was created.")
+    assert no_leg_exists(tmp_path)
+
+    deleted = subprocess.run(printed_command(refusal.remediation,
+                                             DELETE_COMMAND),
+                             capture_output=True, text=True, check=False)
+    assert deleted.returncode == 0, deleted.stderr
+    assert git("branch", "--format=%(refname:short)",
+               cwd=source).stdout.split() == ["main"]
+    opened = adopter.Source(source, None, "main", commit_of(source))
+    assert adopter._refuse_a_split_branch_left_behind(
+        opened, {ROOT: str(source), **leg_urls(tmp_path, leg_names())},
+        BRANCH, True) is None
+
+
+def test_a_live_leg_keeps_its_own_refusal_over_the_split_branch(
+        adopter, monkeypatch, tmp_path):
+    """After a run that VERIFIED, the legs and the branch are both there.
+    `leg-remote-exists` is the older refusal and the one that run meets
+    first, so it keeps its precedence: the branch is for a re-run that has
+    cleared its legs."""
+    no_filter_repo_probe(adopter, monkeypatch)
+    source = make_source_repo(tmp_path / SOURCE, tree=SMALL_TREE, edits=())
+    plan = planned(tmp_path, source)
+    leave_a_split_branch(source)
+    (tmp_path / REMOTES / f"{ASSEMBLY}-{SPEC}.git").mkdir(parents=True)
+
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter.cmd_execute(execute_args(tmp_path, plan))
+
+    assert caught.value.code == "leg-remote-exists"
+
+
+def test_against_github_the_split_branch_is_asked_of_the_assembly(
+        adopter, tmp_path):
+    """Against GitHub nothing is on disk to look at, and the leg names are
+    taken or not by `gh repo create`; the branch is asked of the URL the
+    split is pushed to, which a local path stands in for here."""
+    source = source_of(adopter, tmp_path)
+    urls = {ROOT: str(source.path),
+            **{role: f"https://github.com/{ORG}/{ASSEMBLY}-{role}.git"
+               for role in LEGS}}
+    assert adopter._refuse_a_split_branch_left_behind(
+        source, urls, BRANCH, False) is None
+    leave_a_split_branch(source.path)
+
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter._refuse_a_split_branch_left_behind(source, urls, BRANCH,
+                                                   False)
+
+    assert caught.value.code == BRANCH_EXISTS
+
+
+def test_a_refusal_from_the_substitution_table_leaves_no_leg_repository(
+        adopter, monkeypatch, tmp_path):
+    """The table can refuse -- an `elected_on` that is not a date, a
+    checkout of this standard that is not a git repository -- and it was
+    built AFTER the leg repositories were created, leaving both behind with
+    nothing saying so. It is built before them now."""
+    no_filter_repo_probe(adopter, monkeypatch)
+    plan = planned(tmp_path, make_source_repo(tmp_path / SOURCE,
+                                              tree=SMALL_TREE, edits=()))
+
+    def refused(*_args):
+        raise adopter.Refusal("election-date-invalid",
+                              "elected_on 2026-13-45 is not a date")
+
+    monkeypatch.setattr(adopter, "_template_values", refused)
+
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter.cmd_execute(execute_args(tmp_path, plan))
+
+    assert caught.value.code == "election-date-invalid"
+    assert no_leg_exists(tmp_path)
 
 
 # ---- end to end, with `git filter-repo` -------------------------------------
@@ -452,16 +872,19 @@ def test_the_printed_seed_push_runs_from_a_seeded_leg(
 def adopt_with_hook(tmp_path: Path, ref_pattern: str):
     """Plan a small source, then execute it with every push meeting a hook
     that refuses `ref_pattern`, stdout and stderr merged into one pipe."""
-    source = make_source_repo(tmp_path / "Thing", tree=SMALL_TREE, edits=())
-    plan = tmp_path / "adoption-plan.yaml"
-    written = write_plan(source, plan, project=ASSEMBLY)
-    assert written.returncode == 0, written.stderr + written.stdout
+    source = make_source_repo(tmp_path / SOURCE, tree=SMALL_TREE, edits=())
+    plan = planned(tmp_path, source)
     env = hooks_everywhere(tmp_path, ref_pattern)
-    result = run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
-                        "--local-remote-dir", str(tmp_path / REMOTES),
-                        "--work-dir", str(tmp_path / WORK), env=env,
-                        merge_stderr=True)
-    return source, env, result
+    result = execute(plan, tmp_path / REMOTES, tmp_path / WORK, env=env,
+                     merge_stderr=True)
+    return source, plan, result
+
+
+def execute(plan: Path, remotes: Path, work: Path, env: dict | None = None,
+            merge_stderr: bool = False) -> subprocess.CompletedProcess:
+    return run_script(ADOPT, "execute", PLAN_FLAG, str(plan), "--yes",
+                      "--local-remote-dir", str(remotes), "--work-dir",
+                      str(work), env=env, merge_stderr=merge_stderr)
 
 
 def first_line(lines: list[str], text: str) -> int:
@@ -471,53 +894,106 @@ def first_line(lines: list[str], text: str) -> int:
     raise AssertionError(f"{text!r} is in no line of:\n" + "\n".join(lines))
 
 
-def run_git(argv: list[str], env: dict) -> subprocess.CompletedProcess:
-    """`argv` as a person pastes it, with `env` over this process's own."""
-    assert argv[0] == "git", argv
-    return subprocess.run(argv, capture_output=True, text=True, check=False,
-                          env={**os.environ, **env})
-
-
 @needs_filter_repo
-def test_a_refused_split_push_is_logged_after_the_legs_it_left(tmp_path):
+def test_a_refused_split_push_is_logged_after_the_legs_and_its_way_out_runs(
+        tmp_path):
     """Lane 2's reproduction (PR #184's review, P3-5): both legs are pushed,
     then a hook refuses the split branch. In the merged log every line that
     announced a leg comes BEFORE the REFUSED block, and the notice after it
-    names both pushed legs."""
-    source, _env, result = adopt_with_hook(tmp_path, "refs/heads/adopt/*")
+    names both pushed legs and the work directory. Then its way out, word
+    for word, with the cause gone: a new --local-remote-dir and a fresh
+    --work-dir end in `adoption verified` (#184 P2-1)."""
+    source, plan, result = adopt_with_hook(tmp_path, "refs/heads/adopt/*")
 
     assert result.returncode == 2, result.stdout
     lines = result.stdout.splitlines()
     refused = first_line(lines, f"{REFUSED} {SPLIT_PUSH}.")
     announced = [index for index, line in enumerate(lines)
-                 if line.startswith(("  bare", "  spec", "  code"))]
+                 if line.startswith((BARE_LINE, "  spec", "  code"))]
     assert len(announced) == 4, result.stdout
     assert max(announced) < refused
-    notice = lines[first_line(lines, ROLLED_BACK)]
+    notice = the_notice(result.stdout)
     assert BOTH_PUSHED in notice
     for role in LEGS:
         bare = tmp_path / REMOTES / f"{ASSEMBLY}-{role}.git"
         assert str(bare) in notice
         assert commit_of(bare, MAIN_REF) is not None
+    assert work_dir_named(notice, tmp_path / WORK)
     assert commit_of(source, f"refs/heads/{BRANCH}") is None
+
+    rerun = execute(plan, tmp_path / "new remotes", tmp_path / "new work")
+
+    assert rerun.returncode == 0, rerun.stderr + rerun.stdout
+    assert "adoption verified" in rerun.stdout
 
 
 @needs_filter_repo
-def test_the_printed_seed_push_runs_from_an_extracted_leg(tmp_path):
+def test_a_refused_leg_push_is_logged_after_the_legs_with_one_exit(tmp_path):
     """#177 as the issue found it: the spec leg's push to `main` is refused,
-    and the command the adoption prints is RUN from the clone `git filter-repo`
-    rewrote. It lands the extracted leg's HEAD on the seed branch. The merged
-    log also has the `bare` lines before the REFUSED block."""
-    _source, env, result = adopt_with_hook(tmp_path, MAIN_REF)
+    in a clone `git filter-repo` rewrote. The merged log has the `bare`
+    lines before the REFUSED block, and the hint offers no push for that
+    clone to run, only the re-run (#188 N2)."""
+    _source, _plan, result = adopt_with_hook(tmp_path, MAIN_REF)
 
     assert result.returncode == 2, result.stdout
     lines = result.stdout.splitlines()
     refused = first_line(lines, f"{REFUSED} pushing the {SPEC} leg.")
     assert max(index for index, line in enumerate(lines)
-               if line.startswith("  bare")) < refused
-    argv = printed_push(result.stdout)
-    pushed = run_git(argv, env)
-    assert pushed.returncode == 0, pushed.stderr
-    work = tmp_path / WORK / f"{ASSEMBLY}-{SPEC}"
-    bare = tmp_path / REMOTES / f"{ASSEMBLY}-{SPEC}.git"
-    assert commit_of(bare, SEED_BRANCH) == commit_of(work)
+               if line.startswith(BARE_LINE)) < refused
+    assert "ONE legitimate exit" in result.stdout
+    assert "push -u origin" not in result.stdout
+    assert work_dir_named(the_notice(result.stdout), tmp_path / WORK)
+
+
+@needs_filter_repo
+def test_a_failed_verification_is_flushed_and_its_way_out_runs(tmp_path):
+    """#188 N1. A verification that fails is the last late failure: its
+    findings came first in a merged log, and its exit -- re-run into fresh
+    legs -- made and pushed two more legs and then met the split branch this
+    run had pushed. Now the findings come after every line the run printed,
+    the exit names the legs, the work directory and the branch with the
+    command that deletes it, a re-run that skips the branch is refused
+    before any leg exists, and the exit followed word for word ends in
+    `adoption verified`."""
+    source = make_source_repo(tmp_path / SOURCE, tree=OWN_PIN_TREE,
+                              edits=())
+    plan = planned(tmp_path, source)
+    answered = plan.read_text(encoding=UTF8)
+    assert CONTRACTS_TO_SPEC in answered
+    plan.write_text(answered.replace(CONTRACTS_TO_SPEC, CONTRACTS_KEPT, 1),
+                    encoding=UTF8)
+    checked = run_script(ADOPT, "check", PLAN_FLAG, str(plan))
+    assert checked.returncode == 0, checked.stderr + checked.stdout
+
+    failed = execute(plan, tmp_path / REMOTES, tmp_path / WORK,
+                     merge_stderr=True)
+
+    assert failed.returncode == 1, failed.stdout
+    lines = failed.stdout.splitlines()
+    finding = first_line(lines, "FINDING adopt-shape-file-missing")
+    printed = [index for index, line in enumerate(lines)
+               if line.startswith((BARE_LINE, "  spec", "  code", "  split",
+                                   "  added"))]
+    assert max(printed) < finding, failed.stdout
+    notice = the_notice(failed.stdout)
+    assert BOTH_PUSHED in notice
+    assert work_dir_named(notice, tmp_path / WORK)
+    assert f"The split is pushed to {source} too, as {BRANCH}" \
+        in failed.stdout
+    delete = printed_command(failed.stdout, DELETE_COMMAND)
+
+    skipped = execute(plan, tmp_path / "remotes 2", tmp_path / "work 2")
+    assert skipped.returncode == 2, skipped.stderr + skipped.stdout
+    assert f"{REFUSED} {BRANCH_EXISTS}" in skipped.stderr
+    assert not (tmp_path / "remotes 2").exists()
+
+    # The exit, word for word: fix the plan, delete the branch as printed,
+    # and re-run into fresh legs and a fresh work directory.
+    plan.write_text(answered, encoding=UTF8)
+    deleted = subprocess.run(delete, capture_output=True, text=True,
+                             check=False)
+    assert deleted.returncode == 0, deleted.stderr
+    rerun = execute(plan, tmp_path / "remotes 3", tmp_path / "work 3")
+
+    assert rerun.returncode == 0, rerun.stderr + rerun.stdout
+    assert "adoption verified" in rerun.stdout
