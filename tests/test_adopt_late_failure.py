@@ -621,47 +621,61 @@ def stand_in(kind: type):
     return raised
 
 
-def at_the_code_leg_repository(adopter, monkeypatch, tmp_path, step) -> None:
-    """#188 N4's point: the spec leg's repository is made, then the code
-    leg's raises. A bare repository on disk stands in for GitHub's."""
+def the_code_legs_repository_runs(adopter, monkeypatch, step) -> None:
+    """#188 N4's point: the spec leg's repository is made, then `step` runs
+    in place of making the code leg's."""
     create = adopter._create_leg_remote
 
-    def the_code_legs_raises(*args):
+    def the_code_legs_runs_step(*args):
         if args[-1] == CODE:
             step()
         create(*args)
 
-    monkeypatch.setattr(adopter, "_create_leg_remote", the_code_legs_raises)
+    monkeypatch.setattr(adopter, "_create_leg_remote", the_code_legs_runs_step)
+
+
+# Each of the four below fails at one point of a run that has made a leg
+# repository, handing that point `source` when one is given.
+
+def at_the_code_leg_repository(adopter, monkeypatch, tmp_path, step,
+                               source=None) -> None:
+    """A bare repository on disk stands in for GitHub's."""
+    the_code_legs_repository_runs(adopter, monkeypatch, step)
     names = leg_names()
     adopter._create_leg_remotes({}, names, {}, leg_urls(tmp_path, names),
-                                "main", True, tmp_path / WORK)
+                                "main", True, tmp_path / WORK, source=source)
 
 
-def in_a_leg(adopter, monkeypatch, tmp_path, step) -> None:
+def in_a_leg(adopter, monkeypatch, tmp_path, step, source=None) -> None:
     monkeypatch.setattr(adopter, EXTRACT, step)
-    adopter._build_the_legs(**legs_arguments(tmp_path))
+    adopter._build_the_legs(**legs_arguments(tmp_path, source=source))
 
 
-def in_the_split(adopter, monkeypatch, tmp_path, step) -> None:
+def in_the_split(adopter, monkeypatch, tmp_path, step, source=None) -> None:
     monkeypatch.setattr(adopter, MOUNT, step)
     adopter._commit_the_split(**split_arguments(
-        tmp_path, source_of(adopter, tmp_path)))
+        tmp_path, source or source_of(adopter, tmp_path)))
 
 
-def in_the_verification(adopter, monkeypatch, tmp_path, step) -> None:
+def in_the_verification(adopter, monkeypatch, tmp_path, step,
+                        source=None) -> None:
     monkeypatch.setattr(adopter, TREE_OF, step)
-    adopter._verify(**verify_arguments(tmp_path,
-                                       source_of(adopter, tmp_path)))
+    adopter._verify(**verify_arguments(
+        tmp_path, source or source_of(adopter, tmp_path)))
+
+
+LATE_POINTS = [at_the_code_leg_repository, in_a_leg, in_the_split,
+               in_the_verification]
+LATE_POINT_IDS = ["code-leg-repository", "leg", "split", "verification"]
 
 
 @pytest.mark.parametrize("act, step",
-                         [(at_the_code_leg_repository,
-                           f"creating the {CODE} leg repository"),
-                          (in_a_leg, f"extracting the {SPEC} leg"),
-                          (in_the_split, "mounting the legs"),
-                          (in_the_verification, "verifying the split")],
-                         ids=["code-leg-repository", "leg", "split",
-                              "verification"])
+                         list(zip(LATE_POINTS,
+                                  [f"creating the {CODE} leg repository",
+                                   f"extracting the {SPEC} leg",
+                                   "mounting the legs",
+                                   "verifying the split"])),
+                         ids=LATE_POINT_IDS)
 @pytest.mark.parametrize("kind, opening",
                          [(TypeError, FIX_FIRST),
                           (KeyboardInterrupt, RERUN_ONLY)],
@@ -682,6 +696,74 @@ def test_only_an_interrupt_is_told_to_re_run_with_nothing_to_fix(
     notice = the_notice(err)
     other = RERUN_ONLY if opening == FIX_FIRST else FIX_FIRST
     assert opening in notice and other not in notice, notice
+
+
+# ---- the source's own clone (#188's re-verification, R3) --------------------
+
+#: Where `Source.open` clones an `org/repo` source, in the work directory.
+CLONED_SOURCE = f"source-readonly/{SOURCE}"
+
+
+def cloned_source(adopter, tmp_path: Path):
+    """A source as `Source.open` leaves an `org/repo` one: cloned into the
+    work directory, where a re-run given the same --work-dir cannot clone
+    it again."""
+    origin = make_source_repo(tmp_path / WORK / CLONED_SOURCE,
+                              tree=SMALL_TREE, edits=())
+    return adopter.Source(origin, f"{ORG}/{SOURCE}", "main",
+                          commit_of(origin), cloned=True)
+
+
+@pytest.mark.parametrize("act", LATE_POINTS, ids=LATE_POINT_IDS)
+def test_the_notice_names_the_sources_own_clone_in_the_work_dir(
+        adopter, monkeypatch, capsys, tmp_path, act):
+    """Each point that prints the notice hands it the source, so that the
+    clone is named wherever the run fails, first in the list: it is made
+    first. Any failure will do; a defect is raised alike at all four."""
+    with pytest.raises(TypeError):
+        act(adopter, monkeypatch, tmp_path, stand_in(TypeError),
+            cloned_source(adopter, tmp_path))
+
+    notice = the_notice(capsys.readouterr().err)
+    assert f"{FRESH_WORK_DIR}{tmp_path / WORK} holds {CLONED_SOURCE}" \
+        in notice, notice
+
+
+def test_an_org_repo_run_names_its_clone_when_a_leg_repository_fails(
+        adopter, monkeypatch, capsys, tmp_path):
+    """The re-verification's R3, as it met it: `execute --source org/repo
+    --work-dir W` clones the source into `W/source-readonly/<repo>`, then
+    the code leg's repository fails (#188 N4). A re-run given the same W is
+    refused at that clone (`source-unclonable`), but the notice read only
+    the legs and the split off the disk, so it named no work directory. It
+    names the clone. The run is not refused for its own clone: that is no
+    leg and not the split. `gh repo clone` is a local clone here."""
+    no_filter_repo_probe(adopter, monkeypatch)
+    origin = make_source_repo(tmp_path / SOURCE, tree=SMALL_TREE, edits=())
+    plan = planned(tmp_path, origin)
+    real_run = adopter.run
+
+    def gh_clones_the_origin(args, *rest, **keywords):
+        # The run's one `gh` call before it fails: `gh repo clone <org/repo>
+        # <path> -- --quiet`, under --local-remote-dir.
+        if args[0] == "gh":
+            args = ["git", "clone", "-q", str(origin), args[4]]
+        return real_run(args, *rest, **keywords)
+
+    def refused():
+        raise permission_denied(adopter)
+
+    monkeypatch.setattr(adopter, "run", gh_clones_the_origin)
+    the_code_legs_repository_runs(adopter, monkeypatch, refused)
+    args = execute_args(tmp_path, plan)
+    args.source = f"{ORG}/{SOURCE}"
+
+    with pytest.raises(PermissionError):
+        adopter.cmd_execute(args)
+
+    notice = the_notice(capsys.readouterr().err)
+    assert work_dir_named(notice, tmp_path / WORK, CLONED_SOURCE), notice
+    assert (tmp_path / WORK / CLONED_SOURCE / README).is_file()
 
 
 @pytest.mark.parametrize("seeded", [[], [SPEC]],

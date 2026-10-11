@@ -383,16 +383,21 @@ class Source:
     """A repository being read, and nothing more. Nothing here writes to it."""
 
     def __init__(self, path: Path, repository: str | None, branch: str,
-                 commit: str):
+                 commit: str, cloned: bool = False):
         self.path = path
         self.repository = repository
         self.branch = branch
         self.commit = commit
+        #: Whether `open` CLONED it, into the work directory, rather than
+        #: reading a local path in place: a re-run given the same --work-dir
+        #: cannot clone into that directory again (`_cloned_here`).
+        self.cloned = cloned
 
     @classmethod
     def open(cls, spec: str, work_root: Path) -> "Source":
         """`spec` is a local path (used in place) or `org/repo` (cloned)."""
         candidate = Path(spec).expanduser()
+        cloned = False
         if candidate.exists():
             path = candidate.resolve()
             repository = _remote_repository(path)
@@ -421,9 +426,10 @@ class Source:
                     f"could not clone {spec}: {exc.output.strip()[:400]}",
                     "Remediation: check `gh auth status` and the repository "
                     "name, or clone it yourself and pass the path.") from exc
+            cloned = True
         branch = _default_branch(path)
         commit = git_out(["rev-parse", branch], cwd=path).lower()
-        return cls(path, repository, branch, commit)
+        return cls(path, repository, branch, commit, cloned)
 
     def tree(self) -> list[tuple[str, str, str, int]]:
         """(path, mode, blob sha, size) for every file at the pinned commit."""
@@ -2186,6 +2192,23 @@ def _built_in(work_root: Path, names: dict) -> list[tuple[str, str]]:
             if _holds_something(work_root / names[role])]
 
 
+def _cloned_here(source: Source | None, work_root: Path) -> list[str]:
+    """The source's own clone, as a path in `work_root`, when this run made
+    it there: `Source.open` clones an `org/repo` into
+    `<work_root>/source-readonly/<repo>`, and a re-run given the same
+    --work-dir is refused there, as `source-unclonable` (#188's
+    re-verification, R3). A local path is read in place and is no part of
+    the work directory.
+
+    It is not one of `BUILT_IN`: the run that cloned it goes on to
+    `_refuse_an_occupied_work_dir`, which must not refuse that run for its
+    own clone."""
+    if source is None or not source.cloned \
+            or not _holds_something(source.path):
+        return []
+    return [source.path.relative_to(work_root).as_posix()]
+
+
 def _and_listed(items: list[str]) -> str:
     """`a`, `a and b`, `a, b and c`: a few things, as a sentence names them."""
     if len(items) < 2:
@@ -2195,7 +2218,8 @@ def _and_listed(items: list[str]) -> str:
 
 def _nothing_rolled_back(urls: dict, pushed: list, work_root: Path,
                          names: dict, made=EXTRACTED_LEGS, *,
-                         interrupted: bool = False) -> str:
+                         interrupted: bool = False,
+                         source: Source | None = None) -> str:
     """The one notice for a failure once a leg repository exists.
 
     `_create_leg_remotes` refuses a re-run while they exist:
@@ -2220,11 +2244,12 @@ def _nothing_rolled_back(urls: dict, pushed: list, work_root: Path,
     (#184 P2-1, and N2 of #188's review): each leg is built in
     `<work_root>/<leg>` and the split cloned into `<work_root>/<assembly>`,
     and `_refuse_an_occupied_work_dir` refuses a run whose work directory
-    already holds one, before it creates anything. It is read off the disk,
-    so a failure before anything was built (the code leg's repository, N4)
-    does not send the person away from a work directory a re-run can use.
-    Without `--work-dir` every run makes its own, which is why "or none" is a
-    way out too.
+    already holds one, before it creates anything. So does the `source` this
+    run cloned there (`_cloned_here`), which a re-run cannot clone again. It
+    is read off the disk, so a failure before anything was built or cloned
+    (the code leg's repository, N4, from a local source) does not send the
+    person away from a work directory a re-run can use. Without `--work-dir`
+    every run makes its own, which is why "or none" is a way out too.
     """
     one = len(made) == 1
     if one:
@@ -2246,7 +2271,8 @@ def _nothing_rolled_back(urls: dict, pushed: list, work_root: Path,
               f"that meets {them} is refused, as `leg-remote-exists` under "
               "--local-remote-dir, and against GitHub by `gh repo create`, "
               "which finds the name already taken.")
-    built = [name for name, _ in _built_in(work_root, names)]
+    built = (_cloned_here(source, work_root)
+             + [name for name, _ in _built_in(work_root, names)])
     if built:
         notice += (f" Use a fresh --work-dir as well, or none: {work_root} "
                    f"holds {_and_listed(built)} from this run, and `execute` "
@@ -2426,7 +2452,8 @@ def _refuse_a_split_branch_left_behind(source: Source, urls: dict,
 
 def _create_leg_remotes(plan: Plan, names: dict, repositories: dict,
                         urls: dict, tracking: str, local: bool,
-                        work_root: Path) -> None:
+                        work_root: Path, *,
+                        source: Source | None = None) -> None:
     """(a) The two NEW repositories. The assembly root is never created here.
 
     The spec leg's repository is created first, so a failure creating the
@@ -2436,6 +2463,8 @@ def _create_leg_remotes(plan: Plan, names: dict, repositories: dict,
     is re-raised `reported`: `main` exits 2 on any of `LATE_FAILURES` without
     printing it twice, and anything else (Ctrl-C) keeps its traceback. A
     failure on the first leg leaves nothing, and `main` reports it as before.
+    `source` is handed on for the notice: nothing is built in the work
+    directory yet, but an `org/repo` source is already cloned there.
     """
     print("\ncreating the leg repositories")
     if local:
@@ -2450,7 +2479,8 @@ def _create_leg_remotes(plan: Plan, names: dict, repositories: dict,
                 _report_late(f"creating the {role} leg repository", exc,
                              _nothing_rolled_back(
                                  urls, [], work_root, names, made,
-                                 interrupted=_interrupted(exc)))
+                                 interrupted=_interrupted(exc),
+                                 source=source))
             raise
         made.append(role)
 
@@ -3006,12 +3036,12 @@ def _build_the_legs(source: Source, names: dict, repositories: dict,
                     tracking, repositories[role])
         except LATE_FAILURES as exc:
             _report_late(step, exc, _nothing_rolled_back(
-                urls, list(leg_commits), work_root, names))
+                urls, list(leg_commits), work_root, names, source=source))
             return None
         except BaseException as exc:
             _report_late(step, exc, _nothing_rolled_back(
                 urls, list(leg_commits), work_root, names,
-                interrupted=_interrupted(exc)))
+                interrupted=_interrupted(exc), source=source))
             raise
     return leg_commits, leg_digests
 
@@ -3193,12 +3223,12 @@ def _commit_the_split(plan: Plan, source: Source, assembly: Path,
              f"HEAD:refs/heads/{branch}"], cwd=assembly)
     except LATE_FAILURES as exc:
         _report_late(step, exc, _nothing_rolled_back(
-            urls, list(leg_commits), work_root, names))
+            urls, list(leg_commits), work_root, names, source=source))
         return None
     except BaseException as exc:
         _report_late(step, exc, _nothing_rolled_back(
             urls, list(leg_commits), work_root, names,
-            interrupted=_interrupted(exc)))
+            interrupted=_interrupted(exc), source=source))
         raise
     print(f"\n  split {split_commit[:12]} on {branch} -> {urls['assembly']}")
     return split_commit, message
@@ -3251,7 +3281,7 @@ def cmd_execute(args) -> int:
 
     # ---- (a) the two legs' remotes ----------------------------------------
     _create_leg_remotes(plan, names, repositories, urls, tracking, local,
-                        work_root)
+                        work_root, source=source)
 
     # ---- (b) history-preserving extraction, or a seeded leg ---------------
     legs = _build_the_legs(source, names, repositories, urls, values,
@@ -3500,7 +3530,8 @@ def _left_by_the_split(source: Source, urls: dict, names: dict,
     meets as `adopt-branch-exists`. Said by `_verify` after its findings,
     and after a failure to verify at all."""
     return (_nothing_rolled_back(urls, list(EXTRACTED_LEGS), work_root,
-                                 names, interrupted=interrupted)
+                                 names, interrupted=interrupted,
+                                 source=source)
             + f"\nThe split is pushed to {urls['assembly']} too, as "
             f"{branch}, and a re-run is refused (`adopt-branch-exists`) "
             "until that branch is deleted:\n    "
