@@ -3076,7 +3076,10 @@ def _land_the_root_tree(after: dict, tree: list, before: dict,
         pins a leg it does not mount, and its recursive clone gets no leg.
 
     They name the mount paths as the plan spells them, which since #169 is
-    the one spelling git records a mount at.
+    the one spelling git records a mount at. The gitlink a finding names is
+    `_spelled`, as every path a finding names is (#212): its path is a source
+    or split name, where a mount path is a leg path, which `checked_value`'s
+    alphabet already keeps printable.
 
     THE ROOT `.gitmodules` IS STILL COMPARED BYTE FOR BYTE, deliberately, and
     not by its registrations. The source's own cannot reach here: `check`
@@ -3118,15 +3121,15 @@ def _root_gitlink_finding(path: str, oid: str, before: dict,
     own, when it is as foreign to the source as one at a new path.
     """
     if before.get(path) == oid:
-        return (f"FINDING adopt-root-submodule: {path} is a gitlink to "
-                f"{oid[:12]} in the root tree, the source's own submodule at "
-                "its own commit, and the assembly root keeps no submodule of "
-                f"the source's: its {GITMODULES} is reserved for its two leg "
-                f"mounts; {ROOT_SUBMODULE_DEFECT}")
-    return (f"FINDING adopt-unexpected-gitlink: {path} is a gitlink to "
-            f"{oid[:12]} in the root tree, and neither a leg mount as the "
-            f"plan spells their paths ({', '.join(sorted(mounts))}) nor the "
-            f"source's own submodule at that commit; {SPLIT_DEFECT}")
+        return (f"FINDING adopt-root-submodule: {_spelled(path)} is a "
+                f"gitlink to {oid[:12]} in the root tree, the source's own "
+                "submodule at its own commit, and the assembly root keeps no "
+                f"submodule of the source's: its {GITMODULES} is reserved for "
+                f"its two leg mounts; {ROOT_SUBMODULE_DEFECT}")
+    return (f"FINDING adopt-unexpected-gitlink: {_spelled(path)} is a "
+            f"gitlink to {oid[:12]} in the root tree, and neither a leg mount "
+            f"as the plan spells their paths ({', '.join(sorted(mounts))}) "
+            f"nor the source's own submodule at that commit; {SPLIT_DEFECT}")
 
 
 def _what_is_at(tree: list, path: str) -> str:

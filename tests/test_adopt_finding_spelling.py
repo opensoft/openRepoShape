@@ -310,6 +310,49 @@ def test_adopt_mount_occupied_spells_the_kept_path_under_the_mount(
     assert_one_readable_line(refusal.detail, char)
 
 
+#: The root tree's two leg mounts, as `_verify` passes them to
+#: `_land_the_root_tree`: each gitlink the shape adds, at the plan's path.
+MOUNTS = {"spec": "spec", "code": "code"}
+
+
+def root_gitlink_findings(adopter, path: str, oid: str,
+                          before: dict) -> list[str]:
+    """What `_land_the_root_tree` finds in a root tree holding the two leg
+    mounts and one more gitlink, at `path`."""
+    tree = [(mount, adopter.GITLINK_MODE, "c" * 40, 0) for mount in MOUNTS]
+    tree.append((path, adopter.GITLINK_MODE, oid, 0))
+    return adopter._land_the_root_tree({}, tree, before, MOUNTS)
+
+
+@EACH_CHARACTER
+def test_adopt_root_submodule_spells_the_source_submodule(adopter, char,
+                                                          spelled):
+    """The source's own submodule at its own commit, left in the root
+    (#165). Its path is a source name."""
+    oid = "d" * 40
+    [finding] = root_gitlink_findings(adopter, f"ven{char}dor/d{char}p", oid,
+                                      {f"ven{char}dor/d{char}p": oid})
+    assert finding.startswith(
+        f"FINDING adopt-root-submodule: `ven{spelled}dor/d{spelled}p` is a "
+        f"gitlink to {oid[:12]} in the root tree, the source's own "
+        "submodule at its own commit, "), finding
+    assert_one_readable_line(finding, char)
+
+
+@EACH_CHARACTER
+def test_adopt_unexpected_gitlink_spells_the_gitlink(adopter, char, spelled):
+    """Any other gitlink in the root. The mount paths beside it are leg
+    paths, which `checked_value`'s alphabet already keeps printable."""
+    oid = "e" * 40
+    [finding] = root_gitlink_findings(adopter, f"ex{char}tra", oid, {})
+    assert finding.startswith(
+        f"FINDING adopt-unexpected-gitlink: `ex{spelled}tra` is a gitlink to "
+        f"{oid[:12]} in the root tree, and neither a leg mount as the plan "
+        "spells their paths (code, spec) nor the source's own submodule at "
+        "that commit; "), finding
+    assert_one_readable_line(finding, char)
+
+
 def git_out(repo: Path, *args: str, stdin: bytes | None = None) -> bytes:
     """`git <args>` in `repo`, fed and answering BYTES: text mode would turn a
     carriage return into a line break, and Windows would add one. Skipped

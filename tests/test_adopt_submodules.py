@@ -241,12 +241,12 @@ def test_the_root_that_mount_leaves_never_verifies(mount_fixture, tmp_path):
     assert [line.split(":", 1)[0] for line in found] == [
         "FINDING adopt-root-submodule"], found
     assert found[0].startswith(
-        "FINDING adopt-root-submodule: upstream/kept is a gitlink to "
+        "FINDING adopt-root-submodule: `upstream/kept` is a gitlink to "
         f"{before['upstream/kept'][:12]} in the root tree, the source's own "
         "submodule at its own commit")
     _, lost = adopter._account_for({GITMODULES: before[GITMODULES]}, after,
                                    [])
-    assert lost == [f"FINDING adopt-lost: {GITMODULES} "
+    assert lost == [f"FINDING adopt-lost: `{GITMODULES}` "
                     f"({before[GITMODULES][:12]}) is in no leg, not in the "
                     "root tree, and not listed as drop"]
 
