@@ -390,3 +390,17 @@ def test_a_placement_plan_names_no_repository_so_nothing_is_asked(adopter):
     naming = adopter.NamingPolicy.load(adopter.NAMING_POLICY)
     assert adopter._manifest_values(plan, naming) is None
     assert adopter._manifest_findings(plan) == ([], [])
+
+
+def test_a_plan_whose_names_do_not_classify_is_the_naming_findings_not_a_crash(
+        world):
+    """The manifest cannot be rendered from names the naming policy does not
+    classify, and `check` reports those in its own words. The question asked
+    of the values must not turn that finding into a traceback, or into a
+    second finding about a manifest nobody could write."""
+    plan = edited(world, "  assembly: Northwind\n", "  assembly: north_wind\n")
+    result = run_script(ADOPT, "check", "--plan", str(plan))
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert "FINDING naming-unclassified" in result.stderr
+    assert FINDING not in result.stderr
+    assert "Traceback" not in result.stderr
