@@ -974,6 +974,94 @@ def assembly_root_paths() -> tuple[str, ...]:
             *(rel for _, rel in COPIED_FROM_SHAPE), SHAPE_PIN)
 
 
+# ---------------------------------------------------------------------------
+# A leg's mount path overlaps nothing the shape writes (#172, #197)
+# ---------------------------------------------------------------------------
+#
+# `adopt-project.py` asked this first (#172). `--spec-path contracts` is
+# canonical, so #169 passed it, and `execute` made and pushed both legs,
+# mounted one at `contracts`, wrote the shape's `contracts/spec-pin.yaml`
+# INTO the mounted leg, and died staging the split.
+#
+# THE SHAPE HALF OF THAT RULE MOVED HERE, beside the list it reads, because
+# `scaffold-project.py` asks the same question of its own two leg paths
+# (#197), and a second copy of the relation or of the sentence is how two
+# tools start refusing different paths. The half that reads a SOURCE tree, a
+# path an adoption plan keeps in the root, is adopt's alone and stayed there.
+#
+# A mount path is refused when it EQUALS, CONTAINS or LIES INSIDE a path
+# `assembly_root_paths` lists, or the `collision_dir` the caller hands the
+# materializer, compared WITHOUT REGARD TO CASE: a macOS or Windows disk
+# keeps `Scripts` and `scripts` as one directory.
+
+#: Said where an overlap holds only once case is ignored.
+CASE_ASIDE = " once case is ignored, as a macOS or Windows disk does"
+#: The exit every collision has; a root-kept one has a second.
+MOVE_THE_LEG = "choose another path for the leg"
+
+
+def path_overlap(leg: str, other: str) -> tuple[str, str] | None:
+    """How the mount path `leg` stands to the path `other`: `(relation,
+    aside)`, the relation `is`, `contains` or `is inside`, and the aside
+    `CASE_ASIDE` when it holds only once case is ignored. None when the two
+    do not overlap at all."""
+    for mine, theirs, aside in ((leg, other, ""),
+                                (leg.casefold(), other.casefold(), CASE_ASIDE)):
+        if mine == theirs:
+            return "is", aside
+        if theirs.startswith(mine + "/"):
+            return "contains", aside
+        if mine.startswith(theirs + "/"):
+            return "is inside", aside
+    return None
+
+
+def first_and_more(paths: list[str]) -> str:
+    """`a` or `a` and 2 more: one path named, the rest counted."""
+    more = f" and {len(paths) - 1} more" if len(paths) > 1 else ""
+    return f"`{paths[0]}`{more}"
+
+
+def shape_path_collisions(what: str, value: str,
+                          collision_dir: str) -> list[str]:
+    """Where the mount path `value` overlaps what the shape writes.
+
+    One sentence for the paths of `assembly_root_paths` it overlaps, naming
+    the first and counting the rest, and one more for `collision_dir` when
+    it overlaps that. `what` names the value as its caller does
+    (`--spec-path`, `legs.spec_path`).
+
+    `collision_dir` IS THE ONE THE CALLER HANDS `materialize_assembly_root`.
+    `adopt-project.py execute` passes `shape/`: it mounts the legs FIRST and
+    materializes over them, so a shape file at a mount goes into the mounted
+    leg or beside it under that directory, and the sentences name `execute`
+    because it is the caller that passes one.
+    """
+    out: list[str] = []
+    files = [path for path in assembly_root_paths()
+             if path_overlap(value, path)]
+    if files:
+        relation, aside = path_overlap(value, files[0])
+        them = "them" if len(files) > 1 else "it"
+        out.append(
+            f"{what} {value!r} {relation} {first_and_more(files)}{aside}. "
+            f"The shape writes {them} into the assembly root, and `execute` "
+            f"would write {them} into the mounted leg or beside it under "
+            f"`{collision_dir}/`, leaving the root without {them}: "
+            f"{MOVE_THE_LEG}.")
+    beside = path_overlap(value, collision_dir)
+    if beside:
+        relation, aside = beside
+        example = assembly_root_paths()[0]
+        out.append(
+            f"{what} {value!r} {relation} `{collision_dir}`{aside}. `execute` "
+            f"writes there the shape's copy of each of its files the assembly "
+            f"root already holds (`{example}` as "
+            f"`{collision_dir}/{example}`), so the leg's mount and those "
+            f"copies would share it: {MOVE_THE_LEG}.")
+    return out
+
+
 def materialize_family_root(shape_root: Path, target: Path,
                             values: dict[str, str]) -> Materialized:
     """Write the FAMILY-root skeleton into `target`.
