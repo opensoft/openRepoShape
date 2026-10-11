@@ -53,7 +53,10 @@ implementation of it, `templates/family-root/scripts/siblings.py`, and this
 subcommand runs that file rather than a second copy of its logic.
 
 EXIT CODES: 0 done · 1 nothing (a dry run prints and exits 0) · 2 a refusal.
-`siblings` exits with the template script's own code, unchanged.
+`siblings` exits with the template script's own code, unchanged. A `bump` whose
+commit would record nothing — the member is already pinned at `--to`, in the
+gitlink and in `family.yaml` alike — is `nothing`: it says `nothing to do`, as
+`bump-leg.py` does for a leg, and writes no commit.
 """
 
 from __future__ import annotations
@@ -870,6 +873,32 @@ def cmd_add(args) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _nothing_to_record(root: Path, paths: list[str]) -> bool:
+    """Whether `git commit -- <paths>` has nothing to record: the gitlink the
+    member stands at and the manifest as rewritten are what `HEAD` already has.
+
+    ASKED OF GIT, AFTER THE SAME REWRITE THE COMMIT WOULD CARRY (#210), and
+    not read off the pin alone. A row that names `--to` is not by itself a bump
+    with nothing in it: `validate-family.py` names `bump --to <commit>` as the
+    repair for a gitlink that disagrees with the pin and for a digest that does
+    not recompute, and both leave the row's commit equal to `--to`; and so does
+    a bump an earlier run wrote and staged but never committed. In each of
+    them `git diff` finds something, and the commit goes ahead.
+    `--ignore-submodules=dirty` is what `git commit` itself ignores: files the
+    member holds untracked or modified are not a thing this commit records,
+    its HEAD is. Exit 1 is git's "there is a difference"; any other failure is
+    a real one and propagates.
+    """
+    try:
+        run(["git", "diff", "--quiet", "--ignore-submodules=dirty", "HEAD",
+             "--", *paths], cwd=root)
+    except CommandFailed as exc:
+        if exc.code == 1:
+            return False
+        raise
+    return True
+
+
 def cmd_bump(args) -> int:
     family = Family.open(args.family_root)
     project = checked_value("--member", repo_basename(args.member))
@@ -916,7 +945,20 @@ def cmd_bump(args) -> int:
     rows = [(_member_row(project, project_id, str(row["repository"]), commit,
                          digest) if str(r.get("project")) == project else r)
             for r in family.members]
+    original = family.path.read_bytes()
     family.write_members(rows)
+    if _nothing_to_record(family.root, [path, MANIFEST]):
+        # The same sentence `bump-leg.py` answers the same re-run with, and
+        # exit 1, which is what this file's docstring says `nothing` is. The
+        # manifest goes back byte for byte as it was found: the rewrite
+        # recorded nothing, and an uncommitted hand edit it happened to
+        # overwrite is not this run's to discard.
+        family.path.write_bytes(original)
+        print(f"  {project:<16} {was[:12]} -> {commit[:12]} tree "
+              f"{digest[:12]}…")
+        print(f"\nnothing to do: {row['repository']} is already pinned at "
+              f"{commit[:12]} and every fact agrees.")
+        return 1
 
     head = _commit_one(
         family.root,

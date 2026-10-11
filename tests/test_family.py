@@ -636,6 +636,8 @@ def test_bump_moves_the_gitlink_and_the_pin_together(family, tmp_path):
     result = run_script(FAMILY, "bump", "--family-root", str(holder),
                         "--member", "IRRS", "--to", moved)
     assert result.returncode == 0, result.stderr + result.stdout
+    assert "nothing to do" not in result.stdout, (
+        "a bump that moves the pin is not the one #210 made say so")
 
     row = {r["project"]: r for r in manifest(holder)["members"]}["IRRS"]
     assert row["pin"]["commit"] == moved != was["pin"]["commit"]
@@ -663,6 +665,191 @@ def test_bump_refuses_a_tag(holder):
                         "--member", "IRRS", "--to", "v1.0.0")
     assert result.returncode == 2
     assert "member-to-not-a-commit" in result.stderr
+
+
+# --- bump to the commit already pinned (#210) -------------------------------
+
+def nothing_to_do_line(project: str, commit: str) -> str:
+    """The sentence `bump-leg.py` answers the same re-run with, repository
+    first, so a lane or script reads one wording from either tool."""
+    return (f"nothing to do: {ORG}/{project} is already pinned at "
+            f"{commit[:12]} and every fact agrees.")
+
+
+def commit_in_member(member, message: str = "The member moved again") -> str:
+    """An EMPTY commit on top of the member's HEAD: a new commit whose tree is
+    the old one's, so `pin.tree_sha256` still recomputes and the gitlink is the
+    only fact that moves. Returns its sha."""
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
+        "--allow-empty", "-m", message, cwd=member)
+    return git("rev-parse", "HEAD", cwd=member).stdout.strip()
+
+
+@pytest.mark.parametrize("extra", [
+    (), ("--trailer", TRAILERS[0], "--trailer", TRAILERS[1])],
+    ids=["plain", "with-trailers"])
+def test_bump_to_the_commit_already_pinned_is_nothing_to_do(holder, extra):
+    """A re-run of a bump that already landed. It used to check the member out
+    at the commit, rewrite the same row and hand `git commit` nothing, which
+    exited 1 and reached `main` as "REFUSED a git or gh command failed", exit
+    2 — a refusal, where `family.py` documents exit 1 for nothing and
+    `bump-leg.py` answers the same re-run with `nothing to do` (#210).
+
+    NOTHING IS WRITTEN: no commit, no staged path, not one byte of
+    `family.yaml`. A lane re-runs a bump with its `Lane:` and `Co-Authored-By:`
+    trailers, so the run with them is the one that has to read the same.
+    """
+    pinned = git("rev-parse", "HEAD:members/IRRS", cwd=holder).stdout.strip()
+    row = {r["project"]: r for r in manifest(holder)["members"]}["IRRS"]
+    assert row["pin"]["commit"] == pinned, "fixture drift: gitlink != pin"
+    head = git("rev-parse", "HEAD", cwd=holder).stdout.strip()
+    status = git("status", "--porcelain", cwd=holder).stdout
+    before = (holder / "family.yaml").read_bytes()
+
+    result = run_script(FAMILY, "bump", "--family-root", str(holder),
+                        "--member", "IRRS", "--to", pinned, *extra)
+
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert nothing_to_do_line("IRRS", pinned) in result.stdout
+    assert result.stderr == "", (
+        "nothing to do is not a refusal, and says nothing on stderr")
+    assert "REFUSED" not in result.stdout + result.stderr
+    assert "committed" not in result.stdout
+    assert git("rev-parse", "HEAD", cwd=holder).stdout.strip() == head, (
+        "no commit, not even an empty one")
+    assert git("status", "--porcelain", cwd=holder).stdout == status == ""
+    assert (holder / "family.yaml").read_bytes() == before
+    assert validate(holder).returncode == 0
+
+
+def test_bump_to_the_commit_already_pinned_ignores_what_the_member_holds(
+        holder):
+    """The member's own untracked and modified files are not something the
+    holder's commit can record: `git commit` finds nothing to commit with them
+    there, so a bump that asked `git diff` without `--ignore-submodules=dirty`
+    would have gone on to commit and been refused again (#210)."""
+    member = holder / "members" / "IRRS"
+    pinned = git("rev-parse", "HEAD:members/IRRS", cwd=holder).stdout.strip()
+    (member / "UNTRACKED.md").write_text("left lying in the mount\n")
+    (member / "NOTES.md").write_text("edited in place\n")
+    head = git("rev-parse", "HEAD", cwd=holder).stdout.strip()
+
+    result = run_script(FAMILY, "bump", "--family-root", str(holder),
+                        "--member", "IRRS", "--to", pinned)
+
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert nothing_to_do_line("IRRS", pinned) in result.stdout
+    assert git("rev-parse", "HEAD", cwd=holder).stdout.strip() == head
+    assert (member / "UNTRACKED.md").is_file(), "the member's files stay"
+    assert (member / "NOTES.md").read_text() == "edited in place\n"
+
+
+def test_bump_to_the_commit_already_pinned_leaves_an_uncommitted_edit_alone(
+        holder):
+    """The rewrite equals `HEAD`, so there is nothing to record, and what the
+    working copy held before is put back: an uncommitted edit to the `members:`
+    block is not this run's to discard, however wrong it is. `git status` says
+    the same before and after."""
+    pinned = git("rev-parse", "HEAD:members/IRRS", cwd=holder).stdout.strip()
+    manifest_path = holder / "family.yaml"
+    manifest_path.write_text(manifest_path.read_text().replace(
+        "    id: irrs\n", "    id: something-else\n"))
+    edited = manifest_path.read_bytes()
+    status = git("status", "--porcelain", cwd=holder).stdout
+    assert status.strip() == "M family.yaml", status
+
+    result = run_script(FAMILY, "bump", "--family-root", str(holder),
+                        "--member", "IRRS", "--to", pinned)
+
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert nothing_to_do_line("IRRS", pinned) in result.stdout
+    assert manifest_path.read_bytes() == edited
+    assert git("status", "--porcelain", cwd=holder).stdout == status
+
+
+def test_bump_finishes_a_bump_an_earlier_run_staged_and_did_not_commit(holder):
+    """THE MANIFEST ALREADY NAMES `--to`, and there is still something to
+    commit: a run that wrote the row and staged both paths and then died
+    before `git commit` — a hook that refused, a lock — leaves exactly this.
+    Reading `was == --to` as "nothing to do" would call the half-finished bump
+    done and leave the commit for somebody to make by hand (#210)."""
+    member = holder / "members" / "IRRS"
+    before = git("rev-parse", "HEAD:members/IRRS", cwd=holder).stdout.strip()
+    after = commit_in_member(member)
+    manifest_path = holder / "family.yaml"
+    text = manifest_path.read_text()
+    assert text.count(before) == 1, "fixture drift: IRRS's pin is not unique"
+    manifest_path.write_text(text.replace(before, after, 1))
+    git("add", "--", "members/IRRS", "family.yaml", cwd=holder)
+    head = git("rev-parse", "HEAD", cwd=holder).stdout.strip()
+
+    result = run_script(FAMILY, "bump", "--family-root", str(holder),
+                        "--member", "IRRS", "--to", after)
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "nothing to do" not in result.stdout
+    assert git("rev-parse", "HEAD", cwd=holder).stdout.strip() != head
+    assert git("rev-parse", "HEAD:members/IRRS",
+               cwd=holder).stdout.strip() == after
+    assert set(git("show", "--name-only", "--format=", "HEAD",
+                   cwd=holder).stdout.split()) == {"members/IRRS",
+                                                  "family.yaml"}
+    assert validate(holder).returncode == 0
+
+
+def test_bump_to_the_pinned_commit_repairs_a_gitlink_that_moved_alone(holder):
+    """`validate-family.py`'s own remedy for `member-gitlink-mismatch` is
+    `family.py bump --member <Project> --to <commit>`, and when the commit it
+    is pointed at is the one the row already names the manifest agrees with
+    `--to` and the gitlink does not. That is a bump with something to commit
+    (#210)."""
+    member = holder / "members" / "IRRS"
+    pinned = git("rev-parse", "HEAD:members/IRRS", cwd=holder).stdout.strip()
+    commit_in_member(member)
+    git("add", "--", "members/IRRS", cwd=holder)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m",
+        "Move the gitlink and not the pin", cwd=holder)
+    broken = validate(holder)
+    assert broken.returncode == 1
+    assert "member-gitlink-mismatch" in broken.stderr
+
+    result = run_script(FAMILY, "bump", "--family-root", str(holder),
+                        "--member", "IRRS", "--to", pinned)
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "nothing to do" not in result.stdout
+    assert git("rev-parse", "HEAD:members/IRRS",
+               cwd=holder).stdout.strip() == pinned
+    assert validate(holder).returncode == 0, "and the lockstep rule holds"
+
+
+def test_bump_to_the_pinned_commit_repairs_a_digest_that_does_not_recompute(
+        holder):
+    """The other half of the same remedy: a row whose `tree_sha256` is wrong
+    names the commit `--to` names, and the bump rewrites the digest from the
+    member's own objects. Comparing the commit and not the digest would have
+    called it done."""
+    member = holder / "members" / "IRRS"
+    pinned = git("rev-parse", "HEAD:members/IRRS", cwd=holder).stdout.strip()
+    row = {r["project"]: r for r in manifest(holder)["members"]}["IRRS"]
+    manifest_path = holder / "family.yaml"
+    manifest_path.write_text(manifest_path.read_text().replace(
+        row["pin"]["tree_sha256"], "b" * 64))
+    git("add", "--", "family.yaml", cwd=holder)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m",
+        "Hand-edit a digest", cwd=holder)
+    broken = validate(holder)
+    assert broken.returncode == 1
+    assert "member-digest-mismatch" in broken.stderr
+
+    result = run_script(FAMILY, "bump", "--family-root", str(holder),
+                        "--member", "IRRS", "--to", pinned)
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "nothing to do" not in result.stdout
+    repaired = {r["project"]: r for r in manifest(holder)["members"]}["IRRS"]
+    assert repaired["pin"]["tree_sha256"] == tree_digest(member, pinned)
+    assert validate(holder).returncode == 0
 
 
 # --- --trailer: the lines a bump's commit ends with (#111) ------------------
