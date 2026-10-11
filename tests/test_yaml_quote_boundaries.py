@@ -16,6 +16,17 @@ text, so an unclosed `"abc` read as `"abc`, `- "a\\"` as `a\\`, and
 `"a" b "c"` as `a" b "c` (#250). Each is now a `YamlError` by name, which
 `load_yaml` turns into `REFUSED yaml-unparsable`.
 
+A `[` OR `{` LATER IN A KEY IS REFUSED BY NAME. `_split_key` has always
+taken a `[` or `{` for "this is a flow collection, not a key". On 150c41d a
+quote toggle hid it from that rule when the key held a quote pair, so
+`note "[1]": x` read as a mapping entry; reading quotes only where a scalar
+begins lets the rule see the bracket, and the entry would have stopped being
+one. YAML reads the key `note "[1]"`, and `- a[b]: c` the key `a[b]`, but
+`_split_key` would have to tell a block key from a flow-entry key to read
+them, so it refuses them rather than read a mapping as the string
+`'a[b]: c'`. A `[` or `{` that OPENS the text still makes a flow item
+(`- [a, b]`, `- {a: b}`).
+
 Every expected read below is PyYAML 6.0.3's, and every refused document is
 one PyYAML refuses, except `k: "a"#c`: PyYAML reads `a`, but YAML requires a
 space before a comment, and the subset refuses rather than guess. PyYAML is
@@ -64,6 +75,12 @@ QUOTE_IN_A_PLAIN_SCALAR = [
                  id="block-comma-is-not-a-flow-separator"),
     pytest.param("k: a[b, 'c # d']", {"k": "a[b, 'c"},
                  id="block-bracket-mid-scalar-opens-no-flow"),
+    # A `:` opens a quoted scalar only with a space or the end after it, so
+    # in `a:'b` the `'` opens nothing and `a:'b` is one plain item.
+    pytest.param("k: [a:'b, c']", {"k": ["a:'b", "c'"]},
+                 id="flow-colon-with-no-space-opens-no-quote"),
+    pytest.param("k: a:'b # c'", {"k": "a:'b"},
+                 id="block-colon-with-no-space-opens-no-quote"),
 ]
 
 
@@ -161,6 +178,69 @@ STILL_READ = [
 @pytest.mark.parametrize("text, expected", STILL_READ)
 def test_a_whole_quoted_scalar_still_reads(text, expected):
     assert parse_yaml(text + "\n") == expected
+
+
+#: A `[` or `{` LATER in a key, before its `: `. PyYAML reads every block one
+#: of these as a key; `_split_key` refuses it by name instead of returning
+#: `None`, which made `- a[b]: c` the string `'a[b]: c'`.
+BRACKET_IN_A_KEY = [
+    pytest.param('- note "[1]": x', id="item-quote-pair-around-a-bracket"),
+    pytest.param('note "[1]": x', id="entry-quote-pair-around-a-bracket"),
+    pytest.param("- a[b]: c", id="item-bracket"),
+    pytest.param("a[b]: c", id="entry-bracket"),
+    pytest.param("k:\n  - a{b}: c", id="nested-item-brace"),
+    pytest.param("- - a[b]: c", id="item-in-an-item"),
+    pytest.param("- x {y}: z", id="item-brace-after-a-space"),
+    pytest.param("k: {a[b]: c}", id="flow-mapping-entry"),
+]
+
+
+@pytest.mark.parametrize("text", BRACKET_IN_A_KEY)
+def test_a_bracket_or_brace_later_in_a_key_is_refused_by_name(text):
+    with pytest.raises(YamlError,
+                       match=r"a key holding `\[` or `\{` is not supported"):
+        parse_yaml(text + "\n")
+
+
+def test_the_refusal_quotes_the_key_it_names():
+    with pytest.raises(YamlError, match=r"""supported: 'note "\[1\]"'$"""):
+        parse_yaml('- note "[1]": x\n')
+    with pytest.raises(YamlError, match=r"supported: 'a\[b\]'$"):
+        parse_yaml("a[b]: c\n")
+
+
+#: What the refusal must NOT take: a `[` or `{` that OPENS the text is a flow
+#: collection, one after the `: ` belongs to the value, and one in a scalar
+#: with no `: ` after it makes no key.
+BRACKETS_THAT_ARE_NOT_IN_A_KEY = [
+    pytest.param("- [a, b]", [["a", "b"]], id="flow-sequence-item"),
+    pytest.param("- {a: b}", [{"a": "b"}], id="flow-mapping-item"),
+    pytest.param("k:\n  - [a, b]\n  - {c: d}", {"k": [["a", "b"], {"c": "d"}]},
+                 id="flow-items-under-a-key"),
+    pytest.param("- a: [b]", [{"a": ["b"]}], id="flow-value-of-an-item"),
+    pytest.param("- a: {b: [c]}", [{"a": {"b": ["c"]}}],
+                 id="nested-flow-value-of-an-item"),
+    pytest.param("k: a[b]", {"k": "a[b]"}, id="bracket-in-a-value"),
+    pytest.param("- see [1]", ["see [1]"], id="item-bracket-and-no-colon"),
+]
+
+
+@pytest.mark.parametrize("text, expected", BRACKETS_THAT_ARE_NOT_IN_A_KEY)
+def test_a_bracket_that_is_not_in_a_key_still_reads(text, expected):
+    assert parse_yaml(text + "\n") == expected
+
+
+def test_a_refused_bracket_key_in_a_file_names_the_key(tmp_path):
+    """Read from a file, the way every caller reads one. Bytes, so the file
+    is LF on every platform."""
+    path = tmp_path / "family.yaml"
+    path.write_bytes(b'members:\n  - note "[1]": x\n')
+    with pytest.raises(Refusal) as caught:
+        load_yaml(path)
+    assert caught.value.code == "yaml-unparsable"
+    assert str(path) in caught.value.detail
+    assert """a key holding `[` or `{` is not supported: 'note "[1]"'""" \
+        in caught.value.detail
 
 
 @pytest.mark.parametrize("value", [

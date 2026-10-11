@@ -279,11 +279,25 @@ def _strip_comment(text: str) -> str:
 
 def _split_key(text: str) -> tuple[str, str] | None:
     """Split `key: rest` on the first `:` followed by space or EOL that no
-    quoted scalar holds (`_unquoted`)."""
+    quoted scalar holds (`_unquoted`).
+
+    A `[` OR `{` THAT OPENS THE TEXT makes it a flow collection, which is not
+    a key in this subset, so `- [a, b]` and `- {a: b}` stay flow items. One
+    LATER IN A KEY, before its `: `, is REFUSED by name: YAML reads
+    `a[b]: c` as the key `a[b]`, but a block key and a flow-entry key would
+    have to be told apart to read it, and returning `None` made `- a[b]: c`
+    the string `'a[b]: c'` where a mapping was meant (#249).
+    """
+    bracket = False
     for i, ch in _unquoted(text):
         if ch in "[{":
-            return None  # a flow collection cannot be a key in this subset
-        if ch == ":" and (i + 1 == len(text) or text[i + 1] in " \t"):
+            if not text[:i].strip():
+                return None  # a flow collection cannot be a key in this subset
+            bracket = True
+        elif ch == ":" and (i + 1 == len(text) or text[i + 1] in " \t"):
+            if bracket:
+                raise YamlError("a key holding `[` or `{` is not supported: "
+                                f"{text[:i].strip()!r}")
             return _unquote_key(text[:i].strip()), text[i + 1:].strip()
     return None
 
