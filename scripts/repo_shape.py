@@ -320,28 +320,34 @@ def _flow(text: str) -> Any:
 
 
 def _split_key_flow(text: str) -> tuple[str, str] | None:
-    """`_split_key` for a flow-mapping entry, where the value MAY open a flow."""
-    quote = None
-    for i, ch in enumerate(text):
-        if quote:
-            if ch == quote:
-                quote = None
-            continue
-        if ch in "\"'":
-            quote = ch
-        elif ch in "[{":
-            return None
-        elif ch == ":" and (i + 1 == len(text) or text[i + 1] in " \t"):
-            return _unquote_key(text[:i].strip()), text[i + 1:].strip()
-    return None
+    """`_split_key` for a flow-mapping entry, where the value MAY open a flow.
+
+    IT IS `_split_key`, and not a second scanner, because it used to be one:
+    the same loop spelled again, minus the step that skips the character
+    after a backslash inside double quotes, so `{"a\\": b": 1}` read as the
+    key `a\\` (#213). `_split_key` already lets the value open a flow -- it
+    returns at the first top-level `:`, before any `[` or `{` after it.
+    """
+    return _split_key(text)
 
 
 def _split_flow(body: str) -> list[str]:
+    """A flow collection's body, split at its top-level commas.
+
+    Inside a DOUBLE-quoted item the character after a backslash is taken
+    with it, as `_strip_comment` and `_split_key` take it, so `\\"` neither
+    ends the item nor lets a `,` or `]` after it read as structure (#213). A
+    single-quoted item has no backslash escape: its `''` is two quotes, and
+    the toggle reads it.
+    """
     parts, depth, quote, cur = [], 0, None, []
-    for ch in body:
+    chars = iter(body)
+    for ch in chars:
         if quote:
             cur.append(ch)
-            if ch == quote:
+            if ch == "\\" and quote == '"':
+                cur.append(next(chars, ""))
+            elif ch == quote:
                 quote = None
             continue
         if ch in "\"'":
