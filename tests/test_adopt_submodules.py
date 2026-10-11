@@ -151,6 +151,10 @@ def clone_assembly(source: Path, tmp_path: Path) -> Path:
     return assembly
 
 
+#: The source submodule the mount tests send to the code leg.
+MOVED = "upstream/moved"
+
+
 @pytest.fixture
 def mount_world(tmp_path):
     """A factory for the real Git mount boundary: `build(registered, tree)`.
@@ -164,7 +168,7 @@ def mount_world(tmp_path):
     adopter = importlib.util.module_from_spec(module_spec)
     module_spec.loader.exec_module(adopter)
 
-    def build(registered=("upstream/kept", "upstream/moved"), tree=None):
+    def build(registered=("upstream/kept", MOVED), tree=None):
         dependency = make_source_repo(tmp_path / "dependency",
                                       tree={"value.txt": "dependency\n"},
                                       edits=())
@@ -201,14 +205,15 @@ def test_mount_preserves_registration_kept_in_assembly(mount_fixture,
     root` findings and an `execute` refusal before the mount is reached, and
     #168 refuses every other finding of `check` there too. Should such a
     plan slip past both, the mount still appends its two legs to the
-    registrations it finds rather than replacing them.
+    registrations it finds rather than replacing them, and the verification
+    still fails the root it leaves (the next test).
     """
     adopter, source, work, names, urls = mount_fixture
     assembly = clone_assembly(source, tmp_path)
     kept = git("rev-parse", "HEAD:upstream/kept", cwd=source).stdout.strip()
     adopter._mount_the_legs(
         assembly, work, names, urls,
-        {"spec": [], "code": ["upstream/moved"], "drop": []}, "spec", "code")
+        {"spec": [], "code": [MOVED], "drop": []}, "spec", "code")
     assert registrations(assembly) == [
         "submodule.code.path code", "submodule.spec.path spec",
         "submodule.upstream/kept.path upstream/kept"]
@@ -218,6 +223,37 @@ def test_mount_preserves_registration_kept_in_assembly(mount_fixture,
               "submodule.upstream/kept.url", cwd=assembly).stdout.strip()
     # A Path comparison: Git writes forward slashes, Windows backslashes.
     assert Path(url) == source.parent / "dependency"
+
+
+def test_the_root_that_mount_leaves_never_verifies(mount_fixture, tmp_path):
+    """The other half of that defence: the root the mount above leaves fails
+    verification, on `upstream/kept` itself and on the source `.gitmodules`
+    it appended the legs to (#165). Asked of the root tree the mount
+    staged, with nothing but `git` involved, so it runs where `git
+    filter-repo` is absent too."""
+    adopter, source, work, names, urls = mount_fixture
+    assembly = clone_assembly(source, tmp_path)
+    adopter._mount_the_legs(
+        assembly, work, names, urls,
+        {"spec": [], "code": [MOVED], "drop": []}, "spec", "code")
+    staged = git("write-tree", cwd=assembly).stdout.strip()
+    before = {path: oid for path, _, oid, _
+              in adopter._tree_of(source, "HEAD")}
+    after: dict = {}
+    mounts = {"spec": "spec", "code": "code"}
+    found = adopter._land_the_root_tree(
+        after, adopter._tree_of(assembly, staged), before, mounts)
+    assert [line.split(":", 1)[0] for line in found] == [
+        "FINDING adopt-root-submodule"], found
+    assert found[0].startswith(
+        "FINDING adopt-root-submodule: upstream/kept is a gitlink to "
+        f"{before['upstream/kept'][:12]} in the root tree, the source's own "
+        "submodule at its own commit")
+    _, lost = adopter._account_for({GITMODULES: before[GITMODULES]}, after,
+                                   [])
+    assert lost == [f"FINDING adopt-lost: {GITMODULES} "
+                    f"({before[GITMODULES][:12]}) is in no leg, not in the "
+                    "root tree, and not listed as drop"]
 
 
 def test_failed_mount_does_not_poison_a_fresh_clone(mount_fixture, tmp_path):
@@ -241,7 +277,7 @@ def test_failed_mount_does_not_poison_a_fresh_clone(mount_fixture, tmp_path):
 
 @pytest.mark.parametrize("registered, moved", [
     ((), []),
-    (("upstream/moved",), [".gitmodules", "upstream/"]),
+    ((MOVED,), [".gitmodules", "upstream/"]),
 ], ids=["source-has-no-submodules", "source-registry-moved-to-a-leg"])
 def test_mount_stages_gitmodules_past_a_gitignore_that_hides_it(
         mount_world, tmp_path, registered, moved):

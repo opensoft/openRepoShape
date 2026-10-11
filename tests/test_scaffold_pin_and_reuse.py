@@ -462,13 +462,19 @@ def test_a_branch_name_that_is_a_git_option_is_refused(tmp_path):
 
 
 def test_a_leg_path_with_a_shell_metacharacter_is_refused(tmp_path):
+    """The leg paths are asked the leg-path question first (#179), as adopt's
+    are, so the code is `scaffold-bad-leg-path` and no longer `unsafe-value`;
+    the sentence is `checked_value`'s own, and nothing is created."""
     result = run_script(SCAFFOLD, "--org", ORG, "--project", PROJECT,
                         "--elected-by", "Test Human",
                         "--spec-path", "spec; rm -rf ~",
                         "--local-remote-dir", str(tmp_path / "remotes"),
                         "--work-dir", str(tmp_path / "work"))
     assert result.returncode == 2
-    assert "unsafe-value" in result.stderr
+    assert "REFUSED scaffold-bad-leg-path" in result.stderr
+    assert ("--spec-path is 'spec; rm -rf ~', which is not a value this tool "
+            "will put on a `git` or `gh` command line") in result.stderr
+    assert not (tmp_path / "remotes").exists()
 
 
 # --- --pin: a NEUTRAL PRODUCT root that pins another neutral product -------
