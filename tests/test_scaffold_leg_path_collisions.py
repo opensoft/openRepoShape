@@ -18,6 +18,13 @@ whatever the case, before anything is created, and `--dry-run` refuses it
 too. The scaffold hands the materializer no collision directory, so adopt's
 `shape/` is not on its list.
 
+A `--pin` adds a path: the materializer writes each declared pin at
+`neutral_pin_path(product)`, `contracts/openglass-pin.yaml` for `openGlass`.
+The refusal first asked about a list with no pin in it, so a leg on that file
+planned and then made three repositories (#197's review, S1). The scaffold now
+asks about `assembly_root_paths(<its --pin products>)`, the list the
+materializer writes for that run.
+
 Most tests call `main()` in this process with every process start refused,
 which shows the refusal comes before git, before `gh` and before the work
 directory. The end-to-end tests run the script against a local remote
@@ -26,6 +33,7 @@ directory, and one of them puts a recording `gh` on PATH.
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import os
 import stat
@@ -43,6 +51,7 @@ sys.path.insert(0, str(REPO / "scripts"))
 import shape_materialize  # noqa: E402
 from shape_materialize import (  # noqa: E402
     CASE_ASIDE, PLACEHOLDER_RE, assembly_root_paths, materialize_assembly_root,
+    neutral_pin_path,
 )
 
 PROJECT = "Northwind"
@@ -60,6 +69,11 @@ SCAFFOLD_SAYS = ("The shape writes {them} into the assembly root before the "
 REMEDIATION_ENDS = "The defaults `spec` and `code` pass."
 BASE_ARGS = ("--org", ORG, "--project", PROJECT, "--elected-by", "Test Human",
              "--elected-on", "2026-09-02")
+#: The file `--pin openGlass@<sha>` writes beside the manifest, spelled out
+#: here so the tests say what `neutral_pin_path` must return.
+GLASS_PIN = "contracts/openglass-pin.yaml"
+#: A commit for a `--pin` the refusal comes before: nothing reads its digest.
+ANY_COMMIT = "1" * 40
 
 #: `(role, value, relation, what it names)`: a directory the shape writes
 #: into, at the top and nested, and a path beyond a FILE it writes. A path
@@ -94,10 +108,24 @@ CASE_ONLY = [
 #: of a file the source already holds there; the scaffold writes nothing
 #: there, because it hands the materializer no collision directory. `code`
 #: is not here: beside the default it is two legs at one path, which is
-#: #179's refusal, not this one's.
+#: #179's refusal, not this one's. `GLASS_PIN` is clear WITHOUT a `--pin`:
+#: nothing writes it then, and it lies inside a directory the shape writes
+#: into, as `contracts/spec` does.
 CLEAR = ["spec", "legs/spec", "legs/.github", "scripts/spec",
          "contracts/spec", ".github/spec", "Scripts/x", "project", "README",
-         "Makefile.d/code", "shape", "shape/spec"]
+         "Makefile.d/code", "shape", "shape/spec", GLASS_PIN]
+
+#: `(value, relation, aside)` with `--pin openGlass@<sha>`: the pin's file,
+#: a path beyond it, and the file with capitals in the way. The overlap is a
+#: question about two strings, never about a disk, so the aside is said on
+#: every platform: a case-insensitive disk would meet the pin there, and a
+#: case-sensitive one would keep two paths that no other disk can.
+PINNED = [
+    pytest.param(GLASS_PIN, "is", "", id="the-pin-file"),
+    pytest.param(f"{GLASS_PIN}/x", "is inside", "", id="beyond-the-pin-file"),
+    pytest.param("Contracts/OpenGlass-pin.yaml", "is", CASE_ASIDE,
+                 id="the-pin-file-capitals"),
+]
 
 #: The issue's reproductions, and the two more found probing it: each made
 #: three repositories on main, and the last of them made a broken project.
@@ -127,6 +155,28 @@ def adopter():
     module = importlib.util.module_from_spec(module_spec)
     module_spec.loader.exec_module(module)
     return module
+
+
+@pytest.fixture(scope="module")
+def glass(tmp_path_factory):
+    """A local stand-in for `openGlass` and its commit, for `--pin-source`:
+    a pinned run that gets past the refusal reads the pin's digest here."""
+    path = tmp_path_factory.mktemp("glass") / "openGlass"
+    path.mkdir()
+    git("init", "-q", "-b", "main", cwd=path)
+    (path / "README.md").write_text("# openGlass\n", encoding=UTF8)
+    git("add", "-A", cwd=path)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "seed",
+        cwd=path)
+    return path, git("rev-parse", "HEAD", cwd=path).stdout.strip()
+
+
+def pinned(glass, *products: str) -> tuple[str, ...]:
+    """`--pin <product>@<commit>` for each product, read from `glass`."""
+    source, commit = glass
+    pins = [arg for product in products
+            for arg in ("--pin", f"{product}@{commit}")]
+    return (*pins, "--pin-source", str(source))
 
 
 class ProcessStarted(AssertionError):
@@ -226,6 +276,45 @@ def test_a_path_that_overlaps_nothing_the_scaffold_writes_plans(
     assert "--dry-run: nothing was created." in out
 
 
+# --- a `--pin`'s file is a path the shape writes ----------------------------
+
+@pytest.mark.parametrize("role", ROLES)
+@pytest.mark.parametrize("value, relation, aside", PINNED)
+def test_a_pin_file_is_refused_as_either_leg(
+        scaffold, glass, no_process, capsys, role, value, relation, aside):
+    """With `--pin openGlass@<sha>` the shape writes `GLASS_PIN`, so a leg
+    there is refused in the words every shape path gets, before the pin's
+    digest is read from the `--pin-source`, and the remediation lists it."""
+    err = refusal_of(scaffold, capsys, f"--{role}-path", value,
+                     *pinned(glass, "openGlass"))
+    assert err.startswith(
+        f"{REFUSED}: --{role}-path {value!r} {relation} `{GLASS_PIN}`{aside}. "
+        f"{says('it')}\n"), err
+    remediation = err.split("\n", 1)[1]
+    assert ("(" + ", ".join(f"`{path}`"
+                            for path in assembly_root_paths(["openGlass"]))
+            + ")") in remediation
+
+
+def test_every_pin_s_file_is_refused_and_counted(scaffold, glass, no_process,
+                                                 capsys):
+    """A second `--pin` writes a second file, named by its product alone as
+    the materializer names it, owner or not, and `contracts` then holds two
+    more of the shape's paths."""
+    pins = pinned(glass, "openGlass", "ExplicitOwner/openPane")
+    err = refusal_of(scaffold, capsys, "--spec-path",
+                     "contracts/openpane-pin.yaml", "--code-path", GLASS_PIN,
+                     *pins)
+    assert err.split("\n", 1)[0] == (
+        f"{REFUSED}: --spec-path 'contracts/openpane-pin.yaml' is "
+        f"`contracts/openpane-pin.yaml`. {says('it')} "
+        f"--code-path {GLASS_PIN!r} is `{GLASS_PIN}`. {says('it')}")
+    err = refusal_of(scaffold, capsys, "--spec-path", "contracts", *pins)
+    assert err.startswith(
+        f"{REFUSED}: --spec-path 'contracts' contains "
+        f"`contracts/spec-pin.yaml` and 5 more. {says('them')}\n"), err
+
+
 # --- one definition, asked by both tools -------------------------------------
 
 def test_both_tools_ask_the_one_definition(adopter, scaffold):
@@ -242,29 +331,34 @@ def test_both_tools_ask_the_one_definition(adopter, scaffold):
     assert adopter._first_and_more is shape_materialize.first_and_more
     assert adopter.MOVE_THE_LEG is shape_materialize.MOVE_THE_LEG
     assert not hasattr(adopter, "CASE_ASIDE"), "a second CASE_ASIDE in adopt"
+    assert scaffold.neutral_pin_path is shape_materialize.neutral_pin_path
+    assert neutral_pin_path("openGlass") == GLASS_PIN
 
 
 def test_both_tools_refuse_through_it(adopter, scaffold, no_process, capsys,
                                       monkeypatch):
-    """And both CALL it, each with the collision directory it hands the
-    materializer: adopt `shape`, the scaffold none."""
+    """And both CALL it, each with the collision directory and the pins it
+    hands the materializer: adopt `shape` and none, the scaffold none and
+    its `--pin` products."""
     asked = []
 
-    def spy(what, value, collision_dir=None):
-        asked.append((what, value, collision_dir))
+    def spy(what, value, collision_dir=None, *, neutral_pins=()):
+        asked.append((what, value, collision_dir, tuple(neutral_pins)))
         return [f"{what} {value!r} spied."]
 
     monkeypatch.setattr(adopter, "shape_path_collisions", spy)
     monkeypatch.setattr(scaffold, "shape_path_collisions", spy)
     assert adopter.leg_path_collisions((("--spec-path", "x"),)) == [
         "--spec-path 'x' spied."]
-    code = scaffold.main([*BASE_ARGS, "--dry-run", "--spec-path", "y"])
+    code = scaffold.main([*BASE_ARGS, "--dry-run", "--spec-path", "y",
+                          "--pin", f"openGlass@{ANY_COMMIT}"])
     err = capsys.readouterr().err
     assert code == 2
     assert err.startswith(f"{REFUSED}: --spec-path 'y' spied. "
                           "--code-path 'code' spied.\n")
-    assert asked == [("--spec-path", "x", adopter.COLLISION_DIR),
-                     ("--spec-path", "y", None), ("--code-path", "code", None)]
+    assert asked == [("--spec-path", "x", adopter.COLLISION_DIR, ()),
+                     ("--spec-path", "y", None, ("openGlass",)),
+                     ("--code-path", "code", None, ("openGlass",))]
 
 
 @pytest.mark.parametrize("path", assembly_root_paths())
@@ -281,29 +375,107 @@ def test_both_tools_name_the_same_overlap(adopter, scaffold, no_process,
         shape_materialize.shape_path_collisions("--spec-path", path))
 
 
+def test_adopt_still_says_what_execute_would_write(adopter):
+    """The tail the shared sentence takes for adopt, which the comparison
+    above stops short of, word for word (#197's review, N3)."""
+    said, = adopter.leg_path_collisions((("--spec-path", "project.yaml"),))
+    assert said == (
+        "--spec-path 'project.yaml' is `project.yaml`. The shape writes it "
+        "into the assembly root, and `execute` would write it into the "
+        "mounted leg or beside it under `shape/`, leaving the root without "
+        "it: choose another path for the leg.")
+
+
+@pytest.mark.parametrize("products", [
+    pytest.param((), id="no-pin"),
+    pytest.param(("openGlass",), id="one-pin"),
+    pytest.param(("openGlass", "openPane"), id="two-pins"),
+])
 def test_the_paths_refused_are_the_paths_the_materializer_writes(
-        scaffold, no_process, capsys, tmp_path):
+        scaffold, no_process, capsys, tmp_path, products):
     """NO SECOND LIST. Materialized into an empty directory, as
-    `_build_assembly_root` does, the root holds exactly
-    `assembly_root_paths()`: every file is refused as a leg path, and so is
-    every directory they are written into."""
+    `_build_assembly_root` does, with each pin handed over as it hands them,
+    the root holds exactly `assembly_root_paths(products)`, in the order
+    written: every file is refused as a leg path once the same `--pin`s are
+    passed, and so is every directory they are written into."""
     template = REPO / "templates" / "assembly-root"
     values = {name[2:-2]: "x" for path in template.rglob("*") if path.is_file()
               for name in PLACEHOLDER_RE.findall(path.read_text(UTF8))}
     root = tmp_path / "root"
     root.mkdir()
-    materialize_assembly_root(REPO, root, values)
+    materialized = materialize_assembly_root(
+        REPO, root, values, neutral_pins={product: {} for product in products})
     files = [path for path in listing(root) if (root / path).is_file()]
     directories = [path for path in listing(root) if (root / path).is_dir()]
-    assert sorted(files) == sorted(assembly_root_paths())
+    assert tuple(materialized.written) == assembly_root_paths(products)
+    assert sorted(files) == sorted(assembly_root_paths(products))
+    assert {neutral_pin_path(product) for product in products} <= set(files)
     assert directories, "the shape writes into directories, too"
+    pins = [arg for product in products
+            for arg in ("--pin", f"{product}@{ANY_COMMIT}")]
     for path in files:
-        err = refusal_of(scaffold, capsys, "--spec-path", path)
+        err = refusal_of(scaffold, capsys, "--spec-path", path, *pins)
         assert err.startswith(f"{REFUSED}: --spec-path {path!r} is `{path}`.")
     for path in directories:
-        err = refusal_of(scaffold, capsys, "--code-path", path)
+        err = refusal_of(scaffold, capsys, "--code-path", path, *pins)
         assert err.startswith(
             f"{REFUSED}: --code-path {path!r} contains `{path}/"), err
+
+
+def test_the_products_asked_about_are_the_ones_the_materializer_gets(
+        scaffold, glass):
+    """The refusal reads each `--pin`'s product before any digest exists,
+    and `_build_assembly_root` hands the materializer `declared_pin_values`:
+    the same products in the same order, an owner and a repeat included."""
+    source, commit = glass
+    args = argparse.Namespace(
+        pin=[f"openGlass@{commit}", f"ExplicitOwner/openPane@{commit}",
+             f"openGlass@{commit}"],
+        pin_owner="opensoft", pin_source=source)
+    products = scaffold.declared_pin_products(args)
+    assert list(products) == list(scaffold.declared_pin_values(args))
+    assert list(products) == ["openGlass", "openPane"]
+
+
+# --- the order: before `_identity` and before `_declaration` ----------------
+
+def test_the_refusal_comes_before_git_is_asked_who_elected(
+        scaffold, no_process, capsys, monkeypatch):
+    """Without `--elected-by`, `_identity` asks `git config user.name`; the
+    control shows it, so the refusal that starts no process came before it
+    (#197's review, N3). `GIT_AUTHOR_NAME` answers first when it is set, and
+    CI sets it, so it is unset here."""
+    monkeypatch.delenv("GIT_AUTHOR_NAME", raising=False)
+    unelected = ["--org", ORG, "--project", PROJECT,
+                 "--elected-on", "2026-09-02", "--dry-run"]
+    with pytest.raises(ProcessStarted, match="user.name"):
+        scaffold.main(unelected)
+    code = scaffold.main([*unelected, "--spec-path", "contracts"])
+    out, err = capsys.readouterr()
+    assert (code, out) == (2, ""), err
+    assert err.startswith(f"{REFUSED}: --spec-path 'contracts' contains "), err
+
+
+def test_the_refusal_comes_before_the_declaration_is_read(
+        scaffold, no_process, capsys, monkeypatch):
+    """`_declaration` reads each `--pin`'s digest, with `gh api` when no
+    `--pin-source` is given. The `gh` stub below shows `gh` never runs, on
+    POSIX only; this shows on every platform that `_declaration` is never
+    called (#197's review, N3), and the control that the same command line
+    reaches it once nothing collides."""
+    called = []
+
+    def declaration(args):
+        called.append(list(args.pin))
+        return {}, set(), (), {}
+
+    monkeypatch.setattr(scaffold, "_declaration", declaration)
+    asks_gh = ("--pin", f"openGlass@{ANY_COMMIT}", "--reuse-empty-repo")
+    refusal_of(scaffold, capsys, "--spec-path", "contracts", *asks_gh)
+    assert called == []
+    with pytest.raises(ProcessStarted):
+        scaffold.main([*BASE_ARGS, "--dry-run", *asks_gh])
+    assert called == [[f"openGlass@{ANY_COMMIT}"]]
 
 
 # --- end to end -------------------------------------------------------------
@@ -350,6 +522,31 @@ def test_the_real_run_refuses_before_anything_exists(tmp_path, flag, value):
     assert "creating remotes" not in result.stdout
     assert listing(remotes) == before == ["KEEP"]
     assert list(temporary.iterdir()) == [], "no work directory was made"
+
+
+def test_a_pinned_run_refuses_before_anything_exists(tmp_path, glass):
+    """On #197's first head this dry run said yes and the real run made
+    three repositories. The control reads the pin from the local
+    `--pin-source` and plans its file; with a leg on that file the dry run
+    and the real run say the same no, and nothing exists afterwards."""
+    remotes, work = tmp_path / "remotes", tmp_path / "work"
+    remotes.mkdir()
+    (remotes / "KEEP").write_text("here before the run\n", encoding=UTF8)
+    args = (*BASE_ARGS, *pinned(glass, "openGlass"),
+            "--local-remote-dir", str(remotes), "--work-dir", str(work))
+    control = run_script(SCAFFOLD, *args, "--dry-run")
+    assert control.returncode == 0, control.stdout + control.stderr
+    assert f"-> {GLASS_PIN} (local-clone (" in control.stdout
+    dry = run_script(SCAFFOLD, *args, "--spec-path", GLASS_PIN, "--dry-run")
+    real = run_script(SCAFFOLD, *args, "--spec-path", GLASS_PIN)
+    assert (dry.returncode, real.returncode) == (2, 2), (
+        dry.stdout + dry.stderr + real.stdout + real.stderr)
+    assert dry.stderr == real.stderr
+    assert dry.stdout == real.stdout == ""
+    assert real.stderr.startswith(
+        f"{REFUSED}: --spec-path {GLASS_PIN!r} is `{GLASS_PIN}`. ")
+    assert listing(remotes) == ["KEEP"]
+    assert not work.exists()
 
 
 @WINDOWS_SKIP  # the stub `gh` is a `#!` script; Windows executes none

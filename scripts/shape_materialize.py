@@ -206,7 +206,7 @@ TEMPLATED = (
     # copies above after they have been written.
 )
 #: Rendered only when the project DECLARES a neutral-product pin, and written
-#: once per declared pin as `contracts/<product lowercased>-pin.yaml`.
+#: once per declared pin at `neutral_pin_path(product)`.
 NEUTRAL_PIN_TEMPLATE = "contracts/neutral-product-pin.yaml"
 EXECUTABLE = ("scripts/validate-pins.py", "scripts/validate-manifest.py",
               BOOTSTRAP, VALIDATE_NAMING)
@@ -214,6 +214,23 @@ EXECUTABLE = ("scripts/validate-pins.py", "scripts/validate-manifest.py",
 #: Named once because `assembly_root_paths` lists it beside the lists above,
 #: and a second spelling is how that list would stop matching what is written.
 SHAPE_PIN = "contracts/shape-pin.yaml"
+
+
+def neutral_pin_path(product: str) -> str:
+    """Where a declared neutral-product pin is written: `contracts/<product
+    lowercased>-pin.yaml`, `contracts/openglass-pin.yaml` for `openGlass`.
+
+    SPELLED ONCE, for `SHAPE_PIN`'s reason (#197). `_materialize` writes the
+    pin here, `assembly_root_paths` lists it for a call that declares one,
+    and `scaffold-project.py` refuses a leg path over it from that list. The
+    refusal first read a list with no pin in it, so `--pin openGlass@<sha>
+    --spec-path contracts/openglass-pin.yaml` planned under `--dry-run`, then
+    created all three repositories and died at `git submodule add`. The
+    validators a project carries spell it again: they ship into the project
+    and import nothing from here.
+    """
+    return f"contracts/{product.lower()}-pin.yaml"
+
 
 # ---------------------------------------------------------------------------
 # The FAMILY root's own lists (2026-09-04)
@@ -1024,7 +1041,7 @@ def descendant_note(policy: NamingPolicy, name: str, role: str,
                 f"descendant because {found.referent.reason}")
     return (f"NOTE {name} also matches the descendant form; it is not a "
             f"descendant because no pin on {referent} is declared — declare "
-            f"`contracts/{referent.lower()}-pin.yaml` later if it becomes one, "
+            f"`{neutral_pin_path(referent)}` later if it becomes one, "
             f"or record the chain that reaches it")
 
 
@@ -1071,21 +1088,28 @@ def materialize_assembly_root(shape_root: Path, target: Path,
         collision_dir=collision_dir, append=append, neutral_pins=neutral_pins)
 
 
-def assembly_root_paths() -> tuple[str, ...]:
+def assembly_root_paths(neutral_pins=()) -> tuple[str, ...]:
     """Every path `materialize_assembly_root` writes when nothing is in the
-    way and no neutral-product pin is declared, in the order it writes them.
+    way, in the order it writes them. `neutral_pins` names the products of
+    the `neutral_pins` that call is handed (iterating that mapping yields
+    them); with none, no neutral-product pin is declared.
 
-    READ FROM THE LISTS THAT CALL HANDS `_materialize`, plus the pin it
-    writes last, never kept by hand: `adopt-project.py` refuses a leg mount
-    path that overlaps one of these (#172), and a second list would let the
-    shape gain a file the refusal does not know about. `EXECUTABLE` adds no
-    path (it marks paths the lists already write), and a collision moves a
-    path under the caller's `collision_dir`, which is the caller's to name.
-    `tests/test_adopt_leg_path_collisions.py` materializes into an empty
-    directory and holds this to what was written.
+    READ FROM THE LISTS THAT CALL HANDS `_materialize`, plus the file each
+    declared pin is written to (`neutral_pin_path`) and the pin it writes
+    last, never kept by hand: `adopt-project.py` (#172) and
+    `scaffold-project.py` (#197) refuse a leg mount path that overlaps one of
+    these, and a second list would let the shape gain a file the refusal
+    does not know about. `EXECUTABLE` adds no path (it marks paths the lists
+    already write), and a collision moves a path under the caller's
+    `collision_dir`, which is the caller's to name.
+    `tests/test_adopt_leg_path_collisions.py` and
+    `tests/test_scaffold_leg_path_collisions.py` materialize into an empty
+    directory and hold this to what was written, the second with pins too.
     """
     return (*TEMPLATED, *COPIED_VERBATIM,
-            *(rel for _, rel in COPIED_FROM_SHAPE), SHAPE_PIN)
+            *(rel for _, rel in COPIED_FROM_SHAPE),
+            *(neutral_pin_path(product) for product in neutral_pins),
+            SHAPE_PIN)
 
 
 # ---------------------------------------------------------------------------
@@ -1138,7 +1162,8 @@ def first_and_more(paths: list[str]) -> str:
 
 
 def shape_path_collisions(what: str, value: str,
-                          collision_dir: str | None = None) -> list[str]:
+                          collision_dir: str | None = None, *,
+                          neutral_pins=()) -> list[str]:
     """Where the mount path `value` overlaps a path of `assembly_root_paths`:
     one sentence, naming the first path it overlaps and counting the rest,
     or none. `what` names the value as its caller does (`--spec-path`,
@@ -1146,17 +1171,25 @@ def shape_path_collisions(what: str, value: str,
 
     `collision_dir` IS THE ONE THE CALLER HANDS `materialize_assembly_root`,
     so the two callers differ here by the argument they differ by there.
-    `adopt-project.py execute` passes `shape/`: it mounts the legs FIRST and
-    materializes over them, so a shape file at a mount goes into the mounted
-    leg or beside it under that directory, and the sentence names `execute`
-    because it is the caller that passes one. Whether `value` overlaps
+    `adopt-project.py` passes its `COLLISION_DIR`, `shape` with no slash,
+    from `_shape_collisions`, which `plan`, `check` and `execute` all reach
+    through `leg_path_collisions`. `execute` is the act that mounts the legs
+    FIRST and materializes over them, so a shape file at a mount goes into
+    the mounted leg or beside it under that directory, and the sentence
+    names `execute` whichever of the three asks. Whether `value` overlaps
     `collision_dir` itself is the caller's question, not this one's.
     `scaffold-project.py` passes none (#197): it materializes into an empty
     directory and mounts the legs AFTER, so `git submodule add` meets a path
     the shape already wrote.
+
+    `neutral_pins` IS THE SAME KIND OF ARGUMENT: the products whose pins the
+    caller hands the materializer, so the paths asked about are
+    `assembly_root_paths(neutral_pins)`, each pin's file among them. The
+    scaffold passes its `--pin` products (#197); adopt hands the materializer
+    no pin and passes none, so its list and its sentences are unchanged.
     """
     out: list[str] = []
-    files = [path for path in assembly_root_paths()
+    files = [path for path in assembly_root_paths(neutral_pins)
              if path_overlap(value, path)]
     if files:
         relation, aside = path_overlap(value, files[0])
@@ -1250,7 +1283,7 @@ def _materialize(shape_root: Path, template_root: Path, target: Path,
         result.shape_files.append(
             place(rel, lambda p, t=text: write_lf(p, t)))
     for product, pin_values in (neutral_pins or {}).items():
-        rel = f"contracts/{product.lower()}-pin.yaml"
+        rel = neutral_pin_path(product)
         text = render((template_root / NEUTRAL_PIN_TEMPLATE)
                       .read_text(encoding="utf-8"), {**values, **pin_values}, rel)
         place(rel, lambda p, t=text: write_lf(p, t))

@@ -10,7 +10,8 @@ WHAT IT DOES
      creates anything, so a naming mistake costs a message rather than three
      repositories and a rename. A leg path that is, holds or lies inside a
      path the shape writes into the assembly root (`contracts`,
-     `project.yaml`) is refused just as early, for the same reason (#197).
+     `project.yaml`, a `--pin`'s `contracts/<product>-pin.yaml`) is refused
+     just as early, for the same reason (#197).
   2. Creates the three remotes: `gh repo create` normally, or three BARE
      repositories in a directory with `--local-remote-dir`, which is the test
      path and touches no network.
@@ -63,9 +64,10 @@ from shape_materialize import (  # noqa: E402
 )
 from shape_advisory import scaffold_lines  # noqa: E402
 # The shape half of the leg-path collision rule, which `adopt-project.py`
-# asks of its own mount paths (#172), imported as one unit (#197).
+# asks of its own mount paths (#172), imported as one unit (#197), with the
+# one spelling of the file a `--pin` adds to what the shape writes.
 from shape_materialize import (  # noqa: E402
-    assembly_root_paths, shape_path_collisions,
+    assembly_root_paths, neutral_pin_path, shape_path_collisions,
 )
 
 #: The pin argument: `openGlass@<40 hex>`, optionally organisation-qualified.
@@ -347,6 +349,20 @@ def declared_pin_values(args) -> dict[str, dict[str, str]]:
     return pins
 
 
+def declared_pin_products(args) -> dict[str, None]:
+    """The products `declared_pin_values` keys its pins by, in its order and
+    read by the same `parse_pin`, with no digest: so no `git` and no `gh`.
+
+    #197: `_build_assembly_root` hands those pins to the materializer, which
+    writes `neutral_pin_path(product)` for each, and the leg paths are asked
+    about that file before `_identity` and `_declaration` run, which is
+    before any digest is read. A malformed `--pin` is therefore refused
+    here, by `parse_pin`'s own `pin-malformed`, rather than in
+    `_declaration`; it was refused before anything was created either way.
+    """
+    return dict.fromkeys(parse_pin(raw, args.pin_owner)[0] for raw in args.pin)
+
+
 def _reusable_remotes(names: dict, urls: dict, repositories: dict,
                       local: bool, reuse_flag: bool) -> set[str]:
     """Which remotes already exist, and whether that is allowed.
@@ -399,19 +415,22 @@ def _exists_remedy(role: str, empty: bool, reuse_flag: bool) -> str:
             "--force.")
 
 
-#: What a leg-path collision tells the person to do. The paths are
-#: `assembly_root_paths()`, the materializer's own list, never a copy of it.
-LEG_COLLISION_REMEDIATION = (
-    "Remediation: nothing was created, and nothing here picks a path for "
-    "you, so pass another one yourself. A leg path neither is, holds nor "
-    "lies inside, whatever the case, a path the shape writes into the "
-    "assembly root ("
-    + ", ".join(f"`{path}`" for path in assembly_root_paths())
-    + "). The defaults `spec` and `code` pass."
-)
+def _leg_collision_remediation(neutral_pins=()) -> str:
+    """What a leg-path collision tells the person to do. The paths are
+    `assembly_root_paths(neutral_pins)`, the materializer's own list for this
+    run, never a copy of it: each `--pin` adds the file it writes."""
+    return (
+        "Remediation: nothing was created, and nothing here picks a path for "
+        "you, so pass another one yourself. A leg path neither is, holds nor "
+        "lies inside, whatever the case, a path the shape writes into the "
+        "assembly root ("
+        + ", ".join(f"`{path}`" for path in assembly_root_paths(neutral_pins))
+        + "). The defaults `spec` and `code` pass."
+    )
 
 
-def _refuse_colliding_leg_paths(spec_path: str, code_path: str) -> None:
+def _refuse_colliding_leg_paths(spec_path: str, code_path: str,
+                                neutral_pins=()) -> None:
     """Neither leg is mounted over a path the shape writes into the assembly
     root, or this refuses (#197).
 
@@ -432,14 +451,25 @@ def _refuse_colliding_leg_paths(spec_path: str, code_path: str) -> None:
     without anybody editing this tool. It is asked with no collision
     directory, because the scaffold hands the materializer none and writes
     nothing under adopt's `shape/`.
+
+    A `--pin` IS ONE MORE PATH. `_build_assembly_root` hands the materializer
+    `neutral_pins=pins`, which writes `neutral_pin_path(product)` for each,
+    so `neutral_pins` is those products (`declared_pin_products`) and they
+    are asked about with the rest. Without them, `--pin openGlass@<sha>
+    --spec-path contracts/openglass-pin.yaml` planned and then made three
+    repositories, and `Contracts/OpenGlass-pin.yaml` exited 0 with a gitlink
+    beside the pin, one path on a macOS or Windows disk. With no `--pin`,
+    `contracts/openglass-pin.yaml` lies inside a directory the shape writes
+    into, not a path it writes, and it mounts.
     """
     collisions = [sentence
                   for what, value in (("--spec-path", spec_path),
                                       ("--code-path", code_path))
-                  for sentence in shape_path_collisions(what, value)]
+                  for sentence in shape_path_collisions(
+                      what, value, neutral_pins=neutral_pins)]
     if collisions:
         raise Refusal("scaffold-leg-path-collides", " ".join(collisions),
-                      LEG_COLLISION_REMEDIATION)
+                      _leg_collision_remediation(neutral_pins))
 
 
 def _elector(args) -> str:
@@ -679,7 +709,7 @@ def _print_plan(args, values: dict, names: dict, repositories: dict,
         print(f"pin          {pin_values['PIN_REPOSITORY']} @ "
               f"{pin_values['PIN_COMMIT'][:12]} tree "
               f"{pin_values['PIN_TREE_SHA256'][:12]}… -> "
-              f"contracts/{product.lower()}-pin.yaml ({pin_values['PIN_DIGEST_SOURCE']})")
+              f"{neutral_pin_path(product)} ({pin_values['PIN_DIGEST_SOURCE']})")
     _print_declared_classification(policy, names, declared_pins, chain,
                                    link_pins, pins)
     _print_plan_actions(args, values["TOPIC"], local)
@@ -916,8 +946,10 @@ def _scaffold(args) -> int:
     # for a `--pin` with no `--pin-source`, `_leg_visibility` asks `gh repo
     # view` about a reused root, and `--dry-run` returns only after all of
     # them. Refused here, a dry run refuses exactly as the real run would,
-    # and no process has been started.
-    _refuse_colliding_leg_paths(args.spec_path, args.code_path)
+    # and no process has been started. Each `--pin`'s file is among the
+    # shape's paths, its product read off the argument by `parse_pin` alone.
+    _refuse_colliding_leg_paths(args.spec_path, args.code_path,
+                                declared_pin_products(args))
     project_id, display, elected_on, reference, elected_by = _identity(
         args, project)
 
