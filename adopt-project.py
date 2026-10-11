@@ -2181,7 +2181,7 @@ def _nothing_rolled_back(urls: dict, pushed: list, work_root: Path,
     out. One wording covers every such failure: a leg repository, a leg that
     cannot be built (#171), a leg push that is refused (#177), a split that
     cannot be cloned, mounted, committed or pushed, and a verification that
-    fails (#188).
+    fails or cannot be made (#188).
 
     THE WAY OUT STARTS WITH THE CAUSE (#188's review, F2). A re-run into
     fresh legs while what failed is still there fails the same way, with one
@@ -3390,6 +3390,52 @@ def _verify(source: Source, assembly: Path, work_root: Path, names,
     re-run into fresh legs alone, which created and pushed two more legs and
     then met that branch at the split push; now the branch is named with the
     command that deletes it, and the work directory with the rest.
+
+    SO IS A VERIFICATION THAT CANNOT BE MADE (#188's review, N3): a `git`
+    that will not list a tree, say. It reached `main` as `REFUSED
+    git-failed`, with the validators' remediation about pins and no word of
+    the two pushed legs, the work directory or the branch. It is reported
+    as every late failure is, with the same notice and branch, and exits 2,
+    a question that could not be asked; anything else, such as Ctrl-C, gets
+    the same report and is re-raised.
+    """
+    step = "verifying the split"
+    try:
+        findings = _accounted_for(
+            source, assembly, work_root, names, paths_for, split_commit,
+            dict(zip((spec_path, code_path), EXTRACTED_LEGS)), seeded)
+    except LATE_FAILURES as exc:
+        _report_late(step, exc, _left_by_the_split(source, urls, names,
+                                                   work_root, branch))
+        return 2
+    except BaseException as exc:
+        _report_late(step, exc, _left_by_the_split(
+            source, urls, names, work_root, branch, stopped=True))
+        raise
+    if findings:
+        _flush_stdout()   # the table above, and every leg line, is stdout's
+        print("\n".join(findings), file=sys.stderr)
+        print(f"\n{len(findings)} verification finding(s). NOTHING was "
+              "deleted from the source, so the exit is to fix the plan and "
+              "re-run, unless a finding above names another exit.\n"
+              + _left_by_the_split(source, urls, names, work_root, branch),
+              file=sys.stderr)
+        return 1
+    print("\nadoption verified: every source path is in exactly one place")
+    print(f"\nNEXT: review the pull request on {names['assembly']}, then\n"
+          f"    git clone --recurse-submodules <{names['assembly']} url>\n"
+          "    make bootstrap")
+    return 0
+
+
+def _accounted_for(source: Source, assembly: Path, work_root: Path, names,
+                   paths_for, split_commit: str, mounts: dict,
+                   seeded) -> list[str]:
+    """`_verify`'s accounting: print the table, and return every finding.
+
+    `mounts` maps each leg's mount path, as the plan spells it, to the leg
+    (`_land_the_root_tree`). Split out of `_verify` so that a failure to
+    account at all is reported where the notice and the branch are known.
     """
     print("\nVERIFICATION — every source path at "
           f"{source.commit[:12]}, by blob sha")
@@ -3399,8 +3445,7 @@ def _verify(source: Source, assembly: Path, work_root: Path, names,
         for path, _, oid, _ in _tree_of(work_root / names[role], "HEAD"):
             after.setdefault(path, []).append(f"{role}:{oid}")
     root_findings = _land_the_root_tree(
-        after, _tree_of(assembly, split_commit), before,
-        dict(zip((spec_path, code_path), EXTRACTED_LEGS)))
+        after, _tree_of(assembly, split_commit), before, mounts)
 
     counts, findings = _account_for(before, after, paths_for["drop"])
     findings += _shape_file_findings(assembly, split_commit)
@@ -3411,25 +3456,22 @@ def _verify(source: Source, assembly: Path, work_root: Path, names,
               f"paths{note}")
     print(f"  added  {len(added):>5} new paths (manifest, pins, shape files"
           + (", seeded leg" if seeded else "") + ")")
-    findings += root_findings
-    if findings:
-        _flush_stdout()   # the table above, and every leg line, is stdout's
-        print("\n".join(findings), file=sys.stderr)
-        print(f"\n{len(findings)} verification finding(s). NOTHING was "
-              "deleted from the source, so the exit is to fix the plan and "
-              "re-run, unless a finding above names another exit.\n"
-              + _nothing_rolled_back(urls, list(EXTRACTED_LEGS), work_root,
-                                     names)
-              + f"\nThe split is pushed to {urls['assembly']} too, as "
-              f"{branch}, and a re-run is refused (`adopt-branch-exists`) "
-              "until that branch is deleted:\n    "
-              + _branch_deletion(source, urls, branch), file=sys.stderr)
-        return 1
-    print("\nadoption verified: every source path is in exactly one place")
-    print(f"\nNEXT: review the pull request on {names['assembly']}, then\n"
-          f"    git clone --recurse-submodules <{names['assembly']} url>\n"
-          "    make bootstrap")
-    return 0
+    return findings + root_findings
+
+
+def _left_by_the_split(source: Source, urls: dict, names: dict,
+                       work_root: Path, branch: str, *,
+                       stopped: bool = False) -> str:
+    """What a run whose split is pushed leaves, and the way out: the notice,
+    then the split branch with the command that deletes it, which a re-run
+    meets as `adopt-branch-exists`. Said by `_verify` after its findings,
+    and after a failure to verify at all."""
+    return (_nothing_rolled_back(urls, list(EXTRACTED_LEGS), work_root,
+                                 names, stopped=stopped)
+            + f"\nThe split is pushed to {urls['assembly']} too, as "
+            f"{branch}, and a re-run is refused (`adopt-branch-exists`) "
+            "until that branch is deleted:\n    "
+            + _branch_deletion(source, urls, branch))
 
 
 def _account_for(before: dict, after: dict, drops: list[str]) -> tuple[dict, list]:

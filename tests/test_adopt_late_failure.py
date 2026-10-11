@@ -473,6 +473,68 @@ def test_a_leg_that_fails_without_a_command_is_refused_with_the_notice(
     assert work_dir_named(notice, tmp_path / WORK, f"{ASSEMBLY}-{SPEC}")
 
 
+def verify_arguments(tmp_path: Path, source) -> dict:
+    """What `cmd_execute` hands `_verify` once the split is pushed: the
+    split's own arguments, less what only the split reads, and a split
+    commit. The legs and the split are stand-ins, never read: the failure
+    comes first."""
+    arguments = split_arguments(tmp_path, source)
+    for split_only in ("plan", "values", "leg_commits"):
+        del arguments[split_only]
+    return dict(arguments, split_commit="e" * 40)
+
+
+def test_a_verification_that_cannot_be_made_is_refused_with_the_notice(
+        adopter, monkeypatch, tmp_path):
+    """#188's review, N3: a `git` failure inside `_verify` -- here one that
+    will not list a leg's tree -- reached `main` as `REFUSED git-failed`
+    with the validators' remediation about pins, and said nothing of the two
+    pushed legs, the work directory or the split branch. It is reported as
+    every late failure is: stdout flushed, the step, the notice and the
+    branch with its deletion. `execute` exits 2, as it did."""
+    def unlistable(repo, rev):
+        raise adopter.Refusal(GIT_FAILED, f"`git ls-tree -r -z {rev}` in "
+                                          f"{repo} exited 128: fatal: not a "
+                                          "tree object")
+
+    monkeypatch.setattr(adopter, "_tree_of", unlistable)
+    events, stderr = recorded_streams(monkeypatch)
+    arguments = verify_arguments(tmp_path, source_of(adopter, tmp_path))
+    built_by_this_run(arguments[ROOT])
+
+    assert adopter._verify(**arguments) == 2
+
+    err = "".join(stderr.written)
+    assert flushed_first(events)
+    assert err.count(REFUSED) == 1, err
+    assert f"{REFUSED} verifying the split. {GIT_FAILED}: `git ls-tree" in err
+    assert "validate-pins" not in err
+    notice = the_notice(err)
+    assert BOTH_PUSHED in notice
+    assert FIX_FIRST in notice
+    assert work_dir_named(notice, tmp_path / WORK, ASSEMBLY)
+    assert printed_command(err, DELETE_COMMAND)[-2:] == ["--delete", BRANCH]
+
+
+def test_an_interrupted_verification_still_says_what_the_run_left(
+        adopter, monkeypatch, capsys, tmp_path):
+    """Ctrl-C in `_verify`: after the split is pushed, so the same notice
+    and branch, then the interrupt's own traceback."""
+    def interrupted(*_args):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(adopter, "_tree_of", interrupted)
+
+    with pytest.raises(KeyboardInterrupt):
+        adopter._verify(**verify_arguments(tmp_path,
+                                           source_of(adopter, tmp_path)))
+
+    err = capsys.readouterr().err
+    assert "STOPPED verifying the split by KeyboardInterrupt." in err
+    assert FIX_FIRST not in the_notice(err)
+    assert printed_command(err, DELETE_COMMAND)[-2:] == ["--delete", BRANCH]
+
+
 def test_a_split_the_materializer_cannot_write_is_refused_with_the_notice(
         adopter, monkeypatch, capsys, tmp_path):
     """#188 N3 as lane 2 met it: a root-kept `.github -> .github` passes
