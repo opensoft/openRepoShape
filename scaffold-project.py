@@ -798,7 +798,20 @@ def _build_assembly_root(args, values: dict, names: dict, repositories: dict,
     materialized = materialize_assembly_root(SHAPE_ROOT, assembly, values,
                                              neutral_pins=pins)
 
-    run(["git", "init", "-q", "-b", args.tracking_branch, str(assembly)])
+    # NO TEMPLATE (#229). `git init` copies the operator's template
+    # (`init.templateDir`, or `GIT_TEMPLATE_DIR`) into `.git`, and one that
+    # holds a `modules/<leg path>` store, as a copy of a working Triad root's
+    # `.git` does, plants `.git/modules/<leg path>`. `git submodule add
+    # --force` below REACTIVATES a store that is already there ("Reactivating
+    # local git directory") where it would refuse without `--force`, so the
+    # mount took the STRANGER's store: exit 0, a pushed root whose gitlink is
+    # that store's commit and not the leg's tip, and a recursive clone that
+    # fails. The empty `--template=` is git's documented way to use none. The
+    # root is a build directory this tool fills and pushes, so no template
+    # content belongs in it, and whoever clones the pushed root still gets
+    # their template from `git clone`.
+    run(["git", "init", "-q", "--template=", "-b", args.tracking_branch,
+         str(assembly)])
     # `git submodule add` from the LEG WORKING TREE, then the recorded URL is
     # rewritten to the canonical remote: this way the scaffold never depends on
     # a push having propagated, and `--no-push` produces the same tree.
@@ -818,21 +831,29 @@ def _build_assembly_root(args, values: dict, names: dict, repositories: dict,
         # ignore rule anything, had planned it (#229; #174 and #200 for the
         # same cure in `adopt-project.py`). A gitlink once added is TRACKED,
         # so no rule touches it again.
-        # `--force` also turns off two other refusals of git's, and neither
-        # can arise here, so there is no guard like adopt's
+        # `--force` also turns off three other refusals of git's, and none can
+        # arise here, so there is no guard like adopt's
         # `_refuse_an_unmountable_path`:
-        #   - a path the index holds, or a `.git/modules/<path>` already
-        #     there, is REUSED instead of cloned. The index holds only the
-        #     first mount (the materialized files are staged after both,
-        #     `stage_written`), and `refuse_bad_leg_paths` has made the two
-        #     paths different and not nested, whatever the case (#169, #179),
-        #     so the second add meets neither.
+        #   - a `.git/modules/<path>` already there is REACTIVATED instead of
+        #     refused. The work directory was empty (`_refuse_existing_trees`)
+        #     and the root is `git init`ed with no template (above), so
+        #     `.git/modules` is empty before the first mount and holds only
+        #     that mount's store at the second.
+        #   - a path the index holds is REUSED instead of cloned. When the
+        #     second mount runs, the index holds `.gitmodules` and the first
+        #     gitlink and nothing else (the materialized files are staged
+        #     after both, `stage_written`). No leg path can be `.gitmodules`,
+        #     which `refuse_bad_leg_paths` refuses (#201), and the two paths
+        #     are different and not nested, whatever the case (#169, #179), so
+        #     the second add meets neither.
         #   - git's dry run of the path, which refuses one beyond a symlink or
         #     inside a submodule, is skipped. The materializer writes only
         #     regular files, and a mount inside the other is the nesting that
         #     was just refused.
-        # A path the SHAPE wrote (`contracts`, `project.yaml`) is a different
-        # defect: git refuses it after the clone, with or without `--force`.
+        # A leg AT a path the shape wrote (`contracts`, `project.yaml`) is a
+        # collision of another kind: refused up front by the collision check
+        # where there is one, and by git at the mount where there is not.
+        # `--force` changes neither.
         run(["git", "-c", "protocol.file.allow=always", "submodule", "add",
              "--force", "-q", str(work_root / names[role]), path],
             cwd=assembly)

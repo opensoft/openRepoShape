@@ -25,22 +25,34 @@ passes it before the clone and refuses after it (exit 128); a file rule
 `--force` also turns off two other refusals of git's, which `adopt-project.py`
 makes itself first (`_refuse_an_unmountable_path`) and the scaffold does not
 need to: a path the index already holds, and a path beyond a symlink or inside
-a submodule. The last test pins what is NOT changed: a leg path that is a path
-the shape wrote (`README.md`, `scripts`, `contracts`) is still refused at exit
-2. It asserts the exit and that no gitlink lands there, never the message, so
-it holds both before and after #197 refuses those paths before anything is
+a submodule. A third is a `.git/modules/<leg path>` already there, which
+`--force` REACTIVATES instead of refusing ("A git directory for 'spec' is
+found locally ... use the '--force' option"). The root is a fresh `git init`,
+and `git init` copies the operator's template (`init.templateDir`, or
+`GIT_TEMPLATE_DIR`) into `.git`: a template that holds a `modules/spec` store,
+as one made by copying a working Triad root's `.git` does, plants it. The
+mount then takes the stranger's store: the run exits 0, the pushed root's
+`spec` gitlink is ITS commit and not the spec leg's tip, and the root's
+recursive clone fails. The scaffold's root is a build directory the tool fills
+and pushes, so its `git init` takes `--template=` (git's way to use none), and
+the template tests below pin it.
+The shape-path tests pin what is NOT changed: a leg path that is a path the
+shape wrote (`README.md`, `scripts`, `contracts`) is still refused at exit 2.
+They assert the exit and that no gitlink lands there, never the message, so
+they hold both before and after #197 refuses those paths before anything is
 made.
 
 Every run is the real `scaffold-project.py` over `--local-remote-dir`: bare
 repositories in a temporary directory, no network, and a `gh` on PATH that
-fails if it is ever called. The operator's excludes reach git through
-`GIT_CONFIG_GLOBAL`, pointed at a file each case writes, so no run reads the
-global configuration of whoever runs the suite.
+fails if it is ever called. The operator's excludes, and the template, reach
+git through `GIT_CONFIG_GLOBAL`, pointed at a file each case writes, so no run
+reads the global configuration of whoever runs the suite.
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 import stat
 import textwrap
 from pathlib import Path
@@ -107,8 +119,8 @@ CASES = [
 ]
 
 #: Paths the shape itself writes into the assembly root, which a leg must not
-#: be mounted at. `--force` changes nothing for them: git refuses each after
-#: the clone, with and without it.
+#: be mounted at. `--force` changes nothing for them: git refuses each at the
+#: mount (exit 128), with and without it.
 SHAPE_PATHS = [
     pytest.param("README.md", id="readme-file"),
     pytest.param("scripts", id="scripts-dir"),
@@ -144,14 +156,20 @@ def gh_trap(tmp_path_factory) -> SimpleNamespace:
         log=log)
 
 
-def scaffold(base: Path, gh_trap, excludes: bytes, *flags: str):
+def scaffold(base: Path, gh_trap, excludes: bytes, *flags: str,
+             template: Path | None = None):
     """One real scaffold of `Northwind` into local bare remotes under `base`,
-    run as an operator whose global excludes are `excludes`.
+    run as an operator whose global excludes are `excludes` and, when
+    `template` is given, whose `init.templateDir` is that directory.
 
     Returns what a test needs to read the outcome: the process, the
     environment to ask git questions under, and where everything is.
     """
     env = {**excluding(base / "operator", excludes), **gh_trap.env}
+    if template is not None:
+        with Path(env["GIT_CONFIG_GLOBAL"]).open("ab") as config:
+            config.write(f'[init]\n\ttemplateDir = "{template.as_posix()}"\n'
+                         .encode())
     remotes, work = base / "remotes", base / "work"
     result = run_script(
         SCAFFOLD, "--org", ORG, "--project", PROJECT, "--elected-by",
@@ -207,6 +225,30 @@ def ignored(root: Path, path: str, env: dict) -> bool:
                       f"{path}/", cwd=root, check=False)
     assert asked.returncode in (0, 1), asked.stderr
     return asked.returncode == 0
+
+
+def clone_and_check(root: Path, env: dict, tmp_path: Path, *mounts: str):
+    """What a person does next: `git clone --recurse-submodules` the pushed
+    `root` under the environment `env`, then run what the scaffold's own NEXT
+    STEPS run in it. Each mount is checked out and holds the leg, and the
+    project's own validators, which resolve each leg at the path the manifest
+    names, pass. `bootstrap.py` is the last of them: it re-places each leg on
+    its tracking branch AT the pin, so it fails where a gitlink and a pin
+    disagree and `validate-pins.py` had not looked at the checkout.
+    """
+    clone = tmp_path / PROJECT
+    git_under(env, *FILE_PROTOCOL, "clone", "-q", "--recurse-submodules",
+              str(root), str(clone), cwd=tmp_path)
+    for path in mounts:
+        assert any((clone / path).iterdir()), f"{path} was not checked out"
+    for validator, ok in (("validate-manifest.py", "manifest ok"),
+                          ("validate-pins.py", "pins ok"),
+                          ("bootstrap.py", "bootstrap ok")):
+        checked = run_script(clone / "scripts" / validator, cwd=clone,
+                             env=env)
+        assert checked.returncode == 0, (f"{validator}: {checked.stderr}"
+                                         f"{checked.stdout}")
+        assert ok in checked.stdout, checked.stdout
 
 
 @pytest.fixture(scope="module", params=CASES)
@@ -275,23 +317,9 @@ def test_gitmodules_registers_each_mount_once_at_its_canonical_remote(
 
 def test_a_recursive_clone_checks_out_both_legs_and_its_validators_pass(
         mounted, tmp_path):
-    """What a person does next: clone the root recursively, as it was pushed,
-    under the operator's own excludes. Both legs are checked out at their
-    mounts, and the project's own validators, which resolve each leg at the
-    path the manifest names, pass."""
-    clone = tmp_path / PROJECT
-    git_under(mounted.env, *FILE_PROTOCOL, "clone", "-q",
-              "--recurse-submodules", str(mounted.root), str(clone),
-              cwd=tmp_path)
-    for path in (mounted.spec, mounted.code):
-        assert any((clone / path).iterdir()), f"{path} was not checked out"
-    for validator, ok in (("validate-manifest.py", "manifest ok"),
-                          ("validate-pins.py", "pins ok")):
-        checked = run_script(clone / "scripts" / validator, cwd=clone,
-                             env=mounted.env)
-        assert checked.returncode == 0, (f"{validator}: {checked.stderr}"
-                                         f"{checked.stdout}")
-        assert ok in checked.stdout, checked.stdout
+    """The clone is made under the operator's own excludes, as it would be."""
+    clone_and_check(mounted.root, mounted.env, tmp_path,
+                    mounted.spec, mounted.code)
 
 
 # --- what `--force` does NOT change ------------------------------------------
@@ -310,3 +338,109 @@ def test_a_leg_path_the_shape_wrote_is_still_refused(tmp_path, gh_trap, path):
     assert path not in gitlinks(run.remotes / f"{PROJECT}.git")
     if gh_trap.log is not None:
         assert not gh_trap.log.exists(), f"gh was asked: {asked(gh_trap)}"
+
+
+# --- an operator's git template ----------------------------------------------
+
+#: The two default mount names. A template plants a store for each, so BOTH
+#: mounts meet one: the first, where nothing else is in the index, and the
+#: second, where `.gitmodules` and the first gitlink are.
+STORES = (DEFAULT_SPEC, DEFAULT_CODE)
+
+
+def plant_module_stores(base: Path) -> SimpleNamespace:
+    """A git template holding a NON-BARE module store at `modules/<name>` for
+    each of `STORES`, every one with a commit of its own: the template an
+    operator gets by copying a working Triad root's `.git`. No git command
+    puts a `modules/` into a template directory, so the stores are copied in.
+
+    The commit belongs to no leg, so a gitlink that equals it is a mount of
+    something the scaffold did not build. Returns the template directory and
+    that commit. The stranger repository is made under a configuration of its
+    own, so nothing of the operator's, or of whoever runs the suite, reaches
+    it.
+    """
+    who = {"GIT_AUTHOR_NAME": "A stranger",
+           "GIT_AUTHOR_EMAIL": "stranger@elsewhere.invalid",
+           "GIT_COMMITTER_NAME": "A stranger",
+           "GIT_COMMITTER_EMAIL": "stranger@elsewhere.invalid"}
+    env = {**excluding(base / "neutral", NO_EXCLUDES), **who}
+    stranger, template = base / "stranger", base / "template"
+    git_under(env, "init", "-q", "-b", "main", str(stranger), cwd=base)
+    git_under(env, "commit", "-q", "--allow-empty", "-m",
+              "A commit that belongs to no leg", cwd=stranger)
+    # An `origin`, because a working root's store has one and the scaffold's
+    # next step is `git remote set-url origin`: a store with none dies there,
+    # loudly (exit 2), which is not the defect.
+    git_under(env, "remote", "add", "origin", str(stranger), cwd=stranger)
+    planted = git_under(env, "rev-parse", "HEAD", cwd=stranger).stdout.strip()
+    for name in STORES:
+        shutil.copytree(stranger / ".git", template / "modules" / name)
+    return SimpleNamespace(template=template, commit=planted, env=env)
+
+
+@pytest.fixture(scope="module")
+def templated(gh_trap, tmp_path_factory) -> SimpleNamespace:
+    """ONE real scaffold, as an operator whose `init.templateDir` holds a
+    module store for each default mount, and a clean environment (the
+    operator's excludes and NO template) to clone the result under."""
+    base = tmp_path_factory.mktemp("mount-template")
+    planted = plant_module_stores(base / "planted")
+    run = scaffold(base, gh_trap, NO_EXCLUDES, template=planted.template)
+    run.planted = planted
+    run.root = run.remotes / f"{PROJECT}.git"
+    run.clean = excluding(base / "clean-operator", NO_EXCLUDES)
+    return run
+
+
+def test_the_operators_template_plants_a_store_unless_git_is_told_none(
+        templated, tmp_path):
+    """The premise, asked of git rather than assumed. A plain `git init` under
+    the operator's configuration copies the template's store into
+    `.git/modules`, at the commit the stranger made; `--template=`, git's
+    documented way to use none, copies nothing. If git stops doing the first,
+    this fails instead of the tests below quietly no longer running the
+    defect, and the second is the claim the scaffold's `git init` rests on."""
+    git_under(templated.env, "init", "-q", str(tmp_path / "plain"),
+              cwd=tmp_path)
+    store = tmp_path / "plain" / ".git" / "modules" / DEFAULT_SPEC
+    assert git_under(
+        templated.env, "--git-dir", str(store), "rev-parse", "HEAD",
+        cwd=tmp_path).stdout.strip() == templated.planted.commit
+    git_under(templated.env, "init", "-q", "--template=",
+              str(tmp_path / "none"), cwd=tmp_path)
+    assert not (tmp_path / "none" / ".git" / "modules").exists()
+
+
+def test_the_scaffold_finishes_under_a_template_that_carries_module_stores(
+        templated, gh_trap):
+    assert templated.result.returncode == 0, (templated.result.stderr
+                                              + templated.result.stdout)
+    assert "A git directory for" not in templated.result.stderr
+    if gh_trap.log is not None:
+        assert not gh_trap.log.exists(), f"gh was asked: {asked(gh_trap)}"
+
+
+def test_each_mount_is_the_leg_the_scaffold_pushed_and_never_a_planted_store(
+        templated):
+    """`--force` REACTIVATES a `.git/modules/<path>` that is already there, so
+    this is read from the PUSHED root: each gitlink is the tip its own leg was
+    pushed at, and not the commit of the store the template planted. The
+    planted commit is named in the message because a root that mounted a
+    planted store carries it."""
+    found = gitlinks(templated.root)
+    assert found == {
+        DEFAULT_SPEC: tip(templated.remotes / f"{PROJECT}-spec.git"),
+        DEFAULT_CODE: tip(templated.remotes / f"{PROJECT}-code.git")}, (
+        f"the template's planted commit was {templated.planted.commit}")
+    assert templated.planted.commit not in found.values()
+
+
+def test_a_clean_recursive_clone_of_that_root_succeeds_and_its_pins_hold(
+        templated, tmp_path):
+    """Cloned under the operator's excludes and NO template, so the clone
+    itself is clean and a failure here is the root's. A root that mounted a
+    planted store fails it: `Fetched in submodule path 'spec', but it did not
+    contain` the planted commit."""
+    clone_and_check(templated.root, templated.clean, tmp_path,
+                    DEFAULT_SPEC, DEFAULT_CODE)
