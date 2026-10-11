@@ -1985,14 +1985,15 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
 # them (#183's review, B1). `place` first asks whether something is already
 # at the path, following every symlink on the way. Where something is, the
 # shape's copy goes beside it under `shape/`, and the link is never written
-# through: `CLAUDE.md -> /home/me/CLAUDE.md`, on a machine that has that
-# file, is adopted exactly as `main` adopts it. Where nothing is, the shape
-# writes through every link on the way, so a link that dangles, loops or
-# leads out of the assembly is refused. A symlink ABOVE a path the shape
-# writes is a directory the shape writes into, so it must lead to a
-# directory the root holds, whatever this machine holds elsewhere. And the
-# shape's copy under `shape/` is written without asking again, so a symlink
-# that leads the COPY onto something already there is refused too (B2).
+# through: `CLAUDE.md` linked to a personal file by its absolute path, on a
+# machine that has that file, is adopted exactly as `main` adopts it. Where
+# nothing is, the shape writes through every link on the way, so a link
+# that dangles, loops or leads out of the assembly is refused. A symlink
+# ABOVE a path the shape writes is a directory the shape writes into, so it
+# must lead to a directory the root holds, whatever this machine holds
+# elsewhere. And the shape's copy under `shape/` is written without asking
+# again, so a symlink that leads the COPY onto something already there is
+# refused too (B2).
 #
 # Whether something is at a place OUTSIDE the assembly is a fact of the
 # machine, so `check` and `execute` each ask their own disk: an absolute
