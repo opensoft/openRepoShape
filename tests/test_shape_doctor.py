@@ -771,6 +771,219 @@ def test_a_root_with_no_family_yaml_beside_gets_the_row_it_always_got(
     assert "family.yaml (family-manifest)" in row["detail"]["validated"], row
 
 
+# --- a registered kind in a root that never runs its gate (#327) ------------
+#
+# #211 acted on ONE path: `family.yaml` at the top of an assembly root. Any
+# other file declaring a registered kind was still counted `validated`
+# wherever it sat, so a `contracts/family.yaml` in an assembly root and a
+# `contracts/project.yaml` in a family holder were `ok` and COMPLIANT, exit
+# 0, though the gate registered for each kind never runs on that kind of root.
+
+#: The words the row's next command closes with, spelt out here for the
+#: reason `FAMILY_BESIDE_NEXT` is: a test that read them back from the doctor
+#: would pass whatever it said.
+NEVER_RENAME = ("never rename it to project.yaml or family.yaml in this "
+                "root: a family holder is not a project, and an assembly "
+                "root is not a family holder")
+
+#: Where each kind's manifest goes instead, as the next command offers it.
+FAMILY_HOME = ("a family holder of its own (`family.py init`, then "
+               "`family.py add` there)")
+PROJECT_HOME = ("an assembly root of its own (`setup.sh`, or "
+                "`adopt-project.py plan` for a repository that exists), "
+                "which a holder pins with `family.py add`")
+
+
+def removal_named(standard: Path, row: dict, payload: dict,
+                  names: list) -> list:
+    """The `git rm` a registered-elsewhere row's NEXT names, as the argv it
+    is, after asserting the NEXT spells exactly that command.
+
+    The spelling is held to the doctor's own `quote_arg` -- the quoter whose
+    two dialects the tests further down pin -- so the line is the one the
+    reader's shell hands back whole, on Windows as on POSIX. Where the
+    reader's shell IS POSIX `sh`, `shlex.split` reads the line back too.
+    """
+    module = doctor_module(standard)
+    root = Path(payload["root"])
+    spelled = (f"git -C {module.quote_arg(root)} rm -- "
+               + " ".join(module.quote_arg(name) for name in names))
+    assert f"(`{spelled}`, committed on a branch and landed as a pull " \
+        "request)" in row["next"], row["next"]
+    argv = ["git", "-C", str(root), "rm", "--", *names]
+    if os.name != "nt":
+        assert shlex.split(spelled) == argv, spelled
+    return argv
+
+
+def run_the_removal(argv: list, root: Path) -> None:
+    """Run the NEXT's own `git rm`, and commit it as the line says."""
+    proc = subprocess.run(argv, capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    commit_all(root, "Take the manifest no gate here reads out of the root")
+
+
+def only_finding_is_manifest_kinds(result) -> dict:
+    rows = rows_of(result)
+    others = {name: row["status"] for name, row in rows.items()
+              if row["status"] == "FINDING" and name != "manifest-kinds"}
+    assert others == {}, others
+    return rows["manifest-kinds"]
+
+
+def test_a_contracts_family_yaml_in_an_assembly_root_is_a_finding(
+        standard, project, holder):
+    """THE DEFECT #327 WAS FILED FOR, in an assembly root.
+
+    The holder's own `family.yaml`, committed under the root's `contracts/`:
+    it declares `family-manifest`, whose registered gate `validate-family.py`
+    runs in a family holder and nowhere else. The doctor said `ok`, "every
+    declared kind has a registered validator", COMPLIANT, exit 0. It is the
+    FINDING the same bytes are at the top of the root (#211) now: not
+    `validated`, named with the validator and where it runs, and a next
+    command that exists -- run here, it puts the root back to COMPLIANT.
+    """
+    shutil.copy2(holder["root"] / "family.yaml",
+                 project / "contracts" / "family.yaml")
+    commit_all(project, "A family manifest under contracts/")
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 1, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert (payload["kind"], payload["verdict"]) == (
+        "project", "INVALID (manifest-kinds)"), payload
+    row = only_finding_is_manifest_kinds(result)
+    assert row["status"] == "FINDING", row
+    assert row["reason"] == (
+        "no validator that runs in an assembly root is registered for kind "
+        "contracts/family.yaml (family-manifest: scripts/validate-family.py "
+        "runs only in a family holder)"), row["reason"]
+    assert set(row["detail"]) == MANIFEST_KINDS_DETAIL_KEYS | {
+        "registered_elsewhere"}, row["detail"]
+    assert not any("contracts/family.yaml" in entry
+                   for entry in row["detail"]["validated"]), row["detail"]
+    assert row["detail"]["registered_elsewhere"] == [
+        {"manifest": "contracts/family.yaml", "kind": "family-manifest",
+         "validator": "scripts/validate-family.py", "runs_in": ["family"]}]
+    argv = removal_named(standard, row, payload, ["contracts/family.yaml"])
+    assert row["next"].startswith(
+        "take contracts/family.yaml out of this root (`git -C "), row["next"]
+    assert row["next"].endswith(
+        f", or move what it describes to {FAMILY_HOME}, as the human "
+        f"decides -- {NEVER_RENAME}"), row["next"]
+
+    text = doctor(standard, project)
+    assert text.returncode == 1, text.stdout + text.stderr
+    lines = text.stdout.splitlines()
+    [at] = [index for index, line in enumerate(lines)
+            if "manifest kinds" in line]
+    assert lines[at].split()[:3] == ["FINDING", "manifest", "kinds"], \
+        lines[at]
+    assert lines[at].endswith("  " + row["reason"]), lines[at]
+    assert lines[at + 1].endswith("  " + row["next"]), lines[at + 1]
+    assert verdict_line(text) == "INVALID (manifest-kinds)   (exit 1)", \
+        text.stdout
+
+    run_the_removal(argv, project)
+    after = doctor(standard, project, "--json")
+    assert after.returncode == 0, after.stdout + after.stderr
+    assert json.loads(after.stdout)["verdict"] == "COMPLIANT"
+
+
+def test_a_contracts_project_yaml_in_a_family_holder_is_a_finding(
+        standard, scaffolded_here, holder, tmp_path):
+    """THE MIRROR CASE, in a family holder, which #220's review read from the
+    code and #327 ran: an assembly root's `project.yaml` committed under the
+    holder's `contracts/`. Its gate, `validate-manifest.py`, runs in an
+    assembly root and nowhere else. The holder's own two contracts are still
+    answered -- by `validate-family.py`, which reads the shape pin and the
+    naming policy itself -- so they stay `validated`, and only this file is
+    named."""
+    root = tmp_path / FAMILY_NAME
+    shutil.copytree(holder["root"], root, symlinks=True)
+    shutil.copy2(scaffolded_here["clone"] / "project.yaml",
+                 root / "contracts" / "project.yaml")
+    commit_all(root, "A project manifest under contracts/")
+    result = doctor(standard, root, "--json")
+    assert result.returncode == 1, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert (payload["kind"], payload["verdict"]) == (
+        "family", "INVALID (manifest-kinds)"), payload
+    row = only_finding_is_manifest_kinds(result)
+    assert row["status"] == "FINDING", row
+    assert row["reason"] == (
+        "no validator that runs in a family holder is registered for kind "
+        "contracts/project.yaml (project-manifest: "
+        "scripts/validate-manifest.py runs only in an assembly root)"), \
+        row["reason"]
+    assert row["detail"]["registered_elsewhere"] == [
+        {"manifest": "contracts/project.yaml", "kind": "project-manifest",
+         "validator": "scripts/validate-manifest.py", "runs_in": ["project"]}]
+    assert sorted(row["detail"]["validated"]) == [
+        "contracts/repository-naming.yaml (repository-naming-policy)",
+        "contracts/shape-pin.yaml (pinned_contract_manifest)",
+        "family.yaml (family-manifest)"], row["detail"]
+    argv = removal_named(standard, row, payload, ["contracts/project.yaml"])
+    assert row["next"].endswith(
+        f", or move what it describes to {PROJECT_HOME}, as the human "
+        f"decides -- {NEVER_RENAME}"), row["next"]
+
+    run_the_removal(argv, root)
+    after = doctor(standard, root, "--json")
+    assert after.returncode == 0, after.stdout + after.stderr
+    assert json.loads(after.stdout)["verdict"] == "COMPLIANT"
+
+
+def test_a_contracts_family_yaml_and_one_beside_project_yaml_say_both(
+        standard, project, holder):
+    """Two family manifests in one assembly root, one under `contracts/` and
+    one at the top: two reasons in one row, each with its own exit, the
+    general one first and #211's -- which also checks the members -- after
+    it. Neither is counted `validated`."""
+    shutil.copy2(holder["root"] / "family.yaml",
+                 project / "contracts" / "family.yaml")
+    family_beside(project, holder)
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert json.loads(result.stdout)["verdict"] == "INVALID (manifest-kinds)"
+    row = only_finding_is_manifest_kinds(result)
+    assert row["reason"] == (
+        "no validator that runs in an assembly root is registered for kind "
+        "contracts/family.yaml (family-manifest: scripts/validate-family.py "
+        f"runs only in a family holder); {FAMILY_BESIDE_OPENING}: "
+        f"members/{FAMILY_MEMBER} has no gitlink (mode 160000)"), \
+        row["reason"]
+    assert row["next"].endswith(f"{NEVER_RENAME}; {FAMILY_BESIDE_NEXT}"), \
+        row["next"]
+    assert set(row["detail"]) == MANIFEST_KINDS_DETAIL_KEYS | {
+        "registered_elsewhere", "family_beside"}, row["detail"]
+    assert not any("family" in entry for entry in row["detail"]["validated"])
+
+
+def test_a_registered_kind_is_answered_only_where_its_check_runs():
+    """THE RULE, read straight off the registry (#327).
+
+    A kind is answered on a kind of root only where a check it is
+    `covered_by` APPLIES -- `CHECKS` says which, and nothing else does. So
+    the two root manifests are answered each in its own kind of root and
+    never in the other, and every kind a holder ships is answered there by
+    `family`, which is what keeps a fresh holder COMPLIANT. Every check a
+    kind names exists, or the kind would be answered nowhere at all.
+    """
+    module = doctor_module(REPO)
+    runs = {kind: entry.runs_in()
+            for kind, entry in module.MANIFEST_VALIDATORS.items()}
+    assert runs == {
+        "project-manifest": ("project",),
+        "family-manifest": ("family",),
+        "pinned_contract_manifest": ("project", "family"),
+        "repository-naming-policy": ("project", "family"),
+        "path-classification-policy": ("project", "family"),
+    }, runs
+    checks = {check.id for check in module.CHECKS}
+    for kind, entry in module.MANIFEST_VALIDATORS.items():
+        assert set(entry.covered_by) <= checks, (kind, entry.covered_by)
+
+
 def test_gitlinks_under_lists_one_directory_and_nothing_above_it(project):
     """`gitlinks_under` is asked for the members directory a hand-edited
     manifest names, so an empty one, an absolute one and one that climbs
