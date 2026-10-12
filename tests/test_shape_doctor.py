@@ -58,6 +58,10 @@ from test_commit_trailers import LANE
 #: rewrite, imported from the module that owns its tests for the same reason:
 #: a test that retyped the form would pass against a line nothing renders.
 from test_update_shape import rendered_shape_line
+#: An `origin` written as BYTES git hands back unchanged, and the start of a
+#: URL holding the byte 0xE9 (#385), from the file that owns the advisory's
+#: half of that issue, so the two halves write the same URL the same way.
+from test_shape_advisory import NOT_UTF8, with_origin
 
 DOCTOR = "shape-doctor.py"
 ORG = "testorg"
@@ -2796,6 +2800,107 @@ def test_a_directory_that_is_not_a_clone_at_all_is_not_called_a_stranger(
     assert row["status"] == "ok", row
 
 
+@pytest.mark.parametrize("tail, counted", [
+    (f"{FAMILY_NAME}/{FAMILY_MEMBER}.git", True),
+    ("Someone/Fork.git", False),
+], ids=["the-members-mirror", "a-stranger"])
+def test_a_sibling_origin_not_utf8_is_read_as_make_siblings_reads_it(
+        standard, holder, tmp_path, tail, counted):
+    """#385, through `--root`: a holder whose member's clone beside it has an
+    `origin` that is not UTF-8.
+
+    On the base the `members` row's `origin_url` raised `UnicodeDecodeError`
+    and the report ended in a traceback, exit 1. Now the URL is read with
+    the byte replaced, as `make siblings` reads it: a mirror whose tail is
+    the row's `repository:` IS the working clone, and a stranger's is
+    reported with the replacement, printed as `?`, and the verdict is the
+    one a holder with no clone beside it gets.
+    """
+    root, sibling = member_beside(holder, tmp_path)
+    git("remote", "remove", "origin", cwd=sibling)
+    url = NOT_UTF8 + tail.encode("ascii")
+    with_origin(sibling, url)
+    result = doctor(standard, root, "--json")
+    assert "Traceback" not in result.stderr, result.stderr
+    payload = json.loads(result.stdout)
+    assert (payload["verdict"], result.returncode) == ("COMPLIANT", 0), \
+        payload
+    entry = rows_of(result)["members"]["detail"]["members"][0]
+    if counted:
+        assert entry["working_clone"] == sibling.as_posix(), entry
+        assert entry["other_origin"] is None, entry
+    else:
+        assert entry["working_clone"] is None, entry
+        assert entry["other_origin"] == url.decode("utf-8", "replace"), entry
+    text = doctor(standard, root)
+    assert text.returncode == 0, text.stdout + text.stderr
+    assert "Traceback" not in text.stderr, text.stderr
+    assert ("is a clone of ../caf?/Someone/Fork.git" in text.stdout) \
+        is not counted, text.stdout
+
+
+@pytest.mark.parametrize("relative", [False, True],
+                         ids=["an-absolute-mount-url", "a-relative-mount-url"])
+def test_a_holders_own_origin_not_utf8_is_read_as_make_siblings_reads_it(
+        standard, holder, tmp_path, relative):
+    """#385, the OTHER route into `origin_url`: the HOLDER'S own `origin`.
+
+    The issue names two callers of `origin_url`. `working_clone` asks it of
+    the SIBLING, which the test above pins. `mounted_from` asks it of the
+    HOLDER, to resolve a relative `.gitmodules` url against, and it asks
+    whatever the url is: the call is an argument of `resolved_remote`, which
+    is handed an absolute url too and gives it straight back. So a holder
+    cloned from a mirror under a directory named in Latin-1 reached the
+    traceback through `mounted_from` with an ASCII `.gitmodules` as well.
+
+    On the base both cases raised `UnicodeDecodeError` out of
+    `origin_url`, called from `mounted_from` (the `members` row's own
+    reader, before `working_clone` asks anything). Now the holder's URL is
+    read with the byte replaced, as `make siblings` reads it, and:
+      - an absolute mount url never needed it, so the row answers exactly as
+        it does for an ASCII holder, and
+      - a relative one is resolved against it, as git does, and the clone
+        made from that resolved url is counted as the working clone. The
+        `mounted_from` the row prints carries U+FFFD.
+    The relative case is the one a lossy read could get WRONG: reading the
+    holder's URL as `""` leaves `../IRRS.git` unresolved, which matches no
+    sibling, so the member's clone is not counted.
+    """
+    root, sibling = member_beside(holder, tmp_path)
+    git("remote", "remove", "origin", cwd=root)
+    with_origin(root, NOT_UTF8 + f"{FAMILY_NAME}.git".encode("ascii"))
+    if relative:
+        git("config", "-f", str(root / ".gitmodules"),
+            f"submodule.members/{FAMILY_MEMBER}.url",
+            f"../{FAMILY_MEMBER}.git", cwd=root)
+        commit_all(root, "Mount the member by a relative url")
+        # The clone git would have made from the url that resolves to: the
+        # holder's own directory, `caf\xe9`, with the member's name in it.
+        git("remote", "remove", "origin", cwd=sibling)
+        with_origin(sibling, NOT_UTF8 + f"{FAMILY_MEMBER}.git".encode("ascii"))
+    result = doctor(standard, root, "--json")
+    assert "Traceback" not in result.stderr, result.stderr
+    payload = json.loads(result.stdout)
+    assert (payload["verdict"], result.returncode) == ("COMPLIANT", 0), \
+        payload
+    entry = rows_of(result)["members"]["detail"]["members"][0]
+    assert entry["working_clone"] == sibling.as_posix(), entry
+    assert entry["other_origin"] is None, entry
+    if relative:
+        assert entry["mounted_from"] == f"../caf\ufffd/{FAMILY_MEMBER}.git", \
+            entry
+    else:
+        # The bare repository the holder's `.gitmodules` names, as the
+        # control above compares it: separators folded, since git ESCAPES a
+        # Windows backslash on the way into the file.
+        assert entry["mounted_from"].replace("\\", "/") == str(
+            holder["base"] / "remotes" / f"{FAMILY_MEMBER}.git").replace(
+                "\\", "/"), entry
+    text = doctor(standard, root)
+    assert text.returncode == 0, text.stdout + text.stderr
+    assert "Traceback" not in text.stderr, text.stderr
+
+
 def test_a_credential_in_an_origin_is_not_printed_or_put_in_the_json(
         standard, holder, tmp_path):
     """A REPORT PRINTS WHAT IT FINDS, AND WHAT IT FINDS CAN BE A TOKEN.
@@ -3347,6 +3452,51 @@ def test_working_clone_and_verify_sibling_ACCEPT_a_symlinked_mirror(
         assert siblings.verify_sibling(
             row, work, mount, row["repository"], stranger) is False, what
         assert stranger.state == "WRONG ORIGIN", what
+
+
+def test_working_clone_and_verify_sibling_agree_on_a_non_utf8_origin(
+        tmp_path, siblings):
+    """#385: AN ORIGIN THAT IS NOT UTF-8, ASKED OF BOTH CALLERS.
+
+    `siblings.py::git_text` reads `origin` with `errors="replace"`, so a
+    clone of a mirror under a directory named in Latin-1 is `make siblings`'
+    member clone by the row's `repository:` tail, and a clone of something
+    else under it is `WRONG ORIGIN`. On the base `working_clone` raised
+    `UnicodeDecodeError` for both. The issue's draft would have read the URL
+    as `""`, which calls the first one `(no origin)` and no working clone:
+    the two tools disagreeing about one directory, which #146 removed. So
+    the doctor reads it as `make siblings` does, and quotes the stranger's
+    URL with the replacement character in it.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "shape_doctor_not_utf8_origin", REPO / DOCTOR)
+    doctor = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(doctor)
+    row = {"project": FAMILY_MEMBER, "id": "7c9f1b2d",
+           "repository": f"{FAMILY_NAME}/{FAMILY_MEMBER}"}
+    mount = str(tmp_path / "elsewhere" / f"{FAMILY_MEMBER}.git")
+    cases = [
+        ("a mirror whose tail is the row's",
+         f"{FAMILY_NAME}/{FAMILY_MEMBER}.git".encode("ascii"), True),
+        ("a stranger", b"Someone/Fork.git", False),
+    ]
+    for index, (what, tail, accepted) in enumerate(cases):
+        work = tmp_path / f"work-{index}" / FAMILY_MEMBER
+        work.mkdir(parents=True)
+        git("init", "-q", cwd=work)
+        (work / "project.yaml").write_text(
+            "kind: project-manifest\nid: 7c9f1b2d\n"
+            f"name: {FAMILY_MEMBER}\n", encoding="utf-8")
+        url = NOT_UTF8 + tail
+        with_origin(work, url)
+        read = url.decode("utf-8", "replace")
+        assert doctor.origin_url(work) == read, what
+
+        sibling = siblings.Sibling(FAMILY_MEMBER, work)
+        assert siblings.verify_sibling(
+            row, work, mount, row["repository"], sibling) is accepted, what
+        assert doctor.working_clone(work, row, mount) == (
+            (work.as_posix(), None) if accepted else (None, read)), what
 
 
 # --- the adversarial review on #96 ------------------------------------------
@@ -6681,6 +6831,35 @@ def test_origin_name_reads_a_windows_style_local_path_remote(standard,
     row = module.check_the_way_in(module.Context(here))
     assert row.detail["suggested_project"] == "Atlas", row.detail
     assert "--project Atlas" in row.next_command, row.next_command
+
+
+def test_an_origin_url_that_is_not_utf8_names_nothing_and_raises_nothing(
+        standard, tmp_path):
+    """#385: git keeps a URL as the bytes it was given, and all three of this
+    file's readers of it raised `UnicodeDecodeError` on one that is not
+    UTF-8 -- the `naming` row's, and so `--root`, first.
+
+    THE NAME IS NONE, as for no origin, so `naming` and `the way in` read the
+    directory alone, exactly as they do for the same directory with no
+    `origin` (the twin, under another parent). THE URL IS READ AS `make
+    siblings` READS IT, the byte replaced, because the `members` row must
+    agree with `verify_sibling` about one directory (#146) -- the test of that
+    agreement is `test_working_clone_and_verify_sibling_agree_on_a_non_utf8
+    _origin`.
+    """
+    module = doctor_module(standard)
+    here, twin = tmp_path / "a" / "latin1", tmp_path / "b" / "latin1"
+    for path in (here, twin):
+        path.mkdir(parents=True)
+        git("init", "-q", "-b", "main", ".", cwd=path)
+    with_origin(here, NOT_UTF8 + b"Atlas.git")
+    assert module.origin_name(here) is None
+    assert module.repo_local_origin_name(here) is None
+    assert module.origin_url(here) == "../caf\ufffd/Atlas.git"
+    for check in (module.check_not_a_root_naming, module.check_the_way_in):
+        row, plain = check(module.Context(here)), check(module.Context(twin))
+        assert row.detail == plain.detail, (row.detail, plain.detail)
+        assert "Atlas" not in row.reason + (row.next_command or ""), row
 
 
 def test_origin_name_reads_scp_like_syntax_with_no_slash_at_all(standard,
