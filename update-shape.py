@@ -2594,6 +2594,8 @@ def cmd_apply(args) -> int:
         _note_untaken_additions(additions, taking)
         if _nothing_to_do(rows, pinned, target, taking):
             if _awaits_its_pull_request(root, args, kind):
+                _refuse_what_head_does_not_commit(root, rows, kind,
+                                                  args.branch, pinned, target)
                 return _finish_landing(root, args, upstream, target, kind)
             print(f"nothing to do: every copied file matches "
                   f"{upstream.repository} @ {target[:12]}, which the pin "
@@ -2775,6 +2777,10 @@ def _awaits_its_pull_request(root: Path, args, kind: Kind) -> bool:
     already carries the re-pin proposes nothing, however many other commits
     it holds, and stays "nothing to do". A clone that has never seen
     `origin/<tracking>` cannot tell, and asks `gh`, which answers for itself.
+
+    THIS READS HEAD, AND "NOTHING TO DO" READ THE WORKING TREE (#333). What
+    it recognises is finished only once `_refuse_what_head_does_not_commit`
+    has found the two to be the same bytes wherever either was read.
     """
     if not (args.pr and args.branch) or current_branch(root) != args.branch:
         return False
@@ -2787,6 +2793,88 @@ def _awaits_its_pull_request(root: Path, args, kind: Kind) -> bool:
     landed = _git_answer(root, ["rev-parse", "--verify", "--quiet",
                                 f"refs/remotes/origin/{base}:{pin}"])
     return proposed is not None and proposed != landed
+
+
+def _refuse_what_head_does_not_commit(root: Path, rows: list[Row],
+                                      kind: Kind, branch: str, pinned: str,
+                                      target: str) -> None:
+    """The re-run `_awaits_its_pull_request` recognised finishes what HEAD
+    commits, so the working tree must hold HEAD's bytes wherever this run
+    read it, or the re-run is refused by name (#333).
+
+    TWO DECISIONS, ONE SOURCE. "Nothing to write" is judged from the
+    working tree — `read_pin` and `classify` — and the pull request's base
+    and repository are read from the manifest there too; whether a pull
+    request is owed is judged from HEAD, and HEAD is what the re-run pushes
+    and what its pull request carries. Over a tree that IS HEAD's that is
+    one answer. Over an in-place `apply --at C` left uncommitted on a
+    branch whose commit re-pins B it was two: the re-run pushed B under a
+    pull request titled C, and said the pin on the branch named C.
+
+    So the pin, the manifest and every pinned copy are compared with HEAD
+    BY BYTES (`_not_what_head_commits`). The index is not asked: nothing
+    here commits, and neither decision reads a staged entry. Nor is any
+    other path, a README or an untracked note, which neither decision
+    reads. The refusal comes before `gh` is asked or anything is pushed,
+    with nothing written, so there is nothing to roll back.
+    """
+    pin = "contracts/shape-pin.yaml"
+    differ = _not_what_head_commits(
+        root, list(dict.fromkeys([pin, kind.manifest,
+                                  *(row.path for row in rows)])))
+    if not differ:
+        return
+    head = (_git_answer(root, ["rev-parse", "HEAD"]) or "").strip()
+    committed = _committed_pin(root, pin)
+    carried = (f"; there the pin names {pinned[:12]} and HEAD's names "
+               f"{committed[:12]}, so the pull request would name one commit "
+               "and carry another" if committed and committed != pinned
+               else "")
+    raise Refusal(
+        "update-rerun-uncommitted",
+        f"--pr would finish the landing of {branch} from what HEAD "
+        f"({head[:12]}) commits, under a pull request naming {target[:12]}, "
+        "but the working tree does not hold what HEAD commits at "
+        + ", ".join(differ) + ". \"Nothing to write\" was judged from the "
+        "working tree, and the pull request's base and repository are read "
+        f"from it too{carried}.",
+        f"Remediation: a re-run finishes only what {branch} already "
+        "commits. Commit those changes on it if they are the re-pin to "
+        "propose, or put them back to HEAD's bytes if they are not, then "
+        "run the same command again. Nothing was written or pushed, and gh "
+        "was not asked.")
+
+
+def _not_what_head_commits(root: Path, paths: list[str]) -> list[str]:
+    """Those of `paths` whose bytes on disk are not the blob HEAD commits
+    at that path, or that HEAD does not commit at all, in the order given
+    (#333). A path git will not hash is one this cannot vouch for, and is
+    named with them.
+
+    `git hash-object` on the file, against `HEAD:<path>`: the clean filter
+    runs, so a CRLF checkout of an LF blob is HEAD's, and no index flag
+    hides an edit — `readme_is_committed`'s second question, asked of each
+    path.
+    """
+    differ = []
+    for path in paths:
+        disk = (_git_answer(root, ["hash-object", "--", path]) or "").strip()
+        head = (_git_answer(root, ["rev-parse", "--verify", "--quiet",
+                                   f"HEAD:{path}"]) or "").strip()
+        if not disk or disk != head:
+            differ.append(path)
+    return differ
+
+
+def _committed_pin(root: Path, pin: str) -> str:
+    """The `commit:` HEAD's shape pin names, or "" when that pin does not
+    read as a mapping (#333). Said in the refusal, never decided on."""
+    try:
+        parsed = parse_yaml(_git_answer(root, ["show", f"HEAD:{pin}"]) or "")
+    except YamlError:
+        return ""
+    return (str(parsed.get("commit") or "").lower()
+            if isinstance(parsed, dict) else "")
 
 
 def _pull_requests(answer: str) -> "list[tuple[str, str]] | None":
