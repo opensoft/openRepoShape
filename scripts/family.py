@@ -2072,10 +2072,13 @@ def _add_dry_run(family: Family, repository: str, project: str, path: str,
                  url: str, protocol: list[str], commit: str, at: str | None,
                  trailers: list[str]) -> int:
     """`add --dry-run` (#326), entered once every refusal `add` makes before
-    its first write has been asked — the holder's (`_checked_add_target`)
-    and the member's (`_probe_member`) — and before `MountRollback` is taken
-    or anything is mounted: what a real `add` would write, and no write to
-    the holder.
+    its first write has been asked — the holder's (`_checked_add_target`),
+    the member's (`_probe_member`) and whether the `id:` the probe read is
+    one a row already pins (`_checked_member_id`, #330, which `cmd_add` asks
+    of the probe's reading before it comes here, so the dry run refuses
+    `member-duplicate-id` through the one function the real run does) — and
+    before `MountRollback` is taken or anything is mounted: what a real
+    `add` would write, and no write to the holder.
 
     THE MEMBER IS READ A SECOND TIME, AS THE REAL RUN READS IT A SECOND
     TIME. A real `add` reads the member twice: the probe's throwaway clone,

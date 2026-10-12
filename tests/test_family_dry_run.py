@@ -60,6 +60,8 @@ from test_family import (  # noqa: F401
     validate,
 )
 from test_family_add_excludes import empty_holder  # noqa: F401
+#: The pinned project and the name its renamed copy is added under (#330).
+from test_family_add_member_id import PINNED, RENAMED
 from test_family_add_refusals import (  # noqa: F401
     GHOST, gitmodules_with, holder, offline, one_commit_remote, refusal,
     sections,
@@ -955,13 +957,48 @@ def a_members_line_edited_by_hand(root: Path) -> None:
         "\nmembers:\n", "\nmembers:  # edited by hand\n").encode("utf-8"))
 
 
+def a_renamed_copy_of_a_member(root: Path) -> Path:
+    """#330's case: a bare copy of the pinned `IRRS` under a name no row has,
+    `IRRS2`, so `holding` passes it and its `project.yaml` still records the
+    id `irrs` the row `IRRS` pins. It is a copy of the remote the holder's
+    own `.gitmodules` names, as a repository renamed at the forge is to
+    anybody who clones it by the new name, and it is made BESIDE the holder,
+    never in the family's remotes, which every test of the module shares.
+    Returns the directory of remotes the add is to read the member from."""
+    source = git("config", "-f", ".gitmodules", "--get",
+                 f"submodule.members/{PINNED}.url", cwd=root).stdout.strip()
+    remotes = root.parent / "renamed-remotes"
+    remotes.mkdir()
+    git("clone", "-q", "--bare", source, str(remotes / f"{RENAMED}.git"),
+        cwd=root.parent)
+    return remotes
+
+
 #: Each refusal `add` makes before its first write that a fixture provokes
 #: cheaply, in `add`'s own order, as `(--member, more arguments, set-up,
 #: what stderr starts with)`: the holder's own refusals first, then the
-#: member's, which need the probe's throwaway clone.
+#: member's, which need the probe's throwaway clone, and last the member's
+#: `id:` against the rows (#330), which needs what that clone read. A
+#: set-up that needs the member read from somewhere other than the family's
+#: remotes returns that directory of remotes; the others return None.
 ADD_REFUSALS = {
     "malformed": (SPARE, (), None, "REFUSED member-malformed: "),
     "malformed-dot": (f"{ORG}/..", (), None, "REFUSED member-malformed: "),
+    # #399's rule: a name that BEGINS with `.`, `_` or `-` is refused by the
+    # pattern, in its general sentence, in either position. (An owner that
+    # begins with `-` cannot be said as `--member <owner>/<project>`:
+    # argparse reads it as an option, so that spelling is the real run's
+    # test in `test_family_member_name.py`.)
+    "malformed-project-underscore": (f"{ORG}/_{SPARE}", (), None,
+                                     "REFUSED member-malformed: "),
+    "malformed-project-hyphen": (f"{ORG}/-{SPARE}", (), None,
+                                 "REFUSED member-malformed: "),
+    "malformed-project-dot": (f"{ORG}/.{SPARE}", (), None,
+                              "REFUSED member-malformed: "),
+    "malformed-owner-underscore": (f"_{ORG}/{SPARE}", (), None,
+                                   "REFUSED member-malformed: "),
+    "malformed-owner-dot": (f".{ORG}/{SPARE}", (), None,
+                            "REFUSED member-malformed: "),
     "duplicate-row": (f"{ORG}/{MEMBER}", (), None,
                       "REFUSED member-already-present: "),
     "duplicate-row-in-another-case": (
@@ -987,6 +1024,8 @@ ADD_REFUSALS = {
               "REFUSED member-not-a-project: "),
     "unreadable": (f"{ORG}/IRNOPE", (), None,
                    f"REFUSED reading {ORG}/IRNOPE. THE EXACT COMMAND WAS:"),
+    "duplicate-id": (f"{ORG}/{RENAMED}", (), a_renamed_copy_of_a_member,
+                     "REFUSED member-duplicate-id: "),
 }
 
 
@@ -1010,13 +1049,13 @@ def test_a_refusal_add_makes_before_it_mounts_is_the_same_under_dry_run(
     holder as it was, every hand edit a set-up made still in place, and no
     temporary clone behind."""
     env = isolated(offline, tmp_path)
+    remotes = family["remotes"]
     if set_up is not None:
-        set_up(holder)
+        remotes = set_up(holder) or remotes
     before = add_state(holder, env)
 
-    real = add(holder, env, family["remotes"], *extra, member=member)
-    dry = add(holder, env, family["remotes"], *extra, "--dry-run",
-              member=member)
+    real = add(holder, env, remotes, *extra, member=member)
+    dry = add(holder, env, remotes, *extra, "--dry-run", member=member)
 
     assert dry.returncode == real.returncode == 2, dry.stdout + dry.stderr
     assert dry.stdout == real.stdout
