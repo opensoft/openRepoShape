@@ -34,6 +34,9 @@ WHAT IS CHECKED
       3. the mounted tree carries a `project.yaml` whose `id` is the `id` this
          row records — a repository at the right commit is not by itself the
          project the row claims.
+    and, across the rows, that no two record ONE `id`: that is one project
+    pinned twice, however each row spelled its repository (#206). This one
+    reads `family.yaml` alone, so `--no-members` asks it too.
   - the COPIED shape files, each against its `sha256` row in
     `contracts/shape-pin.yaml`. Editing a copy in place is drift and the exit
     is to carry it upstream, never to update the digest.
@@ -50,6 +53,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import shlex
 import sys
 from pathlib import Path
 
@@ -518,12 +522,61 @@ def _check_shape_pin(root: Path, manifest: dict, report: Report) -> None:
     _check_shape_pin_files(root, pin, rel, report)
 
 
+def _check_member_ids_unique(root: Path, members: list,
+                             report: Report) -> None:
+    """No two rows record ONE `id:` — that is one project pinned twice (#206).
+
+    `id` is the member's own `project.yaml` id, so two rows recording the same
+    one mount the same project twice, however each row spelled its repository:
+    GitHub resolves `InkRouter/IRRS` and `inkrouter/irrs` to one repository,
+    and a `family.py add` that compared the spelling used to write both rows
+    and pass this gate. A row with no `id:` is `member-id-absent`'s finding
+    and a row with no `project:` is `member-project`'s, not this one's.
+
+    A row whose `project:` an earlier row already spells EXACTLY is
+    `member-duplicate`'s finding and is skipped here: one finding for one
+    fault, and the `remove` this one prints would take out both of those
+    rows, because `family.py remove` drops every row spelled that way.
+
+    It reads `family.yaml` alone, so it runs under `--no-members` too — the
+    run a private family's CI falls back to when its members cannot be
+    checked out. The remediation is runnable as printed: openRepoShape's
+    `scripts/family.py` from a checkout of the standard, this holder's own
+    path, and the later row's own spelling, which `remove` matches exactly.
+    """
+    ids: dict[str, str] = {}
+    projects: set[str] = set()
+    for row in members:
+        if not isinstance(row, dict):
+            continue
+        project = row.get("project")
+        if not isinstance(project, str) or not project or project in projects:
+            continue
+        projects.add(project)
+        if not row.get("id"):
+            continue
+        member_id = str(row["id"])
+        if member_id not in ids:
+            ids[member_id] = project
+            continue
+        first = ids[member_id]
+        report.finding(
+            "member-duplicate-id",
+            f"{project} and {first} both record id {member_id!r}: one "
+            "project is pinned twice. A family pins each project once. From "
+            f"a checkout of openRepoShape, `{PYTHON} scripts/family.py remove "
+            f"--family-root {shlex.quote(str(root))} --member "
+            f"{shlex.quote(project)}` takes the later row, {project}, out; "
+            f"name {first} there instead to keep {project}.")
+
+
 def _check_members(root: Path, members: list, no_members: bool,
                   report: Report) -> None:
     """Every row in `members:`, or the `--no-members` skip line.
 
     Split from `main` for #137.
     """
+    _check_member_ids_unique(root, members, report)
     if no_members:
         print(f"  --  {len(members)} member(s) SKIPPED (--no-members): "
               "their gitlinks, digests and project ids are not checked "

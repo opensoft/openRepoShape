@@ -24,7 +24,8 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            `leg: null`, `review_required: true` and the QUESTION to ask.
            A leg path over a path it keeps in the root itself is a NOTE,
            not a refusal: the answer is the person's to change.
-  check    validates a plan against the source: every path covered exactly
+  check    validates a plan against the source: each entry path bound for
+           a leg one `execute` will extract, every path covered exactly
            once, no unresolved legs, leg names conforming to the naming
            policy, each leg's mount path one `execute` can mount
            (`spec`, `legs/spec`; never `spec/` or `./spec`, a name Git or
@@ -389,20 +390,147 @@ class Registrations:
 #: and nothing dies.
 SUBMODULE_VALUED_KEY_RE = re.compile(
     r"submodule\.(?P<name>.*)\.(?:path|url|ignore|update|branch)")
+#: The keys git's submodule reader dies on when one has a VALUE it refuses,
+#: under a name it does not ignore (#215); `_refused_value` says which
+#: values. `ignore` with a value git does not know only warns, and `path`,
+#: `url` and `branch` take any value, so none of them is here.
+SUBMODULE_TYPED_KEY_RE = re.compile(
+    r"submodule\.(?P<name>.*)\.(?P<key>update|shallow|fetchrecursesubmodules)")
+#: The values `update` may take in a `.gitmodules` (submodule.c,
+#: `parse_submodule_update_type`), as git spells them, case and all.
+UPDATE_STRATEGIES = ("checkout", "rebase", "merge", "none")
+#: The words git reads as a boolean, in any ASCII case (config.c / parse.c,
+#: `git_parse_maybe_bool_text`).
+BOOLEAN_WORDS = ("true", "yes", "on", "false", "no", "off")
+#: An integer as `git_parse_signed` reads one: `strtoimax(value, &end, 0)`,
+#: which skips C whitespace and takes a sign and a hex, octal or decimal
+#: number -- and, where the C library reads C23 binary numbers (glibc 2.38
+#: or later, for one), a `0b` binary one -- and then a unit, which is all
+#: that may follow.
+GIT_INTEGER_RE = re.compile(
+    r"[ \t\n\v\f\r]*(?P<sign>[+-]?)(?P<digits>0[xX][0-9a-fA-F]+|0[bB][01]+"
+    r"|0[0-7]*|[1-9][0-9]*)(?P<unit>[kKmMgG]?)")
+#: `get_unit_factor`, by the unit's lower case.
+UNIT_FACTORS = {"": 1, "k": 1 << 10, "m": 1 << 20, "g": 1 << 30}
+#: The `int` git reads a boolean's number into: 2**31 - 1 is its largest.
+GIT_INT_BITS = 31
+#: Who refuses a value as a boolean (`_who_refuses_a_boolean`): no git
+#: reads it, or only some of the gits `execute` may run do, and why.
+EVERY_GIT = "every git"
+OLDER_GITS_REFUSE = ("a number git 2.49 and older refuse, and 2.50 and later "
+                     "read")
+SOME_LIBRARIES_REFUSE = ("a `0b` number, which a git reads only where its C "
+                         "library reads C23 binary numbers (glibc 2.38 or "
+                         "later, for one)")
+
+
+def _who_refuses_a_boolean(value: str) -> str | None:
+    """None where every git takes `value` as a boolean
+    (`git_parse_maybe_bool`): empty, which is false; one of BOOLEAN_WORDS;
+    or an integer `git_parse_int` takes, which is true unless it is zero.
+    Otherwise EVERY_GIT where no git takes it, or why only some do.
+
+    The integer must fit an `int` once its unit is applied. Where gits
+    differ on one, `check` refuses it with the gits that refuse it: a
+    refusal there costs an edit to an absurd value, and a git that refuses
+    it in the extraction costs both leg repositories. git 2.50 moved the
+    bound below zero by one (`(-max - 1) / factor`, where 2.49 and before
+    have `-max / factor`), so -2147483648, -2097152k, -2048m and -2g,
+    however spelled, are OLDER_GITS_REFUSE: measured with git 2.43, each
+    passed `check` and `execute` died after both leg repositories were
+    made. A `0b` number, which git reads only where its C library's
+    `strtoimax` does, is SOME_LIBRARIES_REFUSE."""
+    if not value or (value.isascii() and value.lower() in BOOLEAN_WORDS):
+        return None
+    number = GIT_INTEGER_RE.fullmatch(value)
+    if number is None:
+        return EVERY_GIT
+    digits = number["digits"]
+    binary = digits[1:2] in ("b", "B")
+    if digits[1:2] in ("x", "X"):
+        size = int(digits[2:], 16)
+    elif binary:
+        size = int(digits[2:], 2)
+    else:
+        size = int(digits, 8 if digits.startswith("0") else 10)
+    factor = UNIT_FACTORS[number["unit"].lower()]
+    every_git_reads = ((1 << GIT_INT_BITS) - 1) // factor
+    newer_gits_read = ((1 << GIT_INT_BITS) // factor if number["sign"] == "-"
+                       else every_git_reads)
+    if size > newer_gits_read:
+        return EVERY_GIT
+    if binary:
+        return SOME_LIBRARIES_REFUSE
+    if size > every_git_reads:
+        return OLDER_GITS_REFUSE
+    return None
+
+
+def _refused_value(key: str, value: str) -> str | None:
+    """What git's submodule reader dies on, in its words with the key and
+    the value spelled, when `key` is one SUBMODULE_TYPED_KEY_RE names and
+    `value` one git refuses for it; None otherwise (#215).
+
+    git reads the CHECKED-OUT `.gitmodules` through `gitmodules_cb`
+    (submodule-config.c), which sets `overwrite`, so `parse_config` reads
+    every value, a key given twice included, and dies on the first it
+    refuses. Read in the source code of git 2.39.5 through 2.51.0, the
+    same in each but for the bound `_who_refuses_a_boolean` names, and
+    measured with git 2.43 over `git fast-export`:
+
+      * `update`, `parse_submodule_update_strategy` (submodule.c): one of
+        UPDATE_STRATEGIES, or `!` and a command, which `parse_config`
+        refuses in a `.gitmodules`; anything else, an empty value too, ends
+        it with `invalid value for 'submodule.<name>.update'`.
+      * `shallow`, `git_config_bool`: a value `git_parse_maybe_bool` does not
+        read ends it with `bad boolean config value '<value>' for '<key>'`.
+      * `fetchrecursesubmodules`, `parse_fetch_recurse`, which dies on an
+        error for the checked-out file (`die_on_error`): a boolean or
+        `on-demand`, exactly; anything else ends it with `bad <key>
+        argument: <value>`.
+
+    A number only some gits read as a boolean is refused as the gits that
+    refuse it say, and the finding says which gits those are."""
+    typed = SUBMODULE_TYPED_KEY_RE.fullmatch(key)
+    if typed is None or _a_name_git_ignores(typed["name"]):
+        return None
+    said = _spelled(value) if value else "an empty value"
+    if typed["key"] == "update":
+        if value in UPDATE_STRATEGIES:
+            return None
+        why = (f"a command, which git never takes from a {GITMODULES}"
+               if value.startswith("!") else
+               f"which is not one of {_listed(list(UPDATE_STRATEGIES))}")
+        return f"invalid value for {_spelled(key)}: {said}, {why}"
+    refusers = _who_refuses_a_boolean(value)
+    if refusers is None:
+        return None
+    if typed["key"] == "shallow":
+        return (f"bad boolean config value {said} for {_spelled(key)}"
+                + ("" if refusers == EVERY_GIT else f", {refusers}"))
+    if value == "on-demand":
+        return None
+    return (f"bad {_spelled(key)} argument: {said}, "
+            + ("which is neither a boolean nor `on-demand`"
+               if refusers == EVERY_GIT else refusers))
 
 
 def _registrations(listed: bytes) -> Registrations | str:
-    """`git config -z --list` output, read by `Registrations`; or, for a
-    key SUBMODULE_VALUED_KEY_RE names with no value at all, what git's
-    submodule reader dies on. `-z` prints such a key with no newline, and
-    git looks for its value after it has filtered the name and before it
-    filters the value."""
+    """`git config -z --list` output, read by `Registrations`; or what git's
+    submodule reader dies on, at the first key in the file it dies on: one
+    SUBMODULE_VALUED_KEY_RE names with no value at all, or one whose value
+    it refuses (`_refused_value`, #215). `-z` prints a key with no value
+    with no newline, and git looks for its value after it has filtered the
+    name and before it filters the value."""
     registrations = Registrations()
     for record in listed.split(b"\x00"):
         key, newline, value = _git_path(record).partition("\n")
         valued = SUBMODULE_VALUED_KEY_RE.fullmatch(key)
         if valued and not newline and not _a_name_git_ignores(valued["name"]):
             return f"missing value for '{key}'"
+        refused = _refused_value(key, value) if newline else None
+        if refused:
+            return refused
         match = SUBMODULE_KEY_RE.fullmatch(key)
         if not match:
             continue
@@ -669,9 +797,13 @@ class Source:
         in `git fast-export` with `missing value for 'submodule.b.path'`,
         after both leg repositories were made. Where the history holds none
         either, nothing ever reads the file that way, and it registers
-        nothing (#166's S3). A line git cannot parse at all is another
-        matter: every reader dies on it, and the history says only which
-        reader dies first.
+        nothing (#166's S3). A VALUE git's submodule reader refuses --
+        `update = bogus`, `shallow = maybe`, `_refused_value` -- is read the
+        same way, wherever the gitlink is (#215): `git config --list` exits
+        0 on it, and on main `check` passed it while `execute` died in `git
+        fast-export` after both leg repositories were made. A line git
+        cannot parse at all is another matter: every reader dies on it, and
+        the history says only which reader dies first.
         """
         if not any(path == GITMODULES for path, _, _, _ in tree):
             return Registrations()
@@ -1296,15 +1428,17 @@ def _kept_collisions(what: str, value: str, kept: list) -> list[str]:
     for entry, found in hits.items():
         path, mode = found[0]
         relation, aside = _overlap(value, path)
-        named = _first_and_more([p for p, _ in found])
+        named = _first_and_more([p for p, _ in found], _spelled)
         them = "them" if len(found) > 1 else "it"
-        under = "" if entry == path else f" under the entry `{entry}`"
+        under = ("" if entry == path else
+                 f" under the entry {_spelled(entry)}")
         out.append(
             f"{what} {value!r} {relation} {_kind_of(mode)} {named}{aside}. "
             f"The plan keeps {them} in the assembly root{under}, and Git "
             "cannot mount a leg at a path the root's own tree holds, or "
             "beyond a file, symlink or submodule it holds on the way there: "
-            f"{MOVE_THE_LEG}, or send `{entry}` to a leg or `drop` it.")
+            f"{MOVE_THE_LEG}, or send {_spelled(entry)} to a leg or `drop` "
+            "it.")
     return out
 
 
@@ -1924,12 +2058,16 @@ def _coverage_findings(entry_paths: list[str], tree_paths: list[str]) -> list[st
     Both halves matter and they fail differently: an uncovered path is a file
     the split would silently drop, and an entry covering nothing is a plan
     describing a tree that no longer exists.
+
+    Every path is `_spelled`, as a question names it. Printed raw, a source
+    name holding a line break, an ESC or any other character
+    `str.isprintable` refuses split or overwrote the line it was on (#212).
     """
     findings: list[str] = []
     duplicates = sorted({p for p in entry_paths if entry_paths.count(p) > 1})
     for path in duplicates:
-        findings.append(f"FINDING plan-duplicate-path: {path} appears "
-                        f"{entry_paths.count(path)} times")
+        findings.append(f"FINDING plan-duplicate-path: {_spelled(path)} "
+                        f"appears {entry_paths.count(path)} times")
     uncovered, multiple = [], []
     for path in tree_paths:
         covering = _covering(entry_paths, path)
@@ -1938,18 +2076,18 @@ def _coverage_findings(entry_paths: list[str], tree_paths: list[str]) -> list[st
         elif len(covering) > 1:
             multiple.append((path, covering))
     for path in uncovered[:20]:
-        findings.append(f"FINDING plan-uncovered: {path} is in the source "
-                        "tree and in no plan entry")
+        findings.append(f"FINDING plan-uncovered: {_spelled(path)} is in the "
+                        "source tree and in no plan entry")
     if len(uncovered) > 20:
         findings.append(f"FINDING plan-uncovered: … and {len(uncovered) - 20} "
                         "more uncovered paths")
     for path, covering in multiple[:20]:
-        findings.append(f"FINDING plan-covered-twice: {path} is covered by "
-                        f"{covering}")
+        findings.append(f"FINDING plan-covered-twice: {_spelled(path)} is "
+                        f"covered by {_listed(covering)}")
     used = {p for path in tree_paths for p in _covering(entry_paths, path)}
     for path in sorted(set(entry_paths) - used):
-        findings.append(f"FINDING plan-empty-entry: {path} covers nothing in "
-                        "the source tree at this commit")
+        findings.append(f"FINDING plan-empty-entry: {_spelled(path)} covers "
+                        "nothing in the source tree at this commit")
     return findings
 
 
@@ -1991,14 +2129,15 @@ def _leg_findings(plan: Plan, tree: list | None) -> list[str]:
             findings = _leg_collision_findings(plan, tree)
     for entry in plan.entries:
         leg = entry.get("leg")
+        path = _spelled(str(entry.get("path")))
         if leg is None:
             findings.append(
-                f"FINDING plan-unresolved: {entry.get('path')} still has "
-                f"`leg: null`. The question was: {entry.get('question')}")
+                f"FINDING plan-unresolved: {path} still has `leg: null`. The "
+                f"question was: {entry.get('question')}")
         elif str(leg) not in LEG_VALUES:
             findings.append(
-                f"FINDING plan-bad-leg: {entry.get('path')} declares leg "
-                f"{leg!r}; it is one of {list(LEG_VALUES)}")
+                f"FINDING plan-bad-leg: {path} declares leg {leg!r}; it is "
+                f"one of {list(LEG_VALUES)}")
     return findings
 
 
@@ -2076,8 +2215,11 @@ def _answered_legs(entries: list, paths: list[str]) -> dict:
 
 
 def _as_entry(path: str, entry: str) -> str:
-    """`path`, and the plan entry to edit when that is a directory above it."""
-    return path if entry == path else f"{path} (entry {entry})"
+    """`path`, and the plan entry to edit when that is a directory above it,
+    each `_spelled`: a submodule's path is a source name, and the finding
+    that names it is one line (#212)."""
+    named = _spelled(path)
+    return named if entry == path else f"{named} (entry {_spelled(entry)})"
 
 
 def submodule_plan_problems(entries: list, tree: list,
@@ -2197,11 +2339,11 @@ def _where_git_fails(entries: list, tree: list, registry_leg: str | None,
         gitlink, which the clone checks out as a directory and which
         registers nothing.
 
-    A key with no value is fatal to git's submodule reader alone, which git
-    runs only for a gitlink, so `Source.registered_submodules` reads it as
-    registering nothing where neither the tree nor the history `git
-    fast-export` diffs holds one, and it reaches here only where one of them
-    does.
+    A key with no value, or a value git refuses (#215), is fatal to git's
+    submodule reader alone, which git runs only for a gitlink, so
+    `Source.registered_submodules` reads it as registering nothing where
+    neither the tree nor the history `git fast-export` diffs holds one, and
+    it reaches here only where one of them does.
     """
     a_file = any(path == GITMODULES and mode in FILE_MODES
                  for path, mode, _, _ in tree)
@@ -2281,11 +2423,237 @@ def _submodule_findings(plan: Plan, source: Source,
     return found, [SUBMODULE_REMEDIATION] if found else []
 
 
+#: The answers that never extract an entry into a leg. A path answered
+#: `root` stays in the assembly root and reaches no `git` command but as a
+#: line of the split commit's message; one answered `drop` reaches only
+#: `git rm`, as a literal path after `--`, and that message. Neither is ever
+#: a line of the path list `git filter-repo` reads, so `entry_path_problem`
+#: does not judge them (#196).
+NOT_EXTRACTED = ("root", "drop")
+
+#: Two characters Python's `str.splitlines` ends a line at that are not
+#: control characters. `entry_path_problem` refuses them with the control
+#: characters, as policy.
+LINE_SEPARATORS = "\u2028\u2029"
+
+#: The surrogates `surrogateescape` reads a byte that is not UTF-8 as, and
+#: writes back as that byte (`Source.tree`, `write_paths_listing`): a path's
+#: byte 0x80 to 0xFF is one of these. `entry_path_problem` refuses them as
+#: policy, and every other surrogate as a misreading.
+NOT_UTF8_BYTES = frozenset(map(chr, range(0xDC80, 0xDD00)))
+
+#: What every policy refusal says of git and `git filter-repo`, because it is
+#: true of each of them, measured: a policy refusal is not a misreading.
+TAKEN_LITERALLY = "though git and `git filter-repo` would take it literally"
+
+
+def entry_path_problem(path: str) -> str | None:
+    """Why `execute` will not extract the entry path `path` into a leg, or
+    None.
+
+    ONE TEST, asked by `check`, which reports what it finds as the finding
+    `plan-unsafe-path`, and by `execute`, which refuses that finding in
+    `check`'s words through `_refuse_what_check_finds` before any leg exists
+    (#196). On main at e4decfb `check` asked nothing of an entry's path and
+    `execute` asked `checked_value`, so a source holding `My Notes.md`
+    checked `plan ok` and `execute` refused it as `unsafe-value`.
+
+    AN ENTRY'S PATH IS A FACT OF THE SOURCE, NOT AN OPTION. `plan` writes it
+    from the tree, and a tree legitimately holds a space, a letter outside
+    ASCII, `#`, `$`, `(`, `'`, `"`, `;`, `&`, `[`, `*`: none of them is the
+    threat, as `repo_shape.SAFE_PATH_RE` says of a path the operator names.
+    Every command is argv with `shell=False`, and in `execute` an entry's
+    path reaches `git` in two places, each spelled so git reads it
+    LITERALLY:
+
+      * as one `literal:` line of the path list `git filter-repo
+        --paths-from-file` reads (`_extract_leg`). Without the prefix a line
+        starting with `#` is a comment and one starting with `regex:`,
+        `glob:` or `literal:` is that directive, so `#notes.md` was left out
+        of its leg -- removed from the root by the split, then found nowhere;
+      * as a pathspec after `--` to `git --literal-pathspecs rm`
+        (`_mount_the_legs`). After `--` a path is no option, but it is still
+        a pathspec: `*` and `?` are wildcards and a leading `:` is magic, and
+        `git rm -- ':!keep.md'` removes every other path in the tree.
+
+    Two kinds of path are refused, and each finding says which kind, and
+    why. First, `_misread`: a path one of those two places, or this tool's
+    own write of the list, would NOT carry as it stands. Then
+    `_refused_by_policy`: a path both would carry, measured, that this tool
+    still will not move into a leg. A path with a reason of each kind is
+    told the misreading.
+
+    THE VALUES THAT ARE OPTIONS ARE ANOTHER MATTER: a leg's mount path, a
+    branch, a repository name, the organisation. They stay under
+    `checked_value`'s narrow alphabet and are refused as `unsafe-value`
+    (#168, #169).
+    """
+    return _misread(path) or _refused_by_policy(path)
+
+
+def _misread(path: str) -> str | None:
+    """Why `path`, as a `literal:` line or a literal pathspec, would not reach
+    git or `git filter-repo` as the path it is. Measured with git 2.43 and
+    git-filter-repo 2.47.0, whose `get_paths_from_file` reads its list a line
+    at a time, strips `\\r` and `\\n` from each line's end, skips a blank
+    line, and looks for `==>` before anything else:
+
+      * an empty path: a `literal:` line with nothing after it matches every
+        path, and the leg took the whole tree (and `git rm` refuses an empty
+        pathspec);
+      * a line feed, anywhere: it ends the path's line, and the rest is read
+        as a line of its own -- `docs\\nregex:.*` kept every path;
+      * a carriage return at the END: stripped, so `Icon\\r` -- the macOS
+        folder-icon file -- was read as `Icon`, and the leg took that file
+        instead. A name of carriage returns alone leaves `literal:` with
+        nothing after it, which, as for the empty path, kept every path. A
+        carriage return elsewhere is carried, and is policy's;
+      * a NUL, which no command line can carry (`subprocess` raises), and
+        which git records in no path;
+      * a lone surrogate (category Cs) outside U+DC80 to U+DCFF, such as a
+        hand-edited `\\ud800`. `Source.tree` reads a byte that is not UTF-8
+        as one of U+DC80 to U+DCFF (`surrogateescape`), so no path of the
+        source holds any other, and `_extract_leg`'s `write_paths_listing`
+        cannot write one: it raised `UnicodeEncodeError`, measured. (Such an
+        entry also covers nothing, so `check` reports `plan-empty-entry`
+        beside it.) A byte that is not UTF-8 is policy's;
+      * `==>`, which `git filter-repo` reads as a RENAME wherever it is on a
+        line, before it looks for `literal:`, and which nothing escapes:
+        `literal:a==>b.md` beside `literal:keep.md` extracted only
+        `keep.md`.
+    """
+    if not path:
+        return ("it is empty: a `literal:` line with nothing after it "
+                "matches every path, so `git filter-repo` would put the "
+                "whole tree in the leg")
+    if "\n" in path:
+        return ("it holds a line feed (`\\n`), which ends its line of the "
+                "path list `git filter-repo` reads, so the rest of the name "
+                "would be read as a line of its own")
+    if path.endswith("\r"):
+        rest = path.rstrip("\r")
+        named = (f"would name {_spelled(rest)}, another path" if rest
+                 else "would be `literal:` alone, which matches every path, "
+                      "so `git filter-repo` would put the whole tree in the "
+                      "leg")
+        return ("it ends in a carriage return (`\\r`), which `git "
+                "filter-repo` strips from the end of each line of the path "
+                f"list it reads, so its line {named}")
+    if "\x00" in path:
+        return ("it holds a NUL (`\\x00`), which no command line can carry "
+                "and git records in no path")
+    for char in path:
+        if "\ud800" <= char <= "\udfff" and char not in NOT_UTF8_BYTES:
+            return (f"it holds `{_spelled_character(char)}`, a surrogate no "
+                    "byte of a path is read as, so it names no path of the "
+                    "source, and the path list `git filter-repo` reads cannot "
+                    "be written with it")
+    if "==>" in path:
+        return ("it holds `==>`, which `git filter-repo --paths-from-file` "
+                "reads as a rename wherever it is on the line, and nothing "
+                "on the line escapes it")
+    return None
+
+
+def _refused_by_policy(path: str) -> str | None:
+    """Why this tool will not move `path` into a leg although git and `git
+    filter-repo` would take it literally. MEASURED, each as one `literal:`
+    line and as `git --literal-pathspecs rm -r -q -- <path>`: a tab, `\\x01`,
+    ESC, DEL, `\\x85`, `\\x0b`, `\\x0c`, `\\x1c`, U+2028, a carriage return
+    that does not end the name, `-n.md`, ` ` and three spaces were each
+    extracted, and removed, as exactly that path and nothing else. So each
+    finding below says it is policy, and never that a line would break:
+
+      * a name that is nothing but whitespace, which shows as blank wherever
+        a name is printed. (`git commit` even strips a line of spaces from
+        the split commit's message, which lists the moved paths.)
+      * a control character (C0, DEL, C1) or a line separator: a name that
+        holds one is almost never meant, and printed as it stands -- as
+        `git log` prints a commit message, ESC and `\\x01` raw, measured --
+        it cannot be seen for what it is;
+      * a byte that is not UTF-8, which `Source.tree` keeps as one of
+        U+DC80 to U+DCFF (`surrogateescape`). Since #199 (PR #247)
+        `write_paths_listing` writes it as that byte, and with this refusal
+        disabled a source holding `caf\\xe9.md` was extracted and verified,
+        the byte in the leg, measured. It is held until adopting such a name
+        end to end is measured on macOS and Windows: a name that holds one
+        prints as an escape, never as itself, and the split commit's message
+        lists it with a `?` for the byte (`env_commit`);
+      * a leading `-`, the threat model's first rule
+        (`repo_shape.checked_value`), held although neither place in
+        `entry_path_problem` takes it as an option: a line of the filter's
+        path list is none, and `git rm` is given it after `--`.
+    """
+    if not path.strip():
+        return ("it is nothing but whitespace, which `execute` refuses as "
+                f"policy, {TAKEN_LITERALLY}: such a name shows as blank "
+                "wherever a name is printed")
+    for char in path:
+        if ord(char) < 0x20 or 0x7F <= ord(char) <= 0x9F \
+                or char in LINE_SEPARATORS:
+            kind = ("line separator" if char in LINE_SEPARATORS
+                    else "control character")
+            return (f"it holds the {kind} `{_spelled_character(char)}`, "
+                    f"which `execute` refuses as policy, {TAKEN_LITERALLY}: "
+                    "a name that holds one is almost never meant, and "
+                    "printed as it stands, as `git log` prints a commit "
+                    "message, it cannot be seen for what it is")
+    for char in path:
+        if char in NOT_UTF8_BYTES:
+            return (f"it holds `{_spelled_character(char)}`, which is not "
+                    "UTF-8 and which `execute` refuses as policy, "
+                    f"{TAKEN_LITERALLY}: a name that holds one prints as an "
+                    "escape and never as itself, the split commit's message "
+                    "would list it with a `?` for that byte, and adopting "
+                    "one is not yet measured on macOS or Windows")
+    if path.startswith("-"):
+        return ("it begins with `-`, which `execute` refuses as policy, "
+                f"{TAKEN_LITERALLY} (a line of the filter's path list is no "
+                "option, and `git rm` is given it after `--`): no value this "
+                "tool hands git may begin with `-`, the threat model's first "
+                "rule")
+    return None
+
+
+#: What a plan whose entry `entry_path_problem` refuses is told to do. Said by
+#: `check`, once after its findings, and by `execute`'s refusal.
+UNSAFE_PATH_REMEDIATION = (
+    "Remediation: an entry's `path:` names a path in the source tree, so the "
+    "plan cannot respell it: the respelled entry would cover nothing and the "
+    "path itself would be uncovered. Rename the path in the source, commit, "
+    "and re-run `plan`. Or, if it belongs in no leg, answer the entry `root` "
+    "or `drop`: a path that stays in the assembly root reaches no `git` "
+    "command, and a dropped one reaches only `git rm`, as a literal path "
+    "after `--`. Only a path the plan names as an entry is judged: a name "
+    "below a directory entry is extracted with that directory and never "
+    "written on its own.")
+
+
+def _unsafe_path_findings(plan: Plan) -> tuple[list[str], list[str]]:
+    """`entry_path_problem` for each entry not answered `root` or `drop`, as
+    `check` prints it, one FINDING each; and what to print ONCE after every
+    finding, as `_submodule_findings` does. An unanswered entry is judged
+    too, so the person answering its question knows what `spec` or `code`
+    would meet."""
+    found = []
+    for entry in plan.entries:
+        if str(entry.get("leg")) in NOT_EXTRACTED:
+            continue
+        path = str(entry.get("path"))
+        problem = entry_path_problem(path)
+        if problem:
+            found.append(f"FINDING plan-unsafe-path: {_spelled(path)} has "
+                         f"leg: {y(entry.get('leg'))}, and `execute` will "
+                         f"not extract it into a leg: {problem}")
+    return found, [UNSAFE_PATH_REMEDIATION] if found else []
+
+
 def _entry_findings(plan: Plan, source: Source
                     ) -> tuple[list[str], list[str]]:
     """Every FINDING `check` prints about the plan's ENTRIES, in its order,
-    and what it prints once after them: coverage, then each entry's `leg:`
-    and the two mount paths, then the source's own submodules.
+    and what it prints once after them: each entry's path, then coverage,
+    then each entry's `leg:` and the two mount paths, then the source's own
+    submodules.
 
     ONE LIST, read by `check` and by `execute`'s `_refuse_what_check_finds`.
     #168 and #166 each added findings to `check` and a refusal to `execute`
@@ -2299,15 +2667,22 @@ def _entry_findings(plan: Plan, source: Source
     the root are read out of it (#172, #191): without it a mount path at, or
     beyond, a kept source path checks ok and dies at `git submodule add`
     after both legs are pushed.
+
+    THE PATHS COME FIRST (#196), so that `_refuse_what_check_finds` wears
+    `plan-unsafe-path` for a plan that has one: a path that is a `git` option
+    is refused as that, and never as the uncovered file it also leaves.
     """
     tree = source.tree()
-    findings = (_coverage_findings([str(e.get("path")) for e in plan.entries],
-                                   [path for path, _, _, _ in tree])
+    unsafe, unsafe_remediation = _unsafe_path_findings(plan)
+    findings = (unsafe
+                + _coverage_findings([str(e.get("path"))
+                                      for e in plan.entries],
+                                     [path for path, _, _, _ in tree])
                 + _leg_findings(plan, tree))
     value_findings, value_remediation = _manifest_findings(plan)
     submodule_findings, remediation = _submodule_findings(plan, source, tree)
     return (findings + value_findings + submodule_findings,
-            value_remediation + remediation)
+            unsafe_remediation + value_remediation + remediation)
 
 
 def _topics_line(topic: str, local: bool) -> str:
@@ -2362,10 +2737,10 @@ def cmd_check(args) -> int:
     if plan.source_commit and source.commit != plan.source_commit:
         findings.append(
             f"FINDING plan-stale: the plan was written against "
-            f"{plan.source_commit[:12]} but {source.branch} is now at "
-            f"{source.commit[:12]}. Re-run `plan`: a coverage check against a "
-            "tree that has moved proves nothing about the tree that will be "
-            "split.")
+            f"{plan.source_commit[:12]} but {_spelled(source.branch)} is now "
+            f"at {source.commit[:12]}. Re-run `plan`: a coverage check "
+            "against a tree that has moved proves nothing about the tree that "
+            "will be split.")
 
     entry_findings, remediation = _entry_findings(plan, source)
     findings.extend(entry_findings)
@@ -2463,7 +2838,7 @@ def _refuse_an_unrunnable_plan(plan: Plan, source: Source) -> None:
         raise Refusal(
             "plan-unresolved",
             f"{len(unresolved)} path(s) still have `leg: null`: "
-            + ", ".join(str(e.get("path")) for e in unresolved[:8]),
+            + _listed([str(e.get("path")) for e in unresolved[:8]]),
             "Remediation: answer each entry's `question:` by setting `leg:` "
             "and adding a `resolution:` line, then run `check`. An unanswered "
             "question is never an implicit `root`.")
@@ -2471,7 +2846,7 @@ def _refuse_an_unrunnable_plan(plan: Plan, source: Source) -> None:
         raise Refusal(
             "plan-stale",
             f"the plan was written against {plan.source_commit[:12]} and "
-            f"{source.branch} is now at {source.commit[:12]}",
+            f"{_spelled(source.branch)} is now at {source.commit[:12]}",
             "Remediation: re-run `plan`, re-answer anything new, then "
             "`check`. Splitting a tree the plan has not seen is how a path "
             "goes missing.")
@@ -2535,9 +2910,14 @@ def _extract_leg(role: str, source: Source, work: Path, paths: list[str],
     # path contains - so on Windows every pattern would match nothing, the
     # filter would succeed, and the leg would be pushed EMPTY. A silent
     # extraction of nothing is the worst shape this failure could take.
+    # `literal:` on every line (#196): filter-repo reads a line starting with
+    # `#` as a comment and one starting with `regex:`, `glob:` or `literal:`
+    # as that directive, so a source file named `#notes.md` was left out of
+    # its leg after both legs existed. The prefix takes the rest of the line
+    # as it stands; what no line can carry, `entry_path_problem` refuses.
     # And byte-exact: a path that is not UTF-8 is written as the bytes
     # git records, where `write_lf` raised after both legs existed.
-    write_paths_listing(listing, paths)
+    write_paths_listing(listing, [f"literal:{path}" for path in paths])
     run(["git", "filter-repo", "--paths-from-file", str(listing), "--force"],
         cwd=work)
     head = git_out(["rev-parse", "HEAD"], cwd=work).lower()
@@ -2637,7 +3017,10 @@ def _index_entries(assembly: Path,
     disk's `core.ignorecase` says: the assembly is cloned on macOS and Windows
     too, where `Spec` and `spec` are ONE path, so it is refused on every disk,
     as #169 refuses case-only twins of the two leg paths. `-z`, for a path
-    git would otherwise quote.
+    git would otherwise quote. A name that is not UTF-8 keeps each byte as a
+    surrogate, as `Source.tree` keeps it, so the refusal spells the byte 0xFF
+    `\\xff`, as every other finding does (#212). Decoded with `replace`,
+    `a<0xFF>` and `a<0xFE>` both read `a<U+FFFD>`.
     """
     raw = git_out(["--icase-pathspecs", "ls-files", "-s", "-z", "--",
                    *pathspecs], cwd=assembly, binary=True)
@@ -2646,13 +3029,16 @@ def _index_entries(assembly: Path,
         if record:
             head, _, name = record.partition(b"\t")
             kind = INDEX_ENTRY_KINDS.get(int(head.split()[0], 8), "a file")
-            entries.append((kind, name.decode("utf-8", "replace")))
+            entries.append((kind, name.decode("utf-8",
+                                              "surrogateescape")))
     return entries
 
 
 def _entry_named(entry: tuple[str, str]) -> str:
+    """The index entry and its kind. Its name is a source name the plan kept
+    in the root, so it is `_spelled`, as every path a finding names (#212)."""
     kind, name = entry
-    return f"`{name}` ({kind})"
+    return f"{_spelled(name)} ({kind})"
 
 
 def _occupied(detail: str) -> Refusal:
@@ -2748,8 +3134,12 @@ def _mount_the_legs(assembly: Path, work_root: Path, names: dict, urls: dict,
                                               + paths_for["code"]
                                               + paths_for["drop"])),
                      key=lambda p: (p != GITMODULES, p))
+    # `--literal-pathspecs` (#196): after `--` a path is no option, but it is
+    # still a pathspec, where `*` and `?` are wildcards and a leading `:` is
+    # magic -- `git rm -- ':!keep.md'` removes every other path in the tree.
     for path in removed:
-        run(["git", "rm", "-r", "-q", "--", path], cwd=assembly)
+        run(["git", "--literal-pathspecs", "rm", "-r", "-q", "--", path],
+            cwd=assembly)
     # The plan moved (or dropped) the source's own .gitmodules, so its deletion
     # is staged, and `git submodule add` refuses to write into a file the index
     # says is going away. Give the assembly a fresh, EMPTY, staged one for its
@@ -2850,10 +3240,16 @@ def _repository_urls(args, plan: Plan, names: dict,
 def _leg_paths(plan: Plan) -> dict:
     """Every plan entry's path, by the leg it was assigned to.
 
-    Each one is checked because it reaches `git filter-repo` as an argument.
-    Split out of `cmd_execute` for #138.
+    COLLECTED, NOT JUDGED (#196). An entry's path is a fact of the source,
+    not an option, and what `execute` cannot hand to `git` is
+    `entry_path_problem`'s to say: `check`'s finding `plan-unsafe-path`,
+    which `_refuse_what_check_finds` refuses on the next line of
+    `cmd_execute`, before any of these paths is used and before any leg
+    exists. Judging them here as well would be a second refusal, composed
+    apart from `check`'s list and said before it. Split out of `cmd_execute`
+    for #138.
     """
-    return {leg: [checked_value("a plan path", e.get("path"))
+    return {leg: [str(e.get("path"))
                   for e in plan.entries if str(e.get("leg")) == leg]
             for leg in LEG_VALUES}
 
@@ -2905,12 +3301,16 @@ def _refuse_what_check_finds(plan: Plan, source: Source) -> None:
     `_leg_findings` also reports `plan-unresolved`, which that function has
     already refused in its own words, and a plan written against a tree that
     has since moved is `plan-stale`, not whatever its stale coverage happens
-    to lack. And it runs AFTER `_leg_paths` has checked, as a safe `git`
-    argument, the path of every entry whose `leg:` is one of the four words,
-    because a path that is an option is `unsafe-value` and must stay that, not
-    become an uncovered file. An entry with any other `leg:` is not checked
-    there and reaches no `git` command; it is refused here, under whichever
-    finding `check` lists first. It runs BEFORE `_refuse_unconsented_seeding`,
+    to lack. A VALUE THAT IS AN OPTION AND A PATH THAT IS A FACT ARE TWO
+    TESTS (#196). A leg's mount path, a branch, a repository name and the
+    organisation are options: `checked_value` refuses them as `unsafe-value`
+    in `_checked_plan_values` and `_repository_urls`, before this runs. An
+    entry's path is a fact of the source, judged by `entry_path_problem` as
+    `check`'s own finding `plan-unsafe-path`, which `_entry_findings` lists
+    FIRST: a path that is a `git` option is refused as that, and never as the
+    uncovered file it also leaves. `_leg_paths` collects the entries' paths
+    without judging them, and nothing uses one before this has run. It runs
+    BEFORE `_refuse_unconsented_seeding`,
     `_confirm` and `_create_leg_remotes`, so no leg repository is created and
     nothing is pushed until every refusal has passed. (`_work_root` has
     already made the work directory and an `org/repo` source has already been
@@ -2923,7 +3323,7 @@ def _refuse_what_check_finds(plan: Plan, source: Source) -> None:
     nothing else, and `_refuse_an_unrunnable_plan` is back to its two
     states: a plan `check` rejects as uncovered and split is refused for
     both at once, and a submodule problem is refused here like any other,
-    after `_leg_paths` has checked every path as a `git` argument.
+    after the entries' paths, which are the first of these findings.
     """
     findings, remediation = _entry_findings(plan, source)
     if not findings:
@@ -3408,13 +3808,14 @@ def _account_for(before: dict, after: dict, drops: list[str]) -> tuple[dict, lis
         if len(landings) == 1:
             counts[landings[0].split(":", 1)[0]] += 1
         elif landings:
-            findings.append(f"FINDING adopt-duplicated: {path} is in "
-                            + ", ".join(landings))
+            findings.append(f"FINDING adopt-duplicated: {_spelled(path)} is "
+                            "in " + ", ".join(landings))
         elif any(path == d or path.startswith(d + "/") for d in dropped):
             counts["drop"] += 1
         else:
-            findings.append(f"FINDING adopt-lost: {path} ({oid[:12]}) is in no "
-                            "leg, not in the root tree, and not listed as drop")
+            findings.append(f"FINDING adopt-lost: {_spelled(path)} "
+                            f"({oid[:12]}) is in no leg, not in the root "
+                            "tree, and not listed as drop")
     return counts, findings
 
 
@@ -3467,7 +3868,10 @@ def _land_the_root_tree(after: dict, tree: list, before: dict,
         pins a leg it does not mount, and its recursive clone gets no leg.
 
     They name the mount paths as the plan spells them, which since #169 is
-    the one spelling git records a mount at.
+    the one spelling git records a mount at. The gitlink a finding names is
+    `_spelled`, as every path a finding names is (#212): its path is a source
+    or split name, where a mount path is a leg path, which `checked_value`'s
+    alphabet already keeps printable.
 
     THE ROOT `.gitmodules` IS STILL COMPARED BYTE FOR BYTE, deliberately, and
     not by its registrations. The source's own cannot reach here: `check`
@@ -3509,15 +3913,15 @@ def _root_gitlink_finding(path: str, oid: str, before: dict,
     own, when it is as foreign to the source as one at a new path.
     """
     if before.get(path) == oid:
-        return (f"FINDING adopt-root-submodule: {path} is a gitlink to "
-                f"{oid[:12]} in the root tree, the source's own submodule at "
-                "its own commit, and the assembly root keeps no submodule of "
-                f"the source's: its {GITMODULES} is reserved for its two leg "
-                f"mounts; {ROOT_SUBMODULE_DEFECT}")
-    return (f"FINDING adopt-unexpected-gitlink: {path} is a gitlink to "
-            f"{oid[:12]} in the root tree, and neither a leg mount as the "
-            f"plan spells their paths ({', '.join(sorted(mounts))}) nor the "
-            f"source's own submodule at that commit; {SPLIT_DEFECT}")
+        return (f"FINDING adopt-root-submodule: {_spelled(path)} is a "
+                f"gitlink to {oid[:12]} in the root tree, the source's own "
+                "submodule at its own commit, and the assembly root keeps no "
+                f"submodule of the source's: its {GITMODULES} is reserved for "
+                f"its two leg mounts; {ROOT_SUBMODULE_DEFECT}")
+    return (f"FINDING adopt-unexpected-gitlink: {_spelled(path)} is a "
+            f"gitlink to {oid[:12]} in the root tree, and neither a leg mount "
+            f"as the plan spells their paths ({', '.join(sorted(mounts))}) "
+            f"nor the source's own submodule at that commit; {SPLIT_DEFECT}")
 
 
 def _what_is_at(tree: list, path: str) -> str:
@@ -3595,11 +3999,11 @@ class _SplitTree:
             if target is None:
                 done.append(part)
                 continue
-            hops, via = hops + 1, f" at the symlink {at}"
+            hops, via = hops + 1, f" at the symlink {_spelled(at)}"
             if hops > SYMLINK_HOPS:
                 raise _NotInTheSplitError(
-                    f"runs round a symlink loop at {at} in the split commit "
-                    f"{self.commit}")
+                    f"runs round a symlink loop at {_spelled(at)} in the "
+                    f"split commit {self.commit}")
             parts = self._parts(target, via) + parts
         return "/".join(done)
 
@@ -3607,7 +4011,7 @@ class _SplitTree:
         if target.startswith("/"):
             raise _NotInTheSplitError(
                 f"leads out of the split commit {self.commit}{via}, to "
-                f"{target}")
+                f"{_spelled(target)}")
         return [part for part in target.split("/") if part not in ("", ".")]
 
     def _up(self, done: list[str], via: str) -> list[str]:
@@ -3620,8 +4024,8 @@ class _SplitTree:
         here = "/".join(done)
         if not self._is_dir(here):
             raise _NotInTheSplitError(
-                f"passes through {here}, which is not a directory in the "
-                f"split commit {self.commit}")
+                f"passes through {_spelled(here)}, which is not a directory "
+                f"in the split commit {self.commit}")
         return done[:-1]
 
     def _is_dir(self, path: str) -> bool:
@@ -3682,9 +4086,10 @@ SHAPE_FILE_EXIT = (
 def _missing_shape_file(path: str, why: str, refusal: str) -> str:
     """`refusal` is what the first bootstrap's `validate-pins.py` says about
     it: `shape-pin-missing` for the pin itself, `shape-copy-missing` for a
-    file the pin names."""
-    return (f"FINDING adopt-shape-file-missing: {path} {why}, so the "
-            f"assembly's first `make bootstrap` refuses with {refusal}. "
+    file the pin names. `path` is `_spelled`, as every path a finding names
+    is, and so is each path `why` names (#212)."""
+    return (f"FINDING adopt-shape-file-missing: {_spelled(path)} {why}, so "
+            f"the assembly's first `make bootstrap` refuses with {refusal}. "
             + SHAPE_FILE_EXIT)
 
 

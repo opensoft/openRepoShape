@@ -14,7 +14,7 @@ own `scripts/validate-pins.py` refuses when the three disagree:
 
     1. the GITLINK the assembly root records at the leg's path,
     2. `commit:` and `digests.tree_sha256` in `contracts/<role>-pin.yaml`,
-    3. every `.github/workflows/*.yml` reference of the form
+    3. every TRACKED `.github/workflows/*.yml` reference of the form
        `<owner>/<leg>/...@<40 hex>` naming THAT leg's repository.
 
 `family.py bump` already did exactly this for a family's MEMBER pins. Nothing
@@ -33,6 +33,15 @@ WHAT IT REFUSES, and why each is a refusal rather than a warning:
   * a dirty root. The commit is made with explicit pathspecs, so unrelated
     edits would not be swept in — but a lockstep commit that cannot be read as
     exactly one change is the thing the rule exists to keep readable.
+  * a workflow file git does not TRACK — untracked, or ignored — that names
+    the leg at any other commit. The lockstep commit's `git add` names every
+    file this rewrites: an untracked one would be added to the commit whole,
+    as a new file nobody committed, and an ignored one would stop that
+    `git add` after the rewrite, in git's own words. Leaving either alone
+    would turn the bump red, because `validate-pins.py` reads every file on
+    disk and would still see its old `@<sha>`. Refused by name, before
+    anything is written, under `--dry-run` as well. One that names no leg,
+    or this leg already at `--to`, is left alone.
   * the root standing on its own tracking branch. The next step this prints
     would then be a push to the default branch, and these organisations are
     pull-request only.
@@ -62,7 +71,7 @@ from repo_shape import (  # noqa: E402
     recorded_gitlink, repo_basename, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
-    CommandFailed, check_program, commit_trailers,
+    CommandFailed, captured_child_environment, check_program, commit_trailers,
     escape_what_stdout_cannot_encode, run, trailer_line, write_lf,
 )
 
@@ -228,9 +237,24 @@ def rewrite_pin(text: str, commit: str, digest: str) -> str:
     return "\n".join(out) + "\n"
 
 
+def _tracked_workflows(root: Path, workflows: Path) -> set[str]:
+    """The paths git TRACKS under `workflows`, as POSIX paths relative to
+    `root` — the spelling `plan_workflows` and the commit's pathspecs use.
+
+    The index, by `git ls-files`: `_ensure_root_clean` has already refused a
+    root whose tracked files differ from it, so it is also what HEAD holds.
+    NUL-separated, so a name git would otherwise quote comes back as the
+    bytes it is.
+    """
+    raw = git_out(["ls-files", "-z", "--",
+                   workflows.relative_to(root).as_posix()],
+                  cwd=root, binary=True)
+    return {os.fsdecode(name) for name in raw.split(b"\0") if name}
+
+
 def plan_workflows(root: Path, repository: str,
                    commit: str) -> list[tuple[Path, str, int]]:
-    """Every workflow file whose `@<sha>` refs to THIS leg have to move.
+    """Every TRACKED workflow file whose `@<sha>` refs to THIS leg have to move.
 
     Returns `(path, rewritten text, references moved)`, one row per file that
     actually changes. A reference to any OTHER repository is left exactly as
@@ -240,11 +264,29 @@ def plan_workflows(root: Path, repository: str,
 
     `.yaml` is read as well as `.yml` because `validate-pins.py` reads both,
     and a file this rewrote nothing in is a file the gate still calls red.
+
+    TRACKED FILES ONLY (#207). The directory is walked on disk, because that
+    is the set `validate-pins.py` reads, but a row is made for a file only
+    when git tracks it: the lockstep commit's `git add` names every file it
+    rewrote, so a draft that was never committed would be added to "Bump spec
+    leg" whole, as a new file, while `_ensure_root_clean` — which skips
+    untracked files on exactly the ground that they cannot reach this commit
+    — said nothing. (An IGNORED one is no better, only later: `git add`
+    refuses it after the rewrite, with its own hint and no word about this
+    tool.) An untracked or ignored file that has a reference to move is
+    REFUSED by name rather than skipped: skipped, `validate-pins.py` would
+    still read its old `@<sha>` off the disk and turn the bump red after the
+    rewrite, with a finding that never says the file is not in the
+    repository. One with nothing to move — no reference to this leg, or this
+    leg already at `commit` — is not this tool's business and is left alone,
+    unnamed.
     """
     plans: list[tuple[Path, str, int]] = []
     workflows = root / ".github" / "workflows"
     if not workflows.is_dir():
         return plans
+    tracked = _tracked_workflows(root, workflows)
+    untracked: list[tuple[str, int]] = []
     for path in sorted(workflows.iterdir()):
         if path.suffix not in (".yml", ".yaml") or not path.is_file():
             continue
@@ -262,8 +304,28 @@ def plan_workflows(root: Path, repository: str,
 
         text = path.read_text(encoding="utf-8")
         rewritten = WORKFLOW_REF_RE.sub(swap, text)
-        if moved:
+        if not moved:
+            continue
+        relative = path.relative_to(root).as_posix()
+        if relative in tracked:
             plans.append((path, rewritten, moved))
+        else:
+            untracked.append((relative, moved))
+    if untracked:
+        raise Refusal(
+            "bump-leg-workflow-untracked",
+            f"{len(untracked)} workflow file(s) that git does not track "
+            f"(untracked or ignored) name {repository} at a commit other "
+            f"than {commit[:12]}:\n"
+            + "\n".join(f"    {relative}  {count} reference(s)"
+                        for relative, count in untracked),
+            "Remediation: the lockstep commit adds no file the repository "
+            "does not already hold, and `scripts/validate-pins.py` reads "
+            "every workflow file on disk, so one left where it is would turn "
+            "the bump red over its old `@<sha>`. Either commit it first — it "
+            "is then tracked and moves with the bump, and the dry run lists "
+            "it — or move it out of .github/workflows/ until the bump has "
+            "landed, then re-run.")
     return plans
 
 
@@ -389,15 +451,20 @@ def run_validator(root: Path, script: str) -> tuple[int, str]:
     """The ROOT's own copy of a validator, its output captured for a refusal."""
     if not (root / script).is_file():
         return 0, f"  {script} is absent; SKIPPED\n"
-    # `errors="replace"` and no `encoding=`: the child is a Python process,
-    # which writes its pipe in the locale's codec, so that codec is the one
-    # that reads it back (UTF-8 here would misread a Windows ANSI child).
-    # `replace` is for two interpreters that disagree (`-X utf8` on this one
-    # only): a refusal must not become a traceback on its way to printing the
-    # validator's words (#217).
+    # THE CHILD IS TOLD WHAT TO WRITE AND IS READ BACK AS THAT (#254). A child
+    # takes its stdout configuration from its environment, and this process's
+    # own `reconfigure` (#214) does not reach it: under a cp1252 stdout the
+    # validator raised `UnicodeEncodeError` on a display name such as `日本`
+    # and this refused a bump the pins had no quarrel with. UTF-8 holds every
+    # name, and the pipe is read as UTF-8 to match. #217 read it with the
+    # locale's codec because the child wrote in the locale's codec; it is now
+    # told what to write. `replace` stays, so a validator that wrote bytes
+    # UTF-8 cannot read (through `sys.stdout.buffer`, say) is still a refusal
+    # and not a traceback on its way to printing the validator's words.
     proc = subprocess.run([sys.executable, script], cwd=str(root),
-                          capture_output=True, text=True, errors="replace",
-                          check=False)
+                          capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", check=False,
+                          env=captured_child_environment())
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
 
@@ -484,10 +551,12 @@ def _ensure_root_clean(root: Path) -> None:
     # THE ROOT MUST BE CLEAN. Tracked changes only: an untracked scratch file
     # cannot reach a commit made with explicit pathspecs, and refusing one
     # would be this tool having an opinion about somebody's working
-    # directory. Untracked content INSIDE the leg is ignored for the same
-    # reason; the leg sitting at a different commit than the gitlink is NOT,
-    # because that is a half-finished bump and this one would land on top of
-    # it.
+    # directory. The one kind that could reach it, a workflow file the rewrite
+    # would pick up, is never picked up: `plan_workflows` rewrites tracked
+    # files only and refuses an untracked one by name (#207). Untracked
+    # content INSIDE the leg is ignored for the same reason; the leg sitting
+    # at a different commit than the gitlink is NOT, because that is a
+    # half-finished bump and this one would land on top of it.
     dirt = git_out(["status", "--porcelain", "--untracked-files=no",
                     "--ignore-submodules=untracked"], cwd=root)
     if dirt:

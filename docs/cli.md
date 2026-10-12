@@ -304,11 +304,12 @@ options:
                         the CHAIN of neutral-product pins this project reaches
                         its referent through, e.g. --referent-chain
                         openXdox,openDox. Its first entry must be one of the
-                        --pin products (the pin this project actually holds)
-                        and its last must be the `open<Product>` the name
-                        claims; the manifest RECORDS it, which is what makes a
-                        descendant that pins a LAYER a descendant
-                        (2026-09-05).
+                        --pin products (the pin this project actually holds),
+                        its last must be the `open<Product>` the name claims,
+                        and every link between them must be a neutral
+                        product's name (`open<Product>`, e.g. openXdox); the
+                        manifest RECORDS it, which is what makes a descendant
+                        that pins a LAYER a descendant (2026-09-05).
   --pin-source PIN_SOURCE
                         a local clone to compute --pin digests from, instead
                         of reading the forge with `gh api` (the TEST path; no
@@ -497,7 +498,9 @@ options:
                         given, and needs --branch — there is no commit to put
                         a line on without one
   --push                push the branch to origin (needs --branch)
-  --pr                  open a pull request with `gh` (needs --branch)
+  --pr                  open a pull request with `gh` (needs --branch); a
+                        later run on that branch with nothing left to write
+                        opens it if it is still missing
 ```
 
 ### `shape-doctor.py`
