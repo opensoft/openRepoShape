@@ -1956,9 +1956,9 @@ def copy_out(src: Path, dst: Path) -> None:
 #: spelling. `_spelling_reason` below asks it whether a leg path is a drive
 #: letter's. adopt-project.py imports it too, for two questions of its own:
 #: `Source.open` tells a `--source` path the operator got wrong from a
-#: repository name, and `_PlannedRoot` tells a symlink the plan keeps that
-#: leads to a place on a Windows machine. Both are adopt-project.py's, not
-#: this file's.
+#: repository name, and `_PlannedRoot` asks, on Windows only, whether a
+#: symlink the plan keeps leads to an absolute place on that machine. Both
+#: are adopt-project.py's, not this file's.
 WINDOWS_ABSOLUTE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 
 #: Git's own names, casefolded: a leg cannot be mounted at a segment spelled

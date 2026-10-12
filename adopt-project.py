@@ -2843,7 +2843,11 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
 # machine, so `check` and `execute` each ask their own disk: an absolute
 # target as it stands, and a climb above the root from the work directory,
 # where `execute` makes the assembly's clone. Each says what is true where it
-# runs, and `execute` asks before any leg exists.
+# runs, and `execute` asks before any leg exists. A target is absolute as
+# this machine's `open()` reads it: `C:/x`, a drive letter's path, is a place
+# on this disk only on Windows. On Linux and macOS it is a relative path,
+# into a directory named `C:`, and it is followed as one, as `open()` and the
+# materializer follow it there.
 
 #: The finding for a symlink the plan keeps in the root that the shape cannot
 #: write through.
@@ -2858,6 +2862,14 @@ ON_THIS_MACHINE = ("an absolute path: a place on this machine, not in the "
                    "assembly")
 #: The parts of a path that name no entry, and leave a walk where it is.
 HERE = ("", ".")
+
+
+def _absolute_here(target: str) -> bool:
+    """Whether this machine's `open()` reads the symlink target `target` as
+    an absolute path: one from `/` anywhere, and a drive letter's (`C:/x`)
+    on Windows only."""
+    return target.startswith("/") or (
+        os.name == "nt" and WINDOWS_ABSOLUTE_RE.match(target) is not None)
 
 
 class _Walk:
@@ -3080,7 +3092,7 @@ class _PlannedRoot:
                             "which leads nowhere")
             return []
         last = not queue
-        if target.startswith("/") or WINDOWS_ABSOLUTE_RE.match(target):
+        if _absolute_here(target):
             leads = (f"the symlink {_spelled(at)} leads to "
                      f"{_spelled(target)}, {ON_THIS_MACHINE}")
             if last:
@@ -3096,12 +3108,10 @@ class _PlannedRoot:
     def _outside(walk: _Walk, place: str, missing: str) -> None:
         """`walk` leaves the assembly for `place` on this machine's disk:
         taken where something is there, else `missing` is what stops it.
-        A drive letter's path is somewhere only on Windows, which also
-        spells a place with backslashes; it is named with slashes, as every
-        other path is."""
+        Windows may spell a place with backslashes; it is named with
+        slashes, as every other path is."""
         walk.outside, walk.landed = True, Path(place).as_posix()
-        elsewhere = WINDOWS_ABSOLUTE_RE.match(place) and os.name != "nt"
-        walk.taken = not elsewhere and os.path.exists(place)
+        walk.taken = os.path.exists(place)
         if not walk.taken:
             walk.problem = missing
 

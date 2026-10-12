@@ -608,6 +608,52 @@ def test_a_target_that_is_not_plain_text_is_spelled(tmp_path, raw, spelled):
         GITHUB, spelled, WORKFLOW, leads(GITHUB, spelled, NOT_IN_THE_TREE))]
 
 
+#: A drive letter's paths, as a source written on Windows can hold them:
+#: absolute there, and on Linux and macOS a relative path into a directory
+#: named `C:` (F2 of #183's re-verify). Nothing on a Windows runner is at
+#: either.
+DRIVE_CLAUDE = "C:/no-such-dir-183/CLAUDE.md"
+DRIVE_CI = "C:/no-such-dir-183/ci"
+
+
+def drive_reading(link: str, target: str, at_the_path: bool) -> str:
+    """Why `link -> target`, a drive letter's path, cannot be written
+    through, read as this machine's `open()` reads it."""
+    if not ON_WINDOWS:
+        return leads(link, target, NOT_IN_THE_TREE)
+    where = (f"the symlink {ticked(link)} leads to {ticked(target)}, "
+             f"{ON_THIS_MACHINE}")
+    return f"{where}, and nothing is there" if at_the_path else where
+
+
+@pytest.mark.parametrize(("link", "target", "path"), [
+    pytest.param(CLAUDE, DRIVE_CLAUDE, CLAUDE, id="at-a-shape-path"),
+    pytest.param(GITHUB, DRIVE_CI, WORKFLOW, id="above-a-shape-path"),
+])
+def test_a_drive_letter_target_is_read_as_this_machine_reads_it(
+        adopter, no_filter_repo_probe, tmp_path, link, target, path):
+    """`C:/x` is absolute only on Windows. There it is a place on this
+    machine, not in the assembly; on Linux and macOS it is a relative path,
+    and nothing in this source is at it. Refused on every disk, and each
+    sentence is true where it prints: on Linux it used to say "an absolute
+    path: a place on this machine"."""
+    _, plan = planned(tmp_path, {}, {link: target}, {link: ROOT})
+    refused_alike(adopter, tmp_path, plan, finding(
+        link, target, path, drive_reading(link, target, link == path)))
+
+
+@pytest.mark.skipif(ON_WINDOWS,
+                    reason="Windows cannot hold a directory named `C:`")
+def test_a_drive_letter_target_into_the_root_is_followed_off_windows(
+        adopter, tmp_path):
+    """On Linux and macOS, `.github -> C:/ci` leads into the root's own
+    `C:/ci`, as it does on main, which adopts it and bootstraps: `open()`
+    and the materializer follow it there, and so does `check`."""
+    _, plan = planned(tmp_path, {"C:/ci/keep.txt": "k\n"},
+                      {GITHUB: "C:/ci"}, {"C:/": ROOT, GITHUB: ROOT})
+    passed_alike(adopter, tmp_path, plan)
+
+
 def test_a_link_with_an_empty_target_is_fixed_in_the_source(
         adopter, no_filter_repo_probe, tmp_path):
     """Linux cannot hold a symlink to nothing: `git clone` there stops with
