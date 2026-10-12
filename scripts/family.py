@@ -1042,9 +1042,11 @@ def cmd_init(args) -> int:
 # because `_commit_one` commits the working-tree state of `.gitmodules` whole,
 # and `validate-family.py` and the doctor both passed the result. So every
 # refusal `add` makes is now asked before the holder is touched — the
-# holder's own (`_checked_add_target`) and the member's (`_probe_member`, of a
-# throwaway clone) — and whatever still fails after the mount is undone by
-# `MountRollback`, which says what it put back.
+# holder's own (`_checked_add_target`), the member's (`_probe_member`, of a
+# throwaway clone), and whether the `id` the member's `project.yaml` records
+# is one a row already pins (`_checked_member_id`, #330) — and whatever still
+# fails after the mount is undone by `MountRollback`, which says what it put
+# back.
 
 
 #: Said when the member cannot be read, which is what a PRIVATE member looks
@@ -1417,10 +1419,64 @@ def _checked_add_target(family: Family, repository: str, project: str,
     return commit.lower()
 
 
+def _checked_member_id(family: Family, repository: str, project: str,
+                       project_id: str) -> None:
+    """Refused when a row already records the `id` the member's own
+    `project.yaml` does (#330): the project is a member under another name.
+
+    `family.holding` compares NAMES — the row's project and its repository —
+    and a repository renamed at the forge keeps its `project.yaml`, so
+    `--member testorg/Atlas2` on a family that pins `testorg/Atlas` passed it,
+    was mounted, and committed a second row recording id `atlas`, which the
+    holder's own `validate-family.py` then refused as `member-duplicate-id`
+    and its CI went red. The id is what the validator compares, because it is
+    the project's own name for itself, so it is asked here too, under the
+    validator's code, BEFORE ANYTHING IS MOUNTED: `cmd_add` asks it of the
+    id `_probe_member` read from the throwaway clone, and `_mount_and_pin`
+    asks it again of the mount's reading, which is what the row records — a
+    linked `project.yaml` the probe leaves to the mount, or a member that
+    moved in between, is refused there and unwound like any other refusal.
+
+    THE ROWS THE VALIDATOR ASKS, ASKED THE WAY IT ASKS THEM
+    (`_check_member_ids_unique` in the holder's copy): the row's `id:` as a
+    string, compared exactly; a row with no `project:` or no `id:`, and a row
+    whose `project:` an earlier row already spells exactly, are other
+    findings' and are skipped. So `add` refuses what the gate would refuse
+    and nothing it would pass. The validator keeps its own spelling of the
+    rule, as it keeps `member-path`'s: it ships INTO every holder, and a
+    shared copy would move every holder's pin.
+    """
+    projects: set[str] = set()
+    for row in family.members:
+        name = row.get("project")
+        if not isinstance(name, str) or not name or name in projects:
+            continue
+        projects.add(name)
+        if not row.get("id") or str(row["id"]) != project_id:
+            continue
+        raise Refusal(
+            "member-duplicate-id",
+            f"{project} is already a member of {family.data.get('name')} "
+            f"under another name: {repository}'s project.yaml records id "
+            f"{project_id!r}, and the row {name} pins "
+            f"{row.get('repository')} with that id. Adding it would pin one "
+            "project twice, which `validate-family.py` refuses",
+            "Remediation: a family pins each project once. If "
+            f"{repository} is {row.get('repository')} renamed at the forge, "
+            f"`family.py remove --member {name}` takes the old row out and "
+            "this `add` then pins it under the new name; `family.py bump "
+            f"--member {name} --to <commit>` moves the row that is there "
+            "instead. Two projects that record one id are a fault in one of "
+            "their `project.yaml` files, mended in that project, not in the "
+            "family.")
+
+
 def _probe_member(url: str, protocol: list[str], repository: str,
-                  project: str, at: str | None) -> str:
-    """The commit `add` will pin, with every refusal about the MEMBER asked
-    of a throwaway clone BEFORE the holder is touched (#203).
+                  project: str, at: str | None) -> tuple[str, str | None]:
+    """`(the commit add will pin, the id its project.yaml records)`, with
+    every refusal about the MEMBER asked of a throwaway clone BEFORE the
+    holder is touched (#203). The id is None only for a linked
+    `project.yaml`, which `_probe_manifest` leaves to the mount.
 
     A BARE CLONE IN A TEMPORARY DIRECTORY, OUTSIDE THE HOLDER. The commit is
     resolved and the manifest read from the member's own objects — no
@@ -1442,9 +1498,8 @@ def _probe_member(url: str, protocol: list[str], repository: str,
         clone = scratch / "member.git"
         run(["git", *protocol, "clone", "-q", "--bare", "--", url, str(clone)])
         commit = _probe_commit(clone, repository, at)
-        _probe_manifest(clone, commit, scratch / "project", project,
-                        repository)
-        return commit
+        return commit, _probe_manifest(clone, commit, scratch / "project",
+                                       project, repository)
     finally:
         try:
             _rmtree(scratch)
@@ -1507,9 +1562,9 @@ def _probe_commit(clone: Path, repository: str, at: str | None) -> str:
 
 
 def _probe_manifest(clone: Path, commit: str, scratch: Path, project: str,
-                    repository: str) -> None:
+                    repository: str) -> str | None:
     """`_read_member_project`, asked of the member's objects at `commit`
-    rather than of a checkout.
+    rather than of a checkout: the id it returns, or None for a link.
 
     THE SAME FUNCTION, SO THE SAME REFUSALS. The one file is copied out of
     the clone into a directory of its own and read by the function the mount
@@ -1529,14 +1584,15 @@ def _probe_manifest(clone: Path, commit: str, scratch: Path, project: str,
                      cwd=clone, binary=True)
     mode, kind, oid = (listed.split(b"\t", 1)[0].split() + [b""] * 3)[:3]
     if mode == b"120000":
-        return
+        return None
     scratch.mkdir()
     if kind == b"blob":
         (scratch / "project.yaml").write_bytes(
             git_out(["cat-file", "blob", oid.decode("ascii")], cwd=clone,
                     binary=True))
-    _read_member_project(scratch, project, repository,
-                         shown=f"{repository} @ {commit[:12]}:project.yaml")
+    return _read_member_project(
+        scratch, project, repository,
+        shown=f"{repository} @ {commit[:12]}:project.yaml")
 
 
 def _git_input(args: list[str], cwd: Path, data: bytes) -> None:
@@ -1920,6 +1976,8 @@ def _mount_and_pin(family: Family, repository: str, project: str, path: str,
         run(["git", "checkout", "-q", at], cwd=member)
     commit = git_out(["rev-parse", "HEAD"], cwd=member).lower()
     project_id = _read_member_project(member, project, repository)
+    # Asked again of THIS reading, which is the id the row records (#330).
+    _checked_member_id(family, repository, project, project_id)
     digest = tree_digest(member, commit)
     row = _member_row(project, project_id, repository, commit, digest)
     rows = sorted(family.members + [row], key=lambda r: str(r["project"]))
@@ -1956,9 +2014,17 @@ def cmd_add(args) -> int:
 
     IN THIS ORDER, AND ONLY THIS ORDER: the holder's refusals
     (`_checked_add_target`), then the member's (`_probe_member`, of a
-    throwaway clone), and only then the mount, the pin and the commit
-    (`_mount_and_pin`), inside a `MountRollback` that puts the holder back
-    if anything still fails and says what it put back.
+    throwaway clone), then the member's id against the rows
+    (`_checked_member_id`, #330), and only then the mount, the pin and the
+    commit (`_mount_and_pin`), inside a `MountRollback` that puts the holder
+    back if anything still fails and says what it put back.
+
+    WHEN TWO APPLY, THE EARLIER ONE IS SAID. The holder's refusals need
+    nothing cloned, so they come first: a section under another name that
+    already gives the mount path (`member-path-registered`, #300) is refused
+    with not one line on stdout even when the member also records an id a
+    row pins, and `member-duplicate-id` is said on the re-run, once that
+    section is out.
     """
     family = Family.open(args.family_root)
     repository, project = _checked_member(args.member)
@@ -1971,11 +2037,14 @@ def cmd_add(args) -> int:
     # was being done comes before a refusal of it, not after.
     print(f"checking {repository} before mounting it", flush=True)
     try:
-        commit = _probe_member(url, protocol, repository, project, at)
+        commit, probed_id = _probe_member(url, protocol, repository, project,
+                                          at)
     except CommandFailed as exc:
         print(exc.loudly(f"reading {repository}"), file=sys.stderr)
         print(UNREADABLE_HINT, file=sys.stderr)
         return 2
+    if probed_id is not None:
+        _checked_member_id(family, repository, project, probed_id)
 
     rollback = MountRollback(family.root, path)
     print(f"mounting {repository} at {path}", flush=True)
