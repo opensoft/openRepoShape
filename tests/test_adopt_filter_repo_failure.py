@@ -36,7 +36,7 @@ from pathlib import Path
 import pytest
 
 from conftest import (ADOPT, WINDOWS_SKIP, git, make_source_repo, rmtree,
-                      run_script, write_plan)
+                      run_script, spelled, write_plan)
 
 SPEC, CODE = "spec", "code"
 UNIT_ROLES = (SPEC, CODE)
@@ -74,9 +74,10 @@ SMALL_TREE = {README: "# Thing\n", "src/app/util.py": "VALUE = 1\n",
               "specs/001-feature/tasks.md": "- [ ] one\n"}
 
 #: The notice's first sentence once both legs exist and neither is pushed:
-#: the two repositories it names, which a re-run must not meet again.
-NAMED = re.compile(r"rolled back: (?P<spec>.+?) and (?P<code>.+?) exist, and "
-                   r"neither leg is pushed\.")
+#: the two repositories it names, which a re-run must not meet again, each
+#: between the backticks `_spelled` puts round a path (#212).
+NAMED = re.compile(r"rolled back: `(?P<spec>.+?)` and `(?P<code>.+?)` exist, "
+                   r"and neither leg is pushed\.")
 
 needs_filter_repo = pytest.mark.skipif(
     shutil.which(FILTER_REPO_TOOL) is None,
@@ -184,7 +185,7 @@ def test_a_failed_leg_names_both_leg_repositories_and_what_to_do(
     notice = capsys.readouterr().err.split("--- end output ---", 1)[1]
     assert ROLLED_BACK in notice
     for role in UNIT_ROLES:
-        assert arguments["urls"][role] in notice
+        assert spelled(arguments["urls"][role]) in notice
     assert "--local-remote-dir" in notice
     assert LIVE_LEG in notice
     assert "gh repo create" in notice
@@ -193,8 +194,8 @@ def test_a_failed_leg_names_both_leg_repositories_and_what_to_do(
     # The work directory too, which holds what this run built: a re-run that
     # kept it looped (#184 P2-1), and `execute` now refuses it.
     assert (f"Use a fresh --work-dir as well, or none: "
-            f"{arguments[WORK_ROOT]} holds {ASSEMBLY}-{SPEC} from this "
-            "run") in notice
+            f"{spelled(arguments[WORK_ROOT])} holds "
+            f"{spelled(f'{ASSEMBLY}-{SPEC}')} from this run") in notice
     assert len(notice.strip().splitlines()) == 1
 
 
@@ -370,7 +371,7 @@ def test_a_failed_git_filter_repo_names_itself_on_stderr(
     for role in UNIT_ROLES:
         bare = tmp_path / REMOTES / f"{ASSEMBLY}-{role}.git"
         assert bare.is_dir()
-        assert str(bare) in err
+        assert spelled(bare) in err
     assert LIVE_LEG in err
     assert "neither leg is pushed" in err
 
@@ -395,8 +396,8 @@ def test_following_the_notice_after_a_failed_leg_ends_adoption_verified(
     assert named, notice
     assert [named["spec"], named["code"]] == [
         str(remotes / f"{ASSEMBLY}-{role}.git") for role in UNIT_ROLES]
-    assert (f"Use a fresh --work-dir as well, or none: {work} holds "
-            f"{ASSEMBLY}-{SPEC} from this run") in notice
+    assert (f"Use a fresh --work-dir as well, or none: {spelled(work)} holds "
+            f"{spelled(f'{ASSEMBLY}-{SPEC}')} from this run") in notice
 
     # What it says: delete the two repositories it names, and a fresh
     # --work-dir. The --local-remote-dir is the same one.

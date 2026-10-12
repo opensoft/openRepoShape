@@ -2439,6 +2439,12 @@ def _and_listed(items: list[str]) -> str:
     return f"{', '.join(items[:-1])} and {items[-1]}"
 
 
+def _spelled_and_listed(paths: list[str]) -> str:
+    """`_and_listed`, each path `_spelled`: what a work directory holds, as
+    the notice and `adopt-work-dir-occupied` name it."""
+    return _and_listed([_spelled(path) for path in paths])
+
+
 def _nothing_rolled_back(urls: dict, pushed: list, work_root: Path,
                          names: dict, made=EXTRACTED_LEGS, *,
                          interrupted: bool = False,
@@ -2473,6 +2479,13 @@ def _nothing_rolled_back(urls: dict, pushed: list, work_root: Path,
     (the code leg's repository, N4, from a local source) does not send the
     person away from a work directory a re-run can use. Without `--work-dir`
     every run makes its own, which is why "or none" is a way out too.
+
+    EVERY PATH IT NAMES IS `_spelled` (#212): between backticks, with a
+    backslash escape for a backslash, a backtick and any character
+    `str.isprintable` refuses, as a finding spells a path. A leg repository
+    under `--local-remote-dir` and the work directory are paths a person
+    chose, and printed raw, one holding a line break or an ESC split or
+    overwrote the one line this notice is.
     """
     one = len(made) == 1
     if one:
@@ -2483,7 +2496,8 @@ def _nothing_rolled_back(urls: dict, pushed: list, work_root: Path,
         state = f"the {pushed[0]} leg is pushed"
     else:
         state = "both legs are pushed"
-    named = urls[made[0]] if one else f"{urls['spec']} and {urls['code']}"
+    named = (_spelled(urls[made[0]]) if one else
+             f"{_spelled(urls['spec'])} and {_spelled(urls['code'])}")
     exist, them, fresh = (("exists", "it", "a fresh one") if one
                           else ("exist", "them", "fresh ones"))
     rerun = ("Re-run" if interrupted
@@ -2497,9 +2511,10 @@ def _nothing_rolled_back(urls: dict, pushed: list, work_root: Path,
     built = (_cloned_here(source, work_root)
              + [name for name, _ in _built_in(work_root, names)])
     if built:
-        notice += (f" Use a fresh --work-dir as well, or none: {work_root} "
-                   f"holds {_and_listed(built)} from this run, and `execute` "
-                   "refuses a --work-dir that holds them.")
+        notice += (" Use a fresh --work-dir as well, or none: "
+                   f"{_spelled(str(work_root))} holds "
+                   f"{_spelled_and_listed(built)} from this run, and "
+                   "`execute` refuses a --work-dir that holds them.")
     return notice
 
 
@@ -2556,6 +2571,9 @@ def _branch_deletion(source: Source, urls: dict, branch: str) -> str:
     `git push` must run inside a repository, and the source is the one
     repository every adoption has, a local path or the clone `Source.open`
     made of an `org/repo`.
+
+    NOT `_spelled`, as the sentence before it is (#212): it is a command to
+    paste, and `sh` reads a quoted path, not a spelled one.
     """
     return " ".join(["git", "-C", shlex.quote(str(source.path)), "push",
                      shlex.quote(urls["assembly"]), "--delete",
@@ -2583,14 +2601,16 @@ def _refuse_an_occupied_work_dir(work_root: Path, names: dict) -> None:
 
     NEVER A DEFAULT RUN: without `--work-dir`, `_work_root` makes a new,
     empty directory, and a new or empty `--work-dir` holds nothing either.
+
+    Its paths are `_spelled`, as the notice's are (#212).
     """
     built = _built_in(work_root, names)
     if built:
         raise Refusal(
             "adopt-work-dir-occupied",
-            f"--work-dir {work_root} already holds "
-            f"{_and_listed([name for name, _ in built])}, where this run "
-            f"builds {_and_listed([what for _, what in built])}, and only "
+            f"--work-dir {_spelled(str(work_root))} already holds "
+            f"{_spelled_and_listed([name for name, _ in built])}, where this "
+            f"run builds {_and_listed([what for _, what in built])}, and only "
             "after it has made both leg repositories: `git clone` refuses a "
             "directory that is not empty",
             "Remediation: no leg repository was created and nothing was "
@@ -2645,6 +2665,9 @@ def _refuse_a_split_branch_left_behind(source: Source, urls: dict,
     legs and not the branch. A work directory an earlier run built in is
     refused before either (`_refuse_an_occupied_work_dir`), so "run `execute`
     again" below meets one that is free.
+
+    The assembly and the branch are `_spelled`, as the notice's split line
+    names them (#212); the deletion is a command, quoted for `sh`.
     """
     if local and any(Path(urls[role]).exists() for role in EXTRACTED_LEGS):
         return
@@ -2656,9 +2679,10 @@ def _refuse_a_split_branch_left_behind(source: Source, urls: dict,
         return
     raise Refusal(
         "adopt-branch-exists",
-        f"{urls['assembly']} already has {branch}, the branch this adoption "
-        f"pushes its split commit to, at {tips[0][:12]}: neither the source "
-        f"commit {source.commit[:12]} nor a commit behind it",
+        f"{_spelled(urls['assembly'])} already has {_spelled(branch)}, the "
+        "branch this adoption pushes its split commit to, at "
+        f"{tips[0][:12]}: neither the source commit {source.commit[:12]} nor "
+        "a commit behind it",
         "Remediation: no leg repository was created and nothing was pushed. "
         "The split commit is made on top of the source commit, git moves a "
         "branch to it without force only from that commit or one behind it, "
@@ -3757,13 +3781,14 @@ def _left_by_the_split(source: Source, urls: dict, names: dict,
     """What a run whose split is pushed leaves, and the way out: the notice,
     then the split branch with the command that deletes it, which a re-run
     meets as `adopt-branch-exists`. Said by `_verify` after its findings,
-    and after a failure to verify at all."""
+    and after a failure to verify at all. The assembly and the branch are
+    `_spelled`, as the notice's paths are (#212)."""
     return (_nothing_rolled_back(urls, list(EXTRACTED_LEGS), work_root,
                                  names, interrupted=interrupted,
                                  source=source)
-            + f"\nThe split is pushed to {urls['assembly']} too, as "
-            f"{branch}, and a re-run is refused (`adopt-branch-exists`) "
-            "until that branch is deleted:\n    "
+            + f"\nThe split is pushed to {_spelled(urls['assembly'])} too, "
+            f"as {_spelled(branch)}, and a re-run is refused "
+            "(`adopt-branch-exists`) until that branch is deleted:\n    "
             + _branch_deletion(source, urls, branch))
 
 

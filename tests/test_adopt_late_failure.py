@@ -44,12 +44,12 @@ import shutil
 import subprocess
 import sys
 from argparse import Namespace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
 from conftest import (ADOPT, REPO, git, make_source_repo, run_script,
-                      write_plan)
+                      spelled, write_plan)
 
 SPEC, CODE = "spec", "code"
 LEGS = (SPEC, CODE)
@@ -74,6 +74,8 @@ ORG = "testorg"
 SPEC_REPOSITORY = f"{ORG}/{ASSEMBLY}-{SPEC}"
 END_OUTPUT = "--- end output ---"
 DELETE_COMMAND = "git -C "
+#: The flag the printed deletion removes the split branch with.
+DELETE_FLAG = "--delete"
 NEITHER_PUSHED = "neither leg is pushed"
 GIT_FAILED = "git-failed"
 #: What the operating system says of a program that is not there.
@@ -276,10 +278,12 @@ def the_notice(err: str) -> str:
 
 def work_dir_named(notice: str, work_root: Path, *built: str) -> bool:
     """The notice tells a re-run to leave `work_root` alone, naming what this
-    run built there (#184 P2-1); with `built`, exactly those."""
-    sentence = f"{FRESH_WORK_DIR}{work_root} holds "
-    listed = (" and ".join([", ".join(built[:-1]), built[-1]])
-              if len(built) > 1 else "".join(built))
+    run built there (#184 P2-1); with `built`, exactly those. Each is
+    `spelled`, as every path the notice names is (#212)."""
+    sentence = f"{FRESH_WORK_DIR}{spelled(work_root)} holds "
+    names = [spelled(name) for name in built]
+    listed = (" and ".join([", ".join(names[:-1]), names[-1]])
+              if len(names) > 1 else "".join(names))
     return sentence in notice and (
         not built or f"{sentence}{listed} from this run" in notice)
 
@@ -370,7 +374,7 @@ def test_a_split_that_fails_names_its_step_and_both_pushed_legs(
     notice = err.split(END_OUTPUT, 1)[1]
     assert ROLLED_BACK in notice
     for role in LEGS:
-        assert arguments["urls"][role] in notice
+        assert spelled(arguments["urls"][role]) in notice
     assert BOTH_PUSHED in notice
     assert "leg-remote-exists" in notice
     assert FIX_FIRST in notice
@@ -405,7 +409,8 @@ def test_the_notice_says_which_legs_are_pushed(
 
     notice = capsys.readouterr().err.split(END_OUTPUT, 1)[1]
     urls = arguments["urls"]
-    assert f"{urls[SPEC]} and {urls[CODE]} exist, and {state}." in notice
+    assert (f"{spelled(urls[SPEC])} and {spelled(urls[CODE])} exist, and "
+            f"{state}.") in notice
 
 
 # ---- a failure that is not a failed command (#184 P3-1, #188 N3) ------------
@@ -518,7 +523,7 @@ def test_a_verification_that_cannot_be_made_is_refused_with_the_notice(
     assert BOTH_PUSHED in notice
     assert FIX_FIRST in notice
     assert work_dir_named(notice, tmp_path / WORK, ASSEMBLY)
-    assert printed_command(err, DELETE_COMMAND)[-2:] == ["--delete", BRANCH]
+    assert printed_command(err, DELETE_COMMAND)[-2:] == [DELETE_FLAG, BRANCH]
 
 
 def test_an_interrupted_verification_still_says_what_the_run_left(
@@ -537,7 +542,7 @@ def test_an_interrupted_verification_still_says_what_the_run_left(
     err = capsys.readouterr().err
     assert "STOPPED verifying the split by KeyboardInterrupt." in err
     assert FIX_FIRST not in the_notice(err)
-    assert printed_command(err, DELETE_COMMAND)[-2:] == ["--delete", BRANCH]
+    assert printed_command(err, DELETE_COMMAND)[-2:] == [DELETE_FLAG, BRANCH]
 
 
 def test_a_split_the_materializer_cannot_write_is_refused_with_the_notice(
@@ -730,8 +735,8 @@ def test_the_notice_names_the_sources_own_clone_in_the_work_dir(
             cloned_source(adopter, tmp_path))
 
     notice = the_notice(capsys.readouterr().err)
-    assert f"{FRESH_WORK_DIR}{tmp_path / WORK} holds {CLONED_SOURCE}" \
-        in notice, notice
+    assert (f"{FRESH_WORK_DIR}{spelled(tmp_path / WORK)} holds "
+            f"{spelled(CLONED_SOURCE)}") in notice, notice
 
 
 def test_an_org_repo_run_names_its_clone_when_a_leg_repository_fails(
@@ -769,6 +774,123 @@ def test_an_org_repo_run_names_its_clone_when_a_leg_repository_fails(
     notice = the_notice(capsys.readouterr().err)
     assert work_dir_named(notice, tmp_path / WORK, CLONED_SOURCE), notice
     assert (tmp_path / WORK / CLONED_SOURCE / README).is_file()
+
+
+# ---- every path the notice and the two refusals name is spelled (#212) -----
+
+#: The characters #212 met in a name, as tests/test_adopt_finding_spelling.py
+#: asks them: `(raw, as _spelled writes it)`, by the id each test wears.
+UNPRINTABLE = {
+    "carriage-return": ("\r", "\\r"),
+    "line-feed": ("\n", "\\n"),
+    "next-line": ("\x85", "\\x85"),
+    "line-separator": (" ", "\\u2028"),
+    "escape": ("\x1b", "\\x1b"),
+}
+EACH_UNPRINTABLE = pytest.mark.parametrize(
+    ("char", "written"), list(UNPRINTABLE.values()), ids=list(UNPRINTABLE))
+#: A commit the stand-ins below name, as `git ls-remote` would.
+TIP = "e" * 40
+
+
+def one_printable_line(line: str, char: str) -> bool:
+    """`line` holds no raw `char` and is one line a terminal shows as
+    written: no line break, no ESC, nothing `str.isprintable` refuses."""
+    return char not in line and line.isprintable()
+
+
+def deletion_of(source: str) -> str:
+    """The deletion `_branch_deletion` prints for a local source, which is
+    its own assembly: a command for `sh`, each value quoted."""
+    return shlex.join(["git", "-C", source, "push", source, DELETE_FLAG,
+                       BRANCH])
+
+
+def odd_paths(char: str) -> tuple[dict, PurePosixPath]:
+    """The leg repositories under a `--local-remote-dir`, the source the
+    assembly is, and the work directory, each named with `char`. POSIX paths
+    that are never made, so any platform runs these: what is under test is
+    how they are written, not a disk that holds them."""
+    urls = {role: f"/remotes{char}/{ASSEMBLY}-{role}.git" for role in LEGS}
+    urls[ROOT] = f"/source{char}/{SOURCE}"
+    return urls, PurePosixPath(f"/work{char}")
+
+
+@EACH_UNPRINTABLE
+def test_the_notice_spells_every_path_it_names(adopter, monkeypatch, char,
+                                               written):
+    """The leg repositories under --local-remote-dir, the work directory and
+    the source are paths a person chose. Printed raw, a line break in one
+    split the notice's line, and a carriage return or an ESC overwrote it.
+    Each is `_spelled`, as a finding spells a path, and so is the split
+    branch. The deletion under them is a command, quoted for `sh`, which
+    reads a quoted path and not a spelled one."""
+    monkeypatch.setattr(adopter, "_holds_something", lambda _path: True)
+    urls, work = odd_paths(char)
+    source = adopter.Source(PurePosixPath(urls[ROOT]), None, "main", "c" * 40)
+
+    notice, split, deletion = adopter._left_by_the_split(
+        source, urls, leg_names(), work, BRANCH).split("\n", 2)
+
+    assert notice.startswith(
+        f"{ROLLED_BACK}: `/remotes{written}/{ASSEMBLY}-{SPEC}.git` and "
+        f"`/remotes{written}/{ASSEMBLY}-{CODE}.git` exist, and "
+        f"{BOTH_PUSHED}."), notice
+    assert (f"{FRESH_WORK_DIR}`/work{written}` holds `{ASSEMBLY}-{SPEC}`, "
+            f"`{ASSEMBLY}-{CODE}` and `{ASSEMBLY}` from this run") in notice
+    assert split == (
+        f"The split is pushed to `/source{written}/{SOURCE}` too, as "
+        f"`{BRANCH}`, and a re-run is refused (`{BRANCH_EXISTS}`) until that "
+        "branch is deleted:")
+    for line in (notice, split):
+        assert one_printable_line(line, char), line
+    assert deletion == "    " + deletion_of(urls[ROOT])
+
+
+@EACH_UNPRINTABLE
+def test_adopt_work_dir_occupied_spells_the_work_dir(adopter, monkeypatch,
+                                                     char, written):
+    """The refusal names the work directory as the notice does, so a
+    person reads one spelling of it in both."""
+    monkeypatch.setattr(adopter, "_holds_something", lambda _path: True)
+    _urls, work = odd_paths(char)
+
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter._refuse_an_occupied_work_dir(work, leg_names())
+
+    detail = caught.value.detail
+    assert detail.startswith(
+        f"--work-dir `/work{written}` already holds `{ASSEMBLY}-{SPEC}`, "
+        f"`{ASSEMBLY}-{CODE}` and `{ASSEMBLY}`, where this run builds the "
+        f"{SPEC} leg, the {CODE} leg and the split,"), detail
+    assert one_printable_line(detail, char), detail
+
+
+@EACH_UNPRINTABLE
+def test_adopt_branch_exists_spells_the_assembly_and_the_branch(
+        adopter, monkeypatch, char, written):
+    """The refusal names the assembly and the branch as the notice's split
+    line does: it is the refusal that line says a re-run meets. Its
+    deletion stays the command `sh` reads."""
+    monkeypatch.setattr(adopter, "run", lambda _args, *_rest, **_named:
+                        f"{TIP}\trefs/heads/{BRANCH}\n")
+    monkeypatch.setattr(adopter, "_in_the_history_of",
+                        lambda _source, _tip: False)
+    urls, _work = odd_paths(char)
+    source = adopter.Source(PurePosixPath(urls[ROOT]), None, "main", "c" * 40)
+
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter._refuse_a_split_branch_left_behind(source, urls, BRANCH,
+                                                   local=False)
+
+    detail = caught.value.detail
+    assert detail == (
+        f"`/source{written}/{SOURCE}` already has `{BRANCH}`, the branch this "
+        f"adoption pushes its split commit to, at {TIP[:12]}: neither the "
+        f"source commit {'c' * 12} nor a commit behind it")
+    assert one_printable_line(detail, char), detail
+    assert caught.value.remediation.endswith(
+        "\n    " + deletion_of(urls[ROOT]))
 
 
 @pytest.mark.parametrize("seeded", [[], [SPEC]],
@@ -850,8 +972,8 @@ def code_leg_repository_fails(adopter, monkeypatch, tmp_path,
     # Nothing was built in the work directory yet, so the notice does not
     # send the re-run away from it (#188's review, N2).
     return ([f"{REFUSED} creating the {CODE} leg repository. {said}",
-             f"{ROLLED_BACK}: {urls[SPEC]} exists, and nothing is pushed to "
-             f"it. {FIX_FIRST} it deleted or with a fresh one"],
+             f"{ROLLED_BACK}: {spelled(urls[SPEC])} exists, and nothing is "
+             f"pushed to it. {FIX_FIRST} it deleted or with a fresh one"],
             [urls[CODE], FRESH_WORK_DIR])
 
 
@@ -1091,9 +1213,9 @@ def test_a_split_branch_left_behind_is_refused_before_any_leg_exists(
     refusal = caught.value
     assert refusal.code == BRANCH_EXISTS
     assert refusal.detail == (
-        f"{source} already has {BRANCH}, the branch this adoption pushes its "
-        f"split commit to, at {split[:12]}: neither the source commit "
-        f"{commit_of(source)[:12]} nor a commit behind it")
+        f"{spelled(source)} already has {spelled(BRANCH)}, the branch this "
+        f"adoption pushes its split commit to, at {split[:12]}: neither the "
+        f"source commit {commit_of(source)[:12]} nor a commit behind it")
     assert refusal.remediation.startswith(
         "Remediation: no leg repository was created and nothing was pushed.")
     # `adopt_branch:` is a plan value, and may name a branch of the source's
@@ -1231,8 +1353,9 @@ def test_a_work_dir_an_earlier_run_built_in_is_refused_before_any_leg_exists(
     assert refusal.code == WORK_DIR_OCCUPIED
     what = "the split" if role == ROOT else f"the {role} leg"
     assert refusal.detail.startswith(
-        f"--work-dir {work} already holds {name}, where this run builds "
-        f"{what}, and only after it has made both leg repositories")
+        f"--work-dir {spelled(work)} already holds {spelled(name)}, where "
+        f"this run builds {what}, and only after it has made both leg "
+        "repositories")
     assert refusal.remediation == (
         "Remediation: no leg repository was created and nothing was pushed. "
         "Pass a --work-dir that is new or empty, or none: without one, each "
@@ -1351,7 +1474,7 @@ def test_a_refused_split_push_is_logged_after_the_legs_and_its_way_out_runs(
     assert BOTH_PUSHED in notice
     for role in LEGS:
         bare = tmp_path / REMOTES / f"{ASSEMBLY}-{role}.git"
-        assert str(bare) in notice
+        assert spelled(bare) in notice
         assert commit_of(bare, MAIN_REF) is not None
     assert work_dir_named(notice, tmp_path / WORK)
     assert commit_of(source, f"refs/heads/{BRANCH}") is None
@@ -1442,8 +1565,8 @@ def test_a_failed_verification_is_flushed_and_its_way_out_runs(tmp_path):
     assert FIX_FIRST in notice
     assert work_dir_named(notice, tmp_path / WORK, f"{ASSEMBLY}-{SPEC}",
                           f"{ASSEMBLY}-{CODE}", ASSEMBLY)
-    assert f"The split is pushed to {source} too, as {BRANCH}" \
-        in failed.stdout
+    assert (f"The split is pushed to {spelled(source)} too, as "
+            f"{spelled(BRANCH)}") in failed.stdout
     delete = printed_command(failed.stdout, DELETE_COMMAND)
 
     plan.write_text(answered, encoding=UTF8)

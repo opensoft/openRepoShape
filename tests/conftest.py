@@ -389,3 +389,12 @@ def resolve(plan_path: Path, path: str, leg: str,
         handle.write(text.replace(
             needle, f"  - path: {path}\n    leg: {leg}\n"
                     f"    resolution: \"{why}\"\n", 1))
+
+
+def spelled(path) -> str:
+    """`path` as `adopt-project.py` names one in a finding, a refusal or the
+    late-failure notice (#212): between backticks, with a backslash or a
+    backtick escaped. A path a test builds is otherwise printable, which
+    `_spelled` writes as it is; a Windows path keeps its separators, each
+    one escaped."""
+    return "`" + str(path).replace("\\", "\\\\").replace("`", "\\`") + "`"
