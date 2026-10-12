@@ -15,8 +15,10 @@ reached the terminal as the control it is.
 
 Both files are shape copies (digest-pinned in every project that holds them) and
 a project carries `scripts/repo_shape.py` and no `shape_materialize.py`, so they
-cannot call #214's helper. Each now carries two small functions, the same in
-both: `escape_unencodable_stdout` reconfigures a `strict` or `surrogateescape`
+cannot call #214's helper. Both now import two small functions from
+`repo_shape.py`, the shared library every project and every family holder
+carries beside its `bootstrap.py`, where each is written once:
+`escape_unencodable_stdout` reconfigures a `strict` or `surrogateescape`
 stdout to `backslashreplace` once, at the start of `main`; `spelled` writes the
 controls (category Cc), the surrogates (Cs), the line and paragraph separators
 (Zl, Zp) and the bidirectional controls (U+061C, U+200E, U+200F, U+202A to
@@ -37,8 +39,8 @@ still do. Four kinds of test, all against local bare remotes:
 - what the run does NEXT: it reaches the validators and ends as they end, at
   the `FINDING manifest-name` that `validate-manifest.py` now gives a name
   holding a lone surrogate (#280, landed in #390), with no traceback;
-- the two functions themselves, and a guard that the two files carry the same
-  two.
+- the two functions themselves, in `repo_shape.py`, and a guard that each root
+  imports both from there, runs `repo_shape`'s own objects and defines neither.
 
 A plain name must print exactly what it printed before: a golden of the whole
 output, from known values.
@@ -61,6 +63,7 @@ from conftest import REPO, git, run_script
 from test_stdout_encoding import child_environ, run_tool_bytes, shown
 
 sys.path.insert(0, str(REPO / "scripts"))
+import repo_shape  # noqa: E402
 
 ASSEMBLY_TEMPLATE = (REPO / "templates" / "assembly-root" / "scripts"
                      / "bootstrap.py")
@@ -654,7 +657,7 @@ def test_a_members_row_and_the_make_target_are_spelled(holder, tmp_path):
     assert not {"\x1b", "\u2028"} & set(out), out
 
 
-# --- the two functions, and the two files that carry them -------------------
+# --- the two functions, in repo_shape.py, and the roots that import them -----
 
 def load(path: Path, name: str):
     """`path` run as a module called `name`, and no bytecode written for it.
@@ -720,8 +723,8 @@ def template(request):
     "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645",
     "\U0001f468\u200d\U0001f469\u200d\U0001f467", "a\u200bb", "\ufeffa",
     "\U000e0001", "\ue000", "\u0378", "\u2000\u2009\u202f\u205f"])
-def test_spelled_keeps_what_a_terminal_can_be_shown(template, text):
-    assert template.spelled(text) == text
+def test_spelled_keeps_what_a_terminal_can_be_shown(text):
+    assert repo_shape.spelled(text) == text
 
 
 @pytest.mark.parametrize("char, spelling", [
@@ -735,8 +738,8 @@ def test_spelled_keeps_what_a_terminal_can_be_shown(template, text):
     ("\u061c", r"\u061c"), ("\u202a", r"\u202a"), ("\u202b", r"\u202b"),
     ("\u202c", r"\u202c"), ("\u202d", r"\u202d"), ("\u2066", r"\u2066"),
     ("\u2067", r"\u2067"), ("\u2068", r"\u2068"), ("\u2069", r"\u2069")])
-def test_spelled_writes_the_escape_python_spells(template, char, spelling):
-    assert template.spelled(f"a{char}b") == f"a{spelling}b"
+def test_spelled_writes_the_escape_python_spells(char, spelling):
+    assert repo_shape.spelled(f"a{char}b") == f"a{spelling}b"
 
 
 #: The code points `spelled` escapes, from the specification and not from the
@@ -757,7 +760,7 @@ def escape_of(code: int) -> str:
     return rf"\x{code:02x}" if code < 0x100 else rf"\u{code:04x}"
 
 
-def test_spelled_escapes_exactly_the_specified_characters(template):
+def test_spelled_escapes_exactly_the_specified_characters():
     """EVERY code point, once, in one string: it is escaped when it is in the
     specified set and left alone when it is not. A character class by
     category (Cc, Cs, Zl, Zp) and not `str.isprintable`, so Zs, Cf, Co and Cn
@@ -765,7 +768,7 @@ def test_spelled_escapes_exactly_the_specified_characters(template):
     codes = range(sys.maxunicode + 1)
     expected = "".join(escape_of(code) if code in ESCAPED_CODES
                        else chr(code) for code in codes)
-    assert template.spelled("".join(map(chr, codes))) == expected
+    assert repo_shape.spelled("".join(map(chr, codes))) == expected
 
 
 def test_the_specified_set_is_the_four_categories_and_the_bidi_controls():
@@ -779,22 +782,21 @@ def test_the_specified_set_is_the_four_categories_and_the_bidi_controls():
     assert {unicodedata.category(chr(code)) for code in bidi} <= {"Cf"}
 
 
-def test_spelled_takes_what_a_manifest_can_hold(template):
+def test_spelled_takes_what_a_manifest_can_hold():
     """`name: 5` and `role: [a]` are values too: the text a print would have
     made of them, spelled."""
-    assert template.spelled(5) == "5"
-    assert template.spelled(None) == "None"
-    assert template.spelled(["a\x1b"]) == "['a\\x1b']"
-    assert template.spelled(Path("b\u2028")) == "b\\u2028"
+    assert repo_shape.spelled(5) == "5"
+    assert repo_shape.spelled(None) == "None"
+    assert repo_shape.spelled(["a\x1b"]) == "['a\\x1b']"
+    assert repo_shape.spelled(Path("b\u2028")) == "b\\u2028"
 
 
-def test_spelled_leaves_one_line_free_of_what_must_not_reach_a_terminal(
-        template):
+def test_spelled_leaves_one_line_free_of_what_must_not_reach_a_terminal():
     every = "".join(chr(code) for code in (*range(0x100), 0x2028, 0x2029,
                                            0x202e, 0x200f, 0xd800, 0xdc80,
                                            0xdfff, 0xe000, 0xfeff, 0x1f642,
                                            0xe0001))
-    out = template.spelled(every)
+    out = repo_shape.spelled(every)
     assert "\n" not in out and not NEVER_RAW & set(out), out
     assert not {chr(code) for code in ESCAPED_CODES} & set(out), out
 
@@ -809,11 +811,11 @@ def test_spelled_leaves_one_line_free_of_what_must_not_reach_a_terminal(
     ("namereplace", "namereplace"),
 ])
 def test_a_stdout_that_raises_is_made_to_escape_and_no_other_is_touched(
-        template, monkeypatch, errors, expected):
+        monkeypatch, errors, expected):
     stream = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors=errors,
                               newline="\n")
     monkeypatch.setattr(sys, "stdout", stream)
-    template.escape_unencodable_stdout()
+    repo_shape.escape_unencodable_stdout()
     assert (stream.errors, stream.encoding) == (expected, "cp1252")
     print("\u65e5 \u2014", end="")
     stream.flush()
@@ -822,8 +824,7 @@ def test_a_stdout_that_raises_is_made_to_escape_and_no_other_is_touched(
         assert written == b"\\u65e5 \x97", written
 
 
-def test_a_stdout_that_cannot_be_reconfigured_fails_nothing(template,
-                                                            monkeypatch):
+def test_a_stdout_that_cannot_be_reconfigured_fails_nothing(monkeypatch):
     """No `reconfigure`, a closed stream and no stdout at all (`pythonw`)."""
 
     class Replaced:
@@ -831,37 +832,59 @@ def test_a_stdout_that_cannot_be_reconfigured_fails_nothing(template,
 
     for stdout in (Replaced(), None):
         monkeypatch.setattr(sys, "stdout", stdout)
-        template.escape_unencodable_stdout()
+        repo_shape.escape_unencodable_stdout()
     closed = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict")
     closed.close()
     monkeypatch.setattr(sys, "stdout", closed)
-    template.escape_unencodable_stdout()
+    repo_shape.escape_unencodable_stdout()
 
 
-def source_of(path: Path, name: str) -> str:
-    """The source of the module-level function or assignment called `name`."""
-    text = path.read_text(encoding="utf-8").replace("\r\n", "\n")
-
-    def named(node: ast.stmt) -> bool:
-        if isinstance(node, ast.FunctionDef):
-            return node.name == name
-        return (isinstance(node, ast.Assign)
-                and [target.id for target in node.targets
-                     if isinstance(target, ast.Name)] == [name])
-
-    node = next(node for node in ast.parse(text).body if named(node))
-    return ast.get_source_segment(text, node)
+#: The two functions both roots call, and the two sets `spelled` reads.
+MOVED = ("escape_unencodable_stdout", "spelled", "ESCAPED_CATEGORIES",
+         "ESCAPED_BIDI_CONTROLS")
 
 
-@pytest.mark.parametrize("name", ["escape_unencodable_stdout", "spelled",
-                                  "ESCAPED_CATEGORIES",
-                                  "ESCAPED_BIDI_CONTROLS"])
-def test_the_two_roots_carry_the_same_function(name):
-    """Both files are shape copies that cannot import anything of this
-    repository's, so the helper is written twice; this is what keeps it one.
-    The two sets `spelled` reads are part of it."""
-    assert (source_of(ASSEMBLY_TEMPLATE, name)
-            == source_of(FAMILY_TEMPLATE, name)), name
+@pytest.mark.parametrize("path", [ASSEMBLY_TEMPLATE, FAMILY_TEMPLATE],
+                         ids=["assembly-root", "family-root"])
+def test_each_root_imports_both_functions_and_defines_neither(path):
+    """Written ONCE, in `scripts/repo_shape.py`: the shared library every
+    project and every family holder carries beside its `bootstrap.py`, and
+    the one each root already imported its YAML reader from. Each root's
+    module-level `from repo_shape import (...)` names both, and nothing in
+    the file defines or assigns any of the four names again, so there is no
+    second copy to drift from the first."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    bound = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                             ast.ClassDef)):
+            bound.add(node.name)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            targets = (node.targets if isinstance(node, ast.Assign)
+                       else [node.target])
+            bound.update(name.id for target in targets
+                         for name in ast.walk(target)
+                         if isinstance(name, ast.Name))
+    assert not bound & set(MOVED), bound & set(MOVED)
+    imported = [(alias.name, alias.asname) for node in tree.body
+                if isinstance(node, ast.ImportFrom) and node.level == 0
+                and node.module == "repo_shape" for alias in node.names]
+    for name in ("escape_unencodable_stdout", "spelled"):
+        assert (name, None) in imported, imported
+    others = [alias for node in ast.walk(tree)
+              if isinstance(node, (ast.Import, ast.ImportFrom))
+              and getattr(node, "module", None) != "repo_shape"
+              for alias in node.names
+              if (alias.asname or alias.name) in MOVED]
+    assert not others, [alias.name for alias in others]
+
+
+@pytest.mark.parametrize("name", ["escape_unencodable_stdout", "spelled"])
+def test_each_root_runs_repo_shapes_own_function(template, name):
+    """What a root calls by that name IS `repo_shape`'s object, the one the
+    unit rows above hold to the specification, so those rows are each
+    root's rows too."""
+    assert getattr(template, name) is getattr(repo_shape, name), name
 
 
 @pytest.mark.parametrize("path", [ASSEMBLY_TEMPLATE, FAMILY_TEMPLATE],
