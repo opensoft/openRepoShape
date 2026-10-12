@@ -382,17 +382,28 @@ class Row:
         return self.state in CONFLICTS
 
 
-#: What `update-pin-row` tells the person whose pin's `files:` does not read
-#: as rows (#290). Without it the refusal carried `repo_shape`'s default
-#: trailer, which is about submodules and the lockstep invariant and fixes
-#: nothing in this file.
-PIN_ROWS_REMEDIATION = (
-    "Remediation: `files:` is a list with one `path:`/`sha256:` row per "
-    "copied file. The tool that cut this root wrote it and only "
-    "`update-shape.py apply` moves it, so it is never mended by hand: put "
-    "back the pin a tool last wrote from this repository's own history "
-    "(`git log -- contracts/shape-pin.yaml` names the commit that changed "
-    "it), then run this again.")
+def pin_rows_remediation(root: Path) -> str:
+    """What `update-pin-row` tells the person whose pin's `files:` does not
+    read as rows (#290). Without it the refusal carried `repo_shape`'s
+    default trailer, which is about submodules and the lockstep invariant and
+    fixes nothing in this file.
+
+    A FUNCTION OF THE ROOT, not a constant, because the `git log` it points
+    at has to read the PROJECT's history. This tool is run from a checkout of
+    openRepoShape with `--root /path/to/project`, so a bare `git log --
+    contracts/shape-pin.yaml` inspects the checkout instead and shows no pin
+    history, or the wrong one (codex, PR #343). It is spelled `git -C <root>`
+    by `_by_hand`, this module's one quoter for a line a person pastes, so a
+    root holding a space is one argument there.
+    """
+    log = _by_hand(root, "log", "--", "contracts/shape-pin.yaml")
+    return (
+        "Remediation: `files:` is a list with one `path:`/`sha256:` row per "
+        "copied file. The tool that cut this root wrote it and only "
+        "`update-shape.py apply` moves it, so it is never mended by hand: "
+        "put back the pin a tool last wrote from this repository's own "
+        f"history (`{log}` names the commit that changed it), then run this "
+        "again.")
 
 
 def read_pin(root: Path) -> tuple[dict, list[Row]]:
@@ -437,13 +448,13 @@ def read_pin(root: Path) -> tuple[dict, list[Row]]:
             "update-pin-row",
             f"{pin_path}: `files:` is {files!r}, not a list of "
             "`path:`/`sha256:` rows, so no copied file can be read from it",
-            PIN_ROWS_REMEDIATION)
+            pin_rows_remediation(root))
     rows: list[Row] = []
     for raw in files:
         if not isinstance(raw, dict) or not raw.get("path"):
             raise Refusal("update-pin-row",
                           f"{pin_path}: a `files:` row is not `path:`/`sha256:`",
-                          PIN_ROWS_REMEDIATION)
+                          pin_rows_remediation(root))
         rows.append(Row(str(raw["path"]), str(raw.get("sha256") or "")))
     if not rows:
         raise Refusal(

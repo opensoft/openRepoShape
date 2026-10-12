@@ -28,6 +28,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import re
+import shlex
 import shutil
 import sys
 
@@ -58,8 +59,8 @@ VERDICT = re.compile(r"^(COMPLIANT|DRIFTED|MISPLACED|INVALID|NOT A SHAPE ROOT"
                      r"|CANNOT ANSWER)\b")
 
 
-def scalar_files(root, value: str) -> None:
-    """Replace the pin's `files:` rows by `files: <value>` and commit it.
+def commit_files(root, files_text: str, message: str) -> None:
+    """Replace the pin's `files:` rows by `files_text` and commit it.
 
     `files:` is the pin's last key, so the rest of the pin is untouched.
     BYTES, never `write_text`, so the file stays LF on every OS. Committed,
@@ -69,11 +70,29 @@ def scalar_files(root, value: str) -> None:
     pin = root / SHAPE_PIN
     text = pin.read_bytes().decode("utf-8")
     cut = text.index("\nfiles:\n") + 1
-    pin.write_bytes((text[:cut] + f"files: {value}\n").encode("utf-8"))
+    pin.write_bytes((text[:cut] + files_text).encode("utf-8"))
     git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
-        "-m", f"files: {value}", "--", SHAPE_PIN, cwd=root)
-    assert not isinstance(load_yaml(pin)["files"], list), \
+        "-m", message, "--", SHAPE_PIN, cwd=root)
+
+
+def scalar_files(root, value: str) -> None:
+    """`files: <value>`, committed: a pin whose `files:` is not a list."""
+    commit_files(root, f"files: {value}\n", f"files: {value}")
+    assert not isinstance(load_yaml(root / SHAPE_PIN)["files"], list), \
         "fixture drift: the pin still carries a list of rows"
+
+
+def pin_log_command(root) -> str:
+    """The remediation's `git log`, as `update-shape.py` spells it for `root`.
+
+    COMPUTED here with `shlex.join`, the quoter `update-shape.py`'s
+    `_by_hand` uses, and not written as a literal: a root holding a space or,
+    on Windows, a backslash is quoted, so a literal would pass on one OS and
+    fail on the next. The root is `resolve()`d because the tool resolves its
+    `--root` (a Windows temp directory can arrive as an 8.3 short name).
+    """
+    return shlex.join(["git", "-C", str(root.resolve()), "log", "--",
+                       SHAPE_PIN])
 
 
 def no_traceback(result) -> None:
@@ -90,14 +109,18 @@ def findings(result, code: str) -> list[str]:
             if line.startswith(f"FINDING {code}:")]
 
 
-def assert_refused_update_pin_row(result, shown: str) -> None:
+def assert_refused_update_pin_row(result, shown: str, root) -> None:
     """`read_pin`'s refusal: by name, exit 2, the value shown, and a remedy
-    about the pin -- not `repo_shape`'s default one about submodules."""
+    about the pin -- not `repo_shape`'s default one about submodules. The
+    `git log` it points at is `git -C <root>`, never the bare one: this tool
+    is run from the openRepoShape checkout with `--root <project>`, so a bare
+    `git log` would read the checkout's history, not the project's."""
     no_traceback(result)
     assert result.returncode == 2, result.stdout + result.stderr
     assert "REFUSED update-pin-row: " in result.stderr, result.stderr
     assert f"`files:` is {shown}, not a list" in result.stderr
-    assert "git log -- contracts/shape-pin.yaml" in result.stderr
+    assert pin_log_command(root) in result.stderr, result.stderr
+    assert "git log" not in result.stderr, result.stderr
     assert "submodule" not in result.stderr
 
 
@@ -132,12 +155,76 @@ def test_update_shape_check_and_apply_refuse_it_by_name(project, value,
     before = (project / SHAPE_PIN).read_bytes()
     checked = run_script(UPDATE, "check", "--root", str(project),
                          "--upstream", str(REPO))
-    assert_refused_update_pin_row(checked, shown)
+    assert_refused_update_pin_row(checked, shown, project)
     applied = run_script(UPDATE, "apply", "--root", str(project), "--yes",
                          "--upstream", str(REPO))
-    assert_refused_update_pin_row(applied, shown)
+    assert_refused_update_pin_row(applied, shown, project)
     assert (project / SHAPE_PIN).read_bytes() == before, \
         "a refused apply writes nothing"
+
+
+PIN_LOG_SAID = re.compile(r"`(git -C [^`]+)` names the commit that changed")
+
+
+def printed_pin_log(result) -> str:
+    """The `git log` the remediation prints, exactly as it is printed."""
+    said = PIN_LOG_SAID.search(result.stderr)
+    assert said, result.stderr
+    return said.group(1)
+
+
+def test_the_remediations_git_log_reads_the_root_it_was_run_on(project,
+                                                               tmp_path):
+    """THE CWD IS NOT THE ROOT, and the root holds a space.
+
+    The documented way to run this tool is from the openRepoShape checkout,
+    `update-shape.py check --root /path/to/project`. A bare `git log --
+    contracts/shape-pin.yaml` printed for that run inspects the CHECKOUT and
+    shows no pin history, so the person cannot follow the remediation
+    (codex, PR #343). The printed command is run here, from the checkout, and
+    must show the project's own commits to the pin.
+    """
+    spaced = tmp_path / "a root with space" / "Atlas"
+    spaced.parent.mkdir()
+    shutil.copytree(project, spaced, symlinks=True)
+    scalar_files(spaced, "5")
+    checked = run_script(UPDATE, "check", "--root", str(spaced),
+                         "--upstream", str(REPO), cwd=REPO)
+    assert_refused_update_pin_row(checked, "5", spaced)
+    command = printed_pin_log(checked)
+    assert command == pin_log_command(spaced), command
+    # The space did not split the root into two words.
+    assert shlex.split(command) == ["git", "-C", str(spaced.resolve()), "log",
+                                    "--", SHAPE_PIN], command
+
+    shown = git(*shlex.split(command)[1:], cwd=REPO).stdout
+    history = git("log", "--format=%H", "--", SHAPE_PIN, cwd=spaced)
+    commits = history.stdout.split()
+    assert len(commits) >= 2, history.stdout
+    for sha in commits:
+        assert sha in shown, f"{sha} is a commit to the pin, not shown:\n{shown}"
+    assert git("rev-parse", "HEAD", cwd=spaced).stdout.strip() in shown
+
+
+def test_a_row_that_is_not_a_mapping_carries_the_same_remediation(project,
+                                                                  tmp_path):
+    """`read_pin` raises `update-pin-row` twice, and both carry the remedy:
+    `files:` is a list here, but its one row is `5`, not `path:`/`sha256:`."""
+    spaced = tmp_path / "a root with space" / "Atlas"
+    spaced.parent.mkdir()
+    shutil.copytree(project, spaced, symlinks=True)
+    commit_files(spaced, "files:\n  - 5\n", "files: - 5")
+    assert load_yaml(spaced / SHAPE_PIN)["files"] == [5], \
+        "fixture drift: the pin does not carry one scalar row"
+    checked = run_script(UPDATE, "check", "--root", str(spaced),
+                         "--upstream", str(REPO), cwd=REPO)
+    no_traceback(checked)
+    assert checked.returncode == 2, checked.stdout + checked.stderr
+    assert "REFUSED update-pin-row: " in checked.stderr, checked.stderr
+    assert "a `files:` row is not `path:`/`sha256:`" in checked.stderr
+    assert printed_pin_log(checked) == pin_log_command(spaced)
+    assert "git log" not in checked.stderr, checked.stderr
+    assert "submodule" not in checked.stderr
 
 
 @pytest.mark.parametrize("value, shown", NOT_A_LIST)
@@ -232,7 +319,7 @@ def test_the_holders_validate_family_and_update_shape_and_doctor(holder,
         shown)
     assert_refused_update_pin_row(
         run_script(UPDATE, "check", "--root", str(holder),
-                   "--upstream", str(REPO)), shown)
+                   "--upstream", str(REPO)), shown, holder)
     rows = assert_shape_currency_row(
         run_script(DOCTOR, "--root", str(holder), "--json"), shown)
     assert rows["family"]["status"] == "FINDING", rows["family"]
