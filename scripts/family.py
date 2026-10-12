@@ -126,7 +126,20 @@ FILE_PROTOCOL = ["-c", "protocol.file.allow=always"]
 #: `<org>/<Project>`, the only spelling `--member` accepts. A bare name would
 #: have to guess an owner, and a family whose members are in another
 #: organisation is an ordinary case (an estate's neutral products are).
-MEMBER_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+#:
+#: EACH NAME BEGINS WITH A LETTER OR A DIGIT, as the holder's own
+#: `validate-family.py` requires of a row's `repository:` (`QUALIFIED_RE`,
+#: `member-repository`), because `add` writes `--member` verbatim as that row.
+#: Without it `testorg/_Zed`, `testorg/.Zed`, `_org/Zed` and `.org/Zed` were
+#: mounted, pinned and committed with exit 0, and the gate the holder ships
+#: failed the commit `add` had just reported (#366). THIS IS A THIRD SPELLING
+#: OF THAT PATTERN, not an import of it: the validator reads the holder's own
+#: copy of `repo_shape.py`, so a constant moved there would reach an existing
+#: holder only through `update-shape.py`. `tests/test_family_member_name.py`
+#: reads every spelling and fails when they differ, so it is one rule kept in
+#: three places and never three rules. Change one and the test names the rest.
+MEMBER_RE = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 #: The suffix a LEG's name carries after its assembly root's — the
 #: `(?:-spec|-code)?` that `contracts/repository-naming.yaml`'s leg pattern
@@ -411,25 +424,21 @@ def _member_row(project: str, project_id: str, repository: str, commit: str,
 def _checked_member(raw: str) -> tuple[str, str]:
     """`--member` as `(org/Project, Project)`."""
     name = raw.strip()
-    if not MEMBER_RE.match(name):
-        raise Refusal(
-            "member-malformed",
-            f"--member {raw!r} is not `<org>/<Project>`",
-            "Remediation: name the owner — a family's members may live in "
-            "another organisation, so there is no owner to assume. For "
-            "`remove` and `bump`, the bare `<Project>` is what is wanted.")
     # A SEGMENT THAT IS `.` OR `..` IS A DIRECTORY REFERENCE, NOT A NAME
-    # (#299). `MEMBER_RE`'s class admits the dot, for `.github`, so `<org>/..`
-    # matched, and its mount path `members/..` is the holder's root: on a
-    # fresh holder `_checked_mount_path` found the root's own files "in the
-    # index" under it and told the human to `git rm -r --cached -- members/..`,
-    # which stages the deletion of every file the holder has. The class is
-    # left as it is; only the two names that are no name are refused, before
-    # the member is read or anything is mounted. An owner of `.` or `..`
-    # names no account.
-    owner, _, project = name.partition("/")
+    # (#299), AND IT IS SAID SO BEFORE THE PATTERN IS ASKED (#366). `<org>/..`
+    # once matched `MEMBER_RE`, and its mount path `members/..` is the
+    # holder's root: on a fresh holder `_checked_mount_path` found the root's
+    # own files "in the index" under it and told the human to `git rm -r
+    # --cached -- members/..`, which stages the deletion of every file the
+    # holder has. The pattern refuses both now, for beginning with a dot, but
+    # in its general sentence, and what is wrong with `.` and `..` is that
+    # they are no name at all, which that sentence does not say. So the clause
+    # stays, FIRST, for the more specific one; it is read only on a name with
+    # a `/`, since a bare `.` has no owner to blame and the general sentence
+    # asks for one. An owner of `.` or `..` names no account.
+    owner, slash, project = name.partition("/")
     for which, segment in (("owner", owner), ("project", project)):
-        if segment not in (".", ".."):
+        if not slash or segment not in (".", ".."):
             continue
         if which == "owner":
             why = "no organisation or account is called that"
@@ -442,8 +451,25 @@ def _checked_member(raw: str) -> tuple[str, str]:
             f"--member {raw!r} has `{segment}` as its {which}, which is a "
             f"directory reference and not a name: {why}",
             "Remediation: name the repository as `<org>/<Project>`, each a "
-            "real name; `.` and `..` are neither, though a name may contain "
-            "a dot (`.github`).")
+            "real name beginning with a letter or a digit; `.` and `..` are "
+            "neither, though a name may contain a dot after that (`Ze.d`).")
+    # BEFORE THE MEMBER IS READ, a name the holder's own gate would refuse is
+    # refused here (#366): `add` writes `--member` verbatim as the row's
+    # `repository:`, and `validate-family.py` fails a row whose owner or
+    # project begins with anything but a letter or a digit.
+    if not MEMBER_RE.match(name):
+        raise Refusal(
+            "member-malformed",
+            f"--member {raw!r} is not `<org>/<Project>`: each name begins "
+            "with a letter or a digit and goes on with letters, digits, `.`, "
+            "`_` and `-`",
+            "Remediation: name the owner — a family's members may live in "
+            "another organisation, so there is no owner to assume — and "
+            "begin neither name with `.`, `_` or `-`: the holder's "
+            "`validate-family.py` refuses such a `repository:` as "
+            "`member-repository`, so a commit that wrote one would fail the "
+            "gate the holder ships. For `remove` and `bump`, the bare "
+            "`<Project>` is what is wanted.")
     checked_value("--member", name)
     return name, repo_basename(name)
 
