@@ -3786,6 +3786,12 @@ ROOT_PIN_FAULTS = [
                  "update-pin-no-files", id="no-files-rows"),
     pytest.param(pin_with(r'^  - path: .*$', '  - nopath: x'),
                  "update-pin-row", id="a-row-with-no-path"),
+    pytest.param(pin_with(r'(?s)^files:.*\Z', 'files: 5\n'),
+                 "update-pin-row", id="files-5-not-a-list"),
+    pytest.param(pin_with(r'(?s)^files:.*\Z', 'files: true\n'),
+                 "update-pin-row", id="files-true-not-a-list"),
+    pytest.param(pin_with(r'(?s)^files:.*\Z', 'files: 1.5\n'),
+                 "update-pin-row", id="files-1.5-not-a-list"),
     pytest.param(lambda text: None, "update-pin-missing",
                  id="a-deleted-pin"),
 ]
