@@ -1034,6 +1034,11 @@ def pull_request_fails(adopter, monkeypatch, failure):
     names = {role: f"{ASSEMBLY}-{role}" for role in LEGS}
     assert not adopter._open_the_pull_request(repositories, names, "main",
                                               BRANCH, "body")
+    # The command to open it by hand is said once the split has passed
+    # its verification, as `cmd_execute` says it (#304), not by the step
+    # that failed.
+    adopter._open_it_by_hand(repositories, names, "main", BRANCH, "body",
+                             True)
     return "opening the pull request", "Open the pull request by hand"
 
 
