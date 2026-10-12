@@ -360,11 +360,12 @@ def test_plan_writes_the_name_as_one_entry_check_parses(adopter, tmp_path,
     assert said.count(UNRESOLVED) == len(ANSWERS) + asks, said
     if name == b"Icon\r":
         # Bytes, and ASCII on every platform's stderr: the FINDING names it.
-        # RAW, and that is a defect this line pins: `check` prints a FINDING's
-        # path unspelled, and a terminal hides it behind the carriage return.
-        # Filed as #212 (lane 3, `fix/adopt-spell-finding-paths`), whose fix
-        # edits this line to the spelled name.
-        assert UNRESOLVED + b"Icon\r still has `leg: null`" in said
+        # SPELLED, since #212: `check` writes every path a FINDING names
+        # through `_spelled`, as `plan` writes a question's, so the carriage
+        # return is a backslash and an `r` between backticks and the line
+        # stays one line. Before #212 it was raw, and a terminal hid the name
+        # behind the carriage return.
+        assert UNRESOLVED + b"`Icon\\r` still has `leg: null`" in said
     if asks:
         resolve(plan, spelled, "root")
     for path, leg in ANSWERS:

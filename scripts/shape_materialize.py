@@ -28,6 +28,7 @@ So a colliding template file is written BESIDE the original under
 from __future__ import annotations
 
 import argparse
+import codecs
 import datetime as _dt
 import os
 import re
@@ -40,7 +41,7 @@ from pathlib import Path, PurePath
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from repo_shape import (  # noqa: E402
     CHAIN_RECORD_FIELD, SAFE_ARG_RE, NamingPolicy, Refusal, checked_value,
-    file_sha256, parse_yaml,
+    double_quoted, file_sha256, parse_yaml,
 )
 
 SHAPE_REPOSITORY = "opensoft/openRepoShape"
@@ -81,6 +82,116 @@ def write_lf(path: Path, text: str) -> None:
     """
     with path.open("w", encoding="utf-8", newline="\n") as handle:
         handle.write(text)
+
+
+def escape_what_stdout_cannot_encode(stream=None) -> None:
+    """A character `stream` cannot encode is printed escaped, never raised on.
+
+    WHAT WAS WRONG (#214). The tools that call this print names a person
+    chose -- a source file, a `--source`, `--root`, `--out` or `--work-dir`
+    path, a `--name`, an `--elected-by` -- with a plain `print`, and a stdout
+    whose encoding cannot hold one raised `UnicodeEncodeError` in the middle
+    of the report. On Windows that is any stdout that is not the console
+    itself (a file, a pipe to `tee`, CI, an agent running the tool): Python
+    gives it the ANSI code page, cp1252 on a Western-European install, and a
+    Japanese file name is not in it. `adopt-project.py plan` had already
+    written the plan, then exited 1 with a traceback before `plan written
+    to` and before the questions it exists to ask.
+
+    TWO HANDLERS RAISE ON SUCH A NAME, AND ONLY THOSE TWO ARE CHANGED.
+    - `strict` (a POSIX locale that is not C or POSIX and not one Python
+      coerces C to, so `en_US.UTF-8` but not `C.UTF-8`; and any
+      `PYTHONIOENCODING=<codec>` that names no handler) becomes
+      `backslashreplace`, the handler Python already gives stderr.
+    - `surrogateescape` becomes `SURROGATEESCAPE_THEN_BACKSLASHREPLACE`,
+      registered below. It is what CPython gives EVERY Windows stdout by
+      default, the redirected cp1252 one included (`config_get_stdio_errors`
+      in `Python/initconfig.c`: "On Windows, always use surrogateescape by
+      default", 3.9 to 3.14), and what UTF-8 mode and the C, POSIX and
+      `C.UTF-8` locales give. It covers only U+DC80..U+DCFF, the bytes a
+      name that is not UTF-8 was read in with, so `日本.md` raised there
+      exactly as under `strict`. The new handler writes such a byte back as
+      that byte, which is surrogateescape's own rule, and writes anything
+      else the encoding cannot hold as `backslashreplace` does.
+    Each replacement writes what the handler it replaces would have
+    written, byte for byte, and differs only where that one would have
+    raised, so no run that succeeded prints anything different. Every other
+    handler -- one an operator chose, `replace`, `backslashreplace` itself --
+    is left as it was, and the ENCODING is never changed: a character the
+    code page holds is still written in it.
+
+    `backslashreplace` AND NOT `replace`: `\\u65e5\\u672c.md` still says which
+    file it is, and two names that differ only outside the code page do not
+    both print as `??.md`. (A backslash is not escaped, so a name that holds
+    the six characters `\\u65e5` prints as one holding `日` does.) ONCE, AT
+    THE START OF `main()`, and not at each `print`: `shape-doctor.py`'s
+    `ascii_text` and `shape_advisory.printable` flatten their own text to
+    ASCII on every console, which a name cannot afford -- it would change
+    what a UTF-8 terminal shows -- and a guard at each site is a guard the
+    next `print` goes without.
+
+    GUARDED, because failing to set a handler is no reason to refuse the
+    run: a stream a caller replaced may have no `reconfigure`, a closed or
+    detached one raises `ValueError`, and `pythonw` has no stdout at all.
+    """
+    stream = sys.stdout if stream is None else stream
+    errors = getattr(stream, "errors", None)
+    if errors == "strict":
+        handler = "backslashreplace"
+    elif errors == "surrogateescape":
+        handler = _registered_surrogateescape_then_backslashreplace()
+    else:
+        return
+    try:
+        stream.reconfigure(errors=handler)
+    except (AttributeError, ValueError, OSError):
+        pass
+
+
+#: `reconfigure` takes a handler by NAME, so it is registered under one, and
+#: under one that names this repository: a bare `surrogate-backslash` could
+#: replace a handler some other code registered, or be replaced by it.
+SURROGATEESCAPE_THEN_BACKSLASHREPLACE = (
+    "openreposhape.surrogateescape-then-backslashreplace")
+
+
+def _registered_surrogateescape_then_backslashreplace() -> str:
+    """The handler's name, registered by the first call and by no other."""
+    try:
+        codecs.lookup_error(SURROGATEESCAPE_THEN_BACKSLASHREPLACE)
+    except LookupError:
+        codecs.register_error(SURROGATEESCAPE_THEN_BACKSLASHREPLACE,
+                              _surrogateescape_then_backslashreplace)
+    return SURROGATEESCAPE_THEN_BACKSLASHREPLACE
+
+
+def _surrogateescape_then_backslashreplace(error):
+    """`surrogateescape` for a byte it escaped, `backslashreplace` for the rest.
+
+    The codec hands over a run of characters it cannot encode. This answers
+    the longest stretch at the start of it that is all escaped bytes, with
+    those bytes, or all something else, in `codecs.backslashreplace_errors`'
+    own spelling, so a stdout that was `strict` and one that was
+    `surrogateescape` escape a character identically. It says where it
+    stopped, and the codec asks again for whatever is left. Encoding only:
+    nothing here decodes through a stdout's handler.
+    """
+    if not isinstance(error, UnicodeEncodeError):
+        raise error
+    text, start = error.object, error.start
+    escaped = _is_escaped_byte(text[start])
+    end = start + 1
+    while end < error.end and _is_escaped_byte(text[end]) == escaped:
+        end += 1
+    if escaped:
+        return bytes(ord(char) - 0xDC00 for char in text[start:end]), end
+    return codecs.backslashreplace_errors(UnicodeEncodeError(
+        error.encoding, text, start, end, error.reason))
+
+
+def _is_escaped_byte(char: str) -> bool:
+    """`char` is a byte `surrogateescape` read in as U+DC80..U+DCFF."""
+    return 0xDC80 <= ord(char) <= 0xDCFF
 
 
 def write_paths_listing(path: Path, paths: list[str]) -> None:
@@ -512,8 +623,14 @@ def check_program(args: list[str]) -> None:
 
 def run(args: list[str], cwd: Path | None = None, capture: bool = True) -> str:
     check_program(args)
+    # UTF-8, whatever the locale: git writes a path as UTF-8, and the locale's
+    # codec (ASCII under a POSIX `C` locale, the ANSI code page on Windows)
+    # raises `UnicodeDecodeError` out of `subprocess.run` on one it cannot
+    # read -- before `CommandFailed` exists, so the person gets a traceback
+    # where `REFUSED <step>` and the ruleset hint belong (#217).
     proc = subprocess.run(args, cwd=str(cwd) if cwd else None,
-                          capture_output=capture, text=True, check=False)
+                          capture_output=capture, text=True,
+                          encoding="utf-8", errors="replace", check=False)
     if proc.returncode != 0:
         raise CommandFailed(args, cwd, proc.returncode,
                             (proc.stderr or "") + (proc.stdout or ""))
@@ -926,8 +1043,24 @@ def lane_trailer_argument(quote=None, env: dict | None = None) -> str:
 
 
 def render(text: str, values: dict[str, str], source: str) -> str:
+    """`text` with every `{{KEY}}` replaced by its value, or a refusal.
+
+    A VALUE BETWEEN A YAML TEMPLATE'S DOUBLE QUOTES, `"{{ELECTED_BY}}"`, is
+    spelled by `double_quoted`, the writer `repo_shape`'s reader takes back
+    unchanged. Pasted raw, `--elected-by 'Robert "Bob" Smith'` wrote
+    `"Robert "Bob" Smith"`, which is not YAML: the reader read it by
+    accident until it learned where a quoted scalar ends (#250), and then
+    refused the manifest of three repositories already created. A name ending
+    in a backslash closed no quote, and `C:\\new` or `x" # y` were misread.
+    The spelling is the value itself for any text without a quote, a
+    backslash or a character `str.isprintable` refuses -- a commit, a digest,
+    an ordinary name -- so no other template changes by a byte.
+    """
     out = text
+    yaml_file = source.endswith((".yaml", ".yml"))
     for key, value in values.items():
+        if yaml_file:
+            out = out.replace('"{{' + key + '}}"', double_quoted(str(value)))
         out = out.replace("{{" + key + "}}", str(value))
     left = PLACEHOLDER_RE.findall(out)
     if left:
@@ -1208,10 +1341,15 @@ def path_overlap(leg: str, other: str) -> tuple[str, str] | None:
     return None
 
 
-def first_and_more(paths: list[str]) -> str:
-    """`a` or `a` and 2 more: one path named, the rest counted."""
+def first_and_more(paths: list[str], spell=None) -> str:
+    """`a` or `a` and 2 more: one path named, the rest counted. `spell`
+    writes the named path, between backticks by default: the shape's own
+    paths need nothing more. `adopt-project.py` passes its `_spelled` for a
+    source path the plan keeps in the root, which can hold any character
+    (#212)."""
     more = f" and {len(paths) - 1} more" if len(paths) > 1 else ""
-    return f"`{paths[0]}`{more}"
+    named = spell(paths[0]) if spell else f"`{paths[0]}`"
+    return f"{named}{more}"
 
 
 def shape_path_collisions(what: str, value: str,

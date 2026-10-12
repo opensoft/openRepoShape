@@ -517,10 +517,6 @@ FAILURES = [
      "REFUSED creating the branch shape/update/ignored",
      ("kept      HEAD on main, where it started",
       "absent    shape/update/ignored (never created)"), "unstaged"),
-    ("branch-invalid", lambda root: None, "shape/update..ignored",
-     "REFUSED creating the branch shape/update..ignored",
-     ("kept      HEAD on main, where it started",
-      "absent    shape/update..ignored (never created)"), "unstaged"),
     ("branch-exists", the_branch_already_exists, BRANCH,
      f"REFUSED update-branch-exists: --branch {BRANCH} already exists", (),
      "deleted"),
@@ -591,6 +587,33 @@ def test_a_failure_before_the_commit_puts_the_tree_back_and_names_the_step(
         rel: "upstream-added" for rel in ADDITIONS}
     assert verdict.get(CHANGED) == "upstream-changed"
     assert "nothing to do" not in again.stdout
+
+
+def test_a_branch_git_cannot_name_is_refused_before_any_write(
+        root, standard, quiet):
+    """`shape/update..ignored` WAS this file's branch-creation failure after
+    the writes: `git checkout -b` refuses `..`, so the copies, the pin and
+    the README line had to be put back. Since #204 `main` asks `git
+    check-ref-format --branch` about `--branch` before anything is read or
+    written, so the same name is refused as `update-branch-invalid`, with
+    nothing on stdout and nothing to put back, and the operator's staged
+    work is untouched. `branch-df` above still makes `git checkout -b` fail
+    after the writes."""
+    operators_staged_work(root)
+    checked = check(root, standard, quiet)
+    before = snapshot(root, quiet)
+
+    result = apply(root, standard, quiet, *ADD_ARGS,
+                   "--branch", "shape/update..ignored")
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stderr.startswith(
+        "REFUSED update-branch-invalid: --branch 'shape/update..ignored' "), (
+        result.stderr)
+    assert result.stdout == "", "refused before anything was written"
+    assert "ROLLED BACK" not in result.stderr
+    assert_same_tree(before, snapshot(root, quiet))
+    assert check(root, standard, quiet).stdout == checked.stdout
 
 
 def test_a_rollback_git_will_not_finish_says_so_and_names_the_fix(
