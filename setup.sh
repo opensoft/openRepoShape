@@ -9,11 +9,11 @@
 # THIS FILE IS NOT THE FLOW; `setup-project.py` is. The preflight, the
 # organisation, the naming policy, the plan, the one yes, the scaffold, the
 # clone and the bootstrap all live there — one implementation, one flag list,
-# one set of refusal wordings, one `--help`. This script parses nothing, and
-# owns exactly four things, each of them something Python cannot do for
-# itself before it is running: an INTERPRETER (3.9 or newer, under whichever
-# name this machine has one); GIT itself, because the checkout probe below
-# asks git a question before Python is ever started; a CHECKOUT when the
+# one set of refusal wordings, one `--help`. This script parses nothing of
+# the RUN, and owns exactly four things, each of them something Python cannot
+# do for itself before it is running: an INTERPRETER (3.9 or newer, under
+# whichever name this machine has one); GIT itself, because the checkout probe
+# below asks git a question before Python is ever started; a CHECKOUT when the
 # person has none, because `curl … | bash` leaves no file on disk at all and
 # this script is then the whole of what they have; and the INVOCATION
 # DIRECTORY, which that checkout would otherwise lose — handed over as
@@ -21,14 +21,19 @@
 # beside a temporary checkout in /tmp (#39).
 #
 # What follows is a bash transcription of `setup-project.py`'s section 0
-# (`self_bootstrap`), and nothing else. Every flag named below is about the
-# checkout THIS FILE makes, never about the run.
+# (`self_bootstrap`), and nothing else. Section 0 reads the command line once,
+# for the three things that decide the checkout THIS FILE makes: whether to
+# make one at all (`-h`/`--help`, which outside a checkout this script answers
+# ITSELF, in a few lines that list no flag, before any clone — #341), which
+# ref (`--shape-ref`), and whether to keep it (`--keep-shape-checkout`).
+# Inside a checkout it reads nothing, and `--help` is `setup-project.py`'s.
 
 set -euo pipefail
 
 INVOCATION_DIR="$PWD"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]:-$0}")" && pwd)"
-SHAPE_REPO="${OPENREPOSHAPE_REPO:-https://github.com/opensoft/openRepoShape.git}"
+DEFAULT_SHAPE_REPO="https://github.com/opensoft/openRepoShape.git"
+SHAPE_REPO="${OPENREPOSHAPE_REPO:-$DEFAULT_SHAPE_REPO}"
 ENTRY="setup-project.py"
 
 say() { printf '%s\n' "$*"; }
@@ -116,6 +121,82 @@ fi
 # --------------------------------------------------------------------------
 # 0. self-bootstrap: there is no checkout, so make one
 # --------------------------------------------------------------------------
+# THE ONLY READ OF THE COMMAND LINE, AND IT CONSUMES NOTHING. All three are
+# about the checkout made here, and every argument is passed on to Python
+# unchanged whatever this scan concludes — which is what keeps one parser —
+# bar one run that is not passed on at all: a request for help, answered
+# here (below).
+# TWO KNOWN FALSE POSITIVES, both harmless: a VALUE spelled
+# `--keep-shape-checkout` sets that flag, and a VALUE spelled `--shape-ref`
+# makes the WORD AFTER IT become $SHAPE_REF. Both runs are refused anyway by
+# Python's `checked_value`, which rejects that leading `-` before anything is
+# created — the first two reads only decide whether a temporary directory is
+# removed and whether a ref gets checked out, never what the run itself does,
+# and the third decides whether there is a run at all (below). Each `case`
+# below ends `*) ;;` because an argument this scan does not recognize is
+# Python's to read, not this script's to reject.
+#
+# `-h` AND `--help` BOTH, because `setup-project.py` reads both as the help,
+# and only BEFORE `--`: what follows `--` is `scaffold-project.py`'s, so
+# `setup.sh Atlas -- --help` asks the scaffold for ITS help and is a run like
+# any other. Its false positives are runs `setup-project.py` would refuse —
+# `--help` as a flag's VALUE (`--org --help`; a value starting with `-` is
+# refused) or after an argument it refuses (`--wat --help`) — which get the
+# text below and exit 0 instead; nothing is created either way. Its one false
+# NEGATIVE is `--` as `--visibility`'s value (`--visibility -- --help`), read
+# here as the end of the options: that run clones, as every run did before.
+ASKED_FOR_HELP=0
+KEEP_SHAPE_CHECKOUT=0
+SHAPE_REF=""
+prev=""
+for arg in ${1+"$@"}; do
+	case "$arg" in --) break ;; *) ;; esac
+	case "$prev" in --shape-ref) SHAPE_REF="$arg" ;; *) ;; esac
+	case "$arg" in
+	-h|--help) ASKED_FOR_HELP=1 ;;
+	--keep-shape-checkout) KEEP_SHAPE_CHECKOUT=1 ;;
+	*) ;;  # Python's to read; see above.
+	esac
+	prev="$arg"
+done
+
+# HELP IS ANSWERED HERE, FIRST, AND WITH NO CLONE (#341). It used to fall
+# through to the clone below like any other run: a request for help from a
+# download cloned the public upstream before printing a word, died with git's
+# exit 128 offline, and printed the CLONE's usage, never anything beside this
+# file. `setup-project.py` answers `-h`/`--help` before it looks at anything
+# — the machine, the checkout, `$OPENREPOSHAPE_REPO` — so this does too:
+# before that variable's guard, before `mktemp`, before `git clone`.
+#
+# THE TEXT LISTS NO FLAG, so there is still one flag list (#50): it is
+# `setup-project.py --help`, which answers offline from a checkout or from
+# that one file, and `docs/cli.md`. It names `$OPENREPOSHAPE_REPO` and its
+# DEFAULT, never the variable's value — that guard has not run yet, and a
+# value is echoed only after its guard has passed.
+shim_help() {
+	say "setup.sh: the bash front door to setup-project.py, which is the flow itself."
+	say ""
+	say "This copy of setup.sh is not inside a checkout of openRepoShape, so it"
+	say "answers --help on its own: nothing was cloned and nothing was created."
+	say "Any other run from here first clones the standard into a temporary directory"
+	say "and hands over to setup-project.py in that checkout. The clone is of"
+	say "\$OPENREPOSHAPE_REPO, or of this when that is unset or empty:"
+	say ""
+	say "  $DEFAULT_SHAPE_REPO"
+	say ""
+	say "The flags are setup-project.py's, and its own --help is the one list of"
+	say "them. It answers with no network, from a checkout of openRepoShape or"
+	say "from that one file downloaded on its own:"
+	say ""
+	say "  python3 setup-project.py --help"
+	say ""
+	say "docs/cli.md in the repository is the same list, beside every other tool's."
+}
+if [[ "$ASKED_FOR_HELP" -eq 1 ]]; then
+	shim_help
+	exit 0
+fi
+
 # $OPENREPOSHAPE_REPO reaches `git clone`, which reads its own arguments: a
 # value starting with `-` is an option to git rather than a repository. A
 # CONTROL CHARACTER is refused too — a newline in this value could put a
@@ -128,26 +209,6 @@ case "$SHAPE_REPO" in
 *) ;;  # a well-formed value; passed to `git clone` unchanged below.
 esac
 
-# THE ONLY READ OF THE COMMAND LINE, AND IT CONSUMES NOTHING. Both flags are
-# about the checkout made here, and every argument is passed on to Python
-# unchanged whatever this scan concludes — which is what keeps one parser.
-# TWO KNOWN FALSE POSITIVES, both harmless: a VALUE spelled
-# `--keep-shape-checkout` sets that flag, and a VALUE spelled `--shape-ref`
-# makes the WORD AFTER IT become $SHAPE_REF. Both runs are refused anyway by
-# Python's `checked_value`, which rejects that leading `-` before anything is
-# created — this scan only decides whether a temporary directory is removed
-# and whether a ref gets checked out, never what the run itself does. Each
-# `case` below ends `*) ;;` for the same reason: an argument this scan does
-# not recognize is Python's to read, not this script's to reject.
-KEEP_SHAPE_CHECKOUT=0
-SHAPE_REF=""
-prev=""
-for arg in ${1+"$@"}; do
-	case "$arg" in --) break ;; *) ;; esac
-	case "$prev" in --shape-ref) SHAPE_REF="$arg" ;; *) ;; esac
-	case "$arg" in --keep-shape-checkout) KEEP_SHAPE_CHECKOUT=1 ;; *) ;; esac
-	prev="$arg"
-done
 # Mirrors `setup-project.py`'s REF_RE: a ref starts with a letter or digit,
 # holds only letters, digits, '.', '_', '/', '-', is never a `..` range,
 # never ends in `.lock` (git's own lock-file name for one), and is at most
