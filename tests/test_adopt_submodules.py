@@ -903,7 +903,14 @@ def test_a_name_no_plan_line_can_hold_is_spelled_in_the_question(
 def test_a_newline_spelled_in_the_question_is_the_entry_to_write(tmp_path):
     """The spelling is the entry: `src/a\\nb.py` between double quotes is a
     YAML scalar holding the newline, so the split the question names covers
-    the file, where the name read back as `src/a b.py` covered nothing."""
+    the file, where the name read back as `src/a b.py` covered nothing.
+
+    COVERING IT IS NOT EXTRACTING IT (#196). A line break would end the
+    path's line in the list `git filter-repo` reads, so answered `code` the
+    entry is `plan-unsafe-path` and nothing else -- no file uncovered, no
+    entry covering nothing -- where on main at e4decfb `check` said `plan ok`
+    and `execute` refused the same plan as `unsafe-value`. Answered `drop`,
+    as the remediation offers, it checks ok."""
     source = raw_source(tmp_path, b"src/vendored", b"src/a\nb.py")
     plan = planned(source, tmp_path)[0]
     named = REPLACE_WITH_RE.search(plan_rows(plan)["src/"]["question"])
@@ -912,7 +919,37 @@ def test_a_newline_spelled_in_the_question_is_the_entry_to_write(tmp_path):
     split = answered(plan, tmp_path, {GITMODULES: "code"})
     edited(split, "src/", {f'"{path}"': "code" for path in own})
     result = check_plan(split)
+    assert findings(result.stderr) == [(
+        "plan-unsafe-path", "`src/a\\nb.py` has leg: code, and `execute` "
+        "will not extract it into a leg: it holds a line feed (`\\n`), "
+        "which ends its line of the path list `git filter-repo` reads, so "
+        "the rest of the name would be read as a line of its own")], \
+        result.stderr
+    newline_entry = f'"{own[0]}"'
+    edited(split, newline_entry, {newline_entry: "drop"})
+    result = check_plan(split)
     assert result.returncode == 0, result.stderr
+
+
+def test_a_space_in_a_name_the_question_names_is_extracted(adopter, tmp_path):
+    """#196's own case of #166's split: `docs/User Guide.md` beside a
+    submodule at `docs/theme`. The question names it as an entry to write;
+    written so, the plan checks ok and `execute` refuses nothing over the
+    entries' paths, where on main at e4decfb it refused `docs/User Guide.md`
+    as `unsafe-value` after `check` had said `plan ok`."""
+    source = raw_source(tmp_path, b"docs/theme", b"docs/User Guide.md")
+    plan = planned(source, tmp_path)[0]
+    named = REPLACE_WITH_RE.search(plan_rows(plan)["docs/"]["question"])
+    own = re.findall(r"`([^`]+)`", named[1])
+    assert own == ["docs/User Guide.md", "docs/theme"]
+    split = answered(plan, tmp_path, {GITMODULES: "spec"})
+    edited(split, "docs/", {f'"{path}"': "spec" for path in own})
+    result = check_plan(split)
+    assert result.returncode == 0, result.stderr
+    loaded = adopter.Plan.load(split)
+    assert adopter._refuse_what_check_finds(
+        loaded, loaded.open_source(None, tmp_path / "read")) is None
+    assert adopter._leg_paths(loaded)["spec"][:2] == own
 
 
 @pytest.mark.parametrize("gitlink, beside", [
@@ -1086,10 +1123,21 @@ def test_an_unregistered_submodule_is_told_why_git_ignores_its_entry(
         adopter, tmp_path, source, answers, submodule, why):
     """#166's N2. An entry of `.gitmodules` that names the submodule's path
     and that git ignores is named, with the reason, rather than "no entry"
-    beside an entry the person can see."""
+    beside an entry the person can see.
+
+    A submodule at `-dep` is also an entry path that begins with `-`, which
+    no leg takes (#196): `plan-unsafe-path` comes first, as it does for every
+    plan, and the reason git ignores the entry is still said after it."""
     plan = answered(planned(registered_source(tmp_path, **source),
                             tmp_path)[0], tmp_path, answers)
-    assert findings(check_plan(plan).stderr) == [(
+    # `submodule` is spelled as a finding names it (#212); the entry's own
+    # path is the case's `orphan`, where it has one.
+    path = source.get("orphan", "")
+    unsafe = [("plan-unsafe-path",
+               f"{submodule} has leg: code, and `execute` will not extract "
+               f"it into a leg: {adopter.entry_path_problem(path)}")
+              ] if path.startswith("-") else []
+    assert findings(check_plan(plan).stderr) == unsafe + [(
         UNREGISTERED, f"the submodule {submodule} has leg: code but {why}, "
                       + adopter.NO_URL_IN_THE_LEG)]
 

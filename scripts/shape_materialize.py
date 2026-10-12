@@ -22,7 +22,9 @@ would put a byte in the split commit that no `git rm` accounts for — which is
 precisely what `adopt-project.py --verify` would then report as a mismatch.
 So a colliding template file is written BESIDE the original under
 `collision_dir` (`shape/`) and the collision is reported for the plan's
-`follow_ups:`. The human merges it; the tool never guesses.
+`follow_ups:`. The human merges it; the tool never guesses. A copy whose own
+path is taken -- the source keeps a `shape/README.md` of its own -- is
+REFUSED, never written over (`copy_in_the_way`, #262).
 """
 
 from __future__ import annotations
@@ -193,6 +195,98 @@ def _surrogateescape_then_backslashreplace(error):
 def _is_escaped_byte(char: str) -> bool:
     """`char` is a byte `surrogateescape` read in as U+DC80..U+DCFF."""
     return 0xDC80 <= ord(char) <= 0xDCFF
+
+
+# ---------------------------------------------------------------------------
+# A project's own validators run as children (#254)
+# ---------------------------------------------------------------------------
+#
+# `bump-leg.py` and `update-shape.py apply` run the PROJECT'S copies of
+# `validate-pins.py` and `validate-manifest.py` after they rewrite the pin.
+# Those are digest-pinned shape copies: they print the display name with a
+# plain `print` and never call `escape_what_stdout_cannot_encode`, and a child
+# takes its stdout CONFIGURATION from its environment (`PYTHONIOENCODING`, then
+# the locale), not from the `reconfigure` the parent did. So under a stdout
+# whose code page cannot hold the name -- `PYTHONIOENCODING=cp1252`, or
+# Windows' own default for any stdout that is not the console -- the validator
+# raised `UnicodeEncodeError` at `print(f"manifest ok: {name} ...")`, exited 1,
+# and the tool refused and rolled back a bump that was fine, blaming a gate
+# that had nothing wrong with it. Both tools build the child's environment
+# here, once, and pass it as `env=`.
+
+
+#: What a validator whose output a tool CAPTURES is told to write in. UTF-8
+#: holds every name, so the child cannot raise on one; `backslashreplace`
+#: makes a lone surrogate (a byte of a file name that was not UTF-8) text
+#: rather than a raise, and is a handler a child KNOWS. The tool decodes the
+#: pipe as UTF-8 to match (`bump-leg.py`'s `run_validator`), whatever its own
+#: locale is, and shows the words through its own escaped stdout.
+CAPTURED_CHILD_IOENCODING = "utf-8:backslashreplace"
+
+#: The built-in handlers that never raise on a character an encoding cannot
+#: hold. `strict`, `surrogateescape` (which holds only U+DC80..U+DCFF) and
+#: `surrogatepass` (UTF codecs only) are not among them.
+_HANDLERS_THAT_NEVER_RAISE = frozenset({
+    "backslashreplace", "ignore", "namereplace", "replace",
+    "xmlcharrefreplace"})
+
+
+def captured_child_environment() -> dict[str, str]:
+    """The environment for a Python child whose output this process CAPTURES.
+
+    `PYTHONIOENCODING` is set to `CAPTURED_CHILD_IOENCODING` and whatever the
+    caller had is REPLACED, not respected: an operator's value describes the
+    stream their own words land in, and the pipe a tool reads a child through
+    is not it. Respecting `cp1252:strict` here would put the failure back, one
+    pipe away from the console it was meant for. The pair has to be chosen
+    together: the tool that captures the output decodes it as UTF-8 and prints
+    it through ITS stdout, which `escape_what_stdout_cannot_encode` has made
+    safe, so each stdout in the chain is written by one encoding it was told.
+
+    Matches `shape-doctor.py`'s `run_validator`, which sets `utf-8` for the
+    same two validators and reads them back as UTF-8; the handler is added.
+    """
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = CAPTURED_CHILD_IOENCODING
+    return env
+
+
+def inherited_child_environment(stream=None) -> dict[str, str]:
+    """The environment for a Python child that INHERITS this process's stdout.
+
+    The child writes straight into the same pipe or file this process writes,
+    so it has to write in the encoding this stdout is read in: UTF-8 bytes on
+    a cp1252 pipe would be a different mistake. `PYTHONIOENCODING` is
+    therefore set to the stream's OWN encoding and its own handler, which is
+    what `escape_what_stdout_cannot_encode` leaves it with: an operator's
+    `replace` (or any handler that never raises) is kept, so a run that
+    printed `??` still prints `??`, and every other handler -- `strict`, which
+    the helper has already changed to `backslashreplace` in this process, and
+    `surrogateescape`, which it changed to a handler registered HERE -- is
+    named `backslashreplace`. The child cannot use a handler only this process
+    registered: `PYTHONIOENCODING=<encoding>:<unknown handler>` still starts,
+    and fails with `LookupError: unknown error handler name` at the first
+    character it cannot encode. Built-in names only.
+
+    One difference from the in-process handler, and it is small: a byte of a
+    file name that was not UTF-8, read in as U+DC80..U+DCFF, is written by the
+    child as the text `\\udcff` where this process writes the byte back. A
+    validator prints one only for a path it lists.
+
+    A stream with no usable encoding (`pythonw` has no stdout) leaves the
+    environment as it is: there is nothing the child inherits.
+    """
+    env = dict(os.environ)
+    stream = sys.stdout if stream is None else stream
+    try:
+        encoding = codecs.lookup(stream.encoding).name
+    except (AttributeError, LookupError, TypeError):
+        return env
+    errors = getattr(stream, "errors", None)
+    if errors not in _HANDLERS_THAT_NEVER_RAISE:
+        errors = "backslashreplace"
+    env["PYTHONIOENCODING"] = f"{encoding}:{errors}"
+    return env
 
 
 def write_paths_listing(path: Path, paths: list[str]) -> None:
@@ -539,6 +633,37 @@ def collision_follow_up(intended: str, actual: str) -> str:
         "overwritten")
 
 
+def copy_in_the_way(target: Path, actual: str) -> str | None:
+    """What stands where the shape's copy `actual` (`shape/README.md`) is to
+    be written under `target`, in words; None when the way is free.
+
+    `place` ASKED ABOUT THE PATH THE COPY STANDS IN FOR AND NEVER ABOUT THE
+    COPY'S OWN (#262). A source that keeps its own `shape/` in the root has a
+    real `shape/README.md`, and the shape's README was written over it, on
+    the line after `adopt-project.py` said that nothing was overwritten; a
+    directory `shape/Makefile/` raised `IsADirectoryError` and a file named
+    `shape` raised `FileExistsError`, each after both legs were pushed.
+
+    The copy is in the way when anything is AT its path, a symlink that leads
+    nowhere included (it is written through, and a file lands where nothing
+    was meant), or when something on the way to it is not a directory, which
+    a symlink to one is. `adopt-project.py check` finds what a plan keeps
+    there before any leg exists (`plan-root-blocks-shape-copy`); this is the
+    same question asked of the disk, for a caller that skipped `check`.
+    """
+    parts = actual.split("/")
+    for end in range(1, len(parts) + 1):
+        here = target.joinpath(*parts[:end])
+        if not (here.is_symlink() or here.exists()):
+            return None   # nothing here, so nothing deeper either
+        if end == len(parts):
+            return (f"`{actual}` is already there"
+                    f"{', a directory' if here.is_dir() else ''}")
+        if not here.is_dir():
+            return f"`{'/'.join(parts[:end])}` is not a directory"
+    return None
+
+
 #: Appended to the assembly root's Makefile by `adopt-project.py` ONLY. A
 #: scaffolded project's legs are empty, so nothing reads across them yet; an
 #: ADOPTED project's code leg holds tooling that used to read `contracts/`
@@ -655,6 +780,27 @@ def env_commit(work: Path, message: str) -> None:
     A scaffold that fails on a machine with no `user.email` configured fails
     for a reason that has nothing to do with the project being scaffolded, so
     a fallback identity is supplied rather than assumed.
+
+    THE MESSAGE GOES TO GIT AS UTF-8, whatever the locale (#196). Text-mode
+    stdin encodes with the locale's codec unless Python runs in UTF-8 mode
+    -- cp1252 on a Windows without `PYTHONUTF8=1`, ASCII under a POSIX `C`
+    locale with that mode off -- and git keeps the bytes it is given. An
+    adoption's split message already carried an em dash, which reached git
+    there as a cp1252 byte, and it names each entry path as the source spells
+    it: `Übersicht.md` would land as another byte that is not UTF-8, and
+    `文書.md` would raise `UnicodeEncodeError` after both legs are pushed.
+    Every caller's message goes the same way: `scaffold-project.py`'s
+    assembly commit, `scripts/family.py`'s holder commit, and each first
+    commit `git_init_commit` makes (a scaffolded leg, a seeded one).
+
+    `errors="replace"` works BOTH WAYS. Decoding, git's own output cannot
+    raise. Encoding, a character UTF-8 cannot carry is written as `?`: the
+    one such character a message can hold is a lone surrogate, the byte of a
+    name that is not UTF-8 as `Source.tree` keeps it. `adopt-project.py`
+    refuses one in a path it extracts (`entry_path_problem`), but a `root`
+    or `drop` entry holding one is listed in the split message, so there the
+    message names it with a `?` in place of that byte, a path that does not
+    exist, rather than raising after both legs are pushed.
     """
     env = dict(os.environ)
     for key, fallback in (("GIT_AUTHOR_NAME", "openRepoShape scaffold"),
@@ -666,7 +812,8 @@ def env_commit(work: Path, message: str) -> None:
             env[key] = fallback
     check_program(COMMIT_COMMAND)
     proc = subprocess.run(COMMIT_COMMAND, cwd=str(work), input=message,
-                          capture_output=True, text=True, check=False, env=env)
+                          capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", check=False, env=env)
     if proc.returncode != 0:
         raise CommandFailed(COMMIT_COMMAND, work, proc.returncode,
                             proc.stderr + proc.stdout)
@@ -1452,6 +1599,22 @@ def _materialize(shape_root: Path, template_root: Path, target: Path,
                     "Remediation: scaffold into an empty directory, or call "
                     "with collision_dir set (which is what adopt does).")
             actual = f"{collision_dir}/{rel}"
+            in_the_way = copy_in_the_way(target, actual)
+            if in_the_way:
+                raise Refusal(
+                    "materialize-copy-blocked",
+                    f"the shape's copy of `{rel}` cannot be written to "
+                    f"`{actual}`: {in_the_way}, and nothing was written there",
+                    "Remediation: the shape writes its copy of a file the "
+                    "root already holds under its collision directory, so "
+                    "the source cannot keep its own path there. "
+                    "`adopt-project.py check` reports a plan that does as "
+                    "`plan-root-blocks-shape-copy`, before any leg exists. "
+                    "Send that path to a leg or `drop` it in the plan, and "
+                    "run `execute` again with fresh leg repositories and "
+                    "an empty `--work-dir`, or none: this run made both "
+                    "legs and cloned them into the work directory it was "
+                    "given.")
             result.collisions.append((rel, actual))
             path = target / actual
         path.parent.mkdir(parents=True, exist_ok=True)
