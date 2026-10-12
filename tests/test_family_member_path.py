@@ -381,20 +381,21 @@ def test_add_refuses_a_dot_segment_as_malformed_before_anything_is_read(
         f"its {which}, which is a directory reference and not a name: {why}")
     assert remedy == (
         "Remediation: name the repository as `<org>/<Project>`, each a real "
-        "name; `.` and `..` are neither, though a name may contain a dot "
-        "(`.github`).")
+        "name beginning with a letter or a digit; `.` and `..` are neither, "
+        "though a name may contain a dot after that (`Ze.d`).")
     assert state(root, env) == before
     offline.assert_left_nothing()
 
 
 def test_add_still_takes_a_name_that_contains_a_dot():
-    """`MEMBER_RE`'s class is not narrowed: `.github` is a name, and only the
-    two directory references are refused."""
+    """A dot AFTER a name's first character is still a name. `.github` is not
+    one any more: `MEMBER_RE` takes `validate-family.py`'s shape, in which a
+    name begins with a letter or a digit (#366), and the holder's own gate
+    refused a row naming it, so `add` can no longer write one.
+    `tests/test_family_member_name.py` holds that rule."""
     module = family_module()
-    assert module._checked_member(f"{ORG}/.github") == (f"{ORG}/.github",
-                                                        ".github")
-    assert module._checked_member(f".github/{SPARE}")[1] == SPARE
     assert module._checked_member(f"{ORG}/a.b")[1] == "a.b"
+    assert module._checked_member(f"a.b/{SPARE}")[1] == SPARE
 
 
 # --- the controls -----------------------------------------------------------
