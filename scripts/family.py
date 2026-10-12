@@ -1100,9 +1100,16 @@ def _checked_mount_path(root: Path, project: str, path: str) -> None:
         named = " and ".join(
             f"`{name}` ({'no url' if url is None else 'url ' + url})"
             for name, url in ghosts)
+        # BY KEY, NOT BY SECTION: `--remove-section` cannot address a
+        # section whose name holds `]`, nor one whose header a hand spelled
+        # `[Submodule "..."]` (git 2.43: `no such section`), while a key
+        # reaches every section `git config --list` names. Its path is what
+        # makes it a submodule; git drops the header with the last key.
         removal = " and ".join(
-            f"`git config -f {GITMODULES} --remove-section "
-            f"{shlex.quote('submodule.' + name)}`" for name, _ in ghosts)
+            f"`git config -f {GITMODULES} --unset-all "
+            f"{shlex.quote('submodule.' + name + '.' + key)}`"
+            for name, url in ghosts
+            for key in (("path",) if url is None else ("path", "url")))
         raise Refusal(
             "member-path-registered",
             f"{GITMODULES} already gives the path {path} to the submodule"
@@ -1112,11 +1119,13 @@ def _checked_mount_path(root: Path, project: str, path: str) -> None:
             "it, and a recursive clone of the holder follows whichever "
             "section for that path comes last in the file. A section "
             "somebody wrote is not this tool's to drop or rewrite, so take it "
-            f"out by hand — {removal}, then `git add {GITMODULES}` — or, if "
-            "it was a member, with `family.py remove`; then re-run. With no "
-            f"{GITMODULES} in the working tree, put back the copy git read "
-            f"first: `git checkout -- {GITMODULES}` (the index's), or `git "
-            f"checkout HEAD -- {GITMODULES}`.")
+            f"out by hand, in a POSIX shell — {removal}, then `git add "
+            f"{GITMODULES}` — or, if it was a member, with `family.py "
+            "remove`; then re-run."
+            + ("" if os.path.lexists(root / GITMODULES) else
+               f" With no {GITMODULES} in the working tree, put back the "
+               f"copy git read first: `git checkout -- {GITMODULES}` (the "
+               f"index's), or `git checkout HEAD -- {GITMODULES}`."))
 
 
 def _checked_add_target(family: Family, repository: str, project: str,

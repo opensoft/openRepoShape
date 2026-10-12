@@ -607,6 +607,17 @@ def _check_gitmodules_paths(root: Path, report: Report) -> None:
             "holder's submodules can be cloned from it as it stands. Mend "
             f"the file by hand (`git config -f {GITMODULES} --list` says "
             "where it breaks), then run this again.") from exc
+    except OSError as exc:
+        # NO GIT TO RUN is a question this run cannot answer, so a refusal
+        # (exit 2), never the traceback that exits 1, a finding's code:
+        # `--no-members` ran no git at all before this check.
+        raise Refusal(
+            "gitmodules-unreadable",
+            f"{GITMODULES} could not be read as git reads it: git could not "
+            f"be run ({exc.strerror or exc})",
+            "Remediation: put git on PATH and run this again; this check "
+            "reads the file the way git does, and nothing could fetch this "
+            "holder's submodules without git either.") from exc
     sections: dict[str, dict[str, str]] = {}
     for record in listed.split(b"\0"):
         key, _, value = record.decode("utf-8",
@@ -634,8 +645,8 @@ def _check_gitmodules_paths(root: Path, report: Report) -> None:
             "the sections decides which repository lands there. Keep the one "
             "whose url is the member's (`family.py add` names it after its "
             f"path, `{path}`) and take each other out by hand, `git config "
-            f"-f {GITMODULES} --remove-section submodule.<name>`, then commit "
-            f"{GITMODULES}.")
+            f"-f {GITMODULES} --unset-all submodule.<name>.path` and the "
+            f"same for its `url`, then commit {GITMODULES}.")
 
 
 def _check_members(root: Path, members: list, no_members: bool,
