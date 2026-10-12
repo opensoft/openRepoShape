@@ -8,7 +8,8 @@ and refused the dry run for it as well, with `bump-leg-on-tracking-branch`,
 before it printed the `old -> new` line the human is meant to read. A dry run
 commits nothing, so it now runs there, prints everything it prints on a
 branch, and ends with ONE line saying the real run needs a branch and naming
-the `git switch -c` that makes it.
+the `git switch -c` that makes it, quoted so that it pastes for a root with a
+space in it.
 
 WHAT DID NOT MOVE is pinned here too, because each is the other half of the
 rule: the real run on the tracking branch is refused with the same words, a
@@ -23,6 +24,8 @@ runs on every OS the suite runs on.
 
 from __future__ import annotations
 
+import shlex
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -43,6 +46,9 @@ DRY_RUN = "--dry-run"
 #: Said once, by the last line of a dry run on the tracking branch, and by no
 #: other run.
 NEEDS_A_BRANCH = "needs a branch"
+
+#: What the hint says directly before the command a person pastes.
+PASTE_AFTER = "Create one first with: "
 
 
 @pytest.fixture(scope="module")
@@ -69,9 +75,12 @@ def tracking_branch(project: Path) -> str:
 
 
 def switch_command(project: Path, to: str) -> str:
-    """The command the tool prints, spelled as it prints the root: resolved,
-    which is what `Project.open` does to `--root`."""
-    return f"git -C {project.resolve()} switch -c bump/spec-{to[:12]}"
+    """The command the tool prints, spelled as it prints it: the root
+    resolved, which is what `Project.open` does to `--root`, and the words
+    joined by `shlex.join`. Joined here too, because `shlex.quote` quotes
+    every path that holds a backslash, which is every Windows root."""
+    return shlex.join(["git", "-C", str(project.resolve()), "switch", "-c",
+                       f"bump/spec-{to[:12]}"])
 
 
 # --- a dry run on the tracking branch ---------------------------------------
@@ -135,6 +144,32 @@ def test_the_branch_hint_is_the_only_difference_from_a_dry_run_on_a_branch(
     assert tail.endswith(switch_command(project, advanced) + "\n")
     assert on_tracking.stderr == ""
     assert on_a_branch.stderr == ""
+
+
+def test_the_printed_switch_command_pastes_for_a_root_with_a_space(
+        scaffolded, advanced, tmp_path):
+    """`My Projects/` and `C:\\Users\\Jane Doe\\` are ordinary roots, and
+    the printed line is the step "Advancing a leg" in AGENTS.md has the
+    assistant paste. A shell splits an unquoted root at its space and hands
+    git `Projects/Atlas` as the subcommand, so the line is quoted: read back
+    the way a shell reads it, it is exactly the argv that makes the branch,
+    and running that argv makes it."""
+    root = tmp_path / "My Projects" / PROJECT
+    shutil.copytree(scaffolded["clone"], root, symlinks=True)
+    assert " " in str(root.resolve())
+
+    result = bump(root, scaffolded, advanced, DRY_RUN)
+    assert result.returncode == 0, result.stderr + result.stdout
+    _, found, command = result.stdout.splitlines()[-1].partition(PASTE_AFTER)
+    assert found, result.stdout
+
+    branch = f"bump/spec-{advanced[:12]}"
+    argv = shlex.split(command)
+    assert argv == ["git", "-C", str(root.resolve()), "switch", "-c", branch]
+
+    proc = subprocess.run(argv, capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, proc.stderr
+    assert tracking_branch(root) == branch
 
 
 def test_a_dry_run_already_pinned_on_the_tracking_branch_says_nothing_to_do(

@@ -97,6 +97,7 @@ import argparse
 import errno
 import os
 import re
+import shlex
 import stat
 import subprocess
 import sys
@@ -1471,9 +1472,11 @@ def cmd_bump(args) -> int:
         if branch == project.tracking:
             # LAST, after everything a dry run on a branch prints, so that
             # line is the whole of the difference between the two (#477).
+            # The command is quoted, so a root under `My Projects/` pastes.
             print(f"\nthe real run needs a branch: {root} is on {branch!r}, "
-                  "the tracking branch. Create one first with: git -C "
-                  f"{root} switch -c bump/{role}-{commit[:12]}")
+                  "the tracking branch. Create one first with: "
+                  + shlex.join(["git", "-C", str(root), "switch", "-c",
+                                f"bump/{role}-{commit[:12]}"]))
         return 0
 
     # ---- the rewrite and the commit, remembered byte for byte so a failure
