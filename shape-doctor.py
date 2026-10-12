@@ -164,8 +164,9 @@ counted in MISPLACED, an entry under `paths:` in the plan -- because the
 manifest asserts where it belongs, and a FINDING is exactly something else
 asserting it. The same record answers the policy's question about a leg's
 `.gitmodules` -- which leg owns the submodules it registers -- where it
-places every submodule that leg keeps there, so that file is placed too,
-and an adoption whose record places every submodule reads `ok`.
+places every submodule that leg keeps there and the doctor could read every
+name the leg holds, so that file is placed too, and an adoption whose record
+places every submodule reads `ok`.
 
 WHERE NO ROW NAMES IT, THE NOTE SAYS WHICH KIND OF PLACEMENT IT FOUND (Codex
 review on #186, round 2). A project adopted before the record, or one with a
@@ -2485,7 +2486,8 @@ def leg_submodules(policy, role: str, rel: str, held: list,
     return submodules, wrong
 
 
-def gitmodules_the_record_answers(adopt, submodules: list) -> str | None:
+def gitmodules_the_record_answers(adopt, submodules: list,
+                                  unread: list) -> str | None:
     """The leg's own `.gitmodules`, when the record answers the policy's
     question about it, or None (#189).
 
@@ -2505,9 +2507,18 @@ def gitmodules_the_record_answers(adopt, submodules: list) -> str | None:
     all the file registers: the file stays the question it was, beside the
     note or the finding that names that submodule, and the row does not say
     the record answered it. So does a leg that keeps no submodule at all.
+
+    AND EVERY NAME IN THE LEG READ (#189's second review, F1). A name no
+    report or plan can carry -- a control character, or a byte that is not
+    UTF-8 -- is set aside by `leg_tracked_files` before its mode is read, so
+    a submodule kept under one is in no list here and no row was held to
+    it. `unread` is that residue, and a leg with any of it is not one whose
+    every submodule the record is known to place: the file stays the
+    question it was.
     """
-    if submodules and all(item["placement"] == SUBMODULE_RECORDED
-                          for item in submodules):
+    if (submodules and not unread
+            and all(item["placement"] == SUBMODULE_RECORDED
+                    for item in submodules)):
         return adopt.GITMODULES
     return None
 
@@ -2602,9 +2613,10 @@ def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
 
     THE RECORD IS CONSULTED BEFORE THE LEG'S QUESTIONS ARE COUNTED (#189).
     The policy asks which leg owns the submodules a `.gitmodules` registers,
-    and in a leg whose every submodule the record places there, the record
-    is that answer (`gitmodules_the_record_answers`): the file is placed,
-    and the leg's entry names it under `answered` instead of as a question.
+    and in a leg whose every submodule the record places there, and whose
+    every name could be read, the record is that answer
+    (`gitmodules_the_record_answers`): the file is placed, and the leg's
+    entry names it under `answered` instead of as a question.
     Otherwise a real adoption, whose leg always holds the `.gitmodules` that
     registers its submodules, could never read `ok`.
     """
@@ -2645,8 +2657,8 @@ def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
             and not any(regex.match(path) for regex in patterns)]
     walked = adopt.walk(policy, kept)
     submodules, wrong = leg_submodules(policy, role, rel, held, record)
-    misplaced, review, settled = walked_findings(
-        walked, role, rel, gitmodules_the_record_answers(adopt, submodules))
+    answered = gitmodules_the_record_answers(adopt, submodules, unwritable)
+    misplaced, review, settled = walked_findings(walked, role, rel, answered)
     misplaced += wrong
     # FILES AND PATHS ARE DIFFERENT NUMBERS and the row prints both. `walk`
     # folds a directory whose files agree into ONE entry, so `src/` with two

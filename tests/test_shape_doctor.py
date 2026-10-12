@@ -4555,12 +4555,17 @@ def test_the_record_answers_the_question_about_the_gitmodules_beside_it(
         row["reason"])
 
 
-@pytest.mark.parametrize("other, rows, status", [
-    ("vendor/lib", (), "note"),
-    ("docs/theme", (("docs/theme", "spec"),), "FINDING"),
-], ids=["one-no-row-names", "one-recorded-in-the-other-leg"])
+@pytest.mark.parametrize("other, rows, status, unread", [
+    ("vendor/lib", (), "note", []),
+    ("docs/theme", (("docs/theme", "spec"),), "FINDING", []),
+    pytest.param("bad\x01name", (), "note", ["'bad\\x01name'"],
+                 marks=pytest.mark.skipif(
+                     os.name == "nt", reason="Git for Windows records no "
+                     "path that holds a control character")),
+], ids=["one-no-row-names", "one-recorded-in-the-other-leg",
+        "one-whose-name-cannot-be-read"])
 def test_the_question_stays_where_the_record_does_not_place_every_submodule(
-        standard, project, other, rows, status):
+        standard, project, other, rows, status, unread):
     """THE RECORD ANSWERS FOR A `.gitmodules` ONLY WHERE IT PLACES EVERY
     SUBMODULE THE LEG KEEPS (#189).
 
@@ -4571,6 +4576,11 @@ def test_the_question_stays_where_the_record_does_not_place_every_submodule(
     registers, so the file stays the policy's question, and the row never
     says the record answered it; the note or the finding about the second
     submodule is what it was.
+
+    Or one whose name the doctor cannot read (#189's second review, F1). A
+    control character, like a byte that is not UTF-8, sets the name aside
+    before its mode is read, so no row was held to it: the leg reports the
+    name by `repr`, and the question stays.
     """
     stage(project / "code", ".gitmodules", CURSOR_GITMODULES + (
         f'[submodule "{other}"]\n\tpath = {other}\n'
@@ -4587,6 +4597,7 @@ def test_the_question_stays_where_the_record_does_not_place_every_submodule(
         "code/.gitmodules"], row["detail"]["review_required"]
     code = [leg for leg in row["detail"]["legs"] if leg["role"] == "code"][0]
     assert "answered" not in code, code
+    assert code["unwritable"] == unread, code
     assert ANSWERED_CLAUSE not in row["reason"], row["reason"]
 
 
