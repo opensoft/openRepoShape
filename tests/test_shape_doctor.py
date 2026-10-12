@@ -5322,6 +5322,60 @@ def test_a_template_validators_next_command_runs_when_it_is_pasted(
     assert spec["finding"] not in bare.stdout + bare.stderr
 
 
+#: SKIPPED EVERYWHERE BUT WINDOWS, with the reason beside it: the `$env:` line
+#: is only the one the doctor PRINTS on a Windows host (`validator_command`
+#: asks `os.name`), and only a Windows runner carries `powershell.exe` to run
+#: it. The dialect is held as text from every host by
+#: `VALIDATOR_COMMAND` below; this is the one test that RUNS it (review N3).
+@pytest.mark.skipif(os.name != "nt",
+                    reason="the PowerShell line is printed, and powershell.exe "
+                           "exists, only on a Windows host")
+@pytest.mark.parametrize("case", sorted(TEMPLATE_FALLBACK))
+def test_a_template_validators_next_runs_when_pasted_into_powershell(
+        standard, project, holder, tmp_path, case):
+    """The `$env:` line, run for real in a FRESH `powershell`, is the finding.
+
+    The same three claims as the `sh` paste above: the validator's own
+    finding is printed, the exit is the row's `detail.exit`, and no
+    `ModuleNotFoundError` -- from the filesystem root and with no
+    `PYTHONPATH` in the environment, so the only `repo_shape` this run can
+    find is the one the line itself put on the path.
+
+    TWO THINGS ABOUT `-Command`. A native command's non-zero exit is
+    `$LASTEXITCODE`, and `-Command` ends the session with 1 whatever it was,
+    so `; exit $LASTEXITCODE` is appended -- to the COMMAND, with the row's
+    trailing `   # ...` comment cut off first, because PowerShell reads a
+    comment to the end of the line and would swallow the `exit` with it. And
+    the output is read as BYTES and decoded here as UTF-8 with replacement,
+    on purpose: the finding id this asserts is ASCII, and what the console's
+    code page does to anything else is not under test. Nothing is fed to
+    stdin (`subprocess.DEVNULL`), so there is no path to encode.
+
+    NOT RUN ON THE WRITER'S WORKSTATION, which has no PowerShell: the pull
+    request's `tests-windows` job is this test's first run.
+    """
+    spec = TEMPLATE_FALLBACK[case]
+    root = red_root(case, project, holder, tmp_path)
+    row = rows_of(doctor(standard, root, "--json"))[case]
+    assert row["status"] == "FINDING", row
+    assert row["detail"]["own_copy"] is False, row
+    assert row["next"].startswith("$env:PYTHONPATH = '"), row["next"]
+    line = row["next"].split("   # ", 1)[0]
+    env = {name: value for name, value in os.environ.items()
+           if name.upper() != "PYTHONPATH"}
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    pasted = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+         f"{line}; exit $LASTEXITCODE"],
+        cwd=str(Path(tmp_path.anchor)), capture_output=True,
+        stdin=subprocess.DEVNULL, check=False, env=env)
+    whole = (pasted.stdout + pasted.stderr).decode("utf-8", errors="replace")
+    assert pasted.returncode == row["detail"]["exit"], whole
+    assert f"FINDING {spec['finding']}" in whole, whole
+    for crash in ("Traceback", "ModuleNotFoundError", "repo_shape"):
+        assert crash not in whole, (crash, whole)
+
+
 @pytest.mark.parametrize("case", sorted(TEMPLATE_FALLBACK))
 def test_a_template_validators_row_carries_the_same_next_in_text_and_json(
         standard, project, holder, tmp_path, case):
@@ -5372,6 +5426,122 @@ def test_a_roots_own_validators_next_command_is_unchanged(
         "what it refused"), row["next"]
     assert "PYTHONPATH" not in row["next"], row["next"]
     assert_next_runs_the_roots_own(row, root, Path(spec["own"]).name)
+
+
+# --- a root's OWN validator is run, and printed, as its own gate runs it ----
+#
+# The template's `PYTHONPATH` is the doctor's to give, and only to the copy
+# that has no `repo_shape.py` beside it. A root that keeps its OWN validator
+# and has lost its own `scripts/repo_shape.py` has a gate that cannot import
+# it: the doctor must run that gate the way the project does, so the row says
+# what the gate says, and the line it prints says the same thing when pasted.
+# Run under the standard's `PYTHONPATH` instead, the row answered "passes" or
+# quoted the validator's own finding, and the pasted line died on
+# `ModuleNotFoundError` -- the #238 symptom, with `own_copy: true` (review S1).
+
+def root_without_its_repo_shape(case: str, project: Path, holder: dict,
+                                tmp_path: Path, red: bool) -> Path:
+    """A root with its OWN `case` validator and no `scripts/repo_shape.py`.
+
+    `red=True` is the gate made red by the file edit `TEMPLATE_FALLBACK` names
+    for the case, which still loads; `red=False` leaves the manifest valid, so
+    the only thing wrong with the root is the file it lost. The holder is
+    COPIED, as everywhere here, so the session's stays intact.
+    """
+    spec = TEMPLATE_FALLBACK[case]
+    if red:
+        root = red_root(case, project, holder, tmp_path, keep_own=True)
+    elif case == "family":
+        root = tmp_path / FAMILY_NAME
+        shutil.copytree(holder["root"], root, symlinks=True)
+        root = root.resolve()
+    else:
+        root = project.resolve()
+    assert (root / spec["own"]).is_file(), spec["own"]
+    gone = root / "scripts" / "repo_shape.py"
+    assert gone.is_file(), gone
+    gone.unlink()
+    return root
+
+
+def doctor_with_no_pythonpath(standard: Path, root: Path):
+    """`rows_of` this root, from a doctor whose environment has NO
+    `PYTHONPATH`: one the person running the suite exported would reach the
+    root's own validator through the child's inherited environment and hide
+    the very import this is asking about. An empty value is no entry to
+    Python, and `run_script` can set a variable but not remove one."""
+    return rows_of(run_script(standard / DOCTOR, "--root", str(root), "--json",
+                              env={"PYTHONPATH": ""}))
+
+
+@WINDOWS_SKIP
+@pytest.mark.skipif(shutil.which("sh") is None, reason="needs sh")
+@pytest.mark.parametrize("case", sorted(TEMPLATE_FALLBACK))
+def test_an_own_validator_without_repo_shape_is_a_finding_the_paste_agrees(
+        standard, project, holder, tmp_path, case):
+    """(a): the row quotes the ImportError, and the own-copy NEXT, pasted from
+    `/` with no `PYTHONPATH`, dies on that same import with the row's exit.
+
+    THE RUN AND THE LINE ARE ONE PROCESS FOR THIS COPY: neither has a
+    `PYTHONPATH` the root's own validator did not already have, so what the
+    row quoted is what the reader gets. The finding the wrong file would have
+    produced (`manifest-topic`, ...) is in NEITHER, because neither run got as
+    far as reading it -- which is what separates this from a validator that
+    ran and was red.
+    """
+    spec = TEMPLATE_FALLBACK[case]
+    root = root_without_its_repo_shape(case, project, holder, tmp_path,
+                                       red=True)
+    row = doctor_with_no_pythonpath(standard, root)[case]
+    assert row["status"] == "FINDING", row
+    assert row["detail"]["own_copy"] is True, row
+    assert row["detail"]["exit"] == 1, row
+    assert "ModuleNotFoundError: No module named 'repo_shape'" in \
+        row["reason"], row
+    assert spec["finding"] not in row["reason"], row
+    # The own copy's line is what it has always been: no environment.
+    assert "PYTHONPATH" not in row["next"], row["next"]
+    assert_next_runs_the_roots_own(row, root, Path(spec["own"]).name)
+
+    pasted = pasted_from_elsewhere(row["next"], tmp_path)
+    whole = pasted.stdout + pasted.stderr
+    assert pasted.returncode == row["detail"]["exit"], whole
+    assert "ModuleNotFoundError: No module named 'repo_shape'" in whole, whole
+    assert spec["finding"] not in whole, whole
+
+
+@pytest.mark.parametrize("case", sorted(TEMPLATE_FALLBACK))
+def test_an_own_validator_without_repo_shape_does_not_pass(
+        standard, project, holder, tmp_path, case):
+    """(b): a VALID manifest, the same lost file -- and no "passes".
+
+    The row used to say `the project's own scripts/validate-manifest.py
+    passes` over a gate that exits 1 on `ModuleNotFoundError` when the project
+    runs it. It is now the gate's own failure, and the gate is run here
+    directly to say so: the row and the project's own command agree on the
+    exit code and on the line, not only on the absence of a pass.
+    """
+    spec = TEMPLATE_FALLBACK[case]
+    root = root_without_its_repo_shape(case, project, holder, tmp_path,
+                                       red=False)
+    row = doctor_with_no_pythonpath(standard, root)[case]
+    assert row["status"] != "ok", row
+    assert "passes" not in row["reason"], row
+    assert row["status"] == "FINDING", row
+    assert row["detail"]["own_copy"] is True, row
+    assert "ModuleNotFoundError: No module named 'repo_shape'" in \
+        row["reason"], row
+
+    env = {name: value for name, value in os.environ.items()
+           if name.upper() != "PYTHONPATH"}
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    gate = subprocess.run(
+        [sys.executable, str(root / spec["own"]), "--root", str(root)],
+        cwd=str(root), capture_output=True, encoding="utf-8",
+        errors="replace", stdin=subprocess.DEVNULL, check=False, env=env)
+    assert gate.returncode == row["detail"]["exit"], gate.stdout + gate.stderr
+    assert "ModuleNotFoundError: No module named 'repo_shape'" in \
+        gate.stdout + gate.stderr
 
 
 #: One breakage per kind of root, and the three an assembly root's `project.yaml`
