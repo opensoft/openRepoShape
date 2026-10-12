@@ -86,9 +86,10 @@ IDENTITY_EMAIL = "tests@openreposhape.invalid"
 #: harmless here, because no test reads such an author and nothing in the
 #: suite writes `user.name` into a repository's config. A test that needs its
 #: own identity to take effect through `git()` passes it as `-c` ahead of the
-#: verb, or exports the four variables; `git("config", "user.name", ...)`, or an
-#: exported `EMAIL`, would lose to this default. `tests/test_git_helper_identity.py` holds all of it to account,
-#: on a runner that exports an identity as well as on one that does not.
+#: verb, or exports the four variables; `git("config", "user.name", ...)`, or
+#: an exported `EMAIL`, would lose to this default.
+#: `tests/test_git_helper_identity.py` holds all of it to account, on a runner
+#: that exports an identity as well as on one that does not.
 IDENTITY_CONFIG = ["-c", f"user.name={IDENTITY_NAME}",
                    "-c", f"user.email={IDENTITY_EMAIL}"]
 
