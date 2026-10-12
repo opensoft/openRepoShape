@@ -418,6 +418,14 @@ def _check_shape_pin(root: Path, manifest: dict, report: Report) -> None:
     pin, rel = _check_shape_pin_header(root, manifest, report)
     before = len(report.findings)
     files = pin.get("files") or []
+    if not isinstance(files, list):
+        # Asked, not assumed (#290): `files: 5` was iterated, and the run
+        # ended in a TypeError with no finding naming the pin.
+        report.finding("shape-pin-row",
+                       f"{rel}: `files:` is {files!r}, not a list of "
+                       "`path:`/`sha256:` rows, so nothing about the copied "
+                       "shape files is actually asserted")
+        return
     if not files:
         report.finding("shape-pin-no-files",
                        f"{rel}: no `files:` rows, so nothing about the copied "
