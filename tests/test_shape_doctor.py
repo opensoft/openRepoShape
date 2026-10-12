@@ -3665,14 +3665,22 @@ READ_PIN_CODES = frozenset(param.values[1] for param in ROOT_PIN_FAULTS)
 def pasted(line: str) -> list[str]:
     """The argv the reader's own shell makes of a printed NEXT.
 
-    `shlex` on POSIX, over the command before the row's `   #` note, the way
+    `shlex` on POSIX, over the whole line, the way
     `test_a_red_validators_next_command_is_runnable` reads one; on Windows
-    PowerShell's reading, through `powershell_tokens`, which drops the note
-    itself and unquotes `quote_arg`'s verbatim strings.
+    PowerShell's reading, through `powershell_tokens`, which unquotes
+    `quote_arg`'s verbatim strings and, as PowerShell does, ends the line at
+    a `#` that opens a token.
+
+    THE WHOLE LINE ON POSIX, NOT THE PART BEFORE A `   #` (#277). The row's
+    sentence is its `why` and the NEXT is the command alone, so there is no
+    note to cut off. A reader that cut one off anyway would pass a NEXT that
+    had grown a tail back, and the argv assertions below would stop proving
+    the move. (`tests/test_doctor_next_is_a_command.py` holds the same NEXTs
+    to that on every OS.)
     """
     if os.name == "nt":
         return powershell_tokens(line)
-    return shlex.split(line.split("   #", 1)[0])
+    return shlex.split(line)
 
 
 def run_pasted(line: str) -> None:
@@ -3682,16 +3690,20 @@ def run_pasted(line: str) -> None:
     assert proc.returncode == 0, line + "\n" + proc.stdout + proc.stderr
 
 
-def assert_a_plain_note(line: str) -> None:
-    """The NEXT's `   #` note holds no `;`, apostrophe or backtick (#277).
+def assert_a_plain_next(row: dict) -> None:
+    """The NEXT is the command alone and the sentence is the row's `why`
+    (#277).
 
-    Pasted into an interactive zsh that does not take `#` as a comment, a
-    `;` starts a second command, an apostrophe opens a quotation nothing
-    closes and a backtick runs whatever follows it.
+    The sentence rode on the line as `   # <note>` until #277, and this
+    asserted the note held no `;`, apostrophe or backtick: pasted into an
+    interactive zsh that does not take `#` as a comment, a `;` starts a
+    second command, an apostrophe opens a quotation nothing closes and a
+    backtick runs whatever follows it. Nothing follows the command now, so
+    what is asserted is that none of the sentence is on the line, and that
+    it is said in `why`.
     """
-    note = line.split("   #", 1)[1]
-    for char in (";", "'", "`"):
-        assert char not in note, (char, line)
+    assert "   #" not in row["next"], row["next"]
+    assert row["why"], row
 
 
 def commit_in(root: Path, message: str, *args: str) -> str:
@@ -3748,7 +3760,7 @@ def test_a_root_pin_that_does_not_read_is_invalid_not_cannot_answer(
     assert pasted(row["next"])[:2] == ["git", "-C"], row["next"]
     assert "fetch" not in row["next"]
     assert "update-shape.py" not in row["next"]
-    assert_a_plain_note(row["next"])
+    assert_a_plain_next(row)
     plain = doctor(standard, project)
     assert plain.returncode == 1, plain.stdout + plain.stderr
     assert "CANNOT ANSWER" not in plain.stdout
@@ -3908,8 +3920,8 @@ def test_a_pin_broken_in_a_commit_is_put_back_from_before_that_commit(
     argv = pasted(row["next"])
     assert argv[:2] == ["git", "-C"], row["next"]
     assert argv[3:] == ["checkout", f"{breaking}~1", "--", SHAPE_PIN], argv
-    assert breaking[:12] in row["next"].split("   #", 1)[1], row["next"]
-    assert_a_plain_note(row["next"])
+    assert breaking[:12] in row["why"], row["why"]
+    assert_a_plain_next(row)
     run_pasted(row["next"])
     compliant_again(standard, project)
 
@@ -3955,7 +3967,7 @@ def test_the_issues_own_merge_takes_one_side_of_the_shapes_files_whole(
     assert argv[3:] == ["checkout", "--ours", "--", "Makefile", SHAPE_PIN], \
         argv
     assert "left_for_a_person" not in row["detail"], row["detail"]
-    assert_a_plain_note(row["next"])
+    assert_a_plain_next(row)
     run_pasted(row["next"])
     again = rows_of(doctor(standard, project, "--json"))["shape-currency"]
     assert again["detail"]["error"] not in READ_PIN_CODES, again
@@ -4000,10 +4012,10 @@ def test_a_readme_conflicted_over_the_projects_own_lines_is_left_to_a_person(
     assert pasted(row["next"])[3:] == [
         "checkout", "--ours", "--", SHAPE_PIN], row["next"]
     assert row["detail"]["left_for_a_person"] == ["README.md"], row["detail"]
-    note = row["next"].split("   #", 1)[1]
+    note = row["why"]
     assert "README.md is conflicted too" in note, note
     assert "a person merges it" in note, note
-    assert_a_plain_note(row["next"])
+    assert_a_plain_next(row)
     run_pasted(row["next"])
     assert b"only edit-a wrote" in readme.read_bytes(), \
         "edit-a's paragraph was dropped"
@@ -4079,9 +4091,9 @@ def test_the_issues_two_apply_merge_leaves_the_projects_manifest_to_a_person(
         "checkout", "--ours", "--", "Makefile", SHAPE_PIN], row["next"]
     assert row["detail"]["left_for_a_person"] == ["project.yaml"], \
         row["detail"]
-    note = row["next"].split("   #", 1)[1]
+    note = row["why"]
     assert "project.yaml is conflicted too" in note, note
-    assert_a_plain_note(row["next"])
+    assert_a_plain_next(row)
     run_pasted(row["next"])
     assert b'name: "Atlas Renamed"' in manifest.read_bytes(), \
         "shape/a's rename was dropped"
@@ -4163,8 +4175,8 @@ def test_a_merge_where_only_the_other_side_holds_a_pin_takes_theirs(
     assert row["detail"]["restore"] == "unmerged", row["detail"]
     assert pasted(row["next"])[3:] == [
         "checkout", "--theirs", "--", SHAPE_PIN], row["next"]
-    assert "only that side" in row["next"].split("   #", 1)[1]
-    assert_a_plain_note(row["next"])
+    assert "only that side" in row["why"], row["why"]
+    assert_a_plain_next(row)
     run_pasted(row["next"])
     again = rows_of(doctor(standard, project, "--json"))["shape-currency"]
     assert again["detail"]["error"] == "update-revision-unresolvable", again
@@ -4189,8 +4201,8 @@ def test_two_commits_that_each_broke_the_pin_are_reached_past(standard,
     assert row["detail"]["restore"] == "committed", row["detail"]
     assert pasted(row["next"])[3:] == [
         "checkout", f"{first}~1", "--", SHAPE_PIN], row["next"]
-    assert first[:12] in row["next"].split("   #", 1)[1], row["next"]
-    assert_a_plain_note(row["next"])
+    assert first[:12] in row["why"], row["why"]
+    assert_a_plain_next(row)
     run_pasted(row["next"])
     compliant_again(standard, project)
 
@@ -4238,7 +4250,7 @@ def assert_hidden(standard: Path, root: Path, code: str, letter: str) -> None:
     argv = pasted(row["next"])
     assert argv[3:] == ["ls-files", "-v", "--", SHAPE_PIN], row["next"]
     assert "checkout" not in argv, row["next"]
-    assert_a_plain_note(row["next"])
+    assert_a_plain_next(row)
     shown = subprocess.run(argv, capture_output=True, text=True, check=False)
     assert shown.returncode == 0, shown.stderr
     assert shown.stdout == f"{letter} {SHAPE_PIN}\n", shown.stdout
@@ -4316,7 +4328,7 @@ def test_a_pin_with_no_good_copy_in_its_history_keeps_the_check_next(
     assert "update-shape.py" in row["next"] and " check " in row["next"]
     assert "checkout" not in row["next"], row["next"]
     assert "fetch" not in row["next"]
-    assert_a_plain_note(row["next"])
+    assert_a_plain_next(row)
 
 
 def test_the_doctor_writes_no_bytecode_into_the_standard(standard, project,

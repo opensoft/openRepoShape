@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 """A doctor NEXT is the command and only the command (#277).
 
-THE DEFECT. Twenty of the doctor's NEXT builders ended the command with
+THE DEFECT. Twenty-five of the doctor's NEXT builders ended the command with
 `   # <comment>`, and one printed prose in the command's place. Sixteen were
 there when this began (3ae0109). Doctor A (#276) then rewrote the `legs`
-tail and added two more (`lockstep_next` and the `members` git line), and
-doctor B (#278, #298) added two (its crash line and its restore line).
-A tail was harmless in exactly the shells that read `#` as a comment where
+tail and added two more (`lockstep_next` and the `members` git line), doctor
+B (#278, #298) added two (its crash line and its restore line), and lane 2's
+#237 (#267) added five, which landed while this was in CI (`pin_restore`
+four times and `unreadable_pin_row`). A tail was harmless in exactly the shells that read `#` as a comment where
 a word starts -- `sh -c`, bash, `zsh -c` -- which is how every test and
 every agent tool call had read one. An INTERACTIVE zsh without
 `interactivecomments` -- zsh's default, and macOS's login shell, the one a
@@ -56,19 +57,22 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO, WINDOWS_SKIP, rmtree
+from conftest import REPO, WINDOWS_SKIP, git, rmtree
 #: The lane a lane's run sets, from the file that owns that rule.
 from test_commit_trailers import LANE
 #: The doctor's own fixtures and helpers, from the module that owns them. A
 #: project or a holder made any other way would be a different project.
 from test_shape_doctor import (  # noqa: F401
     BREAKAGES, DOCTOR, DRIFT_TARGET, FAMILY_MEMBER, FAMILY_NAME,
-    UPSTREAM_TARGET, behind_row, break_manifest, doctor, doctor_module,
-    holder, project, red_root, rows_of, scaffolded_here, stage, standard,
-    standard_ahead, standard_of_another_history,
+    GIT_IDENTITY, SHAPE_PIN, UPSTREAM_TARGET, behind_row, break_manifest,
+    break_the_pin, doctor, doctor_module, holder, not_forty_hex, pin_with,
+    project, recommit_a_good_pin, red_root, rows_of, scaffolded_here, stage,
+    standard, standard_ahead, standard_of_another_history,
 )
 #: Doctor A's ways to make a leg or a member red (#276), from the module that
 #: owns them: the `legs` and `members` lines are A's, so the roots are too.
+#: Its `commit_in(root, message)` commits whatever is staged, with an
+#: identity of its own, which is all the pin's history below needs of one.
 from test_doctor_legs_members_next import (
     commit_in, holder_copy, holder_without, make_gitlink_moved,
     make_member_gitlink_mismatch, member_unbootstrapped,
@@ -267,6 +271,72 @@ def _unloaded_manifest_restore(standard, project, holder, tmp_path):
     return rows_of(doctor(standard, root, "--json"))[row_id]
 
 
+def _pin_row(standard, root, restore):
+    """The `shape currency` row for a root whose OWN pin does not read, and
+    the proof that the fixture reached the branch it was made for."""
+    row = rows_of(doctor(standard, root, "--json"))["shape-currency"]
+    assert row["detail"]["restore"] == restore, row["detail"]
+    return row
+
+
+def _pin_unmerged(standard, project, holder, tmp_path):
+    # The issue's own reproduction: two branches rewrite `commit:`, then merge.
+    # Lane 2's `pin_restore`, #237: the pin is `UU`, and the NEXT takes one
+    # side of it whole.
+    base = git("rev-parse", "HEAD", cwd=project).stdout.strip()
+    for branch, digit in (("edit-a", "1"), ("edit-b", "2")):
+        git("checkout", "-q", "-b", branch, base, cwd=project)
+        break_the_pin(project, pin_with(r'^commit: .*$',
+                                        f'commit: "{digit * 40}"'))
+        git("add", "--", SHAPE_PIN, cwd=project)
+        commit_in(project, branch)
+    merged = subprocess.run(["git", "merge", "-q", "edit-a"],
+                            cwd=str(project), capture_output=True, text=True,
+                            check=False, env={**os.environ, **GIT_IDENTITY})
+    assert merged.returncode != 0, merged.stdout + merged.stderr
+    return _pin_row(standard, project, "unmerged")
+
+
+def _pin_uncommitted(standard, project, holder, tmp_path):
+    # HEAD holds a pin that reads and the tree differs from it: `checkout HEAD`.
+    break_the_pin(project, not_forty_hex)
+    return _pin_row(standard, project, "uncommitted")
+
+
+def _pin_hidden(standard, project, holder, tmp_path):
+    # HEAD's pin reads, the copy here is broken, and `git status` says
+    # nothing because an index flag hides it: the `ls-files -v` that shows
+    # which.
+    recommit_a_good_pin(project)
+    git("update-index", "--assume-unchanged", "--", SHAPE_PIN, cwd=project)
+    break_the_pin(project, not_forty_hex)
+    return _pin_row(standard, project, "hidden")
+
+
+def _pin_committed(standard, project, holder, tmp_path):
+    # A commit broke the pin: `checkout <that commit>~1`.
+    break_the_pin(project, not_forty_hex)
+    git("add", "--", SHAPE_PIN, cwd=project)
+    commit_in(project, "break the pin")
+    row = _pin_row(standard, project, "committed")
+    # The commit's own name is in the sentence, so it is read past: the
+    # words after it are asserted here, the words before it by CASES.
+    assert row["why"].endswith(
+        ", the commit that broke it, and the newest pin in its history that "
+        "reads. Commit that rather than editing the pin"), row["why"]
+    return row
+
+
+def _pin_no_history(standard, project, holder, tmp_path):
+    # One root commit holds a bad pin: nothing git can name puts one back, so
+    # `unreadable_pin_row` keeps the `update-shape.py check` it always had.
+    break_the_pin(project, not_forty_hex)
+    git("checkout", "-q", "--orphan", "squashed", cwd=project)
+    git("add", "--", SHAPE_PIN, cwd=project)
+    commit_in(project, "the whole history, squashed into one commit")
+    return _pin_row(standard, project, "none")
+
+
 def _machine(standard, project, holder, tmp_path):
     # A preflight that is not ready, on every host: whether the real one is
     # depends on the machine, and the row's NEXT only exists when it is not.
@@ -288,8 +358,8 @@ def _way_in(standard, project, holder, tmp_path):
 
 #: One fixture per NEXT #277 converted, by the builder and branch it reaches,
 #: and how the sentence that used to follow `   # ` on it now opens -- moved
-#: VERBATIM, less the `#`, so these are the words main and doctors A and B
-#: printed. Not `check_manifest_kinds`, whose prose NEXTs are lane 2's
+#: VERBATIM, less the `#`, so these are the words main, doctors A and B and
+#: lane 2's #237 printed. Not `check_manifest_kinds`, whose prose NEXTs are lane 2's
 #: (#291), and not a `Refusal.remediation` printed as one.
 CASES = {
     "validator_row-neither-readable": (
@@ -308,6 +378,29 @@ CASES = {
         _unloaded_manifest_neither_readable,
         "from a complete checkout of the standard; this one is missing that "
         "file"),
+    "pin_restore-unmerged": (
+        _pin_unmerged,
+        "--theirs takes the other side. Take one side whole for every path "
+        "named and never a hand-merged pin, then finish the merge as git "
+        "says and run this doctor again"),
+    "pin_restore-uncommitted": (
+        _pin_uncommitted,
+        "puts back the pin as last committed and discards the uncommitted "
+        "change that broke it, which no tool of this standard writes"),
+    "pin_restore-hidden": (
+        _pin_hidden,
+        "HEAD holds a pin that reads and git status shows no change to the "
+        "copy here, so no commit broke it and nothing in history is put "
+        "back. S in the first column is skip-worktree, as a sparse checkout "
+        "sets it, and a lowercase h is assume-unchanged: either hides the "
+        "copy here from git. Any other letter means the file itself cannot "
+        "be read, as the refusal says. Clearing that is for a person, then "
+        "run this doctor again"),
+    "pin_restore-committed": (_pin_committed, "the pin as it was before "),
+    "unreadable_pin_row": (
+        _pin_no_history,
+        "no commit in this root holds a pin to put back, so whether it was "
+        "ever scaffolded or adopted is for a person to decide"),
     "check_shape_currency-cannot-answer": (
         _shape_currency_cannot_answer,
         "this checkout of the standard does not carry the commit the pin "

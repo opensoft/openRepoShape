@@ -2241,10 +2241,12 @@ def pin_reads_at(ctx: Context, rev: str) -> bool:
     return True
 
 
-def pin_restore(ctx: Context,
-                detail: dict | None = None) -> tuple[str, str | None]:
-    """`(restore, command)`: the git command that puts back a pin a tool
-    wrote, chosen from the pin's own git state, read-only (#237).
+def pin_restore(ctx: Context, detail: dict | None = None
+                ) -> tuple[str, str | None, str | None]:
+    """`(restore, command, why)`: the git command that puts back a pin a tool
+    wrote, chosen from the pin's own git state, read-only (#237), and the
+    sentence that says what it does -- the row's `why`, apart from the
+    command and never a `   # ` tail on it (#277).
 
     A PIN IS NEVER MENDED BY HAND, so the fix for one that does not read is
     the last one a tool wrote, out of the root's own history. Which command
@@ -2261,7 +2263,7 @@ def pin_restore(ctx: Context,
                    writes lines of them: every other line is the project's
                    own, and one side taken whole drops the other side's
                    edits, the hunks git merged cleanly included (review of
-                   PR #267). Where either is conflicted the note says a
+                   PR #267). Where either is conflicted the `why` says a
                    person merges it, and `detail["left_for_a_person"]` lists
                    it. A file of the project's own is never named: its merge
                    is theirs.
@@ -2282,7 +2284,8 @@ def pin_restore(ctx: Context,
       none         nothing above: no history, a root commit, no git, a walk
                    that meets a parent holding no pin, or goes
                    `PIN_HISTORY_DEPTH` commits back, before a pin that reads.
-                   Nothing git can name fixes it, and the caller says so.
+                   Nothing git can name fixes it, and the caller says so:
+                   `(restore, None, None)`.
 
     EVERY PIN THE COMMAND PUTS BACK IS READ FIRST, by `pin_reads_at`, except
     the side of a merge, which is one tool's output either way.
@@ -2341,24 +2344,25 @@ def pin_restore(ctx: Context,
             return "unmerged", (
                 f"{git_c} checkout {side} -- "
                 + " ".join(quote_arg(name) for name in named)
-                + f"   # {note} for every path named and never a "
+            ), (f"{note} for every path named and never a "
                 f"hand-merged pin{then} the merge as git says and run "
                 "this doctor again")
     elif pin_reads_at(ctx, "HEAD"):
         if xy:
             return "uncommitted", (
-                f"{git_c} checkout HEAD -- {quote_arg(SHAPE_PIN)}   # puts "
-                "back the pin as last committed and discards the uncommitted "
-                "change that broke it, which no tool of this standard writes")
+                f"{git_c} checkout HEAD -- {quote_arg(SHAPE_PIN)}"
+            ), ("puts back the pin as last committed and discards the "
+                "uncommitted change that broke it, which no tool of this "
+                "standard writes")
         return "hidden", (
-            f"{git_c} ls-files -v -- {quote_arg(SHAPE_PIN)}   # HEAD holds a "
-            "pin that reads and git status shows no change to the copy here, "
-            "so no commit broke it and nothing in history is put back. S in "
-            "the first column is skip-worktree, as a sparse checkout sets "
-            "it, and a lowercase h is assume-unchanged: either hides the "
-            "copy here from git. Any other letter means the file itself "
-            "cannot be read, as the refusal says. Clearing that is for a "
-            "person, then run this doctor again")
+            f"{git_c} ls-files -v -- {quote_arg(SHAPE_PIN)}"
+        ), ("HEAD holds a pin that reads and git status shows no change to "
+            "the copy here, so no commit broke it and nothing in history is "
+            "put back. S in the first column is skip-worktree, as a sparse "
+            "checkout sets it, and a lowercase h is assume-unchanged: either "
+            "hides the copy here from git. Any other letter means the file "
+            "itself cannot be read, as the refusal says. Clearing that is "
+            "for a person, then run this doctor again")
     history = git_answer(["rev-list", "-n", str(PIN_HISTORY_DEPTH), "HEAD",
                           "--", SHAPE_PIN], root)
     for breaking in (history or "").split():
@@ -2369,11 +2373,11 @@ def pin_restore(ctx: Context,
         if pin_reads_at(ctx, before):
             return "committed", (
                 f"{git_c} checkout {quote_arg(before)} -- "
-                f"{quote_arg(SHAPE_PIN)}   # the pin as it was before "
-                f"{breaking[:12]}, the commit that broke it, and the newest "
-                "pin in its history that reads. Commit that rather than "
-                "editing the pin")
-    return "none", None
+                f"{quote_arg(SHAPE_PIN)}"
+            ), (f"the pin as it was before {breaking[:12]}, the commit that "
+                "broke it, and the newest pin in its history that reads. "
+                "Commit that rather than editing the pin")
+    return "none", None, None
 
 
 def unreadable_pin_row(ctx: Context, exc: Refusal) -> Row:
@@ -2405,28 +2409,29 @@ def unreadable_pin_row(ctx: Context, exc: Refusal) -> Row:
     THE NEXT PUTS BACK THE PIN A TOOL WROTE, NEVER A FETCH. `pin_restore`
     names the git command from the pin's own state, and run as printed it
     ends at `COMPLIANT` or at a row that reads the pin, but for what its
-    note leaves to a person: a conflicted manifest or README.md, or an index
+    `why` leaves to a person: a conflicted manifest or README.md, or an index
     flag that hides the pin. Naming the tool that refused, `update-shape.py
     check`, was a dead end (review of PR #267): it reads the pin with the
     same `read_pin`, refuses it the same way, and its remediation is about
-    submodules, adoption or a hand edit, none of which fits. That command stays only where git can name nothing, and its note
-    says the rest is a person's call. Each note holds no `;`, apostrophe or
-    backtick, so a pasted line is one command in any shell (#277).
+    submodules, adoption or a hand edit, none of which fits. That command
+    stays only where git can name nothing, and its `why` says the rest is a
+    person's call. Every sentence is the row's `why`, off the command's line,
+    so a pasted line is one command in any shell (#277).
     """
     detail = {"error": exc.code, "pin": SHAPE_PIN,
               "refusal": {"code": exc.code, "detail": exc.detail}}
-    restore, command = pin_restore(ctx, detail)
+    restore, command, why = pin_restore(ctx, detail)
     detail["restore"] = restore
     if command is None:
         command = (f"{PYTHON} {quote_arg(ctx.shape / 'update-shape.py')} "
                    f"check --root {quote_arg(ctx.root)} --upstream "
-                   f"{quote_arg(ctx.shape)}   # no commit in this root holds "
-                   "a pin to put back, so whether it was ever scaffolded or "
-                   "adopted is for a person to decide")
+                   f"{quote_arg(ctx.shape)}")
+        why = ("no commit in this root holds a pin to put back, so whether "
+               "it was ever scaffolded or adopted is for a person to decide")
     return Row("shape-currency", LABEL_SHAPE_CURRENCY, FINDING,
                f"the copies cannot be compared, because {SHAPE_PIN} does not "
                f"read as a pin: REFUSED {exc.code}: {exc.detail}",
-               command, detail)
+               command, detail, why=why)
 
 
 def check_shape_currency(ctx: Context) -> Row:
