@@ -967,17 +967,21 @@ def _index_entries(root: Path, path: str) -> list[tuple[str, str]]:
     return entries
 
 
-def _submodule_paths(root: Path) -> dict[str, tuple[str, str | None]]:
-    """`{name: (path, url)}` of every submodule the holder's `.gitmodules`
-    names, read from where `git submodule add` reads it: the file in the
-    working tree, or the index's copy where there is none, or HEAD's where
-    the index has none either. `url` is None for a section that gives no
-    url; a section that gives no path is no submodule and is not listed.
+def _submodule_paths(
+        root: Path) -> dict[str, tuple[str, str | None, tuple[str, ...]]]:
+    """`{name: (path, url, keys)}` of every submodule the holder's
+    `.gitmodules` names, read from where `git submodule add` reads it: the
+    file in the working tree, or the index's copy where there is none, or
+    HEAD's where the index has none either. `url` is None for a section that
+    gives no url; a section that gives no path is no submodule and is not
+    listed. `keys` is every key the section holds, path and url included,
+    once each, in the order git lists them.
 
     THE ONE READER OF THE FILE, for both questions `_checked_mount_path`
     asks of it: the path a NAME is given (`member-name-taken`, #242), and
-    the names a PATH is given, each with its url (`member-path-registered`,
-    #300). A second reader could read a second copy of the file.
+    the names a PATH is given, each with its url and its keys
+    (`member-path-registered`, #300). A second reader could read a second
+    copy of the file.
     """
     if os.path.lexists(root / GITMODULES):
         source = ["--file", GITMODULES]
@@ -998,9 +1002,9 @@ def _submodule_paths(root: Path) -> dict[str, tuple[str, str | None]]:
         key, _, value = record.decode("utf-8",
                                       "surrogateescape").partition("\n")
         section, _, variable = key.rpartition(".")
-        if section.startswith("submodule.") and variable in ("path", "url"):
+        if section.startswith("submodule."):
             found.setdefault(section[len("submodule."):], {})[variable] = value
-    return {name: (keys["path"], keys.get("url"))
+    return {name: (keys["path"], keys.get("url"), tuple(keys))
             for name, keys in found.items() if "path" in keys}
 
 
@@ -1094,22 +1098,24 @@ def _checked_mount_path(root: Path, project: str, path: str) -> None:
             f"its section to point at {project} (git before 2.51), or mount "
             f"{project} under another name this tool does not follow (git "
             "2.51 and later, with the `--force` this tool mounts with).")
-    ghosts = [(name, url) for name, (at, url) in sections.items()
+    ghosts = [(name, url, keys) for name, (at, url, keys) in sections.items()
               if at == path and name != path]
     if ghosts:
         named = " and ".join(
             f"`{name}` ({'no url' if url is None else 'url ' + url})"
-            for name, url in ghosts)
+            for name, url, _ in ghosts)
         # BY KEY, NOT BY SECTION: `--remove-section` cannot address a
         # section whose name holds `]`, nor one whose header a hand spelled
         # `[Submodule "..."]` (git 2.43: `no such section`), while a key
-        # reaches every section `git config --list` names. Its path is what
-        # makes it a submodule; git drops the header with the last key.
+        # reaches every section `git config --list` names. EVERY KEY it
+        # holds, not its path and url alone: a `branch`, `shallow` or
+        # `update` left behind is inherited by the submodule a later `add`
+        # gives that name, which git writes into the same section. git
+        # drops the header with the last key.
         removal = " and ".join(
             f"`git config -f {GITMODULES} --unset-all "
             f"{shlex.quote('submodule.' + name + '.' + key)}`"
-            for name, url in ghosts
-            for key in (("path",) if url is None else ("path", "url")))
+            for name, _, keys in ghosts for key in keys)
         raise Refusal(
             "member-path-registered",
             f"{GITMODULES} already gives the path {path} to the submodule"

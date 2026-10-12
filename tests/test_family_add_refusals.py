@@ -1306,7 +1306,8 @@ GHOST_REFUSED = (
     f"/nowhere/ghost.git), and that is the path {SPARE} is mounted at")
 
 #: How the refusal spells taking GHOST out: by key, which reaches every
-#: section, its path and then its url.
+#: section, one command for each key it holds, in the order git lists
+#: them.
 GHOST_REMOVAL = (
     "`git config -f .gitmodules --unset-all submodule.ghost.path` and "
     "`git config -f .gitmodules --unset-all submodule.ghost.url`")
@@ -1571,8 +1572,9 @@ def test_the_validator_finds_two_sections_for_one_path(family, holder,
             "the sections decides which repository lands there. Keep the one "
             "whose url is the member's (`family.py add` names it after its "
             "path, `members/IRRS`) and take each other out by hand, `git "
-            "config -f .gitmodules --unset-all submodule.<name>.path` and "
-            "the same for its `url`, then commit .gitmodules."], extra
+            "config -f .gitmodules --unset-all submodule.<name>.<key>` for "
+            "every key that section holds, so a submodule later given its "
+            "name inherits none of them, then commit .gitmodules."], extra
 
 
 def test_a_gitmodules_git_cannot_read_is_a_refusal_not_a_pass(holder):
@@ -1619,3 +1621,51 @@ def test_a_validator_with_no_git_to_run_refuses_instead_of_crashing(
         "Remediation: put git on PATH and run this again; this check reads "
         "the file the way git does, and nothing could fetch this holder's "
         "submodules without git either."]
+
+
+def test_every_key_of_a_ghost_goes_so_a_later_member_of_its_name_inherits_none(
+        family, holder, offline, tmp_path):
+    """EVERY KEY, NOT ITS PATH AND URL ALONE. A ghost named `members/IRQZ`
+    for the spare's mount path also carries `branch`, `shallow` and
+    `update`. The refusal prints one `git config --unset-all` per key it
+    holds, and run as printed they take the whole section out, header and
+    all. Had any key stayed, the add of a member that IS called IRQZ would
+    have had git write its path and url into that same section and inherit
+    the rest — a `branch = dev` that `git submodule update --remote` then
+    fails on, under a gate that says ok. Here IRQZ's section holds its path
+    and its url and nothing else."""
+    remotes = tmp_path / "remotes"
+    remotes.mkdir()
+    for name in (SPARE, "IRQZ"):
+        shutil.copytree(family["remotes"] / f"{SPARE}.git",
+                        remotes / f"{name}.git", symlinks=True)
+    gitmodules_with(holder, (
+        '[submodule "members/IRQZ"]\n'
+        f"\tpath = members/{SPARE}\n\turl = /nowhere/ghost.git\n"
+        "\tbranch = dev\n\tshallow = true\n\tupdate = none\n").encode(),
+        "the work tree")
+    before = snapshot(holder)
+    refused = offline.add(holder, SPARE, remotes=remotes)
+    said, remediation = refused_unchanged(refused, holder, before)
+    assert said == (
+        "REFUSED member-path-registered: .gitmodules already gives the path "
+        f"members/{SPARE} to the submodule named `members/IRQZ` (url "
+        f"/nowhere/ghost.git), and that is the path {SPARE} is mounted at")
+    assert remediation == ghost_remediation(" and ".join(
+        "`git config -f .gitmodules --unset-all "
+        f"submodule.members/IRQZ.{key}`"
+        for key in ("path", "url", "branch", "shallow", "update")))
+    assert len(take_out_as_printed(holder, remediation)) == 5, remediation
+    assert git("config", "-f", ".gitmodules", "--get-regexp",
+               r"^submodule\.members/IRQZ\.", cwd=holder,
+               check=False).stdout == ""
+    assert "members/IRQZ" not in (holder / ".gitmodules").read_text(
+        encoding="utf-8")
+    added = offline.add(holder, "IRQZ", remotes=remotes)
+    assert added.returncode == 0, added.stdout + added.stderr
+    listed = git("config", "--blob", "HEAD:.gitmodules", "--get-regexp",
+                 r"^submodule\.members/IRQZ\.", cwd=holder).stdout
+    assert [line.split(" ", 1)[0] for line in listed.splitlines()] == [
+        "submodule.members/IRQZ.path", "submodule.members/IRQZ.url"]
+    assert git("status", "--porcelain", cwd=holder).stdout == ""
+    offline.assert_left_nothing()

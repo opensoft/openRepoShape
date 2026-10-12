@@ -645,8 +645,9 @@ def _check_gitmodules_paths(root: Path, report: Report) -> None:
             "the sections decides which repository lands there. Keep the one "
             "whose url is the member's (`family.py add` names it after its "
             f"path, `{path}`) and take each other out by hand, `git config "
-            f"-f {GITMODULES} --unset-all submodule.<name>.path` and the "
-            f"same for its `url`, then commit {GITMODULES}.")
+            f"-f {GITMODULES} --unset-all submodule.<name>.<key>` for every "
+            "key that section holds, so a submodule later given its name "
+            f"inherits none of them, then commit {GITMODULES}.")
 
 
 def _check_members(root: Path, members: list, no_members: bool,
