@@ -188,10 +188,18 @@ class LinkSources:
         #: or a checkout beside the project that could not answer.
         self.unanswered: dict[tuple, list[str]] = {}
 
-    def link_pins(self, target: Target) -> dict:
+    def link_pins(self, policy: NamingPolicy, target: Target) -> dict:
         """What the chain's links declare, for the links whose trees answer,
-        with what each lookup asked recorded against the values given."""
-        if not target.chain:
+        with what each lookup asked recorded against the values given.
+
+        A chain no classification reads asks nothing and says nothing:
+        `policy.classify` consults a link's declaration only for a name that
+        claims a referent, with a chain whose shape holds. A source asked for
+        any other chain (a spec leg's record, a name with no `open<Product>`
+        to reach, a chain that does not begin at a held pin) was reported
+        unreadable, or counted as used, for a question nobody asked."""
+        if not policy.reads_link_declarations(target.name, target.pins,
+                                              target.chain):
             return {}
         tried: dict = {}
         found = link_pins_from_trees(
@@ -262,7 +270,10 @@ class LinkSources:
         could not answer, with the system's reason, in the order given."""
         lines = []
         for typed in self.reading:
-            if typed in self.used or typed not in self.unread:
+            # A value is read as ONE link's keyed source, or is the one bare
+            # PATH, so every lookup that asked it asked the same path and got
+            # the same answer: it is `used` or `unread`, never both.
+            if typed not in self.unread:
                 continue
             path, how, why, links = self.unread[typed]
             lines.append(
@@ -530,7 +541,7 @@ def _leg_target(policy: NamingPolicy, path: Path, leg, root: Path,
     declared = str(declared) if declared else None
     target = Target(name, declared, pins, _chain_from_leg(leg), root)
     found = policy.classify(name, declared, pins, target.chain,
-                            sources.link_pins(target))
+                            sources.link_pins(policy, target))
     findings: list[str] = []
     # `declared_role` only wins where the NAME satisfies it, so a role that
     # disagrees with its own name still lands here rather than being made
@@ -645,7 +656,7 @@ def _classify_targets(policy: NamingPolicy, targets: list, args,
     warnings: list[str] = []
     for target in targets:
         name = target.name
-        link_pins = sources.link_pins(target)
+        link_pins = sources.link_pins(policy, target)
         found = policy.classify(name, target.role, target.pins, target.chain,
                                 link_pins)
         if args.explain:

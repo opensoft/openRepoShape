@@ -1612,6 +1612,26 @@ class NamingPolicy:
                     + " or ".join(referents))
         return None
 
+    def reads_link_declarations(self, name: str, declared_pins=None,
+                                referent_chain=None) -> bool:
+        """Does `resolve_referent` ask what a link's OWN manifest declares?
+
+        Only for a name in `<Domainx><Product>` form whose recorded chain's
+        SHAPE holds: a name that claims no referent never reads a chain, and
+        a chain that is broken in its shape is reported broken before any
+        link is consulted. A caller about to read link trees asks this first,
+        so that it neither reads nor reports on a tree no classification
+        will use (#338). `tests/test_naming_policy.py` holds the two
+        together: `resolve_referent` is run with a mapping that notes
+        whether it was read, over every way a chain is not.
+        """
+        referents = self.descendant_referents(name)
+        chain = _chain_links(referent_chain)
+        if not referents or not chain:
+            return False
+        return self._chain_shape_problem(
+            name, chain, _pinned_basenames(declared_pins), referents) is None
+
     # -- classification ----------------------------------------------------
 
     def declared_only(self, family_id: str) -> bool:
@@ -2342,9 +2362,8 @@ def _os_reason(exc: BaseException) -> str:
 def link_manifest_lookup(path) -> tuple[Path | None, str | None]:
     """`(manifest, None)` where `path` can answer as a link's tree, else
     `(None, why)`. `<dir>` -> `<dir>/project.yaml`; a file is taken as the
-    manifest. IT NEVER RAISES (#338). It replaces `link_manifest_path`,
-    which said only `None` and had no caller left once both of its callers
-    needed the reason.
+    manifest. IT NEVER RAISES (#338). It replaced `link_manifest_path`, which
+    is gone: that said only `None`, and both of its callers needed the reason.
 
     `stat()` INSIDE THE GUARD, not `is_dir()` and `is_file()`: before 3.14
     those two swallow only ENOENT, ENOTDIR, EBADF and ELOOP and raise every
@@ -2380,8 +2399,19 @@ def link_manifest_lookup(path) -> tuple[Path | None, str | None]:
 
 def link_declarations(manifest_path, key: str = CHAIN_LINK_DECLARED_BY
                       ) -> tuple[set[str] | None, str | None]:
-    """`declared_neutral_pins`, with why the tree could not answer beside it:
-    `(pins, None)`, or `(None, why)` (#338)."""
+    """The neutral products a link's manifest DECLARES a pin on, with why the
+    tree could not answer beside it: `(pins, None)`, or `(None, why)`.
+
+    `None` means "this tree could not answer" and is deliberately distinct
+    from the empty set, which means "this tree answered, and declares no pin
+    at all". The first is unverified and the second breaks a chain that runs
+    through it. A tree cannot answer when there is no manifest, when it
+    cannot be read, when it is not a mapping, or when its `key` is not a list
+    of names: a scalar, a number or a mapping there is not a declaration, and
+    iterating it as one read `openDox` as the characters `D`, `e`, `n`, `o`,
+    `p`, `x` and ended the run in a `TypeError` for `5` (#338). An absent or
+    empty `key`, and a blank entry in the list, declare nothing, as ever.
+    """
     path, why = link_manifest_lookup(manifest_path)
     if path is None:
         return None, why
@@ -2396,21 +2426,19 @@ def link_declarations(manifest_path, key: str = CHAIN_LINK_DECLARED_BY
         return None, f"{path}: {exc}"
     if not isinstance(data, dict):
         return None, f"{path}: not a mapping"
-    return ({repo_basename(str(pin)) for pin in (data.get(key) or []) if pin},
-            None)
-
-
-def declared_neutral_pins(manifest_path,
-                          key: str = CHAIN_LINK_DECLARED_BY) -> set[str] | None:
-    """The neutral products a manifest DECLARES a pin on, or None.
-
-    None means "this tree could not answer" — no manifest, unreadable YAML, or
-    a file that is not a mapping — and is deliberately distinct from the empty
-    set, which means "this tree answered, and declares no pin at all". The
-    first is unverified and the second breaks a chain that runs through it.
-    `link_declarations` says why it could not.
-    """
-    return link_declarations(manifest_path, key)[0]
+    declared = data.get(key)
+    if declared is None:
+        return set(), None
+    if not isinstance(declared, list):
+        return None, f"{path}: {key} is not a list"
+    pins: set[str] = set()
+    for pin in declared:
+        if pin is None or pin == "":
+            continue
+        if not isinstance(pin, str):
+            return None, f"{path}: {key} holds an entry that is not text"
+        pins.add(repo_basename(pin))
+    return pins, None
 
 
 def resolve_link_source(product: str, root: Path | None = None,
