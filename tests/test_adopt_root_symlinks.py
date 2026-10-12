@@ -124,6 +124,12 @@ COPY_FINDING = f"FINDING {COPY_IN_THE_WAY}: "
 #: A file of the source's own that a link at the copy leads onto.
 NOTES_MD = "notes.md"
 OUTSIDE = "materialize-outside"
+#: How `execute` reports a refusal met once both legs exist, the
+#: materializer's among them (#188): the step it stopped at, with the refusal
+#: on the same line, then the notice of what the run left.
+SPLIT_STEP = "REFUSED committing the split."
+LEFT_BEHIND = "NOTHING has been rolled back: "
+BOTH_PUSHED = "and both legs are pushed."
 #: The materializer's refusal of a path that follows too many symlinks.
 SYMLINK_LOOP = "materialize-symlink-loop"
 CONFIG_VALUE = "GIT_CONFIG_VALUE_0"
@@ -1417,12 +1423,16 @@ def test_a_caller_that_skips_check_meets_the_materializer_refusal(
         adopter, tmp_path, monkeypatch, capsys):
     """Defence in depth: with #168's refusal taken away, the link out (D6)
     reaches the materializer, which refuses it by name -- no traceback, and
-    nothing written into the directory beside the work directory."""
+    nothing written into the directory beside the work directory. Both legs
+    are pushed by then, so `execute` reports it as #188 reports every
+    failure after them: at the step, with the notice of what the run left."""
     outside = tmp_path / WORK / "outside-ci"
     outside.mkdir(parents=True)
     said = refused_past_check(adopter, tmp_path, OUTSIDE_CI, monkeypatch,
                               capsys)
-    assert "REFUSED materialize-outside: " in said
+    assert f"{SPLIT_STEP} {OUTSIDE}: " in said
+    notice = said.split(LEFT_BEHIND, 1)[1]
+    assert BOTH_PUSHED in notice.split("\n", 1)[0]
     assert "Traceback" not in said
     assert list(outside.iterdir()) == []
 
@@ -1433,8 +1443,9 @@ def test_execute_hands_the_materializer_its_spelling(adopter, tmp_path,
                                                      monkeypatch, capsys):
     """The refusal `execute` prints for a link no shape file can be written
     through names its target as `check` would: on one line, the line break
-    and the ESC spelled (#212). Printed raw, the line break split the
-    refusal in two."""
+    and the ESC spelled (#212), after the step #188 names. Printed raw, the
+    line break split the refusal in two."""
     said = refused_past_check(adopter, tmp_path, UNPRINTABLE_TARGET,
                               monkeypatch, capsys)
-    assert f"REFUSED {BLOCKED}: {SPELLED_REFUSAL}" in said.splitlines()
+    assert f"{SPLIT_STEP} {BLOCKED}: {SPELLED_REFUSAL}" in said.splitlines()
+    assert LEFT_BEHIND in said
