@@ -24,6 +24,13 @@ and the operator's git configuration is a file of the test's own
 (`GIT_CONFIG_GLOBAL`, `GIT_CONFIG_NOSYSTEM`). No test pushes to the fixture's
 own remotes.
 
+THE ROW'S PROJECT HAS TO BE A DIRECTORY NAME TOO. A row hand-edited to
+`project: .` and `path: members/.`, or `project: ..` and `path: members/..`,
+IS `members/<project>` and passes the comparison above; `remove --member .`
+then unmounted every member in one commit naming one, and `--member ..` `git
+rm -r -f`'d the holder's root and died on the missing manifest. The same
+`member-path` refusal covers them (the second commit of #299).
+
 A refusal is asked of the holder the way `test_family_add_refusals.py` asks it
 of `add`: not "is the sentence printed" but "is everything exactly as it was",
 down to the bytes of `git ls-files -s -z` and `git status --porcelain=v1 -z`,
@@ -115,6 +122,24 @@ def hand_edit(root: Path, project: str, path: str | None) -> None:
         line, "" if path is None else f"    path: {path}\n").encode("utf-8"))
     row = {r["project"]: r for r in manifest(root)["members"]}[project]
     assert row.get("path") == path
+
+
+def hand_edit_project(root: Path, project: str, as_project: str) -> None:
+    """`project`'s row renamed to `as_project` AND given the path that name
+    makes, `members/<as_project>`: the two hand edits that leave a row equal
+    to the path the tool would compute for it. UNCOMMITTED, as `hand_edit`
+    leaves it."""
+    manifest_path = root / "family.yaml"
+    text = manifest_path.read_bytes().decode("utf-8")
+    for old, new in (
+            (f"  - project: {project}\n", f"  - project: {as_project}\n"),
+            (f"    path: members/{project}\n",
+             f"    path: members/{as_project}\n")):
+        assert text.count(old) == 1, "fixture drift: the row's own lines"
+        text = text.replace(old, new)
+    manifest_path.write_bytes(text.encode("utf-8"))
+    row = {r["project"]: r for r in manifest(root)["members"]}[as_project]
+    assert row["path"] == f"members/{as_project}"
 
 
 def state(root: Path, env: dict) -> dict:
@@ -243,6 +268,57 @@ def test_bump_refuses_a_row_naming_a_directory_that_is_really_there(
     neighbour_intact(holder, env)
 
 
+DOT_ROWS = {
+    "dot": (".", "the members directory itself"),
+    "dotdot": ("..", "the holder's root"),
+}
+
+
+@pytest.mark.parametrize("project, names", DOT_ROWS.values(), ids=DOT_ROWS)
+@pytest.mark.parametrize("verb", ["remove", "bump"])
+def test_a_row_whose_project_is_not_a_directory_name_is_refused(
+        family, holder, offline, tmp_path, verb, project, names):
+    """`project: .` with `path: members/.`, and `project: ..` with `path:
+    members/..`: the row's path EQUALS `members/<project>`, so only the
+    project can be refused. `remove` used to exit 0 with one commit deleting
+    every member's gitlink for the first, and to stage the holder's own files
+    for deletion and die on a `FileNotFoundError` for the second. Now the
+    same `member-path` refusal, exit 2, and the holder byte for byte as it
+    was, both members still mounted, pinned and checked out."""
+    env = isolated(offline, tmp_path)
+    hand_edit_project(holder, MEMBER, project)
+    assert raw(holder, env, "status", "--porcelain=v1", "-z").stdout == (
+        b" M family.yaml\0"), "premise: the hand edit is the only change"
+    before = state(holder, env)
+    args = verb_args(verb, holder, family)
+    args[args.index(MEMBER)] = project
+
+    result = run_script(FAMILY, *args, env=env)
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stdout == "", "refused before anything was reported"
+    said, remedy = refusal(result.stderr)
+    assert said == (
+        f"REFUSED member-path: {project!r} is not a project name: its path "
+        f"would be 'members/{project}', which is {names}, not a member. "
+        "Acting on it would unmount more than one member or remove the "
+        "holder's own files, so no git command was run and nothing was "
+        "written.")
+    assert remedy == (
+        "Remediation: this tool never writes such a row, so it is a hand "
+        "edit. Restore family.yaml from git (`git checkout -- family.yaml`) "
+        "or remove the row by hand, then run the same command again.")
+    assert state(holder, env) == before
+    for mounted in MEMBERS:
+        entry = raw(holder, env, "ls-tree", "HEAD", "--", f"members/{mounted}"
+                    ).stdout
+        assert entry.startswith(b"160000 commit "), entry
+        assert (holder / "members" / mounted / "project.yaml").is_file()
+    assert [r["project"] for r in manifest(holder)["members"]] == [project,
+                                                                   OTHER]
+    assert not offline.gh_log.exists(), offline.gh_log.read_text()
+
+
 # --- the controls -----------------------------------------------------------
 
 @pytest.mark.parametrize("edit", ["as-written", "no-path-line"])
@@ -290,6 +366,17 @@ def test_the_one_definition_is_the_path_add_writes_and_the_check_of_a_row():
         with pytest.raises(module.Refusal) as caught:
             module._member_path(MEMBER, {"path": spelling})
         assert caught.value.code == "member-path", spelling
+    # A project that is not one directory name has no path to compare: the row
+    # is refused under the same code, whatever its `path:` says (or does not).
+    for project in ("", ".", "..", "a/b"):
+        for named in ({}, {"path": f"members/{project}"}):
+            with pytest.raises(module.Refusal) as caught:
+                module._member_path(project, named)
+            assert caught.value.code == "member-path", (project, named)
+    # What `add` writes, with no row, is as it was.
+    assert module._member_path("..") == "members/.."
+    assert module._member_row("..", "x", f"{ORG}/..", "a" * 40, "b" * 64
+                              )["path"] == "members/.."
 
 
 # --- literal pathspecs ------------------------------------------------------

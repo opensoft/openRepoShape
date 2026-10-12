@@ -286,8 +286,35 @@ def _member_path(project: str, row: dict | None = None) -> str:
     validator keeps its own spelling of this rule on purpose. It ships INTO
     every holder, as `repo_shape.py` does, so sharing it would move every
     holder's pin for a refusal of a hand edit.
+
+    A ROW'S PROJECT HAS TO BE A DIRECTORY NAME TOO. Its `path:` is checked
+    against `members/<project>`, so a row that says `project: ..` and `path:
+    members/..` is EQUAL to the expected path and passed the comparison, and
+    `remove` then ran `git rm -r -f -- members/..` over the holder's root,
+    while `project: .` and `path: members/.` unmounted every member in one
+    commit naming one (#299). Each takes two hand edits, the project and the
+    path, and `add` cannot write either: it refuses the mount path as
+    `member-path-taken`, so `_member_row` is never reached. A project that
+    does not make `members/<project>` ONE directory directly under `members/`
+    has no path of its own to be compared with, so it is refused here, under
+    the same code, only when a row is given: what `add` writes (`_member_row`,
+    no row) is as it was.
     """
     expected = f"{MEMBERS_DIR}/{project}"
+    if row is not None and (project in ("", ".", "..") or "/" in project):
+        names = {".": f"the {MEMBERS_DIR} directory itself",
+                 "..": "the holder's root"}.get(
+            project, f"no single directory directly under {MEMBERS_DIR}/")
+        raise Refusal(
+            "member-path",
+            f"{project!r} is not a project name: its path would be "
+            f"{expected!r}, which is {names}, not a member. Acting on it "
+            "would unmount more than one member or remove the holder's own "
+            "files, so no git command was run and nothing was written.",
+            "Remediation: this tool never writes such a row, so it is a hand "
+            f"edit. Restore {MANIFEST} from git (`git checkout -- "
+            f"{MANIFEST}`) or remove the row by hand, then run the same "
+            "command again.")
     declared = expected if row is None else str(row.get("path") or expected)
     if declared != expected:
         raise Refusal(
