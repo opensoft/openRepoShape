@@ -5661,11 +5661,13 @@ def test_an_exported_pythonpath_does_not_reach_a_template_validator(
 
     # AND NO OTHER ROW OF THE RUN REACHED THE DECOY. The row above is the one
     # that passes a directory; the `naming` rows and the machine's preflight
-    # pass none, and a child that kept the operator's variable shows only
-    # there: before #306 the `naming` row of such a run read `FINDING ...
-    # (exit 86): DECOY` over a compliant root while `manifest` read the real
-    # finding. So no row may quote the decoy or say it exited 86, whichever
-    # caller handed it the variable (#306 review S1).
+    # pass none. On main every row whose validator the decoy reached said so,
+    # and this catches any row that reaches it, which is how it catches a
+    # `run_validator` that kept the variable for the callers that pass none
+    # (#306 review S1): popped only for a script inside the root, or with the
+    # `else` dropped, the `naming` row reads `FINDING ... (exit 86): DECOY`
+    # while `manifest` reads the real finding. So no row may quote the decoy
+    # or say it exited 86, whichever caller handed it the variable.
     reached = [name for name, other in rows.items()
                if "DECOY" in other["reason"]
                or "(exit 86)" in other["reason"]
