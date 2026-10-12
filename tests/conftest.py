@@ -17,10 +17,12 @@ fast.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import stat
 import subprocess
 import sys
+from argparse import Namespace
 from pathlib import Path
 
 import pytest
@@ -389,6 +391,124 @@ def resolve(plan_path: Path, path: str, leg: str,
         handle.write(text.replace(
             needle, f"  - path: {path}\n    leg: {leg}\n"
                     f"    resolution: \"{why}\"\n", 1))
+
+
+# --- `.gitmodules` sources, and what `check` and `execute` say of them -----
+#
+# Shared by `test_adopt_history_gitlinks.py` (#195) and
+# `test_adopt_gitmodules_values.py` (#215), which build sources that hold a
+# submodule at GITLINK, at the tip or only in the history, beside a
+# `.gitmodules` git's submodule reader may die on.
+
+GITMODULES = ".gitmodules"
+#: The submodule those sources hold, registered under the name `b`.
+GITLINK = "vendor/b"
+
+
+def as_human(*args: str, cwd: Path) -> subprocess.CompletedProcess:
+    """`git <args>` with an identity, for the commits and merges a test
+    makes in a source."""
+    return git("-c", "user.name=Source Human",
+               "-c", "user.email=source@invalid.example", *args, cwd=cwd)
+
+
+def put_gitmodules(source: Path, text: str | bytes) -> None:
+    """`text` as the source's `.gitmodules`, staged: BYTES, so it is LF on
+    every platform, as a hand edit would leave it."""
+    (source / GITMODULES).write_bytes(
+        text if isinstance(text, bytes) else text.encode())
+    git("add", "--", GITMODULES, cwd=source)
+
+
+def link(source: Path) -> None:
+    """A gitlink at GITLINK, staged straight into the index, as `git add` of
+    an embedded clone records one; no checkout of it is needed. It names
+    `main`'s commit, which an orphan branch's first commit has no HEAD to
+    give."""
+    head = git("rev-parse", "main", cwd=source).stdout.strip()
+    git("update-index", "--add", "--cacheinfo", f"160000,{head},{GITLINK}",
+        cwd=source)
+
+
+def named(verb: str = "(adds|removes|changes)") -> str:
+    """How `_exported_gitlink` names a commit's change to the gitlink, as a
+    pattern: `verb` is what that commit does to it."""
+    return rf"commit [0-9a-f]{{12}} {verb} `vendor/b`"
+
+
+def exported_in_a_clone(source: Path,
+                        base: Path) -> subprocess.CompletedProcess:
+    """`git fast-export --all` in a clone of `source`, as `git filter-repo`
+    runs it in the extraction's clone: the run whose failure the scan
+    foretells. It needs git alone, so it runs where `git filter-repo` is
+    not installed; bytes, because it exports the source's own content."""
+    clone = base / "export-clone"
+    git("clone", "-q", "--", str(source), str(clone), cwd=base)
+    return subprocess.run(["git", "fast-export", "--all"], cwd=clone,
+                          capture_output=True, check=False)
+
+
+def planned(source: Path, base: Path, answers: dict) -> Path:
+    """`plan` for `source` into `base/plan/` (project Northwind), each entry
+    `answers` names given its leg: an entry `plan` asks about is resolved,
+    and any other has its `leg:` set."""
+    plan = base / "plan" / "adoption-plan.yaml"
+    plan.parent.mkdir()
+    written = write_plan(source, plan)
+    assert written.returncode == 0, written.stderr + written.stdout
+    text = plan.read_bytes().decode()
+    for path, leg in answers.items():
+        entry = re.search(rf"  - path: {re.escape(path)}\n    leg: (\S+)\n",
+                          text)
+        assert entry, f"no entry {path} in the plan"
+        if entry[1] == "null":
+            resolve(plan, path, leg)
+            text = plan.read_bytes().decode()
+        else:
+            text = text.replace(entry[0],
+                                f"  - path: {path}\n    leg: {leg}\n", 1)
+    plan.write_bytes(text.encode())
+    return plan
+
+
+def findings(plan: Path) -> list[tuple[str, str]]:
+    """`check`'s findings on `plan`, as `(code, detail)`; its exit is 1 when
+    there is one and 0 when there is none."""
+    result = run_script(ADOPT, "check", "--plan", str(plan))
+    found = [tuple(line.split(" ", 1)[1].split(": ", 1))
+             for line in result.stderr.splitlines()
+             if line.startswith("FINDING ")]
+    assert result.returncode == (1 if found else 0), result.stderr
+    return found
+
+
+def in_the_history(adopter, verb: str = "removes") -> re.Pattern:
+    """How the finding ends for a gitlink only the history holds: the
+    commit `git log` meets first, which `verb`s it."""
+    return re.compile(re.escape(adopter.FAILS_IN_THE_HISTORY).replace(
+        re.escape("{}"), named(verb)) + "$")
+
+
+def refused_before_any_leg(adopter, monkeypatch: pytest.MonkeyPatch,
+                           plan: Path, base: Path):
+    """`execute --yes` on `plan`, in this process, its probe for `git
+    filter-repo` stubbed, because the refusal under test comes before the
+    tool would be used. The refusal must be `check`'s findings, raised by
+    `_refuse_what_check_finds` before `_create_leg_remotes`, so the
+    directory the legs go in is never made; it is returned."""
+    monkeypatch.setattr(adopter, "_require_filter_repo", lambda: None)
+    found = findings(plan)
+    remotes = base / "remotes"
+    args = Namespace(plan=str(plan), source=None, local_remote_dir=remotes,
+                     allow_empty_leg=[], yes=True, work_dir=base / "work")
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter.cmd_execute(args)
+    refusal = caught.value
+    assert refusal.detail.splitlines()[1:] == [
+        f"  FINDING {code}: {detail}" for code, detail in found]
+    assert "no leg repository was created" in refusal.remediation
+    assert not remotes.exists()
+    return refusal
 
 
 def spelled(path) -> str:
