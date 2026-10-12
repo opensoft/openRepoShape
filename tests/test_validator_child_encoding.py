@@ -233,7 +233,12 @@ def assert_the_update_landed(project: Path, shape: dict, before: str,
                cwd=project).stdout.strip() == UPDATE_BRANCH
     assert git("rev-list", "--count", f"{before}..HEAD",
                cwd=project).stdout.strip() == "1", shown
-    upstream_copy = (shape["upstream"] / CHANGED_SOURCE).read_bytes()
+    # The COMMITTED blob, not the upstream's working-tree file: `apply` writes
+    # the blob, and a Windows checkout converts that file to CRLF
+    # (`test_update_shape.py` compares the same way).
+    upstream_copy = subprocess.run(
+        ["git", "show", f"{shape['b']}:{CHANGED_SOURCE}"],
+        cwd=str(shape["upstream"]), capture_output=True, check=True).stdout
     assert (project / CHANGED).read_bytes() == upstream_copy
     assert shape["b"] in (project / "contracts" / "shape-pin.yaml"
                           ).read_text(encoding="utf-8")
