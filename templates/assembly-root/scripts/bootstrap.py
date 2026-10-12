@@ -17,7 +17,12 @@ WHAT IT DOES, in order:
       that already exists is FAST-FORWARDED to the pin when its tip is an
       ancestor of it, because that move loses nothing: it is the state
       `bump-leg.py` leaves, the leg detached at the new pin over a branch at
-      the old one. A branch holding a commit the pin does not contain is never
+      the old one. A branch AHEAD of the pin with no commit of its own, its
+      tip being its upstream's remote-tracking ref, is MOVED BACK to the pin
+      from a leg detached there, because that loses nothing either: it is
+      what git's own recursive clone leaves when the leg's remote has moved
+      past the pin, and the remote-tracking ref still holds every commit.
+      Any other branch holding a commit the pin does not contain is never
       moved; bootstrap prints both and leaves them alone. Advancing a pin
       remains an explicit commit in this repository — see `README.md`, "The
       lockstep invariant". This is why `.gitmodules` carries no `branch=`:
@@ -75,6 +80,13 @@ DEGRADE_LINE = "authority is not wallet-carried in this org"
 SHAPE_UPSTREAM_ENV = "SHAPE_UPSTREAM_PATH"
 SHAPE_UPSTREAM_CACHE = ".shape-upstream-tip"
 COMMIT_40 = re.compile(r"^[0-9a-fA-F]{40}$")
+#: Where a remote-tracking ref lives. Only an upstream there holds a branch's
+#: commits on the remote's behalf; an upstream of `.` is another local branch.
+REMOTE_TRACKING = "refs/remotes/"
+#: What step (a) prints under git's own lines when git refuses a move.
+NOTHING_ELSE = ("          nothing else is tried; the recorded pin is "
+                "authoritative. Deal with what git said and run bootstrap "
+                "again.")
 REGISTER_RELPATH = Path("governance") / "review-authority" / "register.yaml"
 VALIDATORS = (
     ("naming", ["scripts/validate-repository-naming.py", "--project",
@@ -107,30 +119,98 @@ def _short(sha: str | None) -> str:
 
 def _git_says(args: list[str], cwd: Path) -> list[str] | None:
     """`None` when `git <args>` succeeds in `cwd`, else the lines git wrote
-    to say why not (never an empty list).
+    to say why not (never an empty list, and never a blank line).
 
     `_try_git` answers only whether a command worked, which is all a read
     needs. A MOVE git refuses has a reason the person has to act on (an
     untracked file in the way, a branch another worktree has checked out),
     so bootstrap prints git's own words rather than a guess. The bytes are
     decoded here, with `replace`, so no locale's codec decides whether the
-    reason can be read.
+    reason can be read. The blank line git puts between two paragraphs is
+    dropped: printed under the indent, it was a line of trailing spaces.
     """
     proc = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True,
                           check=False)
     if proc.returncode == 0:
         return None
-    said = proc.stderr.decode("utf-8", "replace").strip().splitlines()
-    return [line.rstrip() for line in said] or [
-        f"`git {args[0]}` exited {proc.returncode}"]
+    said = proc.stderr.decode("utf-8", "replace").splitlines()
+    verb = args[2] if args[0] == "-c" else args[0]
+    return [line.rstrip() for line in said if line.strip()] or [
+        f"`git {verb}` exited {proc.returncode}"]
 
 
-def _is_ancestor(sub: Path, local: str, pin: str | None) -> bool:
-    """Whether the branch tip `local` is an ancestor of the pin, so that
-    moving the branch to the pin loses nothing. A pin this leg has not
-    fetched is not known to be one, and is answered no."""
-    return pin is not None and _try_git(
-        ["merge-base", "--is-ancestor", local, pin], sub) is not None
+def _head_of(sub: Path) -> tuple[str | None, str | None]:
+    """The commit the leg has checked out, and the ref HEAD is on (`None`
+    when it is detached)."""
+    return (_try_git(["rev-parse", "--verify", "--quiet", "HEAD"], sub),
+            _try_git(["symbolic-ref", "--quiet", "HEAD"], sub))
+
+
+def _is_ancestor(sub: Path, commit: str | None, of: str | None) -> bool:
+    """Whether `commit` is an ancestor of `of`, as `git merge-base
+    --is-ancestor` answers it. A commit this leg has not fetched is not
+    known to be one, and is answered no."""
+    return commit is not None and of is not None and _try_git(
+        ["merge-base", "--is-ancestor", commit, of], sub) is not None
+
+
+def _upstream_holding(sub: Path, branch: str, local: str) -> str | None:
+    """The remote-tracking ref `branch` builds on, when the branch tip
+    `local` IS that ref's commit: a branch with no commit of its own.
+
+    `None` for every other branch: one with no upstream, one whose upstream
+    is another local branch (`branch.<name>.remote` of `.`), one whose
+    remote-tracking ref is not there (never fetched, or pruned) and one
+    whose tip is not the upstream's. The two are compared by object id.
+    `for-each-ref` names the upstream whether or not its ref exists, and
+    takes the branch after `refs/heads/`, where git reads no option.
+    """
+    upstream = _try_git(["for-each-ref", "--format=%(upstream)",
+                         f"refs/heads/{branch}"], sub)
+    if not upstream or not upstream.startswith(REMOTE_TRACKING):
+        return None
+    held = _try_git(["rev-parse", "--verify", "--quiet", upstream], sub)
+    return upstream if held == local else None
+
+
+def _held_upstream_past_the_pin(sub: Path, branch: str, local: str,
+                                pin: str | None) -> str | None:
+    """`_upstream_holding`'s ref when `move_back_to_pin` loses nothing,
+    else `None`: the branch is AHEAD of the pin, the pin an ancestor of its
+    tip; it has no commit of its own; and HEAD is detached AT the pin, so
+    no file changes. Every other branch past the pin keeps its refusal."""
+    upstream = _upstream_holding(sub, branch, local)
+    if (upstream is None or not _is_ancestor(sub, pin, local)
+            or _head_of(sub) != (pin, None)):
+        return None
+    return upstream
+
+
+def _move_and_check_out(sub: Path, branch: str,
+                        pin: str) -> tuple[bool, list[str] | None]:
+    """From HEAD DETACHED AT THE PIN: `branch -f <branch> <pin>`, then a
+    `checkout` of the branch, which is by then the commit already checked
+    out, so no file in the leg changes, a local edit included.
+
+    Returns whether the branch moved, and git's lines when a step was
+    refused (`None` when both worked). The checkout runs only once `branch
+    -f` has worked. Not `checkout -B`: git 2.43 resets a branch another
+    worktree has checked out with it, leaving that worktree's files behind
+    its own HEAD, where `branch -f` refuses.
+    """
+    why = _git_says(["branch", "-f", branch, pin], sub)
+    if why is not None:
+        return False, why
+    return True, _git_says(["checkout", "-q", branch], sub)
+
+
+def _say_refused(first: str, why: list[str]) -> None:
+    """A move git refused: `first`, git's own lines under it, spelled
+    (#391), then what to do."""
+    print(first)
+    for line in why:
+        print(f"          {spelled(line.strip())}")
+    print(NOTHING_ELSE)
 
 
 def fast_forward_to_pin(sub: Path, label: str, branch: str, local: str,
@@ -145,13 +225,14 @@ def fast_forward_to_pin(sub: Path, label: str, branch: str, local: str,
     exactly two checkouts:
 
     - HEAD on the branch itself: `merge --ff-only`, which moves the working
-      tree too, and moves nothing when a local change or an untracked file
-      is in the way.
-    - HEAD detached AT THE PIN: `branch -f`, then a `checkout` of the
-      branch, which is by then the commit already checked out. Not
-      `checkout -B`: git 2.43 resets a branch another worktree has checked
-      out with it, leaving that worktree's files behind its own HEAD, where
-      `branch -f` refuses.
+      tree too, and moves nothing when a local change to a file the move
+      changes, or an untracked file, is in the way. `merge.autostash` is
+      off for it: with it on, git stashes the change, moves the branch,
+      applies the stash back into conflicts and exits 0, and the leg was
+      left unmerged under a line saying it had been fast-forwarded. `-c`,
+      not `--no-autostash`, which a git before 2.27 refuses as an unknown
+      option; such a git has no autostash and ignores the key.
+    - HEAD detached AT THE PIN: `_move_and_check_out`.
 
     ANY OTHER CHECKOUT IS LEFT WHERE IT IS. A commit made on the detached
     leg after the bump is on no branch, and checking the branch out would
@@ -162,14 +243,13 @@ def fast_forward_to_pin(sub: Path, label: str, branch: str, local: str,
     spelled; the branch names and git's own lines are spelled here (#391).
     """
     named = spelled(branch)
-    head = _try_git(["rev-parse", "--verify", "--quiet", "HEAD"], sub)
-    current = _try_git(["symbolic-ref", "--quiet", "HEAD"], sub)
+    head, current = _head_of(sub)
+    moved = False
     if current == f"refs/heads/{branch}":
-        why = _git_says(["merge", "--ff-only", "-q", pin], sub)
+        why = _git_says(["-c", "merge.autostash=false", "merge", "--ff-only",
+                         "-q", pin], sub)
     elif current is None and head == pin:
-        # The checkout runs only once `branch -f` has succeeded (None).
-        why = (_git_says(["branch", "-f", branch, pin], sub)
-               or _git_says(["checkout", "-q", branch], sub))
+        moved, why = _move_and_check_out(sub, branch, pin)
     else:
         place = "detached"
         if current is not None:
@@ -182,13 +262,15 @@ def fast_forward_to_pin(sub: Path, label: str, branch: str, local: str,
               "leg, and run bootstrap again.")
         return
     if why is not None:
-        print(f"  {label}: branch {named} tip {_short(local)} is behind the "
-              f"PIN {_short(pin)}, and git refused to move it:")
-        for line in why:
-            print(f"          {spelled(line.strip())}")
-        print("          nothing else is tried; the recorded pin is "
-              "authoritative. Deal with what git said and run bootstrap "
-              "again.")
+        if moved:
+            first = (f"  {label}: branch {named} moved {_short(local)} -> "
+                     f"{_short(pin)}, the pin, and git refused to check it "
+                     "out:")
+        else:
+            first = (f"  {label}: branch {named} tip {_short(local)} is "
+                     f"behind the PIN {_short(pin)}, and git refused to move "
+                     "it:")
+        _say_refused(first, why)
         return
     note = ""
     if remote is not None and remote != pin:
@@ -196,6 +278,46 @@ def fast_forward_to_pin(sub: Path, label: str, branch: str, local: str,
                 "deliberately does NOT follow")
     print(f"  {label}: branch {named} fast-forwarded {_short(local)} -> "
           f"{_short(pin)}, the pin{note}")
+
+
+def move_back_to_pin(sub: Path, label: str, path: str, branch: str,
+                     local: str, pin: str, upstream: str) -> None:
+    """Step (a) for a tracking branch AHEAD of the pin with no commit of
+    its own (#475).
+
+    `git clone --recurse-submodules` makes each leg's branch at its
+    remote's tip and leaves HEAD detached at the pin. Where the leg's
+    remote has moved past the pin, which is the ordinary state of an active
+    project, the branch is ahead of the pin, and step (a) used to leave the
+    leg detached, where the next commit made in it is on no branch: the
+    harm `bump-leg.py` left, met on the first day instead.
+
+    The caller has made sure that moving the branch back loses nothing: its
+    tip `local` IS the commit of `upstream`, a remote-tracking ref, which
+    still holds every commit the branch has past the pin; and HEAD is
+    detached AT the pin, so `_move_and_check_out` changes no file. The one
+    line printed says where those commits are and names the command that
+    brings the branch forward, which is the person's to run: what this
+    project records is the pin.
+    """
+    named = spelled(branch)
+    held = spelled(upstream[len(REMOTE_TRACKING):])
+    moved, why = _move_and_check_out(sub, branch, pin)
+    if why is not None:
+        if moved:
+            first = (f"  {label}: branch {named} moved back {_short(local)} "
+                     f"-> {_short(pin)}, the pin ({held} still holds "
+                     f"{_short(local)}), and git refused to check it out:")
+        else:
+            first = (f"  {label}: branch {named} tip {_short(local)} is "
+                     f"ahead of the PIN {_short(pin)} with no commit {held} "
+                     "lacks, and git refused to move it back:")
+        _say_refused(first, why)
+        return
+    print(f"  {label}: branch {named} moved back {_short(local)} -> "
+          f"{_short(pin)}, the pin; nothing is lost, {held} still holds "
+          f"those commits, and `git -C {spelled(path)} merge --ff-only "
+          f"{held}` brings the branch forward")
 
 
 def checkout_tracking_branch(root: Path, leg: dict, branch: str) -> None:
@@ -244,6 +366,11 @@ def checkout_tracking_branch(root: Path, leg: dict, branch: str) -> None:
 
     if _is_ancestor(sub, local, pin):
         fast_forward_to_pin(sub, where, branch, local, pin, remote)
+        return
+
+    upstream = _held_upstream_past_the_pin(sub, branch, local, pin)
+    if upstream is not None:
+        move_back_to_pin(sub, where, path, branch, local, pin, upstream)
         return
 
     print(f"  {where}: PIN {_short(pin)} != branch {named} tip "
