@@ -114,33 +114,35 @@ TEMPLATES = REPO / "templates"
 LEG_PATH_PLACEHOLDERS = ("SPEC_PATH", "CODE_PATH")
 
 
-def template_lines_holding_a_leg_path() -> list[tuple[str, str]]:
+def template_lines_holding_a_leg_path() -> list[tuple[str, int, str]]:
     """Every line of every YAML template that holds a leg path, FOUND by
-    reading `templates/` and not listed here: `(where, line)`, `where` being
-    `<template>:<line number>`. A Markdown template's `{{SPEC_PATH}}/` is
-    prose no YAML reader reads, so only `.yaml` and `.yml` files are asked."""
+    reading `templates/` and not listed here: `(template, line number,
+    line)`, `template` relative to `templates/`. A Markdown template's
+    `{{SPEC_PATH}}/` is prose no YAML reader reads, so only `.yaml` and
+    `.yml` files are asked."""
     found = []
     for path in sorted(TEMPLATES.rglob("*")):
         if path.suffix not in (".yaml", ".yml") or not path.is_file():
             continue
-        where = path.relative_to(TEMPLATES).as_posix()
+        template = path.relative_to(TEMPLATES).as_posix()
         lines = path.read_text(encoding="utf-8").splitlines()
         for number, line in enumerate(lines, 1):
             if any("{{" + key + "}}" in line for key in LEG_PATH_PLACEHOLDERS):
-                found.append((f"{where}:{number}", line))
+                found.append((template, number, line))
     return found
 
 
 TEMPLATE_LEG_PATH_LINES = template_lines_holding_a_leg_path()
 
 
-def read_back(line: str, value: str):
+def read_back(template: str, line: str, value: str):
     """What the project's reader makes of a template `line` once `value` is
-    rendered into it, by the `render` the scaffold and `execute` use. The
-    line is read on its own, dedented: a `key: value` line's scalar is read
-    the same there as inside its block."""
+    rendered into it, by the `render` the scaffold and `execute` use, told
+    the template's name as they tell it. The line is read on its own,
+    dedented: a `key: value` line's scalar is read the same there as inside
+    its block."""
     rendered = shape_materialize.render(
-        line, {key: value for key in LEG_PATH_PLACEHOLDERS}, "test")
+        line, {key: value for key in LEG_PATH_PLACEHOLDERS}, template)
     read = repo_shape.parse_yaml(rendered.strip() + "\n")
     assert isinstance(read, dict) and len(read) == 1, (
         f"{line!r} is not one `key: value` line: teach read_back its form")
@@ -233,7 +235,7 @@ def test_a_value_the_reader_reads_as_text_is_still_a_path(value):
 def test_the_template_lines_found_are_the_ones_the_sentence_names():
     """The search is not vacuous: it finds the leg-path lines of the files
     the rule's sentence names, `project.yaml` and both legs' pins."""
-    found = {where.rsplit(":", 1)[0] for where, _ in TEMPLATE_LEG_PATH_LINES}
+    found = {template for template, _, _ in TEMPLATE_LEG_PATH_LINES}
     assert {"assembly-root/project.yaml",
             "assembly-root/contracts/spec-pin.yaml",
             "assembly-root/contracts/code-pin.yaml"} <= found, (
@@ -250,8 +252,8 @@ def test_the_rule_agrees_with_every_template_line_that_holds_a_leg_path(
     proposes, and leave the rule alone, and this fails: the rule would go on
     refusing `2026`, which `path: "2026"` reads back, with a sentence saying
     the line is unquoted."""
-    read = {where: read_back(line, value)
-            for where, line in TEMPLATE_LEG_PATH_LINES}
+    read = {f"{template}:{number}": read_back(template, line, value)
+            for template, number, line in TEMPLATE_LEG_PATH_LINES}
     misread = {where: got for where, got in read.items() if got != value}
     problem = shape_materialize.leg_path_problem(SPEC, value)
     assert (problem is None) == (not misread), (
