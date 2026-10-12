@@ -246,9 +246,7 @@ options:
   -h, --help            show this help message and exit
   --org ORG
   --project PROJECT     the assembly-root name, e.g. Atlas
-  --id ID               lowercase project id (default: --project lowercased).
-                        One the project's YAML reader would read as another
-                        type -- `null`, `true`, `007` -- is refused.
+  --id ID               lowercase project id (default: --project lowercased)
   --name NAME           display name
   --visibility {private,public,internal}
                         default: private for a fresh scaffold; with --reuse-
@@ -279,9 +277,7 @@ options:
                         exist yet.
   --tracking-branch TRACKING_BRANCH
                         the branch every repository is created on (default:
-                        main). One the project's YAML reader would read as
-                        another type -- `null`, `true`, `007`, `2026` -- is
-                        refused.
+                        main)
   --spec-path SPEC_PATH
                         where the spec leg is mounted, as a path in the
                         assembly root (default: spec). A path that is, holds

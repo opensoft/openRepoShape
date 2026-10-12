@@ -1,12 +1,24 @@
 # SPDX-License-Identifier: Apache-2.0
 """A scaffold refuses a value the new project's manifest cannot hold (#258, #261).
 
-`scaffold-project.py` writes `--id` and `--tracking-branch` into
+`scaffold-project.py` wrote `--id` and `--tracking-branch` into
 `project.yaml` bare, so `--id null` and `--id true` scaffolded a project whose
 first bootstrap failed `manifest-id`, and `--tracking-branch true`, `007` or
 `null` pushed every repository on the branch as typed while bootstrap read the
 manifest back as `True`, `7` or `main` and put each leg on a local branch the
 remotes do not have, with no upstream. It exited 0 and said nothing (#258).
+
+THE TEMPLATE NOW QUOTES THEM (#259). `project.yaml` writes `id`,
+`elected_on`, `visibility` and `tracking_branch` between double quotes, so
+the reader reads each of those values back as typed, and the misread question,
+which is asked of the TEMPLATE, refuses none of them: `--id null` and
+`--tracking-branch 007` scaffold, and the manifest holds `"null"` and `"007"`.
+The question is still asked. A template line that writes such a value bare is
+refused again, with no edit to the rule: the tests below show it on a copy of
+this standard whose `project.yaml` writes those four lines bare, as it did
+before #259. `--tracking-branch=~` now reads back as `~`, which git refuses
+as a branch name; that is #283's, and its row is an expected failure until
+the fix for #283 (PR #355) lands.
 
 It also accepted what the project's own `validate-manifest.py` refuses -- a
 blank `--elected-by`, `--reference` or `--name`, `--elected-on 2026-W41-6` or
@@ -23,8 +35,8 @@ programs the new project will use -- its YAML reader and the validator the
 template ships -- not of a copy of either rule.
 
 NO NETWORK AND NO GITHUB. Every run uses `--local-remote-dir`, which makes
-bare repositories on disk, or `--dry-run`, which makes nothing; the one test
-that proves `gh` is never asked puts a fake one on PATH.
+bare repositories on disk, or `--dry-run`, which makes nothing; the two tests
+that ask whether `gh` is reached put a fake one on PATH.
 """
 
 from __future__ import annotations
@@ -68,10 +80,11 @@ REMOTES, WORK, SCRATCH = "remotes", "work", "tmp"
 IDENTITY = ["--org", ORG, "--project", "Atlas", "--elected-by", "Test Human",
             "--elected-on", "2026-09-02"]
 
-#: `(flag, value, what the project's reader makes of it)`. Each is a legal git
-#: branch name or a legal id, the reader takes it for something else, and the
-#: manifest writes it bare.
-MISREAD_VALUES = [
+#: `(flag, value, what the project's reader makes of it bare)`. Each is a
+#: legal git branch name or a legal id that the reader takes for something
+#: else where a line writes it bare, as `project.yaml` did before #259. The
+#: template quotes both fields now, so the manifest holds each one as typed.
+ONCE_MISREAD_VALUES = [
     pytest.param("--id", "null", "no value at all", id="id-null"),
     pytest.param("--id", "true", "the boolean true", id="id-true"),
     pytest.param("--id", "false", "the boolean false", id="id-false"),
@@ -93,7 +106,6 @@ MISREAD_VALUES = [
                  id="branch-Null"),
     pytest.param("--tracking-branch", "NULL", "no value at all",
                  id="branch-NULL"),
-    pytest.param("--tracking-branch", "~", "no value at all", id="branch-tilde"),
     pytest.param("--tracking-branch", "007", "the number 7", id="branch-007"),
     pytest.param("--tracking-branch", "2026", "the number 2026",
                  id="branch-2026"),
@@ -102,6 +114,37 @@ MISREAD_VALUES = [
                  id="branch-1.50"),
     pytest.param("--tracking-branch", "0", "the number 0", id="branch-0"),
 ]
+
+#: `(flag, value)`: a value the misread rule refused while the template wrote
+#: it bare (`~` is no value at all to the reader) that reads back as typed now,
+#: and is still no name git gives a branch. Refusing it is not this file's
+#: rule: it is #283's, whose fix asks `git check-ref-format --branch` (PR
+#: #355). Until that lands the scaffold passes it and dies at `git init -b ~`,
+#: which against GitHub is after `gh repo create` has made all three
+#: repositories, so the row is an expected failure that turns into an
+#: unexpected pass, and fails, the day #355 refuses it.
+NOT_A_BRANCH = [
+    pytest.param("--tracking-branch", "~", id="branch-tilde",
+                 marks=pytest.mark.xfail(
+                     strict=True,
+                     reason="#283: `~` reads back as text once the template "
+                            "quotes `tracking_branch` (#259), and git refuses "
+                            "it as a branch name, so the scaffold dies at "
+                            "`git init -b ~` (after `gh repo create` against "
+                            "GitHub); PR #355 refuses it first with `git "
+                            "check-ref-format --branch`. Take this mark off "
+                            "when #355 lands.")),
+]
+
+#: The placeholder each flag of `ONCE_MISREAD_VALUES` fills.
+PLACEHOLDER_OF = {"--id": "PROJECT_ID", "--tracking-branch": "TRACKING_BRANCH"}
+
+#: The `project.yaml` lines #259 quoted that this file's rules name, as
+#: `(key, placeholder)`. `written_bare` writes them bare again, as the
+#: template did before #259.
+QUOTED_BY_259 = (("id", "PROJECT_ID"), ("elected_on", "ELECTED_ON"),
+                 ("visibility", "VISIBILITY"),
+                 ("tracking_branch", "TRACKING_BRANCH"))
 
 #: Values the reader takes for text, so the manifest holds what was typed.
 #: `yes` and `on` are YAML 1.1 booleans and this reader reads them as text;
@@ -171,8 +214,9 @@ def adopter():
 
 
 def scaffold(tmp_path: Path, *args: str, work: bool = False,
-             local: bool = True):
-    """One scaffold of `Atlas` into local bare remotes under `tmp_path`.
+             local: bool = True, tool: Path = SCAFFOLD):
+    """One scaffold of `Atlas` into local bare remotes under `tmp_path`, by
+    this standard's `scaffold-project.py` or, as `tool`, a copy's.
 
     Without `work` no `--work-dir` is given, so the tool would make its own in
     a temporary directory; `TMPDIR` (and Windows' `TEMP` and `TMP`) point at
@@ -186,16 +230,17 @@ def scaffold(tmp_path: Path, *args: str, work: bool = False,
         flags += ["--local-remote-dir", str(tmp_path / REMOTES)]
     if work:
         flags += ["--work-dir", str(tmp_path / WORK)]
-    return run_script(SCAFFOLD, *flags, env={
+    return run_script(tool, *flags, env={
         "TMPDIR": str(scratch), "TMP": str(scratch), "TEMP": str(scratch)})
 
 
 def assert_nothing_was_created(tmp_path: Path) -> None:
     """No bare remote, no work directory of the tool's own and none of ours."""
     found = sorted(p.name for p in tmp_path.iterdir())
-    assert found == [SCRATCH], f"a refused scaffold created something: {found}"
+    assert found == [SCRATCH], (
+        f"a scaffold that makes nothing created something: {found}")
     assert list((tmp_path / SCRATCH).iterdir()) == [], (
-        "a refused scaffold made a temporary work directory")
+        "a scaffold that makes nothing made a temporary work directory")
 
 
 def assert_refused(result, code: str) -> None:
@@ -204,29 +249,103 @@ def assert_refused(result, code: str) -> None:
     assert result.stdout == "", "a plan was printed for a refused scaffold"
 
 
-# --- #258: a value the project's reader turns into something else ---------
+def manifest_in(tmp_path: Path, project: str = "Atlas") -> dict:
+    """The `project.yaml` a scaffold under `tmp_path` pushed, as git holds it
+    in the bare remote, read by the project's own reader."""
+    bare = tmp_path / REMOTES / f"{project}.git"
+    return parse_yaml(git("show", "HEAD:project.yaml", cwd=bare).stdout)
 
-@pytest.mark.parametrize("flag, value, reading", MISREAD_VALUES)
-def test_a_value_the_reader_misreads_is_refused_before_anything_is_made(
-        tmp_path, flag, value, reading):
+
+def heads(bare: Path) -> list[str]:
+    """The branches a bare remote holds."""
+    return git("for-each-ref", "--format=%(refname:short)", "refs/heads",
+               cwd=bare).stdout.split()
+
+
+def written_bare(text: str) -> str:
+    """`project.yaml`'s text with the lines #259 quoted (`QUOTED_BY_259`)
+    written bare again, as the template wrote them before it."""
+    for key, placeholder in QUOTED_BY_259:
+        quoted = f'\n{key}: "{{{{{placeholder}}}}}"\n'
+        assert text.count(quoted) == 1, f"{quoted!r} is not one line of it"
+        text = text.replace(quoted, f"\n{key}: {{{{{placeholder}}}}}\n")
+    return text
+
+
+@pytest.fixture(scope="module")
+def bare_standard(tmp_path_factory):
+    """This standard as its own checkout, with `project.yaml` writing the
+    four lines #259 quoted bare again. The misread rule is asked of the
+    template, so there it refuses what it refused before #259, and its tools
+    run from there to show it."""
+    return a_copy_of_the_standard(tmp_path_factory.mktemp("bare"),
+                                  written_bare, "project.yaml")
+
+
+def bare_template(standard: Path) -> Path:
+    """The assembly-root template of a copy of the standard."""
+    return standard / "templates" / "assembly-root"
+
+
+# --- #258: a value the project's reader turned into something else --------
+
+@pytest.mark.parametrize("flag, value, reading", ONCE_MISREAD_VALUES)
+def test_a_value_the_reader_once_misread_is_held_as_typed(
+        tmp_path, bare_standard, flag, value, reading):
+    """The misread rule refused each of these while `project.yaml` wrote it
+    bare, and it still refuses each where a template line does (asked here of
+    the copy of the standard that writes them bare). The template quotes them
+    now (#259), so this standard scaffolds each one, the manifest it pushes
+    holds the value as the text that was typed, and a branch is the one every
+    repository is created on."""
+    placeholder = PLACEHOLDER_OF[flag]
+    (sentence,) = shape_materialize.manifest_misreads(
+        {placeholder: value}, {placeholder: flag},
+        bare_template(bare_standard))
+    assert f"{flag} is {value!r}" in sentence
+    assert f"reads it back as {reading} and not as that text" in sentence
+    assert shape_materialize.manifest_misreads(
+        {placeholder: value}, {placeholder: flag}) == []
     # `=` form, so a value that begins with `~` or `-` reaches the tool as a
     # value and argparse does not take it for another option.
     result = scaffold(tmp_path, f"{flag}={value}")
-    assert_refused(result, MISREAD)
-    assert f"{flag} is {value!r}" in result.stderr
-    assert f"reads it back as {reading} and not as that text" in result.stderr
-    assert "Remediation: choose another value" in result.stderr
+    assert result.returncode == 0, result.stderr + result.stdout
+    manifest = manifest_in(tmp_path)
+    if flag == "--id":
+        assert manifest["id"] == value
+        assert manifest["topic"] == f"xf-project-{value}"
+    else:
+        assert manifest["tracking_branch"] == value
+        for name in ("Atlas", "Atlas-spec", "Atlas-code"):
+            assert heads(tmp_path / REMOTES / f"{name}.git") == [value], name
+
+
+@pytest.mark.parametrize("flag, value", NOT_A_BRANCH)
+def test_a_value_git_refuses_as_a_branch_is_refused_before_anything_is_made(
+        tmp_path, flag, value):
+    """No longer a misread, and still not a branch: it must be refused before
+    anything exists, by the rule that asks git (#283), and not die at the
+    first `git init -b` as `a git or gh command failed`."""
+    result = scaffold(tmp_path, f"{flag}={value}")
+    assert_refused(result, "REFUSED ")
+    assert "a git or gh command failed" not in result.stderr
+    assert flag in result.stderr
     assert_nothing_was_created(tmp_path)
 
 
 @pytest.mark.parametrize("flag, value", [("--id", "null"),
                                          ("--tracking-branch", "007")])
-def test_a_dry_run_refuses_a_misread_value_as_the_real_run_would(
+def test_a_dry_run_accepts_a_value_once_misread_as_the_real_run_does(
         tmp_path, flag, value):
-    """`--dry-run` is a rehearsal: it must not print a plan for a scaffold the
-    real run refuses (the issue's own `--dry-run` accepted every one)."""
+    """`--dry-run` is a rehearsal, and it answers as the real run does. It
+    refused these as the real run did while the template wrote them bare; the
+    template quotes them now (#259), so it prints the plan the real run
+    carries out, and makes nothing."""
     result = scaffold(tmp_path, "--dry-run", f"{flag}={value}")
-    assert_refused(result, MISREAD)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "--dry-run: nothing was created." in result.stdout
+    if flag == "--id":
+        assert f"Atlas ({value})" in result.stdout
     assert_nothing_was_created(tmp_path)
 
 
@@ -235,9 +354,9 @@ def test_a_dry_run_refuses_a_misread_value_as_the_real_run_would(
     ("--tracking-branch", "007"), ("--id", "2026"), ("--id", "null"),
 ])
 def test_the_remediation_says_what_is_true_of_every_value_it_refuses(
-        tmp_path, flag, value):
+        tmp_path, bare_standard, flag, value):
     """`--tracking-branch 2026` and `1.5` are the values this refusal newly
-    takes from people: they scaffolded, bootstrapped and got their upstream,
+    took from people: they scaffolded, bootstrapped and got their upstream,
     because every reader of `tracking_branch` does `str()` and `str(2026)` is
     `2026` again. The remediation once said the first bootstrap would fail or
     put the legs on a branch the remotes lack, which is false of exactly
@@ -245,9 +364,18 @@ def test_the_remediation_says_what_is_true_of_every_value_it_refuses(
     reader reads back something other than what was typed -- names the
     failures that do hold, says plainly that a number which survives `str()`
     is a number all the same, and gives the way forward: a value that is text
-    to the reader."""
-    result = scaffold(tmp_path, "--dry-run", f"{flag}={value}")
+    to the reader.
+
+    The template quotes `id:` and `tracking_branch:` now (#259), so this
+    standard refuses none of them and the remediation is not said; it is
+    asked of the copy whose template writes them bare, where it is."""
+    accepted = scaffold(tmp_path, "--dry-run", f"{flag}={value}")
+    assert accepted.returncode == 0, accepted.stderr + accepted.stdout
+    assert "Remediation" not in accepted.stderr
+    result = scaffold(tmp_path, "--dry-run", f"{flag}={value}",
+                      tool=bare_standard / "scaffold-project.py")
     assert_refused(result, MISREAD)
+    assert_nothing_was_created(tmp_path)
     said = result.stderr
     assert "what it reads back is not what was typed" in said
     assert ("an id that is not text fails the project's own "
@@ -280,17 +408,26 @@ def test_the_remediations_claim_about_str_is_what_the_reader_does(
     ("True", "true", "the boolean true"),
     ("Null", "null", "no value at all"),
 ])
-def test_an_id_derived_from_the_project_name_is_asked_too(
-        tmp_path, project, derived, reading):
+def test_an_id_derived_from_the_project_name_is_held_as_typed_too(
+        tmp_path, bare_standard, project, derived, reading):
     """With no `--id` the id is the project name lowercased, so `--project
-    Null` is `id: null`; the sentence says where the id came from, so it does
-    not point at a flag nobody typed."""
-    result = scaffold(tmp_path, "--project", project)
-    assert_refused(result, MISREAD)
+    Null` is the id `null`. Where a template line writes `id:` bare it is
+    refused, and the sentence says where the id came from, so it does not
+    point at a flag nobody typed (asked of the copy that writes it bare). The
+    template quotes it now (#259), so this standard scaffolds the project and
+    the manifest holds the id as that text."""
+    refused = scaffold(tmp_path, "--project", project,
+                       tool=bare_standard / "scaffold-project.py")
+    assert_refused(refused, MISREAD)
     assert (f"--id (not given, so --project lowercased) is {derived!r}"
-            in result.stderr)
-    assert reading in result.stderr
+            in refused.stderr)
+    assert reading in refused.stderr
     assert_nothing_was_created(tmp_path)
+    result = scaffold(tmp_path, "--project", project)
+    assert result.returncode == 0, result.stderr + result.stdout
+    manifest = manifest_in(tmp_path, project)
+    assert manifest["id"] == derived
+    assert manifest["topic"] == f"xf-project-{derived}"
 
 
 def test_an_explicit_id_is_the_way_round_for_such_a_project_name(tmp_path):
@@ -545,13 +682,10 @@ def test_the_names_a_refusal_shows_are_told_apart_by_their_tails():
 
 # --- never GitHub ----------------------------------------------------------
 
-@WINDOWS_SKIP  # the `gh` below is a `#!` script, which Windows does not run
-@pytest.mark.parametrize("flag", ["--id=null", "--tracking-branch=true",
-                                  "--elected-by= ", "--org=test+org"])
-def test_a_refused_value_never_reaches_gh(tmp_path, flag):
-    """Local remotes are the test path; the real one calls `gh repo create`.
-    Each refusal comes before the first `gh` call, so no repository is made
-    on the forge for a project that was never going to scaffold."""
+def scaffold_against_a_fake_gh(tmp_path: Path, flag: str):
+    """A scaffold with no `--local-remote-dir`, so it goes to the forge, with
+    a fake `gh` first on PATH that logs each call and answers no. Returns the
+    run and the log's path, which exists only if `gh` was asked."""
     bin_dir, log = tmp_path / "bin", tmp_path / "gh.log"
     bin_dir.mkdir()
     shim = bin_dir / "gh"
@@ -566,10 +700,38 @@ def test_a_refused_value_never_reaches_gh(tmp_path, flag):
         SCAFFOLD, *IDENTITY, flag, "--work-dir", str(tmp_path / WORK),
         env={"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
              "FAKE_GH_LOG": str(log)})
+    return result, log
+
+
+@WINDOWS_SKIP  # the `gh` below is a `#!` script, which Windows does not run
+@pytest.mark.parametrize("flag", ["--elected-by= ", "--org=test+org"])
+def test_a_refused_value_never_reaches_gh(tmp_path, flag):
+    """Local remotes are the test path; the real one calls `gh repo create`.
+    Each refusal comes before the first `gh` call, so no repository is made
+    on the forge for a project that was never going to scaffold."""
+    result, log = scaffold_against_a_fake_gh(tmp_path, flag)
     assert result.returncode == 2, result.stderr + result.stdout
     assert "REFUSED" in result.stderr
     assert not log.exists(), f"gh was asked: {log.read_text()}"
     assert not (tmp_path / WORK).exists()
+
+
+@WINDOWS_SKIP  # the `gh` below is a `#!` script, which Windows does not run
+@pytest.mark.parametrize("flag", ["--id=null", "--tracking-branch=true"])
+def test_a_value_once_misread_reaches_gh_as_an_accepted_one_does(tmp_path,
+                                                                 flag):
+    """These two were refused before the first `gh` call while the template
+    wrote them bare. It quotes them now (#259), so they pass every question
+    the scaffold asks, and the run goes on to the forge as an accepted value's
+    does: the fake `gh` is asked to create the first leg and says no. That is
+    also the fake answering where `test_a_refused_value_never_reaches_gh`
+    would have seen a call."""
+    result, log = scaffold_against_a_fake_gh(tmp_path, flag)
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert "manifest-misread" not in result.stderr
+    assert log.exists(), "gh was never asked"
+    assert f"repo create {ORG}/Atlas-spec " in log.read_text()
+    assert f"gh repo create {ORG}/Atlas-spec " in result.stderr
 
 
 # --- one definition, two readers ------------------------------------------
@@ -629,24 +791,29 @@ def test_every_name_a_refusal_uses_is_a_value_the_tools_hold(scaffolder,
     assert set(adopter.MANIFEST_FLAGS) == set(adopter.MANIFEST_PLAN_KEYS)
 
 
-def test_quoting_the_template_would_make_the_refusal_go_away(tmp_path):
-    """#259 proposes quoting `id:` and `tracking_branch:` in the template. The
-    question is asked of the TEMPLATE, so the day it does, those values read
-    back and nothing here refuses them, with no edit to this rule."""
-    copy = tmp_path / "assembly-root"
-    shutil.copytree(REPO / "templates" / "assembly-root", copy,
-                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-    manifest = copy / "project.yaml"
-    text = manifest.read_text(encoding="utf-8")
-    quoted = (text.replace("id: {{PROJECT_ID}}", 'id: "{{PROJECT_ID}}"')
-              .replace("tracking_branch: {{TRACKING_BRANCH}}",
-                       'tracking_branch: "{{TRACKING_BRANCH}}"'))
-    assert quoted != text
-    manifest.write_text(quoted, encoding="utf-8")
+def test_the_template_quotes_them_so_the_misread_rule_refuses_nothing_there(
+        scaffolder, bare_standard):
+    """#259 quoted `id:` and `tracking_branch:` in the template, and
+    `elected_on:` and `visibility:` with them. The question is asked of the
+    TEMPLATE, so since it did, no value of any field the scaffold names is
+    read back as anything but itself, and the rule refuses none, with no edit
+    to it. Written bare again, the same lines are refused again."""
+    text = (REPO / "templates" / "assembly-root" / "project.yaml").read_text(
+        encoding="utf-8")
+    for key, placeholder in QUOTED_BY_259:
+        assert f'\n{key}: "{{{{{placeholder}}}}}"\n' in text, key
+    once_misread = {param.values[1] for param in ONCE_MISREAD_VALUES}
+    # and `~`, a basic-format date, and line breaks `render` spells escaped
+    also = {"~", "20261011", "a\x0bb", "a\u2028b"}
+    for value in sorted(once_misread | also):
+        values = dict.fromkeys(scaffolder.MANIFEST_FLAGS, value)
+        assert shape_materialize.manifest_misreads(
+            values, scaffolder.MANIFEST_FLAGS) == [], repr(value)
     values = {"PROJECT_ID": "null", "TRACKING_BRANCH": "007"}
     what = {"PROJECT_ID": "--id", "TRACKING_BRANCH": "--tracking-branch"}
-    assert len(shape_materialize.manifest_misreads(values, what)) == 2
-    assert shape_materialize.manifest_misreads(values, what, copy) == []
+    assert shape_materialize.manifest_misreads(values, what) == []
+    assert len(shape_materialize.manifest_misreads(
+        values, what, bare_template(bare_standard))) == 2
     # and what the quoted line holds is the text, through the project's reader
     assert parse_yaml('tracking_branch: "007"\n') == {"tracking_branch": "007"}
 
@@ -660,7 +827,9 @@ def test_a_placeholder_is_what_render_calls_one(tmp_path, monkeypatch):
     (`{{SPEC_TREE_SHA256}}`); a line holding one asked placeholder and one
     with a digit must then count as two and not be asked, as a line that is
     asked is rendered with a one-key table and refused as
-    `template-unsubstituted`."""
+    `template-unsubstituted`. The template quotes `id:` (#259), which the
+    reader then reads back, so the copy writes it bare again to have a line
+    whose value is refused."""
     monkeypatch.setattr(shape_materialize, "PLACEHOLDER_RE",
                         re.compile(r"\{\{[A-Z0-9_]+\}\}"))
     assert shape_materialize._placeholders_of(
@@ -671,7 +840,7 @@ def test_a_placeholder_is_what_render_calls_one(tmp_path, monkeypatch):
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     manifest = copy / "project.yaml"
     manifest.write_text(
-        manifest.read_text(encoding="utf-8")
+        written_bare(manifest.read_text(encoding="utf-8"))
         + "extra: {{PROJECT_ID}}-{{SPEC_TREE_SHA256}}\n", encoding="utf-8")
     values = {"PROJECT_ID": "null", "SPEC_TREE_SHA256": "0" * 64}
     what = {"PROJECT_ID": "--id"}
@@ -696,38 +865,53 @@ def test_a_line_a_terminal_would_show_as_something_else_is_quoted_by_python():
 
 
 @pytest.mark.parametrize("char", ["\x0b", "\x1c", "\u2028"])
-def test_a_misread_sentence_holding_a_line_break_is_one_printable_line(char):
-    """The manifest is split at the break, so the reader refuses it; the
-    sentence says so without printing the break itself."""
+def test_a_misread_sentence_holding_a_line_break_is_one_printable_line(
+        bare_standard, char):
+    """Where a template line writes the value bare, the manifest is split at
+    the break, so the reader refuses it; the sentence says so without printing
+    the break itself. The template quotes `tracking_branch:` now (#259), and
+    `render` spells the break as an escape between the quotes, so the reader
+    reads it back and the rule refuses nothing; the sentence is asked of the
+    copy that writes the line bare."""
     what = {"TRACKING_BRANCH": "--tracking-branch"}
+    assert shape_materialize.manifest_misreads(
+        {"TRACKING_BRANCH": f"a{char}b"}, what) == []
+    bare = bare_template(bare_standard)
     (sentence,) = shape_materialize.manifest_misreads(
-        {"TRACKING_BRANCH": f"a{char}b"}, what)
+        {"TRACKING_BRANCH": f"a{char}b"}, what, bare)
     assert len(sentence.splitlines()) == 1
     assert sentence.isprintable()
     assert "into project.yaml as 'tracking_branch: a\\" in sentence
     # a printable misread is quoted in backticks, as before
     (plain,) = shape_materialize.manifest_misreads(
-        {"TRACKING_BRANCH": "007"}, what)
+        {"TRACKING_BRANCH": "007"}, what, bare)
     assert "into project.yaml as `tracking_branch: 007`" in plain
 
 
 # --- the placeholders a misread rule would refuse ---------------------------
 
-def test_the_misread_placeholders_are_the_ones_the_misread_rule_refuses():
+def test_the_misread_placeholders_are_the_ones_the_misread_rule_refuses(
+        bare_standard):
     """What a caller that leaves misreads to a rule of its own asks of the
     validator is whatever `manifest_misreads` would refuse, as an answer of
-    the project's reader and not a list of values."""
+    the project's reader and not a list of values: none on this standard's
+    template, which quotes all three (#259), and the three where a template
+    writes them bare."""
     what = {"PROJECT_ID": "--id", "TRACKING_BRANCH": "--tracking-branch",
             "ELECTED_BY": "--elected-by", "ELECTED_ON": "--elected-on",
             "VISIBILITY": "--visibility", "ORG": "--org"}
     values = {"PROJECT_ID": "007", "TRACKING_BRANCH": "2026",
               "ELECTED_BY": " ", "ELECTED_ON": "2026-09-02",
               "VISIBILITY": "true", "ORG": "acme"}
-    asked = shape_materialize.misread_placeholders(values, what)
+    assert shape_materialize.misread_placeholders(values, what) == ()
+    assert shape_materialize.manifest_misreads(values, what) == []
+    bare = bare_template(bare_standard)
+    asked = shape_materialize.misread_placeholders(values, what, bare)
     assert sorted(asked) == ["PROJECT_ID", "TRACKING_BRANCH", "VISIBILITY"]
-    assert len(shape_materialize.manifest_misreads(values, what)) == len(asked)
+    assert len(shape_materialize.manifest_misreads(values, what, bare)) == (
+        len(asked))
     assert shape_materialize.misread_placeholders(
-        {"PROJECT_ID": "atlas"}, what) == ()
+        {"PROJECT_ID": "atlas"}, what, bare) == ()
 
 
 # --- a validator that cannot be asked -------------------------------------
@@ -753,11 +937,12 @@ BROKEN_VALIDATORS = [
 ]
 
 
-def a_copy_of_the_standard(base: Path, remake) -> Path:
+def a_copy_of_the_standard(base: Path, remake,
+                           rel: str = "scripts/validate-manifest.py") -> Path:
     """The standard, as its own git checkout (the tools name their revision),
-    with its template's `validate-manifest.py` made over by `remake`, which is
-    given the real text and returns the text to put there, or None to remove
-    the file."""
+    with its template's `validate-manifest.py`, or the template file `rel`,
+    made over by `remake`, which is given the real text and returns the text
+    to put there, or None to remove the file."""
     copy = base / "standard"
     shutil.copytree(REPO, copy, symlinks=True, ignore=shutil.ignore_patterns(
         ".git", "__pycache__", ".pytest_cache", "tests", "docs", "handoffs"))
@@ -765,8 +950,7 @@ def a_copy_of_the_standard(base: Path, remake) -> Path:
     git("add", "-A", cwd=copy)
     git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
         "--no-gpg-sign", "-m", "a copy of the standard", cwd=copy)
-    path = copy / "templates" / "assembly-root" / "scripts" / (
-        "validate-manifest.py")
+    path = copy / "templates" / "assembly-root" / rel
     remade = remake(path.read_text(encoding="utf-8"))
     if remade is None:
         path.unlink()
