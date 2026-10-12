@@ -264,13 +264,51 @@ def _member_lines(row: dict) -> list[str]:
     ]
 
 
+def _member_path(project: str, row: dict | None = None) -> str:
+    """The ONE path a member has, `members/<project>` (#299); given the
+    member's row, that path or the refusal that says the row names another.
+
+    THE TOOL WRITES `path:` ITSELF, as this and nothing else (`_member_row`),
+    and `bump` and `remove` used to read it back and hand it to git as it
+    stood. Git reads a path as a pathspec: `path: members/*` made `remove
+    --member Atlas` exit 0 with one commit that unmounted EVERY member while
+    dropping only Atlas's row, and `path: .` made it `git rm -r -f` the
+    holder's own files and die on the missing manifest. A hand edit is outside
+    the supported path (AGENTS.md: do not hand-edit the `members:` block), and
+    the rule this asks is the one `validate-family.py` already records as
+    `member-path`; but the validator runs after a commit, in CI and in the
+    doctor, never in front of these two verbs, so they ask it themselves,
+    BEFORE ANY GIT CALL AND ANY WRITE.
+
+    A row with no `path:` keeps defaulting to it, as it always has, and the
+    comparison is EXACT, as the validator's is: `members/IRRS/`, `members/irrs`
+    and a neighbour's path are each a different string and each refused. The
+    validator keeps its own spelling of this rule on purpose. It ships INTO
+    every holder, as `repo_shape.py` does, so sharing it would move every
+    holder's pin for a refusal of a hand edit.
+    """
+    expected = f"{MEMBERS_DIR}/{project}"
+    declared = expected if row is None else str(row.get("path") or expected)
+    if declared != expected:
+        raise Refusal(
+            "member-path",
+            f"{project}: path is {declared!r} in {MANIFEST}, expected "
+            f"{expected!r}. Git would read that value as a pathspec, so no "
+            "git command was run and nothing was written.",
+            "Remediation: this tool writes that field itself, so a different "
+            f"value is a hand edit. Put `path: {expected}` back in "
+            f"{MANIFEST}, or `git checkout -- {MANIFEST}` if the edit is not "
+            "committed, then run the same command again.")
+    return expected
+
+
 def _member_row(project: str, project_id: str, repository: str, commit: str,
                 digest: str) -> dict:
     return {
         "project": project,
         "id": project_id,
         "repository": repository,
-        "path": f"{MEMBERS_DIR}/{project}",
+        "path": _member_path(project),
         "pin": {"revision_kind": "commit", "commit": commit,
                 "tree_sha256": digest},
     }
@@ -425,10 +463,19 @@ def _commit_one(root: Path, message: str, paths: list[str],
     scaffold and `update-shape.py` share, so it is called here rather than
     spelled a second time; `bump`'s re-stage before its nothing-to-record
     check is the same call, for the same reason.
+
+    THE COMMIT READS THEM LITERALLY TOO (#299). The stage above was literal
+    and `git commit -- <paths>` was not, so a path that is a glob to git
+    committed whatever else it matched: with `members/*` named, the move of
+    every OTHER member's gitlink somebody had staged went into this commit
+    beside the one it was for. `bump` and `remove` hand it a path that is
+    always `members/<project>` (`_member_path`); the flag is the guard that
+    does not depend on that being so.
     """
     force_stage(root, paths if add is None else add)
     message, trailer_args = commit_trailers(message, trailers)
-    args = ["git", "commit", "-q", "-F", "-", *trailer_args, "--", *paths]
+    args = ["git", "--literal-pathspecs", "commit", "-q", "-F", "-",
+            *trailer_args, "--", *paths]
     check_program(args)
     env = dict(os.environ)
     for key, fallback in (("GIT_AUTHOR_NAME", "openRepoShape family"),
@@ -1681,10 +1728,15 @@ def _nothing_to_record(root: Path, paths: list[str]) -> bool:
     its HEAD is. The caller has staged the gitlink first, as `_commit_one`
     would, so a stray one in the index is not a difference. Exit 1 is git's
     "there is a difference"; any other failure is a real one and propagates.
+
+    THE PATHS ARE TAKEN LITERALLY (`--literal-pathspecs`, #299), as the
+    commit this answers for takes them: a glob here would find the
+    difference in a neighbouring member and answer "something to record" for
+    a member that has nothing, so the commit would go ahead.
     """
     try:
-        run(["git", "diff", "--quiet", "--ignore-submodules=dirty", "HEAD",
-             "--", *paths], cwd=root)
+        run(["git", "--literal-pathspecs", "diff", "--quiet",
+             "--ignore-submodules=dirty", "HEAD", "--", *paths], cwd=root)
     except CommandFailed as exc:
         if exc.code == 1:
             return False
@@ -1710,7 +1762,9 @@ def cmd_bump(args) -> int:
             f"--to {args.to!r} is not a 40-hex commit",
             "Remediation: pass the full 40 characters. A tag can be moved and "
             "a commit cannot; a pin is a commit or it is nothing.")
-    path = str(row.get("path") or f"{MEMBERS_DIR}/{project}")
+    # THE ROW'S `path:` IS CHECKED, NOT TRUSTED (#299): `member` below, the
+    # fetch and checkout in it, and every pathspec after them are this path.
+    path = _member_path(project, row)
     member = family.root / path
     if not (member / ".git").exists():
         raise Refusal(
@@ -1799,13 +1853,24 @@ def cmd_remove(args) -> int:
             "something that is not a member is a no-op worth refusing, "
             "because the argument is usually a typo for something that is.")
     project = str(row["project"])
-    path = str(row.get("path") or f"{MEMBERS_DIR}/{project}")
+    # THE ROW'S `path:` IS CHECKED, NOT TRUSTED (#299), before the first git
+    # call: `path: members/*` unmounted every member under one commit naming
+    # one, and `path: .` removed the holder's own files.
+    path = _member_path(project, row)
     # THE MEMBER REPOSITORY IS NOT TOUCHED. Removing a member unmounts it from
     # this holder and nothing else: the project keeps its name, its history,
     # its legs and its gate. A family that could delete a project by dropping
     # a row would be a family that confers something.
-    run(["git", "submodule", "deinit", "-f", "-q", "--", path], cwd=family.root)
-    run(["git", "rm", "-r", "-q", "-f", "--", path], cwd=family.root)
+    #
+    # BOTH CALLS TAKE THE PATH LITERALLY (`--literal-pathspecs`, #299), the
+    # global option, which `git submodule` honours too: the path is always
+    # `members/<project>` here, so this is defence in depth that does not
+    # depend on the row being right. Without it a glob in the path would
+    # unmount and remove every member it matched.
+    run(["git", "--literal-pathspecs", "submodule", "deinit", "-f", "-q",
+         "--", path], cwd=family.root)
+    run(["git", "--literal-pathspecs", "rm", "-r", "-q", "-f", "--", path],
+        cwd=family.root)
     family.write_members([r for r in family.members
                           if str(r.get("project")) != project])
     head = _commit_one(
