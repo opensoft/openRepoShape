@@ -84,8 +84,17 @@ said in the plan with no flag at all: the project lands beside the holder
 exactly as it would have, and the last next-command names the `family.py add`
 that records the membership in the holder and nowhere else.
 
-If it refuses, read the refusal: each one names what to run instead. Do not
-retry with `--force`; there is none, deliberately.
+If it refuses, read the refusal: each one names what to run instead, or, for
+some, the VALUE to change. Among those are two you can foresee from the flags
+you were given, both before anything is created: `scaffold-leg-path-collides`
+(a `--spec-path` or `--code-path` that is, holds or lies inside a FILE the
+shape writes into the assembly root: `project.yaml` is one, and `contracts`
+holds `contracts/spec-pin.yaml`; the defaults `spec` and `code` pass) and
+`scaffold-pin-collides` (a `--pin` the shape cannot write, below). `setup.sh`
+takes those flags after `--`, which it passes straight through to
+`scaffold-project.py`. Relay the refusal and ask the human for the value;
+never choose another yourself. Do not retry with `--force`; there is none,
+deliberately.
 
 ## 3. It finishes the job
 
@@ -178,11 +187,15 @@ the pin and the scaffold records the descent and still gives it two legs:
 ```
 
 The pin needs a full 40-character commit — a tag can be moved and a commit
-cannot — and writes `contracts/openglass-pin.yaml` beside the manifest. Do NOT
-declare a pin the human has not asked for: a declaration is a claim about what
-this project descends from, and inventing one puts a false fact in their tree.
-With no pin, `MedxGlass` is an ordinary assembly root and the manifest records
-the overlap. If the repository they name already exists and is EMPTY, add
+cannot — and writes `contracts/openglass-pin.yaml` beside the manifest. A
+`--pin` whose product lowercases to `spec`, `code` or `shape` is refused,
+because the shape writes those pin files itself, and so is one product pinned
+twice, whatever its case or owner (`openGlass` with `OpenGlass` or
+`Acme/openGlass`), because one file holds one pin. Do NOT declare a pin the
+human has not asked for: a declaration is a claim about what this project
+descends from, and inventing one puts a false fact in their tree. With no pin,
+`MedxGlass` is an ordinary assembly root and the manifest records the overlap.
+If the repository they name already exists and is EMPTY, add
 `--reuse-empty-repo`; if it has commits, it is a live repository and adopt is
 the tool, not scaffold.
 
