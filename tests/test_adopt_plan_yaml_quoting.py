@@ -661,22 +661,27 @@ def test_plan_leaves_an_id_it_derived_from_the_project_to_the_validator(
 
 
 def test_the_misread_rule_names_an_id_plan_derived_by_where_it_came_from(
-        adopter):
-    """Should #181 be the rule that reports an id `plan` derived, its
+        adopter, monkeypatch):
+    """Should #181 be the rule that refuses an id `plan` derived, its
     sentence says where the value came from, so the person knows the flag
     that chooses another. The validator refuses every id the loader
-    misreads today, and is asked first, so this is the rule's own answer,
-    asked of it directly."""
+    misreads today, and is asked first, so `plan` is asked here with the
+    validator's refusal taken out: what is left is the rule's own answer."""
+    monkeypatch.setattr(adopter, "_refuse_unholdable_values",
+                        lambda *_args: None)
     args = argparse.Namespace(
-        id="true", tracking_branch="main", visibility="private",
-        elected_by="Test Human", elected_on=ELECTION_DATE, reference="r",
-        spec_path="spec", code_path="code")
+        project="True", org="testorg", id=None, visibility="private",
+        elected_by="Test Human", elected_on=ELECTION_DATE, reference=None,
+        tracking_branch="main", spec_path="spec", code_path="code", pin=[])
+    naming = adopter.NamingPolicy.load(adopter.NAMING_POLICY)
+    with pytest.raises(adopter.Refusal) as refused:
+        adopter._checked_plan_inputs(
+            args, argparse.Namespace(repository=None), naming)
+    assert refused.value.code == "adopt-manifest-misread", refused.value
     who, what = misread("--id (not given, so --project lowercased)", "true",
                         TRUE_READ)
-    said = adopter.manifest_misreads(adopter._flag_fields(args, set(), []))
-    assert [sentence for sentence in said
-            if sentence.startswith(who)
-            and sentence.endswith(what.rstrip("."))], said
+    assert refused.value.detail.startswith(who), refused.value.detail
+    assert refused.value.detail.endswith(what), refused.value.detail
 
 
 def test_plan_takes_an_elector_from_git_the_manifests_quotes_read_back(
