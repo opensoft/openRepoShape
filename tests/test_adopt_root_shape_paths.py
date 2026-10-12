@@ -41,8 +41,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (ADOPT, REPO, SYNTHETIC_TREE, git, make_source_repo,
-                      resolve, run_script, write_plan)
+from conftest import (ADOPT, FILE_PROTOCOL, REPO, SYNTHETIC_TREE, git,
+                      make_source_repo, resolve, run_script, write_plan)
 
 sys.path.insert(0, str(REPO / "scripts"))
 import shape_materialize  # noqa: E402
@@ -315,21 +315,80 @@ def test_a_path_the_plan_sends_away_is_not_kept(adopter, leg):
 ])
 def test_a_symlink_or_submodule_is_not_a_file_where_a_directory_is(
         adopter, mode, path):
-    """A symlink above a shape path is followed, or refused, by the symlink
-    rule (#183, #178), and a submodule the root keeps is `plan-submodule-root`
-    (#166). Neither is a FILE where a directory is needed, so neither is
-    found here: this rule has no finding for them, so nothing is said twice."""
+    """A symlink ABOVE a shape path is followed, or refused, by the symlink
+    rule (#183, #178), and a submodule the root keeps is
+    `plan-submodule-root` (#166). Neither is a FILE where a directory is
+    needed, so neither is found here as one."""
     assert found(adopter, [(path, "root"), ("README.md", "root")],
                  [row(path, mode), row("README.md")]) == []
 
 
 def test_a_symlink_at_the_copy_itself_is_in_the_way(adopter):
-    """What `place` writes the copy THROUGH, onto what the link leads to:
-    something is AT the path, whatever it is."""
+    """`place` writes the copy THROUGH a link at its path, onto whatever the
+    link leads to: something is AT the path, whatever it is. Nothing on main
+    finds a link there, so it is said here, as a write through it and not
+    over it."""
     said, = found(adopter, [("shape/", "root"), ("README.md", "root")],
                   [row("README.md"), row("shape/README.md", "120000")])
     assert "That path is the symlink `shape/README.md`." in said
     assert said.startswith(f"FINDING {COPY_IN_THE_WAY}: ")
+    assert "`execute` would write the copy through it " in said
+    assert "over it" not in said
+
+
+@pytest.mark.parametrize("rows", [
+    pytest.param([row("README.md"), row("shape/README.md", "160000")],
+                 id="a-submodule-at-the-copy"),
+    pytest.param([row("Makefile"), row("shape/Makefile/sub", "160000")],
+                 id="a-submodule-below-the-copy"),
+    pytest.param([row("Makefile"), row("shape/Makefile/sub", "160000"),
+                  row("shape/Makefile/dep", "160000")],
+                 id="a-directory-at-the-copy-of-nothing-but-submodules"),
+])
+def test_a_submodule_at_the_copy_is_said_once_by_the_submodule_rule(
+        adopter, rows):
+    """A submodule the plan keeps in the root is `plan-submodule-root`'s
+    (#166), which refuses the plan; this rule does not say the same path a
+    second time. And what it would say is not true of one: in the clone a
+    submodule is an empty directory, so `place` stops at it and overwrites
+    nothing, where the finding's sentence says the copy is written over what
+    stands there."""
+    entries = [("README.md", "root"), ("Makefile", "root"),
+               ("shape/", "root")]
+    assert found(adopter, entries, rows) == []
+
+
+def test_a_directory_at_the_copy_names_its_files_and_never_its_submodules(
+        adopter):
+    """The same path stays in the way for what ELSE is under it: the finding
+    names the file, as it did, and leaves the submodule to the submodule
+    rule."""
+    rows = [row("Makefile"), row("shape/Makefile/sub", "160000"),
+            row("shape/Makefile/notes.md")]
+    said, = found(adopter, [("Makefile", "root"), ("shape/", "root")], rows)
+    assert "That path contains the file `shape/Makefile/notes.md`." in said
+    assert "shape/Makefile/sub" not in said
+    assert "submodule" not in said
+
+
+@pytest.mark.parametrize("held", ["README.md", "Makefile"])
+def test_a_symlink_where_the_shape_writes_counts_as_the_root_holding_it(
+        adopter, held):
+    """A kept symlink at a shape path counts as the root holding it.
+    `place` asks `Path.exists()`, which FOLLOWS a link and is false of one
+    that leads nowhere (written through, so no copy is made); but a tree row
+    holds no target to follow, and whether a link leads anywhere is the
+    symlink rule's question (#183, #178). Counting it errs towards refusing:
+    for a link that leads nowhere the finding below describes a copy that is
+    not written, in a plan that rule refuses anyway, and no plan `place`
+    would stop at is passed."""
+    rows = [row(held, "120000"), row(f"shape/{held}")]
+    said, = found(adopter, [(held, "root"), ("shape/", "root")], rows)
+    assert said.startswith(
+        f"FINDING {COPY_IN_THE_WAY}: the shape's copy of `{held}` is written "
+        f"to `shape/{held}`, because the root already holds `{held}`. ")
+    # And one that is not held at all is not asked about, link or no link.
+    assert found(adopter, [("shape/", "root")], [row(f"shape/{held}")]) == []
 
 
 # --- case --------------------------------------------------------------------
@@ -362,14 +421,183 @@ def test_what_holds_with_case_kept_is_not_said_again_without_it(adopter,
     assert CASE_ASIDE not in said
 
 
-def test_whether_a_copy_is_written_is_read_with_case_kept(adopter):
-    """`place` writes a copy where the path the shape writes is already
-    there, as the machine that runs `execute` reads it. A source that holds
-    only `readme.md` has no collision on a disk that keeps case, and a file at
-    `shape/README.md` is then not written over."""
+#: The paths a source keeps in the root, which a disk that keeps case lets
+#: the shape write beside and one that ignores it does not: a `readme.md` is
+#: `README.md` there, so the shape's README collides with it, its copy goes
+#: to `shape/README.md`, and whatever the source keeps at that path, however
+#: it is spelled, is in the way. Each is a tree such a disk can hold.
+BLOCKED_ONLY_WHERE_CASE_IS_IGNORED = [
+    pytest.param(("readme.md", "shape/README.md"), id="a-file-at-the-copy"),
+    pytest.param(("readme.md", "shape/readme.md"),
+                 id="the-copy-spelled-in-lower-case"),
+    pytest.param(("readme.md", "Shape/README.md"),
+                 id="the-copy-under-another-spelling-of-shape"),
+    pytest.param(("readme.md", "shape"), id="a-file-named-shape"),
+    pytest.param(("readme.md", "SHAPE"), id="a-file-named-shape-in-capitals"),
+    pytest.param(("readme.md", "shape/README.md/notes.md"),
+                 id="a-directory-at-the-copy"),
+    pytest.param(("MAKEFILE", "shape/Makefile"), id="a-capitalised-makefile"),
+    pytest.param(("agents.md", "shape/AGENTS.md"), id="another-copy"),
+    pytest.param(("makefile/notes.md", "shape/Makefile"),
+                 id="a-directory-the-path-names-once-case-is-ignored"),
+]
+
+#: The same names where no copy is written, or where it is written to a free
+#: place: not blocked on either kind of disk.
+FREE_WHERE_CASE_IS_IGNORED = [
+    pytest.param(("readme.md", "shape/notes.md"), id="nothing-at-the-copy"),
+    pytest.param(("readme.md",), id="no-shape-directory"),
+    pytest.param(("shape/readme.md",), id="a-copy-and-no-readme-to-collide"),
+    pytest.param(("shape/README.md",), id="a-copy-of-the-name-no-readme"),
+    pytest.param(("README.md", "shape/readme.txt"), id="another-name"),
+]
+
+
+def the_shapes_spelling(adopter) -> dict[str, str]:
+    """Every directory and file the shape writes, and each one's copy under
+    `shape/`, as the shape spells it, by its name with case ignored."""
+    spelled: dict[str, str] = {}
+    for rel in adopter.assembly_root_paths():
+        for path in (rel, f"shape/{rel}"):
+            parts = path.split("/")
+            for end in range(1, len(parts) + 1):
+                prefix = "/".join(parts[:end])
+                spelled.setdefault(prefix.casefold(), prefix)
+    return spelled
+
+
+def as_a_disk_that_ignores_case_keeps(adopter, paths) -> list[str]:
+    """`paths` as such a disk holds them. Every lookup `place` makes is
+    spelled the shape's way (`README.md`, `shape/README.md`, `scripts`), and
+    a disk that ignores case answers each as it would if the source's own
+    name for it were spelled that way. So each component of a kept path that
+    is the shape's name once case is ignored is respelled as the shape
+    spells it, and `place` is run over THAT: on a disk that keeps case, and on
+    one that does not, it does the same. A tree with two paths that are one
+    name once case is ignored is not one such a disk holds, and is not
+    asked."""
+    spelled = the_shapes_spelling(adopter)
+    out = []
+    for path in paths:
+        built = ""
+        for part in path.split("/"):
+            wanted = f"{built}/{part}" if built else part
+            built = spelled.get(wanted.casefold(), wanted)
+        out.append(built)
+    assert len({p.casefold() for p in out}) == len(out), paths
+    return out
+
+
+def place_stops_or_overwrites(adopter, tmp_path: Path, paths) -> bool:
+    """Run the shape's `place` over a root that holds `paths`, as a disk that
+    ignores case holds them: whether it raised, or wrote over a kept file."""
+    target = tmp_path / "assembly"
+    kept = as_a_disk_that_ignores_case_keeps(adopter, paths)
+    for name in kept:
+        path = target / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(f"kept:{name}\n".encode(UTF8))
+    try:
+        materialize_assembly_root(REPO, target, template_values(),
+                                  collision_dir="shape")
+    except Exception:  # noqa: BLE001 -- any stop, a Refusal or a traceback
+        return True
+    return any((target / name).read_bytes() != f"kept:{name}\n".encode(UTF8)
+               for name in kept)
+
+
+def asked_of_the_plan(adopter, paths):
+    """What `check` finds in a plan that keeps every one of `paths` in the
+    root: each is its own entry, and a path under `shape/` is the
+    directory's."""
+    return found(adopter, [(p, "root") for p in paths],
+                 [row(p) for p in paths])
+
+
+@pytest.mark.parametrize("paths", BLOCKED_ONLY_WHERE_CASE_IS_IGNORED)
+def test_a_copy_is_written_where_a_disk_that_ignores_case_holds_the_path(
+        adopter, paths):
+    """`place` asks `path.exists()`, and on a macOS or Windows disk a kept
+    `readme.md` EXISTS as `README.md`: the shape's README collides with it,
+    its copy goes to `shape/README.md`, and whatever the source keeps there
+    blocks it. `check` said `plan ok` to each of these, read the copy's
+    place with case ignored and whether a copy is written at all with case
+    kept; `execute` then made both legs and `place` stopped, or wrote over
+    the source's own file."""
+    said = asked_of_the_plan(adopter, paths)
+    assert said, f"{paths}: a plan that `place` stops at on that disk"
+    assert {s.split(":")[0] for s in said} == {f"FINDING {COPY_IN_THE_WAY}"}
+    assert all(CASE_ASIDE in s for s in said)
+
+
+@pytest.mark.parametrize("paths", FREE_WHERE_CASE_IS_IGNORED)
+def test_a_free_copy_is_not_found_on_a_disk_that_ignores_case(adopter,
+                                                              paths):
+    assert asked_of_the_plan(adopter, paths) == []
+
+
+@pytest.mark.parametrize("paths", [*BLOCKED_ONLY_WHERE_CASE_IS_IGNORED,
+                                   *FREE_WHERE_CASE_IS_IGNORED])
+def test_what_check_finds_is_what_place_does_on_a_disk_that_ignores_case(
+        adopter, tmp_path, paths):
+    """The rule is played, and held to the real thing on the disk it claims
+    to model: the shape's own materializer run over the tree such a disk
+    holds. Raised or overwrote a kept file, if and only if `check` finds."""
+    assert bool(asked_of_the_plan(adopter, paths)) == \
+        place_stops_or_overwrites(adopter, tmp_path, paths), paths
+
+
+def test_the_finding_says_the_root_holds_the_path_only_once_case_is_ignored(
+        adopter):
+    """The kept path is `readme.md`, so on a disk that keeps case the root
+    holds no `README.md` and no copy is written: the finding says that it
+    does on the other kind, as every finding of this rule does that only
+    that kind makes."""
     rows = [row("readme.md"), row("shape/README.md")]
-    assert found(adopter, [("readme.md", "root"), ("shape/", "root")],
-                 rows) == []
+    said, = found(adopter, [("readme.md", "root"), ("shape/", "root")], rows)
+    assert said == (
+        f"FINDING {COPY_IN_THE_WAY}: the shape's copy of `README.md` is "
+        "written to `shape/README.md`, because the root already holds "
+        f"`README.md`{CASE_ASIDE}. That path is the file `shape/README.md`. "
+        "The plan keeps it in the assembly root under the entry `shape/`, "
+        f"and `execute` would write the copy over it {AFTER_THE_LEGS}. "
+        f"{RESERVED}: send `shape/` to a leg, `drop` it, or rename it in the "
+        "source and re-run `plan`.")
+
+
+def test_what_holds_with_case_kept_says_nothing_of_case_in_what_it_holds(
+        adopter):
+    """The same plan with the file spelled as the shape spells it: the root
+    holds `README.md` on every disk, so the sentence says nothing of case."""
+    rows = [row("README.md"), row("shape/README.md")]
+    said, = found(adopter, [("README.md", "root"), ("shape/", "root")], rows)
+    assert CASE_ASIDE not in said
+
+
+def test_several_copies_held_once_case_is_ignored_are_one_finding(adopter):
+    """A file named `shape` stops every copy, so it is one finding, as when
+    the root holds them with case kept; the sentence says the root holds
+    them once case is ignored."""
+    paths = ("readme.md", "agents.md", "makefile", "shape")
+    said, = asked_of_the_plan(adopter, paths)
+    assert said.startswith(
+        f"FINDING {COPY_IN_THE_WAY}: the shape's copies of `README.md` and 2 "
+        "more are written to `shape/README.md` and 2 more, because the root "
+        f"already holds each of them{CASE_ASIDE}. Those paths are inside the "
+        "file `shape`.")
+
+
+def test_a_finding_that_mixes_copies_held_either_way_is_still_one(adopter):
+    """The root holds `README.md` on every disk and `AGENTS.md` only once
+    case is ignored; a file named `shape` stops both copies. One finding for
+    the one kept path, and what it says of the root holding them is true of
+    both disks: each is held once case is ignored."""
+    said, = asked_of_the_plan(adopter, ("README.md", "agents.md", "shape"))
+    assert said.startswith(
+        f"FINDING {COPY_IN_THE_WAY}: the shape's copies of `README.md` and 1 "
+        "more are written to `shape/README.md` and 1 more, because the root "
+        f"already holds each of them{CASE_ASIDE}. Those paths are inside the "
+        "file `shape`.")
 
 
 # --- one list ----------------------------------------------------------------
@@ -570,6 +798,78 @@ def test_execute_refuses_every_finding_at_once_and_leads_with_the_first(
     no_leg_was_created(tmp_path, source)
 
 
+def lower_case_readme_source(tmp_path: Path):
+    """A source whose README is `readme.md` and which keeps its own
+    `shape/README.md`: it adopts where case is kept, and where case is
+    ignored the shape's README collides with `readme.md`, so its copy goes
+    to the source's own `shape/README.md`."""
+    tree = with_files({"readme.md": "# Thing\n",
+                       "shape/README.md": OWN_NOTES}, "README.md")
+    source, plan = kept_source(tmp_path, tree, "shape")
+    answer(plan, "readme.md", "root")
+    return source, plan
+
+
+def test_check_finds_what_only_a_disk_that_ignores_case_would_stop_at(
+        tmp_path):
+    """The case the review found: `check` said `plan ok`, and `execute`
+    on macOS or Windows made both legs and then stopped."""
+    _, plan = lower_case_readme_source(tmp_path)
+    result = check(plan)
+    assert result.returncode == 1, result.stdout + result.stderr
+    finding, = findings_of(result)
+    assert finding.startswith(
+        f"FINDING {COPY_IN_THE_WAY}: the shape's copy of `README.md` is "
+        "written to `shape/README.md`, because the root already holds "
+        f"`README.md`{CASE_ASIDE}. ")
+    assert "plan ok" not in result.stdout
+
+
+def test_execute_refuses_it_before_any_leg_exists_too(
+        adopter, no_filter_repo_probe, tmp_path):
+    source, plan = lower_case_readme_source(tmp_path)
+    printed, = findings_of(check(plan))
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter.cmd_execute(execute_args(tmp_path, plan))
+    assert caught.value.code == COPY_IN_THE_WAY
+    assert printed in caught.value.detail
+    no_leg_was_created(tmp_path, source)
+
+
+def add_a_submodule(tmp_path: Path, source: Path, at: str) -> None:
+    """`git submodule add` of a local repository at `at` in `source`, as a
+    person adding a dependency would, committed."""
+    dependency = make_source_repo(tmp_path / "dependency",
+                                  tree={"value.txt": "first\n"}, edits=())
+    git(*FILE_PROTOCOL, "submodule", "add", "-q", str(dependency), at,
+        cwd=source)
+    git("-c", "user.name=Source Human", "-c",
+        "user.email=source@invalid.example", "commit", "-qm",
+        "Add a dependency", cwd=source)
+
+
+def test_check_names_a_submodule_at_the_copy_once_and_by_the_submodule_rule(
+        tmp_path):
+    """The source keeps a submodule AT `shape/README.md`. #166 refuses a
+    submodule kept in the root, and says it of `.gitmodules` and of the
+    submodule's path, once each; this rule says nothing of the same path,
+    which would be a third finding naming `shape/README.md`, and one that
+    describes a copy written over a submodule."""
+    source = make_source_repo(tmp_path / "Thing")
+    add_a_submodule(tmp_path, source, "shape/README.md")
+    plan = answered_plan(source, tmp_path / "plan.yaml")
+    answer(plan, ".gitmodules", "root")
+    answer(plan, "shape", "root")
+    result = check(plan)
+    assert result.returncode == 1, result.stdout + result.stderr
+    codes = [line.split(":")[0] for line in findings_of(result)]
+    assert codes == ["FINDING plan-submodule-root"] * 2, result.stderr
+    named = [line for line in findings_of(result)
+             if "`shape/README.md`" in line]
+    assert len(named) == 1, "the path is said once"
+    assert COPY_IN_THE_WAY not in result.stderr
+
+
 def test_the_finding_spells_a_kept_path_it_cannot_print_as_it_is(adopter):
     """A source path is bytes, and a name may hold a line break: it is
     spelled with a backslash, as every finding of `check`'s that names a
@@ -681,15 +981,16 @@ def test_a_free_way_is_free(tmp_path):
 
 @pytest.mark.parametrize("files, actual, said", [
     pytest.param({"shape/README.md": OWN_NOTES}, "shape/README.md",
-                 "shape/README.md is already there", id="a-file-at-the-copy"),
+                 "`shape/README.md` is already there",
+                 id="a-file-at-the-copy"),
     pytest.param({"shape/Makefile/notes.md": "x\n"}, "shape/Makefile",
-                 "shape/Makefile is already there, a directory",
+                 "`shape/Makefile` is already there, a directory",
                  id="a-directory-at-the-copy"),
     pytest.param({"shape": "a file\n"}, "shape/README.md",
-                 "shape is not a directory", id="a-file-named-shape"),
+                 "`shape` is not a directory", id="a-file-named-shape"),
     pytest.param({"shape/.github": "a file\n"},
                  "shape/.github/workflows/validate.yml",
-                 "shape/.github is not a directory",
+                 "`shape/.github` is not a directory",
                  id="a-file-on-the-way-down"),
 ])
 def test_what_stands_where_the_copy_goes_is_named(tmp_path, files, actual,
@@ -710,23 +1011,23 @@ def test_a_symlink_to_nowhere_is_in_the_way_and_one_to_a_directory_is_not(
     (target / "shape").unlink()
     (target / "shape").symlink_to("nowhere")
     assert in_the_way(target, "shape/README.md") == \
-        "shape is not a directory"
+        "`shape` is not a directory"
     (target / "shape").unlink()
     (target / "shape").mkdir()
     (target / "shape" / "README.md").symlink_to("nowhere")
     assert in_the_way(target, "shape/README.md") == \
-        "shape/README.md is already there"
+        "`shape/README.md` is already there"
 
 
 @pytest.mark.parametrize("files, said, kept", [
     pytest.param({"README.md": "# Thing\n", "shape/README.md": OWN_NOTES},
-                 "shape/README.md is already there", "shape/README.md",
+                 "`shape/README.md` is already there", "shape/README.md",
                  id="a-file-at-the-copy"),
     pytest.param({"Makefile": "all:\n", "shape/Makefile/notes.md": "x\n"},
-                 "shape/Makefile is already there, a directory",
+                 "`shape/Makefile` is already there, a directory",
                  "shape/Makefile/notes.md", id="a-directory-at-the-copy"),
     pytest.param({"README.md": "# Thing\n", "shape": "a file\n"},
-                 "shape is not a directory", "shape",
+                 "`shape` is not a directory", "shape",
                  id="a-file-named-shape"),
 ])
 def test_the_materializer_never_writes_a_copy_over_what_is_there(
@@ -777,8 +1078,8 @@ def test_with_check_skipped_execute_stops_at_the_copy_and_overwrites_nothing(
         adopter.cmd_execute(execute_args(tmp_path, plan))
     assert caught.value.code == BLOCKED
     assert caught.value.detail.startswith(
-        "the shape's copy of README.md cannot be written to "
-        "shape/README.md: shape/README.md is already there")
+        "the shape's copy of `README.md` cannot be written to "
+        "`shape/README.md`: `shape/README.md` is already there")
     assert git("branch", "--list", SPLIT_BRANCH, cwd=source).stdout == ""
     assert git("show", "main:shape/README.md", cwd=source).stdout == OWN_NOTES
     for role in ROLES:

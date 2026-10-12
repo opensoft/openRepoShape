@@ -122,8 +122,8 @@ import shape_advisory  # noqa: E402
 # #172's shape half, shared with the scaffold since #197 (see that section
 # below), under the names this file has always called it by.
 from shape_materialize import (  # noqa: E402
-    MOVE_THE_LEG, first_and_more as _first_and_more, path_overlap as _overlap,
-    shape_path_collisions,
+    CASE_ASIDE, MOVE_THE_LEG, first_and_more as _first_and_more,
+    path_overlap as _overlap, shape_path_collisions,
 )
 
 #: The naming policy this tool classifies leg names against. One constant,
@@ -2014,18 +2014,32 @@ def _leg_findings(plan: Plan, tree: list | None) -> list[str]:
 # its copy goes to `shape/<path>`, which must then be free: nothing kept AT
 # it, no kept directory there, and no kept FILE on the way (#262).
 #
-# A SYMLINK OR A SUBMODULE counts only as something AT a path, never as a
-# file on the way: a symlink above a shape path or its copy is followed, or
-# refused, by what #183 adds, and a submodule the root keeps is
-# `plan-submodule-root` (#166). Neither is a file where a directory is needed.
+# A SYMLINK OR A SUBMODULE is never a file on the way: a symlink above a shape
+# path or its copy is followed, or refused, by what #183 adds, and a submodule
+# the root keeps is `plan-submodule-root` (#166). Neither is a file where a
+# directory is needed. AT the copy, a submodule (or a directory there that
+# holds nothing but submodules) is `plan-submodule-root`'s too and is not said
+# again: it is not written over -- in a clone a submodule is an empty
+# directory, and `place` stops at it. A symlink AT the copy is found here,
+# and as a write THROUGH it, because nothing else on main says it.
+#
+# A SYMLINK AT A SHAPE PATH counts as the root holding it, though
+# `Path.exists()` follows a link and is false of one that leads nowhere. A
+# tree row is a path, a mode and a blob, so the target is not at hand, and
+# whether a link leads anywhere is #183's question. Counting it is the
+# over-approximation that never says `plan ok` to a plan `place` would stop
+# at, and a plan with a link that leads nowhere is refused either way (here,
+# and there).
 #
 # Asked of a disk that keeps case AND of one that ignores it, as #172 asks
 # its mount paths and for the same reason: a source file `Scripts` is a file
 # where the shape needs `scripts/` on a macOS or Windows disk, and the
-# assembly is cloned there. Whether the root HOLDS a path, so that a copy is
-# written at all, is read with case kept, as `place` reads it on the machine
-# that runs `execute`; only whether a place is FREE is asked both ways, and a
-# finding that holds on the second disk alone says so.
+# assembly is cloned there. EACH disk answers both questions, whether the
+# root holds a path, so that a copy is written at all, and whether a place is
+# free: `place` asks `Path.exists()` for the first, which ignores case on
+# those disks, so a kept `readme.md` is `README.md` there, the copy goes to
+# `shape/README.md`, and what the source keeps at that path is in the way.
+# A finding that holds on the second disk alone says so.
 
 #: `check`'s finding for a kept FILE where the shape writes into a directory
 #: (#263), and for a kept path where the shape writes its copy of a file the
@@ -2062,11 +2076,9 @@ class _KeptTree:
 
     def holds(self, path: str) -> bool:
         """Whether something is at `path`, as `Path.exists()` says: a kept
-        row, or a kept directory."""
+        row, or a kept directory. A symlink row counts without being
+        followed (see the comment above): the row holds no target."""
         return self._key(path) in self._at or self._key(path) in self._dirs
-
-    def is_dir(self, path: str) -> bool:
-        return self._key(path) in self._dirs
 
     def file_above(self, path: str) -> tuple[str, str, str] | None:
         """The kept FILE a directory on the way to `path` would have to be,
@@ -2086,12 +2098,13 @@ class _KeptTree:
                 if self._key(row[0]).startswith(prefix)]
 
 
-def _shape_blocks(held: _KeptTree, disk: _KeptTree) -> list[tuple]:
+def _shape_blocks(disk: _KeptTree) -> list[tuple]:
     """`(code, shape path, where it is written, group, kept rows)` for each
-    path of `assembly_root_paths` that `place` would stop at or overwrite,
-    in the order it writes them. `held` says whether the root already
-    holds a path (so whether its copy is written); `disk` says whether a
-    place is free. `group` names the one thing in the way, so that what one
+    path of `assembly_root_paths` that `place` would stop at or overwrite on
+    `disk`, in the order it writes them. The disk says both whether the root
+    already holds a path, so whether its copy is written at all, and whether
+    the place is free: a disk that ignores case holds `README.md` for a kept
+    `readme.md`. `group` names the one thing in the way, so that what one
     kept path blocks is one finding."""
     out = []
     for rel in assembly_root_paths():
@@ -2100,19 +2113,21 @@ def _shape_blocks(held: _KeptTree, disk: _KeptTree) -> list[tuple]:
             out.append((ROOT_BLOCKS_SHAPE, rel, rel, ("file", above[0]),
                         [above]))
             continue
-        if not held.holds(rel):
+        if not disk.holds(rel):
             continue
         copy = f"{COLLISION_DIR}/{rel}"
         above = disk.file_above(copy)
         if above:
             out.append((ROOT_BLOCKS_COPY, rel, copy, ("file", above[0]),
                         [above]))
-        elif disk.at(copy):
-            out.append((ROOT_BLOCKS_COPY, rel, copy, ("at", copy),
-                        [disk.at(copy)]))
-        elif disk.is_dir(copy):
-            out.append((ROOT_BLOCKS_COPY, rel, copy, ("dir", copy),
-                        disk.under(copy)))
+            continue
+        at = disk.at(copy)
+        # A submodule is `plan-submodule-root`'s (#166), and said once there.
+        rows = [row for row in ([at] if at else disk.under(copy))
+                if row[1] != GITLINK_MODE]
+        if rows:
+            out.append((ROOT_BLOCKS_COPY, rel, copy,
+                        ("at" if at else "dir", copy), rows))
     return out
 
 
@@ -2129,10 +2144,12 @@ def _fix_the_kept_path(entry: str) -> str:
 
 
 def _blocked_sentence(code: str, rels: list[str], copies: list[str],
-                      rows: list) -> str:
+                      rows: list, held_aside: str = "") -> str:
     """One finding's sentence: what the shape writes, the kept path in the
     way and how, and what to do. `rels` are the shape paths it blocks,
-    `copies` where each is written, `rows` the kept paths in the way."""
+    `copies` where each is written, `rows` the kept paths in the way, and
+    `held_aside` says of a copy that the root holds the path it stands in
+    for only once case is ignored."""
     path, mode, entry = rows[0]
     many = len(rels) > 1
     named = _first_and_more([row[0] for row in rows], _spelled)
@@ -2150,7 +2167,8 @@ def _blocked_sentence(code: str, rels: list[str], copies: list[str],
             f"repositories were created and pushed: {fix}.")
     relation, aside = _overlap(copies[0], path)
     consequence = {
-        "is": f"`execute` would write the copy over {them}",
+        "is": "`execute` would write the copy "
+              f"{'through' if mode == SYMLINK_MODE else 'over'} {them}",
         "contains": "`execute` cannot write a file where a directory is, "
                     "so it would stop",
         "is inside": "`execute` cannot make a directory where a file is, "
@@ -2159,7 +2177,7 @@ def _blocked_sentence(code: str, rels: list[str], copies: list[str],
         f"the shape's {'copies' if many else 'copy'} of "
         f"{_first_and_more(rels)} {'are' if many else 'is'} written to "
         f"{_first_and_more(copies)}, because the root already holds "
-        f"{'each of them' if many else _first_and_more(rels)}. "
+        f"{'each of them' if many else _first_and_more(rels)}{held_aside}. "
         f"{'Those paths' if many else 'That path'} "
         f"{_PLURAL_RELATION[relation] if many else relation} "
         f"{_kind_of(mode)} {named}{aside}. The plan keeps {them} in the "
@@ -2172,24 +2190,31 @@ def _root_shape_findings(plan: Plan, tree: list) -> list[str]:
     shape writes (#262, #263): one per kept path in the way, naming the
     first shape path it blocks and counting the rest. Asked of a disk that
     keeps case and then of one that ignores it; a finding the first disk
-    already made is not made again, and one only the second makes says so."""
+    already made is not made again, and one only the second makes says so,
+    and so does a copy only the second writes."""
     kept = _kept_in_root(plan.entries, tree)
     if not kept:
         return []
-    held = _KeptTree(kept, fold=False)
+    keeps_case = _KeptTree(kept, fold=False)
     seen: set[tuple] = set()
-    blocked: dict[tuple, tuple[list, list, list]] = {}
-    for disk in (held, _KeptTree(kept, fold=True)):
-        for code, rel, copy, group, rows in _shape_blocks(held, disk):
+    # `(code, group)` -> the shape paths it blocks, where each is written,
+    # the kept rows in the way, and the shape paths the root holds only once
+    # case is ignored.
+    blocked: dict[tuple, tuple[list, list, list, list]] = {}
+    for disk in (keeps_case, _KeptTree(kept, fold=True)):
+        for code, rel, copy, group, rows in _shape_blocks(disk):
             if (code, rel, group) in seen:
                 continue
             seen.add((code, rel, group))
-            rels, copies, _ = blocked.setdefault((code, group),
-                                                 ([], [], rows))
+            rels, copies, _, folded = blocked.setdefault(
+                (code, group), ([], [], rows, []))
             rels.append(rel)
             copies.append(copy)
-    return [f"FINDING {code}: " + _blocked_sentence(code, rels, copies, rows)
-            for (code, _), (rels, copies, rows) in blocked.items()]
+            if code == ROOT_BLOCKS_COPY and not keeps_case.holds(rel):
+                folded.append(rel)
+    return [f"FINDING {code}: " + _blocked_sentence(
+                code, rels, copies, rows, CASE_ASIDE if folded else "")
+            for (code, _), (rels, copies, rows, folded) in blocked.items()]
 
 
 #: What a plan that splits a source's own submodules is told to do instead.

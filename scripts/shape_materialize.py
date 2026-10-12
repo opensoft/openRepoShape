@@ -564,10 +564,10 @@ def copy_in_the_way(target: Path, actual: str) -> str | None:
         if not (here.is_symlink() or here.exists()):
             return None   # nothing here, so nothing deeper either
         if end == len(parts):
-            return (f"{actual} is already there"
+            return (f"`{actual}` is already there"
                     f"{', a directory' if here.is_dir() else ''}")
         if not here.is_dir():
-            return f"{'/'.join(parts[:end])} is not a directory"
+            return f"`{'/'.join(parts[:end])}` is not a directory"
     return None
 
 
@@ -1488,8 +1488,8 @@ def _materialize(shape_root: Path, template_root: Path, target: Path,
             if in_the_way:
                 raise Refusal(
                     "materialize-copy-blocked",
-                    f"the shape's copy of {rel} cannot be written to "
-                    f"{actual}: {in_the_way}, and nothing was written there",
+                    f"the shape's copy of `{rel}` cannot be written to "
+                    f"`{actual}`: {in_the_way}, and nothing was written there",
                     "Remediation: the shape writes its copy of a file the "
                     "root already holds under its collision directory, so "
                     "the source cannot keep its own path there. "
