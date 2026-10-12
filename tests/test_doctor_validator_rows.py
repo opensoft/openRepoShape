@@ -52,6 +52,12 @@ from test_shape_doctor import (  # noqa: F401
     holder, loader_line, pasted_from_elsewhere, project, red_root, rows_of,
     scaffolded_here, standard,
 )
+#: Doctor A's builders for a leg, and a member, whose gitlink is not its pin
+#: (#276): the lockstep line these rows hand over is A's, so its fixtures are
+#: too, from the module that owns them.
+from test_doctor_legs_members_next import (
+    holder_copy, make_gitlink_moved, make_member_gitlink_mismatch,
+)
 
 #: The four variables `gh` takes a token from, the proxy every validator
 #: child is pointed at, and the variables that point it -- spelled here, from
@@ -750,3 +756,96 @@ def test_a_crash_for_want_of_repo_shape_says_which_file_is_not_there(
     assert "ModuleNotFoundError" in row["reason"], row
     assert (f"{LOST}, which it imports from beside itself, is not there"
             in row["reason"]), row
+
+
+# --- #278: the lockstep line of the `legs` and `members` rows ----------------
+
+def assert_no_pythonpath_line(*streams: str) -> None:
+    """A `PYTHONPATH=` assignment, said anywhere: none could be pasted and
+    work from a standard whose path holds the separator. (The environment
+    row's own reason says `PYTHONPATH` with no `=` after it.)"""
+    for said in streams:
+        assert "PYTHONPATH=" not in said, said
+
+
+@WINDOWS_SKIP
+def test_a_colon_standard_withholds_the_legs_rows_lockstep_line(
+        standard, project, tmp_path):
+    """Doctor A's `legs` row hands a leg whose gitlink is not its pin the
+    lockstep gate (#276), and where the root has no `validate-pins.py` of its
+    own that gate is the standard's TEMPLATE copy, whose line carries
+    `PYTHONPATH=<standard>/scripts`. Under a directory whose name holds
+    `os.pathsep` no `PYTHONPATH` can name that, and the `pins` row beside it
+    already says so: an environment row, nothing run, no NEXT. The `legs` row
+    must not print the line that row refused, so its NEXT is None -- and its
+    finding stands, since the gitlink is not the pin whatever the standard's
+    path is (#278).
+
+    THE CONTROL is the same root asked from a plain directory, where the line
+    is printed and is the command the `pins` row hands over (the tails that
+    explain it differ), so the None below is the separator's doing and not a
+    fixture that never had a line.
+    `WINDOWS_SKIP`: Windows refuses `:` in a file name; the semicolon half of
+    the helper is held by the semicolon test above.
+    """
+    git("rm", "-q", "scripts/validate-pins.py", cwd=project)
+    make_gitlink_moved(project)
+    control = rows_of(doctor(standard, project, "--json"))
+    plain = control["legs"]
+    assert plain["status"] == "FINDING", plain
+    assert plain["next"].startswith("PYTHONPATH="), plain
+    assert "validate-pins.py" in plain["next"], plain
+    assert command_of(plain) == command_of(control["pins"]), (
+        plain, control["pins"])
+
+    here = standard_under(standard, tmp_path, "dir:with-colon")
+    result = doctor(here, project, "--json")
+    rows = rows_of(result)
+    legs, pins = rows["legs"], rows["pins"]
+    assert legs["status"] == "FINDING", legs
+    assert legs["reason"] == plain["reason"], (legs, plain)
+    assert legs["next"] is None, legs
+    assert pins["status"] == "FINDING", pins
+    assert pins["detail"]["environment"] is True, pins
+    assert pins["detail"]["own_copy"] is False, pins
+    assert pins["detail"]["exit"] is None, pins
+    assert pins["next"] is None, pins
+    assert "holds ':'" in pins["reason"], pins
+    assert result.returncode == 3, result.stdout + result.stderr
+    text = doctor(here, project)
+    assert_no_pythonpath_line(result.stdout, text.stdout, text.stderr)
+
+
+@WINDOWS_SKIP
+def test_a_colon_standard_withholds_the_members_rows_lockstep_line_too(
+        standard, holder, tmp_path):
+    """The `members` row shares `lockstep_next` with the `legs` row, and the
+    holder's gate is `validate-family.py`: a member whose gitlink is not its
+    pin, a holder with no gate of its own, and a standard under a colon give
+    the `family` row the environment row and the `members` row no NEXT
+    (#278). The same control, from a plain directory, still prints the line.
+    """
+    root = holder_copy(holder, tmp_path)
+    make_member_gitlink_mismatch(root)
+    git("rm", "-q", "scripts/validate-family.py", cwd=root)
+    control = rows_of(doctor(standard, root, "--json"))
+    plain = control["members"]
+    assert plain["status"] == "FINDING", plain
+    assert plain["next"].startswith("PYTHONPATH="), plain
+    assert "validate-family.py" in plain["next"], plain
+    assert command_of(plain) == command_of(control["family"]), (
+        plain, control["family"])
+
+    here = standard_under(standard, tmp_path, "dir:with-colon")
+    result = doctor(here, root, "--json")
+    rows = rows_of(result)
+    members, family = rows["members"], rows["family"]
+    assert members["status"] == "FINDING", members
+    assert members["reason"] == plain["reason"], (members, plain)
+    assert members["next"] is None, members
+    assert family["status"] == "FINDING", family
+    assert family["detail"]["environment"] is True, family
+    assert family["next"] is None, family
+    assert result.returncode == 3, result.stdout + result.stderr
+    text = doctor(here, root)
+    assert_no_pythonpath_line(result.stdout, text.stdout, text.stderr)

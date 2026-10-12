@@ -2074,13 +2074,17 @@ def lockstep_next(ctx: Context, gate: tuple, noun: str) -> str | None:
     and the same `--root` argument), so the template's line carries the
     `PYTHONPATH` it needs (#238). None when neither copy is readable: that
     is a standard with a hole in it, the gate's own row says so in the same
-    report, and a command that cannot run is the defect #276 is about.
+    report, and a command that cannot run is the defect #276 is about. None
+    too when no `PYTHONPATH` can name the template's `scripts/` (#278): the
+    gate's own row is then an environment row that says why, and a line that
+    splits when pasted is the same defect.
 
     The `legs` and `members` rows say the same thing about a leg and about a
     member, so the sentence is written here once.
     """
     used, _, own_copy = validator_for(ctx, *gate)
-    if not used.is_file():
+    if (not used.is_file()
+            or pythonpath_unnamable(ctx.shape, own_copy) is not None):
         return None
     command = validator_command(ctx.shape, used, own_copy,
                                 ["--root", str(ctx.root)])
