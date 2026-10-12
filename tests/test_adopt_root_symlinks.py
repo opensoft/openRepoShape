@@ -915,8 +915,8 @@ def test_a_file_where_the_shape_needs_a_directory_is_a_refusal(tmp_path):
     (target / GITHUB).write_text("ci", encoding=UTF8)
     refusal = refused_materializing(target)
     assert refusal.code == BLOCKED
-    assert refusal.detail == (f"{WORKFLOW} cannot be written: .github is a "
-                              "file, not a directory")
+    assert refusal.detail == (f"{ticked(WORKFLOW)} cannot be written: "
+                              f"{ticked(GITHUB)} is a file, not a directory")
     assert "nothing was written at that path" in refusal.remediation
     assert "check" not in refusal.remediation
     assert ("an empty `--work-dir`, or none: a `--work-dir` this run was "
@@ -926,61 +926,65 @@ def test_a_file_where_the_shape_needs_a_directory_is_a_refusal(tmp_path):
 
 #: `(links, files, code, detail)` of a target holding `links` and `files`.
 #: `{t}` is the target directory and `{o}` the directory beside it that a
-#: link out of it reaches.
+#: link out of it reaches. Each path the refusal names is between backticks,
+#: as the materializer writes one for a caller that passes no `spell`; `{t}`
+#: is the directory the caller gave, named as it is.
 UNWRITABLE = [
     pytest.param({GITHUB: "../outside"}, (), OUTSIDE,
-                 f"{WORKFLOW} would be written outside {{t}}: at the symlink "
-                 ".github it climbs above it", id="a-relative-link-out"),
+                 f"{ticked(WORKFLOW)} would be written outside {{t}}: at the "
+                 f"symlink {ticked(GITHUB)} it climbs above it",
+                 id="a-relative-link-out"),
     pytest.param({GITHUB: "{o}"}, (), OUTSIDE,
-                 f"{WORKFLOW} would be written through the symlink .github, "
-                 "which leads to the absolute path {o}; the shape follows "
-                 "only a symlink whose relative target stays inside {t}",
-                 id="an-absolute-link"),
+                 f"{ticked(WORKFLOW)} would be written through the symlink "
+                 f"{ticked(GITHUB)}, which leads to the absolute path `{{o}}`; "
+                 "the shape follows only a symlink whose relative target "
+                 "stays inside {t}", id="an-absolute-link"),
     pytest.param({SHAPE_DIR: "../outside"}, (README,), OUTSIDE,
-                 f"{SHAPE_README} would be written outside {{t}}: at the "
-                 "symlink shape it climbs above it",
+                 f"{ticked(SHAPE_README)} would be written outside {{t}}: at "
+                 f"the symlink {ticked(SHAPE_DIR)} it climbs above it",
                  id="the-collision-directory-out"),
     pytest.param({GITHUB: GITHUB}, (), "materialize-symlink-loop",
-                 f"{WORKFLOW} runs round a symlink loop at .github in {{t}}",
-                 id="a-link-to-itself"),
+                 f"{ticked(WORKFLOW)} runs round a symlink loop at "
+                 f"{ticked(GITHUB)} in {{t}}", id="a-link-to-itself"),
     pytest.param({GITHUB: LOOP, LOOP: GITHUB}, (),
                  "materialize-symlink-loop",
-                 f"{WORKFLOW} runs round a symlink loop at .github in {{t}}",
-                 id="a-loop-of-two"),
+                 f"{ticked(WORKFLOW)} runs round a symlink loop at "
+                 f"{ticked(GITHUB)} in {{t}}", id="a-loop-of-two"),
     pytest.param({GITHUB: "nowhere"}, (), BLOCKED,
-                 f"{WORKFLOW} cannot be written: .github is a symlink to "
-                 "nowhere, which is not a directory here",
+                 f"{ticked(WORKFLOW)} cannot be written: {ticked(GITHUB)} is "
+                 "a symlink to `nowhere`, which is not a directory here",
                  id="a-dangling-directory-link"),
     pytest.param({GITHUB: README}, (README,), BLOCKED,
-                 f"{WORKFLOW} cannot be written: .github is a symlink to "
-                 f"{README}, which is not a directory here",
-                 id="a-link-to-a-file"),
+                 f"{ticked(WORKFLOW)} cannot be written: {ticked(GITHUB)} is "
+                 f"a symlink to {ticked(README)}, which is not a directory "
+                 "here", id="a-link-to-a-file"),
     pytest.param({ATTRIBUTES: NOWHERE_ATTRS}, (), BLOCKED,
-                 f"{ATTRIBUTES} cannot be written: the symlink {ATTRIBUTES} "
-                 "leads to nowhere/attrs, and there is no directory there to "
-                 "write it in", id="a-dangling-file-link"),
+                 f"{ticked(ATTRIBUTES)} cannot be written: the symlink "
+                 f"{ticked(ATTRIBUTES)} leads to {ticked(NOWHERE_ATTRS)}, and "
+                 "there is no directory there to write it in",
+                 id="a-dangling-file-link"),
     # S2: `open()` takes `..`, `.` and a trailing `/` only from a directory.
     pytest.param({MAKEFILE: "ci/"}, (), BLOCKED,
-                 "Makefile cannot be written: the target of the symlink "
-                 "Makefile goes on from ci, which is not a directory here",
-                 id="a-file-link-spelled-as-a-directory"),
+                 f"{ticked(MAKEFILE)} cannot be written: the target of the "
+                 f"symlink {ticked(MAKEFILE)} goes on from `ci`, which is not "
+                 "a directory here", id="a-file-link-spelled-as-a-directory"),
     pytest.param({MAKEFILE: "a/.."}, (), BLOCKED,
-                 "Makefile cannot be written: the target of the symlink "
-                 "Makefile goes on from a, which is not a directory here",
-                 id="dot-dot-after-nothing"),
+                 f"{ticked(MAKEFILE)} cannot be written: the target of the "
+                 f"symlink {ticked(MAKEFILE)} goes on from `a`, which is not "
+                 "a directory here", id="dot-dot-after-nothing"),
     pytest.param({MAKEFILE: "README.md/.."}, (README,), BLOCKED,
-                 "Makefile cannot be written: the target of the symlink "
-                 "Makefile goes on from README.md, which is not a directory "
-                 "here", id="dot-dot-after-a-file"),
+                 f"{ticked(MAKEFILE)} cannot be written: the target of the "
+                 f"symlink {ticked(MAKEFILE)} goes on from {ticked(README)}, "
+                 "which is not a directory here", id="dot-dot-after-a-file"),
     # B2: the copy under `shape/` led onto something already there.
     pytest.param({SHAPE_DIR: "."}, (README,), BLOCKED,
-                 f"{SHAPE_README} cannot be written: a symlink on the way "
-                 "leads it to README.md, a file that is already there",
-                 id="the-copy-onto-a-file"),
+                 f"{ticked(SHAPE_README)} cannot be written: a symlink on the "
+                 f"way leads it to {ticked(README)}, a file that is already "
+                 "there", id="the-copy-onto-a-file"),
     pytest.param({SHAPE_DIR: ".", MAKEFILE: "docs"}, ("docs/x.md",), BLOCKED,
-                 "shape/Makefile cannot be written: a symlink on the way "
-                 "leads it to docs, a directory that is already there",
-                 id="the-copy-into-a-directory"),
+                 f"{ticked(SHAPE_DIR + '/' + MAKEFILE)} cannot be written: a "
+                 "symlink on the way leads it to `docs`, a directory that is "
+                 "already there", id="the-copy-into-a-directory"),
 ]
 
 
@@ -1034,8 +1038,8 @@ def test_the_materializer_refuses_a_link_to_nothing(tmp_path, monkeypatch,
                         else real(here))
     refusal = refused_materializing(target)
     assert (refusal.code, refusal.detail) == (
-        BLOCKED, f"{path} cannot be written: the symlink {link} has an empty "
-                 "target, which leads nowhere")
+        BLOCKED, f"{ticked(path)} cannot be written: the symlink "
+                 f"{ticked(link)} has an empty target, which leads nowhere")
 
 
 @needs_disk_symlinks
@@ -1067,6 +1071,32 @@ def test_the_materializer_writes_beside_a_link_to_something_there(tmp_path):
     result = materialize(target)
     assert (CLAUDE, f"{SHAPE_DIR}/{CLAUDE}") in result.collisions
     assert (outside / CLAUDE).read_text(encoding=UTF8) == PERSONAL
+
+
+#: A symlink's target that no terminal shows as it is: a line break, which
+#: would split a refusal's one line, and an ESC, which a terminal acts on.
+UNPRINTABLE_TARGET = "no\nwhere\x1b"
+#: How `_spelled` writes the refusal for a `.github` that leads there.
+SPELLED_REFUSAL = (f"{ticked(WORKFLOW)} cannot be written: {ticked(GITHUB)} "
+                   "is a symlink to `no\\nwhere\\x1b`, which is not a "
+                   "directory here")
+
+
+@needs_disk_symlinks
+def test_a_refusal_spells_each_name_as_its_caller_asks(adopter, tmp_path):
+    """`adopt-project.py` hands the materializer its `_spelled`, as #212
+    spells every path a finding or a refusal names. A caller that passes no
+    `spell`, the scaffold, gets each name between backticks, as above: the
+    shape's own paths need nothing more."""
+    target = tmp_path / ASSEMBLY
+    target.mkdir()
+    symlink(target / GITHUB, UNPRINTABLE_TARGET)
+    with pytest.raises(Refusal) as caught:
+        materialize_assembly_root(REPO, target, template_values(),
+                                  collision_dir=SHAPE_DIR,
+                                  spell=adopter._spelled)
+    assert (caught.value.code, caught.value.detail) == (BLOCKED,
+                                                        SPELLED_REFUSAL)
 
 
 # ---------------------------------------------------------------------------
@@ -1207,6 +1237,30 @@ def test_an_unrelated_absolute_link_in_the_root_still_adopts(tmp_path):
                cwd=source).stdout == ETC
 
 
+def refused_past_check(adopter, base: Path, target: str, monkeypatch,
+                       capsys) -> str:
+    """What `execute` prints to stderr, exiting 2, for a source that keeps
+    `.github -> target` in the root, with #168's refusal of `check`'s
+    findings taken away so that the link reaches the materializer."""
+    source = make_source_repo(base / THING, tree=BASIC)
+    symlink(source / GITHUB, target)
+    git("add", "-A", "--", ".", cwd=source)
+    commit_index(source, "Keep .github as a link")
+    plan = base / PLAN_FILE
+    assert write_plan(source, plan, project=PROJECT).returncode == 0
+    set_leg(plan, GITHUB, ROOT)
+    monkeypatch.setenv("LANES_LANE", "")
+    clear_ambient_pin_sources(monkeypatch)
+    monkeypatch.setattr(adopter, "_refuse_what_check_finds",
+                        lambda plan, source: None)
+    code = adopter.main(["execute", PLAN_FLAG, str(plan), "--yes",
+                         "--local-remote-dir", str(base / REMOTES),
+                         WORK_FLAG, str(base / WORK)])
+    seen = capsys.readouterr()
+    assert code == 2, seen.err + seen.out
+    return seen.err
+
+
 @needs_filter_repo
 @needs_disk_symlinks
 def test_a_caller_that_skips_check_meets_the_materializer_refusal(
@@ -1215,23 +1269,22 @@ def test_a_caller_that_skips_check_meets_the_materializer_refusal(
     reaches the materializer, which refuses it by name -- no traceback, and
     nothing written into the directory beside the work directory."""
     outside = tmp_path / WORK / "outside-ci"
-    source = make_source_repo(tmp_path / THING, tree=BASIC)
-    symlink(source / GITHUB, OUTSIDE_CI)
-    git("add", "-A", "--", ".", cwd=source)
-    commit_index(source, "Link out")
-    plan = tmp_path / PLAN_FILE
-    assert write_plan(source, plan, project=PROJECT).returncode == 0
-    set_leg(plan, GITHUB, ROOT)
     outside.mkdir(parents=True)
-    monkeypatch.setenv("LANES_LANE", "")
-    clear_ambient_pin_sources(monkeypatch)
-    monkeypatch.setattr(adopter, "_refuse_what_check_finds",
-                        lambda plan, source: None)
-    code = adopter.main(["execute", PLAN_FLAG, str(plan), "--yes",
-                         "--local-remote-dir", str(tmp_path / REMOTES),
-                         WORK_FLAG, str(tmp_path / WORK)])
-    seen = capsys.readouterr()
-    assert code == 2, seen.err + seen.out
-    assert "REFUSED materialize-outside: " in seen.err
-    assert "Traceback" not in seen.err
+    said = refused_past_check(adopter, tmp_path, OUTSIDE_CI, monkeypatch,
+                              capsys)
+    assert "REFUSED materialize-outside: " in said
+    assert "Traceback" not in said
     assert list(outside.iterdir()) == []
+
+
+@needs_filter_repo
+@needs_disk_symlinks
+def test_execute_hands_the_materializer_its_spelling(adopter, tmp_path,
+                                                     monkeypatch, capsys):
+    """The refusal `execute` prints for a link no shape file can be written
+    through names its target as `check` would: on one line, the line break
+    and the ESC spelled (#212). Printed raw, the line break split the
+    refusal in two."""
+    said = refused_past_check(adopter, tmp_path, UNPRINTABLE_TARGET,
+                              monkeypatch, capsys)
+    assert f"REFUSED {BLOCKED}: {SPELLED_REFUSAL}" in said.splitlines()

@@ -1251,7 +1251,7 @@ def materialize_assembly_root(shape_root: Path, target: Path,
                               collision_dir: str | None = None,
                               append: dict[str, str] | None = None,
                               neutral_pins: dict[str, dict] | None = None,
-                              ) -> Materialized:
+                              spell=None) -> Materialized:
     """Write the assembly-root skeleton into `target`.
 
     `collision_dir` — where a template file goes when the target path is
@@ -1263,12 +1263,18 @@ def materialize_assembly_root(shape_root: Path, target: Path,
 
     `neutral_pins` maps a neutral product name to the values for its pin file,
     each rendered from `contracts/neutral-product-pin.yaml`.
+
+    `spell` writes each path a refusal names (#183's `materialize-*`), as
+    `first_and_more` takes one: between backticks when it is None, which is
+    all the scaffold's own paths need. `adopt-project.py` passes its
+    `_spelled`, because the source it adopts can hold a symlink to any name.
     """
     return _materialize(
         shape_root, shape_root / "templates" / "assembly-root", target, values,
         templated=TEMPLATED, verbatim=COPIED_VERBATIM,
         from_shape=COPIED_FROM_SHAPE, executable=EXECUTABLE,
-        collision_dir=collision_dir, append=append, neutral_pins=neutral_pins)
+        collision_dir=collision_dir, append=append, neutral_pins=neutral_pins,
+        spell=spell)
 
 
 def assembly_root_paths(neutral_pins=()) -> tuple[str, ...]:
@@ -1475,30 +1481,41 @@ NOT_A_NAME = ("", ".", "..")
 BLOCKED = "materialize-blocked"
 
 
-def _link_parts(here: Path, at: str, rel: str, target: Path,
-                hops: int) -> list[tuple[str, str]]:
+def _ticked(name: str) -> str:
+    """`name` between backticks: how a refusal below names a path when its
+    caller passes no `spell`, as `first_and_more` names one. The shape's own
+    paths need nothing more. `adopt-project.py` passes its `_spelled`,
+    because a source's symlink can lead to a name holding a line break or an
+    ESC, and #212 keeps every refusal on its one line."""
+    return f"`{name}`"
+
+
+def _link_parts(here: Path, at: str, rel: str, target: Path, hops: int,
+                name) -> list[tuple[str, str]]:
     """The target of the symlink `here` (spelled `at`) as path parts, each
     with `at`, or a refusal when it is the hop that makes a loop, it is
-    empty, or it is absolute.
+    empty, or it is absolute. `name` writes each path a refusal names.
 
     An empty target is not `.`: `open()` finds nothing through it, and the
     parts below would read it as the directory the link is in."""
     if hops > SYMLINK_HOPS:
         raise Refusal("materialize-symlink-loop",
-                      f"{rel} runs round a symlink loop at {at} in {target}",
+                      f"{name(rel)} runs round a symlink loop at {name(at)} "
+                      f"in {target}",
                       UNWRITABLE_REMEDIATION)
     link = os.readlink(here)
     if not link:
         raise Refusal(BLOCKED,
-                      f"{rel} cannot be written: the symlink {at} has an "
-                      "empty target, which leads nowhere",
+                      f"{name(rel)} cannot be written: the symlink "
+                      f"{name(at)} has an empty target, which leads nowhere",
                       UNWRITABLE_REMEDIATION)
     if os.path.isabs(link) or os.path.splitdrive(link)[0]:
         raise Refusal(
             "materialize-outside",
-            f"{rel} would be written through the symlink {at}, which leads "
-            f"to the absolute path {link}; the shape follows only a symlink "
-            f"whose relative target stays inside {target}",
+            f"{name(rel)} would be written through the symlink {name(at)}, "
+            f"which leads to the absolute path {name(link)}; the shape "
+            f"follows only a symlink whose relative target stays inside "
+            f"{target}",
             UNWRITABLE_REMEDIATION)
     # Windows reads a link back in its own separator; a POSIX name may hold
     # a backslash, so only the platform's own separator is translated.
@@ -1506,7 +1523,7 @@ def _link_parts(here: Path, at: str, rel: str, target: Path,
 
 
 def _from_a_directory(target: Path, rel: str, done: list[str], part: str,
-                      via: str) -> None:
+                      via: str, name) -> None:
     """Refuse `part`, a `..`, `.` or empty part of the target of the symlink
     `via`, where `open()` cannot take it: `..` above `target`, or any of
     them after something that is not a directory. `open()` takes them
@@ -1517,19 +1534,21 @@ def _from_a_directory(target: Path, rel: str, done: list[str], part: str,
         if part == "..":
             raise Refusal(
                 "materialize-outside",
-                f"{rel} would be written outside {target}: at the symlink "
-                f"{via} it climbs above it", UNWRITABLE_REMEDIATION)
+                f"{name(rel)} would be written outside {target}: at the "
+                f"symlink {name(via)} it climbs above it",
+                UNWRITABLE_REMEDIATION)
         return
     here = target.joinpath(*done)
     if not here.is_dir():
         raise Refusal(
             BLOCKED,
-            f"{rel} cannot be written: the target of the symlink {via} goes "
-            f"on from {root_key(here, target)}, which is not a directory here",
+            f"{name(rel)} cannot be written: the target of the symlink "
+            f"{name(via)} goes on from {name(root_key(here, target))}, which "
+            "is not a directory here",
             UNWRITABLE_REMEDIATION)
 
 
-def _followed(target: Path, rel: str) -> tuple[list[str], int]:
+def _followed(target: Path, rel: str, name) -> tuple[list[str], int]:
     """`rel` under `target` with each symlink on the way followed, the way
     `open()` follows them: the parts it lands on, relative to `target`, and
     how many symlinks led there. A refusal when one leads out of `target`,
@@ -1540,7 +1559,7 @@ def _followed(target: Path, rel: str) -> tuple[list[str], int]:
     while parts:
         part, via = parts.pop(0)
         if part in NOT_A_NAME:
-            _from_a_directory(target, rel, done, part, via)
+            _from_a_directory(target, rel, done, part, via, name)
             if part == "..":
                 done.pop()
             continue
@@ -1548,14 +1567,14 @@ def _followed(target: Path, rel: str) -> tuple[list[str], int]:
         if here.is_symlink():
             hops += 1
             parts = _link_parts(here, root_key(here, target), rel, target,
-                                hops) + parts
+                                hops, name) + parts
         else:
             done.append(part)
     return done, hops
 
 
-def _blocker(target: Path, rel: str, landed: list[str],
-             hops: int) -> str | None:
+def _blocker(target: Path, rel: str, landed: list[str], hops: int,
+             name) -> str | None:
     """What stands where `rel` needs a directory, or where a symlink leads
     it, or None.
 
@@ -1576,31 +1595,37 @@ def _blocker(target: Path, rel: str, landed: list[str],
         if above.is_dir():
             continue
         if above.is_symlink():
-            return (f"{root_key(above, target)} is a symlink to "
-                    f"{os.readlink(above)}, which is not a directory here")
+            return (f"{name(root_key(above, target))} is a symlink to "
+                    f"{name(os.readlink(above))}, which is not a directory "
+                    "here")
         if above.exists():
-            return f"{root_key(above, target)} is a file, not a directory"
+            return (f"{name(root_key(above, target))} is a file, not a "
+                    "directory")
         return None
     path = target / rel
     if path.is_symlink() and not target.joinpath(*landed[:-1]).is_dir():
-        return (f"the symlink {rel} leads to {os.readlink(path)}, and there "
-                "is no directory there to write it in")
+        return (f"the symlink {name(rel)} leads to {name(os.readlink(path))}, "
+                "and there is no directory there to write it in")
     there = target.joinpath(*landed)
     if hops and there.exists():
-        where = root_key(there, target) if landed else str(target)
+        where = name(root_key(there, target)) if landed else str(target)
         what = "a directory" if there.is_dir() else "a file"
         return (f"a symlink on the way leads it to {where}, {what} that is "
                 "already there")
     return None
 
 
-def _refuse_unwritable(target: Path, rel: str) -> None:
+def _refuse_unwritable(target: Path, rel: str, spell=None) -> None:
     """Refuse, before the `mkdir` and the write, a path the shape must not
-    write at (outside `target`, or round a loop) or cannot (#183)."""
-    blocker = _blocker(target, rel, *_followed(target, rel))
+    write at (outside `target`, or round a loop) or cannot (#183). `spell`
+    writes each path the refusal names, `_ticked` where it is None.
+    `target` itself is the directory the caller gave, and is named as it
+    is, as `materialize-collision` names it."""
+    name = spell or _ticked
+    blocker = _blocker(target, rel, *_followed(target, rel, name), name)
     if blocker:
         raise Refusal(BLOCKED,
-                      f"{rel} cannot be written: {blocker}",
+                      f"{name(rel)} cannot be written: {blocker}",
                       UNWRITABLE_REMEDIATION)
 
 
@@ -1608,7 +1633,8 @@ def _materialize(shape_root: Path, template_root: Path, target: Path,
                  values: dict[str, str], *, templated, verbatim, from_shape,
                  executable, collision_dir: str | None = None,
                  append: dict[str, str] | None = None,
-                 neutral_pins: dict[str, dict] | None = None) -> Materialized:
+                 neutral_pins: dict[str, dict] | None = None,
+                 spell=None) -> Materialized:
     """The shared body. Four lists in, one `Materialized` out.
 
     The order is load-bearing and is the same for every root: templated files
@@ -1634,7 +1660,7 @@ def _materialize(shape_root: Path, template_root: Path, target: Path,
             actual = f"{collision_dir}/{rel}"
             result.collisions.append((rel, actual))
             path = target / actual
-        _refuse_unwritable(target, root_key(path, target))
+        _refuse_unwritable(target, root_key(path, target), spell)
         path.parent.mkdir(parents=True, exist_ok=True)
         write(path)
         rel_written = root_key(path, target)

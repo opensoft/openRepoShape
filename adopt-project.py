@@ -3560,9 +3560,11 @@ def _commit_the_split(plan: Plan, source: Source, assembly: Path,
     _mount_the_legs(assembly, work_root, names, urls, paths_for, spec_path,
                     code_path)
 
+    # A materializer refusal names the source's own symlinks and where they
+    # lead, which can hold any character: spelled as every finding is (#212).
     materialized = materialize_assembly_root(
         SHAPE_ROOT, assembly, values, collision_dir=COLLISION_DIR,
-        append={"Makefile": ADOPT_MAKEFILE_BLOCK})
+        append={"Makefile": ADOPT_MAKEFILE_BLOCK}, spell=_spelled)
     for intended, actual in materialized.collisions:
         print(f"  beside  {actual} (the source already has {intended}; nothing "
               "was overwritten)")
