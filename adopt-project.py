@@ -1208,12 +1208,19 @@ def _spelled(path: str) -> str:
     file can hold -- written raw, it raised mid-write and left `--out` empty
     (#166's NEW-2) -- and a name may hold a newline, which would end the
     line. So a character that is not printable is spelled with a backslash,
-    `\\xe9` for the byte 0xE9 and `\\n` for a newline, and so are a
-    backslash and a backtick, so that the spelling reads one way only and
-    the backticks still delimit it. The plan's own `path:` spells that byte
-    `\\udce9`, not `\\xe9` (`repo_shape.double_quoted`), because in YAML
-    `\\xe9` is the character U+00E9, which is another name: a question or a
-    report that says `caf\\xe9` is the entry `"caf\\udce9"` in the plan.
+    and so are a backslash and a backtick, so that the spelling reads one way
+    only and the backticks still delimit it.
+
+    THE SPELLING IS THE PLAN'S OWN (`_spelled_character`): the byte 0xE9 is
+    `\\udce9` and the character U+0085 is `\\x85`, as `path:` writes them
+    (`repo_shape.double_quoted`), so that a question or a report that says
+    `caf\\udce9` is the entry `"caf\\udce9"` in the plan. Each escape names
+    a code point, so a byte and a character never share one. They did: a
+    byte was `\\xe9` here, which in YAML is the character U+00E9, and the 32
+    C1 controls, U+00A0 and U+00AD were spelled as the bytes of the same
+    value, 34 pairs of different names that read alike (#329). A spelling is
+    only printed, in a finding, a refusal or a question the plan carries;
+    none is read back or handed to git.
     """
     return "`" + "".join(map(_spelled_character, path)) + "`"
 
@@ -1233,13 +1240,17 @@ def _shown(path: str) -> str:
 
 
 def _spelled_character(char: str) -> str:
+    """One character of `_spelled`: itself when it is printable, a backslash
+    before a backslash or a backtick, and otherwise the escape
+    `repo_shape.double_quoted` writes for it in the plan, so the plan's one
+    table and not a second one: `\\n` for a line feed, `\\x85` for U+0085,
+    `\\u2028` for U+2028, and `\\udc85` for the byte 0x85, which
+    `Source.tree` keeps as the surrogate U+DC00 plus the byte."""
     if char in "\\`":
         return "\\" + char
     if char.isprintable():
         return char
-    if "\udc80" <= char <= "\udcff":
-        return f"\\x{ord(char) - 0xDC00:02x}"
-    return ascii(char)[1:-1]
+    return double_quoted(char)[1:-1]
 
 
 def cross_leg_references(source: "Source", entries: list["Entry"],
@@ -3349,7 +3360,7 @@ def _refused_by_policy(path: str) -> str | None:
       * a byte that is not UTF-8, which `Source.tree` keeps as one of
         U+DC80 to U+DCFF (`surrogateescape`). Since #199 (PR #247)
         `write_paths_listing` writes it as that byte, and with this refusal
-        disabled a source holding `caf\\xe9.md` was extracted and verified,
+        disabled a source holding `caf\\udce9.md` was extracted and verified,
         the byte in the leg, measured. It is held until adopting such a name
         end to end is measured on macOS and Windows: a name that holds one
         prints as an escape, never as itself, and the split commit's message
@@ -4279,8 +4290,8 @@ def _index_entries(assembly: Path,
     as #169 refuses case-only twins of the two leg paths. `-z`, for a path
     git would otherwise quote. A name that is not UTF-8 keeps each byte as a
     surrogate, as `Source.tree` keeps it, so the refusal spells the byte 0xFF
-    `\\xff`, as every other finding does (#212). Decoded with `replace`,
-    `a<0xFF>` and `a<0xFE>` both read `a<U+FFFD>`.
+    `\\udcff`, as every other finding does (#212, #329). Decoded with
+    `replace`, `a<0xFF>` and `a<0xFE>` both read `a<U+FFFD>`.
     """
     raw = git_out(["--icase-pathspecs", "ls-files", "-s", "-z", "--",
                    *pathspecs], cwd=assembly, binary=True)
