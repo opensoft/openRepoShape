@@ -228,10 +228,12 @@ def test_a_value_spelled_as_an_escape_is_not_read_as_one(adopter):
 #: about it)`. The SAME name is put at the top level, where it is an entry of
 #: its own, and under `docs/`, which the rules send to the spec leg as one
 #: entry. A name with no extension no rule places, so `plan` asks; `.txt` is
-#: code by the extension table.
+#: code by the extension table, and `plan` asks about `caf\\xe9.txt` all the
+#: same, because `execute` will not extract a name that is not UTF-8 into a
+#: leg (#319; `test_adopt_entry_paths.py`).
 ODD_NAMES = [
     pytest.param(b"Icon\r", '"Icon\\r"', True, id="carriage-return"),
-    pytest.param(b"caf\xe9.txt", '"caf\\udce9.txt"', False, id="not-utf8"),
+    pytest.param(b"caf\xe9.txt", '"caf\\udce9.txt"', True, id="not-utf8"),
     pytest.param("n\u0085el".encode(), '"n\\x85el"', True, id="next-line"),
     pytest.param("l\u2028s".encode(), '"l\\u2028s"', True,
                  id="line-separator"),
