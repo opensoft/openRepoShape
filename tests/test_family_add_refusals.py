@@ -1293,9 +1293,9 @@ SPARE_MOUNT = f"members/{SPARE}"
 INDEX_MOVED = (
     "Nothing was committed: the mount has been undone — {restored} — but the "
     "holder's index is NOT as it was before this command ({moved}). Put it "
-    "back before running `add` again: `git status` shows each difference, and "
-    "`git rm -r --cached -- <path>` takes a path new in it back out and "
-    "touches no file.")
+    "back before running `add` again: `git ls-files -s` lists what the index "
+    "now holds, and `git rm -r --cached -- <path>` takes a path new in it "
+    "back out and touches no file.")
 
 #: Each case variant of the mount path the index can hold, as `(mode, name,
 #: whether HEAD holds it as well)`: a file under it and a gitlink at it,
@@ -1373,7 +1373,9 @@ def test_a_case_variant_of_the_mount_path_in_the_index_is_refused_first(
         f"--cached -- {spelled}` takes it out of the index and touches no "
         "file; where HEAD holds it too, commit that removal first, since the "
         f"add's own commit names {SPARE_MOUNT} alone and would keep both "
-        "spellings; then re-run.")
+        "spellings, or, with `core.ignorecase` set, commit the gitlink under "
+        f"the other one while .gitmodules and family.yaml say {SPARE_MOUNT}; "
+        "then re-run.")
     assert index_bytes(holder) == index
     assert snapshot(holder) == before
     offline.assert_left_nothing()
@@ -1442,32 +1444,40 @@ def test_the_closing_sentence_names_what_the_index_gained_lost_and_changed(
         holder, family_module):
     """THE SENTENCE AT UNIT LEVEL (#302), for the differences no mount makes
     on its own. The rollback records the index, which is then changed by
-    hand. With nothing changed, `undo` keeps the sentence it had. Then six
-    entries are new, one is gone and one is staged differently. `undo` has
-    nothing of its own to put back, and it names each kind, five names at
-    most, never calling the holder unchanged."""
+    hand. With nothing changed, `undo` keeps the sentence it had. With ONE
+    entry restaged and nothing else, its name is unchanged and its record is
+    not: comparing names alone would call that holder unchanged. Then six
+    entries are new and one is gone as well. `undo` has nothing of its own
+    to put back, and it names each kind, five names at most, never calling
+    the holder unchanged."""
     rollback = family_module.MountRollback(holder, SPARE_MOUNT)
     assert rollback.undo() == (
         " Nothing was added, and nothing in the holder had changed.")
+    then = ("Put it back before running `add` again: `git ls-files -s` lists "
+            "what the index now holds, and `git rm -r --cached -- <path>` "
+            "takes a path new in it back out and touches no file.")
+    plant(holder, "100644", "Makefile")
+    assert rollback.undo() == (
+        " Nothing was committed, but the holder's index is NOT as it was "
+        f"before this command (staged differently: `Makefile`). {then}")
     for n in range(1, 7):
         plant(holder, "100644", f"new/{n}")
     git("update-index", "--force-remove", "--", "README.md", cwd=holder)
-    plant(holder, "100644", "Makefile")
     assert rollback.undo() == (
         " Nothing was committed, but the holder's index is NOT as it was "
         "before this command (new in it: `new/1`, `new/2`, `new/3`, `new/4`, "
         "`new/5` and 1 more; gone from it: `README.md`; staged differently: "
-        "`Makefile`). Put it back before running `add` again: `git status` "
-        "shows each difference, and `git rm -r --cached -- <path>` takes a "
-        "path new in it back out and touches no file.")
+        f"`Makefile`). {then}")
 
 
 def test_an_index_that_cannot_be_read_back_is_never_called_as_it_was(
         holder, family_module, monkeypatch):
     """The comparison is a git command too. If the index cannot be read
-    back after the unwind, it has not been shown to be as it was, so the
-    sentence is the partial one: it names git's reason and sends the human
-    to `git status`, and the refusal it ends is still the one printed."""
+    back after the unwind, every step may still have been undone, but the
+    index has not been shown to be as it was. The sentence says exactly
+    that, with git's reason, and sends the human to `git status`. It never
+    calls the holder as it was, nor the unwind partial, and the refusal it
+    ends is still the one printed."""
     rollback = family_module.MountRollback(holder, SPARE_MOUNT)
 
     def unreadable(root):
@@ -1477,11 +1487,10 @@ def test_an_index_that_cannot_be_read_back_is_never_called_as_it_was(
 
     monkeypatch.setattr(family_module, "_index_records", unreadable)
     assert rollback.undo() == (
-        " The mount was undone only in part; NOT the index read back to "
-        "compare with the one recorded before the mount: `git ls-files -s -z` "
-        f"in {holder} exited 128: fatal: index file corrupt. Put those back "
-        "by hand — `git status` shows what is left — before running `add` "
-        "again.")
+        " Nothing was committed, but the holder's index could not be read "
+        "back to confirm it is as it was before this command: `git ls-files "
+        f"-s -z` in {holder} exited 128: fatal: index file corrupt. Check it "
+        "with `git status` before running `add` again.")
 
 
 def test_the_index_is_asked_at_the_mount_path_in_any_case_and_literally(
@@ -1502,3 +1511,32 @@ def test_the_index_is_asked_at_the_mount_path_in_any_case_and_literally(
         (f"members/{SPARE.lower()}/d", "a submodule")]
     assert family_module._index_entries(holder, "members/IRQ*") == [
         ("members/IRQ*/c", "a file"), ("members/irq*", "a file")]
+
+
+def test_a_conflicted_entry_at_the_mount_path_is_counted_once_per_stage(
+        holder, family_module):
+    """`member-path-taken` counts as main counted (#302): one per index
+    record, so a path conflicted at three stages is named "and 2 more". The
+    read now lists the whole index, and an exact-case entry still gets the
+    text #242 wrote, byte for byte. (The three stages are written as BYTES
+    on stdin.)"""
+    blob = subprocess.run(["git", "hash-object", "-w", "--stdin"],
+                          cwd=str(holder), input=b"a file\n",
+                          capture_output=True,
+                          check=True).stdout.decode("ascii").strip()
+    subprocess.run(["git", "update-index", "--index-info"], cwd=str(holder),
+                   input=b"".join(f"100644 {blob} {stage}\t{SPARE_MOUNT}/"
+                                  "README\n".encode("ascii")
+                                  for stage in (1, 2, 3)),
+                   capture_output=True, check=True)
+    with pytest.raises(family_module.Refusal) as caught:
+        family_module._checked_mount_path(holder, SPARE, SPARE_MOUNT)
+    assert (caught.value.code, caught.value.detail,
+            caught.value.remediation) == (
+        "member-path-taken",
+        f"the family root's index holds `{SPARE_MOUNT}/README` (a file) and "
+        f"2 more under {SPARE_MOUNT}, though nothing is at {SPARE_MOUNT} on "
+        "disk and no `members:` row names it",
+        "Remediation: this is a half-finished add or a hand edit. `git rm -r "
+        f"--cached -- {SPARE_MOUNT}` takes it out of the index and touches no "
+        "file; then re-run.")
