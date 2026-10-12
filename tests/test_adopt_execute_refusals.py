@@ -604,6 +604,11 @@ def test_check_finds_an_elected_on_it_cannot_read_under_the_plans_key(world,
         f"FINDING {DATE_CODE}: the plan's `elected_on:` is the text "
         f"{read!r}, which is not a day written YYYY-MM-DD"), found
     assert ("the plan naming no `reference:`" in found[0]) is not reference
+    # the claim is about what `execute` WRITES, not "the one form it reads":
+    # on Python 3.11+ `election_date` reads `20261011` too, until #314 lands
+    assert ", the form `execute` writes into the project's `project.yaml`" in \
+        found[0], found
+    assert "the one form" not in found[0], found
     assert "Remediation: edit `elected_on:` in the plan file" in \
         result.stderr
     assert DATE_FLAG not in result.stderr + result.stdout
@@ -729,8 +734,8 @@ def test_another_refusal_from_election_date_is_not_a_date_finding(
 
 
 def test_both_findings_are_listed_and_the_code_is_the_first(adopter, world):
-    """Both keys wrong at once: one list, the date first, as the plan file
-    holds the two keys, and each remediation once."""
+    """Both keys wrong at once: one list, the date first, as `plan` writes the
+    two keys, and each remediation once."""
     text = with_follow_ups(with_elected_on(world.answered, "someday", False),
                            "follow_ups: 5\n")
     printed = check_findings(write_edited(world, text))
