@@ -554,8 +554,10 @@ def _commit_one(root: Path, message: str, paths: list[str],
     environment. Only this variable: the other pathspec variables turn magic
     ON or change only how a glob matches, and the magic still reads.
     """
-    force_stage(root, paths if add is None else add)
+    # BEFORE THE STAGE: a trailer that cannot be carried exactly is refused
+    # while nothing has been staged (#322).
     message, trailer_args = commit_trailers(message, trailers)
+    force_stage(root, paths if add is None else add)
     args = ["git", "commit", "-q", "-F", "-", *trailer_args, "--",
             *[f":(literal){path}" for path in paths]]
     check_program(args)

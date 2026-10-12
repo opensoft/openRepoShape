@@ -975,6 +975,89 @@ TRAILER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*: [^\s\x00-\x1f\x7f]"
                         r"(?:[^\x00-\x1f\x7f]*[^\s\x00-\x1f\x7f])?$")
 
 
+def argv_text(value: str) -> str:
+    """`value` as the TEXT it was typed as, with each byte the locale could not
+    read put back (#322).
+
+    A command-line argument reaches Python as bytes decoded with the locale's
+    codec. Under a POSIX `C` locale with UTF-8 mode off that is ASCII, and the
+    two bytes of `é` arrive as the lone surrogates `\\udcc3\\udca9`
+    (`surrogateescape` keeps a byte it cannot read as U+DC80..U+DCFF, so that
+    `os.fsencode` can give it back). They are not text: `trailer_line` refused
+    such a trailer as "not a trailer", and the commit helpers, handed one
+    directly, wrote each as `?`.
+
+    `os.fsencode` gives the bytes back and, if they are UTF-8, they are the
+    text: `Jos\\udcc3\\udca9` becomes `José`, the value a UTF-8 locale hands
+    over, so a trailer is one string whatever the locale. A value with no
+    escaped byte, which is every ASCII trailer and everything a UTF-8 locale
+    read, is returned as it is. One whose bytes are NOT UTF-8 (a Latin-1
+    terminal's `\\xe9`) is returned as it is too, still holding its
+    surrogate: it is no text, and `trailer_line` and `commit_trailers` refuse
+    it by name rather than guess which code page was meant. Recovered BEFORE
+    the grammar is asked, so bytes that spell a line separator or an
+    invisible character (`\\xc2\\x85` is U+0085) are judged as that
+    character.
+    """
+    if not any(_is_escaped_byte(char) for char in value):
+        return value
+    try:
+        return os.fsencode(value).decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return value
+
+
+def utf8_writable(value: str) -> bool:
+    """Can `value` be written into a commit message exactly, as UTF-8?
+
+    False for a lone surrogate: a byte no character stands for, which an
+    encoder would drop (`errors="replace"` writes `?`) or raise on.
+    """
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def not_utf8_problem(value: str) -> str:
+    """The sentence a refusal says about a trailer `utf8_writable` rejected.
+
+    NAMED BY THE BYTES IT STANDS FOR where it can be, `b'Jos\\xe9'`, because
+    the lone surrogate it holds prints differently on every stdout and an
+    operator needs to see which byte it is.
+    """
+    try:
+        named = repr(os.fsencode(value))
+    except UnicodeEncodeError:
+        named = ascii(value)
+    return (f"the trailer {named} is not UTF-8 text: one of its bytes "
+            "belongs to no character, and a commit message cannot carry it "
+            "as typed. This tool refuses rather than replace it with a `?`. "
+            "Type the trailer in UTF-8; a terminal, script or editor set to "
+            "another code page (Latin-1, cp1252) wrote that byte.")
+
+
+def argv_spelling(text: str) -> str:
+    """`text`, spelled so a child process receives its UTF-8 bytes (#322).
+
+    What a child gets for an argument is the BYTES `subprocess` encodes it
+    to, and on POSIX that is `os.fsencode`: the locale's codec, which under a
+    `C` locale with UTF-8 mode off is ASCII and refuses `é` outright
+    (`UnicodeEncodeError`), and under a Latin-1 locale is one byte, which is
+    not what a UTF-8 commit message holds. A commit message is UTF-8, so the
+    argument is `os.fsdecode` of the text's UTF-8 bytes: the one string
+    `os.fsencode` turns back into exactly those bytes under any locale, and
+    the text itself under a UTF-8 one. Windows passes text to a child as
+    UTF-16 and git converts it, and ASCII is the same in every codec this
+    runs under, so both are returned as they are: no argument a commit was
+    made with before changes.
+    """
+    if os.name == "nt" or text.isascii():
+        return text
+    return os.fsdecode(text.encode("utf-8"))
+
+
 def trailer_line(text: str) -> str:
     """One `--trailer` value, validated where argparse can refuse it.
 
@@ -984,9 +1067,16 @@ def trailer_line(text: str) -> str:
     exits are 2, so a caller scripting on the exit code sees no difference;
     what it buys is that `--trailer 'Lane xfactory-1'` is refused before the
     tool has read a repository, copied a byte or checked out a branch.
+
+    THE VALUE RETURNED IS THE TEXT (#322): see `argv_text`. `Co-Authored-By:
+    José` typed under a `C` locale is the same trailer, the same string and
+    the same bytes in the commit as under a UTF-8 one. One whose bytes are
+    not UTF-8 is refused here, by name, before a repository is read.
     """
-    value = str(text)
+    value = argv_text(str(text))
     if not is_trailer(value):
+        if not utf8_writable(value):
+            raise argparse.ArgumentTypeError(not_utf8_problem(value))
         raise argparse.ArgumentTypeError(
             f"{value!r} is not a `<Key>: <value>` trailer. It needs a token "
             "of letters, digits and hyphens, a colon, ONE space, and a "
@@ -1003,10 +1093,11 @@ def trailer_line(text: str) -> str:
 #: hyphen), `Zl`/`Zp`, which are U+2028 LINE SEPARATOR and U+2029 PARAGRAPH
 #: SEPARATOR themselves, and `Cs` — a LONE SURROGATE, which is what a byte
 #: the locale could not decode becomes in `sys.argv`, and is not text at
-#: all: git is handed that undecodable byte straight back, or, on the
-#: pre-2.32 path that appends trailers to the MESSAGE, `subprocess` raises
-#: `UnicodeEncodeError` on a value this tool had already accepted. A SPACE
-#: is `Zs` and is not in this list.
+#: all. `argv_text` has already turned the ones that spell UTF-8 back into
+#: the characters they were typed as, so what is left is a byte that is no
+#: character: git would be handed it straight back, or, on the pre-2.32 path
+#: that appends trailers to the MESSAGE, the commit helpers' `errors=
+#: "replace"` would write it as `?`. A SPACE is `Zs` and is not in this list.
 UNPRINTABLE_CATEGORIES = ("Cc", "Cf", "Cs", "Zl", "Zp")
 
 
@@ -1177,13 +1268,32 @@ def commit_trailers(message: str, trailers=()) -> tuple[str, list[str]]:
     NO TRAILERS IS NO CHANGE AT ALL: the message is handed back as it came
     and the argument list is empty, which is what keeps every commit these
     tools have ever written byte-identical when nobody passes the flag.
+
+    A TRAILER IS CARRIED AS TYPED OR REFUSED, NEVER REPLACED (#322). The
+    commit helpers write the message on stdin as UTF-8 with `errors=
+    "replace"` (#230), which writes a character UTF-8 cannot carry as `?` and
+    says nothing: under a `C` locale with UTF-8 mode off `Co-Authored-By:
+    José` reached the fallback below as `Jos\\udcc3\\udca9` and was committed
+    as `Jos??`, the commit's record of who produced it altered. So each line
+    is `argv_text`ed first, which makes that `José`, and one that still holds
+    a byte that is no character is a `Refusal` naming the trailer, raised
+    BEFORE a commit is made: `bump-leg.py` and `family.py` call this ahead of
+    their stage, and `update-shape.py apply` rolls its branch and copies
+    back. The `--trailer` arguments are `argv_spelling`s of the text, so the
+    bytes git is handed are the UTF-8 ones under any locale.
     """
-    lines = [str(line) for line in (trailers or ())]
+    lines = [argv_text(str(line)) for line in (trailers or ())]
     if not lines:
         return message, []
+    for line in lines:
+        if not utf8_writable(line):
+            raise Refusal(
+                "trailer-not-utf8", not_utf8_problem(line),
+                "Remediation: pass the trailer as UTF-8 text, or leave it "
+                "off; nothing was committed.")
     if git_takes_trailer_option():
         return message, [part for line in lines
-                         for part in ("--trailer", line)]
+                         for part in ("--trailer", argv_spelling(line))]
     body = message if message.endswith("\n") else message + "\n"
     return body + "\n" + "\n".join(lines) + "\n", []
 

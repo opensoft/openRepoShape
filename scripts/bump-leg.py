@@ -573,8 +573,10 @@ def commit_once(root: Path, message: str, paths: list[str],
     message and `git commit` argv byte-identical to every one before it. See
     `shape_materialize.commit_trailers` for the two ways git is asked.
     """
-    run(["git", "add", "--", *paths], cwd=root)
+    # BEFORE THE STAGE: a trailer that cannot be carried exactly is refused
+    # while nothing has been staged (#322).
     message, trailer_args = commit_trailers(message, trailers)
+    run(["git", "add", "--", *paths], cwd=root)
     args = ["git", "commit", "-q", "-F", "-", *trailer_args, "--", *paths]
     check_program(args)
     env = dict(os.environ)

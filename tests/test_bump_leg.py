@@ -28,10 +28,13 @@ from conftest import ORG, PROJECT, REPO, git, run_script
 #: The trailer helpers and the two lines a lane's run lands, imported from
 #: the file that owns those rules rather than retyped — see
 #: `tests/test_commit_trailers.py`.
-from test_commit_trailers import TRAILERS, message_of, trailers_of
+from test_commit_trailers import (
+    ENVIRONMENTS, NON_ASCII_BYTES, POSIX_ONLY, TRAILERS, argv_of, environment,
+    message_bytes_of, message_of, trailer_bytes_of, trailers_of,
+)
 
 sys.path.insert(0, str(REPO / "scripts"))
-from repo_shape import load_yaml, tree_digest  # noqa: E402
+from repo_shape import Refusal, load_yaml, tree_digest  # noqa: E402
 
 BUMP = REPO / "scripts" / "bump-leg.py"
 VALIDATE_PINS = "scripts/validate-pins.py"
@@ -96,9 +99,10 @@ def branched(project: Path, name: str = WORKING_BRANCH) -> Path:
 
 
 def bump(project: Path, scaffolded: dict, to: str, *extra: str,
-         leg: str = "spec"):
+         leg: str = "spec", env: dict | None = None):
     return run_script(BUMP, "--root", str(project), "--leg", leg, "--to", to,
-                      "--local-remote-dir", str(scaffolded["remotes"]), *extra)
+                      "--local-remote-dir", str(scaffolded["remotes"]), *extra,
+                      env=env)
 
 
 def validate(project: Path):
@@ -831,6 +835,90 @@ def test_a_malformed_trailer_is_refused_before_the_project_is_read(
     assert git("rev-parse", "HEAD", cwd=project).stdout.strip() == head, (
         "argparse refuses before the tool reads anything, let alone commits")
     assert git("status", "--porcelain", cwd=project).stdout == ""
+
+
+@ENVIRONMENTS
+def test_a_non_ascii_trailer_lands_as_typed_under_any_locale_and_git(
+        project, scaffolded, advanced, tmp_path, git_kind, locale):
+    """#322: `--trailer "Co-Authored-By: José ..."` lands as the bytes typed.
+
+    The cell that was broken is `old-git-c-locale`: a git without `commit
+    --trailer` takes the trailer in the stdin message, a `C` locale reads the
+    argument as lone surrogates, and `commit_once`'s `errors="replace"` wrote
+    each as `?`. The stand-in git refuses the option outright, so a run that
+    passed it would fail here rather than pass."""
+    branched(project)
+    result = bump(project, scaffolded, advanced,
+                  "--trailer", argv_of(NON_ASCII_BYTES),
+                  "--trailer", TRAILERS[0],
+                  env=environment(tmp_path, git_kind, locale))
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert message_bytes_of(project).endswith(
+        b"\n\n" + NON_ASCII_BYTES + b"\n" + TRAILERS[0].encode() + b"\n")
+    assert trailer_bytes_of(project) == [NON_ASCII_BYTES,
+                                         TRAILERS[0].encode()], (
+        "and git reads them back as the trailer block, byte for byte")
+
+
+@POSIX_ONLY
+def test_dry_run_prints_a_non_ascii_trailer_on_an_ascii_stdout(
+        project, scaffolded, advanced):
+    """`--dry-run` names the trailers it would write, and under a `C` locale
+    the stdout it names them on is ASCII (a POSIX idea: Windows has its code
+    page): the trailer, now the text typed
+    rather than a refusal, is printed through the escaped stdout
+    (`escape_what_stdout_cannot_encode`) and not raised on after the
+    `old -> new` line. NOT the `ENVIRONMENTS` env: its `PYTHONIOENCODING`
+    would replace the very stdout this is about."""
+    branched(project)
+    result = bump(project, scaffolded, advanced, "--dry-run",
+                  "--trailer", argv_of(NON_ASCII_BYTES),
+                  env={"LC_ALL": "C", "PYTHONUTF8": "0"})
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "trailers     1 to append, in order:" in result.stdout
+    assert ("  Co-Authored-By: Jos\\xe9 N\\xfa\\xf1ez \\u65e5\\u672c "
+            "<jose@example.invalid>") in result.stdout
+    assert git("status", "--porcelain", cwd=project).stdout == ""
+
+
+@POSIX_ONLY
+@pytest.mark.parametrize("locale", ["c", "utf8"])
+def test_a_trailer_that_is_not_utf8_is_refused_by_name_before_anything_runs(
+        project, scaffolded, advanced, tmp_path, locale):
+    branched(project)
+    head = git("rev-parse", "HEAD", cwd=project).stdout.strip()
+    typed = b"Co-Authored-By: Jos\xe9 <jose@example.invalid>"
+    result = bump(project, scaffolded, advanced, "--trailer", argv_of(typed),
+                  env=environment(tmp_path, "old", locale))
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "usage:" in result.stderr
+    assert "--trailer" in result.stderr
+    assert "not UTF-8 text" in result.stderr
+    assert repr(typed) in result.stderr
+    assert git("rev-parse", "HEAD", cwd=project).stdout.strip() == head
+    assert git("status", "--porcelain", cwd=project).stdout == ""
+
+
+@POSIX_ONLY
+def test_commit_once_refuses_a_trailer_that_is_no_text_before_it_stages(
+        bump_leg_module, tmp_path):
+    """A caller that reaches the helper without the command line's own check
+    gets the same refusal, raised before `git add`: the file is still
+    untracked and there is no commit."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    git("init", "-q", "-b", "main", ".", cwd=root)
+    (root / "a.txt").write_text("x\n", encoding="utf-8")
+
+    with pytest.raises(Refusal) as caught:
+        bump_leg_module.commit_once(
+            root, "A commit\n", ["a.txt"],
+            trailers=[argv_of(b"Co-Authored-By: Jos\xe9")])
+
+    assert caught.value.code == "trailer-not-utf8"
+    assert git("status", "--porcelain", cwd=root).stdout == "?? a.txt\n"
+    assert git("rev-parse", "--verify", "-q", "HEAD", cwd=root,
+               check=False).returncode != 0, "nothing was committed"
 
 
 # --- the refusals -----------------------------------------------------------
