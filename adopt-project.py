@@ -3213,14 +3213,15 @@ def _elected_on_findings(plan: Plan) -> list[str]:
                   "reference by it")
         return [f"FINDING {ELECTION_DATE_MALFORMED}: the plan's `elected_on:` "
                 f"is {_read_as(elected_on)}, which is not a day written "
-                "YYYY-MM-DD, the one form `execute` reads: it writes the date "
-                f"into the project's `project.yaml`{chosen}"]
+                "YYYY-MM-DD, the form `execute` writes into the project's "
+                f"`project.yaml`{chosen}"]
     return []
 
 
 def _plan_field_findings(plan: Plan) -> tuple[list[str], list[str]]:
-    """`_elected_on_findings` and `_follow_ups_findings`, in the order the
-    plan file holds the two keys, and what `check` prints once after them."""
+    """`_elected_on_findings` and `_follow_ups_findings`, in the order `plan`
+    writes the two keys (`elected_on:` before `follow_ups:`), and what `check`
+    prints once after them."""
     dated, followed = _elected_on_findings(plan), _follow_ups_findings(plan)
     return (dated + followed,
             ([ELECTED_ON_REMEDIATION] if dated else [])
