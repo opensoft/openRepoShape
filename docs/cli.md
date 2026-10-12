@@ -57,6 +57,8 @@ Every command below is typed at the root of a clone of this repository. `openRep
 
 ### `setup.sh`
 
+From anywhere but a checkout of the standard — a download, `curl … | bash` — `setup.sh --help` is the shim's own instead: a few lines that clone nothing, list no flag, and name `setup-project.py --help` and this file as where the flags are.
+
 `./setup.sh --help`:
 
 ```
@@ -133,8 +135,9 @@ and setup.sh asks, if a terminal is attached. `--org` comes from that flag,
 else $OPENREPOSHAPE_ORG, else a prompt — it is NEVER defaulted. Every other
 argument reaches setup.sh unchanged: --visibility, --elected-by, --family,
 --into, --yes, --local-remote-dir, and anything after `--`, which setup.sh
-hands on to scaffold-project.py. `./setup.sh --help` prints setup-project.py's
-usage, which lists them all.
+hands on to scaffold-project.py. They are setup-project.py's flags:
+`python3 setup-project.py --help` lists them all, and so does
+`./setup.sh --help` in a checkout of this standard.
 
 `--install` places ONE command, and it is this one file:
 
@@ -386,7 +389,45 @@ options:
                         so --elected-on chooses it.
   --tracking-branch TRACKING_BRANCH
   --spec-path SPEC_PATH
+                        where the spec leg is mounted, as a path in the
+                        assembly root (default: spec); the plan records it as
+                        `legs.spec_path`. `plan` refuses it, before it writes
+                        a plan, as `adopt-bad-leg-path` when the path is empty
+                        or `.`, is absolute, begins with `-` or is longer than
+                        255 characters; has a `..` segment, a backslash, a
+                        segment that ends in a dot, or a character outside
+                        ASCII letters, digits and `._/@+~-`; is not in Git's
+                        own spelling (`spec/`, `./spec` and `a//b` are not);
+                        has a segment Git or Windows reserves (`.git`, `CON`);
+                        or is, holds or lies inside the other leg's path,
+                        whatever the case. As `adopt-leg-path-collides` it
+                        refuses a path that is, holds or lies inside a FILE
+                        the shape writes into the root (`project.yaml` is one,
+                        and `contracts` holds several), or that is at or under
+                        `shape/`, whatever the case. The defaults `spec` and
+                        `code` pass. Either refusal writes no plan and
+                        rewrites nothing, and its `Remediation:` line states
+                        the whole rule; you pass the value again.
   --code-path CODE_PATH
+                        where the code leg is mounted, as a path in the
+                        assembly root (default: code); the plan records it as
+                        `legs.code_path`. `plan` refuses it, before it writes
+                        a plan, as `adopt-bad-leg-path` when the path is empty
+                        or `.`, is absolute, begins with `-` or is longer than
+                        255 characters; has a `..` segment, a backslash, a
+                        segment that ends in a dot, or a character outside
+                        ASCII letters, digits and `._/@+~-`; is not in Git's
+                        own spelling (`code/`, `./code` and `a//b` are not);
+                        has a segment Git or Windows reserves (`.git`, `CON`);
+                        or is, holds or lies inside the other leg's path,
+                        whatever the case. As `adopt-leg-path-collides` it
+                        refuses a path that is, holds or lies inside a FILE
+                        the shape writes into the root (`project.yaml` is one,
+                        and `contracts` holds several), or that is at or under
+                        `shape/`, whatever the case. The defaults `spec` and
+                        `code` pass. Either refusal writes no plan and
+                        rewrites nothing, and its `Remediation:` line states
+                        the whole rule; you pass the value again.
   --pin PIN             a neutral product this project declares a pin on — a
                         NAME only, e.g. --pin openGlass or --pin
                         opensoft/openGlass to name the owner explicitly.
