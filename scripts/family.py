@@ -1074,24 +1074,62 @@ def _module_dir(root: Path, path: str) -> tuple[str, Path]:
 INDEX_ENTRY_KINDS = {0o160000: "a submodule", 0o120000: "a symlink"}
 
 
+def _index_records(root: Path) -> dict[bytes, list[bytes]]:
+    """Every entry of the holder's index, `{name: its records}`: one record
+    per stage, each as `git ls-files -s -z` prints it, which is the form
+    `git update-index --index-info` takes back.
+
+    THE WHOLE INDEX, WITH NO PATHSPEC, so no pathspec setting in the
+    environment can narrow what is read. `_index_entries` picks a mount
+    path's entries out of it, and `MountRollback` compares all of it, before
+    the mount and after the unwind (#302). `-z`, for a name git would
+    otherwise quote.
+    """
+    listed = git_out(["ls-files", "-s", "-z"], cwd=root, binary=True)
+    records: dict[bytes, list[bytes]] = {}
+    for record in listed.split(b"\0"):
+        if record:
+            records.setdefault(record.partition(b"\t")[2], []).append(record)
+    return records
+
+
 def _index_entries(root: Path, path: str) -> list[tuple[str, str]]:
     """`(name, kind)` of every entry the holder's index holds AT `path` or
-    UNDER it: what `git submodule add` refuses, without `--force`, as
-    "already exists in the index".
+    UNDER it, IN ANY CASE: what `git submodule add` refuses, without
+    `--force`, as "already exists in the index", and what a clone on a
+    case-insensitive disk takes for the same path. One per record, as git
+    lists them, so a conflicted path counts once per stage, and each is
+    spelled as the index spells it.
 
-    The pathspec is the one git's own check is made with, taken literally:
-    `members/IRRS` selects `members/IRRS` and `members/IRRS/...`, and never
-    `members/IRRSX`. `-z`, for a name git would otherwise quote.
+    ANY CASE, ON EVERY DISK, whatever the holder's `core.ignorecase` says,
+    as adopt's `_index_entries` asks (#302). A holder is cloned on macOS and
+    Windows too, where `Members/IRRS` and `members/IRRS` are ONE path. With
+    `core.ignorecase` set, `git submodule add` staged the member's own files
+    under the variant the index held (an entry `Members/IRRS/README` had 19
+    staged beside it). The commit's pathspec then matched nothing, and the
+    unwind, which asks for exact names, left all 19 staged while saying the
+    holder was exactly as it was.
+
+    LITERAL, AND SO ASKED WITH NO PATHSPEC AT ALL. git refuses
+    `--literal-pathspecs` beside `--icase-pathspecs`, and `--icase-pathspecs`
+    alone reads `*` and `?` as globs. `:(literal,icase)` magic is not parsed
+    at all when the environment sets `GIT_LITERAL_PATHSPECS`, and then it
+    matches nothing, without a word. So the whole index is listed and the
+    names are compared here, with ASCII case folded, as git's own `icase`
+    folds it: `members/IRRS` selects `MEMBERS/irrs` and `members/IRRS/...`,
+    and never `members/IRRSX`, nor a `members/IRR?` that a glob would match.
     """
-    raw = git_out(["--literal-pathspecs", "ls-files", "-s", "-z", "--", path],
-                  cwd=root, binary=True)
+    # ASCII only, as git's `icase` folds; APFS and NTFS fold more (`ſ` is
+    # `s` to them), which no git check of a pathspec follows either.
+    wanted = path.encode("utf-8").lower()
     entries = []
-    for record in raw.split(b"\0"):
-        if record:
-            head, _, name = record.partition(b"\t")
-            entries.append((name.decode("utf-8", "replace"),
-                            INDEX_ENTRY_KINDS.get(int(head.split()[0], 8),
-                                                  "a file")))
+    for name, records in _index_records(root).items():
+        folded = name.lower()
+        if folded == wanted or folded.startswith(wanted + b"/"):
+            entries.extend((name.decode("utf-8", "replace"),
+                            INDEX_ENTRY_KINDS.get(int(record.split()[0], 8),
+                                                  "a file"))
+                           for record in records)
     return entries
 
 
@@ -1162,17 +1200,41 @@ def _checked_mount_path(root: Path, project: str, path: str) -> None:
             "directory. Remove it (`git rm -r` if it is tracked), then re-run.")
     held = _index_entries(root, path)
     if held:
-        at_it = [entry for entry in held if entry[0] == path]
+        at_it = [entry for entry in held if entry[0].lower() == path.lower()]
         name, kind = (at_it or held)[0]
         more = f" and {len(held) - 1} more" if len(held) > 1 else ""
+        # IN ANY CASE, AND NAMED AS THE INDEX SPELLS IT (#302). `git rm`
+        # matches a pathspec case-sensitively even with `core.ignorecase`
+        # set, so the remediation names each spelling of the mount path the
+        # index holds. That is `path` itself when the case is the same. A
+        # removal staged under another spelling is one the add's commit,
+        # whose pathspec is `path`, does not carry. So where HEAD holds the
+        # variant, the removal is committed first. Otherwise HEAD keeps the
+        # variant beside the member, or, with `core.ignorecase` set, records
+        # the gitlink under a spelling other than `path` (`MEMBERS/ATLAS/...`
+        # gave `MEMBERS/Atlas`, and kept its file too), or both, while
+        # `.gitmodules` and the manifest say `path`.
+        variant = name[:len(path)]
+        spelled = " ".join(sorted({entry[0][:len(path)] for entry in held}))
         raise Refusal(
             "member-path-taken",
             f"the family root's index holds `{name}` ({kind}){more}"
-            + ("" if at_it else f" under {path}") + f", though nothing is at "
-            f"{path} on disk and no `members:` row names it",
+            + ("" if at_it else f" under {variant}")
+            + ("" if variant == path else
+               f", the same path as {path} on a case-insensitive disk")
+            + f", though nothing is at {path} on disk and no `members:` row "
+            "names it",
             "Remediation: this is a half-finished add or a hand edit. `git rm "
-            f"-r --cached -- {path}` takes it out of the index and touches no "
-            "file; then re-run.")
+            f"-r --cached -- {spelled}` takes it out of the index and touches "
+            "no file; "
+            + ("then " if spelled == path else
+               "where HEAD holds it too, commit that removal first, since the "
+               f"add's own commit names {path} alone: otherwise HEAD keeps "
+               "the other spelling beside the member, or, with "
+               "`core.ignorecase` set, records the member's gitlink under a "
+               f"spelling other than the {path} that {GITMODULES} and "
+               f"{MANIFEST} say, or both; then ")
+            + "re-run.")
     try:
         run(["git", "--literal-pathspecs", "add", "--dry-run",
              "--ignore-missing", "-f", "--no-warn-embedded-repo", "--", path],
@@ -1481,6 +1543,16 @@ class MountRollback:
     moved the one commit happened: undoing the tree under it would leave a
     working copy that contradicts its own history, so nothing is undone and
     the sentence says so.
+
+    "EXACTLY AS IT WAS" ONLY FOR WHAT WAS COMPARED (#302). Each step puts
+    back what it recorded, by its exact name. git can stage under a name no
+    step asks for: with `core.ignorecase` set, a mount whose directory the
+    index already holds in another case is staged in that case, and the
+    commit's pathspec then matches nothing. So the WHOLE index is recorded
+    too, and `undo` compares it after its steps. Only when the two agree
+    does the sentence say the holder is as it was. When they do not, it
+    names what differs and sends the human to `git ls-files -s`, and the one
+    command that changes anything, `git rm -r --cached`, touches no file.
     """
 
     def __init__(self, root: Path, path: str) -> None:
@@ -1496,6 +1568,9 @@ class MountRollback:
         #: and takes a commit it names now, and did not then, as the one
         #: commit having landed.
         self.head = self._head()
+        #: The whole index, which `undo` compares with the index after its
+        #: steps (#302).
+        self.index = _index_records(root)
         self.gitlink = self._entries(path)
         self.files = {name: (self._bytes(name), self._entries(name))
                       for name in (GITMODULES, MANIFEST)}
@@ -1605,9 +1680,34 @@ class MountRollback:
                 cwd=self.root)
         return True
 
+    def _index_moved(self) -> str:
+        """What the index holds now that it did not hold before the mount,
+        what it has lost, and what it holds staged differently, each named
+        up to five times in the index's order. Returns "" when the index is
+        the one the constructor recorded (#302)."""
+        now = _index_records(self.root)
+        if now == self.index:
+            return ""
+        parts = []
+        for said, names in (
+                ("new in it", [name for name in now
+                               if name not in self.index]),
+                ("gone from it", [name for name in self.index
+                                  if name not in now]),
+                ("staged differently", [name for name in now
+                                        if name in self.index
+                                        and now[name] != self.index[name]])):
+            if names:
+                shown = ", ".join(f"`{name.decode('utf-8', 'replace')}`"
+                                  for name in names[:5])
+                more = f" and {len(names) - 5} more" if len(names) > 5 else ""
+                parts.append(f"{said}: {shown}{more}")
+        return "; ".join(parts)
+
     def undo(self) -> str:
         """Put the holder back. Returns the sentence a refusal ends with:
-        what was put back, or — if any of it could not be — what is left."""
+        what was put back, or — if any of it could not be — what is left,
+        and, where the index is not the one recorded, what differs in it."""
         # NO HEAD IS NOT A COMMIT THAT LANDED: a holder with no commit yet
         # reads None before and after, and so does one whose HEAD names no
         # readable commit. Only a commit HEAD now names and did not before
@@ -1643,12 +1743,42 @@ class MountRollback:
                               f"was: {_reason(exc.cause)}")
             except (CommandFailed, Refusal, OSError) as exc:
                 failed.append(f"{said}: {_reason(exc)}")
+        # THE WHOLE INDEX, once every step has been asked (#302). A partial
+        # unwind already says it is one, and names `git status`. An index
+        # that cannot be read back leaves the steps undone but unconfirmed,
+        # and the sentence says exactly that.
+        moved, unread = "", None
+        if not failed:
+            try:
+                moved = self._index_moved()
+            except Refusal as exc:
+                unread = _reason(exc)
         if failed:
             return (" The mount was undone only in part"
                     + (" (" + ", ".join(restored) + ")" if restored else "")
                     + "; NOT " + "; NOT ".join(failed) + ". Put those back "
                     "by hand — `git status` shows what is left — before "
                     "running `add` again.")
+        undone = ((" Nothing was committed: the mount has been undone — "
+                   + ", ".join(restored) + " —") if restored else
+                  " Nothing was committed,")
+        # `git ls-files -s` is where both sentences send the human: it lists
+        # every record the index holds now, so an entry that is new, or
+        # staged differently, can be read there record by record. An entry
+        # that is gone is in no listing at all, which is why the sentence
+        # names it. `git status` compares the index with HEAD, not with the
+        # index before this command, so it is not that comparison either.
+        if unread is not None:
+            return (undone + " but the holder's index could not be read back "
+                    "to confirm it is as it was before this command: "
+                    f"{unread}. Check it before running `add` again: `git "
+                    "ls-files -s` lists what the index now holds.")
+        if moved:
+            return (undone + " but the holder's index is NOT as it was before "
+                    f"this command ({moved}). Put it back before running "
+                    "`add` again: `git ls-files -s` lists what the index now "
+                    "holds, and `git rm -r --cached -- <path>` takes a path "
+                    "new in it back out and touches no file.")
         if restored:
             return (" Nothing was added: the mount has been undone — "
                     + ", ".join(restored) + " — and the holder is exactly as "
