@@ -104,6 +104,7 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -739,18 +740,78 @@ class Addition(Row):
     rather than filtered away: `--add` on such a path must refuse BY NAME, and
     a refusal that cannot say which of three things went wrong sends a human to
     read this file's source.
+
+    A SYMLINK IS THE OPERATOR'S, AND IS NEVER "NOTHING THERE" (#239). `present`
+    is the root's own answer from `lstat`, which a dangling link gives where
+    `exists()` follows it and says no, and `link` names the first symlink (or
+    Windows junction) on the path's way down from the root — the path itself
+    or a directory above it — and where it points. A write at such a path goes
+    THROUGH the link, to wherever it leads, outside the root included.
     """
 
-    def __init__(self, copy: Copy, present: bool, target_bytes: bytes):
+    def __init__(self, copy: Copy, present: bool, target_bytes: bytes,
+                 link: tuple[str, str] | None = None):
         super().__init__(copy.path, "")
         self.source = copy.source
         self.executable = copy.executable
         self.present = present
+        self.link = link
         self.target_bytes = target_bytes
         self.digest = file_bytes_sha256(target_bytes)
         self.state = UPSTREAM_ADDED
         self.detail = ("the standard added this file after this pin; `apply` "
                        "writes it only when --add names that path")
+
+
+#: An NTFS junction's reparse tag. `stat` names IO_REPARSE_TAG_MOUNT_POINT on
+#: Windows only — it comes from `_stat` there, and naming it bare is an
+#: AttributeError everywhere else — so it is looked up, with the value
+#: Windows' own headers give it as the fallback.
+JUNCTION_TAG = getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003)
+
+
+def is_link_info(info: os.stat_result) -> bool:
+    """A symlink, or on Windows a JUNCTION, from an `lstat` result (#239).
+
+    A junction is Windows' ordinary directory link, and `lstat` reads it as
+    a directory: CPython sets `S_IFLNK` for IO_REPARSE_TAG_SYMLINK only, which
+    is why 3.12 added `os.path.isjunction` as a call of its own. That call is
+    too new for the 3.9 this standard runs on, so this asks what it asks:
+    `st_reparse_tag` (3.8+), absent on POSIX and 0 for anything that is not
+    a reparse point. NOT the `FILE_ATTRIBUTE_REPARSE_POINT` bit, which
+    `lstat` keeps for a OneDrive placeholder or a deduplicated file it has
+    traversed, and which would call a plain directory in a synced checkout a
+    link.
+    """
+    return (stat.S_ISLNK(info.st_mode)
+            or getattr(info, "st_reparse_tag", 0) == JUNCTION_TAG)
+
+
+def symlink_on_the_way(root: Path, rel: str) -> tuple[str, str] | None:
+    """The first link on `rel`'s way down from `root`, `rel` itself
+    included, as `(its path inside the root, where it points)`; None when
+    nothing on that way is one (#239). A link is a symlink, or a junction on
+    Windows (`is_link_info`); `os.readlink` reads either since 3.8.
+
+    `lstat`, ONE COMPONENT AT A TIME, because every other question this file
+    asks of a path FOLLOWS a link: `Path.exists()` says no for a link whose
+    target is missing, and a write at the path or under a directory link then
+    creates what the link points at, which a root is free to point outside
+    itself. The first component that cannot be `lstat`ed ends the walk: the
+    ones after a missing component are missing too.
+    """
+    here = root
+    walked: list[str] = []
+    for part in Path(rel).parts:
+        here = here / part
+        walked.append(part)
+        try:
+            info = os.lstat(here)
+        except (OSError, ValueError):
+            return None
+        if is_link_info(info):
+            return "/".join(walked), os.readlink(here)
+    return None
 
 
 def find_additions(root: Path, rows: list[Row], upstream: Upstream,
@@ -761,6 +822,10 @@ def find_additions(root: Path, rows: list[Row], upstream: Upstream,
     its own name: that is where an in-place adoption's collision landed, so a
     root whose pin carries `shape/Makefile` has a row for the shape's Makefile
     and is not owed another one.
+
+    A PATH THE ROOT HOLDS ANYTHING AT IS PRESENT (#239): `lexists`, not
+    `exists`, so a symlink whose target is missing, and a symlink above the
+    path, are the operator's and not an absence this tool may write into.
     """
     pinned = {row.path for row in rows}
     additions: list[Addition] = []
@@ -773,8 +838,40 @@ def find_additions(root: Path, rows: list[Row], upstream: Upstream,
             # nothing to copy, and inventing a row for absent bytes is the one
             # thing a pin may never do.
             continue
-        additions.append(Addition(copy, (root / copy.path).exists(), data))
+        link = symlink_on_the_way(root, copy.path)
+        additions.append(Addition(
+            copy, link is not None or os.path.lexists(root / copy.path),
+            data, link))
     return additions
+
+
+def link_refusal(path: str, link: tuple[str, str]) -> Refusal:
+    """`update-add-symlink`: `--add <path>` with a link at the path or above
+    it, `link` being `symlink_on_the_way`'s answer (#239). Raised where
+    `resolve_additions` finds the link, and again by `Rollback.write_added`
+    for one that arrived after that.
+
+    WHERE THE LINK POINTS IS QUOTED, `!r`, because it is the operator's text
+    and a file name may hold a newline: printed as it is, a target spelled
+    `out<LF>REFUSED fake` puts a line on stderr that reads as a second
+    refusal. And the promise is `--add`'s alone: a pinned copy, or the pin,
+    kept as a link is still rewritten through it.
+    """
+    name, points = link
+    above = "" if name == path else f", on the way to {path}"
+    return Refusal(
+        "update-add-symlink",
+        f"--add {path} names a file the upstream's lists add, but {name} in "
+        f"this root is a symlink{above}, pointing at {points!r}. A write at "
+        f"{path} would go THROUGH it, to wherever it leads — outside this "
+        "root, if that is where it points — and `--add` never writes through "
+        "a link",
+        f"Remediation: if the link is yours to keep, leave {path} alone: "
+        "`check` stops reporting a path the root holds, and the standard's "
+        "file is yours to carry in whatever the link leads to. To take the "
+        f"standard's file instead, remove or move {name} and run this command "
+        f"again with the same --add: with nothing at {path} it is written "
+        "there, as for any addition.")
 
 
 def resolve_additions(rows: list[Row], additions: list[Addition],
@@ -788,6 +885,12 @@ def resolve_additions(rows: list[Row], additions: list[Addition],
     And a path the ROOT ALREADY HAS A FILE AT is a merge: that is the
     `--accept-local` posture, taken for the same reason, because overwriting
     bytes no row records would delete somebody's work without saying so.
+
+    A FOURTH, ASKED BEFORE THAT ONE: a SYMLINK at the path, or above it, is
+    refused as its own answer (#239), and so is a Windows junction there. It
+    is not a file to merge — a dangling one holds nothing — and a write there
+    goes through the link to wherever it points, so the remedy is the
+    operator's own link, not a merge.
     """
     by_path = {add.path: add for add in additions}
     pinned = {row.path for row in rows}
@@ -812,6 +915,8 @@ def resolve_additions(rows: list[Row], additions: list[Addition],
                 f"`{UPSTREAM_ADDED}` path at that commit; a path in none of "
                 "them is not a shape copy there. Check the spelling, and the "
                 "commit.")
+        if add.link is not None:
+            raise link_refusal(path, add.link)
         if add.present:
             raise Refusal(
                 "update-add-would-overwrite",
@@ -1868,14 +1973,53 @@ class Rollback:
         to create to put the file in. The mode is set the way `_materialize`
         sets it, which is to chmod the executables and leave everything else to
         the umask.
+
+        CREATED EXCLUSIVELY, AND RECORDED ONLY ONCE IT EXISTS (#239). `prepare`
+        looked at the path, but this runs later — after `confirm` has waited
+        for a human — and a link or a file can arrive in between. `xb` is
+        `O_CREAT|O_EXCL`, which POSIX fails on any name already there, a
+        dangling link included, where `write_bytes` followed the link and
+        created what it points at; `mkdir` fails the same way on a dangling
+        directory link above the path. The ledger had recorded the path before
+        writing it, so a red validator's undo then unlinked the operator's link
+        and left the file at its end. Now a path is recorded once this run has
+        made it, and a name already taken is a refusal, which `cmd_apply`'s
+        arm answers by putting back the copies written before it. What an
+        exclusive create cannot see is a LIVE directory link that arrives
+        ABOVE the path in that window: the create follows it, as every `open`
+        does.
         """
-        for parent in reversed([p for p in path.parents if not p.exists()]):
-            parent.mkdir()
-            self.created.append(parent)
+        try:
+            for parent in reversed([p for p in path.parents
+                                    if not p.exists()]):
+                parent.mkdir()
+                self.created.append(parent)
+            handle = path.open("xb")
+        except FileExistsError:
+            raise self._taken(path) from None
         self.created.append(path)
-        path.write_bytes(data)
+        with handle:
+            handle.write(data)
         if executable:
             path.chmod(0o755)
+
+    def _taken(self, path: Path) -> Refusal:
+        """The refusal for a name `write_added` found taken: the link, by
+        name, when there is one on the way to `path`, and otherwise whatever
+        the root now has there."""
+        rel = self._name(path)
+        link = symlink_on_the_way(self.root, rel)
+        if link is not None:
+            return link_refusal(rel, link)
+        return Refusal(
+            "update-add-would-overwrite",
+            f"--add {rel}: this root had nothing at {rel} when this run "
+            "looked, and has something there now. Writing over it would "
+            "replace bytes no pin row records",
+            f"Remediation: look at what is at {rel}. If it is the project's, "
+            "a human merges, as for any path the root holds, and `check` "
+            "stops reporting it; if it is not, remove it and run this command "
+            "again with the same --add.")
 
     def new_branch(self, branch: str) -> None:
         """`git checkout -b <branch>`, remembered so `undo` can take it back.
