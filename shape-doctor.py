@@ -1629,6 +1629,13 @@ def check_shape_currency(ctx: Context) -> Row:
     which is why both commits are in the row.
     """
     us = ctx.update_shape()
+    # A PIN OR MANIFEST KEPT AS A LINK IS ASKED ABOUT FIRST, before anything
+    # reads the pin or opens this checkout as the upstream (#286): see
+    # `linked_record_row`.
+    linked = linked_record_row(ctx, us)
+    if linked is not None:
+        return linked
+
     args = argparse.Namespace(root=str(ctx.root), upstream=str(ctx.shape),
                               at=None)
     try:
@@ -1730,6 +1737,52 @@ def check_shape_currency(ctx: Context) -> Row:
                    detail)
     finally:
         upstream.close()
+
+
+def linked_record_row(ctx: Context, us) -> Row | None:
+    """The `shape currency` row for a root that keeps its pin or its
+    manifest as a symlink, or under one, or None when it keeps neither
+    (#286).
+
+    A STATEMENT ABOUT THEIR REPOSITORY, NOT A FAILURE TO ASK. `update-shape.py
+    apply` rewrites `contracts/shape-pin.yaml` and the manifest where they
+    stand, so it refuses a root that keeps either as a link
+    (`update-rewrite-symlink`): the re-pin would land at the link's end,
+    outside the root if that is where it points, and git, which holds the
+    link, would commit none of it. That is what the root's own tree holds,
+    and no `git fetch` in the standard changes it. Filed with `prepare`'s
+    other refusals, it read `CANNOT ANSWER`, exit 3, with a fetch for its
+    NEXT. So this row carries no `environment`, which is the only thing that
+    makes `verdict_for` answer CANNOT ANSWER; the ladder goes on, and where
+    every gate reads through the link and is green, the verdict is `INVALID
+    (shape-currency)`.
+
+    ASKED FIRST, AND BY THE SAME FUNCTION. `linked_record` is the question
+    `read_pin` and `prepare` ask before they refuse, for the KIND of root
+    `prepare` would see, so this row and `update-shape.py` cannot disagree
+    about which record is linked. Asked before anything reads the pin, so a
+    linked pin is answered as a link, whatever else reads it next.
+
+    THE REFUSAL, QUOTED AS `update-shape.py` PRINTS IT, and its remedy for
+    the NEXT: replace the link with what it points at, commit that, run the
+    doctor again. Said, not spelled as a command: what the link points at
+    may be shared with other trees, and removing a link -- a junction above
+    all -- is a person's call.
+    """
+    linked = us.linked_record(ctx.root, us.root_kind(ctx.root))
+    if linked is None:
+        return None
+    record, (name, points) = linked
+    refusal = us.rewrite_link_refusal([linked])
+    return Row("shape-currency", LABEL_SHAPE_CURRENCY, FINDING,
+               "update-shape.py cannot re-pin this root: "
+               f"REFUSED {refusal.code}: {refusal.detail}",
+               f"replace {name} with the file or directory it points at, "
+               "or with what it replaced where it points at nothing, commit "
+               "that, and run this doctor again -- update-shape.py never "
+               f"rewrites {record} through a link",
+               {"error": refusal.code, "path": record, "link": name,
+                "points": points})
 
 
 def head_of(path: Path) -> str | None:

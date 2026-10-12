@@ -415,9 +415,9 @@ def read_pin(root: Path) -> tuple[dict, list[Row]]:
     rather than as a pin that "does not exist".
     """
     pin_path = root / "contracts" / "shape-pin.yaml"
-    link = symlink_on_the_way(root, "contracts/shape-pin.yaml")
-    if link is not None:
-        raise rewrite_link_refusal([("contracts/shape-pin.yaml", link)])
+    linked = linked_record(root)
+    if linked is not None:
+        raise rewrite_link_refusal([linked])
     if not pin_path.is_file():
         raise Refusal(
             "update-pin-missing",
@@ -941,6 +941,33 @@ def linked_copy_detail(path: str, link: tuple[str, str]) -> str:
             "hand at the link's end")
 
 
+def linked_record(root: Path, kind: Kind | None = None
+                  ) -> tuple[str, tuple[str, str]] | None:
+    """The first RECORD `apply` rewrites that the root keeps as a symlink,
+    or under one, as `(record, link)`, `link` being `symlink_on_the_way`'s
+    answer for it; None when neither is (#286). The records are
+    `contracts/shape-pin.yaml` and then `kind.manifest`; with no `kind`, the
+    pin alone, which is all `read_pin` reads.
+
+    ONE QUESTION, AND EVERYONE WHO NEEDS IT ASKS THIS ONE. `read_pin`
+    refuses a linked pin and `prepare` a linked manifest, each with
+    `rewrite_link_refusal` over this answer. `shape-doctor.py` asks it
+    FIRST, before it reads the pin or opens this checkout as the upstream:
+    a linked record is a fact about the ROOT, which keeps a link where
+    `apply` has to write, and not this checkout of the standard failing to
+    ask about a commit. Asking the same function is how the doctor tells the
+    two apart by which read refused, rather than by a list of refusal codes.
+    """
+    records = ["contracts/shape-pin.yaml"]
+    if kind is not None:
+        records.append(kind.manifest)
+    for record in records:
+        link = symlink_on_the_way(root, record)
+        if link is not None:
+            return record, link
+    return None
+
+
 def rewrite_link_refusal(linked: list[tuple[str, tuple[str, str]]],
                          arrived: bool = False) -> Refusal:
     """`update-rewrite-symlink`: a file `apply` REWRITES is a symlink in the
@@ -960,10 +987,10 @@ def rewrite_link_refusal(linked: list[tuple[str, tuple[str, str]]],
     for a link that came after `prepare` looked.
 
     ONE PATH IS ONE LINE, as `update-add-symlink` is. `read_pin` and
-    `prepare` always name one, and the doctor quotes their refusal inside
-    its own one-line verdict, which a detail spread over three lines broke
-    into three. Several `copy-is-link` rows are a list, one path a line, as
-    `update-conflict` lists its own.
+    `prepare` always name one, and the doctor quotes this refusal, for the
+    record `linked_record` names, inside one line of its table, which a
+    detail spread over three lines broke into three. Several `copy-is-link`
+    rows are a list, one path a line, as `update-conflict` lists its own.
     """
     many = len(linked) > 1
     sentences = (["It was not there when this run looked: it arrived while "
@@ -1618,9 +1645,9 @@ def prepare(args) -> tuple[Path, dict, list[Row], list[Addition], Upstream,
     # THE MANIFEST IS THE OTHER RECORD `apply` REWRITES, so a link at it, or
     # above it, is refused here as `read_pin` refuses one at the pin (#286):
     # before the upstream is opened, and before any byte is written.
-    link = symlink_on_the_way(root, kind.manifest)
-    if link is not None:
-        raise rewrite_link_refusal([(kind.manifest, link)])
+    linked = linked_record(root, kind)
+    if linked is not None:
+        raise rewrite_link_refusal([linked])
     pinned = str(pin["commit"]).lower()
     declared = str(pin.get("source_repository") or SHAPE_REPOSITORY)
     upstream = open_upstream(str(args.upstream or declared))

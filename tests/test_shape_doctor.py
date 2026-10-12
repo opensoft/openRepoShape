@@ -1806,6 +1806,90 @@ def test_a_pinned_copy_kept_as_a_link_is_drifted_by_name(standard, project,
     assert "AGENTS-shape.md" in row["reason"], row["reason"]
 
 
+def keep_as_committed_link(root: Path, linked: str, tmp_path: Path) -> Path:
+    """`linked` moved beside the root, a symlink to it left in its place and
+    committed, so the link is what git holds. Returns where it points."""
+    end = tmp_path / "outside" / Path(linked).name
+    end.parent.mkdir(exist_ok=True)
+    shutil.move(str(root / linked), str(end))
+    (root / linked).symlink_to(end, target_is_directory=end.is_dir())
+    commit_all(root, f"keep {linked} as a link")
+    return end
+
+
+def assert_a_linked_record_is_their_finding(result, linked: str,
+                                            record: str) -> None:
+    """The `shape-currency` row for a root that keeps `record`, or the
+    directory above it, as a committed link at `linked` (#286).
+
+    A STATEMENT ABOUT THEIR REPOSITORY. `update-shape.py` refuses to
+    re-pin through the link, and the doctor had filed that refusal with
+    the ones about THIS checkout of the standard: `CANNOT ANSWER`, exit 3,
+    with a `git fetch --all` that changes nothing. It is a finding now:
+    `INVALID (shape-currency)`, exit 1, the refusal quoted, and the NEXT is
+    the refusal's own remedy.
+    """
+    payload = json.loads(result.stdout)
+    assert (payload["verdict"], payload["exit"]) == (
+        "INVALID (shape-currency)", 1), payload["verdict"]
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "cannot-answer" not in result.stderr, result.stderr
+    row = rows_of(result)["shape-currency"]
+    assert row["status"] == "FINDING", row
+    assert "environment" not in row["detail"], row["detail"]
+    assert row["detail"]["error"] == "update-rewrite-symlink", row["detail"]
+    assert (row["detail"]["path"], row["detail"]["link"]) == (
+        record, linked), row["detail"]
+    assert "REFUSED update-rewrite-symlink: `apply` would rewrite " \
+        f"{record}, but {linked} in this root is a symlink" in row["reason"], \
+        row["reason"]
+    assert "fetch" not in row["next"], row["next"]
+    assert row["next"].startswith(f"replace {linked} with the file or "
+                                  "directory it points at"), row["next"]
+    assert "run this doctor again" in row["next"], row["next"]
+    # Every other row reads THROUGH the link and finds nothing wrong: the
+    # verdict is this row's alone.
+    red = [key for key, other in rows_of(result).items()
+           if other["status"] == "FINDING"]
+    assert red == ["shape-currency"], red
+
+
+@WINDOWS_SKIP
+@pytest.mark.parametrize("linked, record", [
+    pytest.param("contracts/shape-pin.yaml", "contracts/shape-pin.yaml",
+                 id="pin-at-a-link"),
+    pytest.param("contracts", "contracts/shape-pin.yaml",
+                 id="contracts-directory-link"),
+    pytest.param("project.yaml", "project.yaml", id="manifest-at-a-link"),
+])
+def test_a_pin_or_manifest_kept_as_a_link_is_a_finding_not_cannot_answer(
+        standard, project, tmp_path, linked, record):
+    """The pin, the `contracts` directory above it, or `project.yaml` kept
+    as a committed link, with the bytes unchanged and the pin naming this
+    standard's commit. Main read through the link and said COMPLIANT; #286
+    made `update-shape.py` refuse the root, and the doctor then answered
+    CANNOT ANSWER. Neither is the truth: `apply` cannot re-pin this root
+    until the link is replaced, and that is the root's to fix."""
+    keep_as_committed_link(project, linked, tmp_path)
+    result = doctor(standard, project, "--json")
+    assert_a_linked_record_is_their_finding(result, linked, record)
+
+
+@WINDOWS_SKIP
+def test_a_family_manifest_kept_as_a_link_is_a_finding_not_cannot_answer(
+        standard, holder, tmp_path):
+    """A family holder's manifest is `family.yaml`, and `apply` rewrites it
+    as it rewrites an assembly root's `project.yaml`: the doctor asks after
+    the manifest of the KIND of root it was pointed at."""
+    root = tmp_path / FAMILY_NAME
+    shutil.copytree(holder["root"], root, symlinks=True)
+    keep_as_committed_link(root, "family.yaml", tmp_path)
+    result = doctor(standard, root, "--json")
+    assert json.loads(result.stdout)["kind"] == "family", result.stdout
+    assert_a_linked_record_is_their_finding(result, "family.yaml",
+                                            "family.yaml")
+
+
 #: How the `leg shape files` row spells a copy ON THIS HOST. `cp` is not a
 #: program on Windows, it is an alias of `Copy-Item` (Microsoft's own
 #: reference: "PowerShell includes the following aliases for `Copy-Item`:

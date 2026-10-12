@@ -158,7 +158,7 @@ def said(path: str, name: str, points) -> str:
 
 def one_link_said(path: str, name: str, points) -> str:
     """How `update-rewrite-symlink` opens when it names ONE path: on one
-    line, so the doctor can quote it inside its one-line verdict."""
+    line, so the doctor can quote it inside one line of its table."""
     return f"`apply` would rewrite {path}, but " + said(path, name, points)
 
 
@@ -302,7 +302,7 @@ def test_check_refuses_a_pin_or_manifest_kept_as_a_link(
     assert "Traceback" not in result.stderr, result.stderr
     assert "REFUSED update-rewrite-symlink" in result.stderr, result.stderr
     # ONE LINE, link and reason together: the doctor quotes this refusal
-    # inside its own one-line verdict.
+    # inside one line of its table.
     refused = [line for line in result.stderr.splitlines()
                if line.startswith("REFUSED")]
     assert len(refused) == 1, result.stderr
