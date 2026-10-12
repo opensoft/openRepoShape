@@ -16,9 +16,12 @@ It also means these tests exercise the code as it is on disk right now rather
 than as it was committed, which is the point of running them at all.
 
 NOTHING HERE REACHES A NETWORK. The scaffolds use `--local-remote-dir` (bare
-repositories on disk as origins), and the two shim tests put a `gh` and a
-`curl` on `$PATH` that refuse loudly, so a run that tried to fetch would fail
-rather than quietly succeed against github.com.
+repositories on disk as origins), and the shim tests put a `gh` and a `curl`
+on `$PATH` that refuse loudly and log every call, so a run that tried to
+fetch would fail rather than quietly succeed against github.com. Every other
+doctor run's `machine` row asks the session's `gh` guard (`tests/conftest.py`,
+#296), which answers its two probes as a `gh` with no login and fails the
+test on any other call.
 """
 
 from __future__ import annotations
@@ -39,6 +42,7 @@ import pytest
 
 from conftest import (FILE_PROTOCOL, REPO, WINDOWS_SKIP, git, rmtree,
                       run_script)
+from gh_guard import PROBES as GH_PROBES
 
 sys.path.insert(0, str(REPO / "scripts"))
 #: THE ONE DEFINITION of "is this the same repository" (#155), imported here
@@ -308,15 +312,18 @@ def test_a_project_behind_the_standard_is_compliant_but_behind(
 
 # --- a leg that is not at its pin ------------------------------------------
 
-def test_a_leg_off_its_pin_is_a_finding_that_names_bootstrap(standard,
-                                                             project):
+def test_a_leg_off_its_pin_is_a_finding_that_names_a_submodule_update(
+        standard, project):
     """A commit made INSIDE a mount, which is how a leg walks off its pin.
 
     The gitlink in the superproject's index is untouched, so
     `validate-pins.py` is still green — it reads what the next commit would
     RECORD — and the only thing that can notice is a tool that looks at the
-    mount's HEAD. That is this row, and its exit is `make bootstrap`, which
-    puts the leg back on its tracking branch AT the pin.
+    mount's HEAD. That is this row, and its exit is `git submodule update`,
+    which puts the leg back AT the gitlink, which is the pin. It names no
+    script of the root's: `scripts/bootstrap.py` may be what is missing, and
+    never moved an existing branch (#276; `test_doctor_legs_members_next.py`
+    pastes the line).
     """
     leg = project / "spec"
     subprocess.run(["git", "commit", "-q", "--allow-empty", "-m",
@@ -327,8 +334,10 @@ def test_a_leg_off_its_pin_is_a_finding_that_names_bootstrap(standard,
     assert result.returncode == 1, result.stdout + result.stderr
     assert verdict_line(result).startswith("DRIFTED ("), result.stdout
     assert "leg(s) not at the pin" in verdict_line(result), result.stdout
-    assert "bootstrap.py" in result.stdout, (
-        "the row must name what `make bootstrap` runs")
+    assert "submodule update --init --recursive" in result.stdout, (
+        "the row must name the command that puts the leg back at its pin")
+    assert "bootstrap.py" not in result.stdout, (
+        "and no script the root may lack (#276)")
     rows = rows_of(doctor(standard, project, "--json"))
     assert rows["legs"]["status"] == "FINDING"
     assert rows["pins"]["status"] == "ok", (
@@ -349,7 +358,11 @@ def test_an_unbootstrapped_mount_is_a_finding(standard, project):
     rows = rows_of(result)
     assert rows["legs"]["status"] == "FINDING"
     assert "unbootstrapped clone" in rows["legs"]["reason"]
-    assert "bootstrap" in (rows["legs"]["next"] or "")
+    # `bootstrap.py` never initialises a mount (it prints `NOT INITIALIZED`
+    # and stops), so the line is the submodule update that does (#276).
+    assert "submodule update --init --recursive --checkout -- code" in \
+        (rows["legs"]["next"] or ""), rows["legs"]["next"]
+    assert "bootstrap.py" not in (rows["legs"]["next"] or "")
 
 
 # --- a manifest kind nothing validates -------------------------------------
@@ -1145,23 +1158,34 @@ def no_adoption_offered(text: str = "", rows: dict | None = None,
         assert "adopt-project.py" not in json.dumps(rest), rest
 
 
+#: WHETHER THE `machine` ROW'S `gh` IS THE SESSION GUARD (#296). On POSIX the
+#: preflight's bare `gh` is the guard `tests/conftest.py` puts first on PATH,
+#: which answers every run the same, so the whole row can be held still. On
+#: Windows CreateProcess looks a bare `gh` up as `gh.exe` alone, never the
+#: guard's `gh.cmd`, so the row still asks whatever `gh.exe` is installed,
+#: which answers from its host and may answer two runs differently.
+GH_IS_THE_GUARD = os.name != "nt"
+
+
 def machine_row_unchanged(before: dict, after: dict) -> None:
     """The `machine` row is the row the same root had before it broke.
 
     It is about the workstation, so nothing in a manifest can move it, and
-    #205 is held to that rather than trusted with it. ONE PART IS NOT THIS
-    TEST'S TO HOLD STILL: the preflight asks `gh`, which answers from its
-    host, so where `gh` answered the two runs differently only the parts that
-    do not come from it are compared. Where it answered the same, the whole
-    row must be the same, byte for byte.
+    #205 is held to that rather than trusted with it. Where the row's `gh` is
+    the session guard (`GH_IS_THE_GUARD`) it answers both runs the same, so
+    the whole row must be the same, byte for byte. ONE PART IS NOT THIS
+    TEST'S TO HOLD STILL where it is not: there the preflight asks a real
+    `gh`, which answers from its host, so where it answered the two runs
+    differently only the parts that do not come from it are compared.
     """
     for key in ("id", "label", "status"):
         assert after[key] == before[key], (key, before, after)
     for key in ("preflight", "git-filter-repo"):
         assert after["detail"].get(key) == before["detail"].get(key), \
             (key, before, after)
-    if all(after["detail"].get(key) == before["detail"].get(key)
-           for key in ("exit", "report")):
+    if GH_IS_THE_GUARD or all(
+            after["detail"].get(key) == before["detail"].get(key)
+            for key in ("exit", "report")):
         assert after == before, (before, after)
 
 
@@ -1253,8 +1277,8 @@ def test_the_json_report_of_an_unloaded_manifest_is_the_same_report(
         f"{payload['verdict']}   (exit {payload['exit']})", text.stdout
     no_adoption_offered(text.stdout + text.stderr)
     for name, row in rows.items():
-        if name == "machine":
-            continue  # it asks `gh`, which need not answer twice the same
+        if name == "machine" and not GH_IS_THE_GUARD:
+            continue  # a real `gh` need not answer twice the same
         assert row["reason"] in text.stdout, (name, row["reason"])
         if row["next"]:
             assert row["next"] in text.stdout, (name, row["next"])
@@ -1376,8 +1400,8 @@ def test_a_family_yaml_that_does_not_load_is_invalid_and_not_absent(
                   "what is here", "remove the file", "git submodule"):
         assert never not in whole, (never, whole)
     for name, row in rows.items():
-        if name == "machine":
-            continue  # it asks `gh`, which need not answer twice the same
+        if name == "machine" and not GH_IS_THE_GUARD:
+            continue  # a real `gh` need not answer twice the same
         assert row["reason"] in text.stdout, (name, row["reason"])
         if row["next"]:
             assert row["next"] in text.stdout, (name, row["next"])
@@ -1529,17 +1553,68 @@ def test_the_doctor_writes_nothing(standard, project):
 # --- the shim ---------------------------------------------------------------
 
 def refusing_network(tmp_path) -> dict:
-    """A `$PATH` whose `gh` and `curl` fail loudly if anything calls them."""
+    """A `$PATH` whose `gh` and `curl` fail loudly if anything calls them,
+    and write down every call they are handed.
+
+    THE LOG IS THE WITNESS, NOT STDERR (#296). The doctor's `machine` row
+    calls this `gh` -- `gh --version` and `gh auth status`, from
+    `setup-project.py --preflight` -- and the preflight CAPTURES what `gh`
+    prints, so the refusal below never reaches the run's stderr and an
+    assertion that it is absent there could not fail. Each call is one line
+    in `CALLS` beside the two scripts: the program, then each argument, TAB
+    separated. A stub of the test's own, it sits ahead of the session's `gh`
+    guard (`tests/conftest.py`) and wins, exactly as before.
+    """
     fake = tmp_path / "no-network"
     fake.mkdir(exist_ok=True)
+    log = shlex.quote(str(fake / CALLS))
     for name in ("gh", "curl"):
         script = fake / name
         script.write_text(
             "#!/bin/sh\n"
+            f"{{ printf '%s' {name}; [ \"$#\" -eq 0 ] || "
+            f"printf '\\t%s' \"$@\"; printf '\\n'; }} >> {log}\n"
             f"printf 'fake {name}: no test here may reach the network\\n' >&2\n"
             "exit 1\n", encoding="utf-8")
         script.chmod(0o755)
     return {"PATH": f"{fake}{os.pathsep}{os.environ['PATH']}"}
+
+
+#: `refusing_network`'s log, beside its two scripts.
+CALLS = "calls.log"
+
+
+def network_calls(tmp_path) -> list:
+    """Every call `refusing_network`'s `gh` and `curl` were handed, as
+    `[program, *arguments]`, in order; none when nothing called them."""
+    log = tmp_path / "no-network" / CALLS
+    if not log.exists():
+        return []
+    return [line.split("\t")
+            for line in log.read_text(encoding="utf-8").splitlines()]
+
+
+def beyond_the_machine_row(calls: list) -> list:
+    """`calls` less the two the doctor's `machine` row makes -- `gh
+    --version` and `gh auth status`, the session guard's own `PROBES` -- so
+    what is left is a fetch, which no test here may make."""
+    return [call for call in calls
+            if not (call[0] == "gh" and tuple(call[1:]) in GH_PROBES)]
+
+
+def fetched_nothing(tmp_path, doctor_ran: bool) -> None:
+    """No call beyond the `machine` row's reached `refusing_network`'s `gh`
+    or `curl` -- and, where the doctor ran, the row's two probes DID reach
+    that `gh`, once each and in order, which is what shows the `gh` the run
+    met was the stub rather than one further down PATH. Where it did not run
+    (a refusal before it), nothing reached either."""
+    calls = network_calls(tmp_path)
+    assert beyond_the_machine_row(calls) == [], (
+        f"a run that must fetch nothing called: {calls}")
+    # The guard's own table, in its order, which is the preflight's: one
+    # definition of the row's two calls, so a change to it moves this too.
+    expected = [["gh", *argv] for argv in GH_PROBES] if doctor_ran else []
+    assert calls == expected, calls
 
 
 def shim_env(tmp_path, **extra) -> dict:
@@ -1562,8 +1637,12 @@ def test_the_shim_runs_the_script_beside_it_and_fetches_nothing(
 
     Nothing is faked here: the real shim runs the real `shape-doctor.py` out
     of the real (temporary) standard, and the `gh` and `curl` on `$PATH`
-    refuse — so a shim that reached for the network would fail this test
-    rather than pass it slowly.
+    refuse and log — so a shim that reached for the network would fail this
+    test rather than pass it slowly. THE LOG is what is read (#296): the
+    doctor's `machine` row calls that `gh` too, the preflight captures what
+    it prints, and so the refusal never reaches stderr. The row's two probes
+    are in the log, which shows the `gh` this run reached was the stub, and
+    nothing else is.
     """
     result = subprocess.run(
         ["bash", str(standard / "openRepoShape"), "--doctor", str(project)],
@@ -1573,7 +1652,7 @@ def test_the_shim_runs_the_script_beside_it_and_fetches_nothing(
     assert "COMPLIANT   (exit 0)" in result.stdout
     assert f"standard    {standard}" in result.stdout, (
         "the checkout beside the file is the standard it must use")
-    assert "no test here may reach the network" not in result.stderr
+    fetched_nothing(tmp_path, doctor_ran=True)
 
 
 @WINDOWS_SKIP
@@ -1604,6 +1683,7 @@ def test_the_shim_from_stdin_clones_the_standard_first(standard, project,
         "the directory the project happens to sit next to")
     assert not Path(reported).exists(), (
         f"{reported} outlived the run; the EXIT trap did not fire")
+    fetched_nothing(tmp_path, doctor_ran=True)
 
 
 @WINDOWS_SKIP
@@ -1618,6 +1698,7 @@ def test_the_shim_doctor_takes_a_path_and_nothing_else(standard, tmp_path):
     assert "openRepoShape --preflight" in result.stderr, (
         "the refusal must name the machine check, because `--doctor` meant "
         "that until 2026-09-10")
+    fetched_nothing(tmp_path, doctor_ran=False)
 
 
 @WINDOWS_SKIP
@@ -1631,6 +1712,7 @@ def test_the_shim_doctor_defaults_to_the_directory_you_are_in(standard,
         cwd=str(project), env=shim_env(tmp_path))
     assert result.returncode == 0, result.stdout + result.stderr
     assert "COMPLIANT   (exit 0)" in result.stdout
+    fetched_nothing(tmp_path, doctor_ran=True)
 
 
 def test_the_shipped_doctor_is_executable_with_a_shebang():
@@ -1747,8 +1829,12 @@ def test_the_legs_next_command_is_runnable(standard, project):
                    env={**os.environ, **GIT_IDENTITY})
     row = rows_of(doctor(standard, project, "--json"))["legs"]
     command = row["next"].split("#")[0].split()
-    assert "--root" in command, row["next"]
-    assert Path(command[1]).is_file(), command
+    # A git line and not a script of the root's (#276): `git -C <root>
+    # submodule update --init --recursive -- spec`.
+    assert command[:2] == ["git", "-C"], row["next"]
+    assert command[3:7] == ["submodule", "update", "--init", "--recursive"], \
+        row["next"]
+    assert command[-1] == "spec", row["next"]
     proc = subprocess.run(command, capture_output=True, text=True,
                           check=False, env={**os.environ, **GIT_IDENTITY,
                                             "PYTHONDONTWRITEBYTECODE": "1"})
@@ -2657,6 +2743,38 @@ def test_the_doctor_and_siblings_run_ONE_definition_of_one_repository(
     assert repo_shape.resolved_remote("../IRRS.git", "") == "../IRRS.git"
     assert repo_shape.resolved_remote(
         "https://host/IRRS.git", "https://host/x") == "https://host/IRRS.git"
+
+
+def test_a_port_and_githubs_ssh_host_are_not_part_of_a_remotes_key():
+    """`remote_key` TAKES A PORT, AND `ssh.github.com`, OFF THE HOST (#190).
+
+    `ssh://git@github.com:22/Acme/Widget.git`, and
+    `ssh://git@ssh.github.com:443/Acme/Widget.git` as GitHub documents SSH
+    over the HTTPS port, are the scp `git@github.com:Acme/Widget.git`
+    reached another way, and keyed as `github.com/22/acme/widget`.
+    `same_repository`'s forge-tail match hid that for an `Owner/Repo`, but
+    not for a repository at a host's top level, and `adopt-project.py`
+    compares keys and nothing else, so it refused a source cloned that way.
+    """
+    scp = repo_shape.remote_key("git@github.com:Acme/Widget.git")
+    for url in ("ssh://git@github.com:22/Acme/Widget.git",
+                "ssh://git@ssh.github.com:443/Acme/Widget.git",
+                "ssh://git@SSH.GitHub.com:443/Acme/Widget.git",
+                "https://github.com:443/Acme/Widget.git",
+                "https://x-access-token:token@github.com:443/Acme/Widget.git",
+                "git@ssh.github.com:Acme/Widget.git"):
+        assert repo_shape.remote_key(url) == scp, url
+    assert repo_shape.same_repository("ssh://git@host:2222/Repo.git",
+                                      "git@host:Repo.git")
+    # ...and nothing that is not a port: the scp spelling has none, so its
+    # `22` is a path component; a drive's colon carries no digits; and
+    # another repository, or another host, is still another.
+    for url in ("git@github.com:22/Acme/Widget.git",
+                "ssh://git@github.com:22/Acme/Other.git",
+                "ssh://git@gitlab.com:22/Acme/Widget.git"):
+        assert repo_shape.remote_key(url) != scp, url
+    assert repo_shape.remote_key("file:///E:/mirrors/Widget.git") \
+        == repo_shape.remote_key("E:\\mirrors\\Widget.git")
 
 
 def test_a_symlinked_prefix_is_ONE_directory_to_both_callers(tmp_path,
