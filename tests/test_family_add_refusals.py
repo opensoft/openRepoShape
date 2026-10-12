@@ -732,7 +732,8 @@ def test_a_commit_that_fails_unwinds_the_mount_and_the_pin(family, holder,
                              f"mounting {ORG}/{SPARE} at members/{SPARE}\n")
     assert result.stderr.splitlines() == [
         f"REFUSED committing {SPARE} to the family. THE EXACT COMMAND WAS:",
-        f"    git commit -q -F - -- .gitmodules members/{SPARE} family.yaml",
+        "    git commit -q -F - -- :(literal).gitmodules "
+        f":(literal)members/{SPARE} :(literal)family.yaml",
         f"    (in {holder.resolve()})",
         "    exit 1",
         "--- output ---",
@@ -1280,3 +1281,267 @@ def test_the_first_add_to_a_holder_with_no_commit_makes_its_root_commit(
     assert row["pin"]["commit"] == tip
     assert git("status", "--porcelain", cwd=root).stdout == ""
     offline.assert_left_nothing()
+
+
+# --- a case variant of the mount path, and the whole index (#302) -----------
+
+#: `add`'s mount path for the spare member.
+SPARE_MOUNT = f"members/{SPARE}"
+
+#: What a refused `add` ends with when the unwind put back everything it
+#: recorded but the index still differs: the middle names what was put back,
+#: and `{moved}` what differs.
+INDEX_MOVED = (
+    "Nothing was committed: the mount has been undone — {restored} — but the "
+    "holder's index is NOT as it was before this command ({moved}). Put it "
+    "back before running `add` again: `git ls-files -s` lists what the index "
+    "now holds, and `git rm -r --cached -- <path>` takes a path new in it "
+    "back out and touches no file.")
+
+#: Each case variant of the mount path the index can hold, as `(mode, name,
+#: whether HEAD holds it as well)`: a file under it and a gitlink at it,
+#: staged, and a file under it that a commit already holds.
+CASE_VARIANTS = {
+    "a file under it, staged": ("100644", f"Members/{SPARE}/README", False),
+    "a submodule at it, staged": ("160000", f"members/{SPARE.lower()}", False),
+    "a file under it, committed": ("100644", f"Members/{SPARE}/README", True),
+}
+
+
+def index_bytes(root: Path) -> bytes:
+    """`git ls-files -s -z` of `root`, as bytes: the whole index, every
+    record and every byte of each name, which is the strongest form of "the
+    index is as it was"."""
+    return subprocess.run(["git", "ls-files", "-s", "-z"], cwd=str(root),
+                          capture_output=True, check=True).stdout
+
+
+def plant(root: Path, mode: str, name: str) -> None:
+    """An index entry `name` and nothing on disk, by `update-index
+    --cacheinfo`: a case variant needs no case-insensitive disk this way, so
+    the state is the same on every OS. A gitlink names a commit nothing has;
+    a file is a blob written as BYTES. `core.protectNTFS` is off for this
+    one command, so git for Windows indexes a `*` it would refuse to check
+    out."""
+    oid = "1" * 40
+    if mode != "160000":
+        oid = subprocess.run(["git", "hash-object", "-w", "--stdin"],
+                             cwd=str(root), input=b"a file\n",
+                             capture_output=True,
+                             check=True).stdout.decode("ascii").strip()
+    git("-c", "core.protectNTFS=false", "update-index", "--add", "--cacheinfo",
+        f"{mode},{oid},{name}", cwd=root)
+
+
+@pytest.mark.parametrize("ignorecase", ["true", "false"])
+@pytest.mark.parametrize("variant", list(CASE_VARIANTS))
+def test_a_case_variant_of_the_mount_path_in_the_index_is_refused_first(
+        family, holder, offline, variant, ignorecase):
+    """THE ISSUE'S STATE (#302): the index holds the mount path in another
+    case, and nothing is on disk. With `core.ignorecase` set, `git submodule
+    add` staged the member's own files under the variant (19 of them beside
+    `Members/IRQS/README`). The commit's pathspec then matched nothing, and
+    the unwind, asking for exact names, left all 19 staged while saying the
+    holder was exactly as it was. Now it is refused before the member is
+    even read, on every disk and whatever `core.ignorecase` says, because a
+    holder is cloned on macOS and Windows too, where the two spellings are
+    one path. The refusal names the entry as the index spells it, and its
+    remediation, run as printed, lets the same command through with the
+    member under one spelling only. Where HEAD holds the variant, the
+    removal is committed first: the add's own commit names `members/IRQS`
+    alone, so without it HEAD keeps the variant, records the gitlink under
+    another spelling, or both."""
+    mode, name, committed = CASE_VARIANTS[variant]
+    git("config", "--local", "core.ignorecase", ignorecase, cwd=holder)
+    plant(holder, mode, name)
+    if committed:
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm",
+            f"Track {name}", cwd=holder)
+    spelled = name[:len(SPARE_MOUNT)]
+    assert spelled != SPARE_MOUNT and spelled.lower() == SPARE_MOUNT.lower()
+    kind = "a submodule" if mode == "160000" else "a file"
+    before, index = snapshot(holder), index_bytes(holder)
+
+    result = offline.add(holder, SPARE, remotes=family["remotes"])
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stdout == ""
+    assert refusal(result.stderr) == (
+        f"REFUSED member-path-taken: the family root's index holds `{name}` "
+        f"({kind})" + ("" if name == spelled else f" under {spelled}")
+        + f", the same path as {SPARE_MOUNT} on a case-insensitive disk, "
+        f"though nothing is at {SPARE_MOUNT} on disk and no `members:` row "
+        "names it",
+        "Remediation: this is a half-finished add or a hand edit. `git rm -r "
+        f"--cached -- {spelled}` takes it out of the index and touches no "
+        "file; where HEAD holds it too, commit that removal first, since the "
+        f"add's own commit names {SPARE_MOUNT} alone: otherwise HEAD keeps "
+        "the other spelling beside the member, or, with `core.ignorecase` "
+        "set, records the member's gitlink under a spelling other than the "
+        f"{SPARE_MOUNT} that .gitmodules and family.yaml say, or both; then "
+        "re-run.")
+    assert index_bytes(holder) == index
+    assert snapshot(holder) == before
+    offline.assert_left_nothing()
+
+    git("rm", "-r", "-q", "--cached", "--", spelled, cwd=holder)
+    if committed:
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm",
+            f"Untrack {spelled}", cwd=holder)
+    again = offline.add(holder, SPARE, remotes=family["remotes"])
+    assert again.returncode == 0, again.stdout + again.stderr
+    held = [line for line in git("ls-tree", "-r", "--name-only", "HEAD",
+                                 cwd=holder).stdout.splitlines()
+            if line.lower() == SPARE_MOUNT.lower()
+            or line.lower().startswith(SPARE_MOUNT.lower() + "/")]
+    assert held == [SPARE_MOUNT]
+    offline.assert_left_nothing()
+
+
+def test_a_gitlink_git_stages_under_another_spelling_is_named_not_hidden(
+        family, holder, offline):
+    """THE CLOSING SENTENCE SAYS "EXACTLY AS IT WAS" ONLY FOR WHAT IT
+    COMPARED (#302). The index holds `Members/README`, a case variant of
+    `members/` and not of the mount path, so `member-path-taken` lets it
+    by: it is not at `members/IRQS` or under it in any spelling. With
+    `core.ignorecase` set, git stages the new gitlink in the spelling the
+    index already gives the directory, `Members/IRQS`, and the commit, whose
+    pathspec is `members/IRQS`, matches nothing. The unwind puts back every
+    piece it recorded by name, and the gitlink it never recorded is still
+    staged. That used to end "the holder is exactly as it was". The whole
+    index is compared now, so the sentence names the entry, and the command
+    it names takes it back out, touching no file."""
+    git("config", "--local", "core.ignorecase", "true", cwd=holder)
+    plant(holder, "100644", "Members/README")
+    tip = git("rev-parse", "main",
+              cwd=family["remotes"] / f"{SPARE}.git").stdout.strip()
+    before, index = snapshot(holder), index_bytes(holder)
+
+    result = offline.add(holder, SPARE, remotes=family["remotes"])
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stdout == (f"checking {ORG}/{SPARE} before mounting it\n"
+                             f"mounting {ORG}/{SPARE} at {SPARE_MOUNT}\n")
+    # The step that failed, and not the command's own spelling, which is the
+    # commit's business and changes with it.
+    lines = result.stderr.splitlines()
+    assert lines[0] == (f"REFUSED committing {SPARE} to the family. THE "
+                        "EXACT COMMAND WAS:")
+    assert lines[-1] == INDEX_MOVED.format(
+        restored=f"{SPARE_MOUNT} removed, .git/modules/{SPARE_MOUNT} removed, "
+                 ".gitmodules restored byte for byte, family.yaml restored "
+                 f"byte for byte, `submodule.{SPARE_MOUNT}` dropped from the "
+                 "holder's git config",
+        moved=f"new in it: `Members/{SPARE}`")
+    # What it says is what is there: one record more, the member's gitlink
+    # in the other spelling, and nothing lost.
+    was, now = set(index.split(b"\0")), set(index_bytes(holder).split(b"\0"))
+    assert now - was == {f"160000 {tip} 0\tMembers/{SPARE}".encode()}
+    assert was - now == set()
+    offline.assert_left_nothing()
+
+    git("rm", "-r", "-q", "--cached", "--", f"Members/{SPARE}", cwd=holder)
+    assert index_bytes(holder) == index
+    assert snapshot(holder) == before
+
+
+def test_the_closing_sentence_names_what_the_index_gained_lost_and_changed(
+        holder, family_module):
+    """THE SENTENCE AT UNIT LEVEL (#302), for the differences no mount makes
+    on its own. The rollback records the index, which is then changed by
+    hand. With nothing changed, `undo` keeps the sentence it had. With ONE
+    entry restaged and nothing else, its name is unchanged and its record is
+    not: comparing names alone would call that holder unchanged. Then six
+    entries are new and one is gone as well. `undo` has nothing of its own
+    to put back, and it names each kind, five names at most, never calling
+    the holder unchanged."""
+    rollback = family_module.MountRollback(holder, SPARE_MOUNT)
+    assert rollback.undo() == (
+        " Nothing was added, and nothing in the holder had changed.")
+    then = ("Put it back before running `add` again: `git ls-files -s` lists "
+            "what the index now holds, and `git rm -r --cached -- <path>` "
+            "takes a path new in it back out and touches no file.")
+    plant(holder, "100644", "Makefile")
+    assert rollback.undo() == (
+        " Nothing was committed, but the holder's index is NOT as it was "
+        f"before this command (staged differently: `Makefile`). {then}")
+    for n in range(1, 7):
+        plant(holder, "100644", f"new/{n}")
+    git("update-index", "--force-remove", "--", "README.md", cwd=holder)
+    assert rollback.undo() == (
+        " Nothing was committed, but the holder's index is NOT as it was "
+        "before this command (new in it: `new/1`, `new/2`, `new/3`, `new/4`, "
+        "`new/5` and 1 more; gone from it: `README.md`; staged differently: "
+        f"`Makefile`). {then}")
+
+
+def test_an_index_that_cannot_be_read_back_is_never_called_as_it_was(
+        holder, family_module, monkeypatch):
+    """The comparison is a git command too. If the index cannot be read
+    back after the unwind, every step may still have been undone, but the
+    index has not been shown to be as it was. The sentence says exactly
+    that, with git's reason, and sends the human to `git ls-files -s`, as
+    the sentence for an index that differs does. It never calls the holder
+    as it was, nor the unwind partial, and the refusal it ends is still the
+    one printed."""
+    rollback = family_module.MountRollback(holder, SPARE_MOUNT)
+
+    def unreadable(root):
+        raise family_module.Refusal(
+            "git-failed", f"`git ls-files -s -z` in {root} exited 128: "
+            "fatal: index file corrupt")
+
+    monkeypatch.setattr(family_module, "_index_records", unreadable)
+    assert rollback.undo() == (
+        " Nothing was committed, but the holder's index could not be read "
+        "back to confirm it is as it was before this command: `git ls-files "
+        f"-s -z` in {holder} exited 128: fatal: index file corrupt. Check it "
+        "before running `add` again: `git ls-files -s` lists what the index "
+        "now holds.")
+
+
+def test_the_index_is_asked_at_the_mount_path_in_any_case_and_literally(
+        holder, family_module):
+    """`_index_entries` (#302): every entry AT the path or UNDER it, in any
+    case, each as the index spells it. Never a neighbour the path is only a
+    prefix of (`members/IRQSX`), never a variant of `members/` alone, and
+    never what a glob would add: `members/IRQ*` is a name, so it selects
+    itself in any case, where `git --icase-pathspecs` would read it as a
+    glob and select `members/IRQS`, `members/IRQSX/b` and `MEMBERS/irqs/a`
+    besides. (The entries are planted, with nothing on disk.)"""
+    for name in ("MEMBERS/irqs/a", SPARE_MOUNT, f"{SPARE_MOUNT}X/b",
+                 "Members/README", "members/IRQ*/c", "members/irq*"):
+        plant(holder, "100644", name)
+    plant(holder, "160000", f"members/{SPARE.lower()}/d")
+    assert family_module._index_entries(holder, SPARE_MOUNT) == [
+        ("MEMBERS/irqs/a", "a file"), (SPARE_MOUNT, "a file"),
+        (f"members/{SPARE.lower()}/d", "a submodule")]
+    assert family_module._index_entries(holder, "members/IRQ*") == [
+        ("members/IRQ*/c", "a file"), ("members/irq*", "a file")]
+
+
+def test_a_conflicted_entry_at_the_mount_path_is_counted_once_per_stage(
+        holder, family_module):
+    """`member-path-taken` counts as main counted (#302): one per index
+    record, so a path conflicted at three stages is named "and 2 more". The
+    read now lists the whole index, and an exact-case entry still gets the
+    text #242 wrote, byte for byte. (The three stages are written as BYTES
+    on stdin.)"""
+    blob = subprocess.run(["git", "hash-object", "-w", "--stdin"],
+                          cwd=str(holder), input=b"a file\n",
+                          capture_output=True,
+                          check=True).stdout.decode("ascii").strip()
+    subprocess.run(["git", "update-index", "--index-info"], cwd=str(holder),
+                   input=b"".join(f"100644 {blob} {stage}\t{SPARE_MOUNT}/"
+                                  "README\n".encode("ascii")
+                                  for stage in (1, 2, 3)),
+                   capture_output=True, check=True)
+    with pytest.raises(family_module.Refusal) as caught:
+        family_module._checked_mount_path(holder, SPARE, SPARE_MOUNT)
+    assert (caught.value.code, caught.value.detail,
+            caught.value.remediation) == (
+        "member-path-taken",
+        f"the family root's index holds `{SPARE_MOUNT}/README` (a file) and "
+        f"2 more under {SPARE_MOUNT}, though nothing is at {SPARE_MOUNT} on "
+        "disk and no `members:` row names it",
+        "Remediation: this is a half-finished add or a hand edit. `git rm -r "
+        f"--cached -- {SPARE_MOUNT}` takes it out of the index and touches no "
+        "file; then re-run.")

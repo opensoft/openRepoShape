@@ -24,7 +24,8 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            `leg: null`, `review_required: true` and the QUESTION to ask.
            A leg path over a path it keeps in the root itself is a NOTE,
            not a refusal: the answer is the person's to change.
-  check    validates a plan against the source: every path covered exactly
+  check    validates a plan against the source: each entry path bound for
+           a leg one `execute` will extract, every path covered exactly
            once, no unresolved legs, leg names conforming to the naming
            policy, each leg's mount path one `execute` can mount
            (`spec`, `legs/spec`; never `spec/` or `./spec`, a name Git or
@@ -32,9 +33,12 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            `execute` would refuse; the two never equal or nested, in any
            case; neither equal to, around or inside a path the shape writes
            into the root, `shape/`, or a source path the plan keeps there),
-           and the source's own submodules kept on one leg with their
-           `.gitmodules`, registered there and never in the root. It prints
-           what will happen and changes nothing.
+           no path kept in the root where the shape writes (a plain file at
+           a directory it writes into, `.github`, `contracts` or `scripts`,
+           or the source's own path at a copy it writes under `shape/`, in
+           any case), and the source's own submodules kept on one leg with
+           their `.gitmodules`, registered there and never in the root. It
+           prints what will happen and changes nothing.
   execute  creates the two legs, extracts them with `git filter-repo`, makes
            the one split commit on a branch of the source, sets the
            `xf-project-<id>` topic on all three (skipped for local remotes),
@@ -119,8 +123,8 @@ import shape_advisory  # noqa: E402
 # #172's shape half, shared with the scaffold since #197 (see that section
 # below), under the names this file has always called it by.
 from shape_materialize import (  # noqa: E402
-    MOVE_THE_LEG, first_and_more as _first_and_more, path_overlap as _overlap,
-    shape_path_collisions,
+    CASE_ASIDE as _CASE_ASIDE, MOVE_THE_LEG, first_and_more as _first_and_more,
+    path_overlap as _overlap, shape_path_collisions,
 )
 
 #: The naming policy this tool classifies leg names against. One constant,
@@ -1065,6 +1069,22 @@ def cross_leg_references(source: "Source", entries: list["Entry"],
     the spec leg, and the code that reads them reads ACROSS the assembly root
     mount. The read is one relative path from the code leg — but only once
     somebody edits it, so the plan says which file and the human decides when.
+
+    EVERY NAME IS A NAME (#216). Both inputs are source paths, and git reads
+    each as something else unless told not to. A spec directory passed bare
+    sits where git reads OPTIONS: `-notes/` was a usage error (exit 129, no
+    follow-up), and `-O<cmd>/` was `--open-files-in-pager`, which git runs
+    through a shell -- argv and `shell=False` stop Python running a shell,
+    not git -- so `-e` makes it the pattern. The code entries are pathspecs:
+    `:cache` read as the pathspec `cache` and `*` matched files in the spec
+    leg, so `--literal-pathspecs`. `-l` C-quoted a name outside printable
+    ASCII (`"src/\\303\\234bersicht.py"`), so `-z`, read as `Source.tree`
+    reads names, and each hit is spelled as a question spells a path, with
+    no backticks: one line of UTF-8 whatever its bytes; so is the spec
+    directory's own name. `--no-color`, because `color.grep=always` wraps
+    each name in escapes. A grep that FAILS is said, never read as "no file
+    names it", and so is one that cannot be asked: `-F` splits a pattern at
+    a line feed.
     """
     code_paths = [e.path.rstrip("/") for e in entries if e.leg == "code"]
     spec_dirs = [e.path for e in entries
@@ -1073,27 +1093,53 @@ def cross_leg_references(source: "Source", entries: list["Entry"],
         return []
     out: list[str] = []
     for spec_dir in spec_dirs:
+        named = "".join(map(_spelled_character, spec_dir))
+        if "\n" in spec_dir:
+            # `-F` reads a pattern holding a line feed as one pattern per
+            # line: `a<LF>b/` was searched as `a` OR `b/` and named files
+            # that never mention it, the way `*` did.
+            out.append(_search_by_hand(
+                named, "`git grep` reads each line of a pattern as a pattern "
+                "of its own, so it cannot search for this name"))
+            continue
         proc = subprocess.run(
-            ["git", "grep", "-l", "-I", "-F", spec_dir, source.commit, "--",
-             *code_paths],
-            cwd=str(source.path), capture_output=True, text=True, check=False)
-        hits = [line.split(":", 1)[1] for line in proc.stdout.splitlines()
-                if ":" in line]
+            ["git", "--literal-pathspecs", "grep", "--no-color", "-z", "-l",
+             "-I", "-F", "-e", spec_dir, source.commit, "--", *code_paths],
+            cwd=str(source.path), capture_output=True, check=False)
+        if proc.returncode not in (0, 1):
+            why = _one_line(proc.stderr.decode("utf-8", "replace"))[:300]
+            out.append(_search_by_hand(
+                named, f"`git grep` exited {proc.returncode}: {why}"))
+            continue
+        # `<commit>:<path>` per record; the commit is hex, so the first `:`
+        # ends it and the rest is the path, raw.
+        hits = [_git_path(record.partition(b":")[2])
+                for record in proc.stdout.split(b"\x00") if b":" in record]
         # Fixtures last. A test fixture that mentions `contracts/` is usually
         # quoting a path rather than reading one, and burying the harness that
         # DOES read it under twenty of them is how a follow-up list stops
         # being read at all.
         hits.sort(key=lambda h: ("fixture" in h or h.startswith("tests/"), h))
         for hit in hits[:8]:
+            shown = "".join(map(_spelled_character, hit))
             out.append(
-                f"{code_path}/{hit} names `{spec_dir}`, which moves to the "
+                f"{code_path}/{shown} names `{named}`, which moves to the "
                 f"spec leg: it must read across the assembly root — "
-                f"`../{spec_path}/{spec_dir}` relative to `{code_path}/` — or "
+                f"`../{spec_path}/{named}` relative to `{code_path}/` — or "
                 "take the path from the environment")
         if len(hits) > 8:
             out.append(f"… and {len(hits) - 8} more file(s) under the code leg "
-                       f"naming `{spec_dir}`")
+                       f"naming `{named}`")
     return out
+
+
+def _search_by_hand(named: str, why: str) -> str:
+    """The follow-up for a spec directory git did not search for: the
+    reason, and what to look for instead."""
+    return (f"git could not search the files moving to the code leg for "
+            f"`{named}` ({why}); find the ones that name it by hand: each "
+            f"must read across the assembly root once `{named}` moves to the "
+            "spec leg")
 
 
 def follow_ups_for(source: "Source", entries: list["Entry"], names: dict,
@@ -1923,7 +1969,7 @@ def _coverage_findings(entry_paths: list[str], tree_paths: list[str]) -> list[st
 def _leg_findings(plan: Plan, tree: list | None) -> list[str]:
     """`leg:` is answered with one of the four words, each leg's mount path
     is canonical (#169), and neither overlaps a path the assembly root holds
-    (#172).
+    (#172); and the root keeps nothing where the shape writes (#262, #263).
 
     The path findings live HERE, and not in `cmd_check`, so that whatever
     reads this function reports a bad path from the one place that knows what
@@ -1967,7 +2013,251 @@ def _leg_findings(plan: Plan, tree: list | None) -> list[str]:
             findings.append(
                 f"FINDING plan-bad-leg: {path} declares leg {leg!r}; it is "
                 f"one of {list(LEG_VALUES)}")
+    if isinstance(plan.legs, dict):
+        findings += _root_shape_findings(plan, tree)
     return findings
+
+
+# ---------------------------------------------------------------------------
+# What the plan keeps in the root is not where the shape writes (#262, #263)
+# ---------------------------------------------------------------------------
+#
+# `execute` clones the source and writes the shape's files into the clone
+# with `place`, which writes a file at its own path, or beside it under
+# `shape/` where something is already there, and asks nothing else of the
+# disk. A path the plan keeps in the root can stand where `place` writes, and
+# `check` said `plan ok` to both ways of it. `execute` then made and pushed
+# both legs, and `place` died, or overwrote, in the split:
+#
+#   * a FILE where the shape needs a DIRECTORY (#263): the source's own file
+#     named `.github`, `contracts` or `scripts`, the directories the shape
+#     writes into. `.github/workflows/validate.yml` under a file `.github`
+#     died in `NotADirectoryError`, `contracts/spec-pin.yaml` under a file
+#     `contracts` in `FileExistsError`;
+#   * a path where the shape writes its COPY of a file the root holds (#262):
+#     the source's own `shape/`, kept in the root. A real `shape/README.md`
+#     was overwritten by the shape's README on the line after `execute` said
+#     nothing was overwritten, and the verification ended `adopt-lost`; a
+#     directory `shape/Makefile/` died in `IsADirectoryError`, and a file
+#     named `shape` in `FileExistsError`.
+#
+# Both are known before any leg exists. The plan says which source paths stay
+# in the root (`_kept_in_root`, which #172's mount rule reads too), and
+# `assembly_root_paths` lists what the shape writes in the order `place`
+# writes it, so `check` plays `place` over the first with the second and
+# reports where it would stop or overwrite; `execute` refuses the same plan
+# with every other finding of `check`'s (#168). The materializer refuses the
+# overwrite and the stop itself too (`shape_materialize.copy_in_the_way`), for
+# a caller that skipped `check`.
+#
+# WHAT `place` DOES, AND SO WHAT IS PLAYED. For each shape path: if a kept
+# FILE stands where a directory is needed on the way to it, it cannot be
+# written (#263). Else, if the root already holds the path -- a kept path, or
+# a kept directory with something under it, as `Path.exists()` reads it --
+# its copy goes to `shape/<path>`, which must then be free: nothing kept AT
+# it, no kept directory there, and no kept FILE on the way (#262).
+#
+# A SYMLINK OR A SUBMODULE is never a file on the way: a symlink above a shape
+# path or its copy is followed, or refused, by what #183 adds, and a submodule
+# the root keeps is `plan-submodule-root` (#166). Neither is a file where a
+# directory is needed. AT the copy, a submodule (or a directory there that
+# holds nothing but submodules) is `plan-submodule-root`'s too and is not said
+# again: it is not written over -- in a clone a submodule is an empty
+# directory, and `place` stops at it. A symlink AT the copy is found here,
+# and as a write THROUGH it, because nothing else on main says it.
+#
+# A SYMLINK AT A SHAPE PATH counts as the root holding it, though
+# `Path.exists()` follows a link and is false of one that leads nowhere. A
+# tree row is a path, a mode and a blob, so the target is not at hand, and
+# whether a link leads anywhere is #183's question. Counting it is the
+# over-approximation that never says `plan ok` to a plan `place` would stop
+# at, and a plan with a link that leads nowhere is refused either way (here,
+# and there).
+#
+# Asked of a disk that keeps case AND of one that ignores it, as #172 asks
+# its mount paths and for the same reason: a source file `Scripts` is a file
+# where the shape needs `scripts/` on a macOS or Windows disk, and the
+# assembly is cloned there. EACH disk answers both questions, whether the
+# root holds a path, so that a copy is written at all, and whether a place is
+# free: `place` asks `Path.exists()` for the first, which ignores case on
+# those disks, so a kept `readme.md` is `README.md` there, the copy goes to
+# `shape/README.md`, and what the source keeps at that path is in the way.
+# A finding that holds on the second disk alone says so.
+
+#: `check`'s finding for a kept FILE where the shape writes into a directory
+#: (#263), and for a kept path where the shape writes its copy of a file the
+#: root holds (#262).
+ROOT_BLOCKS_SHAPE = "plan-root-blocks-shape"
+ROOT_BLOCKS_COPY = "plan-root-blocks-shape-copy"
+
+
+class _KeptTree:
+    """The source paths the plan keeps in the root, looked up as a disk looks
+    them up: `fold` is a disk that ignores case, `False` one that keeps it.
+    `kept` is `_kept_in_root`'s `(path, mode, entry)` rows.
+
+    A DIRECTORY is a prefix of a kept path: git records files, so a directory
+    the plan keeps holds at least one of them."""
+
+    def __init__(self, kept: list, fold: bool) -> None:
+        self.rows = kept
+        self._fold = fold
+        self._at: dict[str, tuple[str, str, str]] = {}
+        self._dirs: set[str] = set()
+        for row in kept:
+            parts = row[0].split("/")
+            self._at.setdefault(self._key(row[0]), row)
+            self._dirs.update(self._key("/".join(parts[:end]))
+                              for end in range(1, len(parts)))
+
+    def _key(self, path: str) -> str:
+        return path.casefold() if self._fold else path
+
+    def at(self, path: str) -> tuple[str, str, str] | None:
+        """The kept row AT `path`, a file, symlink or submodule."""
+        return self._at.get(self._key(path))
+
+    def holds(self, path: str) -> bool:
+        """Whether something is at `path`, as `Path.exists()` says: a kept
+        row, or a kept directory. A symlink row counts without being
+        followed (see the comment above): the row holds no target."""
+        return self._key(path) in self._at or self._key(path) in self._dirs
+
+    def file_above(self, path: str) -> tuple[str, str, str] | None:
+        """The kept FILE a directory on the way to `path` would have to be,
+        the topmost: `mkdir` stops there. A symlink or a submodule is not
+        one; see the comment above."""
+        parts = path.split("/")
+        for end in range(1, len(parts)):
+            row = self.at("/".join(parts[:end]))
+            if row and row[1] in FILE_MODES:
+                return row
+        return None
+
+    def under(self, path: str) -> list[tuple[str, str, str]]:
+        """Every kept row below the directory `path`."""
+        prefix = self._key(path) + "/"
+        return [row for row in self.rows
+                if self._key(row[0]).startswith(prefix)]
+
+
+def _shape_blocks(disk: _KeptTree) -> list[tuple]:
+    """`(code, shape path, where it is written, group, kept rows)` for each
+    path of `assembly_root_paths` that `place` would stop at or overwrite on
+    `disk`, in the order it writes them. The disk says both whether the root
+    already holds a path, so whether its copy is written at all, and whether
+    the place is free: a disk that ignores case holds `README.md` for a kept
+    `readme.md`. `group` names the one thing in the way, so that what one
+    kept path blocks is one finding."""
+    out = []
+    for rel in assembly_root_paths():
+        above = disk.file_above(rel)
+        if above:
+            out.append((ROOT_BLOCKS_SHAPE, rel, rel, ("file", above[0]),
+                        [above]))
+            continue
+        if not disk.holds(rel):
+            continue
+        copy = f"{COLLISION_DIR}/{rel}"
+        above = disk.file_above(copy)
+        if above:
+            out.append((ROOT_BLOCKS_COPY, rel, copy, ("file", above[0]),
+                        [above]))
+            continue
+        at = disk.at(copy)
+        # A submodule is `plan-submodule-root`'s (#166), and said once there.
+        rows = [row for row in ([at] if at else disk.under(copy))
+                if row[1] != GITLINK_MODE]
+        if rows:
+            out.append((ROOT_BLOCKS_COPY, rel, copy,
+                        ("at" if at else "dir", copy), rows))
+    return out
+
+
+#: How a verb of `path_overlap`'s relations reads of several paths.
+_PLURAL_RELATION = {"is": "are", "contains": "contain",
+                    "is inside": "are inside"}
+
+
+def _fix_the_kept_path(entry: str) -> str:
+    """What every finding of this kind says to do, as `_kept_collisions` ends
+    its own: the entry is the plan's to change, or the source's."""
+    return (f"send {_spelled(entry)} to a leg, `drop` it, or rename it in "
+            "the source and re-run `plan`")
+
+
+def _blocked_sentence(code: str, rels: list[str], copies: list[str],
+                      rows: list, held_aside: str = "") -> str:
+    """One finding's sentence: what the shape writes, the kept path in the
+    way and how, and what to do. `rels` are the shape paths it blocks,
+    `copies` where each is written, `rows` the kept paths in the way, and
+    `held_aside` says of a copy that the root holds the path it stands in
+    for only once case is ignored."""
+    path, mode, entry = rows[0]
+    many = len(rels) > 1
+    named = _first_and_more([row[0] for row in rows], _spelled)
+    them = "them" if len(rows) > 1 else "it"
+    under = "" if entry == path else f" under the entry {_spelled(entry)}"
+    fix = _fix_the_kept_path(entry)
+    if code == ROOT_BLOCKS_SHAPE:
+        relation, aside = _overlap(rels[0], path)
+        return (
+            f"the shape writes {_first_and_more(rels)}, which "
+            f"{_PLURAL_RELATION[relation] if many else relation} the file "
+            f"{named}{aside}. The plan keeps it in the assembly root{under}, "
+            "and `execute` cannot make a directory where a file is, so it "
+            "would stop writing the shape's files after both leg "
+            f"repositories were created and pushed: {fix}.")
+    relation, aside = _overlap(copies[0], path)
+    consequence = {
+        "is": "`execute` would write the copy "
+              f"{'through' if mode == SYMLINK_MODE else 'over'} {them}",
+        "contains": "`execute` cannot write a file where a directory is, "
+                    "so it would stop",
+        "is inside": "`execute` cannot make a directory where a file is, "
+                     "so it would stop"}[relation]
+    return (
+        f"the shape's {'copies' if many else 'copy'} of "
+        f"{_first_and_more(rels)} {'are' if many else 'is'} written to "
+        f"{_first_and_more(copies)}, because the root already holds "
+        f"{'each of them' if many else _first_and_more(rels)}{held_aside}. "
+        f"{'Those paths' if many else 'That path'} "
+        f"{_PLURAL_RELATION[relation] if many else relation} "
+        f"{_kind_of(mode)} {named}{aside}. The plan keeps {them} in the "
+        f"assembly root{under}, and {consequence} after both leg "
+        f"repositories were created and pushed. {SHAPE_DIR_RESERVED}: {fix}.")
+
+
+def _root_shape_findings(plan: Plan, tree: list) -> list[str]:
+    """`check`'s findings for a path the plan keeps in the root where the
+    shape writes (#262, #263): one per kept path in the way, naming the
+    first shape path it blocks and counting the rest. Asked of a disk that
+    keeps case and then of one that ignores it; a finding the first disk
+    already made is not made again, and one only the second makes says so,
+    and so does a copy only the second writes."""
+    kept = _kept_in_root(plan.entries, tree)
+    if not kept:
+        return []
+    keeps_case = _KeptTree(kept, fold=False)
+    seen: set[tuple] = set()
+    # `(code, group)` -> the shape paths it blocks, where each is written,
+    # the kept rows in the way, and the shape paths the root holds only once
+    # case is ignored.
+    blocked: dict[tuple, tuple[list, list, list, list]] = {}
+    for disk in (keeps_case, _KeptTree(kept, fold=True)):
+        for code, rel, copy, group, rows in _shape_blocks(disk):
+            if (code, rel, group) in seen:
+                continue
+            seen.add((code, rel, group))
+            rels, copies, _, folded = blocked.setdefault(
+                (code, group), ([], [], rows, []))
+            rels.append(rel)
+            copies.append(copy)
+            if code == ROOT_BLOCKS_COPY and not keeps_case.holds(rel):
+                folded.append(rel)
+    return [f"FINDING {code}: " + _blocked_sentence(
+                code, rels, copies, rows, _CASE_ASIDE if folded else "")
+            for (code, _), (rels, copies, rows, folded) in blocked.items()]
 
 
 #: What a plan that splits a source's own submodules is told to do instead.
@@ -2252,11 +2542,237 @@ def _submodule_findings(plan: Plan, source: Source,
     return found, [SUBMODULE_REMEDIATION] if found else []
 
 
+#: The answers that never extract an entry into a leg. A path answered
+#: `root` stays in the assembly root and reaches no `git` command but as a
+#: line of the split commit's message; one answered `drop` reaches only
+#: `git rm`, as a literal path after `--`, and that message. Neither is ever
+#: a line of the path list `git filter-repo` reads, so `entry_path_problem`
+#: does not judge them (#196).
+NOT_EXTRACTED = ("root", "drop")
+
+#: Two characters Python's `str.splitlines` ends a line at that are not
+#: control characters. `entry_path_problem` refuses them with the control
+#: characters, as policy.
+LINE_SEPARATORS = "\u2028\u2029"
+
+#: The surrogates `surrogateescape` reads a byte that is not UTF-8 as, and
+#: writes back as that byte (`Source.tree`, `write_paths_listing`): a path's
+#: byte 0x80 to 0xFF is one of these. `entry_path_problem` refuses them as
+#: policy, and every other surrogate as a misreading.
+NOT_UTF8_BYTES = frozenset(map(chr, range(0xDC80, 0xDD00)))
+
+#: What every policy refusal says of git and `git filter-repo`, because it is
+#: true of each of them, measured: a policy refusal is not a misreading.
+TAKEN_LITERALLY = "though git and `git filter-repo` would take it literally"
+
+
+def entry_path_problem(path: str) -> str | None:
+    """Why `execute` will not extract the entry path `path` into a leg, or
+    None.
+
+    ONE TEST, asked by `check`, which reports what it finds as the finding
+    `plan-unsafe-path`, and by `execute`, which refuses that finding in
+    `check`'s words through `_refuse_what_check_finds` before any leg exists
+    (#196). On main at e4decfb `check` asked nothing of an entry's path and
+    `execute` asked `checked_value`, so a source holding `My Notes.md`
+    checked `plan ok` and `execute` refused it as `unsafe-value`.
+
+    AN ENTRY'S PATH IS A FACT OF THE SOURCE, NOT AN OPTION. `plan` writes it
+    from the tree, and a tree legitimately holds a space, a letter outside
+    ASCII, `#`, `$`, `(`, `'`, `"`, `;`, `&`, `[`, `*`: none of them is the
+    threat, as `repo_shape.SAFE_PATH_RE` says of a path the operator names.
+    Every command is argv with `shell=False`, and in `execute` an entry's
+    path reaches `git` in two places, each spelled so git reads it
+    LITERALLY:
+
+      * as one `literal:` line of the path list `git filter-repo
+        --paths-from-file` reads (`_extract_leg`). Without the prefix a line
+        starting with `#` is a comment and one starting with `regex:`,
+        `glob:` or `literal:` is that directive, so `#notes.md` was left out
+        of its leg -- removed from the root by the split, then found nowhere;
+      * as a pathspec after `--` to `git --literal-pathspecs rm`
+        (`_mount_the_legs`). After `--` a path is no option, but it is still
+        a pathspec: `*` and `?` are wildcards and a leading `:` is magic, and
+        `git rm -- ':!keep.md'` removes every other path in the tree.
+
+    Two kinds of path are refused, and each finding says which kind, and
+    why. First, `_misread`: a path one of those two places, or this tool's
+    own write of the list, would NOT carry as it stands. Then
+    `_refused_by_policy`: a path both would carry, measured, that this tool
+    still will not move into a leg. A path with a reason of each kind is
+    told the misreading.
+
+    THE VALUES THAT ARE OPTIONS ARE ANOTHER MATTER: a leg's mount path, a
+    branch, a repository name, the organisation. They stay under
+    `checked_value`'s narrow alphabet and are refused as `unsafe-value`
+    (#168, #169).
+    """
+    return _misread(path) or _refused_by_policy(path)
+
+
+def _misread(path: str) -> str | None:
+    """Why `path`, as a `literal:` line or a literal pathspec, would not reach
+    git or `git filter-repo` as the path it is. Measured with git 2.43 and
+    git-filter-repo 2.47.0, whose `get_paths_from_file` reads its list a line
+    at a time, strips `\\r` and `\\n` from each line's end, skips a blank
+    line, and looks for `==>` before anything else:
+
+      * an empty path: a `literal:` line with nothing after it matches every
+        path, and the leg took the whole tree (and `git rm` refuses an empty
+        pathspec);
+      * a line feed, anywhere: it ends the path's line, and the rest is read
+        as a line of its own -- `docs\\nregex:.*` kept every path;
+      * a carriage return at the END: stripped, so `Icon\\r` -- the macOS
+        folder-icon file -- was read as `Icon`, and the leg took that file
+        instead. A name of carriage returns alone leaves `literal:` with
+        nothing after it, which, as for the empty path, kept every path. A
+        carriage return elsewhere is carried, and is policy's;
+      * a NUL, which no command line can carry (`subprocess` raises), and
+        which git records in no path;
+      * a lone surrogate (category Cs) outside U+DC80 to U+DCFF, such as a
+        hand-edited `\\ud800`. `Source.tree` reads a byte that is not UTF-8
+        as one of U+DC80 to U+DCFF (`surrogateescape`), so no path of the
+        source holds any other, and `_extract_leg`'s `write_paths_listing`
+        cannot write one: it raised `UnicodeEncodeError`, measured. (Such an
+        entry also covers nothing, so `check` reports `plan-empty-entry`
+        beside it.) A byte that is not UTF-8 is policy's;
+      * `==>`, which `git filter-repo` reads as a RENAME wherever it is on a
+        line, before it looks for `literal:`, and which nothing escapes:
+        `literal:a==>b.md` beside `literal:keep.md` extracted only
+        `keep.md`.
+    """
+    if not path:
+        return ("it is empty: a `literal:` line with nothing after it "
+                "matches every path, so `git filter-repo` would put the "
+                "whole tree in the leg")
+    if "\n" in path:
+        return ("it holds a line feed (`\\n`), which ends its line of the "
+                "path list `git filter-repo` reads, so the rest of the name "
+                "would be read as a line of its own")
+    if path.endswith("\r"):
+        rest = path.rstrip("\r")
+        named = (f"would name {_spelled(rest)}, another path" if rest
+                 else "would be `literal:` alone, which matches every path, "
+                      "so `git filter-repo` would put the whole tree in the "
+                      "leg")
+        return ("it ends in a carriage return (`\\r`), which `git "
+                "filter-repo` strips from the end of each line of the path "
+                f"list it reads, so its line {named}")
+    if "\x00" in path:
+        return ("it holds a NUL (`\\x00`), which no command line can carry "
+                "and git records in no path")
+    for char in path:
+        if "\ud800" <= char <= "\udfff" and char not in NOT_UTF8_BYTES:
+            return (f"it holds `{_spelled_character(char)}`, a surrogate no "
+                    "byte of a path is read as, so it names no path of the "
+                    "source, and the path list `git filter-repo` reads cannot "
+                    "be written with it")
+    if "==>" in path:
+        return ("it holds `==>`, which `git filter-repo --paths-from-file` "
+                "reads as a rename wherever it is on the line, and nothing "
+                "on the line escapes it")
+    return None
+
+
+def _refused_by_policy(path: str) -> str | None:
+    """Why this tool will not move `path` into a leg although git and `git
+    filter-repo` would take it literally. MEASURED, each as one `literal:`
+    line and as `git --literal-pathspecs rm -r -q -- <path>`: a tab, `\\x01`,
+    ESC, DEL, `\\x85`, `\\x0b`, `\\x0c`, `\\x1c`, U+2028, a carriage return
+    that does not end the name, `-n.md`, ` ` and three spaces were each
+    extracted, and removed, as exactly that path and nothing else. So each
+    finding below says it is policy, and never that a line would break:
+
+      * a name that is nothing but whitespace, which shows as blank wherever
+        a name is printed. (`git commit` even strips a line of spaces from
+        the split commit's message, which lists the moved paths.)
+      * a control character (C0, DEL, C1) or a line separator: a name that
+        holds one is almost never meant, and printed as it stands -- as
+        `git log` prints a commit message, ESC and `\\x01` raw, measured --
+        it cannot be seen for what it is;
+      * a byte that is not UTF-8, which `Source.tree` keeps as one of
+        U+DC80 to U+DCFF (`surrogateescape`). Since #199 (PR #247)
+        `write_paths_listing` writes it as that byte, and with this refusal
+        disabled a source holding `caf\\xe9.md` was extracted and verified,
+        the byte in the leg, measured. It is held until adopting such a name
+        end to end is measured on macOS and Windows: a name that holds one
+        prints as an escape, never as itself, and the split commit's message
+        lists it with a `?` for the byte (`env_commit`);
+      * a leading `-`, the threat model's first rule
+        (`repo_shape.checked_value`), held although neither place in
+        `entry_path_problem` takes it as an option: a line of the filter's
+        path list is none, and `git rm` is given it after `--`.
+    """
+    if not path.strip():
+        return ("it is nothing but whitespace, which `execute` refuses as "
+                f"policy, {TAKEN_LITERALLY}: such a name shows as blank "
+                "wherever a name is printed")
+    for char in path:
+        if ord(char) < 0x20 or 0x7F <= ord(char) <= 0x9F \
+                or char in LINE_SEPARATORS:
+            kind = ("line separator" if char in LINE_SEPARATORS
+                    else "control character")
+            return (f"it holds the {kind} `{_spelled_character(char)}`, "
+                    f"which `execute` refuses as policy, {TAKEN_LITERALLY}: "
+                    "a name that holds one is almost never meant, and "
+                    "printed as it stands, as `git log` prints a commit "
+                    "message, it cannot be seen for what it is")
+    for char in path:
+        if char in NOT_UTF8_BYTES:
+            return (f"it holds `{_spelled_character(char)}`, which is not "
+                    "UTF-8 and which `execute` refuses as policy, "
+                    f"{TAKEN_LITERALLY}: a name that holds one prints as an "
+                    "escape and never as itself, the split commit's message "
+                    "would list it with a `?` for that byte, and adopting "
+                    "one is not yet measured on macOS or Windows")
+    if path.startswith("-"):
+        return ("it begins with `-`, which `execute` refuses as policy, "
+                f"{TAKEN_LITERALLY} (a line of the filter's path list is no "
+                "option, and `git rm` is given it after `--`): no value this "
+                "tool hands git may begin with `-`, the threat model's first "
+                "rule")
+    return None
+
+
+#: What a plan whose entry `entry_path_problem` refuses is told to do. Said by
+#: `check`, once after its findings, and by `execute`'s refusal.
+UNSAFE_PATH_REMEDIATION = (
+    "Remediation: an entry's `path:` names a path in the source tree, so the "
+    "plan cannot respell it: the respelled entry would cover nothing and the "
+    "path itself would be uncovered. Rename the path in the source, commit, "
+    "and re-run `plan`. Or, if it belongs in no leg, answer the entry `root` "
+    "or `drop`: a path that stays in the assembly root reaches no `git` "
+    "command, and a dropped one reaches only `git rm`, as a literal path "
+    "after `--`. Only a path the plan names as an entry is judged: a name "
+    "below a directory entry is extracted with that directory and never "
+    "written on its own.")
+
+
+def _unsafe_path_findings(plan: Plan) -> tuple[list[str], list[str]]:
+    """`entry_path_problem` for each entry not answered `root` or `drop`, as
+    `check` prints it, one FINDING each; and what to print ONCE after every
+    finding, as `_submodule_findings` does. An unanswered entry is judged
+    too, so the person answering its question knows what `spec` or `code`
+    would meet."""
+    found = []
+    for entry in plan.entries:
+        if str(entry.get("leg")) in NOT_EXTRACTED:
+            continue
+        path = str(entry.get("path"))
+        problem = entry_path_problem(path)
+        if problem:
+            found.append(f"FINDING plan-unsafe-path: {_spelled(path)} has "
+                         f"leg: {y(entry.get('leg'))}, and `execute` will "
+                         f"not extract it into a leg: {problem}")
+    return found, [UNSAFE_PATH_REMEDIATION] if found else []
+
+
 def _entry_findings(plan: Plan, source: Source
                     ) -> tuple[list[str], list[str]]:
     """Every FINDING `check` prints about the plan's ENTRIES, in its order,
-    and what it prints once after them: coverage, then each entry's `leg:`
-    and the two mount paths, then the source's own submodules.
+    and what it prints once after them: each entry's path, then coverage,
+    then each entry's `leg:`, the two mount paths and what the root keeps
+    where the shape writes, then the source's own submodules.
 
     ONE LIST, read by `check` and by `execute`'s `_refuse_what_check_finds`.
     #168 and #166 each added findings to `check` and a refusal to `execute`
@@ -2270,13 +2786,20 @@ def _entry_findings(plan: Plan, source: Source
     the root are read out of it (#172, #191): without it a mount path at, or
     beyond, a kept source path checks ok and dies at `git submodule add`
     after both legs are pushed.
+
+    THE PATHS COME FIRST (#196), so that `_refuse_what_check_finds` wears
+    `plan-unsafe-path` for a plan that has one: a path that is a `git` option
+    is refused as that, and never as the uncovered file it also leaves.
     """
     tree = source.tree()
-    findings = (_coverage_findings([str(e.get("path")) for e in plan.entries],
-                                   [path for path, _, _, _ in tree])
+    unsafe, unsafe_remediation = _unsafe_path_findings(plan)
+    findings = (unsafe
+                + _coverage_findings([str(e.get("path"))
+                                      for e in plan.entries],
+                                     [path for path, _, _, _ in tree])
                 + _leg_findings(plan, tree))
     submodule_findings, remediation = _submodule_findings(plan, source, tree)
-    return findings + submodule_findings, remediation
+    return findings + submodule_findings, unsafe_remediation + remediation
 
 
 def _topics_line(topic: str, local: bool) -> str:
@@ -2504,9 +3027,14 @@ def _extract_leg(role: str, source: Source, work: Path, paths: list[str],
     # path contains - so on Windows every pattern would match nothing, the
     # filter would succeed, and the leg would be pushed EMPTY. A silent
     # extraction of nothing is the worst shape this failure could take.
+    # `literal:` on every line (#196): filter-repo reads a line starting with
+    # `#` as a comment and one starting with `regex:`, `glob:` or `literal:`
+    # as that directive, so a source file named `#notes.md` was left out of
+    # its leg after both legs existed. The prefix takes the rest of the line
+    # as it stands; what no line can carry, `entry_path_problem` refuses.
     # And byte-exact: a path that is not UTF-8 is written as the bytes
     # git records, where `write_lf` raised after both legs existed.
-    write_paths_listing(listing, paths)
+    write_paths_listing(listing, [f"literal:{path}" for path in paths])
     run(["git", "filter-repo", "--paths-from-file", str(listing), "--force"],
         cwd=work)
     head = git_out(["rev-parse", "HEAD"], cwd=work).lower()
@@ -2723,8 +3251,12 @@ def _mount_the_legs(assembly: Path, work_root: Path, names: dict, urls: dict,
                                               + paths_for["code"]
                                               + paths_for["drop"])),
                      key=lambda p: (p != GITMODULES, p))
+    # `--literal-pathspecs` (#196): after `--` a path is no option, but it is
+    # still a pathspec, where `*` and `?` are wildcards and a leading `:` is
+    # magic -- `git rm -- ':!keep.md'` removes every other path in the tree.
     for path in removed:
-        run(["git", "rm", "-r", "-q", "--", path], cwd=assembly)
+        run(["git", "--literal-pathspecs", "rm", "-r", "-q", "--", path],
+            cwd=assembly)
     # The plan moved (or dropped) the source's own .gitmodules, so its deletion
     # is staged, and `git submodule add` refuses to write into a file the index
     # says is going away. Give the assembly a fresh, EMPTY, staged one for its
@@ -2817,10 +3349,16 @@ def _repository_urls(args, plan: Plan, names: dict,
 def _leg_paths(plan: Plan) -> dict:
     """Every plan entry's path, by the leg it was assigned to.
 
-    Each one is checked because it reaches `git filter-repo` as an argument.
-    Split out of `cmd_execute` for #138.
+    COLLECTED, NOT JUDGED (#196). An entry's path is a fact of the source,
+    not an option, and what `execute` cannot hand to `git` is
+    `entry_path_problem`'s to say: `check`'s finding `plan-unsafe-path`,
+    which `_refuse_what_check_finds` refuses on the next line of
+    `cmd_execute`, before any of these paths is used and before any leg
+    exists. Judging them here as well would be a second refusal, composed
+    apart from `check`'s list and said before it. Split out of `cmd_execute`
+    for #138.
     """
-    return {leg: [checked_value("a plan path", e.get("path"))
+    return {leg: [str(e.get("path"))
                   for e in plan.entries if str(e.get("leg")) == leg]
             for leg in LEG_VALUES}
 
@@ -2872,12 +3410,16 @@ def _refuse_what_check_finds(plan: Plan, source: Source) -> None:
     `_leg_findings` also reports `plan-unresolved`, which that function has
     already refused in its own words, and a plan written against a tree that
     has since moved is `plan-stale`, not whatever its stale coverage happens
-    to lack. And it runs AFTER `_leg_paths` has checked, as a safe `git`
-    argument, the path of every entry whose `leg:` is one of the four words,
-    because a path that is an option is `unsafe-value` and must stay that, not
-    become an uncovered file. An entry with any other `leg:` is not checked
-    there and reaches no `git` command; it is refused here, under whichever
-    finding `check` lists first. It runs BEFORE `_refuse_unconsented_seeding`,
+    to lack. A VALUE THAT IS AN OPTION AND A PATH THAT IS A FACT ARE TWO
+    TESTS (#196). A leg's mount path, a branch, a repository name and the
+    organisation are options: `checked_value` refuses them as `unsafe-value`
+    in `_checked_plan_values` and `_repository_urls`, before this runs. An
+    entry's path is a fact of the source, judged by `entry_path_problem` as
+    `check`'s own finding `plan-unsafe-path`, which `_entry_findings` lists
+    FIRST: a path that is a `git` option is refused as that, and never as the
+    uncovered file it also leaves. `_leg_paths` collects the entries' paths
+    without judging them, and nothing uses one before this has run. It runs
+    BEFORE `_refuse_unconsented_seeding`,
     `_confirm` and `_create_leg_remotes`, so no leg repository is created and
     nothing is pushed until every refusal has passed. (`_work_root` has
     already made the work directory and an `org/repo` source has already been
@@ -2890,7 +3432,7 @@ def _refuse_what_check_finds(plan: Plan, source: Source) -> None:
     nothing else, and `_refuse_an_unrunnable_plan` is back to its two
     states: a plan `check` rejects as uncovered and split is refused for
     both at once, and a submodule problem is refused here like any other,
-    after `_leg_paths` has checked every path as a `git` argument.
+    after the entries' paths, which are the first of these findings.
     """
     findings, remediation = _entry_findings(plan, source)
     if not findings:
@@ -2906,11 +3448,12 @@ def _refuse_what_check_finds(plan: Plan, source: Source) -> None:
         code, "\n".join(lines), "\n".join([
             "Remediation: no leg repository was created and nothing was "
             "pushed. Correct the plan -- answer each entry's `leg:`, cover "
-            "every source path exactly once, and mount neither leg over a "
-            "path the assembly root holds -- and run `check` until it prints "
-            "`plan ok`, then run `execute` again. A leg made from a plan "
-            "`check` rejects is one the corrected plan cannot make again: "
-            "under `--local-remote-dir` it meets `leg-remote-exists`.",
+            "every source path exactly once, mount neither leg over a path "
+            "the assembly root holds, and keep in the root no path where the "
+            "shape writes a file or its copy -- and run `check` until it "
+            "prints `plan ok`, then run `execute` again. A leg made from a "
+            "plan `check` rejects is one the corrected plan cannot make "
+            "again: under `--local-remote-dir` it meets `leg-remote-exists`.",
             *remediation]))
 
 
@@ -3055,12 +3598,22 @@ def _stage_the_split(assembly: Path, materialized: Materialized) -> None:
     is staged as `_where_it_landed` spells it, and one whose link leads OUT of
     the assembly is not staged at all: it is not in this repository, and the
     verification reports the pinned file missing.
+
+    AND EACH ONE IS A PATH, NOT A PATHSPEC (#216). A path that landed
+    through a link is the link's target, a name the SOURCE chose, and after
+    `--` git still reads a name as a pathspec: `:ci/workflows/validate.yml`
+    is the magic `:` and the path `ci/...`, which matches nothing and fails
+    the add (`fatal: pathspec ... did not match any files`) after both legs
+    are pushed; `:!ci/...` is an EXCLUDE, which forces nothing by that name,
+    so a file the source's `.gitignore` hides is left out of the split; and
+    `ga[0]/...` is a glob, which forces an ignored `ga0/...` too. So
+    `--literal-pathspecs`: every name is the path it spells.
     """
     run(["git", "add", "-A", "--", "."], cwd=assembly)
     landed = (_where_it_landed(assembly, written)
               for written in materialized.written)
-    run(["git", "add", "-f", "--", *(path for path in landed if path)],
-        cwd=assembly)
+    run(["git", "--literal-pathspecs", "add", "-f", "--",
+         *(path for path in landed if path)], cwd=assembly)
 
 
 def _where_it_landed(assembly: Path, written: str) -> str | None:
