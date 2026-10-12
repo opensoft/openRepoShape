@@ -552,6 +552,178 @@ def test_a_list_of_text_an_empty_list_and_a_bare_key_still_pass(adopter,
     assert adopter._refuse_what_check_finds(plan, source) is None
 
 
+DATE_CODE = "election-date-malformed"
+DATE_FLAG = "--elected-on"
+
+#: An `elected_on:` that `election_date` refuses on every Python, by test id:
+#: as the plan holds it, as the reader reads it, and whether the plan keeps
+#: its `reference:` (#294). Without one, `execute` made both legs and only
+#: then refused, naming `--elected-on`; with one it never read the date and
+#: wrote the word into the manifest.
+BAD_DATES = {
+    "word": ("someday", "someday", False),
+    "notadate": ("notadate", "notadate", False),
+    "unpadded": ('"2026-9-2"', "2026-9-2", False),
+    "not-a-day": ('"2026-02-30"', "2026-02-30", False),
+    "word-reference-kept": ("someday", "someday", True),
+}
+ONE_PER_BAD_DATE = pytest.mark.parametrize("edit", sorted(BAD_DATES))
+
+
+def with_elected_on(text: str, value: str, reference: bool) -> str:
+    """`text` with `elected_on:` set to `value` by hand, and its `reference:`
+    line deleted unless `reference`."""
+    if not reference:
+        text, done = re.subn(r"^reference:.*\n", "", text, count=1,
+                             flags=re.M)
+        assert done == 1, "the plan has no `reference:` line to delete"
+    edited, done = re.subn(r"^elected_on: .*$",
+                           lambda _: f"elected_on: {value}", text, count=1,
+                           flags=re.M)
+    assert done == 1, "the plan has no `elected_on:` line to edit"
+    return edited
+
+
+@ONE_PER_BAD_DATE
+def test_check_finds_an_elected_on_it_cannot_read_under_the_plans_key(world,
+                                                                      edit):
+    """#294: a FINDING `election-date-malformed` that names the plan's
+    `elected_on:` and no flag, whether or not the plan has a `reference:`.
+    `check` used to say `plan ok`: it never read the date."""
+    value, read, reference = BAD_DATES[edit]
+    result = run_check(write_edited(
+        world, with_elected_on(world.answered, value, reference)))
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert_no_traceback(result)
+    found = findings_of(result)
+    assert len(found) == 1, found
+    assert found[0].startswith(
+        f"FINDING {DATE_CODE}: the plan's `elected_on:` is the text "
+        f"{read!r}, which is not a day written YYYY-MM-DD"), found
+    assert ("the plan naming no `reference:`" in found[0]) is not reference
+    assert "Remediation: edit `elected_on:` in the plan file" in \
+        result.stderr
+    assert DATE_FLAG not in result.stderr + result.stdout
+
+
+@ONE_PER_BAD_DATE
+def test_execute_refuses_an_elected_on_it_cannot_read_before_any_leg(
+        adopter, world, edit):
+    """The same finding, refused through `_refuse_what_check_finds` before
+    `_create_leg_remotes`. With no `reference:`, `execute` used to create
+    both legs and then refuse from `default_reference`, in words that named
+    `--elected-on`; with one, it went on and wrote the word into the
+    manifest."""
+    value, read, reference = BAD_DATES[edit]
+    world.plan.write_text(with_elected_on(world.answered, value, reference),
+                          encoding=UTF8)
+    refusal = refused_by(adopter, execute_args(world.tmp, world.plan))
+    assert refusal.code == DATE_CODE
+    no_leg_was_created(world.tmp)
+    assert source_branches(world.source) == ["main"]
+    assert f"the plan's `elected_on:` is the text {read!r}" in refusal.detail
+    assert "edit `elected_on:` in the plan file" in refusal.remediation
+    assert DATE_FLAG not in str(refusal)
+
+
+@pytest.mark.parametrize("value,reference", [
+    ('"2026-09-02"', False), ('"2026-06-01"', False), ('"2026-09-02"', True),
+    ("null", False)])
+def test_an_elected_on_election_date_reads_still_passes(adopter, world, value,
+                                                        reference):
+    """The controls: a date, with or without the `reference:` it chooses, and
+    no date at all, which `execute` fills with today's."""
+    text = with_elected_on(world.answered, value, reference)
+    checked = run_check(write_edited(world, text))
+    assert checked.returncode == 0, checked.stderr + checked.stdout
+    plan, source = open_plan(adopter, world, text)
+    assert adopter._refuse_what_check_finds(plan, source) is None
+
+
+@pytest.mark.parametrize("value", ["2026-W41-6", "20261011", "2026-09-02",
+                                   "someday"])
+def test_check_asks_election_date_itself_of_the_plans_date(adopter, world,
+                                                           value):
+    """ONE QUESTION, `plan`'s. `check` asks the plan's `elected_on:` what
+    `plan` asks `--elected-on`, `election_date` on this interpreter, and
+    nothing of its own: `2026-W41-6` and `20261011` are dates to
+    `date.fromisoformat` from Python 3.11 and not to the project's own
+    validator, which is #261's to rule on. Whatever `election_date` answers,
+    `check` answers the same, so `plan`, `check` and `execute` cannot
+    disagree about one value."""
+    try:
+        adopter.election_date(value)
+        refused = False
+    except adopter.Refusal:
+        refused = True
+    result = run_check(write_edited(
+        world, with_elected_on(world.answered, f'"{value}"', False)))
+    assert result.returncode == (1 if refused else 0), \
+        result.stderr + result.stdout
+    assert (f"FINDING {DATE_CODE}:" in result.stderr) is refused
+
+
+def test_a_tighter_election_date_is_asked_with_no_edit(adopter, world,
+                                                       monkeypatch):
+    """`election_date` held to `YYYY-MM-DD` on every Python, as #261 asks of
+    it, stood in for here: `check`'s list follows it, and `execute` refuses
+    `2026-W41-6` before any leg. The stand-in's own words name
+    `--elected-on`; the refusal says the plan's key and not them."""
+    real = adopter.election_date
+
+    def held_to_the_form(elected_on):
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(elected_on)):
+            raise adopter.Refusal(
+                DATE_CODE, f"{DATE_FLAG} {elected_on!r} is not YYYY-MM-DD")
+        return real(elected_on)
+
+    monkeypatch.setattr(adopter, "election_date", held_to_the_form)
+    world.plan.write_text(
+        with_elected_on(world.answered, '"2026-W41-6"', False), encoding=UTF8)
+    refusal = refused_by(adopter, execute_args(world.tmp, world.plan))
+    assert refusal.code == DATE_CODE
+    assert "the plan's `elected_on:` is the text '2026-W41-6'" in \
+        refusal.detail
+    assert DATE_FLAG not in str(refusal)
+    no_leg_was_created(world.tmp)
+
+
+def test_another_refusal_from_election_date_is_not_a_date_finding(
+        adopter, world, monkeypatch):
+    """Only `election-date-malformed` is a finding about the date. Anything
+    else `election_date` raises -- a rule it could not ask, as when the
+    validator it may consult is missing -- is raised as it is, and a date it
+    never judged is not reported as malformed."""
+    def cannot_ask(elected_on):
+        raise adopter.Refusal("rule-unusable", "the rule could not be asked")
+
+    monkeypatch.setattr(adopter, "election_date", cannot_ask)
+    plan, source = open_plan(adopter, world, world.answered)
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter._refuse_what_check_finds(plan, source)
+    assert caught.value.code == "rule-unusable"
+
+
+def test_both_findings_are_listed_and_the_code_is_the_first(adopter, world):
+    """Both keys wrong at once: one list, the date first, as the plan file
+    holds the two keys, and each remediation once."""
+    text = with_follow_ups(with_elected_on(world.answered, "someday", False),
+                           "follow_ups: 5\n")
+    printed = check_findings(write_edited(world, text))
+    assert [line.split(":", 1)[0] for line in printed] == [
+        f"FINDING {DATE_CODE}", f"FINDING {BAD_FOLLOW_UPS_CODE}"]
+    plan, source = open_plan(adopter, world, text)
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter._refuse_what_check_finds(plan, source)
+    assert caught.value.code == DATE_CODE
+    for finding in printed:
+        assert finding in caught.value.detail
+    assert caught.value.remediation.count("Remediation: edit `elected_on:`") \
+        == 1
+    assert caught.value.remediation.count(
+        "Remediation: write `follow_ups:`") == 1
+
+
 # --- a plan that is not UTF-8 (#192) ----------------------------------------
 
 #: The byte `0xff` is in no UTF-8 text, so wherever it lands the file cannot be
@@ -686,3 +858,34 @@ def test_a_follow_ups_that_is_not_a_list_creates_no_leg_and_the_corrected_plan_r
     corrected = run_script(ADOPT, "execute", *flags)
     assert corrected.returncode == 0, corrected.stderr + corrected.stdout
     assert "adoption verified" in corrected.stdout
+
+
+@needs_filter_repo
+def test_an_elected_on_it_cannot_read_creates_no_leg_and_the_corrected_plan_runs(  # noqa: E501
+        adopter, world):
+    """#294 as a person met it, through `main`: exit 2, a REFUSED line that
+    names no flag, no traceback and no leg, so the corrected plan does not
+    meet `leg-remote-exists`. The corrected plan has no `reference:`, and the
+    manifest records the one its date chooses."""
+    remotes, work = world.tmp / REMOTES, world.tmp / WORK
+    flags = ("--plan", str(world.plan), "--yes", "--local-remote-dir",
+             str(remotes), "--work-dir", str(work))
+    world.plan.write_text(with_elected_on(world.answered, "someday", False),
+                          encoding=UTF8)
+    refused = run_script(ADOPT, "execute", *flags)
+    assert refused.returncode == 2, refused.stderr + refused.stdout
+    assert f"REFUSED {DATE_CODE}: " in refused.stderr
+    assert_no_traceback(refused)
+    assert DATE_FLAG not in refused.stderr
+    assert "creating the leg repositories" not in refused.stdout
+    assert not remotes.exists(), "not even the directory the legs go in"
+    assert source_branches(world.source) == ["main"]
+
+    world.plan.write_text(
+        with_elected_on(world.answered, '"2026-09-02"', False), encoding=UTF8)
+    corrected = run_script(ADOPT, "execute", *flags)
+    assert corrected.returncode == 0, corrected.stderr + corrected.stdout
+    assert "adoption verified" in corrected.stdout
+    manifest = adopter.load_yaml(work / PROJECT / "project.yaml")
+    assert manifest["reference"] == adopter.default_reference("2026-09-02")
+    assert str(manifest["elected_on"]) == "2026-09-02"

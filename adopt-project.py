@@ -2741,6 +2741,19 @@ def _refused_by_policy(path: str) -> str | None:
 # `_commit_the_split`, after both legs were pushed; `abc` was written into the
 # split commit's message as three follow-ups, `a`, `b` and `c`, and an item
 # `- true` as `True`.
+#
+# `elected_on:` (#294). Nothing asked whether it was a date but
+# `_template_values`, and only for a plan with no `reference:`:
+# `default_reference` asked `election_date` after `_create_leg_remotes` had
+# made both legs, and the refusal named `--elected-on`, a flag neither `check`
+# nor `execute` takes. With `reference:` kept the date was never asked, and
+# `execute` wrote `someday` into the manifest. THE DATE IS ASKED OF
+# `election_date`, the rule `plan` asks of `--elected-on` and
+# `_template_values` of the plan's date, and of nothing else: what that rule
+# admits is #261's to decide, and a tighter rule there is asked here with no
+# edit. Only the words are this caller's, because the date came from the plan
+# file and not from a flag: the refusal `election_date` raises names
+# `--elected-on`, which is right for `plan` and wrong here.
 
 #: `check`'s finding for a `follow_ups:` that is not a list of text, and the
 #: code `execute` refuses it under (#293).
@@ -2811,10 +2824,60 @@ def _follow_ups_findings(plan: Plan) -> list[str]:
             if not isinstance(item, str)]
 
 
+#: `check`'s finding for an `elected_on:` that `election_date` does not read,
+#: and the code `execute` refuses it under: the code `plan` refuses a bad
+#: `--elected-on` under, said here of the plan's key (#294).
+ELECTION_DATE_MALFORMED = "election-date-malformed"
+
+#: Said once after the `elected_on:` finding. It names the plan file's key and
+#: no flag: `check` and `execute` take none for the date.
+ELECTED_ON_REMEDIATION = (
+    "Remediation: edit `elected_on:` in the plan file to the day the shape "
+    "was elected, written as a zero-padded ISO date in quotes, e.g. "
+    "`elected_on: \"2026-09-02\"`: not 2026-9-2, and not a word like "
+    "'yesterday'. `execute` writes it into the project's `project.yaml`, and "
+    "a plan with no `reference:` has its reference chosen BY that date, so "
+    "it is read before anything is created.")
+
+
+def _elected_on_findings(plan: Plan) -> list[str]:
+    """A FINDING for an `elected_on:` that `election_date` does not read,
+    whether or not the plan has a `reference:` (#294); `[]` for a date it
+    reads and for no `elected_on:` at all, which `execute` fills with today's.
+
+    The value asked is the one `_template_values` takes, `str` of what the
+    plan holds, so the two cannot answer differently. `election_date`'s own
+    refusal is not passed on, because its words are `plan`'s: they name
+    `--elected-on`, which neither `check` nor `execute` takes. Only THAT
+    refusal is a finding about the date: any other `election_date` raises
+    is about something else (a rule it could not ask), and is raised as it
+    is.
+    """
+    elected_on = plan.get("elected_on")
+    if elected_on is None:
+        return []
+    try:
+        election_date(str(elected_on))
+    except Refusal as refused:
+        if refused.code != ELECTION_DATE_MALFORMED:
+            raise
+        chosen = ("" if plan.get("reference") else
+                  ", and, the plan naming no `reference:`, chooses the "
+                  "reference by it")
+        return [f"FINDING {ELECTION_DATE_MALFORMED}: the plan's `elected_on:` "
+                f"is {_read_as(elected_on)}, which is not a day written "
+                "YYYY-MM-DD, the one form `execute` reads: it writes the date "
+                f"into the project's `project.yaml`{chosen}"]
+    return []
+
+
 def _plan_field_findings(plan: Plan) -> tuple[list[str], list[str]]:
-    """`_follow_ups_findings`, and what `check` prints once after them."""
-    followed = _follow_ups_findings(plan)
-    return followed, [FOLLOW_UPS_REMEDIATION] if followed else []
+    """`_elected_on_findings` and `_follow_ups_findings`, in the order the
+    plan file holds the two keys, and what `check` prints once after them."""
+    dated, followed = _elected_on_findings(plan), _follow_ups_findings(plan)
+    return (dated + followed,
+            ([ELECTED_ON_REMEDIATION] if dated else [])
+            + ([FOLLOW_UPS_REMEDIATION] if followed else []))
 
 
 #: What a plan whose entry `entry_path_problem` refuses is told to do. Said by
@@ -2858,7 +2921,7 @@ def _entry_findings(plan: Plan, source: Source
     where the shape writes, then the source's own submodules, then each
     value `execute` writes into a file that no file can hold (#255). Last,
     each plan value `execute` reads late and `_plan_field_findings` asks
-    about (#293).
+    about (#293, #294).
 
     ONE LIST, read by `check` and by `execute`'s `_refuse_what_check_finds`.
     #168 and #166 each added findings to `check` and a refusal to `execute`
