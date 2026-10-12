@@ -3056,9 +3056,11 @@ def shape_pin_a_list(root: Path) -> list:
 
 
 def leg_pin_conflicted(root: Path) -> list:
-    # `Makefile` conflicts beside it and is a file the shape writes, but
-    # only the shape pin takes the shape with it: a leg pin is named alone.
-    conflict_in(root, SPEC_PIN, "commit", "Makefile")
+    # `Makefile`, a copy the shape writes, and README.md, which holds the
+    # line `apply` writes, conflict beside it. Only the shape pin takes the
+    # copies with it and names README.md for a person: a leg pin is named
+    # alone, and its note says nothing of either.
+    conflict_in(root, SPEC_PIN, "commit", "Makefile", "README.md")
     return ["checkout", "--ours", "--", SPEC_PIN]
 
 
@@ -3119,6 +3121,7 @@ def test_a_file_a_tool_wrote_that_does_not_load_is_put_back_from_git(
     assert argv[3:] == expected, argv
     note = row["next"].split("   #", 1)[1]
     assert NOTE_SAYS[restore].format(what=what) in note, note
+    assert "README.md" not in note and "a person merges" not in note, note
     if rel == SHAPE_PIN:
         # One helper, so the two rows about the one file name one command.
         assert row["next"] == rows["shape-currency"]["next"], rows
