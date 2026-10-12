@@ -352,6 +352,7 @@ SPEC_PATH_KEY = "legs.spec_path"
 TRACKING_KEY = "tracking_branch"
 PINS_KEY = "pins"
 ELECTED_BY_KEY = "elected_by"
+ELECTED_ON_KEY = "elected_on"
 REFERENCE_KEY = "reference"
 SPEC_FLAG = "--spec-path"
 TRACKING_FLAG = "--tracking-branch"
@@ -364,6 +365,7 @@ NAMED = {PINS_KEY: "a pin in pins"}
 #: The `_template_values` placeholders the tests below fill.
 TRACKING_PLACEHOLDER = "TRACKING_BRANCH"
 ELECTED_BY_PLACEHOLDER = "ELECTED_BY"
+ELECTED_ON_PLACEHOLDER = "ELECTED_ON"
 REFERENCE_PLACEHOLDER = "REFERENCE"
 PINS_PLACEHOLDER = "NEUTRAL_PRODUCT_PINS"
 #: The leg path and the branch the accepted end-to-end run is given.
@@ -375,6 +377,9 @@ Q4_BRANCH = "2026-q4"
 #: since #284, which reads back as typed.
 DOMAIN_USER = "CORP\\tom"
 DOMAIN_USER_READ = "the text `CORP`, then a tab, then `om`"
+#: The same name with double quotes of its own, as a plan edited by hand
+#: carries it: `'"CORP\tom"'`.
+QUOTED_DOMAIN_USER = f"'\"{DOMAIN_USER}\"'"
 
 #: `(flag, value, plan key, what the project's loader reads)`. At 76a6153
 #: each of the first fifteen went through `execute` to `adoption verified`
@@ -404,11 +409,12 @@ REFUSED = [
     (TRACKING_FLAG, "007", TRACKING_KEY, SEVEN_READ),
 ]
 #: `(plan key, value, what the loader reads)` that only an edited plan can
-#: carry here: `plan` takes `--visibility` from a fixed choice, and reads
-#: `--elected-on 20260902` as a date only on Python 3.11 and later.
+#: carry here: `plan` reads `--elected-on 20260902` as a date only on Python
+#: 3.11 and later. No visibility is here: `plan` takes one from a fixed
+#: choice, and `execute` hands any other to `gh repo create` before it
+#: writes anything (`NEVER_WRITTEN`).
 EDITED_ONLY = [
-    ("elected_on", DATE_DIGITS, f"the number {DATE_DIGITS}"),
-    ("visibility", "true", TRUE_READ),
+    (ELECTED_ON_KEY, DATE_DIGITS, f"the number {DATE_DIGITS}"),
 ]
 #: REFUSED as `plan` is given it, and as a plan carries it.
 PLANNED = [(flag, value, reading) for flag, value, _, reading in REFUSED]
@@ -424,9 +430,14 @@ def checked(plan: Path):
     return run_script(ADOPT, "check", "--plan", str(plan))
 
 
+#: The directory `executed` names for the local remotes, which a run that is
+#: refused before any leg exists never creates.
+REMOTES = "remotes"
+
+
 def executed(plan: Path, tmp_path: Path):
     return run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
-                      "--local-remote-dir", str(tmp_path / "remotes"),
+                      "--local-remote-dir", str(tmp_path / REMOTES),
                       "--work-dir", str(tmp_path / "work"))
 
 
@@ -610,16 +621,20 @@ def test_check_names_an_id_it_derived_from_the_assembly(
 #: something that is not text, so the plan does not say what `str` of it
 #: says: `007` is read as 7, and `TRUE` as true. The sentence names what was
 #: READ, with its kind, and then the text `execute` writes (review181's N2).
-#: The project's loader reads that text back as the same kind again.
+#: The project's loader reads that text back as the same kind again. The
+#: list and the mapping are an `elected_on`'s, which `execute` writes as it
+#: stands: as a `tracking_branch` it refuses either as `unsafe-value`, and
+#: as a `visibility` `gh` takes neither, before anything is written
+#: (`NEVER_WRITTEN`).
 READ_AS_NOT_TEXT = [
     (TRACKING_KEY, "007", SEVEN_READ, "7"),
     (TRACKING_KEY, "TRUE", TRUE_READ, "True"),
     (TRACKING_KEY, "1.50", "the number 1.5", "1.5"),
-    (TRACKING_KEY, "[a]", "a list", "['a']"),
-    ("visibility", "{a: b}", "a mapping", "{'a': 'b'}"),
+    (ELECTED_ON_KEY, "[a]", "a list", "['a']"),
+    (ELECTED_ON_KEY, "{a: b}", "a mapping", "{'a': 'b'}"),
     ("id", "007", SEVEN_READ, "7"),
     (PINS_KEY, "TRUE", TRUE_READ, "True"),
-    ("elected_on", DATE_DIGITS, f"the number {DATE_DIGITS}", DATE_DIGITS),
+    (ELECTED_ON_KEY, DATE_DIGITS, f"the number {DATE_DIGITS}", DATE_DIGITS),
 ]
 
 
@@ -644,29 +659,77 @@ def test_check_names_a_plan_value_that_is_not_text_by_what_was_read(
     assert f"{named} is " not in result.stderr, "`str` of it was echoed"
 
 
+#: `(plan key, as a plan edited by hand spells it)`: values the project's
+#: loader would misread, which `execute` never writes. It refuses the branch
+#: as `unsafe-value` (`_checked_plan_values`), and `gh repo create` takes no
+#: `--true`, before anything is written. A finding would say the value is
+#: written and the run ends `adoption verified`: for these neither is true
+#: (rv181f's F2, F2b).
+NEVER_WRITTEN = [
+    pytest.param(TRACKING_KEY, QUOTED_DOMAIN_USER, id=TRACKING_KEY),
+    pytest.param("visibility", '"true"', id="visibility"),
+]
+
+
+@pytest.mark.parametrize("key, spelled", NEVER_WRITTEN)
+def test_check_says_nothing_misread_of_a_value_execute_never_writes(
+        adopter, answered, tmp_path, key, spelled):
+    """`check` asked the loader about every value, and named these two as
+    misread, with a remediation saying the run would still end `adoption
+    verified`. It asks only about a value `execute` gets as far as
+    writing."""
+    _, text = answered
+    plan = tmp_path / PLAN_FILE
+    carrying(plan, text, key, spelled)
+    result = checked(plan)
+    assert result.returncode in (0, 1), result.stdout + result.stderr
+    assert MISREAD_FINDING not in result.stderr, result.stderr
+    assert adopter.MANIFEST_MISREAD_REMEDIATION not in result.stderr
+
+
+@needs_filter_repo
+def test_execute_refuses_that_branch_as_unsafe_before_any_leg_exists(
+        answered, tmp_path):
+    """What `execute` does with the branch `check` no longer calls misread:
+    it refuses it as `unsafe-value`, before it creates a leg or touches the
+    source, so no sentence of `check`'s says it gets further."""
+    source, text = answered
+    plan = tmp_path / PLAN_FILE
+    carrying(plan, text, TRACKING_KEY, QUOTED_DOMAIN_USER)
+    assert MISREAD_FINDING not in checked(plan).stderr
+    result = executed(plan, tmp_path)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stderr.startswith(
+        f"REFUSED unsafe-value: {TRACKING_KEY} is "), result.stderr
+    assert not (tmp_path / REMOTES).exists()
+    assert SPLIT_BRANCH not in git("branch", "--list", cwd=source).stdout
+
+
 #: `(placeholder, value, the manifest line `execute` writes, what the loader
 #: reads it back as)`: values the loader reads back as OTHER TEXT, each
 #: through a placeholder the template writes bare. The double quotes in the
 #: first six are the VALUE's own, as a hand-edited plan's
-#: `tracking_branch: '"CORP\tom"'` carries them: the loader takes them for
-#: YAML's and resolves the escape between them. The manifest's OWN quotes no
-#: longer do that, since #284 (`BETWEEN_THE_QUOTES`). `\\r` and a code
-#: point's `\\xNN` are escapes the loader resolves since #199, which the gate
-#: follows with no edit of its own: it asks the loader.
+#: `elected_on: '"CORP\tom"'` carries them: the loader takes them for YAML's
+#: and resolves the escape between them. The manifest's OWN quotes no longer
+#: do that, since #284 (`BETWEEN_THE_QUOTES`). `\\r` and a code point's
+#: `\\xNN` are escapes the loader resolves since #199, which the gate follows
+#: with no edit of its own: it asks the loader. Not a `tracking_branch`'s:
+#: `execute` refuses a quote, a backslash or a space in one as
+#: `unsafe-value` before it writes anything (`NEVER_WRITTEN`).
 UNESCAPED = [
-    (TRACKING_PLACEHOLDER, f'"{DOMAIN_USER}"',
-     f'tracking_branch: "{DOMAIN_USER}"', DOMAIN_USER_READ),
-    (TRACKING_PLACEHOLDER, '"docs\\new.md"', 'tracking_branch: "docs\\new.md"',
+    (ELECTED_ON_PLACEHOLDER, f'"{DOMAIN_USER}"',
+     f'elected_on: "{DOMAIN_USER}"', DOMAIN_USER_READ),
+    (ELECTED_ON_PLACEHOLDER, '"docs\\new.md"', 'elected_on: "docs\\new.md"',
      "the text `docs`, then a line break, then `ew.md`"),
-    (TRACKING_PLACEHOLDER, '"a\\\\b"', 'tracking_branch: "a\\\\b"',
+    (ELECTED_ON_PLACEHOLDER, '"a\\\\b"', 'elected_on: "a\\\\b"',
      "the text `a\\b`"),
-    (TRACKING_PLACEHOLDER, '"a\\"b"', 'tracking_branch: "a\\"b"',
+    (ELECTED_ON_PLACEHOLDER, '"a\\"b"', 'elected_on: "a\\"b"',
      'the text `a"b`'),
-    (TRACKING_PLACEHOLDER, '"CORP\\ralph"', 'tracking_branch: "CORP\\ralph"',
+    (ELECTED_ON_PLACEHOLDER, '"CORP\\ralph"', 'elected_on: "CORP\\ralph"',
      "the text `CORP`, then a carriage return, then `alph`"),
-    (TRACKING_PLACEHOLDER, '"docs\\x41.md"', 'tracking_branch: "docs\\x41.md"',
+    (ELECTED_ON_PLACEHOLDER, '"docs\\x41.md"', 'elected_on: "docs\\x41.md"',
      "the text `docsA.md`"),
-    (TRACKING_PLACEHOLDER, "a #b", "tracking_branch: a #b", "the text `a`"),
+    (ELECTED_ON_PLACEHOLDER, "a #b", "elected_on: a #b", "the text `a`"),
 ]
 
 
@@ -785,7 +848,7 @@ def test_execute_refuses_a_plan_carrying_one_before_any_leg_exists(
     assert f"{MISREAD_FINDING}{who}" in result.stderr
     assert what in result.stderr
     assert adopter.MANIFEST_MISREAD_REMEDIATION in result.stderr
-    assert not (tmp_path / "remotes").exists()
+    assert not (tmp_path / REMOTES).exists()
     assert SPLIT_BRANCH not in git("branch", "--list", cwd=source).stdout
 
 

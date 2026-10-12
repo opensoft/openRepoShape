@@ -1647,6 +1647,9 @@ MANIFEST_YAML = "project.yaml"
 ELECTED_BY_KEY = "elected_by"
 ELECTED_ON_KEY = "elected_on"
 REFERENCE_KEY = "reference"
+#: The two other plan keys `_execute_gets_to_write` asks about by name.
+TRACKING_KEY = "tracking_branch"
+VISIBILITY_KEY = "visibility"
 #: The placeholder `execute` writes the project's id through.
 ID_PLACEHOLDER = "PROJECT_ID"
 
@@ -1655,8 +1658,8 @@ ID_PLACEHOLDER = "PROJECT_ID"
 #: placeholder that carries it. The id is asked about apart from these,
 #: because `execute` derives it when the plan has none; the leg paths are
 #: `legs.` keys; the pins are a list.
-MANIFEST_FIELDS = {"tracking_branch": "TRACKING_BRANCH",
-                   "visibility": "VISIBILITY", ELECTED_BY_KEY: "ELECTED_BY",
+MANIFEST_FIELDS = {TRACKING_KEY: "TRACKING_BRANCH",
+                   VISIBILITY_KEY: "VISIBILITY", ELECTED_BY_KEY: "ELECTED_BY",
                    ELECTED_ON_KEY: "ELECTED_ON", REFERENCE_KEY: "REFERENCE"}
 LEG_PATH_PLACEHOLDERS = {"spec": "SPEC_PATH", "code": "CODE_PATH"}
 #: How `plan` fills a flag nobody passed, where the value it fills in can be
@@ -1866,16 +1869,47 @@ def _id_field(plan: Plan) -> tuple:
     return _field("id", ID_PLACEHOLDER, set_id)
 
 
+#: The plan values `execute` hands to `git` before it writes anything:
+#: `_checked_plan_values` checks each with `checked_value`, and refuses one it
+#: refuses (`unsafe-value`) before `_refuse_what_check_finds` asks the gate.
+GIT_ARGUMENT_KEYS = (TRACKING_KEY,)
+
+
+def _execute_gets_to_write(key: str, value) -> bool:
+    """Does `execute` get as far as writing `value` into the project? Not for
+    a `git` argument `checked_value` refuses: `_checked_plan_values` refuses
+    it as `unsafe-value` before any leg exists, so a sentence saying
+    `execute` writes it, and that the run would end `adoption verified`,
+    would be false (rv181f's F2). Nor, outside `--local-remote-dir`, for a
+    visibility that is not one of `VISIBILITY_CHOICES`: `_create_leg_remotes`
+    hands it to `gh repo create` as `--<visibility>` before anything is
+    written, and no other is a visibility gh creates a repository with
+    (rv181f's F2b). `check` is not told which of the two modes `execute` will
+    run in, so such a visibility is asked about in neither. None of the
+    three choices is misread."""
+    if key == VISIBILITY_KEY:
+        return str(value) in VISIBILITY_CHOICES
+    if key not in GIT_ARGUMENT_KEYS:
+        return True
+    try:
+        checked_value(key, value)
+    except Refusal:
+        return False
+    return True
+
+
 def _plan_fields(plan: Plan) -> list[tuple]:
     """A plan's values as its loader read them, each named by its key in the
     plan, with the lines `_template_values` would write them into.
 
     A key the plan does not carry is left out: `execute` fills it with a
     default of this tool's own (`main`, `private`, today's date), and none of
-    those is misread. A leg path is asked about only when it is text with no
-    `plan-bad-leg-path` of its own, so one wrong value is one finding. An id
-    `Plan.project_id` refuses, or a refused leg name it is derived from, is
-    refused on its own account by `check` and `execute` alike.
+    those is misread. So is a value `execute` never gets as far as writing
+    (`_execute_gets_to_write`): it refuses it, or `gh` does, first. A leg
+    path is asked about only when it is text with no `plan-bad-leg-path` of
+    its own, so one wrong value is one finding. An id `Plan.project_id`
+    refuses, or a refused leg name it is derived from, is refused on its own
+    account by `check` and `execute` alike.
     """
     fields: list[tuple] = []
     try:
@@ -1884,7 +1918,8 @@ def _plan_fields(plan: Plan) -> list[tuple]:
         pass
     fields += [_field(key, placeholder, plan.get(key))
                for key, placeholder in MANIFEST_FIELDS.items()
-               if plan.get(key) is not None]
+               if plan.get(key) is not None
+               and _execute_gets_to_write(key, plan.get(key))]
     for (what, value), placeholder in zip(_plan_leg_paths(plan),
                                           LEG_PATH_PLACEHOLDERS.values()):
         if isinstance(value, str) and leg_path_problem(what, value) is None:
