@@ -711,12 +711,20 @@ class CommandFailed(Exception):
         )
 
 
-#: `{tracking}` is the run's tracking branch (`--tracking-branch`, the plan's
-#: `tracking_branch`): the branch the refused push targeted, which is also the
-#: branch a work clone is made on and the base a seeding pull request lands on
-#: (#324). Every caller passes it, after `checked_value` has admitted it, so
-#: it is a safe argument and is not quoted here. A call that leaves it out
-#: fails `tests/test_ruleset_hint_tracking_branch.py`.
+#: Two fields name a branch, and they are NOT the same thing (#324):
+#:   `{tracking}` is the run's tracking branch (`--tracking-branch`, the
+#:   plan's `tracking_branch`): the branch of the REMOTE the refused push
+#:   targeted, and so the base a seeding pull request lands on.
+#:   `{local}` is the ref in `{work}` that the refused push carried: the
+#:   tracking branch where the tool pushed it by name (the scaffold, the family
+#:   holder: their clones are made on it), `HEAD` where it pushed `HEAD:`
+#:   (both adopt legs). An extracted leg's clone holds the source's OWN branch
+#:   of the tracking branch's name, filtered, which is another commit than the
+#:   one pushed, so there `{tracking}` as the local ref would seed a leg with
+#:   the wrong history.
+#: Every caller passes both, after `checked_value` has admitted the tracking
+#: branch, so each is a safe argument and neither is quoted here. A call that
+#: leaves one out fails `tests/test_ruleset_hint_tracking_branch.py`.
 RULESET_HINT = """
 If the organisation applies a ruleset requiring changes to arrive by pull
 request, a direct push to the default branch is refused BY DESIGN and must not
@@ -725,7 +733,7 @@ be worked around. Two legitimate exits:
   (1) have an operator holding the bypass right seed the default branch once,
       then re-run this scaffold; or
   (2) push a seed BRANCH and open a pull request:
-          git -C {work} push -u origin {tracking}:seed/scaffold
+          git -C {work} push -u origin {local}:seed/scaffold
           gh pr create --repo {repo} --base {tracking} --head seed/scaffold \\
               --title 'Seed the {role} leg' --body 'Scaffolded shape.'
 

@@ -1045,6 +1045,7 @@ def _seed_legs(args, values: dict, names: dict, repositories: dict,
                 print(exc.loudly(f"pushing the {role} leg"), file=sys.stderr)
                 print(RULESET_HINT.format(work=work, repo=repositories[role],
                                           role=role,
+                                          local=args.tracking_branch,
                                           tracking=args.tracking_branch),
                       file=sys.stderr)
                 return None
@@ -1163,6 +1164,7 @@ def _build_assembly_root(args, values: dict, names: dict, repositories: dict,
             print(RULESET_HINT.format(work=assembly,
                                       repo=repositories["assembly"],
                                       role="assembly",
+                                      local=args.tracking_branch,
                                       tracking=args.tracking_branch),
                   file=sys.stderr)
             return False

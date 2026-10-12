@@ -3082,7 +3082,8 @@ def _extract_leg(role: str, source: Source, work: Path, paths: list[str],
     except CommandFailed as exc:
         print(exc.loudly(f"pushing the {role} leg"), file=sys.stderr)
         print(RULESET_HINT.format(work=work, repo=repository, role=role,
-                                  tracking=tracking), file=sys.stderr)
+                                  local="HEAD", tracking=tracking),
+              file=sys.stderr)
         raise
     count = git_out(["rev-list", "--count", "HEAD"], cwd=work)
     print(f"  {role:<5} {len(paths):>3} path(s) -> {head[:12]} "
@@ -3130,7 +3131,8 @@ def _seed_leg(role: str, work: Path, values: dict, branch: str, url: str,
     except CommandFailed as exc:
         print(exc.loudly(f"pushing the seeded {role} leg"), file=sys.stderr)
         print(RULESET_HINT.format(work=work, repo=repository, role=role,
-                                  tracking=tracking), file=sys.stderr)
+                                  local="HEAD", tracking=tracking),
+              file=sys.stderr)
         raise
     print(f"  {role:<5}   0 path(s) -> {commit[:12]} (SEEDED from "
           f"{SEED_TEMPLATE[role]}/) -> {url}")
