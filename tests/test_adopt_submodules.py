@@ -873,9 +873,9 @@ def raw_source(base: Path, gitlink: bytes, beside: bytes | None) -> Path:
     # Not UTF-8: `Source.tree` keeps the byte as a surrogate, which no UTF-8
     # plan can hold.
     (b"upstream/d\xe9p", None, UPSTREAM,
-     " This entry holds the submodule(s) `upstream/d\\xe9p`: it is asked"),
+     " This entry holds the submodule(s) `upstream/d\\udce9p`: it is asked"),
     (b"src/vendored", b"src/caf\xe9.py", "src/",
-     "an entry for each of `src/app/`, `src/caf\\xe9.py`, `src/vendored`,"),
+     "an entry for each of `src/app/`, `src/caf\\udce9.py`, `src/vendored`,"),
     # A newline would end the plan's line, and read back as a space.
     (b"src/vendored", b"src/a\nb.py", "src/",
      "an entry for each of `src/a\\nb.py`, `src/app/`, `src/vendored`,"),

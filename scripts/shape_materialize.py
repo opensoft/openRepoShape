@@ -37,6 +37,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import unicodedata
 from pathlib import Path, PurePath
 
@@ -792,6 +793,147 @@ def run(args: list[str], cwd: Path | None = None, capture: bool = True) -> str:
         raise CommandFailed(args, cwd, proc.returncode,
                             (proc.stderr or "") + (proc.stdout or ""))
     return (proc.stdout or "").strip()
+
+
+# ---------------------------------------------------------------------------
+# A branch name, asked of git (#283)
+# ---------------------------------------------------------------------------
+#
+# `checked_value` holds a `--tracking-branch` to an ALPHABET, which keeps an
+# option and a shell word off a command line, and the alphabet is wider than
+# the names git accepts as a branch: `~`, `a..b`, `x.lock`, `a/`, `/a`, `a//b`,
+# `.a` and `a.` are all inside it, and `git init -b` refuses each. Nothing
+# asked git, so `--dry-run` printed a plan and, against GitHub, the run
+# created all three repositories before the first `git init -b` died.
+#
+# GIT IS THE AUTHORITY on what a branch name is (`git check-ref-format
+# --branch`): it is ASKED, never copied here, so a rule git adds or relaxes is
+# ours the day the person upgrades. The question is its own function, beside
+# `refuse_bad_leg_paths` in what it is for: a value judged BEFORE a work
+# directory or a remote exists, and by `--dry-run` too.
+#
+# IT LIVES HERE AND NOT IN `scripts/repo_shape.py` for the reason the leg-path
+# rule does: that file is a SHAPE COPY every project digest-pins, and one
+# function added there would put an `upstream-changed scripts/repo_shape.py`
+# row in front of every project for a rule no project's own copy ever asks.
+
+BRANCH_REMEDIATION = (
+    "Remediation: pass a branch name git will create, such as `main` or "
+    "`release/1.2`: no `..`, no `//`, no `~`, no `/` at either end, no `.` at "
+    "the end, no part that starts with `.` or ends in `.lock`, and not "
+    "`HEAD`. `git check-ref-format --branch <name>` is the check, and `git "
+    "help check-ref-format` lists every rule.")
+
+#: When git could not answer at all, the name was never judged, and a remedy
+#: that says "pass another name" sends the person after the wrong thing.
+BRANCH_UNCHECKED_REMEDIATION = (
+    "Remediation: the name was not judged, because git could not answer the "
+    "question for any name. Fix what git's own words above name (a `git` "
+    "missing from PATH, a malformed global or system git config), check that "
+    "`git check-ref-format --branch main` prints `main`, then run this again.")
+
+#: A name every git creates as a branch. It is asked only after git refused
+#: the person's name: a git that refuses this one too could not answer.
+BRANCH_CONTROL = "main"
+
+
+def _ask_git_branch(name: str) -> str:
+    """`git check-ref-format --branch <name>`, asked of NO repository and
+    from no directory of the person's.
+
+    `--branch` sets up the repository it finds, so asked in the operator's
+    working directory it failed for EVERY name inside a repository git
+    cannot open (a `.git` file naming a gitdir that is gone, a `.git/config`
+    that does not parse) and in a directory removed under the person, where
+    a scaffold without the question succeeds; and a repository it did open
+    lent `@{-1}` its own reflog (review of a03abcf). An empty directory is
+    no repository as `--git-dir` and is a directory that exists as the
+    working directory, so the answer is the same wherever the person
+    stands, and git, having no repository, has nothing to expand.
+    """
+    nowhere = tempfile.mkdtemp(prefix="openreposhape-branch-")
+    try:
+        return run(["git", f"--git-dir={nowhere}", "check-ref-format",
+                    "--branch", name], cwd=Path(nowhere))
+    finally:
+        # Empty: git writes nothing there. A removal that fails (Windows can
+        # hold a directory a moment after the process in it ended) must not
+        # turn git's answer into a refusal.
+        shutil.rmtree(nowhere, ignore_errors=True)
+
+
+def _branch_verdict(what: str, value) -> tuple[str | None, str]:
+    """`(problem, remediation)`: `branch_problem`'s sentence, and the remedy
+    that fits it, which is about the NAME when git judged the name and about
+    GIT when git could not answer."""
+    text = str(value)
+    refused = f"{what} is {text!r}, which is not a branch name git will create"
+    unchecked = f"{what} is {text!r}, which could not be checked"
+    if text.startswith("-"):
+        return (f"{refused}: it begins with `-`, which git reads as an option",
+                BRANCH_REMEDIATION)
+    try:
+        answer = _ask_git_branch(text)
+    except CommandFailed as exc:
+        said = f" ({exc.output})" if exc.output else ""
+        # GIT'S REFUSAL, OR GIT'S FAILURE? Git's words are localised, so they
+        # are not read: git is asked about a name it always creates, and a
+        # git that refuses that too (a malformed global config, say) could
+        # not answer for any name, so this one was never judged.
+        try:
+            _ask_git_branch(BRANCH_CONTROL)
+        except (CommandFailed, OSError):
+            return (f"{unchecked}: `git check-ref-format --branch` fails for "
+                    f"`{BRANCH_CONTROL}` too, so git could not answer{said}",
+                    BRANCH_UNCHECKED_REMEDIATION)
+        return (f"{refused}: `git check-ref-format --branch` refuses it{said}",
+                BRANCH_REMEDIATION)
+    except ValueError as exc:
+        # The value cannot be an argument at all (a NUL, a lone surrogate):
+        # the answer is not git's, and the fault is the value's.
+        return (f"{unchecked}: `git check-ref-format --branch` could not be "
+                f"run ({exc})", BRANCH_REMEDIATION)
+    except OSError as exc:
+        # `git` itself is missing, or no empty directory could be made to ask
+        # it from: the answer is not git's, and the fault is not the name's.
+        return (f"{unchecked}: `git check-ref-format --branch` could not be "
+                f"run ({exc})", BRANCH_UNCHECKED_REMEDIATION)
+    if answer != text:
+        return (f"{refused}: `git check-ref-format --branch` reads it as "
+                f"{answer!r}, not as written", BRANCH_REMEDIATION)
+    return None, BRANCH_REMEDIATION
+
+
+def branch_problem(what: str, value) -> str | None:
+    """None when `git check-ref-format --branch` accepts `value` exactly as
+    written; otherwise the sentence that says what git made of it.
+
+    `what` names the value as the person met it (`--tracking-branch`,
+    `tracking_branch`), the way `leg_path_problem` is given its flag. Git is
+    asked with no repository in play (`_ask_git_branch`), so the verdict
+    does not depend on the directory the person runs the tool from. A name
+    git would EXPAND rather than echo (`@{-1}`) is refused too: the tool
+    writes the name it was given, so a spelling that means another branch
+    is not that branch. A leading `-` is refused without asking, so the value
+    is never an option to the question itself; `checked_value` has refused it
+    already for the tools that call that first. A git that cannot answer for
+    any name says so ("could not be checked"); it does not blame the name.
+    """
+    return _branch_verdict(what, value)[0]
+
+
+def refuse_bad_branch(refusal: str, what: str, value) -> None:
+    """Raise `Refusal(refusal)` when git would not create `value` as a branch,
+    or could not say.
+
+    `refusal` is the caller's own code (`scaffold-bad-tracking-branch`), so
+    each tool refuses in its own voice, as `refuse_bad_leg_paths` lets it.
+    The remedy is `BRANCH_REMEDIATION` when git judged the name, and
+    `BRANCH_UNCHECKED_REMEDIATION` when git could not answer at all.
+    """
+    problem, remediation = _branch_verdict(what, value)
+    if problem:
+        raise Refusal(refusal, problem, remediation)
 
 
 #: `-F -` reads the message from STDIN. Every argument is then a literal, and
