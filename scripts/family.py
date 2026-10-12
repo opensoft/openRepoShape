@@ -136,7 +136,7 @@ from repo_shape import (  # noqa: E402
     load_yaml, recorded_gitlink, repo_basename, same_repository, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
-    RULESET_HINT, SHAPE_REPOSITORY, CommandFailed, check_program,
+    FAMILY_RULESET_HINT, SHAPE_REPOSITORY, CommandFailed, check_program,
     commit_trailers, env_commit, escape_what_stdout_cannot_encode,
     force_stage, materialize_family_root, refuse_bad_branch, run,
     stage_written, trailer_line, write_lf,
@@ -1012,10 +1012,8 @@ def _create_holder_worktree(args, work: Path, values: dict, shape_commit: str,
             cwd=work)
     except CommandFailed as exc:
         print(exc.loudly("pushing the family holder"), file=sys.stderr)
-        print(RULESET_HINT.format(work=work, repo=repository,
-                                  role="family",
-                                  local=args.tracking_branch,
-                                  tracking=args.tracking_branch),
+        print(FAMILY_RULESET_HINT.format(repo=repository,
+                                         tracking=args.tracking_branch),
               file=sys.stderr)
         return 2
     return None

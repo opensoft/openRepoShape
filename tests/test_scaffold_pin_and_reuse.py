@@ -93,19 +93,21 @@ def test_a_root_with_commits_is_refused_and_sent_to_adopt(tmp_path):
     assert "keeps its name, its identity and its history" in result.stderr
 
 
-def test_an_existing_LEG_is_still_refused_outright(tmp_path):
-    """`--reuse-empty-repo` is about the assembly root alone. The legs are
-    created and seeded here, so one that exists is somebody else's."""
-    remotes = tmp_path / "remotes"
-    remotes.mkdir(parents=True)
-    bare(remotes / f"{PROJECT}-spec.git")
+def test_an_existing_LEG_with_commits_is_still_refused_outright(tmp_path):
+    """`--reuse-empty-repo` reuses an EMPTY leg, and one holding only this
+    scaffold's own seed (#462, `test_scaffold_reuse_seeded_legs.py`). A leg
+    holding anything else is somebody's repository, and is refused whatever
+    the flag says."""
+    spec = seeded_bare(tmp_path, f"{PROJECT}-spec")
     result = run_script(SCAFFOLD, "--org", ORG, "--project", PROJECT,
                         "--elected-by", "Test Human", "--reuse-empty-repo",
-                        "--local-remote-dir", str(remotes),
+                        "--local-remote-dir", str(spec.parent),
                         "--work-dir", str(tmp_path / "work"))
     assert result.returncode == 2
     assert "scaffold-remote-exists" in result.stderr
-    assert "the two legs must not exist yet" in result.stderr
+    assert "has commits" in result.stderr
+    assert "other than the one seed this scaffold would push" in result.stderr
+    assert not (spec.parent / f"{PROJECT}-code.git").exists()
 
 
 # --- --pin: a DECLARED descendant that carries legs ------------------------

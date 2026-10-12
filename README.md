@@ -456,15 +456,15 @@ says), and runs `scripts/bootstrap.py` (what `make bootstrap` runs).
 > created. A failed push says so in as many words — *NOTHING has been rolled
 > back. What already exists is listed above; delete it by hand if you want a
 > clean re-run* — and it is no less true of a failure anywhere else. A second
-> run is refused while the legs exist, and there is no `--force`, because
-> re-running over a live project is not a scaffold: delete what was created —
-> `gh repo delete <org>/<name>`, which needs the `delete_repo` scope, and
-> `gh repo delete --help` names `gh auth refresh -s delete_repo` as how to get
-> it — or scaffold under a different `--project`. `--reuse-empty-repo` covers
-> exactly one case: an assembly ROOT that already exists with ZERO commits,
-> which is a reserved name rather than a project. It applies to the root alone
-> — an existing leg is refused whatever it holds, and a root that HAS commits
-> is a live repository, which `adopt-project.py` converts in place instead.
+> run is refused while they exist, and there is no `--force`: delete what was
+> created — `gh repo delete <org>/<name>`, which needs the `delete_repo` scope
+> (`gh auth refresh -s delete_repo`) — or scaffold under a different
+> `--project`, or re-run with `--reuse-empty-repo`. That reuses each of the
+> three that has ZERO commits, a reserved name rather than a project, and a
+> leg whose one commit is the seed this scaffold pushes, so a run a ruleset
+> refused is finished by an operator holding the bypass right re-running it.
+> A leg with other commits is refused, and a root that HAS commits is a live
+> repository, which `adopt-project.py` converts in place instead.
 > `--visibility internal` is the third value every tool here accepts; only a
 > GitHub Enterprise Cloud organisation offers it at all, and one that does not
 > is refused by GitHub rather than by this tool.

@@ -255,10 +255,10 @@ options:
   --name NAME           display name
   --visibility {private,public,internal}
                         default: private for a fresh scaffold; with --reuse-
-                        empty-repo and an existing assembly root, the two new
-                        legs INHERIT that root's own visibility instead (a
+                        empty-repo and an existing assembly root, the legs it
+                        creates INHERIT that root's own visibility instead (a
                         mismatch with an explicit --visibility is a warning,
-                        not a refusal)
+                        not a refusal, and so is a reused leg's)
   --pin-owner PIN_OWNER
                         the organisation an UNQUALIFIED --pin name resolves
                         under (default: opensoft, where every neutral
@@ -302,10 +302,14 @@ options:
                         create bare repositories here instead of calling `gh
                         repo create` (the TEST path; no network)
   --no-push
-  --reuse-empty-repo    if <org>/<Project> already exists and has ZERO
-                        commits, use it as the assembly root instead of
-                        refusing. A repository with commits is still refused:
-                        that is a live project, not a slot.
+  --reuse-empty-repo    if <org>/<Project>, <Project>-spec or <Project>-code
+                        already exists and has ZERO commits, use it instead of
+                        refusing, and a leg whose one commit is the seed this
+                        scaffold pushes too: an operator holding the bypass
+                        right finishes a run a ruleset refused by re-running
+                        it with this. A root with commits, and a leg with any
+                        other, is still refused: that is a live repository,
+                        not a slot.
   --pin openProduct@COMMIT
                         declare a neutral-product pin, e.g. --pin
                         openGlass@<40 hex>. It writes

@@ -35,9 +35,9 @@ almost always an explicit `--org <their-org>`. Pass `--allow-upstream-org`
 only if the human asks for it in those words.
 
 **Never bypass an organisation ruleset.** A ruleset that refuses a direct push
-to `main` is doing its job; the exits are in the scaffold's own failure message
-(seed by pull request, or ask an operator with the bypass right). `--admin` is
-not a remedy.
+to `main` is doing its job; the exit is in the tool's own failure message (for
+a scaffold or `family.py init`: an operator holding the bypass right re-runs
+it with `--reuse-empty-repo`). `--admin` is not a remedy.
 
 ## 1. Confirm what you are about to do
 
