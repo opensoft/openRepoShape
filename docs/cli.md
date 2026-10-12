@@ -246,7 +246,9 @@ options:
   -h, --help            show this help message and exit
   --org ORG
   --project PROJECT     the assembly-root name, e.g. Atlas
-  --id ID               lowercase project id
+  --id ID               lowercase project id (default: --project lowercased).
+                        One the project's YAML reader would read as another
+                        type -- `null`, `true`, `007` -- is refused.
   --name NAME           display name
   --visibility {private,public,internal}
                         default: private for a fresh scaffold; with --reuse-
@@ -262,6 +264,9 @@ options:
                         (owner/openProduct@<sha>) to override it for one pin
                         without changing this default for the others.
   --elected-by ELECTED_BY
+                        the human electing the shape (default:
+                        GIT_AUTHOR_NAME, then `git config user.name`); not
+                        blank
   --elected-on ELECTED_ON
                         YYYY-MM-DD
   --reference REFERENCE
@@ -273,6 +278,10 @@ options:
                         does not claim it followed a document that did not
                         exist yet.
   --tracking-branch TRACKING_BRANCH
+                        the branch every repository is created on (default:
+                        main). One the project's YAML reader would read as
+                        another type -- `null`, `true`, `007`, `2026` -- is
+                        refused.
   --spec-path SPEC_PATH
                         where the spec leg is mounted, as a path in the
                         assembly root (default: spec). A path that is, holds
@@ -365,6 +374,8 @@ options:
   --id ID
   --visibility {private,public,internal}
   --elected-by ELECTED_BY
+                        the human electing the shape (default: `git config
+                        user.name`); not blank
   --elected-on ELECTED_ON
                         YYYY-MM-DD
   --reference REFERENCE
@@ -642,6 +653,7 @@ options:
 ```
 usage: family.py add [-h] --family-root FAMILY_ROOT --member ORG/PROJECT
                      [--at COMMIT] [--local-remote-dir LOCAL_REMOTE_DIR]
+                     [--trailer "KEY: VALUE"] [--dry-run]
 
 options:
   -h, --help            show this help message and exit
@@ -653,6 +665,15 @@ options:
   --local-remote-dir LOCAL_REMOTE_DIR
                         resolve the member to a bare repository here instead
                         of github.com (the TEST path)
+  --trailer "KEY: VALUE"
+                        append this `<Key>: <value>` line to the commit this
+                        writes; repeatable, kept in the order given
+  --dry-run             print the row, the gitlink and the .gitmodules section
+                        this would write, and its trailers, and change nothing
+                        in the holder: it READS the member, as a real add
+                        does, from throwaway clones in temporary directories
+                        outside the holder, which it deletes, and mounts,
+                        writes, stages and commits nothing
 ```
 
 #### `scripts/family.py bump`
@@ -661,7 +682,7 @@ options:
 
 ```
 usage: family.py bump [-h] --family-root FAMILY_ROOT --member PROJECT
-                      --to COMMIT [--trailer "KEY: VALUE"]
+                      --to COMMIT [--trailer "KEY: VALUE"] [--dry-run]
 
 options:
   -h, --help            show this help message and exit
@@ -672,6 +693,11 @@ options:
   --trailer "KEY: VALUE"
                         append this `<Key>: <value>` line to the commit this
                         writes; repeatable, kept in the order given
+  --dry-run             print the row this would write, and its trailers, and
+                        change nothing in the holder: it FETCHES the member,
+                        as a real bump does, to resolve --to and digest it,
+                        and checks nothing out, writes, stages and commits
+                        nothing; exit 1 if there is nothing to do
 ```
 
 #### `scripts/family.py remove`
@@ -680,11 +706,15 @@ options:
 
 ```
 usage: family.py remove [-h] --family-root FAMILY_ROOT --member PROJECT
+                        [--dry-run]
 
 options:
   -h, --help            show this help message and exit
   --family-root FAMILY_ROOT
   --member PROJECT
+  --dry-run             print the row, the gitlink, the .gitmodules section
+                        and the directory this would remove, and change
+                        nothing
 ```
 
 #### `scripts/family.py siblings`
@@ -816,12 +846,18 @@ options:
   --pin-source [PRODUCT=]PATH
                         a local checkout to recompute a neutral-product pin's
                         digest from, instead of `gh api` — e.g. --pin-source
-                        openGlass=../openGlass. A bare PATH with no `PRODUCT=`
+                        openGlass=../openGlass. The text before the first `=`
+                        is a PRODUCT only when it names a pin project.yaml
+                        declares, and then that reading wins even over a
+                        directory spelled like the whole value (./PATH reads
+                        that directory); any other value is a bare PATH, which
                         applies to whichever declared pin has no more specific
-                        answer (the common case is exactly one). Repeatable.
-                        SHAPE_PIN_SOURCE_<PRODUCT> (env) and a checkout
-                        sitting beside this assembly root are also tried,
-                        before `gh api` and before this flag's bare form.
+                        answer (the common case is exactly one). Repeatable; a
+                        value no pin used is noted, and one that cannot be
+                        read is a finding. SHAPE_PIN_SOURCE_<PRODUCT> (env)
+                        and a checkout sitting beside this assembly root are
+                        also tried, before `gh api` and before this flag's
+                        bare form.
 ```
 
 ### `templates/family-root/scripts/bootstrap.py`
