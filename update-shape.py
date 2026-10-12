@@ -429,8 +429,8 @@ def read_pin(root: Path) -> tuple[dict, list[Row]]:
     # values -- `files: 0`, `false`, `null`, `[]` reach `update-pin-no-files`
     # below -- and a truthy scalar was iterated: `files: 5`, `true` or `1.5`
     # ended `check`, `apply` and `shape-doctor.py` in a `TypeError`, exit 1,
-    # with nothing naming the pin. A string or a mapping is refused here too,
-    # once, rather than one character or one key at a time.
+    # with nothing naming the pin. A string or a mapping lands here too, and
+    # is named for what it is rather than as its first character or key.
     files = pin.get("files") or []
     if not isinstance(files, list):
         raise Refusal(
