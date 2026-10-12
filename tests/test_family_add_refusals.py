@@ -1588,8 +1588,7 @@ def ghost_remediation(removal: str, off_disk: bool = False) -> str:
         "and a recursive clone of the holder follows whichever section for "
         "that path comes last in the file. A section somebody wrote is not "
         "this tool's to drop or rewrite, so take it out by hand, in a POSIX "
-        f"shell — {removal}, then `git add .gitmodules` — or, if it was a "
-        "member, with `family.py remove`; then re-run."
+        f"shell — {removal}, then `git add .gitmodules` — and re-run."
         + (" With no .gitmodules in the working tree, put back the copy git "
            "read first: `git checkout -- .gitmodules` (the index's), or `git "
            "checkout HEAD -- .gitmodules`." if off_disk else ""))

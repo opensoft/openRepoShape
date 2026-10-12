@@ -51,7 +51,8 @@ from test_family import (  # noqa: F401
     validate,
 )
 from test_family_add_refusals import (  # noqa: F401
-    holder, offline, refusal, sections,
+    gitmodules_paths, holder, offline, refusal, sections,
+    take_out_as_printed,
 )
 from test_family_member_path import (
     GLOB, MEMBER, OTHER, hand_edit, older, raw, recorded,
@@ -362,6 +363,12 @@ def hand_edit_path(root: Path, env: dict) -> None:
     hand_edit(root, MEMBER, GLOB)
 
 
+def a_second_section(root: Path, env: dict) -> None:
+    """#360: a section of another name giving `MEMBER`'s path, committed."""
+    commit_sections(root, env, f'[submodule "ghost"]\n\tpath = '
+                                f'members/{MEMBER}\n')
+
+
 #: Each refusal `bump` or `remove` makes before its first write, and how a
 #: test brings the holder to it: `(verb, --member, --to, set-up, code)`.
 #: `None` for `bump`'s `--to` is the member's older commit, a real move.
@@ -376,6 +383,9 @@ REFUSALS = {
     "remove-unknown": ("remove", "Nope", None, None, "member-unknown"),
     "remove-member-path": ("remove", MEMBER, None, hand_edit_path,
                            "member-path"),
+    "remove-path-registered-twice": ("remove", MEMBER, None,
+                                     a_second_section,
+                                     "member-path-registered-twice"),
 }
 
 
@@ -453,10 +463,11 @@ def test_bump_dry_run_after_a_failed_fetch_says_what_it_resolved_from(
 
 def test_bump_dry_run_reads_the_members_manifest_at_to_and_refuses_as_bump(
         holder, offline, tmp_path):
-    """WHAT THE REAL RUN ASKS AFTER ITS CHECKOUT, ASKED OF THE OBJECTS. A
+    """WHAT THE REAL RUN READS AFTER ITS CHECKOUT, ASKED OF THE OBJECTS. A
     `--to` whose tree has no `project.yaml` is `member-not-a-project` from
-    both runs, word for word; the dry run asks it without moving the
-    member's checkout, which the real run leaves at `--to`."""
+    both runs, word for word, and neither moves the member's checkout: the
+    real run asks it of the same objects before its checkout (#365), where
+    it used to refuse after it and leave the member at `--to`."""
     env = isolated(offline, tmp_path)
     target = commit_in_mount(
         holder, env, lambda mount: (mount / "project.yaml").unlink())
@@ -471,6 +482,7 @@ def test_bump_dry_run_reads_the_members_manifest_at_to_and_refuses_as_bump(
     real = bump(holder, env, target)
     assert real.returncode == 2
     assert real.stderr == dry.stderr
+    assert_as_it_was(holder, env, before, BUMP_ORDER)
 
 
 @pytest.mark.skipif(sys.platform == "win32",
@@ -597,51 +609,66 @@ def registered_keys(root: Path, env: dict, name: str) -> list[str]:
             == f"submodule.{name}"]
 
 
-#: Hand edits that give `members/<MEMBER>` to a section of another name,
-#: appended to `.gitmodules` and committed: `(text, the name git rm then drops
-#: every section of, or None for none, the other names whose sections say that
-#: path and stay)`. Each is what git 2.43 does, probed: the work-tree file is
-#: read with overwrite, so a name keeps its LAST path, a name moving away
-#: takes the old path out of git's map, and a suspicious name is ignored.
+#: Hand edits that give `members/<MEMBER>` to a section of ANOTHER name,
+#: appended to `.gitmodules` and committed: `(text, the other name)`. Each is
+#: a second submodule for the member's path, by any `path` line it has —
+#: the last one, an earlier one it then moves away from, or a name git
+#: ignores — and each is refused by `remove` and its dry run alike (#360),
+#: because `git rm` takes out the sections of ONE name and the commit kept
+#: the other.
 GHOSTS = {
     "two-names": (
-        f'[submodule "ghost"]\n\tpath = members/{MEMBER}\n',
-        "ghost", [f"members/{MEMBER}"]),
+        f'[submodule "ghost"]\n\tpath = members/{MEMBER}\n', "ghost"),
     "last-path-wins": (
         '[submodule "ghost"]\n\tpath = members/ELSEWHERE\n'
-        f'[submodule "ghost"]\n\tpath = members/{MEMBER}\n',
-        "ghost", [f"members/{MEMBER}"]),
+        f'[submodule "ghost"]\n\tpath = members/{MEMBER}\n', "ghost"),
     "path-left-behind": (
         f'[submodule "ghost"]\n\tpath = members/{MEMBER}\n'
-        '[submodule "ghost"]\n\tpath = members/ELSEWHERE\n',
-        None, [f"members/{MEMBER}", "ghost"]),
+        '[submodule "ghost"]\n\tpath = members/ELSEWHERE\n', "ghost"),
     "suspicious-name": (
-        f'[submodule "../ghost"]\n\tpath = members/{MEMBER}\n',
-        f"members/{MEMBER}", ["../ghost"]),
+        f'[submodule "../ghost"]\n\tpath = members/{MEMBER}\n', "../ghost"),
+}
+
+#: Hand edits that give the path to the member's OWN name alone, in more
+#: than one section: `(text, the name git rm then drops every section of, or
+#: None for none, the names whose sections say that path and stay)`. Each is
+#: what git 2.43 does, probed: the work-tree file is read with overwrite, so
+#: a name keeps its LAST path, and a name moving away takes the old path out
+#: of git's map. One name, so no refusal: the dry run says what git does.
+ONE_NAME = {
+    "own-name-comes-back": (
+        f'[submodule "members/{MEMBER}"]\n\tpath = members/ELSEWHERE\n'
+        f'[submodule "members/{MEMBER}"]\n\tpath = members/{MEMBER}\n',
+        f"members/{MEMBER}", []),
+    "own-name-moves-away": (
+        f'[submodule "members/{MEMBER}"]\n\tpath = members/ELSEWHERE\n',
+        None, [f"members/{MEMBER}"]),
 }
 
 
-@pytest.mark.parametrize("text, dropped, kept", GHOSTS.values(), ids=GHOSTS)
-def test_remove_dry_run_names_the_sections_a_real_remove_drops(
-        holder, offline, tmp_path, text, dropped, kept):
-    """A SECOND SECTION FOR THE MEMBER'S PATH — a half-removed member, a hand
-    edit — and the dry run names the name whose sections `git rm` drops (or
-    that it drops none), the names it leaves that still say the path, and
-    the registration `deinit` drops under the same name. Then a REAL
-    `remove` takes out exactly the sections of the name the dry run named,
-    and the registration it named, and nothing else: the dry run says what
-    git will do, not what a reader of the file might expect."""
-    env = isolated(offline, tmp_path)
-    with (holder / ".gitmodules").open("ab") as gitmodules:
+def commit_sections(root: Path, env: dict, text: str) -> list[str]:
+    """`text` appended to `.gitmodules` as BYTES and committed; returns the
+    sections the file then names, in order."""
+    with (root / ".gitmodules").open("ab") as gitmodules:
         gitmodules.write(text.encode("utf-8"))
-    raw(holder, env, "add", "--", ".gitmodules")
-    raw(holder, env, "commit", "-q", "-m", "A second section for one path")
-    listed = sections((holder / ".gitmodules").read_text(encoding="utf-8"))
-    before = state(holder, env)
+    raw(root, env, "add", "--", ".gitmodules")
+    raw(root, env, "commit", "-q", "-m", "A second section for one path")
+    return sections((root / ".gitmodules").read_text(encoding="utf-8"))
 
-    dry = remove(holder, env, "--dry-run")
 
-    assert_as_it_was(holder, env, before, REMOVE_ORDER)
+def assert_dry_run_names_what_git_drops(root: Path, env: dict,
+                                        listed: list[str],
+                                        dropped: str | None,
+                                        kept: list[str]) -> None:
+    """The dry run names the name whose sections `git rm` drops (or that it
+    drops none), the names it leaves that still say the path, and the
+    registration `deinit` drops under the same name; then a REAL `remove`
+    takes out exactly the sections of that name, and the registration it
+    named, and nothing else: the dry run says what git will do, not what a
+    reader of the file might expect."""
+    before = state(root, env)
+    dry = remove(root, env, "--dry-run")
+    assert_as_it_was(root, env, before, REMOVE_ORDER)
     assert dry.returncode == 0, dry.stdout + dry.stderr
     lines = dry.stdout.splitlines()
     path = f"members/{MEMBER}"
@@ -649,31 +676,82 @@ def test_remove_dry_run_names_the_sections_a_real_remove_drops(
             "section of that name" if dropped else
             "gitmodules   none: git reads no section of .gitmodules in the "
             f"work tree as giving {path}, so none is removed") in lines
-    assert ("             left in place, though it gives the same path: "
-            + ", ".join(f'[submodule "{name}"]' for name in kept)) in lines
+    left = [line for line in lines if line.startswith("             left ")]
+    assert left == ([] if not kept else [
+        "             left in place, though it gives the same path: "
+        + ", ".join(f'[submodule "{name}"]' for name in kept)])
     named = [line for line in lines if line.startswith("registration ")]
     assert named == ([f'registration [submodule "{path}"] in the holder\'s '
                       ".git/config, dropped by `git submodule deinit`"]
                      if dropped == path else [])
 
-    real = remove(holder, env)
+    real = remove(root, env)
 
     assert real.returncode == 0, real.stdout + real.stderr
-    assert sections((holder / ".gitmodules").read_text(encoding="utf-8")) \
+    assert sections((root / ".gitmodules").read_text(encoding="utf-8")) \
         == [name for name in listed if name != dropped]
-    assert bool(registered_keys(holder, env, path)) is (not named)
+    assert bool(registered_keys(root, env, path)) is (not named)
+
+
+@pytest.mark.parametrize("text, other", GHOSTS.values(), ids=GHOSTS)
+def test_remove_dry_run_names_the_sections_a_real_remove_drops(
+        holder, offline, tmp_path, text, other):
+    """A SECOND SUBMODULE FOR THE MEMBER'S PATH — a half-removed member, a
+    hand edit — is refused by the dry run and the real run in the same
+    words, with the holder byte for byte as it was (#360), naming the other
+    section and printing its by-key removal. Run as printed, that removal
+    leaves the member's own section, and then the dry run names it as the
+    one `git rm` drops, and a real `remove` drops exactly that and leaves no
+    section for the path."""
+    env = isolated(offline, tmp_path)
+    commit_sections(holder, env, text)
+    before = state(holder, env)
+
+    real = remove(holder, env)
+    dry = remove(holder, env, "--dry-run")
+
+    assert_as_it_was(holder, env, before, REMOVE_ORDER)
+    assert dry.returncode == real.returncode == 2, dry.stdout + dry.stderr
+    assert dry.stdout == real.stdout == ""
+    assert dry.stderr == real.stderr
+    said, remediation = refusal(real.stderr)
+    assert said.startswith("REFUSED member-path-registered-twice: "), said
+    assert f"`{other}` (no url)" in said
+    assert take_out_as_printed(holder, remediation), remediation
+    raw(holder, env, "commit", "-q", "-m", "Take the other section out")
+
+    assert_dry_run_names_what_git_drops(
+        holder, env, sections((holder / ".gitmodules").read_text(
+            encoding="utf-8")), f"members/{MEMBER}", [])
+    assert f"members/{MEMBER}" not in gitmodules_paths(holder)
+
+
+@pytest.mark.parametrize("text, dropped, kept", ONE_NAME.values(),
+                         ids=ONE_NAME)
+def test_remove_dry_run_follows_git_through_one_names_sections(
+        holder, offline, tmp_path, text, dropped, kept):
+    """ONE NAME, MORE THAN ONE SECTION, NO REFUSAL: only one submodule says
+    the path, so `remove` runs, and its dry run names what git's own reading
+    of the file makes of it — the name's sections all dropped when its last
+    `path` is the member's, none when it moved away."""
+    env = isolated(offline, tmp_path)
+    listed = commit_sections(holder, env, text)
+    assert_dry_run_names_what_git_drops(holder, env, listed, dropped, kept)
 
 
 # --- both --------------------------------------------------------------------
 
 @pytest.mark.parametrize("verb", ["bump", "remove"])
-def test_a_dry_run_asks_the_manifest_refusal_the_real_run_asks_after_it_writes(
+def test_a_dry_run_asks_the_manifest_refusal_the_real_run_asks_first_too(
         family, holder, offline, tmp_path, verb):
-    """`family-members-unrecognised` is asked by the real `bump` after its
-    checkout and by the real `remove` after its unmount. The dry run asks it
-    too, exit 2, before anything is written. The hand edit is the one
+    """`family-members-unrecognised` is asked by the real `bump` before its
+    checkout and by the real `remove` before its unmount (#365; both used to
+    ask it after, with the holder changed). The dry run asks it too, exit 2,
+    before anything is written. The hand edit is the one
     `test_family_add_refusals.py` makes: a comment on the `members:` line,
-    which YAML reads past and the line rewrite does not, left uncommitted."""
+    which YAML reads past and the line rewrite does not, left uncommitted.
+    The real runs are held to the same holder in
+    `test_family_bump_remove_rollback.py`."""
     env = isolated(offline, tmp_path)
     manifest_path = holder / "family.yaml"
     text = manifest_path.read_bytes().decode("utf-8")
