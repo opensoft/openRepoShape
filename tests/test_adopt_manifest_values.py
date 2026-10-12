@@ -32,7 +32,10 @@ refusal that comes before the first leg; the tests that run one skip without
 from __future__ import annotations
 
 import importlib.util
+import os
+import re
 import shutil
+import subprocess
 import sys
 from argparse import Namespace
 from pathlib import Path
@@ -43,6 +46,7 @@ from conftest import (ADOPT, REPO, git, make_source_repo, resolve, run_script,
                       write_plan)
 
 sys.path.insert(0, str(REPO / "scripts"))
+import repo_shape  # noqa: E402
 import shape_materialize  # noqa: E402
 
 PROJECT = "Northwind"
@@ -371,18 +375,225 @@ def test_the_flags_and_the_plan_keys_name_the_same_values(adopter):
     assert mapped - {"PROJECT_NAME"} <= set(adopter.MANIFEST_FLAGS)
 
 
-def test_a_checkout_that_cannot_name_its_revision_skips_the_question(
+# --- the question is asked with no git at all (NIT-9, SonarCloud S8705) ------
+#
+# The manifest is rendered here to be ASKED ABOUT and never written: the
+# validator the template ships holds `shape.commit` and `shape.digests.
+# tree_sha256` to their FORM (`COMMIT_RE`, `SHA256_RE`) and compares neither
+# with anything, and neither is a value a tool names to a person, so
+# `manifest_misreads` is not asked about them. `plan` and `check` therefore put
+# a fixed, well-formed pair into the table they render and run no `git` to read
+# the real ones. `execute` still reads the real ones and writes them.
+
+@pytest.fixture(scope="module")
+def no_git_standard(tmp_path_factory):
+    """The standard as a `git archive` or a downloaded zip holds it: every
+    tool, template and contract, and no `.git`, so no revision to read."""
+    copy = tmp_path_factory.mktemp("fixV2-no-git") / "standard"
+    shutil.copytree(REPO, copy, symlinks=True, ignore=shutil.ignore_patterns(
+        ".git", "__pycache__", ".pytest_cache", "tests", "docs", "handoffs"))
+    assert not (copy / ".git").exists()
+    return copy
+
+
+def verdict_of(result) -> list[str]:
+    """What a run said about the values, without the lines git or the host add
+    around it."""
+    return [line for line in result.stderr.splitlines()
+            if line.startswith(("REFUSED ", "FINDING ", "Remediation: "))]
+
+
+def test_a_checkout_that_cannot_name_its_revision_is_still_asked(
         adopter, world, monkeypatch):
-    """`plan` and `check` never needed a revision and are not made to: where
-    this tool's own checkout cannot give one (`execute` could not run either,
-    and says so where it reads one), the manifest cannot be rendered and
-    nothing is asked, rather than `check` dying where it succeeded."""
-    def no_revision(*args, **kwargs):
-        raise adopter.Refusal("not-a-checkout", "no git here")
-    monkeypatch.setattr(adopter, "git_out", no_revision)
+    """`plan` and `check` need no revision, so a checkout that cannot give one
+    (or a git that fails) is asked the same question as any other, and a plan
+    the validator refuses is found there as it is in a checkout. It skipped
+    the whole question and said nothing, so a blank `--elected-by` passed
+    `plan` from a tree that had no `.git`."""
+    def no_git(*args, **kwargs):
+        raise adopter.Refusal("git-failed", "no git here")
+    monkeypatch.setattr(adopter, "git_out", no_git)
+    monkeypatch.setattr(adopter, "tree_digest", no_git)
     plan = adopter.Plan.load(edited(world, "visibility: private",
                                     "visibility: secret"))
-    assert adopter._manifest_findings(plan) == ([], [])
+    naming = adopter.NamingPolicy.load(adopter.NAMING_POLICY)
+    assert adopter._manifest_values(plan, naming) is not None
+    findings, remediation = adopter._manifest_findings(plan)
+    assert len(findings) == 1, findings
+    assert findings[0].startswith(FINDING)
+    assert "visibility is 'secret'" in findings[0] and remediation
+    # and it is no finding for a plan the validator would pass
+    good = adopter.Plan.load(world["plan"])
+    assert adopter._manifest_findings(good) == ([], [])
+
+
+def test_the_question_runs_no_process_at_all(adopter, world, monkeypatch):
+    """No `git`, no `gh`, no shell: asking what the validator would say of a
+    plan's values reads files and runs the validator's own Python, and the
+    table it asks about is built by a function that is handed its commit and
+    digest. (It ran `git rev-parse HEAD` and then `git ls-tree -r` of the
+    whole standard, with `plan` and `check` skipping the question where that
+    failed.)"""
+    refused = adopter.Plan.load(edited(world, "visibility: private",
+                                       "visibility: secret"))
+    good = adopter.Plan.load(world["plan"])
+    naming = adopter.NamingPolicy.load(adopter.NAMING_POLICY)
+    shape_materialize.manifest_validator()   # its own load is a read as well
+
+    def no_process(*args, **kwargs):
+        raise AssertionError(f"a process was started: {args!r}")
+    for name in ("run", "Popen", "check_output", "check_call", "call"):
+        monkeypatch.setattr(subprocess, name, no_process)
+    monkeypatch.setattr(os, "system", no_process)
+    assert adopter._manifest_values(good, naming) is not None
+    assert adopter._manifest_findings(good) == ([], [])
+    assert adopter._manifest_findings(good, misreads_elsewhere=True) == (
+        [], [])
+    (finding,), remediation = adopter._manifest_findings(refused)
+    assert "visibility is 'secret'" in finding and remediation
+
+
+@pytest.mark.parametrize("flag, value, named", [
+    ("--elected-by", " ", "--elected-by is ' '"),
+    ("--reference", " ", "--reference is ' '"),
+    ("--org", "test+org", "--org is 'test+org'"),
+])
+def test_plan_refuses_it_from_a_tree_with_no_git_as_in_a_checkout(
+        world, tmp_path, no_git_standard, flag, value, named):
+    out = tmp_path / "not-written.yaml"
+    given = {"--org": "testorg", "--elected-by": "Test Human",
+             "--elected-on": "2026-09-02", flag: value}
+    args = ["plan", "--source", str(world["source"]), "--project", PROJECT,
+            "--out", str(out), *(f"{k}={v}" for k, v in given.items())]
+    without_git = run_script(no_git_standard / "adopt-project.py", *args)
+    assert without_git.returncode == 2, (without_git.stderr
+                                         + without_git.stdout)
+    assert f"REFUSED {INVALID}: {named}" in without_git.stderr
+    assert "Traceback" not in without_git.stderr
+    assert not out.exists(), "a plan was written"
+    in_checkout = run_script(ADOPT, *args)
+    assert in_checkout.returncode == 2, in_checkout.stderr
+    assert verdict_of(without_git) == verdict_of(in_checkout) != []
+    assert not out.exists()
+
+
+def test_plan_and_check_pass_a_good_plan_from_a_tree_with_no_git(
+        world, tmp_path, no_git_standard):
+    """The question is asked and not skipped, and asking it makes no refusal
+    of a plan the validator accepts."""
+    out = tmp_path / "plan.yaml"
+    planned = run_script(
+        no_git_standard / "adopt-project.py", "plan", "--source",
+        str(world["source"]), "--project", PROJECT, "--org", "testorg",
+        "--elected-by", "Test Human", "--elected-on", "2026-09-02", "--out",
+        str(out))
+    assert planned.returncode == 0, planned.stderr + planned.stdout
+    assert out.is_file()
+    for path, leg in ANSWERS:
+        resolve(out, path, leg)
+    checked = run_script(no_git_standard / "adopt-project.py", "check",
+                         "--plan", str(out))
+    assert checked.returncode == 0, checked.stderr + checked.stdout
+    assert "plan ok" in checked.stdout
+    assert FINDING not in checked.stderr
+
+
+@pytest.mark.parametrize("old, new, named", PLAN_EDITS)
+def test_check_finds_it_from_a_tree_with_no_git_as_in_a_checkout(
+        world, no_git_standard, old, new, named):
+    plan = edited(world, old, new)
+    without_git = run_script(no_git_standard / "adopt-project.py", "check",
+                             "--plan", str(plan))
+    assert without_git.returncode == 1, (without_git.stderr
+                                         + without_git.stdout)
+    assert FINDING in without_git.stderr, without_git.stderr
+    for fragment in named:
+        assert fragment in without_git.stderr, without_git.stderr
+    in_checkout = run_script(ADOPT, "check", "--plan", str(plan))
+    assert in_checkout.returncode == 1
+    assert verdict_of(without_git) == verdict_of(in_checkout) != []
+
+
+def test_what_plan_and_check_put_in_the_table_is_a_well_formed_pair(
+        adopter, world):
+    """A fixed commit and digest in the form the validator holds the real ones
+    to, which the project's YAML reader reads as text whether the template
+    quotes it or not (forty digits would be one number, and `12345e6789...`
+    another)."""
+    commit, digest = (adopter._VALIDATION_SHAPE_COMMIT,
+                      adopter._VALIDATION_SHAPE_DIGEST)
+    assert re.fullmatch(r"[0-9a-f]{40}", commit)
+    assert re.fullmatch(r"[0-9a-f]{64}", digest)
+    for value in (commit, digest):
+        assert re.search(r"[a-f]", value)
+        for line in (f"k: {value}\n", f'k: "{value}"\n'):
+            assert shape_materialize.parse_yaml(line) == {"k": value}
+    plan = adopter.Plan.load(world["plan"])
+    naming = adopter.NamingPolicy.load(adopter.NAMING_POLICY)
+    values = adopter._manifest_values(plan, naming)
+    assert values["SHAPE_COMMIT"] == commit
+    assert values["SHAPE_TREE_SHA256"] == digest
+    # it is not this checkout's own: no claim about it is made
+    assert commit != git("rev-parse", "HEAD", cwd=REPO).stdout.strip()
+
+
+def test_the_validator_compares_the_shape_commit_with_nothing_and_no_tool_names_it(
+        adopter, world):
+    """What the fixed pair rests on, asked of the validator itself: any
+    well-formed commit and digest give the same sentences for the same values,
+    a malformed one is refused for its FORM, and neither value is one a tool
+    names to a person (so `manifest_misreads` is never asked about it)."""
+    plan = adopter.Plan.load(edited(world, "visibility: private",
+                                    "visibility: secret"))
+    naming = adopter.NamingPolicy.load(adopter.NAMING_POLICY)
+    values = adopter._manifest_values(plan, naming)
+    keys = adopter.MANIFEST_PLAN_KEYS
+    asked = shape_materialize.manifest_invalid(values, naming, keys)
+    assert len(asked) == 1 and "visibility is 'secret'" in asked[0]
+    head = git("rev-parse", "HEAD", cwd=REPO).stdout.strip()
+    for other in ({"SHAPE_COMMIT": head, "SHAPE_TREE_SHA256": "f" * 64},
+                  {"SHAPE_COMMIT": "A" * 40, "SHAPE_TREE_SHA256": "0" * 64},
+                  {"SHAPE_COMMIT": "1" * 39 + "e",
+                   "SHAPE_TREE_SHA256": "e" * 64}):
+        assert shape_materialize.manifest_invalid(
+            {**values, **other}, naming, keys) == asked
+    malformed = shape_materialize.manifest_invalid(
+        {**values, "SHAPE_COMMIT": "not-a-commit"}, naming, keys)
+    assert any("shape.commit is 'not-a-commit', not 40 hex" in sentence
+               for sentence in malformed), malformed
+    for table in (adopter.MANIFEST_FLAGS, keys):
+        assert "SHAPE_COMMIT" not in table
+        assert "SHAPE_TREE_SHA256" not in table
+    # and were it asked, the fixed pair reads back as the text it is
+    assert shape_materialize.manifest_misreads(
+        values, {"SHAPE_COMMIT": "--shape-commit",
+                 "SHAPE_TREE_SHA256": "--shape-digest"}) == []
+
+
+@needs_filter_repo
+def test_execute_still_renders_the_real_commit_and_digest(
+        adopter, world, monkeypatch, capsys):
+    """`execute` reads the standard's own revision and the digest of its tree
+    and writes THEM into the files it makes: the fixed pair is for the
+    question only. Stopped where the legs would be built, with the table
+    `execute` hands them in hand."""
+    seen = []
+
+    def stop_before_the_legs(source, names, repositories, urls, values, *rest):
+        seen.append(dict(values))
+        return None
+    monkeypatch.setattr(adopter, "_build_the_legs", stop_before_the_legs)
+    code = adopter.main(["execute", "--plan", str(world["plan"]), "--yes",
+                         "--local-remote-dir", str(world["tmp"] / REMOTES),
+                         "--work-dir", str(world["tmp"] / WORK)])
+    capsys.readouterr()
+    assert code == 2
+    (values,) = seen
+    head = git("rev-parse", "HEAD", cwd=REPO).stdout.strip().lower()
+    assert values["SHAPE_COMMIT"] == head
+    assert values["SHAPE_TREE_SHA256"] == repo_shape.tree_digest(REPO, head)
+    assert values["SHAPE_COMMIT"] != adopter._VALIDATION_SHAPE_COMMIT
+    assert values["SHAPE_TREE_SHA256"] != adopter._VALIDATION_SHAPE_DIGEST
 
 
 def test_a_placement_plan_names_no_repository_so_nothing_is_asked(adopter):

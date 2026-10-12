@@ -1639,18 +1639,37 @@ def _flag_plan(args, names: dict, pins: list) -> "Plan":
         "pins": list(pins)})
 
 
+#: The commit and the tree digest the manifest rendered FOR VALIDATION holds
+#: in `shape.commit` and `shape.digests.tree_sha256`, in place of the real
+#: ones `execute` reads and writes (`_template_values`). The validator the
+#: template ships holds each to its FORM (`COMMIT_RE`, `SHA256_RE`) and
+#: compares neither with anything, and no tool names either to a person, so
+#: reading the real ones (`git rev-parse HEAD`, then `git ls-tree -r` of the
+#: whole standard) bought `plan` and `check` nothing, and made them skip the
+#: question silently from a tree with no git revision. Lowercase hex with a
+#: letter in it, so that the project's YAML reader reads each as text and never
+#: as a number (forty digits would be an integer), quoted or not.
+_VALIDATION_SHAPE_COMMIT = "0123456789abcdef0123456789abcdef01234567"
+_VALIDATION_SHAPE_DIGEST = ("0123456789abcdef0123456789abcdef"
+                            "0123456789abcdef0123456789abcdef")
+
+
 def _manifest_values(plan: Plan, naming: NamingPolicy) -> dict | None:
     """The substitution table `execute` renders the manifest from, as it
-    would build it from this plan; None where the plan's names are not ones
-    the naming policy classifies, which `check` and `execute` report in their
-    own words (`_check_names`) and the manifest cannot be rendered without, or
-    where this tool's own checkout cannot name its revision (below).
+    would build it from this plan, FOR VALIDATION AND NEVER FOR WRITING; None
+    where the plan's names are not ones the naming policy classifies, which
+    `check` and `execute` report in their own words (`_check_names`) and the
+    manifest cannot be rendered without.
 
-    `_template_values` is asked, not copied, so the table cannot differ from
-    `execute`'s. The four leg commits and digests are not known before the
-    legs exist and are not in the manifest; a refusal of the plan's own names,
-    id, organisation or leg paths is raised here as it is by `check` and
-    `execute` a few lines later.
+    `_template_table` is asked, not copied, and `execute`'s `_template_values`
+    is that same table with the real commit and digest, so the table cannot
+    differ from `execute`'s. The four leg commits and digests are not known
+    before the legs exist and are not in the manifest; the standard's own
+    commit and tree digest are replaced by the fixed pair above, so that no
+    `git` runs here and a checkout that cannot name its revision is asked the
+    same question as any other. A refusal of the plan's own names, id,
+    organisation or leg paths is raised here as it is by `check` and `execute`
+    a few lines later.
     """
     if not isinstance(plan.legs, dict):
         # The doctor's PLACEMENT plan writes `legs:` as a list (see
@@ -1666,17 +1685,10 @@ def _manifest_values(plan: Plan, naming: NamingPolicy) -> dict | None:
     org = checked_value("org", plan.get("org"))
     repositories = {role: f"{org}/{name}" for role, name in names.items()}
     (_, spec_path), (_, code_path) = _plan_leg_paths(plan)
-    try:
-        shape_commit = git_out(["rev-parse", "HEAD"], cwd=SHAPE_ROOT).lower()
-    except Refusal:
-        # No checkout to read a revision from: `execute` cannot run either,
-        # and says so in its own words where it reads one. `plan` and `check`
-        # never needed one and are not made to.
-        return None
-    return _template_values(
+    return _template_table(
         plan, names, repositories, {"assembly": ""}, str(spec_path),
         str(code_path), str(plan.get("tracking_branch", "main")), {}, {},
-        shape_commit, pins, naming)
+        _VALIDATION_SHAPE_COMMIT, _VALIDATION_SHAPE_DIGEST, pins, naming)
 
 
 def _manifest_findings(plan: Plan, misreads_elsewhere: bool = False
@@ -3649,6 +3661,22 @@ def cmd_execute(args) -> int:
 def _template_values(plan: Plan, names, repositories, urls, spec_path,
                      code_path, tracking, leg_commits, leg_digests,
                      shape_commit, pins, naming) -> dict[str, str]:
+    """The substitution table the new project's files are WRITTEN from: the
+    standard's real `shape_commit` and the digest of its tree, read here.
+    `execute` is the one caller. A table to ask a question about and not to
+    write is `_template_table`'s, which reads neither (`_manifest_values`)."""
+    return _template_table(plan, names, repositories, urls, spec_path,
+                           code_path, tracking, leg_commits, leg_digests,
+                           shape_commit, tree_digest(SHAPE_ROOT, shape_commit),
+                           pins, naming)
+
+
+def _template_table(plan: Plan, names, repositories, urls, spec_path,
+                    code_path, tracking, leg_commits, leg_digests,
+                    shape_commit, shape_digest, pins, naming
+                    ) -> dict[str, str]:
+    """The substitution table, from the plan and the commit and digest it is
+    handed, running nothing: no `git`, no `gh`."""
     project = names["assembly"]
     project_id = plan.project_id
     elected_on = str(plan.get("elected_on", _dt.date.today().isoformat()))
@@ -3680,7 +3708,7 @@ def _template_values(plan: Plan, names, repositories, urls, spec_path,
         "CODE_REPOSITORY": repositories["code"],
         "SHAPE_REPOSITORY": SHAPE_REPOSITORY,
         "SHAPE_COMMIT": shape_commit,
-        "SHAPE_TREE_SHA256": tree_digest(SHAPE_ROOT, shape_commit),
+        "SHAPE_TREE_SHA256": shape_digest,
         "DIGEST_DEFINITION": TREE_DIGEST_DEFINITION,
         "CLONE_URL": urls["assembly"],
         "ASSEMBLY_CLONE_URL": urls["assembly"],
