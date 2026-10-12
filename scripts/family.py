@@ -150,6 +150,19 @@ MEMBERS_DIR = "members"
 #: -- named once so the two commits cannot spell the file differently.
 GITMODULES = ".gitmodules"
 FILE_PROTOCOL = ["-c", "protocol.file.allow=always"]
+#: What `add` says when git cannot read the holder's `.gitmodules` (#370), in
+#: the words the holder's own `validate-family.py` says it about the same
+#: file, under the same code, `gitmodules-unreadable` (#300): both read it as
+#: git does, so one fault has one name and one remedy. `repo_shape`'s
+#: `git-failed` was all `add` said before, under the lockstep remedy of an
+#: assembly root's legs. A SECOND SPELLING, not an import: the validator is
+#: the holder's copy. `tests/test_refusal_default_remediation.py` runs both
+#: over one file and fails when they differ.
+GITMODULES_UNREADABLE = (
+    "Remediation: git cannot read it either, so none of this holder's "
+    "submodules can be cloned from it as it stands. Mend the file by hand "
+    f"(`git config -f {GITMODULES} --list` says where it breaks), then run "
+    "this again.")
 
 #: `<org>/<Project>`, the only spelling `--member` accepts. A bare name would
 #: have to guess an owner, and a family whose members are in another
@@ -1247,6 +1260,7 @@ def _submodule_paths(
     read it through `git config --list`, never through a parser of this
     tool's.
     """
+    spec = None
     if os.path.lexists(root / GITMODULES):
         source = ["--file", GITMODULES]
     else:
@@ -1259,8 +1273,23 @@ def _submodule_paths(
                 continue
         else:
             return {}
-    listed = git_out(["config", "-z", *source, "--list"], cwd=root,
-                     binary=True)
+    try:
+        listed = git_out(["config", "-z", *source, "--list"], cwd=root,
+                         binary=True)
+    except Refusal as exc:
+        remedy = GITMODULES_UNREADABLE
+        if spec is not None:
+            # NONE IN THE WORKING TREE: git read the index's copy, or HEAD's,
+            # and that copy, put back, is the file to mend.
+            index = spec.startswith(":")
+            remedy += (f" With no {GITMODULES} in the working tree, git read "
+                       f"{'the index' if index else 'HEAD'}'s copy: put it "
+                       f"back first, `git checkout {'' if index else 'HEAD '}"
+                       f"-- {GITMODULES}`.")
+        raise Refusal(
+            "gitmodules-unreadable",
+            f"{GITMODULES} could not be read as git reads it: {exc.detail}",
+            remedy) from exc
     found: dict[str, dict[str, str]] = {}
     for record in listed.split(b"\0"):
         key, _, value = record.decode("utf-8",
@@ -3230,12 +3259,13 @@ def _git_bytes(args: list[str], cwd: Path, data: bytes | None = None) -> bytes:
     as bytes for the reason `_git_input` gives; a failure is a
     `CommandFailed`.
 
-    WHAT THE DRY RUNS ASK GIT WITH (#326). `git_out`'s failure is a
-    `Refusal` that carries `repo_shape`'s default remediation, which is a
+    WHAT THE DRY RUNS ASK GIT WITH (#326). `git_out`'s failure was a
+    `Refusal` that carried `repo_shape`'s default remediation, which was a
     LEG's (run `validate-pins.py`, advance `contracts/<leg>-pin.yaml`), and
-    a holder has neither. A `CommandFailed` is printed as every failed git
-    command in this file is: the exact command, where, and git's own words,
-    exit 2, which is how the real run reports the same failure.
+    a holder has neither; since #370 it carries none. A `CommandFailed` is
+    printed as every failed git command in this file is: the exact command,
+    where, and git's own words, exit 2, which is how the real run reports the
+    same failure.
     """
     command = ["git", *args]
     check_program(command)

@@ -69,6 +69,8 @@ from repo_shape import (  # noqa: E402
     find_repo_root, git_out, load_yaml, pin_source_env_name, recorded_gitlink,
     repo_basename, tree_digest, tree_digest_from_gh,
 )
+#: The lockstep remedy, which is this validator's own (#370): see `main`.
+from repo_shape import REMEDIATION  # noqa: E402
 
 # `PIN_SOURCE_ENV_PREFIX` / `pin_source_env_name` live in `repo_shape` because
 # the SAME checkout answers two questions about a neutral product: the digest
@@ -892,7 +894,16 @@ def main(argv: list[str] | None = None) -> int:
         root = find_repo_root(args.root or Path(__file__).resolve().parents[1])
         _run_all_checks(root, report, args.pin_source)
     except Refusal as exc:
-        print(str(exc), file=sys.stderr)
+        # THE LOCKSTEP REMEDY IS THIS VALIDATOR'S (#370). `repo_shape` gives a
+        # refusal built without a remedy none, because it cannot know whose
+        # it is; here it is the assembly root's, and every refusal this
+        # prints that names no remedy of its own -- its own, and those
+        # `load_yaml`, `git_out` and `find_repo_root` raise for it -- gets
+        # `REMEDIATION`, exactly as it always did. Only that name is
+        # imported, which every `repo_shape.py` a root has ever been given
+        # defines, and one that still defaults to it prints it the same way.
+        print(exc if exc.remediation else f"{exc}\n{REMEDIATION}",
+              file=sys.stderr)
         return 2
 
     return _emit_report(report, args.quiet)
