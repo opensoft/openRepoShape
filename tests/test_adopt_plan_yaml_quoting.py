@@ -352,6 +352,7 @@ SPEC_PATH_KEY = "legs.spec_path"
 TRACKING_KEY = "tracking_branch"
 PINS_KEY = "pins"
 ELECTED_BY_KEY = "elected_by"
+REFERENCE_KEY = "reference"
 SPEC_FLAG = "--spec-path"
 TRACKING_FLAG = "--tracking-branch"
 PIN_FLAG = "--pin"
@@ -363,12 +364,15 @@ NAMED = {PINS_KEY: "a pin in pins"}
 #: The `_template_values` placeholders the tests below fill.
 TRACKING_PLACEHOLDER = "TRACKING_BRANCH"
 ELECTED_BY_PLACEHOLDER = "ELECTED_BY"
+REFERENCE_PLACEHOLDER = "REFERENCE"
 PINS_PLACEHOLDER = "NEUTRAL_PRODUCT_PINS"
 #: The leg path and the branch the accepted end-to-end run is given.
 LEGS_NULL = "legs/null"
 Q4_BRANCH = "2026-q4"
-#: A Windows `DOMAIN\user` name: between double quotes, the loader makes the
-#: `\t` a tab (`DOUBLE_QUOTED_ESCAPES`), which the sentence names as one.
+#: A Windows `DOMAIN\user` name. Pasted raw between double quotes, the loader
+#: makes the `\t` a tab (`DOUBLE_QUOTED_ESCAPES`), which a sentence names as
+#: one; between the manifest's own quotes `render` spells it `"CORP\\tom"`
+#: since #284, which reads back as typed.
 DOMAIN_USER = "CORP\\tom"
 DOMAIN_USER_READ = "the text `CORP`, then a tab, then `om`"
 
@@ -377,9 +381,10 @@ DOMAIN_USER_READ = "the text `CORP`, then a tab, then `om`"
 #: and then to a bootstrap that failed, or that put the legs on another branch
 #: than the one they were pushed on (lane 2's review, and this fix's own repro
 #: of it); `2026`, `1.5` and `~` did so on `main` too (#187's review). `007`
-#: is a branch bootstrap would read as `7`. The last two are values
-#: `project.yaml` writes between quotes, which the loader still does not give
-#: back: it makes the `\t` and the `\n` a tab and a line break.
+#: is a branch bootstrap would read as `7`. No value `project.yaml` writes
+#: between its quotes is here: `render` spells those with `double_quoted`
+#: since #284, and `BETWEEN_THE_QUOTES` below holds the ones that misread
+#: before it.
 REFUSED = [
     (SPEC_FLAG, "null", SPEC_PATH_KEY, NO_VALUE),
     (SPEC_FLAG, "Null", SPEC_PATH_KEY, NO_VALUE),
@@ -397,9 +402,6 @@ REFUSED = [
     (PIN_FLAG, "null", PINS_KEY, NO_VALUE),
     (PIN_FLAG, "True", PINS_KEY, TRUE_READ),
     (TRACKING_FLAG, "007", TRACKING_KEY, SEVEN_READ),
-    (ELECTED_BY_FLAG, DOMAIN_USER, ELECTED_BY_KEY, DOMAIN_USER_READ),
-    ("--reference", "docs\\new.md", "reference",
-     "the text `docs`, then a line break, then `ew.md`"),
 ]
 #: `(plan key, value, what the loader reads)` that only an edited plan can
 #: carry here: `plan` takes `--visibility` from a fixed choice, and reads
@@ -527,9 +529,13 @@ def test_plan_names_an_id_it_derived_from_the_project(
     assert who in result.stderr and what in result.stderr, result.stderr
 
 
-def test_plan_names_an_elector_it_took_from_git(answered, tmp_path):
-    """No `--elected-by`: `plan` asks `git config user.name`, and a
-    `CORP\\tom` there is a name the manifest's quotes turn into a tab."""
+def test_plan_takes_an_elector_from_git_the_manifests_quotes_read_back(
+        answered, tmp_path):
+    """No `--elected-by`: `plan` asks `git config user.name`. A `CORP\\tom`
+    there was refused while `render` pasted it raw between the manifest's
+    quotes, where the loader made its `\\t` a tab. Since #284 `execute`
+    writes it `"CORP\\\\tom"`, which reads back as typed, so `plan` writes
+    the plan and `check` passes it."""
     source, _ = answered
     plan = tmp_path / PLAN_FILE
     result = run_script(
@@ -537,11 +543,13 @@ def test_plan_names_an_elector_it_took_from_git(answered, tmp_path):
         "--org", "testorg", "--elected-on", "2026-09-02", "--out", str(plan),
         env={"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "user.name",
              "GIT_CONFIG_VALUE_0": DOMAIN_USER})
-    assert result.returncode == 2, result.stdout + result.stderr
-    who, what = misread("--elected-by (not given, so `git config "
-                        "user.name`)", DOMAIN_USER, DOMAIN_USER_READ)
-    assert who in result.stderr and what in result.stderr, result.stderr
-    assert not plan.exists()
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert '\nelected_by: "CORP\\\\tom"\n' in text_of(plan)
+    for path, leg in ANSWERS:
+        resolve(plan, path, leg)
+    passed = checked(plan)
+    assert passed.returncode == 0, passed.stdout + passed.stderr
+    assert "manifest-misread" not in passed.stderr
 
 
 @pytest.mark.parametrize("key, value, reading", CARRIED,
@@ -637,24 +645,28 @@ def test_check_names_a_plan_value_that_is_not_text_by_what_was_read(
 
 
 #: `(placeholder, value, the manifest line `execute` writes, what the loader
-#: reads it back as)`: values the loader reads back as OTHER TEXT, through
-#: the double quotes the template writes around them. The last two are
-#: escapes the loader resolves since #199 (`\\r`, and a code point's
-#: `\\xNN`), which the gate follows with no edit of its own: it asks the
-#: loader.
+#: reads it back as)`: values the loader reads back as OTHER TEXT, each
+#: through a placeholder the template writes bare. The double quotes in the
+#: first six are the VALUE's own, as a hand-edited plan's
+#: `tracking_branch: '"CORP\tom"'` carries them: the loader takes them for
+#: YAML's and resolves the escape between them. The manifest's OWN quotes no
+#: longer do that, since #284 (`BETWEEN_THE_QUOTES`). `\\r` and a code
+#: point's `\\xNN` are escapes the loader resolves since #199, which the gate
+#: follows with no edit of its own: it asks the loader.
 UNESCAPED = [
-    (ELECTED_BY_PLACEHOLDER, DOMAIN_USER, 'elected_by: "CORP\\tom"',
-     DOMAIN_USER_READ),
-    ("REFERENCE", "docs\\new.md", 'reference: "docs\\new.md"',
+    (TRACKING_PLACEHOLDER, f'"{DOMAIN_USER}"',
+     f'tracking_branch: "{DOMAIN_USER}"', DOMAIN_USER_READ),
+    (TRACKING_PLACEHOLDER, '"docs\\new.md"', 'tracking_branch: "docs\\new.md"',
      "the text `docs`, then a line break, then `ew.md`"),
-    (ELECTED_BY_PLACEHOLDER, "a\\\\b", 'elected_by: "a\\\\b"',
+    (TRACKING_PLACEHOLDER, '"a\\\\b"', 'tracking_branch: "a\\\\b"',
      "the text `a\\b`"),
-    (ELECTED_BY_PLACEHOLDER, 'a\\"b', 'elected_by: "a\\"b"',
+    (TRACKING_PLACEHOLDER, '"a\\"b"', 'tracking_branch: "a\\"b"',
      'the text `a"b`'),
-    (ELECTED_BY_PLACEHOLDER, "CORP\\ralph", 'elected_by: "CORP\\ralph"',
+    (TRACKING_PLACEHOLDER, '"CORP\\ralph"', 'tracking_branch: "CORP\\ralph"',
      "the text `CORP`, then a carriage return, then `alph`"),
-    ("REFERENCE", "docs\\x41.md", 'reference: "docs\\x41.md"',
+    (TRACKING_PLACEHOLDER, '"docs\\x41.md"', 'tracking_branch: "docs\\x41.md"',
      "the text `docsA.md`"),
+    (TRACKING_PLACEHOLDER, "a #b", "tracking_branch: a #b", "the text `a`"),
 ]
 
 
@@ -671,6 +683,34 @@ def test_text_the_loader_reads_as_other_text_is_shown_as_typed_and_read(
         f"x is `{value}`, which `execute` writes into {MANIFEST} as "
         f"`{line}`, where the project's own YAML loader reads it back as "
         f"{reading} and not as that text: choose another value"]
+
+
+#: Values the manifest's own double quotes misread while `render` pasted
+#: them raw between them: an escape the loader resolved, a `"` that ended
+#: the scalar early, a last `\\` that left it unclosed, and a carriage return
+#: that split the line. Since #284 `render` spells each with `double_quoted`,
+#: which the loader reads back as typed.
+BETWEEN_THE_QUOTES = [DOMAIN_USER, "docs\\new.md", "CORP\\ralph",
+                      "docs\\x41.md", "a\\\\b", 'a\\"b', 'Robert "Bob" Smith',
+                      "trail\\", '"', "a\rb"]
+
+
+@pytest.mark.parametrize("placeholder, key", [
+    (ELECTED_BY_PLACEHOLDER, ELECTED_BY_KEY),
+    (REFERENCE_PLACEHOLDER, REFERENCE_KEY)],
+    ids=[ELECTED_BY_KEY, REFERENCE_KEY])
+@pytest.mark.parametrize("value", BETWEEN_THE_QUOTES)
+def test_a_value_between_the_manifests_quotes_is_asked_as_render_writes_it(
+        adopter, placeholder, key, value):
+    """`project.yaml` writes `elected_by:` and `reference:` between double
+    quotes, where `render` spells the value with `double_quoted` since #284.
+    The gate asked the line with the value pasted raw, so it refused
+    `CORP\\tom` for a line `execute` no longer writes, and a name holding a
+    `"`. It asks the line `render` writes, and passes each value."""
+    assert adopter._written(placeholder, value) == [
+        (MANIFEST, f"{key}: {repo_shape.double_quoted(value)}")]
+    assert adopter.manifest_misreads(
+        [adopter._field(key, placeholder, value)]) == []
 
 
 @needs_filter_repo
@@ -786,6 +826,7 @@ def test_the_template_line_says_whether_a_value_is_quoted(adopter):
 LANDS = {
     TRACKING_PLACEHOLDER: [(MANIFEST, (TRACKING_KEY,))],
     ELECTED_BY_PLACEHOLDER: [(MANIFEST, (ELECTED_BY_KEY,))],
+    REFERENCE_PLACEHOLDER: [(MANIFEST, (REFERENCE_KEY,))],
     "SPEC_PATH": [(MANIFEST, ("legs", 1, "path")),
                   ("contracts/spec-pin.yaml", ("submodule_path",))],
     PINS_PLACEHOLDER: [(MANIFEST, ("neutral_product_pins", 0))],

@@ -1575,8 +1575,8 @@ def _kept_collision_notes(args, entries: list, tree: list) -> list[str]:
 # THE FIX IS TO REFUSE. `plan` (before the plan is written), `check` (a
 # FINDING) and `execute` (through `_entry_findings`, before any leg exists)
 # ask the ONE question below and refuse a value the project's loader would
-# read back as anything but that same text. Quoting the placeholders is left
-# to a follow-up rather than done here: the same templates render every
+# read back as anything but that same text. Quoting the bare placeholders is
+# left to a follow-up rather than done here: the same templates render every
 # scaffolded project, and `scaffold-project.py` writes these values bare
 # with no such gate, so quoting them changes both tools at once.
 #
@@ -1585,8 +1585,9 @@ def _kept_collision_notes(args, entries: list, tree: list) -> list[str]:
 # as `execute` would put it there, and `loader_reading` -- the question `y`
 # asks -- reads that line back. No list of words, and no list of which
 # placeholders are quoted: `elected_by: "{{ELECTED_BY}}"` is asked as the
-# quoted line it is, so `Null` reads back there and `CORP\tom` does not
-# (the loader makes the `\t` a tab).
+# line `render` writes, the value spelled by `double_quoted` (#284), so
+# `Null` and `CORP\tom` both read back there, and a bare `Null` after
+# `tracking_branch:` does not.
 
 #: The assembly root's templated files that are YAML: what the project's own
 #: loader reads back out of the split commit. The materializer's list, so a
@@ -1614,8 +1615,10 @@ MANIFEST_FIELDS = {"tracking_branch": "TRACKING_BRANCH",
 LEG_PATH_PLACEHOLDERS = {"spec": "SPEC_PATH", "code": "CODE_PATH"}
 #: How `plan` fills a flag nobody passed, where the value it fills in can be
 #: one the loader misreads: a sentence about it names where it came from.
-FLAG_DEFAULTS = {"id": "--project lowercased",
-                 ELECTED_BY_KEY: "`git config user.name`"}
+#: Not the elector it takes from `git config user.name`: the manifest writes
+#: that between double quotes, which `render` spells with `double_quoted`
+#: (#284), and no elector is misread there.
+FLAG_DEFAULTS = {"id": "--project lowercased"}
 #: How a sentence names the id `execute` derives when the plan sets none:
 #: when it has no `id:`, or an `id:` with no value (`null`, `~` or nothing,
 #: as `main`'s `plan --id null` wrote it), which `Plan.get` reads alike.
@@ -1649,9 +1652,21 @@ def _pin_item(pin: str) -> str:
 def _written(placeholder: str, value: str) -> list[tuple[str, str]]:
     """`(file, line)` for each line of a templated YAML file that carries
     `{{placeholder}}`: with `value` in its place, as `execute` writes it, and
-    without its indent, which says nothing about how the value is read."""
+    without its indent, which says nothing about how the value is read.
+
+    AS `execute` WRITES IT is as the materializer's `render` writes it, in
+    its two steps: between a YAML template's double quotes,
+    `"{{ELECTED_BY}}"`, the value is spelled by `double_quoted`, which the
+    loader reads back as typed; anywhere else it stands as it is (#284).
+    Pasted raw between the quotes, as `render` once did, the gate refused
+    `--elected-by 'CORP\\tom'` for a line `execute` no longer writes, and a
+    name holding a `"`. Every file here is `.yaml`, which is what makes
+    `render` take the first step.
+    """
     token = "{{" + placeholder + "}}"
-    return [(rel, line.strip().replace(token, value))
+    quoted = f'"{token}"'
+    return [(rel, line.strip().replace(quoted, double_quoted(value))
+             .replace(token, value))
             for rel in TEMPLATED_YAML
             for line in (ASSEMBLY_TEMPLATE / rel).read_text(
                 encoding="utf-8").splitlines()
