@@ -49,19 +49,21 @@ LATIN1_COMMENT = b"# caf\xe9\n"
 #: A whole workflow saved as UTF-16 with a byte-order mark (what a Windows
 #: editor's "Unicode" save writes). `ff fe` is not a UTF-8 start byte, so the
 #: first byte is already the bad one.
-UTF16_WORKFLOW = codecs.BOM_UTF16_LE + "on: [pull_request]\n".encode("utf-16-le")
+UTF16_WORKFLOW = (codecs.BOM_UTF16_LE
+                  + "on: [pull_request]\n".encode("utf-16-le"))
 
 
 @pytest.fixture(scope="module")
 def advanced(scaffolded, tmp_path_factory) -> str:
     """A real new commit on the spec leg's bare remote; returns its sha."""
-    work = tmp_path_factory.mktemp("spec-advance-unreadable") / f"{PROJECT}-spec"
+    work = (tmp_path_factory.mktemp("spec-advance-unreadable")
+            / f"{PROJECT}-spec")
     proc = subprocess.run(
         ["git", "clone", "-q",
          str(scaffolded["remotes"] / f"{PROJECT}-spec.git"), str(work)],
         capture_output=True, text=True, check=False)
     assert proc.returncode == 0, proc.stderr
-    (work / "UNREADABLE-CONTRACT.md").write_text("# a contract the leg gained\n")
+    (work / "UNREADABLE-CONTRACT.md").write_text("# a contract gained\n")
     git("add", "--", "UNREADABLE-CONTRACT.md", cwd=work)
     git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm",
         "Advance the spec leg for the unreadable-file tests", cwd=work)
