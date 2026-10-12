@@ -33,8 +33,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (FILE_PROTOCOL, REPO, assert_read_through_git, git,
-                      object_store, rmtree)
+from conftest import (FILE_PROTOCOL, REPO, assert_read_through_git,
+                      assert_store_read_through_git, git, rmtree)
 
 SETUP_PROJECT = REPO / "setup-project.py"
 SETUP_SH = REPO / "setup.sh"
@@ -147,13 +147,9 @@ def test_the_assembly_root_is_cloned_where_into_says(setup_run):
     assert (clone / ".gitmodules").is_file()
 
 
-def test_the_clone_reads_the_remotes_through_git_not_through_their_files(
+def test_the_entry_points_clone_was_read_through_git_not_through_files(
         setup_run):
-    """#440: step (7) clones what the scaffold has just pushed, and a plain
-    path is git's local clone, which walks the remote's object files and dies
-    `failed to copy file to ...: No such file or directory` when maintenance
-    packs them mid-walk, after all three repositories exist. A clone read
-    through the transport holds one pack in the root and in each leg."""
+    """#440, through the interpreter alone: see `assert_read_through_git`."""
     assert_read_through_git(setup_run["clone"])
 
 
@@ -183,8 +179,7 @@ def test_the_rewrite_reads_a_plain_path_through_git_in_an_awkward_directory(
                            str(bare), str(clone)],
                           capture_output=True, text=True, check=False)
     assert proc.returncode == 0, proc.stderr
-    loose, packs = object_store(clone)
-    assert loose == 0 and packs >= 1, (loose, packs)
+    assert_store_read_through_git(clone, "the clone")
 
 
 def test_the_root_is_read_through_git_when_the_remotes_are_spelled_by_a_symlink(

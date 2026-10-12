@@ -131,13 +131,8 @@ def test_the_assembly_root_is_cloned_where_into_says(setup_run):
     assert (clone / ".gitmodules").is_file()
 
 
-def test_the_clone_reads_the_remotes_through_git_not_through_their_files(
-        setup_run):
-    """#440: step (7) clones what the scaffold has just pushed, and a plain
-    path is git's local clone, which walks the remote's object files and dies
-    `failed to copy file to ...: No such file or directory` when maintenance
-    packs them mid-walk, after all three repositories exist. A clone read
-    through the transport holds one pack in the root and in each leg."""
+def test_the_shims_clone_was_read_through_git_not_through_its_files(setup_run):
+    """#440, through `setup.sh`: see `assert_read_through_git`."""
     assert_read_through_git(setup_run["clone"])
 
 

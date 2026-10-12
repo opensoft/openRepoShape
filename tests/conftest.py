@@ -201,10 +201,8 @@ def object_store(repo: Path) -> tuple[int, int]:
     return int(fields["count"]), int(fields["packs"])
 
 
-def assert_read_through_git(clone: Path,
-                            legs: tuple[str, ...] = ("spec", "code")) -> None:
-    """The assembly root at `clone` and each of its legs hold their objects
-    in a pack and none loose (#440).
+def assert_store_read_through_git(repo: Path, name: str) -> None:
+    """`repo`'s object store holds a pack and no loose object (#440).
 
     A clone that walked the source's object files (git's local clone, which
     is what a plain path gets) leaves them as the source had them: LOOSE, for
@@ -213,13 +211,23 @@ def assert_read_through_git(clone: Path,
     observable of the two, and it is what the macOS race needs: a clone that
     never lists the source's `objects/` cannot lose a file from the list.
     """
-    for name, repo in (("the root", clone),
-                       *((f"the {leg} leg", clone / leg) for leg in legs)):
-        loose, packs = object_store(repo)
-        assert loose == 0 and packs >= 1, (
-            f"{name} of {clone} holds {loose} loose objects and {packs} packs: "
-            "the clone read the source's object files one by one (git's local "
-            "clone) instead of through the transport")
+    loose, packs = object_store(repo)
+    assert loose == 0, (
+        f"{name} holds {loose} loose objects: the clone read the source's "
+        "object files one by one (git's local clone) instead of through the "
+        "transport")
+    assert packs >= 1, f"{name} holds no pack: nothing was received"
+
+
+def assert_read_through_git(clone: Path,
+                            legs: tuple[str, ...] = ("spec", "code")) -> None:
+    """The assembly root at `clone` and each of its legs were read through
+    git (`assert_store_read_through_git`), not through the source's files.
+    The one assertion behind every #440 test that clones a scaffold: the two
+    session fixtures, `setup.sh` and `setup-project.py`."""
+    assert_store_read_through_git(clone, f"the root of {clone}")
+    for leg in legs:
+        assert_store_read_through_git(clone / leg, f"the {leg} leg of {clone}")
 
 
 def is_pin_source_name(name: str) -> bool:
