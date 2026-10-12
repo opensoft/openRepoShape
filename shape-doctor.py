@@ -948,7 +948,7 @@ def run_validator(ctx: Context, script: Path, args: list[str],
     what their row can SAY, for the better: a `sitecustomize.py`, or a module
     that shadows the standard library, in an operator's `PYTHONPATH` used to
     end the naming validator and turn a compliant root's `naming` row into a
-    FINDING (exit 86), and it no longer can.
+    FINDING, and it no longer can.
 
     A PASTED COMMAND IS A SECOND PROCESS, AND THIS `env` IS NOT IN IT. What a
     row prints as its NEXT is run later, by a person, in their own shell -- so
