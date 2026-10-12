@@ -19,8 +19,9 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
 
   plan     walks the source at its default branch, classifies every top-level
            path against `contracts/path-classification.yaml`, and writes
-           `adoption-plan.yaml`. Paths it cannot honestly call, and every
-           path holding one of the source's own submodules, carry
+           `adoption-plan.yaml`. Paths it cannot honestly call, every path
+           holding one of the source's own submodules, and every path
+           `execute` will not extract into a leg as it is named, carry
            `leg: null`, `review_required: true` and the QUESTION to ask.
            A leg path over a path it keeps in the root itself is a NOTE,
            not a refusal: the answer is the person's to change. A
@@ -42,8 +43,9 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            a directory it writes into, `.github`, `contracts` or `scripts`,
            or the source's own path at a copy it writes under `shape/`, in
            any case), and the source's own submodules kept on one leg with
-           their `.gitmodules`, registered there and never in the root. It
-           prints what will happen and changes nothing.
+           their `.gitmodules`, registered there and never in the root, each
+           relative url naming the same repository from the leg as from the
+           source. It prints what will happen and changes nothing.
   execute  creates the two legs, extracts them with `git filter-repo`, makes
            the one split commit on a branch of the source, sets the
            `xf-project-<id>` topic on all three (skipped for local remotes),
@@ -56,7 +58,9 @@ reasons in it rather than a pipe between two processes: the classifier is
 right about `openspec/` and cannot be right about `examples/golden-run/`
 without knowing whether the specification cites it. `execute` REFUSES while
 any `leg:` is still null, and on every other finding `check` reports, before
-it has created a leg repository or pushed anything.
+it has created a leg repository or pushed anything -- a source submodule's
+relative url resolved again from the leg remotes it is about to create, which
+under `--local-remote-dir` are not the GitHub ones `check` resolves from.
 
 WHY `git filter-repo` AND NOT A VENDORED COPY. Extracting history correctly is
 a solved problem with one correct implementation, and a vendored copy of it
@@ -83,14 +87,25 @@ rather than being reinterpreted later by a tool that grew a second one.
 
 EXIT CODES: 0 done · 1 findings (a plan that does not check out; a
 verification mismatch) · 2 a refusal — the question could not be asked.
+`execute` has other exit 2s, once the leg repositories exist (a refused push,
+a refused mount). Two of them are GitHub mode's alone, and both come AFTER both
+legs and the split branch are pushed and the verification has passed: `gh pr
+create` refused (`The branch IS pushed`, printed after the table) and the
+topic would not set (`The split IS pushed and the pull request IS open`). Each
+prints the command that finishes the job by hand, and that command is the way
+out: a re-run into fresh legs abandons the pushed pair for a second. A
+verification that fails outranks both, with exit 1 and no command to open the
+pull request.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as _dt
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -105,7 +120,8 @@ from repo_shape import (  # noqa: E402
     COMMIT_RE, NEUTRAL_PRODUCT_OWNER, PROJECT_ID_RE, TREE_DIGEST_DEFINITION,
     VISIBILITY_CHOICES, NamingPolicy, Refusal, YamlError,
     accepts_role, checked_value, double_quoted, git_out, load_yaml,
-    parse_yaml, tree_digest,
+    parse_yaml, redacted, remote_is_a_path, remote_key, remote_local_path,
+    tree_digest,
 )
 from shape_materialize import (  # noqa: E402
     ADOPT_MAKEFILE_BLOCK, RULESET_HINT, SHAPE_REPOSITORY,
@@ -577,6 +593,12 @@ class Registrations:
     def __contains__(self, path: str) -> bool:
         name = self._name_at.get(path)
         return name is not None and bool(self._url_of.get(name))
+
+    def url(self, path: str) -> str:
+        """The url git reads for the submodule registered at `path`; empty
+        when it registers none there."""
+        name = self._name_at.get(path)
+        return "" if name is None else self._url_of.get(name, "")
 
     def why_not(self, path: str) -> str | None:
         """Why git registers nothing at `path` though an entry names it;
@@ -1237,20 +1259,133 @@ def _asked_about(entry: Entry, held: list[str], asked: Verdict,
                  own: list[str]) -> Entry:
     """`entry` as `ask_about_submodules` writes it: the `.gitmodules`
     verdict, whose `leg:` is null, and its question naming `held` and, when
-    it holds more than one path, the `own` entries that replace it. Each
-    path is `_spelled`, because the question is a line of the plan."""
-    question = (f"{asked.question or ''} This entry holds the submodule(s) "
-                f"{_listed(held)}: it is asked this question, not "
-                f"classified by its rule `{entry.rule}`.")
+    it holds more than one path, the `own` entries that replace it, and
+    which of those `execute` will not extract as they are named
+    (`_refused_replacements`, #319). Each path is `_spelled`, because the
+    question is a line of the plan, and the question is set on the entry
+    as it is written: `Verdict` folds each run of spaces in a question to
+    one, and a name holding two, `src/a  b.md`, was named `src/a b.md`, an
+    entry that covers nothing."""
+    question = (f"{asked.question} " if asked.question else "") + (
+        f"This entry holds the submodule(s) {_listed(held)}: it is asked "
+        f"this question, not classified by its rule `{entry.rule}`.")
     if len(own) > 1:
         question += (" Split the entry if its paths do not all belong in one "
                      f"leg: replace it with "
                      f"{_replacements(entry.path, held, own)}, each with its "
                      "own `leg:`. An entry added beside this one for a path "
-                     "it covers is `plan-covered-twice`.")
-    return Entry(entry.path, Verdict(None, asked.rule, asked.reason,
-                                     asked.confidence, question),
-                 entry.files, entry.bytes)
+                     "it covers is `plan-covered-twice`."
+                     + _refused_replacements(own, held))
+    out = Entry(entry.path, Verdict(None, asked.rule, asked.reason,
+                                    asked.confidence), entry.files,
+                entry.bytes)
+    out.question = question
+    return out
+
+
+def _refused_replacements(own: list[str], held: list[str]) -> str:
+    """What the question `_asked_about` writes says of the entries `own`
+    that replace a directory entry, when `execute` will not extract one of
+    them into a leg as it is named (`entry_path_problem`, #319): each such
+    entry by name, with the reason, and that `root` or `drop` is its only
+    answer -- `drop` for a submodule, which the assembly root never keeps.
+    Past SPLIT_ENTRIES_NAMED of them the rest are counted. Empty when there
+    is none, so the question is what it was.
+
+    Under the directory entry such a name is never written on its own, and
+    `check` judges nothing below it; as an entry of its own, the edit the
+    question names, it is judged, and `check` refused the answer `spec` or
+    `code` as `plan-unsafe-path` though this question had offered both."""
+    refused = [(path, entry_path_problem(path)) for path in own]
+    refused = [(path, problem) for path, problem in refused if problem]
+    if not refused:
+        return ""
+    if len(refused) == 1:
+        [(path, problem)] = refused
+        answer = ("`drop` is the only answer for it: the assembly root keeps "
+                  "no submodule of the source's" if path in held else
+                  "`root` or `drop` is the only answer for it")
+        return (f" Of those entries, `execute` will not extract "
+                f"{_spelled(path)} into a leg as it is named, because "
+                f"{problem}; so {answer}.")
+    submodule = (", and `drop` for a submodule, which the assembly root "
+                 "never keeps" if any(path in held for path, _ in refused)
+                 else "")
+    named = "; ".join(f"{_spelled(path)}, because {problem}"
+                      for path, problem in refused[:SPLIT_ENTRIES_NAMED])
+    more = len(refused) - SPLIT_ENTRIES_NAMED
+    if more > 0:
+        named += (f"; and {more} more, each `plan-unsafe-path` in `check` "
+                  "if it is answered `spec` or `code`")
+    return (" Of those entries, `execute` will not extract these into a leg "
+            "as they are named, so `root` or `drop` is the only answer for "
+            f"each{submodule}: {named}.")
+
+
+def ask_about_refused_paths(entries: list[Entry], tree: list) -> list[Entry]:
+    """`entries`, with every one `execute` will not extract into a leg as it
+    is named ASKED, rather than answered `spec` or `code` (#319).
+
+    `entry_path_problem` is the one test `check` and `execute` ask of an
+    entry's path (#196), and `plan` asked it nothing: a source holding
+    `-notes.md`, `notes\\t.md`, `a\\rb.md`, `a\\nb.md`, `a==>b.md` or a name
+    that is not UTF-8 was planned `leg: spec`, `review_required: false`, no
+    question, and the first anybody heard of it was `check`'s
+    `plan-unsafe-path`: an answer `plan` chose for the person, refused one
+    command later. `Icon\\r`, which no rule places, was asked the policy's
+    question, which offers `spec` and `code` as well.
+
+    So each entry the test refuses that is not answered `root` -- the rules
+    put it in a leg, or ask -- gets `leg: null` and a question that says why
+    `execute` will not extract it, in the test's words, and that `root` or
+    `drop` is the only answer for it, as UNSAFE_PATH_REMEDIATION says after
+    `check`'s finding; renaming it in the source is the way into a leg. An
+    entry that holds a submodule is told `drop`: the assembly root keeps no
+    submodule of the source's (`plan-submodule-root`). A question the entry
+    carries already -- the policy's, or `.gitmodules`' -- is kept, and this
+    one follows it. An entry answered `root` is left as it is: it is never
+    extracted (NOT_EXTRACTED), and `check` and `execute` take it. The rule
+    and the reason stay the classifier's, so the plan still says where the
+    rules would have put it.
+
+    `check` and `execute` are not changed: they ask the same test of
+    whatever the person answers, as they always did. The question is set on
+    the entry as it is written, as `_asked_about` sets one, so no run of
+    spaces in a name it spells is folded.
+    """
+    gitlinks = [path for path, mode, _, _ in tree if mode == GITLINK_MODE]
+    out = []
+    for entry in entries:
+        problem = (None if entry.leg in NOT_EXTRACTED
+                   else entry_path_problem(entry.path))
+        if problem is None:
+            out.append(entry)
+            continue
+        held = any(_covering([entry.path], path) for path in gitlinks)
+        out.append(_refused_as_named(entry, problem, held))
+    return out
+
+
+def _refused_as_named(entry: Entry, problem: str, held: bool) -> Entry:
+    """`entry` as `ask_about_refused_paths` writes it: `leg: null`, its rule
+    and reason, and the question, after any it carries already."""
+    if entry.leg is not None:
+        lead = (f"The rules put this path in the {entry.leg} leg (rule "
+                f"`{entry.rule}`), but `execute` will not extract it")
+    else:
+        lead = (f"{entry.question} But " if entry.question else "") \
+            + "`execute` will not extract this path"
+    answer = ("`drop` is the only answer `execute` takes for this entry as it "
+              "stands: `root` would keep a submodule in the assembly root, "
+              "which keeps none of the source's" if held else
+              "`root` or `drop` is the only answer `execute` takes for it")
+    out = Entry(entry.path, Verdict(None, entry.rule, entry.reason,
+                                    entry.confidence), entry.files,
+                entry.bytes)
+    out.question = (f"{lead} into a leg as it is named, because {problem}. "
+                    f"So {answer}. To put it in a leg, rename it in the "
+                    "source, commit, and re-run `plan`.")
+    return out
 
 
 def _replacements(entry: str, held: list[str], own: list[str]) -> str:
@@ -1997,12 +2132,22 @@ def cmd_plan(args) -> int:
     # called the code leg empty, so the plan recorded it as seeded and told
     # the person to re-run with `--allow-empty-leg code`, which it never
     # needed (#166's NEW-1). A source with no submodule plans as it did.
+    #
+    # A path `execute` will not extract as it is named is the other way
+    # round (#319): `root` and `drop` are the only answers it takes, so the
+    # path is in no leg whatever the person says, and what the rules imply
+    # is read with it ASKED. A follow-up about a code path no leg will hold,
+    # or naming it as a spec directory, would be about nothing, and a leg it
+    # alone fed is seeded -- which the plan records, as `check` will say of
+    # the plan as written. A source with no such path plans as it did.
     ruled = walk(policy, [(path, size) for path, _, _, size in tree])
-    materialized = _predict_collisions(ruled)
-    follow_ups = follow_ups_for(source, ruled, names, args.spec_path,
+    implied = ask_about_refused_paths(ruled, tree)
+    materialized = _predict_collisions(implied)
+    follow_ups = follow_ups_for(source, implied, names, args.spec_path,
                                 args.code_path, materialized)
-    seeded = seeded_legs(assigned_paths(ruled))
-    entries = ask_about_submodules(policy, ruled, tree)
+    seeded = seeded_legs(assigned_paths(implied))
+    entries = ask_about_refused_paths(
+        ask_about_submodules(policy, ruled, tree), tree)
     out = Path(args.out)
     write_lf(out, render_plan(args, source, entries, names, pins, follow_ups,
                               seeded))
@@ -2837,17 +2982,272 @@ def _kept_submodule_problems(kept: list, registered: Registrations,
     return problems
 
 
-def _submodule_findings(plan: Plan, source: Source,
-                        tree: list) -> tuple[list[str], list[str]]:
-    """`submodule_plan_problems` as `check` prints them, one FINDING each,
-    and what to print ONCE after every finding: SUBMODULE_REMEDIATION when
-    there is one of these, nothing when there is none. `check` is where the
-    person is told to fix the plan, so it says how, in the words `execute`'s
-    refusal would use one step later."""
+# ---------------------------------------------------------------------------
+# A kept submodule's RELATIVE url, resolved from the leg that holds it (#190)
+# ---------------------------------------------------------------------------
+#
+# git resolves a submodule url that begins `./` or `../` against the remote of
+# the repository whose `.gitmodules` holds it: that repository's default
+# remote, or, with none, its own directory (`git help submodule`). Before the
+# split that is the SOURCE; after it, the file is in a LEG, so it is the leg's
+# remote. `url = ../dependency` names a sibling of the source before and a
+# sibling of the leg after, and on main the run said `adoption verified` and
+# the assembly's `git clone --recurse-submodules` then failed wherever the
+# dependency did not happen to sit beside the leg: under `--local-remote-dir`,
+# or with an `--org` other than the source's.
+#
+# REFUSED, NEVER REWRITTEN. Writing the absolute url into the leg's
+# `.gitmodules` would change a blob the verification accounts for by sha, in
+# every commit of the leg's history that holds one, and put in the leg a url
+# nobody committed. So a url whose two resolutions differ is a finding of
+# `check` and a refusal of `execute` before any leg exists, and the person
+# commits the absolute url in the source or drops the submodule. Where both
+# name the same repository -- legs made in the source's own GitHub
+# organisation, or on disk beside the dependency -- nothing changes, and the
+# verification has nothing new to account for.
+#
+# ASKED OF GIT. Each resolution is `git submodule init`'s, run in a scratch
+# repository whose `origin` is the remote in question: the code the
+# assembly's recursive clone runs, not a copy of it. `repo_shape.join_remote`
+# is a copy, and git's arithmetic differs from it where it matters here: git
+# takes `..\` for a relative url on every platform and strips it on Windows
+# alone, and it fails on a `..` too many where the copy consumes nothing. A
+# url that is not relative is never resolved, because git copies it as it
+# stands, so a source with no submodule, or none with a relative url, starts
+# no git process here.
+
+RELATIVE_URL = "plan-submodule-relative-url"
+#: git's own test for a url it resolves against a remote
+#: (`starts_with_dot_slash`, `starts_with_dot_dot_slash`): `./` or `../`,
+#: with either separator on every platform.
+RELATIVE_URL_RE = re.compile(r"\.\.?[/\\]")
+#: What a plan that keeps a relative url git resolves elsewhere from its leg
+#: is told: by `check`, once after its findings, and by `execute`'s refusal.
+RELATIVE_URL_REMEDIATION = (
+    "Remediation for a relative submodule url: git resolves it against the "
+    "remote of the repository whose `.gitmodules` holds it -- in the "
+    "assembly, the leg -- so it must name the same repository from the leg "
+    "as from the source. Commit the submodule's absolute url in the source's "
+    "`.gitmodules` and re-run `plan`, or `drop` the submodule: its "
+    "registration then stays behind in the leg, inert. `check` resolves it "
+    "from the GitHub remotes the plan's `org:` names and `execute` from the "
+    "remotes it is about to create, before it creates any; under "
+    "`--local-remote-dir` those are bare repositories on disk, where "
+    "`check`'s `plan ok` settles nothing about it.")
+
+
+class _Resolution:
+    """One relative url as git resolved it from one repository: `url`, or,
+    when git could not, `said`, which is what git said."""
+
+    def __init__(self, url: str | None, said: str = "") -> None:
+        self.url = url
+        self.said = said
+
+    def same_as(self, other: "_Resolution") -> bool:
+        """Both resolved, to one repository however each is spelled.
+
+        `remote_key` is the standard's one rule for when two spellings are
+        one repository: the source's `origin` may be
+        `git@github.com:Org/Thing.git` and a leg's is
+        `https://github.com/org/...`. It compares two filesystem paths by
+        their text alone, so they are then asked of this machine, whose
+        symlinks -- and the `..` of a relative answer joined to the source's
+        working tree (`_default_remote`) -- may make two spellings one
+        directory: the order `same_repository_here` asks them in, so the
+        disk can add an answer and never take one away.
+        """
+        if self.url is None or other.url is None:
+            return False
+        if remote_key(self.url) == remote_key(other.url):
+            return True
+        paths = [remote_local_path(url) for url in (self.url, other.url)]
+        return None not in paths \
+            and os.path.realpath(paths[0]) == os.path.realpath(paths[1])
+
+    def __str__(self) -> str:
+        # `redacted`: a source's remote may carry a token, and so does every
+        # url resolved against it.
+        return (f"to {_spelled(redacted(self.url))}" if self.url is not None
+                else f"not at all ({self.said})")
+
+
+def _kept_relative_urls(entries: list, tree: list,
+                        registered: Registrations | str
+                        ) -> tuple[str | None, list[tuple[str, str, str]]]:
+    """`(leg, [(path, entry, url), ...])`: each submodule the plan keeps in
+    the leg its `.gitmodules` goes to, registered with a relative url, and
+    that leg. A submodule kept anywhere else, or not registered, is already
+    a finding of `submodule_plan_problems`; a dropped one is inert; and a
+    `.gitmodules` git cannot read has no url to read."""
+    gitlinks = [path for path, mode, _, _ in tree if mode == GITLINK_MODE]
+    if not gitlinks or isinstance(registered, str):
+        return None, []
+    answered = _answered_legs(entries, [GITMODULES, *gitlinks])
+    leg = answered.get(GITMODULES, (None, None))[0]
+    return leg, [(path, entry, registered.url(path)) for path, kept, entry
+                 in _kept_in_a_leg(answered, gitlinks)
+                 if kept == leg and path in registered
+                 and RELATIVE_URL_RE.match(registered.url(path))]
+
+
+def _default_remote(source: Source) -> tuple[str, str, Path | None]:
+    """`(base, which, working_tree)`: what git resolves the source's relative
+    urls against, how a finding names it, and where the clone opens git's
+    answer when that answer is a relative path. git's rule -- the
+    checked-out branch's remote, else `origin`; that remote's url, else,
+    with none, the repository's own directory -- asked of the branch being
+    ADOPTED, which a clone of the source checks out, and not of whatever
+    branch this working copy happens to have checked out.
+
+    A RELATIVE REMOTE GIVES A RELATIVE ANSWER. Against `../src/Thing.git`,
+    `git submodule init` resolves `../dependency` to `../src/dependency` and
+    keeps it so, and `git submodule update` opens that from the top of the
+    working tree. Compared as git leaves it, it equalled no leg's answer,
+    and a layout whose clone works was refused (#190, P3-2). So
+    `working_tree` is the source's own for such a remote -- a path, and not
+    an absolute one (`remote_local_path` names absolute paths only), which
+    is git's own test for the answers it leaves relative -- and None for
+    every other base."""
+    name = _config_value(source.path, f"branch.{source.branch}.remote") \
+        or "origin"
+    url = _config_value(source.path, f"remote.{name}.url")
+    if url is None:
+        return (source.path.as_posix(),
+                f"its own directory, as it has no remote {_spelled(name)}",
+                None)
+    if remote_is_a_path(url) and remote_local_path(url) is None:
+        return (url, f"its remote {_spelled(name)}, relative to its working "
+                "tree", source.path)
+    return url, f"its remote {_spelled(name)}", None
+
+
+def _config_value(repository: Path, key: str) -> str | None:
+    """`key` in `repository`'s git config, as git reads it -- the last
+    value, when there are several; None when unset."""
+    got = subprocess.run(["git", GIT_CONFIG, "-z", "--get", key],
+                         cwd=repository, capture_output=True, check=False)
+    return None if got.returncode else _git_path(got.stdout.rstrip(b"\x00"))
+
+
+def _resolved(base: str, urls: list[str],
+              working_tree: Path | None = None) -> list[_Resolution]:
+    """Each of `urls` as `git submodule init` resolves it in a repository
+    whose `origin` is `base`, in a scratch repository made for the purpose
+    and removed after it; and, given a `working_tree`, git's relative answer
+    joined to it, which is what the clone opens (`_default_remote`). A url
+    git cannot resolve is what git said: that is where the clone fails."""
+    scratch = Path(tempfile.mkdtemp(prefix="openreposhape-url-"))
+    try:
+        run(["git", "init", "-q", str(scratch)])
+        run(["git", GIT_CONFIG, "remote.origin.url", base], cwd=scratch)
+        for index, url in enumerate(urls):
+            for key, value in (("path", f"u{index}"), ("url", url)):
+                run(["git", GIT_CONFIG, "-f", GITMODULES,
+                     f"submodule.u{index}.{key}", value], cwd=scratch)
+        # A gitlink names a commit nobody fetches here; any object id of the
+        # repository's own format will do, and this one is at hand.
+        oid = run(["git", "hash-object", GITMODULES], cwd=scratch)
+        for index in range(len(urls)):
+            run(["git", "update-index", "--add", "--cacheinfo",
+                 f"{GITLINK_MODE},{oid},u{index}"], cwd=scratch)
+        # One `init` per url, because git stops at the first it cannot
+        # resolve and each finding names its own.
+        return [_resolution_of(scratch, f"u{index}", working_tree)
+                for index in range(len(urls))]
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _resolution_of(scratch: Path, name: str,
+                   working_tree: Path | None) -> _Resolution:
+    """`name`'s url, as `git submodule init` copies it into the config, and
+    joined to `working_tree` when there is one."""
+    init = subprocess.run(["git", "submodule", "init", "-q", "--", name],
+                          cwd=scratch, capture_output=True, check=False)
+    if init.returncode:
+        return _Resolution(None, _one_line(init.stderr.decode(
+            errors="replace")))
+    url = _config_value(scratch, f"submodule.{name}.url")
+    if working_tree is None or url is None:
+        return _Resolution(url)
+    # Not normalised: `..` after a symlink is the disk's to resolve, and
+    # `same_as` asks the disk (`realpath`) for exactly that.
+    return _Resolution((working_tree / url).as_posix())
+
+
+def _relative_url_findings(plan: Plan, source: Source, tree: list,
+                           registered: Registrations | str,
+                           local_remote_dir: Path | None
+                           ) -> tuple[list[str], list[str]]:
+    """`(findings, notes)` for the relative urls of the submodules the plan
+    keeps in a leg: a `plan-submodule-relative-url` FINDING for each that
+    git resolves to another repository from its leg than from the source,
+    or cannot resolve from one of them; and, when there is none of those,
+    the one NOTE `check` prints about what it could not know.
+
+    THE LEG'S REMOTE IS THE ONE `execute` WOULD CREATE: under
+    `local_remote_dir`, the bare repository there; otherwise the GitHub
+    repository the plan's `org:` and leg name give. `check` takes no
+    `--local-remote-dir`, so it decides on GitHub's, and `execute` decides
+    again on the remotes it is about to create, before it creates any. They
+    are read only when there is a relative url to resolve, and the NOTE
+    says, where `check` resolved them all alike, that it was GitHub's it
+    asked: a plan it passes can still be refused by `execute
+    --local-remote-dir`."""
+    leg, kept = _kept_relative_urls(plan.entries, tree, registered)
+    if not kept:
+        return [], []
+    remote = _remote_urls(checked_value("org", plan.get("org")), plan.names(),
+                          local_remote_dir, source)[leg]
+    base, which, working_tree = _default_remote(source)
+    urls = [url for _, _, url in kept]
+    found, alike = [], []
+    for (path, entry, url), here, there in zip(
+            kept, _resolved(base, urls, working_tree),
+            _resolved(remote, urls)):
+        if here.same_as(there):
+            alike.append(f"{_spelled(url)} of {_spelled(path)}, {there}")
+            continue
+        found.append(
+            f"FINDING {RELATIVE_URL}: the submodule {_as_entry(path, entry)} "
+            f"has leg: {leg}, and its url in the source's {GITMODULES} is the "
+            f"relative {_spelled(url)}, which git resolves against the remote "
+            "of the repository holding that file: from the source, at "
+            f"{_spelled(redacted(base))} ({which}), {here}, and from the "
+            f"{leg} leg, at {_spelled(remote)}, {there}; the assembly's "
+            "recursive clone resolves it from the leg")
+    if found or local_remote_dir is not None:
+        return found, []
+    return [], [
+        f"NOTE `check` resolved the relative url of each submodule the plan "
+        f"keeps in the {leg} leg from that leg's GitHub remote, "
+        f"{_spelled(remote)}, and each names the same repository from there "
+        f"as from the source: {'; '.join(alike)}. `execute "
+        "--local-remote-dir` resolves it again from the bare repository it "
+        "would create instead, and refuses there, before it creates any leg, "
+        "a url that names another repository."]
+
+
+def _submodule_findings(plan: Plan, source: Source, tree: list,
+                        local_remote_dir: Path | None = None
+                        ) -> tuple[tuple[list[str], list[str]],
+                                   tuple[list[str], list[str]], list[str]]:
+    """`(findings, remediation)` for `submodule_plan_problems`, one FINDING
+    each and SUBMODULE_REMEDIATION when there is one; the same for each
+    `_relative_url_findings` one, with RELATIVE_URL_REMEDIATION; and the
+    NOTEs `check` prints. A remediation is printed ONCE after every finding.
+    The two come back apart because `_entry_findings` lists the relative
+    urls last, after the values #255 finds. `check` is where the person is
+    told to fix the plan, so it says how, in the words `execute`'s refusal
+    would use one step later."""
+    registered = source.registered_submodules(tree)
     found = [f"FINDING {code}: {detail}" for code, detail
-             in submodule_plan_problems(plan.entries, tree,
-                                        source.registered_submodules(tree))]
-    return found, [SUBMODULE_REMEDIATION] if found else []
+             in submodule_plan_problems(plan.entries, tree, registered)]
+    moved, notes = _relative_url_findings(plan, source, tree, registered,
+                                          local_remote_dir)
+    return ((found, [SUBMODULE_REMEDIATION] if found else []),
+            (moved, [RELATIVE_URL_REMEDIATION] if moved else []), notes)
 
 
 #: The answers that never extract an entry into a leg. A path answered
@@ -3075,13 +3475,16 @@ def _unsafe_path_findings(plan: Plan) -> tuple[list[str], list[str]]:
     return found, [UNSAFE_PATH_REMEDIATION] if found else []
 
 
-def _entry_findings(plan: Plan, source: Source
-                    ) -> tuple[list[str], list[str]]:
+def _entry_findings(plan: Plan, source: Source,
+                    local_remote_dir: Path | None = None
+                    ) -> tuple[list[str], list[str], list[str]]:
     """Every FINDING `check` prints about the plan's ENTRIES, in its order,
-    and what it prints once after them: each entry's path, then coverage,
-    then each entry's `leg:`, the two mount paths and what the root keeps
-    where the shape writes, then the source's own submodules, then each
-    value `execute` writes into a file that no file can hold (#255).
+    what it prints once after them, and the NOTEs it prints beside them:
+    each entry's path, then coverage, then each entry's `leg:`, the two
+    mount paths and what the root keeps where the shape writes, then the
+    source's own submodules, then each value `execute` writes into a file
+    that no file can hold (#255), and last each relative url of a kept
+    submodule that names another repository from its leg (#190).
 
     ONE LIST, read by `check` and by `execute`'s `_refuse_what_check_finds`.
     #168 and #166 each added findings to `check` and a refusal to `execute`
@@ -3089,7 +3492,10 @@ def _entry_findings(plan: Plan, source: Source
     same lines; three compositions then disagreed, and a plan `check`
     rejected as uncovered AND split was refused by `execute` for the split
     alone, to be refused again for the rest once that was fixed. Composed
-    once, the two commands cannot differ about a plan.
+    once, the two commands cannot differ about a plan -- but in the one
+    place a remote decides it: `local_remote_dir` is `execute`'s, and a
+    relative submodule url is resolved from the leg remotes it names, where
+    `check` has none and resolves from GitHub's (#190).
 
     `_leg_findings` is handed the TREE, because the paths the plan keeps in
     the root are read out of it (#172, #191): without it a mount path at, or
@@ -3107,10 +3513,12 @@ def _entry_findings(plan: Plan, source: Source
                                       for e in plan.entries],
                                      [path for path, _, _, _ in tree])
                 + _leg_findings(plan, tree))
-    submodule_findings, remediation = _submodule_findings(plan, source, tree)
+    (split, split_remediation), (moved, moved_remediation), notes = \
+        _submodule_findings(plan, source, tree, local_remote_dir)
     unwritable_findings, unwritable_remediation = _value_findings(plan)
-    return (findings + submodule_findings + unwritable_findings,
-            unsafe_remediation + remediation + unwritable_remediation)
+    return (findings + split + unwritable_findings + moved,
+            unsafe_remediation + split_remediation + unwritable_remediation
+            + moved_remediation, notes)
 
 
 def _topics_line(topic: str, local: bool) -> str:
@@ -3181,7 +3589,7 @@ def cmd_check(args) -> int:
             "against a tree that has moved proves nothing about the tree that "
             "will be split.")
 
-    entry_findings, remediation = _entry_findings(plan, source)
+    entry_findings, remediation, notes = _entry_findings(plan, source)
     findings.extend(entry_findings)
 
     names = plan.names()
@@ -3202,6 +3610,8 @@ def cmd_check(args) -> int:
     for line in seeding_warnings(seeded, plan.allowed_empty_legs()):
         print(line)
     for line in plan.seeding_record_disagreements(seeded):
+        print(line)
+    for line in notes:
         print(line)
 
     for line in [*findings, *remediation]:
@@ -3289,6 +3699,20 @@ def _refuse_an_unrunnable_plan(plan: Plan, source: Source) -> None:
             "Remediation: re-run `plan`, re-answer anything new, then "
             "`check`. Splitting a tree the plan has not seen is how a path "
             "goes missing.")
+
+
+def _flush_stdout() -> None:
+    """Flush stdout before a failure is written to stderr (#171, #177, #188).
+
+    `execute` announces each leg repository, each pushed leg and the split on
+    stdout. Piped, stdout is block-buffered and stderr is not, so without
+    this a log that merges the two (`> log 2>&1`) shows the failure BEFORE the
+    lines it is about. A stdout nobody reads any more, such as a closed pipe,
+    must not turn the report into a BrokenPipeError, so that error is
+    swallowed: the report on stderr is what the human needs.
+    """
+    with contextlib.suppress(OSError):
+        sys.stdout.flush()
 
 
 def _create_leg_remotes(plan: Plan, names: dict, repositories: dict,
@@ -3656,21 +4080,28 @@ def _repository_urls(args, plan: Plan, names: dict,
     itself under `--local-remote-dir`, because an in-place adoption pushes its
     split branch back to the repository it read.
     """
-    local = args.local_remote_dir is not None
     org = checked_value("org", plan.get("org"))
     repositories = {role: f"{org}/{name}" for role, name in names.items()}
-    if local:
-        # NOT created yet: nothing exists on disk until the human has said
-        # yes, so a refused run leaves the directory it would have used
-        # absent rather than empty.
-        remote_dir = args.local_remote_dir.resolve()
-        urls = {role: str(remote_dir / f"{name}.git")
+    return (args.local_remote_dir is not None, repositories,
+            _remote_urls(org, names, args.local_remote_dir, source))
+
+
+def _remote_urls(org: str, names: dict, local_remote_dir: Path | None,
+                 source: Source) -> dict:
+    """The url of each of the three repositories, by role: what `execute`
+    pushes to, and what a relative submodule url kept in a leg is resolved
+    from (#190), which `check` asks with no `local_remote_dir`."""
+    if local_remote_dir is None:
+        return {role: f"https://github.com/{org}/{name}.git"
                 for role, name in names.items()}
-        urls["assembly"] = str(source.path)
-    else:
-        urls = {role: f"https://github.com/{org}/{name}.git"
-                for role, name in names.items()}
-    return local, repositories, urls
+    # NOT created yet: nothing exists on disk until the human has said yes,
+    # so a refused run leaves the directory it would have used absent rather
+    # than empty.
+    remote_dir = local_remote_dir.resolve()
+    urls = {role: str(remote_dir / f"{name}.git")
+            for role, name in names.items()}
+    urls["assembly"] = str(source.path)
+    return urls
 
 
 def _leg_paths(plan: Plan) -> dict:
@@ -3695,7 +4126,8 @@ def _leg_paths(plan: Plan) -> dict:
 REFUSED_FINDINGS_SHOWN = 8
 
 
-def _refuse_what_check_finds(plan: Plan, source: Source) -> None:
+def _refuse_what_check_finds(plan: Plan, source: Source,
+                             local_remote_dir: Path | None = None) -> None:
     """Refuse a plan `check` rejects, BEFORE a leg repository exists (#168).
 
     Of `check`'s findings, `execute` used to refuse only `plan-unresolved`,
@@ -3760,14 +4192,21 @@ def _refuse_what_check_finds(plan: Plan, source: Source) -> None:
     states: a plan `check` rejects as uncovered and split is refused for
     both at once, and a submodule problem is refused here like any other,
     after the entries' paths, which are the first of these findings.
+
+    BUT FROM THE REMOTES THIS RUN WOULD CREATE (#190). A relative submodule
+    url kept in a leg is resolved from that leg's remote, and under
+    `local_remote_dir` that is a bare repository `check` cannot know of: such
+    a finding is this run's own, and the refusal says so. A url `check` finds
+    from GitHub's remotes may name the same repository from these, and one it
+    passes may not.
     """
-    findings, remediation = _entry_findings(plan, source)
+    findings, remediation, _ = _entry_findings(plan, source, local_remote_dir)
     if not findings:
         return
     # `FINDING <code>: <detail>` is the one shape both functions write.
     code = findings[0].split()[1].rstrip(":")
     lines = [f"{len(findings)} finding(s) in {plan.path}, as `check` prints "
-             "them:"]
+             f"them{_as_resolved_here(findings, local_remote_dir)}:"]
     lines += [f"  {finding}" for finding in findings[:REFUSED_FINDINGS_SHOWN]]
     if len(findings) > REFUSED_FINDINGS_SHOWN:
         lines.append(f"  and {len(findings) - REFUSED_FINDINGS_SHOWN} more")
@@ -3782,6 +4221,20 @@ def _refuse_what_check_finds(plan: Plan, source: Source) -> None:
             "plan `check` rejects is one the corrected plan cannot make "
             "again: under `--local-remote-dir` it meets `leg-remote-exists`.",
             *remediation]))
+
+
+def _as_resolved_here(findings: list[str],
+                      local_remote_dir: Path | None) -> str:
+    """What the refusal's first line adds when a finding in it is not one
+    `check` prints: a relative url resolved from `local_remote_dir`'s
+    remotes, where `check` resolves it from GitHub's. Nothing otherwise."""
+    if local_remote_dir is None or not any(
+            finding.startswith(f"FINDING {RELATIVE_URL}:")
+            for finding in findings):
+        return ""
+    return (", but with each relative submodule url resolved from the leg "
+            "remotes this run would create under --local-remote-dir, where "
+            "`check` resolves it from GitHub's")
 
 
 def _refuse_unconsented_seeding(args, plan: Plan, seeded: list) -> None:
@@ -3840,29 +4293,65 @@ def _build_the_legs(source: Source, names: dict, repositories: dict,
     return leg_commits, leg_digests
 
 
+def _pull_request_command(repositories: dict, names: dict, tracking: str,
+                          branch: str, message: str) -> list[str]:
+    """The `gh pr create` that opens the split's pull request. It carries its
+    own title and body, so it runs with no terminal to prompt on: this is what
+    `_open_the_pull_request` runs, and what `_open_it_by_hand` prints (#304)."""
+    return ["gh", "pr", "create", "--repo", repositories["assembly"],
+            "--base", tracking, "--head", branch,
+            "--title", f"Adopt the three-repository shape: "
+                       f"{names['spec']} and {names['code']}",
+            "--body", message]
+
+
 def _open_the_pull_request(repositories: dict, names: dict, tracking: str,
                            branch: str, message: str) -> bool:
     """(c′) The pull request, because these organisations are pull-request
     only.
 
-    Returns False when `gh` refused, having printed why and the command that
-    finishes the job by hand — the branch IS pushed by the time this runs, so
-    the exit is never "start again". Split out of `cmd_execute` for #138.
+    Returns False when `gh` refused, having printed why. The branch IS pushed
+    by the time this runs, so the exit is never "start again". The command
+    that finishes the job by hand is `_open_it_by_hand`'s, which the caller
+    prints AFTER the verification and only once it has passed (#304): until
+    then nothing says the split is the one to open a pull request for. Split
+    out of `cmd_execute` for #138.
     """
     try:
-        url = run(["gh", "pr", "create", "--repo", repositories["assembly"],
-                   "--base", tracking, "--head", branch,
-                   "--title", f"Adopt the three-repository shape: "
-                              f"{names['spec']} and {names['code']}",
-                   "--body", message])
+        url = run(_pull_request_command(repositories, names, tracking, branch,
+                                        message))
         print(f"  pull request {url}")
     except CommandFailed as exc:
         print(exc.loudly("opening the pull request"), file=sys.stderr)
-        print("The branch IS pushed. Open the pull request by hand:\n"
-              f"    gh pr create --repo {repositories['assembly']} "
-              f"--base {tracking} --head {branch}", file=sys.stderr)
         return False
     return True
+
+
+def _open_it_by_hand(repositories: dict, names: dict, tracking: str,
+                     branch: str, message: str, passed: bool) -> None:
+    """What a refused `gh pr create` leaves to do, said once `execute` knows
+    whether the split it pushed is the one the plan asked for (#304).
+
+    A split that PASSED verification gets the command that opens its pull
+    request, the same command `_open_the_pull_request` ran, with its title and
+    body, so that it also runs where there is no terminal to prompt on. One
+    that did not gets the opposite: the refusal printed above names the exact
+    command that was tried, and a person who sees only that, with findings
+    under it, may paste it. Stdout is flushed first. The table is on it and a
+    pipe holds it in a block buffer, so without the flush this would come
+    before the table it depends on in a merged log; a stdout that is closed,
+    `| head` and gone, must not take the command down with it (`_flush_stdout`).
+    """
+    _flush_stdout()
+    if not passed:
+        print("No pull request was opened, and none should be: the split "
+              "above did not pass verification.", file=sys.stderr)
+        return
+    command = " ".join(shlex.quote(argument) for argument in
+                       _pull_request_command(repositories, names, tracking,
+                                             branch, message))
+    print(f"The branch IS pushed. Open the pull request by hand:\n    "
+          f"{command}", file=sys.stderr)
 
 
 def _set_the_topic(repositories: dict, topic: str) -> bool:
@@ -4047,7 +4536,7 @@ def cmd_execute(args) -> int:
     local, repositories, urls = _repository_urls(args, plan, names, source)
     _refuse_an_unwritable_clone_url(urls["assembly"])
     paths_for = _leg_paths(plan)
-    _refuse_what_check_finds(plan, source)
+    _refuse_what_check_finds(plan, source, args.local_remote_dir)
 
     seeded = seeded_legs(paths_for)
     _refuse_unconsented_seeding(args, plan, seeded)
@@ -4091,19 +4580,31 @@ def cmd_execute(args) -> int:
         return 2
     split_commit, message = split
 
-    topics_failed = False
+    # A pull request `gh` refused does not end the run here: the legs and the
+    # split ARE pushed, and what the person needs to know before they open it
+    # is whether the split is right (#304). The topic is not tried after a
+    # refused pull request, because what it says is that the pull request IS
+    # open.
+    pull_request_refused = topics_failed = False
     if not local:
-        if not _open_the_pull_request(repositories, names, tracking, branch,
-                                      message):
-            return 2
-        topics_failed = not _set_the_topic(repositories, topic)
+        pull_request_refused = not _open_the_pull_request(
+            repositories, names, tracking, branch, message)
+        if not pull_request_refused:
+            topics_failed = not _set_the_topic(repositories, topic)
 
     # ---- (d) verification, by blob sha ------------------------------------
     verified = _verify(source, assembly, work_root, names, paths_for,
                        split_commit, spec_path, code_path, seeded)
+    if pull_request_refused:
+        _open_it_by_hand(repositories, names, tracking, branch, message,
+                         not verified)
+    elif not verified:
+        _next_steps(names)
     if verified:
-        return verified   # a verification mismatch outranks a missing topic
-    return 2 if topics_failed else 0
+        # A verification mismatch outranks a refused pull request and a
+        # missing topic.
+        return verified
+    return 2 if pull_request_refused or topics_failed else 0
 
 
 # ---------------------------------------------------------------------------
@@ -4408,10 +4909,16 @@ def _verify(source: Source, assembly: Path, work_root: Path, names,
               "another exit.", file=sys.stderr)
         return 1
     print("\nadoption verified: every source path is in exactly one place")
+    return 0
+
+
+def _next_steps(names: dict) -> None:
+    """What a person does once the split is verified AND its pull request is
+    open. Not said where there is none to review: after a refused `gh pr
+    create`, the command to open it is the next step (#304)."""
     print(f"\nNEXT: review the pull request on {names['assembly']}, then\n"
           f"    git clone --recurse-submodules <{names['assembly']} url>\n"
           "    make bootstrap")
-    return 0
 
 
 def _account_for(before: dict, after: dict, drops: list[str]) -> tuple[dict, list]:
