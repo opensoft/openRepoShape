@@ -1314,8 +1314,9 @@ def build_parser() -> argparse.ArgumentParser:
                              "order given")
     parser.add_argument("--local-remote-dir", type=Path, default=None,
                         help="resolve the leg's remote to a bare repository "
-                             "here instead of its origin (the TEST path; no "
-                             "network)")
+                             "here instead of its origin (the TEST path; the "
+                             "leg needs no network, but the project's own "
+                             "validate-pins.py may still ask `gh api`)")
     parser.add_argument("--dry-run", action="store_true",
                         help="print what would move and change nothing")
     return parser

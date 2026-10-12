@@ -1115,11 +1115,12 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
       is found &mdash; <code>--pin-source [PRODUCT=]&lt;path&gt;</code>,
       <code>SHAPE_PIN_SOURCE_&lt;PRODUCT&gt;</code> in the environment, or a checkout beside the
       assembly root named for the pinned repository &mdash; else by <code>gh api</code>, with the
-      operator&rsquo;s <code>gh</code> credentials, when <code>gh</code> can read it. Neither
-      answering is a named SKIP, exit 0, never a finding or a failure: no checkout and no network
-      does not make a descent a lie. <code>make bootstrap</code>, <code>bump-leg.py</code> and
-      <code>update-shape.py apply</code> run this gate in the operator&rsquo;s environment, so each
-      makes that call too; none takes <code>--pin-source</code>.</p>
+      operator&rsquo;s <code>gh</code> credentials, when <code>gh</code> can read it. Finding
+      neither is a named SKIP, exit 0: no checkout and no network does not make a descent a lie. A
+      checkout that cannot answer is the finding <code>neutral-pin-source-unreadable</code>.
+      <code>make bootstrap</code>, <code>bump-leg.py</code> and <code>update-shape.py apply</code>
+      run this validator in the operator&rsquo;s environment, so each makes that call too; none
+      takes <code>--pin-source</code>.</p>
       <p>A NEUTRAL product may elect the shape and be its own assembly root as well:
       <code>openDox</code> mounting <code>openDox-spec</code> and <code>openDox-code</code> is a
       fact about LAYOUT and not a claim about neutrality, because electing confers nothing.
@@ -1371,10 +1372,10 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
       <p class="eyebrow">Reference</p>
       <h2>Keeping a project&rsquo;s shape current</h2>
       <p>The copies are the trade: a project runs its own gate, which never consults this standard
-      (its one possible network read is <code>validate-pins.py</code>&rsquo;s <code>gh api</code>
-      recheck of a neutral product&rsquo;s pin, <a href="#legs">described with the legs</a>), and an
-      upstream FIX to a copied file reaches it never. <code>update-shape.py</code> is the re-sync,
-      as one command.</p>
+      (its validators&rsquo; one possible network read is <code>validate-pins.py</code>&rsquo;s
+      <code>gh api</code> recheck of a neutral product&rsquo;s pin,
+      <a href="#legs">described with the legs</a>), and an upstream FIX to a copied file reaches it
+      never. <code>update-shape.py</code> is the re-sync, as one command.</p>
       <div class="code" data-lang="sh"><pre><code>./update-shape.py check --root ../MedxEHR          # writes nothing
 ./update-shape.py apply --root ../MedxEHR --at &lt;commit&gt; --yes \
     --branch shape/update-&lt;sha&gt;                    # then open a pull request</code></pre></div>
@@ -1806,11 +1807,11 @@ resume InkRouter                # on workstation B, and the estate is back</code
       refusing an untracked or ignored one it would rewrite, added (#207); the assistant rules
       saying that some scaffold refusals name a value to change, added (#288);
       <code>bump-leg.py</code> refusing a workflow file or the leg&rsquo;s pin that is not UTF-8, by
-      name, added (#289); the one network read a project&rsquo;s own gate can make, the
+      name, added (#289); the one network read a project&rsquo;s own validators can make, the
       <code>gh api</code> recheck of a neutral product&rsquo;s pin, said where this page and the
       README had said &ldquo;offline&rdquo;, added (#411) &mdash; a page cannot name the commit
       that contains it, and the blob below is the fact a test checks.
-      README.md blob d25081fd5675d608aa9f362cb901b8db819481ef. Every command, flag, exit code
+      README.md blob 4ce951da2a58bd100b4323281549d25314c61ea4. Every command, flag, exit code
       and file name on this page is quoted from that README and from AGENTS.md.</p>
     </footer>
   </main>

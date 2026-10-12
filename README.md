@@ -699,11 +699,11 @@ has its `commit`, `revision_kind` and `sorted-ls-tree-r-v1` digest recomputed as
 one is found — `--pin-source [PRODUCT=]<path>`, `SHAPE_PIN_SOURCE_<PRODUCT>` in
 the environment, or a checkout beside the assembly root named for the pinned
 repository — else by `gh api`, with the operator's `gh` credentials, when `gh`
-can read it. Neither answering is a named SKIP, exit 0, never a finding or a
-failure: no checkout and no network does not make a descent a lie. `make
-bootstrap`, `bump-leg.py` and `update-shape.py apply` run this gate in the
-operator's environment, so each makes that call too; none takes `--pin-source`.
-A differing digest or missing pin file is drift, as everywhere.
+can read it. Finding neither is a named SKIP, exit 0: no checkout and no network
+does not make a descent a lie. A checkout that cannot answer is the finding
+`neutral-pin-source-unreadable`. `make bootstrap`, `bump-leg.py` and
+`update-shape.py apply` run this validator in the operator's environment, so
+each makes that call too; none takes `--pin-source`.
 
 ### A neutral product may elect the shape and be its own assembly root
 
@@ -1023,11 +1023,11 @@ the rest is the project's own, which an upstream fix must never overwrite.
 ## Keeping a project's shape current
 
 The copies are the trade: a project runs its own gate, which never consults this
-standard (its one possible network read is `validate-pins.py`'s `gh api` recheck
-of a neutral product's pin, above), and an upstream FIX to a copied file reaches
-it never. On 2026-09-03 that bill came due — one change to the assembly-root
-`validate.yml`, and both projects with the shape were updated BY HAND: re-copy,
-re-pin, re-validate. `update-shape.py` is that, as one command:
+standard (its validators' one possible network read is `validate-pins.py`'s `gh
+api` recheck of a neutral product's pin, above), and an upstream FIX to a copied
+file reaches it never. On 2026-09-03 that bill came due — one change to the
+assembly-root `validate.yml`, and both projects with the shape were updated BY
+HAND: re-copy, re-pin, re-validate. `update-shape.py` is that, as one command:
 
 ```sh
 ./update-shape.py check --root ../MedxEHR          # writes nothing
