@@ -57,7 +57,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from repo_shape import (  # noqa: E402
     COMMIT_RE, SHA256_RE, TREE_DIGEST_DEFINITION, Refusal, file_sha256,
-    find_repo_root, git_out, load_yaml, pin_source_env_name, recorded_gitlink,
+    find_repo_root, git_out, load_yaml, pin_source_env_collisions,
+    pin_source_env_name, pin_source_env_shared, recorded_gitlink,
     repo_basename, tree_digest, tree_digest_from_gh,
 )
 
@@ -352,6 +353,7 @@ def _check_shape_pin(root: Path, manifest: dict, report: Report) -> None:
 def resolve_neutral_pin_source(root: Path, product: str, repository: str,
                                keyed_sources: dict[str, Path],
                                default_source: Path | None,
+                               env_shared: bool = False,
                                ) -> tuple[Path | None, str | None]:
     """Where to read `product`'s tree OFFLINE, if anywhere at all.
 
@@ -367,6 +369,11 @@ def resolve_neutral_pin_source(root: Path, product: str, repository: str,
          to whichever pin does not already have a more specific answer — the
          common case is exactly one declared neutral-product pin
 
+    Rule 2 is skipped when `env_shared` is true, which is when another
+    declared pin names the same variable (#275): a variable that cannot say
+    which product it holds answers for neither, and `neutral-pin-source-
+    collides` is reported for the pair.
+
     Returns `(None, None)` when nothing above answers; the caller's next step
     is `gh api`, and after that, a SKIP.
     """
@@ -374,7 +381,7 @@ def resolve_neutral_pin_source(root: Path, product: str, repository: str,
     if keyed is not None:
         return keyed, f"--pin-source {product}=..."
     env_name = pin_source_env_name(product)
-    env_value = os.environ.get(env_name)
+    env_value = None if env_shared else os.environ.get(env_name)
     if env_value:
         return Path(env_value), f"${env_name}"
     sibling = root.parent / repo_basename(repository)
@@ -469,7 +476,9 @@ def _recompute_neutral_pin_digest(root: Path, product: str, repository: str,
                                   commit: str, rel: str,
                                   keyed_sources: dict[str, Path],
                                   default_source: Path | None,
-                                  report: Report) -> tuple[str, str] | None:
+                                  report: Report,
+                                  shared: frozenset[str] = frozenset()
+                                  ) -> tuple[str, str] | None:
     """Recompute the referent's tree digest: offline where a source can be
     found, else from `gh api`, else a named SKIP that never fails the run.
 
@@ -478,8 +487,10 @@ def _recompute_neutral_pin_digest(root: Path, product: str, repository: str,
     already reported in that case, exactly as the original loop's
     `continue` left it.
     """
+    env_shared = product.casefold() in shared
     source, how = resolve_neutral_pin_source(root, product, repository,
-                                              keyed_sources, default_source)
+                                              keyed_sources, default_source,
+                                              env_shared)
     if source is not None:
         try:
             return tree_digest(source, commit), how
@@ -493,11 +504,14 @@ def _recompute_neutral_pin_digest(root: Path, product: str, repository: str,
     try:
         return tree_digest_from_gh(repository, commit), "gh-api-tree-recursive"
     except Refusal as exc:
+        # A variable another pin shares is not offered (#275).
+        offered = ("A --pin-source or" if env_shared else
+                   f"A --pin-source, {pin_source_env_name(product)}, or")
         report.skip(
             f"{product}: pin commit {commit[:12]} digest NOT "
             f"rechecked — no local checkout ({exc.code}: "
-            f"{exc.detail}). A --pin-source, {pin_source_env_name(product)}, "
-            f"or a checkout at ../{repo_basename(repository)} beside "
+            f"{exc.detail}). {offered} a checkout at "
+            f"../{repo_basename(repository)} beside "
             "this assembly root would verify it offline.",
         )
         return None
@@ -505,7 +519,9 @@ def _recompute_neutral_pin_digest(root: Path, product: str, repository: str,
 
 def _check_one_neutral_product_pin(root: Path, product, report: Report,
                                    keyed_sources: dict[str, Path],
-                                   default_source: Path | None) -> None:
+                                   default_source: Path | None,
+                                   shared: frozenset[str] = frozenset()
+                                   ) -> None:
     """One `neutral_product_pins:` entry, start to finish.
 
     Split from `_check_neutral_product_pins` for #132 so the loop in that
@@ -523,7 +539,7 @@ def _check_one_neutral_product_pin(root: Path, product, report: Report,
     commit, recorded = fields
     recomputed = _recompute_neutral_pin_digest(root, product, repository,
                                                commit, rel, keyed_sources,
-                                               default_source, report)
+                                               default_source, report, shared)
     if recomputed is None:
         return
     actual, how = recomputed
@@ -541,6 +557,29 @@ def _check_one_neutral_product_pin(root: Path, product, report: Report,
                    f"recomputes ({how})")
 
 
+def _report_pin_source_collisions(products, report: Report) -> None:
+    """One `neutral-pin-source-collides` finding for each variable two or more
+    declared products share (#275), naming every one of them and the
+    variable. `pin_source_env_collisions` is `repo_shape`'s, the one answer
+    `scaffold-project.py` refuses on too: products are distinct by casefold,
+    so a product listed twice is not a collision here. The names are quoted
+    with `repr`, as `neutral-pin-entry-malformed` quotes an entry: they are
+    the manifest's own text and may hold a newline."""
+    for variable, group in pin_source_env_collisions(products).items():
+        names = " and ".join(repr(product) for product in group)
+        report.finding(
+            "neutral-pin-source-collides",
+            f"project.yaml neutral_product_pins declares {names}, and one "
+            f"variable, {variable}, names the local checkout of each: it "
+            "cannot say which it holds, so it is read for none of them.\n"
+            "  Remediation: `SHAPE_PIN_SOURCE_<PRODUCT>` is the product's "
+            "name upper-cased with every character outside `A-Z`, `0-9` and "
+            "`_` turned into `_`, so names that differ only in `-`, `.` or "
+            "`_` share one. Declare one product of each such group, or "
+            "products whose names differ by more.",
+        )
+
+
 def _check_neutral_product_pins(root: Path, manifest: dict, report: Report,
                                 keyed_sources: dict[str, Path],
                                 default_source: Path | None) -> None:
@@ -553,11 +592,21 @@ def _check_neutral_product_pins(root: Path, manifest: dict, report: Report,
     local checkout when one can be found, else from `gh api`. Neither
     available is a SKIP, never a finding and never a refusal: the absence of
     a way to answer is not evidence that the pin is wrong.
+
+    TWO PRODUCTS THAT SHARE ONE VARIABLE ARE A FINDING (#275), and neither
+    reads it. `SHAPE_PIN_SOURCE_<PRODUCT>` is the product's name upper-cased
+    with every character outside `[A-Z0-9_]` turned into `_`, so `open-glass`,
+    `open_glass` and `open.glass` are three pin files and one variable.
+    Whichever checkout it named answered for all of them, and the pin it was
+    not a checkout of was reported as `neutral-pin-source-unreadable`: drift
+    in the project, said about a variable.
     """
     products = manifest.get("neutral_product_pins") or []
+    _report_pin_source_collisions(products, report)
+    shared = frozenset(pin_source_env_shared(products))
     for product in products:
         _check_one_neutral_product_pin(root, product, report, keyed_sources,
-                                       default_source)
+                                       default_source, shared)
 
 
 def _parse_pin_sources(pin_source_args: list[str]
