@@ -25,19 +25,20 @@ and the second is the one that keeps a thirty-first from arriving:
 The reader is `TextModeCalls`, and #321 widened what it sees. It reads a call
 spelled `subprocess.run(...)` AND the spellings that used to walk past it:
 `from subprocess import run` (also `as`, also `*`), `import subprocess as sp`,
-`sp = subprocess` and `other_module.subprocess.run`; a call that names only
-`encoding=` or only `errors=` (text mode, with the locale's codec for the half
-it left out); `getoutput` and `getstatusoutput` (always text, with no codec to
-name before Python 3.11); a call that hands its keywords over as `**options`;
-and a spawner passed around uncalled (`functools.partial(subprocess.run,
-...)`). Each has a synthetic module the guard must flag and the same module fixed,
+`sp = subprocess` (also `sp: object = subprocess`) and
+`other_module.subprocess.run`; a call that names only `encoding=` or only
+`errors=` (text mode, with the locale's codec for the half it left out);
+`getoutput` and `getstatusoutput` (always text, with no codec to name before
+Python 3.11); a call that hands its keywords over as `**options`; and a
+spawner passed around uncalled (`functools.partial(subprocess.run, ...)`).
+Each has a synthetic module the guard must flag and the same module fixed,
 which it must pass (`SYNTHETIC`), so a form dropped from the reader fails by
 name.
 
-What a syntax tree cannot resolve stays outside it: `getattr(subprocess, name)`
-and an import made by `importlib`. A wrapper that is not `subprocess` is read
-where it calls `subprocess` (`shape_materialize.run` names its own
-`encoding=`).
+What a syntax tree cannot resolve stays outside it: `getattr(subprocess, name)`,
+an import made by `importlib`, and the module held by a walrus, an unpacking or
+a `for` target. A wrapper that is not `subprocess` is read where it calls
+`subprocess` (`shape_materialize.run` names its own `encoding=`).
 """
 
 from __future__ import annotations
@@ -200,11 +201,14 @@ class TextModeCalls(ast.NodeVisitor):
       spawner referred to without being called.
 
     A call is a spawner call however it is spelled: `subprocess.run`, the
-    module under another name (`import subprocess as sp`, `sp = subprocess`),
-    the module reached through another (`shape_materialize.subprocess.run`), or
-    a bare name from `from subprocess import run [as read]` / `import *`.
+    module under another name (`import subprocess as sp`, `sp = subprocess`,
+    `sp: object = subprocess`), the module reached through another
+    (`shape_materialize.subprocess.run`), or a bare name from `from subprocess
+    import run [as read]` / `import *`.
     Names are read across the whole file, so a name bound in one function
-    counts in the next: that can only make the guard stricter.
+    counts in the next: that can only make the guard stricter. Only a plain or
+    annotated assignment of a bare name is followed; a walrus, an unpacking or
+    a `for` target that holds the module is not.
     """
 
     def __init__(self) -> None:
@@ -241,13 +245,19 @@ class TextModeCalls(ast.NodeVisitor):
             if isinstance(annotation, ast.expr):
                 self.annotations.update(id(n) for n in ast.walk(annotation))
         changed = True
-        while changed:  # `sp = subprocess`, and `again = sp`
+        while changed:  # `sp = subprocess`, `sp: object = subprocess`, `a = sp`
             changed = False
             for node in ast.walk(tree):
-                if (isinstance(node, ast.Assign)
-                        and isinstance(node.value, ast.Name)
+                if isinstance(node, ast.Assign):
+                    targets = node.targets
+                elif (isinstance(node, ast.AnnAssign)
+                      and node.value is not None):
+                    targets = [node.target]
+                else:
+                    continue
+                if (isinstance(node.value, ast.Name)
                         and node.value.id in self.modules):
-                    for target in node.targets:
+                    for target in targets:
                         if (isinstance(target, ast.Name)
                                 and target.id not in self.modules):
                             self.modules.add(target.id)
@@ -459,6 +469,60 @@ SYNTHETIC = [
             return again.Popen(argv, stdout=sp.PIPE, text=True,
                                encoding="utf-8", errors="replace")
         """, "does not name ['encoding', 'errors']"),
+    module_case("module-assigned-with-an-annotation", """
+        import subprocess
+        sp: object = subprocess
+
+        def read(argv):
+            return sp.run(argv, capture_output=True, text=True).stdout
+        """, """
+        import subprocess
+        sp: object = subprocess
+
+        def read(argv):
+            return sp.run(argv, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace").stdout
+        """, "does not name ['encoding', 'errors']"),
+    module_case("module-annotated-after-a-plain-alias", """
+        import subprocess
+        sp = subprocess
+        again: "ModuleType" = sp
+
+        def read(argv):
+            return again.Popen(argv, stdout=sp.PIPE, text=True)
+        """, """
+        import subprocess
+        sp = subprocess
+        again: "ModuleType" = sp
+
+        def read(argv):
+            return again.Popen(argv, stdout=sp.PIPE, text=True,
+                               encoding="utf-8", errors="replace")
+        """, "does not name ['encoding', 'errors']"),
+    module_case("spawner-assigned-with-an-annotation", """
+        import subprocess
+        from typing import Callable
+
+        run: Callable = subprocess.run
+        """, """
+        import subprocess
+
+        def run(argv):
+            return subprocess.run(argv, capture_output=True, text=True,
+                                  encoding="utf-8", errors="replace")
+        """, "refers to `subprocess.run` without calling it"),
+    module_case("imported-spawner-assigned-with-an-annotation", """
+        from subprocess import check_output
+        from typing import Callable
+
+        read: Callable = check_output
+        """, """
+        from subprocess import check_output
+
+        def read(argv):
+            return check_output(argv, text=True, encoding="utf-8",
+                                errors="replace")
+        """, "refers to `subprocess.check_output` without calling it"),
     module_case("module-reached-through-another", """
         import shape_materialize
 
@@ -724,6 +788,7 @@ def test_an_annotation_is_not_a_spawner_it_refers_to():
 
         def start(argv) -> subprocess.Popen:
             child: subprocess.Popen = None
+            pending: subprocess.Popen
             return child
 
         def finish(proc: "subprocess.Popen", other: Popen) -> CompletedProcess:
