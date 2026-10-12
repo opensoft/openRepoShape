@@ -126,6 +126,9 @@ from shape_materialize import (  # noqa: E402
     CASE_ASIDE as _CASE_ASIDE, MOVE_THE_LEG, first_and_more as _first_and_more,
     path_overlap as _overlap, shape_path_collisions,
 )
+# Whether a value this tool writes into a file is text a file can hold
+# (#255), asked beside `one_printable_line`, the trailer's question.
+from shape_materialize import unwritable_reason  # noqa: E402
 
 #: The naming policy this tool classifies leg names against. One constant,
 #: because three spellings of the same path is how the second one goes stale.
@@ -694,13 +697,25 @@ class Source:
             path = candidate.resolve()
             repository = _remote_repository(path)
         else:
-            if "/" not in spec or WINDOWS_ABSOLUTE_RE.match(spec):
+            if ("/" not in spec or WINDOWS_ABSOLUTE_RE.match(spec)
+                    or unwritable_reason(spec) or spec.startswith("-")):
                 # A DRIVE-LETTER PATH IS A PATH THAT IS NOT THERE, never an
                 # `org/repo`. `D:/work/Thing` carries a `/` and would
                 # otherwise be handed to `gh repo clone` as an owner named
                 # `D:`; `os.path.isabs` cannot be asked instead, because it
                 # answers False for that string on Linux and macOS and this
                 # refusal must read the same on every platform.
+                # NOR IS A NAME THAT IS NOT TEXT (#255). Since #247 a plan's
+                # `local_path:` can spell a NUL, a control character or a
+                # lone surrogate, and the reader gives it back: a path that
+                # cannot exist, which reached `print` (a surrogate raised on
+                # a strict stdout) or `subprocess` (a NUL raised there) as a
+                # traceback, where main had refused it.
+                # NOR IS A NAME THAT BEGINS WITH `-`. It is the first
+                # argument `gh repo clone` is given, and gh's own parser
+                # reads it as an option: `-u/x` set `--upstream-remote-name`
+                # to `/x`. No GitHub owner name begins with `-`, so nothing
+                # gh could clone is refused here.
                 raise Refusal(
                     "source-unresolvable",
                     f"--source {spec!r} is neither a path that exists nor an "
@@ -1593,7 +1608,24 @@ def _checked_plan_inputs(args, source: Source,
     # manifest field instead of as a question.
     election_date(args.elected_on)
     args.reference = args.reference or default_reference(args.elected_on)
+    # A value `plan` filled in by itself is named by where it came from, as
+    # #181 names one, and not as a flag the person never passed.
+    elector = ("--elected-by" if args.elected_by else
+               "--elected-by (not given, so `git config user.name`)")
     args.elected_by = args.elected_by or _elector()
+    # Before the plan is written, in the words `check` would use (#255): a
+    # value `execute` writes into a file must be text one can hold. The
+    # date has had its answer above, `election_date`.
+    unwritable = unwritable_values(
+        ((elector, args.elected_by, ROOT_MANIFEST_AND_README),
+         ("--reference", args.reference, ROOT_MANIFEST_AND_README)))
+    if unwritable:
+        raise Refusal("adopt-unwritable-value",
+                      " ".join(f"{problem}." for problem in unwritable),
+                      "Remediation: no plan was written. Pass each value "
+                      "named again, retyped; when `--elected-by` is not "
+                      "given, `plan` reads `git config user.name`, so pass "
+                      "the flag or correct that. " + WRITTEN_AS_TEXT)
     names = _names(args.project)
     pins = [_checked_pin_name(p) for p in (args.pin or []) if p.strip()]
     _check_names(naming, names, set(pins))
@@ -2772,7 +2804,8 @@ def _entry_findings(plan: Plan, source: Source
     """Every FINDING `check` prints about the plan's ENTRIES, in its order,
     and what it prints once after them: each entry's path, then coverage,
     then each entry's `leg:`, the two mount paths and what the root keeps
-    where the shape writes, then the source's own submodules.
+    where the shape writes, then the source's own submodules, then each
+    value `execute` writes into a file that no file can hold (#255).
 
     ONE LIST, read by `check` and by `execute`'s `_refuse_what_check_finds`.
     #168 and #166 each added findings to `check` and a refusal to `execute`
@@ -2799,7 +2832,9 @@ def _entry_findings(plan: Plan, source: Source
                                      [path for path, _, _, _ in tree])
                 + _leg_findings(plan, tree))
     submodule_findings, remediation = _submodule_findings(plan, source, tree)
-    return findings + submodule_findings, unsafe_remediation + remediation
+    unwritable_findings, unwritable_remediation = _value_findings(plan)
+    return (findings + submodule_findings + unwritable_findings,
+            unsafe_remediation + remediation + unwritable_remediation)
 
 
 def _topics_line(topic: str, local: bool) -> str:
@@ -2821,23 +2856,27 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
     seeded = seeded_legs(assigned_paths(plan.entries))
     where = source.repository or _shown(str(source.path))
     print(f"\nWHAT WILL HAPPEN, against {where} @ {source.commit[:12]}:")
+    # Every value below that is the plan's own is `_shown`, as a name is:
+    # since #247 the reader gives back a lone surrogate, which raised on a
+    # strict stdout before the FINDING about it was printed (#255).
     print(f"  create {names['spec']} and {names['code']} "
-          f"({plan.get('visibility', 'private')})")
+          f"({_shown(str(plan.get('visibility', 'private')))})")
     print(f"  extract {len(moved)} path(s) with `git filter-repo`, history "
           "preserved")
     for role in seeded:
         print(f"  SEED the {role} leg from {SEED_TEMPLATE[role]}/ — no path is "
               "assigned to it")
-    print(f"  ONE split commit on branch {plan.get('adopt_branch', ADOPT_BRANCH)} "
+    print(f"  ONE split commit on branch "
+          f"{_shown(str(plan.get('adopt_branch', ADOPT_BRANCH)))} "
           f"of {names['assembly']}: `git rm -r` those paths, mount the legs at "
-          f"{_plan_leg_path(plan, 'spec')}/ and "
-          f"{_plan_leg_path(plan, 'code')}/")
+          f"{_shown(str(_plan_leg_path(plan, 'spec')))}/ and "
+          f"{_shown(str(_plan_leg_path(plan, 'code')))}/")
     print(f"  {len(stays)} path(s) stay in the assembly root; "
           f"{len(drops)} dropped")
     print("  the source is never deleted, never renamed, never force-pushed")
     print(_topics_line(topic, local))
     for item in plan.get("follow_ups", []):
-        print(f"  follow-up: {item}")
+        print(f"  follow-up: {_shown(str(item))}")
 
 
 def cmd_check(args) -> int:
@@ -3718,6 +3757,7 @@ def cmd_execute(args) -> int:
     # validated before it is used rather than after something has gone wrong.
     spec_path, code_path, branch, tracking = _checked_plan_values(plan)
     local, repositories, urls = _repository_urls(args, plan, names, source)
+    _refuse_an_unwritable_clone_url(urls["assembly"])
     paths_for = _leg_paths(plan)
     _refuse_what_check_finds(plan, source)
 
@@ -3776,6 +3816,141 @@ def cmd_execute(args) -> int:
     if verified:
         return verified   # a verification mismatch outranks a missing topic
     return 2 if topics_failed else 0
+
+
+# ---------------------------------------------------------------------------
+# What `execute` writes into a file is text a file can hold (#255)
+# ---------------------------------------------------------------------------
+#
+# `_template_values` puts `elected_by`, `elected_on`, `reference`,
+# `visibility`, each pin and the assembly root's clone URL into the templates
+# as they stand, and `write_lf` writes the result as strict UTF-8;
+# `_commit_the_split` puts each follow-up into the split commit's message.
+# Since #247 a plan can carry a lone surrogate -- a byte that is not UTF-8,
+# as `sys.argv` and `os.fsdecode` keep one -- and the reader gives it back.
+# So `plan` and `check` passed `--elected-by b'Jos\xe9'`, and `execute`
+# created and pushed both legs before `write_lf` raised `UnicodeEncodeError`.
+# Before #247, `plan` raised on it and nothing was made. A line break or a
+# NUL in the plan went on into the manifest, and a bidi override or isolate
+# went into the README, which then showed the rest of its line reversed.
+#
+# So `unwritable_reason` is asked of each such value before anything exists.
+# `plan` refuses `--elected-by` and `--reference` as
+# `adopt-unwritable-value`, and writes no plan (`--elected-on` is a date, and
+# `election_date` refuses anything else). `check` reports each plan value as
+# `plan-unwritable-value`, and `execute` refuses those findings through
+# `_refuse_what_check_finds`, before `_create_leg_remotes`. Every other value
+# the templates take is a `checked_value`, the project id, or one of this
+# tool's own.
+#
+# THE CLONE URL IS `execute`'S OWN. Under `--local-remote-dir` it is the
+# source's path, and `check` has no such flag to know it will be written.
+# Against GitHub it is `https://github.com/<org>/<name>.git`, and the path is
+# written nowhere. So `execute` refuses an unwritable one itself, right
+# after `_repository_urls`, and `plan` and `check` still pass a source
+# directory whose name is not UTF-8, as #247 made them.
+
+#: `check`'s finding, and the code `execute` refuses it under.
+UNWRITABLE_VALUE = "plan-unwritable-value"
+
+#: Where `execute` writes the values it is asked about.
+ROOT_MANIFEST = "the assembly root's `project.yaml`"
+ROOT_MANIFEST_AND_README = "the assembly root's `project.yaml` and `README.md`"
+SPLIT_MESSAGE = "the split commit's message"
+
+#: Each plan value `_template_values` substitutes as it stands, by its key,
+#: and where it lands. `pins` and `follow_ups` are lists, asked item by item.
+WRITTEN_PLAN_VALUES = {"elected_by": ROOT_MANIFEST_AND_README,
+                       "elected_on": ROOT_MANIFEST_AND_README,
+                       "reference": ROOT_MANIFEST_AND_README,
+                       "visibility": ROOT_MANIFEST}
+
+#: Why such a value must be text, said after every refusal of one.
+WRITTEN_AS_TEXT = (
+    "`execute` writes each one as it stands, into the assembly root's files "
+    "or the split commit's message, so it must be one line of UTF-8 text. A "
+    "byte that is not UTF-8, or a lone surrogate, cannot be written at all; "
+    "a line break or a control character would be written raw into a value "
+    "that is read back as one line; and a bidirectional embedding, override "
+    "or isolate control would show the rest of the line it is written into "
+    "in another order than it is written. A byte that is not UTF-8 reaches a "
+    "command line from a terminal or a script whose encoding is not the "
+    "locale's.")
+
+PLAN_VALUE_REMEDIATION = ("Remediation: correct each value named in the plan, "
+                          "or re-run `plan` with it retyped. "
+                          + WRITTEN_AS_TEXT)
+
+
+def unwritable_values(fields) -> list[str]:
+    """A sentence for each `(what, value, where)` whose `value` is not text
+    a file can hold; `[]` when every one is.
+
+    `what` names the value as the person has it in front of them --
+    `--elected-by` to `plan`, `elected_by` read out of a plan -- and `where`
+    is the file `execute` writes it into. The value is spelled as Python
+    spells it, as `unsafe-value` spells one, so the sentence stays one line
+    of text whatever the value holds.
+    """
+    out = []
+    for what, value, where in fields:
+        reason = unwritable_reason(value)
+        if reason:
+            out.append(f"{what} is {value!r}, which `execute` writes into "
+                       f"{where}, and {reason}")
+    return out
+
+
+def _plan_values(plan: Plan) -> list[tuple[str, str, str]]:
+    """`(what, value, where)` for each value of the plan's that `execute`
+    writes into a file, as `str` makes it, which is how `_template_values`
+    and `_commit_the_split` take it. A key the plan does not carry is filled
+    by this tool (`private`, today's date) and is left out."""
+    fields = [(key, str(plan.get(key)), where)
+              for key, where in WRITTEN_PLAN_VALUES.items()
+              if plan.get(key) is not None]
+    fields += [("a `pins:` item", pin, ROOT_MANIFEST) for pin in plan.pins]
+    return fields + [("a `follow_ups:` item", str(item), SPLIT_MESSAGE)
+                     for item in plan.get("follow_ups", [])]
+
+
+def _value_findings(plan: Plan) -> tuple[list[str], list[str]]:
+    """`unwritable_values` of the plan as `check` prints them, one FINDING
+    each, and what to print once after every finding: how to correct them
+    when there is one, nothing when there is none."""
+    found = [f"FINDING {UNWRITABLE_VALUE}: {problem}"
+             for problem in unwritable_values(_plan_values(plan))]
+    return found, [PLAN_VALUE_REMEDIATION] if found else []
+
+
+def _refuse_an_unwritable_clone_url(url: str) -> None:
+    """Refuse the assembly root's clone URL when no file can hold it, before
+    any leg exists.
+
+    Only a local one can be refused: under `--local-remote-dir` the URL is
+    the source's own path, which the assembly root's `README.md` names (and
+    a seeded leg's), so a source directory whose name is not UTF-8 pushed
+    both legs and then raised in `write_lf` (#255), and one whose name holds
+    a bidi override was written into the README raw.
+
+    THE REMEDIATION MOVES THE SOURCE AND PLANS AGAIN. A clone of it at a
+    path that is text, passed to `execute` with --source, still has the old
+    path as its `origin`, and `_remote_repository` reads that as UTF-8 and
+    raises; renaming the directory and running `plan` again adopts.
+    """
+    reason = unwritable_reason(url)
+    if reason:
+        raise Refusal(
+            "adopt-unwritable-value",
+            "under --local-remote-dir the assembly root's clone URL is the "
+            f"source's own path, {url!r}, which `execute` writes into its "
+            f"`README.md`, and {reason}",
+            "Remediation: nothing was created. Rename or move the source "
+            "repository so that its path is one line of UTF-8 text with no "
+            "control character in it, then run `plan --source <its new "
+            "path>`, `check` and `execute` again; or adopt against GitHub, "
+            "without --local-remote-dir, where the clone URL is "
+            "`https://github.com/<org>/<name>.git`.")
 
 
 def _template_values(plan: Plan, names, repositories, urls, spec_path,
