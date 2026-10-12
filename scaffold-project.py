@@ -296,17 +296,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--spec-path", default="spec",
                         help="where the spec leg is mounted, as a path in "
                              "the assembly root (default: spec). A path that "
-                             "is, holds or lies inside one the shape writes "
-                             "into the root itself, such as `contracts` or "
-                             "`project.yaml`, is refused before anything is "
-                             "created.")
+                             "is, holds or lies inside a FILE the shape "
+                             "writes into the root is refused before anything "
+                             "is created: `project.yaml` is one, and "
+                             "`contracts` holds several.")
     parser.add_argument("--code-path", default="code",
                         help="where the code leg is mounted, as a path in "
                              "the assembly root (default: code). A path that "
-                             "is, holds or lies inside one the shape writes "
-                             "into the root itself, such as `contracts` or "
-                             "`project.yaml`, is refused before anything is "
-                             "created.")
+                             "is, holds or lies inside a FILE the shape "
+                             "writes into the root is refused before anything "
+                             "is created: `project.yaml` is one, and "
+                             "`contracts` holds several.")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--local-remote-dir", type=Path, default=None,
                         help="create bare repositories here instead of calling "
@@ -325,7 +325,9 @@ def main(argv: list[str] | None = None) -> int:
                              "product in the manifest, which is what makes a "
                              "`<Domainx><Product>` name a DESCENDANT rather "
                              "than a name shaped like one. Repeatable, "
-                             "once per product.")
+                             "once per product (the same name in another "
+                             "case, or under another owner, is the same "
+                             "product).")
     parser.add_argument("--referent-chain", default="",
                         metavar="openLayer,openProduct",
                         help="the CHAIN of neutral-product pins this project "

@@ -561,21 +561,22 @@ def test_agents_md_is_short_enough_to_be_read():
     warning-in-CI the ratified text calls an amendment of the doctrine
     rather than a realization of it.
 
-    2026-10-12: 464 -> 471 -- the scaffold's two path-collision refusals
+    2026-10-12: 464 -> 477 — the scaffold's two path-collision refusals
     (#288), `scaffold-leg-path-collides` (#197) and `scaffold-pin-collides`
-    (#241). Seven lines: five in section 2, two sentences after "If it
-    refuses, read the refusal: each one names what to run instead", and two
-    in "Scaffolding a project that DECLARES descent". They buy the one thing
-    that sentence got wrong for these two: it promises a command, and they
-    name a VALUE, so an assistant briefed from this file alone could not say
-    beforehand that `--pin code@<sha>`, a `--pin` repeated for one product
-    or `--spec-path contracts` would be refused, and met each only by
-    running the scaffold. Both fire at the plan, before the typed `yes`, so
-    nothing is lost by learning of them late; the lines are there so that an
-    assistant can say so first, and does not retry with another spelling of
-    the same value."""
+    (#241). Thirteen lines: ten in section 2, beside "If it refuses, read the
+    refusal", and three in "Scaffolding a project that DECLARES descent".
+    They buy what that sentence could not say for these two: it promised a
+    command, and some refusals name a VALUE, so an assistant briefed from
+    this file alone could not say beforehand that `--pin code@<sha>`, a
+    `--pin` repeated for one product or `--spec-path contracts` would be
+    refused, and met each only by running the scaffold. Both fire at the
+    plan, before the typed `yes`, so nothing is lost by learning of them
+    late; the lines are there so that an assistant says so first, relays the
+    refusal, asks the human for the value and does not retry with another
+    spelling of it. Section 2 is also where the file says that `setup.sh`
+    takes the three flags only after `--`, which nothing else here did."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 471, f"AGENTS.md is {len(lines)} lines; the cap is 471"
+    assert len(lines) <= 477, f"AGENTS.md is {len(lines)} lines; the cap is 477"
 
 
 def test_claude_md_points_at_agents_md():
@@ -1125,14 +1126,15 @@ def test_readme_is_short_enough_to_be_read():
     #   the status list are, since a status a page does not list is a status
     #   a reader takes for a finding. Three are Layout rows for the schema,
     #   the advisory module and the template.
-    # 2026-10-12: 1416 -> 1419 -- the scaffold's `--pin` refusals (#288). Three
+    # 2026-10-12: 1416 -> 1419 — the scaffold's `--pin` refusals (#288). Three
     #   lines at the end of the paragraph on a descendant that carries legs,
     #   the one place the README says `scaffold-project.py --pin` writes the
     #   pin: a `--pin` of `spec`, `code` or `shape` is refused because the
-    #   shape writes those pin files itself, and one product pinned twice
-    #   because one file holds one pin, both before anything is created. The
-    #   README's own text had said only what a `--pin` writes, so a reader
-    #   met either refusal by running the scaffold.
+    #   shape writes those pin files itself, and one product pinned twice, in
+    #   any case or under any owner, because one file holds one pin, both
+    #   before anything is created. The README's own text had said only what
+    #   a `--pin` writes, so a reader met either refusal by running the
+    #   scaffold.
     assert len(lines) <= 1419, (
         f"README.md is {len(lines)} lines; the cap is 1419")
 

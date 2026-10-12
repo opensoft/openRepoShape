@@ -658,7 +658,7 @@ entry together. The legs are not descendants of anything: `MedxGlass-spec`
 carries the lowercase suffix and says so. `scaffold-project.py` refuses,
 before it creates anything, a `--pin` whose product lowercases to `spec`,
 `code` or `shape` — the shape writes those pin files itself — and one product
-pinned twice, because one file holds one pin.
+pinned twice, in any case or under any owner, because one file holds one pin.
 
 The declaration is `neutral_product_pins:` in `project.yaml`, a fact in the
 project's own tree, so classification stays OFFLINE — it never asks GitHub
