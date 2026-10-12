@@ -24,8 +24,8 @@ scaffolded into local bare repositories, nothing is created on GitHub, and a
 `gh` on PATH logs and exits non-zero so a call to it would be seen. (On
 Windows a `#!` shim is not executable and the log stays empty whatever
 happens; `add` with `--local-remote-dir` has no `gh` call to make, which is
-what the POSIX runs prove.) `add` has no `--dry-run`, so there is none to
-test here.
+what the POSIX runs prove.) `add --dry-run` asks these same refusals and is
+tested in `test_family_dry_run.py` (#326).
 """
 
 from __future__ import annotations
@@ -1588,8 +1588,7 @@ def ghost_remediation(removal: str, off_disk: bool = False) -> str:
         "and a recursive clone of the holder follows whichever section for "
         "that path comes last in the file. A section somebody wrote is not "
         "this tool's to drop or rewrite, so take it out by hand, in a POSIX "
-        f"shell — {removal}, then `git add .gitmodules` — or, if it was a "
-        "member, with `family.py remove`; then re-run."
+        f"shell — {removal}, then `git add .gitmodules` — and re-run."
         + (" With no .gitmodules in the working tree, put back the copy git "
            "read first: `git checkout -- .gitmodules` (the index's), or `git "
            "checkout HEAD -- .gitmodules`." if off_disk else ""))
@@ -1734,7 +1733,9 @@ def test_a_section_that_is_not_another_name_at_the_mount_path_is_added_past(
     member's own name for its own path — what `remove` leaves behind when a
     ghost came after the member's section (#300) — which git rewrites in
     place. Each commits ONE section for the mount path, with the member's
-    url, and the holder passes its own gate."""
+    url. The holder passes its own gate, except where the other section's
+    path is one no row names, which is now a finding of its own (#361) and
+    the only one: the add did not make it, and did not make it worse."""
     if other is not None:
         path, name = other
         gitmodules_with(holder, (f'[submodule "{name}"]\n\tpath = {path}\n'
@@ -1751,7 +1752,16 @@ def test_a_section_that_is_not_another_name_at_the_mount_path_is_added_past(
                f"submodule.members/{SPARE}.url",
                cwd=holder).stdout.strip() == url
     assert git("status", "--porcelain", cwd=holder).stdout == ""
-    assert validate(holder).returncode == 0
+    checked = validate(holder)
+    if other is None or other[0] == f"members/{SPARE}":
+        assert checked.returncode == 0, checked.stderr + checked.stdout
+    else:
+        assert checked.returncode == 1, checked.stderr + checked.stdout
+        assert [line.split(":", 1)[0] for line in checked.stderr.splitlines()
+                if line.startswith("FINDING")] == [
+            "FINDING gitmodules-path-unnamed"], checked.stderr
+        assert (f".gitmodules gives the path {other[0]} to the submodule "
+                f'named "{other[1]}"') in checked.stderr
     offline.assert_left_nothing()
 
 
@@ -1884,14 +1894,18 @@ def test_a_validator_with_no_git_to_run_refuses_instead_of_crashing(
     cannot answer — a refusal, exit 2 — never the traceback that exits 1, a
     finding's code. The holder's own validator is run IN THIS PROCESS with
     its one git call failing as a missing program does, so no PATH is
-    changed for anything else."""
+    changed for anything else. The code is `git-not-runnable`, the one the
+    whole validator gives a missing git (#368,
+    `tests/test_validate_family_without_git.py`), and no longer
+    `gitmodules-unreadable`, which means a file git ran and could not
+    read."""
     monkeypatch.setattr(sys, "path", list(sys.path))
     spec = importlib.util.spec_from_file_location(
         "holder_validate_family", holder / "scripts" / "validate-family.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    def no_git(args, cwd, binary=False):
+    def no_git(args, cwd, binary=False, env=None):
         raise FileNotFoundError(2, "No such file or directory", "git")
 
     monkeypatch.setattr(module, "git_out", no_git)
@@ -1899,11 +1913,11 @@ def test_a_validator_with_no_git_to_run_refuses_instead_of_crashing(
     out, err = capsys.readouterr()
     assert code == 2, out + err
     assert err.splitlines() == [
-        "REFUSED gitmodules-unreadable: .gitmodules could not be read as git "
+        "REFUSED git-not-runnable: .gitmodules could not be read as git "
         "reads it: git could not be run (No such file or directory)",
-        "Remediation: put git on PATH and run this again; this check reads "
-        "the file the way git does, and nothing could fetch this holder's "
-        "submodules without git either."]
+        "Remediation: put git on PATH and run this again. This check reads "
+        "the holder the way git does, and nothing could clone it or fetch "
+        "its members without git either."]
 
 
 def test_every_key_of_a_ghost_goes_so_a_later_member_of_its_name_inherits_none(

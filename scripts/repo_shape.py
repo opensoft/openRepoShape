@@ -461,6 +461,31 @@ def _scalar(raw: str) -> Any:
     return text
 
 
+def _refuse_flow_indicator(text: str) -> None:
+    """Refuse a PLAIN scalar of a flow collection that holds `[`, `]`, `{` or
+    `}` (#301); a quoted one is `_scalar`'s to judge, and its brackets are
+    text.
+
+    In YAML a plain scalar inside a flow collection ENDS at any of the four,
+    as it ends at the `,` `_split_flow` splits at, so a scalar holding one is
+    never the text it looks like, and PyYAML refuses the document. `k: [a]]`
+    closes the sequence after `a` and leaves a `]` nothing opened, and
+    `k: [x [a, b]]` opens a sequence while an item is still being read.
+    `_split_flow` counts brackets to find its commas and never asked whether
+    the count went below zero or ended above it, so the rest was read as
+    text: `['a]']`, `['x [a, b]']`, and the key of `k: {a"]:}` as `a"]`
+    since #284 stopped reading that `"` as a quote. Refused, a stray
+    bracket typed into `pins: [a, b]]` is a `yaml-unparsable` naming it, not
+    the pin `b]`.
+    """
+    if text.startswith(('"', "'")):
+        return
+    held = next((char for char in text if char in "[]{}"), None)
+    if held is not None:
+        raise YamlError(f"a plain scalar in a flow collection holds `{held}`, "
+                        f"which ends it in YAML: {text!r}")
+
+
 def _flow_value(text: str) -> Any:
     """A flow entry is itself a flow collection when it OPENS with `[` or `{`.
 
@@ -468,8 +493,14 @@ def _flow_value(text: str) -> Any:
     and `'' in "[{"` is True for any string, so the test used to run `_flow`
     on it and refuse `{a: }` as `not a flow collection: ''`, a text nobody
     wrote. `_scalar('')` is the null a block `a:` reads.
+
+    ONE THAT OPENS NOTHING HOLDS NO BRACKET OR BRACE (#301): a plain item or
+    value holding one is refused by `_refuse_flow_indicator`.
     """
-    return _flow(text) if text.startswith(("[", "{")) else _scalar(text)
+    if text.startswith(("[", "{")):
+        return _flow(text)
+    _refuse_flow_indicator(text)
+    return _scalar(text)
 
 
 def _flow(text: str) -> Any:
@@ -506,10 +537,19 @@ def _split_key_flow(text: str) -> tuple[str, str] | None:
     names its line, and a flow collection has none to name, so this names the
     entry. A QUOTED key, `"? a"`, does not open with the `?`, and `?a` is not
     the indicator, which needs a space after it: both read as they did.
+
+    A PLAIN KEY HOLDS NO `]` OR `}` EITHER (#301). `_split_key` refuses a
+    `[` or `{` later in a key, and in a flow a closer ends the key as surely,
+    so `{a"]:}` read as the key `a"]` and `{]:}` as `]`, where PyYAML
+    refuses both. `_refuse_flow_indicator` refuses them; a quoted key is
+    still text.
     """
     if text.startswith("? "):
         raise YamlError(f"explicit keys are not supported: {text!r}")
-    return _split_key(text)
+    kv = _split_key(text)
+    if kv is not None and not text.startswith(('"', "'")):
+        _refuse_flow_indicator(kv[0])
+    return kv
 
 
 def _split_flow(body: str) -> list[str]:
@@ -828,9 +868,18 @@ def load_yaml(path: Path) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def git_out(args: list[str], cwd: Path, binary: bool = False) -> Any:
+def git_out(args: list[str], cwd: Path, binary: bool = False,
+            env: dict[str, str] | None = None) -> Any:
+    """`git <args>` in `cwd`, its stdout, or a `git-failed` refusal.
+
+    `env` is the whole environment git runs in, None for this process's
+    own. A git that cannot be STARTED (none on PATH) raises `OSError` from
+    here, never a refusal: whether that is a question the caller cannot
+    answer is the caller's to say (#368).
+    """
     proc = subprocess.run(
-        ["git", *args], cwd=str(cwd), capture_output=True, check=False
+        ["git", *args], cwd=str(cwd), capture_output=True, check=False,
+        env=env,
     )
     if proc.returncode != 0:
         raise Refusal(
@@ -990,10 +1039,28 @@ def file_sha256(path: Path) -> str:
 #: `<mode> SP <oid> SP <stage> TAB <path>` and `ls-tree` emits
 #: `<mode> SP <type> SP <oid> TAB <path>` — the same shape with a DIFFERENT
 #: third column, so the two cannot share one index.
+#:
+#: BOTH LISTINGS TAKE THE PATH LITERALLY (#367), with the global
+#: `--literal-pathspecs`. A pathspec is a glob to `ls-files`, so a row whose
+#: hand-edited `path:` was `members/*` read the first member's gitlink and
+#: answered with it, a neighbour's commit, for every caller. Not
+#: `:(literal)` magic on the path, which a caller's own exported
+#: `GIT_LITERAL_PATHSPECS=1` switches off, and then it matches nothing.
 GITLINK_LISTINGS = (
-    (["ls-files", "-s", "--"], 1, 2),
-    (["ls-tree", "HEAD", "--"], 2, None),
+    (["--literal-pathspecs", "ls-files", "-s", "--"], 1, 2),
+    (["--literal-pathspecs", "ls-tree", "HEAD", "--"], 2, None),
 )
+
+#: The two pathspec settings a caller's environment can carry that git
+#: refuses BESIDE `--literal-pathspecs` ("global 'literal' pathspec setting
+#: is incompatible with all other global pathspec settings", exit 128). Both
+#: listings would then fail, and `recorded_gitlink` reads a failed listing as
+#: "no gitlink here", so an operator who exports either would see every gate
+#: refuse a gitlink that is there. They are left out of those two git calls
+#: alone. `GIT_NOGLOB_PATHSPECS` stays: git takes it beside the literal
+#: setting, and with it the path is literal anyway.
+PATHSPEC_ENV_REFUSED_BESIDE_LITERAL = ("GIT_GLOB_PATHSPECS",
+                                       "GIT_ICASE_PATHSPECS")
 
 
 def recorded_gitlink(repo: Path, path: str) -> str | None:
@@ -1009,10 +1076,17 @@ def recorded_gitlink(repo: Path, path: str) -> str | None:
     bump and passes a stale pin. HEAD remains the fallback, for a path the
     commit records and the index does not hold at stage 0 — one the index
     never had, and one a conflicted merge holds only at stages 1, 2 and 3.
+
+    `path` IS TAKEN LITERALLY (#367): `members/*` is the entry of that name,
+    which no index holds, and never every gitlink a glob would match. A git
+    that cannot be started raises `OSError` through this, never "no
+    gitlink": only a listing git RAN and refused is read as nothing (#368).
     """
+    env = {name: value for name, value in os.environ.items()
+           if name.upper() not in PATHSPEC_ENV_REFUSED_BESIDE_LITERAL}
     for args, oid_at, stage_at in GITLINK_LISTINGS:
         try:
-            out = git_out([*args, path], cwd=repo)
+            out = git_out([*args, path], cwd=repo, env=env)
         except Refusal:
             continue
         for line in out.splitlines():
@@ -1972,6 +2046,17 @@ REMOTE_SCHEME_ONLY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:/*$")
 #: draws for a value on a command line, for the same reason.
 REMOTE_DRIVE_RE = re.compile(r"^[A-Za-z]:$")
 
+#: A `:<port>` after the HOST of a `<scheme>://` url: where its transport
+#: connects, never which repository it reaches. Only such a url has one; in
+#: git's scp spelling `host:22/Repo.git` the `22` is the path's, and stays.
+#: Digits are required, so a drive's bare colon is never read as one.
+REMOTE_PORT_RE = re.compile(r":\d+$")
+
+#: A host that is another door into the repositories of the host it maps
+#: to: GitHub's SSH-over-the-HTTPS-port endpoint, which GitHub's own
+#: documentation spells `ssh://git@ssh.github.com:443/Org/Repo.git`.
+REMOTE_HOST_ALIASES = {"ssh.github.com": "github.com"}
+
 
 def _remote_body(url: str) -> str:
     """A remote with its scheme, its credential and its trailing `/` gone.
@@ -2085,11 +2170,24 @@ def remote_key(url: str) -> str:
     was written in. It is asked of the remote AS IT WAS WRITTEN, because the
     scp colon this function is about to turn into a `/` is the one thing that
     tells a Windows drive from a host.
+
+    A PORT COMES OFF TOO, AND `ssh.github.com` IS `github.com` (#190).
+    `ssh://git@github.com:22/Org/Repo.git` and GitHub's documented
+    `ssh://git@ssh.github.com:443/Org/Repo.git` are
+    `git@github.com:Org/Repo.git` reached through another door; with the
+    port's colon taken for the scp one they keyed as `github.com/22/org/repo`,
+    which no other spelling of that repository does, and a caller comparing
+    keys -- `adopt-project.py`'s relative-url check -- called them two.
     """
     text = _remote_body(url)
     fold_case = _remote_names_a_host(url)
-    if ":" in text.split("/", 1)[0]:     # the scp spelling's one separator
-        text = text.replace(":", "/", 1)
+    first, slash, rest = text.partition("/")
+    if REMOTE_SCHEME_RE.match(url.strip()):   # only a url's host has a port
+        first = REMOTE_PORT_RE.sub("", first)
+    # The scp spelling's one separator, `host:path`, becomes a `/`.
+    host, slash, rest = (first.replace(":", "/", 1) + slash
+                         + rest).partition("/")
+    text = REMOTE_HOST_ALIASES.get(host.lower(), host) + slash + rest
     if text.lower().endswith(".git"):
         text = text[:-4]
     return (text.lower() if fold_case else text).strip("/")
