@@ -71,7 +71,7 @@ from repo_shape import (  # noqa: E402
     recorded_gitlink, repo_basename, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
-    CommandFailed, check_program, commit_trailers,
+    CommandFailed, captured_child_environment, check_program, commit_trailers,
     escape_what_stdout_cannot_encode, run, trailer_line, write_lf,
 )
 
@@ -451,15 +451,20 @@ def run_validator(root: Path, script: str) -> tuple[int, str]:
     """The ROOT's own copy of a validator, its output captured for a refusal."""
     if not (root / script).is_file():
         return 0, f"  {script} is absent; SKIPPED\n"
-    # `errors="replace"` and no `encoding=`: the child is a Python process,
-    # which writes its pipe in the locale's codec, so that codec is the one
-    # that reads it back (UTF-8 here would misread a Windows ANSI child).
-    # `replace` is for two interpreters that disagree (`-X utf8` on this one
-    # only): a refusal must not become a traceback on its way to printing the
-    # validator's words (#217).
+    # THE CHILD IS TOLD WHAT TO WRITE AND IS READ BACK AS THAT (#254). A child
+    # takes its stdout configuration from its environment, and this process's
+    # own `reconfigure` (#214) does not reach it: under a cp1252 stdout the
+    # validator raised `UnicodeEncodeError` on a display name such as `日本`
+    # and this refused a bump the pins had no quarrel with. UTF-8 holds every
+    # name, and the pipe is read as UTF-8 to match. #217 read it with the
+    # locale's codec because the child wrote in the locale's codec; it is now
+    # told what to write. `replace` stays, so a validator that wrote bytes
+    # UTF-8 cannot read (through `sys.stdout.buffer`, say) is still a refusal
+    # and not a traceback on its way to printing the validator's words.
     proc = subprocess.run([sys.executable, script], cwd=str(root),
-                          capture_output=True, text=True, errors="replace",
-                          check=False)
+                          capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", check=False,
+                          env=captured_child_environment())
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
 
