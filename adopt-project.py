@@ -399,7 +399,7 @@ class Source:
             repository = _remote_repository(path)
         else:
             if ("/" not in spec or WINDOWS_ABSOLUTE_RE.match(spec)
-                    or unwritable_reason(spec)):
+                    or unwritable_reason(spec) or spec.startswith("-")):
                 # A DRIVE-LETTER PATH IS A PATH THAT IS NOT THERE, never an
                 # `org/repo`. `D:/work/Thing` carries a `/` and would
                 # otherwise be handed to `gh repo clone` as an owner named
@@ -412,6 +412,11 @@ class Source:
                 # cannot exist, which reached `print` (a surrogate raised on
                 # a strict stdout) or `subprocess` (a NUL raised there) as a
                 # traceback, where main had refused it.
+                # NOR IS A NAME THAT BEGINS WITH `-`. It is the first
+                # argument `gh repo clone` is given, and gh's own parser
+                # reads it as an option: `-u/x` set `--upstream-remote-name`
+                # to `/x`. No GitHub owner name begins with `-`, so nothing
+                # gh could clone is refused here.
                 raise Refusal(
                     "source-unresolvable",
                     f"--source {spec!r} is neither a path that exists nor an "

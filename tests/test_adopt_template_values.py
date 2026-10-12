@@ -41,6 +41,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import unicodedata
@@ -48,7 +49,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (ADOPT, REPO, blank_unnamed_pin_sources,
+from conftest import (ADOPT, REPO, WINDOWS_SKIP, blank_unnamed_pin_sources,
                       make_source_repo, resolve)
 
 sys.path.insert(0, str(REPO / "scripts"))
@@ -113,15 +114,17 @@ def planned(base: Path, source: Path,
                    *flags)
 
 
-def checked(base: Path) -> subprocess.CompletedProcess:
+def checked(base: Path,
+            extra: dict | None = None) -> subprocess.CompletedProcess:
     return adopted("check", "--plan", str(base / PLAN_FILE), "--work-dir",
-                   str(base / WORK))
+                   str(base / WORK), extra=extra)
 
 
-def executed(base: Path) -> subprocess.CompletedProcess:
+def executed(base: Path,
+             extra: dict | None = None) -> subprocess.CompletedProcess:
     return adopted("execute", "--plan", str(base / PLAN_FILE), "--yes",
                    "--local-remote-dir", str(base / REMOTES), "--work-dir",
-                   str(base / WORK))
+                   str(base / WORK), extra=extra)
 
 
 def answer(base: Path) -> None:
@@ -514,6 +517,96 @@ def test_a_local_path_that_is_not_text_is_unresolvable(tmp_path, answered,
         assert run.returncode == 2, f"{name}:\n{said(run)}"
         assert SOURCE_REFUSED + f"--source {value!r} is neither".encode() \
             in run.stderr, f"{name}:\n{said(run)}"
+
+
+# --- `--source`: a name `gh` would read as one of its options ----------------
+
+#: `--source` values that begin with `-`. Neither is a path that exists, and
+#: each holds a `/`, so `Source.open` took it for an `org/repo` name and ran
+#: `gh repo clone <it> <directory> -- --quiet`, where gh's own parser read it
+#: as an option: `-u` is `--upstream-remote-name`, and `--upload-pack=x/y`
+#: is a flag gh does not know. No GitHub owner name begins with `-`.
+OPTION_SOURCES = ["-u/x", "--upload-pack=x/y"]
+
+
+def gh_stub(base: Path) -> tuple[dict, Path]:
+    """The environment that puts a `gh` first on PATH, and the file it
+    records each call's arguments in, one to a line. It refuses every call.
+    It is a `#!` script, which Windows does not execute: there nothing is
+    recorded, and the refusal's id alone says that `gh` did not run."""
+    binary = base / "bin"
+    binary.mkdir()
+    script = binary / "gh"
+    script.write_bytes(b"#!/bin/sh\n"
+                       b"printf '%s\\n' \"$@\" >> \"$GH_STUB_LOG\"\n"
+                       b"echo 'stub gh: refusing' >&2\n"
+                       b"exit 1\n")
+    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    log = base / "gh.log"
+    return ({"PATH": f"{binary}{os.pathsep}{os.environ.get('PATH', '')}",
+             "GH_STUB_LOG": str(log)}, log)
+
+
+def gh_calls(log: Path) -> str:
+    """What the stub was given, readable in an assertion message."""
+    return log.read_text(encoding="utf-8") if log.exists() else ""
+
+
+@pytest.mark.parametrize("spec", OPTION_SOURCES, ids=OPTION_SOURCES)
+def test_plan_refuses_a_source_gh_would_read_as_an_option(tmp_path, spec):
+    """On main `plan` handed `spec` to `gh repo clone` as its first
+    argument (SonarCloud's S8705 asked the question). Now it is
+    `source-unresolvable` before anything runs: no path that exists, and no
+    `org/repo` name."""
+    stub, log = gh_stub(tmp_path)
+    refused = adopted("plan", f"--source={spec}", "--project", PROJECT,
+                      "--org", "testorg", "--elected-by", "Test Human",
+                      "--elected-on", "2026-09-02", "--out",
+                      str(tmp_path / PLAN_FILE), "--work-dir",
+                      str(tmp_path / WORK), extra=stub)
+    assert not log.exists(), f"gh was run with:\n{gh_calls(log)}"
+    assert_no_traceback({"plan": refused})
+    assert refused.returncode == 2, said(refused)
+    assert SOURCE_REFUSED + f"--source {spec!r} is neither".encode() \
+        in refused.stderr, said(refused)
+    assert not (tmp_path / PLAN_FILE).exists()
+
+
+@pytest.mark.parametrize("spec", OPTION_SOURCES, ids=OPTION_SOURCES)
+def test_check_and_execute_refuse_a_hand_edited_source_gh_would_read(
+        tmp_path, answered, spec):
+    """The plan file is edited between `plan` and `execute`, on purpose, and
+    its `local_path:` reaches the same `Source.open`. On main `check` and
+    `execute` each ran `gh repo clone` with it first."""
+    edited_plan(tmp_path, answered, f"  local_path: {double_quoted(spec)}")
+    assert load_yaml(tmp_path / PLAN_FILE)["source"]["local_path"] == spec
+    stub, log = gh_stub(tmp_path)
+    runs = {"check": checked(tmp_path, stub),
+            "execute": executed(tmp_path, stub)}
+    assert not log.exists(), f"gh was run with:\n{gh_calls(log)}"
+    assert_no_traceback_and_no_leg(tmp_path, runs)
+    for name, run in runs.items():
+        assert run.returncode == 2, f"{name}:\n{said(run)}"
+        assert SOURCE_REFUSED + f"--source {spec!r} is neither".encode() \
+            in run.stderr, f"{name}:\n{said(run)}"
+
+
+@WINDOWS_SKIP  # the stub `gh` is a `#!` script; Windows executes none
+def test_the_gh_stub_records_an_org_repo_source(tmp_path):
+    """The control for the two tests above: an `org/repo` name is handed to
+    `gh repo clone`, and the stub records the call it refuses. A stub that
+    recorded nothing would let them pass without asking anything."""
+    stub, log = gh_stub(tmp_path)
+    refused = adopted("plan", "--source=testorg/Thing", "--project", PROJECT,
+                      "--org", "testorg", "--elected-by", "Test Human",
+                      "--elected-on", "2026-09-02", "--out",
+                      str(tmp_path / PLAN_FILE), "--work-dir",
+                      str(tmp_path / WORK), extra=stub)
+    assert_no_traceback({"plan": refused})
+    assert refused.returncode == 2, said(refused)
+    assert b"REFUSED source-unclonable: " in refused.stderr, said(refused)
+    assert gh_calls(log).splitlines()[:3] == ["repo", "clone",
+                                              "testorg/Thing"], gh_calls(log)
 
 
 # --- controls: valid text still adopts, as on main ---------------------------
