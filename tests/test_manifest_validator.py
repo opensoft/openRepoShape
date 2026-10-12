@@ -3,6 +3,10 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+
 import pytest
 
 from conftest import run_script
@@ -325,6 +329,73 @@ def test_a_manifest_that_is_not_utf8_refuses_rather_than_raising(project):
     assert "Remediation: " in result.stderr
     assert "Traceback" not in result.stderr
     assert "manifest ok" not in result.stdout
+
+
+# --- a display name no UTF-8 text can hold (#280) ---------------------------
+
+def rename(project, escape: str) -> None:
+    """Put `name: "<escape>"` in place of the scaffolded `name: "Atlas"`, as
+    BYTES: `escape` is the YAML spelling, backslash and all, and the file
+    stays ASCII and keeps whatever line endings it has."""
+    manifest = project / "project.yaml"
+    data = manifest.read_bytes()
+    assert data.count(b'\nname: "Atlas"') == 1, "fixture drift: the name line"
+    manifest.write_bytes(data.replace(b'\nname: "Atlas"',
+                                      f'\nname: "{escape}"'.encode("ascii")))
+
+
+def validate_bytes(project, **env: str):
+    """`(exit code, stdout, stderr)` as BYTES, so no codec of this process
+    reads them, with `env` set over this process's environment."""
+    proc = subprocess.run(
+        [sys.executable, str(project / "scripts" / "validate-manifest.py")],
+        cwd=str(project), capture_output=True, stdin=subprocess.DEVNULL,
+        env={**os.environ, **env}, check=False)
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+@pytest.mark.parametrize("escape, code_point", [
+    pytest.param("a\\ud83db", "U+D83D", id="the-issue-row-high-surrogate"),
+    pytest.param("caf\\udce9", "U+DCE9", id="the-byte-surrogateescape-keeps"),
+    pytest.param("a\\ud800b", "U+D800", id="the-first-surrogate"),
+    pytest.param("a\\udfffb", "U+DFFF", id="the-last-surrogate"),
+    pytest.param("\\ud83d\\ude00", "U+D83D", id="a-pair-is-two-surrogates"),
+])
+@pytest.mark.parametrize("ioencoding", [None, "utf-8"])
+def test_a_name_holding_a_lone_surrogate_is_a_finding(project, escape,
+                                                      code_point, ioencoding):
+    """On c7c02fa the reader took the escape, the validator accepted the
+    name, and its `manifest ok` line raised `UnicodeEncodeError`: exit 1 and
+    a traceback, under a pipe and under `PYTHONIOENCODING=utf-8` (the
+    doctor's) alike. It is a finding now, on stderr, with the name escaped
+    by `repr`, before that line is reached."""
+    rename(project, escape)
+    env = {} if ioencoding is None else {"PYTHONIOENCODING": ioencoding}
+    code, stdout, stderr = validate_bytes(project, **env)
+    shown = (stdout + stderr).decode("utf-8", "backslashreplace")
+    assert code == 1, shown
+    assert b"Traceback" not in stderr and b"UnicodeEncodeError" not in stderr, \
+        shown
+    assert b"manifest ok" not in stdout, shown
+    finding = (f"FINDING manifest-name: name is '{escape}', which holds "
+               f"{code_point}, a lone surrogate").encode("ascii")
+    assert finding in stderr, shown
+    assert b"1 finding(s)" in stderr, "the name is the only finding"
+
+
+@pytest.mark.parametrize("escape", [
+    pytest.param("\\U0001F600", id="an-astral-character-as-one-escape"),
+    pytest.param("\\u00e9t\\u00e9", id="a-bmp-character-as-an-escape"),
+    pytest.param("\\ue000", id="private-use-just-past-the-surrogates"),
+    pytest.param("\\ud7ff", id="the-last-character-before-them"),
+])
+def test_a_name_spelled_without_a_surrogate_is_still_ok(project, escape):
+    """What the finding must not take: every other code point, spelled as an
+    escape, including the two either side of U+D800..U+DFFF."""
+    rename(project, escape)
+    code, stdout, stderr = validate_bytes(project, PYTHONIOENCODING="utf-8")
+    assert code == 0, stderr.decode("utf-8", "backslashreplace")
+    assert stdout.startswith(b"manifest ok: "), stdout
 
 
 # --- the ruling: a chain of pins may reach the referent (2026-09-05) --------
