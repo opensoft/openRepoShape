@@ -1106,9 +1106,10 @@ holder         {work}
 #
 # THIS IS THE SMALLEST VERSION THE FAMILY NEEDS, and not `shape_materialize`'s:
 # the questions there (`manifest_misreads`, `manifest_invalid`, #261) are
-# written for the assembly root's `project.yaml` and its `validate-manifest.py`
-# and are not on the branch this was cut from. Whichever of the two changes
-# lands second unifies them: the two differ only in the template, the
+# written for the assembly root's `project.yaml` and its `validate-manifest.py`.
+# #314 added them first, and this change landed second without unifying them,
+# so the two sets of helpers exist side by side. Unifying them is an item on
+# tracking issue #459's checklist: the two differ only in the template, the
 # validator's entry point and the sentence that names the file.
 
 #: The holder's template directory, and the one validator in it these
