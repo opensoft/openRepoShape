@@ -86,11 +86,14 @@ needs_filter_repo = pytest.mark.skipif(
     reason="git filter-repo is not installed: `pip install git-filter-repo`")
 
 
-def adopted(*args: str) -> subprocess.CompletedProcess:
-    """`adopt-project.py <args>` on a strict stdout, answered in bytes, each
-    stream with LF line ends whatever the platform printed."""
+def adopted(*args: str,
+            extra: dict | None = None) -> subprocess.CompletedProcess:
+    """`adopt-project.py <args>` on a strict stdout, with `extra` in its
+    environment, answered in bytes, each stream with LF line ends whatever
+    the platform printed."""
     env = blank_unnamed_pin_sources(
-        {**IDENTITY, **os.environ, "LANES_LANE": "", **STRICT}, STRICT)
+        {**IDENTITY, **os.environ, "LANES_LANE": "", **(extra or {}),
+         **STRICT}, STRICT)
     done = subprocess.run([sys.executable, str(ADOPT), *args],
                           capture_output=True, env=env,
                           stdin=subprocess.DEVNULL, check=False)
@@ -199,6 +202,32 @@ def test_plan_refuses_a_flag_no_file_can_hold(tmp_path, flag, value):
     assert ADOPT_REFUSED + f"{flag} is {value!r}, which ".encode() \
         in refused.stderr, said(refused)
     assert b"no plan was written" in refused.stderr
+    assert not (tmp_path / PLAN_FILE).exists()
+
+
+def test_plan_names_the_elector_it_took_from_git_config(tmp_path):
+    """With no --elected-by, `plan` records `git config user.name`. A TAB
+    there is refused like a TAB passed with the flag, and named by where
+    it came from, as #181 names a value `plan` filled in: not as a flag
+    the person never passed."""
+    config = tmp_path / "gitconfig"
+    config.write_bytes(b'[user]\n\tname = "Jo\\tSmith"\n')
+    extra = {"GIT_CONFIG_GLOBAL": str(config)}
+    read = subprocess.run(["git", "config", "user.name"], cwd=str(REPO),
+                          capture_output=True, env={**os.environ, **extra},
+                          check=False)
+    if read.stdout.rstrip(b"\r\n") != b"Jo\tSmith":
+        pytest.skip("`git config user.name` here is not read from "
+                    f"GIT_CONFIG_GLOBAL: {read.stdout!r}")
+    source = make_source_repo(tmp_path / "Thing")
+    refused = adopted("plan", "--source", str(source), "--project", PROJECT,
+                      "--org", "testorg", "--elected-on", "2026-09-02",
+                      "--out", str(tmp_path / PLAN_FILE), "--work-dir",
+                      str(tmp_path / WORK), extra=extra)
+    assert_no_traceback({"plan": refused})
+    assert refused.returncode == 2, said(refused)
+    assert ADOPT_REFUSED + b"--elected-by (not given, so `git config " \
+        b"user.name`) is 'Jo\\tSmith', which " in refused.stderr, said(refused)
     assert not (tmp_path / PLAN_FILE).exists()
 
 

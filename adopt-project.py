@@ -1244,19 +1244,24 @@ def _checked_plan_inputs(args, source: Source,
     # manifest field instead of as a question.
     election_date(args.elected_on)
     args.reference = args.reference or default_reference(args.elected_on)
+    # A value `plan` filled in by itself is named by where it came from, as
+    # #181 names one, and not as a flag the person never passed.
+    elector = ("--elected-by" if args.elected_by else
+               "--elected-by (not given, so `git config user.name`)")
     args.elected_by = args.elected_by or _elector()
     # Before the plan is written, in the words `check` would use (#255): a
     # value `execute` writes into a file must be text one can hold. The
     # date has had its answer above, `election_date`.
     unwritable = unwritable_values(
-        (("--elected-by", args.elected_by, ROOT_MANIFEST_AND_README),
+        ((elector, args.elected_by, ROOT_MANIFEST_AND_README),
          ("--reference", args.reference, ROOT_MANIFEST_AND_README)))
     if unwritable:
         raise Refusal("adopt-unwritable-value",
                       " ".join(f"{problem}." for problem in unwritable),
                       "Remediation: no plan was written. Pass each value "
-                      "named again, retyped (`--elected-by` defaults to "
-                      "`git config user.name`). " + WRITTEN_AS_TEXT)
+                      "named again, retyped; when `--elected-by` is not "
+                      "given, `plan` reads `git config user.name`, so pass "
+                      "the flag or correct that. " + WRITTEN_AS_TEXT)
     names = _names(args.project)
     pins = [_checked_pin_name(p) for p in (args.pin or []) if p.strip()]
     _check_names(naming, names, set(pins))
