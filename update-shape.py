@@ -946,24 +946,36 @@ def rewrite_link_refusal(linked: list[tuple[str, tuple[str, str]]],
     the pin, by `prepare` for the manifest, by `cmd_apply` for every
     `copy-is-link` row at once — and, with `arrived`, by `Rollback.write`
     for a link that came after `prepare` looked.
+
+    ONE PATH IS ONE LINE, as `update-add-symlink` is. `read_pin` and
+    `prepare` always name one, and the doctor quotes their refusal inside
+    its own one-line verdict, which a detail spread over three lines broke
+    into three. Several `copy-is-link` rows are a list, one path a line, as
+    `update-conflict` lists its own.
     """
     many = len(linked) > 1
-    said = "\n".join(f"    {path}: {link_said(path, link)}"
-                     for path, link in linked)
-    late = ("\n  It was not there when this run looked: it arrived while "
-            "`apply` ran, after this run had decided what to write."
-            if arrived else "")
+    sentences = (["It was not there when this run looked: it arrived while "
+                  "`apply` ran, after this run had decided what to write."]
+                 if arrived else [])
+    sentences.append(
+        "A rewrite goes THROUGH a link, to wherever it leads — outside this "
+        "root, if that is where it points — and git, which holds the link "
+        "and not those bytes, commits none of them: the commit `--branch` "
+        "makes would not hold what this run wrote. This command never "
+        "writes through a symlink")
+    if many:
+        detail = ("`apply` would rewrite these files, but each is a symlink "
+                  "in this root, or sits under one:\n"
+                  + "\n".join(f"    {path}: {link_said(path, link)}"
+                              for path, link in linked)
+                  + "".join(f"\n  {sentence}" for sentence in sentences))
+    else:
+        path, link = linked[0]
+        detail = " ".join([f"`apply` would rewrite {path}, but "
+                           f"{link_said(path, link)}.", *sentences])
     return Refusal(
         "update-rewrite-symlink",
-        ("these files `apply` would rewrite are symlinks in this root, or sit "
-         "under one:" if many else
-         "a file `apply` would rewrite is a symlink in this root, or sits "
-         "under one:")
-        + f"\n{said}{late}\n  A rewrite goes THROUGH a link, to wherever it "
-        "leads — outside this root, if that is where it points — and git, "
-        "which holds the link and not those bytes, commits none of them: the "
-        "commit `--branch` makes would not hold what this run wrote. This "
-        "command never writes through a symlink",
+        detail,
         "Remediation: replace "
         + ("each link" if many else "the link")
         + " with what it points at — the same bytes at the same path, so git "

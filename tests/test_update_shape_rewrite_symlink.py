@@ -156,6 +156,12 @@ def said(path: str, name: str, points) -> str:
     return f"{name} in this root is a symlink{above}, pointing at {points!r}"
 
 
+def one_link_said(path: str, name: str, points) -> str:
+    """How `update-rewrite-symlink` opens when it names ONE path: on one
+    line, so the doctor can quote it inside its one-line verdict."""
+    return f"`apply` would rewrite {path}, but " + said(path, name, points)
+
+
 def assert_refused_before_any_write(result) -> None:
     """Exit 2, by name, and nothing written to put back: the refusal came
     before the first byte, not after a write through the link."""
@@ -228,8 +234,8 @@ def test_apply_refuses_a_pinned_copy_kept_as_a_link_before_any_write(
     assert (root / AGENTS).is_symlink()
     assert pinned_commit(root) == standard["a"]
     assert_refused_before_any_write(result)
-    assert f"    {AGENTS}: " + said(AGENTS, AGENTS, str(where)) \
-        in result.stderr, result.stderr
+    assert one_link_said(AGENTS, AGENTS, str(where)) in result.stderr, (
+        result.stderr)
     assert "replace the link with what it points at" in result.stderr
 
 
@@ -295,7 +301,13 @@ def test_check_refuses_a_pin_or_manifest_kept_as_a_link(
     assert result.returncode == 2, result.stdout + result.stderr
     assert "Traceback" not in result.stderr, result.stderr
     assert "REFUSED update-rewrite-symlink" in result.stderr, result.stderr
-    assert f"    {path}: " + said(path, name, points) in result.stderr, (
+    # ONE LINE, link and reason together: the doctor quotes this refusal
+    # inside its own one-line verdict.
+    refused = [line for line in result.stderr.splitlines()
+               if line.startswith("REFUSED")]
+    assert len(refused) == 1, result.stderr
+    assert one_link_said(path, name, points) in refused[0], result.stderr
+    assert refused[0].endswith("never writes through a symlink"), (
         result.stderr)
     assert "NEXT" not in result.stdout, result.stdout
     assert_untouched(before, snapshot(root))
@@ -324,7 +336,7 @@ def test_apply_refuses_a_pin_or_manifest_kept_as_a_link_before_any_write(
     assert (root / CHANGED).read_bytes() == copy
     assert pinned_commit(root) == standard["a"]
     assert_refused_before_any_write(result)
-    assert f"{path}: " + said(path, name, os.readlink(root / name)) \
+    assert one_link_said(path, name, os.readlink(root / name)) \
         in result.stderr, result.stderr
 
 
