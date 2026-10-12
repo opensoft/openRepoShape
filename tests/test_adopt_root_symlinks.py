@@ -1402,7 +1402,7 @@ def refused_past_check(adopter, base: Path, target: str, monkeypatch,
     monkeypatch.setenv("LANES_LANE", "")
     clear_ambient_pin_sources(monkeypatch)
     monkeypatch.setattr(adopter, "_refuse_what_check_finds",
-                        lambda plan, source: None)
+                        lambda *_: None)
     code = adopter.main(["execute", PLAN_FLAG, str(plan), "--yes",
                          "--local-remote-dir", str(base / REMOTES),
                          WORK_FLAG, str(base / WORK)])
