@@ -41,8 +41,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import (FILE_PROTOCOL, REPO, WINDOWS_SKIP, git, rmtree,
-                      run_script)
+from conftest import (REPO, WINDOWS_SKIP, assert_read_through_git,
+                      clone_just_pushed, git, rmtree, run_script)
 from gh_guard import PROBES as GH_PROBES
 
 sys.path.insert(0, str(REPO / "scripts"))
@@ -138,10 +138,8 @@ def scaffolded_here(standard, tmp_path_factory) -> dict:
     scaffold(standard, base, PROJECT)
     clones = base / "clones"
     clones.mkdir()
-    proc = subprocess.run(
-        ["git", *FILE_PROTOCOL, "clone", "-q", "--recurse-submodules",
-         str(base / "remotes" / f"{PROJECT}.git"), str(clones / PROJECT)],
-        capture_output=True, text=True, check=False)
+    proc = clone_just_pushed(base / "remotes" / f"{PROJECT}.git",
+                             clones / PROJECT)
     assert proc.returncode == 0, proc.stderr
     return {"base": base, "clone": clones / PROJECT}
 
@@ -152,6 +150,16 @@ def project(scaffolded_here, tmp_path) -> Path:
     target = tmp_path / PROJECT
     shutil.copytree(scaffolded_here["clone"], target, symlinks=True)
     return target
+
+
+def test_the_session_clone_was_read_through_git_not_through_the_remotes(
+        scaffolded_here):
+    """#440: `scaffolded_here` cloned what it had just pushed through the
+    transport, so the root and both legs are ONE PACK each. A plain-path
+    clone leaves the remotes' loose objects loose, and is the one that lost a
+    file to background maintenance on the macOS runner, erroring every test
+    in this file at setup (124 of them, then 118)."""
+    assert_read_through_git(scaffolded_here["clone"])
 
 
 def doctor(standard: Path, root, *args) -> subprocess.CompletedProcess:

@@ -33,7 +33,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO, git, rmtree
+from conftest import (FILE_PROTOCOL, REPO, assert_read_through_git, git,
+                      object_store, rmtree)
 
 SETUP_PROJECT = REPO / "setup-project.py"
 SETUP_SH = REPO / "setup.sh"
@@ -144,6 +145,70 @@ def test_the_assembly_root_is_cloned_where_into_says(setup_run):
     assert clone.is_dir(), f"{clone} does not exist"
     assert (clone / "project.yaml").is_file()
     assert (clone / ".gitmodules").is_file()
+
+
+def test_the_clone_reads_the_remotes_through_git_not_through_their_files(
+        setup_run):
+    """#440: step (7) clones what the scaffold has just pushed, and a plain
+    path is git's local clone, which walks the remote's object files and dies
+    `failed to copy file to ...: No such file or directory` when maintenance
+    packs them mid-walk, after all three repositories exist. A clone read
+    through the transport holds one pack in the root and in each leg."""
+    assert_read_through_git(setup_run["clone"])
+
+
+def test_the_rewrite_reads_a_plain_path_through_git_in_an_awkward_directory(
+        tmp_path):
+    """#440: the two leg clones `--recurse-submodules` makes are git's own,
+    from the plain path `.gitmodules` records, and no flag reaches them. What
+    does is `local_remotes_by_url`'s `url.<file URI>.insteadOf` rewrite, and
+    this is it ALONE (no `--no-local`) on a plain path, in a directory whose
+    name a URL must encode: a space, and a `%` that would read as an escape
+    if the base were spelled by hand. Source objects pushed into a bare
+    repository are loose; the clone holds one pack."""
+    remotes = tmp_path / "odd dir 100%" / "remotes"
+    source = tmp_path / "source"
+    source.mkdir()
+    git("init", "-q", "-b", "main", cwd=source)
+    (source / "leg.txt").write_bytes(b"a leg\n")
+    git("add", "leg.txt", cwd=source)
+    git("commit", "-q", "-m", "one", cwd=source)
+    bare = remotes / "Leg.git"
+    git("init", "-q", "--bare", str(bare), cwd=tmp_path)
+    git("push", "-q", str(bare), "main", cwd=source)
+
+    args = entry_point_module().local_remotes_by_url(str(remotes))
+    clone = tmp_path / "clone"
+    proc = subprocess.run(["git", *FILE_PROTOCOL, *args, "clone", "-q",
+                           str(bare), str(clone)],
+                          capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, proc.stderr
+    loose, packs = object_store(clone)
+    assert loose == 0 and packs >= 1, (loose, packs)
+
+
+def test_the_root_is_read_through_git_when_the_remotes_are_spelled_by_a_symlink(
+        tmp_path):
+    """#440: `--no-local` is what covers the ROOT, and not the rewrite.
+
+    The rewrite's prefix is the directory RESOLVED, as the scaffold wrote it
+    into `.gitmodules`, so it reaches the legs; the root's own URL is the
+    directory as it was TYPED (`abspath`, never `resolve()`), which a symlink
+    makes another spelling of the same directory (on macOS the temporary
+    root, `/var`, is one: `/private/var`) and the prefix does not match.
+    Only `--no-local` is left to read the root through git."""
+    base = tmp_path / "run"
+    real, link = tmp_path / "real", tmp_path / "link"
+    real.mkdir()
+    try:
+        os.symlink(real, link, target_is_directory=True)
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"this platform cannot create a symlink here: {exc}")
+    result = run_entry("--project", "Sample", "--yes", "--org", "demoorg",
+                       "--local-remote-dir", str(link / "remotes"),
+                       "--into", str(base / "work"))
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert_read_through_git(base / "work" / "Sample")
 
 
 def test_both_legs_are_on_main_after_bootstrap(setup_run):

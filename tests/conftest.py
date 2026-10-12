@@ -60,6 +60,39 @@ ORG = "testorg"
 #: ever needs.
 FILE_PROTOCOL = ["-c", "protocol.file.allow=always"]
 
+
+def clone_just_pushed(remote: Path, dest: Path) -> subprocess.CompletedProcess:
+    """`git clone --recurse-submodules` of a bare remote a scaffold has JUST
+    pushed into, READ THROUGH GIT AND NOT THROUGH ITS FILES (#440).
+
+    A clone of a plain path is git's local clone: it walks the source's
+    `objects/` and links or copies each file in turn. The push that ended the
+    scaffold can leave maintenance running in the remote, which packs the
+    loose objects and deletes them mid-walk, and the clone dies `failed to
+    copy file to '<dest>/.git/objects/..': No such file or directory` (the
+    macOS runner, twice in 90 minutes on 2026-10-12). Upload-pack reads the
+    object store, which a repack does not break.
+
+    `--no-local` does that for the root. The two leg clones
+    `--recurse-submodules` makes are git's own, from the plain path
+    `.gitmodules` records, so each leg URL is rewritten to `file://` with a
+    `url.<base>.insteadOf` for the one command: a `-c` is not stored, so the
+    clone's own `origin` and `submodule.<name>.url` keep the plain paths. The
+    prefix is the directory RESOLVED, as `scaffold-project.py` writes it into
+    `.gitmodules`, in both of a Windows path's spellings.
+    """
+    remotes = remote.parent.resolve()
+    uri = remotes.as_uri().rstrip("/") + "/"
+    prefixes = dict.fromkeys([os.path.join(str(remotes), ""),
+                              remotes.as_posix().rstrip("/") + "/"])
+    rewrites = [arg for prefix in prefixes
+                for arg in ("-c", f"url.{uri}.insteadOf={prefix}")]
+    return subprocess.run(
+        ["git", *FILE_PROTOCOL, *rewrites, "clone", "-q", "--no-local",
+         "--recurse-submodules", str(remote), str(dest)],
+        capture_output=True, text=True, check=False)
+
+
 #: THE DEFAULT IDENTITY `git()` GIVES GIT (#279). A commit needs an author and
 #: a committer, and git guesses them from the passwd entry and a hostname with
 #: a domain; a container whose hostname has none cannot, and the commit dies
@@ -156,6 +189,37 @@ def git(*args: str, cwd: Path, check: bool = True) -> subprocess.CompletedProces
         raise AssertionError(f"git {' '.join(args)} in {cwd} failed:\n"
                              f"{proc.stderr}{proc.stdout}")
     return proc
+
+
+def object_store(repo: Path) -> tuple[int, int]:
+    """`(loose objects, packs)` of one repository, from `git count-objects -v`
+    run in it. A submodule's working tree answers for its own store under the
+    superproject's `.git/modules/`."""
+    fields = dict(
+        line.split(": ", 1)
+        for line in git("count-objects", "-v", cwd=repo).stdout.splitlines())
+    return int(fields["count"]), int(fields["packs"])
+
+
+def assert_read_through_git(clone: Path,
+                            legs: tuple[str, ...] = ("spec", "code")) -> None:
+    """The assembly root at `clone` and each of its legs hold their objects
+    in a pack and none loose (#440).
+
+    A clone that walked the source's object files (git's local clone, which
+    is what a plain path gets) leaves them as the source had them: LOOSE, for
+    a repository somebody has just pushed 8 or 25 objects into. A clone made
+    through the transport receives one pack. That difference is the one
+    observable of the two, and it is what the macOS race needs: a clone that
+    never lists the source's `objects/` cannot lose a file from the list.
+    """
+    for name, repo in (("the root", clone),
+                       *((f"the {leg} leg", clone / leg) for leg in legs)):
+        loose, packs = object_store(repo)
+        assert loose == 0 and packs >= 1, (
+            f"{name} of {clone} holds {loose} loose objects and {packs} packs: "
+            "the clone read the source's object files one by one (git's local "
+            "clone) instead of through the transport")
 
 
 def is_pin_source_name(name: str) -> bool:
@@ -304,10 +368,7 @@ def scaffolded(tmp_path_factory) -> dict:
     )
     assert result.returncode == 0, result.stderr + result.stdout
     clones.mkdir()
-    proc = subprocess.run(
-        ["git", *FILE_PROTOCOL, "clone", "-q", "--recurse-submodules",
-         str(remotes / f"{PROJECT}.git"), str(clones / PROJECT)],
-        capture_output=True, text=True, check=False)
+    proc = clone_just_pushed(remotes / f"{PROJECT}.git", clones / PROJECT)
     assert proc.returncode == 0, proc.stderr
     return {
         "base": base, "remotes": remotes, "work": work,
