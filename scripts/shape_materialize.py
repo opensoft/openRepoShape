@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import codecs
 import datetime as _dt
+import functools
 import os
 import re
 import shutil
@@ -1560,29 +1561,32 @@ def copy_out(src: Path, dst: Path) -> None:
 #     passing a plan `execute` then refuses. The alphabet is `checked_value`'s
 #     own (`SAFE_ARG_RE`): it is asked here, not copied.
 #
-# LAST, A PATH THE PROJECT MUST READ BACK AS WRITTEN (#225). The templates
-# write a leg path BARE -- `path: {{SPEC_PATH}}` in `project.yaml`,
-# `submodule_path: {{SPEC_PATH}}` in `contracts/spec-pin.yaml`, the same for
-# the code leg -- and the project reads them with its own copy of
-# `repo_shape`'s YAML reader, which takes `null`, `~`, `true`, `False`, `2026`
-# and `1.5` as no value, a boolean or a number. Every one of those is in the
-# alphabet above, so `--spec-path 2026` scaffolded three repositories whose
-# first bootstrap then failed `manifest-leg-path: leg 'spec': path is 2026`,
-# and `adopt-project.py execute` said `adoption verified` before the same
-# bootstrap failed. Such a value is refused, with no spelling offered: there
-# is none that names the same directory.
+# LAST, A PATH THE PROJECT MUST READ BACK AS WRITTEN (#225). The assembly
+# root's `project.yaml` holds each leg path on a `path:` line, and the leg's
+# pin, `contracts/<role>-pin.yaml`, on a `submodule_path:` line. The project
+# reads both with its own copy of `repo_shape`'s YAML reader. Written bare
+# there, as the templates wrote them when #225 was found, `null`, `~`,
+# `true`, `False`, `2026` and `1.5` are read as no value, a boolean or a
+# number. Every one of those is in
+# the alphabet above, so `--spec-path 2026` scaffolded three repositories
+# whose first bootstrap then failed `manifest-leg-path: leg 'spec': path is
+# 2026`, and `adopt-project.py execute` said `adoption verified` before the
+# same bootstrap failed. Such a value is refused, with no spelling offered:
+# there is none that names the same directory.
 #
-#   * THE READER IS ASKED, through the line the template writes, and never a
-#     list of its words: a list is what goes stale the day the reader learns
-#     another one. `yes`, `0x1F`, `1e3` and `.inf` are text to this reader
-#     today (YAML 1.1 or 1.2 would read some of them otherwise), so they are
-#     paths here, and a reader that learned one would refuse it with no edit.
-#   * REFUSED RATHER THAN QUOTED IN THE TEMPLATES. Only the scaffold and
-#     `adopt-project.py execute` fill those placeholders, and both ask this
-#     rule before anything exists, so no value either writes there is read
-#     back as anything else. Quoting them as well would change the bytes of
-#     every new project's `project.yaml` and leg pins for values that can no
-#     longer reach them.
+#   * THE TEMPLATES ARE READ, AND THE READER IS ASKED. The rule finds every
+#     YAML template line that holds a leg path, renders the value into it
+#     with `render`, as the scaffold and `execute` do, and asks the reader
+#     what it gives back. It keeps no copy of the line and no list of the
+#     reader's words: a copy goes stale the day a template quotes the
+#     placeholder (#259), and a list the day the reader learns a word. Where
+#     every such line is quoted, every value `checked_value` admits reads
+#     back, and the rule refuses none, with no edit here.
+#   * `yes`, `0x1F`, `1e3` and `.inf` are text to this reader today (YAML 1.1
+#     or 1.2 would read some of them otherwise), so they are paths here, and
+#     a reader that learned one would refuse it on a bare line with no edit.
+#   * `tests/test_leg_path_yaml_scalars.py` finds the template lines on its
+#     own and holds the rule's verdict to what each line reads back.
 
 #: `D:\work\Thing` or `D:/work/Thing` — a Windows absolute path, in either
 #: spelling. `_spelling_reason` below asks it whether a leg path is a drive
@@ -1616,10 +1620,10 @@ LEG_PATH_REMEDIATION = (
     "space, or is a Windows device name (`CON`, `PRN`, `AUX`, `NUL`, "
     "`COM1`-`COM9`, `LPT1`-`LPT9`, with or without an extension); the whole "
     f"value matches {SAFE_ARG_RE.pattern} and does not begin with `-`; the "
-    "project's YAML reader reads it back as text where the project writes it "
-    "unquoted, which it does not for `null`, `~`, `true`, `False`, `2026` or "
-    "`1.5`; and the two legs take different paths, neither inside the other, "
-    "whatever the case."
+    "project's YAML reader reads it back as the same text from every line "
+    "the project writes it into (a bare line reads `null`, `~`, `true`, "
+    "`False`, `2026` and `1.5` as something else); and the two legs take "
+    "different paths, neither inside the other, whatever the case."
 )
 
 
@@ -1667,14 +1671,61 @@ def _unmountable_reason(text: str) -> str | None:
     return None
 
 
-#: The line a template writes a leg path into, bare. `project.yaml`'s
-#: `path:` and a leg pin's `submodule_path:` are read alike, so one is asked.
-#: It is a COPY of those lines, held to them by
-#: `test_the_rule_agrees_with_every_template_line_that_holds_a_leg_path`,
-#: which reads the templates themselves: the day a template writes a leg
-#: path another way (quoted, as #259 proposes), that test fails, and this
-#: rule goes or is re-pointed with it.
-LEG_PATH_LINE = "path: {}\n"
+#: The templates the rule below reads its lines from: the shape's own
+#: `templates/`, which both tools render a project from (`SHAPE_ROOT /
+#: "templates"`, and this file is `SHAPE_ROOT/scripts/`). A test points it
+#: at a copy whose lines it has quoted or left bare.
+LEG_PATH_TEMPLATES = Path(__file__).resolve().parents[1] / "templates"
+
+#: The placeholders a leg path is rendered into.
+LEG_PATH_PLACEHOLDERS = ("SPEC_PATH", "CODE_PATH")
+
+
+@functools.lru_cache(maxsize=None)
+def _leg_path_lines(templates: Path) -> tuple[tuple[str, str, str], ...]:
+    """Every line of every YAML template under `templates` that holds a leg
+    path, as `(tree, file, line)`: `tree` is the template tree
+    (`assembly-root`) and `file` the path the line is written to inside it
+    (`contracts/spec-pin.yaml`).
+
+    FOUND, NOT LISTED, the way `tests/test_leg_path_yaml_scalars.py` finds
+    them, so a template that writes a leg path another way, or in another
+    file, changes what this rule asks with no edit here. A Markdown
+    template's `{{SPEC_PATH}}/` is prose no YAML reader reads, so only `.yaml`
+    and `.yml` files are asked. The shallowest file comes first, so a
+    sentence names `project.yaml` before the pins. Read once per process.
+    """
+    found = []
+    for path in sorted(templates.rglob("*"),
+                       key=lambda p: (len(p.parts), p.as_posix())):
+        if path.suffix not in (".yaml", ".yml") or not path.is_file():
+            continue
+        tree, _, file = path.relative_to(templates).as_posix().partition("/")
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if any("{{" + key + "}}" in line for key in LEG_PATH_PLACEHOLDERS):
+                found.append((tree, file, line))
+    return tuple(found)
+
+
+def _read_back(tree: str, file: str, rendered: str):
+    """What the project's reader gives back from one rendered `key: value`
+    line, read on its own: its scalar reads the same there as inside its
+    block."""
+    read = parse_yaml(rendered + "\n")
+    if not (isinstance(read, dict) and len(read) == 1):
+        raise Refusal("template-leg-path-line",
+                      f"templates/{tree}/{file}: `{rendered}` is not one "
+                      "`key: value` line, which is the one form the leg-path "
+                      "rule reads a leg path back from",
+                      "Remediation: this is a defect in the shape's "
+                      "templates, not in your invocation.")
+    return next(iter(read.values()))
+
+
+def _listed(names: list[str]) -> str:
+    """`a`, `a and b`, `a, b and c`."""
+    return (names[0] if len(names) == 1
+            else ", ".join(names[:-1]) + " and " + names[-1])
 
 
 def _read_as(value) -> str:
@@ -1690,21 +1741,40 @@ def _read_as(value) -> str:
 
 def _misread_reason(text: str) -> str | None:
     """Why the project would read a leg path written as `text` back as
-    something else, or None when it reads back `text`.
+    something else, or None when every line it is written into reads back
+    `text`.
 
-    Asked of the reader the project ships (`parse_yaml`, which every
-    assembly root carries a copy of), through the line the template writes.
-    Asked after `checked_value`, whose alphabet holds no space, quote,
-    bracket, brace, `#`, `:`, `&`, `*` or `!`, so the line always parses and
-    its value is a plain scalar.
+    Each template line that holds a leg path is RENDERED with `text` by
+    `render`, under its file's name, as the scaffold and `execute` render it,
+    and read back by the reader the project ships (`parse_yaml`, which every
+    assembly root carries a copy of). A bare line reads `2026` as a number; a
+    quoted one (#259) reads it back. The sentence quotes each line that
+    misreads, as rendered. Asked after `checked_value`, whose alphabet holds
+    no space, quote, backslash, bracket, brace, `#`, `:`, `&`, `*` or `!`, so
+    each line parses, bare or quoted, and a bare value is a plain scalar.
     """
-    read = parse_yaml(LEG_PATH_LINE.format(text))["path"]
-    if read == text:
+    values = dict.fromkeys(LEG_PATH_PLACEHOLDERS, text)
+    misread: dict[tuple[str, str], list[str]] = {}
+    reads = []
+    for tree, file, line in _leg_path_lines(LEG_PATH_TEMPLATES):
+        rendered = render(line, values, file).strip()
+        read = _read_back(tree, file, rendered)
+        if read != text:
+            files = misread.setdefault((tree, rendered), [])
+            if f"`{file}`" not in files:
+                files.append(f"`{file}`")
+            reads.append(read)
+    if not misread:
         return None
-    return ("the assembly root's `project.yaml` and "
-            "`contracts/<role>-pin.yaml` hold a leg path unquoted "
-            f"(`path: {text}`), and the project's own YAML reader reads that "
-            f"as {_read_as(read)}, so its first bootstrap would fail")
+    trees: dict[str, list[str]] = {}
+    for (tree, rendered), files in misread.items():
+        trees.setdefault(tree, []).append(
+            f"as `{rendered}` in {_listed(files)}")
+    where = "; ".join(
+        f"the {tree.replace('-', ' ')} writes a leg path {' and '.join(lines)}"
+        for tree, lines in trees.items())
+    return (f"{where}, and the project's own YAML reader reads that as "
+            f"{_read_as(reads[0])}, so its first bootstrap would fail")
 
 
 def _canonical_spelling(text: str) -> str | None:
@@ -1719,7 +1789,8 @@ def _canonical_spelling(text: str) -> str | None:
     path and one with a `..` have no such spelling -- they name another place,
     and picking it for the person is the rewrite this refuses -- and neither
     has a result this check, or `checked_value`, would itself refuse
-    (`./.git` is not answered `.git`, nor `-x/` `-x`, nor `2026/` `2026`).
+    (`./.git` is not answered `.git`, nor `-x/` `-x`, nor `2026/` `2026`
+    while a template line would read `2026` back as a number).
     """
     if text.startswith(("/", "\\")):
         return None
