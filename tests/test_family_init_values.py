@@ -349,12 +349,14 @@ def test_the_refusal_comes_before_any_step_that_reaches_github(
 # ---------------------------------------------------------------------------
 
 
-def forged_shape(tmp_path, *, quoted: bool):
+def forged_shape(tmp_path, *, quoted: bool, validator: str | None = None):
     """A one-commit checkout of the standard's own `scripts/`, `templates/`
     and `contracts/` (what `init` reads) whose `family.yaml` writes its bare
     placeholders bare, or quoted, as asked. Its `scripts/family.py` is the
     copy under test, so a run of it asks the template it sits beside: the end
-    to end half of what #259 will change, run today."""
+    to end half of what #259 will change, run today. `validator` is the
+    source its `validate-family.py` is made over, for a validator that cannot
+    be asked."""
     shape = tmp_path / ("shape-quoted" if quoted else "shape-bare")
     for name in ("scripts", "templates", "contracts"):
         shutil.copytree(REPO / name, shape / name,
@@ -366,6 +368,9 @@ def forged_shape(tmp_path, *, quoted: bool):
         if quoted:
             text = text.replace("{{" + key + "}}", '"{{' + key + '}}"')
     manifest.write_bytes(text.encode("utf-8"))
+    if validator is not None:
+        (shape / "templates" / "family-root" / "scripts"
+         / "validate-family.py").write_bytes(validator.encode("utf-8"))
     git("init", "-q", "-b", "main", ".", cwd=shape)
     git("add", "-A", cwd=shape)
     git("-c", "user.name=T", "-c", "user.email=t@example.invalid",
@@ -534,6 +539,28 @@ def test_a_value_the_template_always_quotes_is_never_a_misread(tmp_path):
                 table(**{key: value}), module.MANIFEST_FLAGS, template) == []
 
 
+def test_a_comment_that_names_a_placeholder_is_not_a_line_the_reader_reads(
+        tmp_path):
+    """A `#` line is no `key: value` for the holder's reader to misread, so a
+    template that explains a placeholder in a comment is not asked about it.
+    (Read as a line, `# the id is contoso` is not the text `contoso`.)"""
+    module = family_module()
+    template = template_copy(tmp_path, "commented", quoted=False)
+    with (template / "family.yaml").open("a", encoding="utf-8",
+                                         newline="\n") as stream:
+        stream.write("# the family id is {{FAMILY_ID}}\n"
+                     "    # and its branch is {{TRACKING_BRANCH}}\n")
+    assert module.family_manifest_misreads(
+        table(), module.MANIFEST_FLAGS, template) == []
+    # The same line is asked once it is not a comment.
+    with (template / "family.yaml").open("a", encoding="utf-8",
+                                         newline="\n") as stream:
+        stream.write("note: {{FAMILY_ID}}\n")
+    sentences = module.family_manifest_misreads(
+        table(FAMILY_ID="null"), module.MANIFEST_FLAGS, template)
+    assert len(sentences) == 1 and "`note: null`" in sentences[0]
+
+
 def test_a_placeholder_nobody_asked_about_is_not_asked(tmp_path):
     """`what` names the values to ask about: the rest of the table (the shape
     pin's commit, the repository) is the tool's own and is not the person's."""
@@ -668,6 +695,97 @@ def test_a_manifest_the_holders_reader_refuses_is_a_sentence_and_not_a_trace(
 
 
 # ---------------------------------------------------------------------------
+# A value with a line break in it is one escaped line of the refusal
+# ---------------------------------------------------------------------------
+
+#: A value the holder's reader reads as a SECOND key (a line break carries one
+#: into the file), with a would-be forged `FINDING` line and the escape that
+#: clears a screen. `_line_shown` is what keeps each of them one line of the
+#: refusal that quotes the line it would write.
+FORGERIES = [
+    pytest.param("x\nFINDING forged: y\x1b[2J", id="line-feed-and-escape"),
+    pytest.param("x\rFINDING forged: y\x1b[2J", id="carriage-return"),
+    pytest.param("x\u2028FINDING forged: y", id="line-separator"),
+    pytest.param("x\x85FINDING forged: y", id="next-line"),
+]
+
+
+@pytest.mark.parametrize("value", FORGERIES)
+def test_a_value_with_a_line_break_is_one_escaped_sentence(tmp_path, value):
+    """`family-manifest-misread` quotes the line it would write, and that line
+    holds the value. A value that breaks the line must not break the
+    refusal: no forged `FINDING` line, no raw escape for a terminal to act
+    on, and the line shown the way Python spells it."""
+    module = family_module()
+    bare = template_copy(tmp_path, "bare", quoted=False)
+    sentences = module.family_manifest_misreads(
+        table(CREATED_ON=value), module.MANIFEST_FLAGS, bare)
+    assert len(sentences) == 1
+    sentence = sentences[0]
+    assert sentence.isprintable(), repr(sentence)
+    assert len(sentence.splitlines()) == 1
+    assert not [line for line in sentence.splitlines()
+                if line.startswith("FINDING")]
+    # The line it would write, as Python spells it and not in backticks.
+    assert "family.yaml as 'created_on: x\\" in sentence, sentence
+    assert "as `created_on" not in sentence
+
+
+@pytest.mark.parametrize("value", FORGERIES)
+def test_the_refusal_a_person_reads_has_no_forged_line_and_no_raw_escape(
+        tmp_path, monkeypatch, capsys, value):
+    """The same, through `main` and what it prints: in this process, so that
+    the value never crosses an argv (UTF-16 on Windows) and the run holds on
+    every OS. The template is forced bare, so that the row means the same
+    whichever state #259 leaves the real one in."""
+    module = family_module()
+    bare = template_copy(tmp_path, "bare", quoted=False)
+    ask = module.refuse_unholdable_manifest
+    monkeypatch.setattr(module, "refuse_unholdable_manifest",
+                        lambda args, values: ask(args, values, bare))
+    for dry_run in ([], ["--dry-run"]):
+        code = module.main([
+            "init", "--org", ORG, "--family", HOLDER, "--created-by", "T H",
+            "--created-on", value, *dry_run,
+            "--local-remote-dir", str(tmp_path / "remotes"),
+            "--work-dir", str(tmp_path / "work")])
+        captured = capsys.readouterr()
+        assert code == 2, captured
+        assert captured.err.count("REFUSED ") == 1, captured.err
+        assert "REFUSED family-manifest-misread:" in captured.err
+        assert "\x1b" not in captured.err
+        assert not [line for line in captured.err.splitlines()
+                    if line.startswith("FINDING")], captured.err
+        # The refusal and its remediation, and no line a value made. (A
+        # warning the run printed before it, such as a dirty checkout's, is
+        # not part of the refusal.)
+        refusal = captured.err[captured.err.index("REFUSED "):]
+        assert len(refusal.splitlines()) == 2, captured.err
+        nothing_was_created(tmp_path)
+
+
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="argv is UTF-16 on Windows: this run hands the "
+                           "tool a line break and an escape in argv, which "
+                           "the in-process rows above hold on every OS")
+def test_the_refusal_of_a_forged_value_at_the_command_line(bare_shape,
+                                                          tmp_path):
+    """The reproduction of the review: `init --created-on $'x\\nFINDING
+    forged: y\\x1b[2J' --dry-run` over a template that is bare."""
+    value = "x\nFINDING forged: y\x1b[2J"
+    result = init_in(bare_shape, tmp_path, f"--created-on={value}",
+                     dry_run=True)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "REFUSED family-manifest-misread:" in result.stderr
+    assert "\x1b" not in result.stderr
+    assert not [line for line in result.stderr.splitlines()
+                if line.startswith("FINDING")], result.stderr
+    refusal = result.stderr[result.stderr.index("REFUSED "):]
+    assert len(refusal.splitlines()) == 2, result.stderr
+    nothing_was_created(tmp_path)
+
+
+# ---------------------------------------------------------------------------
 # A validator that cannot be asked is a named refusal, and nothing was created
 # ---------------------------------------------------------------------------
 
@@ -685,6 +803,22 @@ BREAKS = [
         "def _check_envelope(manifest, policy, report):\n"
         "    raise RuntimeError('boom')\n",
         "raised when it was asked", id="raises-when-asked"),
+    # THE THREE GAPS (review of #307): a `Report` with no `findings`, a
+    # finding that is not text, and a question that EXITS.
+    pytest.param(
+        "class Report:\n    def __init__(self):\n        self.notes = []\n\n\n"
+        "def _check_envelope(manifest, policy, report):\n    pass\n",
+        "raised when it was asked: AttributeError", id="report-has-no-findings"),
+    pytest.param(
+        "class Report:\n    def __init__(self):\n        self.findings = []\n\n\n"
+        "def _check_envelope(manifest, policy, report):\n"
+        "    report.findings.append(7)\n",
+        "answered with a finding that is not text: its type is int",
+        id="finding-is-not-text"),
+    pytest.param(
+        "import sys\n\n\nclass Report:\n    findings = []\n\n\n"
+        "def _check_envelope(manifest, policy, report):\n    sys.exit(0)\n",
+        "exited when it was asked: SystemExit: 0", id="exits-when-asked"),
 ]
 
 
@@ -705,15 +839,83 @@ def test_a_validator_that_cannot_be_asked_is_refused_by_name(
     assert "nothing was created" in caught.value.remediation
 
 
-def test_asking_the_validator_leaves_no_bytecode_of_it_in_the_template():
-    """The template is a tree other readers walk: a `.pyc` of the validator
-    in it is a file nobody put there. (Other tools that run a template script
-    may leave their own cache; only the validator's is asked about.)"""
+def test_a_validator_that_exits_is_a_refusal_at_the_command_line_and_not_a_zero(
+        tmp_path):
+    """A `_check_envelope` that calls `sys.exit(0)` used to end `init` with
+    that zero, having printed and created nothing: a person told "success"
+    by a run that did nothing. It is `family-validator-unusable`, exit 2,
+    under `--dry-run` and on the real run alike."""
+    shape = forged_shape(tmp_path, quoted=False, validator=(
+        "import sys\n\n\nclass Report:\n    findings = []\n\n\n"
+        "def _check_envelope(manifest, policy, report):\n    sys.exit(0)\n"))
+    for dry_run in (True, False):
+        result = init_in(shape, tmp_path, dry_run=dry_run)
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert "REFUSED family-validator-unusable:" in result.stderr
+        assert "exited when it was asked: SystemExit: 0" in result.stderr
+        assert "landing" not in result.stdout
+        nothing_was_created(tmp_path)
+
+
+def test_loading_the_validator_leaves_sys_path_as_it_was(monkeypatch):
+    """The validator puts its own directory first on `sys.path` for the
+    import it makes (`from repo_shape import ...`), and this process goes on
+    to import other things: what it put there is taken off again."""
     module = family_module()
-    cached = TEMPLATE / "scripts" / "__pycache__"
-    before = set(cached.glob("validate-family*")) if cached.is_dir() else set()
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    before = list(sys.path)
+    module.family_validator()
+    assert sys.path == before
+
+
+def test_a_validator_that_fails_to_load_leaves_sys_path_and_the_flag_alone(
+        tmp_path, monkeypatch):
+    """The restore is in a `finally`: a validator that put a directory on
+    `sys.path` and then raised leaves neither it nor the bytecode flag
+    changed."""
+    module = family_module()
+    template = template_copy(tmp_path, "broken", quoted=False)
+    (template / "scripts" / "validate-family.py").write_bytes(
+        b"import sys\nsys.path.insert(0, 'fixM-nowhere')\n"
+        b"raise RuntimeError('nope')\n")
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    monkeypatch.setattr(sys, "dont_write_bytecode", False)
+    before = list(sys.path)
+    with pytest.raises(module.Refusal) as caught:
+        module.family_validator(template)
+    assert caught.value.code == "family-validator-unusable"
+    assert sys.path == before
+    assert sys.dont_write_bytecode is False
+
+
+def test_asking_the_validator_leaves_no_bytecode_of_it_in_the_template(
+        tmp_path, monkeypatch):
+    """The template is a tree other readers walk: a `.pyc` of the validator
+    in it is a file nobody put there.
+
+    Asked of a COPY of the template, made without any `__pycache__`, so the
+    answer does not depend on what an earlier run left in this checkout (a
+    stale `.pyc` there would fail this whatever the code does). The flag is
+    cleared first, so it is `family_validator` that has to set it, and a
+    control shows that importing the same file that way does write one."""
+    module = family_module()
+    monkeypatch.setattr(sys, "dont_write_bytecode", False)
+    control = template_copy(tmp_path, "control", quoted=False)
+    spec = importlib.util.spec_from_file_location(
+        "fixM_control_validator", control / "scripts" / "validate-family.py")
+    saved = list(sys.path)
+    try:
+        spec.loader.exec_module(importlib.util.module_from_spec(spec))
+    finally:
+        sys.path[:] = saved
+    if not list((control / "scripts" / "__pycache__").glob("validate-family*")):
+        pytest.skip("this interpreter writes no bytecode here, so there is "
+                    "none for the question to leave behind")
+    template = template_copy(tmp_path, "asked", quoted=False)
+    cached = template / "scripts" / "__pycache__"
+    assert not cached.exists()
     module.family_manifest_invalid(
         table(), module.NamingPolicy.load(module.NAMING_POLICY),
-        module.MANIFEST_FLAGS)
-    after = set(cached.glob("validate-family*")) if cached.is_dir() else set()
-    assert after == before == set()
+        module.MANIFEST_FLAGS, template)
+    assert not cached.exists() or not list(cached.glob("validate-family*"))
+    assert sys.dont_write_bytecode is False

@@ -1248,14 +1248,28 @@ def family_manifest_invalid(values: dict, policy: NamingPolicy, what: dict,
         return ["the manifest this run would write is not a mapping, which "
                 "is what the holder's own YAML reader makes of it."]
     validator = family_validator(template_dir)
+    # THE VALIDATOR'S OWN DEFECT, NEVER A FINDING. One that raises, one that
+    # EXITS (a `sys.exit(0)` would end this run with a zero, having printed
+    # and created nothing) and one whose `Report` has no `findings`, or whose
+    # findings are not text, did not answer, and a manifest it did not answer
+    # for is not one that passed.
     try:
         report = validator.Report()
         validator._check_envelope(manifest, policy, report)
-    except Exception as exc:  # the validator's own defect, never a finding
+        findings = list(report.findings)
+    except SystemExit as exc:
+        raise _validator_unusable(
+            "exited when it was asked", f"SystemExit: {exc.code}") from exc
+    except Exception as exc:
         raise _validator_unusable(
             "raised when it was asked", f"{type(exc).__name__}: {exc}"
         ) from exc
-    return _sentences_of(list(report.findings), values, what)
+    for finding in findings:
+        if not isinstance(finding, str):
+            raise _validator_unusable(
+                "answered with a finding that is not text",
+                f"its type is {type(finding).__name__}")
+    return _sentences_of(findings, values, what)
 
 
 #: The remediation of a value the reader turns into something else, without
