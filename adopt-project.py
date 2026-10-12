@@ -3267,6 +3267,23 @@ def _misplaced_script(walk: _Walk) -> str | None:
             f"the root, which {named} is not")
 
 
+def _links_at_a_copy(plan: Plan, tree: list) -> set[str]:
+    """Each symlink the plan keeps AT the copy under `shape/` of a path the
+    root holds: #262's `plan-root-blocks-shape-copy` names it, the shape's
+    copy written THROUGH it, earlier in `_entry_findings`' one list. Asked
+    as `_leg_findings` asks it, of a plan whose `legs` it can read, on a
+    disk that keeps case and on one that ignores it."""
+    if not isinstance(plan.legs, dict):
+        return set()
+    kept = _kept_in_root(plan.entries, tree)
+    named: set[str] = set()
+    for fold in (False, True):
+        for _, _, copy, group, rows in _shape_blocks(_KeptTree(kept, fold)):
+            if group == ("at", copy) and rows[0][1] == SYMLINK_MODE:
+                named.add(rows[0][0])
+    return named
+
+
 def _root_symlink_findings(plan: Plan, source: Source,
                            tree: list) -> list[str]:
     """A FINDING for each symlink the plan keeps in the root that a path the
@@ -3278,11 +3295,17 @@ def _root_symlink_findings(plan: Plan, source: Source,
     disk that keeps case does, and again as one that ignores it; what only
     the second refuses says so. `tree` is `Source.tree()`, read once by
     `_entry_findings` for every finding it composes.
+
+    A symlink AT the copy of a path the root holds is #262's to say
+    (`_links_at_a_copy`), and is not said again here: one link, one
+    finding. The copy is still walked, and a link the walk meets ABOVE it,
+    or AT the copy of a path the root holds only through a symlink, is
+    this check's, because #262's rule follows no link.
     """
     findings: list[str] = []
     if not any(mode == SYMLINK_MODE for _, mode, _, _ in tree):
         return findings
-    seen: set[str] = set()
+    seen = _links_at_a_copy(plan, tree)
     for fold in (False, True):
         for walk in _PlannedRoot(plan, source, tree, fold=fold).walks():
             why = walk.problem or _misplaced_script(walk)

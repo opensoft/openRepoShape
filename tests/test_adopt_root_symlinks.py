@@ -114,6 +114,11 @@ READ = "read"
 ASSEMBLY = "assembly"
 OUTSIDE_DIR = "outside"
 BLOCKED = "materialize-blocked"
+#: #262's finding for a path the plan keeps where the shape writes its copy.
+COPY_IN_THE_WAY = "plan-root-blocks-shape-copy"
+COPY_FINDING = f"FINDING {COPY_IN_THE_WAY}: "
+#: A file of the source's own that a link at the copy leads onto.
+NOTES_MD = "notes.md"
 OUTSIDE = "materialize-outside"
 CONFIG_VALUE = "GIT_CONFIG_VALUE_0"
 #: Case twins of paths the shape writes, as a macOS or Windows disk reads
@@ -474,11 +479,6 @@ REFUSED = [
                   "it lands on `sub/README.md`, a directory that is already "
                   "there, where the shape's copy cannot be written"),
                  id="the-collision-directory-holds-a-directory-of-the-name"),
-    pytest.param({"notes.md": "n\n"}, {SHAPE_README: "../notes.md"},
-                 {"notes.md": ROOT, "shape/": ROOT},
-                 (SHAPE_README, "../notes.md", SHAPE_README,
-                  f"it lands on `notes.md`, {OVER_IT}"),
-                 id="a-link-at-the-copy-itself"),
     # S1: a case twin is followed as a disk that ignores case follows it.
     pytest.param({}, {GITHUB_TWIN: OUTSIDE_CI}, {GITHUB_TWIN: ROOT},
                  (GITHUB_TWIN, OUTSIDE_CI, WORKFLOW, climbs(GITHUB_TWIN),
@@ -524,6 +524,45 @@ def test_one_finding_per_link_however_many_shape_paths_run_through_it(
     assert findings == [finding(
         CONTRACTS, "/srv", "contracts/spec-pin.yaml",
         f"the symlink `contracts` leads to `/srv`, {ON_THIS_MACHINE}")]
+
+
+def test_a_link_at_the_copy_is_one_finding_by_the_rule_that_sees_it(
+        adopter, no_filter_repo_probe, tmp_path):
+    """A symlink kept AT the copy under `shape/` of a path the root holds is
+    #262's: `plan-root-blocks-shape-copy` names it, the shape's copy written
+    THROUGH it, and this rule does not say the same link again. `execute`
+    refuses with that line, before any leg. Where the root holds the path
+    only through a symlink above it (`.github -> ci`, the project's own
+    `ci/workflows/validate.yml` kept), #262's rule, which follows no link,
+    does not see the copy, and the link at it is this rule's."""
+    held = tmp_path / "held"
+    _, plan = planned(held, {NOTES_MD: "n\n"},
+                      {SHAPE_README: f"../{NOTES_MD}"},
+                      {NOTES_MD: ROOT, "shape/": ROOT})
+    checked = check(plan)
+    assert checked.returncode == 1, checked.stderr + checked.stdout
+    assert symlink_findings(checked) == [], checked.stderr
+    said = [line for line in checked.stderr.splitlines()
+            if line.startswith(COPY_FINDING)]
+    assert len(said) == 1, checked.stderr
+    assert f"That path is the symlink {ticked(SHAPE_README)}." in said[0]
+    assert "`execute` would write the copy through it " in said[0]
+    refusal = refused_by(adopter, execute_args(held, plan))
+    assert refusal.code == COPY_IN_THE_WAY
+    assert f"  {said[0]}" in refusal.detail.splitlines()
+    no_leg_was_created(held)
+
+    through = tmp_path / "through"
+    copy = f"{SHAPE_DIR}/{WORKFLOW}"
+    out_of_the_copy = f"../../../{NOTES_MD}"
+    _, plan = planned(through, {"ci/workflows/validate.yml": ON_PUSH,
+                                NOTES_MD: "n\n"},
+                      {GITHUB: "ci", copy: out_of_the_copy},
+                      {CI_DIR: ROOT, GITHUB: ROOT, NOTES_MD: ROOT,
+                       "shape/": ROOT})
+    refused_alike(adopter, through, plan, finding(
+        copy, out_of_the_copy, copy,
+        f"it lands on {ticked(NOTES_MD)}, {OVER_IT}"))
 
 
 #: An empty target, and two that are not plain text: a byte that is not
