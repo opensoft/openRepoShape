@@ -264,7 +264,12 @@ def test_execute_refuses_it_before_any_leg_exists(world, old, new, named):
     plan = edited(world, old, new)
     result = execute(world, plan)
     assert result.returncode == 2, result.stderr + result.stdout
-    assert "REFUSED plan-manifest-invalid" in result.stderr
+    # The refusal wears the code of the FIRST finding in the list (#168). A
+    # value another rule also judges (a number-looking `elected_on` is a
+    # misread on #181) may be listed before this one, so what is asked is
+    # that this finding is in it.
+    assert "REFUSED plan-manifest-" in result.stderr
+    assert f"{FINDING}: " in result.stderr
     for fragment in named:
         assert fragment in result.stderr, result.stderr
     assert "adoption verified" not in result.stdout
