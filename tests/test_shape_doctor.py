@@ -2279,6 +2279,60 @@ def break_the_pin(root: Path, mutation) -> None:
         pin.write_bytes(mutated)
 
 
+#: Every code `read_pin` raises for a root's own pin, read off the faults
+#: above rather than retyped: a row that still says one of these has not
+#: read the pin.
+READ_PIN_CODES = frozenset(param.values[1] for param in ROOT_PIN_FAULTS)
+
+
+def pasted(line: str) -> list[str]:
+    """The argv the reader's own shell makes of a printed NEXT.
+
+    `shlex` on POSIX, over the command before the row's `   #` note, the way
+    `test_a_red_validators_next_command_is_runnable` reads one; on Windows
+    PowerShell's reading, through `powershell_tokens`, which drops the note
+    itself and unquotes `quote_arg`'s verbatim strings.
+    """
+    if os.name == "nt":
+        return powershell_tokens(line)
+    return shlex.split(line.split("   #", 1)[0])
+
+
+def run_pasted(line: str) -> None:
+    """Run a printed NEXT exactly as a reader would, and require exit 0."""
+    proc = subprocess.run(pasted(line), capture_output=True, text=True,
+                          check=False, env={**os.environ, **GIT_IDENTITY})
+    assert proc.returncode == 0, line + "\n" + proc.stdout + proc.stderr
+
+
+def assert_a_plain_note(line: str) -> None:
+    """The NEXT's `   #` note holds no `;`, apostrophe or backtick (#277).
+
+    Pasted into an interactive zsh that does not take `#` as a comment, a
+    `;` starts a second command, an apostrophe opens a quotation nothing
+    closes and a backtick runs whatever follows it.
+    """
+    note = line.split("   #", 1)[1]
+    for char in (";", "'", "`"):
+        assert char not in note, (char, line)
+
+
+def commit_in(root: Path, message: str, *args: str) -> str:
+    """`git commit` in `root` with an identity that is never global; the new
+    HEAD."""
+    proc = subprocess.run(["git", "commit", "-q", *args, "-m", message],
+                          cwd=str(root), capture_output=True, text=True,
+                          check=False, env={**os.environ, **GIT_IDENTITY})
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    return git("rev-parse", "HEAD", cwd=root).stdout.strip()
+
+
+def compliant_again(standard: Path, root: Path) -> None:
+    result = doctor(standard, root, "--json")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout)["verdict"] == "COMPLIANT"
+
+
 @pytest.mark.parametrize("mutation, code", ROOT_PIN_FAULTS)
 def test_a_root_pin_that_does_not_read_is_invalid_not_cannot_answer(
         standard, project, mutation, code):
@@ -2308,17 +2362,25 @@ def test_a_root_pin_that_does_not_read_is_invalid_not_cannot_answer(
     assert f"REFUSED {code}: " in row["reason"], row["reason"]
     assert "Remediation" not in row["reason"]
     assert "submodule" not in row["reason"]
-    # The NEXT is the tool that refused, with the file at fault named; it is
-    # not a fetch in the standard, which cannot change the pin.
-    assert "update-shape.py" in row["next"] and " check " in row["next"]
-    assert "shape-pin.yaml" in row["next"]
+    # The NEXT puts back the pin a tool wrote, from the root's own history:
+    # the change that broke it is not committed, so that is `checkout HEAD`.
+    # It is not a fetch in the standard, which cannot change the pin, nor the
+    # `update-shape.py check` that refuses the same file the same way.
+    assert row["detail"]["restore"] == "uncommitted", row["detail"]
+    assert f"checkout HEAD -- {SHAPE_PIN}" in row["next"], row["next"]
+    assert pasted(row["next"])[:2] == ["git", "-C"], row["next"]
     assert "fetch" not in row["next"]
+    assert "update-shape.py" not in row["next"]
+    assert_a_plain_note(row["next"])
     plain = doctor(standard, project)
     assert plain.returncode == 1, plain.stdout + plain.stderr
     assert "CANNOT ANSWER" not in plain.stdout
     assert "shape-doctor-cannot-answer" not in plain.stderr
     assert "fetch --all" not in plain.stdout + plain.stderr
     assert verdict_line(plain).startswith("INVALID (")
+    # And run as printed, it fixes it.
+    run_pasted(row["next"])
+    compliant_again(standard, project)
 
 
 def test_a_merge_conflict_in_the_pin_still_names_the_projects_own_validator(
@@ -2348,8 +2410,8 @@ def test_a_pin_only_update_shape_refuses_is_the_one_red_row(standard,
 
     So the shape-currency row is the only finding, and it is not on the
     ladder's named list: the catch-all names it, `INVALID (shape-currency)`,
-    exit 1 -- which is why its NEXT is `update-shape.py check` and not the
-    validator, whose exit 0 would send this reader nowhere.
+    exit 1 -- which is why its NEXT is not the validator, whose exit 0 would
+    send this reader nowhere, but the pin put back from the root's history.
     """
     break_the_pin(project, other_digest_definition)
     result = doctor(standard, project, "--json")
@@ -2426,6 +2488,123 @@ def test_a_family_holders_conflicted_pin_is_invalid_too(standard, holder,
     row = rows_of(result)["shape-currency"]
     assert row["status"] == "FINDING" and "environment" not in row["detail"]
     assert row["detail"]["error"] == "yaml-unparsable"
+    assert row["detail"]["restore"] == "uncommitted", row["detail"]
+    run_pasted(row["next"])
+    again = rows_of(doctor(standard, root, "--json"))["shape-currency"]
+    assert again["detail"].get("error") not in READ_PIN_CODES, again
+
+
+# --- the pin put back: the NEXT for each state git can be in (#237) ---------
+#
+# Each test below runs the printed NEXT and asks the doctor again. The NEXT
+# is chosen from the pin's own git state, read-only: unmerged, then
+# uncommitted (the parametrised test above), then committed, then none.
+
+#: `commit: "zzzz"`, the committed fault the review probed beside a deletion.
+not_forty_hex = pin_with(r'^commit: .*$', 'commit: "zzzz"')
+
+
+@pytest.mark.parametrize("mutation, code", [
+    pytest.param(lambda text: None, "update-pin-missing",
+                 id="the-pin-deleted-in-a-commit"),
+    pytest.param(not_forty_hex, "update-pin-commit",
+                 id="a-commit-line-not-40-hex-committed"),
+])
+def test_a_pin_broken_in_a_commit_is_put_back_from_before_that_commit(
+        standard, project, mutation, code):
+    """Clean status, so `checkout HEAD` would put back the broken pin.
+
+    The NEXT names the last commit to change the pin, `~1`: the pin as it
+    was before it. An unrelated commit after the break is what tells that
+    apart from `HEAD~1`.
+    """
+    break_the_pin(project, mutation)
+    git("add", "--", SHAPE_PIN, cwd=project)
+    breaking = commit_in(project, "break the pin")
+    commit_in(project, "an unrelated commit after it", "--allow-empty")
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 1, result.stdout + result.stderr
+    row = rows_of(result)["shape-currency"]
+    assert row["detail"]["error"] == code, row["detail"]
+    assert row["detail"]["restore"] == "committed", row["detail"]
+    argv = pasted(row["next"])
+    assert argv[:2] == ["git", "-C"], row["next"]
+    assert argv[3:] == ["checkout", f"{breaking}~1", "--", SHAPE_PIN], argv
+    assert breaking[:12] in row["next"].split("   #", 1)[1], row["next"]
+    assert_a_plain_note(row["next"])
+    run_pasted(row["next"])
+    compliant_again(standard, project)
+
+
+def test_the_issues_own_merge_takes_one_side_of_the_shapes_files_whole(
+        standard, project):
+    """The issue's reproduction: two branches rewrite `commit:`, then merge.
+
+    The pin is `UU`, and so are `Makefile`, a shape copy, and a file of the
+    project's own. The NEXT takes one side whole of every conflicted file the
+    shape writes and of no other, so the project's own file is left to its
+    owner. Run, the pin reads again: the row then answers about the commit
+    it names, which in this fixture is no commit at all.
+    """
+    own = project / "notes.md"
+    own.write_bytes(b"base\n")
+    git("add", "--", "notes.md", cwd=project)
+    base = commit_in(project, "a file of the project's own")
+    for branch, digit in (("edit-a", "1"), ("edit-b", "2")):
+        git("checkout", "-q", "-b", branch, base, cwd=project)
+        break_the_pin(project, pin_with(r'^commit: .*$',
+                                        f'commit: "{digit * 40}"'))
+        for name in ("Makefile", "notes.md"):
+            path = project / name
+            path.write_bytes(path.read_bytes() + f"# {branch}\n".encode())
+        git("add", "--", SHAPE_PIN, "Makefile", "notes.md", cwd=project)
+        commit_in(project, branch)
+    merged = subprocess.run(["git", "merge", "-q", "edit-a"],
+                            cwd=str(project), capture_output=True, text=True,
+                            check=False, env={**os.environ, **GIT_IDENTITY})
+    assert merged.returncode != 0, merged.stdout + merged.stderr
+    status = git("status", "--porcelain=v1", cwd=project).stdout
+    for name in (SHAPE_PIN, "Makefile", "notes.md"):
+        assert f"UU {name}" in status, status
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 1, result.stdout + result.stderr
+    row = rows_of(result)["shape-currency"]
+    assert row["detail"]["error"] == "yaml-unparsable", row["detail"]
+    assert row["detail"]["restore"] == "unmerged", row["detail"]
+    assert row["next"].startswith("git -C "), row["next"]
+    assert "checkout --ours -- " in row["next"], row["next"]
+    argv = pasted(row["next"])
+    assert argv[3:] == ["checkout", "--ours", "--", "Makefile", SHAPE_PIN], \
+        argv
+    assert_a_plain_note(row["next"])
+    run_pasted(row["next"])
+    again = rows_of(doctor(standard, project, "--json"))["shape-currency"]
+    assert again["detail"]["error"] not in READ_PIN_CODES, again
+    assert again["detail"]["error"] == "update-revision-unresolvable", again
+    assert b"<<<<<<<" in own.read_bytes()
+
+
+def test_a_pin_with_no_good_copy_in_its_history_keeps_the_check_next(
+        standard, project):
+    """No history to put a pin back from: one root commit holds a bad pin.
+
+    Nothing git can name fixes it, so the NEXT stays the tool that refused,
+    and says that whether this root was ever scaffolded or adopted is a
+    person's decision.
+    """
+    break_the_pin(project, not_forty_hex)
+    git("checkout", "-q", "--orphan", "squashed", cwd=project)
+    git("add", "--", SHAPE_PIN, cwd=project)
+    commit_in(project, "the whole history, squashed into one commit")
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 1, result.stdout + result.stderr
+    row = rows_of(result)["shape-currency"]
+    assert row["detail"]["error"] == "update-pin-commit", row["detail"]
+    assert row["detail"]["restore"] == "none", row["detail"]
+    assert "update-shape.py" in row["next"] and " check " in row["next"]
+    assert "checkout" not in row["next"], row["next"]
+    assert "fetch" not in row["next"]
+    assert_a_plain_note(row["next"])
 
 
 def test_the_doctor_writes_no_bytecode_into_the_standard(standard, project,

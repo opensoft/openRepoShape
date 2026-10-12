@@ -1085,10 +1085,113 @@ def what_a_re_pin_would_move(ctx: Context, us, repository: str,
 #: sentence, its `--json` detail and its next command (#237).
 SHAPE_PIN = "contracts/shape-pin.yaml"
 
+#: `git status --porcelain=v1`'s codes for an UNMERGED path, as git's own
+#: documentation tabulates them. Which side holds the file is NOT read off
+#: the letters (`AU` is this side alone, `UA` the other alone): it is read
+#: off the index stages `ls-files -u` lists, 2 for `--ours`, 3 for
+#: `--theirs`.
+UNMERGED_STATUS = ("DD", "AU", "UD", "UA", "DU", "AA", "UU")
+
+
+def git_answer(args: list, cwd: Path, binary: bool = False):
+    """`git_out`, or None where git does not answer: a non-zero exit, no
+    repository, no `git` on the path, output that is not UTF-8."""
+    try:
+        return git_out(args, cwd=cwd, binary=binary)
+    except (Refusal, OSError, ValueError):
+        return None
+
+
+def pin_restore(ctx: Context) -> tuple[str, str | None]:
+    """`(restore, command)`: the git command that puts back a pin a tool
+    wrote, chosen from the pin's own git state, read-only (#237).
+
+    A PIN IS NEVER MENDED BY HAND, so the fix for one that does not read is
+    the last one a tool wrote, out of the root's own history. Which command
+    reaches it depends only on where the bad bytes are, and the first of
+    these that applies decides, as `detail["restore"]`:
+
+      unmerged     a merge left the pin conflicted. `checkout --ours`, or
+                   `--theirs` where only that side holds a pin, of every
+                   conflicted path the shape writes -- the pin, the manifest
+                   that mirrors it, the README's `Shape:` line, the copies --
+                   because a merge of two `update-shape.py apply` runs
+                   conflicts in them together, and one side taken whole is one
+                   tool's output. A file of the project's own is never named:
+                   its merge is theirs.
+      uncommitted  HEAD holds a pin and the tree or the index differs from it.
+                   `checkout HEAD`, which drops a change no tool of this
+                   standard leaves uncommitted.
+      committed    the last commit to change the pin broke or removed it.
+                   `checkout <that commit>~1`, the pin as it was before it --
+                   named only where that commit has a parent holding a pin.
+      none         nothing above: no history, a root commit, no git. Nothing
+                   git can name fixes it, and the caller says so.
+
+    THE STATUS IS TWO FIXED-WIDTH LETTERS, READ AS BYTES: `git_out`'s text
+    form strips its output, and the leading space of ` M` with it. And
+    `--no-optional-locks` (git 2.15) keeps `status` from refreshing the
+    index, which would be this command writing into their repository. Every
+    path is read relative to the root (`ls-files` and pathspecs are, and
+    `<rev>:./<path>` is), so each one names the root's own file even where
+    git answers from a checkout the root sits inside.
+    """
+    root = ctx.root
+    git_c = f"git -C {quote_arg(root)}"
+    raw = git_answer(["--no-optional-locks", "status", "--porcelain=v1",
+                      "--", SHAPE_PIN], root, binary=True)
+    xy = raw.decode("utf-8", "replace")[:2] if raw else ""
+    if xy in UNMERGED_STATUS:
+        us = ctx.update_shape()
+        kind = us.root_kind(root)
+        shaped = {SHAPE_PIN, kind.manifest, us.README}
+        for rel in kind.copy_source:
+            shaped.update((rel, f"{us.COLLISION_DIR}/{rel}"))
+        # `<mode> SP <object> SP <stage> TAB <path>`, one record per stage.
+        stages: dict[str, set] = {}
+        listing = git_answer(["ls-files", "-u", "-z"], root, binary=True)
+        for record in (listing or b"").split(b"\0"):
+            meta, _tab, path = record.partition(b"\t")
+            name = path.decode("utf-8", "replace")
+            if name in shaped:
+                stages.setdefault(name, set()).add(meta.rsplit(b" ", 1)[-1])
+        pin_stages = stages.get(SHAPE_PIN, set())
+        side, stage = (("--ours", b"2") if b"2" in pin_stages else
+                       ("--theirs", b"3") if b"3" in pin_stages else
+                       (None, None))
+        if side:
+            note = ("--theirs takes the other side. Take one side whole"
+                    if b"3" in pin_stages and side == "--ours"
+                    else "only that side of the merge holds a pin. Take it "
+                    "whole")
+            named = sorted(name for name, held in stages.items()
+                           if stage in held)
+            return "unmerged", (
+                f"{git_c} checkout {side} -- "
+                + " ".join(quote_arg(name) for name in named)
+                + f"   # {note} for every path named and never a "
+                "hand-merged pin, then finish the merge as git says and run "
+                "this doctor again")
+    elif xy and git_answer(["cat-file", "-e", f"HEAD:./{SHAPE_PIN}"],
+                           root) is not None:
+        return "uncommitted", (
+            f"{git_c} checkout HEAD -- {quote_arg(SHAPE_PIN)}   # puts back "
+            "the pin as last committed and discards the uncommitted change "
+            "that broke it, which no tool of this standard writes")
+    last = git_answer(["rev-list", "-n", "1", "HEAD", "--", SHAPE_PIN], root)
+    if last and git_answer(["cat-file", "-e", f"{last}~1:./{SHAPE_PIN}"],
+                           root) is not None:
+        return "committed", (
+            f"{git_c} checkout {quote_arg(last + '~1')} -- "
+            f"{quote_arg(SHAPE_PIN)}   # the pin as it was before "
+            f"{last[:12]}, the last commit to change it. Commit that rather "
+            "than editing the pin")
+    return "none", None
+
 
 def unreadable_pin_row(ctx: Context, exc: Refusal) -> Row:
     """The `shape currency` row for a root whose OWN pin does not read as one
-    (#237): a FINDING, the refusal quoted whole, and the file to put right.
+    (#237): a FINDING, the refusal quoted whole, and the pin put back.
 
     A STATEMENT ABOUT THEIR REPOSITORY, NOT A FAILURE TO ASK. The pin is a
     file in the root: a merge conflict left in it, a byte that is not UTF-8,
@@ -1108,35 +1211,34 @@ def unreadable_pin_row(ctx: Context, exc: Refusal) -> Row:
     Its `Remediation:` trailer is left off on purpose: `yaml-unparsable`
     carries `repo_shape`'s default one, about submodules and the lockstep
     invariant, which would send a person resolving a merge conflict to `git
-    submodule update`. This is the wording `unloaded_manifest_row` gives a
-    `project.yaml` that does not load, so the two files are answered alike.
+    submodule update`. This is the wording #232's `unloaded_manifest_row`
+    gives a `project.yaml` that does not load, so the two files are answered
+    alike.
 
-    THE NEXT IS THE TOOL THAT REFUSED, NOT THE VALIDATOR AND NEVER A FETCH.
-    `update-shape.py check` asks exactly the question this row could not
-    answer, so it refuses the same way until the file reads as a pin and
-    compares the copies the moment it does -- including for the refusals
-    `validate-pins.py` does not make, which is why it is not that script
-    named here (the `pins` row names it whenever it is red). The comment
-    names the file, because the file is the fix, and says what a fix is not:
-    which side of a merge conflict, what a hand edit meant, whether a deleted
-    pin is restored or the project was never pinned -- all of it a person's
-    call, and the doctor writes nothing.
+    THE NEXT PUTS BACK THE PIN A TOOL WROTE, NEVER A FETCH. `pin_restore`
+    names the git command from the pin's own state, and run as printed it
+    ends at `COMPLIANT` or at a row that reads the pin. Naming the tool that
+    refused, `update-shape.py check`, was a dead end (review of PR #267): it
+    reads the pin with the same `read_pin`, refuses it the same way, and its
+    remediation is about submodules, adoption or a hand edit, none of which
+    fits. That command stays only where git can name nothing, and its note
+    says the rest is a person's call. Each note holds no `;`, apostrophe or
+    backtick, so a pasted line is one command in any shell (#277).
     """
-    pin = ctx.root / SHAPE_PIN
+    restore, command = pin_restore(ctx)
     detail = {"error": exc.code, "pin": SHAPE_PIN,
-              "refusal": {"code": exc.code, "detail": exc.detail}}
+              "refusal": {"code": exc.code, "detail": exc.detail},
+              "restore": restore}
+    if command is None:
+        command = (f"{PYTHON} {quote_arg(ctx.shape / 'update-shape.py')} "
+                   f"check --root {quote_arg(ctx.root)} --upstream "
+                   f"{quote_arg(ctx.shape)}   # no commit in this root holds "
+                   "a pin to put back, so whether it was ever scaffolded or "
+                   "adopted is for a person to decide")
     return Row("shape-currency", LABEL_SHAPE_CURRENCY, FINDING,
                f"the copies cannot be compared, because {SHAPE_PIN} does not "
                f"read as a pin: REFUSED {exc.code}: {exc.detail}",
-               f"{PYTHON} {quote_arg(ctx.shape / 'update-shape.py')} check "
-               f"--root {quote_arg(ctx.root)} --upstream "
-               f"{quote_arg(ctx.shape)}   # the file at fault is "
-               f"{quote_arg(pin)}, and the line above says what is wrong "
-               "with it; this refuses it the same way until it reads as a "
-               "pin, and compares the copies the moment it does. What it "
-               "should say -- a merge conflict resolved, a deleted file "
-               "restored, a hand edit put right -- is the person's call",
-               detail)
+               command, detail)
 
 
 def check_shape_currency(ctx: Context) -> Row:
