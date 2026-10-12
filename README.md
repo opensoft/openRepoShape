@@ -305,9 +305,12 @@ flag goes on the Python entry point —
 which, run from a download, still clones the standard into a temporary
 directory first, and from a checkout clones nothing. What it leaves behind is
 `./Atlas` and three bare repositories in `./rehearsal`, both of which you can
-delete. `openRepoShape --help` and `setup.sh --help` list every flag, this one
-included; [`docs/cli.md`](docs/cli.md) is every tool's help and every
-subcommand's in one file, generated from the tools themselves.
+delete. `python3 setup-project.py --help` and, from a checkout, `setup.sh --help`
+list every flag, this one included. From a download, `setup.sh --help` clones
+nothing and lists none: it names `setup-project.py --help`, which answers
+offline from that one file too, and [`docs/cli.md`](docs/cli.md), every
+tool's help and every subcommand's in one file, generated from the tools
+themselves.
 
 Without installing anything — no fork, no manual clone — one command:
 
@@ -516,11 +519,11 @@ confers nothing and stays neutral.
 
 ### What setup.sh does
 
-`setup.sh` is a shim — about seventy lines of code (twice that with its comments)
-that find a Python 3.9 or newer, clone this standard into a temporary directory when
-you are not already in a checkout of it, and hand over to `setup-project.py`, which
-IS the flow. These are the commands that flow runs, in order, with no behaviour of
-its own (the first only in self-bootstrap mode, from the one-liner above):
+`setup.sh` is a shim that finds a Python 3.9 or newer, clones this standard into a
+temporary directory when you are not already in a checkout of it, and hands over to
+`setup-project.py`, which IS the flow. These are the commands that flow runs, in
+order, with no behaviour of its own (the first only in self-bootstrap mode, from the
+one-liner above):
 
 ```sh
 git clone --depth 1 https://github.com/opensoft/openRepoShape.git <tmp-dir>
