@@ -19,8 +19,9 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
 
   plan     walks the source at its default branch, classifies every top-level
            path against `contracts/path-classification.yaml`, and writes
-           `adoption-plan.yaml`. Paths it cannot honestly call, and every
-           path holding one of the source's own submodules, carry
+           `adoption-plan.yaml`. Paths it cannot honestly call, every path
+           holding one of the source's own submodules, and every path
+           `execute` will not extract into a leg as it is named, carry
            `leg: null`, `review_required: true` and the QUESTION to ask.
            A leg path over a path it keeps in the root itself is a NOTE,
            not a refusal: the answer is the person's to change.
@@ -1020,20 +1021,133 @@ def _asked_about(entry: Entry, held: list[str], asked: Verdict,
                  own: list[str]) -> Entry:
     """`entry` as `ask_about_submodules` writes it: the `.gitmodules`
     verdict, whose `leg:` is null, and its question naming `held` and, when
-    it holds more than one path, the `own` entries that replace it. Each
-    path is `_spelled`, because the question is a line of the plan."""
-    question = (f"{asked.question or ''} This entry holds the submodule(s) "
-                f"{_listed(held)}: it is asked this question, not "
-                f"classified by its rule `{entry.rule}`.")
+    it holds more than one path, the `own` entries that replace it, and
+    which of those `execute` will not extract as they are named
+    (`_refused_replacements`, #319). Each path is `_spelled`, because the
+    question is a line of the plan, and the question is set on the entry
+    as it is written: `Verdict` folds each run of spaces in a question to
+    one, and a name holding two, `src/a  b.md`, was named `src/a b.md`, an
+    entry that covers nothing."""
+    question = (f"{asked.question} " if asked.question else "") + (
+        f"This entry holds the submodule(s) {_listed(held)}: it is asked "
+        f"this question, not classified by its rule `{entry.rule}`.")
     if len(own) > 1:
         question += (" Split the entry if its paths do not all belong in one "
                      f"leg: replace it with "
                      f"{_replacements(entry.path, held, own)}, each with its "
                      "own `leg:`. An entry added beside this one for a path "
-                     "it covers is `plan-covered-twice`.")
-    return Entry(entry.path, Verdict(None, asked.rule, asked.reason,
-                                     asked.confidence, question),
-                 entry.files, entry.bytes)
+                     "it covers is `plan-covered-twice`."
+                     + _refused_replacements(own, held))
+    out = Entry(entry.path, Verdict(None, asked.rule, asked.reason,
+                                    asked.confidence), entry.files,
+                entry.bytes)
+    out.question = question
+    return out
+
+
+def _refused_replacements(own: list[str], held: list[str]) -> str:
+    """What the question `_asked_about` writes says of the entries `own`
+    that replace a directory entry, when `execute` will not extract one of
+    them into a leg as it is named (`entry_path_problem`, #319): each such
+    entry by name, with the reason, and that `root` or `drop` is its only
+    answer -- `drop` for a submodule, which the assembly root never keeps.
+    Past SPLIT_ENTRIES_NAMED of them the rest are counted. Empty when there
+    is none, so the question is what it was.
+
+    Under the directory entry such a name is never written on its own, and
+    `check` judges nothing below it; as an entry of its own, the edit the
+    question names, it is judged, and `check` refused the answer `spec` or
+    `code` as `plan-unsafe-path` though this question had offered both."""
+    refused = [(path, entry_path_problem(path)) for path in own]
+    refused = [(path, problem) for path, problem in refused if problem]
+    if not refused:
+        return ""
+    if len(refused) == 1:
+        [(path, problem)] = refused
+        answer = ("`drop` is the only answer for it: the assembly root keeps "
+                  "no submodule of the source's" if path in held else
+                  "`root` or `drop` is the only answer for it")
+        return (f" Of those entries, `execute` will not extract "
+                f"{_spelled(path)} into a leg as it is named, because "
+                f"{problem}; so {answer}.")
+    submodule = (", and `drop` for a submodule, which the assembly root "
+                 "never keeps" if any(path in held for path, _ in refused)
+                 else "")
+    named = "; ".join(f"{_spelled(path)}, because {problem}"
+                      for path, problem in refused[:SPLIT_ENTRIES_NAMED])
+    more = len(refused) - SPLIT_ENTRIES_NAMED
+    if more > 0:
+        named += (f"; and {more} more, each `plan-unsafe-path` in `check` "
+                  "if it is answered `spec` or `code`")
+    return (" Of those entries, `execute` will not extract these into a leg "
+            "as they are named, so `root` or `drop` is the only answer for "
+            f"each{submodule}: {named}.")
+
+
+def ask_about_refused_paths(entries: list[Entry], tree: list) -> list[Entry]:
+    """`entries`, with every one `execute` will not extract into a leg as it
+    is named ASKED, rather than answered `spec` or `code` (#319).
+
+    `entry_path_problem` is the one test `check` and `execute` ask of an
+    entry's path (#196), and `plan` asked it nothing: a source holding
+    `-notes.md`, `notes\\t.md`, `a\\rb.md`, `a\\nb.md`, `a==>b.md` or a name
+    that is not UTF-8 was planned `leg: spec`, `review_required: false`, no
+    question, and the first anybody heard of it was `check`'s
+    `plan-unsafe-path`: an answer `plan` chose for the person, refused one
+    command later. `Icon\\r`, which no rule places, was asked the policy's
+    question, which offers `spec` and `code` as well.
+
+    So each entry the test refuses that is not answered `root` -- the rules
+    put it in a leg, or ask -- gets `leg: null` and a question that says why
+    `execute` will not extract it, in the test's words, and that `root` or
+    `drop` is the only answer for it, as UNSAFE_PATH_REMEDIATION says after
+    `check`'s finding; renaming it in the source is the way into a leg. An
+    entry that holds a submodule is told `drop`: the assembly root keeps no
+    submodule of the source's (`plan-submodule-root`). A question the entry
+    carries already -- the policy's, or `.gitmodules`' -- is kept, and this
+    one follows it. An entry answered `root` is left as it is: it is never
+    extracted (NOT_EXTRACTED), and `check` and `execute` take it. The rule
+    and the reason stay the classifier's, so the plan still says where the
+    rules would have put it.
+
+    `check` and `execute` are not changed: they ask the same test of
+    whatever the person answers, as they always did. The question is set on
+    the entry as it is written, as `_asked_about` sets one, so no run of
+    spaces in a name it spells is folded.
+    """
+    gitlinks = [path for path, mode, _, _ in tree if mode == GITLINK_MODE]
+    out = []
+    for entry in entries:
+        problem = (None if entry.leg in NOT_EXTRACTED
+                   else entry_path_problem(entry.path))
+        if problem is None:
+            out.append(entry)
+            continue
+        held = any(_covering([entry.path], path) for path in gitlinks)
+        out.append(_refused_as_named(entry, problem, held))
+    return out
+
+
+def _refused_as_named(entry: Entry, problem: str, held: bool) -> Entry:
+    """`entry` as `ask_about_refused_paths` writes it: `leg: null`, its rule
+    and reason, and the question, after any it carries already."""
+    if entry.leg is not None:
+        lead = (f"The rules put this path in the {entry.leg} leg (rule "
+                f"`{entry.rule}`), but `execute` will not extract it")
+    else:
+        lead = (f"{entry.question} But " if entry.question else "") \
+            + "`execute` will not extract this path"
+    answer = ("`drop` is the only answer `execute` takes for this entry as it "
+              "stands: `root` would keep a submodule in the assembly root, "
+              "which keeps none of the source's" if held else
+              "`root` or `drop` is the only answer `execute` takes for it")
+    out = Entry(entry.path, Verdict(None, entry.rule, entry.reason,
+                                    entry.confidence), entry.files,
+                entry.bytes)
+    out.question = (f"{lead} into a leg as it is named, because {problem}. "
+                    f"So {answer}. To put it in a leg, rename it in the "
+                    "source, commit, and re-run `plan`.")
+    return out
 
 
 def _replacements(entry: str, held: list[str], own: list[str]) -> str:
@@ -1757,12 +1871,22 @@ def cmd_plan(args) -> int:
     # called the code leg empty, so the plan recorded it as seeded and told
     # the person to re-run with `--allow-empty-leg code`, which it never
     # needed (#166's NEW-1). A source with no submodule plans as it did.
+    #
+    # A path `execute` will not extract as it is named is the other way
+    # round (#319): `root` and `drop` are the only answers it takes, so the
+    # path is in no leg whatever the person says, and what the rules imply
+    # is read with it ASKED. A follow-up about a code path no leg will hold,
+    # or naming it as a spec directory, would be about nothing, and a leg it
+    # alone fed is seeded -- which the plan records, as `check` will say of
+    # the plan as written. A source with no such path plans as it did.
     ruled = walk(policy, [(path, size) for path, _, _, size in tree])
-    materialized = _predict_collisions(ruled)
-    follow_ups = follow_ups_for(source, ruled, names, args.spec_path,
+    implied = ask_about_refused_paths(ruled, tree)
+    materialized = _predict_collisions(implied)
+    follow_ups = follow_ups_for(source, implied, names, args.spec_path,
                                 args.code_path, materialized)
-    seeded = seeded_legs(assigned_paths(ruled))
-    entries = ask_about_submodules(policy, ruled, tree)
+    seeded = seeded_legs(assigned_paths(implied))
+    entries = ask_about_refused_paths(
+        ask_about_submodules(policy, ruled, tree), tree)
     out = Path(args.out)
     write_lf(out, render_plan(args, source, entries, names, pins, follow_ups,
                               seeded))
