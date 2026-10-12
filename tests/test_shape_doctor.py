@@ -4041,16 +4041,20 @@ def test_a_pin_broken_in_a_commit_is_put_back_from_before_that_commit(
     compliant_again(standard, project)
 
 
-def test_the_issues_own_merge_takes_one_side_of_the_shapes_files_whole(
-        standard, project):
+def test_the_issues_own_merge_takes_only_the_pin_whole(standard, project):
     """The issue's reproduction: two branches rewrite `commit:`, then merge.
 
     The pin is `UU`, and so are `Makefile`, a shape copy, and a file of the
-    project's own. The NEXT takes one side whole of every conflicted file the
-    shape writes and of no other, so the project's own file is left to its
-    owner. Run, the pin reads again: the row then answers about the commit
-    it names, which in this fixture is no commit at all.
+    project's own. The NEXT took one side whole of the pin and the
+    Makefile, as one tool's output. But a copy can hold an edit of the
+    project, kept by `apply --accept-local`, and taken whole the other
+    side's copy dropped it (#485). So the NEXT takes the pin alone, and its
+    note and `left_for_a_person` give the Makefile to a person to merge by
+    hand. The project's own file is left to its owner, unnamed. Run, the
+    pin reads again and the Makefile is as the merge left it: the row then
+    answers about the commit the pin names, which here is no commit at all.
     """
+    makefile = project / "Makefile"
     own = project / "notes.md"
     own.write_bytes(b"base\n")
     git("add", "--", "notes.md", cwd=project)
@@ -4079,11 +4083,17 @@ def test_the_issues_own_merge_takes_one_side_of_the_shapes_files_whole(
     assert row["next"].startswith("git -C "), row["next"]
     assert "checkout --ours -- " in row["next"], row["next"]
     argv = pasted(row["next"])
-    assert argv[3:] == ["checkout", "--ours", "--", "Makefile", SHAPE_PIN], \
-        argv
-    assert "left_for_a_person" not in row["detail"], row["detail"]
+    assert argv[3:] == ["checkout", "--ours", "--", SHAPE_PIN], argv
+    assert row["detail"]["left_for_a_person"] == ["Makefile"], row["detail"]
+    note = row["next"].split("   #", 1)[1]
+    assert "Makefile is a copy conflicted too" in note, note
+    assert "merges it by hand, keeping the hunks git merged" in note, note
+    assert "notes.md" not in row["next"], row["next"]
     assert_a_plain_note(row["next"])
+    held = makefile.read_bytes()
+    assert b"# edit-a" in held and b"# edit-b" in held, held[-200:]
     run_pasted(row["next"])
+    assert makefile.read_bytes() == held, "the NEXT took the Makefile whole"
     again = rows_of(doctor(standard, project, "--json"))["shape-currency"]
     assert again["detail"]["error"] not in READ_PIN_CODES, again
     assert again["detail"]["error"] == "update-revision-unresolvable", again
@@ -4163,9 +4173,12 @@ def test_the_issues_two_apply_merge_leaves_the_projects_manifest_to_a_person(
     paragraph, lines of its own far from any `apply` writes. Git merges both
     cleanly, and `project.yaml` is still `UU` over its `shape:` block.
     Taking `project.yaml` whole dropped the rename, and the doctor then said
-    COMPLIANT (review of PR #267). The NEXT takes the files the shape writes
-    whole, `project.yaml` is left to a person, and the rename survives the
-    NEXT, that person's merge and the merge commit.
+    COMPLIANT (review of PR #267). The NEXT takes the pin whole, and
+    `project.yaml` is left to a person, and the rename survives the NEXT,
+    that person's merge and the merge commit. So is the `UU` Makefile: it
+    was taken whole with the pin until a copy kept by `--accept-local` was
+    found to lose its edit that way (#485), and now the person merges it
+    too, here to the side the NEXT took, which is the pin's own copy.
 
     The row is `check_shape_currency`'s own, asked in process: without
     #232 a `project.yaml` that does not load is NOT A SHAPE ROOT and the
@@ -4203,31 +4216,38 @@ def test_the_issues_two_apply_merge_leaves_the_projects_manifest_to_a_person(
     assert row["detail"]["error"] == "yaml-unparsable", row["detail"]
     assert row["detail"]["restore"] == "unmerged", row["detail"]
     assert pasted(row["next"])[3:] == [
-        "checkout", "--ours", "--", "Makefile", SHAPE_PIN], row["next"]
-    assert row["detail"]["left_for_a_person"] == ["project.yaml"], \
+        "checkout", "--ours", "--", SHAPE_PIN], row["next"]
+    assert row["detail"]["left_for_a_person"] == ["Makefile",
+                                                  "project.yaml"], \
         row["detail"]
     note = row["next"].split("   #", 1)[1]
     assert "project.yaml is conflicted too" in note, note
+    assert "Makefile is a copy conflicted too" in note, note
     assert_a_plain_note(row["next"])
+    held = (project / "Makefile").read_bytes()
     run_pasted(row["next"])
     assert b'name: "Atlas Renamed"' in manifest.read_bytes(), \
         "shape/a's rename was dropped"
     assert b"only shape/a wrote" in readme.read_bytes()
+    assert (project / "Makefile").read_bytes() == held, \
+        "the NEXT took the Makefile whole"
     again = module.check_shape_currency(module.Context(project)).as_dict()
     assert again["detail"].get("error") not in READ_PIN_CODES, again
-    # A person's merge of `project.yaml`: each conflicting hunk to the side
-    # the NEXT took, each clean one kept, over git's own three stages.
-    stages = []
-    for number in (1, 2, 3):
-        held = subprocess.run(["git", "show", f":{number}:project.yaml"],
-                              cwd=str(project), capture_output=True,
-                              check=True).stdout
-        stages.append(tmp_path / f"project.yaml.{number}")
-        stages[-1].write_bytes(held)
-    subprocess.run(["git", "merge-file", "--ours", str(stages[1]),
-                    str(stages[0]), str(stages[2])],
-                   capture_output=True, check=True)
-    manifest.write_bytes(stages[1].read_bytes())
+    # A person's merge of `project.yaml` and of the Makefile: each
+    # conflicting hunk to the side the NEXT took, each clean one kept, over
+    # git's own three stages.
+    for name in ("project.yaml", "Makefile"):
+        stages = []
+        for number in (1, 2, 3):
+            held = subprocess.run(["git", "show", f":{number}:{name}"],
+                                  cwd=str(project), capture_output=True,
+                                  check=True).stdout
+            stages.append(tmp_path / f"{name}.{number}")
+            stages[-1].write_bytes(held)
+        subprocess.run(["git", "merge-file", "--ours", str(stages[1]),
+                        str(stages[0]), str(stages[2])],
+                       capture_output=True, check=True)
+        (project / name).write_bytes(stages[1].read_bytes())
     git("add", "--", "project.yaml", "Makefile", SHAPE_PIN, cwd=project)
     commit_in(project, "merge shape/a")
     kept = git("show", "HEAD:project.yaml", cwd=project).stdout
@@ -5464,6 +5484,209 @@ def test_a_neutral_product_pin_is_shown_never_put_back(standard, project,
     run_read_only(standard, project, row)
     assert (project / NEUTRAL_PIN).read_bytes() == before
     assert b"2" * 40 in before
+
+
+# --- the shape pin and a copy conflicted together (#485) --------------------
+#
+# Review of PR #358 (probes OD and OD2), filed as #485. Two branches that
+# each re-pin the shape: on one a person edits a copy and keeps the edit
+# with `update-shape.py apply --accept-local`, the exit the `shape currency`
+# row names for it; on the other `apply` takes a newer standard that wrote
+# the same end of that copy. Merged, the shape pin and the copy are both
+# conflicted. The NEXT took the copy whole with the pin, as one tool's
+# output, and with the update side as `--ours` the person's lines were gone,
+# the hunk git had merged with them, and the doctor then said COMPLIANT.
+# Now the NEXT takes the pin alone, and the copy is a person's to merge, as
+# a copy conflicted on its own is.
+
+#: The project's own Makefile target, and the one the standard's newer
+#: Makefile gains: both at the end of the file, so git cannot merge them.
+OWN_TARGET = b"\n# the project's own target\nship:\n\t@echo shipping Atlas\n"
+NEWER_TARGET = b"\n# a target the standard gained\ndoctor:\n\t@echo doctor\n"
+
+
+def standard_appended(standard: Path, tmp_path: Path, rel: str,
+                      tail: bytes) -> tuple:
+    """`(a copy of standard, S1, S2)`: S1 is the commit every project here
+    is scaffolded at, S2 one more commit appending `tail` to the standard's
+    `rel`, so `apply --at S2` re-copies the file made from it. A copy, with
+    its `.git`, so the session's `standard` is left as every test finds it.
+    """
+    moved = tmp_path / "moved" / "openRepoShape"
+    shutil.copytree(standard, moved, symlinks=True)
+    s1 = git("rev-parse", "HEAD", cwd=moved).stdout.strip()
+    append_to(moved / rel, tail)
+    commit_all(moved, f"{rel} gains a line")
+    return moved, s1, git("rev-parse", "HEAD", cwd=moved).stdout.strip()
+
+
+def apply_and_commit(moved: Path, root: Path, *args: str) -> None:
+    """The real `update-shape.py apply --yes`, and what it wrote committed."""
+    applied = run_script(moved / "update-shape.py", "apply", "--root",
+                         str(root), "--upstream", str(moved), "--yes", *args)
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    commit_all(root, "update-shape.py apply " + " ".join(args))
+
+
+def two_shape_updates_merged(moved: Path, s1: str, s2: str, root: Path,
+                             copy: str, edit, ours: str) -> bytes:
+    """Probe OD's state, built with the real `update-shape.py`.
+
+    Branch `local`: `edit` changes `copy`, committed, then kept with `apply
+    --at S1 --accept-local <copy>`, which re-pins it from the project's
+    bytes. Branch `upgrade`: `apply --at S2`, which re-copies it from the
+    newer standard and re-pins the shape. Both from HEAD, and `ours`
+    merges the other, which leaves the copy and the shape pin `UU`. The
+    copy's bytes as the merge left them.
+    """
+    base = git("rev-parse", "HEAD", cwd=root).stdout.strip()
+    git("checkout", "-q", "-b", "local", base, cwd=root)
+    edit(root)
+    git("add", "--", copy, cwd=root)
+    commit_in(root, f"the project's own edit of {copy}")
+    apply_and_commit(moved, root, "--at", s1, "--accept-local", copy)
+    git("checkout", "-q", "-b", "upgrade", base, cwd=root)
+    apply_and_commit(moved, root, "--at", s2)
+    git("checkout", "-q", ours, cwd=root)
+    theirs = "local" if ours == "upgrade" else "upgrade"
+    merged = subprocess.run(["git", "merge", "-q", theirs], cwd=str(root),
+                            capture_output=True, text=True, check=False,
+                            env={**os.environ, **GIT_IDENTITY})
+    assert merged.returncode != 0, merged.stdout + merged.stderr
+    status = git("status", "--porcelain=v1", cwd=root).stdout
+    assert f"UU {copy}" in status and f"UU {SHAPE_PIN}" in status, status
+    return (root / copy).read_bytes()
+
+
+def verdict_of(standard: Path, root: Path) -> tuple[str, dict]:
+    result = doctor(standard, root, "--json")
+    return json.loads(result.stdout)["verdict"], rows_of(result)
+
+
+def assert_the_pin_alone_is_taken(currency: dict, kinds: dict,
+                                  copy: str) -> None:
+    """The shape pin's NEXT names the pin alone, both rows print it, and
+    its note and `left_for_a_person` give the copy to a person."""
+    assert currency["detail"]["restore"] == "unmerged", currency["detail"]
+    assert pasted(currency["next"])[3:] == [
+        "checkout", "--ours", "--", SHAPE_PIN], currency["next"]
+    assert currency["detail"]["left_for_a_person"] == [copy], currency
+    assert kinds["next"] == currency["next"], (kinds, currency)
+    assert kinds["detail"]["left_for_a_person"] == [copy], kinds["detail"]
+    note = currency["next"].split("   #", 1)[1]
+    assert f"{copy} is a copy conflicted too" in note, note
+    assert "merges it by hand, keeping the hunks git merged" in note, note
+    assert "apply --accept-local" in note, note
+    assert_a_plain_note(currency["next"])
+
+
+@pytest.mark.parametrize("ours", [
+    pytest.param("upgrade", id="the-update-side-ours"),
+    pytest.param("local", id="the-persons-side-ours"),
+])
+def test_a_copy_conflicted_with_the_shape_pin_is_left_to_a_person(
+        standard, project, tmp_path, ours):
+    """Probe OD (#485): the naming copy edited and accepted on `local`, its
+    end rewritten by an upgrade on `upgrade`, merged either way.
+
+    The NEXT was `checkout --ours -- <copy> contracts/shape-pin.yaml`.
+    With the update side as ours it dropped the project's line, which git
+    had merged, and its tail; the merge finished, the doctor said
+    COMPLIANT. With the person's side as ours it dropped the upgrade's.
+
+    Now, run as pasted, it leaves the copy as the merge left it. The
+    `manifest kinds` row's `restore` calls the copy `unmerged`, the case
+    it is in, where it said `project` while its NEXT overwrote the file.
+    The next run names the copy's read-only `diff`, and the doctor is not
+    COMPLIANT until a person has merged it and, where the merge differs
+    from the pin, re-pinned it with the `--accept-local` the `shape
+    currency` row names. HEAD then holds every line of both sides.
+    """
+    moved, s1, s2 = standard_appended(standard, tmp_path, NAMING_COPY,
+                                      SHAPE_TAIL)
+
+    def person(r: Path) -> None:
+        insert_after_first_line(r / NAMING_COPY, PROJECT_LINE)
+        append_to(r / NAMING_COPY, PROJECT_TAIL)
+
+    held = two_shape_updates_merged(moved, s1, s2, project, NAMING_COPY,
+                                    person, ours)
+    for line in (PROJECT_LINE, PROJECT_TAIL, SHAPE_TAIL):
+        assert line in held, line
+    kinds, currency = kinds_and_currency(moved, project)
+    run_pasted(currency["next"])
+    assert (project / NAMING_COPY).read_bytes() == held, \
+        "the NEXT took one side of the copy whole"
+    assert_the_pin_alone_is_taken(currency, kinds, NAMING_COPY)
+    assert kinds["detail"]["restore"] == {NAMING_COPY: "unmerged",
+                                          SHAPE_PIN: "unmerged"}, kinds
+    verdict, rows = verdict_of(moved, project)
+    assert verdict != "COMPLIANT", rows
+    kinds = rows["manifest-kinds"]
+    assert kinds["detail"]["restore"] == {NAMING_COPY: "unmerged"}, kinds
+    assert pasted(kinds["next"])[3:] == ["diff", "--", NAMING_COPY], kinds
+    shown = run_read_only(moved, project, kinds)
+    assert PROJECT_TAIL.strip() in shown and SHAPE_TAIL.strip() in shown
+    merge_by_hand(project / NAMING_COPY)
+    git("add", "--", NAMING_COPY, SHAPE_PIN, cwd=project)
+    commit_in(project, "the copy merged by hand")
+    verdict, rows = verdict_of(moved, project)
+    assert verdict != "COMPLIANT", rows
+    if ours == "upgrade":
+        currency = rows["shape-currency"]
+        then = currency["next"].split("   #", 1)[1].split()
+        assert then[:2] == ["then", "apply"], currency["next"]
+        assert then[then.index("--accept-local") + 1] == NAMING_COPY, then
+        applied = run_script(moved / "update-shape.py", "apply", "--root",
+                             str(project), "--upstream", str(moved),
+                             *then[2:])
+        assert applied.returncode == 0, applied.stdout + applied.stderr
+        compliant_again(moved, project)
+    kept = git("show", f"HEAD:{NAMING_COPY}", cwd=project).stdout
+    for line in (PROJECT_LINE, PROJECT_TAIL, SHAPE_TAIL):
+        assert line.decode() in kept, line
+
+
+def test_a_makefile_conflicted_with_the_shape_pin_keeps_the_projects_target(
+        standard, project, tmp_path):
+    """Probe OD2 (#485), the copy a project most often edits. The project
+    appends its own target to the Makefile and keeps it with
+    `--accept-local`, and the standard's newer Makefile appends another.
+    The update branch merges the project's.
+
+    The NEXT named `Makefile` with the pin, and once the merge was finished
+    HEAD's Makefile had lost the project's target and the doctor said
+    COMPLIANT. Now the Makefile keeps both sides through the NEXT, the
+    doctor is not COMPLIANT until a person has merged it and accepted the
+    merge, and HEAD's Makefile then holds both targets.
+    """
+    moved, s1, s2 = standard_appended(standard, tmp_path, UPSTREAM_TARGET,
+                                      NEWER_TARGET)
+    held = two_shape_updates_merged(
+        moved, s1, s2, project, "Makefile",
+        lambda r: append_to(r / "Makefile", OWN_TARGET), "upgrade")
+    assert b"ship:" in held and b"doctor:" in held, held[-400:]
+    kinds, currency = kinds_and_currency(moved, project)
+    run_pasted(currency["next"])
+    assert (project / "Makefile").read_bytes() == held, \
+        "the NEXT took one side of the Makefile whole"
+    assert_the_pin_alone_is_taken(currency, kinds, "Makefile")
+    assert kinds["detail"]["restore"] == {SHAPE_PIN: "unmerged"}, kinds
+    verdict, rows = verdict_of(moved, project)
+    assert verdict != "COMPLIANT", rows
+    merge_by_hand(project / "Makefile")
+    git("add", "--", "Makefile", SHAPE_PIN, cwd=project)
+    commit_in(project, "the Makefile merged by hand")
+    verdict, rows = verdict_of(moved, project)
+    assert verdict != "COMPLIANT", rows
+    then = rows["shape-currency"]["next"].split("   #", 1)[1].split()
+    assert then[then.index("--accept-local") + 1] == "Makefile", then
+    applied = run_script(moved / "update-shape.py", "apply", "--root",
+                         str(project), "--upstream", str(moved), *then[2:])
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    compliant_again(moved, project)
+    kept = git("show", "HEAD:Makefile", cwd=project).stdout
+    assert "ship:" in kept and "doctor:" in kept, kept[-400:]
 
 
 # --- placement: code in spec, spec in code (#99) ----------------------------
