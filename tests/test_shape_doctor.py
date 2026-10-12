@@ -312,15 +312,18 @@ def test_a_project_behind_the_standard_is_compliant_but_behind(
 
 # --- a leg that is not at its pin ------------------------------------------
 
-def test_a_leg_off_its_pin_is_a_finding_that_names_bootstrap(standard,
-                                                             project):
+def test_a_leg_off_its_pin_is_a_finding_that_names_a_submodule_update(
+        standard, project):
     """A commit made INSIDE a mount, which is how a leg walks off its pin.
 
     The gitlink in the superproject's index is untouched, so
     `validate-pins.py` is still green — it reads what the next commit would
     RECORD — and the only thing that can notice is a tool that looks at the
-    mount's HEAD. That is this row, and its exit is `make bootstrap`, which
-    puts the leg back on its tracking branch AT the pin.
+    mount's HEAD. That is this row, and its exit is `git submodule update`,
+    which puts the leg back AT the gitlink, which is the pin. It names no
+    script of the root's: `scripts/bootstrap.py` may be what is missing, and
+    never moved an existing branch (#276; `test_doctor_legs_members_next.py`
+    pastes the line).
     """
     leg = project / "spec"
     subprocess.run(["git", "commit", "-q", "--allow-empty", "-m",
@@ -331,8 +334,10 @@ def test_a_leg_off_its_pin_is_a_finding_that_names_bootstrap(standard,
     assert result.returncode == 1, result.stdout + result.stderr
     assert verdict_line(result).startswith("DRIFTED ("), result.stdout
     assert "leg(s) not at the pin" in verdict_line(result), result.stdout
-    assert "bootstrap.py" in result.stdout, (
-        "the row must name what `make bootstrap` runs")
+    assert "submodule update --init --recursive" in result.stdout, (
+        "the row must name the command that puts the leg back at its pin")
+    assert "bootstrap.py" not in result.stdout, (
+        "and no script the root may lack (#276)")
     rows = rows_of(doctor(standard, project, "--json"))
     assert rows["legs"]["status"] == "FINDING"
     assert rows["pins"]["status"] == "ok", (
@@ -353,7 +358,11 @@ def test_an_unbootstrapped_mount_is_a_finding(standard, project):
     rows = rows_of(result)
     assert rows["legs"]["status"] == "FINDING"
     assert "unbootstrapped clone" in rows["legs"]["reason"]
-    assert "bootstrap" in (rows["legs"]["next"] or "")
+    # `bootstrap.py` never initialises a mount (it prints `NOT INITIALIZED`
+    # and stops), so the line is the submodule update that does (#276).
+    assert "submodule update --init --recursive --checkout -- code" in \
+        (rows["legs"]["next"] or ""), rows["legs"]["next"]
+    assert "bootstrap.py" not in (rows["legs"]["next"] or "")
 
 
 # --- a manifest kind nothing validates -------------------------------------
@@ -1820,8 +1829,12 @@ def test_the_legs_next_command_is_runnable(standard, project):
                    env={**os.environ, **GIT_IDENTITY})
     row = rows_of(doctor(standard, project, "--json"))["legs"]
     command = row["next"].split("#")[0].split()
-    assert "--root" in command, row["next"]
-    assert Path(command[1]).is_file(), command
+    # A git line and not a script of the root's (#276): `git -C <root>
+    # submodule update --init --recursive -- spec`.
+    assert command[:2] == ["git", "-C"], row["next"]
+    assert command[3:7] == ["submodule", "update", "--init", "--recursive"], \
+        row["next"]
+    assert command[-1] == "spec", row["next"]
     proc = subprocess.run(command, capture_output=True, text=True,
                           check=False, env={**os.environ, **GIT_IDENTITY,
                                             "PYTHONDONTWRITEBYTECODE": "1"})
