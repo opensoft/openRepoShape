@@ -33,6 +33,10 @@ The groups of tests:
   disk follows it, and refused on every disk (S1).
 - `core.symlinks=false` (#183): `execute` refuses, before any leg, a link the
   shape would write beneath, because the assembly's clone holds it as a file.
+  A link AT a path the shape writes is then that file, which `place` writes
+  the copy beside, so neither `check` nor `execute` refuses it, wherever it
+  leads (B-OFF). The tests of a link `check` follows tell `git` to check a
+  symlink out as one, since Git for Windows' own default is a file.
 - The materializer's own refusals, for a caller that skipped `check`.
 
 The end-to-end tests at the bottom need `git filter-repo` and a disk that
@@ -142,6 +146,13 @@ BUILD_MAKEFILE = "build/Makefile"
 GIT_INFO = ".git/info"
 GIT_HEAD = ".git/HEAD"
 GIT_DESCRIPTION = ".git/description"
+GIT_HOOKS = ".git/hooks"
+#: What the assembly's clone holds in its own `.git` when the shape is
+#: written, besides `HEAD`: the files git makes in every clone it checks
+#: out, and places in the directories of its objects, its refs, their logs,
+#: and the stores of the legs `execute` has mounted (2b of #183's re-verify).
+GIT_KEPT = (".git/index", ".git/packed-refs", ".git/logs/HEAD",
+            ".git/refs/heads", ".git/objects/pack", ".git/modules/spec")
 SPEC_OTHER = "spec/docs/other.md"
 VENDOR = "vendor"
 PERSONAL = "a personal file\n"
@@ -194,6 +205,18 @@ def symlink(link: Path, target: str) -> None:
         os.symlink(target, link)
     except (NotImplementedError, OSError) as exc:
         pytest.skip(f"this platform cannot create a symlink here: {exc}")
+
+
+@pytest.fixture
+def links_as_links(monkeypatch):
+    """`git` told to check a symlink out AS a symlink, after whatever
+    `GIT_CONFIG_*` the runner's job sets (the Windows job sets two). `check`
+    follows a link AT a path the shape writes only where `git` does that,
+    and Git for Windows' own default is a plain file (B-OFF)."""
+    held = int(os.environ.get("GIT_CONFIG_COUNT") or 0)
+    monkeypatch.setenv("GIT_CONFIG_COUNT", str(held + 1))
+    monkeypatch.setenv(f"GIT_CONFIG_KEY_{held}", "core.symlinks")
+    monkeypatch.setenv(f"GIT_CONFIG_VALUE_{held}", "true")
 
 
 @pytest.fixture(scope=MODULE)
@@ -341,6 +364,8 @@ def passed_alike(adopter, base: Path, plan: Path, *extra: str) -> None:
     assert checked.returncode == 0, checked.stderr + checked.stdout
     assert "plan ok" in checked.stdout
     loaded = adopter.Plan.load(plan)
+    # Made as `execute`'s `_work_root` makes it: the disk is asked there.
+    (base / WORK).mkdir(exist_ok=True)
     source = loaded.open_source(None, base / WORK)
     assert adopter._refuse_what_check_finds(loaded, source) is None
 
@@ -504,6 +529,10 @@ REFUSED = [
                  (CLAUDE, GIT_DESCRIPTION, CLAUDE,
                   leads(CLAUDE, GIT_DESCRIPTION, NOT_IN_THE_TREE)),
                  id="at-a-path-to-what-only-a-template-puts-in-dot-git"),
+    pytest.param({}, {CLAUDE: GIT_HOOKS}, {CLAUDE: ROOT},
+                 (CLAUDE, GIT_HOOKS, CLAUDE,
+                  leads(CLAUDE, GIT_HOOKS, NOT_IN_THE_TREE)),
+                 id="at-a-path-to-the-hooks-only-a-template-makes"),
     # B2: the copy under `shape/` lands on something already there.
     pytest.param({}, {SHAPE_DIR: "."}, {SHAPE_DIR: ROOT},
                  (SHAPE_DIR, ".", SHAPE_README,
@@ -534,8 +563,8 @@ REFUSED = [
 
 @pytest.mark.parametrize((*PLANNED, "expected"), REFUSED)
 def test_check_reports_the_link_and_execute_refuses_it_before_any_leg(
-        adopter, no_filter_repo_probe, tmp_path, files, links, legs,
-        expected):
+        adopter, no_filter_repo_probe, links_as_links, tmp_path, files, links,
+        legs, expected):
     """One finding naming the link, its target and the shape path that runs
     through it; `execute` refuses with the same line, word for word, and
     makes no leg, so the corrected plan does not meet `leg-remote-exists`."""
@@ -648,7 +677,8 @@ def drive_reading(link: str, target: str, at_the_path: bool) -> str:
     pytest.param(GITHUB, DRIVE_CI, WORKFLOW, id="above-a-shape-path"),
 ])
 def test_a_drive_letter_target_is_read_as_this_machine_reads_it(
-        adopter, no_filter_repo_probe, tmp_path, link, target, path):
+        adopter, no_filter_repo_probe, links_as_links, tmp_path, link, target,
+        path):
     """`C:/x` is absolute only on Windows. There it is a place on this
     machine, not in the assembly; on Linux and macOS it is a relative path,
     and nothing in this source is at it. Refused on every disk, and each
@@ -743,7 +773,8 @@ def test_a_link_at_a_path_to_a_place_outside_that_is_there_is_kept(
 
 @pytest.mark.parametrize(AT_OUTSIDE_ARGS, AT_OUTSIDE)
 def test_a_link_at_a_path_to_a_place_outside_that_is_not_there_is_refused(
-        adopter, no_filter_repo_probe, tmp_path, links, legs, files, names):
+        adopter, no_filter_repo_probe, links_as_links, tmp_path, links, legs,
+        files, names):
     """(a) Where nothing is there, main writes the shape's file THROUGH the
     link, onto this machine outside the assembly."""
     outside, plan = outside_plan(tmp_path, links, legs, files)
@@ -757,7 +788,7 @@ def test_a_link_at_a_path_to_a_place_outside_that_is_not_there_is_refused(
 
 def test_execute_asks_its_own_disk_before_any_leg(adopter,
                                                   no_filter_repo_probe,
-                                                  tmp_path):
+                                                  links_as_links, tmp_path):
     """`check` passed while the file was there; `execute` finds it gone and
     refuses before any leg, rather than trusting what `check` saw."""
     outside, plan = outside_plan(tmp_path, {CLAUDE: f"{{o}}/{CLAUDE}"},
@@ -773,7 +804,7 @@ def test_execute_asks_its_own_disk_before_any_leg(adopter,
 
 
 def test_a_link_at_a_path_that_climbs_into_the_work_directory(
-        adopter, no_filter_repo_probe, tmp_path):
+        adopter, no_filter_repo_probe, links_as_links, tmp_path):
     """`execute` makes the assembly's clone in its work directory, so `..`
     above the root leads there: refused while nothing is there, kept, as on
     main, once something is. `check` asks the same directory when it is
@@ -792,7 +823,7 @@ def test_a_link_at_a_path_that_climbs_into_the_work_directory(
 
 
 def test_a_link_at_a_path_into_what_execute_makes_beside_the_assembly(
-        adopter, no_filter_repo_probe, tmp_path):
+        adopter, no_filter_repo_probe, links_as_links, tmp_path):
     """The spec leg's clone is made in the work directory only after this
     check, so the disk cannot answer for it yet."""
     _, plan = planned(tmp_path, {}, {AGENTS: "../Northwind-spec/agents.md"},
@@ -863,11 +894,15 @@ ACCEPTED = [
     pytest.param({CI_FILE: ON_PUSH}, {GITHUB_TWIN: "ci"},
                  {CI_DIR: ROOT, GITHUB_TWIN: ROOT},
                  id="a-case-twin-that-stays-inside"),
-    # A link AT a path to what git makes in every clone's own `.git`:
-    # `place` finds it there and writes the copy beside, as on main (F3 of
-    # #183's re-verify).
+    # A link AT a path to what the clone's own `.git` holds by the time the
+    # shape is written: `place` finds it there and writes the copy beside,
+    # as on main (F3 and 2b of #183's re-verify).
     pytest.param({}, {CLAUDE: GIT_HEAD}, {CLAUDE: ROOT},
                  id="at-a-path-to-the-clones-own-head"),
+    *(pytest.param({}, {CLAUDE: kept}, {CLAUDE: ROOT},
+                   id="at-a-path-to-the-clones-own-"
+                      + kept[5:].replace("/", "-"))
+      for kept in GIT_KEPT),
 ]
 
 #: Links no path the shape writes runs through: main keeps each exactly as
@@ -997,6 +1032,49 @@ def test_an_adoption_with_no_link_beneath_a_shape_path_makes_no_probe(
     opened = loaded.open_source(None, tmp_path / READ)
     assert adopter._refuse_symlinks_checked_out_as_files(
         loaded, opened, tmp_path) is None
+    # Nor does `check`'s list, which asks only of a link it cannot follow.
+    assert adopter._refuse_what_check_finds(loaded, opened) is None
+
+
+#: Links AT a path the shape writes that `check` cannot follow, which a
+#: checkout without symlinks holds as plain files (B-OFF of #183's
+#: re-verify): `CLAUDE.md` linked to a personal file on another machine,
+#: one that dangles, and D3's. `place` finds each file there and writes the
+#: shape's copy beside it, and main adopts and bootstraps each.
+AT_A_FILE = [
+    pytest.param({}, {CLAUDE: "/nonexistent-183/.claude/CLAUDE.md"},
+                 {CLAUDE: ROOT}, id="absolute-and-nothing-there"),
+    pytest.param({}, {CLAUDE: "nowhere.md"}, {CLAUDE: ROOT},
+                 id="dangling"),
+    pytest.param({"config/readme.md": "c\n"}, {ATTRIBUTES: CONFIG_ATTRS},
+                 {CONFIG_DIR: ROOT, ATTRIBUTES: ROOT},
+                 id="D3-dangling-in-a-kept-directory"),
+]
+
+
+@pytest.mark.parametrize(PLANNED, [
+    *AT_A_FILE,
+    pytest.param({}, {GITIGNORE_TWIN: NOWHERE_GITIGNORE},
+                 {GITIGNORE_TWIN: ROOT}, id="a-case-twin"),
+])
+def test_with_symlinks_off_a_link_at_a_path_is_a_file_passed_by_both(
+        adopter, tmp_path, monkeypatch, files, links, legs):
+    """Where `git` checks a symlink out as a plain file (Git for Windows'
+    default), nothing about where a link AT a path the shape writes leads is
+    refused: `check` and `execute` each ask their own work directory, and
+    neither the list of `check`'s findings nor the probe for a link the
+    shape writes beneath refuses it. A case twin is that file once case is
+    ignored, and a second name where it is kept."""
+    _, plan = planned(tmp_path, files, links, legs)
+    for key, value in SYMLINKS_OFF.items():
+        monkeypatch.setenv(key, value)
+    passed_alike(adopter, tmp_path, plan)
+    loaded = adopter.Plan.load(plan)
+    work = tmp_path / WORK
+    opened = loaded.open_source(None, work)
+    assert adopter._refuse_symlinks_checked_out_as_files(
+        loaded, opened, work) is None
+    assert list(work.iterdir()) == []
 
 
 # ---------------------------------------------------------------------------
@@ -1376,6 +1454,60 @@ def test_a_link_at_a_path_into_the_clones_own_git_adopts_beside_it(tmp_path):
             f"{CLAUDE}; nothing was overwritten)") in result.stdout
     assert split_modes(source)[CLAUDE] == SYMLINK
     assert git("show", f"{BRANCH}:{CLAUDE}", cwd=source).stdout == GIT_HEAD
+
+
+def adopted_beside(result, source: Path, links: dict) -> None:
+    """`execute` verified the adoption, each link is kept as the source had
+    it, and the shape's copy of each is beside it under `shape/`."""
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert VERIFIED in result.stdout
+    modes = split_modes(source)
+    for link, target in links.items():
+        assert (f"  beside  {SHAPE_DIR}/{link} (the source already has "
+                f"{link}; nothing was overwritten)") in result.stdout
+        assert modes[link] == SYMLINK
+        assert modes[f"{SHAPE_DIR}/{link}"] == "100644"
+        assert git("show", f"{BRANCH}:{link}", cwd=source).stdout == target
+
+
+#: Two links, each AT a path the shape writes, into what the assembly's
+#: clone holds in its own `.git` by then (2b of #183's re-verify).
+INTO_THE_CLONES_GIT = [
+    pytest.param({CLAUDE: ".git/index", AGENTS: ".git/packed-refs"},
+                 id="the-index-and-the-packed-refs"),
+    pytest.param({CLAUDE: ".git/logs/HEAD", AGENTS: ".git/objects/pack"},
+                 id="a-log-and-the-packs"),
+    pytest.param({CLAUDE: ".git/refs/heads", AGENTS: ".git/modules/spec"},
+                 id="the-branches-and-a-legs-store"),
+]
+
+
+@needs_filter_repo
+@needs_disk_symlinks
+@pytest.mark.parametrize(LINKS, INTO_THE_CLONES_GIT)
+def test_links_into_what_the_clones_own_git_holds_adopt_beside_them(
+        tmp_path, links):
+    """Git makes each in the clone, or `execute` does before the shape is
+    written, so `place` finds it there and writes the copy beside the link,
+    as on main. Before 2b only five such names counted, and these were
+    refused."""
+    source, plan = planned(tmp_path, {}, links, {link: ROOT for link in links})
+    adopted_beside(execute(tmp_path, plan), source, links)
+
+
+@needs_filter_repo
+@pytest.mark.parametrize(PLANNED, AT_A_FILE)
+def test_with_symlinks_off_execute_adopts_beside_the_file(
+        tmp_path, monkeypatch, files, links, legs):
+    """B-OFF of #183's re-verify, end to end: where `git` checks a symlink
+    out as a plain file, the assembly's clone holds the link AT the shape
+    path as one, `place` writes the copy beside it, and the split keeps the
+    link as the source had it, as main does. Before, `check` refused it, and
+    so did `execute`, before any leg."""
+    source, plan = planned(tmp_path, files, links, legs)
+    for key, value in SYMLINKS_OFF.items():
+        monkeypatch.setenv(key, value)
+    adopted_beside(execute(tmp_path, plan), source, links)
 
 
 @needs_filter_repo
