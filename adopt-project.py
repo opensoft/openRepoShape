@@ -3047,6 +3047,15 @@ def _interrupted(exc: BaseException) -> bool:
 #: after `_create_leg_remotes` has made the two leg repositories.
 BUILT_IN = {"spec": "the spec leg", "code": "the code leg",
             "assembly": "the split"}
+#: Why a directory of `BUILT_IN` that holds something is refused, by what
+#: builds in it. The split and an extracted leg are cloned into theirs; a
+#: seeded leg is not, so `git clone` was no reason for its directory
+#: (#188's confirmation check, N-1). `_seed_leg` writes its template into
+#: the directory and commits what is there: on main, a person's own files
+#: and history left there went into the new leg and were pushed.
+CLONE_REFUSES = "`git clone` refuses a directory that is not empty"
+SEED_TAKES_IN = ("a seeded leg's first commit would take in what it holds "
+                 "and push it to the new leg")
 
 
 def _holds_something(path: Path) -> bool:
@@ -3234,7 +3243,8 @@ def _branch_deletion(source: Source, urls: dict, branch: str) -> str:
                      shlex.quote(branch)])
 
 
-def _refuse_an_occupied_work_dir(work_root: Path, names: dict) -> None:
+def _refuse_an_occupied_work_dir(work_root: Path, names: dict,
+                                 seeded: list[str]) -> None:
     """Refuse a work directory that already holds one of the directories
     this run builds in (`BUILT_IN`), BEFORE a leg repository exists (#188's
     review, F1).
@@ -3243,6 +3253,10 @@ def _refuse_an_occupied_work_dir(work_root: Path, names: dict) -> None:
     leg repositories, and `git clone` refuses a directory that is not empty.
     So a run into a `--work-dir` an earlier run had built in made two legs
     (two real repositories, against GitHub) and then stopped at the clone.
+    A SEEDED leg (`seeded`, its roles) is not cloned: its first commit
+    takes in whatever the directory holds and pushes it to the new leg, so
+    the detail gives each directory the reason of what builds in it
+    (`CLONE_REFUSES`, `SEED_TAKES_IN`; #188's confirmation check, N-1).
     The notice says not to reuse such a directory, but one printed way out
     left it unsaid -- `adopt-branch-exists`'s "delete the branch, then run
     `execute` again" -- and followed as written, it looped: a new pair of
@@ -3265,11 +3279,22 @@ def _refuse_an_occupied_work_dir(work_root: Path, names: dict) -> None:
             f"--work-dir {_spelled(str(work_root))} already holds "
             f"{_spelled_and_listed([name for name, _ in built])}, where this "
             f"run builds {_and_listed([what for _, what in built])}, and only "
-            "after it has made both leg repositories: `git clone` refuses a "
-            "directory that is not empty",
+            "after it has made both leg repositories: "
+            + _why_occupied(built, names, seeded),
             "Remediation: no leg repository was created and nothing was "
             "pushed. Pass a --work-dir that is new or empty, or none: without "
             "one, each run makes a new one.")
+
+
+def _why_occupied(built: list[tuple[str, str]], names: dict,
+                  seeded: list[str]) -> str:
+    """Why `built`'s directories are refused: each builder's reason once,
+    in the order `BUILT_IN` builds them, a seeded leg's `SEED_TAKES_IN`
+    and every other's `CLONE_REFUSES`."""
+    seeds = {names[role] for role in seeded}
+    reasons = [SEED_TAKES_IN if name in seeds else CLONE_REFUSES
+               for name, _ in built]
+    return ", and ".join(dict.fromkeys(reasons))
 
 
 def _in_the_history_of(source: Source, tip: str) -> bool:
@@ -4220,7 +4245,7 @@ def cmd_execute(args) -> int:
     _refuse_unconsented_seeding(args, plan, seeded)
     # What an earlier run left, the work directory first: a refusal below
     # whose way out is "run `execute` again" then meets one that is free.
-    _refuse_an_occupied_work_dir(work_root, names)
+    _refuse_an_occupied_work_dir(work_root, names, seeded)
     _refuse_a_split_branch_left_behind(source, urls, branch, local)
     for line in plan.seeding_record_disagreements(seeded):
         print(line)

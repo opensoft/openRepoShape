@@ -856,7 +856,7 @@ def test_adopt_work_dir_occupied_spells_the_work_dir(adopter, monkeypatch,
     _urls, work = odd_paths(char)
 
     with pytest.raises(adopter.Refusal) as caught:
-        adopter._refuse_an_occupied_work_dir(work, leg_names())
+        adopter._refuse_an_occupied_work_dir(work, leg_names(), [])
 
     detail = caught.value.detail
     assert detail.startswith(
@@ -1360,6 +1360,55 @@ def test_a_work_dir_an_earlier_run_built_in_is_refused_before_any_leg_exists(
         "Remediation: no leg repository was created and nothing was pushed. "
         "Pass a --work-dir that is new or empty, or none: without one, each "
         "run makes a new one.")
+    assert not (tmp_path / REMOTES).exists()
+    assert listing(work) == before
+
+
+#: A source with nothing for the spec leg, which `execute --allow-empty-leg
+#: spec` SEEDS from its template instead of extracting it.
+CODE_ONLY_TREE = {path: text for path, text in SMALL_TREE.items()
+                  if not path.startswith("specs/")}
+CLONE_REFUSES = "`git clone` refuses a directory that is not empty"
+SEED_TAKES_IN = ("a seeded leg's first commit would take in what it holds "
+                 "and push it to the new leg")
+
+
+@pytest.mark.parametrize("occupied, reasons", [
+    ([CODE], [CLONE_REFUSES]),
+    ([ROOT], [CLONE_REFUSES]),
+    ([SPEC], [SEED_TAKES_IN]),
+    ([SPEC, ROOT], [SEED_TAKES_IN, CLONE_REFUSES]),
+    ([CODE, ROOT], [CLONE_REFUSES]),
+], ids=["extracted-leg", "the-split", "seeded-leg",
+        "seeded-leg-and-the-split", "extracted-leg-and-the-split"])
+def test_adopt_work_dir_occupied_gives_each_builder_its_reason(
+        adopter, monkeypatch, tmp_path, occupied, reasons):
+    """A seeded leg is never cloned (#188's confirmation check, N-1).
+    `_seed_leg` writes its template into the directory and commits what
+    is there, so on main a person's own files and history left at
+    `<work>/<spec leg>` went into the new leg and were pushed. The
+    refusal comes before any leg exists either way, and its reason is the
+    one of what builds in each directory: `git clone` for an extracted
+    leg and the split, the first commit for a seeded leg. Each reason is
+    given once, in the order the run would build."""
+    no_filter_repo_probe(adopter, monkeypatch)
+    plan = planned(tmp_path, make_source_repo(tmp_path / SOURCE,
+                                              tree=CODE_ONLY_TREE,
+                                              edits=()))
+    work = tmp_path / WORK
+    for role in occupied:
+        built_by_this_run(work / leg_names()[role])
+    before = listing(work)
+    args = execute_args(tmp_path, plan)
+    args.allow_empty_leg = [SPEC]
+
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter.cmd_execute(args)
+
+    assert caught.value.code == WORK_DIR_OCCUPIED
+    assert caught.value.detail.endswith(
+        "and only after it has made both leg repositories: "
+        + ", and ".join(reasons)), caught.value.detail
     assert not (tmp_path / REMOTES).exists()
     assert listing(work) == before
 
