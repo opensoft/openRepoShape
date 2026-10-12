@@ -459,17 +459,23 @@ def test_a_pin_source_that_cannot_be_entered_or_named_is_a_finding(
     gh_never_ran(log)
 
 
-@pytest.mark.parametrize("encoding", ["cp1252", "cp1252:surrogateescape"])
-def test_a_note_naming_what_stdout_cannot_encode_is_printed_escaped(
-        tmp_path, encoding):
+@pytest.mark.parametrize("encoding, spelled", [
+    ("cp1252", "\\u65e5\\u672c"),
+    ("cp1252:surrogateescape", "\\u65e5\\u672c"),
+    ("cp1252:replace", "??"),
+])
+def test_a_note_naming_what_stdout_cannot_encode_never_raises(
+        tmp_path, encoding, spelled):
     """The note echoes a `--pin-source` as typed, so a value stdout cannot
     encode raised `UnicodeEncodeError` and turned a passing run into exit 1
     (#295 review, SHOULD-2); main's copy, which printed no such line, exits
     0 on the same arguments. cp1252 is what Windows gives a stdout that is
     not the console, with `surrogateescape` its default handler; `cp1252`
-    alone is `strict`. The child's stdout is read as BYTES and decoded
-    strictly as cp1252, so a byte the code page could not hold fails here,
-    and the name comes out escaped, as stderr would write it."""
+    alone is `strict`. Those two, the handlers that raise, now escape the
+    name as stderr would write it. A handler somebody CHOSE is theirs and
+    is kept: under `cp1252:replace` the name is `??`, never escaped over
+    their choice. The child's stdout is read as BYTES and decoded strictly
+    as cp1252, so a byte the code page could not hold fails here."""
     root, product, commit = scaffold_with_pin(tmp_path)
     unused = tmp_path / "日本"
     env, log = logging_gh(tmp_path, PYTHONIOENCODING=encoding)
@@ -484,9 +490,34 @@ def test_a_note_naming_what_stdout_cannot_encode_is_printed_escaped(
     assert "Traceback" not in stderr, stderr
     stdout = result.stdout.decode("cp1252")
     assert f"openGlass: pin commit {commit[:12]} digest recomputes" in stdout
-    escaped = str(unused).replace("日本", "\\u65e5\\u672c")
-    assert f"  note --pin-source {escaped}: not used — " in stdout, stdout
+    shown = str(unused).replace("日本", spelled)
+    assert f"  note --pin-source {shown}: not used — " in stdout, stdout
     assert stdout.endswith("pins ok\n") or stdout.endswith("pins ok\r\n")
+    gh_never_ran(log)
+
+
+def test_a_pin_source_that_is_a_symlink_to_a_checkout_recomputes(tmp_path):
+    """A named source that is itself a symlink to the stand-in answers, as
+    it always did: `_digest_from_source` asks `stat()`, which follows the
+    link to the directory, and never `lstat()`, which would call the link a
+    file and refuse a checkout somebody linked into place (#295 review,
+    NIT-B). Skipped on Windows, where a symlink needs a privilege the
+    runner's user may not hold, and wherever `os.symlink` refuses."""
+    if os.name == "nt":
+        pytest.skip("a symlink on Windows needs a privilege (or developer "
+                    "mode) this run may not have")
+    root, product, commit = scaffold_with_pin(tmp_path)
+    link = tmp_path / "linked-openGlass"
+    try:
+        os.symlink(product, link, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"this platform will not make a symlink here: {exc}")
+    env, log = logging_gh(tmp_path)
+    result = validate(root, "--pin-source", f"openGlass={link}", env=env)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert_pin_digest_recomputed(result, "openGlass", commit)
+    assert "(--pin-source openGlass=...)" in result.stdout
+    assert "  note " not in result.stdout
     gh_never_ran(log)
 
 
