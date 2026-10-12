@@ -24,8 +24,8 @@ scaffolded into local bare repositories, nothing is created on GitHub, and a
 `gh` on PATH logs and exits non-zero so a call to it would be seen. (On
 Windows a `#!` shim is not executable and the log stays empty whatever
 happens; `add` with `--local-remote-dir` has no `gh` call to make, which is
-what the POSIX runs prove.) `add` has no `--dry-run`, so there is none to
-test here.
+what the POSIX runs prove.) `add --dry-run` asks these same refusals and is
+tested in `test_family_dry_run.py` (#326).
 """
 
 from __future__ import annotations
