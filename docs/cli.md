@@ -661,7 +661,7 @@ options:
 
 ```
 usage: family.py bump [-h] --family-root FAMILY_ROOT --member PROJECT
-                      --to COMMIT [--trailer "KEY: VALUE"]
+                      --to COMMIT [--trailer "KEY: VALUE"] [--dry-run]
 
 options:
   -h, --help            show this help message and exit
@@ -672,6 +672,11 @@ options:
   --trailer "KEY: VALUE"
                         append this `<Key>: <value>` line to the commit this
                         writes; repeatable, kept in the order given
+  --dry-run             print the row this would write, and its trailers, and
+                        change nothing in the holder: it FETCHES the member,
+                        as a real bump does, to resolve --to and digest it,
+                        and checks nothing out, writes, stages and commits
+                        nothing; exit 1 if there is nothing to do
 ```
 
 #### `scripts/family.py remove`
@@ -680,11 +685,15 @@ options:
 
 ```
 usage: family.py remove [-h] --family-root FAMILY_ROOT --member PROJECT
+                        [--dry-run]
 
 options:
   -h, --help            show this help message and exit
   --family-root FAMILY_ROOT
   --member PROJECT
+  --dry-run             print the row, the gitlink, the .gitmodules section
+                        and the directory this would remove, and change
+                        nothing
 ```
 
 #### `scripts/family.py siblings`
@@ -816,12 +825,18 @@ options:
   --pin-source [PRODUCT=]PATH
                         a local checkout to recompute a neutral-product pin's
                         digest from, instead of `gh api` — e.g. --pin-source
-                        openGlass=../openGlass. A bare PATH with no `PRODUCT=`
+                        openGlass=../openGlass. The text before the first `=`
+                        is a PRODUCT only when it names a pin project.yaml
+                        declares, and then that reading wins even over a
+                        directory spelled like the whole value (./PATH reads
+                        that directory); any other value is a bare PATH, which
                         applies to whichever declared pin has no more specific
-                        answer (the common case is exactly one). Repeatable.
-                        SHAPE_PIN_SOURCE_<PRODUCT> (env) and a checkout
-                        sitting beside this assembly root are also tried,
-                        before `gh api` and before this flag's bare form.
+                        answer (the common case is exactly one). Repeatable; a
+                        value no pin used is noted, and one that cannot be
+                        read is a finding. SHAPE_PIN_SOURCE_<PRODUCT> (env)
+                        and a checkout sitting beside this assembly root are
+                        also tried, before `gh api` and before this flag's
+                        bare form.
 ```
 
 ### `templates/family-root/scripts/bootstrap.py`
