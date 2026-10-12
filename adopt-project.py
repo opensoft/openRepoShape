@@ -6242,6 +6242,54 @@ def _work_root(args) -> Path:
     return root
 
 
+def _leg_path_help(leg: str, default: str) -> str:
+    """`plan`'s `--help` for `--spec-path` and `--code-path` (#340): what the
+    flag is, what the plan records it as, and the two refusals `plan` makes on
+    it before it writes a plan, each by the code it prints. The two flags take
+    the one rule, so it is said from one place: `leg` is the role and
+    `default` the flag's default, which the examples of a spelling Git does
+    not keep are written from.
+
+    `tests/test_adopt_plan_leg_path_help.py` holds this to the tool: each
+    clause below names the value `plan` refuses for it, and each value the
+    help says is refused is. The spelling half is `leg_path_problem`'s, in the
+    order it asks (`scripts/shape_materialize.py`): the spelling, then the
+    names Git and Windows keep, then the alphabet `checked_value` allows (ASCII
+    only, 255 characters, nothing that begins with `-`). The collision half is
+    the scaffold's own sentence (#288) plus the half only an adoption has,
+    `shape/`, where `execute` writes its copy of a file the root already
+    holds. A mount over a source path the plan KEEPS in the root is not said
+    here, because `plan` refuses nothing for it (`_kept_collision_notes`).
+
+    THE LIST NEVER SAYS "ONLY". Each clause is a value `plan` refuses, and
+    each refusal prints the whole rule under `Remediation:`, where the closing
+    sentence sends the reader. A value the project's YAML reader would read
+    back as something other than text (`null`, `2026`: #225) is in none of
+    them: `plan` writes a plan for it, or refuses it under a clause or a code
+    another change adds, and this text is true either way. So it says nothing
+    of what `plan` ACCEPTS, because `plan` takes some values and does not
+    mount them where they were given (`null` is mounted at the default, #181).
+    """
+    return (
+        f"where the {leg} leg is mounted, as a path in the assembly root "
+        f"(default: {default}); the plan records it as `legs.{leg}_path`. "
+        "`plan` refuses it, before it writes a plan, as `adopt-bad-leg-path` "
+        "when the path is empty or `.`, is absolute, begins with `-` or is "
+        "longer than 255 characters; has a `..` segment, a backslash, a "
+        "segment that ends in a dot, or a character outside ASCII letters, "
+        "digits and `._/@+~-`; is not in Git's own spelling "
+        f"(`{default}/`, `./{default}` and `a//b` are not); has a segment "
+        "Git or Windows reserves (`.git`, `CON`); or is, holds or lies "
+        "inside the other leg's path, whatever the case. As "
+        "`adopt-leg-path-collides` it refuses a path that is, holds or lies "
+        "inside a FILE the shape writes into the root (`project.yaml` is "
+        "one, and `contracts` holds several), or that is at or under "
+        "`shape/`, whatever the case. The defaults `spec` and `code` pass. "
+        "Either refusal writes no plan and rewrites nothing, and its "
+        "`Remediation:` line states the whole rule; you pass the value "
+        "again.")
+
+
 def main(argv: list[str] | None = None) -> int:
     # FIRST, so that every `print` after it -- `--help` included -- escapes
     # a name stdout cannot encode rather than raising on it (#214).
@@ -6273,8 +6321,10 @@ def main(argv: list[str] | None = None) -> int:
                            "ratified from for one dated earlier — so "
                            "--elected-on chooses it.")
     plan.add_argument("--tracking-branch", default="main")
-    plan.add_argument("--spec-path", default="spec")
-    plan.add_argument("--code-path", default="code")
+    plan.add_argument("--spec-path", default="spec",
+                      help=_leg_path_help("spec", "spec"))
+    plan.add_argument("--code-path", default="code",
+                      help=_leg_path_help("code", "code"))
     plan.add_argument("--pin", action="append", default=[],
                       help="a neutral product this project declares a pin on "
                            "— a NAME only, e.g. --pin openGlass or --pin "

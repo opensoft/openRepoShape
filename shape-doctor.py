@@ -2188,7 +2188,12 @@ def pin_reads_at(ctx: Context, rev: str) -> bool:
     `parse_yaml` -- and `check_pin` makes the checks `read_pin` makes, so
     the two cannot disagree about a pin. Where git gives no blob (no such
     path, no such commit) there is no pin that reads, and `files: 5`, which
-    `read_pin` itself fails with a `TypeError`, does not read either.
+    `check_pin` refuses as `update-pin-row`, does not read either (#290).
+
+    A `TypeError` IS NOT CAUGHT. It was, for that `files: 5`; nothing in a
+    pin's bytes raises one now, so one means a caller out of step with
+    `check_pin`, and the doctor fails loudly rather than answer that no
+    commit holds a pin to put back.
     """
     blob = git_answer(["cat-file", "blob", f"{rev}:./{SHAPE_PIN}"],
                       ctx.root, binary=True)
@@ -2197,8 +2202,8 @@ def pin_reads_at(ctx: Context, rev: str) -> bool:
     us = ctx.update_shape()
     try:
         text = blob.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
-        us.check_pin(us.parse_yaml(text), f"{rev}:{SHAPE_PIN}")
-    except (Refusal, us.YamlError, ValueError, TypeError):
+        us.check_pin(us.parse_yaml(text), f"{rev}:{SHAPE_PIN}", ctx.root)
+    except (Refusal, us.YamlError, ValueError):
         return False
     return True
 
@@ -3933,7 +3938,13 @@ def pinned_paths(root: Path) -> set:
     pin = Context._read(root / "contracts" / "shape-pin.yaml")
     if not isinstance(pin, dict):
         return set()
-    return {str(row.get("path")) for row in (pin.get("files") or [])
+    # A `files:` that is not a list pins nothing, as a pin that is not a
+    # mapping pins nothing (#290): `files: 5` was iterated, a TypeError. The
+    # shape-currency row is where that pin is reported.
+    rows = pin.get("files")
+    if not isinstance(rows, list):
+        return set()
+    return {str(row.get("path")) for row in rows
             if isinstance(row, dict) and row.get("path")}
 
 
