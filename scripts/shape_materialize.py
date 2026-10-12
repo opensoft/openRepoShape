@@ -1241,10 +1241,11 @@ def lane_trailer_argument(quote=None, env: dict | None = None) -> str:
     chosen here. `shape-doctor.py` hands over its platform-aware `quote_arg`,
     because every other value on those rows is spelled by that one function
     and a line half-quoted by two rules is a line no shell reads the way its
-    writer meant. With none, the trailer is spelled inside double quotes —
-    which is how `AGENTS.md`, `docs/cli.md` and the issue all write it, and
-    is what `update-shape.py`'s own NEXT line, which quotes nothing, can
-    carry without pretending to a quoting rule it does not have.
+    writer meant. `update-shape.py` hands over `shlex.quote` for the same
+    reason, now that every other argument on its NEXT line goes through it
+    (#325). With none, the trailer is spelled inside double quotes — which is
+    how `AGENTS.md`, `docs/cli.md` and the issue all write it — and no caller
+    in this repository asks for that spelling any more.
 
     ONE ARGUMENT, NOT TWO. `Co-Authored-By:` is the caller's to pass: it
     names a person or a model, which no environment variable knows, and a
