@@ -37,6 +37,7 @@ import subprocess
 import sys
 
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from types import SimpleNamespace
 
 import pytest
 
@@ -789,7 +790,10 @@ NEVER_RENAME = ("never rename it to project.yaml or family.yaml in this "
 #: Where each kind's manifest goes instead, as the next command offers it.
 FAMILY_HOME = ("a family holder of its own (`family.py init`, then "
                "`family.py add` there)")
+#: `setup-project.py` beside `setup.sh`, on every OS: `setup.sh` is a bash
+#: script, and a Windows reader has no bash to run it in.
 PROJECT_HOME = ("an assembly root of its own (`setup.sh`, or "
+                "`setup-project.py` on Windows, for a new one; "
                 "`adopt-project.py plan` for a repository that exists), "
                 "which a holder pins with `family.py add`")
 
@@ -863,7 +867,8 @@ def test_a_contracts_family_yaml_in_an_assembly_root_is_a_finding(
                    for entry in row["detail"]["validated"]), row["detail"]
     assert row["detail"]["registered_elsewhere"] == [
         {"manifest": "contracts/family.yaml", "kind": "family-manifest",
-         "validator": "scripts/validate-family.py", "runs_in": ["family"]}]
+         "validator": "scripts/validate-family.py", "runs_in": ["family"],
+         "git": "committed"}]
     argv = removal_named(standard, row, payload, ["contracts/family.yaml"])
     assert row["next"].startswith(
         "take contracts/family.yaml out of this root (`git -C "), row["next"]
@@ -917,7 +922,8 @@ def test_a_contracts_project_yaml_in_a_family_holder_is_a_finding(
         row["reason"]
     assert row["detail"]["registered_elsewhere"] == [
         {"manifest": "contracts/project.yaml", "kind": "project-manifest",
-         "validator": "scripts/validate-manifest.py", "runs_in": ["project"]}]
+         "validator": "scripts/validate-manifest.py", "runs_in": ["project"],
+         "git": "committed"}]
     assert sorted(row["detail"]["validated"]) == [
         "contracts/repository-naming.yaml (repository-naming-policy)",
         "contracts/shape-pin.yaml (pinned_contract_manifest)",
@@ -957,6 +963,190 @@ def test_a_contracts_family_yaml_and_one_beside_project_yaml_say_both(
     assert set(row["detail"]) == MANIFEST_KINDS_DETAIL_KEYS | {
         "registered_elsewhere", "family_beside"}, row["detail"]
     assert not any("family" in entry for entry in row["detail"]["validated"])
+
+
+# --- the NEXT, for the file as git has it (#327, review of PR #375) ---------
+#
+# The doctor reads the disk, and `git rm` takes out only a file a commit
+# holds whole. The NEXT named it for every file, and it said "did not match
+# any files" (exit 128) for one git does not track, ignored or not, and
+# refused one with changes no commit holds.
+
+def plant_family_yaml(project: Path, holder: dict,
+                      name: str = "family.yaml") -> Path:
+    """The holder's `family.yaml`, copied under the root's `contracts/` as
+    `name`, and nothing committed."""
+    planted = project / "contracts" / name
+    shutil.copy2(holder["root"] / "family.yaml", planted)
+    return planted
+
+
+def next_for_one(ways: str) -> str:
+    """The NEXT for one `contracts/family.yaml`, `ways` its parenthesis."""
+    return (f"take contracts/family.yaml out of this root ({ways}), or move "
+            f"what it describes to {FAMILY_HOME}, as the human decides -- "
+            f"{NEVER_RENAME}")
+
+
+def git_rm_refuses(project: Path, planted: Path) -> None:
+    """The `git rm` the NEXT used to name, run as it named it: it fails, and
+    the file is still there."""
+    proc = subprocess.run(
+        ["git", "-C", str(project), "rm", "--",
+         planted.relative_to(project).as_posix()],
+        capture_output=True, text=True, check=False)
+    assert proc.returncode != 0, proc.stdout + proc.stderr
+    assert planted.is_file()
+
+
+@pytest.mark.parametrize("state", ["untracked", "ignored"])
+def test_a_contracts_family_yaml_git_does_not_track_is_deleted(
+        standard, project, holder, state):
+    """A `contracts/family.yaml` nobody has committed -- copied in and not
+    added, or hidden by the root's own excludes -- is the same FINDING, and
+    its NEXT is to delete it, with nothing to commit. It names no `git rm`,
+    which fails on it; deleting it is COMPLIANT again."""
+    planted = plant_family_yaml(project, holder)
+    if state == "ignored":
+        exclude = project / git("rev-parse", "--git-path", "info/exclude",
+                                cwd=project).stdout.strip()
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        with open(exclude, "ab") as handle:
+            handle.write(b"\ncontracts/family.yaml\n")
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert json.loads(result.stdout)["verdict"] == "INVALID (manifest-kinds)"
+    row = only_finding_is_manifest_kinds(result)
+    assert row["next"] == next_for_one(
+        "delete it, which git does not track, so there is nothing to "
+        "commit"), row["next"]
+    assert row["detail"]["registered_elsewhere"] == [
+        {"manifest": "contracts/family.yaml", "kind": "family-manifest",
+         "validator": "scripts/validate-family.py", "runs_in": ["family"],
+         "git": state}]
+    git_rm_refuses(project, planted)
+
+    planted.unlink()
+    after = doctor(standard, project, "--json")
+    assert after.returncode == 0, after.stdout + after.stderr
+    assert json.loads(after.stdout)["verdict"] == "COMPLIANT"
+
+
+@pytest.mark.parametrize("state", ["edited", "staged"])
+def test_a_contracts_family_yaml_with_changes_no_commit_holds(
+        standard, project, holder, state):
+    """Committed and then edited, or staged and never committed: `git rm`
+    refuses both, because it will not discard changes no commit holds. The
+    NEXT says to commit or drop them, names the `git status` that shows
+    them, and leaves the `git rm` to the next run -- which, once they are
+    committed, names it, and running that is COMPLIANT again."""
+    planted = plant_family_yaml(project, holder)
+    if state == "edited":
+        commit_all(project, "A family manifest under contracts/")
+        with open(planted, "ab") as handle:
+            handle.write(b"# an edit no commit holds\n")
+    else:
+        git("add", "--", "contracts/family.yaml", cwd=project)
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 1, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["verdict"] == "INVALID (manifest-kinds)", payload
+    row = only_finding_is_manifest_kinds(result)
+    root = doctor_module(standard).quote_arg(Path(payload["root"]))
+    assert row["next"] == next_for_one(
+        "it has changes no commit holds, which `git rm` will not discard: "
+        f"commit or drop them (`git -C {root} status -- "
+        "contracts/family.yaml` shows them), and the next run names the "
+        "`git rm`"), row["next"]
+    assert [entry["git"] for entry in
+            row["detail"]["registered_elsewhere"]] == ["changed"], row
+    git_rm_refuses(project, planted)
+
+    commit_all(project, "Commit what the row said to commit first")
+    again = doctor(standard, project, "--json")
+    row = only_finding_is_manifest_kinds(again)
+    argv = removal_named(standard, row, json.loads(again.stdout),
+                         ["contracts/family.yaml"])
+    run_the_removal(argv, project)
+    after = doctor(standard, project, "--json")
+    assert after.returncode == 0, after.stdout + after.stderr
+    assert json.loads(after.stdout)["verdict"] == "COMPLIANT"
+
+
+def test_manifests_that_come_out_differently_are_each_named(
+        standard, project, holder):
+    """Three family manifests under `contracts/` -- one committed, one git
+    does not track, one edited since its commit -- get one NEXT with a way
+    for each, each naming its own file, in the row's order.
+
+    AND THE DOCTOR ASKED GIT WITHOUT WRITING THE INDEX. The committed one is
+    rewritten with its own bytes and a newer mtime, so its index entry is
+    stat-dirty: a `git status` refreshes that entry and, without
+    `--no-optional-locks`, writes `.git/index` back. It must stay byte for
+    byte as it was, because the doctor writes nothing into the repository.
+    """
+    committed = plant_family_yaml(project, holder)
+    edited = plant_family_yaml(project, holder, "x-family.yaml")
+    commit_all(project, "Two family manifests under contracts/")
+    with open(edited, "ab") as handle:
+        handle.write(b"# an edit no commit holds\n")
+    plant_family_yaml(project, holder, "old-family.yaml")
+    committed.write_bytes(committed.read_bytes())
+    stat = committed.stat()
+    os.utime(committed, (stat.st_atime + 100, stat.st_mtime + 100))
+    index = project / git("rev-parse", "--git-path", "index",
+                          cwd=project).stdout.strip()
+    before = index.read_bytes()
+
+    result = doctor(standard, project, "--json")
+    assert index.read_bytes() == before, "the doctor wrote the index"
+    assert result.returncode == 1, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["verdict"] == "INVALID (manifest-kinds)", payload
+    row = only_finding_is_manifest_kinds(result)
+    root = doctor_module(standard).quote_arg(Path(payload["root"]))
+    assert row["next"] == (
+        "take contracts/family.yaml, contracts/old-family.yaml, "
+        "contracts/x-family.yaml out of this root "
+        f"(`git -C {root} rm -- contracts/family.yaml`, committed on a "
+        "branch and landed as a pull request; delete "
+        "contracts/old-family.yaml, which git does not track, so there is "
+        "nothing to commit; contracts/x-family.yaml has changes no commit "
+        "holds, which `git rm` will not discard: commit or drop them "
+        f"(`git -C {root} status -- contracts/x-family.yaml` shows them), "
+        "and the next run names the `git rm`), or move what they describe "
+        f"to {FAMILY_HOME}, as the human decides -- never rename one to "
+        "project.yaml or family.yaml in this root: a family holder is not a "
+        "project, and an assembly root is not a family holder"), row["next"]
+    assert [(entry["manifest"], entry["git"]) for entry in
+            row["detail"]["registered_elsewhere"]] == [
+        ("contracts/family.yaml", "committed"),
+        ("contracts/old-family.yaml", "untracked"),
+        ("contracts/x-family.yaml", "changed")], row["detail"]
+
+
+def test_git_states_answers_only_in_a_repository_of_its_own(tmp_path):
+    """`git -C` discovers. In a plain directory inside another repository,
+    `status` answers about THAT repository, with paths relative to its top,
+    so `contracts/family.yaml` was never listed, read as `committed`, and
+    the NEXT named a `git rm` aimed at the enclosing repository. Now git is
+    not asked there, and the NEXT carries no way at all: #211's "take it out
+    of this root", which holds in any state. Its own repository is asked."""
+    module = doctor_module(REPO)
+    outer = tmp_path / "outer"
+    outer.mkdir()
+    git("init", "-q", "-b", "main", ".", cwd=outer)
+    root = outer / PROJECT
+    (root / "contracts").mkdir(parents=True)
+    (root / "contracts" / "family.yaml").write_bytes(
+        b"kind: family-manifest\n")
+    names = ["contracts/family.yaml"]
+    assert module.git_states(root, names) == {}
+    assert module.removal_ways(SimpleNamespace(root=root), names, {}) == ""
+
+    git("init", "-q", "-b", "main", ".", cwd=root)
+    assert module.git_states(root, names) == {
+        "contracts/family.yaml": "untracked"}
 
 
 def test_a_registered_kind_is_answered_only_where_its_check_runs():

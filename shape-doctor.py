@@ -732,7 +732,10 @@ class ManifestKind:
 
     `home` is the other exit for a manifest found in a root that never runs
     its gate: a root of the kind that does, named by the commands that make
-    one. Only the two kinds a root of the other kind can hold need one.
+    one. Only the two kinds a root of the other kind can hold need one. It
+    is one sentence on every platform, so it names `setup-project.py` beside
+    `setup.sh`, which is a bash script Windows cannot run -- the reason
+    `scaffold_command` spells that line per platform (Copilot, PR #102).
     """
 
     def __init__(self, kind: str, covered_by: tuple, how: str,
@@ -753,9 +756,9 @@ class ManifestKind:
 MANIFEST_VALIDATORS: dict[str, ManifestKind] = {
     "project-manifest": ManifestKind(
         "project-manifest", ("manifest",), "scripts/validate-manifest.py",
-        "an assembly root of its own (`setup.sh`, or `adopt-project.py "
-        "plan` for a repository that exists), which a holder pins with "
-        "`family.py add`"),
+        "an assembly root of its own (`setup.sh`, or `setup-project.py` on "
+        "Windows, for a new one; `adopt-project.py plan` for a repository "
+        "that exists), which a holder pins with `family.py add`"),
     "family-manifest": ManifestKind(
         "family-manifest", ("family",), "scripts/validate-family.py",
         "a family holder of its own (`family.py init`, then `family.py add` "
@@ -1515,16 +1518,32 @@ def registered_elsewhere(ctx: Context, found: list) -> tuple[str, str, list]:
     in a root whose gate never reads it. Nor could the same bytes be a
     FINDING as `family.yaml` (#211) and a note as `contracts/family.yaml`.
 
-    THE NEXT COMMAND IS ONE THAT EXISTS: `git rm`, quoted for the reader's
-    shell like every path this report prints, and landed the way every
-    change here lands. The other exit is the kind's `home`, as the human
-    decides. Renaming the file to the root's own manifest name is ruled out
-    in the line itself, because that is the one move that looks like a fix:
-    in a holder it makes the root read as a project, and in an assembly
-    root it is #211's finding instead of this one.
+    THE NEXT COMMAND IS ONE THAT EXISTS, FOR THE FILE AS GIT HAS IT. The
+    doctor reads the disk, so the file may be one nobody has committed yet,
+    and `git rm` takes out only a file whose every byte a commit holds: it
+    says "did not match any files" (exit 128) for one git does not track,
+    ignored or not, and refuses one with changes no commit holds. So
+    `git_states` asks first, and each file gets the exit that works:
+      committed   `git rm`, quoted for the reader's shell like every path
+                  this report prints, committed on a branch and landed as
+                  a pull request, the way every change here lands;
+      untracked,  deleting it, with nothing to commit;
+      ignored
+      changed     committing or dropping those changes first, since `git
+                  rm` will not discard them, and the next run names the
+                  `git rm`.
+    Where git cannot say, the line is #211's, which holds in any state:
+    take it out of this root. Each file's state is `detail`'s `git`.
+
+    The other exit is the kind's `home`, as the human decides. Renaming the
+    file to the root's own manifest name is ruled out in the line itself,
+    because that is the one move that looks like a fix: in a holder it
+    makes the root read as a project, and in an assembly root it is #211's
+    finding instead of this one.
     """
     names = [rel for rel, _, _ in found]
     one = len(names) == 1
+    states = git_states(ctx.root, names)
     clauses, detail = [], []
     for rel, kind, entry in found:
         runs = entry.runs_in()
@@ -1533,7 +1552,8 @@ def registered_elsewhere(ctx: Context, found: list) -> tuple[str, str, list]:
                  if runs else f"no check runs {entry.how}")
         clauses.append(f"{rel} ({kind}: {where})")
         detail.append({"manifest": rel, "kind": kind,
-                       "validator": entry.how, "runs_in": list(runs)})
+                       "validator": entry.how, "runs_in": list(runs),
+                       "git": states.get(rel)})
     sentence = (f"no validator that runs in {ROOT_IN_WORDS[ctx.kind]} is "
                 "registered for kind " + ", ".join(clauses))
     homes = {rel: entry.home or "a root whose gate runs its validator"
@@ -1544,15 +1564,104 @@ def registered_elsewhere(ctx: Context, found: list) -> tuple[str, str, list]:
     else:
         other_exit = "move what each describes to " + "; ".join(
             f"{rel}: {home}" for rel, home in homes.items())
-    command = (f"git -C {quote_arg(ctx.root)} rm -- "
-               + " ".join(quote_arg(name) for name in names))
-    fix = (f"take {', '.join(names)} out of this root (`{command}`, "
-           f"committed on a branch and landed as a pull request), or "
-           f"{other_exit}, as the human decides -- never rename "
-           f"{'it' if one else 'one'} to {PROJECT_MANIFEST} or "
-           f"{FAMILY_MANIFEST} in this root: a family holder is not a "
-           "project, and an assembly root is not a family holder")
+    fix = (f"take {', '.join(names)} out of this root"
+           f"{removal_ways(ctx, names, states)}, or {other_exit}, as the "
+           f"human decides -- never rename {'it' if one else 'one'} to "
+           f"{PROJECT_MANIFEST} or {FAMILY_MANIFEST} in this root: a family "
+           "holder is not a project, and an assembly root is not a family "
+           "holder")
     return sentence, fix, detail
+
+
+def git_states(root: Path, names: list) -> dict:
+    """`{path: state}` for each of `names`, from ONE `git status`:
+    `committed`, `untracked`, `ignored` or `changed` -- or `{}` where git
+    cannot say (#327).
+
+    A path `status` does not list is tracked, and HEAD, the index and the
+    work tree agree on it: `committed`, the one state `git rm` takes. `??`
+    alone is `untracked`, `!!` alone is `ignored` (`--ignored`, so a file
+    the root's excludes hide is still named), and anything else -- an edit,
+    a staged change, a file staged and never committed, a removal staged
+    while the file is still on disk (`D ` and `??` at once) -- is `changed`.
+
+    READ-ONLY AND LITERAL. `--no-optional-locks`, so `status` refreshes the
+    index in memory and never writes it back: the doctor writes nothing into
+    the repository. `--literal-pathspecs`, so a name holding `[` or `*` is
+    that one file and not a pattern. `-z`, so a name comes back as itself,
+    and `--untracked-files=all`, so it is the file and not its directory.
+
+    AND ONLY IN A REPOSITORY OF ITS OWN. `git -C` discovers: in a plain
+    directory inside another repository, `status` answers about THAT one,
+    with paths relative to its top, and a `git rm` there would change it.
+    `not_its_own_repository` declines to guess, as it does for a leg.
+    """
+    if not_its_own_repository(root) is not None:
+        return {}
+    try:
+        raw = git_out(["--no-optional-locks", "--literal-pathspecs", "status",
+                       "--porcelain=v1", "-z", "--untracked-files=all",
+                       "--ignored", "--", *names], cwd=root, binary=True)
+    except (Refusal, OSError):
+        return {}
+    codes: dict[str, set] = {}
+    records = iter(raw.split(b"\0"))
+    for record in records:
+        if len(record) < 4:
+            continue
+        code = record[:2].decode("ascii", "replace")
+        codes.setdefault(record[3:].decode("utf-8", "surrogateescape"),
+                         set()).add(code)
+        if code[0] in "RC":
+            next(records, None)   # a rename's or copy's source path
+    states = {}
+    for name in names:
+        found = codes.get(name, set())
+        states[name] = ("committed" if not found
+                        else "untracked" if found == {"??"}
+                        else "ignored" if found == {"!!"}
+                        else "changed")
+    return states
+
+
+def removal_ways(ctx: Context, names: list, states: dict) -> str:
+    """How each of `names` comes out of the root, as git has it: the
+    parenthesis the `manifest kinds` row's NEXT carries (#327), or nothing
+    where git could not say. A file is named again only where the files
+    do not all come out the same way."""
+    root = quote_arg(ctx.root)
+    groups = {state: [name for name in names if states.get(name) in kinds]
+              for state, kinds in (("committed", ("committed",)),
+                                   ("loose", ("untracked", "ignored")),
+                                   ("changed", ("changed",)))}
+    groups = {state: group for state, group in groups.items() if group}
+    alone = len(groups) == 1
+
+    def subject(group: list, pronoun: str) -> str:
+        return pronoun if alone else ", ".join(group)
+
+    ways = []
+    if "committed" in groups:
+        ways.append(f"`git -C {root} rm -- "
+                    + " ".join(quote_arg(n) for n in groups["committed"])
+                    + "`, committed on a branch and landed as a pull "
+                    "request")
+    if "loose" in groups:
+        group = groups["loose"]
+        single = len(group) == 1
+        ways.append(f"delete {subject(group, 'it' if single else 'them')}, "
+                    "which git does not track, so there is nothing to "
+                    "commit")
+    if "changed" in groups:
+        group = groups["changed"]
+        single = len(group) == 1
+        ways.append(
+            f"{subject(group, 'it' if single else 'they')} "
+            f"{'has' if single else 'have'} changes no commit holds, which "
+            "`git rm` will not discard: commit or drop them (`git -C "
+            f"{root} status -- {' '.join(quote_arg(n) for n in group)}` "
+            "shows them), and the next run names the `git rm`")
+    return f" ({'; '.join(ways)})" if ways else ""
 
 
 def check_manifest_kinds(ctx: Context) -> Row:
