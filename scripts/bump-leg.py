@@ -93,12 +93,15 @@ commit · 2 a refusal.
 from __future__ import annotations
 
 import argparse
+import errno
 import os
 import re
+import stat
 import subprocess
 import sys
 from functools import partial
 from pathlib import Path
+from typing import Callable
 
 SHAPE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
@@ -296,6 +299,44 @@ def _not_utf8(root: Path, path: Path, exc: UnicodeDecodeError) -> str:
             f"{exc.start} ({exc.reason})")
 
 
+#: The `OSError`s that `Path.is_file()` and `Path.is_dir()` answered False to
+#: on Python 3.9 to 3.13 (pathlib's `_ignore_error`), because each means there
+#: is nothing at the name to open: no such file, a part of the path that is
+#: not a directory, a bad descriptor, a symlink loop, and Windows' "not
+#: ready", "invalid name" and "cannot resolve". Every other one was raised.
+_ABSENT_ERRNOS = (errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP)
+_ABSENT_WINERRORS = (21, 123, 1921)
+
+
+def _is_a(path: Path, kind: Callable[[int], bool]) -> bool:
+    """Whether `path` is there and of `kind` (`stat.S_ISREG`, `stat.S_ISDIR`),
+    raising the `OSError` of a `stat` the operating system REFUSED (#383).
+
+    NOT `Path.is_file()` OR `Path.is_dir()`, whose answer depends on the
+    Python. Up to 3.13 they raised a refused `stat` (`PermissionError`) and
+    answered False only when nothing was there; from 3.14 they call
+    `os.path.isfile` and `isdir`, which answer False to ANY `OSError`. On 3.14
+    the pin inside a `contracts/` this user cannot search was "missing"
+    (`bump-leg-pin-missing`, whose remedy restores a file that is there), and
+    every file in a `.github/workflows/` this user can list but not search
+    was skipped as no file at all: the bump went ahead, `validate-pins.py`
+    found the workflow "pinned but absent", and the run was rolled back as
+    `bump-leg-validators-red`. Asked here, every Python answers as 3.9 to
+    3.13 did, and a refused `stat` is a refusal that names the path.
+    """
+    try:
+        mode = path.stat().st_mode
+    except OSError as exc:
+        if (exc.errno in _ABSENT_ERRNOS
+                or getattr(exc, "winerror", None) in _ABSENT_WINERRORS):
+            return False
+        raise
+    except ValueError:
+        # a name the operating system cannot take at all (a NUL in it)
+        return False
+    return kind(mode)
+
+
 def _os_reason(exc: OSError) -> str:
     """The operating system's own words for `exc` (`Permission denied`), or
     what Python made of it when there are none (an `OSError` raised with no
@@ -465,7 +506,7 @@ def _workflow_texts(root: Path, workflows: Path, tracked: set[str],
     (#383). A file this user may not open raised `PermissionError`, an
     `OSError` that `main()` does not catch either: the same traceback, exit 1,
     `--dry-run` included. Any `OSError` of the read or of the `stat` before
-    it (`is_file`, which a directory this user can list but not search
+    it (`_is_a`, which a directory this user can list but not search
     refuses) is named the same way, as a line of its own with the system's
     reason, whether or not the file names the leg; a file that is not UTF-8
     and one that cannot be opened meet in ONE refusal, each group with its own
@@ -480,7 +521,8 @@ def _workflow_texts(root: Path, workflows: Path, tracked: set[str],
     unopened: list[tuple[str, bool, OSError]] = []
     for path in _workflow_children(root, workflows):
         try:
-            if path.suffix not in (".yml", ".yaml") or not path.is_file():
+            if (path.suffix not in (".yml", ".yaml")
+                    or not _is_a(path, stat.S_ISREG)):
                 continue
             texts.append((path, path.read_text(encoding="utf-8")))
         except UnicodeDecodeError as exc:
@@ -641,7 +683,7 @@ def plan_workflows(root: Path, repository: str,
     plans: list[tuple[Path, str, int]] = []
     workflows = root / ".github" / "workflows"
     try:
-        if not workflows.is_dir():
+        if not _is_a(workflows, stat.S_ISDIR):
             return plans
     except OSError as exc:
         # a directory above `workflows` this user cannot search (#383)
@@ -1008,7 +1050,7 @@ def _leg_pin_path(root: Path, pin_rel: str) -> Path:
     """
     pin_path = root / pin_rel
     try:
-        present = pin_path.is_file()
+        present = _is_a(pin_path, stat.S_ISREG)
     except OSError as exc:
         # `contracts/` this user cannot search: the `stat` is refused, which
         # is not an absent file (#383)

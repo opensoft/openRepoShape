@@ -34,6 +34,14 @@ who reads anything. The tests that make the operating system fail for another
 reason (a file gone between the listing and the read, an I/O error) do it
 with a stand-in for the call, so they run everywhere, root included.
 
+A REFUSED `stat` IS ASKED OF THE OPERATING SYSTEM, NOT OF `Path.is_file()`.
+Up to Python 3.13 `is_file` and `is_dir` raised a refused `stat`; from 3.14
+they answer False to ANY `OSError`, and CI's 3.14 turned two mode tests here
+red at e2c78ee (an unsearchable `contracts/` read as a missing pin, and the
+files of a workflows directory listable but not searchable were skipped). The
+last section stands in for 3.14's answer with a refused `stat`, in-process, so
+a tool that leans on `is_file` raising fails on every Python, root included.
+
 EVERY MODE-000 TEST COMPARES THE WHOLE TREE, as
 `tests/test_bump_leg_rollback.py` does, from a snapshot taken BEFORE the mode
 is changed (the snapshot reads the files): the root's HEAD, the pin's and
@@ -364,9 +372,12 @@ def test_a_workflows_directory_that_cannot_be_listed_is_refused_naming_it(
 def test_a_workflows_directory_listable_but_not_searchable_is_refused(
         project, scaffolded, advanced):
     """A DIRECTORY WITH `r` AND NO `x`: its names list, and every `stat` of a
-    name in it is refused. The listing succeeds, so it is `is_file` that
+    name in it is refused. The listing succeeds, so it is the `stat` that
     raises, and it is a file-level refusal naming each: the same family, a
-    different frame."""
+    different frame. Asked through `Path.is_file()`, Python 3.14 answers "no
+    file" instead, every file is skipped, the bump goes ahead and
+    `validate-pins.py` rolls it back as `bump-leg-validators-red` (CI at
+    e2c78ee)."""
     prepared(project)
 
     stderr = refused_while_unopenable(
@@ -376,6 +387,29 @@ def test_a_workflows_directory_listable_but_not_searchable_is_refused(
     assert ".github/workflows/legs.yml: cannot be read: Permission denied" \
         in stderr
     assert "chmod u+rx" in stderr
+
+
+@needs_a_mode
+@MODES
+def test_a_github_directory_that_cannot_be_searched_names_the_workflows(
+        project, scaffolded, advanced, extra):
+    """`.github/` mode 000, the directory ABOVE the workflows: the `stat` of
+    `.github/workflows` is refused before any listing, and it is the
+    directory refusal, whose `chmod u+rx` advice names every directory above
+    it inside the root. Asked through `Path.is_dir()`, Python 3.14 answers
+    "no directory", and the bump went on as if the project had no workflow
+    to move."""
+    prepared(project)
+
+    stderr = refused_while_unopenable(
+        project, scaffolded, advanced, "bump-leg-workflow-unreadable",
+        ".github", extra=extra)
+
+    assert (".github/workflows/: cannot be listed: Permission denied"
+            in stderr)
+    assert "chmod u+rx" in stderr and "every directory above it" in stderr
+    refused_again_fine(project, scaffolded, advanced, extra,
+                       ".github/workflows/legs.yml")
 
 
 # --- the pin -----------------------------------------------------------------
@@ -403,10 +437,12 @@ def test_a_leg_pin_that_cannot_be_opened_is_refused_by_name(
 @needs_a_mode
 def test_a_contracts_directory_that_cannot_be_searched_names_the_pin(
         project, scaffolded, advanced):
-    """`contracts/` mode 000: `is_file` on the pin is refused before the read
+    """`contracts/` mode 000: the `stat` of the pin is refused before the read
     is reached. That is not an absent pin (`bump-leg-pin-missing`, whose
     remedy is to restore it from history): the file is there and cannot be
-    reached, so it is the pin refusal, with the permission remedy."""
+    reached, so it is the pin refusal, with the permission remedy. Python
+    3.14's `Path.is_file()` answers "no file" here, which is how CI at e2c78ee
+    got `bump-leg-pin-missing`."""
     prepared(project)
 
     stderr = refused_while_unopenable(
@@ -535,3 +571,108 @@ def test_a_respelled_unopenable_workflow_is_refused_as_the_disk_spells_it(
     assert ".github/workflows/legs.yml" not in refusal.detail
     assert "(untracked or ignored)" not in refusal.detail
     assert "chmod u+r" in refusal.remediation
+
+
+# --- a refused `stat`, as Python 3.14 answers it (everywhere, root too) -----
+
+def refused_stat(monkeypatch, *names: str) -> None:
+    """`Path.stat` refused (`Permission denied`) for each of `names`, as it is
+    for a name inside a directory this user may not search, and
+    `Path.is_file`, `is_dir` and `exists` answering as Python 3.14's do:
+    False to ANY `OSError` (they call `os.path.isfile` and the like), where
+    3.9 to 3.13 raised a refused `stat`.
+
+    CI's 3.14 is where the mode tests above first met that answer (e2c78ee):
+    `is_file` said "no file", and the tool took an unsearchable `contracts/`
+    for a missing pin and skipped every file of a workflows directory it could
+    list but not search. In-process, so this runs on every Python and every
+    platform and as root, and on a Python before 3.14 it still fails a tool
+    that asks `is_file` or `is_dir` and counts on the raise."""
+    real = Path.stat
+
+    def refusing(self, *args, **kwargs):
+        if self.name in names:
+            raise PermissionError(errno.EACCES, "Permission denied", str(self))
+        return real(self, *args, **kwargs)
+
+    def as_python_314(kind):
+        def answer(self, *args, **kwargs):
+            try:
+                return kind(self.stat().st_mode)
+            except (OSError, ValueError):
+                return False
+        return answer
+
+    monkeypatch.setattr(Path, "stat", refusing)
+    monkeypatch.setattr(Path, "is_file", as_python_314(stat.S_ISREG))
+    monkeypatch.setattr(Path, "is_dir", as_python_314(stat.S_ISDIR))
+    monkeypatch.setattr(Path, "exists", as_python_314(lambda mode: True))
+
+
+def test_a_workflow_whose_stat_is_refused_is_named_not_skipped(
+        bump_leg_module, project, advanced, monkeypatch):
+    """A WORKFLOWS DIRECTORY LISTABLE BUT NOT SEARCHABLE, on every Python. The
+    listing names `legs.yml` and its `stat` is refused: the file refusal names
+    it, with the permission remedy. A file skipped as "not a file" is a bump
+    that goes ahead without it and is rolled back by `validate-pins.py`."""
+    reference_both_legs(project)
+    refused_stat(monkeypatch, "legs.yml")
+
+    refusal = refusal_of(bump_leg_module, bump_leg_module.plan_workflows,
+                         project, f"{ORG}/{PROJECT}-spec", advanced)
+
+    assert refusal.code == "bump-leg-workflow-unreadable"
+    assert (".github/workflows/legs.yml: cannot be read: Permission denied"
+            in refusal.detail)
+    assert "1 workflow file(s) cannot be opened" in refusal.detail
+    assert "chmod u+r" in refusal.remediation
+
+
+def test_a_workflows_directory_whose_stat_is_refused_is_named(
+        bump_leg_module, project, advanced, monkeypatch):
+    """A `.github/` this user may not search, on every Python: the `stat` of
+    `.github/workflows` is refused, and it is the directory refusal. A
+    directory taken for "not there" is a bump that moves no workflow."""
+    reference_both_legs(project)
+    refused_stat(monkeypatch, "workflows")
+
+    refusal = refusal_of(bump_leg_module, bump_leg_module.plan_workflows,
+                         project, f"{ORG}/{PROJECT}-spec", advanced)
+
+    assert refusal.code == "bump-leg-workflow-unreadable"
+    assert refusal.detail == (".github/workflows/: cannot be listed: "
+                              "Permission denied")
+    assert "chmod u+rx" in refusal.remediation
+
+
+def test_a_pin_whose_stat_is_refused_is_not_called_missing(
+        bump_leg_module, project, monkeypatch):
+    """A `contracts/` this user may not search, on every Python: the pin is
+    there and cannot be reached, which is `bump-leg-pin-unreadable` with the
+    permission remedy, never `bump-leg-pin-missing`, whose remedy restores a
+    file nobody lost."""
+    refused_stat(monkeypatch, "spec-pin.yaml")
+
+    refusal = refusal_of(bump_leg_module, bump_leg_module._leg_pin_path,
+                         project, "contracts/spec-pin.yaml")
+
+    assert refusal.code == "bump-leg-pin-unreadable"
+    assert refusal.detail == ("contracts/spec-pin.yaml: cannot be read: "
+                              "Permission denied")
+    assert "chmod u+r" in refusal.remediation
+
+
+@pytest.mark.parametrize("missing", [
+    "contracts/nowhere-pin.yaml",
+    "contracts/spec-pin.yaml/below",
+], ids=["no-such-file", "a-file-on-the-path"])
+def test_a_pin_that_is_not_there_is_still_missing(
+        bump_leg_module, project, missing):
+    """THE OTHER HALF OF THE ANSWER: nothing at the name (`ENOENT`), or a part
+    of the path that is a file (`ENOTDIR`), is the absent pin it always was,
+    and not a file this user cannot open."""
+    refusal = refusal_of(bump_leg_module, bump_leg_module._leg_pin_path,
+                         project, missing)
+
+    assert refusal.code == "bump-leg-pin-missing"
+    assert refusal.detail.startswith(f"{missing} does not exist")
