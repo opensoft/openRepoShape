@@ -36,6 +36,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import unicodedata
@@ -1702,18 +1703,72 @@ def parse_pin(raw: str, owner: str = NEUTRAL_PRODUCT_OWNER) -> tuple[str, str, s
 
 
 def pin_digest_from_source(source: Path, commit: str, repository: str) -> str:
-    """The `sorted-ls-tree-r-v1` digest, read from a clone on this machine."""
+    """The `sorted-ls-tree-r-v1` digest, read from a clone on this machine.
+
+    A SOURCE THAT CANNOT ANSWER IS `pin-source-unreadable`, HOWEVER IT FAILS
+    (#339): exit 2, with the remediation below, before anything is created,
+    `--dry-run` or not. `tree_digest` runs `git` IN the source, and a
+    directory that is not a clone is git's own failure, a `Refusal`. A path
+    `subprocess.run` cannot enter at all never reaches git: it is an
+    `OSError` raised out of `cwd=`, `FileNotFoundError` for a source that is
+    not there, `NotADirectoryError` for a file, `PermissionError` for one
+    under a parent this user cannot enter, and nothing caught it, so
+    `--pin-source <missing>` ended both tools in a traceback, exit 1, where
+    a directory that is not a clone was this refusal.
+
+    THE REASON IS `validate-pins.py`'S (#295, #312), and the sentence is the
+    same one that file prints for the same source: "no such directory", "it
+    is a file, not a directory", and for any other `OSError` the system's own
+    reason (`strerror`: "Permission denied", "File name too long"). `stat()`
+    INSIDE THE GUARD judges the path, and not `exists()`/`is_dir()`: before
+    3.14 those swallow only a missing path and raise every other `OSError`,
+    so a source under a parent this user cannot enter was still a traceback,
+    and on 3.14 "no such directory" for a directory that is there. A source
+    `stat()` can read but `cwd=` cannot enter (a directory with no search
+    bit) fails in `tree_digest`, which the same guard answers.
+    """
     try:
-        return tree_digest(source, commit)
-    except Refusal as exc:
+        return _digest_from_pin_source(source, commit)
+    except (Refusal, OSError) as exc:
+        why = (exc.detail if isinstance(exc, Refusal)
+               else exc.strerror or str(exc))
         raise Refusal(
             "pin-source-unreadable",
-            f"{source} could not answer for {repository} @ {commit}: "
-            f"{exc.detail}",
+            f"{source} could not answer for {repository} @ {commit}: {why}",
             "Remediation: point --pin-source at a clone of that repository "
             "that HAS the pinned commit (`git fetch --all` first), or drop "
             "--pin-source and let `gh api` read the forge.",
         ) from exc
+
+
+def _digest_from_pin_source(source: Path, commit: str) -> str:
+    """`tree_digest` over `source`, with a path that is no directory said
+    in `validate-pins.py`'s words (#339). Any other `OSError`, from `stat()`
+    or from git's `cwd=`, is left for `pin_digest_from_source` to name."""
+    try:
+        mode = source.stat().st_mode
+    except (FileNotFoundError, NotADirectoryError):
+        raise Refusal("pin-source-missing", "no such directory") from None
+    if not stat.S_ISDIR(mode):
+        raise Refusal("pin-source-not-a-directory",
+                      "it is a file, not a directory")
+    return tree_digest(source, commit)
+
+
+def _resolved_pin_source(source: Path) -> Path:
+    """`source` made absolute, or AS TYPED when it cannot be (#339).
+
+    A symlink loop is a `RuntimeError` out of `Path.resolve()` before 3.13
+    and an `OSError` since, and either one ended the run in a traceback
+    before `pin_digest_from_source` could ask. As typed, `stat()` there meets
+    the loop and says "Too many levels of symbolic links". A path that is
+    merely absent or unreadable resolves, so a valid source is read exactly
+    as before.
+    """
+    try:
+        return source.resolve()
+    except (OSError, RuntimeError):
+        return source
 
 
 def pin_digest_from_gh(repository: str, commit: str) -> str:
@@ -1786,8 +1841,8 @@ def declared_pin_values(args) -> dict[str, dict[str, str]]:
     for raw in args.pin:
         product, repository, commit = parse_pin(raw, args.pin_owner)
         if args.pin_source is not None:
-            digest = pin_digest_from_source(args.pin_source.resolve(), commit,
-                                            repository)
+            digest = pin_digest_from_source(
+                _resolved_pin_source(args.pin_source), commit, repository)
             digest_source = f"local-clone ({args.pin_source})"
         else:
             digest = pin_digest_from_gh(repository, commit)
