@@ -52,6 +52,10 @@ MISREAD = "REFUSED scaffold-manifest-misread"
 INVALID = "REFUSED scaffold-manifest-invalid"
 TOO_LONG = "REFUSED scaffold-name-too-long"
 BAD_DATE = "REFUSED election-date-malformed"
+#: A free-text value no file can hold as one line of text is refused in
+#: `_identity`, before the manifest is rendered (#282), so a blank that is
+#: also a control character or a line break is refused there.
+UNWRITABLE = "REFUSED scaffold-unwritable-value"
 
 #: Where a test's scaffold writes, under `tmp_path`: the bare remotes, the
 #: tool's work directory, and the temporary directory the tool would
@@ -113,8 +117,8 @@ INVALID_VALUES = [
     pytest.param(["--elected-by= "], INVALID, ("--elected-by is ' '",
                                               "manifest-elected-by"),
                  id="elected-by-blank"),
-    pytest.param(["--elected-by=\t"], INVALID, ("--elected-by is '\\t'",
-                                               "manifest-elected-by"),
+    pytest.param(["--elected-by=\t"], UNWRITABLE, ("--elected-by is '\\t'",
+                                                  "it holds a control character"),
                  id="elected-by-tab"),
     pytest.param(["--reference= "], INVALID, ("--reference is ' '",
                                              "manifest-reference"),
@@ -143,10 +147,9 @@ INVALID_VALUES = [
 #: them rather than on a space and a tab.
 INVISIBLE = ["\u00a0", "\u2003", "\u3000"]
 
-#: And the ones that are also LINE BREAKS to `str.splitlines`, so the project's
-#: reader splits the manifest at them: the manifest is refused as unreadable
-#: before the validator is asked, which is a `misread` here, and becomes
-#: `invalid` the day `render` spells such a value as an escape (#250).
+#: And the ones that are also LINE BREAKS to `str.splitlines`: no file can
+#: hold one as one line of text, so `_identity` refuses each as
+#: `scaffold-unwritable-value` before the manifest is rendered (#282).
 LINE_BREAKS = ["\x0b", "\x1c", "\u2028"]
 
 
@@ -403,8 +406,8 @@ def test_a_blank_that_is_also_a_line_break_is_refused_too(tmp_path, blank):
     scaffolded into a project whose every reader refuses `project.yaml`."""
     result = scaffold(tmp_path, "--dry-run", f"--elected-by={blank}")
     assert result.returncode == 2, result.stderr + result.stdout
-    assert "REFUSED scaffold-manifest-" in result.stderr
-    assert "--elected-by is " in result.stderr
+    assert f"{UNWRITABLE}: --elected-by is " in result.stderr
+    assert "it holds a line break" in result.stderr
     assert result.stdout == ""
     assert_nothing_was_created(tmp_path)
 
