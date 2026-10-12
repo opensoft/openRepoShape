@@ -50,6 +50,33 @@ ORG = "testorg"
 #: ever needs.
 FILE_PROTOCOL = ["-c", "protocol.file.allow=always"]
 
+#: THE ONE DEFAULT IDENTITY THIS SUITE GIVES GIT (#279). A commit needs an
+#: author and a committer, and git guesses them from the passwd entry and a
+#: hostname with a domain; a container whose hostname has none cannot, and the
+#: commit dies with `Author identity unknown`. `git()` below puts the two
+#: values here ahead of every verb as `-c` CONFIG (`IDENTITY_CONFIG`), and
+#: `run_script` puts the same two into the environment of the script it
+#: starts, so the suite names its default once. They are the spelling the
+#: suite already used; the `.invalid` TLD is reserved (RFC 2606), so no
+#: address here can ever be a real one.
+IDENTITY_NAME = "openRepoShape tests"
+IDENTITY_EMAIL = "tests@openreposhape.invalid"
+
+#: THE DEFAULT AS CONFIG, NEVER AS ENVIRONMENT (#279). `GIT_AUTHOR_NAME` and
+#: `GIT_COMMITTER_NAME` OUTRANK `user.name` in git's own precedence, so a
+#: default exported through `env` would silently replace the identity of
+#: every call site that gives its own: `git("-c", "user.name=t", "-c",
+#: "user.email=t@t", "commit", ...)` is the suite's commonest spelling, and a
+#: test that commits as `Source Human` on purpose (`make_source_repo`,
+#: `as_human`) would record the default and assert on the wrong author. As
+#: `-c` ahead of the verb it is the weakest identity there is: a later `-c`
+#: on the same command line wins over it, and an identity the operator or CI
+#: EXPORTS (the three CI jobs export `openRepoShape CI`) wins over both.
+#: Every call keeps exactly the identity it had; only a call that had none
+#: gains one.
+IDENTITY_CONFIG = ["-c", f"user.name={IDENTITY_NAME}",
+                   "-c", f"user.email={IDENTITY_EMAIL}"]
+
 #: THE ENTRY-POINT TESTS THAT CANNOT RUN ON WINDOWS. Two shapes of test wear
 #: this: one that runs `bash`, and one that puts a `#!`-shebang script named
 #: `gh` on PATH and expects the operating system to execute it. Windows has
@@ -83,8 +110,20 @@ def rmtree(path: Path) -> None:
 
 
 def git(*args: str, cwd: Path, check: bool = True) -> subprocess.CompletedProcess:
-    proc = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True,
-                          text=True, check=False)
+    """`git <args>` in `cwd`, under `IDENTITY_CONFIG` (#279).
+
+    A test that makes a commit, a tag or a merge through here and gives no
+    identity of its own used to depend on git guessing one, and failed with
+    `Author identity unknown` wherever git could not (`stage_unmerged`'s
+    `commit-tree` in `tests/test_shape_doctor.py`, `commit` in
+    `tests/test_pin_validator.py`). The default goes in as CONFIG so that it
+    yields to every identity a call site or the environment gives; the
+    comment on `IDENTITY_CONFIG` says why it must not be an environment
+    variable. The failure message below names `args` only: the two `-c`
+    pairs are the helper's, not the test's.
+    """
+    proc = subprocess.run(["git", *IDENTITY_CONFIG, *args], cwd=str(cwd),
+                          capture_output=True, text=True, check=False)
     if check and proc.returncode != 0:
         raise AssertionError(f"git {' '.join(args)} in {cwd} failed:\n"
                              f"{proc.stderr}{proc.stdout}")
@@ -213,10 +252,10 @@ def run_script(script: Path, *args: str, cwd: Path | None = None,
     #: `blank_unnamed_pin_sources` above for the Windows case-folding this
     #: needs that `LANES_LANE`, a single fixed name, never did.
     env = blank_unnamed_pin_sources(env, asked)
-    env.setdefault("GIT_AUTHOR_NAME", "openRepoShape tests")
-    env.setdefault("GIT_AUTHOR_EMAIL", "tests@openreposhape.invalid")
-    env.setdefault("GIT_COMMITTER_NAME", "openRepoShape tests")
-    env.setdefault("GIT_COMMITTER_EMAIL", "tests@openreposhape.invalid")
+    env.setdefault("GIT_AUTHOR_NAME", IDENTITY_NAME)
+    env.setdefault("GIT_AUTHOR_EMAIL", IDENTITY_EMAIL)
+    env.setdefault("GIT_COMMITTER_NAME", IDENTITY_NAME)
+    env.setdefault("GIT_COMMITTER_EMAIL", IDENTITY_EMAIL)
     if input is None and stdin is None:
         stdin = subprocess.DEVNULL
     return subprocess.run([sys.executable, str(script), *args],
