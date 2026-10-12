@@ -123,7 +123,7 @@ import shape_advisory  # noqa: E402
 # #172's shape half, shared with the scaffold since #197 (see that section
 # below), under the names this file has always called it by.
 from shape_materialize import (  # noqa: E402
-    CASE_ASIDE, MOVE_THE_LEG, first_and_more as _first_and_more,
+    CASE_ASIDE as _CASE_ASIDE, MOVE_THE_LEG, first_and_more as _first_and_more,
     path_overlap as _overlap, shape_path_collisions,
 )
 
@@ -2214,7 +2214,7 @@ def _root_shape_findings(plan: Plan, tree: list) -> list[str]:
             if code == ROOT_BLOCKS_COPY and not keeps_case.holds(rel):
                 folded.append(rel)
     return [f"FINDING {code}: " + _blocked_sentence(
-                code, rels, copies, rows, CASE_ASIDE if folded else "")
+                code, rels, copies, rows, _CASE_ASIDE if folded else "")
             for (code, _), (rels, copies, rows, folded) in blocked.items()]
 
 
