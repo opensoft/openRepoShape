@@ -157,7 +157,8 @@ PATH_POLICY = SHAPE_ROOT / "contracts" / "path-classification.yaml"
 #: file is named.
 from shape_materialize import (  # noqa: E402
     PIN_ARG_RE, declared_pin_products, declared_pin_values, neutral_pin_path,
-    one_printable_line, pin_collisions, refuse_colliding_pins,
+    one_printable_line, pin_collisions, pin_variable_collisions,
+    refuse_colliding_pins,
 )
 from repo_shape import SHA256_RE, repo_basename  # noqa: E402
 
@@ -325,11 +326,19 @@ def _read_pins(plan: "Plan") -> tuple[list, list[str]]:
             placeholder: (row[key].lower() if key in PIN_RECORDED
                           else row[key])
             for key, placeholder in PIN_FIELDS}))
+    typed = [(said, product) for said, product, _ in pins]
     findings += [f"FINDING {PIN_COLLIDES}: {collision} `plan` refuses such "
                  "`--pin`s as `adopt-pin-collides`: re-run `plan` with each "
                  "product once, by the name of the repository it pins."
-                 for collision in pin_collisions(
-                     [(said, product) for said, product, _ in pins])]
+                 for collision in pin_collisions(typed)]
+    # Two products one `SHAPE_PIN_SOURCE_<PRODUCT>` names (#275): the question
+    # `validate-pins.py` asks, through the same function `plan` refuses with.
+    findings += [f"FINDING {PIN_COLLIDES}: {shared} `plan` refuses such "
+                 "`--pin`s as `adopt-pin-collides`, and the root's own "
+                 "`validate-pins.py` reports them as "
+                 "`neutral-pin-source-collides`: re-run `plan` with one "
+                 "product of each such group."
+                 for shared in pin_variable_collisions(typed)]
     return pins, findings
 
 
@@ -387,7 +396,8 @@ def _kept_pin_findings(plan: "Plan", tree: list) -> list[str]:
 def _pin_findings(plan: "Plan", tree: list) -> list[str]:
     """Every FINDING about the plan's pins: each entry `execute` cannot
     write a pin file from, two pins at one file or one at a file the shape
-    writes, and a path the root keeps where a pin is written."""
+    writes, two whose products one `SHAPE_PIN_SOURCE_<PRODUCT>` names
+    (#275), and a path the root keeps where a pin is written."""
     return _read_pins(plan)[1] + _kept_pin_findings(plan, tree)
 
 

@@ -48,9 +48,12 @@ from repo_shape import (  # noqa: E402
 )
 
 # What a declared neutral-product pin is read with (#273): the forge's tree
-# listing, the owner an unqualified name resolves under, and the digest.
+# listing, the owner an unqualified name resolves under, and the digest; and
+# which products share a `SHAPE_PIN_SOURCE_<PRODUCT>` variable, the one answer
+# the project's own `validate-pins.py` reports on (#275).
 from repo_shape import (  # noqa: E402
-    GH_TREE_API, NEUTRAL_PRODUCT_OWNER, tree_digest,
+    GH_TREE_API, NEUTRAL_PRODUCT_OWNER, PIN_SOURCE_ENV_PREFIX,
+    pin_source_env_collisions, tree_digest,
 )
 
 SHAPE_REPOSITORY = "opensoft/openRepoShape"
@@ -1772,6 +1775,19 @@ PIN_COLLISION_REMEDIATION = (
     "each product once, by the name of the repository it pins."
 )
 
+#: What a refused pair of `--pin`s whose products share a source variable is
+#: told to do (#275), after what `PIN_COLLISION_REMEDIATION` says when a file
+#: collides too.
+PIN_VARIABLE_REMEDIATION = (
+    f"`{PIN_SOURCE_ENV_PREFIX}<PRODUCT>` names the local checkout of a "
+    "product, and is its name upper-cased with every character outside `A-Z`, "
+    "`0-9` and `_` turned into `_`, so names that differ only in `-`, `.` or "
+    "`_` share one. The project's own `validate-pins.py` reports such a pair "
+    "as `neutral-pin-source-collides`, and a variable two pins share is read "
+    "for neither. Pass one product of each such group, or products whose "
+    "names differ by more."
+)
+
 
 def pin_collisions(typed) -> list[str]:
     """One sentence for each file that a pin would be written over: a file
@@ -1822,6 +1838,48 @@ def pin_collisions(typed) -> list[str]:
     return collisions
 
 
+def pin_variable_collisions(typed) -> list[str]:
+    """One sentence for each `SHAPE_PIN_SOURCE_<PRODUCT>` variable that two or
+    more of the products pinned share, each pin named as `typed` names it,
+    in the order each variable's first pin was (#275). `typed` is
+    `pin_collisions`'s `(said, product)` list.
+
+    `open-glass`, `open_glass` and `open.glass` are three pin files and three
+    legal `--pin` names, and one variable: whichever checkout it names answers
+    for all of them, and the project's own `validate-pins.py` reported the
+    pin it was not a checkout of as `neutral-pin-source-unreadable`. The
+    question is `repo_shape.pin_source_env_collisions`'s, so it is the one
+    `validate-pins.py` answers, and it takes products as their pin files do:
+    the same product typed twice is #241's `one file`, said by
+    `pin_collisions`, and is never a collision here.
+    """
+    said_of = {}
+    for said, product in typed:
+        said_of.setdefault(product.casefold(), []).append(said)
+    out = []
+    for variable, products in pin_source_env_collisions(
+            product for _, product in typed).items():
+        named = [said for product in products
+                 for said in said_of[product.casefold()]]
+        out.append(
+            " and ".join(named) + " name the products "
+            + " and ".join(f"`{product}`" for product in products)
+            + f", and one variable, `{variable}`, names the local checkout of "
+            "each: it cannot say which it holds.")
+    return out
+
+
+def pin_collision_remediation(file_collision: bool,
+                              variable_collision: bool) -> str:
+    """The remediation for the collisions a refusal names: #241's alone for a
+    file, the variable's alone, or both said once each (#275)."""
+    if not variable_collision:
+        return PIN_COLLISION_REMEDIATION
+    if not file_collision:
+        return f"Remediation: nothing was created. {PIN_VARIABLE_REMEDIATION}"
+    return f"{PIN_COLLISION_REMEDIATION} {PIN_VARIABLE_REMEDIATION}"
+
+
 def refuse_colliding_pins(pins, owner: str,
                           refusal: str = "scaffold-pin-collides") -> None:
     """No `--pin` is written where the shape writes a file of its own, and no
@@ -1860,11 +1918,20 @@ def refuse_colliding_pins(pins, owner: str,
     contracts` was told it contains that file "and 4 more" where there
     were three (#197's re-review, N1). Refused first, no pin path it lists
     is the shape's or listed twice.
+
+    TWO PINS THAT SHARE A SOURCE VARIABLE ARE REFUSED HERE TOO (#275), in the
+    same refusal and after the file collisions, by `pin_variable_collisions`:
+    `--pin open-glass@<A> --pin open_glass@<B>` are two files and one
+    `SHAPE_PIN_SOURCE_OPEN_GLASS`. The refusal is the one the project's own
+    `validate-pins.py` would make as a finding, said before anything exists.
     """
-    collisions = pin_collisions([(f"--pin {raw!r}", parse_pin(raw, owner)[0])
-                                 for raw in pins])
-    if collisions:
-        raise Refusal(refusal, " ".join(collisions), PIN_COLLISION_REMEDIATION)
+    typed = [(f"--pin {raw!r}", parse_pin(raw, owner)[0]) for raw in pins]
+    collisions = pin_collisions(typed)
+    shared = pin_variable_collisions(typed)
+    if collisions or shared:
+        raise Refusal(refusal, " ".join(collisions + shared),
+                      pin_collision_remediation(bool(collisions),
+                                                bool(shared)))
 
 
 def materialize_family_root(shape_root: Path, target: Path,

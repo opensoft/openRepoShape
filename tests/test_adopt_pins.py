@@ -403,6 +403,29 @@ def test_a_colliding_pin_is_refused_by_plan(source_repo, tmp_path, glass,
     assert gh_calls(gh_env) == ""
 
 
+def test_two_products_one_source_variable_names_are_refused_by_plan(
+        source_repo, tmp_path, glass, gh_env):
+    """#275's adopt half, through the function the scaffold refuses with:
+    `open-glass` and `open_glass` are two pin files and one
+    `SHAPE_PIN_SOURCE_OPEN_GLASS`, which the root's own `validate-pins.py`
+    would report as `neutral-pin-source-collides`."""
+    path, first, second = glass
+    out = tmp_path / "plan.yaml"
+    result = plan_with(source_repo, out, f"open-glass@{first}",
+                       f"open_glass@{second}",
+                       extra=("--pin-source", str(path)), env=gh_env)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stderr == (
+        f"REFUSED adopt-pin-collides: --pin 'open-glass@{first}' and --pin "
+        f"'open_glass@{second}' name the products `open-glass` and "
+        "`open_glass`, and one variable, `SHAPE_PIN_SOURCE_OPEN_GLASS`, names "
+        "the local checkout of each: it cannot say which it holds.\n"
+        "Remediation: nothing was created. "
+        f"{shape_materialize.PIN_VARIABLE_REMEDIATION}\n")
+    assert not out.exists()
+    assert gh_calls(gh_env) == ""
+
+
 def test_a_leg_mounted_over_a_pins_file_is_refused_by_plan(source_repo,
                                                            tmp_path, glass):
     """`execute` mounts the legs and then writes each pin, so a leg at the
@@ -581,6 +604,19 @@ def colliding(glass) -> dict:
                                         commit=commit, digest=digest),
                   "`pins:` entry 1 ('shape') writes the pin of the product "
                   "`shape` at `contracts/shape-pin.yaml`, " + SHAPE_WRITES),
+        # Two files, one `SHAPE_PIN_SOURCE_<PRODUCT>` (#275).
+        "variable-pair": ("pins:\n" + pin_entry(
+                              product="open-glass",
+                              repository="opensoft/open-glass",
+                              commit=commit, digest=digest)
+                          + pin_entry(product="open_glass",
+                                      repository="opensoft/open_glass",
+                                      commit=commit, digest=digest),
+                          "`pins:` entry 1 ('open-glass') and `pins:` entry 2 "
+                          "('open_glass') name the products `open-glass` and "
+                          "`open_glass`, and one variable, "
+                          "`SHAPE_PIN_SOURCE_OPEN_GLASS`, names the local "
+                          "checkout of each: it cannot say which it holds."),
     }
 
 
@@ -600,7 +636,8 @@ CASE_IDS = [("plan-pin-unrecorded", name) for name in (
 CASE_IDS += [("plan-pin-malformed", name) for name in (
     "not-a-list", "a-number", "short-commit", "short-digest",
     "another-product", "no-owner", "no-source")]
-CASE_IDS += [("plan-pin-collides", name) for name in ("case-pair", "shape")]
+CASE_IDS += [("plan-pin-collides", name)
+             for name in ("case-pair", "shape", "variable-pair")]
 
 
 def test_every_case_is_asked(cases):
