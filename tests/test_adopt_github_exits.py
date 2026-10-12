@@ -117,9 +117,12 @@ BY_HAND = "Open the pull request by hand:"
 #: $FAKE_GH_ROOT, which is what the rewritten `https://github.com/` URL then
 #: names, and the one command named in $FAKE_GH_REFUSES is refused the way a
 #: token without the permission is, after writing the arguments it was given,
-#: NUL-separated, to $FAKE_GH_ROOT/refused-arguments.
+#: NUL-separated, to $FAKE_GH_ROOT/refused-arguments. Every call records the
+#: token and the config directory it was run with in $FAKE_GH_ROOT/environment:
+#: they are what a real `gh` would have been run with.
 GH_SHIM = textwrap.dedent("""\
     #!/bin/sh
+    printf '%s\\n%s\\n' "$GH_TOKEN" "$GH_CONFIG_DIR" > "$FAKE_GH_ROOT/environment"
     case "$1 $2" in
       "$FAKE_GH_REFUSES")
         : > "$FAKE_GH_ROOT/refused-arguments"
@@ -494,6 +497,23 @@ def test_the_same_source_verifies_when_gh_opens_the_pull_request(tmp_path):
 
 
 # --- the real `gh` stays out of reach ---------------------------------------
+
+@WINDOWS_SKIP  # the `gh` is a `#!` script, which Windows does not run
+@needs_filter_repo
+def test_a_run_gives_gh_no_token_it_would_accept_and_no_config(tmp_path):
+    """Whatever `gh` the run reaches is run with what the shim was run with: a
+    token no organisation knows, and a config directory with nothing in it, so
+    that the operator's login is not there to be used if the shim ever cannot
+    be executed and the next `gh` on PATH answers instead."""
+    result, github = github_run(tmp_path, "pr create")
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    token, config, _ = (github / "environment").read_text(
+        encoding="utf-8").split("\n")
+    assert token == "bogus-token-for-tests", token
+    assert Path(config) == tmp_path / "gh-config", config
+    assert list(Path(config).iterdir()) == [], config
+
 
 def program(directory: Path, *names: str) -> None:
     """Executable files called `names` in `directory`."""
