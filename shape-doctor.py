@@ -56,7 +56,12 @@ THE ROWS, for an assembly root, in this order:
     manifest          the project's own `scripts/validate-manifest.py` when it
                       has one -- it is the pinned copy, and that is the point
                       -- else the standard's template copy, and the row says
-                      which ran
+                      which ran; the template's NEXT line carries the
+                      `PYTHONPATH` the doctor ran it under, because it
+                      imports `repo_shape` from the standard's `scripts/` and
+                      a bare path pasted anywhere else dies on that import,
+                      and the project's own copy is run and printed with none,
+                      as its own gate runs it (#238)
     pins              the project's own `scripts/validate-pins.py` likewise:
                       the lockstep invariant, and the shape-copy digests
     manifest kinds    every `kind:`-bearing manifest in the root, against
@@ -528,7 +533,8 @@ UNQUOTED_POSIX = re.compile(r"^[A-Za-z0-9_./:@%+=,-]+$")
 UNQUOTED_NT = re.compile(r"^[A-Za-z0-9_./:%+=\\-]+$")
 
 
-def quote_arg(value, platform: str | None = None) -> str:
+def quote_arg(value, platform: str | None = None, *,
+              always: bool = False) -> str:
     # A RAW docstring, because the Windows examples below are Windows paths:
     # `C:\Users\...` is a `\U` escape to the interpreter, and a docstring that
     # had to spell a reader's path with doubled backslashes would be a
@@ -606,6 +612,17 @@ def quote_arg(value, platform: str | None = None) -> str:
     and false to the point of it (Copilot, PR #102). `.fullmatch` is what
     actually requires every character to be in the alphabet, not only the
     ones before wherever `$` was willing to stop.
+
+    `always` QUOTES A VALUE THE ALPHABET WOULD LEAVE BARE, and exists for the
+    one position where bare is not a value at all: the right-hand side of a
+    PowerShell assignment. `$env:PYTHONPATH = C:\shape\scripts` is not the
+    string `C:\shape\scripts`, it is an attempt to RUN it, because what
+    follows `=` is a pipeline and a bareword in one is a command name (#238).
+    Every other position this file interpolates into is an argument, where
+    bare is the value; so it is off unless a caller asks, and the quoting
+    itself is still this function's alone -- one place that knows the
+    apostrophe is doubled, rather than a second copy of the rule beside the
+    one that needs it.
     """
     # ASCII first, so the alphabet check and the quoting below it both see
     # what `Row.__init__` will (Copilot, PR #102); see the docstring above.
@@ -614,7 +631,8 @@ def quote_arg(value, platform: str | None = None) -> str:
     # `.fullmatch`, not `.match`: a pattern ending in `$` still matches just
     # before a trailing newline, so `.match` alone would call "Atlas\n" bare
     # (Copilot, PR #102).
-    if (UNQUOTED_NT if windows else UNQUOTED_POSIX).fullmatch(text):
+    if not always and (UNQUOTED_NT if windows else UNQUOTED_POSIX).fullmatch(
+            text):
         return text
     if windows:
         # PowerShell's verbatim string: nothing inside is expanded, and the
@@ -865,22 +883,67 @@ class Context:
 # ---------------------------------------------------------------------------
 
 
-def run_validator(ctx: Context, script: Path, args: list[str]) -> tuple:
+def validator_scripts(shape: Path, own_copy: bool) -> Path | None:
+    """The directory a validator run has on `PYTHONPATH`, or None for a run
+    that has none: the standard's own `scripts/` for the standard's TEMPLATE
+    copy, and nothing for the root's OWN copy (#238).
+
+    ONE DEFINITION OF THE DIRECTORY AND OF THE CONDITION, for the two places
+    that have to agree about both. `run_validator` sets what this returns on
+    the doctor's child and `validator_command` prints what it returns in the
+    line a row hands over, and each is asked with the one `own_copy` that
+    `validator_for` made -- so the run and the line apply `PYTHONPATH` under
+    the same condition, and there is no second test of `own_copy` to drift
+    from the first (review S1 on #238).
+
+    THE TEMPLATE'S IS THE STANDARD'S `scripts/`, because that is the only
+    place `repo_shape.py` is: the template has none beside it. THE ROOT'S OWN
+    COPY GETS NOTHING, because it is the project's own gate and the doctor's
+    job is to run it as the project runs it -- as a path, importing
+    `repo_shape` from beside itself. A root that has lost its own
+    `scripts/repo_shape.py` has a gate that cannot import it, and the row
+    must say what that gate says (`ModuleNotFoundError` as a finding), not a
+    "passes" the project's own gate would never give.
+    """
+    return None if own_copy else shape / "scripts"
+
+
+def run_validator(ctx: Context, script: Path, args: list[str],
+                  pythonpath: Path | None = None) -> tuple:
     """`(exit code, first line worth quoting, whole output)`.
 
-    THE PYTHONPATH IS THE POINT OF THE `env` BLOCK. A project's own
+    THE PYTHONPATH IS THE POINT OF THE `env` BLOCK, AND IT IS SET ONLY WHEN
+    A CALLER ASKS: `pythonpath` is the directory to put on it, and
+    `validator_row` passes `validator_scripts`'s answer. A project's own
     `scripts/validate-pins.py` sits beside its own copy of `repo_shape.py` and
-    imports it from there. The STANDARD's template copy has no `repo_shape.py`
-    beside it -- that file is copied out of the shape itself, not out of the
-    template -- so when this command falls back to the template it must put
-    `<shape>/scripts` on the path or the fallback dies on an ImportError that
-    says nothing about the project being checked.
+    imports it from there, so it is run with nothing added -- the way the
+    project's own gate runs it. The STANDARD's template copy has no
+    `repo_shape.py` beside it -- that file is copied out of the shape itself,
+    not out of the template -- so when a row falls back to the template it
+    must put `<shape>/scripts` on the path or the fallback dies on an
+    ImportError that says nothing about the project being checked. The
+    standard's own scripts (naming, the machine's preflight) are not given
+    one either: the naming script inserts its own directory ahead of its
+    `repo_shape` import, and the machine's preflight needs nothing from
+    `repo_shape` at all and never imports it (#238).
+
+    A PASTED COMMAND IS A SECOND PROCESS, AND THIS `env` IS NOT IN IT. What a
+    row prints as its NEXT is run later, by a person, in their own shell --
+    so the `PYTHONPATH` set here reaches the doctor's child and never the
+    reader's, and `validator_command` is what puts the same directory in the
+    printed line (#238). Both are `validator_scripts`'s, asked with the same
+    `own_copy`, so the run and the line apply `PYTHONPATH` under one
+    condition: a template copy gets it in both and the root's own copy gets
+    it in neither. A root's own copy that cannot import `repo_shape` from
+    beside itself therefore fails here as it fails when pasted, and the row
+    reports that failure rather than a pass the pasted line would not give.
     """
     env = dict(os.environ)
-    existing = env.get("PYTHONPATH")
-    scripts = str(ctx.shape / "scripts")
-    env["PYTHONPATH"] = (f"{scripts}{os.pathsep}{existing}" if existing
-                         else scripts)
+    if pythonpath is not None:
+        existing = env.get("PYTHONPATH")
+        scripts = str(pythonpath)
+        env["PYTHONPATH"] = (f"{scripts}{os.pathsep}{existing}" if existing
+                             else scripts)
     # UTF-8 whatever the console is: these validators print this repository's
     # own prose, and `ascii_text` flattens it for the report afterwards.
     env["PYTHONIOENCODING"] = "utf-8"
@@ -911,18 +974,98 @@ def run_validator(ctx: Context, script: Path, args: list[str]) -> tuple:
 
 
 def validator_for(ctx: Context, own: str, template: str) -> tuple:
-    """`(the validator a row runs, how the row names it)`: the root's own
-    copy when it has one, else the standard's template copy.
+    """`(the validator a row runs, how the row names it, whether it is the
+    root's own copy)`: the root's own copy when it has one, else the
+    standard's template copy.
 
     One choice, made in one place, because two rows make it: `validator_row`
     runs what this picks, and `unloaded_manifest_row` names it as the next
     command (#205). A root told to run one copy by one row and another by the
     next would be told two different things about one gate.
+
+    THE THIRD VALUE IS WHAT `validator_command` NEEDS to spell the line, and
+    it is returned here, from the one place that made the choice, instead of
+    being re-derived from the path by a caller (#238). It is also the row's
+    `detail.own_copy`.
     """
     own_path = ctx.root / own
     if own_path.is_file():
-        return own_path, f"the project's own {own}"
-    return ctx.shape / template, f"the standard's {template}"
+        return own_path, f"the project's own {own}", True
+    return ctx.shape / template, f"the standard's {template}", False
+
+
+def validator_command(shape: Path, used: Path, own_copy: bool, args: list,
+                      platform: str | None = None) -> str:
+    r"""The line that runs `used` on `args`, spelled for the READER'S shell,
+    and carrying the environment the doctor ran it under (#238).
+
+    A NEXT IS A COMMAND, and a command pasted into the shell it was quoted
+    for, from any directory and with no `PYTHONPATH` in the environment, has
+    to do what its row says: print the validator's own output and exit with
+    the code the row records. The root's OWN copy does, for as long as the
+    project keeps its own `repo_shape.py` beside it, as a project copied from
+    the shape does: it imports it from there, so that line is the bare
+    interpreter, path and arguments it has always been, byte for byte. It is
+    the project's own gate and is run, and printed, as the project runs it. A
+    root that has lost that file has a gate that dies on the import, pasted
+    or not, and the row says so as a finding, because the doctor ran it the
+    same way (`validator_scripts`).
+
+    THE STANDARD'S TEMPLATE COPY DOES NOT. It imports `repo_shape` from beside
+    itself, and `repo_shape.py` is copied INTO a project's `scripts/` out of
+    the standard's `scripts/`, never kept beside the template (`REPO_SHAPE`,
+    `scripts/shape_materialize.py`). The doctor's own child runs it with
+    `<shape>/scripts` on `PYTHONPATH` (`run_validator`, through
+    `validator_scripts`); the line a row printed carried only the path, so
+    pasting it died on `ModuleNotFoundError: No module named 'repo_shape'`
+    with exit 1 -- the code a validator uses for "findings", so anything keyed
+    on the exit code read a crash as the finding the row had already
+    reported, and the one command the row hands over to "read its output in
+    full" printed a traceback that named nothing about the project. A reader
+    whose own shell already exported a `PYTHONPATH` that reached the standard
+    never saw it, which is how it went unfound.
+
+    SO THE TEMPLATE'S LINE SETS IT, in the reader's dialect, which is the
+    same two this file already speaks (`quote_arg`, `copy_command`,
+    `scaffold_command`): `PYTHONPATH=<shape>/scripts python3 <template> ...`
+    for `sh`, and `$env:PYTHONPATH = '<shape>\scripts'; python <template> ...`
+    for PowerShell. Both are ONE directory, so this is a plain assignment and
+    not a list: `os.pathsep` is the doctor's child's business, where it
+    PREPENDS to whatever the environment already holds, and a printed line
+    sets the one path it needs rather than splicing into a value it cannot
+    see.
+
+    ONLY `PYTHONPATH`, and not the rest of the child's environment.
+    `PYTHONIOENCODING` and `PYTHONDONTWRITEBYTECODE` exist so the DOCTOR can
+    quote a validator's prose and keep its own promise to write nothing; a
+    reader pasting a line is making their own run, and the import is the only
+    thing that run cannot do without.
+
+    THE POWERSHELL VALUE IS QUOTED WHETHER OR NOT IT NEEDS IT, which is
+    `quote_arg`'s `always`: what follows `=` is a pipeline, so a bare
+    `C:\shape\scripts` would be run as a command and not assigned as a
+    string. THE ASSIGNMENT LASTS FOR THE POWERSHELL SESSION, not for the one
+    command, and it REPLACES any `PYTHONPATH` the reader had: `sh`'s prefix
+    applies to one command and leaves the reader's environment alone, and
+    this does not. That is accepted: the issue and the plan for this change
+    named this spelling, `$env:` is PowerShell's idiom, and the effect ends
+    with the session (review N1 on #238).
+
+    `platform` IS PASSED ON, as `copy_command` says at length: one resolved
+    `target` governs the dialect, the interpreter and every quoting, so a
+    Windows line built on a POSIX runner is a Windows line, and both are
+    asserted from either host. `platform=None` is the host, unchanged.
+    """
+    target = os.name if platform is None else platform
+    command = " ".join([python_command(platform), quote_arg(used, target),
+                        *(quote_arg(arg, target) for arg in args)])
+    scripts = validator_scripts(shape, own_copy)
+    if scripts is None:
+        return command
+    if target == "nt":
+        return (f"$env:PYTHONPATH = {quote_arg(scripts, target, always=True)}; "
+                f"{command}")
+    return f"PYTHONPATH={quote_arg(scripts, target)} {command}"
 
 
 def validator_row(ctx: Context, check_id: str, label: str, own: str,
@@ -936,8 +1079,7 @@ def validator_row(ctx: Context, check_id: str, label: str, own: str,
     have". The template copy is the fallback for a root that has lost or never
     had one, and the row names which of the two answered.
     """
-    own_path = ctx.root / own
-    used, which = validator_for(ctx, own, template)
+    used, which, own_copy = validator_for(ctx, own, template)
     if not used.is_file():
         return Row(check_id, label, FINDING,
                    f"neither {own} nor {template} is readable, so the "
@@ -947,8 +1089,9 @@ def validator_row(ctx: Context, check_id: str, label: str, own: str,
                    f"{quote_arg(ctx.root)}   # from a complete checkout of "
                    "the standard; this one is missing that file",
                    {"validator": None})
-    code, quoted, _ = run_validator(ctx, used, args)
-    detail = {"validator": used.as_posix(), "own_copy": own_path.is_file(),
+    code, quoted, _ = run_validator(ctx, used, args,
+                                    validator_scripts(ctx.shape, own_copy))
+    detail = {"validator": used.as_posix(), "own_copy": own_copy,
               "exit": code}
     if code == 0:
         return Row(check_id, label, OK, f"{which} passes", None, detail)
@@ -958,11 +1101,15 @@ def validator_row(ctx: Context, check_id: str, label: str, own: str,
     # `python3 validate-pins.py in <root>`, which is prose wearing a command's
     # clothes: `in` arrives as an argument and argparse refuses it. Every
     # validator here takes `--root`, so the runnable spelling is the absolute
-    # path and that flag, and it needs no `cd` (Copilot, PR #96).
-    spelled = " ".join(quote_arg(arg) for arg in args)
+    # path and that flag, and it needs no `cd` (Copilot, PR #96). AND IT NEEDS
+    # NO ENVIRONMENT FROM THE READER: where `used` is the standard's template
+    # copy the line carries the `PYTHONPATH` the doctor ran it under, or it
+    # dies on an import and exits with a finding's code (#238); the root's own
+    # copy was run under none, and its line carries none.
+    command = validator_command(ctx.shape, used, own_copy, args)
     return Row(check_id, label, FINDING, reason,
-               f"{PYTHON} {quote_arg(used)} {spelled}   # read its output in "
-               "full; it names what it refused", detail)
+               f"{command}   # read its output in full; it names what it "
+               "refused", detail)
 
 
 #: The row that OWNS each kind's manifest, by id: the one that quotes its
@@ -1015,10 +1162,10 @@ def unloaded_manifest_row(ctx: Context, check_id: str, label: str, own: str,
     """
     refusal = ctx.manifest_refusal
     name = ctx.manifest_path.name
-    used, _which = validator_for(ctx, own, template)
+    used, _which, own_copy = validator_for(ctx, own, template)
     reason = f"{name} does not load: {refusal_line(refusal)}"
-    detail = {"validator": used.as_posix(),
-              "own_copy": (ctx.root / own).is_file(), "manifest": name,
+    detail = {"validator": used.as_posix(), "own_copy": own_copy,
+              "manifest": name,
               "refusal": {"code": refusal.code, "detail": refusal.detail}}
     if not used.is_file():
         # Neither copy to name: `validator_row` already says so, for any
@@ -1027,8 +1174,10 @@ def unloaded_manifest_row(ctx: Context, check_id: str, label: str, own: str,
                                 ["--root", str(ctx.root)])
         return Row(check_id, label, FINDING, f"{reason}; {missing.reason}",
                    missing.next_command, {**missing.detail, **detail})
+    command = validator_command(ctx.shape, used, own_copy,
+                                ["--root", ctx.root])
     return Row(check_id, label, FINDING, reason,
-               f"{PYTHON} {quote_arg(used)} --root {quote_arg(ctx.root)}   "
+               f"{command}   "
                f"# the file to fix is {quote_arg(ctx.manifest_path)}, where "
                "the line above says; this refuses it the same way until it "
                "loads. What it should say there -- a merge conflict "
