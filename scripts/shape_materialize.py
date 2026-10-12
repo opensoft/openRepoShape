@@ -30,7 +30,6 @@ from __future__ import annotations
 import argparse
 import codecs
 import datetime as _dt
-import functools
 import os
 import re
 import shutil
@@ -1680,8 +1679,10 @@ LEG_PATH_TEMPLATES = Path(__file__).resolve().parents[1] / "templates"
 #: The placeholders a leg path is rendered into.
 LEG_PATH_PLACEHOLDERS = ("SPEC_PATH", "CODE_PATH")
 
+#: What `_leg_path_lines` found under each templates directory it was asked.
+_LEG_PATH_LINES: dict[Path, tuple[tuple[str, str, str], ...]] = {}
 
-@functools.lru_cache(maxsize=None)
+
 def _leg_path_lines(templates: Path) -> tuple[tuple[str, str, str], ...]:
     """Every line of every YAML template under `templates` that holds a leg
     path, as `(tree, file, line)`: `tree` is the template tree
@@ -1695,6 +1696,8 @@ def _leg_path_lines(templates: Path) -> tuple[tuple[str, str, str], ...]:
     and `.yml` files are asked. The shallowest file comes first, so a
     sentence names `project.yaml` before the pins. Read once per process.
     """
+    if templates in _LEG_PATH_LINES:
+        return _LEG_PATH_LINES[templates]
     found = []
     for path in sorted(templates.rglob("*"),
                        key=lambda p: (len(p.parts), p.as_posix())):
@@ -1704,7 +1707,8 @@ def _leg_path_lines(templates: Path) -> tuple[tuple[str, str, str], ...]:
         for line in path.read_text(encoding="utf-8").splitlines():
             if any("{{" + key + "}}" in line for key in LEG_PATH_PLACEHOLDERS):
                 found.append((tree, file, line))
-    return tuple(found)
+    _LEG_PATH_LINES[templates] = tuple(found)
+    return _LEG_PATH_LINES[templates]
 
 
 def _read_back(tree: str, file: str, rendered: str):
