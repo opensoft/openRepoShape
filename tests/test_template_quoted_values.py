@@ -33,8 +33,10 @@ sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import load_yaml, parse_yaml  # noqa: E402
 from shape_materialize import render  # noqa: E402
 
-PLACEHOLDER = re.compile(r"\{\{([A-Z_]+)\}\}")
-QUOTED_PLACEHOLDER = re.compile(r'"\{\{([A-Z_]+)\}\}"')
+#: Digits too: `{{SHAPE_TREE_SHA256}}` is a placeholder, and `render` refuses
+#: a table that has no value for it (#260).
+PLACEHOLDER = re.compile(r"\{\{([A-Z0-9_]+)\}\}")
+QUOTED_PLACEHOLDER = re.compile(r'"\{\{([A-Z0-9_]+)\}\}"')
 
 #: Every YAML template that quotes a placeholder. Found, not listed, so a
 #: template that gains a quoted field is covered without an edit here.

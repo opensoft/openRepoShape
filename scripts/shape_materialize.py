@@ -508,7 +508,18 @@ FAMILY_EXECUTABLE = (
     "scripts/siblings.py",
 )
 
-PLACEHOLDER_RE = re.compile(r"\{\{[A-Z_]+\}\}")
+#: A `{{KEY}}` placeholder: capitals, digits and underscores between double
+#: braces. The digits are what make `{{SPEC_TREE_SHA256}}` one, which the
+#: pattern `[A-Z_]+` did not see (#260). A workflow's own `${{ github.x }}`
+#: and a Python f-string's `{{commit}}` hold a space or a lower-case letter,
+#: so neither is one. Every key of every substitution table is spelled this
+#: way, because `render` replaces only what this pattern finds.
+PLACEHOLDER_RE = re.compile(r"\{\{[A-Z0-9_]+\}\}")
+#: The same placeholder, or one standing alone between a YAML template's
+#: double quotes, `"{{ELECTED_BY}}"`, which is matched FIRST: group 1 is the
+#: quoted placeholder, and a bare one leaves it None.
+YAML_PLACEHOLDER_RE = re.compile(
+    '"(' + PLACEHOLDER_RE.pattern + ')"|' + PLACEHOLDER_RE.pattern)
 
 #: THE ONE READING OF THE LINE A FAMILY HOLDER'S README ENDS WITH.
 #: `templates/family-root/README.md` closes with ``Shape: `<repository>` @
@@ -1260,20 +1271,39 @@ def render(text: str, values: dict[str, str], source: str) -> str:
     The spelling is the value itself for any text without a quote, a
     backslash or a character `str.isprintable` refuses -- a commit, a digest,
     an ordinary name -- so no other template changes by a byte.
+
+    ONE PASS, SO A VALUE IS NEVER READ AGAIN (#260). The keys used to be
+    replaced one after another, each over the whole text, so the value an
+    earlier key put in was scanned by every later key. `--elected-by
+    '{{SPEC_PATH}}'` was recorded as `elected_by: "spec"` under `adoption
+    verified`. `{{PROJECT}}`, a key that came earlier, or `{{NOPE}}`, which
+    no key names, was left in the output and refused as a defect in the
+    tool, after the legs were pushed. Now the template is read once, left to
+    right, and each placeholder is replaced by its value as it is met. The
+    text a value brings in is never searched, so it is written as typed.
+
+    THE REFUSAL ASKS THE TEMPLATE, NOT THE OUTPUT. A placeholder the TEMPLATE
+    holds and the table has no value for is the defect the remediation
+    names, and it is refused before anything is written. The output is not
+    searched: it now holds the person's own text, which may hold `{{` and
+    is no defect of anybody's.
     """
-    out = text
-    yaml_file = source.endswith((".yaml", ".yml"))
-    for key, value in values.items():
-        if yaml_file:
-            out = out.replace('"{{' + key + '}}"', double_quoted(str(value)))
-        out = out.replace("{{" + key + "}}", str(value))
-    left = PLACEHOLDER_RE.findall(out)
-    if left:
+    missing = sorted({token for token in PLACEHOLDER_RE.findall(text)
+                      if token[2:-2] not in values})
+    if missing:
         raise Refusal("template-unsubstituted",
-                      f"{source}: no value for {sorted(set(left))}",
+                      f"{source}: no value for {missing}",
                       "Remediation: this is a defect in the substitution table "
                       "of the tool you ran, not in your invocation.")
-    return out
+
+    def value_of(placeholder: str) -> str:
+        return str(values[placeholder[2:-2]])
+
+    if not source.endswith((".yaml", ".yml")):
+        return PLACEHOLDER_RE.sub(lambda match: value_of(match[0]), text)
+    return YAML_PLACEHOLDER_RE.sub(
+        lambda match: (double_quoted(value_of(match[1])) if match[1]
+                       else value_of(match[0])), text)
 
 
 def _local_strays(src: Path) -> frozenset[str]:

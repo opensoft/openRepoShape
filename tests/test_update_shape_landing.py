@@ -13,12 +13,27 @@ opened the pull request it was asked for.
 THE UPSTREAM IS A CLONE OF THIS REPOSITORY, the project is scaffolded out of
 it into bare repositories in a temporary directory, and every test gets its
 own copy of the root AND of its bare remote, so one test's push cannot make
-another's non-fast-forward. `gh` is a shell script on PATH that logs its argv
-and answers from a state directory — the shape `test_free_plan_hint.py`
-already uses — so nothing here reaches a network or a real repository. A test
-that needs that script carries `WINDOWS_SKIP` (CreateProcess reads no
-shebang); the ones that never reach `gh`, and one that stubs it in-process,
-run on every platform.
+another's non-fast-forward. `gh` is a Python program that logs its argv and
+answers from a state directory, so nothing here reaches a network or a real
+repository, and no test in this file is skipped for the operating system it
+runs on (#334).
+
+HOW A PROGRAM NAMED `gh` REACHES THE CHILD WITHOUT A FILE NAMED `gh`. On
+Windows `subprocess.run(["gh", ...])` is `CreateProcess`, which appends `.exe`
+to a program name that has no extension (its documented rule) and reads no
+shebang: a `#!/bin/sh` script is not a program there, a `gh.cmd` beside it is
+not what `gh` names, and a real `gh.exe` further down PATH would be the one
+that ran. No file this suite can write without a compiler is a `gh` on that
+OS. So the update's child interpreter is started with a `sitecustomize.py`
+first on its `PYTHONPATH` (`GH_ON_PATH`) that does the one thing PATH
+resolution would have done: a `subprocess.Popen` whose program is `gh` is
+started as `python <the stub> <the same arguments>`. Everything after that is
+real: the stub is a process, its exit code and its two streams cross real
+pipes, and the arguments cross the OS's own command-line quoting. `git`, a
+real executable everywhere, is never touched. What this does not exercise is
+the OS finding a `gh` by searching PATH; `test_a_gh_missing_from_path_...` and
+the in-process tests at the end cover the other half of that, a `gh` it cannot
+find.
 """
 
 from __future__ import annotations
@@ -28,15 +43,13 @@ import json
 import os
 import shlex
 import shutil
-import stat
 import subprocess
 import sys
 from types import SimpleNamespace
 
 import pytest
 
-from conftest import REPO, WINDOWS_SKIP, blank_unnamed_pin_sources, git, \
-    run_script
+from conftest import REPO, blank_unnamed_pin_sources, git, run_script
 from test_update_shape import (CHANGED, CHANGED_SOURCE, PROJECT,
                                UPSTREAM_FIX_LINE, commit_upstream_changes,
                                next_line_of, scaffold_upstream_and_project)
@@ -51,22 +64,66 @@ PIN = "contracts/shape-pin.yaml"
 URL = "https://github.invalid/testorg/Atlas/pull/7"
 PR_OPEN_NEXT = "NEXT  the pull request is open; ask a human to review and merge it"
 
-#: The stub. One line per call, each argument ended by a unit separator, so
-#: the log keeps argument boundaries (the `--title` and `--body` values have
-#: spaces in them) without a shell-quoting round trip.
-GH_STUB = """#!/bin/sh
-{ printf '%s\\037' "$@"; printf '\\n'; } >> "$GH_LOG"
-case "$1 $2" in
-  "pr list") cat "$GH_STATE/list" 2>/dev/null || echo '[]' ;;
-  "pr create")
-    if [ -e "$GH_STATE/create-fails" ]; then
-      echo "HTTP 422: Validation Failed (stub)" >&2; exit 97
-    fi
-    echo "__URL__"
-    printf '[{"state":"OPEN","url":"__URL__"}]\\n' > "$GH_STATE/list" ;;
-  *) echo "stub gh: unexpected $*" >&2; exit 64 ;;
-esac
+#: The stub, as a program: what the shell script it replaces did, in Python,
+#: because Python is the one interpreter every CI job has. One line per call,
+#: each argument ended by a unit separator, so the log keeps argument
+#: boundaries (the `--title` and `--body` values have spaces in them) without
+#: a shell-quoting round trip. The log is written as bytes (`\n` on every OS,
+#: UTF-8, never the console's code page), and `pr create` fails with exit 97
+#: while the state directory holds `create-fails`.
+GH_STUB = """\
+import os
+import sys
+
+URL = "__URL__"
+arguments = sys.argv[1:]
+state = os.environ["GH_STATE"]
+with open(os.environ["GH_LOG"], "ab") as log:
+    log.write(b"".join(a.encode("utf-8", "surrogateescape") + b"\\x1f"
+                       for a in arguments) + b"\\n")
+listing = os.path.join(state, "list")
+if arguments[:2] == ["pr", "list"]:
+    try:
+        with open(listing, "rb") as answer:
+            sys.stdout.buffer.write(answer.read())
+    except FileNotFoundError:
+        sys.stdout.buffer.write(b"[]\\n")
+elif arguments[:2] == ["pr", "create"]:
+    if os.path.exists(os.path.join(state, "create-fails")):
+        sys.stderr.write("HTTP 422: Validation Failed (stub)\\n")
+        sys.exit(97)
+    sys.stdout.write(URL + "\\n")
+    with open(listing, "wb") as answer:
+        answer.write(b'[{"state":"OPEN","url":"' + URL.encode() + b'"}]\\n')
+else:
+    sys.stderr.write("stub gh: unexpected " + " ".join(arguments) + "\\n")
+    sys.exit(64)
 """.replace("__URL__", URL)
+
+#: What stands where `gh` would be found. Python imports `sitecustomize` at
+#: start-up from `PYTHONPATH`, so the update's child interpreter, and the
+#: validators it runs, load this before the tool's first line. A program named
+#: `gh` (by its file name, as `check_program` reads one) is started as the
+#: stub run through this interpreter; every other program is untouched, and
+#: with no `GH_STUB` in the environment the module does nothing at all.
+GH_ON_PATH = """\
+import os
+import subprocess
+import sys
+
+_STUB = os.environ.get("GH_STUB")
+
+
+class _Popen(subprocess.Popen):
+    def __init__(self, args, *rest, **kwargs):
+        if (_STUB and isinstance(args, (list, tuple)) and args
+                and os.path.basename(args[0]) in ("gh", "gh.exe")):
+            args = [sys.executable, _STUB, *args[1:]]
+        super().__init__(args, *rest, **kwargs)
+
+
+subprocess.Popen = _Popen
+"""
 
 
 @pytest.fixture(scope="module")
@@ -97,12 +154,12 @@ def root(project, tmp_path):
 
 @pytest.fixture
 def gh(tmp_path):
-    """The `gh` stub on PATH, and what it was asked."""
-    binary = tmp_path / "bin"
+    """The `gh` stub in the update's child, and what it was asked."""
+    binary = tmp_path / "gh-stub"
     binary.mkdir()
-    script = binary / "gh"
-    script.write_text(GH_STUB, encoding="utf-8")
-    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    stub = binary / "gh_stub.py"
+    stub.write_text(GH_STUB, encoding="utf-8")
+    (binary / "sitecustomize.py").write_text(GH_ON_PATH, encoding="utf-8")
     state = tmp_path / "gh-state"
     state.mkdir()
     log = tmp_path / "gh.log"
@@ -128,7 +185,9 @@ def gh(tmp_path):
         if log.exists():
             log.unlink()
 
-    env = {"PATH": f"{binary}{os.pathsep}{os.environ['PATH']}",
+    inherited = os.environ.get("PYTHONPATH")
+    path = [str(binary), inherited] if inherited else [str(binary)]
+    env = {"PYTHONPATH": os.pathsep.join(path), "GH_STUB": str(stub),
            "GH_LOG": str(log), "GH_STATE": str(state)}
     return SimpleNamespace(env=env, calls=calls, failing=failing,
                            answer=answer, forget=forget)
@@ -174,7 +233,6 @@ def commits_on_the_branch(root) -> int:
 
 # --- the pull request fails after the commit and the push -----------------
 
-@WINDOWS_SKIP
 def test_a_failed_pull_request_is_named_and_its_next_line_is_the_command(
         root, project, gh):
     """THE ISSUE'S FIRST RUN. The commit and the push landed, so the refusal
@@ -206,7 +264,6 @@ def test_a_failed_pull_request_is_named_and_its_next_line_is_the_command(
     assert on_the_remote(root) == head
 
 
-@WINDOWS_SKIP
 def test_a_failed_pull_request_on_an_unpushed_branch_pushes_first(
         root, project, gh):
     """`--pr` WITHOUT `--push`: the branch never reached origin, so the NEXT
@@ -233,7 +290,6 @@ def test_a_failed_pull_request_on_an_unpushed_branch_pushes_first(
     assert on_the_remote(root) is None
 
 
-@WINDOWS_SKIP
 def test_the_commit_and_the_push_print_above_the_refusal_in_one_log(
         root, project, gh):
     """STDOUT IS FLUSHED BEFORE THE REFUSAL. With both streams in one pipe,
@@ -258,7 +314,6 @@ def test_the_commit_and_the_push_print_above_the_refusal_in_one_log(
     assert order == sorted(order), (found, proc.stdout)
 
 
-@WINDOWS_SKIP
 def test_a_rerun_on_the_branch_opens_the_missing_pull_request(root, project,
                                                               gh):
     """THE ISSUE'S SECOND RUN. Nothing is left to write, and the pull request
@@ -299,7 +354,6 @@ def test_a_rerun_on_the_branch_opens_the_missing_pull_request(root, project,
     assert commits_on_the_branch(root) == 1
 
 
-@WINDOWS_SKIP
 @pytest.mark.parametrize("state", ["MERGED", "CLOSED"])
 def test_a_branch_whose_pull_request_was_merged_or_closed_gets_no_second_one(
         root, project, gh, state):
@@ -367,7 +421,6 @@ def test_a_failed_push_is_named_and_its_next_line_pushes_first(root, project,
     assert on_the_remote(root) is None
 
 
-@WINDOWS_SKIP
 def test_a_rerun_after_a_failed_push_pushes_and_opens_the_pull_request(
         root, project, gh, tmp_path):
     git("remote", "set-url", "--push", "origin",
@@ -446,7 +499,6 @@ def test_a_failure_before_the_commit_under_push_and_pr_is_rolled_back(
                cwd=root.path).stdout.split() == ["refs/heads/main"]
 
 
-@WINDOWS_SKIP
 def test_the_same_command_after_a_rolled_back_commit_lands_and_opens(
         root, project, gh):
     """ROLLED BACK, THE NEXT RUN IS THE FIRST RUN AGAIN. With the hook gone
@@ -481,8 +533,7 @@ def test_the_same_command_after_a_rolled_back_commit_lands_and_opens(
 def test_without_pr_a_rerun_on_the_branch_is_still_nothing_to_do(
         root, project, gh, flags):
     """No `--pr`, no re-run behaviour: the second run prints main's one line
-    and exits 0, and `gh` is never asked (on Windows the stub is not a
-    program, which a call would turn into a failure)."""
+    and exits 0, and `gh` is never asked."""
     first = apply(root, project, "--branch", BRANCH, *flags, env=gh.env)
     assert first.returncode == 0, first.stdout + first.stderr
     again = apply(root, project, "--branch", BRANCH, *flags, env=gh.env)
@@ -516,7 +567,6 @@ def test_a_branch_that_proposes_no_repin_is_nothing_to_do_under_pr(
     assert on_the_remote(root) is None
 
 
-@WINDOWS_SKIP
 def test_a_rerun_from_another_branch_is_still_nothing_to_do(root, project,
                                                            gh):
     """THE RE-RUN ACTS ONLY ON THE BRANCH CHECKED OUT. A checkout that moved
@@ -689,9 +739,11 @@ def update_shape():
 
 def test_the_failed_pull_request_and_its_rerun_in_process(
         root, project, update_shape, monkeypatch, capsys):
-    """THE WINDOWS JOB'S COVERAGE of the two runs above: `gh` stubbed at
+    """THE SAME TWO RUNS WITH NO SUBPROCESS FOR `gh`: stubbed at
     `update_shape.run`, the one function every command goes through, and
-    `git` — the commit and the push — run for real."""
+    `git` — the commit and the push — run for real. Added (#227) as the
+    Windows job's coverage while the runs above were skipped there; they run
+    there now (#334) and this one stays, with no process for `gh` at all."""
     real = update_shape.run
     calls: list = []
     fails = [True]
@@ -737,10 +789,12 @@ def test_the_failed_pull_request_and_its_rerun_in_process(
 
 def test_a_gh_that_cannot_be_started_in_process(root, project, update_shape,
                                                 monkeypatch, capsys):
-    """THE WINDOWS JOB'S COVERAGE of a missing `gh`: `update_shape.run`
-    raises for every `gh` call exactly as `subprocess.run` does when the
-    program is not on PATH, and `git` runs for real. The first run and the
-    re-run each name their step and end on the same `gh pr create`."""
+    """A MISSING `gh`, WHERE NO PATH CAN HIDE ONE: `update_shape.run` raises
+    for every `gh` call exactly as `subprocess.run` does when the program is
+    not on PATH, and `git` runs for real. The first run and the re-run each
+    name their step and end on the same `gh pr create`. The subprocess test
+    before it skips where `gh` lives beside `git` or Python, which a Linux
+    runner's `/usr/bin` is."""
     real = update_shape.run
     calls: list = []
 
