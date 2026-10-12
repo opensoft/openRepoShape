@@ -2732,6 +2732,38 @@ def test_the_doctor_and_siblings_run_ONE_definition_of_one_repository(
         "https://host/IRRS.git", "https://host/x") == "https://host/IRRS.git"
 
 
+def test_a_port_and_githubs_ssh_host_are_not_part_of_a_remotes_key():
+    """`remote_key` TAKES A PORT, AND `ssh.github.com`, OFF THE HOST (#190).
+
+    `ssh://git@github.com:22/Acme/Widget.git`, and
+    `ssh://git@ssh.github.com:443/Acme/Widget.git` as GitHub documents SSH
+    over the HTTPS port, are the scp `git@github.com:Acme/Widget.git`
+    reached another way, and keyed as `github.com/22/acme/widget`.
+    `same_repository`'s forge-tail match hid that for an `Owner/Repo`, but
+    not for a repository at a host's top level, and `adopt-project.py`
+    compares keys and nothing else, so it refused a source cloned that way.
+    """
+    scp = repo_shape.remote_key("git@github.com:Acme/Widget.git")
+    for url in ("ssh://git@github.com:22/Acme/Widget.git",
+                "ssh://git@ssh.github.com:443/Acme/Widget.git",
+                "ssh://git@SSH.GitHub.com:443/Acme/Widget.git",
+                "https://github.com:443/Acme/Widget.git",
+                "https://x-access-token:token@github.com:443/Acme/Widget.git",
+                "git@ssh.github.com:Acme/Widget.git"):
+        assert repo_shape.remote_key(url) == scp, url
+    assert repo_shape.same_repository("ssh://git@host:2222/Repo.git",
+                                      "git@host:Repo.git")
+    # ...and nothing that is not a port: the scp spelling has none, so its
+    # `22` is a path component; a drive's colon carries no digits; and
+    # another repository, or another host, is still another.
+    for url in ("git@github.com:22/Acme/Widget.git",
+                "ssh://git@github.com:22/Acme/Other.git",
+                "ssh://git@gitlab.com:22/Acme/Widget.git"):
+        assert repo_shape.remote_key(url) != scp, url
+    assert repo_shape.remote_key("file:///E:/mirrors/Widget.git") \
+        == repo_shape.remote_key("E:\\mirrors\\Widget.git")
+
+
 def test_a_symlinked_prefix_is_ONE_directory_to_both_callers(tmp_path,
                                                              siblings):
     """THE PREFIX CASE #157 MOVED OUT OF THE RULE AND INTO THE CALLERS.
