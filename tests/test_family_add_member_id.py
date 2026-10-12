@@ -246,7 +246,11 @@ def test_a_member_whose_id_changes_between_the_probe_and_the_mount_is_unwound(
         git("clone", "-q", str(remotes / f"{SPARE}.git"), str(work),
             cwd=tmp_path)
         text = (work / "project.yaml").read_bytes()
-        changed = re.sub(rb"(?m)^id: irqs$", b"id: irrs", text)
+        # The template writes the id quoted (`id: "irqs"`, #259), and a
+        # hand-written manifest writes it bare: match either, and write the
+        # new id back in the quoting the old one had, so the member still
+        # loads and this still fails loudly if the line ever stops matching.
+        changed = re.sub(rb'(?m)^id: ("?)irqs\1$', rb"id: \1irrs\1", text)
         assert changed != text
         (work / "project.yaml").write_bytes(changed)
         git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam",
