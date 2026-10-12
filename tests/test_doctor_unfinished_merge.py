@@ -91,12 +91,13 @@ def assert_invalid_for_the_merge(standard: Path, root: Path,
     assert payload["rows"][0]["id"] == "merge", "the merge row reads first"
     assert row["status"] == "FINDING", row
     assert row["detail"] == {"unmerged": paths, "count": len(paths),
-                             "merge_head": merging}, row["detail"]
+                             "merging": merging}, row["detail"]
     assert f"{len(paths)} path(s) unmerged in the index" in row["reason"]
     for path in paths:
         assert path in row["reason"], (path, row["reason"])
-    said = ("finish it (`git add` each path, then `git commit`) or abandon "
-            "it (`git merge --abort`)")
+    said = ("resolve each path (which side it takes is the merge owner's "
+            "call), `git add` it, then `git commit`, or abandon the merge "
+            "(`git merge --abort`)")
     assert (said in row["reason"]) is merging, row["reason"]
     argv = pasted(row["next"])
     assert argv[:2] == ["git", "-C"] and argv[3:] == ["status"], row["next"]
@@ -245,6 +246,62 @@ def test_a_cherry_pick_left_conflicted_is_invalid_and_sends_to_git_status(
             "abandon what left them") in row["reason"], row["reason"]
 
 
+def test_a_rebase_stopped_on_a_merge_it_replays_is_sent_to_git_status(
+        standard, project):
+    """`git rebase -r` replays a merge whose conflict was resolved by hand,
+    meets the conflict again and stops, with `MERGE_HEAD` beside
+    `rebase-merge`. `git merge --abort` there would strand the rebase, so
+    the row words it as it does a cherry-pick: `git status` names the
+    rebase's own `--continue` and `--abort`."""
+    base = git("rev-parse", "HEAD", cwd=project).stdout.strip()
+    for side in ("x", "t"):
+        git("checkout", "-q", "-b", f"side-{side}", base, cwd=project)
+        (project / "NOTES.md").write_bytes(f"{side}\n".encode())
+        git("add", "--", "NOTES.md", cwd=project)
+        git("commit", "-q", "-m", f"notes {side}", cwd=project)
+    assert merge(project, "side-x").returncode != 0
+    (project / "NOTES.md").write_bytes(b"resolved by hand\n")
+    git("add", "--", "NOTES.md", cwd=project)
+    git("commit", "-q", "--no-edit", cwd=project)
+    git("checkout", "-q", "-b", "onto", base, cwd=project)
+    (project / "ONTO.md").write_bytes(b"onto\n")
+    git("add", "--", "ONTO.md", cwd=project)
+    git("commit", "-q", "-m", "onto", cwd=project)
+    rebased = git("rebase", "-r", "onto", "side-t", cwd=project, check=False)
+    assert rebased.returncode != 0, rebased.stdout + rebased.stderr
+    for name in ("MERGE_HEAD", "rebase-merge"):
+        held = Path(git("rev-parse", "--git-path", name,
+                        cwd=project).stdout.strip())
+        assert (held if held.is_absolute() else project / held).exists(), \
+            f"fixture: the stopped rebase must leave {name}"
+    row = assert_invalid_for_the_merge(standard, project, ["NOTES.md"],
+                                       merging=False)
+    assert "merge --abort" not in row["reason"], row["reason"]
+
+
+def test_a_directory_inside_another_repository_is_not_asked_its_merge(
+        standard, tmp_path):
+    """`git -C` walks up. A directory with no repository of its own, inside
+    a checkout in the middle of a merge, is not that checkout: no row, for
+    a conflict outside the directory (a `note` before) or inside it (a
+    FINDING before). Asked of the checkout itself, the row is there."""
+    outer = tmp_path / "outer"
+    (outer / "inner").mkdir(parents=True)
+    (outer / "inner" / "seed.md").write_bytes(b"seed\n")
+    git("init", "-q", "-b", "main", cwd=outer)
+    git("add", "--", "inner/seed.md", cwd=outer)
+    git("commit", "-q", "-m", "seed", cwd=outer)
+    own_file_conflicted(outer, "merge")
+    module = doctor_module(standard)
+    inner = (outer / "inner").resolve()
+    assert module.check_merge(module.Context(inner)) is None
+    assert unmerged_in_the_index(outer, [b"inner/x.md"])
+    assert module.check_merge(module.Context(inner)) is None
+    row = module.check_merge(module.Context(outer.resolve()))
+    assert row.detail == {"unmerged": ["NOTES.md", "inner/x.md"],
+                          "count": 2, "merging": True}, row.detail
+
+
 def test_a_merge_with_nothing_unmerged_is_a_note_and_stays_compliant(
         standard, project):
     """`git merge --no-commit`: `MERGE_HEAD` and nothing unmerged. Git
@@ -265,7 +322,7 @@ def test_a_merge_with_nothing_unmerged_is_a_note_and_stays_compliant(
     assert row["status"] == "note", row
     assert row["next"] is None, row
     assert row["detail"] == {"unmerged": [], "count": 0,
-                             "merge_head": True}, row["detail"]
+                             "merging": True}, row["detail"]
     assert "nothing in it is unmerged" in row["reason"], row["reason"]
 
 
@@ -321,7 +378,7 @@ def test_the_row_names_five_paths_then_counts_the_rest(standard, project):
     spelled = [name.decode() for name in names]
     assert row.status == module.FINDING, row.as_dict()
     assert row.detail == {"unmerged": spelled, "count": 7,
-                          "merge_head": False}, row.detail
+                          "merging": False}, row.detail
     assert ("7 path(s) unmerged in the index, so git commits nothing here "
             "until each is resolved: a.md, b.md, c.md, d.md, e.md and 2 "
             "more. ") in row.reason, row.reason
@@ -365,7 +422,7 @@ def test_the_merge_rung_outranks_drift_and_asks_for_its_list(standard):
     red = module.Row("pins", "pins", module.FINDING, "red", None, {})
     unfinished = module.Row("merge", "merge", module.FINDING, "unmerged",
                             None, {"unmerged": ["spec"], "count": 1,
-                                   "merge_head": True})
+                                   "merging": True})
     assert module.verdict_for(ctx, [off_pin, red]) == (
         "DRIFTED (1 leg(s) not at the pin)", 1)
     assert module.verdict_for(ctx, [unfinished, off_pin, red]) == (

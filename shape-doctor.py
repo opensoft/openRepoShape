@@ -57,6 +57,9 @@ holder only, so a `contracts/family.yaml` in an assembly root -- or a
 
 THE ROWS, for an assembly root, in this order:
 
+    merge             only in the middle of a merge: a FINDING naming the
+                      index's unmerged paths, or a `note` once nothing is
+                      left unmerged; no row at all otherwise (#424)
     naming            the three leg names against the STANDARD's own
                       `contracts/repository-naming.yaml`
     manifest          the project's own `scripts/validate-manifest.py` when it
@@ -85,9 +88,10 @@ THE ROWS, for an assembly root, in this order:
     machine           whether this workstation can RUN the fixes named above
                       (`setup-project.py --preflight`, plus `git-filter-repo`)
 
-and for a FAMILY holder: `family` (its own `scripts/validate-family.py`),
-`manifest kinds`, `shape currency`, `placement` (`n/a`: a holder has no legs
-of its own), `members` and `machine`. A directory that
+and for a FAMILY holder: `merge` likewise, `family` (its own
+`scripts/validate-family.py`), `manifest kinds`, `shape currency`,
+`placement` (`n/a`: a holder has no legs of its own), `members` and
+`machine`. A directory that
 is NEITHER gets `naming` (what it is called, under the policy), `what is
 here`, `the way in` -- `adopt-project.py plan` for a repository that already
 exists, `setup.sh` for a new one -- and `machine`.
@@ -5073,21 +5077,54 @@ def unmerged_paths(root: Path) -> list[str] | None:
     return list(paths)
 
 
-def merge_in_progress(root: Path) -> bool:
-    """Whether git records a merge in progress: a `MERGE_HEAD` file in the
-    root's git directory (#424).
-
-    THE FILE, NOT `rev-parse --verify MERGE_HEAD`, which also resolves a
-    branch or a tag of that name. `--git-path` names the file in a linked
-    worktree too, where it is per worktree; a relative answer is relative to
-    the root, where git was asked.
-    """
-    where = (git_answer(["rev-parse", "--git-path", "MERGE_HEAD"], root,
+def git_dir_holds(root: Path, name: str) -> bool:
+    """Whether the root's git directory holds `name` (#424). `--git-path`
+    names it in a linked worktree too, where git keeps it per worktree, and
+    a relative answer is relative to the root, where git was asked."""
+    where = (git_answer(["rev-parse", "--git-path", name], root,
                         binary=True) or b"").rstrip(b"\r\n")
     if not where:
         return False
     path = Path(os.fsdecode(where))
-    return (path if path.is_absolute() else root / path).is_file()
+    return (path if path.is_absolute() else root / path).exists()
+
+
+#: What a rebase in progress keeps in the git directory: the merge backend's
+#: directory and the apply backend's, which `git am` shares.
+REBASE_STATE = ("rebase-merge", "rebase-apply")
+
+
+def merge_in_progress(root: Path) -> bool:
+    """Whether git records a MERGE in progress, and no rebase: a
+    `MERGE_HEAD` file, and neither of `REBASE_STATE` (#424).
+
+    THE FILE, NOT `rev-parse --verify MERGE_HEAD`, which also resolves a
+    branch or a tag of that name. AND NOT A REBASE: `git rebase -r` stopped
+    on a merge it replays writes `MERGE_HEAD` too, and `git merge --abort`
+    there strands the rebase, so the row sends a rebase to `git status`,
+    which names its own `--continue` and `--abort`.
+    """
+    return git_dir_holds(root, "MERGE_HEAD") and not any(
+        git_dir_holds(root, name) for name in REBASE_STATE)
+
+
+def own_repository(root: Path) -> bool:
+    """Whether git answers about the root's OWN repository (#424).
+
+    `git -C` DISCOVERS, so a plain directory inside a checkout in the middle
+    of a merge would be told about that checkout's merge -- the reason
+    `not_its_own_repository` declines for a leg. Asked here as bytes and
+    compared with `samefile`, so neither a toplevel that is not UTF-8 nor a
+    root spelled in another case or through a symlink reads as a stranger.
+    """
+    top = (git_answer(["rev-parse", "--show-toplevel"], root, binary=True)
+           or b"").rstrip(b"\r\n")
+    if not top:
+        return False
+    try:
+        return os.path.samefile(os.fsdecode(top), root)
+    except OSError:
+        return False
 
 
 def check_merge(ctx: Context) -> Row | None:
@@ -5130,7 +5167,9 @@ def check_merge(ctx: Context) -> Row | None:
     root is almost never in, and every report and every `--json` caller's
     row set would change for it. Where git gives no answer -- no repository,
     no `git` -- there is no row either: no commit is being refused, and the
-    rows that read git say so themselves.
+    rows that read git say so themselves. Nor where the root is not a
+    repository of its own (`own_repository`): the merge `git -C` would find
+    is the enclosing checkout's.
 
     ONLY THE ROOT'S OWN INDEX. A leg is a repository of its own, and a merge
     left unfinished in one is work in progress there, like an uncommitted
@@ -5138,6 +5177,8 @@ def check_merge(ctx: Context) -> Row | None:
     index.
     """
     root = ctx.root
+    if not own_repository(root):
+        return None
     unmerged = unmerged_paths(root)
     merging = merge_in_progress(root)
     if not unmerged and not merging:
@@ -5149,14 +5190,15 @@ def check_merge(ctx: Context) -> Row | None:
                    "abandons it. A note, because git commits it as it "
                    "stands and the other rows read the files it is made "
                    "from", None,
-                   {"unmerged": [], "count": 0, "merge_head": True})
+                   {"unmerged": [], "count": 0, "merging": True})
     spelled = [repr(path) if UNWRITABLE_IN_A_PLAN.search(path) else path
                for path in unmerged]
     named = ", ".join(spelled[:UNMERGED_NAMED])
     if len(spelled) > UNMERGED_NAMED:
         named += f" and {len(spelled) - UNMERGED_NAMED} more"
-    how = ("A merge is in progress: finish it (`git add` each path, then "
-           "`git commit`) or abandon it (`git merge --abort`)" if merging
+    how = ("A merge is in progress: resolve each path (which side it takes "
+           "is the merge owner's call), `git add` it, then `git commit`, or "
+           "abandon the merge (`git merge --abort`)" if merging
            else "`git status` says how to resolve each, and how to finish "
            "or abandon what left them")
     return Row("merge", LABEL_MERGE, FINDING,
@@ -5166,7 +5208,7 @@ def check_merge(ctx: Context) -> Row | None:
                "holds",
                f"git -C {quote_arg(root)} status",
                {"unmerged": spelled, "count": len(spelled),
-                "merge_head": merging})
+                "merging": merging})
 
 
 # ---------------------------------------------------------------------------
