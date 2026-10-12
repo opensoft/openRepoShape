@@ -27,6 +27,17 @@ THE SHIM IS A `#!` SCRIPT, so the runs are `WINDOWS_SKIP`ped, and they need
 `git filter-repo` as every `execute` test does. Reading step 7, and the
 module's own EXIT CODES paragraph, runs everywhere.
 
+THE REAL `gh` MUST NOT BE REACHABLE FROM A RUN. The shim is first on PATH, but
+`subprocess` goes on to the next directory when the program it found cannot be
+executed, and a `gh` there would be the operator's. So the run's environment
+also carries an unauthenticated token and an empty config directory, and takes
+every directory that holds a `gh` out of PATH where it can (`without_a_real_gh`).
+
+The command a refused `gh pr create` leaves to do by hand is the command that
+was refused, title and body included, because `gh` will not take a pull
+request without them where there is no terminal to ask on. The tests parse it
+and compare it with what the shim was run with; none of them runs it.
+
 `adopt-project.py`'s own two messages are asserted here WORD FOR WORD, and the
 anchors step 7 gives (`IS pushed`, `gh pr create`, the topic) are asserted
 against them, so rewording either side alone fails a test instead of leaving
@@ -37,6 +48,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -96,15 +108,24 @@ NOT_BY_HAND = ("No pull request was opened, and none should be: the split "
                "above did not pass verification.")
 VERIFIED = "adoption verified: every source path is in exactly one place"
 FINDING = "FINDING adopt-shape-file-missing:"
+#: What `_verify` used to say after every pass, whether or not a pull request
+#: existed to review.
+NEXT = f"NEXT: review the pull request on {NORTHWIND}"
+BY_HAND = "Open the pull request by hand:"
 
 #: `gh` with no network. `repo create` makes a bare repository under
 #: $FAKE_GH_ROOT, which is what the rewritten `https://github.com/` URL then
 #: names, and the one command named in $FAKE_GH_REFUSES is refused the way a
-#: token without the permission is.
+#: token without the permission is, after writing the arguments it was given,
+#: NUL-separated, to $FAKE_GH_ROOT/refused-arguments.
 GH_SHIM = textwrap.dedent("""\
     #!/bin/sh
     case "$1 $2" in
       "$FAKE_GH_REFUSES")
+        : > "$FAKE_GH_ROOT/refused-arguments"
+        for argument in "$@"; do
+          printf '%s\\0' "$argument" >> "$FAKE_GH_ROOT/refused-arguments"
+        done
         echo "HTTP 403: Resource not accessible by integration" >&2; exit 1;;
       "repo create")
         git init -q --bare -b main "$FAKE_GH_ROOT/$3.git" && echo "https://github.com/$3";;
@@ -125,6 +146,33 @@ def adopter():
     return module
 
 
+#: What a run needs to find on PATH besides the shim: `git`, the `git
+#: filter-repo` it dispatches to, the interpreter that script names, and what
+#: git's own shell helpers call.
+NEEDED_ON_PATH = ("git", "git-filter-repo", "python3", "python", "sh", "env",
+                  "sed", "tr", "uname", "cat")
+
+
+def without_a_real_gh(path: str, needed=NEEDED_ON_PATH) -> str:
+    """`path` with every directory that holds a `gh` taken out, so that a run
+    whose shim cannot be executed has no operator's `gh` to fall through to.
+
+    Taken out only when nothing is lost: each program in `needed` must be found
+    at the same place without those directories as with them. `/usr/bin` on
+    Linux holds `gh` beside `git` and `sed`, and Homebrew's `bin` holds a `gh`
+    beside the `git` a run is meant to use, so on those `path` comes back
+    whole, and what keeps the real `gh` from acting is the unauthenticated
+    token and the empty config directory the environment also carries."""
+    kept = os.pathsep.join(
+        directory for directory in path.split(os.pathsep)
+        if not any(os.path.isfile(os.path.join(directory, name))
+                   for name in ("gh", "gh.exe")))
+    if all(shutil.which(program, path=kept) == shutil.which(program, path=path)
+           for program in needed):
+        return kept
+    return path
+
+
 def step_7() -> str:
     """Step 7 of AGENTS.md, from its heading to the blank line after it, as
     one line of single-spaced text."""
@@ -133,7 +181,8 @@ def step_7() -> str:
 
 
 def github_run(tmp_path: Path, refuses: str, tree: dict = SOURCE_TREE,
-               keep_contracts: bool = False, merge_stderr: bool = False):
+               keep_contracts: bool = False, merge_stderr: bool = False,
+               stdout_closed: bool = False):
     """Plan a small source and `execute` it in GitHub mode, with a `gh` that
     refuses `refuses`. Returns `(result, github)`: the run, and the directory
     that stands for github.com, with `testorg/<name>.git` in it.
@@ -142,7 +191,9 @@ def github_run(tmp_path: Path, refuses: str, tree: dict = SOURCE_TREE,
     the root, which fails the verification. `merge_stderr` runs with both
     streams in one pipe, as a person redirecting a log has them: stdout is
     then block-buffered, and the order the lines arrive in is the order the
-    tool flushed them."""
+    tool flushed them. `stdout_closed` gives the run a stdout whose reading end
+    is already closed, as `| head` leaves it once `head` has quit, so that
+    `result.stdout` is None."""
     github = tmp_path / "github"
     (github / ORG).mkdir(parents=True)
     source = make_source_repo(tmp_path / NORTHWIND, tree=tree, edits=())
@@ -159,6 +210,11 @@ def github_run(tmp_path: Path, refuses: str, tree: dict = SOURCE_TREE,
     config = tmp_path / "gitconfig"
     config.write_text(f'[url "{github.as_posix()}/"]\n'
                       "\tinsteadOf = https://github.com/\n", encoding="utf-8")
+    # The operator's `gh` must not be reachable from here: no token it would
+    # accept, no config to read a login from, and (where it can be done
+    # without losing `git`) no directory that holds one on PATH.
+    gh_config = tmp_path / "gh-config"
+    gh_config.mkdir()
 
     plan = tmp_path / "adoption-plan.yaml"
     written = write_plan(source, plan)
@@ -169,21 +225,47 @@ def github_run(tmp_path: Path, refuses: str, tree: dict = SOURCE_TREE,
         with plan.open("w", encoding="utf-8", newline="\n") as handle:
             handle.write(answered.replace(CONTRACTS_TO_SPEC, KEEP_CONTRACTS,
                                           1))
-    result = subprocess.run(
-        [sys.executable, str(ADOPT), "execute", "--plan", str(plan), "--yes",
-         "--work-dir", str(tmp_path / "work")],
-        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT if merge_stderr else subprocess.PIPE,
-        text=True, check=False,
-        env={**os.environ, "LANES_LANE": "",
-             "GIT_AUTHOR_NAME": "openRepoShape tests",
-             "GIT_AUTHOR_EMAIL": "tests@openreposhape.invalid",
-             "GIT_COMMITTER_NAME": "openRepoShape tests",
-             "GIT_COMMITTER_EMAIL": "tests@openreposhape.invalid",
-             "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
-             "GIT_CONFIG_GLOBAL": str(config), "GIT_ALLOW_PROTOCOL": "file",
-             "FAKE_GH_ROOT": str(github), "FAKE_GH_REFUSES": refuses})
+    stdout = subprocess.PIPE
+    if stdout_closed:
+        read_end, stdout = os.pipe()
+        os.close(read_end)
+    try:
+        result = subprocess.run(
+            [sys.executable, str(ADOPT), "execute", "--plan", str(plan),
+             "--yes", "--work-dir", str(tmp_path / "work")],
+            stdin=subprocess.DEVNULL, stdout=stdout,
+            stderr=subprocess.STDOUT if merge_stderr else subprocess.PIPE,
+            text=True, check=False,
+            env={**os.environ, "LANES_LANE": "",
+                 "GIT_AUTHOR_NAME": "openRepoShape tests",
+                 "GIT_AUTHOR_EMAIL": "tests@openreposhape.invalid",
+                 "GIT_COMMITTER_NAME": "openRepoShape tests",
+                 "GIT_COMMITTER_EMAIL": "tests@openreposhape.invalid",
+                 "PATH": os.pathsep.join(
+                     [str(bin_dir), without_a_real_gh(os.environ["PATH"])]),
+                 "GH_TOKEN": "bogus-token-for-tests",
+                 "GH_CONFIG_DIR": str(gh_config),
+                 "GIT_CONFIG_GLOBAL": str(config),
+                 "GIT_ALLOW_PROTOCOL": "file",
+                 "FAKE_GH_ROOT": str(github), "FAKE_GH_REFUSES": refuses})
+    finally:
+        if stdout_closed:
+            os.close(stdout)
     return result, github
+
+
+def refused_arguments(github: Path) -> list[str]:
+    """The arguments the shim was run with when it refused: the command
+    `adopt-project.py` tried, after `gh`."""
+    recorded = (github / "refused-arguments").read_bytes().decode("utf-8")
+    return recorded.split("\0")[:-1]
+
+
+def printed_command(text: str) -> list[str]:
+    """The command printed after `Open the pull request by hand:`, as the
+    arguments a shell would give it. Everything after that line is the command,
+    for it is the last thing the run says. It is parsed and never run."""
+    return shlex.split(text.split(BY_HAND, 1)[1])
 
 
 def heads(repository: Path) -> list[str]:
@@ -237,7 +319,11 @@ def test_the_modules_exit_codes_paragraph_names_the_exits_after_the_push(
     not be asked". It says what comes after the push, in the tool's own
     words, so the file and the messages it describes cannot part."""
     codes = " ".join(adopter.__doc__.split("EXIT CODES:", 1)[1].split())
-    assert "two more exit 2s" in codes, codes
+    # Not every exit 2 is the question that could not be asked, and not every
+    # other one is GitHub's: two of them are.
+    assert "other exit 2s, once the leg repositories exist" in codes, codes
+    assert "Two of them are GitHub mode's alone" in codes, codes
+    assert "two more exit 2s" not in codes, codes
     assert "AFTER both legs and the split branch are pushed" in codes, codes
     assert "the verification has passed" in codes, codes
     assert "`gh pr create` refused (`The branch IS pushed`" in codes, codes
@@ -282,6 +368,10 @@ def test_each_exit_after_the_push_is_exit_2_with_a_command_to_finish_by_hand(
     # IS open (the stub would have let it through); after a refused topic it
     # was tried and refused.
     assert "set on all three" not in result.stdout, result.stdout
+    # `NEXT: review the pull request` is said where there is one to review,
+    # and not after a refused `gh pr create`, where the command to open it is
+    # the next step.
+    assert (NEXT in result.stdout) is opened, result.stdout
 
     # What step 7 says of it is what the tool printed: the marker words and
     # the command it names.
@@ -306,8 +396,57 @@ def test_the_command_to_open_a_refused_pull_request_comes_after_the_table(
     verified = result.stdout.index(VERIFIED)
     by_hand = result.stdout.index(BRANCH_IS_PUSHED)
     assert table < verified < by_hand, result.stdout
-    assert result.stdout.count("Open the pull request by hand") == 1
-    assert result.stdout.rstrip().endswith(BRANCH_IS_PUSHED), result.stdout
+    assert result.stdout.count(BY_HAND) == 1
+    # Nothing follows the command: the whole of what comes after it parses as
+    # the command, whose last argument is the body.
+    printed = printed_command(result.stdout)
+    assert printed[:3] == ["gh", "pr", "create"], printed
+    assert printed[-2] == "--body", printed
+    assert NEXT not in result.stdout, result.stdout
+    assert_pushed(github)
+
+
+@WINDOWS_SKIP  # the `gh` is a `#!` script, which Windows does not run
+@needs_filter_repo
+def test_the_command_printed_for_a_refused_pull_request_is_the_one_refused(
+        tmp_path):
+    """The printed command has its title and body. `gh pr create` without
+    them asks for them, and where there is no terminal it refuses instead
+    (`must provide --title and --body ... when not running interactively`), so
+    an assistant told to finish with the command it prints could not. It is the
+    command `adopt-project.py` ran, argument for argument: what the shim was
+    run with is read back, and the printed command is parsed and compared with
+    it. Nothing here runs the printed command."""
+    result, github = github_run(tmp_path, "pr create")
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    refused = refused_arguments(github)
+    printed = printed_command(result.stderr)
+    assert refused[:2] == ["pr", "create"], refused
+    assert "--title" in refused and "--body" in refused, refused
+    assert printed == ["gh", *refused], (printed, refused)
+    # The body is the split's commit message, which says what moved where.
+    body = refused[refused.index("--body") + 1]
+    assert body.startswith("Adopt the three-repository shape: "), body
+    assert "MOVED TO THE CODE LEG" in body and "\n" in body, body
+
+
+@WINDOWS_SKIP  # the `gh` is a `#!` script, which Windows does not run
+@needs_filter_repo
+def test_a_closed_stdout_does_not_lose_the_command_to_open_the_pull_request(
+        tmp_path):
+    """`execute ... | head`, once `head` has quit, leaves a stdout nobody reads.
+    The command is on stderr, so it is still printed: flushing stdout first,
+    which the order test needs, raised BrokenPipeError there and ended the run
+    in a traceback with no command, where it was printed before #304 and
+    the exit was Python's own 120 for a stdout it cannot flush at exit."""
+    result, github = github_run(tmp_path, "pr create", stdout_closed=True)
+
+    assert "Traceback" not in result.stderr, result.stderr
+    assert BRANCH_IS_PUSHED in result.stderr, result.stderr
+    # 2 is the tool's own exit; 120 is what Python makes of it when it cannot
+    # flush the closed stdout as it exits, and what this run gave before.
+    assert result.returncode in (2, 120), result.stderr
     assert_pushed(github)
 
 
@@ -331,6 +470,7 @@ def test_a_failed_verification_outranks_a_refused_pull_request(tmp_path):
     # Nothing tells the person to open one, or that the adoption is done.
     assert "Open the pull request by hand" not in result.stderr + result.stdout
     assert "IS pushed" not in result.stderr + result.stdout
+    assert NEXT not in result.stdout, result.stdout
     assert VERIFIED not in result.stdout, result.stdout
     assert "VERIFICATION" in result.stdout, result.stdout
     # The legs and the branch exist, as the footer says, and no re-run into
@@ -348,5 +488,43 @@ def test_the_same_source_verifies_when_gh_opens_the_pull_request(tmp_path):
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert VERIFIED in result.stdout, result.stdout
+    assert NEXT in result.stdout, result.stdout
     assert "Open the pull request by hand" not in result.stderr
     assert_pushed(github)
+
+
+# --- the real `gh` stays out of reach ---------------------------------------
+
+def program(directory: Path, *names: str) -> None:
+    """Executable files called `names` in `directory`."""
+    directory.mkdir(parents=True, exist_ok=True)
+    for name in names:
+        (directory / name).write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        (directory / name).chmod(0o755)
+
+
+@WINDOWS_SKIP  # `shutil.which` reads PATHEXT there, and nothing here runs
+def test_the_directory_that_holds_a_real_gh_is_taken_off_path_only_when_free(
+        tmp_path):
+    """A directory with a `gh` and nothing the run needs goes; one that holds
+    `gh` beside `git`, or whose going changes which `git` is found, stays,
+    because losing `git` fails the run and swapping it changes what is
+    tested. Then the token and the config directory are what is left."""
+    system, extra, only_gh = (tmp_path / "system", tmp_path / "extra",
+                              tmp_path / "only-gh")
+    program(system, "git", "sed")
+    program(only_gh, "gh")
+    path = os.pathsep.join(map(str, (only_gh, system)))
+    needed = ("git", "sed")
+    assert without_a_real_gh(path, needed) == str(system)
+
+    # `gh` beside `git`: removing the directory would lose `git`.
+    program(extra, "gh", "git", "sed")
+    shared = os.pathsep.join(map(str, (extra, system)))
+    assert without_a_real_gh(shared, needed) == shared
+    # `gh` beside the `git` that comes first: the other `git` would be used.
+    program(extra, "gh", "git")
+    program(system, "git")
+    assert without_a_real_gh(shared, ("git",)) == shared
+    # No `gh` anywhere, and nothing to take out.
+    assert without_a_real_gh(str(system), needed) == str(system)
