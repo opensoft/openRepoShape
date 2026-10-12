@@ -16,6 +16,7 @@ is the question a pin actually has.
 from __future__ import annotations
 
 import importlib.util
+import os
 import shutil
 import subprocess
 import sys
@@ -509,6 +510,178 @@ def test_a_tracked_workflow_with_a_non_ascii_name_is_not_taken_for_untracked(
         cwd=str(project), capture_output=True, check=True).stdout.split(b"\0")
     assert relative.encode("utf-8") in names
     assert validate(project).returncode == 0
+
+
+# --- a tracked workflow the disk spells another way (#332) ------------------
+
+def disk_ignores_case(directory: Path) -> bool:
+    """Probe the disk `directory` is on: does a file written as
+    `case-probe` open as `CASE-PROBE`? macOS and Windows answer yes by
+    default, Linux no — asked of the disk, never assumed from the OS."""
+    probe = directory / "case-probe"
+    probe.write_bytes(b"")
+    try:
+        return (directory / "CASE-PROBE").exists()
+    finally:
+        probe.unlink()
+
+
+def respelled(workflows: Path, name: str, spelling: str) -> None:
+    """Rename `name` to `spelling` outside git, through a third name, so the
+    disk holds `spelling` whether or not it ignores case."""
+    os.rename(workflows / name, workflows / (name + ".respelling"))
+    os.rename(workflows / (name + ".respelling"), workflows / spelling)
+    assert spelling in os.listdir(workflows)
+    assert name not in os.listdir(workflows)
+
+
+def ignoring_case(first: Path, second: Path) -> bool:
+    """`_same_file` as a disk that ignores case answers it, for a test on
+    one that keeps case: two names in one directory spelled alike once case
+    is ignored are one file. On a disk that ignores case the real answer is
+    the same, so the tests that pass this run everywhere."""
+    return (first.parent == second.parent
+            and first.name.casefold() == second.name.casefold())
+
+
+def test_a_tracked_workflow_respelled_by_case_moves_under_gits_spelling(
+        project, scaffolded, advanced, tmp_path):
+    """THE BUG (#332), on the disk it happens on. A tracked `legs.yml`
+    renamed outside git to `Legs.yml` on a disk that ignores case is one
+    file: the walk lists `Legs.yml`, the index holds `legs.yml`, and `git
+    status` is clean. The exact comparison refused it as untracked, and
+    "commit it first" could never clear it, because there is nothing to
+    commit. It is the tracked file: rewritten, listed and committed under
+    git's spelling, and only that, so the commit adds no path git does not
+    track and the rewrite is in it.
+
+    RUNS ONLY WHERE THE DISK IGNORES CASE — the macOS and Windows jobs — and
+    is skipped on one that keeps it (Linux), where `Legs.yml` and
+    `legs.yml` are two files and `git status` reports the tracked one
+    deleted. The rule's own logic runs everywhere, in the test after this
+    one.
+    """
+    if not disk_ignores_case(tmp_path):
+        pytest.skip("needs a disk that ignores case (macOS, Windows): on "
+                    "this one a second spelling is a second file")
+    was, code = reference_both_legs(project)
+    branched(project)
+    workflows = project / ".github" / "workflows"
+    respelled(workflows, "legs.yml", "Legs.yml")
+    assert git("status", "--porcelain", cwd=project).stdout == "", (
+        "git calls the root clean, so there is nothing to commit first")
+
+    dry = bump(project, scaffolded, advanced, "--dry-run")
+    assert dry.returncode == 0, dry.stderr + dry.stdout
+    assert "bump-leg-workflow-untracked" not in dry.stderr
+    assert ".github/workflows/legs.yml  1 reference(s)" in dry.stdout
+
+    result = bump(project, scaffolded, advanced)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert committed(project) == {"spec", "contracts/spec-pin.yaml",
+                                  ".github/workflows/legs.yml"}
+    names = git("ls-tree", "-r", "--name-only", "HEAD", "--",
+                ".github/workflows", cwd=project).stdout.splitlines()
+    assert ".github/workflows/legs.yml" in names
+    assert ".github/workflows/Legs.yml" not in names
+    blob = git("show", "HEAD:.github/workflows/legs.yml", cwd=project).stdout
+    assert spec_ref(advanced) in blob and was not in blob, (
+        "the rewrite is in the commit, under git's spelling")
+    assert f"{ORG}/{PROJECT}-code/.github/workflows/y.yml@{code}" in blob
+    assert spec_ref(advanced) in (workflows / "Legs.yml").read_text(
+        encoding="utf-8")
+    assert validate(project).returncode == 0
+    assert git("status", "--porcelain", cwd=project).stdout == ""
+
+
+def test_a_respelled_tracked_workflow_is_planned_under_gits_spelling(
+        bump_leg_module, project, advanced, monkeypatch):
+    """The rule itself, on every disk: `_same_file`, the one place the tool
+    asks the filesystem, answers as a disk that ignores case would. The row
+    names git's `legs.yml`, which is the path the commit's pathspec carries,
+    with the text read from the disk's `Legs.yml` and its reference moved;
+    on main this is the `bump-leg-workflow-untracked` refusal."""
+    was, _ = reference_both_legs(project)
+    workflows = project / ".github" / "workflows"
+    respelled(workflows, "legs.yml", "Legs.yml")
+    monkeypatch.setattr(bump_leg_module, "_same_file", ignoring_case,
+                        raising=False)
+
+    plans = bump_leg_module.plan_workflows(project, f"{ORG}/{PROJECT}-spec",
+                                           advanced)
+
+    assert [(path.relative_to(project).as_posix(), moved)
+            for path, _, moved in plans] == [(".github/workflows/legs.yml", 1)]
+    (_, text, _), = plans
+    assert spec_ref(advanced) in text and was not in text
+
+
+def test_a_name_two_tracked_spellings_answer_to_is_refused_as_untracked(
+        bump_leg_module, project, advanced, monkeypatch):
+    """An index holding `legs.yml` AND `LEGS.yml`, on a disk that holds one
+    `Legs.yml` for both: one rewrite cannot move two index entries, and
+    committing one would leave the other's old `@<sha>` in the tree. Not
+    resolved to either, so it is refused by the disk's name, as before."""
+    was, _ = reference_both_legs(project)
+    blob = git("rev-parse", "HEAD:.github/workflows/legs.yml",
+               cwd=project).stdout.strip()
+    git("update-index", "--add", "--cacheinfo",
+        f"100644,{blob},.github/workflows/LEGS.yml", cwd=project)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm",
+        "Track a second spelling", cwd=project)
+    respelled(project / ".github" / "workflows", "legs.yml", "Legs.yml")
+    monkeypatch.setattr(bump_leg_module, "_same_file", ignoring_case,
+                        raising=False)
+
+    with pytest.raises(bump_leg_module.Refusal) as refused:
+        bump_leg_module.plan_workflows(project, f"{ORG}/{PROJECT}-spec",
+                                       advanced)
+    assert refused.value.code == "bump-leg-workflow-untracked"
+    assert ".github/workflows/Legs.yml  1 reference(s)" in refused.value.detail
+    assert was in (project / ".github" / "workflows" / "Legs.yml").read_text(
+        encoding="utf-8"), "nothing was written"
+
+
+@pytest.mark.parametrize("twin", ["another-file", "a-hard-link"])
+@pytest.mark.parametrize("ignorecase", ["true", "false"])
+def test_a_second_spelling_that_is_a_second_name_is_refused_whatever_git_says(
+        project, scaffolded, advanced, tmp_path, ignorecase, twin):
+    """The filesystem is asked, not `core.ignorecase`. On a disk that keeps
+    case a `Legs.yml` beside the tracked `legs.yml` is another file, and
+    with the setting true git neither lists it as untracked nor will stage
+    it — so a tool that took git's word would rewrite it and leave it out of
+    the commit. It is refused by name, and the tracked `legs.yml` is not.
+    A HARD LINK is the same file under a second name the directory lists,
+    and the listing is what says so: a tracked name the walk lists is a file
+    of its own, so the link is not taken for a respelling of it either.
+
+    RUNS ONLY WHERE THE DISK KEEPS CASE (Linux): one that ignores it cannot
+    hold the two names at once.
+    """
+    if disk_ignores_case(tmp_path):
+        pytest.skip("needs a disk that keeps case (Linux): this one cannot "
+                    "hold two spellings of one name")
+    was, _ = reference_both_legs(project)
+    branched(project)
+    git("config", "core.ignorecase", ignorecase, cwd=project)
+    workflows = project / ".github" / "workflows"
+    if twin == "a-hard-link":
+        os.link(workflows / "legs.yml", workflows / "Legs.yml")
+    else:
+        leave_untracked(project, "Legs.yml", spec_ref(was))
+    if ignorecase == "true":
+        assert git("ls-files", "-o", "--", ".github/workflows",
+                   cwd=project).stdout == "", (
+            "this test only means something while git calls the twin "
+            "tracked")
+    before = found(project)
+
+    result = bump(project, scaffolded, advanced)
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert "bump-leg-workflow-untracked" in result.stderr
+    assert ".github/workflows/Legs.yml  1 reference(s)" in result.stderr
+    assert ".github/workflows/legs.yml" not in result.stderr
+    assert found(project) == before
 
 
 # --- --dry-run --------------------------------------------------------------

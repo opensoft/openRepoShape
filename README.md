@@ -655,7 +655,10 @@ Descent and the three-repository shape are independent facts: `MedxGlass` pins
 referent_declared: true` is a valid classification for a root.
 `scaffold-project.py --pin openGlass@<40 hex>` writes the pin and the manifest
 entry together. The legs are not descendants of anything: `MedxGlass-spec`
-carries the lowercase suffix and says so.
+carries the lowercase suffix and says so. `scaffold-project.py` refuses,
+before it creates anything, a `--pin` whose product lowercases to `spec`,
+`code` or `shape` — the shape writes those pin files itself — and one product
+pinned twice, in any case or under any owner, because one file holds one pin.
 
 The declaration is `neutral_product_pins:` in `project.yaml`, a fact in the
 project's own tree, so classification stays OFFLINE — it never asks GitHub

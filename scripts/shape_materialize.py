@@ -508,7 +508,18 @@ FAMILY_EXECUTABLE = (
     "scripts/siblings.py",
 )
 
-PLACEHOLDER_RE = re.compile(r"\{\{[A-Z_]+\}\}")
+#: A `{{KEY}}` placeholder: capitals, digits and underscores between double
+#: braces. The digits are what make `{{SPEC_TREE_SHA256}}` one, which the
+#: pattern `[A-Z_]+` did not see (#260). A workflow's own `${{ github.x }}`
+#: and a Python f-string's `{{commit}}` hold a space or a lower-case letter,
+#: so neither is one. Every key of every substitution table is spelled this
+#: way, because `render` replaces only what this pattern finds.
+PLACEHOLDER_RE = re.compile(r"\{\{[A-Z0-9_]+\}\}")
+#: The same placeholder, or one standing alone between a YAML template's
+#: double quotes, `"{{ELECTED_BY}}"`, which is matched FIRST: group 1 is the
+#: quoted placeholder, and a bare one leaves it None.
+YAML_PLACEHOLDER_RE = re.compile(
+    '"(' + PLACEHOLDER_RE.pattern + ')"|' + PLACEHOLDER_RE.pattern)
 
 #: THE ONE READING OF THE LINE A FAMILY HOLDER'S README ENDS WITH.
 #: `templates/family-root/README.md` closes with ``Shape: `<repository>` @
@@ -1041,6 +1052,64 @@ def is_trailer(value: str) -> bool:
     return bool(TRAILER_RE.fullmatch(value)) and one_printable_line(value)
 
 
+#: The nine bidirectional embedding, override and isolate controls, by code
+#: point: U+202A..U+202E (LRE, RLE, PDF, LRO, RLO) and U+2066..U+2069 (LRI,
+#: RLI, FSI, PDI). Each is `Cf`, and each sets the direction of the text
+#: after it, so a line that holds one is shown in another order than it is
+#: written. The marks U+200E, U+200F and U+061C are not among them: a mark
+#: is one character of one direction, and sets no span's.
+BIDI_CONTROLS = frozenset((*range(0x202A, 0x202F), *range(0x2066, 0x206A)))
+
+
+def unwritable_reason(value: str) -> str | None:
+    r"""Why `value` is not one line of text a file can hold, in words; None
+    when it is (#255).
+
+    `adopt-project.py` writes a value a person gave it -- `--elected-by`,
+    `--reference`, the source's own path as a local clone URL -- into the
+    assembly root's `project.yaml` and `README.md` through `write_lf`, which
+    is strict UTF-8. Since #247 the plan keeps a lone surrogate (a byte that
+    is not UTF-8, as `sys.argv` and `os.fsdecode` keep it) as `\udce9`, and
+    the reader gives it back, so `plan` and `check` passed such a value and
+    `write_lf` raised `UnicodeEncodeError` after both legs were pushed. This
+    is the question asked of every such value before anything exists.
+
+    `one_printable_line` LESS `Cf` OTHER THAN THE NINE `BIDI_CONTROLS`, AND
+    THE EMPTY VALUE, because both are text a file holds and both were
+    adopted before #247 and since. Such a `Cf` character is invisible, not
+    unwritable: UTF-8 encodes it, the reader reads it back, and a name may
+    need one -- a Persian name joins its parts with U+200C ZERO WIDTH
+    NON-JOINER, which `one_printable_line` refuses. An empty `elected_by` is
+    what `plan` records when `git config user.name` names nobody, and the
+    manifest holds it as `""`. What is left is refused: a lone surrogate,
+    which UTF-8 cannot encode; a line break, which ends the line the
+    manifest's reader reads the value from (CR, U+0085 and U+2028 among
+    them, as `str.splitlines` ends lines); a bidi embedding, override or
+    isolate control, which a file holds but which shows the rest of the line
+    it is written into -- the README's `Elected by` line, its date and
+    reference among it -- in another order than it is written, as
+    `double_quoted` in `scripts/repo_shape.py` spells one in the plan for
+    the same reason; and any other control character, NUL among them, which
+    YAML does not allow raw (TAB aside, and no name, date or reference holds
+    one either).
+    """
+    if value.splitlines() not in ([], [value]):
+        return "it holds a line break, and it is written as one line"
+    for char in value:
+        category = unicodedata.category(char)
+        if category == "Cs":
+            return ("it holds a byte that is not UTF-8"
+                    if "\udc80" <= char <= "\udcff" else
+                    "it holds a lone surrogate, which is no character")
+        if ord(char) in BIDI_CONTROLS:
+            return ("it holds a bidirectional control (an embedding, "
+                    "override or isolate), which shows the rest of the line "
+                    "in another order than it is written")
+        if category in UNPRINTABLE_CATEGORIES and category != "Cf":
+            return "it holds a control character"
+    return None
+
+
 #: The git that learned `commit --trailer` (2.32, 2021-06-06). An older one
 #: still has `git interpret-trailers`, but not the commit option — so on that
 #: host the trailer is appended to the message TEXT instead, which produces
@@ -1202,20 +1271,39 @@ def render(text: str, values: dict[str, str], source: str) -> str:
     The spelling is the value itself for any text without a quote, a
     backslash or a character `str.isprintable` refuses -- a commit, a digest,
     an ordinary name -- so no other template changes by a byte.
+
+    ONE PASS, SO A VALUE IS NEVER READ AGAIN (#260). The keys used to be
+    replaced one after another, each over the whole text, so the value an
+    earlier key put in was scanned by every later key. `--elected-by
+    '{{SPEC_PATH}}'` was recorded as `elected_by: "spec"` under `adoption
+    verified`. `{{PROJECT}}`, a key that came earlier, or `{{NOPE}}`, which
+    no key names, was left in the output and refused as a defect in the
+    tool, after the legs were pushed. Now the template is read once, left to
+    right, and each placeholder is replaced by its value as it is met. The
+    text a value brings in is never searched, so it is written as typed.
+
+    THE REFUSAL ASKS THE TEMPLATE, NOT THE OUTPUT. A placeholder the TEMPLATE
+    holds and the table has no value for is the defect the remediation
+    names, and it is refused before anything is written. The output is not
+    searched: it now holds the person's own text, which may hold `{{` and
+    is no defect of anybody's.
     """
-    out = text
-    yaml_file = source.endswith((".yaml", ".yml"))
-    for key, value in values.items():
-        if yaml_file:
-            out = out.replace('"{{' + key + '}}"', double_quoted(str(value)))
-        out = out.replace("{{" + key + "}}", str(value))
-    left = PLACEHOLDER_RE.findall(out)
-    if left:
+    missing = sorted({token for token in PLACEHOLDER_RE.findall(text)
+                      if token[2:-2] not in values})
+    if missing:
         raise Refusal("template-unsubstituted",
-                      f"{source}: no value for {sorted(set(left))}",
+                      f"{source}: no value for {missing}",
                       "Remediation: this is a defect in the substitution table "
                       "of the tool you ran, not in your invocation.")
-    return out
+
+    def value_of(placeholder: str) -> str:
+        return str(values[placeholder[2:-2]])
+
+    if not source.endswith((".yaml", ".yml")):
+        return PLACEHOLDER_RE.sub(lambda match: value_of(match[0]), text)
+    return YAML_PLACEHOLDER_RE.sub(
+        lambda match: (double_quoted(value_of(match[1])) if match[1]
+                       else value_of(match[0])), text)
 
 
 def _local_strays(src: Path) -> frozenset[str]:
