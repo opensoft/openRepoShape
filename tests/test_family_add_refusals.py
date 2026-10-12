@@ -732,8 +732,8 @@ def test_a_commit_that_fails_unwinds_the_mount_and_the_pin(family, holder,
                              f"mounting {ORG}/{SPARE} at members/{SPARE}\n")
     assert result.stderr.splitlines() == [
         f"REFUSED committing {SPARE} to the family. THE EXACT COMMAND WAS:",
-        "    git --literal-pathspecs commit -q -F - -- .gitmodules "
-        f"members/{SPARE} family.yaml",
+        "    git commit -q -F - -- :(literal).gitmodules "
+        f":(literal)members/{SPARE} :(literal)family.yaml",
         f"    (in {holder.resolve()})",
         "    exit 1",
         "--- output ---",

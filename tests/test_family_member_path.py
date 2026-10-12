@@ -11,8 +11,10 @@ while dropping only Atlas's row, and `path: .` made it `git rm -r -f` the
 holder's own files and die on the missing manifest. `validate-family.py` has a
 rule for it (`member-path`), but it runs after a commit, never in front of
 these two verbs. So they refuse `member-path` themselves, before any git call
-and any write; and every git call that takes the path takes it literally, which
-does not depend on the row being right.
+and any write; and every git call that takes the path takes it literally (the
+global `--literal-pathspecs` on `deinit`, `rm` and `diff`; per-pathspec
+`:(literal)` on the commit, which runs the holder's hooks and must not hand
+them `GIT_LITERAL_PATHSPECS`), which does not depend on the row being right.
 
 THE ISSUE'S MEMBERS ARE `Atlas` AND `Borg`; this family's are `IRRS` and
 `IRSS`, so `IRRS` is the row a test edits and `IRSS` is the neighbour that must
@@ -52,9 +54,10 @@ from conftest import git, run_script
 #: the modules that own them rather than rebuilt: a holder made any other way
 #: would test a different holder.
 from test_family import (  # noqa: F401
-    FAMILY, MEMBERS, NAME, ORG, commit_in_member, family, family_module,
-    manifest, validate,
+    FAMILY, MEMBERS, NAME, ORG, SPARE, commit_in_member, family,
+    family_module, manifest, validate,
 )
+from test_family_add_excludes import empty_holder  # noqa: F401
 from test_family_add_refusals import (  # noqa: F401
     holder, offline, refusal, snapshot,
 )
@@ -306,8 +309,11 @@ def test_a_row_whose_project_is_not_a_directory_name_is_refused(
         "written.")
     assert remedy == (
         "Remediation: this tool never writes such a row, so it is a hand "
-        "edit. Restore family.yaml from git (`git checkout -- family.yaml`) "
-        "or remove the row by hand, then run the same command again.")
+        "edit. Restore family.yaml from git (`git checkout -- family.yaml` "
+        "if the edit is not committed), or put the row's `project:` and "
+        "`path:` back as the tool wrote them (`project: <Project>`, `path: "
+        "members/<Project>`), then run the command again naming that "
+        "member.")
     assert state(holder, env) == before
     for mounted in MEMBERS:
         entry = raw(holder, env, "ls-tree", "HEAD", "--", f"members/{mounted}"
@@ -317,6 +323,78 @@ def test_a_row_whose_project_is_not_a_directory_name_is_refused(
     assert [r["project"] for r in manifest(holder)["members"]] == [project,
                                                                    OTHER]
     assert not offline.gh_log.exists(), offline.gh_log.read_text()
+
+
+# --- `add`: a `.` or `..` segment is not a name -----------------------------
+
+#: `--member` spellings with a segment that is a directory reference, and the
+#: sentence the refusal ends on: the one thing wrong with each.
+DIRECTORY_REFERENCES = {
+    "project-dotdot": (f"{ORG}/..", "..", "project",
+                       "it would mount at members/.., the holder's root"),
+    "project-dot": (f"{ORG}/.", ".", "project",
+                    "it would mount at members/., the members directory "
+                    "itself"),
+    "owner-dotdot": (f"../{SPARE}", "..", "owner",
+                     "no organisation or account is called that"),
+    "owner-dot": (f"./{SPARE}", ".", "owner",
+                  "no organisation or account is called that"),
+}
+
+
+@pytest.mark.parametrize("spelling, segment, which, why",
+                         DIRECTORY_REFERENCES.values(),
+                         ids=DIRECTORY_REFERENCES)
+@pytest.mark.parametrize("kind", ["fresh-holder", "holder-with-members"])
+def test_add_refuses_a_dot_segment_as_malformed_before_anything_is_read(
+        family, offline, tmp_path, request, kind, spelling, segment, which,
+        why):
+    """`add --member <org>/..` matched `MEMBER_RE` (its class admits the dot,
+    for `.github`) and its mount path `members/..` is the holder's root. On a
+    FRESH holder `member-path-taken` then found the root's own files in the
+    index under it and told the human to run `git rm -r --cached --
+    members/..`, which stages the deletion of EVERY file the holder has. A
+    segment of `.` or `..` is a directory reference, not a name, so it is the
+    argument refusal `member-malformed`, before the member is read: not one
+    line on stdout (`checking ... before mounting it` comes first otherwise),
+    no clone, no `gh` call, and the holder byte for byte as it was."""
+    env = isolated(offline, tmp_path)
+    if kind == "fresh-holder":
+        root = request.getfixturevalue("empty_holder")
+        assert not (root / "members").exists(), "premise: a fresh holder"
+        remotes = tmp_path / "remotes"
+    else:
+        root = request.getfixturevalue("holder")
+        assert (root / "members").is_dir()
+        remotes = family["remotes"]
+    before = state(root, env)
+
+    result = run_script(FAMILY, "add", "--family-root", str(root),
+                        "--member", spelling, "--local-remote-dir",
+                        str(remotes), env=env)
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stdout == "", "refused before the member was even read"
+    said, remedy = refusal(result.stderr)
+    assert said == (
+        f"REFUSED member-malformed: --member {spelling!r} has `{segment}` as "
+        f"its {which}, which is a directory reference and not a name: {why}")
+    assert remedy == (
+        "Remediation: name the repository as `<org>/<Project>`, each a real "
+        "name; `.` and `..` are neither, though a name may contain a dot "
+        "(`.github`).")
+    assert state(root, env) == before
+    offline.assert_left_nothing()
+
+
+def test_add_still_takes_a_name_that_contains_a_dot():
+    """`MEMBER_RE`'s class is not narrowed: `.github` is a name, and only the
+    two directory references are refused."""
+    module = family_module()
+    assert module._checked_member(f"{ORG}/.github") == (f"{ORG}/.github",
+                                                        ".github")
+    assert module._checked_member(f".github/{SPARE}")[1] == SPARE
+    assert module._checked_member(f"{ORG}/a.b")[1] == "a.b"
 
 
 # --- the controls -----------------------------------------------------------
@@ -405,16 +483,26 @@ GIT_CALLS = {
 }
 
 
+def literal_form(call: str) -> list[str]:
+    """`call` as the tool spells it: the global option in front, except on the
+    commit, whose path is `:(literal)`-prefixed instead (see `_commit_one`)."""
+    if call == "commit":
+        return [word if word != GLOB else f":(literal){GLOB}"
+                for word in GIT_CALLS[call]]
+    return ["--literal-pathspecs", *GIT_CALLS[call]]
+
+
 @pytest.mark.parametrize("call", GIT_CALLS)
-def test_the_global_flag_keeps_a_glob_from_reaching_a_neighbour_in_each_call(
+def test_a_literal_spelling_keeps_a_glob_off_the_neighbour_in_each_call(
         holder, offline, tmp_path, call):
     """EACH GIT CALL `bump` AND `remove` MAKE WITH THE MEMBER'S PATH, run with
     the path `members/*`, on THIS git and on every runner's: the plain call
     reaches the neighbour (the premise: a test whose glob matched nothing
-    would pass on any code), and the same call under the GLOBAL
-    `--literal-pathspecs` does not. `git submodule` is its own command, which
-    is why `deinit` is here; it honours the global option, which reaches it as
-    `GIT_LITERAL_PATHSPECS` in the environment."""
+    would pass on any code), and the same call in the tool's literal spelling
+    does not: the GLOBAL `--literal-pathspecs` for `deinit`, `rm` and `diff`,
+    `:(literal)` on the path for the commit. `git submodule` is its own
+    command, which is why `deinit` is here; it honours the global option,
+    which reaches it as `GIT_LITERAL_PATHSPECS` in the environment."""
     env = isolated(offline, tmp_path)
     literal_holder = tmp_path / "literal"
     shutil.copytree(holder, literal_holder, symlinks=True)
@@ -429,8 +517,7 @@ def test_the_global_flag_keeps_a_glob_from_reaching_a_neighbour_in_each_call(
         "premise: without the flag, the glob reaches the neighbour; "
         + plain.stderr.decode("utf-8", "replace"))
 
-    literal = raw(literal_holder, env, "--literal-pathspecs",
-                  *GIT_CALLS[call], check=False)
+    literal = raw(literal_holder, env, *literal_form(call), check=False)
     assert not reached_the_neighbour(call, literal_holder, env, literal), (
         literal.stderr.decode("utf-8", "replace"))
     assert (literal_holder / "members" / OTHER / "project.yaml").is_file()
@@ -458,16 +545,26 @@ def global_options(argv: list[str], subcommands: set[str]) -> list[str]:
     return argv[1:at]
 
 
-@pytest.mark.parametrize("verb, subcommands", [
-    ("remove", {"submodule", "rm", "commit"}),
-    ("bump", {"add", "diff", "commit"})])
+def subcommand(argv: list[str], subcommands: set[str]) -> str:
+    return next(word for i, word in enumerate(argv)
+                if i and word in subcommands)
+
+
+@pytest.mark.parametrize("verb, flagged, commit_paths", [
+    ("remove", {"submodule", "rm"},
+     [".gitmodules", f"members/{OTHER}", "family.yaml"]),
+    ("bump", {"add", "diff"}, [f"members/{MEMBER}", "family.yaml"])])
 def test_every_git_call_that_takes_the_members_path_is_literal(
-        family, holder, offline, tmp_path, monkeypatch, verb, subcommands):
-    """THE FLAG IS THERE, in the place git takes global options, on every call
-    a real run of the verb makes with the member's path: `remove`'s `deinit`,
-    `rm` and `commit`; `bump`'s two stages, its `diff` and its `commit`. The
-    set is exact, so a new call that names the path is a test to extend rather
-    than a call that goes unchecked."""
+        family, holder, offline, tmp_path, monkeypatch, verb, flagged,
+        commit_paths):
+    """THE LITERAL SPELLING IS THERE on every call a real run of the verb makes
+    with the member's path. `remove`'s `deinit` and `rm`, and `bump`'s two
+    stages and its `diff`, carry `--literal-pathspecs` in the place git takes
+    global options. The COMMIT of both carries `:(literal)` on each of its
+    paths and NOT the global option: that option is `GIT_LITERAL_PATHSPECS` in
+    the environment of every hook the commit runs. The set of calls is exact,
+    so a new call that names the path is a test to extend rather than a call
+    that goes unchecked."""
     module = family_module()
     for key, value in isolated(offline, tmp_path).items():
         monkeypatch.setenv(key, value)
@@ -476,12 +573,67 @@ def test_every_git_call_that_takes_the_members_path_is_literal(
     args = verb_args(verb, holder, family)
     if verb == "remove":
         args[args.index(MEMBER)] = OTHER
+    subcommands = {*flagged, "commit"}
 
     assert module.main(args) == 0
 
-    named = [argv for argv in calls if argv[0] == "git" and path in argv]
-    assert {argv[next(i for i, word in enumerate(argv)
-                      if i and word in subcommands)]
-            for argv in named} == subcommands
+    named = [argv for argv in calls if argv[0] == "git"
+             and (path in argv or f":(literal){path}" in argv)]
+    assert {subcommand(argv, subcommands) for argv in named} == subcommands
     for argv in named:
-        assert "--literal-pathspecs" in global_options(argv, subcommands), argv
+        options = argv[1:argv.index(subcommand(argv, subcommands))]
+        if subcommand(argv, subcommands) == "commit":
+            assert "--literal-pathspecs" not in options, argv
+            assert argv[argv.index("--") + 1:] == [
+                f":(literal){each}" for each in commit_paths], argv
+        else:
+            assert "--literal-pathspecs" in options, argv
+
+
+def with_a_glob_hook(root: Path, tmp_path: Path) -> Path:
+    """A `pre-commit` hook in `root` that writes what a glob-picking hook sees:
+    the variable git's own `--literal-pathspecs` would put in its environment,
+    and the staged files `git diff --cached --name-only -- '*.yaml'` finds, one
+    per line. Returns the log. `sh`, which git runs hooks with on every OS
+    (git for Windows ships its own); LOCAL `core.hooksPath`, so a global one
+    cannot point git somewhere this hook is not."""
+    log = tmp_path / "hook.log"
+    hooks = tmp_path / "hooks"
+    hooks.mkdir()
+    (hooks / "pre-commit").write_bytes((
+        "#!/bin/sh\n"
+        f"{{ echo \"literal=${{GIT_LITERAL_PATHSPECS-unset}}\"\n"
+        "  git diff --cached --name-only -- '*.yaml'; } >> "
+        f"'{log.as_posix()}'\n"
+        "exit 0\n").encode("utf-8"))
+    (hooks / "pre-commit").chmod(0o755)
+    git("config", "--local", "core.hooksPath", hooks.as_posix(), cwd=root)
+    return log
+
+
+@pytest.mark.parametrize("verb", ["add", "bump", "remove"])
+def test_the_commit_hooks_see_no_literal_pathspecs_and_find_the_manifest(
+        family, holder, offline, tmp_path, verb):
+    """THE GLOBAL `--literal-pathspecs` ON THE COMMIT LEAKED INTO THE HOLDER'S
+    HOOKS. It is `GIT_LITERAL_PATHSPECS=1` in git's environment, which every
+    child of `git commit` inherits, so a `pre-commit` hook that picked the
+    staged files with a glob matched nothing on every `add`, `bump` and
+    `remove` commit: a linter behind it checked nothing and said nothing. The
+    commit takes `:(literal)` on its paths now. Through a real `add`, `bump`
+    and `remove`, the hook sees no such variable, and its glob finds the
+    manifest the commit is of."""
+    env = isolated(offline, tmp_path)
+    log = with_a_glob_hook(holder, tmp_path)
+    if verb == "add":
+        args = ["add", "--family-root", str(holder), "--member",
+                f"{ORG}/{SPARE}", "--local-remote-dir",
+                str(family["remotes"])]
+    else:
+        args = verb_args(verb, holder, family)
+
+    result = run_script(FAMILY, *args, env=env)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert log.is_file(), "premise: the hook ran"
+    assert log.read_bytes().decode("utf-8").split() == ["literal=unset",
+                                                         "family.yaml"]
