@@ -559,12 +559,15 @@ DATE_FLAG = "--elected-on"
 #: as the plan holds it, as the reader reads it, and whether the plan keeps
 #: its `reference:` (#294). Without one, `execute` made both legs and only
 #: then refused, naming `--elected-on`; with one it never read the date and
-#: wrote the word into the manifest.
+#: wrote the word into the manifest. `empty-text` is falsy and not null: only
+#: `elected_on:` ABSENT or null is "no date" (`execute` fills in today's), so
+#: `""` is a date `election_date` cannot read and is refused like any other.
 BAD_DATES = {
     "word": ("someday", "someday", False),
     "notadate": ("notadate", "notadate", False),
     "unpadded": ('"2026-9-2"', "2026-9-2", False),
     "not-a-day": ('"2026-02-30"', "2026-02-30", False),
+    "empty-text": ('""', "", False),
     "word-reference-kept": ("someday", "someday", True),
 }
 ONE_PER_BAD_DATE = pytest.mark.parametrize("edit", sorted(BAD_DATES))
@@ -604,6 +607,27 @@ def test_check_finds_an_elected_on_it_cannot_read_under_the_plans_key(world,
     assert "Remediation: edit `elected_on:` in the plan file" in \
         result.stderr
     assert DATE_FLAG not in result.stderr + result.stdout
+
+
+@pytest.mark.parametrize("value,read_as", [
+    ("false", "the boolean false"), ("0", "the number 0"),
+    ("[]", "a list of 0 item(s)"), ("{}", "a mapping of 0 key(s)")])
+def test_check_finds_a_falsy_elected_on_that_is_not_null(world, value,
+                                                         read_as):
+    """#294: only an `elected_on:` that is absent or null is "no date". Any
+    other falsy value is a date `election_date` cannot read, so it is a
+    FINDING that says what the plan holds; `if not elected_on:` in place of
+    `is None` would skip it and `check` would say `plan ok`. It is not a
+    `BAD_DATES` row because that test says "the text"."""
+    result = run_check(write_edited(
+        world, with_elected_on(world.answered, value, False)))
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert_no_traceback(result)
+    found = findings_of(result)
+    assert len(found) == 1, found
+    assert found[0].startswith(
+        f"FINDING {DATE_CODE}: the plan's `elected_on:` is {read_as}, which "
+        "is not a day written YYYY-MM-DD"), found
 
 
 @ONE_PER_BAD_DATE
