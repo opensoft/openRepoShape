@@ -123,6 +123,9 @@ from shape_materialize import (  # noqa: E402
     inherited_child_environment, lane_trailer_argument, readme_shape_lines,
     readme_trailing_shape_line, run, trailer_line,
 )
+# Where a root keeps its shape pin. The materializer that writes it names it
+# once; this module spells the path by that name and never by a literal (#290).
+from shape_materialize import SHAPE_PIN  # noqa: E402
 
 #: `owner/repo`, the only remote spelling `--upstream` accepts.
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -396,7 +399,7 @@ def pin_rows_remediation(root: Path) -> str:
     by `_by_hand`, this module's one quoter for a line a person pastes, so a
     root holding a space is one argument there.
     """
-    log = _by_hand(root, "log", "--", "contracts/shape-pin.yaml")
+    log = _by_hand(root, "log", "--", SHAPE_PIN)
     return (
         "Remediation: `files:` is a list with one `path:`/`sha256:` row per "
         "copied file. The tool that cut this root wrote it and only "
@@ -2508,7 +2511,7 @@ def cmd_apply(args) -> int:
         _refuse_red_validators(root, kind)
         added = [add.path for add in taking]
         paths = sorted({row.path for row in copied} | set(added)
-                       | {"contracts/shape-pin.yaml", kind.manifest}
+                       | {SHAPE_PIN, kind.manifest}
                        | ({README} if readme.rewritten else set()))
         _land(root, args, paths, added, target, upstream, kind, len(copied),
               ledger)
@@ -2675,7 +2678,7 @@ def _awaits_its_pull_request(root: Path, args, kind: Kind) -> bool:
     base = tracking_branch_of(load_yaml(root / kind.manifest))
     if args.branch == base:
         return False
-    pin = "contracts/shape-pin.yaml"
+    pin = SHAPE_PIN
     proposed = _git_answer(root, ["rev-parse", "--verify", "--quiet",
                                   f"HEAD:{pin}"])
     landed = _git_answer(root, ["rev-parse", "--verify", "--quiet",
