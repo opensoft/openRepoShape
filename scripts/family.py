@@ -1080,10 +1080,11 @@ def _checked_mount_path(root: Path, project: str, path: str) -> None:
         # index holds. That is `path` itself when the case is the same. A
         # removal staged under another spelling is one the add's commit,
         # whose pathspec is `path`, does not carry. So where HEAD holds the
-        # variant, the removal is committed first. Otherwise the add's commit
-        # keeps both spellings, or, with `core.ignorecase` set, records the
-        # gitlink under the variant while `.gitmodules` and the manifest say
-        # `path`.
+        # variant, the removal is committed first. Otherwise HEAD keeps the
+        # variant beside the member, or, with `core.ignorecase` set, records
+        # the gitlink under a spelling other than `path` (`MEMBERS/ATLAS/...`
+        # gave `MEMBERS/Atlas`, and kept its file too), or both, while
+        # `.gitmodules` and the manifest say `path`.
         variant = name[:len(path)]
         spelled = " ".join(sorted({entry[0][:len(path)] for entry in held}))
         raise Refusal(
@@ -1099,10 +1100,11 @@ def _checked_mount_path(root: Path, project: str, path: str) -> None:
             "no file; "
             + ("then " if spelled == path else
                "where HEAD holds it too, commit that removal first, since the "
-               f"add's own commit names {path} alone and would keep both "
-               "spellings, or, with `core.ignorecase` set, commit the gitlink "
-               f"under the other one while {GITMODULES} and {MANIFEST} say "
-               f"{path}; then ")
+               f"add's own commit names {path} alone: otherwise HEAD keeps "
+               "the other spelling beside the member, or, with "
+               "`core.ignorecase` set, records the member's gitlink under a "
+               f"spelling other than the {path} that {GITMODULES} and "
+               f"{MANIFEST} say, or both; then ")
             + "re-run.")
     try:
         run(["git", "--literal-pathspecs", "add", "--dry-run",
@@ -1631,14 +1633,17 @@ class MountRollback:
         undone = ((" Nothing was committed: the mount has been undone — "
                    + ", ".join(restored) + " —") if restored else
                   " Nothing was committed,")
+        # `git ls-files -s` is where both sentences send the human: it lists
+        # every record the index holds now, so an entry that is new, or
+        # staged differently, can be read there record by record. An entry
+        # that is gone is in no listing at all, which is why the sentence
+        # names it. `git status` compares the index with HEAD, not with the
+        # index before this command, so it is not that comparison either.
         if unread is not None:
             return (undone + " but the holder's index could not be read back "
                     "to confirm it is as it was before this command: "
-                    f"{unread}. Check it with `git status` before running "
-                    "`add` again.")
-        # `git ls-files -s`, NOT `git status`, for the index: status compares
-        # the index with HEAD, so an entry that was staged and is now gone
-        # shows nowhere in it.
+                    f"{unread}. Check it before running `add` again: `git "
+                    "ls-files -s` lists what the index now holds.")
         if moved:
             return (undone + " but the holder's index is NOT as it was before "
                     f"this command ({moved}). Put it back before running "

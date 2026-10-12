@@ -1348,7 +1348,8 @@ def test_a_case_variant_of_the_mount_path_in_the_index_is_refused_first(
     remediation, run as printed, lets the same command through with the
     member under one spelling only. Where HEAD holds the variant, the
     removal is committed first: the add's own commit names `members/IRQS`
-    alone and would keep both."""
+    alone, so without it HEAD keeps the variant, records the gitlink under
+    another spelling, or both."""
     mode, name, committed = CASE_VARIANTS[variant]
     git("config", "--local", "core.ignorecase", ignorecase, cwd=holder)
     plant(holder, mode, name)
@@ -1372,10 +1373,11 @@ def test_a_case_variant_of_the_mount_path_in_the_index_is_refused_first(
         "Remediation: this is a half-finished add or a hand edit. `git rm -r "
         f"--cached -- {spelled}` takes it out of the index and touches no "
         "file; where HEAD holds it too, commit that removal first, since the "
-        f"add's own commit names {SPARE_MOUNT} alone and would keep both "
-        "spellings, or, with `core.ignorecase` set, commit the gitlink under "
-        f"the other one while .gitmodules and family.yaml say {SPARE_MOUNT}; "
-        "then re-run.")
+        f"add's own commit names {SPARE_MOUNT} alone: otherwise HEAD keeps "
+        "the other spelling beside the member, or, with `core.ignorecase` "
+        "set, records the member's gitlink under a spelling other than the "
+        f"{SPARE_MOUNT} that .gitmodules and family.yaml say, or both; then "
+        "re-run.")
     assert index_bytes(holder) == index
     assert snapshot(holder) == before
     offline.assert_left_nothing()
@@ -1475,9 +1477,10 @@ def test_an_index_that_cannot_be_read_back_is_never_called_as_it_was(
     """The comparison is a git command too. If the index cannot be read
     back after the unwind, every step may still have been undone, but the
     index has not been shown to be as it was. The sentence says exactly
-    that, with git's reason, and sends the human to `git status`. It never
-    calls the holder as it was, nor the unwind partial, and the refusal it
-    ends is still the one printed."""
+    that, with git's reason, and sends the human to `git ls-files -s`, as
+    the sentence for an index that differs does. It never calls the holder
+    as it was, nor the unwind partial, and the refusal it ends is still the
+    one printed."""
     rollback = family_module.MountRollback(holder, SPARE_MOUNT)
 
     def unreadable(root):
@@ -1490,7 +1493,8 @@ def test_an_index_that_cannot_be_read_back_is_never_called_as_it_was(
         " Nothing was committed, but the holder's index could not be read "
         "back to confirm it is as it was before this command: `git ls-files "
         f"-s -z` in {holder} exited 128: fatal: index file corrupt. Check it "
-        "with `git status` before running `add` again.")
+        "before running `add` again: `git ls-files -s` lists what the index "
+        "now holds.")
 
 
 def test_the_index_is_asked_at_the_mount_path_in_any_case_and_literally(
