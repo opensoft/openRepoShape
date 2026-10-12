@@ -17,10 +17,15 @@ Both files are shape copies (digest-pinned in every project that holds them) and
 a project carries `scripts/repo_shape.py` and no `shape_materialize.py`, so they
 cannot call #214's helper. Each now carries two small functions, the same in
 both: `escape_unencodable_stdout` reconfigures a `strict` or `surrogateescape`
-stdout to `backslashreplace` once, at the start of `main`; `spelled` writes every
-character `str.isprintable` refuses as the escape Python spells it, and is
-applied to every value the script prints that it read from the manifest, a
-register row or the disk. Four kinds of test, all against local bare remotes:
+stdout to `backslashreplace` once, at the start of `main`; `spelled` writes the
+controls (category Cc), the surrogates (Cs), the line and paragraph separators
+(Zl, Zp) and the bidirectional controls (U+061C, U+200E, U+200F, U+202A to
+U+202E, U+2066 to U+2069) as the escape Python spells them, and NOTHING else,
+and is applied to every value the script prints that it read from the manifest,
+a register row or the disk. `str.isprintable` is not the test: it also refuses
+the zero-width non-joiner and joiner, the ideographic and no-break spaces and
+the soft hyphen, which are valid text that printed raw before this fix and
+still do. Four kinds of test, all against local bare remotes:
 
 - the rows of the issue, run for real in a scaffolded project and in a family
   holder, under every stdout that matters, answered in BYTES and decoded
@@ -29,10 +34,9 @@ register row or the disk. Four kinds of test, all against local bare remotes:
 - every other print that carries a value: the leg's role, path and tracking
   branch, a register row and the path of a register, the root's own directory
   name, a member row and `--members-make`;
-- what the run does NEXT: it reaches the validators and ends as they end. What
-  they say about the surrogate is the other fix's (#280, on
-  `fix/yaml-flow-brackets-surrogates`), so that row asks the validator itself
-  what it says and holds `bootstrap` to that;
+- what the run does NEXT: it reaches the validators and ends as they end, at
+  the `FINDING manifest-name` that `validate-manifest.py` now gives a name
+  holding a lone surrogate (#280, landed in #390), with no traceback;
 - the two functions themselves, and a guard that the two files carry the same
   two.
 
@@ -48,6 +52,7 @@ import io
 import shutil
 import subprocess
 import sys
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -85,21 +90,46 @@ CORE_NAMES = (
     ("lone-surrogate", r'"a\ud83db"', r"a\ud83db"),
     ("esc-and-cr", r'"a\x1bb\rc"', r"a\x1bb\rc"),
     ("japanese", '"日本"', "日本"),
+    # Valid text that `str.isprintable` refuses: it prints raw, as it did
+    # before the fix, wherever the stdout holds it, and the cp1252 stdouts
+    # hold this one.
+    ("nbsp", r'"a\xa0b"', "a\xa0b"),
 )
+#: Valid names that print RAW, as on origin/main: a Persian name with its
+#: zero-width non-joiner, an emoji sequence with its zero-width joiners, a
+#: Japanese full name with the ideographic space, and the soft hyphen. (Each
+#: is spelled by code point here, so no invisible character sits in this file.)
+RAW_NAMES = (
+    ("persian-zwnj", r'"\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645"',
+     "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645"),
+    ("emoji-zwj", r'"\U0001f468\u200d\U0001f469\u200d\U0001f467"',
+     "\U0001f468\u200d\U0001f469\u200d\U0001f467"),
+    ("ideographic-space", '"山田\\u3000太郎"', "山田\u3000太郎"),
+    ("nbsp", r'"a\xa0b"', "a\xa0b"),
+    ("soft-hyphen", r'"co\xadop"', "co\xadop"),
+    ("zero-width-space-and-bom", r'"a\u200bb\ufeffc"', "a\u200bb\ufeffc"),
+)
+#: Names that print ESCAPED: a newline, tab and DEL; U+2028; and the
+#: right-to-left override and mark, which reorder the text around them.
 MORE_NAMES = (
     ("newline-tab-del", r'"a\nb\tc\x7fd"', r"a\nb\tc\x7fd"),
-    ("nbsp-and-line-separator", r'"a\xa0b\u2028c"', r"a\xa0b\u2028c"),
+    ("line-separator", r'"a\u2028b"', r"a\u2028b"),
+    ("rlo-and-rlm", r'"a\u202eb\u200fc"', r"a\u202eb\u200fc"),
     ("astral", '"🙂"', "🙂"),
     ("quote-and-backslash", r'"He said \"hi\" \\o/"', r'He said "hi" \o/'),
     ("two-lone-surrogates", r'"\ud83d\ude00"', r"\ud83d\ude00"),
 )
+#: What must reach NO stdout raw, whatever the row: the controls, the line
+#: separator and the bidirectional override and mark.
+NEVER_RAW = {"\x1b", "\r", "\x7f", "\u2028", "\u202e", "\u200f", "\x85"}
 NAME_ROWS = [pytest.param(scalar, printed, encoding,
                           id=f"{label}-{encoding.replace(':', '-')}")
              for label, scalar, printed in CORE_NAMES
              for encoding in ENCODINGS]
 NAME_ROWS += [pytest.param(scalar, printed, encoding,
                            id=f"{label}-{encoding.replace(':', '-')}")
-              for label, scalar, printed in MORE_NAMES
+              for label, scalar, printed in MORE_NAMES + RAW_NAMES
+              if (label, scalar, printed) not in CORE_NAMES
               for encoding in NARROW]
 
 DEGRADE_LINE = "authority is not wallet-carried in this org"
@@ -162,7 +192,7 @@ def test_the_name_line_is_printed_whatever_the_name_and_the_stdout(
                         f"({spelled_root(project, encoding)})"), out
     assert lines[1] == "", out
     assert out.endswith("bootstrap ok\n"), out
-    assert not {"\x1b", "\r", "\x7f", "\u2028", "\xa0"} & set(out), out
+    assert not NEVER_RAW & set(out), out
 
 
 def test_a_plain_name_prints_exactly_what_it_printed_before(project, tmp_path):
@@ -199,17 +229,30 @@ def test_a_plain_name_prints_exactly_what_it_printed_before(project, tmp_path):
     ], out
 
 
+#: The valid names whose first line must be the bytes origin/main wrote: those
+#: that print raw, and a mixture of printable text and a quote and a backslash.
+BYTE_NAMES = [pytest.param(scalar, printed, id=label)
+              for label, scalar, printed in RAW_NAMES] + [
+    pytest.param('"日本 🙂 \\"q\\" \\\\"', '日本 🙂 "q" \\', id="printable-mixture")]
+
+
+@pytest.mark.parametrize("scalar, name", BYTE_NAMES)
 def test_a_name_a_utf8_stdout_holds_is_written_as_the_bytes_it_is(
-        project, tmp_path):
-    """Read as BYTES, so a character kept is a character kept: `日本`, an
-    emoji and a quote and a backslash are the UTF-8 bytes they always were."""
-    edit(project, "project.yaml", 'name: "Atlas"', 'name: "日本 🙂 \\"q\\" \\\\"')
+        project, tmp_path, scalar, name):
+    """BYTE-IDENTICAL to origin/main, read as BYTES so a character kept is a
+    character kept: the line is exactly what the plain `print` it replaced
+    wrote. `日本`, an emoji, a quote and a backslash, and the valid names
+    `str.isprintable` refuses: a Persian name with its zero-width non-joiner,
+    an emoji sequence with its zero-width joiners, a Japanese full name with
+    the ideographic space, the no-break space, the soft hyphen and the
+    zero-width space and byte-order mark."""
+    edit(project, "project.yaml", 'name: "Atlas"', f"name: {scalar}")
     code, stdout, stderr = run_tool_bytes(
         bootstrap_of(project), "--skip-validators", encoding="utf-8:strict",
         tmp_path=tmp_path, cwd=project)
     assert code == 0 and b"Traceback" not in stderr, stderr
     first = stdout.split(b"\n")[0].rstrip(b"\r")
-    assert first.startswith('bootstrap: 日本 🙂 "q" \\ ('.encode("utf-8")), first
+    assert first == f"bootstrap: {name} ({project.resolve()})".encode("utf-8")
 
 
 # --- what the run does NEXT --------------------------------------------------
@@ -220,16 +263,17 @@ def test_a_lone_surrogate_name_reaches_the_validators_and_ends_as_they_end(
     where the manifest validator fails the run, and exits as `main`'s own
     failed-validator path does: `bootstrap FAILED: manifest (exit 1)`, exit 1.
 
-    WHAT THE VALIDATOR SAYS is the other fix's (#280). Where it names the
-    surrogate (`FINDING manifest-name`), bootstrap must say it and no
-    traceback may be anywhere; where it does not yet, the validator's own
-    `print` raises in ITS process, and no traceback may come from bootstrap's.
-    The validator is asked by itself, so the row holds on both trees."""
+    WHAT THE VALIDATOR SAYS is #280's, landed in #390: `FINDING manifest-name`
+    names the lone surrogate, in the validator by itself and again in the run
+    that carries it, and no traceback is anywhere. (Before #390 the
+    validator's own `manifest ok:` print raised in ITS process.)"""
     edit(project, "project.yaml", 'name: "Atlas"', r'name: "a\ud83db"')
     alone_code, _, alone_err = run(
         project / "scripts" / "validate-manifest.py", encoding="utf-8:strict",
         tmp_path=tmp_path, cwd=project)
     assert alone_code == 1, alone_err
+    assert "FINDING manifest-name" in alone_err, alone_err
+    assert "Traceback" not in alone_err, alone_err
     code, out, err = run(bootstrap_of(project), encoding="utf-8:strict",
                          tmp_path=tmp_path, cwd=project)
     assert out.startswith(r"bootstrap: a\ud83db ("), out
@@ -237,9 +281,32 @@ def test_a_lone_surrogate_name_reaches_the_validators_and_ends_as_they_end(
     assert code == 1, out + err
     assert "bootstrap FAILED: manifest (exit 1)" in err, err
     assert 'bootstrap.py", line' not in err, err
-    if "FINDING manifest-name" in alone_err:
-        assert "FINDING manifest-name" in err, err
-        assert "Traceback" not in err, err
+    assert "FINDING manifest-name" in err, err
+    assert "Traceback" not in err, err
+
+
+#: The valid names the manifest validator accepts and prints itself.
+VALIDATED_NAMES = [pytest.param(scalar, printed, id=label)
+                   for label, scalar, printed in RAW_NAMES
+                   if label in ("persian-zwnj", "emoji-zwj",
+                                "ideographic-space")]
+
+
+@pytest.mark.parametrize("scalar, name", VALIDATED_NAMES)
+def test_a_valid_name_is_printed_as_the_validator_prints_it(project, tmp_path,
+                                                            scalar, name):
+    """The whole run, validators included, over a valid name that
+    `str.isprintable` refuses. `validate-manifest.py` accepts it and prints it
+    raw on its `manifest ok:` line, a few lines below this script's own, so
+    escaping it here would show one name twice, two ways."""
+    edit(project, "project.yaml", 'name: "Atlas"', f"name: {scalar}")
+    code, out, err = run(bootstrap_of(project), encoding="utf-8:strict",
+                         tmp_path=tmp_path, cwd=project)
+    assert code == 0 and "Traceback" not in err, out + err
+    lines = out.split("\n")
+    assert lines[0] == (f"bootstrap: {name} "
+                        f"({spelled_root(project, 'utf-8:strict')})"), out
+    assert any(line.startswith(f"manifest ok: {name} (") for line in lines), out
 
 
 @pytest.mark.skipif(shutil.which("make") is None or
@@ -259,8 +326,10 @@ def test_make_bootstrap_ends_as_the_validators_end_not_in_a_traceback(
                 for text in (proc.stdout, proc.stderr))
     assert proc.returncode == 2, out + err
     assert r"bootstrap: a\ud83db (" in out, out
+    assert "FINDING manifest-name" in err, err
     assert "bootstrap FAILED: manifest (exit 1)" in err, err
     assert 'bootstrap.py", line' not in err, err
+    assert "Traceback" not in err, err
 
 
 # --- every other print that carries a value ---------------------------------
@@ -479,7 +548,7 @@ def test_the_family_name_line_is_printed_whatever_the_name_and_the_stdout(
     assert "Traceback" not in err, err
     assert out.split("\n")[0] == family_line(printed, holder, encoding), out
     assert out.endswith("family bootstrap ok\n"), out
-    assert not {"\x1b", "\r", "\x7f", "\u2028", "\xa0"} & set(out), out
+    assert not NEVER_RAW & set(out), out
 
 
 def test_a_plain_family_prints_exactly_what_it_printed_before(holder,
@@ -500,6 +569,21 @@ def test_a_plain_family_prints_exactly_what_it_printed_before(holder,
         "family bootstrap ok",
         "",
     ], out
+
+
+@pytest.mark.parametrize("scalar, name", BYTE_NAMES)
+def test_a_family_name_a_utf8_stdout_holds_is_written_as_the_bytes_it_is(
+        holder, tmp_path, scalar, name):
+    """The family root's first line, as BYTES: exactly what the plain `print`
+    it replaced wrote on origin/main, for every valid name that prints raw."""
+    edit(holder, "family.yaml", f'name: "{FAMILY_NAME}"', f"name: {scalar}")
+    code, stdout, stderr = run_tool_bytes(
+        bootstrap_of(holder), "--no-fetch", "--skip-members",
+        encoding="utf-8:strict", tmp_path=tmp_path, cwd=holder)
+    assert code == 0 and b"Traceback" not in stderr, stderr
+    first = stdout.split(b"\n")[0].rstrip(b"\r")
+    assert first == (f"bootstrap: {name} ({holder.resolve()}) \u2014 0 member(s)"
+                     ).encode("utf-8")
 
 
 def test_a_family_roots_own_directory_name_is_spelled(holder, tmp_path):
@@ -590,18 +674,73 @@ def template(request):
 
 @pytest.mark.parametrize("text", [
     "Atlas", "日本", "Zo\u00eb", "\U0001f642", 'He said "hi" \\o/', "a b", "",
-    "/tmp/x y/z", "C:\\Users\\a\\Atlas", "a=b: c, [d] {e}"])
+    "/tmp/x y/z", "C:\\Users\\a\\Atlas", "a=b: c, [d] {e}",
+    # What `str.isprintable` refuses and a UTF-8 terminal shows correctly:
+    # Zs (the no-break and ideographic spaces), Cf (the zero-width non-joiner
+    # and joiner, the soft hyphen, the zero-width space, the byte-order mark,
+    # a tag character), Co (private use) and Cn (unassigned). Printed raw
+    # before the fix, so printed raw now.
+    "a\xa0b", "\u5c71\u7530\u3000\u592a\u90ce", "co\xadop",
+    "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645",
+    "\U0001f468\u200d\U0001f469\u200d\U0001f467", "a\u200bb", "\ufeffa",
+    "\U000e0001", "\ue000", "\u0378", "\u2000\u2009\u202f\u205f"])
 def test_spelled_keeps_what_a_terminal_can_be_shown(template, text):
     assert template.spelled(text) == text
 
 
 @pytest.mark.parametrize("char, spelling", [
     ("\x00", r"\x00"), ("\x1b", r"\x1b"), ("\r", r"\r"), ("\n", r"\n"),
-    ("\t", r"\t"), ("\x7f", r"\x7f"), ("\x85", r"\x85"), ("\xa0", r"\xa0"),
-    ("\u200b", r"\u200b"), ("\u2028", r"\u2028"), ("\ud83d", r"\ud83d"),
-    ("\udce9", r"\udce9"), ("\U000e0001", r"\U000e0001")])
+    ("\t", r"\t"), ("\x7f", r"\x7f"), ("\x85", r"\x85"), ("\x9f", r"\x9f"),
+    ("\u2028", r"\u2028"), ("\u2029", r"\u2029"), ("\ud83d", r"\ud83d"),
+    ("\udce9", r"\udce9"), ("\ud800", r"\ud800"), ("\udfff", r"\udfff"),
+    # The bidirectional controls: the right-to-left override and mark, the
+    # left-to-right mark, the Arabic letter mark, every embedding and isolate.
+    ("\u202e", r"\u202e"), ("\u200f", r"\u200f"), ("\u200e", r"\u200e"),
+    ("\u061c", r"\u061c"), ("\u202a", r"\u202a"), ("\u202b", r"\u202b"),
+    ("\u202c", r"\u202c"), ("\u202d", r"\u202d"), ("\u2066", r"\u2066"),
+    ("\u2067", r"\u2067"), ("\u2068", r"\u2068"), ("\u2069", r"\u2069")])
 def test_spelled_writes_the_escape_python_spells(template, char, spelling):
     assert template.spelled(f"a{char}b") == f"a{spelling}b"
+
+
+#: The code points `spelled` escapes, from the specification and not from the
+#: implementation: the controls (Cc), the surrogates (Cs), the line and
+#: paragraph separators (Zl, Zp), and the bidirectional controls.
+ESCAPED_CODES = frozenset(
+    {*range(0x00, 0x20), *range(0x7f, 0xa0), *range(0xd800, 0xe000),
+     0x2028, 0x2029, 0x061c, 0x200e, 0x200f, *range(0x202a, 0x202f),
+     *range(0x2066, 0x206a)})
+
+
+def escape_of(code: int) -> str:
+    """The escape Python spells `code` as: its own name for a tab, a line feed
+    and a carriage return, else `\\xNN` or `\\uNNNN`."""
+    named = {9: r"\t", 10: r"\n", 13: r"\r"}
+    if code in named:
+        return named[code]
+    return rf"\x{code:02x}" if code < 0x100 else rf"\u{code:04x}"
+
+
+def test_spelled_escapes_exactly_the_specified_characters(template):
+    """EVERY code point, once, in one string: it is escaped when it is in the
+    specified set and left alone when it is not. A character class by
+    category (Cc, Cs, Zl, Zp) and not `str.isprintable`, so Zs, Cf, Co and Cn
+    stay raw."""
+    codes = range(sys.maxunicode + 1)
+    expected = "".join(escape_of(code) if code in ESCAPED_CODES
+                       else chr(code) for code in codes)
+    assert template.spelled("".join(map(chr, codes))) == expected
+
+
+def test_the_specified_set_is_the_four_categories_and_the_bidi_controls():
+    """The test's own set agrees with the category names the spec gives, on
+    this interpreter's Unicode database (the four categories are fixed ranges,
+    so it holds on every one)."""
+    categories = {code for code in range(sys.maxunicode + 1)
+                  if unicodedata.category(chr(code)) in ("Cc", "Cs", "Zl", "Zp")}
+    bidi = {0x061c, 0x200e, 0x200f, *range(0x202a, 0x202f), *range(0x2066, 0x206a)}
+    assert ESCAPED_CODES == categories | bidi
+    assert {unicodedata.category(chr(code)) for code in bidi} <= {"Cf"}
 
 
 def test_spelled_takes_what_a_manifest_can_hold(template):
@@ -613,12 +752,15 @@ def test_spelled_takes_what_a_manifest_can_hold(template):
     assert template.spelled(Path("b\u2028")) == "b\\u2028"
 
 
-def test_spelled_leaves_one_line_of_printable_text(template):
+def test_spelled_leaves_one_line_free_of_what_must_not_reach_a_terminal(
+        template):
     every = "".join(chr(code) for code in (*range(0x100), 0x2028, 0x2029,
-                                           0xd800, 0xdc80, 0xdfff, 0xe000,
-                                           0xfeff, 0x1f642, 0xe0001))
+                                           0x202e, 0x200f, 0xd800, 0xdc80,
+                                           0xdfff, 0xe000, 0xfeff, 0x1f642,
+                                           0xe0001))
     out = template.spelled(every)
-    assert out.isprintable() and "\n" not in out, out
+    assert "\n" not in out and not NEVER_RAW & set(out), out
+    assert not {chr(code) for code in ESCAPED_CODES} & set(out), out
 
 
 @pytest.mark.parametrize("errors, expected", [
@@ -661,16 +803,27 @@ def test_a_stdout_that_cannot_be_reconfigured_fails_nothing(template,
 
 
 def source_of(path: Path, name: str) -> str:
+    """The source of the module-level function or assignment called `name`."""
     text = path.read_text(encoding="utf-8").replace("\r\n", "\n")
-    node = next(node for node in ast.parse(text).body
-                if isinstance(node, ast.FunctionDef) and node.name == name)
+
+    def named(node: ast.stmt) -> bool:
+        if isinstance(node, ast.FunctionDef):
+            return node.name == name
+        return (isinstance(node, ast.Assign)
+                and [target.id for target in node.targets
+                     if isinstance(target, ast.Name)] == [name])
+
+    node = next(node for node in ast.parse(text).body if named(node))
     return ast.get_source_segment(text, node)
 
 
-@pytest.mark.parametrize("name", ["escape_unencodable_stdout", "spelled"])
+@pytest.mark.parametrize("name", ["escape_unencodable_stdout", "spelled",
+                                  "ESCAPED_CATEGORIES",
+                                  "ESCAPED_BIDI_CONTROLS"])
 def test_the_two_roots_carry_the_same_function(name):
     """Both files are shape copies that cannot import anything of this
-    repository's, so the helper is written twice; this is what keeps it one."""
+    repository's, so the helper is written twice; this is what keeps it one.
+    The two sets `spelled` reads are part of it."""
     assert (source_of(ASSEMBLY_TEMPLATE, name)
             == source_of(FAMILY_TEMPLATE, name)), name
 
