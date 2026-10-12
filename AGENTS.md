@@ -143,9 +143,13 @@ order, and step 4 is the one you must not skip.
    it is the human's word, not your convenience.
 7. **Read the verification table back to them.** It accounts for every source
    path at the source commit, by blob sha, in exactly one of {spec leg, code
-   leg, root tree} or as `drop`. If it exits non-zero, STOP and relay it: the
+   leg, root tree} or as `drop`. If it exits non-zero, STOP and relay it, and
+   take the way out THAT exit prints. Exit 1, a failed verification: the
    source is untouched — nothing is deleted, `main` is where it was, the split
-   is on a branch — so the exit is to fix the plan and re-run into fresh legs.
+   is on a branch — so fix the plan and re-run into fresh legs. Exit 2 saying
+   `IS pushed` (GitHub only: `gh pr create` or the topic refused) comes after
+   both legs and the split are pushed and verified: finish with the command it
+   prints and never re-run into fresh legs, which abandons that pair.
 
 `execute` opens a pull request, because these organisations are pull-request
 only. Never suggest a direct push to the default branch, and never `--admin`.
