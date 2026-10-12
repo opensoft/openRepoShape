@@ -165,7 +165,7 @@ from shape_materialize import (  # noqa: E402
 # asked of the plan's values by `plan`, `check` and `execute` (#261).
 from shape_materialize import (  # noqa: E402
     MANIFEST_INVALID_REMEDIATION, manifest_value_problems,
-    misread_placeholders, refuse_manifest_values, refuse_unstorable_names,
+    refuse_manifest_values, refuse_unstorable_names,
 )
 # Whether a value this tool writes into a file is text a file can hold
 # (#255), asked beside `one_printable_line`, the trailer's question.
@@ -1830,8 +1830,10 @@ REFERENCE_KEY = "reference"
 #: The two other plan keys `_execute_gets_to_write` asks about by name.
 TRACKING_KEY = "tracking_branch"
 VISIBILITY_KEY = "visibility"
-#: The placeholder `execute` writes the project's id through.
+#: The placeholder `execute` writes the project's id through, and the one it
+#: writes the pins' list through.
 ID_PLACEHOLDER = "PROJECT_ID"
+PINS_PLACEHOLDER = "NEUTRAL_PRODUCT_PINS"
 
 #: Each plan value `execute` writes into those files, by its key in the plan
 #: (and `plan`'s flag of the same name, dashed) and the `_template_values`
@@ -2060,13 +2062,16 @@ def _execute_gets_to_write(key: str, value) -> bool:
     a `git` argument `checked_value` refuses: `_checked_plan_values` refuses
     it as `unsafe-value` before any leg exists, so a sentence saying
     `execute` writes it, and that the run would end `adoption verified`,
-    would be false (rv181f's F2). Nor, outside `--local-remote-dir`, for a
-    visibility that is not one of `VISIBILITY_CHOICES`: `_create_leg_remotes`
-    hands it to `gh repo create` as `--<visibility>` before anything is
-    written, and no other is a visibility gh creates a repository with
-    (rv181f's F2b). `check` is not told which of the two modes `execute` will
-    run in, so such a visibility is asked about in neither. None of the
-    three choices is misread. Nor for any other value no file can hold
+    would be false (rv181f's F2). Nor for a visibility that is not one of
+    `VISIBILITY_CHOICES`, text or not. Outside `--local-remote-dir`
+    `_create_leg_remotes` would hand it to `gh repo create` as
+    `--<visibility>` before anything is written, and no other is a
+    visibility gh creates a repository with (rv181f's F2b); `check` is not
+    told which mode `execute` will run in. It is the project's own
+    validator's to name instead, in either mode (`manifest-visibility`,
+    #261, `_manifest_findings`), and `execute` refuses a plan holding it
+    before anything exists. None of the three choices is misread. Nor for
+    any other value no file can hold
     (`unwritable_reason`): `check` names it as `plan-unwritable-value`, and
     `execute` refuses a plan holding it before any leg exists (#255), so one
     wrong value is one finding, and none says the run gets further."""
@@ -2081,9 +2086,11 @@ def _execute_gets_to_write(key: str, value) -> bool:
     return True
 
 
-def _plan_fields(plan: Plan) -> list[tuple]:
+def _plan_fields(plan: Plan) -> list[tuple[str, tuple]]:
     """A plan's values as its loader read them, each named by its key in the
-    plan, with the lines `_template_values` would write them into.
+    plan, with the lines `_template_values` would write them into: `(the
+    placeholder that carries it, the field)`, so that what a sentence is
+    about can be told to the validator (`_misread_findings`).
 
     A key the plan does not carry is left out: `execute` fills it with a
     default of this tool's own (`main`, `private`, today's date), and none of
@@ -2095,25 +2102,41 @@ def _plan_fields(plan: Plan) -> list[tuple]:
     refused leg name it is derived from, is refused on its own account by
     `check` and `execute` alike.
     """
-    fields: list[tuple] = []
+    fields: list[tuple[str, tuple]] = []
     try:
-        fields.append(_id_field(plan))
+        fields.append((ID_PLACEHOLDER, _id_field(plan)))
     except Refusal:
         pass
-    fields += [_field(key, placeholder, plan.get(key))
+    fields += [(placeholder, _field(key, placeholder, plan.get(key)))
                for key, placeholder in MANIFEST_FIELDS.items()
                if plan.get(key) is not None
                and _execute_gets_to_write(key, plan.get(key))]
     for (what, value), placeholder in zip(_plan_leg_paths(plan),
                                           LEG_PATH_PLACEHOLDERS.values()):
         if isinstance(value, str) and leg_path_problem(what, value) is None:
-            fields.append(_field(what, placeholder, value))
+            fields.append((placeholder, _field(what, placeholder, value)))
     # Each pin as the loader read it, which `Plan.pins` has already made text
     # (`TRUE` would be named as `True`); the same items, in the same order,
     # less one no file can hold, which is #255's finding alone.
-    return fields + [_pin_field(PIN_IN_PLAN, pin)
+    return fields + [(PINS_PLACEHOLDER, _pin_field(PIN_IN_PLAN, pin))
                      for pin in (plan.data.get("pins") or [])
                      if pin and _execute_gets_to_write("pins", pin)]
+
+
+def _misread_findings(plan: Plan) -> tuple[list[str], tuple[str, ...]]:
+    """`check`'s FINDING for each plan value the project's loader would
+    misread (#181), and the placeholders they are about, so that the
+    project's own validator, asked in the same list, is not asked about
+    those again (`_manifest_findings`): one wrong value is one finding."""
+    found: list[str] = []
+    reported: list[str] = []
+    for placeholder, field in _plan_fields(plan):
+        problems = manifest_misreads([field])
+        found += [f"FINDING plan-manifest-misread: {problem}."
+                  for problem in problems]
+        if problems:
+            reported.append(placeholder)
+    return found, tuple(reported)
 
 
 def _checked_plan_inputs(args, source: Source,
@@ -2196,9 +2219,11 @@ def _checked_plan_inputs(args, source: Source,
     names = _names(args.project)
     pins = [_checked_pin_name(p) for p in (args.pin or []) if p.strip()]
     _check_names(naming, names, set(pins))
-    # LAST, over every value as the plan will record it: `execute` writes
-    # them into the project's own YAML, and one its loader would read as
-    # something else is refused before the plan exists (#181).
+    # LAST here, over every value as the plan will record it: `execute`
+    # writes them into the project's own YAML, and one its loader would read
+    # as something else is refused before the plan exists (#181). The
+    # project's own validator is asked next (`_refuse_unholdable_values`,
+    # #261), of values that read back.
     misread = manifest_misreads(_flag_fields(args, given, pins))
     if misread:
         raise Refusal("adopt-manifest-misread",
@@ -2232,26 +2257,25 @@ def _checked_plan_inputs(args, source: Source,
 # `--id true`, `--tracking-branch 007` -- is #181's, and the scaffold asks
 # both.
 
-#: How `plan` names each value the manifest records: the flag a person typed.
-MANIFEST_FLAGS = {
-    "PROJECT_ID": "--id", "ELECTED_BY": "--elected-by",
-    "ELECTED_ON": "--elected-on", "REFERENCE": "--reference",
-    "VISIBILITY": "--visibility", "TRACKING_BRANCH": "--tracking-branch",
-    "ORG": "--org",
+#: How `check` and `execute` name each value the manifest records: its key
+#: in the plan. The id's placeholder and `MANIFEST_FIELDS` are #181's, so
+#: that each placeholder and each key is spelled once; the organisation is a
+#: value only the validator is asked about.
+MANIFEST_PLAN_KEYS = {
+    ID_PLACEHOLDER: "id",
+    **{placeholder: key for key, placeholder in MANIFEST_FIELDS.items()},
+    "ORG": "org",
 }
+
+#: And how `plan` names the same values: the flag a person typed, which is
+#: the key, dashed, as `_flag_fields` spells #181's.
+MANIFEST_FLAGS = {placeholder: "--" + key.replace("_", "-")
+                  for placeholder, key in MANIFEST_PLAN_KEYS.items()}
 
 #: The validator's findings about a leg's mount path, which `check` already
 #: reports as `plan-bad-leg-path` and `plan-leg-path-collides` from the same
 #: list (`_leg_findings`): said once, in the words of the rule that judges it.
 LEG_PATH_CODES = ("manifest-leg-path", "manifest-leg-path-collision")
-
-#: And how `check` and `execute` name the same value: its key in the plan.
-MANIFEST_PLAN_KEYS = {
-    "PROJECT_ID": "id", "ELECTED_BY": "elected_by",
-    "ELECTED_ON": "elected_on", "REFERENCE": "reference",
-    "VISIBILITY": "visibility", "TRACKING_BRANCH": "tracking_branch",
-    "ORG": "org",
-}
 
 
 def _flag_plan(args, names: dict, pins: list) -> "Plan":
@@ -2326,40 +2350,36 @@ def _manifest_values(plan: Plan, naming: NamingPolicy) -> dict | None:
         _VALIDATION_SHAPE_COMMIT, _VALIDATION_SHAPE_DIGEST, pins, naming)
 
 
-def _manifest_findings(plan: Plan, misreads_elsewhere: bool = False
+def _manifest_findings(plan: Plan, reported: tuple[str, ...] = ()
                        ) -> tuple[list[str], list[str]]:
     """What the project's own validator would refuse of this plan's values,
     as `check` prints them (one FINDING each), and what it prints once after
     them. `[]` and `[]` when it would pass, or when the plan's names are
     refused in their own words (`_manifest_values`).
 
-    `misreads_elsewhere` is for a caller whose list ALSO holds a misread
-    rule's finding for each value the project's reader reads back as another
-    type (`elected_on: "20261011"`, `visibility: "true"`, `id: "007"`: text in
-    the plan, a number or a boolean to the reader once the template writes it
-    bare), so that such a value is judged once and not twice. It is False
-    wherever nothing else asks that question, so that this rule alone still
-    refuses the value, with the validator's finding as the only one. Who is
-    left out is the reader's answer (`shape_materialize.manifest_misreads`,
-    the rule the scaffold applies) and not a list.
+    `reported` is the placeholders whose value a misread rule in the same
+    list has ALREADY reported (#181's `plan-manifest-misread`, which
+    `_misread_findings` returns them with): the validator's finding about
+    such a value is left out, so that it is judged once and not twice
+    (`elected_on: "20261011"`, `id: "007"`). Empty wherever nothing else
+    asks that question, so that this rule alone still refuses the value.
+
+    EVERY OTHER VALUE IS ASKED, ONE THE PLAN'S READER READ AS NOT TEXT
+    INCLUDED, so that no value is left to a rule that does not judge it. The
+    misread rule judges what the loader would misread of what `execute`
+    gets as far as writing, and nothing else (`_execute_gets_to_write`): a
+    `visibility` outside the three choices, `true` and `[secret]` among
+    them, is this rule's. Such a value is named by what was read
+    (`_named_as_read`), because the sentence goes on to quote `str` of it,
+    the text `execute` would write and not what the plan says.
     """
     naming = NamingPolicy.load(NAMING_POLICY)
     values = _manifest_values(plan, naming)
     if values is None:
         return [], []
-    # A value the plan's reader read as a number, a boolean or a collection is
-    # a MISREAD (`id: 007` is 7), and what the template would then write is
-    # `str` of what was read, which the plan never said: it is not asked about
-    # here, in words that would echo that text.
-    not_text = tuple(
-        placeholder for placeholder, key in MANIFEST_PLAN_KEYS.items()
-        if plan.get(key) is not None
-        and not isinstance(plan.get(key), str))
-    if misreads_elsewhere:
-        not_text += misread_placeholders(values, MANIFEST_PLAN_KEYS)
-    problems = manifest_value_problems(values, naming, MANIFEST_PLAN_KEYS,
+    problems = manifest_value_problems(values, naming, _named_as_read(plan),
                                        misreads=False, ignore=LEG_PATH_CODES,
-                                       not_text=not_text)
+                                       not_text=tuple(reported))
     if not problems:
         return [], []
     return ([f"FINDING plan-manifest-invalid: {sentence}"
@@ -2368,6 +2388,21 @@ def _manifest_findings(plan: Plan, misreads_elsewhere: bool = False
              "values into the project's `project.yaml` as they stand, so "
              "correct each one named here in the plan, or re-run `plan` with "
              "a value the validator accepts."])
+
+
+def _named_as_read(plan: Plan) -> dict[str, str]:
+    """How a sentence of the validator's names each value: by its key in the
+    plan, and a value the plan's reader read as something that is not text
+    by what was read too (review181's N2), as in `visibility, read out of
+    the plan as the boolean true, is 'True'`. A value the plan holds as
+    text, or as no value at all, is named by its key alone."""
+    named = {}
+    for placeholder, key in MANIFEST_PLAN_KEYS.items():
+        value = plan.get(key)
+        named[placeholder] = (
+            key if value is None or isinstance(value, str) else
+            f"{key}, read out of the plan as {_the_loader_made(value)},")
+    return named
 
 
 def _refuse_unholdable_values(args, names: dict, pins: list,
@@ -3862,6 +3897,14 @@ def _entry_findings(plan: Plan, source: Source,
     which is the value's consequence; the byte, the break or the control is
     what the person retypes. Both are listed, and both refuse before any leg
     exists. The relative urls of #190 still come after both, last.
+
+    A VALUE #181 CALLS MISREAD IS #181'S ALONE. Its `plan-manifest-misread`
+    names what the loader would read back, and the validator is not asked
+    about that value again: `id: "007"` is not also `manifest-id: id is 7`.
+    The validator is asked about every other value, a `visibility` outside
+    the three choices among them, text or not, which #181 does not judge
+    (`_execute_gets_to_write`). So the two never both name one value
+    (`_manifest_findings`).
     """
     tree = source.tree()
     unsafe, unsafe_remediation = _unsafe_path_findings(plan)
@@ -3870,12 +3913,11 @@ def _entry_findings(plan: Plan, source: Source,
                                       for e in plan.entries],
                                      [path for path, _, _, _ in tree])
                 + _leg_findings(plan, tree))
-    misread = [f"FINDING plan-manifest-misread: {problem}."
-               for problem in manifest_misreads(_plan_fields(plan))]
+    misread, reported = _misread_findings(plan)
     (split, split_remediation), (moved, moved_remediation), notes = \
         _submodule_findings(plan, source, tree, local_remote_dir)
     unwritable_findings, unwritable_remediation = _value_findings(plan)
-    value_findings, value_remediation = _manifest_findings(plan)
+    value_findings, value_remediation = _manifest_findings(plan, reported)
     return (findings + misread + split + unwritable_findings + value_findings
             + moved,
             unsafe_remediation

@@ -448,8 +448,8 @@ def test_the_question_runs_no_process_at_all(adopter, world, monkeypatch):
     monkeypatch.setattr(os, "system", no_process)
     assert adopter._manifest_values(good, naming) is not None
     assert adopter._manifest_findings(good) == ([], [])
-    assert adopter._manifest_findings(good, misreads_elsewhere=True) == (
-        [], [])
+    assert adopter._manifest_findings(
+        good, tuple(adopter.MANIFEST_PLAN_KEYS)) == ([], [])
     (finding,), remediation = adopter._manifest_findings(refused)
     assert "visibility is 'secret'" in finding
     assert remediation
@@ -641,18 +641,18 @@ def test_a_bad_leg_path_is_one_finding_in_the_words_of_its_own_rule(world,
 
 
 @pytest.mark.parametrize("old, new", [
-    ("visibility: private", "visibility: [secret]"),
     ('elected_on: "2026-09-02"', "elected_on: 20260902"),
     ("id: northwind", "id: 007"),
 ])
 def test_a_value_the_reader_reads_as_another_kind_is_not_this_questions(
         world, old, new):
-    """`id: 007` is the number 7, `elected_on: 20260902` another number and
-    `visibility: [secret]` a list: what the template would write is `str` of
-    what was read, which the plan never said, so a finding about it would
-    echo text nobody typed. That is a misread and is judged as one; the
-    validator is asked about the values the plan holds as text, and as no
-    value at all."""
+    """`id: 007` is the number 7 and `elected_on: 20260902` another number:
+    what the template would write is `str` of what was read, which the plan
+    never said. That is a misread, #181's `plan-manifest-misread` names it
+    by what was read, and the validator is not asked about it again. A
+    `visibility` outside the three choices is not here: #181 does not judge
+    it, so it is the validator's, text or not, named by what was read
+    (tests/test_adopt_plan_yaml_quoting.py, `JUDGED_ONCE`)."""
     plan = edited(world, old, new)
     result = run_script(ADOPT, "check", "--plan", str(plan))
     assert FINDING not in result.stderr, result.stderr
@@ -723,13 +723,15 @@ def test_a_text_value_the_reader_misreads_is_one_finding_on_this_rule_alone(
 @pytest.mark.parametrize("old, new, named", TEXT_THE_READER_MISREADS)
 def test_where_a_misread_rule_judges_it_the_validator_is_not_asked_again(
         adopter, world, old, new, named):
-    """`misreads_elsewhere`: a list that holds the misread rule's finding for
-    such a value (#181's `plan-manifest-misread`) is not given a second one
-    about the same value, in the validator's words and with the retyped text
+    """`reported`: a list that holds the misread rule's finding for such a
+    value (#181's `plan-manifest-misread`) is not given a second one about
+    the same value, in the validator's words and with the retyped text
     (`id is 7`) that the misread finding exists to avoid."""
     plan = adopter.Plan.load(edited(world, old, new))
-    assert adopter._manifest_findings(plan, misreads_elsewhere=True) == (
-        [], [])
+    key = new.split(":", 1)[0]
+    placeholder = next(placeholder for placeholder, named
+                       in adopter.MANIFEST_PLAN_KEYS.items() if named == key)
+    assert adopter._manifest_findings(plan, (placeholder,)) == ([], [])
 
 
 def test_a_value_that_is_not_a_misread_is_still_asked_where_one_judges_the_rest(
@@ -745,7 +747,7 @@ def test_a_value_that_is_not_a_misread_is_still_asked_where_one_judges_the_rest(
         handle.write(text)
     plan = adopter.Plan.load(path)
     alone, _ = adopter._manifest_findings(plan)
-    shared, _ = adopter._manifest_findings(plan, misreads_elsewhere=True)
+    shared, _ = adopter._manifest_findings(plan, ("PROJECT_ID",))
     assert len(alone) == 3, alone
     assert len(shared) == 2, shared
     assert any("visibility is 'secret'" in f for f in shared)
@@ -757,10 +759,13 @@ def test_a_value_that_is_not_a_misread_is_still_asked_where_one_judges_the_rest(
 def test_a_text_value_the_reader_misreads_is_one_finding_in_the_list_check_prints(
         adopter, world, old, new, named):
     """NOT ZERO AND NOT TWO, whatever rules the list holds. This rule alone,
-    `_entry_findings` does not pass `misreads_elsewhere`, and the validator's
-    finding is the one. With #181 in the list as well, the call there must pass
-    it, or this is the pair the two rules each make of one value: this test
-    fails on a merge that has not."""
+    `_entry_findings` passes no `reported`, and the validator's finding is
+    the one. With #181 in the list as well, the call there passes the
+    placeholders #181 reported, or this is the pair the two rules each make
+    of one value: this test fails on a merge that has not. `visibility:
+    "true"` is #181's to leave alone (it does not judge a visibility outside
+    the three choices), so it must not be passed for it either, or it is
+    zero."""
     plan = adopter.Plan.load(edited(world, old, new))
     source = plan.open_source(str(world["source"]), world["tmp"] / "read")
     findings, _, _ = adopter._entry_findings(plan, source)

@@ -349,6 +349,11 @@ DATE_DIGITS = "20260902"
 MISREAD_FINDING = "FINDING plan-manifest-misread: "
 #: How `check` begins #255's line about a value no file can hold.
 UNWRITABLE_FINDING = "FINDING plan-unwritable-value: "
+#: How `check` begins #261's line about a value the project's own
+#: validate-manifest.py refuses.
+INVALID_FINDING = "FINDING plan-manifest-invalid: "
+#: `true` as text, as a plan edited by hand quotes it.
+TRUE_TEXT = '"true"'
 #: The plan keys the rows below name, and the flag `plan` takes each as.
 SPEC_PATH_KEY = "legs.spec_path"
 TRACKING_KEY = "tracking_branch"
@@ -412,10 +417,12 @@ REFUSED = [
     (TRACKING_FLAG, "007", TRACKING_KEY, SEVEN_READ),
 ]
 #: `(plan key, value, what the loader reads)` that only an edited plan can
-#: carry here: `plan` reads `--elected-on 20260902` as a date only on Python
-#: 3.11 and later. No visibility is here: `plan` takes one from a fixed
-#: choice, and `execute` hands any other to `gh repo create` before it
-#: writes anything (`NEVER_WRITTEN`).
+#: carry here: `plan` refuses `--elected-on 20260902` as
+#: `election-date-malformed` on every Python since #261, which holds the date
+#: to the validator's own `YYYY-MM-DD`. The validator refuses it too
+#: (`manifest-elected-on`), and `check` names it once, as the misread it is
+#: (`JUDGED_ONCE`). No visibility is here: `plan` takes one from a fixed
+#: choice, and any other is the validator's (`JUDGED_ONCE`).
 EDITED_ONLY = [
     (ELECTED_ON_KEY, DATE_DIGITS, f"the number {DATE_DIGITS}"),
 ]
@@ -576,7 +583,9 @@ def test_plan_takes_an_elector_from_git_the_manifests_quotes_read_back(
 def test_check_reports_a_plan_carrying_one(adopter, answered, tmp_path, key,
                                            value, reading):
     """A plan carrying the value -- spelled by the plan writer, so the plan
-    itself reads it back -- is a FINDING, with the remediation once after."""
+    itself reads it back -- is a FINDING, with the remediation once after.
+    It is #181's alone: the project's own validator is not asked about it
+    again (#261), though it refuses `id: "true"` and the date too."""
     _, text = answered
     plan = tmp_path / PLAN_FILE
     carrying(plan, text, key, adopter.y(value))
@@ -586,6 +595,7 @@ def test_check_reports_a_plan_carrying_one(adopter, answered, tmp_path, key,
     assert f"{MISREAD_FINDING}{who}" in result.stderr
     assert what in result.stderr, result.stderr
     assert result.stderr.count(adopter.MANIFEST_MISREAD_REMEDIATION) == 1
+    assert INVALID_FINDING not in result.stderr, result.stderr
     assert "plan ok" not in result.stdout
 
 
@@ -665,6 +675,7 @@ def test_check_names_a_plan_value_that_is_not_text_by_what_was_read(
     assert (f"reads it back as {read_as} and not as the text `{written}`: "
             "choose another value.") in result.stderr, result.stderr
     assert f"{named} is " not in result.stderr, "`str` of it was echoed"
+    assert INVALID_FINDING not in result.stderr, result.stderr
 
 
 #: `(plan key, as a plan edited by hand spells it)`: values the project's
@@ -672,10 +683,11 @@ def test_check_names_a_plan_value_that_is_not_text_by_what_was_read(
 #: as `unsafe-value` (`_checked_plan_values`), and `gh repo create` takes no
 #: `--true`, before anything is written. A finding would say the value is
 #: written and the run ends `adoption verified`: for these neither is true
-#: (rv181f's F2, F2b).
+#: (rv181f's F2, F2b). Since #261 the visibility is the project's own
+#: validator's finding instead (`JUDGED_ONCE`).
 NEVER_WRITTEN = [
     pytest.param(TRACKING_KEY, QUOTED_DOMAIN_USER, id=TRACKING_KEY),
-    pytest.param(VISIBILITY_KEY, '"true"', id=VISIBILITY_KEY),
+    pytest.param(VISIBILITY_KEY, TRUE_TEXT, id=VISIBILITY_KEY),
 ]
 
 
@@ -720,7 +732,9 @@ UNWRITABLE_DATE = '"2026-09-02\\nx"'
 #: a line break, in a value read back as one line, and a control character
 #: such as a tab. The date and the pins are written bare, where the
 #: project's loader would read each as something else too; the visibility
-#: is one `gh` takes no flag for (`NEVER_WRITTEN`).
+#: is not one #181 judges (`NEVER_WRITTEN`). The project's own validator
+#: lists the manifest such a value makes beside #255's finding, as main has
+#: it (#255 before #261, `_entry_findings`).
 UNWRITABLE = [
     pytest.param(ELECTED_ON_KEY, UNWRITABLE_DATE, id=ELECTED_ON_KEY),
     pytest.param(VISIBILITY_KEY, '"private\\nx"', id=VISIBILITY_KEY),
@@ -736,7 +750,7 @@ def test_check_names_a_value_no_file_can_hold_once_as_unwritable(
     misread, under a remediation saying the run would still end `adoption
     verified`: one wrong value was two findings, and the second was false,
     because `execute` refuses the value before it writes anything. It is
-    #255's finding alone."""
+    #255's finding, once, and never #181's."""
     _, text = answered
     plan = tmp_path / PLAN_FILE
     carrying(plan, text, key, spelled)
@@ -760,6 +774,91 @@ def test_execute_refuses_a_date_no_file_can_hold_as_unwritable_not_misread(
     assert result.returncode == 2, result.stdout + result.stderr
     assert result.stderr.startswith(
         "REFUSED plan-unwritable-value: "), result.stderr
+    assert MISREAD_FINDING not in result.stderr, result.stderr
+    assert not (tmp_path / REMOTES).exists()
+    assert SPLIT_BRANCH not in branches_of(source)
+
+
+#: `(plan key, as a plan edited by hand spells it, the one finding `check`
+#: prints about it)`: a value of each kind #181's gate and #261's validator
+#: (`plan-manifest-invalid`) divide between them. Text the loader misreads is
+#: #181's, though the validator refuses it too; text it reads back is the
+#: validator's; a value read as not text is #181's where #181 asks about it,
+#: and the validator's where it does not, as for a visibility outside the
+#: three choices, text or not (`_execute_gets_to_write`).
+JUDGED_ONCE = [
+    pytest.param(ELECTED_ON_KEY, f'"{DATE_DIGITS}"', MISREAD_FINDING,
+                 id="date-text-misread"),
+    pytest.param("id", '"007"', MISREAD_FINDING, id="id-text-misread"),
+    pytest.param(ELECTED_ON_KEY, DATE_DIGITS, MISREAD_FINDING,
+                 id="date-read-as-a-number"),
+    pytest.param(ELECTED_BY_KEY, '" "', INVALID_FINDING, id="elector-blank"),
+    pytest.param(VISIBILITY_KEY, "secret", INVALID_FINDING,
+                 id="visibility-secret"),
+    pytest.param(VISIBILITY_KEY, TRUE_TEXT, INVALID_FINDING,
+                 id="visibility-text-true"),
+    pytest.param(VISIBILITY_KEY, "true", INVALID_FINDING,
+                 id="visibility-boolean"),
+    pytest.param(VISIBILITY_KEY, "[secret]", INVALID_FINDING,
+                 id="visibility-list"),
+]
+
+
+@pytest.mark.parametrize("key, spelled, finding", JUDGED_ONCE)
+def test_check_judges_each_value_once_by_the_rule_true_of_it(
+        answered, tmp_path, key, spelled, finding):
+    """At the merge of main dd8d0ea, `id: "007"` and `elected_on:
+    "20260902"` were two findings each, #181's and the validator's, and a
+    visibility that is not text was none: #181 does not judge it, and the
+    validator left every value read as not text to #181. Each is one."""
+    _, text = answered
+    plan = tmp_path / PLAN_FILE
+    carrying(plan, text, key, spelled)
+    result = checked(plan)
+    assert result.returncode == 1, result.stdout + result.stderr
+    judged = [line for line in result.stderr.splitlines()
+              if line.startswith((MISREAD_FINDING, INVALID_FINDING))]
+    assert len(judged) == 1, result.stderr
+    assert judged[0].startswith(finding), result.stderr
+
+
+#: `(a visibility as a plan edited by hand spells it, how the validator's
+#: sentence names it)`: read as not text, it is named by what was read, as
+#: #181 names such a value, before the text `execute` would write for it.
+NOT_TEXT_VISIBILITY = [
+    pytest.param("true", "visibility, read out of the plan as the boolean "
+                 "true, is 'True', which", id="boolean"),
+    pytest.param("[secret]", "visibility, read out of the plan as a list, "
+                 "is \"['secret']\", which", id="list"),
+]
+
+
+@pytest.mark.parametrize("spelled, named", NOT_TEXT_VISIBILITY)
+def test_the_validator_names_a_value_read_as_not_text_by_what_was_read(
+        answered, tmp_path, spelled, named):
+    """Its sentence quotes `str` of the value, the text `execute` would
+    write: `visibility is 'True'` alone, for a plan that says `true`, would
+    name text the plan never said (review181's N2)."""
+    _, text = answered
+    plan = tmp_path / PLAN_FILE
+    carrying(plan, text, VISIBILITY_KEY, spelled)
+    result = checked(plan)
+    assert (f"{INVALID_FINDING}{named} the project's own validate-manifest.py "
+            "refuses: manifest-visibility: ") in result.stderr, result.stderr
+
+
+@needs_filter_repo
+def test_execute_refuses_a_visibility_it_never_writes_as_the_validators(
+        answered, tmp_path):
+    """`visibility: "true"`: #181 leaves it to the validator, and `execute`
+    refuses it under the validator's code before any leg exists."""
+    source, text = answered
+    plan = tmp_path / PLAN_FILE
+    carrying(plan, text, VISIBILITY_KEY, TRUE_TEXT)
+    result = executed(plan, tmp_path)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stderr.startswith(
+        "REFUSED plan-manifest-invalid: "), result.stderr
     assert MISREAD_FINDING not in result.stderr, result.stderr
     assert not (tmp_path / REMOTES).exists()
     assert SPLIT_BRANCH not in branches_of(source)
@@ -911,6 +1010,7 @@ def test_execute_refuses_a_plan_carrying_one_before_any_leg_exists(
     assert f"{MISREAD_FINDING}{who}" in result.stderr
     assert what in result.stderr
     assert adopter.MANIFEST_MISREAD_REMEDIATION in result.stderr
+    assert INVALID_FINDING not in result.stderr, result.stderr
     assert not (tmp_path / REMOTES).exists()
     assert SPLIT_BRANCH not in branches_of(source)
 
