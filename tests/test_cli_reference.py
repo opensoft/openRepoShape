@@ -577,3 +577,61 @@ def test_the_checkout_refusal_comes_before_the_no_bash_one(tmp_path,
         assert "is not a checkout" in err, f"{argv}: {err}"
         assert "bash entry points" not in err, (
             f"{argv}: the no-bash refusal came first: {err}")
+
+
+# --- checkouts the shim accepts and the generator must too (#341) ------------
+#
+# The generator's probe is the shim's, so it has to read git's answer the way
+# the shim does. Bash's `$(...)` keeps every byte of the top level but the
+# trailing newlines; a generator that stripped the path, or decoded it with
+# `replace`, refused two real checkouts the shim treats as checkouts: one whose
+# directory name ends in a space, and one whose path is not UTF-8. Both tests
+# are skipped where the file system cannot hold the name (Windows takes
+# neither; macOS refuses what is not UTF-8), because there is then no such
+# checkout to refuse.
+
+def a_checkout_at(path):
+    """`copy_of_the_tree`, plus the `git init` that makes it a work tree.
+
+    The shim's probe, and the generator's, ask for a top level and two files at
+    it, so an empty repository is a checkout to both: no commit is needed."""
+    copy_of_the_tree(path)
+    subprocess.run(["git", "init", "-q"], cwd=str(path), check=True,
+                   stdin=subprocess.DEVNULL, capture_output=True)
+    return path
+
+
+def the_generator_accepts(tree, tmp_path):
+    """`--check` IN `tree`, as a person runs it: it renders and agrees with the
+    committed reference (the copy carries this tree's own `docs/cli.md`), exit
+    0, with no refusal and no clone."""
+    result = subprocess.run(
+        [sys.executable, str(tree / "scripts" / "render-cli-reference.py"),
+         "--check"], cwd=str(tree), env=offline_env(tmp_path),
+        stdin=subprocess.DEVNULL, capture_output=True, check=False)
+    said = (result.stderr + result.stdout).decode("utf-8", "replace")
+    assert result.returncode == 0, f"exit {result.returncode}\n{said}"
+    assert "[ok]" in said, said
+    assert "is not a checkout" not in said, said
+    assert not traced_clones(tmp_path), traced_clones(tmp_path)
+
+
+@WINDOWS_SKIP
+def test_a_checkout_whose_path_ends_in_a_space_is_a_checkout(tmp_path):
+    tree = a_checkout_at(tmp_path / "trail" / "openRepoShape ")
+    assert str(tree).endswith(" "), "the fixture lost the space it is about"
+    the_generator_accepts(tree, tmp_path)
+
+
+@WINDOWS_SKIP
+def test_a_checkout_whose_path_is_not_utf8_is_a_checkout(tmp_path):
+    parent = tmp_path / os.fsdecode(b"bad\xffname")
+    try:
+        parent.mkdir()
+    except OSError as error:
+        pytest.skip(f"this file system cannot hold a name that is not UTF-8: "
+                    f"{error}")
+    tree = a_checkout_at(parent / "openRepoShape")
+    with pytest.raises(UnicodeDecodeError):
+        os.fsencode(tree).decode("utf-8")
+    the_generator_accepts(tree, tmp_path)

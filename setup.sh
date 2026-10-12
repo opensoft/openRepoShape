@@ -123,15 +123,18 @@ fi
 # --------------------------------------------------------------------------
 # THE ONLY READ OF THE COMMAND LINE, AND IT CONSUMES NOTHING. All three are
 # about the checkout made here, and every argument is passed on to Python
-# unchanged whatever this scan concludes — which is what keeps one parser.
+# unchanged whatever this scan concludes — which is what keeps one parser —
+# bar one run that is not passed on at all: a request for help, answered
+# here (below).
 # TWO KNOWN FALSE POSITIVES, both harmless: a VALUE spelled
 # `--keep-shape-checkout` sets that flag, and a VALUE spelled `--shape-ref`
 # makes the WORD AFTER IT become $SHAPE_REF. Both runs are refused anyway by
 # Python's `checked_value`, which rejects that leading `-` before anything is
-# created — this scan only decides whether a temporary directory is removed
-# and whether a ref gets checked out, never what the run itself does. Each
-# `case` below ends `*) ;;` for the same reason: an argument this scan does
-# not recognize is Python's to read, not this script's to reject.
+# created — the first two reads only decide whether a temporary directory is
+# removed and whether a ref gets checked out, never what the run itself does,
+# and the third decides whether there is a run at all (below). Each `case`
+# below ends `*) ;;` because an argument this scan does not recognize is
+# Python's to read, not this script's to reject.
 #
 # `-h` AND `--help` BOTH, because `setup-project.py` reads both as the help,
 # and only BEFORE `--`: what follows `--` is `scaffold-project.py`'s, so

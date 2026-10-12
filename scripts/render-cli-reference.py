@@ -342,7 +342,16 @@ def require_a_checkout(tree: Path = REPO) -> None:
         raise Refusal(
             f"cannot tell whether {tree} is a checkout of openRepoShape: git "
             f"could not be run ({error}). {RENDER_FROM_A_CLONE}") from error
-    toplevel = proc.stdout.decode("utf-8", "replace").strip()
+    # THE PATH, BYTE FOR BYTE. Bash's `$(...)` in the shim's
+    # `is_shape_checkout` drops the trailing newlines and keeps every other
+    # byte, so a checkout whose directory name ends in a space, or is not
+    # UTF-8, is a checkout to the shim and has to be one here. `.strip()`
+    # would eat the space that belongs to the name, and a `replace` decode
+    # would turn a byte that is not UTF-8 into U+FFFD, naming a directory that
+    # is not there. `os.fsdecode` is how this process spells such a name to
+    # the file system; the `\r` goes with the newline, as `.strip()` took it,
+    # for a git that ends its lines the Windows way.
+    toplevel = os.fsdecode(proc.stdout).rstrip("\r\n")
     if proc.returncode != 0 or not toplevel:
         said = proc.stderr.decode("utf-8", "replace").strip().splitlines()
         raise Refusal(

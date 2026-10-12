@@ -1573,7 +1573,8 @@ def test_a_rehearsal_that_stops_at_the_plan_makes_no_family_folder(tmp_path):
 #: standing (`--into`). And `--help` since #341, which decides whether there
 #: is a checkout to make AT ALL: outside one, the shim answers it itself with
 #: a few lines that list no flag, rather than cloning the standard to print
-#: this file's usage. Its one case label is pinned below.
+#: this file's usage. THE EXCUSE IS FOR TWO PLACES, NOT FOR THE SPELLING:
+#: those few lines and the one case label, both pinned below.
 SHIM_FLAGS = {"--quiet", "--depth", "--show-toplevel", "--into", "--shape-ref",
               "--keep-shape-checkout", "--help"}
 
@@ -1645,6 +1646,27 @@ def test_setup_sh_parses_no_flags_of_its_own():
     # a help label of another shape, is a parser growing back after all.
     assert code.count("--help)") == code.count("-h|--help)") == 1, (
         "setup.sh's one help label must be section 0's `-h|--help)`, once")
+    # ...AND EVERY OTHER `--help` IS THE SHIM'S OWN TEXT, which is `say`
+    # lines and nothing else. `SHIM_FLAGS` excuses a SPELLING, and a second
+    # reader needs no case label to be one: a quoted `"--help")`, a
+    # `[[ $1 == --help ]]` in the developer path or inside the scan, or a
+    # `--help` read from a command substitution inside a `say`. So the
+    # spelling is excused in exactly two places, the text and the label, and
+    # the text is held to one double-quoted string per line, with no command
+    # substitution, no `${...}` and no backtick in it.
+    text = re.search(r"^shim_help\(\) \{\n(.*?)^\}\n", code,
+                     re.MULTILINE | re.DOTALL)
+    assert text, "setup.sh no longer defines shim_help()"
+    prints_only = re.compile(r'say "(?:[^"\\`$]|\\.|\$(?![({]))*"')
+    assert all(prints_only.fullmatch(line.strip())
+               for line in text.group(1).splitlines()), (
+        "shim_help() does something other than print its text: every line "
+        "must be one `say \"...\"` with no command substitution in it")
+    rest = code.replace(text.group(0), "")
+    assert rest.count("--help") == rest.count("-h|--help)") == 1, (
+        "setup.sh reads --help somewhere other than section 0's one label")
+    assert len(re.findall(r"(?<![\w-])-h(?![\w-])", rest)) == 1, (
+        "setup.sh reads -h somewhere other than section 0's one label")
 
 
 def test_the_shim_names_the_command_line_tools_on_a_mac():

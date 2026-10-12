@@ -226,9 +226,12 @@ def test_help_exits_zero():
 def test_help_inside_a_checkout_is_still_setup_project_pys_own(monkeypatch):
     """#341 changed `--help` only OUTSIDE a checkout. Inside one the shim
     still execs `setup-project.py` before section 0 reads a word, so `-h`
-    and `--help` both print that file's usage byte for byte, and never the
-    shim's own text. `GIT_ALLOW_PROTOCOL=file`, so a regression that reached
-    the clone fails closed instead of reaching GitHub."""
+    and `--help` both print that file's usage byte for byte, on stdout AND on
+    stderr, and never the shim's own text. Stderr too, because a second
+    reader of `--help` in the developer path would most naturally say its
+    piece there, where a stdout comparison cannot see it.
+    `GIT_ALLOW_PROTOCOL=file`, so a regression that reached the clone fails
+    closed instead of reaching GitHub."""
     monkeypatch.setenv("GIT_ALLOW_PROTOCOL", "file")
     own = subprocess.run([sys.executable, str(REPO / "setup-project.py"),
                           "--help"], capture_output=True, text=True,
@@ -237,6 +240,7 @@ def test_help_inside_a_checkout_is_still_setup_project_pys_own(monkeypatch):
     for result in (run_setup("--help"), run_setup("-h")):
         assert result.returncode == 0, result.stderr + result.stdout
         assert result.stdout == own.stdout
+        assert result.stderr == own.stderr
         assert SHIM_HELP_FIRST_LINE not in result.stdout
         assert "(0) self-bootstrap" not in result.stdout
 
