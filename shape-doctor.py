@@ -47,7 +47,11 @@ manifest's declared `kind:` -- `project-manifest`, `family-manifest`,
 it, and a `contracts/*.yaml` whose `kind` has no entry is a FINDING that says
 so by name. A manifest nobody validates is the failure this whole standard is
 against, and "we did not notice it was there" is how it happens; a future
-inventory plugs in by adding one row to that table.
+inventory plugs in by adding one row to that table. A kind whose check never
+runs on THIS kind of root is that failure too, and the same FINDING (#327):
+`validate-family.py` is registered for `family-manifest` and runs in a family
+holder only, so a `contracts/family.yaml` in an assembly root -- or a
+`contracts/project.yaml` in a holder -- is a manifest nothing here reads.
 
 THE ROWS, for an assembly root, in this order:
 
@@ -65,7 +69,7 @@ THE ROWS, for an assembly root, in this order:
     pins              the project's own `scripts/validate-pins.py` likewise:
                       the lockstep invariant, and the shape-copy digests
     manifest kinds    every `kind:`-bearing manifest in the root, against
-                      MANIFEST_VALIDATORS
+                      MANIFEST_VALIDATORS and the kind of root it is in
     shape currency    `update-shape.py check`'s per-file verdicts, summarised
     legs              each leg mounted, and its checked-out commit against the
                       pin (no fetch)
@@ -701,34 +705,73 @@ class Check:
         self.fix = fix
 
 
+#: Each kind of root that carries manifests, as a sentence names it: the
+#: `manifest kinds` row says where a validator runs in these words (#327).
+ROOT_IN_WORDS = {PROJECT: "an assembly root", FAMILY: "a family holder"}
+
+
 class ManifestKind:
     """One `kind:` this standard knows a validator for.
 
-    `covered_by` is the id of the CHECK that validates it, so the row about
-    manifest kinds can say where a kind was answered rather than merely that
-    it was recognised. A kind with no entry here is a FINDING by name: a
-    manifest nobody validates is the gap this table exists to close.
+    `covered_by` is the ids of the CHECKS that validate it, one for each kind
+    of root it is validated in, so the row about manifest kinds can say where
+    a kind was answered rather than merely that it was recognised. A kind
+    with no entry here is a FINDING by name: a manifest nobody validates is
+    the gap this table exists to close.
+
+    AND A KIND IS ANSWERED ONLY WHERE ONE OF THOSE CHECKS RUNS (#327).
+    `runs_in` reads each check's `applies_to` out of `CHECKS`, so this table
+    names checks and the registry alone says which root runs each of them --
+    there is no second list of root kinds here to drift from it. The `family`
+    check applies to a holder and to nothing else, so `family-manifest` is
+    answered in a holder only, and a `contracts/family.yaml` in an assembly
+    root is a manifest no gate there reads; `manifest` likewise, so a
+    `contracts/project.yaml` in a holder is one too. The other kinds a holder
+    carries are answered there by `family`: its `validate-family.py` reads
+    `contracts/shape-pin.yaml` and loads the naming policy itself.
+
+    `home` is the other exit for a manifest found in a root that never runs
+    its gate: a root of the kind that does, named by the commands that make
+    one. Only the two kinds a root of the other kind can hold need one. It
+    is one sentence on every platform, so it names `setup-project.py` beside
+    `setup.sh`, which is a bash script Windows cannot run -- the reason
+    `scaffold_command` spells that line per platform (Copilot, PR #102).
     """
 
-    def __init__(self, kind: str, covered_by: str, how: str):
+    def __init__(self, kind: str, covered_by: tuple, how: str,
+                 home: str | None = None):
         self.kind = kind
         self.covered_by = covered_by
         self.how = how
+        self.home = home
+
+    def runs_in(self) -> tuple:
+        """The kinds of root a check that `covered_by` names runs on."""
+        return tuple(root for root in ROOT_IN_WORDS
+                     if any(check.id in self.covered_by
+                            and root in check.applies_to
+                            for check in CHECKS))
 
 
 MANIFEST_VALIDATORS: dict[str, ManifestKind] = {
     "project-manifest": ManifestKind(
-        "project-manifest", "manifest", "scripts/validate-manifest.py"),
+        "project-manifest", ("manifest",), "scripts/validate-manifest.py",
+        "an assembly root of its own (`setup.sh`, or `setup-project.py` on "
+        "Windows, for a new one; `adopt-project.py plan` for a repository "
+        "that exists), which a holder pins with `family.py add`"),
     "family-manifest": ManifestKind(
-        "family-manifest", "family", "scripts/validate-family.py"),
+        "family-manifest", ("family",), "scripts/validate-family.py",
+        "a family holder of its own (`family.py init`, then `family.py add` "
+        "there)"),
     "pinned_contract_manifest": ManifestKind(
-        "pinned_contract_manifest", "pins",
+        "pinned_contract_manifest", ("pins", "family"),
         "scripts/validate-pins.py (or validate-family.py in a holder)"),
     "repository-naming-policy": ManifestKind(
-        "repository-naming-policy", "naming",
-        "scripts/validate-repository-naming.py, through NamingPolicy.load"),
+        "repository-naming-policy", ("naming", "family"),
+        "scripts/validate-repository-naming.py, through NamingPolicy.load "
+        "(validate-family.py, through the same, in a holder)"),
     "path-classification-policy": ManifestKind(
-        "path-classification-policy", "manifest-kinds",
+        "path-classification-policy", ("manifest-kinds",),
         "scripts/path_classify.py reads it; nothing validates it in a root"),
 }
 
@@ -1295,6 +1338,16 @@ def check_manifest(ctx: Context) -> Row:
                          ["--root", str(ctx.root)])
 
 
+#: THE TWO LOCKSTEP GATES, as `(the root's own copy, the standard's template)`,
+#: spelled ONCE. `check_pins` and `check_family` run them, and the `legs` and
+#: `members` rows (`lockstep_next`, #276) hand them over for what no checkout
+#: cures; a path typed in each place is a gate the rows can disagree about.
+PINS_GATE = ("scripts/validate-pins.py",
+             "templates/assembly-root/scripts/validate-pins.py")
+FAMILY_GATE = ("scripts/validate-family.py",
+               "templates/family-root/scripts/validate-family.py")
+
+
 def check_pins(ctx: Context) -> Row:
     # `validate-pins.py` reads `project.yaml` FIRST -- the legs it checks are
     # the ones declared there -- and refuses before any pin when it does not
@@ -1304,15 +1357,12 @@ def check_pins(ctx: Context) -> Row:
                           "a single pin, has nothing to check yet")
     if waiting is not None:
         return waiting
-    return validator_row(
-        ctx, "pins", "pins", "scripts/validate-pins.py",
-        "templates/assembly-root/scripts/validate-pins.py",
-        ["--root", str(ctx.root)])
+    return validator_row(ctx, "pins", "pins", *PINS_GATE,
+                         ["--root", str(ctx.root)])
 
 
 def check_family(ctx: Context) -> Row:
-    own = "scripts/validate-family.py"
-    template = "templates/family-root/scripts/validate-family.py"
+    own, template = FAMILY_GATE
     if ctx.manifest_refusal is not None:
         return unloaded_manifest_row(ctx, "family", "family", own, template)
     return validator_row(ctx, "family", "family", own, template,
@@ -1458,6 +1508,169 @@ FAMILY_BESIDE_FIX = (
     "add` here, which would mount the members inside a project")
 
 
+def registered_elsewhere(ctx: Context, found: list) -> tuple[str, str, list]:
+    """Manifests whose kind is registered to a gate this root never runs:
+    the sentence, the next command, and the facts (#327).
+
+    `found` is `(path, kind, entry)` for each, in the row's own order. The
+    sentence opens the way the unregistered kind's does -- "no validator
+    ... is registered for kind" -- because to this root it is the same
+    fact: the registry has a validator for the kind, and none that runs
+    here. Each file says which validator that is and where it does run.
+
+    A FINDING, NOT A NOTE, for the reason an unregistered kind is one. A
+    `note` is a difference nothing asserts, and a file declaring `kind:`
+    asserts what it is; the registry exists so that no such file is
+    answered by nobody, and a kind the registry knows is no better answered
+    in a root whose gate never reads it. Nor could the same bytes be a
+    FINDING as `family.yaml` (#211) and a note as `contracts/family.yaml`.
+
+    THE NEXT COMMAND IS ONE THAT EXISTS, FOR THE FILE AS GIT HAS IT. The
+    doctor reads the disk, so the file may be one nobody has committed yet,
+    and `git rm` takes out only a file whose every byte a commit holds: it
+    says "did not match any files" (exit 128) for one git does not track,
+    ignored or not, and refuses one with changes no commit holds. So
+    `git_states` asks first, and each file gets the exit that works:
+      committed   `git rm`, quoted for the reader's shell like every path
+                  this report prints, committed on a branch and landed as
+                  a pull request, the way every change here lands;
+      untracked,  deleting it, with nothing to commit;
+      ignored
+      changed     committing or dropping those changes first, since `git
+                  rm` will not discard them, and the next run names the
+                  `git rm`.
+    Where git cannot say, the line is #211's, which holds in any state:
+    take it out of this root. Each file's state is `detail`'s `git`.
+
+    The other exit is the kind's `home`, as the human decides. Renaming the
+    file to the root's own manifest name is ruled out in the line itself,
+    because that is the one move that looks like a fix: in a holder it
+    makes the root read as a project, and in an assembly root it is #211's
+    finding instead of this one.
+    """
+    names = [rel for rel, _, _ in found]
+    one = len(names) == 1
+    states = git_states(ctx.root, names)
+    clauses, detail = [], []
+    for rel, kind, entry in found:
+        runs = entry.runs_in()
+        where = (f"{entry.how} runs only in "
+                 + " or ".join(ROOT_IN_WORDS[root] for root in runs)
+                 if runs else f"no check runs {entry.how}")
+        clauses.append(f"{rel} ({kind}: {where})")
+        detail.append({"manifest": rel, "kind": kind,
+                       "validator": entry.how, "runs_in": list(runs),
+                       "git": states.get(rel)})
+    sentence = (f"no validator that runs in {ROOT_IN_WORDS[ctx.kind]} is "
+                "registered for kind " + ", ".join(clauses))
+    homes = {rel: entry.home or "a root whose gate runs its validator"
+             for rel, _, entry in found}
+    if len(set(homes.values())) == 1:
+        other_exit = (f"move what {'it describes' if one else 'they describe'}"
+                      f" to {homes[names[0]]}")
+    else:
+        other_exit = "move what each describes to " + "; ".join(
+            f"{rel}: {home}" for rel, home in homes.items())
+    fix = (f"take {', '.join(names)} out of this root"
+           f"{removal_ways(ctx, names, states)}, or {other_exit}, as the "
+           f"human decides -- never rename {'it' if one else 'one'} to "
+           f"{PROJECT_MANIFEST} or {FAMILY_MANIFEST} in this root: a family "
+           "holder is not a project, and an assembly root is not a family "
+           "holder")
+    return sentence, fix, detail
+
+
+def git_states(root: Path, names: list) -> dict:
+    """`{path: state}` for each of `names`, from ONE `git status`:
+    `committed`, `untracked`, `ignored` or `changed` -- or `{}` where git
+    cannot say (#327).
+
+    A path `status` does not list is tracked, and HEAD, the index and the
+    work tree agree on it: `committed`, the one state `git rm` takes. `??`
+    alone is `untracked`, `!!` alone is `ignored` (`--ignored`, so a file
+    the root's excludes hide is still named), and anything else -- an edit,
+    a staged change, a file staged and never committed, a removal staged
+    while the file is still on disk (`D ` and `??` at once) -- is `changed`.
+
+    READ-ONLY AND LITERAL. `--no-optional-locks`, so `status` refreshes the
+    index in memory and never writes it back: the doctor writes nothing into
+    the repository. `--literal-pathspecs`, so a name holding `[` or `*` is
+    that one file and not a pattern. `-z`, so a name comes back as itself,
+    and `--untracked-files=all`, so it is the file and not its directory.
+
+    AND ONLY IN A REPOSITORY OF ITS OWN. `git -C` discovers: in a plain
+    directory inside another repository, `status` answers about THAT one,
+    with paths relative to its top, and a `git rm` there would change it.
+    `not_its_own_repository` declines to guess, as it does for a leg.
+    """
+    if not_its_own_repository(root) is not None:
+        return {}
+    try:
+        raw = git_out(["--no-optional-locks", "--literal-pathspecs", "status",
+                       "--porcelain=v1", "-z", "--untracked-files=all",
+                       "--ignored", "--", *names], cwd=root, binary=True)
+    except (Refusal, OSError):
+        return {}
+    codes: dict[str, set] = {}
+    records = iter(raw.split(b"\0"))
+    for record in records:
+        if len(record) < 4:
+            continue
+        code = record[:2].decode("ascii", "replace")
+        codes.setdefault(record[3:].decode("utf-8", "surrogateescape"),
+                         set()).add(code)
+        if code[0] in "RC":
+            next(records, None)   # a rename's or copy's source path
+    states = {}
+    for name in names:
+        found = codes.get(name, set())
+        states[name] = ("committed" if not found
+                        else "untracked" if found == {"??"}
+                        else "ignored" if found == {"!!"}
+                        else "changed")
+    return states
+
+
+def removal_ways(ctx: Context, names: list, states: dict) -> str:
+    """How each of `names` comes out of the root, as git has it: the
+    parenthesis the `manifest kinds` row's NEXT carries (#327), or nothing
+    where git could not say. A file is named again only where the files
+    do not all come out the same way."""
+    root = quote_arg(ctx.root)
+    groups = {state: [name for name in names if states.get(name) in kinds]
+              for state, kinds in (("committed", ("committed",)),
+                                   ("loose", ("untracked", "ignored")),
+                                   ("changed", ("changed",)))}
+    groups = {state: group for state, group in groups.items() if group}
+    alone = len(groups) == 1
+
+    def subject(group: list, pronoun: str) -> str:
+        return pronoun if alone else ", ".join(group)
+
+    ways = []
+    if "committed" in groups:
+        ways.append(f"`git -C {root} rm -- "
+                    + " ".join(quote_arg(n) for n in groups["committed"])
+                    + "`, committed on a branch and landed as a pull "
+                    "request")
+    if "loose" in groups:
+        group = groups["loose"]
+        single = len(group) == 1
+        ways.append(f"delete {subject(group, 'it' if single else 'them')}, "
+                    "which git does not track, so there is nothing to "
+                    "commit")
+    if "changed" in groups:
+        group = groups["changed"]
+        single = len(group) == 1
+        ways.append(
+            f"{subject(group, 'it' if single else 'they')} "
+            f"{'has' if single else 'have'} changes no commit holds, which "
+            "`git rm` will not discard: commit or drop them (`git -C "
+            f"{root} status -- {' '.join(quote_arg(n) for n in group)}` "
+            "shows them), and the next run names the `git rm`")
+    return f" ({'; '.join(ways)})" if ways else ""
+
+
 def check_manifest_kinds(ctx: Context) -> Row:
     """Every `kind:`-bearing manifest in this root, against the registry.
 
@@ -1468,10 +1681,14 @@ def check_manifest_kinds(ctx: Context) -> Row:
     a file that DOES declare a kind that nothing here validates, which is a
     manifest travelling in a shape root with no gate behind it.
 
-    A REGISTERED KIND WHOSE GATE THIS ROOT NEVER RUNS IS THAT CASE TOO
-    (#211): a `family.yaml` declaring `family-manifest` in an assembly root.
-    It is not counted `validated`; `family_beside_project` says why, and
-    checks the members it pins against the gitlinks.
+    A REGISTERED KIND WHOSE GATE THIS ROOT NEVER RUNS IS THAT CASE TOO,
+    wherever the file is (#211, #327). A kind counts `validated` only where a
+    check it is registered to RUNS -- `ManifestKind.runs_in` -- so a
+    `contracts/family.yaml` in an assembly root, or a `contracts/project.yaml`
+    in a holder, is listed under `registered_elsewhere` and is a FINDING
+    `registered_elsewhere()` explains. A `family.yaml` at the top of an
+    assembly root is the same fact with more to say: `family_beside_project`
+    also checks the members it pins against the gitlinks.
 
     THE ROOT'S OWN MANIFEST, WHEN IT DOES NOT LOAD, IS NOT THIS ROW'S (#205).
     The `manifest` (or `family`) row quotes its refusal and names its gate,
@@ -1484,6 +1701,9 @@ def check_manifest_kinds(ctx: Context) -> Row:
     known: list[str] = []
     unknown: list[str] = []
     unreadable: list[str] = []
+    #: `(path, kind, entry)` for each manifest whose registered gate never
+    #: runs on this kind of root (#327).
+    ungated: list[tuple] = []
     elsewhere = (ctx.manifest_path if ctx.manifest_refusal is not None
                  else None)
     beside: tuple[str, dict] | None = None
@@ -1503,10 +1723,20 @@ def check_manifest_kinds(ctx: Context) -> Row:
             beside = family_beside_project(ctx, data)
             continue
         entry = MANIFEST_VALIDATORS.get(kind)
-        (known if entry else unknown).append(f"{rel} ({kind})")
+        if entry is None:
+            unknown.append(f"{rel} ({kind})")
+        elif ctx.kind not in entry.runs_in():
+            ungated.append((rel, kind, entry))
+        else:
+            known.append(f"{rel} ({kind})")
     detail = {"validated": known, "unregistered": unknown,
               "unreadable": unreadable,
               "registered_kinds": sorted(MANIFEST_VALIDATORS)}
+    ungated_said = registered_elsewhere(ctx, ungated) if ungated else None
+    if ungated_said is not None:
+        # ONLY WHEN THERE IS ONE, like `family_beside` below, so every root
+        # without such a file reports the row it reported before #327.
+        detail["registered_elsewhere"] = ungated_said[2]
     # Only when there is one, so every other root's row is the row it was.
     aside = ""
     if elsewhere is not None:
@@ -1518,7 +1748,8 @@ def check_manifest_kinds(ctx: Context) -> Row:
         # ONLY WHEN THERE IS ONE, so every root without it reports the same
         # row, byte for byte, as it did before #211.
         detail["family_beside"] = beside[1]
-    if unknown or unreadable or beside is not None:
+    if (unknown or unreadable or ungated_said is not None
+            or beside is not None):
         parts = []
         fixes = []
         if unknown:
@@ -1530,6 +1761,9 @@ def check_manifest_kinds(ctx: Context) -> Row:
             fixes.append("register the kind in shape-doctor.py's "
                          "MANIFEST_VALIDATORS, beside the check that "
                          "validates it, or remove the file from the root")
+        if ungated_said is not None:
+            parts.append(ungated_said[0])
+            fixes.append(ungated_said[1])
         if beside is not None:
             parts.append(beside[0])
             fixes.append(FAMILY_BESIDE_FIX)
@@ -1747,19 +1981,167 @@ def pin_commit(root: Path, relative: str) -> str | None:
     return commit if COMMIT_RE.match(commit) else None
 
 
+def own_bootstrap(root: Path, make_target: bool = False) -> bool:
+    """Can the root's own `scripts/bootstrap.py` RUN? It imports `repo_shape`
+    from beside itself, so it and `scripts/repo_shape.py` must both be there:
+    a root without either has no bootstrap a NEXT may name (#276).
+
+    `make_target` also asks for the Makefile target `make bootstrap` runs, for
+    the one sentence that sends a reader there. ONE DEFINITION, because the
+    `legs` and `members` rows each asked it in their own words.
+    """
+    scripts = root / "scripts"
+    if not all((scripts / name).is_file()
+               for name in ("bootstrap.py", "repo_shape.py")):
+        return False
+    if not make_target:
+        return True
+    try:
+        makefile = (root / "Makefile").read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    return re.search(r"(?m)^bootstrap\s*:", makefile) is not None
+
+
+def lockstep_next(ctx: Context, gate: tuple, noun: str) -> str | None:
+    """The line for what NO checkout cures: the lockstep gate, built the way
+    the `pins` and `family` rows build their own (`PINS_GATE`, `FAMILY_GATE`
+    and the same `--root` argument), so the template's line carries the
+    `PYTHONPATH` it needs (#238). None when neither copy is readable: that
+    is a standard with a hole in it, the gate's own row says so in the same
+    report, and a command that cannot run is the defect #276 is about.
+
+    The `legs` and `members` rows say the same thing about a leg and about a
+    member, so the sentence is written here once.
+    """
+    used, _, own_copy = validator_for(ctx, *gate)
+    if not used.is_file():
+        return None
+    command = validator_command(ctx.shape, used, own_copy,
+                                ["--root", str(ctx.root)])
+    return (f"{command}   # no submodule update cures a {noun} whose gitlink "
+            "or pin is missing or disagrees, or a mount git cannot read a "
+            f"HEAD in. {used.name} prints what it finds and names the repair "
+            "where it has one")
+
+
+def submodule_update_next(root: Path, paths: list[str], off_pin: list[Path],
+                          noun: str, after: str = "", rerun: bool = False,
+                          platform: str | None = None) -> tuple[str, str]:
+    """`(the line, what it does)`: the script-free command that checks each
+    submodule at `paths` out at the commit `root` records for it, and the
+    sentence a reader needs before pasting it (#276).
+
+    WHY A GIT LINE AND NOT THE ROOT'S `scripts/bootstrap.py`. The `legs` and
+    `members` rows used to hand over `python3 <root>/scripts/bootstrap.py`
+    without asking whether the root had it, and a root that had lost it (the
+    `shape currency` row says `copy-missing` for the same file) pasted
+    `can't open file`, exit 2. Where the file was there it did not cure the
+    row's first problem either: bootstrap never initialises a mount, it
+    prints `NOT INITIALIZED` and stops, and it never moves an existing branch
+    whose tip is not the pin (`templates/assembly-root/scripts/bootstrap.py`,
+    `checkout_tracking_branch`). `git submodule update --init --recursive --
+    <paths>` needs no script and no `PYTHONPATH`, and a probe of both cases
+    shows it cures them: an empty mount is filled, and a leg committed past
+    its pin is put back AT the gitlink, which is what the row compares HEAD
+    with. `--init` registers a mount the clone never initialised (a plain
+    `git clone` has `submodule.active` unset, and without it the update
+    prints `not initialized` and leaves the row red) and `--recursive` goes
+    into the submodule's own submodules, as the holder's bootstrap does
+    (`fetch_members`).
+
+    `--checkout` IS THE WORD THE EXPLANATION RESTS ON. `git submodule update`
+    obeys a configured `submodule.<name>.update`, in `.git/config` or
+    committed in `.gitmodules`: under `rebase` or `merge` the same line
+    writes a rebased or a merge commit INTO THE LEG and the row stays red,
+    and under `none` it skips the mount. Each exits 0, so the reader is told
+    nothing. `--checkout` overrides the setting for this one command, so the
+    line checks the commit out whatever the clone has configured.
+
+    IT MOVES HEAD, AND THAT IS NOT FREE, so the sentence says so. A commit
+    made in a leg on a BRANCH stays on that branch. A commit made on a
+    detached HEAD is left only in the leg's reflog, which is what bootstrap's
+    own `checkout <branch>` does to it too. `off_pin` is the mounts whose
+    HEAD is exactly that, and each is named with the line that keeps the
+    commit first, `git -C <leg> branch NAME`. Nothing is said when no mount
+    is in that state, because a reader told about a loss that cannot happen
+    learns to skip the sentence on the day it can.
+
+    THE SENTENCE CARRIES NONE OF `;`, `'`, A BACKTICK OR A PARENTHESIS. It
+    is a `   # ` tail today and a tail is pasted with the line: a shell that
+    does not treat `#` as a comment reads each of those as syntax. It is
+    plain words, so that moving it out of the NEXT later (#277) is a move
+    and not a rewrite. `after` is the caller's own closing sentence, and
+    `rerun` adds the one the `legs` and `members` rows share: some other
+    leg or member is something this line does not cure, and the next run
+    names it.
+
+    `platform` is `quote_arg`'s and `copy_command`'s, and for the same
+    reason: the line is spelled for the reader's shell, not the host's.
+    """
+    target = os.name if platform is None else platform
+    line = " ".join(["git", "-C", quote_arg(root, target), "submodule",
+                     "update", "--init", "--recursive", "--checkout", "--",
+                     *(quote_arg(path, target) for path in paths)])
+    why = (f"checks each {noun} out at the commit this repository records "
+           "for it, and fetches a mount that is empty")
+    if off_pin:
+        keep = " and ".join(f"git -C {quote_arg(mount, target)} branch NAME"
+                            for mount in off_pin)
+        why += (f". A commit made in a {noun} on no branch is left only in "
+                "its reflog by this line. To keep one, run first "
+                f"{keep} with a name of your choice")
+    why += after
+    if rerun:
+        why += (f". Run the doctor again afterwards, because a {noun} this "
+                "line does not cure is named by the next run")
+    return line, why
+
+
 def check_legs(ctx: Context) -> Row:
     """Each leg mounted, and its checked-out commit against the pin.
 
     NOTHING IS FETCHED. The question is what is on this disk right now: an
     empty mount is a clone nobody bootstrapped, and a mount at another commit
-    is a leg somebody moved -- both of which `make bootstrap` answers, and
-    neither of which needs a remote to be asked about. The GITLINK against the
-    pin file is `validate-pins.py`'s question and is left to it; this row
-    reports the gitlink it found so the two can be read together.
+    is a leg somebody moved. The GITLINK against the pin file is
+    `validate-pins.py`'s question and is left to it; this row reports the
+    gitlink it found so the two can be read together.
 
     THE LEGS ARE THE MANIFEST'S, and a manifest that does not load declares
     none that this row can name -- which is not "declares no non-assembly
     leg", the sentence below, about a project that has none (#205).
+
+    THE NEXT IS CHOSEN BY WHAT IS WRONG, AND IT CURES THE FIRST KIND (#276).
+    `make bootstrap` was named for all of it and does not answer it: it
+    never initialises an empty mount, it never moves an existing branch whose
+    tip is not the pin, and a root can have lost the script it runs. So there
+    are two lines.
+
+    - A leg a CHECKOUT cures: an empty mount, or a HEAD that is not the pin
+      where the gitlink IS the pin. The line is
+      `git submodule update --init --recursive` over those legs
+      (`submodule_update_next`), which needs no script from the root.
+    - A leg NO checkout cures: no gitlink, no 40-hex pin, a gitlink that is
+      not the pin (a checkout lands on the gitlink, so HEAD would still not
+      be the pin), or a mount git cannot read a HEAD in. These are lockstep
+      facts, `validate-pins.py` is the gate that compares them and names the
+      repair, and the line is that gate's, from `validator_for` and
+      `validator_command` (the root's own copy, else the standard's).
+
+    WHEN BOTH ARE PRESENT THE CHECKOUT WINS AND A RE-RUN NAMES THE OTHER,
+    because it is the one command that changes the row and a reader pasting
+    the lockstep gate first would be told nothing new.
+
+    "POPULATED, BUT GIT CANNOT READ A HEAD" IS THE SECOND KIND, and it was
+    probed: a mount whose gitdir is gone or whose HEAD is corrupt, an unborn
+    HEAD, and a leg left on an orphan branch all make `git submodule update`
+    exit 128 ("could not get a repository handle", "Unable to find current
+    revision") and leave this row exactly as it was, so printing that line
+    would be a NEXT that does not cure. A populated mount with no `.git` of
+    its own is read the same way: `head_of` asks git in that directory, git
+    walks up, and the HEAD it answers with is the ROOT's (see `member_state`),
+    which the update does not cure either unless a leftover gitdir happens to
+    still be there.
     """
     waiting = waiting_row(ctx, "legs", "legs",
                           "the legs it declares are not known and none is "
@@ -1774,6 +2156,9 @@ def check_legs(ctx: Context) -> Row:
                    "for it", None, {"legs": []})
     rows: list[dict] = []
     problems: list[str] = []
+    checkout: list[str] = []
+    off_pin: list[Path] = []
+    lockstep: list[str] = []
     for leg in legs:
         role = str(leg.get("role") or "?")
         rel = str(leg.get("path") or role)
@@ -1788,26 +2173,51 @@ def check_legs(ctx: Context) -> Row:
         if gitlink is None:
             problems.append(f"{rel}: no gitlink recorded, so this leg is not "
                             "mounted as a submodule at all")
+            lockstep.append(rel)
         elif not populated:
             problems.append(f"{rel}: the gitlink is there and the directory "
                             "is empty -- an unbootstrapped clone")
+            checkout.append(rel)
         elif head is None:
             problems.append(f"{rel}: populated, but git cannot read a HEAD in "
                             "it")
+            lockstep.append(rel)
         elif pinned is None:
             problems.append(f"{rel}: contracts/{role}-pin.yaml carries no "
                             "40-hex commit to compare HEAD against")
+            lockstep.append(rel)
         elif head != pinned:
             problems.append(f"{rel}: checked out at {head[:12]}, pinned at "
                             f"{pinned[:12]}")
+            if gitlink == pinned and (mount / ".git").exists():
+                checkout.append(rel)
+                if detached(mount):
+                    off_pin.append(mount)
+            else:
+                lockstep.append(rel)
     detail = {"legs": rows}
     if problems:
+        if checkout:
+            # `make bootstrap` IS NAMED ONLY WHERE IT CAN RUN, and said for
+            # what it does: it puts a leg on its tracking branch, and
+            # leaves alone one whose branch is already ahead of the pin
+            # (`checkout_tracking_branch` prints "not moving an existing
+            # branch"), which is the commit-past-the-pin case this line
+            # was written for.
+            after = ""
+            if own_bootstrap(ctx.root, make_target=True):
+                after = (". Then make bootstrap puts each leg on its "
+                         "tracking branch, and leaves alone one whose branch "
+                         "is already ahead of the pin")
+            line, why = submodule_update_next(ctx.root, checkout, off_pin,
+                                              "leg", after, bool(lockstep))
+            next_command = f"{line}   # {why}"
+        else:
+            # NO CHECKOUT CURES IT: the lockstep gate, one definition of it
+            # for this row and the `pins` row (`lockstep_next`).
+            next_command = lockstep_next(ctx, PINS_GATE, "leg")
         return Row("legs", "legs", FINDING, "; ".join(problems),
-                   f"{PYTHON} "
-                   f"{quote_arg(ctx.root / 'scripts' / 'bootstrap.py')} "
-                   f"--root {quote_arg(ctx.root)}   # what `make bootstrap` "
-                   "runs: it puts every leg on its tracking branch AT the "
-                   "pinned commit", detail)
+                   next_command, detail)
     return Row("legs", "legs", OK,
                f"{len(rows)} leg(s) mounted and checked out at their pins",
                None, detail)
@@ -3371,12 +3781,62 @@ def members_verdict(ctx: Context, detail: dict, members_dir: str,
         if strangers:
             reason += ("; and, though it is not what fails this row: "
                        + "; ".join(strangers))
-        return Row("members", "members", FINDING, reason,
-                   f"{PYTHON} "
-                   f"{quote_arg(ctx.root / 'scripts' / 'bootstrap.py')} "
-                   f"--root {quote_arg(ctx.root)}   # what `make bootstrap` "
-                   "runs in a holder: it fetches every member at its pin and "
-                   "leaves it detached there", detail)
+        # THE NEXT IS CHOSEN BY WHAT IS WRONG, as `check_legs`' is, and the
+        # members that a CHECKOUT cures win over the ones none does (#276).
+        # An empty mount, or a HEAD that is not the pin where the holder's
+        # GITLINK is, is cured by fetching and checking out. No checkout
+        # cures a member the holder records no gitlink for (the `family` row
+        # says `member-gitlink-absent`, and the git line dies on `pathspec
+        # did not match`), a gitlink that is not the pin (a checkout lands on
+        # the gitlink, so HEAD would still not be the pin, `member-gitlink-
+        # mismatch`), a row with no 40-hex `pin.commit`, or a mount git
+        # cannot read a HEAD in (a populated one with no `.git` of its own
+        # answers with the HOLDER's HEAD, `member_state`).
+        checkout: list[str] = []
+        off_pin: list[Path] = []
+        lockstep = False
+        for entry in rows:
+            if member_problem(entry) is None:
+                continue
+            mount = ctx.root / entry["path"]
+            gitlink = recorded_gitlink(ctx.root, entry["path"])
+            if gitlink is None:
+                lockstep = True
+            elif not entry["populated"]:
+                checkout.append(entry["path"])
+            elif (entry["pin"] is None or entry["head"] is None
+                    or not (mount / ".git").exists()):
+                lockstep = True
+            elif gitlink == entry["pin"]:
+                checkout.append(entry["path"])
+                if entry["detached"]:
+                    off_pin.append(mount)
+            else:
+                lockstep = True
+        # THE HOLDER'S OWN BOOTSTRAP STAYS THE NEXT WHEN IT CAN RUN: it does
+        # what the plain git line does AND carries the credential rewrite a
+        # PRIVATE member needs (`fetch_members`), so replacing it would
+        # trade a missing script for a fetch that fails on a private member.
+        if checkout and own_bootstrap(ctx.root):
+            next_command = (
+                f"{PYTHON} "
+                f"{quote_arg(ctx.root / 'scripts' / 'bootstrap.py')} "
+                f"--root {quote_arg(ctx.root)}   # what `make bootstrap` "
+                "runs in a holder: it fetches every member at its pin and "
+                "leaves it detached there")
+        elif checkout:
+            after = (". This holder has no scripts/bootstrap.py that can "
+                     "run, so this is the plain git line, with no "
+                     "credential rewrite for a private member")
+            line, why = submodule_update_next(ctx.root, checkout, off_pin,
+                                              "member", after, lockstep)
+            next_command = f"{line}   # {why}"
+        else:
+            # THE FAMILY GATE, one definition of it for this row and the
+            # `family` row (`lockstep_next`).
+            next_command = lockstep_next(ctx, FAMILY_GATE, "member")
+        return Row("members", "members", FINDING, reason, next_command,
+                   detail)
     note = f"{len(rows)} member(s) mounted at their pins"
     if on_a_branch:
         note += ("; on a BRANCH rather than detached: "
