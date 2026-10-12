@@ -2895,6 +2895,30 @@ def test_a_pin_a_sparse_checkout_leaves_out_is_not_rolled_back(standard,
     assert_hidden(standard, project, "update-pin-missing", "S")
 
 
+def test_reading_the_pins_git_state_leaves_a_stat_dirty_index_alone(
+        standard, project):
+    """The pin's `git status` must not refresh the root's index: that is the
+    doctor writing into it. `--no-optional-locks` is what stops it, and a
+    plain `git status`, as the control, does rewrite it."""
+    break_the_pin(project, not_forty_hex)
+    git("add", "--", SHAPE_PIN, cwd=project)
+    commit_in(project, "break the pin")
+    later = os.stat(project / SHAPE_PIN).st_mtime + 120
+    for path in project.rglob("*"):
+        if (".git" not in path.relative_to(project).parts and path.is_file()
+                and not path.is_symlink()):
+            os.utime(path, (later, later))
+    index = project / ".git" / "index"
+    before = index.read_bytes()
+    row = rows_of(doctor(standard, project, "--json"))["shape-currency"]
+    assert row["detail"]["restore"] == "committed", row["detail"]
+    assert index.read_bytes() == before, "the doctor rewrote the root's index"
+    subprocess.run(["git", "status", "--porcelain=v1", "--", SHAPE_PIN],
+                   cwd=str(project), capture_output=True, check=False)
+    assert index.read_bytes() != before, \
+        "control: a plain status must refresh it"
+
+
 def test_a_pin_with_no_good_copy_in_its_history_keeps_the_check_next(
         standard, project):
     """No history to put a pin back from: one root commit holds a bad pin.
