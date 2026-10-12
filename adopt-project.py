@@ -1591,11 +1591,12 @@ def _checked_plan_inputs(args, source: Source,
 # `_entry_findings`, before any leg exists) ask ONE question of the values: the
 # `project.yaml` `execute` would write from them, put through the validator the
 # template ships, through `shape_materialize.manifest_value_problems`, which
-# loads that validator rather than copying a rule of it. The plan is read the
-# way `execute` reads it (`_template_values`), so the table is the one `execute`
-# renders from. Only the validator's question is asked here: whether the
-# project's YAML reader reads a value back as the text it is -- `--id true`,
-# `--tracking-branch 007` -- is #181's, and the scaffold asks both.
+# loads that validator rather than copying a rule of it. The table is built by
+# `_template_table`, which `execute`'s `_template_values` also calls, so it is
+# the one `execute` renders from. Only the validator's question is asked here:
+# whether the project's YAML reader reads a value back as the text it is --
+# `--id true`, `--tracking-branch 007` -- is #181's, and the scaffold asks
+# both.
 
 #: How `plan` names each value the manifest records: the flag a person typed.
 MANIFEST_FLAGS = {

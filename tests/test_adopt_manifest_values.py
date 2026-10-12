@@ -375,7 +375,7 @@ def test_the_flags_and_the_plan_keys_name_the_same_values(adopter):
     assert mapped - {"PROJECT_NAME"} <= set(adopter.MANIFEST_FLAGS)
 
 
-# --- the question is asked with no git at all (NIT-9, SonarCloud S8705) ------
+# --- the question is asked with no git at all -------------------------------
 #
 # The manifest is rendered here to be ASKED ABOUT and never written: the
 # validator the template ships holds `shape.commit` and `shape.digests.
@@ -389,7 +389,7 @@ def test_the_flags_and_the_plan_keys_name_the_same_values(adopter):
 def no_git_standard(tmp_path_factory):
     """The standard as a `git archive` or a downloaded zip holds it: every
     tool, template and contract, and no `.git`, so no revision to read."""
-    copy = tmp_path_factory.mktemp("fixV2-no-git") / "standard"
+    copy = tmp_path_factory.mktemp("no-git-standard") / "standard"
     shutil.copytree(REPO, copy, symlinks=True, ignore=shutil.ignore_patterns(
         ".git", "__pycache__", ".pytest_cache", "tests", "docs", "handoffs"))
     assert not (copy / ".git").exists()
@@ -421,7 +421,8 @@ def test_a_checkout_that_cannot_name_its_revision_is_still_asked(
     findings, remediation = adopter._manifest_findings(plan)
     assert len(findings) == 1, findings
     assert findings[0].startswith(FINDING)
-    assert "visibility is 'secret'" in findings[0] and remediation
+    assert "visibility is 'secret'" in findings[0]
+    assert remediation
     # and it is no finding for a plan the validator would pass
     good = adopter.Plan.load(world["plan"])
     assert adopter._manifest_findings(good) == ([], [])
@@ -450,7 +451,8 @@ def test_the_question_runs_no_process_at_all(adopter, world, monkeypatch):
     assert adopter._manifest_findings(good, misreads_elsewhere=True) == (
         [], [])
     (finding,), remediation = adopter._manifest_findings(refused)
-    assert "visibility is 'secret'" in finding and remediation
+    assert "visibility is 'secret'" in finding
+    assert remediation
 
 
 @pytest.mark.parametrize("flag, value, named", [
@@ -549,7 +551,8 @@ def test_the_validator_compares_the_shape_commit_with_nothing_and_no_tool_names_
     values = adopter._manifest_values(plan, naming)
     keys = adopter.MANIFEST_PLAN_KEYS
     asked = shape_materialize.manifest_invalid(values, naming, keys)
-    assert len(asked) == 1 and "visibility is 'secret'" in asked[0]
+    assert len(asked) == 1, asked
+    assert "visibility is 'secret'" in asked[0]
     head = git("rev-parse", "HEAD", cwd=REPO).stdout.strip()
     for other in ({"SHAPE_COMMIT": head, "SHAPE_TREE_SHA256": "f" * 64},
                   {"SHAPE_COMMIT": "A" * 40, "SHAPE_TREE_SHA256": "0" * 64},
@@ -685,7 +688,8 @@ def test_check_refuses_a_text_value_the_reader_misreads(world, old, new,
     value = new.split(": ", 1)[1].strip('"')
     findings = [line for line in result.stderr.splitlines()
                 if line.startswith("FINDING ")]
-    assert findings and any(value in f for f in findings), result.stderr
+    assert findings, result.stderr
+    assert any(value in f for f in findings), result.stderr
 
 
 @needs_filter_repo
@@ -711,7 +715,8 @@ def test_a_text_value_the_reader_misreads_is_one_finding_on_this_rule_alone(
     plan = adopter.Plan.load(edited(world, old, new))
     findings, remediation = adopter._manifest_findings(plan)
     assert len(findings) == 1, findings
-    assert findings[0].startswith(FINDING) and named in findings[0]
+    assert findings[0].startswith(FINDING)
+    assert named in findings[0]
     assert remediation
 
 

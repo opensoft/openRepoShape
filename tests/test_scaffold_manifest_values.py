@@ -529,7 +529,8 @@ def test_the_names_a_refusal_shows_are_told_apart_by_their_tails():
         shape_materialize.refuse_unstorable_names(
             "r", [name, f"{name}-spec", f"{name}-code"])
     sentences = caught.value.detail.rstrip(".").split("; ")
-    assert len(sentences) == 2 and len(set(sentences)) == 2, sentences
+    assert len(sentences) == 2, sentences
+    assert len(set(sentences)) == 2, sentences
     assert sentences[0].startswith("NNNNNNNNNNNN...NNNNNNN-spec is 256 bytes")
     assert sentences[1].startswith("NNNNNNNNNNNN...NNNNNNN-code is 256 bytes")
     # the bare repository's directory adds `.git`, after the tail
@@ -674,7 +675,8 @@ def test_a_placeholder_is_what_render_calls_one(tmp_path, monkeypatch):
     # only the line that holds the one placeholder is asked, and nothing raises
     sentences = shape_materialize.manifest_misreads(values, what, copy)
     assert len(sentences) == 1
-    assert "id: null" in sentences[0] and "extra" not in sentences[0]
+    assert "id: null" in sentences[0]
+    assert "extra" not in sentences[0]
 
 
 # --- what is shown of a line ----------------------------------------------
@@ -697,7 +699,8 @@ def test_a_misread_sentence_holding_a_line_break_is_one_printable_line(char):
     what = {"TRACKING_BRANCH": "--tracking-branch"}
     (sentence,) = shape_materialize.manifest_misreads(
         {"TRACKING_BRANCH": f"a{char}b"}, what)
-    assert len(sentence.splitlines()) == 1 and sentence.isprintable()
+    assert len(sentence.splitlines()) == 1
+    assert sentence.isprintable()
     assert "into project.yaml as 'tracking_branch: a\\" in sentence
     # a printable misread is quoted in backticks, as before
     (plain,) = shape_materialize.manifest_misreads(

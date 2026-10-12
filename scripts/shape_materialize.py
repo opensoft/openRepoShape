@@ -389,6 +389,9 @@ NAMING_POLICY_YAML = "contracts/repository-naming.yaml"
 #: rather than importing one across a boundary neither module crosses
 #: otherwise.
 BOOTSTRAP = "scripts/bootstrap.py"
+#: And again for the project's manifest validator, which `COPIED_VERBATIM` and
+#: `EXECUTABLE` both carry and `manifest_validator` loads from the template.
+MANIFEST_VALIDATOR = "scripts/validate-manifest.py"
 
 #: Copied out of openRepoShape's OWN tree, so the project carries the standard
 #: it was cut from rather than a link to it.
@@ -400,7 +403,7 @@ COPIED_FROM_SHAPE = (
 #: Copied VERBATIM out of the assembly-root template (no substitution).
 COPIED_VERBATIM = (
     "scripts/validate-pins.py",
-    "scripts/validate-manifest.py",
+    MANIFEST_VALIDATOR,
     BOOTSTRAP,
     "Makefile",
     ".gitignore",
@@ -443,7 +446,7 @@ TEMPLATED = (
 #: Rendered only when the project DECLARES a neutral-product pin, and written
 #: once per declared pin at `neutral_pin_path(product)`.
 NEUTRAL_PIN_TEMPLATE = "contracts/neutral-product-pin.yaml"
-EXECUTABLE = ("scripts/validate-pins.py", "scripts/validate-manifest.py",
+EXECUTABLE = ("scripts/validate-pins.py", MANIFEST_VALIDATOR,
               BOOTSTRAP, VALIDATE_NAMING)
 #: The copy pin, rendered LAST by `_materialize` over the copies it digests.
 #: Named once because `assembly_root_paths` lists it beside the lists above,
@@ -1937,11 +1940,11 @@ import importlib.util  # noqa: E402
 from repo_shape import YamlError, parse_yaml  # noqa: E402
 
 #: The assembly root's template directory, and the two files in it these
-#: questions read: the manifest, and the validator the project is given.
+#: questions read: the manifest, and the validator the project is given
+#: (`MANIFEST_VALIDATOR`, named beside the copy lists that carry it).
 ASSEMBLY_TEMPLATE = (Path(__file__).resolve().parent.parent / "templates"
                      / "assembly-root")
 MANIFEST_TEMPLATE = "project.yaml"
-MANIFEST_VALIDATOR = "scripts/validate-manifest.py"
 
 #: The names this module asks of the validator: its `elected_on` pattern and
 #: the function that makes every FINDING.
