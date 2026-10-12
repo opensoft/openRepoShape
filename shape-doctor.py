@@ -967,19 +967,44 @@ def check_manifest_kinds(ctx: Context) -> Row:
     reporting on somebody else's data. What is reported is the other case --
     a file that DOES declare a kind that nothing here validates, which is a
     manifest travelling in a shape root with no gate behind it.
+
+    A FILE THAT DOES NOT LOAD IS NOT AN UNREGISTERED KIND (#291). It used to
+    share that case's next command -- register the kind, or remove the file
+    from the root -- which no file without a readable `kind:` can follow, and
+    which told a reader with a conflicted `contracts/shape-pin.yaml` to
+    delete the pin. The row now quotes what the loader said about each one,
+    and `unreadable_next` picks the command. That sentence stays the
+    unregistered kind's alone, and where a row has both it names the
+    restore first, because the row cannot say what kind a file declares
+    until it loads. The next run names the other. `restore` and `refusals`
+    join `detail` only when a file does not load, so every other root
+    reports the row it always did.
     """
     known: list[str] = []
     unknown: list[str] = []
     unreadable: list[str] = []
+    refusals: dict[str, dict] = {}
     for path in manifest_candidates(ctx.root):
-        data = Context._read(path)
+        rel = path.relative_to(ctx.root).as_posix()
+        # `load_yaml` and not `Context._read`, which says None for both a
+        # refusal and an empty file: the row quotes the refusal, less the
+        # path it opens with, which the row has just named.
+        try:
+            data = load_yaml(path)
+        except Refusal as exc:
+            unreadable.append(rel)
+            refusals[rel] = {"code": exc.code,
+                             "detail": exc.detail.removeprefix(f"{path}: ")}
+            continue
         if not isinstance(data, dict):
-            unreadable.append(path.relative_to(ctx.root).as_posix())
+            unreadable.append(rel)
+            refusals[rel] = {"code": None, "detail": (
+                "it holds no YAML document" if data is None else
+                f"it loads as a {type(data).__name__}, not a mapping")}
             continue
         kind = data.get("kind")
         if not isinstance(kind, str) or not kind:
             continue
-        rel = path.relative_to(ctx.root).as_posix()
         entry = MANIFEST_VALIDATORS.get(kind)
         (known if entry else unknown).append(f"{rel} ({kind})")
     detail = {"validated": known, "unregistered": unknown,
@@ -990,13 +1015,18 @@ def check_manifest_kinds(ctx: Context) -> Row:
         if unknown:
             parts.append("no validator registered for kind "
                          + ", ".join(unknown))
-        if unreadable:
-            parts.append("unreadable as YAML: " + ", ".join(unreadable))
-        return Row("manifest-kinds", LABEL_MANIFEST_KINDS, FINDING,
-                   "; ".join(parts),
-                   "register the kind in shape-doctor.py's "
+        command = ("register the kind in shape-doctor.py's "
                    "MANIFEST_VALIDATORS, beside the check that validates it, "
-                   "or remove the file from the root", detail)
+                   "or remove the file from the root")
+        if unreadable:
+            said = {rel: ": ".join(filter(None, (why["code"], why["detail"])))
+                    for rel, why in refusals.items()}
+            parts.append("unreadable as YAML: " + ", ".join(
+                f"{rel} ({said[rel]})" for rel in unreadable))
+            restore, command = unreadable_next(ctx, unreadable)
+            detail.update({"restore": restore, "refusals": refusals})
+        return Row("manifest-kinds", LABEL_MANIFEST_KINDS, FINDING,
+                   "; ".join(parts), command, detail)
     return Row("manifest-kinds", LABEL_MANIFEST_KINDS, OK,
                f"{len(known)} manifest(s), every declared kind has a "
                "registered validator", None, detail)
@@ -1102,7 +1132,7 @@ def git_answer(args: list, cwd: Path, binary: bool = False):
         return None
 
 
-def pin_restore(ctx: Context) -> tuple[str, str | None]:
+def pin_restore(ctx: Context, pin: str = SHAPE_PIN) -> tuple[str, str | None]:
     """`(restore, command)`: the git command that puts back a pin a tool
     wrote, chosen from the pin's own git state, read-only (#237).
 
@@ -1135,18 +1165,35 @@ def pin_restore(ctx: Context) -> tuple[str, str | None]:
     path is read relative to the root (`ls-files` and pathspecs are, and
     `<rev>:./<path>` is), so each one names the root's own file even where
     git answers from a checkout the root sits inside.
+
+    ANY FILE UNDER `contracts/` A TOOL WROTE, NOT THE SHAPE PIN ALONE (#291).
+    `pin` is the root's own `contracts/shape-pin.yaml` unless the caller
+    names another file `tool_written` admits -- a leg's pin, a neutral
+    product's, the naming policy's copy -- which is how the `manifest kinds`
+    row puts back each one that does not load. The four states, their
+    commands and their notes are the same for every one, with the note
+    saying `copy` where the file is not a pin. Only the shape pin takes
+    more paths with it in a merge: `apply` writes it, the manifest, the
+    README and the copies in one commit. Any other file is named alone. A
+    leg pin moves with its gitlink, but `checkout --ours` on a conflicted
+    gitlink exits 0 and leaves all three stages where they were, so naming
+    it would be a command that changes nothing. Finishing the merge takes
+    the gitlink, and the `pins` row then says whether the two agree.
     """
     root = ctx.root
     git_c = f"git -C {quote_arg(root)}"
+    what = "pin" if pin.endswith("-pin.yaml") else "copy"
     raw = git_answer(["--no-optional-locks", "status", "--porcelain=v1",
-                      "--", SHAPE_PIN], root, binary=True)
+                      "--", pin], root, binary=True)
     xy = raw.decode("utf-8", "replace")[:2] if raw else ""
     if xy in UNMERGED_STATUS:
-        us = ctx.update_shape()
-        kind = us.root_kind(root)
-        shaped = {SHAPE_PIN, kind.manifest, us.README}
-        for rel in kind.copy_source:
-            shaped.update((rel, f"{us.COLLISION_DIR}/{rel}"))
+        shaped = {pin}
+        if pin == SHAPE_PIN:
+            us = ctx.update_shape()
+            kind = us.root_kind(root)
+            shaped.update((kind.manifest, us.README))
+            for rel in kind.copy_source:
+                shaped.update((rel, f"{us.COLLISION_DIR}/{rel}"))
         # `<mode> SP <object> SP <stage> TAB <path>`, one record per stage.
         stages: dict[str, set] = {}
         listing = git_answer(["ls-files", "-u", "-z"], root, binary=True)
@@ -1155,38 +1202,102 @@ def pin_restore(ctx: Context) -> tuple[str, str | None]:
             name = path.decode("utf-8", "replace")
             if name in shaped:
                 stages.setdefault(name, set()).add(meta.rsplit(b" ", 1)[-1])
-        pin_stages = stages.get(SHAPE_PIN, set())
+        pin_stages = stages.get(pin, set())
         side, stage = (("--ours", b"2") if b"2" in pin_stages else
                        ("--theirs", b"3") if b"3" in pin_stages else
                        (None, None))
         if side:
             note = ("--theirs takes the other side. Take one side whole"
                     if b"3" in pin_stages and side == "--ours"
-                    else "only that side of the merge holds a pin. Take it "
-                    "whole")
+                    else f"only that side of the merge holds a {what}. Take "
+                    "it whole")
             named = sorted(name for name, held in stages.items()
                            if stage in held)
             return "unmerged", (
                 f"{git_c} checkout {side} -- "
                 + " ".join(quote_arg(name) for name in named)
                 + f"   # {note} for every path named and never a "
-                "hand-merged pin, then finish the merge as git says and run "
-                "this doctor again")
-    elif xy and git_answer(["cat-file", "-e", f"HEAD:./{SHAPE_PIN}"],
+                f"hand-merged {what}, then finish the merge as git says and "
+                "run this doctor again")
+    elif xy and git_answer(["cat-file", "-e", f"HEAD:./{pin}"],
                            root) is not None:
         return "uncommitted", (
-            f"{git_c} checkout HEAD -- {quote_arg(SHAPE_PIN)}   # puts back "
-            "the pin as last committed and discards the uncommitted change "
+            f"{git_c} checkout HEAD -- {quote_arg(pin)}   # puts back the "
+            f"{what} as last committed and discards the uncommitted change "
             "that broke it, which no tool of this standard writes")
-    last = git_answer(["rev-list", "-n", "1", "HEAD", "--", SHAPE_PIN], root)
-    if last and git_answer(["cat-file", "-e", f"{last}~1:./{SHAPE_PIN}"],
+    last = git_answer(["rev-list", "-n", "1", "HEAD", "--", pin], root)
+    if last and git_answer(["cat-file", "-e", f"{last}~1:./{pin}"],
                            root) is not None:
         return "committed", (
             f"{git_c} checkout {quote_arg(last + '~1')} -- "
-            f"{quote_arg(SHAPE_PIN)}   # the pin as it was before "
+            f"{quote_arg(pin)}   # the {what} as it was before "
             f"{last[:12]}, the last commit to change it. Commit that rather "
-            "than editing the pin")
+            f"than editing the {what}")
     return "none", None
+
+
+def tool_written(ctx: Context, rel: str) -> bool:
+    """Whether `rel`, a root path under `contracts/`, is a file a tool of
+    this standard writes, so that git holds the last good bytes (#291).
+
+    Every `contracts/<name>-pin.yaml` is a pin. The shape pin is written by
+    `scaffold-project.py`, `adopt-project.py` and `update-shape.py apply`, a
+    leg pin by those and by `bump-leg.py`, and a neutral product pin by
+    `scaffold-project.py --pin`. Every shape copy the root kind lists is
+    such a file too, and under `contracts/` that is the naming policy. No
+    one edits any of them by hand, so the bytes a tool last wrote are the
+    fix. Anything else under `contracts/`, and `project.yaml` or
+    `family.yaml`, is the project's own.
+    """
+    if rel.startswith("contracts/") and rel.endswith("-pin.yaml"):
+        return True
+    return rel in ctx.update_shape().root_kind(ctx.root).copy_source
+
+
+#: The note on the `manifest kinds` row's next command where no file that
+#: does not load has a copy git can put back (#291). No `;`, apostrophe or
+#: backtick, so a pasted line is one command in any shell (#277).
+UNREADABLE_BY_HAND = (
+    "the reason names each file that does not load and why, and no commit "
+    "in this root holds a copy a tool wrote to put back, so what each should "
+    "say -- a merge conflict resolved, a hand edit put right -- is for a "
+    "person to decide. This row reads them again once they load")
+
+
+def unreadable_next(ctx: Context, unreadable: list) -> tuple[dict, str]:
+    """`(restore, command)` for the `manifest kinds` row's files that do not
+    load (#291): each file's case, and the one command the row prints.
+
+    A FILE A TOOL WROTE IS PUT BACK FROM GIT by `pin_restore`. That is the
+    helper the `shape currency` row uses for the shape pin, so both rows
+    print the same command for the same file. The shape pin goes first
+    where it has a command, then each other file in the row's order. A row
+    prints one command, and the next run names the next file.
+
+    A FILE OF THE PROJECT'S OWN IS NOT, and its case is `project`, with git
+    not asked. The git-state choice does not fit it: each of the three
+    commands discards somebody's edit -- the other side of their merge,
+    their uncommitted work, their last commit -- and nothing in this
+    standard says which bytes are right. Where no file has a command to
+    name, the command is this doctor again, to run once a person has mended
+    the file, and its note says that what the file should say is theirs to
+    decide. #205's `manifest` row answers a `project.yaml` that does not
+    load the same way: the gate that refuses it, and that note.
+    """
+    restore: dict[str, str] = {}
+    commands: dict[str, str] = {}
+    for rel in unreadable:
+        if tool_written(ctx, rel):
+            restore[rel], found = pin_restore(ctx, rel)
+            if found:
+                commands[rel] = found
+        else:
+            restore[rel] = "project"
+    command = commands.get(SHAPE_PIN) or next(iter(commands.values()), None)
+    if command is None:
+        command = (f"{PYTHON} {quote_arg(ctx.shape / 'shape-doctor.py')} "
+                   f"--root {quote_arg(ctx.root)}   # {UNREADABLE_BY_HAND}")
+    return restore, command
 
 
 def unreadable_pin_row(ctx: Context, exc: Refusal) -> Row:
