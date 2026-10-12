@@ -637,11 +637,16 @@ sudo dnf config-manager addrepo --from-repofile=https://cli.github.com/packages/
 sudo dnf install gh</code></pre></div>
           <p><code>git</code> itself comes from <code>sudo apt-get install -y git</code> on Debian
           and Ubuntu and <code>sudo dnf install -y git</code> on Fedora &mdash; the same commands
-          that preflight offers to run for you.</p>
+          <code>setup-project.py --preflight</code> offers to run for you; the run and
+          <code>openRepoShape</code> need <code>git</code> before their preflight starts.</p>
           <h4>The tool offers the rest</h4>
-          <p>The run opens with a preflight that names what is missing, prints the command for THIS
-          machine and asks once &mdash; <code>Type yes to continue:</code>, the same words it asks
-          everything else with &mdash; then runs it and carries on.</p>
+          <p>The run opens with a preflight that names what is missing and, for <code>gh</code> and
+          its login, prints the command for THIS machine and asks once &mdash;
+          <code>Type yes to continue:</code>, the same words it asks everything else with &mdash;
+          then runs it and carries on. A missing <code>git</code> is refused before the preflight
+          starts, with where to get it (<code>setup.sh</code> does the same for a Python older than
+          3.9), so only <code>setup-project.py --preflight</code>, run directly, offers to install
+          it.</p>
         </div>
 
       </div>
@@ -673,8 +678,9 @@ sudo dnf install gh</code></pre></div>
           That the login shell is zsh changes nothing &mdash; both entry points are run under
           <code>bash</code> explicitly.</p>
           <h4>The tool offers the rest</h4>
-          <p>The preflight names what is missing, prints the command for THIS machine and asks once
-          &mdash; <code>Type yes to continue:</code> &mdash; then runs it and carries on.
+          <p>The preflight names what is missing and, for <code>gh</code> and its login, prints the
+          command for THIS machine and asks once &mdash; <code>Type yes to continue:</code> &mdash;
+          then runs it and carries on.
           <strong>Homebrew is the one install never run for you</strong>: on a Mac without
           <code>brew</code> the preflight names <a href="https://brew.sh">brew.sh</a> and stops
           there.</p>
@@ -693,10 +699,12 @@ sudo dnf install gh</code></pre></div>
           <a href="https://git-scm.com/downloads">git-scm.com/downloads</a>, and <code>gh</code>
           with <code>winget install --id GitHub.cli -e</code>.</p>
           <h4>The tool offers the rest</h4>
-          <p>The preflight names anything missing, prints the command for THIS machine and asks once
-          &mdash; <code>Type yes to continue:</code> &mdash; then runs it and carries on. On Windows
-          those offers are the winget ones: <code>winget install --id Git.Git -e</code> for
-          <code>git</code> and <code>winget install --id GitHub.cli -e</code> for <code>gh</code>.
+          <p>The preflight names anything missing and, for <code>gh</code> and its login, prints the
+          command for THIS machine and asks once &mdash; <code>Type yes to continue:</code> &mdash;
+          then runs it and carries on. On Windows those offers are the winget ones:
+          <code>winget install --id GitHub.cli -e</code> for <code>gh</code> and, only under
+          <code>py setup-project.py --preflight</code>, <code>winget install --id Git.Git -e</code>
+          for <code>git</code>: a run refuses a missing <code>git</code> before its preflight starts.
           There is no <code>openRepoShape</code> command to install here: that two-liner IS the
           Windows way in, and the <code>openRepoShape</code> command is a macOS, Linux and WSL2
           convenience with no Windows twin, because on Windows there is nothing to install.</p>
@@ -724,9 +732,9 @@ sudo dnf install gh</code></pre></div>
 	&amp;&amp; sudo apt update \
 	&amp;&amp; sudo apt install gh -y</code></pre></div>
           <h4>The tool offers the rest</h4>
-          <p>The preflight names anything missing and where to get it, prints the command for THIS
-          machine and asks once &mdash; <code>Type yes to continue:</code> &mdash; then runs it and
-          carries on.</p>
+          <p>The preflight names anything missing and where to get it and, for <code>gh</code> and
+          its login, prints the command for THIS machine and asks once &mdash;
+          <code>Type yes to continue:</code> &mdash; then runs it and carries on.</p>
         </div>
 
       </div>
@@ -799,14 +807,17 @@ sudo dnf install gh</code></pre></div>
             <div data-platform="linux mac wsl" class="code" data-lang="sh"><pre><code>openRepoShape --preflight</code></pre></div>
             <div data-platform="win" class="code" data-lang="powershell"><pre><code>py setup-project.py --preflight</code></pre></div>
             <p data-platform="linux">It checks this machine, offers what is missing and creates nothing. It exits 0 when
-            everything is present and 1 when it is not.</p>
-            <p data-platform="mac">It exits 0 when everything is present and 1 when it is not, and creates nothing. This
-            is also where a <code>python3</code> below 3.9 is named.</p>
+            everything is present and 1 when it is not; it exits 2 instead, before any check, when
+            <code>git</code> or a Python 3.9 or newer is missing.</p>
+            <p data-platform="mac">It exits 0 when everything is present and 1 when it is not, and creates nothing; it
+            exits 2 instead, before any check, when <code>git</code> or a Python 3.9 or newer is
+            missing. This is also where a <code>python3</code> below 3.9 is named.</p>
             <p data-platform="win">It exits 0 when everything is present and 1 when it is not.
             <code>python setup-project.py --preflight</code> is the same command on a machine with no
             <code>py</code>: Python from the Microsoft Store installs <code>python</code> and no
             launcher at all.</p>
-            <p data-platform="wsl">It exits 0 when everything is present and 1 when it is not.</p>
+            <p data-platform="wsl">It exits 0 when everything is present and 1 when it is not; it exits 2
+            instead, before any check, when <code>git</code> or a Python 3.9 or newer is missing.</p>
           </div></li>
 
           <li><div>
@@ -856,8 +867,9 @@ sudo dnf install gh</code></pre></div>
             fetch <code>setup.sh</code>, then for the self-bootstrap clone of this standard into a
             temporary directory. Run the same flag on <code>./setup.sh</code> from a checkout
             instead and nothing touches the network at all. What it leaves behind is
-            <code>./Atlas</code> and three bare repositories in <code>./rehearsal</code>, both of
-            which you can delete.</p>
+            <code>./Atlas</code>, three bare repositories in <code>./rehearsal</code>, and the
+            scaffold&rsquo;s three working trees in the temporary directory its
+            <code>Working trees are at</code> line names, all of which you can delete.</p>
             <p data-platform="mac wsl" class="aside">Honestly: it still reaches GitHub before the run starts &mdash; to
             fetch <code>setup.sh</code>, then for the self-bootstrap clone of this standard into a
             temporary directory. Run the same flag on <code>./setup.sh</code> from a checkout
@@ -878,8 +890,10 @@ sudo dnf install gh</code></pre></div>
             <div data-platform="win" class="code" data-lang="powershell"><pre><code>py setup-project.py &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
             <p data-platform="linux"><code>&lt;Project&gt;</code> is one positional CamelCase name (e.g.
             <code>Atlas</code>); <code>--org</code> is required &mdash; from the flag,
-            <code>$OPENREPOSHAPE_ORG</code>, or the command&rsquo;s own prompt &mdash; and add
-            <code>--visibility private</code> if you want that. It shows the plan and asks once,
+            <code>$OPENREPOSHAPE_ORG</code>, or the command&rsquo;s own prompt &mdash; and
+            <code>--visibility</code> defaults to <code>private</code>: add
+            <code>--visibility public</code> (or <code>internal</code>) if you want that. It shows
+            the plan and asks once,
             <code>Type yes to continue:</code>; type <code>yes</code>. Afterwards
             <code>./&lt;Project&gt;</code> is the cloned root.</p>
             <p data-platform="mac"><code>&lt;Project&gt;</code> is one positional CamelCase name (e.g.
@@ -1049,7 +1063,8 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
         that fails to mint is a misconfiguration, not a degrade, and fails the job outright, naming
         both secrets and the required installation.</li>
         <li>An installation token is per-owner, so a leg under a different owner is excluded with a
-        warning and can only be reached via <code>SHAPE_LEGS_TOKEN</code>.</li>
+        warning. <code>SHAPE_LEGS_TOKEN</code> is read only when the App is not configured, so
+        that leg is reachable only with the App secrets removed.</li>
         <li>The root repository is always readable by the workflow&rsquo;s own default token, so
         <code>actions/checkout</code> never carries a <code>token:</code> override &mdash; putting a
         legs credential there was itself the next defect, because a token scoped to the legs alone
@@ -1057,8 +1072,10 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
         ran.</li>
         <li>Whichever credential resolves is read only inside the guarded &ldquo;fetch the legs
         (submodules)&rdquo; step, scoped to that step&rsquo;s <code>env:</code>, and used through a
-        <code>git -c url.&lt;...&gt;.insteadOf=&lt;...&gt;</code> rewrite covering both HTTPS and SSH
-        leg URLs &mdash; never persisted onto the root checkout.</li>
+        <code>git -c url.&lt;...&gt;.insteadOf=&lt;...&gt;</code> rewrite covering both HTTPS
+        (<code>https://github.com/&hellip;</code>) and scp-form SSH
+        (<code>git@github.com:&hellip;</code>) leg URLs &mdash; never persisted onto the root
+        checkout.</li>
         <li>Without either credential the workflow degrades instead of failing: it still runs the
         naming and manifest checks and skips <code>validate-pins.py</code> with a warning explaining
         why. It fails outright only if a credential <strong>is</strong> configured and the fetch
@@ -1102,8 +1119,10 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
       &mdash; <code>&lt;user&gt;-wip</code>, <a href="#park">a person&rsquo;s own workspace
       repository</a>, unambiguous by construction because nothing else here spells that suffix. The
       leg suffixes are lowercase and hyphenated precisely so they sit in a different visual class
-      from every other family, all of which are CamelCase words. Every repository of a project also
-      carries the GitHub topic <code>xf-project-&lt;id&gt;</code>.</p>
+      from every other family but one, all of which are CamelCase words; the exception is the
+      workspace form <code>&lt;user&gt;-wip</code>, lowercase and hyphenated too, with a suffix no
+      leg form admits. Every repository of a project also carries the GitHub topic
+      <code>xf-project-&lt;id&gt;</code>.</p>
       <p>A descendant form is a claim, and a claim needs a referent:
       <code>&lt;Domainx&gt;&lt;Product&gt;</code> counts as a descendant only if it PINS
       <code>open&lt;Product&gt;</code>, declared as <code>neutral_product_pins:</code> in the
@@ -1135,8 +1154,8 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
       ITS IDENTITY AND ITS FULL HISTORY and becomes the assembly root, while
       <code>&lt;Project&gt;-spec</code> and <code>&lt;Project&gt;-code</code> are NEW repositories
       extracted with history-preserving filters. The source is never deleted, never renamed and
-      never force-pushed; the only change to it is ONE split commit, arriving on a branch by pull
-      request.</p>
+      never force-pushed; the only change to its history is ONE split commit, arriving on a branch
+      by pull request.</p>
       <div class="code" data-lang="sh"><pre><code>./adopt-project.py plan --source MedxSoft/MedxEHR --project MedxEHR
 #   ... a human or an AI answers every `review_required` entry in the plan
 ./adopt-project.py check   --plan adoption-plan.yaml
@@ -1296,7 +1315,8 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
       <p><strong>What is digested.</strong> <code>sorted-ls-tree-r-v1</code>: the sha256 of the
       sorted <code>git ls-tree -r -z &lt;commit&gt;</code> listing &mdash; each record
       <code>&lt;mode&gt; SP &lt;type&gt; SP &lt;oid&gt; TAB &lt;path&gt;</code> with the path
-      unquoted, sorted bytewise, joined with LF. Not <code>git archive</code>: its tar bytes carry a
+      unquoted, sorted bytewise, each followed by LF, the last one included. Not
+      <code>git archive</code>: its tar bytes carry a
       pax header naming the commit, uname/gname, an mtime, and <code>export-ignore</code> handling
       from <code>.gitattributes</code>, so the same commit can digest differently across git
       versions and platforms &mdash; disqualifying for a number two machines must agree on.</p>
@@ -1372,8 +1392,12 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
       <p><code>check</code> prints one verdict per file the pin names, and the verdict is the
       product: <code>unchanged</code>, <code>upstream-changed</code> (the bytes differ between the
       pinned commit and the target), <code>locally-modified</code> (the project&rsquo;s bytes differ
-      from the pinned digest &mdash; drift it introduced) or <code>both</code>. It exits 1 when there
-      is anything to do, so it can be a scheduled job.</p>
+      from the pinned digest &mdash; drift it introduced), <code>both</code> or
+      <code>already-at-target</code> (the root already holds the target&rsquo;s bytes) &mdash; or,
+      where there is nothing to compare, <code>upstream-removed</code> (the standard no longer has
+      the file), <code>unmapped</code> (no file there corresponds to it) or
+      <code>copy-missing</code> (the root has no such file), each of which <code>apply</code>
+      refuses. It exits 1 when there is anything to do, so it can be a scheduled job.</p>
       <p><code>apply</code> copies the <code>upstream-changed</code> files, rewrites
       <code>contracts/shape-pin.yaml</code> and mirrors the two fields into
       <code>project.yaml</code>. Then it runs the project&rsquo;s OWN <code>validate-pins.py</code>
@@ -1384,8 +1408,9 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
         human passes <code>--accept-local &lt;path&gt;</code> &mdash; recomputing that row silently
         would turn a drift finding into a digest that agrees with the project&rsquo;s own edited
         bytes.</li>
-        <li>A file changed on <strong>both</strong> sides is refused outright: two edits to one file
-        is a merge, and a merge is a human&rsquo;s judgement. So is a copy that was never
+        <li>A file changed on <strong>both</strong> sides is refused until a human merges it by hand,
+        commits the merge and re-runs with <code>--accept-local &lt;path&gt;</code>: two edits to
+        one file is a merge, and a merge is a human&rsquo;s judgement. So is a copy that was never
         verbatim.</li>
         <li><strong>Only the pin&rsquo;s own rows are RE-SYNCED.</strong> The file list is read from
         <code>contracts/shape-pin.yaml</code> and never re-derived from this repository&rsquo;s copy
@@ -1440,9 +1465,9 @@ openRepoShape --doctor                 # the repository you are standing in
       <a href="#confers">preference</a> said once and stepped over by the verdict (a leg gets its
       assembly root).</p>
       <p>Every row is <code>ok</code>, <code>note</code>, <code>FINDING</code> or
-      <code>n/a</code> &mdash; or <code>advisory</code>, the Triad row alone &mdash; and every one
-      that is not <code>ok</code> names the exact command that fixes it, except the Triad row,
-      which names none in any status. <strong>Only a <code>FINDING</code> moves the verdict</strong>, and
+      <code>n/a</code> &mdash; or <code>advisory</code>, the Triad row alone &mdash; and a row that
+      is not <code>ok</code> names the exact command that fixes it whenever there is one to run,
+      except the Triad row, which names none in any status. <strong>Only a <code>FINDING</code> moves the verdict</strong>, and
       <code>FINDING</code> means exactly <em>something else asserts this</em> &mdash; a validator,
       a pin row, a manifest, a gitlink. A difference nothing asserts is a <code>note</code>:
       printed, in <code>--json</code>, and stepped over by the verdict. That line was drawn after
@@ -1452,16 +1477,16 @@ openRepoShape --doctor                 # the repository you are standing in
       <table>
         <thead><tr><th>verdict</th><th>exit</th><th>when</th></tr></thead>
         <tbody>
-          <tr><td><code>COMPLIANT</code></td><td>0</td><td>every row ok, and the pin names this standard&rsquo;s commit</td></tr>
-          <tr><td><code>COMPLIANT, SHAPE BEHIND (n upstream-changed, m upstream-added)</code></td><td>1</td><td>valid, and the standard has moved on</td></tr>
-          <tr><td><code>DRIFTED (&hellip;)</code></td><td>1</td><td>a copy was edited here, or a leg is off its pin</td></tr>
+          <tr><td><code>COMPLIANT</code></td><td>0</td><td>no row is a <code>FINDING</code>, and the pin names this standard&rsquo;s commit</td></tr>
+          <tr><td><code>COMPLIANT, SHAPE BEHIND (n upstream-changed, m upstream-added)</code>, or <code>(pin &lt;a&gt; -&gt; &lt;b&gt;, no copied file differs)</code></td><td>1</td><td>valid, and the standard has moved on</td></tr>
+          <tr><td><code>DRIFTED (&hellip;)</code></td><td>1</td><td>a copy was edited, deleted or no longer maps onto the standard, or a leg (a member, in a holder) is off its pin</td></tr>
           <tr><td><code>MISPLACED (n paths)</code></td><td>1</td><td>a tracked path sits in a leg the path policy puts elsewhere</td></tr>
           <tr><td><code>INVALID (&lt;rows&gt;)</code></td><td>1</td><td>a validator went red</td></tr>
           <tr><td><code>NOT A SHAPE ROOT</code></td><td>2</td><td>neither manifest is there &mdash; adopt, or scaffold</td></tr>
         </tbody>
       </table>
-      <p>Exit 3 is usage or environment &mdash; nothing about it is a statement about the tree
-      you pointed at: no such path, a <code>shape-doctor.py</code> not in a checkout of the
+      <p>A malformed command line is exit 2, as argparse makes it. Exit 3 is environment &mdash;
+      nothing about it is a statement about the tree you pointed at: no such path, a <code>shape-doctor.py</code> not in a checkout of the
       standard, or a pin naming a commit <em>this</em> checkout does not carry
       (<code>CANNOT ANSWER</code>). <strong>Drift outranks a red validator</strong> on the
       verdict line, deliberately: an edited shape copy is exactly what makes
@@ -1571,15 +1596,17 @@ resume InkRouter                # on workstation B, and the estate is back</code
       (<code>&lt;Name&gt;/project.yaml</code>) of the same name, because the holder is what drives
       the members. With no <code>&lt;Name&gt;</code> the estate around the current directory is used:
       the nearest holder beside you, or project root above you. With no estate around it either,
-      <code>park</code> PARKS EVERY ESTATE it finds under your projects directory instead of
-      refusing (Brett Heap&rsquo;s RULING of 2026-09-10, #91, superseding ruling 3 of #82 for this
-      one case): it lists what it found, then runs itself on each one in name order, continuing
-      past a refusal.
+      <code>park</code> lists every estate it finds under your projects directory and ASKS whether
+      to park them all (with no terminal on stdin it cannot ask, so it refuses and names
+      <code>--all</code>); <code>park --all</code>, or <code>-a</code>, parks them all unasked,
+      from anywhere, in name order, continuing past a refusal and skipping a root that carries no
+      Speckit overlay (Brett Heap&rsquo;s RULINGs of 2026-09-10: #91&rsquo;s unasked sweep,
+      superseded the same day by this question).
       <code>--repo &lt;owner/name&gt;</code> names the estate by the <code>origin</code> of a clone
       you ALREADY have, in any url spelling; it never clones one, because <code>resume</code> is the
       command that clones and it clones from the record.</p>
-      <p><span class="refuses">Refuses</span> <strong><code>resume</code> keeps the old
-      refusal</strong>: with no <code>&lt;Name&gt;</code> and no estate around it either,
+      <p><span class="refuses">Refuses</span> <strong><code>resume</code> has no
+      <code>--all</code></strong>: with no <code>&lt;Name&gt;</code> and no estate around it either,
       <code>resume</code>&rsquo;s own bare form still REFUSES and lists the estates it found
       &mdash; rebuilding every estate on a fresh machine by accident is the opposite risk from
       <code>park</code> failing to park the one you meant.</p>
@@ -1799,9 +1826,10 @@ resume InkRouter                # on workstation B, and the estate is back</code
       name, added (#289); <code>bump-leg.py</code> refusing a workflow file, the workflows directory
       or the leg&rsquo;s pin that this user cannot open, by name, added (#383); what
       <code>setup.sh --help</code> does from a download, which clones nothing, and which commands
-      list every flag, added (#341) &mdash; a page cannot name the commit that contains it, and
-      the blob below is the fact a test checks.
-      README.md blob 5465d135ca7263010ee354424041f90c4553d2e7. Every command, flag, exit code
+      list every flag, added (#341); the statements the v1.0.0 accuracy pass found false,
+      corrected here as in the README, added (#483) &mdash; a page cannot name the commit that
+      contains it, and the blob below is the fact a test checks.
+      README.md blob 6252b58b32dc7b72cfd57baeb04c9e175a991336. Every command, flag, exit code
       and file name on this page is quoted from that README and from AGENTS.md.</p>
     </footer>
   </main>

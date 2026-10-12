@@ -115,11 +115,11 @@ the three names, `scaffold-project.py --dry-run`, an explicit human yes,
 
 ## Adopting an existing repository
 
-`adopt-project.py` converts a repository that already exists, IN PLACE: it
-keeps its name, its identity and its full history and becomes the assembly
-root, and the two legs are new repositories extracted with `git filter-repo`
-(a hard dependency; the preflight prints the install command). Seven steps, in
-order, and step 4 is the one you must not skip.
+`adopt-project.py` converts a repository that already exists, IN PLACE: it keeps
+its name, its identity and its full history and becomes the assembly root, and
+the two legs are new repositories extracted with `git filter-repo` (a hard
+dependency: `execute` refuses without it, printing the install command). Seven
+steps, in order, and step 4 is the one you must not skip.
 
 ```sh
 ./adopt-project.py plan --source <org/repo|path> --project <Project>
@@ -173,14 +173,15 @@ legitimate thing to adopt.
    plan that lost its code paths to a bad edit is indistinguishable from a
    repository that has no code. Do not pass it because the tool asked for it;
    pass it because the human confirmed the repository genuinely has none.
-2. Everything else is unchanged, step 7 included: the verification table
-   reads `code: 0 of N source paths (seeded from template)` and still
-   accounts for every source path by blob sha.
+2. Everything else is unchanged, step 7 included: the verification table's
+   `code` row reads `0 of N source paths (seeded from template)`, and the table
+   still accounts for every source path by blob sha.
 
 ## Scaffolding a project that DECLARES descent
 
-`MedxGlass` descends from `openGlass` only if it PINS it (2026-09-02). Pass
-the pin and the scaffold records the descent and still gives it two legs:
+`MedxGlass` descends from `openGlass` only if it PINS it, or pins a layer that
+does and records the chain (`--referent-chain`; 2026-09-02, chains 2026-09-05).
+Pass the pin and the scaffold records the descent and still gives it two legs:
 
 ```sh
 ./scaffold-project.py --org MedxSoft --project MedxGlass \
@@ -202,34 +203,37 @@ the tool, not scaffold.
 
 ## Checking a repository's compliance
 
-`openRepoShape --doctor [<path>]` — or `./shape-doctor.py --root <path>` from
-a checkout — answers ONE question about ONE repository: is it compliant with
-this shape, and what is missing. Run it before you propose a change to a
-repository you did not scaffold, and again after any procedure above. It
-writes nothing into the repository and fetches nothing, so there is no
-confirmation to get and no `--dry-run` to do first. The checks are a REGISTRY with an empty `fix` slot
+`openRepoShape --doctor [<path>]` — or `./shape-doctor.py --root <path>` from a
+checkout — answers ONE question about ONE repository: is it compliant with this
+shape, and what is missing. Run it before you propose a change to a repository
+you did not scaffold, and again after any procedure above. It writes nothing
+into the repository and fetches nothing, so there is no confirmation to get and
+no `--dry-run` to do first. The checks are a REGISTRY with an empty `fix` slot
 in each of them, which is where a repair mode will hang; nothing in it writes
-today. The one exception to "writes nothing" is `--placement-plan <file>`,
-which writes that file and nothing else — see 4.
+today. The one exception to "writes nothing" is `--placement-plan <file>`, which
+writes that file and nothing else — see 4. Installed, `openRepoShape --doctor`
+runs from a temporary clone of the standard, deleted on exit, and takes a path
+and nothing else: to ACT on a row (`--json`, `--placement-plan`, its next
+command) run `./shape-doctor.py --root <path>` from a checkout.
 
 1. **Read the verdict, then read the rows.** `COMPLIANT`, `COMPLIANT, SHAPE
-   BEHIND`, `DRIFTED`, `MISPLACED`, `INVALID`, `NOT A SHAPE ROOT` — exits 0,
-   1, 1, 1, 1, 2 — and `CANNOT ANSWER`, exit 3, which is THIS CHECKOUT
-   failing to ask, never
-   a statement about their repository. The verdict names the MOST SPECIFIC
-   finding and the TABLE names every one, so a report summarised from the
-   verdict line alone is a report you did not read. Relay the rows.
+   BEHIND`, `DRIFTED`, `MISPLACED`, `INVALID`, `NOT A SHAPE ROOT` — exits 0, 1,
+   1, 1, 1, 2 — and `CANNOT ANSWER`, exit 3, which is THIS CHECKOUT failing to
+   ask, never a statement about their repository. The verdict names the MOST
+   SPECIFIC finding and the TABLE names every one, so a report summarised from
+   the verdict line alone is a report you did not read. Relay the rows.
 2. **`note` is not a finding and you do not "fix" it.** A row says `note`
    when it found a difference nothing asserts — a leg file no pin names, a
    rendered `AGENTS.md`. It never moves the verdict. Report it; propose a
    change only if the human asks.
 3. **A FINDING names its fix, and you run THAT.** Every one carries the exact
-   next command — `update-shape.py apply …`, `make bootstrap`, `bump-leg.py
-   …`, the project's own validator. Run the one the row names. Do not
-   improvise a repair, and never edit a pinned file, a digest or a manifest
-   to make a row go green: that is the hand-edited pin this standard spends a
-   section refusing. Each of those commands has its own section above and its
-   own refusals, and they all still apply.
+   next command — `update-shape.py check …` and the `apply` it leads to, `git
+   submodule update …` (in a holder, its `scripts/bootstrap.py`), the project's
+   own validator. Run the one the row names. Do not improvise a repair, and
+   never edit a pinned file, a digest or a manifest to make a row go green: that
+   is the hand-edited pin this standard spends a section refusing. Each of those
+   tools has its own section in this file and its own refusals, and they all
+   still apply.
 4. **`placement` says what is in the wrong leg, and you never move a file
    to answer it.** It runs the adoption's own path policy over each mounted
    leg and names the paths it would have put elsewhere — code in the spec
@@ -250,13 +254,12 @@ which writes that file and nothing else — see 4.
    which of them is wanted is a fact about their repository. Report the
    verdict and both commands; adopt or scaffold nothing on your own
    initiative. There is no `--force`, deliberately.
-6. **The `machine` row is not about the repository.** It is `n/a` by status
-   and never changes the verdict: it says whether THIS workstation can run
-   the fixes the other rows named. Relay a missing prerequisite;
-   `openRepoShape --preflight` is what offers to install one, and the human
-   types that yes.
-7. `--json` is the same report as one object, each row carrying its `id`, for
-   when you have to act on a row rather than quote it.
+6. **The `machine` row is not about the repository.** It is `n/a` by status and
+   never changes the verdict: it says whether THIS workstation can run the fixes
+   the other rows named. Relay a missing prerequisite; `openRepoShape
+   --preflight` is what offers to install one, and the human types that yes.
+7. `./shape-doctor.py --json` is the same report as one object, each row
+   carrying its `id`, for when you have to act on a row rather than quote it.
 
 ## Updating a project's shape
 
@@ -380,29 +383,27 @@ python3 scripts/family.py siblings --family-root <path>
 2. **A family pins ASSEMBLY ROOTS, never legs.** `--member <org>/<Project>`,
    never `<Project>-spec`. The tool refuses a leg, and the refusal is
    correct: a leg has no `project.yaml` and belongs to its own root.
-3. **Each of `add`, `bump` and `remove` writes ONE commit** moving the
-   gitlink and the pin together. Land it as a pull request; never suggest a
-   push to the default branch. Do not hand-edit `family.yaml`'s `members:`
-   block — the tool rewrites it wholesale. `bump` takes the same repeatable
-   `--trailer "<Key>: <value>"` as `update-shape.py apply`, for the lines its
-   commit must end with.
+3. **Each of `add`, `bump` and `remove` writes ONE commit** moving the gitlink
+   and the pin together. Land it as a pull request; never suggest a push to the
+   default branch. Do not hand-edit `family.yaml`'s `members:` block — the tool
+   rewrites it wholesale. `bump` takes the same repeatable `--trailer "<Key>:
+   <value>"` as `update-shape.py apply`, for the lines its commit must end with.
 4. **The member must be scaffolded or adopted FIRST.** A family cannot make a
    project out of a repository; it can only pin one that already is.
 5. **`make siblings` in the holder — or `family.py siblings --family-root
-   <path>`, the same file — places the WORKSTATION layout**: each member
-   cloned BESIDE the holder, in the family folder, on its tracking branch,
-   with its own bootstrap run. Two copies of every member is intended:
-   `members/<Project>` inside the holder is pinned and DETACHED, for
-   `bootstrap` and `validate`; the sibling is where the human works.
-   **What it never does, and neither do you:** it MOVES NOTHING — when the
-   parent folder is not named after the family it warns and prints an `mv`,
-   and running that `mv` yourself relocates a checkout out from under a
-   shell, an editor and every agent lane, and breaks any linked worktree
-   (its `.git` file carries an absolute path). It also never touches an
-   existing clone beyond `git fetch`: no checkout, no reset, no pull,
-   because somebody is working in there. A directory that is a clone of a
-   different repository is reported and skipped; the exit is the human's
-   hand, not an overwrite.
+   <path>`, the same file — places the WORKSTATION layout**: each member cloned
+   BESIDE the holder, in the family folder, on its tracking branch, with its own
+   bootstrap run. Two copies of every member is intended: `members/<Project>`
+   inside the holder is pinned and DETACHED, for `bootstrap` and `validate`; the
+   sibling is where the human works. **What it never does, and neither do you:**
+   it MOVES NOTHING — when the parent folder is not named after the family it
+   warns and prints an `mv`, and running that `mv` yourself relocates a checkout
+   out from under a shell, an editor and every agent lane, and breaks any linked
+   worktree (its `.git` file carries an absolute path). It also never touches an
+   existing clone beyond `git fetch`: no checkout, no reset, no pull, because
+   somebody is working in there. A directory that is a clone of a different
+   repository is reported and skipped; the exit is the human's hand, not an
+   overwrite.
 6. `update-shape.py` updates a family root exactly as it updates a project,
    and the same four refusals apply. It mirrors into `family.yaml`. An
    existing holder receives `scripts/siblings.py` that way: `check` reports
@@ -423,11 +424,10 @@ make park                         # then leave
 make bootstrap && make resume     # on the other machine, after a clone
 ```
 
-1. **The overlay is a PREREQUISITE and the refusal names it.** Both targets
-   exit 2 with `install it with: setup-openspeckit` when
-   `.specify/extensions/git/` is not there. Relay that line; never hand-roll
-   the WIP commit, the `git worktree add` or the soft reset yourself because
-   a target refused.
+1. **The overlay is a PREREQUISITE and the refusal names it.** Both targets exit
+   2 with `install it with: setup-openspeckit` when `.specify/extensions/git/`
+   is not there. Relay that line; never hand-roll the WIP commit, the `git
+   worktree add` or the soft reset yourself because a target refused.
 2. **`resume` refusing on DIVERGENCE is not something to work around.** The
    remote tip is not the commit that was parked, which means somebody's work
    is on that branch; the refusal names both commits and the commands to
