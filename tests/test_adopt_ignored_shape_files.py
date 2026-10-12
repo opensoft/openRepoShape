@@ -83,10 +83,11 @@ IGNORE_FILE = ".gitignore"
 #: The id of the finding, and the start of every line that carries it.
 MISSING = "FINDING adopt-shape-file-missing:"
 #: The two exits every shape-file finding names, and the ONLY two: the plan
-#: answer the footer and AGENTS.md give, and a defect report. Never a
-#: hand-staged push of a split nobody re-verifies.
-PLAN_ANSWER = ("send that path to a leg or `drop` it, and re-run into fresh "
-               "legs")
+#: answer, whose re-run is the one the footer at the end of the report gives
+#: (and AGENTS.md step 7), and a defect report. Never a hand-staged push of a
+#: split nobody re-verifies.
+PLAN_ANSWER = ("send that path to a leg or `drop` it, and re-run as the end "
+               "of this report says")
 DEFECT = "do not merge it, and report it to opensoft/openRepoShape"
 #: The mode `git ls-tree` reports for a symlink.
 SYMLINK = "120000"
@@ -210,8 +211,8 @@ def test_the_forced_paths_are_the_written_ones_in_posix_spelling(adopter,
 
     assert calls == [
         ["git", "add", "-A", "--", "."],
-        ["git", "add", "-f", "--", ".github/workflows/validate.yml",
-         "shape/.gitattributes"]]
+        ["git", "--literal-pathspecs", "add", "-f", "--",
+         ".github/workflows/validate.yml", "shape/.gitattributes"]]
     assert not any("\\" in part for call in calls for part in call)
 
 
@@ -731,5 +732,10 @@ def test_a_source_pin_kept_in_the_root_fails_verification_with_the_plan_answer(
     assert "refuses with shape-copy-missing. " in findings[0]
     assert PLAN_ANSWER in findings[0] and DEFECT in findings[0]
     assert "git add" not in findings[0]
-    assert "fix the plan and re-run" in result.stderr
+    # The finding points at the end of the report, so that is where the way
+    # out must be: after the finding, ending with the split branch's
+    # deletion, which a re-run otherwise meets as `adopt-branch-exists`.
+    after = result.stderr.split(findings[0], 1)[1]
+    assert "fix the plan and re-run" in after
+    assert after.rstrip().endswith(f"--delete {BRANCH}"), result.stderr
     assert git("show", f"{BRANCH}:{PIN}", cwd=source).stdout == own_pin
