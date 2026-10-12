@@ -283,7 +283,17 @@ options:
                         another type -- `null`, `true`, `007`, `2026` -- is
                         refused.
   --spec-path SPEC_PATH
+                        where the spec leg is mounted, as a path in the
+                        assembly root (default: spec). A path that is, holds
+                        or lies inside a FILE the shape writes into the root
+                        is refused before anything is created: `project.yaml`
+                        is one, and `contracts` holds several.
   --code-path CODE_PATH
+                        where the code leg is mounted, as a path in the
+                        assembly root (default: code). A path that is, holds
+                        or lies inside a FILE the shape writes into the root
+                        is refused before anything is created: `project.yaml`
+                        is one, and `contracts` holds several.
   --dry-run
   --local-remote-dir LOCAL_REMOTE_DIR
                         create bare repositories here instead of calling `gh
@@ -299,7 +309,9 @@ options:
                         contracts/<openproduct>-pin.yaml and lists the product
                         in the manifest, which is what makes a
                         `<Domainx><Product>` name a DESCENDANT rather than a
-                        name shaped like one. Repeatable.
+                        name shaped like one. Repeatable, once per product
+                        (the same name in another case, or under another
+                        owner, is the same product).
   --referent-chain openLayer,openProduct
                         the CHAIN of neutral-product pins this project reaches
                         its referent through, e.g. --referent-chain
@@ -815,12 +827,18 @@ options:
   --pin-source [PRODUCT=]PATH
                         a local checkout to recompute a neutral-product pin's
                         digest from, instead of `gh api` — e.g. --pin-source
-                        openGlass=../openGlass. A bare PATH with no `PRODUCT=`
+                        openGlass=../openGlass. The text before the first `=`
+                        is a PRODUCT only when it names a pin project.yaml
+                        declares, and then that reading wins even over a
+                        directory spelled like the whole value (./PATH reads
+                        that directory); any other value is a bare PATH, which
                         applies to whichever declared pin has no more specific
-                        answer (the common case is exactly one). Repeatable.
-                        SHAPE_PIN_SOURCE_<PRODUCT> (env) and a checkout
-                        sitting beside this assembly root are also tried,
-                        before `gh api` and before this flag's bare form.
+                        answer (the common case is exactly one). Repeatable; a
+                        value no pin used is noted, and one that cannot be
+                        read is a finding. SHAPE_PIN_SOURCE_<PRODUCT> (env)
+                        and a checkout sitting beside this assembly root are
+                        also tried, before `gh api` and before this flag's
+                        bare form.
 ```
 
 ### `templates/family-root/scripts/bootstrap.py`
