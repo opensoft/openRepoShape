@@ -265,14 +265,16 @@ def rmtree(path) -> None:
     shutil.rmtree(path, onerror=clear_readonly)
 
 
-def run(argv, cwd=None, capture: bool = False) -> subprocess.CompletedProcess:
+def run(argv, cwd=None, capture: bool = False,
+        stdin=None) -> subprocess.CompletedProcess:
     """One spelling of "run a program", with the output decoding pinned.
 
     `encoding="utf-8", errors="replace"`: a child's bytes are its own business
     and a mojibake byte in a `git --version` string must not raise out of the
     preflight. Output is INHERITED unless `capture` asks otherwise, so
     `scaffold-project.py` and the validators print straight to the terminal
-    the way they do under setup.sh.
+    the way they do under setup.sh. So is stdin, unless `stdin` names a file
+    descriptor: `run_at_the_terminal` is the one caller that does.
 
     EVERY ARGV THAT CARRIES A VALUE FROM THE COMMAND LINE WAS CHECKED AT PARSE
     TIME. `argv` is a list and `shell=False`, so there is no shell to inject
@@ -284,7 +286,8 @@ def run(argv, cwd=None, capture: bool = False) -> subprocess.CompletedProcess:
     try:
         return subprocess.run(argv, cwd=str(cwd) if cwd is not None else None,
                               capture_output=capture, text=True,
-                              encoding="utf-8", errors="replace", check=False)
+                              encoding="utf-8", errors="replace", check=False,
+                              stdin=stdin)
     except OSError:
         # A PROGRAM THAT IS NOT THERE IS A FAILED RUN, not a traceback.
         # `is_shape_checkout()` asks git a question before the preflight has
@@ -830,12 +833,12 @@ def run_command_text(text: str) -> int:
     the environment, nothing read from disk ever reaches this line - and the
     parity test is what keeps it so.
 
-    stdin, stdout and stderr are inherited (`run` sets only
-    `capture_output`), so `sudo` asks for the password on the person's own
-    terminal and the package manager's own output is what they read.
+    stdout and stderr are inherited and stdin is the person's terminal
+    (`run_at_the_terminal`), so `sudo` asks for the password there and the
+    package manager's own output is what they read.
     """
     argv = ["cmd", "/c", text] if os.name == "nt" else ["bash", "-c", text]
-    return run(argv).returncode
+    return run_at_the_terminal(argv).returncode
 
 
 def offer(command_text: str) -> bool:
@@ -849,14 +852,16 @@ def offer(command_text: str) -> bool:
     AGENTS.md says the same thing to an assistant driving this: the human
     types this one.
 
-    NO TERMINAL, NO OFFER. `sys.stdin.isatty()` is the only gate, exactly as
-    in `plan_and_confirm`, so a piped or scheduled run prints what it printed
-    before any of this existed and stops where it stopped.
+    NO TERMINAL, NO OFFER. `can_ask()` is the only gate, exactly as in
+    `plan_and_confirm`: the person's terminal, which is stdin or, when a pipe
+    is, the controlling terminal (#492). A run with neither, scheduled or in
+    an assistant's shell, prints what it printed before any of this existed
+    and stops where it stopped.
 
     The `yes` is EXACT and the prompt is the one this file already asks:
     `y`, `Yes`, an empty line and EOF are all refusals.
     """
-    if not sys.stdin.isatty():
+    if not can_ask():
         return False
     say("")
     if "\n" in command_text:
@@ -1011,15 +1016,15 @@ def _offer_login() -> bool:
     """`gh auth login`, offered and then run as a PLAIN ARGV.
 
     Never through a shell: it is a terminal UI that ends in a browser and
-    there is nothing in it to quote. `run()` sets only `capture_output`, so
-    gh is handed the person's own stdin, stdout and stderr - which is what
-    its prompts and its one-time code need, and what the isatty gate on the
+    there is nothing in it to quote. gh is handed the person's own terminal
+    as stdin (`run_at_the_terminal`) and their stdout and stderr - which is
+    what its prompts and its one-time code need, and what the gate on the
     offer has already guaranteed is there. The browser half is the human's;
     this starts the login and asks `gh auth status` once when gh comes back.
     """
     if not offer("gh auth login"):
         return False
-    if run(["gh", "auth", "login"]).returncode != 0:
+    if run_at_the_terminal(["gh", "auth", "login"]).returncode != 0:
         return False
     if run(["gh", "auth", "status"], capture=True).returncode != 0:
         say("  gh is still not authenticated.")
@@ -1072,7 +1077,7 @@ def _check_credential_helper(opts: Options) -> None:
          "over HTTPS will fail. Fix it once: gh auth setup-git")
     if not offer("gh auth setup-git"):
         return
-    if run(["gh", "auth", "setup-git"]).returncode != 0:
+    if run_at_the_terminal(["gh", "auth", "setup-git"]).returncode != 0:
         return
     if _credential_helper_configured():
         ok("git will ask gh for github.com credentials")
@@ -1301,18 +1306,123 @@ def resolve_org(opts: Options, invocation_dir: str) -> str:
 # 3. the project
 # ---------------------------------------------------------------------------
 
-def ask(prompt: str) -> str:
+#: THE PERSON'S OWN TERMINAL, BY NAME (#492). `curl ... | bash -s --`, the
+#: README's first command, makes the script's stdin THE PIPE it arrived down,
+#: and this file's too, so a run in the person's own terminal found no
+#: terminal on stdin and refused where it should have asked. A process
+#: started from a terminal keeps it as its CONTROLLING terminal whatever its
+#: stdin is, and `/dev/tty` opens exactly that one. A process with none - an
+#: AI assistant's shell, a scheduled job, the doctor's preflight (started in
+#: a session of its own) - cannot open it, and refuses as before.
+#:
+#: POSIX ONLY. Windows has no `/dev/tty`: the name would be a FILE on the
+#: current drive there, and a file is the one thing that must never answer a
+#: question, so it is never opened. A script piped into `py -` still
+#: refuses, which is why the README's Windows path downloads the file first.
+CONTROLLING_TERMINAL = "/dev/tty"
+
+
+def open_terminal():
+    """A file descriptor on the controlling terminal, or None.
+
+    `os.isatty` on what was opened, because whether a thing is a terminal is
+    the device's answer and not its name's: a `/dev` somebody populated by
+    hand - a chroot, a container image - can hold a regular file called
+    `tty`, and a file never types `yes`.
+    """
+    if os.name == "nt":
+        return None
     try:
-        return input(prompt)
-    except EOFError:
+        descriptor = os.open(CONTROLLING_TERMINAL, os.O_RDWR | os.O_NOCTTY)
+    except OSError:
+        return None
+    if not os.isatty(descriptor):
+        os.close(descriptor)
+        return None
+    return descriptor
+
+
+def can_ask() -> bool:
+    """Is there a person at a terminal to put a question to?
+
+    Stdin when it is a terminal, as it always was; otherwise the controlling
+    terminal, opened and closed again here (#492). Every gate asks this one
+    question - the project name, each install offer, the one `yes` - so a
+    gate can never pass where `ask` would then have nobody to ask.
+    """
+    if sys.stdin.isatty():
+        return True
+    descriptor = open_terminal()
+    if descriptor is None:
+        return False
+    os.close(descriptor)
+    return True
+
+
+def ask(prompt: str) -> str:
+    """ONE line, typed by the person at their own terminal, and NEVER read
+    from anywhere else.
+
+    Stdin when it is the terminal: `input`, exactly as before. Otherwise the
+    controlling terminal (#492): the prompt is written to it, where the
+    person is looking whatever stdout is, and the answer is read from it a
+    byte at a time up to the newline, so nothing after the answer is taken.
+    Stdin that is not a terminal is never read: under `curl | bash` it is the
+    rest of the script, and a `yes` arriving down a pipe is nobody's answer.
+    With no terminal at all the answer is an empty line, which no question
+    here takes for a yes; the gates (`can_ask`) refuse before asking.
+    """
+    if sys.stdin.isatty():
+        try:
+            return input(prompt)
+        except EOFError:
+            return ""
+    descriptor = open_terminal()
+    if descriptor is None:
         return ""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    answer = b""
+    try:
+        unwritten = prompt.encode("utf-8")
+        while unwritten:
+            unwritten = unwritten[os.write(descriptor, unwritten):]
+        while not answer.endswith(b"\n"):
+            byte = os.read(descriptor, 1)
+            if not byte:
+                break
+            answer += byte
+    finally:
+        os.close(descriptor)
+    text = answer.decode("utf-8", errors="replace")
+    return text[:-1] if text.endswith("\n") else text
+
+
+def run_at_the_terminal(argv) -> subprocess.CompletedProcess:
+    """A command the person has just said `yes` to, run with their terminal
+    as its stdin.
+
+    What an offer runs can ask something of its own - `gh auth login` is a
+    terminal UI, `sudo` wants a password - so it gets the terminal the `yes`
+    came from: inherited when stdin is that terminal, and the controlling
+    terminal opened for it when stdin is a pipe (#492), which would hand
+    `gh` the rest of `setup.sh` as its input.
+    """
+    if sys.stdin.isatty():
+        return run(argv)
+    descriptor = open_terminal()
+    try:
+        return run(argv, stdin=descriptor)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 def resolve_project_and_elector(opts: Options, shape_root: Path) -> None:
     """setup.sh:355-386, transcribed."""
     say("")
     say("(3) project")
-    if not opts.project and sys.stdin.isatty():
+    if not opts.project and can_ask():
         opts.project = ask("  project name (ONE CamelCase token, e.g. Atlas): ")
     if not opts.project:
         usage(sys.stderr)
@@ -1608,27 +1718,28 @@ def plan_and_confirm(opts: Options, shape_root: Path, org: str,
 
     if opts.assume_yes:
         return
-    # A SCRIPT THAT ARRIVED ON STDIN HAS AN EXHAUSTED STDIN, so this refusal
-    # is what a `Get-Content setup-project.py | py -` run gets instead of a
-    # prompt nobody can answer. That is exactly why the README's Windows path
-    # DOWNLOADS the file first and then runs it: a file on disk leaves stdin
-    # attached to the terminal the person is typing at. `curl ... | bash -s --`
-    # is the same pipe, so it lands here even in the person's own terminal.
+    # THE QUESTION GOES TO THE PERSON'S TERMINAL, NEVER TO A PIPE (#492).
+    # `curl ... | bash -s --` hands this file the rest of the script as its
+    # stdin, so the yes is read from the controlling terminal instead
+    # (`ask`), and the one-liner asks in the person's own terminal as the
+    # README says it does. Windows has no controlling terminal to open, so a
+    # `Get-Content setup-project.py | py -` run lands here: that is why the
+    # README's Windows path DOWNLOADS the file first and then runs it.
     #
     # THE WORDING NAMES THE EXIT THAT KEEPS THE HUMAN IN CHARGE FIRST (#476).
-    # An AI assistant's shell has no terminal and AGENTS.md forbids it
+    # An AI assistant's shell has no terminal at all and AGENTS.md forbids it
     # `--yes`, so a refusal that said "re-run with --yes" was the one exit
     # open to it and the one it may not take. The way on is the person's own
     # terminal, where the prompt can ask; `--yes` is named last, as the
     # person's own answer given in advance, and is never put as something to
     # re-run with.
-    if not sys.stdin.isatty():
+    if not can_ask():
         die("this will create THREE repositories and there is no terminal to "
             "confirm on, so nothing was created. The person deciding runs "
-            "this same command in a terminal of their own, from a file and "
-            "not through a pipe (`openRepoShape`, `./setup.sh`, or `py "
-            "setup-project.py`), and it asks them. `--yes` is that person's "
-            "own answer given in advance, never an assistant's.")
+            "this same command in a terminal of their own, and it asks them "
+            "there (on Windows, from the downloaded file and not through a "
+            "pipe). `--yes` is that person's own answer given in advance, "
+            "never an assistant's.")
     say("")
     say("This will create THREE repositories in '%s'." % org)
     if ask("Type yes to continue: ") != "yes":

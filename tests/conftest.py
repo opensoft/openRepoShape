@@ -27,11 +27,14 @@ from __future__ import annotations
 
 import os
 import re
+import select
 import shlex
 import shutil
+import signal
 import stat
 import subprocess
 import sys
+import time
 from argparse import Namespace
 from pathlib import Path
 
@@ -739,21 +742,108 @@ def assert_refuses_for_want_of_a_terminal(stderr: str) -> None:
     The refusal is read by an AI assistant whose shell has no terminal and
     whom AGENTS.md forbids `--yes`, so it must open with the exit that keeps
     the human in charge, and `--yes` may appear only as the person's own
-    answer. It is `setup-project.py`'s one wording: `setup.sh` and the
-    `openRepoShape` command pass it through, so their tests hold the same
-    text rather than each spelling it again.
+    answer. That exit is the same command in the person's own terminal,
+    which asks there even piped (#492); only Windows, with no controlling
+    terminal to ask on, still needs the downloaded file. It is
+    `setup-project.py`'s one wording: `setup.sh` and the `openRepoShape`
+    command pass it through, so their tests hold the same text rather than
+    each spelling it again.
     """
     assert "no terminal to confirm on" in stderr, stderr
     assert not re.search(r"re-?run\s+with\s+--yes|if you mean it", stderr,
                          re.IGNORECASE), (
         f"the refusal invites a re-run with --yes, the flag an assistant "
         f"may not pass: {stderr!r}")
-    assert "from a file and not through a pipe" in stderr, stderr
+    assert ("this same command in a terminal of their own, and it asks them "
+            "there" in stderr), stderr
+    assert "on Windows, from the downloaded file" in stderr, stderr
     [yes_sentence] = [sentence for sentence in re.split(r"(?<=\.)\s+", stderr)
                       if "--yes" in sentence]
     assert "never an assistant's" in yes_sentence, yes_sentence
     assert stderr.index("terminal of their own") < stderr.index("--yes"), (
         f"the exit that keeps the human in charge comes first: {stderr!r}")
+
+
+#: THE PERSON'S OWN TERMINAL, IN A TEST (#492). The one-liner reads its yes
+#: from the CONTROLLING terminal when its stdin is the pipe the script came
+#: down, so a test that says it asks has to give the run one: a
+#: pseudo-terminal, made the controlling terminal of a session of the run's
+#: own. `subprocess` hands a child file descriptors and nothing more, so
+#: `_CONTROLLING`, run first by this interpreter, claims the terminal on its
+#: stdin (`TIOCSCTTY`) and then becomes the command. POSIX only: Windows has
+#: no controlling terminal to give, and its way in is the downloaded file.
+PTY_SKIP = pytest.mark.skipif(
+    os.name == "nt",
+    reason="a controlling terminal is POSIX; on Windows the way in is the "
+           "downloaded setup-project.py, and there is no /dev/tty to ask on")
+
+_CONTROLLING = ("import fcntl, os, sys, termios; "
+                "fcntl.ioctl(0, termios.TIOCSCTTY, 0); "
+                "os.execvp(sys.argv[1], sys.argv[1:])")
+
+
+def run_in_a_terminal(argv: list, *, cwd: Path, env: dict, answers=(),
+                      prompt="Type yes to continue:",
+                      timeout: float = 180) -> tuple:
+    """`argv` run as a person runs it in their own terminal: a
+    pseudo-terminal is its controlling terminal and its stdin, stdout and
+    stderr, so a pipe inside `argv` (`cat setup.sh | bash -s -- ...`) is the
+    only thing that is not the terminal. Each of `answers` is typed once the
+    screen shows its prompt after the answer before it - `prompt` is one
+    prompt for every answer, or one per answer, in order - `"EOF"` as Ctrl-D,
+    and nothing is typed anywhere else.
+
+    Returns `(exit status, the screen, how many answers were typed)`, with
+    the terminal's `\\r\\n` read as `\\n`. A run still going after `timeout`
+    seconds is killed and FAILS the test with its screen: a run waiting on a
+    prompt nobody answers is the defect this exists to show. Reading stops
+    once the run has exited and its output is drained, so a detached child
+    still holding the terminal cannot keep the test waiting.
+    """
+    master, slave = os.openpty()
+    try:
+        proc = subprocess.Popen([sys.executable, "-c", _CONTROLLING, *argv],
+                                cwd=str(cwd), env=env, stdin=slave,
+                                stdout=slave, stderr=slave,
+                                start_new_session=True)
+    finally:
+        os.close(slave)
+    prompts = ([prompt] * len(answers) if isinstance(prompt, str)
+               else list(prompt))
+    screen, typed, since = b"", 0, 0
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise AssertionError(
+                    f"still running after {timeout}s, waiting on its "
+                    "terminal:\n" + screen.decode("utf-8", "replace"))
+            if not select.select([master], [], [], min(left, 1.0))[0]:
+                if proc.poll() is not None:
+                    break
+                continue
+            try:
+                chunk = os.read(master, 4096)
+            except OSError:  # EIO: the last holder of the terminal is gone
+                break
+            if not chunk:
+                break
+            screen += chunk
+            if typed < len(answers) and \
+                    prompts[typed].encode("utf-8") in screen[since:]:
+                answer = answers[typed]
+                os.write(master, b"\x04" if answer == "EOF"
+                         else answer.encode("utf-8"))
+                typed, since = typed + 1, len(screen)
+        status = proc.wait(timeout=max(deadline - time.monotonic(), 1.0))
+    finally:
+        if proc.poll() is None:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait()
+        os.close(master)
+    return (status, screen.decode("utf-8", "replace").replace("\r\n", "\n"),
+            typed)
 
 
 def spelled(path) -> str:

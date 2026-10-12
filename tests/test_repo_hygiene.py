@@ -1190,20 +1190,26 @@ def test_the_documents_say_what_an_assistant_does_with_no_terminal(name):
     and let it ask, and an assistant's shell has no terminal, so setup stops
     after the plan and the refusal was the only thing that said what next.
     Every document that carries the rule now carries the way on: the plan
-    goes to the human, who runs the same command in their own terminal, from
-    a file and not a pipe, because a pipe leaves a script no terminal to ask
-    on. The assistant never passes `--yes` for them.
+    goes to the human, who runs the same command in their own terminal. The
+    assistant never passes `--yes` for them.
+
+    #492: and that command may be the one-liner itself, because setup reads
+    the answer from the person's terminal and never from the pipe the script
+    arrived down. "From a file and not a pipe", which #476 had to say, is no
+    longer true and is no longer said.
 
     The page is read as text: tags dropped, entities decoded, whitespace
     folded, so a re-wrap or a `<code>` around a flag does not fail it.
     """
     text = (REPO / name).read_text(encoding="utf-8")
     said = " ".join(html.unescape(re.sub(r"<[^>]+>", "", text)).split())
-    assert re.search(r"stops after the plan.{0,400}?from a file and not a pipe",
-                     said), (
+    assert re.search(r"stops after the plan.{0,400}?own terminal.{0,200}?"
+                     r"never (?:from )?the pipe", said, re.IGNORECASE), (
         f"{name} does not say that setup stops after the plan where there is "
         "no terminal, and that the human runs the same command in their own "
-        "terminal from a file and not a pipe")
+        "terminal, which reads the answer there and never from the pipe")
+    assert "from a file and not a pipe" not in said, (
+        f"{name} still sends the human to a file instead of the pipe")
     assert NO_TERMINAL_ROUTE[name] in said, (
         f"{name} no longer says {NO_TERMINAL_ROUTE[name]!r}")
 

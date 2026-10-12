@@ -925,6 +925,10 @@ sudo dnf install gh</code></pre></div>
           <li><code>--yes</code> skips the scaffold question only. It does not answer an install
           offer, <code>gh auth login</code> or <code>gh auth setup-git</code>.</li>
           <li>With no terminal attached there is no offer at all.</li>
+          <li>Every question is asked at your terminal, even when the script arrived down a pipe
+          (<code>curl &hellip; | bash -s --</code>): the answer is read from the terminal, never
+          from the pipe. Windows has no such terminal to open, which is why its way in downloads
+          the file first.</li>
           <li>Homebrew is never run for you: on a Mac without <code>brew</code> the preflight names
           <a href="https://brew.sh">brew.sh</a> and stops there.</li>
         </ul>
@@ -1754,12 +1758,11 @@ resume InkRouter                # on workstation B, and the estate is back</code
       &mdash; and let them answer its prompt; &ldquo;go ahead&rdquo; about something else is not a
       yes about this. An assistant&rsquo;s shell almost never has a terminal, so setup stops after
       the plan &mdash; exit 2, <code>no terminal to confirm on</code> &mdash; and that is the rule
-      working, not a fault: give the human the same command to run in their OWN terminal, from a
-      file and not a pipe, which cannot ask even there
-      (<code>bash &lt;(curl -fsSL &lt;that URL&gt;) &hellip;</code>,
-      <code>openRepoShape &hellip;</code> or <code>./setup.sh &hellip;</code>), and never pass
-      <code>--yes</code> yourself. Read a refusal rather than retrying: each one names what to run
-      instead, or, for some, the VALUE to change &mdash; among them a <code>--spec-path</code> or
+      working, not a fault: give the human the same command to run in their OWN terminal, where
+      it asks them, the one-liner too &mdash; setup reads the answer from that terminal and never
+      from the pipe &mdash; and never pass <code>--yes</code> yourself. Read a refusal rather than
+      retrying: each one names what to run instead, or, for some, the VALUE to change &mdash;
+      among them a <code>--spec-path</code> or
       <code>--code-path</code> that is, holds or lies inside a file the shape writes, and a
       <code>--pin</code> the shape cannot write, both before anything is created &mdash; and there
       is no <code>--force</code>, deliberately. Relay the finished block &mdash; the clone
@@ -1807,9 +1810,10 @@ resume InkRouter                # on workstation B, and the estate is back</code
       or the leg&rsquo;s pin that this user cannot open, by name, added (#383); what
       <code>setup.sh --help</code> does from a download, which clones nothing, and which commands
       list every flag, added (#341); the assistant&rsquo;s route when its shell has no terminal,
-      added (#476) &mdash; a page cannot name the commit that contains it, and
-      the blob below is the fact a test checks.
-      README.md blob aa9815a3b03b87f2b06270da00949d3f2ccff10c. Every command, flag, exit code
+      added (#476); the one-liner asking at the person&rsquo;s own terminal, never reading the
+      answer from the pipe, added (#492) &mdash; a page cannot name the commit that contains it,
+      and the blob below is the fact a test checks.
+      README.md blob fb390ae452d729595c0b31fdb157c6c5deacbe36. Every command, flag, exit code
       and file name on this page is quoted from that README and from AGENTS.md.</p>
     </footer>
   </main>

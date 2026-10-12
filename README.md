@@ -331,11 +331,11 @@ Shorter still, once: install the `openRepoShape` command and this becomes
 `openRepoShape Atlas --org <your-org>` — see the worked example below.
 
 The script clones this standard into a temporary directory (self-bootstrap:
-see below), checks your machine, checks the three names, shows the plan and
-asks once — then creates the three repositories, clones the assembly root and
-bootstraps it, and removes the temporary directory. `--yes` skips the
-question, and it REFUSES `--org opensoft` without `--allow-upstream-org`,
-because that would scaffold three repositories into opensoft's own namespace.
+see below), checks your machine and the three names, shows the plan and asks
+once, at your terminal, never reading the answer from the pipe; then creates
+the three repositories, clones and bootstraps the assembly root, and removes
+the temporary directory. `--yes` skips the question. It REFUSES
+`--org opensoft` without `--allow-upstream-org`: that namespace is opensoft's.
 
 Every scaffolded project pins `opensoft/openRepoShape` directly — the
 **shape pin**, `contracts/shape-pin.yaml` — and `update-shape.py` reads
@@ -439,11 +439,11 @@ scaffold plan, a dry run of everything about to be created. (4) `This will
 create THREE repositories in 'Northwind'.` and `Type yes to continue:` — Dana
 types `yes`. If an AI agent is driving, it runs the command WITHOUT `--yes`; in
 a shell with no terminal the run stops after the plan, and the agent hands Dana
-the same command for her own terminal, from a file and not a pipe, where Dana
-types the answer, never the agent (AGENTS.md's first rule). Then it creates the
-three repositories, writes the pins and the manifest, sets the topic
-`xf-project-atlas` on all three, clones the root into the directory you ran it
-from, as `./Atlas` (or `--into <dir>`), and runs `scripts/bootstrap.py`.
+the same command for her own terminal, which asks her even piped, reading the
+yes she types there, never the pipe or the agent (AGENTS.md's first rule). Then
+it creates the three repositories, writes the pins and the manifest, sets the
+topic `xf-project-atlas` on all three, clones the root as `./Atlas` where you
+ran it (or `--into <dir>`), and runs `scripts/bootstrap.py`.
 
 > [!WARNING]
 > **If it fails part-way.** Nothing is created before the typed `yes` in (4):

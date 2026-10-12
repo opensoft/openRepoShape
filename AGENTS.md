@@ -82,9 +82,9 @@ project lands beside the holder, and the last next-command names the
 `family.py add` that records the membership in the holder and nowhere else.
 
 No terminal in your shell, so setup stops after the plan: exit 2, `no terminal
-to confirm on`. Give the human the same command for THEIR OWN terminal, from a
-file and not a pipe, which cannot ask even there: `bash <(curl -fsSL <that
-URL>) …`, `openRepoShape …` or `./setup.sh …`. Never pass `--yes` yourself.
+to confirm on`. Give the human the same command for THEIR OWN terminal, where
+it asks them, the one-liner too: setup reads the answer from that terminal and
+never from the pipe. Never pass `--yes` yourself.
 
 If it refuses, read the refusal: each one names what to run instead, or, for
 some, the VALUE to change. Two you can foresee from your flags, both before
