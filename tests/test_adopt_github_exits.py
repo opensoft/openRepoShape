@@ -428,9 +428,13 @@ def test_the_command_printed_for_a_refused_pull_request_is_the_one_refused(
     assert refused[:2] == ["pr", "create"], refused
     assert "--title" in refused and "--body" in refused, refused
     assert printed == ["gh", *refused], (printed, refused)
-    # The body is the split's commit message, which says what moved where.
+    # The title names the two legs, and is the first line of the body: the
+    # split's commit message, which says what moved where.
+    title = refused[refused.index("--title") + 1]
     body = refused[refused.index("--body") + 1]
-    assert body.startswith("Adopt the three-repository shape: "), body
+    assert title == ("Adopt the three-repository shape: "
+                     f"{NORTHWIND}-spec and {NORTHWIND}-code"), title
+    assert body.split("\n", 1)[0] == title, body
     assert "MOVED TO THE CODE LEG" in body and "\n" in body, body
 
 
