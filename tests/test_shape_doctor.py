@@ -1602,8 +1602,9 @@ def fetched_nothing(tmp_path, doctor_ran: bool) -> None:
     calls = network_calls(tmp_path)
     assert beyond_the_machine_row(calls) == [], (
         f"a run that must fetch nothing called: {calls}")
-    expected = [["gh", "--version"], ["gh", "auth", "status"]] \
-        if doctor_ran else []
+    # The guard's own table, in its order, which is the preflight's: one
+    # definition of the row's two calls, so a change to it moves this too.
+    expected = [["gh", *argv] for argv in GH_PROBES] if doctor_ran else []
     assert calls == expected, calls
 
 

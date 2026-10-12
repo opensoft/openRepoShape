@@ -529,19 +529,24 @@ def refused_before_any_leg(adopter, monkeypatch: pytest.MonkeyPatch,
 # shebang means nothing. WHAT REACHES THE GUARD ON WINDOWS IS LESS, and the
 # code under test decides it, not this block: every tool here starts `gh` as
 # a bare `["gh", ...]` argv, and CreateProcess looks that up as `gh.exe` alone
-# -- it does not read PATHEXT -- so a doctor run there still reaches the real
-# `gh.exe` if one is installed (the Windows runner's, which holds no login),
-# and the guard logs nothing. `shutil.which("gh")` does read PATHEXT and finds
-# `gh.cmd`, which is how `tests/test_gh_guard.py` reaches the launcher there.
-# The guard can therefore never fail a Windows test spuriously: only a call
-# made through a PATHEXT-aware lookup can reach it at all.
+# -- it does not read PATHEXT -- so on Windows every such call bypasses the
+# guard. A doctor run there still asks a real `gh.exe` where one is
+# installed: two calls on the runner, which holds no login, and three on a
+# machine that is logged in, whose preflight goes on to `gh api user`. Where
+# none is installed those calls cannot start, yet `shutil.which("gh")`, which
+# does read PATHEXT, finds `gh.cmd` -- so during a test the preflight there
+# reports `[ok] gh (unknown version)` and `[!!] gh is not authenticated`
+# rather than `gh is not installed`. That same lookup is how
+# `tests/test_gh_guard.py` reaches the launcher on Windows. The guard can
+# never fail a Windows test spuriously: only a call made through a
+# PATHEXT-aware lookup can reach it at all.
 #
 # NO PRODUCT SEAM. No flag or variable in the doctor, `setup-project.py` or
 # `openRepoShape` leaves the row out: PATH alone does it, so no CLI surface
 # and no line of `docs/cli.md` moved for a test's sake.
 #
 # THE SCRIPT IS IMPORTED HERE TOO: the probe table, the log format and the
-# decision the per-test check makes are the ones the guard itself uses.
+# decision the teardown check makes are the ones the guard itself uses.
 from gh_guard import LOG_NAME as GH_GUARD_LOG  # noqa: E402
 from gh_guard import failure as gh_guard_failure  # noqa: E402
 
@@ -580,12 +585,17 @@ class GhGuard:
     """The session's guard: its directory, its log, and how much of the log
     has been read.
 
-    `take` is the ONE way a line is marked read. The per-test check takes
-    after every test, so a line counts against the test whose setup, call or
-    teardown wrote it -- a session fixture that a test's setup started
-    included. A test that runs the guard on purpose (`tests/test_gh_guard.py`)
-    takes its own lines and asserts on them, which is what keeps them out of
-    the check: no marker is needed for that, and none is added.
+    `take` is the ONE way a line is marked read. `pytest_runtest_teardown`
+    below takes once a test's whole teardown is over -- its own fixtures and
+    every module, class or session fixture that teardown finalized -- so a
+    line counts against the test whose setup, call or teardown wrote it, a
+    scoped fixture's finalizer and a session fixture its setup started
+    included. ONE CALL IT CANNOT PLACE: a child a test left running that runs
+    `gh` after that test's teardown lands on the next test whose teardown
+    reads the log, and the message still names the test and phase that made
+    it. A test that runs the guard on purpose (`tests/test_gh_guard.py`) takes
+    its own lines and asserts on them, which is what keeps them out of the
+    check: no marker is needed for that, and none is added.
     """
 
     def __init__(self, directory: Path, log: Path) -> None:
@@ -600,8 +610,12 @@ class GhGuard:
         return taken
 
 
+#: Where `gh_guard` leaves itself for `pytest_runtest_teardown` to read.
+GH_GUARD_KEY = pytest.StashKey()
+
+
 @pytest.fixture(scope="session", autouse=True)
-def gh_guard(tmp_path_factory):
+def gh_guard(tmp_path_factory, pytestconfig):
     """The guard, FIRST on `os.environ["PATH"]` for the whole session.
 
     `os.environ`, so every child inherits it however it is started:
@@ -609,20 +623,18 @@ def gh_guard(tmp_path_factory):
     bare `subprocess.run`. A test that installs its own `gh` stub puts its
     directory ahead of this one and keeps winning, as it always did. Session
     scope and autouse, so it is set up before any other session fixture --
-    `scaffolded` included -- and torn down after all of them; PATH is put
-    back as it was, and a refused call nobody took by then fails the run at
-    the last teardown rather than passing unread.
+    `scaffolded` included -- and torn down after all of them, inside the
+    last test's teardown, where `pytest_runtest_teardown` reads whatever
+    they logged; PATH is put back as it was.
     """
     directory = tmp_path_factory.mktemp("gh-guard")
     guard = GhGuard(directory, install_gh_guard(directory))
+    pytestconfig.stash[GH_GUARD_KEY] = guard
     before = os.environ.get("PATH")
     os.environ["PATH"] = str(directory) + (os.pathsep + before
                                            if before else "")
     try:
         yield guard
-        found = gh_guard_failure(guard.take())
-        if found:
-            pytest.fail(found, pytrace=False)
     finally:
         if before is None:
             os.environ.pop("PATH", None)
@@ -630,13 +642,25 @@ def gh_guard(tmp_path_factory):
             os.environ["PATH"] = before
 
 
-@pytest.fixture(autouse=True)
-def gh_guard_check(gh_guard):
-    """Fail the test, at its teardown, when the guard refused one of its
-    calls, naming each call and the test phase that made it.
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_teardown(item, nextitem):
+    """Fail a test, at its teardown, when the guard refused one of its calls,
+    naming each call and the phase that made it; the two probes pass.
 
-    The two probes pass: they are what the `machine` row asks, answered."""
-    yield
-    found = gh_guard_failure(gh_guard.take())
+    A HOOK WRAPPER, NOT AN AUTOUSE FIXTURE (#296, the review of b111b51). A
+    function fixture is torn down BEFORE the module, class and session
+    fixtures a test's teardown finalizes, so a call one of those made in its
+    own finalizer was charged to the NEXT test, and under `-x` the run
+    stopped on an innocent one. Everything after `yield` here runs once the
+    whole teardown -- every finalizer it triggered -- is over, so the call is
+    charged to the test whose teardown made it; and the LAST test's teardown
+    finalizes every session fixture, the guard's own included, so nothing a
+    session fixture logs goes unread. A teardown that raised on its own
+    account reports that instead, and its lines are read by the next one.
+    """
+    result = yield
+    guard = item.config.stash.get(GH_GUARD_KEY, None)
+    found = gh_guard_failure(guard.take()) if guard is not None else None
     if found:
         pytest.fail(found, pytrace=False)
+    return result

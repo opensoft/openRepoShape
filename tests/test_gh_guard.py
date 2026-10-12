@@ -6,7 +6,8 @@ its check fails a test that ran `gh`, and the doctor's `machine` row meets it.
 after each test, that the guard refused none of that test's calls. Each test
 here that runs the guard ON PURPOSE takes its own log lines with
 `gh_guard.take()` and asserts on them, which is also what keeps them out of
-that check.
+that check. One row runs an inner pytest, in a plain subprocess, to show the
+check itself failing a test: the decision function alone cannot show that.
 
 WINDOWS. The tools under test start `gh` as a bare `["gh", ...]` argv, and
 CreateProcess looks that up as `gh.exe` alone, so on Windows those calls never
@@ -19,8 +20,11 @@ operating systems, and the Windows job is what proves `gh.cmd` works.
 from __future__ import annotations
 
 import json
+import os
+import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from conftest import REPO, WINDOWS_SKIP, run_script
@@ -164,3 +168,116 @@ def test_the_doctors_machine_row_meets_the_guard(gh_guard, project, request):
     assert [(kind, argv) for kind, argv, _ in taken] == [
         ("probe", ["--version"]), ("probe", ["auth", "status"])], taken
     assert all(test.startswith(this_test(request)) for _, _, test in taken)
+
+
+#: THE INNER SUITE `test_the_check_fails_the_test_that_ran_gh_and_no_other`
+#: runs: two modules, so a module fixture is finalized by the last test of
+#: ITS module, and the session fixture by the last test of the run.
+INNER_A = """\
+import subprocess
+
+import pytest
+
+
+def gh(*args):
+    return subprocess.run(["gh", *args], capture_output=True, text=True,
+                          stdin=subprocess.DEVNULL, check=False).returncode
+
+
+@pytest.fixture(scope="module")
+def calls_gh_at_module_end():
+    yield
+    gh("api", "module-end")
+
+
+def test_probes_only():
+    assert gh("--version") == 0
+    assert gh("auth", "status") == 1
+
+
+def test_refused_call():
+    assert gh("api", "user") == 97
+
+
+def test_module_fixture(calls_gh_at_module_end):
+    pass
+"""
+
+INNER_B = """\
+import subprocess
+
+import pytest
+
+
+@pytest.fixture(scope="session")
+def calls_gh_at_session_end():
+    yield
+    subprocess.run(["gh", "api", "session-end"], capture_output=True,
+                   stdin=subprocess.DEVNULL, check=False)
+
+
+def test_innocent():
+    pass
+
+
+def test_last(calls_gh_at_session_end):
+    pass
+"""
+
+#: One `ERROR at teardown of <test>` section of the inner run's report: the
+#: test's name, then everything up to the next section or the summary.
+TEARDOWN_ERROR = re.compile(
+    r"^_+ ERROR at teardown of (\S+) _+\n(.*?)(?=^_{3,} |^=+ )",
+    re.M | re.S)
+
+
+@WINDOWS_SKIP  # the inner tests' bare `gh` is `gh.exe` to CreateProcess
+def test_the_check_fails_the_test_that_ran_gh_and_no_other(tmp_path):
+    """The teardown check itself, in a real pytest run: a test that ran `gh`
+    ERRORS at its teardown naming the call, and a test that did not, passes.
+
+    AN INNER PYTEST IN A SUBPROCESS, the one row here that needs one (the
+    review of b111b51, S1): with the check disabled every other row stays
+    green, because each takes its own lines. `-p conftest`, with `tests/` on
+    PYTHONPATH, loads THIS suite's `conftest.py` as a plugin -- guard, hook
+    and all -- and writes nothing under `tests/`; the `pytest.ini` beside the
+    inner files makes their directory the inner run's root.
+
+    Of the inner run's five tests, three must error at teardown, each naming
+    its own call and phase: `gh api user` from a test's call; `gh api
+    module-end` from a module fixture's finalizer, charged to the last test
+    of ITS module and not to `test_innocent` after it; and `gh api
+    session-end` from a session fixture's, charged to the last test of the
+    run. `test_probes_only` asks the two probes and passes.
+    """
+    inner = tmp_path / "inner"
+    inner.mkdir()
+    (inner / "pytest.ini").write_bytes(b"[pytest]\n")
+    (inner / "test_a.py").write_bytes(INNER_A.encode("utf-8"))
+    (inner / "test_b.py").write_bytes(INNER_B.encode("utf-8"))
+    env = {name: value for name, value in os.environ.items()
+           if name not in ("PYTEST_ADDOPTS", "PYTEST_PLUGINS")}
+    here = str(Path(__file__).resolve().parent)
+    env["PYTHONPATH"] = here + (os.pathsep + env["PYTHONPATH"]
+                                if env.get("PYTHONPATH") else "")
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-p", "conftest",
+         "-p", "no:cacheprovider", f"--basetemp={tmp_path / 'inner-temp'}",
+         "-q", "test_a.py", "test_b.py"],
+        cwd=str(inner), env=env, capture_output=True, text=True,
+        check=False, stdin=subprocess.DEVNULL)
+    whole = result.stdout + result.stderr
+    assert result.returncode == 1, whole
+    assert re.search(r"\b5 passed, 3 errors\b", result.stdout), whole
+    sections = dict(TEARDOWN_ERROR.findall(result.stdout))
+    expected = {"test_refused_call": ("api user", "test_a.py", "call"),
+                "test_module_fixture": ("api module-end", "test_a.py",
+                                        "teardown"),
+                "test_last": ("api session-end", "test_b.py", "teardown")}
+    assert set(sections) == set(expected), whole
+    for name, (call, module, phase) in expected.items():
+        section = sections[name]
+        assert "tests/conftest.py's gh guard logged 1 line(s)" in section, \
+            section
+        assert f"  gh {call}    [{module}::{name} ({phase})]" in section, \
+            section
