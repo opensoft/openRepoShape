@@ -22,7 +22,9 @@ would put a byte in the split commit that no `git rm` accounts for — which is
 precisely what `adopt-project.py --verify` would then report as a mismatch.
 So a colliding template file is written BESIDE the original under
 `collision_dir` (`shape/`) and the collision is reported for the plan's
-`follow_ups:`. The human merges it; the tool never guesses.
+`follow_ups:`. The human merges it; the tool never guesses. A copy whose own
+path is taken -- the source keeps a `shape/README.md` of its own -- is
+REFUSED, never written over (`copy_in_the_way`, #262).
 """
 
 from __future__ import annotations
@@ -628,6 +630,37 @@ def collision_follow_up(intended: str, actual: str) -> str:
         f"merge {actual} into {intended}: the source repository already has "
         "that name, so the shape's copy was written beside it and NOTHING was "
         "overwritten")
+
+
+def copy_in_the_way(target: Path, actual: str) -> str | None:
+    """What stands where the shape's copy `actual` (`shape/README.md`) is to
+    be written under `target`, in words; None when the way is free.
+
+    `place` ASKED ABOUT THE PATH THE COPY STANDS IN FOR AND NEVER ABOUT THE
+    COPY'S OWN (#262). A source that keeps its own `shape/` in the root has a
+    real `shape/README.md`, and the shape's README was written over it, on
+    the line after `adopt-project.py` said that nothing was overwritten; a
+    directory `shape/Makefile/` raised `IsADirectoryError` and a file named
+    `shape` raised `FileExistsError`, each after both legs were pushed.
+
+    The copy is in the way when anything is AT its path, a symlink that leads
+    nowhere included (it is written through, and a file lands where nothing
+    was meant), or when something on the way to it is not a directory, which
+    a symlink to one is. `adopt-project.py check` finds what a plan keeps
+    there before any leg exists (`plan-root-blocks-shape-copy`); this is the
+    same question asked of the disk, for a caller that skipped `check`.
+    """
+    parts = actual.split("/")
+    for end in range(1, len(parts) + 1):
+        here = target.joinpath(*parts[:end])
+        if not (here.is_symlink() or here.exists()):
+            return None   # nothing here, so nothing deeper either
+        if end == len(parts):
+            return (f"`{actual}` is already there"
+                    f"{', a directory' if here.is_dir() else ''}")
+        if not here.is_dir():
+            return f"`{'/'.join(parts[:end])}` is not a directory"
+    return None
 
 
 #: Appended to the assembly root's Makefile by `adopt-project.py` ONLY. A
@@ -1565,6 +1598,22 @@ def _materialize(shape_root: Path, template_root: Path, target: Path,
                     "Remediation: scaffold into an empty directory, or call "
                     "with collision_dir set (which is what adopt does).")
             actual = f"{collision_dir}/{rel}"
+            in_the_way = copy_in_the_way(target, actual)
+            if in_the_way:
+                raise Refusal(
+                    "materialize-copy-blocked",
+                    f"the shape's copy of `{rel}` cannot be written to "
+                    f"`{actual}`: {in_the_way}, and nothing was written there",
+                    "Remediation: the shape writes its copy of a file the "
+                    "root already holds under its collision directory, so "
+                    "the source cannot keep its own path there. "
+                    "`adopt-project.py check` reports a plan that does as "
+                    "`plan-root-blocks-shape-copy`, before any leg exists. "
+                    "Send that path to a leg or `drop` it in the plan, and "
+                    "run `execute` again with fresh leg repositories and "
+                    "an empty `--work-dir`, or none: this run made both "
+                    "legs and cloned them into the work directory it was "
+                    "given.")
             result.collisions.append((rel, actual))
             path = target / actual
         path.parent.mkdir(parents=True, exist_ok=True)
