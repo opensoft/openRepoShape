@@ -245,9 +245,10 @@ def test_the_repro_of_issue_283_for_a_tilde_names_the_flag_and_the_rule(
 def test_a_leading_dash_is_still_refused_by_the_alphabet_first(tmp_path):
     """`checked_value` runs first and says `unsafe-value`: a value that reads
     as an option never reaches `git check-ref-format`, whose own refusal of it
-    is the second line of defence and not the first."""
-    result = scaffold(tmp_path, "--tracking-branch=--upload-pack=touch x",
-                      dry_run=True)
+    is the second line of defence and not the first. `-x` has nothing but its
+    leading dash for the alphabet to refuse, so the dash rule is the one
+    held."""
+    result = scaffold(tmp_path, "--tracking-branch=-x", dry_run=True)
     assert result.returncode == 2
     assert "REFUSED unsafe-value" in result.stderr
     assert SCAFFOLD_CODE not in result.stderr
@@ -495,7 +496,8 @@ def test_a_git_that_cannot_run_is_a_refusal_not_a_traceback(monkeypatch):
 def test_a_value_that_cannot_be_an_argument_is_a_refusal_not_a_traceback():
     """A NUL cannot be put on a command line at all."""
     problem = shape_materialize.branch_problem("tracking_branch", "a\x00b")
-    assert problem is not None and "could not be checked" in problem
+    assert problem is not None
+    assert "could not be checked" in problem
 
 
 def test_a_name_git_would_expand_is_not_the_name_that_was_written(monkeypatch):
