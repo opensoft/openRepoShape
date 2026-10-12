@@ -30,6 +30,10 @@ Three kinds of test, the first two against local bare remotes and never GitHub:
 - the environment helpers themselves, each one handed to a real child that
   prints the name, so a handler a child does not know fails here; and a guard
   that no tool runs the interpreter without one.
+
+One name no stdout can hold at all, a lone surrogate (#280), is refused by the
+validator as a finding, and the two tools, the doctor and `make validate` are
+each run on it.
 """
 
 from __future__ import annotations
@@ -343,6 +347,110 @@ def test_an_apply_under_a_c_locale_lands(upstream_and_project, shape_root,
                              stdout, stderr)
     assert b"manifest ok: \\u65e5\\u672c" in stdout, stdout
     assert b"pins ok" in stdout, stdout
+
+
+# --- a display name no UTF-8 text can hold (#280) ---------------------------
+#
+# The escape `"a\ud83db"` reads as a string holding the lone surrogate U+D83D,
+# as PyYAML's own Python reader reads it. No UTF-8 stream can hold one, so the
+# validator's `manifest ok` line raised: `make validate` and the doctor met a
+# traceback, while the two callers above, which hand their child
+# `backslashreplace` (#254), passed the project. The validator now reports the
+# name as a finding, and all four launchers stop at it.
+
+#: The display name as the YAML spells it, and the finding the project's own
+#: validator reports for it.
+SURROGATE_ESCAPE = "a\\ud83db"
+SURROGATE_FINDING = (b"FINDING manifest-name: name is 'a\\ud83db', which "
+                     b"holds U+D83D, a lone surrogate")
+
+
+def rename_to_a_lone_surrogate(project: Path) -> str:
+    """Rename the display name to `SURROGATE_ESCAPE` and commit it on its own
+    branch; returns the sha it left HEAD at. Edited as bytes."""
+    manifest = project / "project.yaml"
+    body = manifest.read_bytes()
+    line = f'\nname: "{PROJECT}"'.encode("ascii")
+    assert body.count(line) == 1, body
+    manifest.write_bytes(body.replace(
+        line, f'\nname: "{SURROGATE_ESCAPE}"'.encode("ascii")))
+    git("checkout", "-q", "-b", WORKING_BRANCH, cwd=project)
+    git("-c", "user.name=t", "-c", "user.email=t@t.invalid", "commit", "-q",
+        "-am", "A display name holding a lone surrogate", cwd=project)
+    return git("rev-parse", "HEAD", cwd=project).stdout.strip()
+
+
+def assert_stopped_at_the_finding(code: int, stdout: bytes, stderr: bytes,
+                                  exit_code: int, refusal: bytes = b"") -> None:
+    """The launcher exits `exit_code` with the validator's finding in its
+    output, `refusal` named where it has one, and no traceback anywhere."""
+    both = stdout + stderr
+    shown = both.decode("utf-8", "backslashreplace")
+    assert code == exit_code, shown
+    assert SURROGATE_FINDING in both, shown
+    assert refusal in both, shown
+    assert b"Traceback" not in both and b"UnicodeEncodeError" not in both, \
+        shown
+    assert b"manifest ok" not in both, shown
+
+
+def test_a_real_bump_of_a_project_whose_name_holds_a_surrogate_is_refused(
+        project, scaffolded, advanced, tmp_path):
+    """On c7c02fa this bump exited 0: its child printed `manifest ok:
+    a\\ud83db`, and the commit it made read `Bump spec leg to <sha> in a?b`,
+    the name lost to the `replace` its message is written with. It is the
+    validator's finding now, and every byte is rolled back."""
+    before = rename_to_a_lone_surrogate(project)
+    pinned = git("rev-parse", "HEAD:spec", cwd=project).stdout.strip()
+    code, stdout, stderr = run_in(
+        BUMP, *bump_arguments(project, scaffolded, advanced),
+        encoding="utf-8:strict", tmp_path=tmp_path)
+    assert_stopped_at_the_finding(code, stdout, stderr, 2,
+                                  b"bump-leg-validators-red")
+    assert git("rev-parse", "HEAD", cwd=project).stdout.strip() == before
+    assert git("rev-parse", "HEAD:spec", cwd=project).stdout.strip() == pinned
+    assert git("status", "--porcelain", cwd=project).stdout == ""
+
+
+def test_an_apply_on_a_project_whose_name_holds_a_surrogate_is_refused(
+        upstream_and_project, shape_root, tmp_path):
+    """On c7c02fa `apply` exited 0 and printed `manifest ok: a\\ud83db`. The
+    validator it runs is the one B wrote, which carries the finding."""
+    before = rename_to_a_lone_surrogate(shape_root)
+    copy = (shape_root / CHANGED).read_bytes()
+    code, stdout, stderr = run_in(
+        UPDATE, *update_arguments(shape_root, upstream_and_project),
+        encoding="utf-8:strict", tmp_path=tmp_path)
+    assert_stopped_at_the_finding(code, stdout, stderr, 2,
+                                  b"update-validators-red")
+    assert git("rev-parse", "HEAD", cwd=shape_root).stdout.strip() == before
+    assert (shape_root / CHANGED).read_bytes() == copy, "rolled back"
+    assert git("status", "--porcelain", cwd=shape_root).stdout == ""
+
+
+def test_the_doctor_quotes_the_finding_for_a_name_holding_a_surrogate(
+        project, tmp_path):
+    """On c7c02fa the `manifest` row quoted the traceback's last line,
+    `UnicodeEncodeError: 'utf-8' codec can't encode character '\\ud83d'`."""
+    rename_to_a_lone_surrogate(project)
+    code, stdout, stderr = run_in(
+        REPO / "shape-doctor.py", "--root", str(project),
+        encoding="utf-8:strict", tmp_path=tmp_path)
+    assert_stopped_at_the_finding(code, stdout, stderr, 1)
+    row = [line for line in stdout.splitlines() if SURROGATE_FINDING in line]
+    assert len(row) == 1 and row[0].split()[:2] == [b"FINDING", b"manifest"], \
+        stdout.decode("utf-8", "backslashreplace")
+    assert b"INVALID (manifest)" in stdout
+
+
+@pytest.mark.skipif(shutil.which("make") is None, reason="needs `make` on PATH")
+def test_make_validate_stops_at_the_finding_for_a_surrogate(project, tmp_path):
+    """On c7c02fa `make validate` stopped on the validator's traceback."""
+    rename_to_a_lone_surrogate(project)
+    proc = subprocess.run(["make", "validate"], cwd=str(project),
+                          capture_output=True, stdin=subprocess.DEVNULL,
+                          env=child_environ(tmp_path, None), check=False)
+    assert_stopped_at_the_finding(proc.returncode, proc.stdout, proc.stderr, 2)
 
 
 # --- the environment each tool builds ---------------------------------------
