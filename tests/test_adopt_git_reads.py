@@ -52,8 +52,15 @@ LATIN1_NAME = b"Jos\xe9"
 NOT_UTF8_URL = b"../caf\xe9/repo.git"
 ASCII_URL = b"../cafe/repo.git"
 
-NO_ORG = (b"REFUSED adopt-no-org: the source has no `origin` to read an "
-          b"organisation from\nRemediation: pass --org <org>.\n")
+#: Said of all three sources that name no org: one with no origin, one whose
+#: origin URL is not UTF-8, and one whose URL ends in no `org/repo`. The
+#: sentence was "the source has no `origin`", which is false of the last two.
+NO_ORG = (b"REFUSED adopt-no-org: the source's `origin` names no "
+          b"organisation this tool can read: it has none, its URL is not "
+          b"UTF-8, or its URL ends in no `org/repo`\n"
+          b"Remediation: pass --org <org>.\n")
+#: An origin URL that is UTF-8 and ends in no `org/repo` at all.
+NO_PAIR_URL = b"repo.git"
 
 
 def by_git_config(base: Path, source: Path, extra: dict,
@@ -185,14 +192,17 @@ def test_plan_reads_an_origin_that_is_not_utf8_as_none(tmp_path, url,
         == repository
 
 
-@pytest.mark.parametrize("url", [NOT_UTF8_URL, None],
-                         ids=["not-utf8", "no-origin"])
+@pytest.mark.parametrize("url", [NOT_UTF8_URL, None, NO_PAIR_URL],
+                         ids=["not-utf8", "no-origin", "no-pair"])
 def test_plan_without_org_refuses_a_source_that_names_none(tmp_path, url):
     """With no --org, an origin that is not UTF-8 is `adopt-no-org`, as a
-    source with no origin at all is. On the base the first was the
-    traceback, and the second `REFUSED unsafe-value: --org is '-'`: the
-    stand-in for a missing org met `checked_value` before `adopt-no-org`
-    was asked, which no run had ever reached."""
+    source with no origin at all is, and one whose URL ends in no `org/repo`.
+    On the base the first was the traceback, and the second `REFUSED
+    unsafe-value: --org is '-'`: the stand-in for a missing org met
+    `checked_value` before `adopt-no-org` was asked, which no run had ever
+    reached. The sentence is the same for the three, and says each: the
+    first and the last are sources that HAVE an origin, so "the source has
+    no `origin`" was false of them."""
     source = make_source_repo(tmp_path / "Thing")
     if url is not None:
         with_origin(source, url)
@@ -201,6 +211,24 @@ def test_plan_without_org_refuses_a_source_that_names_none(tmp_path, url):
     assert refused.returncode == 2, said(refused)
     assert NO_ORG in refused.stderr, said(refused)
     assert b"unsafe-value" not in refused.stderr, said(refused)
+    assert not (tmp_path / PLAN_FILE).exists()
+
+
+@pytest.mark.parametrize("org", ["-evil", "-", "my org"],
+                         ids=["leading-dash", "dash-only", "space"])
+def test_plan_refuses_an_unsafe_org_that_is_passed(tmp_path, org):
+    """`--org` is `checked_value`'s question too, and #292 moved it below
+    `adopt-no-org`: a `plan` that stopped asking it wrote `org: "-evil"` and
+    exited 0, `check` said `plan ok`, and only `execute` refused the value,
+    at `_repository_urls`. A value passed is refused as `unsafe-value`,
+    naming `--org`, before any plan is written."""
+    source = make_source_repo(tmp_path / "Thing")
+    refused = planned(tmp_path, source, f"--org={org}")
+    assert_no_traceback({"plan": refused})
+    assert refused.returncode == 2, said(refused)
+    assert b"REFUSED unsafe-value: --org is " + repr(org).encode("ascii") \
+        + b", which is not a value this tool will put on a `git` or `gh` " \
+        b"command line\n" in refused.stderr, said(refused)
     assert not (tmp_path / PLAN_FILE).exists()
 
 

@@ -1611,13 +1611,17 @@ def _checked_plan_inputs(args, source: Source,
     # NO ORG IS `adopt-no-org`, asked before `checked_value` (#292). The `-`
     # that once stood in for a missing one reached `checked_value` first,
     # which refused `--org is '-'`, a value nobody passed; this refusal was
-    # never reached. A source with no `origin`, or one whose URL is not
-    # UTF-8 (`_remote_repository`), names no org.
+    # never reached. A source with no `origin`, one whose URL is not UTF-8,
+    # and one whose URL ends in no `org/repo` (`_remote_repository`) all name
+    # no org, and the refusal says each of the three: it is asked of a source
+    # that HAS an origin as often as of one that has none.
     args.org = args.org or (source.repository or "/").split("/")[0]
     if not args.org:
         raise Refusal(
-            "adopt-no-org", "the source has no `origin` to read an "
-            "organisation from", "Remediation: pass --org <org>.")
+            "adopt-no-org", "the source's `origin` names no organisation "
+            "this tool can read: it has none, its URL is not UTF-8, or its "
+            "URL ends in no `org/repo`",
+            "Remediation: pass --org <org>.")
     args.org = checked_value("--org", args.org)
     args.elected_on = args.elected_on or _dt.date.today().isoformat()
     # Read before the plan is written, whether or not it is what chooses the
