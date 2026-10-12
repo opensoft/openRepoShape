@@ -528,8 +528,8 @@ def _workflow_texts(root: Path, workflows: Path, tracked: set[str],
                 "workflow file on disk too, whether or not it names this "
                 "leg, so skipping one would only move the failure there. "
                 + _cannot_open_advice([error for _, _, error in unopened])
-                + "Nothing is committed for such a file, because one made "
-                "readable has no change to commit. ")
+                + "No commit is needed for a file that could not be opened: "
+                "made readable, it has no change to commit. ")
             if not all(held for _, held, _ in unopened):
                 advice += ("A file marked (untracked or ignored) is not in "
                            "the repository: it can also be moved out of "
