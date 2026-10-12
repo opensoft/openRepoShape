@@ -46,7 +46,10 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            `xf-project-<id>` topic on all three (skipped for local remotes),
            and then VERIFIES by blob sha that every source path landed in
            exactly one place, and that the root's only submodules are the
-           two leg mounts, each at the commit pushed to its leg.
+           two leg mounts, each at the commit pushed to its leg. The split's
+           `project.yaml` records the leg each source submodule kept in a
+           leg was answered into, under `submodules:`, for `shape-doctor.py`
+           to check it against.
 
 THE PLAN IS AN ARTIFACT A HUMAN OR AN AI EDITS. That is why it is YAML with
 reasons in it rather than a pipe between two processes: the classifier is
@@ -4901,6 +4904,100 @@ def _where_it_landed(assembly: Path, written: str) -> str | None:
         if landed.is_relative_to(root) else None
 
 
+#: The key `execute` appends to the assembly's `project.yaml` (#189). The
+#: doctor reads it by this name through the module it loads, and the
+#: project's own `validate-manifest.py`, which imports nothing of this tool's,
+#: spells it once more.
+SUBMODULE_RECORD = "submodules"
+
+#: The comment above that block, in the manifest itself, because the
+#: manifest is read by people who never saw the plan it came from.
+SUBMODULE_RECORD_PREAMBLE = (
+    "",
+    "# THE SOURCE'S OWN SUBMODULES, and the leg each one was ANSWERED into",
+    "# when this repository was adopted (#189). Written once, by",
+    "# `adopt-project.py execute`, from the adoption plan: one row per",
+    "# submodule the split kept in a leg, its path inside that leg, the",
+    "# `resolution:` the plan gave the entry that covered it, and the source",
+    "# commit the plan was answered at. `shape-doctor.py` checks each",
+    "# submodule a leg holds against it. Like every field here, it confers",
+    "# nothing.",
+    f"{SUBMODULE_RECORD}:",
+)
+
+
+def submodule_record(entries: list, tree: list, commit: str) -> str:
+    """The `submodules:` block `execute` appends to `project.yaml`, or ""
+    when the split keeps no submodule of the source's in a leg (#189).
+
+    WHY THE ANSWER IS WRITTEN DOWN. Which leg holds a source submodule is a
+    human's answer under #166 -- `plan` asks it of every entry that covers a
+    gitlink, whatever rule its name matches -- and the plan that carries the
+    answer is not committed anywhere. Without a record, the assembly holds
+    `.cursor` in the code leg and nothing else, and `shape-doctor.py` cannot
+    tell that answer from a submodule added by hand, so the most it can say
+    is a note. With one, a submodule in the leg recorded is placed and one in
+    the other leg is MISPLACED, with the manifest as the evidence.
+
+    ONE ROW PER GITLINK KEPT IN A LEG, from `_answered_legs`, the reading
+    `check` holds the plan to: by the time `execute` calls this,
+    `_refuse_what_check_finds` has refused a gitlink no entry covers, one
+    covered twice, one left unanswered and one answered `root`. A gitlink
+    answered `drop` is in no leg, so nothing can be checked against it, and
+    one added at that path later is a gitlink no record covers. The path is
+    the gitlink's path in the source, which `git filter-repo` keeps as its
+    path in the leg. `resolution:` is written when the plan's entry has one;
+    a directory entry's answer covers every gitlink under it, so each row
+    carries that entry's line.
+
+    A SOURCE WITH NO SUBMODULE GETS "" and so the `project.yaml` -- and the
+    split -- it always got, byte for byte.
+
+    EVERY PATH AND REASON IS DOUBLE-QUOTED, by `repo_shape.double_quoted`,
+    the writer of the escapes the reader resolves (#199). Always quoted,
+    unlike `y`: a submodule may sit at `null`, `true` or `0001`, which a
+    plain scalar reads back as something that is not a path. And a character
+    `str.isprintable` refuses is spelled by its code point: NEL and U+2028
+    end a line for the reader, a no-break or zero-width space is another name
+    than the one it looks like, and the surrogate a byte that is not UTF-8 is
+    kept as cannot be written by `write_lf` at all, where `\\udce9` reads
+    back as that surrogate. So every row reads back as the name the doctor
+    holds the submodule at to it, and the manifest is written after both
+    legs exist. A name with a control character or a byte that is not UTF-8
+    in it is one the doctor reads no further: it reports it as a name no
+    report can carry.
+    """
+    gitlinks = [path for path, mode, _, _ in tree if mode == GITLINK_MODE]
+    kept = _kept_in_a_leg(_answered_legs(entries, gitlinks), gitlinks)
+    if not kept:
+        return ""
+    resolutions = {str(e.get("path")): _resolution_text(e.get("resolution"))
+                   for e in entries}
+    lines = list(SUBMODULE_RECORD_PREAMBLE)
+    for path, leg, entry in kept:
+        lines.append(f"  - path: {double_quoted(path)}")
+        lines.append(f"    leg: {leg}")
+        if resolutions.get(entry):
+            lines.append(
+                f"    resolution: {double_quoted(resolutions[entry])}")
+        lines.append(f'    source_commit: "{commit}"')
+    return "\n".join(lines) + "\n"
+
+
+def _resolution_text(resolution) -> str | None:
+    """A plan entry's `resolution:` as the text the record carries, or None.
+
+    A scalar is written as the plan's reader returned it. A blank one is no
+    reason, and a mapping or a list under the key is not one line of text,
+    so neither is written: the record's `resolution:` is optional, and a row
+    without one still says where the submodule was answered into.
+    """
+    if resolution is None or isinstance(resolution, (dict, list)):
+        return None
+    text = str(resolution)
+    return text if text.strip() else None
+
+
 def _commit_the_split(plan: Plan, source: Source, assembly: Path,
                       names: dict, urls: dict, values: dict, work_root: Path,
                       paths_for: dict, seeded: list, spec_path: str,
@@ -4960,9 +5057,17 @@ def _commit_the_split(plan: Plan, source: Source, assembly: Path,
                         spec_path, code_path)
 
         step = "committing the split"
+        # The plan's submodule answers outlive the plan only here (#189).
+        # An empty record appends nothing, so a source with no submodule
+        # gets the manifest it always got.
+        append = {"Makefile": ADOPT_MAKEFILE_BLOCK}
+        record = submodule_record(plan.entries, source.tree(),
+                                  source.commit)
+        if record:
+            append["project.yaml"] = record
         materialized = materialize_assembly_root(
             SHAPE_ROOT, assembly, values, collision_dir=COLLISION_DIR,
-            append={"Makefile": ADOPT_MAKEFILE_BLOCK})
+            append=append)
         for intended, actual in materialized.collisions:
             print(f"  beside  {actual} (the source already has {intended}; "
                   "nothing was overwritten)")
@@ -5927,6 +6032,54 @@ def _work_root(args) -> Path:
     return root
 
 
+def _leg_path_help(leg: str, default: str) -> str:
+    """`plan`'s `--help` for `--spec-path` and `--code-path` (#340): what the
+    flag is, what the plan records it as, and the two refusals `plan` makes on
+    it before it writes a plan, each by the code it prints. The two flags take
+    the one rule, so it is said from one place: `leg` is the role and
+    `default` the flag's default, which the examples of a spelling Git does
+    not keep are written from.
+
+    `tests/test_adopt_plan_leg_path_help.py` holds this to the tool: each
+    clause below names the value `plan` refuses for it, and each value the
+    help says is refused is. The spelling half is `leg_path_problem`'s, in the
+    order it asks (`scripts/shape_materialize.py`): the spelling, then the
+    names Git and Windows keep, then the alphabet `checked_value` allows (ASCII
+    only, 255 characters, nothing that begins with `-`). The collision half is
+    the scaffold's own sentence (#288) plus the half only an adoption has,
+    `shape/`, where `execute` writes its copy of a file the root already
+    holds. A mount over a source path the plan KEEPS in the root is not said
+    here, because `plan` refuses nothing for it (`_kept_collision_notes`).
+
+    THE LIST NEVER SAYS "ONLY". Each clause is a value `plan` refuses, and
+    each refusal prints the whole rule under `Remediation:`, where the closing
+    sentence sends the reader. A value the project's YAML reader would read
+    back as something other than text (`null`, `2026`: #225) is in none of
+    them: `plan` writes a plan for it, or refuses it under a clause or a code
+    another change adds, and this text is true either way. So it says nothing
+    of what `plan` ACCEPTS, because `plan` takes some values and does not
+    mount them where they were given (`null` is mounted at the default, #181).
+    """
+    return (
+        f"where the {leg} leg is mounted, as a path in the assembly root "
+        f"(default: {default}); the plan records it as `legs.{leg}_path`. "
+        "`plan` refuses it, before it writes a plan, as `adopt-bad-leg-path` "
+        "when the path is empty or `.`, is absolute, begins with `-` or is "
+        "longer than 255 characters; has a `..` segment, a backslash, a "
+        "segment that ends in a dot, or a character outside ASCII letters, "
+        "digits and `._/@+~-`; is not in Git's own spelling "
+        f"(`{default}/`, `./{default}` and `a//b` are not); has a segment "
+        "Git or Windows reserves (`.git`, `CON`); or is, holds or lies "
+        "inside the other leg's path, whatever the case. As "
+        "`adopt-leg-path-collides` it refuses a path that is, holds or lies "
+        "inside a FILE the shape writes into the root (`project.yaml` is "
+        "one, and `contracts` holds several), or that is at or under "
+        "`shape/`, whatever the case. The defaults `spec` and `code` pass. "
+        "Either refusal writes no plan and rewrites nothing, and its "
+        "`Remediation:` line states the whole rule; you pass the value "
+        "again.")
+
+
 def main(argv: list[str] | None = None) -> int:
     # FIRST, so that every `print` after it -- `--help` included -- escapes
     # a name stdout cannot encode rather than raising on it (#214).
@@ -5958,8 +6111,10 @@ def main(argv: list[str] | None = None) -> int:
                            "ratified from for one dated earlier — so "
                            "--elected-on chooses it.")
     plan.add_argument("--tracking-branch", default="main")
-    plan.add_argument("--spec-path", default="spec")
-    plan.add_argument("--code-path", default="code")
+    plan.add_argument("--spec-path", default="spec",
+                      help=_leg_path_help("spec", "spec"))
+    plan.add_argument("--code-path", default="code",
+                      help=_leg_path_help("code", "code"))
     plan.add_argument("--pin", action="append", default=[],
                       help="a neutral product this project declares a pin on "
                            "— a NAME only, e.g. --pin openGlass or --pin "
