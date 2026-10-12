@@ -724,6 +724,299 @@ def test_both_findings_are_listed_and_the_code_is_the_first(adopter, world):
         "Remediation: write `follow_ups:`") == 1
 
 
+# --- the keys a plan is opened by (#386) -------------------------------------
+
+#: The finding codes, one per key, as #293's is `plan-bad-follow-ups`.
+BAD_SOURCE, BAD_LEGS, BAD_PINS = ("plan-bad-source", "plan-bad-legs",
+                                  "plan-bad-pins")
+BAD_ALLOW, BAD_PATHS = "plan-bad-allow-empty-legs", "plan-bad-paths"
+
+#: What a hand edit can leave a key `Plan` reads holding, by test id: the key,
+#: the block written in place of its own, the code, and what the finding must
+#: begin with (#386). On #356's head (5a5011d) the scalars ended `check` and
+#: `execute` in `TypeError: ... is not iterable` (`pins:`, `paths:`,
+#: `allow_empty_legs:`) or `AttributeError: ... has no attribute 'get'`
+#: (`legs:`, `source:`), exit 1; `pins: openGlass` passed `check` and adopted
+#: with eight one-letter pins; an item `true` of `pins:` was written as the
+#: pin `True`, and `allow_empty_legs: code` consented for four legs, `c`, `o`,
+#: `d` and `e`.
+BAD_KEYS = {
+    "pins-int": ("pins", "pins: 5\n", BAD_PINS,
+                 "`pins:` is the number 5, not a list"),
+    "pins-true": ("pins", "pins: true\n", BAD_PINS,
+                  "`pins:` is the boolean true, not a list"),
+    "pins-text": ("pins", "pins: openGlass\n", BAD_PINS,
+                  "`pins:` is the text 'openGlass', not a list"),
+    "pins-item-true": ("pins", "pins: [openGlass, true]\n", BAD_PINS,
+                       "item 2 of `pins:` is the boolean true, not text"),
+    "pins-item-int": ("pins", "pins:\n  - 2026\n", BAD_PINS,
+                      "item 1 of `pins:` is the number 2026, not text"),
+    "pins-item-null": ("pins", "pins: [null]\n", BAD_PINS,
+                       "item 1 of `pins:` is null, not text"),
+    "pins-item-mapping": ("pins", "pins: [{a: 1}]\n", BAD_PINS,
+                          "item 1 of `pins:` is a mapping of 1 key(s), not "
+                          "text"),
+    "allow-int": ("allow_empty_legs", "allow_empty_legs: 5\n", BAD_ALLOW,
+                  "`allow_empty_legs:` is the number 5, not a list"),
+    "allow-true": ("allow_empty_legs", "allow_empty_legs: true\n", BAD_ALLOW,
+                   "`allow_empty_legs:` is the boolean true, not a list"),
+    "allow-text": ("allow_empty_legs", "allow_empty_legs: code\n", BAD_ALLOW,
+                   "`allow_empty_legs:` is the text 'code', not a list"),
+    "allow-item-case": ("allow_empty_legs", "allow_empty_legs: [Code]\n",
+                        BAD_ALLOW, "item 1 of `allow_empty_legs:` is the text "
+                        "'Code', not a leg `execute` can seed"),
+    "allow-item-int": ("allow_empty_legs", "allow_empty_legs: [code, 5]\n",
+                       BAD_ALLOW, "item 2 of `allow_empty_legs:` is the "
+                       "number 5, not a leg `execute` can seed"),
+    "paths-int": ("paths", "paths: 5\n", BAD_PATHS,
+                  "`paths:` is the number 5, not a list"),
+    "paths-true": ("paths", "paths: true\n", BAD_PATHS,
+                   "`paths:` is the boolean true, not a list"),
+    "paths-text": ("paths", "paths: src/\n", BAD_PATHS,
+                   "`paths:` is the text 'src/', not a list"),
+    "legs-int": ("legs", "legs: 5\n", BAD_LEGS,
+                 "`legs:` is the number 5, not a mapping"),
+    "legs-list": ("legs", "legs: [spec, code]\n", BAD_LEGS,
+                  "`legs:` is a list of 2 item(s), not a mapping"),
+    "source-int": ("source", "source: 5\n", BAD_SOURCE,
+                   "`source:` is the number 5, not a mapping"),
+    "source-text": ("source", "source: Thing\n", BAD_SOURCE,
+                    "`source:` is the text 'Thing', not a mapping"),
+}
+ONE_PER_BAD_KEY = pytest.mark.parametrize("edit", sorted(BAD_KEYS))
+
+#: The line each key's remediation begins with, said once after its findings.
+KEY_REMEDIATION = {key: f"Remediation: write `{key}:` in the plan file"
+                   for key in ("source", "legs", "pins", "allow_empty_legs")}
+KEY_REMEDIATION["paths"] = ("Remediation: `paths:` is the list of entries "
+                            "`plan` wrote")
+
+#: What `execute`'s refusal of them says first.
+NOTHING_MADE = ("nothing was created and nothing was pushed: the plan was "
+                "refused before the work directory was made, the source was "
+                "opened or a leg repository was created")
+
+
+def with_key(text: str, key: str, block: str) -> str:
+    """`text` with the top-level `key:` and the block under it replaced by
+    `block`, or deleted when `block` is empty, as a hand edit would."""
+    edited, done = re.subn(rf"^{key}:.*\n(?:[ \t]+.*\n)*", lambda _: block,
+                           text, count=1, flags=re.M)
+    assert done == 1, f"the plan has no `{key}:` to edit"
+    return edited
+
+
+def bad_key_text(world: World, edit: str) -> str:
+    key, block, _, _ = BAD_KEYS[edit]
+    return with_key(world.answered, key, block)
+
+
+@ONE_PER_BAD_KEY
+def test_check_finds_a_key_plan_reads_that_is_not_what_plan_writes(world,
+                                                                   edit):
+    """#386 (a): a FINDING that names the key and what the reader gave it,
+    exit 1, no traceback and no `plan ok`; and nothing else is reported,
+    because every other finding is read from these keys. On 5a5011d each was
+    a traceback naming Python's error, or `plan ok`."""
+    key, _, code, said = BAD_KEYS[edit]
+    result = run_check(write_edited(world, bad_key_text(world, edit)))
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert_no_traceback(result)
+    assert "plan ok" not in result.stdout
+    found = findings_of(result)
+    assert len(found) == 1, found
+    assert found[0].startswith(f"FINDING {code}: {said}"), found
+    assert result.stderr.count(KEY_REMEDIATION[key]) == 1, result.stderr
+    assert "1 finding(s) in" in result.stderr
+
+
+@ONE_PER_BAD_KEY
+def test_execute_refuses_a_key_plan_reads_before_anything_is_made(
+        adopter, world, edit):
+    """#386 (c): the same finding, refused under its own code before the
+    work directory, the source's reading or a leg; on 5a5011d each ended in
+    the traceback `check` printed, or, for the text and item rows of `pins:`
+    and `allow_empty_legs:`, adopted."""
+    key, _, code, said = BAD_KEYS[edit]
+    world.plan.write_text(bad_key_text(world, edit), encoding=UTF8)
+    refusal = refused_by(adopter, execute_args(world.tmp, world.plan))
+    assert refusal.code == code
+    assert f"  FINDING {code}: {said}" in refusal.detail
+    assert refusal.detail.startswith(f"1 finding(s) in {world.plan}, as "
+                                     "`check` prints them:")
+    assert NOTHING_MADE in refusal.remediation
+    assert refusal.remediation.count(KEY_REMEDIATION[key]) == 1
+    no_leg_was_created(world.tmp)
+    assert not (world.tmp / WORK).exists(), "not even the work directory"
+    assert source_branches(world.source) == ["main"]
+
+
+def test_every_key_that_is_wrong_is_named_in_one_run(adopter, world):
+    """#386 (b): three of the five keys wrong at once, and #293's beside
+    them: one list, in the order `plan` writes the keys, then #293's, which
+    `check` would otherwise report only once these were corrected. `execute`
+    wears the first one's code and names every one, each remediation once."""
+    text = with_key(world.answered, "pins", "pins: openGlass\n")
+    text = with_key(text, "legs", "legs: 5\n")
+    text = with_key(text, "paths", "paths: true\n")
+    text = with_follow_ups(text, "follow_ups: 5\n")
+    printed = check_findings(write_edited(world, text))
+    assert [line.split(":", 1)[0] for line in printed] == [
+        f"FINDING {BAD_LEGS}", f"FINDING {BAD_PINS}", f"FINDING {BAD_PATHS}",
+        f"FINDING {BAD_FOLLOW_UPS_CODE}"], printed
+    world.plan.write_text(text, encoding=UTF8)
+    refusal = refused_by(adopter, execute_args(world.tmp, world.plan))
+    assert refusal.code == BAD_LEGS
+    for finding in printed:
+        assert f"  {finding}" in refusal.detail
+    for key in ("legs", "pins", "paths"):
+        assert refusal.remediation.count(KEY_REMEDIATION[key]) == 1
+    assert refusal.remediation.count("Remediation: write `follow_ups:`") == 1
+    no_leg_was_created(world.tmp)
+
+
+def test_a_wrong_source_is_named_when_source_says_where_to_read_it(world):
+    """`--source` says where to read the repository, so the plan's `source:`
+    is not read to open it; it is still the plan's record of the repository,
+    and its `commit:` is what `check` holds the tree to. On 5a5011d this was
+    `AttributeError` from `source_commit`."""
+    text = with_key(world.answered, "source", "source: 5\n")
+    result = run_script(ADOPT, "check", "--plan",
+                        str(write_edited(world, text)),
+                        "--source", str(world.source))
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert_no_traceback(result)
+    [found] = findings_of(result)
+    assert found.startswith(
+        f"FINDING {BAD_SOURCE}: `source:` is the number 5, not a mapping"), \
+        found
+
+
+def test_a_spec_only_plan_that_consents_in_text_is_not_four_legs(adopter,
+                                                                 tmp_path):
+    """#386's `allow_empty_legs: code`, where it matters: a source with no
+    code, whose plan `plan` wrote with `--allow-empty-leg code`. Text on the
+    key's own line was read as four legs, `c`, `o`, `d` and `e`, so on
+    5a5011d `check` said `plan ok` while `execute` refused
+    `adopt-empty-leg-unconsented` for the leg the person had named; both now
+    name the key."""
+    repo = spec_only_source(tmp_path)
+    plan_path = tmp_path / "plan.yaml"
+    written = write_plan(repo, plan_path, project=PROJECT,
+                         extra=("--allow-empty-leg", CODE))
+    assert written.returncode == 0, written.stderr + written.stdout
+    text = with_key(plan_path.read_text(encoding=UTF8), "allow_empty_legs",
+                    "allow_empty_legs: code\n")
+    plan_path.write_text(text, encoding=UTF8)
+    found = check_findings(plan_path)
+    assert found == [f"FINDING {BAD_ALLOW}: `allow_empty_legs:` is the text "
+                     "'code', not a list: each item of a list names one leg "
+                     "`execute` may seed from the shape's template"], found
+    refusal = refused_by(adopter, execute_args(tmp_path, plan_path))
+    assert refusal.code == BAD_ALLOW
+    no_leg_was_created(tmp_path)
+
+
+#: What `check` and `execute` still take, by test id: the key, the block
+#: written in place of its own ("" deletes the key), and whether `check`
+#: then passes. A `paths:` with no entries is valid as a TYPE and leaves every
+#: source path uncovered, which is `plan-uncovered`'s to say, as it was.
+GOOD_KEYS = {
+    "pins-empty": ("pins", "pins: []\n", True),
+    "pins-bare": ("pins", "pins:\n", True),
+    "pins-absent": ("pins", "", True),
+    "pins-flow": ("pins", "pins: [openGlass]\n", True),
+    "pins-block": ("pins", "pins:\n  - openGlass\n", True),
+    "allow-empty": ("allow_empty_legs", "allow_empty_legs: []\n", True),
+    "allow-bare": ("allow_empty_legs", "allow_empty_legs:\n", True),
+    "allow-absent": ("allow_empty_legs", "", True),
+    "allow-both": ("allow_empty_legs", "allow_empty_legs: [spec, code]\n",
+                   True),
+    "paths-empty": ("paths", "paths: []\n", False),
+    "paths-bare": ("paths", "paths:\n", False),
+    "paths-absent": ("paths", "", False),
+}
+
+
+@pytest.mark.parametrize("edit", sorted(GOOD_KEYS))
+def test_a_list_an_empty_list_a_bare_key_and_no_key_are_not_findings(
+        adopter, world, edit):
+    """#386 (d): what `plan` writes, and the ways of writing none, are not
+    findings of this kind; a plan with no entries is `plan-uncovered`, as it
+    was, and never `plan-bad-paths`."""
+    key, block, passes = GOOD_KEYS[edit]
+    text = with_key(world.answered, key, block)
+    checked = run_check(write_edited(world, text))
+    assert_no_traceback(checked)
+    assert "FINDING plan-bad-" not in checked.stderr, checked.stderr
+    if passes:
+        assert checked.returncode == 0, checked.stderr + checked.stdout
+        plan, source = open_plan(adopter, world, text)
+        assert adopter._refuse_what_check_finds(plan, source) is None
+    else:
+        assert checked.returncode == 1, checked.stderr + checked.stdout
+        assert {line.split(":", 1)[0] for line in findings_of(checked)} == {
+            f"FINDING {UNCOVERED}"}
+
+
+def test_the_readers_ask_the_type_of_what_they_read(adopter, world):
+    """#386 (3): no `TypeError` or `AttributeError` from the reads themselves,
+    whoever constructs the plan: each takes only what `plan` writes. On
+    5a5011d the constructor raised on `pins: 5` and `paths: 5`,
+    `allowed_empty_legs` on `allow_empty_legs: 5`, `names` on `legs: 5`, and
+    `source_commit` and `open_source` on `source: 5`; text was read one
+    character at a time."""
+    base = {"kind": adopter.PLAN_KIND, "mode": "in-place"}
+    for value in (5, True, 1.5, "openGlass", {"a": 1}):
+        plan = adopter.Plan(Path("p.yaml"), {
+            **base, "pins": value, "paths": value,
+            "allow_empty_legs": value, "source": value})
+        assert plan.pins == [] and plan.entries == []
+        assert plan.allowed_empty_legs() == set()
+        assert plan.source_commit == ""
+        with pytest.raises(adopter.Refusal) as caught:
+            plan.open_source(None, world.tmp / "read")
+        assert caught.value.code == "plan-no-source"
+        assert plan.open_source(str(world.source),
+                                world.tmp / "read").commit
+    plan = adopter.Plan(Path("p.yaml"), {
+        **base, "pins": ["openGlass", True, None, "", 5],
+        "allow_empty_legs": ["code", None, 5, "Spec"]})
+    assert plan.pins == ["openGlass"]
+    assert plan.allowed_empty_legs() == {"code", "Spec"}
+    no_legs = adopter.Plan(Path("p.yaml"), dict(base)).names()
+    for legs in (5, "Northwind", [{"role": "spec"}]):
+        plan = adopter.Plan(Path("p.yaml"), {**base, "legs": legs})
+        assert plan.legs == legs, "the doctor's list is kept as it stands"
+        assert plan.names() == no_legs, "read as no `legs:` at all"
+
+
+def test_a_placement_plans_list_of_legs_still_constructs(adopter):
+    """#386's constraint: `shape-doctor.py --placement-plan` writes `legs:` as
+    a LIST and `tests/test_shape_doctor.py` hands it to `Plan` and
+    `_leg_findings`. The constructor refuses no `legs:`; only `check` and
+    `execute`, reading a plan FILE, name one that is not a mapping."""
+    plan = adopter.Plan(Path("placement-plan.yaml"), {
+        "kind": adopter.PLAN_KIND, "mode": "in-place",
+        "legs": [{"role": "spec", "path": "spec"}],
+        "paths": [{"path": "spec/tool.py", "leg": "spec"}]})
+    assert [entry["path"] for entry in plan.entries] == ["spec/tool.py"]
+    assert plan.legs == [{"role": "spec", "path": "spec"}]
+    assert adopter._leg_findings(plan, None) == []
+
+
+def test_the_refusal_comes_before_anyone_is_asked_to_say_yes_for_a_key(
+        adopter, world, monkeypatch):
+    """WITHOUT `--yes`, on a stream that is not a terminal: the refusal is
+    still the key's own, and not `adopt-unconfirmed`."""
+    monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+    world.plan.write_text(bad_key_text(world, "pins-text"), encoding=UTF8)
+    refusal = refused_by(adopter,
+                         execute_args(world.tmp, world.plan, yes=False))
+    assert refusal.code == BAD_PINS
+    no_leg_was_created(world.tmp)
+
+
 # --- a plan that is not UTF-8 (#192) ----------------------------------------
 
 #: The byte `0xff` is in no UTF-8 text, so wherever it lands the file cannot be
@@ -889,3 +1182,34 @@ def test_an_elected_on_it_cannot_read_creates_no_leg_and_the_corrected_plan_runs
     manifest = adopter.load_yaml(work / PROJECT / "project.yaml")
     assert manifest["reference"] == adopter.default_reference("2026-09-02")
     assert str(manifest["elected_on"]) == "2026-09-02"
+
+
+@needs_filter_repo
+def test_pins_written_as_text_creates_no_leg_and_the_corrected_plan_runs(
+        adopter, world):
+    """#386 (e) as a person met it, through `main`: `pins: openGlass` is exit 2
+    and a REFUSED line, with no work directory, no leg and no split branch.
+    On 5a5011d it adopted, said `adoption verified`, and wrote eight pins,
+    `G`, `a`, `e`, `l`, `n`, `o`, `p` and `s`. The corrected plan, the list
+    `plan` writes, adopts with the one pin it names."""
+    remotes, work = world.tmp / REMOTES, world.tmp / WORK
+    flags = ("--plan", str(world.plan), "--yes", "--local-remote-dir",
+             str(remotes), "--work-dir", str(work))
+    world.plan.write_text(bad_key_text(world, "pins-text"), encoding=UTF8)
+    refused = run_script(ADOPT, "execute", *flags)
+    assert refused.returncode == 2, refused.stderr + refused.stdout
+    assert f"REFUSED {BAD_PINS}: " in refused.stderr
+    assert "`pins:` is the text 'openGlass', not a list" in refused.stderr
+    assert_no_traceback(refused)
+    assert "adoption verified" not in refused.stdout
+    assert not remotes.exists(), "not even the directory the legs go in"
+    assert not work.exists(), "and no work directory"
+    assert source_branches(world.source) == ["main"]
+
+    world.plan.write_text(with_key(world.answered, "pins",
+                                   "pins: [openGlass]\n"), encoding=UTF8)
+    corrected = run_script(ADOPT, "execute", *flags)
+    assert corrected.returncode == 0, corrected.stderr + corrected.stdout
+    assert "adoption verified" in corrected.stdout
+    manifest = adopter.load_yaml(work / PROJECT / "project.yaml")
+    assert manifest["neutral_product_pins"] == ["openGlass"]
