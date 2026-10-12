@@ -54,6 +54,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import stat
 import sys
 from pathlib import Path
 
@@ -416,13 +417,15 @@ class PinSources:
     def read_as_path(self, typed: str | None) -> str:
         """The sentence saying a value holding `=` was read as a bare PATH,
         or `""` — what a person who meant `PRODUCT=PATH` and mistyped the
-        product needs told, since nothing else in the run names it."""
+        product needs told, since nothing else in the run names it. Nothing
+        when no pin is declared: the note has already said so."""
         if typed is None or self.reading.get(typed) is not None \
-                or "=" not in typed:
+                or "=" not in typed or not self.declared:
             return ""
-        declared = ", ".join(self.declared) or "none"
-        return (f"It was read as a PATH: `{typed.partition('=')[0]}` is not "
-                f"a declared neutral-product pin (declared: {declared}).")
+        key = typed.partition("=")[0]
+        what = f"`{key}` is not" if key else "nothing before its `=` is"
+        return (f"It was read as a PATH: {what} a declared neutral-product "
+                f"pin (declared: {', '.join(self.declared)}).")
 
 
 def resolve_neutral_pin_source(root: Path, product: str, repository: str,
@@ -476,10 +479,22 @@ def _digest_from_source(source: Path, commit: str) -> str:
     openGlass=<missing>` died on a traceback, exit 1, where a directory that
     is not a checkout is the `neutral-pin-source-unreadable` FINDING. An
     explicit source that cannot answer is that finding however it fails.
+
+    `stat()` INSIDE THE GUARD, and not `exists()`/`is_dir()`: before 3.14
+    those two swallow only a missing path and raise every other `OSError`,
+    so a source under a parent this user cannot enter, or a name longer than
+    the filesystem takes, was still a traceback on 3.9 to 3.13 and, on 3.14,
+    a finding saying "no such directory" about a directory that exists. The
+    reason the finding gives is the system's own.
     """
-    if not source.exists():
-        raise Refusal("pin-source-missing", "no such directory")
-    if not source.is_dir():
+    try:
+        mode = source.stat().st_mode
+    except (FileNotFoundError, NotADirectoryError):
+        raise Refusal("pin-source-missing", "no such directory") from None
+    except OSError as exc:
+        raise Refusal("pin-source-unreadable",
+                      f"{exc.strerror or exc}") from exc
+    if not stat.S_ISDIR(mode):
         raise Refusal("pin-source-not-a-directory",
                       "it is a file, not a directory")
     try:
@@ -572,9 +587,11 @@ def _check_neutral_pin_commit_and_digest_fields(pin: dict, rel: str,
 def _also_a_directory(typed: str | None, sources: PinSources) -> str:
     """The line for a value read as `PRODUCT=PATH` that ALSO names an
     existing directory whole (#295): the keyed reading won, and this is how
-    to ask for the other one."""
+    to ask for the other one. `os.path.isdir`, which is False for every
+    `OSError` on every Python, where `Path.is_dir` before 3.14 raised a name
+    too long out of the finding it was adding a line to."""
     if typed is None or sources.reading.get(typed) is None \
-            or not Path(typed).is_dir():
+            or not os.path.isdir(typed):
         return ""
     return (f"`{typed}` is also a directory; `--pin-source ./{typed}` "
             "reads it as one.")
@@ -749,7 +766,25 @@ def _run_all_checks(root: Path, report: Report,
 def _emit_report(report: Report, quiet: bool) -> int:
     """Print the notes and findings and choose the exit code. Split from
     `main` for #132.
+
+    A CHARACTER STDOUT CANNOT ENCODE IS PRINTED ESCAPED (#295). A note names
+    a `--pin-source` as typed, and a `sibling checkout (<path>)` line names a
+    path, so a stdout in cp1252 (what Windows gives one that is not the
+    console) raised `UnicodeEncodeError` on `日本` and turned a passing run
+    into a traceback. A `strict` or `surrogateescape` stdout, the two that
+    raise, becomes `backslashreplace`, the handler stderr already has; any
+    other handler, one somebody chose, is left alone. The tools run from a
+    checkout of the standard use `escape_what_stdout_cannot_encode` (#214),
+    which also writes a byte `surrogateescape` read in back as that byte; it
+    lives in `shape_materialize.py`, which no project carries, and this file
+    imports nothing but `repo_shape`, so here such a byte prints as `\\udcXX`,
+    as it already does on stderr.
     """
+    if getattr(sys.stdout, "errors", None) in ("strict", "surrogateescape"):
+        try:
+            sys.stdout.reconfigure(errors="backslashreplace")
+        except (AttributeError, ValueError, OSError):
+            pass
     if not quiet:
         for note in report.notes:
             print(note)
