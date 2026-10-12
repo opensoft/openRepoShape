@@ -1226,12 +1226,19 @@ def _spelled(path: str) -> str:
     file can hold -- written raw, it raised mid-write and left `--out` empty
     (#166's NEW-2) -- and a name may hold a newline, which would end the
     line. So a character that is not printable is spelled with a backslash,
-    `\\xe9` for the byte 0xE9 and `\\n` for a newline, and so are a
-    backslash and a backtick, so that the spelling reads one way only and
-    the backticks still delimit it. The plan's own `path:` spells that byte
-    `\\udce9`, not `\\xe9` (`repo_shape.double_quoted`), because in YAML
-    `\\xe9` is the character U+00E9, which is another name: a question or a
-    report that says `caf\\xe9` is the entry `"caf\\udce9"` in the plan.
+    and so are a backslash and a backtick, so that the spelling reads one way
+    only and the backticks still delimit it.
+
+    THE SPELLING IS THE PLAN'S OWN (`_spelled_character`): the byte 0xE9 is
+    `\\udce9` and the character U+0085 is `\\x85`, as `path:` writes them
+    (`repo_shape.double_quoted`), so that a question or a report that says
+    `caf\\udce9` is the entry `"caf\\udce9"` in the plan. Each escape names
+    a code point, so a byte and a character never share one. They did: a
+    byte was `\\xe9` here, which in YAML is the character U+00E9, and the 32
+    C1 controls, U+00A0 and U+00AD were spelled as the bytes of the same
+    value, 34 pairs of different names that read alike (#329). A spelling is
+    only printed, in a finding, a refusal or a question the plan carries;
+    none is read back or handed to git.
     """
     return "`" + "".join(map(_spelled_character, path)) + "`"
 
@@ -1251,13 +1258,17 @@ def _shown(path: str) -> str:
 
 
 def _spelled_character(char: str) -> str:
+    """One character of `_spelled`: itself when it is printable, a backslash
+    before a backslash or a backtick, and otherwise the escape
+    `repo_shape.double_quoted` writes for it in the plan, so the plan's one
+    table and not a second one: `\\n` for a line feed, `\\x85` for U+0085,
+    `\\u2028` for U+2028, and `\\udc85` for the byte 0x85, which
+    `Source.tree` keeps as the surrogate U+DC00 plus the byte."""
     if char in "\\`":
         return "\\" + char
     if char.isprintable():
         return char
-    if "\udc80" <= char <= "\udcff":
-        return f"\\x{ord(char) - 0xDC00:02x}"
-    return ascii(char)[1:-1]
+    return double_quoted(char)[1:-1]
 
 
 def cross_leg_references(source: "Source", entries: list["Entry"],
@@ -3367,7 +3378,7 @@ def _refused_by_policy(path: str) -> str | None:
       * a byte that is not UTF-8, which `Source.tree` keeps as one of
         U+DC80 to U+DCFF (`surrogateescape`). Since #199 (PR #247)
         `write_paths_listing` writes it as that byte, and with this refusal
-        disabled a source holding `caf\\xe9.md` was extracted and verified,
+        disabled a source holding `caf\\udce9.md` was extracted and verified,
         the byte in the leg, measured. It is held until adopting such a name
         end to end is measured on macOS and Windows: a name that holds one
         prints as an escape, never as itself, and the split commit's message
@@ -4998,8 +5009,8 @@ def _index_entries(assembly: Path,
     as #169 refuses case-only twins of the two leg paths. `-z`, for a path
     git would otherwise quote. A name that is not UTF-8 keeps each byte as a
     surrogate, as `Source.tree` keeps it, so the refusal spells the byte 0xFF
-    `\\xff`, as every other finding does (#212). Decoded with `replace`,
-    `a<0xFF>` and `a<0xFE>` both read `a<U+FFFD>`.
+    `\\udcff`, as every other finding does (#212, #329). Decoded with
+    `replace`, `a<0xFF>` and `a<0xFE>` both read `a<U+FFFD>`.
     """
     raw = git_out(["--icase-pathspecs", "ls-files", "-s", "-z", "--",
                    *pathspecs], cwd=assembly, binary=True)
@@ -6644,6 +6655,54 @@ def _work_root(args) -> Path:
     return root
 
 
+def _leg_path_help(leg: str, default: str) -> str:
+    """`plan`'s `--help` for `--spec-path` and `--code-path` (#340): what the
+    flag is, what the plan records it as, and the two refusals `plan` makes on
+    it before it writes a plan, each by the code it prints. The two flags take
+    the one rule, so it is said from one place: `leg` is the role and
+    `default` the flag's default, which the examples of a spelling Git does
+    not keep are written from.
+
+    `tests/test_adopt_plan_leg_path_help.py` holds this to the tool: each
+    clause below names the value `plan` refuses for it, and each value the
+    help says is refused is. The spelling half is `leg_path_problem`'s, in the
+    order it asks (`scripts/shape_materialize.py`): the spelling, then the
+    names Git and Windows keep, then the alphabet `checked_value` allows (ASCII
+    only, 255 characters, nothing that begins with `-`). The collision half is
+    the scaffold's own sentence (#288) plus the half only an adoption has,
+    `shape/`, where `execute` writes its copy of a file the root already
+    holds. A mount over a source path the plan KEEPS in the root is not said
+    here, because `plan` refuses nothing for it (`_kept_collision_notes`).
+
+    THE LIST NEVER SAYS "ONLY". Each clause is a value `plan` refuses, and
+    each refusal prints the whole rule under `Remediation:`, where the closing
+    sentence sends the reader. A value the project's YAML reader would read
+    back as something other than text (`null`, `2026`: #225) is in none of
+    them: `plan` writes a plan for it, or refuses it under a clause or a code
+    another change adds, and this text is true either way. So it says nothing
+    of what `plan` ACCEPTS, because `plan` takes some values and does not
+    mount them where they were given (`null` is mounted at the default, #181).
+    """
+    return (
+        f"where the {leg} leg is mounted, as a path in the assembly root "
+        f"(default: {default}); the plan records it as `legs.{leg}_path`. "
+        "`plan` refuses it, before it writes a plan, as `adopt-bad-leg-path` "
+        "when the path is empty or `.`, is absolute, begins with `-` or is "
+        "longer than 255 characters; has a `..` segment, a backslash, a "
+        "segment that ends in a dot, or a character outside ASCII letters, "
+        "digits and `._/@+~-`; is not in Git's own spelling "
+        f"(`{default}/`, `./{default}` and `a//b` are not); has a segment "
+        "Git or Windows reserves (`.git`, `CON`); or is, holds or lies "
+        "inside the other leg's path, whatever the case. As "
+        "`adopt-leg-path-collides` it refuses a path that is, holds or lies "
+        "inside a FILE the shape writes into the root (`project.yaml` is "
+        "one, and `contracts` holds several), or that is at or under "
+        "`shape/`, whatever the case. The defaults `spec` and `code` pass. "
+        "Either refusal writes no plan and rewrites nothing, and its "
+        "`Remediation:` line states the whole rule; you pass the value "
+        "again.")
+
+
 def main(argv: list[str] | None = None) -> int:
     # FIRST, so that every `print` after it -- `--help` included -- escapes
     # a name stdout cannot encode rather than raising on it (#214).
@@ -6675,8 +6734,10 @@ def main(argv: list[str] | None = None) -> int:
                            "ratified from for one dated earlier — so "
                            "--elected-on chooses it.")
     plan.add_argument("--tracking-branch", default="main")
-    plan.add_argument("--spec-path", default="spec")
-    plan.add_argument("--code-path", default="code")
+    plan.add_argument("--spec-path", default="spec",
+                      help=_leg_path_help("spec", "spec"))
+    plan.add_argument("--code-path", default="code",
+                      help=_leg_path_help("code", "code"))
     plan.add_argument("--pin", action="append", default=[],
                       help="a neutral product this project declares a pin on "
                            "— a NAME only, e.g. --pin openGlass or --pin "

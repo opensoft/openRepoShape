@@ -2188,7 +2188,12 @@ def pin_reads_at(ctx: Context, rev: str) -> bool:
     `parse_yaml` -- and `check_pin` makes the checks `read_pin` makes, so
     the two cannot disagree about a pin. Where git gives no blob (no such
     path, no such commit) there is no pin that reads, and `files: 5`, which
-    `read_pin` itself fails with a `TypeError`, does not read either.
+    `check_pin` refuses as `update-pin-row`, does not read either (#290).
+
+    A `TypeError` IS NOT CAUGHT. It was, for that `files: 5`; nothing in a
+    pin's bytes raises one now, so one means a caller out of step with
+    `check_pin`, and the doctor fails loudly rather than answer that no
+    commit holds a pin to put back.
     """
     blob = git_answer(["cat-file", "blob", f"{rev}:./{SHAPE_PIN}"],
                       ctx.root, binary=True)
@@ -2197,8 +2202,8 @@ def pin_reads_at(ctx: Context, rev: str) -> bool:
     us = ctx.update_shape()
     try:
         text = blob.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
-        us.check_pin(us.parse_yaml(text), f"{rev}:{SHAPE_PIN}")
-    except (Refusal, us.YamlError, ValueError, TypeError):
+        us.check_pin(us.parse_yaml(text), f"{rev}:{SHAPE_PIN}", ctx.root)
+    except (Refusal, us.YamlError, ValueError):
         return False
     return True
 
@@ -3933,7 +3938,13 @@ def pinned_paths(root: Path) -> set:
     pin = Context._read(root / "contracts" / "shape-pin.yaml")
     if not isinstance(pin, dict):
         return set()
-    return {str(row.get("path")) for row in (pin.get("files") or [])
+    # A `files:` that is not a list pins nothing, as a pin that is not a
+    # mapping pins nothing (#290): `files: 5` was iterated, a TypeError. The
+    # shape-currency row is where that pin is reported.
+    rows = pin.get("files")
+    if not isinstance(rows, list):
+        return set()
+    return {str(row.get("path")) for row in rows
             if isinstance(row, dict) and row.get("path")}
 
 
@@ -4054,13 +4065,27 @@ def origin_url(path: Path) -> str:
 
     BOTH THE SIBLING AND THE HOLDER are asked this: the holder's own remote
     is what a relative submodule url is resolved against.
+
+    AND IT IS READ AS `make siblings` READS IT: a byte that is not UTF-8 is
+    replaced, which is `siblings.py::git_text`'s `errors="replace"` (#385).
+    git keeps a URL as the bytes it was given, so a clone of a mirror under
+    a directory named in a legacy code page has one, and read strictly it
+    ended this report in a `UnicodeDecodeError` traceback. It is NOT the
+    empty string: `verify_sibling` accepts `<dir>/caf\\ufffd/Org/Repo.git`
+    as the member's clone by the row's `repository: Org/Repo` tail, so
+    `""` here would call the clone `make siblings` fetches into `(no
+    origin)` and no working clone -- the two tools disagreeing about one
+    directory, which `working_clone` exists to prevent (#146). A URL that
+    matches nothing is quoted with the replacement, and a row prints it as
+    `?`.
     """
     if not (path / ".git").exists():
         return ""
     try:
-        return git_out(["remote", "get-url", "origin"], cwd=path)
+        raw = git_out(["remote", "get-url", "origin"], cwd=path, binary=True)
     except (Refusal, OSError):
         return ""
+    return raw.decode("utf-8", "replace").strip()
 
 
 def submodule_config(root: Path) -> dict:
@@ -4550,10 +4575,21 @@ def origin_name(root: Path) -> str | None:
     containing a second colon of its own: `D` in `D:/a/.../Atlas.git` is a
     PATH, never a host, however this function is later changed to use
     what comes after it.
+
+    AND A URL THAT IS NOT UTF-8 NAMES NOTHING, as no origin names nothing
+    (#385). git keeps a URL as the bytes it was given -- a clone of a
+    directory named in a legacy code page has one -- and read strictly it
+    ended this report in a `UnicodeDecodeError` traceback, exit 1, from the
+    `naming` row, where the same repository with no origin ends NOT A SHAPE
+    ROOT, exit 2. No segment of it is salvaged: in a double-byte code page
+    the byte `\\` is the second half of many characters, so what the rules
+    above split off could be a fragment of a name. It is the answer
+    `shape_advisory.repository_names` gives the same URL, so the `naming`
+    row, `the way in` and the `Triad` row read one identity.
     """
     try:
         url = git_out(["remote", "get-url", "origin"], cwd=root)
-    except (Refusal, OSError):
+    except (Refusal, OSError, UnicodeDecodeError):
         return None
     if _WINDOWS_PATH_RE.match(url):
         url = url.replace("\\", "/")

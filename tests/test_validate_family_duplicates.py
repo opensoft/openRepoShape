@@ -29,7 +29,9 @@ that mounts a second member at `members/irrs`: `--no-members` reads no
 member, and a fixture with two directories whose names differ only in case
 cannot exist on macOS or Windows (`mount_twice` spells its second row `IRRS2`
 for that reason). That one test says so and skips there; every other row of
-this module runs on all three platforms.
+this module runs on all three platforms. Each member the holder mounts keeps
+a row (`keeping_mounts`): a mount no row names is a finding of its own since
+#361.
 """
 
 from __future__ import annotations
@@ -87,6 +89,17 @@ def rewrite(holder, rows: list) -> None:
     family_module().Family.open(holder).write_members(rows)
     git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam",
         "Rewrite the members", cwd=holder)
+
+
+def keeping_mounts(holder, rows: list) -> list:
+    """`rows`, then the holder's own row for each member it mounts that no
+    row in `rows` gives the path of. A mount no row names is a finding of
+    its own (#361, `member-gitlink-unnamed` and `gitmodules-path-unnamed`),
+    and every test here asks about the names `rows` spells, not about that,
+    so each member the holder mounts keeps a row."""
+    given = {row.get("path") for row in rows}
+    return [*rows, *(row for row in manifest(holder)["members"]
+                     if row["path"] not in given)]
 
 
 def findings(result) -> list[str]:
@@ -156,8 +169,9 @@ def test_rows_that_differ_only_in_case_are_found_under_no_members(
     """Both rows are named as WRITTEN, the earlier one first, whichever of
     the two spellings that is, and the finding says why they are one."""
     base = irrs_row(holder)
-    rewrite(holder, [spelled(base, first, "irrs-first"),
-                     spelled(base, second, "irrs-second")])
+    rewrite(holder, keeping_mounts(holder, [
+        spelled(base, first, "irrs-first"),
+        spelled(base, second, "irrs-second")]))
     result = validate(holder, "--no-members")
     assert result.returncode == 1, result.stderr + result.stdout
     assert len(findings(result)) == 1, result.stderr
@@ -173,7 +187,8 @@ def test_a_case_variant_is_not_the_exact_finding(holder):
     some disks. A reader told the wrong one goes looking for a row that is
     not there."""
     base = irrs_row(holder)
-    rewrite(holder, [base, spelled(base, "irrs", "irrs-twin")])
+    rewrite(holder, keeping_mounts(
+        holder, [base, spelled(base, "irrs", "irrs-twin")]))
     result = validate(holder, "--no-members")
     assert result.returncode == 1, result.stderr + result.stdout
     assert len(findings(result)) == 1, result.stderr
@@ -192,8 +207,9 @@ def test_rows_that_a_disk_folds_but_lower_does_not_are_found_under_no_members(
     first, second = pair
     assert first.lower() != second.lower(), "the point is that lower() fails"
     base = irrs_row(holder)
-    rewrite(holder, [spelled(base, first, "irrs-first"),
-                     spelled(base, second, "irrs-second")])
+    rewrite(holder, keeping_mounts(holder, [
+        spelled(base, first, "irrs-first"),
+        spelled(base, second, "irrs-second")]))
     result = run_script(holder / "scripts" / "validate-family.py",
                         "--no-members", cwd=holder,
                         env={"PYTHONUTF8": "1"})
@@ -210,7 +226,8 @@ def test_the_case_finding_does_not_assume_one_project(holder):
     because `family.py remove` cannot take out a row that was never mounted,
     which is the only kind a macOS or Windows holder can hold."""
     base = irrs_row(holder)
-    rewrite(holder, [base, spelled(base, "irrs", "irrs-twin")])
+    rewrite(holder, keeping_mounts(
+        holder, [base, spelled(base, "irrs", "irrs-twin")]))
     result = validate(holder, "--no-members")
     assert result.returncode == 1, result.stderr + result.stdout
     (line,) = findings(result)
@@ -231,7 +248,8 @@ def test_each_later_row_is_one_finding_against_the_first_that_holds_its_name(
     base = irrs_row(holder)
     lower = spelled(base, "irrs", "irrs-two")
     title = spelled(base, "Irrs", "irrs-three")
-    rewrite(holder, [base, lower, title, dict(lower)])
+    rewrite(holder, keeping_mounts(holder,
+                                   [base, lower, title, dict(lower)]))
     result = validate(holder, "--no-members")
     assert result.returncode == 1, result.stderr + result.stdout
     found = findings(result)
