@@ -22,7 +22,9 @@ would put a byte in the split commit that no `git rm` accounts for — which is
 precisely what `adopt-project.py --verify` would then report as a mismatch.
 So a colliding template file is written BESIDE the original under
 `collision_dir` (`shape/`) and the collision is reported for the plan's
-`follow_ups:`. The human merges it; the tool never guesses.
+`follow_ups:`. The human merges it; the tool never guesses. A copy whose own
+path is taken -- the source keeps a `shape/README.md` of its own -- is
+REFUSED, never written over (`copy_in_the_way`, #262).
 """
 
 from __future__ import annotations
@@ -506,7 +508,18 @@ FAMILY_EXECUTABLE = (
     "scripts/siblings.py",
 )
 
-PLACEHOLDER_RE = re.compile(r"\{\{[A-Z_]+\}\}")
+#: A `{{KEY}}` placeholder: capitals, digits and underscores between double
+#: braces. The digits are what make `{{SPEC_TREE_SHA256}}` one, which the
+#: pattern `[A-Z_]+` did not see (#260). A workflow's own `${{ github.x }}`
+#: and a Python f-string's `{{commit}}` hold a space or a lower-case letter,
+#: so neither is one. Every key of every substitution table is spelled this
+#: way, because `render` replaces only what this pattern finds.
+PLACEHOLDER_RE = re.compile(r"\{\{[A-Z0-9_]+\}\}")
+#: The same placeholder, or one standing alone between a YAML template's
+#: double quotes, `"{{ELECTED_BY}}"`, which is matched FIRST: group 1 is the
+#: quoted placeholder, and a bare one leaves it None.
+YAML_PLACEHOLDER_RE = re.compile(
+    '"(' + PLACEHOLDER_RE.pattern + ')"|' + PLACEHOLDER_RE.pattern)
 
 #: THE ONE READING OF THE LINE A FAMILY HOLDER'S README ENDS WITH.
 #: `templates/family-root/README.md` closes with ``Shape: `<repository>` @
@@ -628,6 +641,37 @@ def collision_follow_up(intended: str, actual: str) -> str:
         f"merge {actual} into {intended}: the source repository already has "
         "that name, so the shape's copy was written beside it and NOTHING was "
         "overwritten")
+
+
+def copy_in_the_way(target: Path, actual: str) -> str | None:
+    """What stands where the shape's copy `actual` (`shape/README.md`) is to
+    be written under `target`, in words; None when the way is free.
+
+    `place` ASKED ABOUT THE PATH THE COPY STANDS IN FOR AND NEVER ABOUT THE
+    COPY'S OWN (#262). A source that keeps its own `shape/` in the root has a
+    real `shape/README.md`, and the shape's README was written over it, on
+    the line after `adopt-project.py` said that nothing was overwritten; a
+    directory `shape/Makefile/` raised `IsADirectoryError` and a file named
+    `shape` raised `FileExistsError`, each after both legs were pushed.
+
+    The copy is in the way when anything is AT its path, a symlink that leads
+    nowhere included (it is written through, and a file lands where nothing
+    was meant), or when something on the way to it is not a directory, which
+    a symlink to one is. `adopt-project.py check` finds what a plan keeps
+    there before any leg exists (`plan-root-blocks-shape-copy`); this is the
+    same question asked of the disk, for a caller that skipped `check`.
+    """
+    parts = actual.split("/")
+    for end in range(1, len(parts) + 1):
+        here = target.joinpath(*parts[:end])
+        if not (here.is_symlink() or here.exists()):
+            return None   # nothing here, so nothing deeper either
+        if end == len(parts):
+            return (f"`{actual}` is already there"
+                    f"{', a directory' if here.is_dir() else ''}")
+        if not here.is_dir():
+            return f"`{'/'.join(parts[:end])}` is not a directory"
+    return None
 
 
 #: Appended to the assembly root's Makefile by `adopt-project.py` ONLY. A
@@ -1169,20 +1213,39 @@ def render(text: str, values: dict[str, str], source: str) -> str:
     The spelling is the value itself for any text without a quote, a
     backslash or a character `str.isprintable` refuses -- a commit, a digest,
     an ordinary name -- so no other template changes by a byte.
+
+    ONE PASS, SO A VALUE IS NEVER READ AGAIN (#260). The keys used to be
+    replaced one after another, each over the whole text, so the value an
+    earlier key put in was scanned by every later key. `--elected-by
+    '{{SPEC_PATH}}'` was recorded as `elected_by: "spec"` under `adoption
+    verified`. `{{PROJECT}}`, a key that came earlier, or `{{NOPE}}`, which
+    no key names, was left in the output and refused as a defect in the
+    tool, after the legs were pushed. Now the template is read once, left to
+    right, and each placeholder is replaced by its value as it is met. The
+    text a value brings in is never searched, so it is written as typed.
+
+    THE REFUSAL ASKS THE TEMPLATE, NOT THE OUTPUT. A placeholder the TEMPLATE
+    holds and the table has no value for is the defect the remediation
+    names, and it is refused before anything is written. The output is not
+    searched: it now holds the person's own text, which may hold `{{` and
+    is no defect of anybody's.
     """
-    out = text
-    yaml_file = source.endswith((".yaml", ".yml"))
-    for key, value in values.items():
-        if yaml_file:
-            out = out.replace('"{{' + key + '}}"', double_quoted(str(value)))
-        out = out.replace("{{" + key + "}}", str(value))
-    left = PLACEHOLDER_RE.findall(out)
-    if left:
+    missing = sorted({token for token in PLACEHOLDER_RE.findall(text)
+                      if token[2:-2] not in values})
+    if missing:
         raise Refusal("template-unsubstituted",
-                      f"{source}: no value for {sorted(set(left))}",
+                      f"{source}: no value for {missing}",
                       "Remediation: this is a defect in the substitution table "
                       "of the tool you ran, not in your invocation.")
-    return out
+
+    def value_of(placeholder: str) -> str:
+        return str(values[placeholder[2:-2]])
+
+    if not source.endswith((".yaml", ".yml")):
+        return PLACEHOLDER_RE.sub(lambda match: value_of(match[0]), text)
+    return YAML_PLACEHOLDER_RE.sub(
+        lambda match: (double_quoted(value_of(match[1])) if match[1]
+                       else value_of(match[0])), text)
 
 
 def _local_strays(src: Path) -> frozenset[str]:
@@ -1565,6 +1628,22 @@ def _materialize(shape_root: Path, template_root: Path, target: Path,
                     "Remediation: scaffold into an empty directory, or call "
                     "with collision_dir set (which is what adopt does).")
             actual = f"{collision_dir}/{rel}"
+            in_the_way = copy_in_the_way(target, actual)
+            if in_the_way:
+                raise Refusal(
+                    "materialize-copy-blocked",
+                    f"the shape's copy of `{rel}` cannot be written to "
+                    f"`{actual}`: {in_the_way}, and nothing was written there",
+                    "Remediation: the shape writes its copy of a file the "
+                    "root already holds under its collision directory, so "
+                    "the source cannot keep its own path there. "
+                    "`adopt-project.py check` reports a plan that does as "
+                    "`plan-root-blocks-shape-copy`, before any leg exists. "
+                    "Send that path to a leg or `drop` it in the plan, and "
+                    "run `execute` again with fresh leg repositories and "
+                    "an empty `--work-dir`, or none: this run made both "
+                    "legs and cloned them into the work directory it was "
+                    "given.")
             result.collisions.append((rel, actual))
             path = target / actual
         path.parent.mkdir(parents=True, exist_ok=True)
