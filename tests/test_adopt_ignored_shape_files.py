@@ -210,8 +210,8 @@ def test_the_forced_paths_are_the_written_ones_in_posix_spelling(adopter,
 
     assert calls == [
         ["git", "add", "-A", "--", "."],
-        ["git", "add", "-f", "--", ".github/workflows/validate.yml",
-         "shape/.gitattributes"]]
+        ["git", "--literal-pathspecs", "add", "-f", "--",
+         ".github/workflows/validate.yml", "shape/.gitattributes"]]
     assert not any("\\" in part for call in calls for part in call)
 
 
@@ -303,10 +303,10 @@ def test_a_pinned_file_the_split_commit_lacks_is_a_finding(adopter, tmp_path):
 
     assert len(findings) == 2, findings
     assert findings[0].startswith(
-        f"{MISSING} {ATTRIBUTES} is named by {PIN} but is not in the split "
+        f"{MISSING} `{ATTRIBUTES}` is named by {PIN} but is not in the split "
         f"commit {commit[:12]}, so the assembly's first `make bootstrap` "
         "refuses with shape-copy-missing. ")
-    assert findings[1].startswith(f"{MISSING} {WORKFLOW} ")
+    assert findings[1].startswith(f"{MISSING} `{WORKFLOW}` ")
     assert not any(MAKEFILE in finding for finding in findings)
     for finding in findings:
         # What to do: the exit the footer under it and AGENTS.md give, or a
@@ -335,7 +335,7 @@ def test_a_split_commit_with_no_pin_is_one_finding_about_the_pin(adopter,
     findings = adopter._shape_file_findings(repo, commit)
     assert len(findings) == 1, findings
     assert findings[0].startswith(
-        f"{MISSING} {PIN} is the pin that lists the shape's files and is not "
+        f"{MISSING} `{PIN}` is the pin that lists the shape's files and is not "
         f"in the split commit {commit[:12]}, so the assembly's first `make "
         "bootstrap` refuses with shape-pin-missing. ")
     assert "shape-copy-missing" not in findings[0]
@@ -374,7 +374,7 @@ def test_a_gitlink_at_a_pinned_path_is_not_the_pinned_file(adopter, tmp_path):
     head = git("rev-parse", "HEAD", cwd=repo).stdout.strip()
     findings = adopter._shape_file_findings(repo, head)
     assert [f.split(" is named", 1)[0] for f in findings] == \
-        [f"{MISSING} spec"]
+        [f"{MISSING} `spec`"]
 
 
 #: `(files, links)` of a split commit in which every pinned file is found
@@ -431,18 +431,18 @@ def findings_within(adopter, repo: Path, commit: str,
 #: and how the finding says so. `{c}` is the split commit's short id.
 LEADS_NOWHERE = [
     pytest.param({".github": "/etc"},
-                 "leads out of the split commit {c} at the symlink .github, "
-                 "to /etc", id="an-absolute-link"),
+                 "leads out of the split commit {c} at the symlink "
+                 "`.github`, to `/etc`", id="an-absolute-link"),
     pytest.param({".github": "../ci"},
                  "climbs above the root of the split commit {c} at the "
-                 "symlink .github", id="a-link-above-the-root"),
+                 "symlink `.github`", id="a-link-above-the-root"),
     pytest.param({".github": ".github"},
-                 "runs round a symlink loop at .github in the split commit "
+                 "runs round a symlink loop at `.github` in the split commit "
                  "{c}", id="a-link-to-itself"),
     pytest.param({".github": "loop", "loop": ".github"},
                  "runs round a symlink loop at ", id="a-loop-of-two"),
     pytest.param({".github": "nowhere/../ci"},
-                 "passes through nowhere, which is not a directory in the "
+                 "passes through `nowhere`, which is not a directory in the "
                  "split commit {c}",
                  id="through-a-directory-that-is-not-there"),
     pytest.param({".github": "nowhere"},
@@ -463,7 +463,7 @@ def test_a_link_out_of_the_tree_or_round_a_loop_is_a_finding(
         ignore="build/\n", links=links)
     findings = findings_within(adopter, repo, commit)
     assert len(findings) == 1, findings
-    assert findings[0].startswith(f"{MISSING} {WORKFLOW} is named by {PIN} "
+    assert findings[0].startswith(f"{MISSING} `{WORKFLOW}` is named by {PIN} "
                                   "but "), findings[0]
     assert why.format(c=commit[:12]) in findings[0], findings[0]
     assert "refuses with shape-copy-missing. " in findings[0]
@@ -607,8 +607,8 @@ def test_execute_fails_at_verification_when_the_split_lacks_a_pinned_file(
 
     seen = capsys.readouterr()
     assert code == 1, seen.err + seen.out
-    assert f"{MISSING} {ATTRIBUTES} " in seen.err
-    assert f"{MISSING} {WORKFLOW} " in seen.err
+    assert f"{MISSING} `{ATTRIBUTES}` " in seen.err
+    assert f"{MISSING} `{WORKFLOW}` " in seen.err
     assert "adoption verified" not in seen.out
     assert ATTRIBUTES not in committed(source, BRANCH)
 
@@ -725,7 +725,8 @@ def test_a_source_pin_kept_in_the_root_fails_verification_with_the_plan_answer(
                 if line.startswith("FINDING ")]
     assert len(findings) == 1, result.stderr
     assert findings[0].startswith(
-        f"{MISSING} src/app/main.py is named by {PIN} but is not in the split "
+        f"{MISSING} `src/app/main.py` is named by {PIN} but is not in the "
+        "split "
         "commit ")
     assert "refuses with shape-copy-missing. " in findings[0]
     assert PLAN_ANSWER in findings[0] and DEFECT in findings[0]
