@@ -374,20 +374,147 @@ class Registrations:
 #: and nothing dies.
 SUBMODULE_VALUED_KEY_RE = re.compile(
     r"submodule\.(?P<name>.*)\.(?:path|url|ignore|update|branch)")
+#: The keys git's submodule reader dies on when one has a VALUE it refuses,
+#: under a name it does not ignore (#215); `_refused_value` says which
+#: values. `ignore` with a value git does not know only warns, and `path`,
+#: `url` and `branch` take any value, so none of them is here.
+SUBMODULE_TYPED_KEY_RE = re.compile(
+    r"submodule\.(?P<name>.*)\.(?P<key>update|shallow|fetchrecursesubmodules)")
+#: The values `update` may take in a `.gitmodules` (submodule.c,
+#: `parse_submodule_update_type`), as git spells them, case and all.
+UPDATE_STRATEGIES = ("checkout", "rebase", "merge", "none")
+#: The words git reads as a boolean, in any ASCII case (config.c / parse.c,
+#: `git_parse_maybe_bool_text`).
+BOOLEAN_WORDS = ("true", "yes", "on", "false", "no", "off")
+#: An integer as `git_parse_signed` reads one: `strtoimax(value, &end, 0)`,
+#: which skips C whitespace and takes a sign and a hex, octal or decimal
+#: number -- and, where the C library reads C23 binary numbers (glibc 2.38
+#: or later, for one), a `0b` binary one -- and then a unit, which is all
+#: that may follow.
+GIT_INTEGER_RE = re.compile(
+    r"[ \t\n\v\f\r]*(?P<sign>[+-]?)(?P<digits>0[xX][0-9a-fA-F]+|0[bB][01]+"
+    r"|0[0-7]*|[1-9][0-9]*)(?P<unit>[kKmMgG]?)")
+#: `get_unit_factor`, by the unit's lower case.
+UNIT_FACTORS = {"": 1, "k": 1 << 10, "m": 1 << 20, "g": 1 << 30}
+#: The `int` git reads a boolean's number into: 2**31 - 1 is its largest.
+GIT_INT_BITS = 31
+#: Who refuses a value as a boolean (`_who_refuses_a_boolean`): no git
+#: reads it, or only some of the gits `execute` may run do, and why.
+EVERY_GIT = "every git"
+OLDER_GITS_REFUSE = ("a number git 2.49 and older refuse, and 2.50 and later "
+                     "read")
+SOME_LIBRARIES_REFUSE = ("a `0b` number, which a git reads only where its C "
+                         "library reads C23 binary numbers (glibc 2.38 or "
+                         "later, for one)")
+
+
+def _who_refuses_a_boolean(value: str) -> str | None:
+    """None where every git takes `value` as a boolean
+    (`git_parse_maybe_bool`): empty, which is false; one of BOOLEAN_WORDS;
+    or an integer `git_parse_int` takes, which is true unless it is zero.
+    Otherwise EVERY_GIT where no git takes it, or why only some do.
+
+    The integer must fit an `int` once its unit is applied. Where gits
+    differ on one, `check` refuses it with the gits that refuse it: a
+    refusal there costs an edit to an absurd value, and a git that refuses
+    it in the extraction costs both leg repositories. git 2.50 moved the
+    bound below zero by one (`(-max - 1) / factor`, where 2.49 and before
+    have `-max / factor`), so -2147483648, -2097152k, -2048m and -2g,
+    however spelled, are OLDER_GITS_REFUSE: measured with git 2.43, each
+    passed `check` and `execute` died after both leg repositories were
+    made. A `0b` number, which git reads only where its C library's
+    `strtoimax` does, is SOME_LIBRARIES_REFUSE."""
+    if not value or (value.isascii() and value.lower() in BOOLEAN_WORDS):
+        return None
+    number = GIT_INTEGER_RE.fullmatch(value)
+    if number is None:
+        return EVERY_GIT
+    digits = number["digits"]
+    binary = digits[1:2] in ("b", "B")
+    if digits[1:2] in ("x", "X"):
+        size = int(digits[2:], 16)
+    elif binary:
+        size = int(digits[2:], 2)
+    else:
+        size = int(digits, 8 if digits.startswith("0") else 10)
+    factor = UNIT_FACTORS[number["unit"].lower()]
+    every_git_reads = ((1 << GIT_INT_BITS) - 1) // factor
+    newer_gits_read = ((1 << GIT_INT_BITS) // factor if number["sign"] == "-"
+                       else every_git_reads)
+    if size > newer_gits_read:
+        return EVERY_GIT
+    if binary:
+        return SOME_LIBRARIES_REFUSE
+    if size > every_git_reads:
+        return OLDER_GITS_REFUSE
+    return None
+
+
+def _refused_value(key: str, value: str) -> str | None:
+    """What git's submodule reader dies on, in its words with the key and
+    the value spelled, when `key` is one SUBMODULE_TYPED_KEY_RE names and
+    `value` one git refuses for it; None otherwise (#215).
+
+    git reads the CHECKED-OUT `.gitmodules` through `gitmodules_cb`
+    (submodule-config.c), which sets `overwrite`, so `parse_config` reads
+    every value, a key given twice included, and dies on the first it
+    refuses. Read in the source code of git 2.39.5 through 2.51.0, the
+    same in each but for the bound `_who_refuses_a_boolean` names, and
+    measured with git 2.43 over `git fast-export`:
+
+      * `update`, `parse_submodule_update_strategy` (submodule.c): one of
+        UPDATE_STRATEGIES, or `!` and a command, which `parse_config`
+        refuses in a `.gitmodules`; anything else, an empty value too, ends
+        it with `invalid value for 'submodule.<name>.update'`.
+      * `shallow`, `git_config_bool`: a value `git_parse_maybe_bool` does not
+        read ends it with `bad boolean config value '<value>' for '<key>'`.
+      * `fetchrecursesubmodules`, `parse_fetch_recurse`, which dies on an
+        error for the checked-out file (`die_on_error`): a boolean or
+        `on-demand`, exactly; anything else ends it with `bad <key>
+        argument: <value>`.
+
+    A number only some gits read as a boolean is refused as the gits that
+    refuse it say, and the finding says which gits those are."""
+    typed = SUBMODULE_TYPED_KEY_RE.fullmatch(key)
+    if typed is None or _a_name_git_ignores(typed["name"]):
+        return None
+    said = _spelled(value) if value else "an empty value"
+    if typed["key"] == "update":
+        if value in UPDATE_STRATEGIES:
+            return None
+        why = (f"a command, which git never takes from a {GITMODULES}"
+               if value.startswith("!") else
+               f"which is not one of {_listed(list(UPDATE_STRATEGIES))}")
+        return f"invalid value for {_spelled(key)}: {said}, {why}"
+    refusers = _who_refuses_a_boolean(value)
+    if refusers is None:
+        return None
+    if typed["key"] == "shallow":
+        return (f"bad boolean config value {said} for {_spelled(key)}"
+                + ("" if refusers == EVERY_GIT else f", {refusers}"))
+    if value == "on-demand":
+        return None
+    return (f"bad {_spelled(key)} argument: {said}, "
+            + ("which is neither a boolean nor `on-demand`"
+               if refusers == EVERY_GIT else refusers))
 
 
 def _registrations(listed: bytes) -> Registrations | str:
-    """`git config -z --list` output, read by `Registrations`; or, for a
-    key SUBMODULE_VALUED_KEY_RE names with no value at all, what git's
-    submodule reader dies on. `-z` prints such a key with no newline, and
-    git looks for its value after it has filtered the name and before it
-    filters the value."""
+    """`git config -z --list` output, read by `Registrations`; or what git's
+    submodule reader dies on, at the first key in the file it dies on: one
+    SUBMODULE_VALUED_KEY_RE names with no value at all, or one whose value
+    it refuses (`_refused_value`, #215). `-z` prints a key with no value
+    with no newline, and git looks for its value after it has filtered the
+    name and before it filters the value."""
     registrations = Registrations()
     for record in listed.split(b"\x00"):
         key, newline, value = _git_path(record).partition("\n")
         valued = SUBMODULE_VALUED_KEY_RE.fullmatch(key)
         if valued and not newline and not _a_name_git_ignores(valued["name"]):
             return f"missing value for '{key}'"
+        refused = _refused_value(key, value) if newline else None
+        if refused:
+            return refused
         match = SUBMODULE_KEY_RE.fullmatch(key)
         if not match:
             continue
@@ -654,9 +781,13 @@ class Source:
         in `git fast-export` with `missing value for 'submodule.b.path'`,
         after both leg repositories were made. Where the history holds none
         either, nothing ever reads the file that way, and it registers
-        nothing (#166's S3). A line git cannot parse at all is another
-        matter: every reader dies on it, and the history says only which
-        reader dies first.
+        nothing (#166's S3). A VALUE git's submodule reader refuses --
+        `update = bogus`, `shallow = maybe`, `_refused_value` -- is read the
+        same way, wherever the gitlink is (#215): `git config --list` exits
+        0 on it, and on main `check` passed it while `execute` died in `git
+        fast-export` after both leg repositories were made. A line git
+        cannot parse at all is another matter: every reader dies on it, and
+        the history says only which reader dies first.
         """
         if not any(path == GITMODULES for path, _, _, _ in tree):
             return Registrations()
@@ -2259,11 +2390,11 @@ def _where_git_fails(entries: list, tree: list, registry_leg: str | None,
         gitlink, which the clone checks out as a directory and which
         registers nothing.
 
-    A key with no value is fatal to git's submodule reader alone, which git
-    runs only for a gitlink, so `Source.registered_submodules` reads it as
-    registering nothing where neither the tree nor the history `git
-    fast-export` diffs holds one, and it reaches here only where one of them
-    does.
+    A key with no value, or a value git refuses (#215), is fatal to git's
+    submodule reader alone, which git runs only for a gitlink, so
+    `Source.registered_submodules` reads it as registering nothing where
+    neither the tree nor the history `git fast-export` diffs holds one, and
+    it reaches here only where one of them does.
     """
     a_file = any(path == GITMODULES and mode in FILE_MODES
                  for path, mode, _, _ in tree)
