@@ -41,7 +41,10 @@ WHAT IT REFUSES, and why each is a refusal rather than a warning:
     would turn the bump red, because `validate-pins.py` reads every file on
     disk and would still see its old `@<sha>`. Refused by name, before
     anything is written, under `--dry-run` as well. One that names no leg,
-    or this leg already at `--to`, is left alone.
+    or this leg already at `--to`, is left alone. A TRACKED file the disk
+    spells another way — renamed by case alone outside git, on a disk that
+    ignores case — is that tracked file, rewritten and committed under
+    git's spelling, never refused as untracked.
   * the root standing on its own tracking branch. The next step this prints
     would then be a push to the default branch, and these organisations are
     pull-request only.
@@ -85,7 +88,8 @@ from repo_shape import (  # noqa: E402
 )
 from shape_materialize import (  # noqa: E402
     CommandFailed, captured_child_environment, check_program, commit_trailers,
-    escape_what_stdout_cannot_encode, run, trailer_line, write_lf,
+    escape_what_stdout_cannot_encode, is_nested_key, rewrite_fault, run,
+    trailer_line, with_scalar, write_lf,
 )
 
 MANIFEST = "project.yaml"
@@ -224,17 +228,31 @@ def rewrite_pin(text: str, commit: str, digest: str) -> str:
 
     Each replacement must fire exactly once or this refuses: a pin file this
     tool did not recognise is not a pin file it may edit.
+
+    EACH OF THE TWO LINES KEEPS ITS OWN LAYOUT (#323). `commit:` is found at
+    column 0 and `tree_sha256:` as any INDENTED line that begins with it, so a
+    `digests:` child at any depth the reader accepts is recognised, and only
+    the value after the key changes: the indentation, the spacing and a
+    trailing `# comment` are the line's own. They were written back as
+    `commit: "<sha>"` and `  tree_sha256: "<digest>"`, so a child indented
+    four spaces was refused as hand-edited and a comment was dropped.
+
+    WHAT IS RETURNED HAS BEEN READ BACK, as `update-shape.py`'s pin and
+    manifest rewrites are (`shape_materialize.rewrite_fault`): a layout this
+    line rewrite cannot carry is refused HERE as this tool's failure, before
+    any byte is written. The digest is the one this command RECOMPUTED from
+    the leg's own objects; the read-back only asks that it landed.
     """
     out: list[str] = []
     seen = {"commit": 0, "tree_sha256": 0}
     for line in text.splitlines():
         if line.startswith("commit:"):
             seen["commit"] += 1
-            out.append(f'commit: "{commit}"')
+            out.append(with_scalar(line, "commit", commit))
             continue
-        if line.startswith("  tree_sha256:"):
+        if is_nested_key(line, "tree_sha256"):
             seen["tree_sha256"] += 1
-            out.append(f'  tree_sha256: "{digest}"')
+            out.append(with_scalar(line, "tree_sha256", digest))
             continue
         out.append(line)
     for key, count in seen.items():
@@ -245,9 +263,23 @@ def rewrite_pin(text: str, commit: str, digest: str) -> str:
                 "was expected, so this tool will not rewrite it",
                 "Remediation: the pin was hand-edited into a shape this tool "
                 "does not recognise. Fix it by hand this once — `commit:` at "
-                "column 0 and `  tree_sha256:` under `digests:` — or re-"
-                "scaffold.")
-    return "\n".join(out) + "\n"
+                "column 0 and `tree_sha256:` indented under `digests:` — or "
+                "re-scaffold.")
+    rewritten = "\n".join(out) + "\n"
+    why = rewrite_fault(text, rewritten, commit, digest)
+    if why is not None:
+        raise Refusal(
+            "bump-leg-pin-unrecognised",
+            "the pin file reads as it stands, but this tool's rewrite of it "
+            f"does not read back to the target ({why}), so this tool will not "
+            "write it",
+            "Remediation: the fault is this tool's line rewrite, not the "
+            "project's pin. Put each of `commit:` and `tree_sha256:` on one "
+            "line with its quoted value, as the scaffold writes them, leave "
+            "both values as they are — this command recomputes the digest, "
+            "nobody edits it to fit — and run the same command again; this "
+            "tool will not guess at a pin it does not recognise.")
+    return rewritten
 
 
 def _tracked_workflows(root: Path, workflows: Path) -> set[str]:
@@ -263,6 +295,56 @@ def _tracked_workflows(root: Path, workflows: Path) -> set[str]:
                    workflows.relative_to(root).as_posix()],
                   cwd=root, binary=True)
     return {os.fsdecode(name) for name in raw.split(b"\0") if name}
+
+
+def _same_file(first: Path, second: Path) -> bool:
+    """Whether the filesystem resolves both names to ONE file — False when
+    either cannot be resolved at all.
+
+    THE SEAM a test on a disk that keeps case replaces to stand in for one
+    that ignores it (#332): no other line of this tool asks the question.
+    """
+    try:
+        return os.path.samefile(first, second)
+    except OSError:
+        return False
+
+
+def _tracked_spelling(root: Path, path: Path, tracked: set[str],
+                      listed: set[str]) -> str | None:
+    """Git's spelling of the workflow file at `path`, or None when git does
+    not track it.
+
+    `path` is a name the directory walk yielded, and `listed` is every name
+    that walk yields. A name git holds is its own spelling. Any other is a
+    tracked file only when EXACTLY ONE tracked name in the same directory is
+    missing from `listed` and the filesystem resolves it to this very file:
+    a disk that ignores case, which macOS and Windows use by default, holds
+    a tracked `legs.yml` renamed outside git to `Legs.yml` as one file,
+    lists it as `Legs.yml` and opens it under either name. A tracked name
+    the walk DOES list is a file of its own, never a respelling of another,
+    and one no file answers to is not this one. Two that both answer are an
+    index carrying two spellings of one file, which no single rewrite can
+    keep in step, so that name is left unresolved and refused as untracked.
+
+    THE FILESYSTEM IS ASKED, NOT `core.ignorecase`. The setting is git's
+    record of the disk a clone was made on, and a clone copied to another
+    disk keeps it. Set true on a disk that keeps case, git lists neither a
+    separate `Legs.yml` as untracked nor stages it (`git add Legs.yml` is a
+    no-op and `git commit -- Legs.yml` refuses the pathspec): taken from
+    git, such a file would be rewritten on disk and be missing from the
+    commit. Asked of the filesystem, a second spelling there is a second
+    file and is refused by name, whatever the setting says.
+    """
+    relative = path.relative_to(root).as_posix()
+    if relative in tracked:
+        return relative
+    parent = relative.rsplit("/", 1)[0]
+    answering = [other for other in sorted(tracked)
+                 if other.rsplit("/", 1)[0] == parent
+                 and other.rsplit("/", 1)[1] not in listed
+                 and _same_file(root / other, path)]
+    return answering[0] if len(answering) == 1 else None
 
 
 def plan_workflows(root: Path, repository: str,
@@ -293,12 +375,26 @@ def plan_workflows(root: Path, repository: str,
     repository. One with nothing to move — no reference to this leg, or this
     leg already at `commit` — is not this tool's business and is left alone,
     unnamed.
+
+    A TRACKED FILE THE DISK SPELLS ANOTHER WAY IS STILL TRACKED (#332). The
+    walk yields the disk's spelling and `git ls-files` the index's, and on a
+    disk that ignores case a tracked `legs.yml` renamed to `Legs.yml` outside
+    git is one file under both: `git status` is clean under the
+    `core.ignorecase` a clone there is given, and an exact comparison
+    refused it as untracked with an exit, "commit it first", that could
+    never clear it — there is nothing to commit. Its row carries GIT'S
+    spelling (`_tracked_spelling`), because git matches a commit's pathspec
+    against the index by exact spelling whatever the disk does: the commit
+    names the path git tracks and no other, and the rewrite reaches the one
+    file through it, read through the disk's name and written through
+    git's, which the filesystem has already said are the same file.
     """
     plans: list[tuple[Path, str, int]] = []
     workflows = root / ".github" / "workflows"
     if not workflows.is_dir():
         return plans
     tracked = _tracked_workflows(root, workflows)
+    listed = {child.name for child in workflows.iterdir()}
     untracked: list[tuple[str, int]] = []
     for path in sorted(workflows.iterdir()):
         if path.suffix not in (".yml", ".yaml") or not path.is_file():
@@ -319,11 +415,11 @@ def plan_workflows(root: Path, repository: str,
         rewritten = WORKFLOW_REF_RE.sub(swap, text)
         if not moved:
             continue
-        relative = path.relative_to(root).as_posix()
-        if relative in tracked:
-            plans.append((path, rewritten, moved))
+        spelled = _tracked_spelling(root, path, tracked, listed)
+        if spelled is not None:
+            plans.append((root / spelled, rewritten, moved))
         else:
-            untracked.append((relative, moved))
+            untracked.append((path.relative_to(root).as_posix(), moved))
     if untracked:
         raise Refusal(
             "bump-leg-workflow-untracked",

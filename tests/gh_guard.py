@@ -1,0 +1,161 @@
+# SPDX-License-Identifier: Apache-2.0
+"""The suite's `gh` (#296): two answers, one refusal, and a log of every call.
+
+WHY IT EXISTS. `tests/conftest.py` says NO NETWORK AND NO GITHUB, and 149
+tests broke that without a word. Every doctor run ends in the `machine` row,
+which runs `setup-project.py --preflight`, which asks `gh --version`, `gh auth
+status` and, when the login answers, `gh api user`; the installed command's
+`--install` ends with a `gh auth status` of its own. Nothing stood between
+those calls and whatever `gh` the operator had on PATH -- 407 calls over four
+files, on a logged-in machine each one a request to GitHub carrying the
+operator's token -- and the one stub the doctor tests did have could not see
+them, because the preflight captures `gh`'s output.
+
+WHAT IT DOES. `tests/conftest.py` copies this file into a directory under
+pytest's temporary root, writes two launchers beside it -- `gh`, a POSIX
+`#!/bin/sh`, and `gh.cmd` -- and puts that directory FIRST on PATH for the
+whole session, so every child inherits it however it was started. Asked one
+of the two `PROBES`, it answers; asked anything else, it refuses with
+`GUARD_EXIT` and one line naming `tests/conftest.py`. Every call, the probes
+included, is one JSON line in `LOG_NAME` beside this file, carrying its argv
+and `$PYTEST_CURRENT_TEST`; `failure` is the decision the per-test check in
+`tests/conftest.py` makes over the lines a test added.
+
+WHY THE PROBES ARE ANSWERED RATHER THAN REFUSED. They are how the machine row
+and the installed command learn whether `gh` is there and logged in, and
+nothing else. Answered as "present, not logged in" -- the state of a CI
+runner, which exports no token -- the row is exercised by every doctor test,
+says the same thing on every machine, and needs no flag in the doctor to
+leave it out; a logged-in operator gets the output CI gets. "Not logged in"
+also stops the preflight short of `gh api user`, its one call that would
+fetch something. Refused, every doctor test would fail at teardown on calls
+the row is designed to make. The answers are EXACTLY what the two callers
+parse and no more: `program_version` (`setup-project.py`) reads the third
+word of the first line of `gh --version`, and `_check_gh` there and
+`machine_report` in `openRepoShape` read only the exit status of `gh auth
+status`. Any other argv -- `gh version`, `gh auth status --hostname x` -- is
+not a probe and is refused.
+
+STANDARD LIBRARY ONLY, and importable: `tests/conftest.py` and
+`tests/test_gh_guard.py` read the same table, the same record format and the
+same decision from here, so the guard and the check cannot disagree about
+what a probe is.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shlex
+import sys
+from pathlib import Path
+
+#: The exit status of a refused call: not 0, not 1 (a `gh` that failed), not
+#: 4 (gh's own "authentication required"), and the number every logging
+#: `gh` shim in this estate already exits with.
+GUARD_EXIT = 97
+
+#: The log, beside this file in the guard's directory. One JSON object per
+#: line: `kind` (`probe` or `refused`), `argv` and `test`.
+LOG_NAME = "gh-guard.log"
+
+#: ONE line. Its third word is the version `program_version` reports, so the
+#: preflight prints `[ok] gh test-guard`, and the rest says what answered.
+VERSION_LINE = ("gh version test-guard (the openRepoShape test suite's gh "
+                "guard, tests/conftest.py)")
+
+#: gh's own words for a machine with no login, on stderr, exit 1. Nothing
+#: parses them -- both callers read the exit status -- so they are gh's own
+#: rather than invented ones.
+NOT_LOGGED_IN = ("You are not logged into any GitHub hosts. To log in, run: "
+                 "gh auth login")
+
+#: THE TWO PROBES, as exact argv tuples, and the answer to each:
+#: `(exit status, stdout, stderr)`.
+PROBES = {
+    ("--version",): (0, VERSION_LINE + "\n", ""),
+    ("auth", "status"): (1, "", NOT_LOGGED_IN + "\n"),
+}
+
+#: The refusal, ONE line on stderr. `{argv}` is the call as `shown` spells it.
+REFUSAL = ("gh guard (tests/conftest.py): no test may run the operator's gh, "
+           "so `gh {argv}` was refused and logged; a test that means to run "
+           "gh puts a stub of its own ahead of the guard on PATH")
+
+
+#: Every C0 control character, and DEL, spelled `\xNN` by `shown`.
+_CONTROLS = {code: f"\\x{code:02x}" for code in (*range(32), 127)}
+
+
+def is_probe(argv) -> bool:
+    """Whether `argv` is one of the two `PROBES`, exactly."""
+    return tuple(argv) in PROBES
+
+
+def shown(argv) -> str:
+    """`argv` shell-quoted, with every control character spelled `\\xNN`, so
+    the refusal and the check's message each name a call on ONE line."""
+    return shlex.join(argv).translate(_CONTROLS)
+
+
+def record(argv, test: str) -> str:
+    """The log line for one call: JSON, so an argument holding a newline or
+    a tab stays inside its own line and cannot forge another one."""
+    return json.dumps({"kind": "probe" if is_probe(argv) else "refused",
+                       "argv": list(argv), "test": test})
+
+
+def failure(lines) -> str | None:
+    """The per-test check's decision over the log lines one test added: None
+    when every one is a probe, else the message that fails the test.
+
+    THE KIND IS RE-DERIVED FROM THE ARGV, never read from the line, so the
+    check and the guard share one definition of a probe (`PROBES`). A line
+    this file did not write -- not JSON, or no list of strings under `argv`
+    -- FAILS the check rather than being skipped: a log nobody can read is
+    not a log that proves nothing was called.
+    """
+    named = []
+    for line in lines:
+        try:
+            entry = json.loads(line)
+            argv, test = entry["argv"], entry.get("test", "")
+            if not isinstance(argv, list) or \
+                    not all(isinstance(word, str) for word in argv):
+                raise TypeError(argv)
+        except (ValueError, KeyError, TypeError, AttributeError):
+            named.append(f"  a log line the guard did not write: {line!r}")
+            continue
+        if is_probe(argv):
+            continue
+        named.append(f"  gh {shown(argv)}    "
+                     f"[{test or 'no $PYTEST_CURRENT_TEST'}]")
+    if not named:
+        return None
+    return ("tests/conftest.py's gh guard logged "
+            f"{len(named)} line(s) that are not the machine row's two probes "
+            "-- calls to gh made with no stub of the test's own ahead of the "
+            "guard on PATH, each refused:\n" + "\n".join(named) + "\n"
+            "No test may reach the operator's gh. A test that means to run "
+            "gh puts a stub of its own first on PATH, as "
+            "tests/test_neutral_pin_validator.py does.")
+
+
+def main(argv) -> int:
+    """Log the call, then answer a probe or refuse anything else."""
+    log = Path(__file__).resolve().with_name(LOG_NAME)
+    with open(log, "a", encoding="utf-8", newline="\n") as handle:
+        handle.write(record(argv, os.environ.get("PYTEST_CURRENT_TEST", ""))
+                     + "\n")
+    answer = PROBES.get(tuple(argv))
+    if answer is not None:
+        code, out, err = answer
+        sys.stdout.write(out)
+        sys.stderr.write(err)
+        return code
+    sys.stderr.write(REFUSAL.format(argv=shown(argv)) + "\n")
+    return GUARD_EXIT
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -16,6 +16,7 @@ is the question a pin actually has.
 from __future__ import annotations
 
 import importlib.util
+import os
 import shutil
 import subprocess
 import sys
@@ -246,6 +247,133 @@ def test_bumping_to_the_commit_already_pinned_does_nothing(project, scaffolded):
     assert result.returncode == 1, result.stderr + result.stdout
     assert "nothing to do" in result.stdout
     assert git("rev-parse", "HEAD", cwd=project).stdout.strip() == head
+
+
+# --- the pin's own layout (#323) --------------------------------------------
+
+SPEC_PIN = "contracts/spec-pin.yaml"
+
+
+def commit_spec_pin(project: Path, text: str, message: str) -> None:
+    """Write the spec pin as exactly these bytes and commit it, so the root is
+    clean when the bump starts and the pin under test is the one HEAD holds."""
+    (project / SPEC_PIN).write_bytes(text.encode("utf-8"))
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", message,
+        "--", SPEC_PIN, cwd=project)
+
+
+@pytest.mark.parametrize("width", [4, 3, 1])
+def test_bump_moves_a_pin_whose_digests_child_is_indented_its_own_way(
+        project, scaffolded, advanced, width):
+    """THE ISSUE'S REPRODUCTION, end to end. `spec-pin.yaml` read fine with
+    `tree_sha256:` indented four spaces, and `rewrite_pin` refused it as
+    `bump-leg-pin-unrecognised` — "0 `tree_sha256` line(s)". The bump lands
+    now, the project's own gate is green, and the diff to the pin is the two
+    values and nothing else. The digest is the recomputed one."""
+    branched(project)
+    pin = project / SPEC_PIN
+    scaffolded_text = pin.read_text(encoding="utf-8")
+    laid = scaffolded_text.replace("\n  tree_sha256:",
+                                   "\n" + " " * width + "tree_sha256:", 1)
+    assert laid != scaffolded_text, "fixture: the scaffold's layout was found"
+    commit_spec_pin(project, laid, "Re-indent the pin's digests child")
+    before = load_yaml(pin)
+
+    result = bump(project, scaffolded, advanced)
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    digest = tree_digest(project / "spec", advanced)
+    assert pin.read_text(encoding="utf-8") == (
+        laid.replace(f'commit: "{before["commit"]}"', f'commit: "{advanced}"')
+        .replace(f'tree_sha256: "{before["digests"]["tree_sha256"]}"',
+                 f'tree_sha256: "{digest}"'))
+    assert validate(project).returncode == 0, "the project's own gate is green"
+    assert git("status", "--porcelain", cwd=project).stdout == ""
+
+
+def test_bump_keeps_a_comment_on_the_pins_two_lines(project, scaffolded,
+                                                    advanced):
+    """A TRAILING COMMENT IS NOT THE VALUE (#323). Both lines were written
+    back bare, so the commit that moved the pin also deleted what a person had
+    written beside it. Only the two values move."""
+    branched(project)
+    pin = project / SPEC_PIN
+    before = load_yaml(pin)
+    commit_line = f'commit: "{before["commit"]}"'
+    tree_line = f'tree_sha256: "{before["digests"]["tree_sha256"]}"'
+    text = pin.read_text(encoding="utf-8")
+    commented = (
+        text.replace(commit_line, commit_line + "  # the cut we reviewed")
+        .replace(tree_line, tree_line + " # recomputed, not edited"))
+    assert commented.count("# the cut we reviewed") == 1
+    assert commented.count("# recomputed, not edited") == 1
+    commit_spec_pin(project, commented, "Comment the pin's two lines")
+
+    result = bump(project, scaffolded, advanced)
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    digest = tree_digest(project / "spec", advanced)
+    assert pin.read_text(encoding="utf-8") == (
+        commented.replace(commit_line, f'commit: "{advanced}"')
+        .replace(tree_line, f'tree_sha256: "{digest}"'))
+    assert validate(project).returncode == 0
+    assert git("status", "--porcelain", cwd=project).stdout == ""
+
+
+@pytest.mark.parametrize("layout", ["comment", "digests child at 4"])
+def test_a_pin_in_its_own_layout_already_at_the_commit_is_nothing_to_do(
+        project, scaffolded, layout):
+    """EXIT 1 MEANS THE PIN IT WOULD WRITE IS THE PIN IT HAS. A commented pin
+    differed from its own rewrite (the comment dropped), so a bump that had
+    already landed was made again as a commit that only deleted a comment; and
+    a pin indented four was refused instead of recognised as landed."""
+    pinned = git("rev-parse", "HEAD:spec", cwd=project).stdout.strip()
+    branched(project)
+    pin = project / SPEC_PIN
+    text = pin.read_text(encoding="utf-8")
+    if layout == "comment":
+        laid = text.replace(f'commit: "{pinned}"',
+                            f'commit: "{pinned}"  # the cut we reviewed')
+    else:
+        laid = text.replace("\n  tree_sha256:", "\n    tree_sha256:", 1)
+    assert laid != text
+    commit_spec_pin(project, laid, "Lay the pin out another way")
+    head = git("rev-parse", "HEAD", cwd=project).stdout.strip()
+
+    result = bump(project, scaffolded, pinned)
+
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert "nothing to do" in result.stdout
+    assert git("rev-parse", "HEAD", cwd=project).stdout.strip() == head
+
+
+def test_a_pin_layout_the_rewrite_cannot_carry_is_refused_and_rolled_back(
+        project, scaffolded, advanced):
+    """THE PIN IS READ BACK, as update-shape's are (#208). A `commit:` whose
+    value sits on the line below it reads and validates, and is the one layout
+    a line rewrite cannot move. The bump says the fault is its own, by this
+    tool's refusal id rather than the validators' lockstep remedy, and the
+    leg's detached checkout it had already made is put back with everything
+    else."""
+    branched(project)
+    pin = project / SPEC_PIN
+    pinned = load_yaml(pin)["commit"]
+    text = pin.read_text(encoding="utf-8")
+    folded = text.replace(f'commit: "{pinned}"\n', f"commit: >-\n  {pinned}\n",
+                          1)
+    assert folded != text, "fixture: the scaffold's commit line was found"
+    commit_spec_pin(project, folded, "Fold the pin's commit onto its own line")
+    was = found(project)
+
+    result = bump(project, scaffolded, advanced)
+
+    assert result.returncode == 2, result.stdout
+    assert "bump-leg-pin-unrecognised" in result.stderr
+    assert "the fault is this tool's line rewrite" in result.stderr
+    assert "unexpected indentation" in result.stderr
+    assert "bump-leg-validators-red" not in result.stderr
+    assert found(project) == was, "every fact it moves is where it was"
+    assert pin.read_bytes() == folded.encode("utf-8")
 
 
 # --- the third fact: the workflow references --------------------------------
@@ -509,6 +637,178 @@ def test_a_tracked_workflow_with_a_non_ascii_name_is_not_taken_for_untracked(
         cwd=str(project), capture_output=True, check=True).stdout.split(b"\0")
     assert relative.encode("utf-8") in names
     assert validate(project).returncode == 0
+
+
+# --- a tracked workflow the disk spells another way (#332) ------------------
+
+def disk_ignores_case(directory: Path) -> bool:
+    """Probe the disk `directory` is on: does a file written as
+    `case-probe` open as `CASE-PROBE`? macOS and Windows answer yes by
+    default, Linux no — asked of the disk, never assumed from the OS."""
+    probe = directory / "case-probe"
+    probe.write_bytes(b"")
+    try:
+        return (directory / "CASE-PROBE").exists()
+    finally:
+        probe.unlink()
+
+
+def respelled(workflows: Path, name: str, spelling: str) -> None:
+    """Rename `name` to `spelling` outside git, through a third name, so the
+    disk holds `spelling` whether or not it ignores case."""
+    os.rename(workflows / name, workflows / (name + ".respelling"))
+    os.rename(workflows / (name + ".respelling"), workflows / spelling)
+    assert spelling in os.listdir(workflows)
+    assert name not in os.listdir(workflows)
+
+
+def ignoring_case(first: Path, second: Path) -> bool:
+    """`_same_file` as a disk that ignores case answers it, for a test on
+    one that keeps case: two names in one directory spelled alike once case
+    is ignored are one file. On a disk that ignores case the real answer is
+    the same, so the tests that pass this run everywhere."""
+    return (first.parent == second.parent
+            and first.name.casefold() == second.name.casefold())
+
+
+def test_a_tracked_workflow_respelled_by_case_moves_under_gits_spelling(
+        project, scaffolded, advanced, tmp_path):
+    """THE BUG (#332), on the disk it happens on. A tracked `legs.yml`
+    renamed outside git to `Legs.yml` on a disk that ignores case is one
+    file: the walk lists `Legs.yml`, the index holds `legs.yml`, and `git
+    status` is clean. The exact comparison refused it as untracked, and
+    "commit it first" could never clear it, because there is nothing to
+    commit. It is the tracked file: rewritten, listed and committed under
+    git's spelling, and only that, so the commit adds no path git does not
+    track and the rewrite is in it.
+
+    RUNS ONLY WHERE THE DISK IGNORES CASE — the macOS and Windows jobs — and
+    is skipped on one that keeps it (Linux), where `Legs.yml` and
+    `legs.yml` are two files and `git status` reports the tracked one
+    deleted. The rule's own logic runs everywhere, in the test after this
+    one.
+    """
+    if not disk_ignores_case(tmp_path):
+        pytest.skip("needs a disk that ignores case (macOS, Windows): on "
+                    "this one a second spelling is a second file")
+    was, code = reference_both_legs(project)
+    branched(project)
+    workflows = project / ".github" / "workflows"
+    respelled(workflows, "legs.yml", "Legs.yml")
+    assert git("status", "--porcelain", cwd=project).stdout == "", (
+        "git calls the root clean, so there is nothing to commit first")
+
+    dry = bump(project, scaffolded, advanced, "--dry-run")
+    assert dry.returncode == 0, dry.stderr + dry.stdout
+    assert "bump-leg-workflow-untracked" not in dry.stderr
+    assert ".github/workflows/legs.yml  1 reference(s)" in dry.stdout
+
+    result = bump(project, scaffolded, advanced)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert committed(project) == {"spec", "contracts/spec-pin.yaml",
+                                  ".github/workflows/legs.yml"}
+    names = git("ls-tree", "-r", "--name-only", "HEAD", "--",
+                ".github/workflows", cwd=project).stdout.splitlines()
+    assert ".github/workflows/legs.yml" in names
+    assert ".github/workflows/Legs.yml" not in names
+    blob = git("show", "HEAD:.github/workflows/legs.yml", cwd=project).stdout
+    assert spec_ref(advanced) in blob and was not in blob, (
+        "the rewrite is in the commit, under git's spelling")
+    assert f"{ORG}/{PROJECT}-code/.github/workflows/y.yml@{code}" in blob
+    assert spec_ref(advanced) in (workflows / "Legs.yml").read_text(
+        encoding="utf-8")
+    assert validate(project).returncode == 0
+    assert git("status", "--porcelain", cwd=project).stdout == ""
+
+
+def test_a_respelled_tracked_workflow_is_planned_under_gits_spelling(
+        bump_leg_module, project, advanced, monkeypatch):
+    """The rule itself, on every disk: `_same_file`, the one place the tool
+    asks the filesystem, answers as a disk that ignores case would. The row
+    names git's `legs.yml`, which is the path the commit's pathspec carries,
+    with the text read from the disk's `Legs.yml` and its reference moved;
+    on main this is the `bump-leg-workflow-untracked` refusal."""
+    was, _ = reference_both_legs(project)
+    workflows = project / ".github" / "workflows"
+    respelled(workflows, "legs.yml", "Legs.yml")
+    monkeypatch.setattr(bump_leg_module, "_same_file", ignoring_case,
+                        raising=False)
+
+    plans = bump_leg_module.plan_workflows(project, f"{ORG}/{PROJECT}-spec",
+                                           advanced)
+
+    assert [(path.relative_to(project).as_posix(), moved)
+            for path, _, moved in plans] == [(".github/workflows/legs.yml", 1)]
+    (_, text, _), = plans
+    assert spec_ref(advanced) in text and was not in text
+
+
+def test_a_name_two_tracked_spellings_answer_to_is_refused_as_untracked(
+        bump_leg_module, project, advanced, monkeypatch):
+    """An index holding `legs.yml` AND `LEGS.yml`, on a disk that holds one
+    `Legs.yml` for both: one rewrite cannot move two index entries, and
+    committing one would leave the other's old `@<sha>` in the tree. Not
+    resolved to either, so it is refused by the disk's name, as before."""
+    was, _ = reference_both_legs(project)
+    blob = git("rev-parse", "HEAD:.github/workflows/legs.yml",
+               cwd=project).stdout.strip()
+    git("update-index", "--add", "--cacheinfo",
+        f"100644,{blob},.github/workflows/LEGS.yml", cwd=project)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm",
+        "Track a second spelling", cwd=project)
+    respelled(project / ".github" / "workflows", "legs.yml", "Legs.yml")
+    monkeypatch.setattr(bump_leg_module, "_same_file", ignoring_case,
+                        raising=False)
+
+    with pytest.raises(bump_leg_module.Refusal) as refused:
+        bump_leg_module.plan_workflows(project, f"{ORG}/{PROJECT}-spec",
+                                       advanced)
+    assert refused.value.code == "bump-leg-workflow-untracked"
+    assert ".github/workflows/Legs.yml  1 reference(s)" in refused.value.detail
+    assert was in (project / ".github" / "workflows" / "Legs.yml").read_text(
+        encoding="utf-8"), "nothing was written"
+
+
+@pytest.mark.parametrize("twin", ["another-file", "a-hard-link"])
+@pytest.mark.parametrize("ignorecase", ["true", "false"])
+def test_a_second_spelling_that_is_a_second_name_is_refused_whatever_git_says(
+        project, scaffolded, advanced, tmp_path, ignorecase, twin):
+    """The filesystem is asked, not `core.ignorecase`. On a disk that keeps
+    case a `Legs.yml` beside the tracked `legs.yml` is another file, and
+    with the setting true git neither lists it as untracked nor will stage
+    it — so a tool that took git's word would rewrite it and leave it out of
+    the commit. It is refused by name, and the tracked `legs.yml` is not.
+    A HARD LINK is the same file under a second name the directory lists,
+    and the listing is what says so: a tracked name the walk lists is a file
+    of its own, so the link is not taken for a respelling of it either.
+
+    RUNS ONLY WHERE THE DISK KEEPS CASE (Linux): one that ignores it cannot
+    hold the two names at once.
+    """
+    if disk_ignores_case(tmp_path):
+        pytest.skip("needs a disk that keeps case (Linux): this one cannot "
+                    "hold two spellings of one name")
+    was, _ = reference_both_legs(project)
+    branched(project)
+    git("config", "core.ignorecase", ignorecase, cwd=project)
+    workflows = project / ".github" / "workflows"
+    if twin == "a-hard-link":
+        os.link(workflows / "legs.yml", workflows / "Legs.yml")
+    else:
+        leave_untracked(project, "Legs.yml", spec_ref(was))
+    if ignorecase == "true":
+        assert git("ls-files", "-o", "--", ".github/workflows",
+                   cwd=project).stdout == "", (
+            "this test only means something while git calls the twin "
+            "tracked")
+    before = found(project)
+
+    result = bump(project, scaffolded, advanced)
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert "bump-leg-workflow-untracked" in result.stderr
+    assert ".github/workflows/Legs.yml  1 reference(s)" in result.stderr
+    assert ".github/workflows/legs.yml" not in result.stderr
+    assert found(project) == before
 
 
 # --- --dry-run --------------------------------------------------------------
