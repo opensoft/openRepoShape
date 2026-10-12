@@ -62,7 +62,9 @@ without knowing whether the specification cites it. `execute` REFUSES while
 any `leg:` is still null, and on every other finding `check` reports, before
 it has created a leg repository or pushed anything -- a source submodule's
 relative url resolved again from the leg remotes it is about to create, which
-under `--local-remote-dir` are not the GitHub ones `check` resolves from.
+under `--local-remote-dir` are not the GitHub ones `check` resolves from, and
+the place outside the assembly that a symlink kept at a path the shape writes
+leads to asked again of the disk, a climb from its own work directory.
 
 WHY `git filter-repo` AND NOT A VENDORED COPY. Extracting history correctly is
 a solved problem with one correct implementation, and a vendored copy of it
@@ -3229,10 +3231,13 @@ def _entry_findings(plan: Plan, source: Source,
     same lines; three compositions then disagreed, and a plan `check`
     rejected as uncovered AND split was refused by `execute` for the split
     alone, to be refused again for the rest once that was fixed. Composed
-    once, the two commands cannot differ about a plan -- but in the one
-    place a remote decides it: `local_remote_dir` is `execute`'s, and a
-    relative submodule url is resolved from the leg remotes it names, where
-    `check` has none and resolves from GitHub's (#190).
+    once, the two commands cannot differ about a plan -- but in the two
+    places something outside the plan decides it. `local_remote_dir` is
+    `execute`'s, and a relative submodule url is resolved from the leg
+    remotes it names, where `check` has none and resolves from GitHub's
+    (#190). And whether anything is at the place outside the assembly that
+    a symlink AT a shape path leads to is asked of the disk by each command
+    when it runs, a climb above the root from its own work directory (#183).
 
     `_leg_findings` is handed the TREE, because the paths the plan keeps in
     the root are read out of it (#172, #191): without it a mount path at, or
@@ -4516,7 +4521,10 @@ def _refuse_what_check_finds(plan: Plan, source: Source,
     THE FINDINGS ARE `check`'S OWN: `_entry_findings`, the one list `check`
     prints, so the two commands cannot disagree about what a plan covers, or
     about a symlink the plan keeps in the root and the shape writes through
-    (#178). The refusal's code is the FIRST finding's own (`plan-uncovered`,
+    (#178) -- but where such a link, AT a shape path, leads out of the
+    assembly: whether anything is there is asked of the disk again here,
+    before any leg exists, and a climb from this run's own work directory
+    (#183). The refusal's code is the FIRST finding's own (`plan-uncovered`,
     ...); its detail is every finding as `check` prints it, capped at
     `REFUSED_FINDINGS_SHOWN` with an "and N more" tail; its remediation is
     this one, then whatever `check` prints after its findings -- #166's
