@@ -2833,9 +2833,10 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
 # that dangles, loops or leads out of the assembly is refused. A symlink
 # ABOVE a path the shape writes is a directory the shape writes into, so it
 # must lead to a directory the root holds, whatever this machine holds
-# elsewhere. And the shape's copy under `shape/` is written without asking
-# again, so a symlink that leads the COPY onto something already there is
-# refused too (B2).
+# elsewhere. And `place` asks where the shape's copy under `shape/` lands
+# only of the disk, after both legs exist (#262's `copy_in_the_way`), while
+# #262's `check` rule follows no link, so a symlink that leads the COPY onto
+# something already there is refused here too (B2).
 #
 # Whether something is at a place OUTSIDE the assembly is a fact of the
 # machine, so `check` and `execute` each ask their own disk: an absolute
@@ -3211,15 +3212,15 @@ class _PlannedRoot:
 
     def _over(self, walk: _Walk) -> str:
         """Why the shape's copy cannot be written where a symlink leads it:
-        onto something already there, which `place` writes over without
-        asking again."""
+        onto something already there. `place` stops there (#262's
+        `copy_in_the_way`), after both legs exist; before #262 it wrote the
+        copy over a file, and raised IsADirectoryError on a directory."""
         landed = _spelled(walk.landed)
-        if (os.path.isdir(walk.landed) if walk.outside
-                else self._is_dir(walk.landed)):
-            return (f"it lands on {landed}, a directory that is already "
-                    "there, where the shape's copy cannot be written")
-        return (f"it lands on {landed}, which is already there, so the "
-                "shape's copy would be written over it")
+        is_dir = (os.path.isdir(walk.landed) if walk.outside
+                  else self._is_dir(walk.landed))
+        what = "a directory" if is_dir else "a file"
+        return (f"it lands on {landed}, {what} that is already there, where "
+                "the shape's copy cannot be written")
 
 
 def _work_dir_names(plan: Plan) -> tuple[str, dict[str, str]]:

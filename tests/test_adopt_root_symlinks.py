@@ -354,7 +354,8 @@ SCRIPTS_MISPLACED = (
     "contracts/repository-naming.yaml, from the directory above their own, "
     "so they run only from a directory directly under the root, which {} is "
     "not")
-OVER_IT = "which is already there, so the shape's copy would be written over it"
+ON_A_FILE = ("a file that is already there, where the shape's copy cannot be "
+             "written")
 LINK_TO_GH = {"tooling/gh/workflows/build.yml": "on: push\n"}
 
 #: `(*PLANNED, (link, target, shape path, why[, aside]))`. The first ten are
@@ -468,12 +469,12 @@ REFUSED = [
     # B2: the copy under `shape/` lands on something already there.
     pytest.param({}, {SHAPE_DIR: "."}, {SHAPE_DIR: ROOT},
                  (SHAPE_DIR, ".", SHAPE_README,
-                  f"it lands on {ticked(README)}, {OVER_IT}"),
+                  f"it lands on {ticked(README)}, {ON_A_FILE}"),
                  id="the-collision-directory-is-the-root"),
     pytest.param({"vendor/README.md": "vendor's own\n"}, {SHAPE_DIR: VENDOR},
                  {VENDOR_DIR: ROOT, SHAPE_DIR: ROOT},
                  (SHAPE_DIR, VENDOR, SHAPE_README,
-                  f"it lands on `vendor/README.md`, {OVER_IT}"),
+                  f"it lands on `vendor/README.md`, {ON_A_FILE}"),
                  id="the-collision-directory-holds-the-name"),
     pytest.param({"sub/README.md/x.txt": "x\n"}, {SHAPE_DIR: "sub"},
                  {"sub/": ROOT, SHAPE_DIR: ROOT},
@@ -564,7 +565,7 @@ def test_a_link_at_the_copy_is_one_finding_by_the_rule_that_sees_it(
                        "shape/": ROOT})
     refused_alike(adopter, through, plan, finding(
         copy, out_of_the_copy, copy,
-        f"it lands on {ticked(NOTES_MD)}, {OVER_IT}"))
+        f"it lands on {ticked(NOTES_MD)}, {ON_A_FILE}"))
 
 
 #: An empty target, and two that are not plain text: a byte that is not
