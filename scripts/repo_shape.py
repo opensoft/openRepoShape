@@ -172,6 +172,12 @@ class YamlError(Exception):
 # invent, and an invented meaning in a validator is a wrong answer with a
 # confident tone.
 #
+# A QUOTE OPENS A QUOTED SCALAR ONLY WHERE A SCALAR BEGINS, as in YAML; in
+# the middle of a plain scalar (`it's`) it is a character of it (#249). A
+# quoted scalar must close on its own line, with nothing after its closing
+# quote but a comment or the structure that ends it, or it is REFUSED (#250):
+# a quoted scalar spanning lines is outside this subset. See `_unquoted`.
+#
 # A FLOW MAPPING READS AS ITS BLOCK TWIN (#252): an entry opening `? ` is an
 # explicit key and is refused as a block line opening `? ` is, and an empty
 # value (`{k: }`, `{k:}`) is null as a block `k:` is.
@@ -204,56 +210,109 @@ class _Rec:
         self.block = block
 
 
-def _strip_comment(text: str) -> str:
-    """Drop a trailing `#` comment that is not inside a quoted scalar."""
-    out = []
-    quote = None
-    i = 0
+def _quote_end(text: str, start: int) -> int | None:
+    """The index just past the quoted scalar that opens at `text[start]`,
+    or None when nothing on the line closes it.
+
+    A `"` closes it where no backslash escapes it: the character after each
+    backslash is taken with the backslash, so the `"` of `\\\\"` closes and
+    the `"` of `\\"` does not. A `'` closes it where it is not doubled, `''`
+    being a single-quoted scalar's one escape.
+    """
+    quote = text[start]
+    i = start + 1
+    while i < len(text):
+        if quote == '"' and text[i] == "\\":
+            i += 2
+        elif text[i] != quote:
+            i += 1
+        elif quote == "'" and text[i + 1:i + 2] == "'":
+            i += 2
+        else:
+            return i + 1
+    return None
+
+
+def _unquoted(text: str, flow: bool = False):
+    """Each `(index, character)` of `text` that no quoted scalar holds: the
+    characters `_strip_comment`, `_split_key` and `_split_flow` may read as
+    structure.
+
+    THE ONE DEFINITION OF WHERE A QUOTED SCALAR STARTS AND ENDS, which those
+    three used to spell as three toggles that opened a quote at ANY `"` or
+    `'` (#249). A quote opens one only where a scalar BEGINS: at the start
+    of the text, or after `- `, `: `, `[` or `{`, or after a `,` inside a
+    flow, with any spaces after each. Anywhere else, as in `it's` or `a"b`,
+    it is a character of a plain scalar, so the `,`, `#` or `: ` after it is
+    still structure and `k: [it's, a]` is two items, as its block twin is.
+    The quoted scalar ends at `_quote_end`. When nothing closes it, the rest
+    of the text is inside it and nothing more is yielded; `_scalar` then
+    refuses it by name (#250).
+
+    `flow` says `text` is a flow collection's body, where every `,`, `[` and
+    `{` is structure. On a block line they are structure only inside a flow
+    the line opens where a scalar begins, so `k: a, 'b # c'` is the plain
+    scalar `a, 'b` and a comment, as YAML reads it.
+    """
+    depth, begins, i = 0, True, 0
     while i < len(text):
         ch = text[i]
-        if quote:
-            out.append(ch)
-            if ch == "\\" and quote == '"' and i + 1 < len(text):
-                out.append(text[i + 1])
-                i += 2
-                continue
-            if ch == quote:
-                quote = None
-        elif ch in "\"'":
-            quote = ch
-            out.append(ch)
-        elif ch == "#" and (not out or out[-1] in " \t"):
-            break
-        else:
-            out.append(ch)
+        if begins and ch in "\"'":
+            end = _quote_end(text, i)
+            if end is None:
+                return
+            i, begins = end, False
+            continue
+        yield i, ch
         i += 1
-    return "".join(out).rstrip()
+        if ch in "[{" and (begins or flow or depth):
+            depth += 1
+        elif ch in "]}" and depth:
+            depth -= 1
+        spaced = text[i:i + 1] in ("", " ", "\t")
+        if ch not in " \t" and not (ch == "-" and begins and spaced):
+            begins = (ch in "[{," and (flow or depth > 0)
+                      or ch == ":" and spaced)
+
+
+def _strip_comment(text: str) -> str:
+    """Drop a trailing `#` comment: a `#` no quoted scalar holds
+    (`_unquoted`), at the start of the text or after a space or tab."""
+    for i, ch in _unquoted(text):
+        if ch == "#" and (i == 0 or text[i - 1] in " \t"):
+            return text[:i].rstrip()
+    return text.rstrip()
 
 
 def _split_key(text: str) -> tuple[str, str] | None:
-    """Split `key: rest` on the first top-level `:` followed by space or EOL."""
-    quote = None
-    i = 0
-    while i < len(text):
-        ch = text[i]
-        if quote:
-            if ch == "\\" and quote == '"':
-                i += 2
-                continue
-            if ch == quote:
-                quote = None
-        elif ch in "\"'":
-            quote = ch
-        elif ch in "[{":
-            return None  # a flow collection cannot be a key in this subset
+    """Split `key: rest` on the first `:` followed by space or EOL that no
+    quoted scalar holds (`_unquoted`).
+
+    A `[` OR `{` THAT OPENS THE TEXT makes it a flow collection, which is not
+    a key in this subset, so `- [a, b]` and `- {a: b}` stay flow items. One
+    LATER IN A KEY, before its `: `, is REFUSED by name: YAML reads
+    `a[b]: c` as the key `a[b]`, but a block key and a flow-entry key would
+    have to be told apart to read it, and returning `None` made `- a[b]: c`
+    the string `'a[b]: c'` where a mapping was meant (#249).
+    """
+    bracket = False
+    for i, ch in _unquoted(text):
+        if ch in "[{":
+            if not text[:i].strip():
+                return None  # a flow collection cannot be a key in this subset
+            bracket = True
         elif ch == ":" and (i + 1 == len(text) or text[i + 1] in " \t"):
+            if bracket:
+                raise YamlError("a key holding `[` or `{` is not supported: "
+                                f"{text[:i].strip()!r}")
             return _unquote_key(text[:i].strip()), text[i + 1:].strip()
-        i += 1
     return None
 
 
 def _unquote_key(key: str) -> str:
-    if len(key) >= 2 and key[0] == key[-1] and key[0] in "\"'":
+    """A key that begins with a quote is one quoted scalar, or `_scalar`
+    refuses it: `"a" b: 1` is not the key `"a" b` (#250)."""
+    if key[:1] in ('"', "'"):
         return str(_scalar(key))
     return key
 
@@ -367,14 +426,33 @@ def _unescape(body: str) -> str:
     return "".join(out)
 
 
+def _quoted_scalar(text: str) -> str:
+    """The value of `text`, which begins with a quote and must be ONE whole
+    quoted scalar (#250).
+
+    Not "starts and ends with a quote": that took `"a" b "c"` for one scalar,
+    `"a\\"` for `a\\` and an unclosed `"abc` for plain text, where YAML
+    refuses each. Nothing may follow the closing quote, because a comment
+    after it is gone before this runs and the structure after it is not part
+    of `text`.
+    """
+    end = _quote_end(text, 0)
+    if end is None:
+        raise YamlError(f"quoted scalar without a closing quote: {text!r}")
+    if end < len(text):
+        raise YamlError(
+            f"quoted scalar with text after its closing quote: {text!r}")
+    if text[0] == "'":
+        return text[1:-1].replace("''", "'")
+    return _unescape(text[1:-1])
+
+
 def _scalar(raw: str) -> Any:
     text = raw.strip()
     if text == "" or text in ("null", "~", "Null", "NULL"):
         return None
-    if text[0] == "'" and text[-1] == "'" and len(text) >= 2:
-        return text[1:-1].replace("''", "'")
-    if text[0] == '"' and text[-1] == '"' and len(text) >= 2:
-        return _unescape(text[1:-1])
+    if text[0] in "\"'":
+        return _quoted_scalar(text)
     if text[0] in "&*!":
         raise YamlError(f"anchors, aliases and tags are not supported: {text!r}")
     if text in ("true", "True", "TRUE"):
@@ -442,35 +520,23 @@ def _split_key_flow(text: str) -> tuple[str, str] | None:
 def _split_flow(body: str) -> list[str]:
     """A flow collection's body, split at its top-level commas.
 
-    Inside a DOUBLE-quoted item the character after a backslash is taken
-    with it, as `_strip_comment` and `_split_key` take it, so `\\"` neither
-    ends the item nor lets a `,` or `]` after it read as structure (#213). A
-    single-quoted item has no backslash escape: its `''` is two quotes, and
-    the toggle reads it.
+    The commas, brackets and braces it reads are the ones `_unquoted` yields,
+    so one inside a quoted item is not structure, and neither is a quote in
+    the middle of a plain item (#249). Inside a DOUBLE-quoted item the
+    character after a backslash is taken with it, so `\\"` neither ends the
+    item nor lets a `,` or `]` after it read as structure (#213). A
+    single-quoted item has no backslash escape: its `''` is a quote.
     """
-    parts, depth, quote, cur = [], 0, None, []
-    chars = iter(body)
-    for ch in chars:
-        if quote:
-            cur.append(ch)
-            if ch == "\\" and quote == '"':
-                cur.append(next(chars, ""))
-            elif ch == quote:
-                quote = None
-            continue
-        if ch in "\"'":
-            quote = ch
-        elif ch in "[{":
+    parts, depth, start = [], 0, 0
+    for i, ch in _unquoted(body, flow=True):
+        if ch in "[{":
             depth += 1
         elif ch in "]}":
             depth -= 1
         elif ch == "," and depth == 0:
-            parts.append("".join(cur).strip())
-            cur = []
-            continue
-        cur.append(ch)
-    if cur:
-        parts.append("".join(cur).strip())
+            parts.append(body[start:i].strip())
+            start = i + 1
+    parts.append(body[start:].strip())
     return [p for p in parts if p != ""]
 
 
