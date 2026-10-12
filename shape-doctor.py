@@ -2504,7 +2504,7 @@ def pinned_copies(ctx: Context) -> set:
     us = ctx.update_shape()
     try:
         _pin, rows = us.read_pin(ctx.root)
-    except (Refusal, us.YamlError, OSError, ValueError, TypeError):
+    except (Refusal, us.YamlError, OSError, ValueError):
         return set()
     return {row.path for row in rows}
 
@@ -2533,7 +2533,7 @@ BY_HAND_WHY = {
              "hand update-shape.py asks for where a copy changed on both "
              "sides"),
     "pin": ("No tool of this standard writes a neutral product pin after the "
-            "scaffold, so every change to one was made by a person"),
+            "scaffold, and every change to one since was made by a person"),
 }
 
 

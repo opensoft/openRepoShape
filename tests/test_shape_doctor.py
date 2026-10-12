@@ -5467,6 +5467,11 @@ def test_a_neutral_product_pin_is_shown_never_put_back(standard, project,
     assert pasted(row["next"])[3:] == expected, row["next"]
     assert "No tool of this standard writes a neutral product pin" in \
         row["next"].split("   #", 1)[1], row["next"]
+    # One `so` to a sentence (review of PR #358): the reason ended in its own
+    # ", so every change to one was made by a person", and the note's ", so
+    # neither side is taken whole" or ", so nothing is rolled back" followed.
+    assert not any(sentence.count(", so ") > 1 for sentence in
+                   row["next"].split("   #", 1)[1].split(". ")), row["next"]
     run_read_only(standard, project, row)
     assert (project / NEUTRAL_PIN).read_bytes() == before
     assert b"2" * 40 in before
