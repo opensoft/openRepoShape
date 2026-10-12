@@ -635,10 +635,10 @@ def test_a_link_at_the_copy_is_one_finding_by_the_rule_that_sees_it(
         f"it lands on {ticked(NOTES_MD)}, {ON_A_FILE}"))
 
 
-#: An empty target, and two that are not plain text: a byte that is not
-#: UTF-8, and a newline that would end the one-line FINDING.
+#: Two targets that are not plain text: a byte that is not UTF-8, and a
+#: newline that would end the one-line FINDING.
 SPELLED = [
-    pytest.param(b"nowhere\xff", "nowhere\\xff", id="not-utf-8"),
+    pytest.param(b"nowhere\xff", "nowhere\\udcff", id="not-utf-8"),
     pytest.param(b"a\nb", "a\\nb", id="a-newline"),
 ]
 
@@ -646,8 +646,8 @@ SPELLED = [
 @pytest.mark.parametrize(("raw", "spelled"), SPELLED)
 def test_a_target_that_is_not_plain_text_is_spelled(tmp_path, raw, spelled):
     """As #166's findings spell a path: between backticks, a byte that is
-    not UTF-8 as `\\xff` and a newline as `\\n`, so the finding is one line
-    that reads one way."""
+    not UTF-8 as `\\udcff`, the plan's own spelling of it (#329), and a
+    newline as `\\n`, so the finding is one line that reads one way."""
     _, plan = planned(tmp_path, {}, {GITHUB: raw}, {GITHUB: ROOT})
     checked = check(plan)
     assert symlink_findings(checked) == [finding(
