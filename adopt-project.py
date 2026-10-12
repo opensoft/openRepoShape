@@ -2724,6 +2724,99 @@ def _refused_by_policy(path: str) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Plan values `execute` read late, asked by `check` before any leg exists
+# ---------------------------------------------------------------------------
+#
+# Each value below was read by `execute` after `check` had said `plan ok`, and
+# nothing in between asked what it held. `check` now asks, and `execute`
+# refuses what it finds through `_refuse_what_check_finds`, before any leg
+# exists.
+#
+# `follow_ups:` (#293). `plan` writes it as a block list, and every reader
+# iterated the value with no test that it was one. A hand-edited
+# `follow_ups: 5` (or `true`, `1.5`, `false`) ended `check` in
+# `TypeError: 'int' object is not iterable`, a traceback with no FINDING
+# naming the key, and on main ended `execute` the same way in
+# `_commit_the_split`, after both legs were pushed; `abc` was written into the
+# split commit's message as three follow-ups, `a`, `b` and `c`, and an item
+# `- true` as `True`.
+
+#: `check`'s finding for a `follow_ups:` that is not a list of text, and the
+#: code `execute` refuses it under (#293).
+BAD_FOLLOW_UPS = "plan-bad-follow-ups"
+
+#: Said once after the `follow_ups:` findings.
+FOLLOW_UPS_REMEDIATION = (
+    "Remediation: write `follow_ups:` in the plan file as `plan` writes it, "
+    "a list with one item of text per follow-up, each on its own line as "
+    "`  - \"<what is left to do>\"`, or `follow_ups: []` for none. `execute` "
+    "writes each item as one line of the split commit's message, so it takes "
+    "nothing else: a number or a boolean is not a list, text on the key's own "
+    "line would be written one character per follow-up, and an item that is "
+    "not text would be written as Python spells it (`True`, `None`).")
+
+
+def _read_as(value) -> str:
+    """What the plan's reader handed back for a value, in words, spelled as a
+    YAML plan spells it where that differs from Python (`true`, `null`)."""
+    if isinstance(value, bool):
+        return f"the boolean {str(value).lower()}"
+    if isinstance(value, (int, float)):
+        return f"the number {value!r}"
+    if isinstance(value, str):
+        return f"the text {value!r}"
+    if value is None:
+        return "null"
+    if isinstance(value, dict):
+        return f"a mapping of {len(value)} key(s)"
+    if isinstance(value, list):
+        return f"a list of {len(value)} item(s)"
+    return f"a value of type {type(value).__name__}"
+
+
+def _plan_follow_ups(plan: Plan) -> list[str]:
+    """The plan's follow-ups as `execute` writes them into the split commit's
+    message: each item of a `follow_ups:` LIST that is text, and nothing for a
+    `follow_ups:` that is absent, bare or anything but a list.
+
+    THE ONE READ, for the three readers (`_plan_values`,
+    `_print_what_will_happen`, `_commit_the_split`), so that none of them
+    iterates a number or spells a string out one character at a time. What it
+    leaves out is never silently dropped from a run: `_follow_ups_findings`
+    reports it in `check`, and `execute` has refused it through
+    `_refuse_what_check_finds` before the split commit is written.
+    """
+    value = plan.get("follow_ups", [])
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
+def _follow_ups_findings(plan: Plan) -> list[str]:
+    """A FINDING for a `follow_ups:` that is present and not a list, or for
+    each item of one that is not text; `[]` for a list of text, an empty
+    list and a bare key (#293)."""
+    value = plan.get("follow_ups")
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        return [f"FINDING {BAD_FOLLOW_UPS}: `follow_ups:` is "
+                f"{_read_as(value)}, not a list: `execute` writes each item "
+                "of a list into the split commit's message as one follow-up"]
+    return [f"FINDING {BAD_FOLLOW_UPS}: item {number} of `follow_ups:` is "
+            f"{_read_as(item)}, not text: `execute` writes each item into the "
+            "split commit's message as one line of text"
+            for number, item in enumerate(value, 1)
+            if not isinstance(item, str)]
+
+
+def _plan_field_findings(plan: Plan) -> tuple[list[str], list[str]]:
+    """`_follow_ups_findings`, and what `check` prints once after them."""
+    followed = _follow_ups_findings(plan)
+    return followed, [FOLLOW_UPS_REMEDIATION] if followed else []
+
+
 #: What a plan whose entry `entry_path_problem` refuses is told to do. Said by
 #: `check`, once after its findings, and by `execute`'s refusal.
 UNSAFE_PATH_REMEDIATION = (
@@ -2763,7 +2856,9 @@ def _entry_findings(plan: Plan, source: Source
     and what it prints once after them: each entry's path, then coverage,
     then each entry's `leg:`, the two mount paths and what the root keeps
     where the shape writes, then the source's own submodules, then each
-    value `execute` writes into a file that no file can hold (#255).
+    value `execute` writes into a file that no file can hold (#255). Last,
+    each plan value `execute` reads late and `_plan_field_findings` asks
+    about (#293).
 
     ONE LIST, read by `check` and by `execute`'s `_refuse_what_check_finds`.
     #168 and #166 each added findings to `check` and a refusal to `execute`
@@ -2791,8 +2886,11 @@ def _entry_findings(plan: Plan, source: Source
                 + _leg_findings(plan, tree))
     submodule_findings, remediation = _submodule_findings(plan, source, tree)
     unwritable_findings, unwritable_remediation = _value_findings(plan)
-    return (findings + submodule_findings + unwritable_findings,
-            unsafe_remediation + remediation + unwritable_remediation)
+    field_findings, field_remediation = _plan_field_findings(plan)
+    return (findings + submodule_findings + unwritable_findings
+            + field_findings,
+            unsafe_remediation + remediation + unwritable_remediation
+            + field_remediation)
 
 
 def _topics_line(topic: str, local: bool) -> str:
@@ -2833,8 +2931,8 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
           f"{len(drops)} dropped")
     print("  the source is never deleted, never renamed, never force-pushed")
     print(_topics_line(topic, local))
-    for item in plan.get("follow_ups", []):
-        print(f"  follow-up: {_shown(str(item))}")
+    for item in _plan_follow_ups(plan):
+        print(f"  follow-up: {_shown(item)}")
 
 
 def cmd_check(args) -> int:
@@ -3645,7 +3743,7 @@ def _commit_the_split(plan: Plan, source: Source, assembly: Path,
         print(f"  beside  {actual} (the source already has {intended}; nothing "
               "was overwritten)")
 
-    follow_ups = [str(f) for f in plan.get("follow_ups", [])]
+    follow_ups = _plan_follow_ups(plan)
     message = _split_message(names, paths_for, leg_commits, spec_path,
                              code_path, follow_ups, materialized.collisions,
                              seeded)
@@ -3827,13 +3925,16 @@ def _plan_values(plan: Plan) -> list[tuple[str, str, str]]:
     """`(what, value, where)` for each value of the plan's that `execute`
     writes into a file, as `str` makes it, which is how `_template_values`
     and `_commit_the_split` take it. A key the plan does not carry is filled
-    by this tool (`private`, today's date) and is left out."""
+    by this tool (`private`, today's date) and is left out. The follow-ups
+    are `_plan_follow_ups`', the items of text `_commit_the_split` writes; a
+    `follow_ups:` that is not a list of text is `plan-bad-follow-ups` (#293),
+    and is never iterated here."""
     fields = [(key, str(plan.get(key)), where)
               for key, where in WRITTEN_PLAN_VALUES.items()
               if plan.get(key) is not None]
     fields += [("a `pins:` item", pin, ROOT_MANIFEST) for pin in plan.pins]
-    return fields + [("a `follow_ups:` item", str(item), SPLIT_MESSAGE)
-                     for item in plan.get("follow_ups", [])]
+    return fields + [("a `follow_ups:` item", item, SPLIT_MESSAGE)
+                     for item in _plan_follow_ups(plan)]
 
 
 def _value_findings(plan: Plan) -> tuple[list[str], list[str]]:

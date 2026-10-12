@@ -21,8 +21,8 @@ file builds a source with no submodule, so it holds the five classes
 themselves; #168's submodule cases are refused by the same function under the
 same two codes, `plan-uncovered` and `plan-bad-leg`.
 
-NO NETWORK, NO GITHUB, AND NO `git filter-repo` except in the one end-to-end
-test at the bottom. The rest load `adopt-project.py` through importlib and call
+NO NETWORK, NO GITHUB, AND NO `git filter-repo` except in the end-to-end tests
+at the bottom. The rest load `adopt-project.py` through importlib and call
 `cmd_execute` in this process. Its probe for `git filter-repo` is stubbed,
 because every refusal under test is raised BEFORE the tool would be used. A
 `cmd_execute` that stopped refusing would carry on and make the legs, then
@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import re
 import shutil
 import sys
 from argparse import Namespace
@@ -432,6 +433,125 @@ def test_a_path_that_is_a_git_option_is_still_unsafe_not_uncovered(adopter,
     no_leg_was_created(world.tmp)
 
 
+# --- plan values `execute` read late ---------------------------------------
+
+#: `follow_ups:` and every item under it, as `plan` writes the block; the
+#: edits below replace the whole of it.
+FOLLOW_UPS_BLOCK = re.compile(r"^follow_ups:\n(?:  - .*\n)*", re.M)
+BAD_FOLLOW_UPS_CODE = "plan-bad-follow-ups"
+
+#: What a hand edit can leave `follow_ups:` holding that is not a list of
+#: text, by test id: the block it is written as, and what the finding must say
+#: of it (#293). The scalars ended `check` in `TypeError: ... is not iterable`
+#: with no FINDING, and on main ended `execute` the same way after both legs
+#: were pushed; `abc` went into the split commit's message as three
+#: follow-ups, `a`, `b` and `c`, and an item `true` as `True`.
+BAD_FOLLOW_UPS = {
+    "int": ("follow_ups: 5\n", "`follow_ups:` is the number 5, not a list"),
+    "true": ("follow_ups: true\n",
+             "`follow_ups:` is the boolean true, not a list"),
+    "false": ("follow_ups: false\n",
+              "`follow_ups:` is the boolean false, not a list"),
+    "float": ("follow_ups: 1.5\n",
+              "`follow_ups:` is the number 1.5, not a list"),
+    "text": ("follow_ups: abc\n",
+             "`follow_ups:` is the text 'abc', not a list"),
+    "mapping": ("follow_ups: {a: 1}\n",
+                "`follow_ups:` is a mapping of 1 key(s), not a list"),
+    "item-int": ("follow_ups:\n  - 5\n",
+                 "item 1 of `follow_ups:` is the number 5, not text"),
+    "item-true": ('follow_ups:\n  - "keep"\n  - true\n',
+                  "item 2 of `follow_ups:` is the boolean true, not text"),
+    "item-null": ("follow_ups:\n  - null\n",
+                  "item 1 of `follow_ups:` is null, not text"),
+}
+
+#: What `check` and `execute` still take, by test id, and the follow-ups each
+#: reads: an empty list, a bare key, and a list of text as `plan` writes it.
+GOOD_FOLLOW_UPS = {
+    "empty-list": ("follow_ups: []\n", []),
+    "bare-key": ("follow_ups:\n", []),
+    "text-items": ('follow_ups:\n  - "Re-point CI at code/"\n'
+                   '  - "merge shape/README.md"\n',
+                   ["Re-point CI at code/", "merge shape/README.md"]),
+}
+
+
+def with_follow_ups(text: str, block: str) -> str:
+    """`text` with its `follow_ups:` block replaced by `block`."""
+    edited, done = FOLLOW_UPS_BLOCK.subn(lambda _: block, text, count=1)
+    assert done == 1, "the plan has no `follow_ups:` block to edit"
+    return edited
+
+
+def assert_no_traceback(result) -> None:
+    for output in (result.stdout, result.stderr):
+        assert "Traceback" not in output, output
+
+
+def findings_of(result) -> list[str]:
+    return [line for line in result.stderr.splitlines()
+            if line.startswith("FINDING ")]
+
+
+@pytest.mark.parametrize("edit", sorted(BAD_FOLLOW_UPS))
+def test_check_finds_a_follow_ups_that_is_not_a_list_of_text(world, edit):
+    """#293: a FINDING that names the key and what it holds, exit 1, and no
+    traceback. At #270's head `check` read the value in `_plan_values` and
+    ended in `TypeError: 'int' object is not iterable`; on main it did so in
+    `_print_what_will_happen`. `abc` printed three follow-ups, `a`, `b` and
+    `c`, which the summary no longer reads."""
+    block, said = BAD_FOLLOW_UPS[edit]
+    result = run_check(write_edited(world,
+                                    with_follow_ups(world.answered, block)))
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert_no_traceback(result)
+    found = findings_of(result)
+    assert len(found) == 1, found
+    assert found[0].startswith(f"FINDING {BAD_FOLLOW_UPS_CODE}: {said}: "), \
+        found
+    assert "Remediation: write `follow_ups:` in the plan file" in \
+        result.stderr
+    shown = [line for line in result.stdout.splitlines()
+             if line.startswith("  follow-up: ")]
+    assert shown == (["  follow-up: keep"] if '"keep"' in block else []), \
+        shown
+
+
+@pytest.mark.parametrize("edit", sorted(BAD_FOLLOW_UPS))
+def test_execute_refuses_a_follow_ups_that_is_not_a_list_of_text_and_creates_no_leg(  # noqa: E501
+        adopter, world, edit):
+    """Through `_refuse_what_check_finds`, before any leg exists, under the
+    finding's own code. At #270's head this was the same `TypeError` raised
+    from the same list; on main it was raised in `_commit_the_split`, after
+    both legs were pushed."""
+    block, said = BAD_FOLLOW_UPS[edit]
+    world.plan.write_text(with_follow_ups(world.answered, block),
+                          encoding=UTF8)
+    refusal = refused_by(adopter, execute_args(world.tmp, world.plan))
+    assert refusal.code == BAD_FOLLOW_UPS_CODE
+    assert f"FINDING {BAD_FOLLOW_UPS_CODE}: {said}" in refusal.detail
+    assert "write `follow_ups:` in the plan file" in refusal.remediation
+    no_leg_was_created(world.tmp)
+    assert source_branches(world.source) == ["main"]
+
+
+@pytest.mark.parametrize("edit", sorted(GOOD_FOLLOW_UPS))
+def test_a_list_of_text_an_empty_list_and_a_bare_key_still_pass(adopter,
+                                                                world, edit):
+    """The controls: what `plan` writes, and the two ways of writing none,
+    pass `check` and `execute`'s refusal, and the follow-ups read are the
+    items as written."""
+    block, items = GOOD_FOLLOW_UPS[edit]
+    text = with_follow_ups(world.answered, block)
+    checked = run_check(write_edited(world, text))
+    assert checked.returncode == 0, checked.stderr + checked.stdout
+    for item in items:
+        assert f"  follow-up: {item}" in checked.stdout
+    plan, source = open_plan(adopter, world, text)
+    assert adopter._refuse_what_check_finds(plan, source) is None
+
+
 # --- a plan that is not UTF-8 (#192) ----------------------------------------
 
 #: The byte `0xff` is in no UTF-8 text, so wherever it lands the file cannot be
@@ -541,3 +661,28 @@ def test_an_uncovered_plan_creates_no_leg_and_the_corrected_plan_then_runs(
     assert "adoption verified" in corrected.stdout
     for role in ROLES:
         assert (remotes / f"{PROJECT}-{role}.git").is_dir()
+
+
+@needs_filter_repo
+def test_a_follow_ups_that_is_not_a_list_creates_no_leg_and_the_corrected_plan_runs(  # noqa: E501
+        world):
+    """#293 as a person met it, through `main`: exit 2, a REFUSED line, no
+    traceback and no leg, so the corrected plan does not meet
+    `leg-remote-exists`."""
+    remotes, work = world.tmp / REMOTES, world.tmp / WORK
+    flags = ("--plan", str(world.plan), "--yes", "--local-remote-dir",
+             str(remotes), "--work-dir", str(work))
+    world.plan.write_text(with_follow_ups(world.answered, "follow_ups: 5\n"),
+                          encoding=UTF8)
+    refused = run_script(ADOPT, "execute", *flags)
+    assert refused.returncode == 2, refused.stderr + refused.stdout
+    assert f"REFUSED {BAD_FOLLOW_UPS_CODE}: " in refused.stderr
+    assert_no_traceback(refused)
+    assert "creating the leg repositories" not in refused.stdout
+    assert not remotes.exists(), "not even the directory the legs go in"
+    assert source_branches(world.source) == ["main"]
+
+    world.plan.write_text(world.answered, encoding=UTF8)
+    corrected = run_script(ADOPT, "execute", *flags)
+    assert corrected.returncode == 0, corrected.stderr + corrected.stdout
+    assert "adoption verified" in corrected.stdout
