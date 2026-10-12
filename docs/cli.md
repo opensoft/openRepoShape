@@ -653,6 +653,7 @@ options:
 ```
 usage: family.py add [-h] --family-root FAMILY_ROOT --member ORG/PROJECT
                      [--at COMMIT] [--local-remote-dir LOCAL_REMOTE_DIR]
+                     [--trailer "KEY: VALUE"] [--dry-run]
 
 options:
   -h, --help            show this help message and exit
@@ -664,6 +665,15 @@ options:
   --local-remote-dir LOCAL_REMOTE_DIR
                         resolve the member to a bare repository here instead
                         of github.com (the TEST path)
+  --trailer "KEY: VALUE"
+                        append this `<Key>: <value>` line to the commit this
+                        writes; repeatable, kept in the order given
+  --dry-run             print the row, the gitlink and the .gitmodules section
+                        this would write, and its trailers, and change nothing
+                        in the holder: it READS the member, as a real add
+                        does, from throwaway clones in temporary directories
+                        outside the holder, which it deletes, and mounts,
+                        writes, stages and commits nothing
 ```
 
 #### `scripts/family.py bump`
