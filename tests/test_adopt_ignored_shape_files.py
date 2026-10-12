@@ -210,8 +210,8 @@ def test_the_forced_paths_are_the_written_ones_in_posix_spelling(adopter,
 
     assert calls == [
         ["git", "add", "-A", "--", "."],
-        ["git", "add", "-f", "--", ".github/workflows/validate.yml",
-         "shape/.gitattributes"]]
+        ["git", "--literal-pathspecs", "add", "-f", "--",
+         ".github/workflows/validate.yml", "shape/.gitattributes"]]
     assert not any("\\" in part for call in calls for part in call)
 
 
