@@ -1531,6 +1531,11 @@ def _unmountable_reason(text: str) -> str | None:
 
 #: The line a template writes a leg path into, bare. `project.yaml`'s
 #: `path:` and a leg pin's `submodule_path:` are read alike, so one is asked.
+#: It is a COPY of those lines, held to them by
+#: `test_the_rule_agrees_with_every_template_line_that_holds_a_leg_path`,
+#: which reads the templates themselves: the day a template writes a leg
+#: path another way (quoted, as #259 proposes), that test fails, and this
+#: rule goes or is re-pointed with it.
 LEG_PATH_LINE = "path: {}\n"
 
 

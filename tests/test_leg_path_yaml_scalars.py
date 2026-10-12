@@ -18,6 +18,13 @@ today's reader says, `yes`, `0x1F`, `1e3` and `.inf` among the values it reads
 as text (YAML 1.1 or 1.2 would read some of them otherwise), and one test
 teaches the reader a new word to show the rule follows it with no edit.
 
+THE RULE ASKS ITS OWN COPY OF THE TEMPLATE LINE (`LEG_PATH_LINE`), so one
+test reads the templates themselves: it finds every YAML template line that
+holds a leg path, renders each value into it, and holds the rule's verdict to
+what the reader gives back. Quote those lines (#259 proposes it) and leave the
+rule alone, and that test fails rather than the rule refusing `2026` in
+silence over a line that reads it back.
+
 Every scaffold here runs with `--local-remote-dir` (no network, no `gh`).
 Only the `execute` test needs `git filter-repo`.
 """
@@ -102,6 +109,43 @@ TEXT_TO_THIS_READER = ["yes", "no", "on", "off", "0x1F", "0o17", "1e3",
 
 KEPT = LOOKALIKES + TEXT_TO_THIS_READER
 
+#: Where the templates are, and the placeholders a leg path is rendered into.
+TEMPLATES = REPO / "templates"
+LEG_PATH_PLACEHOLDERS = ("SPEC_PATH", "CODE_PATH")
+
+
+def template_lines_holding_a_leg_path() -> list[tuple[str, str]]:
+    """Every line of every YAML template that holds a leg path, FOUND by
+    reading `templates/` and not listed here: `(where, line)`, `where` being
+    `<template>:<line number>`. A Markdown template's `{{SPEC_PATH}}/` is
+    prose no YAML reader reads, so only `.yaml` and `.yml` files are asked."""
+    found = []
+    for path in sorted(TEMPLATES.rglob("*")):
+        if path.suffix not in (".yaml", ".yml") or not path.is_file():
+            continue
+        where = path.relative_to(TEMPLATES).as_posix()
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for number, line in enumerate(lines, 1):
+            if any("{{" + key + "}}" in line for key in LEG_PATH_PLACEHOLDERS):
+                found.append((f"{where}:{number}", line))
+    return found
+
+
+TEMPLATE_LEG_PATH_LINES = template_lines_holding_a_leg_path()
+
+
+def read_back(line: str, value: str):
+    """What the project's reader makes of a template `line` once `value` is
+    rendered into it, by the `render` the scaffold and `execute` use. The
+    line is read on its own, dedented: a `key: value` line's scalar is read
+    the same there as inside its block."""
+    rendered = shape_materialize.render(
+        line, {key: value for key in LEG_PATH_PLACEHOLDERS}, "test")
+    read = repo_shape.parse_yaml(rendered.strip() + "\n")
+    assert isinstance(read, dict) and len(read) == 1, (
+        f"{line!r} is not one `key: value` line: teach read_back its form")
+    return next(iter(read.values()))
+
 #: Where a scaffold writes, under `tmp_path`, and the temporary directory the
 #: tool would otherwise make its work directory in.
 REMOTES, WORK, SCRATCH = "remotes", "work", "tmp"
@@ -184,6 +228,35 @@ def test_a_value_the_reader_reads_as_text_is_still_a_path(value):
     assert repo_shape.parse_yaml(f"path: {value}\n") == {"path": value}, (
         "this table is about today's reader, and it no longer agrees")
     assert shape_materialize.leg_path_problem(SPEC, value) is None
+
+
+def test_the_template_lines_found_are_the_ones_the_sentence_names():
+    """The search is not vacuous: it finds the leg-path lines of the files
+    the rule's sentence names, `project.yaml` and both legs' pins."""
+    found = {where.rsplit(":", 1)[0] for where, _ in TEMPLATE_LEG_PATH_LINES}
+    assert {"assembly-root/project.yaml",
+            "assembly-root/contracts/spec-pin.yaml",
+            "assembly-root/contracts/code-pin.yaml"} <= found, (
+        TEMPLATE_LEG_PATH_LINES)
+
+
+@pytest.mark.parametrize("value", [*(p.values[0] for p in REFUSED), *KEPT])
+def test_the_rule_agrees_with_every_template_line_that_holds_a_leg_path(
+        value):
+    """THE TEMPLATES ARE READ, NOT THE RULE'S COPY OF THEIR LINE: `value` is
+    rendered into every template line that holds a leg path, each is read
+    back with the project's reader, and the rule must refuse `value` exactly
+    when one of them does not give it back. Quote those lines, as #259
+    proposes, and leave the rule alone, and this fails: the rule would go on
+    refusing `2026`, which `path: "2026"` reads back, with a sentence saying
+    the line is unquoted."""
+    read = {where: read_back(line, value)
+            for where, line in TEMPLATE_LEG_PATH_LINES}
+    misread = {where: got for where, got in read.items() if got != value}
+    problem = shape_materialize.leg_path_problem(SPEC, value)
+    assert (problem is None) == (not misread), (
+        f"the rule says {problem!r}, and the templates read {value!r} back "
+        f"as {read!r}")
 
 
 def test_the_rule_follows_the_reader_when_it_learns_a_word(monkeypatch):
