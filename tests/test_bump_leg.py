@@ -249,6 +249,133 @@ def test_bumping_to_the_commit_already_pinned_does_nothing(project, scaffolded):
     assert git("rev-parse", "HEAD", cwd=project).stdout.strip() == head
 
 
+# --- the pin's own layout (#323) --------------------------------------------
+
+SPEC_PIN = "contracts/spec-pin.yaml"
+
+
+def commit_spec_pin(project: Path, text: str, message: str) -> None:
+    """Write the spec pin as exactly these bytes and commit it, so the root is
+    clean when the bump starts and the pin under test is the one HEAD holds."""
+    (project / SPEC_PIN).write_bytes(text.encode("utf-8"))
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", message,
+        "--", SPEC_PIN, cwd=project)
+
+
+@pytest.mark.parametrize("width", [4, 3, 1])
+def test_bump_moves_a_pin_whose_digests_child_is_indented_its_own_way(
+        project, scaffolded, advanced, width):
+    """THE ISSUE'S REPRODUCTION, end to end. `spec-pin.yaml` read fine with
+    `tree_sha256:` indented four spaces, and `rewrite_pin` refused it as
+    `bump-leg-pin-unrecognised` — "0 `tree_sha256` line(s)". The bump lands
+    now, the project's own gate is green, and the diff to the pin is the two
+    values and nothing else. The digest is the recomputed one."""
+    branched(project)
+    pin = project / SPEC_PIN
+    scaffolded_text = pin.read_text(encoding="utf-8")
+    laid = scaffolded_text.replace("\n  tree_sha256:",
+                                   "\n" + " " * width + "tree_sha256:", 1)
+    assert laid != scaffolded_text, "fixture: the scaffold's layout was found"
+    commit_spec_pin(project, laid, "Re-indent the pin's digests child")
+    before = load_yaml(pin)
+
+    result = bump(project, scaffolded, advanced)
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    digest = tree_digest(project / "spec", advanced)
+    assert pin.read_text(encoding="utf-8") == (
+        laid.replace(f'commit: "{before["commit"]}"', f'commit: "{advanced}"')
+        .replace(f'tree_sha256: "{before["digests"]["tree_sha256"]}"',
+                 f'tree_sha256: "{digest}"'))
+    assert validate(project).returncode == 0, "the project's own gate is green"
+    assert git("status", "--porcelain", cwd=project).stdout == ""
+
+
+def test_bump_keeps_a_comment_on_the_pins_two_lines(project, scaffolded,
+                                                    advanced):
+    """A TRAILING COMMENT IS NOT THE VALUE (#323). Both lines were written
+    back bare, so the commit that moved the pin also deleted what a person had
+    written beside it. Only the two values move."""
+    branched(project)
+    pin = project / SPEC_PIN
+    before = load_yaml(pin)
+    commit_line = f'commit: "{before["commit"]}"'
+    tree_line = f'tree_sha256: "{before["digests"]["tree_sha256"]}"'
+    text = pin.read_text(encoding="utf-8")
+    commented = (
+        text.replace(commit_line, commit_line + "  # the cut we reviewed")
+        .replace(tree_line, tree_line + " # recomputed, not edited"))
+    assert commented.count("# the cut we reviewed") == 1
+    assert commented.count("# recomputed, not edited") == 1
+    commit_spec_pin(project, commented, "Comment the pin's two lines")
+
+    result = bump(project, scaffolded, advanced)
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    digest = tree_digest(project / "spec", advanced)
+    assert pin.read_text(encoding="utf-8") == (
+        commented.replace(commit_line, f'commit: "{advanced}"')
+        .replace(tree_line, f'tree_sha256: "{digest}"'))
+    assert validate(project).returncode == 0
+    assert git("status", "--porcelain", cwd=project).stdout == ""
+
+
+@pytest.mark.parametrize("layout", ["comment", "digests child at 4"])
+def test_a_pin_in_its_own_layout_already_at_the_commit_is_nothing_to_do(
+        project, scaffolded, layout):
+    """EXIT 1 MEANS THE PIN IT WOULD WRITE IS THE PIN IT HAS. A commented pin
+    differed from its own rewrite (the comment dropped), so a bump that had
+    already landed was made again as a commit that only deleted a comment; and
+    a pin indented four was refused instead of recognised as landed."""
+    pinned = git("rev-parse", "HEAD:spec", cwd=project).stdout.strip()
+    branched(project)
+    pin = project / SPEC_PIN
+    text = pin.read_text(encoding="utf-8")
+    if layout == "comment":
+        laid = text.replace(f'commit: "{pinned}"',
+                            f'commit: "{pinned}"  # the cut we reviewed')
+    else:
+        laid = text.replace("\n  tree_sha256:", "\n    tree_sha256:", 1)
+    assert laid != text
+    commit_spec_pin(project, laid, "Lay the pin out another way")
+    head = git("rev-parse", "HEAD", cwd=project).stdout.strip()
+
+    result = bump(project, scaffolded, pinned)
+
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert "nothing to do" in result.stdout
+    assert git("rev-parse", "HEAD", cwd=project).stdout.strip() == head
+
+
+def test_a_pin_layout_the_rewrite_cannot_carry_is_refused_and_rolled_back(
+        project, scaffolded, advanced):
+    """THE PIN IS READ BACK, as update-shape's are (#208). A `commit:` whose
+    value sits on the line below it reads and validates, and is the one layout
+    a line rewrite cannot move. The bump says the fault is its own, by this
+    tool's refusal id rather than the validators' lockstep remedy, and the
+    leg's detached checkout it had already made is put back with everything
+    else."""
+    branched(project)
+    pin = project / SPEC_PIN
+    pinned = load_yaml(pin)["commit"]
+    text = pin.read_text(encoding="utf-8")
+    folded = text.replace(f'commit: "{pinned}"\n', f"commit: >-\n  {pinned}\n",
+                          1)
+    assert folded != text, "fixture: the scaffold's commit line was found"
+    commit_spec_pin(project, folded, "Fold the pin's commit onto its own line")
+    was = found(project)
+
+    result = bump(project, scaffolded, advanced)
+
+    assert result.returncode == 2, result.stdout
+    assert "bump-leg-pin-unrecognised" in result.stderr
+    assert "the fault is this tool's line rewrite" in result.stderr
+    assert "unexpected indentation" in result.stderr
+    assert "bump-leg-validators-red" not in result.stderr
+    assert found(project) == was, "every fact it moves is where it was"
+    assert pin.read_bytes() == folded.encode("utf-8")
+
+
 # --- the third fact: the workflow references --------------------------------
 
 def test_a_reference_to_this_leg_moves_and_other_references_do_not(

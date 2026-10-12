@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
-"""`family.py bump --dry-run` and `remove --dry-run` print what the real run
-would do and change nothing in the holder (#326).
+"""`family.py add --dry-run`, `bump --dry-run` and `remove --dry-run` print
+what the real run would do and change nothing in the holder (#326).
 
 `bump`, `add` and `remove` took no `--dry-run`, though the file's exit-code
 paragraph said a dry run prints and exits 0 and `bump-leg.py` has one. The
@@ -15,8 +15,14 @@ real bump does, and resolves `--to` and digests it there; it prints the row as
 1 for `nothing to do`; and it never checks the member out, rewrites
 `family.yaml`, stages or commits. `remove --dry-run` makes every refusal
 `remove` makes and prints the row, the gitlink, the `.gitmodules` section by
-name and the directory, and changes nothing. `add` takes none yet: the
-changes to it in flight land first.
+name and the directory, and changes nothing. `add --dry-run`, the second part
+of #326, makes every refusal `add` makes before its first write, the
+member's own included; it reads the member as a real add does, from
+throwaway clones in temporary directories outside the holder that are gone
+afterwards, and prints the row, the gitlink, the `.gitmodules` section, the
+registration, the directory and the trailers; it runs no `git submodule
+add` and writes nothing of the holder's: no `.gitmodules`, `family.yaml`,
+index, work tree, `.git/config` or `.git/modules`.
 
 "CHANGES NOTHING" IS ASKED AS BYTES, the way `test_family_member_path.py` and
 `test_family_add_refusals.py` ask it of a refusal: `git ls-files -s -z`, `git
@@ -35,7 +41,10 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -47,12 +56,15 @@ from test_commit_trailers import TRAILERS, trailers_of
 #: the modules that own them rather than rebuilt: a holder made any other way
 #: would test a different holder.
 from test_family import (  # noqa: F401
-    FAMILY, ORG, family, family_module, manifest, nothing_to_do_line,
+    FAMILY, ORG, SPARE, family, family_module, manifest, nothing_to_do_line,
     validate,
 )
+from test_family_add_excludes import empty_holder  # noqa: F401
+#: The pinned project and the name its renamed copy is added under (#330).
+from test_family_add_member_id import PINNED, RENAMED
 from test_family_add_refusals import (  # noqa: F401
-    gitmodules_paths, holder, offline, refusal, sections,
-    take_out_as_printed,
+    GHOST, gitmodules_paths, gitmodules_with, holder, offline,
+    one_commit_remote, refusal, sections, take_out_as_printed,
 )
 from test_family_member_path import (
     GLOB, MEMBER, OTHER, hand_edit, older, raw, recorded,
@@ -831,3 +843,652 @@ def test_a_dry_run_runs_no_git_command_that_writes(
     assert ("fetch" in ran) is (verb == "bump")
     assert ("hash-object" in ran) is (to == "pinned"), (
         "premise: `nothing to do` is asked of `hash-object`, and only then")
+
+
+# --- add ---------------------------------------------------------------------
+
+#: The mount path of the member every `add` here adds: the spare, which the
+#: family has scaffolded and not added.
+SPARE_PATH = f"members/{SPARE}"
+
+#: The order an `add --dry-run` test compares a holder's state in: the
+#: facts `git submodule add`, the real run's first write, changes first.
+ADD_ORDER = ("index", ".gitmodules", ".git/modules", ".git/config",
+             "family.yaml", "status", "work tree", "objects", "HEAD")
+
+
+def add_state(root: Path, env: dict) -> dict:
+    """Everything `add --dry-run` must leave as it found it, as bytes: what
+    `state` reads but a member's HEAD, with a file that is not there as
+    None (absent stays absent), HEAD read as a holder with no commit reads
+    it, and the holder's `.git/modules` listed two deep, which is where a
+    mount keeps its object store. In a holder that is a linked worktree,
+    `.git` is a file and the three read from inside it are None."""
+    def read(name: str) -> bytes | None:
+        target = root / name
+        return target.read_bytes() if target.is_file() else None
+
+    modules = root / ".git" / "modules"
+    return {
+        "objects": objects(root) if (root / ".git").is_dir() else None,
+        "HEAD": raw(root, env, "rev-parse", "-q", "--verify", "HEAD",
+                    check=False).stdout,
+        "index": raw(root, env, "ls-files", "-s", "-z").stdout,
+        "status": raw(root, env, "status", "--porcelain=v1", "-z").stdout,
+        "family.yaml": read("family.yaml"),
+        ".gitmodules": read(".gitmodules"),
+        ".git/config": read(".git/config"),
+        ".git/modules": (sorted(path.relative_to(modules).as_posix()
+                                for depth in ("*", "*/*")
+                                for path in modules.glob(depth))
+                         if modules.is_dir() else None),
+        "work tree": work_tree(root),
+    }
+
+
+def assert_add_as_it_was(root: Path, env: dict, before: dict) -> None:
+    """`root` is in the state `before` recorded, compared in `ADD_ORDER`,
+    so a failure names the first fact that moved."""
+    now = add_state(root, env)
+    for key in ADD_ORDER:
+        assert now[key] == before[key], f"{key} changed"
+
+
+def add(root: Path, env: dict, remotes: Path, *extra: str,
+        member: str = f"{ORG}/{SPARE}"):
+    return run_script(FAMILY, "add", "--family-root", str(root), "--member",
+                      member, "--local-remote-dir", str(remotes), *extra,
+                      env=env)
+
+
+def field(lines: list[str], label: str) -> str:
+    """The one line of a dry run's output that `label` starts, without the
+    label and the padding that lines every value up at column 13."""
+    found = [line[13:] for line in lines if line.startswith(f"{label:<13}")]
+    assert len(found) == 1, (label, lines)
+    return found[0]
+
+
+def tip_of(family, project: str = SPARE) -> str:
+    return git("rev-parse", "main",
+               cwd=family["remotes"] / f"{project}.git").stdout.strip()
+
+
+def gitmodules_value(root: Path, env: dict, key: str) -> str:
+    """`submodule.<SPARE_PATH>.<key>` as git reads the holder's
+    `.gitmodules`."""
+    return raw(root, env, "config", "-f", ".gitmodules", "--get",
+               f"submodule.{SPARE_PATH}.{key}").stdout.decode("utf-8").strip()
+
+
+@pytest.mark.parametrize("which", ["holder", "empty_holder"],
+                         ids=["two-members", "first-member"])
+def test_add_dry_run_prints_what_a_real_add_writes_and_changes_nothing(
+        family, offline, tmp_path, request, which):
+    """THE RULING'S FIRST TEST, for `add`. A real add previewed: the row,
+    the gitlink, the `.gitmodules` section (in a new file for a family's
+    first member) and the rest of what the mount makes, and not one byte of
+    the holder moved: HEAD, the index, `git status`, `family.yaml`,
+    `.gitmodules` (absent stays absent), `.git/config`, the `.git/modules`
+    listing, the work tree and the holder's own objects. No `gh` call, and
+    no temporary clone left behind. Then the real add writes exactly the
+    row, the section and the gitlink the dry run printed, and the holder
+    validates."""
+    root = request.getfixturevalue(which)
+    env = isolated(offline, tmp_path)
+    first = which == "empty_holder"
+    assert (root / ".gitmodules").exists() is not first, "premise"
+    assert registered_keys(root, env, SPARE_PATH) == [], "premise"
+    tip = tip_of(family)
+    before = add_state(root, env)
+
+    dry = add(root, env, family["remotes"], "--dry-run")
+
+    # FIRST, WHATEVER IT PRINTED: nothing moved, and nothing was left.
+    assert_add_as_it_was(root, env, before)
+    offline.assert_left_nothing()
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    assert dry.stderr == ""
+    lines = dry.stdout.splitlines()
+    assert lines[:3] == [
+        f"checking {ORG}/{SPARE} before mounting it",
+        f"member       {SPARE}  {ORG}/{SPARE} at {SPARE_PATH}",
+        f"commit       none -> {tip[:12]}"]
+    assert field(lines, "gitlink") == f"{SPARE_PATH} none -> {tip[:12]}"
+    section = re.fullmatch(
+        rf'\[submodule "{SPARE_PATH}"\]  path {SPARE_PATH}, url (.+?)'
+        r"(, in a new \.gitmodules)?", field(lines, "gitmodules"))
+    assert section, field(lines, "gitmodules")
+    assert bool(section.group(2)) is first
+    assert field(lines, "registration") == (
+        f'[submodule "{SPARE_PATH}"] in the holder\'s .git/config, written '
+        "by `git submodule add`")
+    assert field(lines, "directory") == (
+        f"{SPARE_PATH}  the member checked out at {tip[:12]}; its object "
+        f"store at .git/modules/{SPARE_PATH}")
+    row = printed_row(dry.stdout)
+    assert row[0] == f"  - project: {SPARE}"
+    assert f'      commit: "{tip}"' in row
+    assert "trailers     none" in lines
+    assert lines[-1] == (
+        f"--dry-run: nothing was changed in the holder. {ORG}/{SPARE} was "
+        "read from throwaway clones in temporary directories outside the "
+        "holder, now deleted; .gitmodules, family.yaml, the index, the work "
+        "tree and the holder's git directory are as they were.")
+    was = sections(before[".gitmodules"].decode("utf-8")) if not first else []
+
+    real = add(root, env, family["remotes"])
+
+    assert real.returncode == 0, real.stdout + real.stderr
+    text = (root / "family.yaml").read_text(encoding="utf-8")
+    assert "\n".join(row) + "\n" in text, "the row printed is the row written"
+    written = {r["project"]: r for r in manifest(root)["members"]}[SPARE]
+    assert f"({written['pin']['tree_sha256']})" in lines[3], (
+        "the tree line carries the digest written")
+    assert pinned_at(root, env, SPARE) == tip
+    now = sections((root / ".gitmodules").read_text(encoding="utf-8"))
+    assert [name for name in now if name not in was] == [SPARE_PATH]
+    assert gitmodules_value(root, env, "path") == SPARE_PATH
+    assert gitmodules_value(root, env, "url") == section.group(1)
+    assert registered_keys(root, env, SPARE_PATH)
+    assert (root / SPARE_PATH / "project.yaml").is_file()
+    assert (root / ".git" / "modules" / SPARE_PATH).is_dir()
+    assert trailers_of(root) == [], "no --trailer, no trailer"
+    assert validate(root).returncode == 0
+    offline.assert_left_nothing()
+
+
+def something_at_the_mount_path(root: Path) -> None:
+    """A directory at the mount path that no row names: a half-finished
+    add, or a hand's."""
+    (root / SPARE_PATH).mkdir(parents=True)
+    (root / SPARE_PATH / "README").write_bytes(b"left here by hand\n")
+
+
+def a_section_under_another_name(root: Path) -> None:
+    """#300's ghost: a section named `ghost` giving the mount path, in the
+    work tree only, a hand edit nobody staged."""
+    gitmodules_with(root, GHOST, "the work tree only")
+
+
+def the_mount_paths_name_given_to_another_path(root: Path) -> None:
+    """A section NAMED the mount path that gives another path (#242)."""
+    with (root / ".gitmodules").open("ab") as gitmodules:
+        gitmodules.write(f'[submodule "{SPARE_PATH}"]\n\tpath = '
+                         "members/ELSEWHERE\n\turl = /nowhere/else.git\n"
+                         .encode("utf-8"))
+
+
+def a_cached_store(root: Path) -> None:
+    """The object store a removed member leaves under `.git/modules`."""
+    (root / ".git" / "modules" / SPARE_PATH).mkdir(parents=True)
+
+
+def a_members_line_edited_by_hand(root: Path) -> None:
+    """A comment on the `members:` line, which YAML reads past and the line
+    rewrite does not, left uncommitted."""
+    manifest_path = root / "family.yaml"
+    text = manifest_path.read_bytes().decode("utf-8")
+    assert text.count("\nmembers:\n") == 1, "fixture drift"
+    manifest_path.write_bytes(text.replace(
+        "\nmembers:\n", "\nmembers:  # edited by hand\n").encode("utf-8"))
+
+
+def a_renamed_copy_of_a_member(root: Path) -> Path:
+    """#330's case: a bare copy of the pinned `IRRS` under a name no row has,
+    `IRRS2`, so `holding` passes it and its `project.yaml` still records the
+    id `irrs` the row `IRRS` pins. It is a copy of the remote the holder's
+    own `.gitmodules` names, as a repository renamed at the forge is to
+    anybody who clones it by the new name, and it is made BESIDE the holder,
+    never in the family's remotes, which every test of the module shares.
+    Returns the directory of remotes the add is to read the member from."""
+    source = git("config", "-f", ".gitmodules", "--get",
+                 f"submodule.members/{PINNED}.url", cwd=root).stdout.strip()
+    remotes = root.parent / "renamed-remotes"
+    remotes.mkdir()
+    git("clone", "-q", "--bare", source, str(remotes / f"{RENAMED}.git"),
+        cwd=root.parent)
+    return remotes
+
+
+#: Each refusal `add` makes before its first write that a fixture provokes
+#: cheaply, in `add`'s own order, as `(--member, more arguments, set-up,
+#: what stderr starts with)`: the holder's own refusals first, then the
+#: member's, which need the probe's throwaway clone, and last the member's
+#: `id:` against the rows (#330), which needs what that clone read. A
+#: set-up that needs the member read from somewhere other than the family's
+#: remotes returns that directory of remotes; the others return None.
+ADD_REFUSALS = {
+    "malformed": (SPARE, (), None, "REFUSED member-malformed: "),
+    "malformed-dot": (f"{ORG}/..", (), None, "REFUSED member-malformed: "),
+    # #399's rule: a name that BEGINS with `.`, `_` or `-` is refused by the
+    # pattern, in its general sentence, in either position. (An owner that
+    # begins with `-` cannot be said as `--member <owner>/<project>`:
+    # argparse reads it as an option, so that spelling is the real run's
+    # test in `test_family_member_name.py`.)
+    "malformed-project-underscore": (f"{ORG}/_{SPARE}", (), None,
+                                     "REFUSED member-malformed: "),
+    "malformed-project-hyphen": (f"{ORG}/-{SPARE}", (), None,
+                                 "REFUSED member-malformed: "),
+    "malformed-project-dot": (f"{ORG}/.{SPARE}", (), None,
+                              "REFUSED member-malformed: "),
+    "malformed-owner-underscore": (f"_{ORG}/{SPARE}", (), None,
+                                   "REFUSED member-malformed: "),
+    "malformed-owner-dot": (f".{ORG}/{SPARE}", (), None,
+                            "REFUSED member-malformed: "),
+    "duplicate-row": (f"{ORG}/{MEMBER}", (), None,
+                      "REFUSED member-already-present: "),
+    "duplicate-row-in-another-case": (
+        f"{ORG.lower()}/{MEMBER.lower()}", (), None,
+        "REFUSED member-already-present: "),
+    "path-taken": (f"{ORG}/{SPARE}", (), something_at_the_mount_path,
+                   "REFUSED member-path-taken: "),
+    "name-taken": (f"{ORG}/{SPARE}", (),
+                   the_mount_paths_name_given_to_another_path,
+                   "REFUSED member-name-taken: "),
+    "path-registered": (f"{ORG}/{SPARE}", (), a_section_under_another_name,
+                        "REFUSED member-path-registered: "),
+    "git-dir-cached": (f"{ORG}/{SPARE}", (), a_cached_store,
+                       "REFUSED member-git-dir-cached: "),
+    "members-unrecognised": (f"{ORG}/{SPARE}", (),
+                             a_members_line_edited_by_hand,
+                             "REFUSED family-members-unrecognised: "),
+    "at-not-a-commit": (f"{ORG}/{SPARE}", ("--at", "abc1234"), None,
+                        "REFUSED member-at-not-a-commit: "),
+    "at-unknown": (f"{ORG}/{SPARE}", ("--at", "0" * 40), None,
+                   "REFUSED member-at-unknown: "),
+    "a-leg": (f"{ORG}/{MEMBER}-spec", (), None,
+              "REFUSED member-not-a-project: "),
+    "unreadable": (f"{ORG}/IRNOPE", (), None,
+                   f"REFUSED reading {ORG}/IRNOPE. THE EXACT COMMAND WAS:"),
+    "duplicate-id": (f"{ORG}/{RENAMED}", (), a_renamed_copy_of_a_member,
+                     "REFUSED member-duplicate-id: "),
+}
+
+
+def scratch_free(text: str) -> str:
+    """`text` with the random part of a throwaway clone's directory name
+    taken out: the one thing two runs over the same holder print
+    differently, in the exact command of a clone that failed."""
+    return re.sub(r"openreposhape-member-[^/\\\s]+", "openreposhape-member-*",
+                  text)
+
+
+@pytest.mark.parametrize("member, extra, set_up, said",
+                         ADD_REFUSALS.values(), ids=ADD_REFUSALS)
+def test_a_refusal_add_makes_before_it_mounts_is_the_same_under_dry_run(
+        family, holder, offline, tmp_path, member, extra, set_up, said):
+    """THE RULING: every refusal `add` makes before its first write is the
+    same refusal under `--dry-run`, the same code and exit 2, whether it is
+    the holder's (asked before the member is read) or the member's (asked
+    of the probe's throwaway clone). The real run and the dry run, over the
+    same holder, print the same stdout and the same stderr, and leave the
+    holder as it was, every hand edit a set-up made still in place, and no
+    temporary clone behind."""
+    env = isolated(offline, tmp_path)
+    remotes = family["remotes"]
+    if set_up is not None:
+        remotes = set_up(holder) or remotes
+    before = add_state(holder, env)
+
+    real = add(holder, env, remotes, *extra, member=member)
+    dry = add(holder, env, remotes, *extra, "--dry-run", member=member)
+
+    assert dry.returncode == real.returncode == 2, dry.stdout + dry.stderr
+    assert dry.stdout == real.stdout
+    assert scratch_free(dry.stderr) == scratch_free(real.stderr)
+    assert dry.stderr.startswith(said), dry.stderr
+    assert_add_as_it_was(holder, env, before)
+    offline.assert_left_nothing()
+
+
+def test_add_dry_run_prints_the_trailers_the_real_commit_ends_with(
+        family, holder, offline, tmp_path):
+    """`--trailer` with `--dry-run` prints the lines, in order, after the row
+    and before the closing line, worded as `bump --dry-run` words them. The
+    real add then ends its one commit with exactly those lines. `add` takes
+    the same repeatable `--trailer` as `bump` (#326)."""
+    env = isolated(offline, tmp_path)
+    trailers = ("--trailer", TRAILERS[0], "--trailer", TRAILERS[1])
+
+    dry = add(holder, env, family["remotes"], "--dry-run", *trailers)
+
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    lines = dry.stdout.splitlines()
+    at = lines.index("trailers     2 to append, in order:")
+    assert lines[at + 1:at + 3] == [f"  {TRAILERS[0]}", f"  {TRAILERS[1]}"]
+    assert lines.index(ROW_HEADER) < at
+    assert lines[-1].startswith("--dry-run: ")
+
+    real = add(holder, env, family["remotes"], *trailers)
+
+    assert real.returncode == 0, real.stdout + real.stderr
+    assert trailers_of(holder) == list(TRAILERS)
+
+
+def test_add_dry_run_with_at_previews_that_commit(family, holder, offline,
+                                                   tmp_path):
+    """`--at` an older commit: the dry run previews THAT commit and has no
+    `without --at` note, and the real add pins the commit printed."""
+    env = isolated(offline, tmp_path)
+    older_spare = git("rev-parse", "main~1",
+                      cwd=family["remotes"] / f"{SPARE}.git").stdout.strip()
+    assert older_spare != tip_of(family), "premise"
+
+    dry = add(holder, env, family["remotes"], "--at", older_spare,
+              "--dry-run")
+    plain = add(holder, env, family["remotes"], "--dry-run")
+
+    assert dry.returncode == plain.returncode == 0, dry.stderr + plain.stderr
+    lines = dry.stdout.splitlines()
+    assert field(lines, "commit") == f"none -> {older_spare[:12]}"
+    assert f'      commit: "{older_spare}"' in printed_row(dry.stdout)
+    assert not any(line.startswith("note         without --at")
+                   for line in lines)
+    assert field(plain.stdout.splitlines(), "note") == (
+        "without --at a real add pins the tip it finds when it mounts, "
+        f"which is {tip_of(family)[:12]} unless {ORG}/{SPARE} moves on "
+        f"first; --at {tip_of(family)} pins this one")
+
+    real = add(holder, env, family["remotes"], "--at", older_spare)
+
+    assert real.returncode == 0, real.stdout + real.stderr
+    assert pinned_at(holder, env, SPARE) == older_spare
+    assert "\n".join(printed_row(dry.stdout)) + "\n" in (
+        holder / "family.yaml").read_text(encoding="utf-8")
+
+
+def test_add_dry_run_names_a_registration_the_mount_rewrites(
+        family, holder, offline, tmp_path):
+    """A `submodule.members/<P>` registration the holder already has, from
+    a member removed by hand: `git submodule add` rewrites its url, and the
+    dry run says so rather than that it writes one. The real add leaves the
+    url the dry run printed."""
+    env = isolated(offline, tmp_path)
+    raw(holder, env, "config", "--local", f"submodule.{SPARE_PATH}.url",
+        "/where/it/used/to/live.git")
+    before = add_state(holder, env)
+
+    dry = add(holder, env, family["remotes"], "--dry-run")
+
+    assert_add_as_it_was(holder, env, before)
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    lines = dry.stdout.splitlines()
+    assert field(lines, "registration") == (
+        f'[submodule "{SPARE_PATH}"] in the holder\'s .git/config, its url '
+        "rewritten by `git submodule add`")
+    url = field(lines, "gitmodules").rpartition(", url ")[2]
+
+    real = add(holder, env, family["remotes"])
+
+    assert real.returncode == 0, real.stdout + real.stderr
+    assert raw(holder, env, "config", "--local", "--get",
+               f"submodule.{SPARE_PATH}.url").stdout.decode(
+                   "utf-8").strip() == url
+
+
+@pytest.mark.parametrize("taken_out, held_in", [
+    ("from the work tree", "the index and HEAD"),
+    ("from the work tree and the index", "HEAD")],
+    ids=["unstaged-deletion", "staged-deletion"])
+def test_add_dry_run_names_the_refusal_git_makes_at_the_mount(
+        family, holder, offline, tmp_path, taken_out, held_in):
+    """GIT'S OWN REFUSAL, NAMED AND NOT MADE. With no `.gitmodules` in the
+    work tree and one in the index or HEAD, `git submodule add` refuses to
+    write the file, before it writes anything, and the real add exits 2
+    there with the holder unchanged. Only git can say that sentence, so the
+    dry run says in a note what will happen and how to put the file back,
+    and exits 0, never claiming a new `.gitmodules`."""
+    env = isolated(offline, tmp_path)
+    if taken_out == "from the work tree":
+        (holder / ".gitmodules").unlink()
+    else:
+        raw(holder, env, "rm", "-q", "--", ".gitmodules")
+    before = add_state(holder, env)
+
+    dry = add(holder, env, family["remotes"], "--dry-run")
+
+    assert_add_as_it_was(holder, env, before)
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    assert ", in a new .gitmodules" not in dry.stdout
+    assert (f"note         .gitmodules is in {held_in} but not in the work "
+            "tree, where `git submodule add` refuses to write it: the real "
+            "run exits 2 at its mount with the holder unchanged. Put back "
+            "the copy git read first: `git checkout -- .gitmodules` (the "
+            "index's), or `git checkout HEAD -- .gitmodules`"
+            ) in dry.stdout.splitlines()
+
+    real = add(holder, env, family["remotes"])
+
+    assert real.returncode == 2, real.stdout + real.stderr
+    assert ("fatal: please make sure that the .gitmodules file is in the "
+            "working tree") in real.stderr
+    assert_add_as_it_was(holder, env, before)
+    offline.assert_left_nothing()
+
+
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="a tracked symlink is a plain file in a Windows "
+                           "checkout, which the real add refuses")
+def test_add_dry_run_leaves_a_linked_manifest_to_the_real_run(
+        holder, offline, tmp_path):
+    """A `project.yaml` that is a SYMLINK is only its link text in the
+    member's objects, and the real add's mount reads through it. The dry
+    run does not refuse it, since the real run pins it; it says the `id:`
+    is the real run's to read and prints no guess. The real add then writes
+    the printed row with the id the link leads to. (The link is built in
+    the member's INDEX, not on a disk.)"""
+    env = isolated(offline, tmp_path)
+    remotes = tmp_path / "remotes"
+    remotes.mkdir()
+    work = tmp_path / "IRLN-work"
+    git("init", "-q", str(work), cwd=tmp_path)
+    (work / "manifest").mkdir()
+    (work / "manifest" / "project.yaml").write_bytes(
+        b"schema_version: 1\nkind: project-manifest\nid: irln\nname: IRLN\n")
+    git("add", "--", "manifest/project.yaml", cwd=work)
+    link = subprocess.run(["git", "hash-object", "-w", "--stdin"],
+                          cwd=str(work), input=b"manifest/project.yaml",
+                          capture_output=True, check=True).stdout
+    git("update-index", "--add", "--cacheinfo",
+        f"120000,{link.decode('ascii').strip()},project.yaml", cwd=work)
+    git("commit", "-qm", "A linked manifest", cwd=work)
+    git("clone", "-q", "--bare", str(work), str(remotes / "IRLN.git"),
+        cwd=tmp_path)
+    tip = git("rev-parse", "HEAD", cwd=remotes / "IRLN.git").stdout.strip()
+    before = add_state(holder, env)
+
+    dry = add(holder, env, remotes, "--dry-run", member=f"{ORG}/IRLN")
+
+    assert_add_as_it_was(holder, env, before)
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    lines = dry.stdout.splitlines()
+    assert (f"note         project.yaml is a symbolic link at {tip[:12]}, "
+            "which only a checkout reads through: the real run reads the "
+            "`id:` through the link, and the row below leaves it to that run"
+            ) in lines
+    row = printed_row(dry.stdout)
+    assert row[1] == "    id: (read through the link by the real run)"
+
+    real = add(holder, env, remotes, member=f"{ORG}/IRLN")
+
+    assert real.returncode == 0, real.stdout + real.stderr
+    text = (holder / "family.yaml").read_text(encoding="utf-8")
+    assert "\n".join([row[0], "    id: irln", *row[2:]]) + "\n" in text
+    offline.assert_left_nothing()
+
+
+def test_add_dry_run_reads_the_member_outside_the_holder_and_writes_nothing(
+        family, holder, offline, tmp_path, monkeypatch):
+    """IN PROCESS, every program the dry run starts recorded. The member is
+    read from two bare clones, the probe's and the dry run's own, each in a
+    directory under the run's TEMP and none in the holder; and the holder's
+    `git status`, asked while the dry run's own clone is still there, at the
+    moment its digest is computed, is the status before the run: a clone
+    made inside the holder would show in it, even one deleted afterwards. No
+    git command run in the holder writes, `git add --dry-run`, the real
+    run's own check of the mount path, aside; none runs `git submodule`."""
+    module = family_module()
+    env = isolated(offline, tmp_path)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(tempfile, "tempdir", str(offline.temp))
+    before = add_state(holder, env)
+    real_run, real_digest = subprocess.run, module.tree_digest
+    calls: list[tuple[list[str], object]] = []
+    digested: list[tuple[Path, bytes]] = []
+
+    def record(argv, *rest, **named):
+        calls.append((list(argv), named.get("cwd")))
+        return real_run(argv, *rest, **named)
+
+    def digest(repo, rev):
+        status = real_run(["git", "status", "--porcelain=v1", "-z"],
+                          cwd=str(holder), capture_output=True,
+                          check=True).stdout
+        digested.append((Path(repo), status))
+        return real_digest(repo, rev)
+
+    monkeypatch.setattr(subprocess, "run", record)
+    monkeypatch.setattr(module, "tree_digest", digest)
+
+    code = module.main(["add", "--family-root", str(holder), "--member",
+                        f"{ORG}/{SPARE}", "--local-remote-dir",
+                        str(family["remotes"]), "--dry-run"])
+    ran = list(calls)
+
+    assert code == 0
+    assert len(digested) == 1, "premise: one digest, of the dry run's clone"
+    (repo, status), = digested
+    assert status == before["status"], (
+        "the holder's status moved while the member was being read")
+    temp, root = offline.temp.resolve(), holder.resolve()
+    assert temp in repo.resolve().parents and root not in repo.resolve(
+        ).parents, repo
+    gits = [(argv, cwd) for argv, cwd in ran if Path(argv[0]).name == "git"]
+    clones = [argv for argv, _ in gits if subcommand_of(argv) == "clone"]
+    assert len(clones) == 2, "the probe's clone and the dry run's own"
+    assert all(temp in Path(argv[-1]).resolve().parents for argv in clones)
+    in_holder = [argv for argv, cwd in gits
+                 if cwd is not None and Path(cwd).resolve() == root]
+    assert in_holder, "premise: the holder was asked"
+    assert [argv for argv in in_holder if writes(argv) and not (
+        subcommand_of(argv) == "add" and "--dry-run" in argv)] == []
+    assert "submodule" not in {subcommand_of(argv) for argv, _ in gits}
+    assert_add_as_it_was(holder, env, before)
+    offline.assert_left_nothing()
+
+
+def test_add_dry_run_prints_the_id_the_members_manifest_records(
+        holder, offline, tmp_path):
+    """NEVER AN INVENTED ID (#326's third ruling). Every member the family
+    fixture scaffolds records `id:` as its name lowercased, so a dry run
+    that printed `project.lower()` would pass every other test here. This
+    member is `IRDI` and its `project.yaml` says `id: routing-core`: the dry
+    run prints that id, read from the member, and the real add then writes
+    exactly the row the dry run printed."""
+    env = isolated(offline, tmp_path)
+    remotes = one_commit_remote(tmp_path, "IRDI", {
+        "project.yaml": b"schema_version: 1\nkind: project-manifest\n"
+                        b"id: routing-core\nname: IRDI\n"})
+    before = add_state(holder, env)
+
+    dry = add(holder, env, remotes, "--dry-run", member=f"{ORG}/IRDI")
+
+    assert_add_as_it_was(holder, env, before)
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    row = printed_row(dry.stdout)
+    assert row[:2] == ["  - project: IRDI", "    id: routing-core"]
+
+    real = add(holder, env, remotes, member=f"{ORG}/IRDI")
+
+    assert real.returncode == 0, real.stdout + real.stderr
+    assert "\n".join(row) + "\n" in (holder / "family.yaml").read_text(
+        encoding="utf-8"), "the row printed is the row written"
+    assert {r["project"]: r for r in manifest(holder)["members"]
+            }["IRDI"]["id"] == "routing-core"
+    offline.assert_left_nothing()
+
+
+def test_add_dry_run_removes_its_own_clone_when_reading_the_member_fails(
+        family, holder, offline, tmp_path, monkeypatch, capsys):
+    """RULING 2's "removed afterwards, also on a refusal", for the dry run's
+    OWN clone. Every other refusal here is made before that clone exists.
+    Here the probe reads the member, and the member's remote is gone by the
+    time the dry run clones it a second time, as it would be if it were
+    renamed or made private in between. That clone fails in git, and the
+    failure is printed as every failed reading of the member is: the exact
+    command, then the hint, exit 2. The directory the dry run made for its
+    clone is gone, nothing else is left in TEMP, and the holder is as it
+    was. In process, so the remote can be moved between the two clones."""
+    module = family_module()
+    env = isolated(offline, tmp_path)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(tempfile, "tempdir", str(offline.temp))
+    remotes = tmp_path / "remotes"
+    remotes.mkdir()
+    shutil.copytree(family["remotes"] / f"{SPARE}.git",
+                    remotes / f"{SPARE}.git", symlinks=True)
+    before = add_state(holder, env)
+    real_run = module.run
+    clones: list[Path] = []
+
+    def run(args, *rest, **named):
+        if "clone" in args:
+            clones.append(Path(args[-1]))
+            if len(clones) == 2:
+                (remotes / f"{SPARE}.git").rename(remotes / f"{SPARE}.gone")
+        return real_run(args, *rest, **named)
+
+    monkeypatch.setattr(module, "run", run)
+
+    code = module.main(["add", "--family-root", str(holder), "--member",
+                        f"{ORG}/{SPARE}", "--local-remote-dir", str(remotes),
+                        "--dry-run"])
+    out, err = capsys.readouterr()
+
+    assert code == 2, out + err
+    assert len(clones) == 2, "premise: the dry run's own clone was the one"
+    assert out == f"checking {ORG}/{SPARE} before mounting it\n"
+    lines = err.splitlines()
+    assert lines[0] == (f"REFUSED reading {ORG}/{SPARE}. THE EXACT COMMAND "
+                        "WAS:")
+    assert "clone -q --bare -- " in lines[1]
+    assert lines[-1] == module.UNREADABLE_HINT
+    assert not clones[1].parent.exists(), "the dry run's clone was left"
+    assert_add_as_it_was(holder, env, before)
+    offline.assert_left_nothing()
+
+
+def test_add_dry_run_names_the_store_git_keeps_for_a_linked_worktree(
+        family, holder, offline, tmp_path):
+    """THE OBJECT STORE IS NAMED WHERE GIT KEEPS IT (`_module_dir`), not
+    where it usually is. A holder that is a LINKED WORKTREE, a lane's usual
+    holder, has a `.git` FILE, and git keeps a mount's store under
+    `.git/worktrees/<name>/modules/`, not `.git/modules/`. The dry run
+    names that store, it does not exist yet, and the real add then puts
+    the store exactly there."""
+    env = isolated(offline, tmp_path)
+    lane = tmp_path / "lane"
+    git("worktree", "add", "-q", "-b", "add-irqs", str(lane), cwd=holder)
+    assert (lane / ".git").is_file(), "premise: a linked worktree"
+    before = add_state(lane, env)
+
+    dry = add(lane, env, family["remotes"], "--dry-run")
+
+    assert_add_as_it_was(lane, env, before)
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    directory = field(dry.stdout.splitlines(), "directory")
+    said = (f"{SPARE_PATH}  the member checked out at "
+            f"{tip_of(family)[:12]}; its object store at ")
+    assert directory.startswith(said), directory
+    store = lane / directory[len(said):]
+    assert not store.exists(), "premise: no store before the real add"
+
+    real = add(lane, env, family["remotes"])
+
+    assert real.returncode == 0, real.stdout + real.stderr
+    assert (store / "config").is_file(), (
+        f"the store printed, {store}, is not the one git made")
+    offline.assert_left_nothing()
