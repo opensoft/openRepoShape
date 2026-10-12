@@ -504,6 +504,38 @@ def test_an_untracked_file_the_operator_keeps_in_the_leg_is_left_alone_and_not_c
     assert mine.read_bytes() == b"the operator's own untracked file\n"
 
 
+def test_a_leg_detached_at_the_commit_it_stood_on_is_put_back_on_its_branch(
+        project, scaffolded, bump_leg_module, monkeypatch, capsys):
+    """`--to` the commit already pinned, with a workflow reference left
+    behind by a bump made by hand: not `nothing to do`, and the forward
+    checkout detaches the leg AT THE COMMIT IT STOOD ON. Its HEAD is where it
+    was and its branch is not, so a rollback that compared the HEAD alone
+    would leave the leg detached, which `bootstrap.py` never leaves it."""
+    prepared(project)
+    pinned = git("rev-parse", "HEAD:spec", cwd=project).stdout.strip()
+    legs = project / ".github" / "workflows" / "legs.yml"
+    spec_ref = f"{PROJECT}-spec/.github/workflows/x.yml@"
+    text = legs.read_text(encoding="utf-8")
+    assert text.count(spec_ref + pinned) == 1
+    legs.write_text(text.replace(spec_ref + pinned, spec_ref + "0" * 40),
+                    encoding="utf-8")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm",
+        "A workflow reference the last bump missed", "--",
+        ".github/workflows/legs.yml", cwd=project)
+    before = snapshot(project)
+    assert before["leg_branch"] == "refs/heads/main"
+    monkeypatch.setattr(bump_leg_module, "run_validator",
+                        lambda root, script: (1, "pin-digest-mismatch\n"))
+
+    code = run_main(bump_leg_module, project, scaffolded, pinned)
+
+    err = capsys.readouterr().err
+    assert code == 2
+    assert "REFUSED bump-leg-validators-red" in err
+    assert ROLLED_BACK in err, err
+    assert_nothing_changed(project, before)
+
+
 # --- the commit, inside the rollback's reach --------------------------------
 
 @pytest.mark.parametrize("refusal", ["signing", "commit-msg"])
@@ -535,32 +567,8 @@ def test_a_commit_git_refuses_puts_every_byte_back(
     assert NOT_COMPLETE not in result.stderr
 
 
-@pytest.mark.parametrize("after", ["interrupt", "refusal"])
-def test_a_failure_after_the_commit_landed_rolls_nothing_back(
-        after, project, scaffolded, advanced, bump_leg_module, monkeypatch,
-        capsys):
-    """THE HEAD GUARD. Once the root's HEAD has moved, the bump IS a commit,
-    and putting the files, the leg and the index back under it would leave a
-    tree that contradicts the commit just made. An interrupt after `git
-    commit` returned, or the `git rev-parse HEAD` that reads it back failing,
-    rolls nothing back, and says the commit landed."""
-    before = prepared(project)
-    real_commit = bump_leg_module.commit_once
-    failure = (KeyboardInterrupt() if after == "interrupt" else
-               bump_leg_module.Refusal("git-failed",
-                                       "`git rev-parse HEAD` exited 128"))
-
-    def lands_then_fails(*args, **kwargs):
-        real_commit(*args, **kwargs)
-        raise failure
-    monkeypatch.setattr(bump_leg_module, "commit_once", lands_then_fails)
-
-    if after == "interrupt":
-        with pytest.raises(KeyboardInterrupt):
-            run_main(bump_leg_module, project, scaffolded, advanced)
-    else:
-        assert run_main(bump_leg_module, project, scaffolded, advanced) == 2
-
+def assert_the_commit_landed_and_nothing_was_rolled_back(
+        project: Path, before: dict, advanced: str) -> str:
     head = git("rev-parse", "HEAD", cwd=project).stdout.strip()
     assert head != before["head"], "the commit landed"
     assert git("rev-parse", "HEAD:spec", cwd=project).stdout.strip() == \
@@ -569,8 +577,88 @@ def test_a_failure_after_the_commit_landed_rolls_nothing_back(
         "the tree agrees with the commit: nothing was rolled back under it")
     assert git("rev-parse", "HEAD", cwd=project / "spec").stdout.strip() == \
         advanced
+    return head
+
+
+@pytest.mark.parametrize("after", ["interrupt", "refusal", "oserror"])
+def test_a_failure_after_the_commit_landed_rolls_nothing_back(
+        after, project, scaffolded, advanced, bump_leg_module, monkeypatch,
+        capsys):
+    """THE HEAD GUARD. Once the root's HEAD has moved, the bump IS a commit,
+    and putting the files, the leg and the index back under it would leave a
+    tree that contradicts the commit just made. An interrupt after `git
+    commit` returned, the `git rev-parse HEAD` that reads it back failing, or
+    an `OSError` once it landed rolls nothing back, and says the commit
+    landed. The `OSError` is not made into `bump-leg-rewrite-failed`, whose
+    remediation says nothing was committed."""
+    before = prepared(project)
+    real_commit = bump_leg_module.commit_once
+    failure = {
+        "interrupt": KeyboardInterrupt(),
+        "refusal": bump_leg_module.Refusal("git-failed",
+                                           "`git rev-parse HEAD` exited 128"),
+        "oserror": OSError(errno.EIO, "the disk went away after the commit"),
+    }[after]
+
+    def lands_then_fails(*args, **kwargs):
+        real_commit(*args, **kwargs)
+        raise failure
+    monkeypatch.setattr(bump_leg_module, "commit_once", lands_then_fails)
+
+    if after == "refusal":
+        assert run_main(bump_leg_module, project, scaffolded, advanced) == 2
+    else:
+        with pytest.raises(type(failure)) as raised:
+            run_main(bump_leg_module, project, scaffolded, advanced)
+        assert raised.value is failure
+
+    head = assert_the_commit_landed_and_nothing_was_rolled_back(
+        project, before, advanced)
     err = capsys.readouterr().err
     assert f"committed as {head[:12]}" in err, err
     assert ROLLED_BACK not in err
     if after == "refusal":
         assert "REFUSED git-failed" in err
+    if after == "oserror":
+        assert "OSError while the bump was being applied" in err, err
+        assert "bump-leg-rewrite-failed" not in err
+        assert "Nothing was committed" not in err
+
+
+def test_a_head_that_cannot_be_read_after_the_commit_rolls_nothing_back(
+        project, scaffolded, advanced, bump_leg_module, monkeypatch, capsys):
+    """THE HEAD GUARD'S THIRD ANSWER. Once the commit has been asked for,
+    every `git rev-parse HEAD` in the root fails: the one `commit_once`
+    reads the new commit back with, and the guard's own. Whether the commit
+    landed is then unknown, and a rollback under a commit that did land is
+    the worse mistake, so nothing is rolled back and the report says it
+    could not be read."""
+    before = prepared(project)
+    asked = []
+    real_check = bump_leg_module.check_program
+    real_git_out = bump_leg_module.git_out
+
+    def notes_the_commit(args):
+        if args[:2] == ["git", "commit"]:
+            asked.append(args)
+        return real_check(args)
+
+    def head_unreadable_once_asked(args, cwd, binary=False):
+        if asked and args == ["rev-parse", "HEAD"]:
+            raise bump_leg_module.Refusal(
+                "git-failed", "`git rev-parse HEAD` exited 128: bad HEAD")
+        return real_git_out(args, cwd=cwd, binary=binary)
+    monkeypatch.setattr(bump_leg_module, "check_program", notes_the_commit)
+    monkeypatch.setattr(bump_leg_module, "git_out", head_unreadable_once_asked)
+
+    code = run_main(bump_leg_module, project, scaffolded, advanced)
+
+    assert asked, "the commit was asked for"
+    assert code == 2
+    assert_the_commit_landed_and_nothing_was_rolled_back(
+        project, before, advanced)
+    err = capsys.readouterr().err
+    assert "REFUSED git-failed" in err
+    assert "Whether the commit landed could not be read" in err, err
+    assert ROLLED_BACK not in err
+    assert NOT_COMPLETE not in err
