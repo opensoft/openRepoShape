@@ -1922,11 +1922,14 @@ def _execute_gets_to_write(key: str, value) -> bool:
     written, and no other is a visibility gh creates a repository with
     (rv181f's F2b). `check` is not told which of the two modes `execute` will
     run in, so such a visibility is asked about in neither. None of the
-    three choices is misread."""
+    three choices is misread. Nor for any other value no file can hold
+    (`unwritable_reason`): `check` names it as `plan-unwritable-value`, and
+    `execute` refuses a plan holding it before any leg exists (#255), so one
+    wrong value is one finding, and none says the run gets further."""
     if key == VISIBILITY_KEY:
         return str(value) in VISIBILITY_CHOICES
     if key not in GIT_ARGUMENT_KEYS:
-        return True
+        return unwritable_reason(str(value)) is None
     try:
         checked_value(key, value)
     except Refusal:
@@ -1941,11 +1944,12 @@ def _plan_fields(plan: Plan) -> list[tuple]:
     A key the plan does not carry is left out: `execute` fills it with a
     default of this tool's own (`main`, `private`, today's date), and none of
     those is misread. So is a value `execute` never gets as far as writing
-    (`_execute_gets_to_write`): it refuses it, or `gh` does, first. A leg
-    path is asked about only when it is text with no `plan-bad-leg-path` of
-    its own, so one wrong value is one finding. An id `Plan.project_id`
-    refuses, or a refused leg name it is derived from, is refused on its own
-    account by `check` and `execute` alike.
+    (`_execute_gets_to_write`): it refuses it first, as `unsafe-value` or as
+    #255's `plan-unwritable-value`, or `gh` does. A leg path is asked about
+    only when it is text with no `plan-bad-leg-path` of its own, so one
+    wrong value is one finding. An id `Plan.project_id` refuses, or a
+    refused leg name it is derived from, is refused on its own account by
+    `check` and `execute` alike.
     """
     fields: list[tuple] = []
     try:
@@ -1961,9 +1965,11 @@ def _plan_fields(plan: Plan) -> list[tuple]:
         if isinstance(value, str) and leg_path_problem(what, value) is None:
             fields.append(_field(what, placeholder, value))
     # Each pin as the loader read it, which `Plan.pins` has already made text
-    # (`TRUE` would be named as `True`); the same items, in the same order.
+    # (`TRUE` would be named as `True`); the same items, in the same order,
+    # less one no file can hold, which is #255's finding alone.
     return fields + [_pin_field(PIN_IN_PLAN, pin)
-                     for pin in (plan.data.get("pins") or []) if pin]
+                     for pin in (plan.data.get("pins") or [])
+                     if pin and _execute_gets_to_write("pins", pin)]
 
 
 def _checked_plan_inputs(args, source: Source,
@@ -4065,8 +4071,7 @@ def _checked_plan_values(plan: Plan) -> tuple[str, str, str, str]:
     code_path = checked_value(*code_leg)
     branch = checked_value("adopt_branch", plan.get("adopt_branch",
                                                     ADOPT_BRANCH))
-    tracking = checked_value("tracking_branch",
-                             plan.get("tracking_branch", "main"))
+    tracking = checked_value(TRACKING_KEY, plan.get(TRACKING_KEY, "main"))
     return spec_path, code_path, branch, tracking
 
 
@@ -4642,10 +4647,10 @@ SPLIT_MESSAGE = "the split commit's message"
 
 #: Each plan value `_template_values` substitutes as it stands, by its key,
 #: and where it lands. `pins` and `follow_ups` are lists, asked item by item.
-WRITTEN_PLAN_VALUES = {"elected_by": ROOT_MANIFEST_AND_README,
-                       "elected_on": ROOT_MANIFEST_AND_README,
-                       "reference": ROOT_MANIFEST_AND_README,
-                       "visibility": ROOT_MANIFEST}
+WRITTEN_PLAN_VALUES = {ELECTED_BY_KEY: ROOT_MANIFEST_AND_README,
+                       ELECTED_ON_KEY: ROOT_MANIFEST_AND_README,
+                       REFERENCE_KEY: ROOT_MANIFEST_AND_README,
+                       VISIBILITY_KEY: ROOT_MANIFEST}
 
 #: Why such a value must be text, said after every refusal of one.
 WRITTEN_AS_TEXT = (

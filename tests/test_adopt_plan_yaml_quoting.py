@@ -347,6 +347,8 @@ SEVEN_READ = "the number 7"
 DATE_DIGITS = "20260902"
 #: How `check` and `execute` begin the line about each one.
 MISREAD_FINDING = "FINDING plan-manifest-misread: "
+#: How `check` begins #255's line about a value no file can hold.
+UNWRITABLE_FINDING = "FINDING plan-unwritable-value: "
 #: The plan keys the rows below name, and the flag `plan` takes each as.
 SPEC_PATH_KEY = "legs.spec_path"
 TRACKING_KEY = "tracking_branch"
@@ -354,6 +356,7 @@ PINS_KEY = "pins"
 ELECTED_BY_KEY = "elected_by"
 ELECTED_ON_KEY = "elected_on"
 REFERENCE_KEY = "reference"
+VISIBILITY_KEY = "visibility"
 SPEC_FLAG = "--spec-path"
 TRACKING_FLAG = "--tracking-branch"
 PIN_FLAG = "--pin"
@@ -439,6 +442,11 @@ def executed(plan: Path, tmp_path: Path):
     return run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
                       "--local-remote-dir", str(tmp_path / REMOTES),
                       "--work-dir", str(tmp_path / "work"))
+
+
+def branches_of(source: Path) -> str:
+    """The source's branches: no split branch until `execute` commits one."""
+    return git("branch", "--list", cwd=source).stdout
 
 
 def planned(tmp_path: Path, *extra: str, tree: dict | None = None) -> Path:
@@ -667,7 +675,7 @@ def test_check_names_a_plan_value_that_is_not_text_by_what_was_read(
 #: (rv181f's F2, F2b).
 NEVER_WRITTEN = [
     pytest.param(TRACKING_KEY, QUOTED_DOMAIN_USER, id=TRACKING_KEY),
-    pytest.param("visibility", '"true"', id="visibility"),
+    pytest.param(VISIBILITY_KEY, '"true"', id=VISIBILITY_KEY),
 ]
 
 
@@ -702,7 +710,59 @@ def test_execute_refuses_that_branch_as_unsafe_before_any_leg_exists(
     assert result.stderr.startswith(
         f"REFUSED unsafe-value: {TRACKING_KEY} is "), result.stderr
     assert not (tmp_path / REMOTES).exists()
-    assert SPLIT_BRANCH not in git("branch", "--list", cwd=source).stdout
+    assert SPLIT_BRANCH not in branches_of(source)
+
+
+#: A date with a line break in it, as a plan edited by hand spells it.
+UNWRITABLE_DATE = '"2026-09-02\\nx"'
+#: `(plan key, as a plan edited by hand spells it)`: values no file
+#: `execute` writes can hold, which #255 names as `plan-unwritable-value`:
+#: a line break, in a value read back as one line, and a control character
+#: such as a tab. The date and the pins are written bare, where the
+#: project's loader would read each as something else too; the visibility
+#: is one `gh` takes no flag for (`NEVER_WRITTEN`).
+UNWRITABLE = [
+    pytest.param(ELECTED_ON_KEY, UNWRITABLE_DATE, id=ELECTED_ON_KEY),
+    pytest.param(VISIBILITY_KEY, '"private\\nx"', id=VISIBILITY_KEY),
+    pytest.param(PINS_KEY, '"a\\nb"', id="pins-line-break"),
+    pytest.param(PINS_KEY, '"openGlass\\t"', id="pins-tab"),
+]
+
+
+@pytest.mark.parametrize("key, spelled", UNWRITABLE)
+def test_check_names_a_value_no_file_can_hold_once_as_unwritable(
+        adopter, answered, tmp_path, key, spelled):
+    """At the merge of #255 the gate also called the date and the pin
+    misread, under a remediation saying the run would still end `adoption
+    verified`: one wrong value was two findings, and the second was false,
+    because `execute` refuses the value before it writes anything. It is
+    #255's finding alone."""
+    _, text = answered
+    plan = tmp_path / PLAN_FILE
+    carrying(plan, text, key, spelled)
+    result = checked(plan)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert result.stderr.count(UNWRITABLE_FINDING) == 1, result.stderr
+    assert MISREAD_FINDING not in result.stderr, result.stderr
+    assert adopter.MANIFEST_MISREAD_REMEDIATION not in result.stderr
+
+
+@needs_filter_repo
+def test_execute_refuses_a_date_no_file_can_hold_as_unwritable_not_misread(
+        answered, tmp_path):
+    """`execute` refuses a plan under the code of `check`'s first finding,
+    which for this date was the misread one: it is refused as what it is,
+    before any leg exists."""
+    source, text = answered
+    plan = tmp_path / PLAN_FILE
+    carrying(plan, text, ELECTED_ON_KEY, UNWRITABLE_DATE)
+    result = executed(plan, tmp_path)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stderr.startswith(
+        "REFUSED plan-unwritable-value: "), result.stderr
+    assert MISREAD_FINDING not in result.stderr, result.stderr
+    assert not (tmp_path / REMOTES).exists()
+    assert SPLIT_BRANCH not in branches_of(source)
 
 
 #: `(placeholder, value, the manifest line `execute` writes, what the loader
@@ -751,11 +811,14 @@ def test_text_the_loader_reads_as_other_text_is_shown_as_typed_and_read(
 #: `(a hand-edited plan's pin, the item `execute` writes for it, as a
 #: sentence shows that line)`. `execute` writes a pin into its `  - ` item as
 #: it stands, so the whitespace after it stays in the line, where the loader
-#: drops it. A space shows between the backticks; a tab makes the line one a
-#: terminal would not show as it is, so Python spells it.
+#: drops it. A space shows between the backticks; a no-break space makes the
+#: line one a terminal would not show as it is, so Python spells it. Not a
+#: tab since #255: no file `execute` writes holds a control character, and a
+#: pin holding one is #255's finding alone (`UNWRITABLE`).
 PIN_WITH_A_TRAIL = [
     pytest.param('"openGlass "', "`- openGlass `", id="space"),
-    pytest.param('"openGlass\\t"', "'- openGlass\\t'", id="tab"),
+    pytest.param('"openGlass\\xa0"', "'- openGlass\\xa0'",
+                 id="no-break-space"),
 ]
 
 
@@ -849,7 +912,7 @@ def test_execute_refuses_a_plan_carrying_one_before_any_leg_exists(
     assert what in result.stderr
     assert adopter.MANIFEST_MISREAD_REMEDIATION in result.stderr
     assert not (tmp_path / REMOTES).exists()
-    assert SPLIT_BRANCH not in git("branch", "--list", cwd=source).stdout
+    assert SPLIT_BRANCH not in branches_of(source)
 
 
 #: What the gate still lets through, each spelled like a keyword somewhere:
