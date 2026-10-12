@@ -54,7 +54,9 @@ WHAT IS CHECKED
     member mounted by hand, a row deleted by hand, a section `family.py
     remove` left behind: every check above starts from a row, so none of
     them ever asked. Neither needs a member checked out, so `--no-members`
-    asks them too.
+    asks them too. A path a row names in another case is still one of these,
+    and what it says to do depends on which of the two is the member's own:
+    it names no command that would un-register the member.
   - the COPIED shape files, each against its `sha256` row in
     `contracts/shape-pin.yaml`. Editing a copy in place is drift and the exit
     is to carry it upstream, never to update the digest.
@@ -74,9 +76,10 @@ import os
 import re
 import shlex
 import sys
+from collections import Counter
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from repo_shape import (  # noqa: E402
@@ -862,8 +865,17 @@ def _member_gitlinks(root: Path) -> dict[str, str]:
     return found
 
 
-def _row_paths(members: list) -> dict[str, str]:
-    """`{path: who}` for every row that gives a path: its `path:`, or
+class RowPath(NamedTuple):
+    """What a row names by the path it gives: `who` names the row in a
+    finding, and `canonical` is the one path its project may have,
+    `members/<project>`, or None for a row with no `project:`."""
+
+    who: str
+    canonical: str | None
+
+
+def _row_paths(members: list) -> dict[str, RowPath]:
+    """`{path: RowPath}` for every row that gives a path: its `path:`, or
     `members/<project>` where it has none, defaulted as
     `_check_member_repository_and_path` defaults it. `who` names the row in
     a finding: `the row for <project>`, or, for a row with no `project:`
@@ -871,42 +883,123 @@ def _row_paths(members: list) -> dict[str, str]:
 
     A row NAMES the path it gives, AS WRITTEN (#361), and nothing else: a
     hand-edited `path:` names that string, so the member's own mount is then
-    a gitlink no row names, beside the row's `member-path` finding.
+    a gitlink no row names, beside the row's `member-path` finding. The
+    row's canonical path rides along, because what to say about a path that
+    folds to the row's depends on which of the two is the canonical one.
     """
-    named: dict[str, str] = {}
+    named: dict[str, RowPath] = {}
     for row in members:
         if not isinstance(row, dict):
             continue
         project = row.get("project")
         if not isinstance(project, str) or not project:
             project = None
+        canonical = (f"{DEFAULT_MEMBERS_DIR}/{project}"
+                     if project is not None else None)
         if row.get("path"):
             path = str(row["path"])
-        elif project is not None:
-            path = f"{DEFAULT_MEMBERS_DIR}/{project}"
+        elif canonical is not None:
+            path = canonical
         else:
             continue
-        named.setdefault(path, f"the row for {project}" if project
-                         else "a row with no project:")
+        named.setdefault(path, RowPath(
+            f"the row for {project}" if project else "a row with no project:",
+            canonical))
     return named
 
 
-def _case_variant(path: str, named: dict[str, str]) -> tuple[str, str] | None:
-    """`(row path, who)` of a row naming `path` in another case, or None.
+def _case_variant(path: str,
+                  named: dict[str, RowPath]) -> tuple[str, RowPath] | None:
+    """`(row path, row)` of a row naming `path` in another case, or None.
 
     `str.casefold()`, as `member-duplicate` folds (#331): on macOS and
     Windows `Members/Atlas` IS `members/Atlas`, so a finding about the one
     says which row the other belongs to.
     """
     folded = path.casefold()
-    for row_path, who in named.items():
+    for row_path, row in named.items():
         if row_path.casefold() == folded:
-            return row_path, who
+            return row_path, row
     return None
 
 
+#: The three things a path that folds to a row's path can be, and so what a
+#: finding about it may tell an operator to run: `STRAY`, a second path to
+#: the member's own directory, which a command can take out; `ROW_EDITED`,
+#: the member's own path, whose row was hand-edited into a case variant of
+#: it; and `WRONG_CASE`, the only record of the member there is, in the
+#: wrong case.
+STRAY, ROW_EDITED, WRONG_CASE = "stray", "row-edited", "wrong-case"
+
+#: What a gitlink or a section nobody can account for says to do when the
+#: fault may be in the row, in `git log -p -- family.yaml`'s words.
+RESTORE_ROW = ("If its row was deleted or its path: edited by hand, put the "
+               "row back as git last had it (git log -p -- family.yaml shows "
+               "the change).")
+
+
+def _variant_case(path: str, row_path: str, row: RowPath,
+                  holds: set[str]) -> str:
+    """Which of `STRAY`, `ROW_EDITED` and `WRONG_CASE` the path `path`, which
+    folds to the path `row_path` that `row` names, is (#361).
+
+    `holds` is every exact path that holds what is being asked about: the
+    gitlinks, or the paths the sections give. A command that takes `path` out
+    leaves the member standing in ONE state only, `STRAY`: the row's path is
+    its canonical `members/<project>` AND that exact path holds a gitlink (a
+    section) too, so `path` is a second one. In the other two it takes the
+    member's own record out, and every mode that does not check members would
+    then say `family ok`:
+
+    - `ROW_EDITED`: `path` IS the row's canonical path and the row spells it
+      another way, a mount at `members/Nova` and a row written `Members/Nova`.
+      The row is the hand edit, and the cure is in `family.yaml`.
+    - `WRONG_CASE`, any other: the row's path is canonical with nothing at it,
+      so `path` is the only record there is, in the wrong case; or the row's
+      path is no canonical one either and `path` is a third spelling, which
+      this does not decide while the row is wrong.
+    """
+    if row_path == row.canonical and row_path in holds:
+        return STRAY
+    if path == row.canonical:
+        return ROW_EDITED
+    return WRONG_CASE
+
+
+def _variant_said(row_path: str, row: RowPath) -> str:
+    """The sentence that says a path is a case variant of a row's."""
+    return (f" It is a case variant of {row_path}, which {row.who} names, and "
+            "macOS and Windows hold the two as one directory.")
+
+
+def _variant_advice(kind: str, path: str, row_path: str, row: RowPath,
+                    what: str) -> str:
+    """What a `ROW_EDITED` or `WRONG_CASE` path says, in place of a command.
+
+    `what` is `gitlink` or `section`. No command is printed in either: the
+    `git rm --cached` or the `--unset-all` lines that suit a `STRAY` would
+    take the member's own record out, and a family whose members a runner
+    could not check out would then pass. A `ROW_EDITED` says the row is what
+    is wrong, and where to put its path back; a `WRONG_CASE` says the member
+    is recorded in the wrong case, and sends the operator to `git log -p --
+    family.yaml`, as an unnamed path that no row folds to does (`RESTORE_ROW`).
+    """
+    if kind == ROW_EDITED:
+        return (f" It is {path}, the one path {row.who} may have, and the row "
+                f"names it as {row_path} instead, which macOS and Windows "
+                "hold as one directory with it. The row's path: is the hand "
+                f"edit and this {what} is the member's own: put {path} back "
+                "in the row's path: (git log -p -- family.yaml shows the "
+                f"change). No command is printed, since this {what} is not "
+                "what is wrong.")
+    return (_variant_said(row_path, row)
+            + " The member is recorded in the wrong case, so no command is "
+              f"printed: taking this {what} out could un-register it. "
+            + RESTORE_ROW)
+
+
 def _check_gitlinks_named(root: Path, gitlinks: dict[str, str],
-                          named: dict[str, str], report: Report) -> None:
+                          named: dict[str, RowPath], report: Report) -> None:
     """Every gitlink in `members/` is at a path some row names EXACTLY — the
     `member-gitlink-unnamed` finding (#361).
 
@@ -917,15 +1010,20 @@ def _check_gitlinks_named(root: Path, gitlinks: dict[str, str],
     nothing pins, digests or identifies it.
 
     EXACTLY, as git compares paths. A gitlink a row names in another case is
-    still a finding, which says so: on a case-insensitive disk its directory
-    IS that member's, so its remedy is `git rm --cached`, which touches no
-    file. Any other is taken out with a plain `git rm`, which refuses while
-    its checkout holds changes, then mounted with `family.py add`: `add`
-    cannot adopt an existing mount, and after `git rm --cached` alone it
-    refuses the checkout left in the way (`member-path-taken`). `add` then
-    names the object store `git rm` leaves in `.git/modules`, if it is still
-    there.
+    still a finding, and says which of three it is (`_variant_case`). A
+    second path to the member's own directory is taken out of the index
+    alone with `git rm --cached`, which touches no file, and committed. The
+    member's own gitlink, which the ROW misspells, and the only record of a
+    member there is, in the wrong case, print no command: either could
+    un-register the member. Any other is taken out with a plain `git rm`,
+    which refuses while its checkout holds changes, then mounted with
+    `family.py add`: `add` cannot adopt an existing mount, and after `git rm
+    --cached` alone it refuses the checkout left in the way
+    (`member-path-taken`). `add` then names the object store `git rm` leaves
+    in `.git/modules`, if it is still there. `--member` is quoted as the
+    paths are, its project alone: `<org>` is the operator's to fill in.
     """
+    holds = set(gitlinks)
     for path, commit in sorted(gitlinks.items()):
         if path in named:
             continue
@@ -934,34 +1032,40 @@ def _check_gitlinks_named(root: Path, gitlinks: dict[str, str],
                 "nothing here pins, digests or identifies it.")
         variant = _case_variant(path, named)
         if variant is not None:
-            row_path, who = variant
+            row_path, row = variant
+            kind = _variant_case(path, row_path, row, holds)
+            if kind != STRAY:
+                report.finding(
+                    "member-gitlink-unnamed",
+                    said + _variant_advice(kind, path, row_path, row,
+                                           "gitlink"))
+                continue
             report.finding(
                 "member-gitlink-unnamed",
-                f"{said} It is a case variant of {row_path}, which {who} "
-                "names, and macOS and Windows hold the two as one directory. "
-                "Take it out of the index alone, which touches no file, and "
-                f"commit that:\n    git rm --cached -- {shlex.quote(path)}")
+                f"{said}{_variant_said(row_path, row)} Take it out of the "
+                "index alone, which touches no file, and commit "
+                f"that:\n    git rm --cached -- {shlex.quote(path)}")
             continue
         parts = path.split("/")
-        project = parts[1] if len(parts) == 2 and parts[1] else "<Project>"
+        member = (shlex.quote(parts[1]) if len(parts) == 2 and parts[1]
+                  else "<Project>")
         report.finding(
             "member-gitlink-unnamed",
-            f"{said} If its row was deleted or its path: edited by hand, put "
-            "the row back as git last had it (git log -p -- family.yaml "
-            "shows the change). If it was mounted by hand, take it out with "
-            "the first command below, which refuses while its checkout holds "
-            f"changes and takes its {GITMODULES} section out too, then mount "
-            "it with the second, from a checkout of openRepoShape: family.py "
-            "add writes its row and its gitlink in one commit, and names the "
-            "object store git rm leaves under .git/modules if one is still "
-            "there.\n"
+            f"{said} {RESTORE_ROW} If it was mounted by hand, take it out "
+            "with the first command below, which refuses while its checkout "
+            f"holds changes and takes its {GITMODULES} section out too, then "
+            "mount it with the second, from a checkout of openRepoShape: "
+            "family.py add writes its row and its gitlink in one commit, and "
+            "names the object store git rm leaves under .git/modules if one "
+            "is still there.\n"
             f"    git rm -- {shlex.quote(path)}\n"
             f"    {PYTHON} scripts/family.py add --family-root "
-            f"{shlex.quote(str(root))} --member <org>/{project}")
+            f"{shlex.quote(str(root))} --member <org>/{member}")
 
 
 def _check_gitmodules_named(sections: dict[str, dict[str, str]],
-                            named: dict[str, str], report: Report) -> None:
+                            gitlinks: dict[str, str],
+                            named: dict[str, RowPath], report: Report) -> None:
     """Every path a `.gitmodules` section gives is a path some row names
     EXACTLY — the `gitmodules-path-unnamed` finding (#361).
 
@@ -972,13 +1076,23 @@ def _check_gitmodules_named(sections: dict[str, dict[str, str]],
     It is what `family.py remove` leaves of two sections for one path
     (#360), and a section for `Members/Atlas` is one `add` commits beside
     the member's own, since git compares the two exactly: that one is still
-    a finding, and says which row it is the case variant of. A section with
-    no path gives none and is not one of these.
+    a finding, and says which of three it is (`_variant_case`). Only the
+    section that is a second one beside the member's own is taken out. A
+    section with no path gives none and is not one of these.
 
     The remedy is #300's, by key, every key the section holds, one command
     to a line: `--remove-section` cannot address a section whose name holds
     `]`, and a key left behind is inherited.
+
+    A section at the path of a gitlink whose finding says to `git rm` it
+    prints no command: that `git rm` takes the section out too, and a
+    `--unset-all` run after it exits 5, the key being gone. Where two sections give the
+    path (`gitmodules-path-twice`) it takes out only the one git reads for
+    it, the last in the file, so each of those keeps its own commands.
     """
+    holds = {keys["path"] for keys in sections.values() if "path" in keys}
+    given = Counter(keys["path"] for keys in sections.values()
+                    if "path" in keys)
     for name, keys in sections.items():
         path = keys.get("path")
         if path is None or path in named:
@@ -991,14 +1105,26 @@ def _check_gitmodules_named(sections: dict[str, dict[str, str]],
         variant = _case_variant(path, named)
         lead = "Take"
         if variant is not None:
-            row_path, who = variant
-            said += (f" It is a case variant of {row_path}, which {who} "
-                     "names, and macOS and Windows hold the two as one "
-                     "directory.")
+            row_path, row = variant
+            kind = _variant_case(path, row_path, row, holds)
+            if kind != STRAY:
+                report.finding(
+                    "gitmodules-path-unnamed",
+                    said + _variant_advice(kind, path, row_path, row,
+                                           "section"))
+                continue
+            said += _variant_said(row_path, row)
         else:
             said += (" If its row was deleted or its path: edited by hand, "
                      "put the row back as git last had it.")
             lead = "Otherwise take"
+            if path in gitlinks and given[path] == 1:
+                report.finding(
+                    "gitmodules-path-unnamed",
+                    f"{said} Otherwise the git rm printed above for the "
+                    f"gitlink at {path} takes this section out too, so no "
+                    "command is printed here.")
+                continue
         removal = "".join(
             f"\n    git config -f {GITMODULES} --unset-all "
             f"{shlex.quote(f'submodule.{name}.{key}')}" for key in keys)
@@ -1024,8 +1150,9 @@ def _check_members(root: Path, members: list, no_members: bool,
     sections = _gitmodules_sections(root)
     _check_gitmodules_paths(sections, report)
     named = _row_paths(members)
-    _check_gitlinks_named(root, _member_gitlinks(root), named, report)
-    _check_gitmodules_named(sections, named, report)
+    gitlinks = _member_gitlinks(root)
+    _check_gitlinks_named(root, gitlinks, named, report)
+    _check_gitmodules_named(sections, gitlinks, named, report)
     if no_members:
         print(f"  --  {len(members)} member(s) SKIPPED (--no-members): "
               "their gitlinks, digests and project ids are not checked "

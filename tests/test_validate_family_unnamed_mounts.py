@@ -19,6 +19,21 @@ index at stage 0, else HEAD, the order `recorded_gitlink` reads one in, and
 git compares paths. A path a row names in another case is still a finding,
 and it names that row: macOS and Windows hold the two as one directory.
 
+A PATH THAT FOLDS TO A ROW'S is one of three things, and what it says to run
+depends on which (review of #406, SHOULD-1). A SECOND path to the member's own
+directory is taken out with `git rm --cached`. A row HAND-EDITED into a case
+variant of its own mount (`path: Members/IRSS` over a mount at
+`members/IRSS`) is the row's fault, and a member whose ONLY record is at a
+case variant (`members/irss`, the row saying `members/IRSS`) is recorded in
+the wrong case: the same command, run in either, takes the member's own
+record out of the index, after which `--no-members`, the run a private
+family's CI falls back to, says `family ok` over a member that is no longer
+there. Those two print no command.
+
+When a hand mount's gitlink says to `git rm` it, its section finding says that
+the `git rm` takes the section out too and prints no `--unset-all` line: run
+after it they exit 5, the keys being gone.
+
 The same family and the same offline rules as `tests/test_family.py`, whose
 fixture is imported. EVERY STATE BUT ONE IS BUILT IN GIT'S INDEX AND
 OBJECTS, never through a checkout, so each runs on all three platforms: a
@@ -29,6 +44,15 @@ file's bytes the same way. The one exception runs the printed remedy, and
 mounts the spare member for real with `git submodule add`, as
 `tests/test_validate_family_duplicates.py` does, because what that remedy
 must clear is what a real mount leaves.
+
+THE CASE-VARIANT STATES HOLD ON macOS AND WINDOWS the same way: a disk that
+folds case makes `members/IRSS` and `members/irss` one directory, so none of
+them puts a second directory on disk. A gitlink is only ever an index record
+(`stage_gitlink`, `git rm --cached`) and a commit of the index, which reads no
+directory, so the checkout of `members/IRSS` stays the one directory it is and
+the index says whichever spelling the test wants. A section is hashed into
+the objects and the one `.gitmodules` file is written beside it, and the one
+hand edit, `family.yaml`, is a single file written as bytes.
 """
 
 from __future__ import annotations
@@ -44,6 +68,7 @@ from test_family import (  # noqa: F401
     FAMILY, ORG, SPARE, family, family_module, holder, manifest, validate,
 )
 from test_family_add_refusals import git_section, gitmodules_with
+from test_validate_family_member_path_glob import hand_edit
 
 MODES = pytest.mark.parametrize(
     "extra", [(), ("--pins",), ("--no-members",)],
@@ -85,6 +110,31 @@ VARIANT = (" It is a case variant of {row_path}, which the row for "
            "{project} names, and macOS and Windows hold the two as one "
            "directory.")
 
+#: What a path that is the member's own, in a row hand-edited into a case
+#: variant of it, says: the row is the hand edit, and no command. `{what}` is
+#: `gitlink` or `section`.
+ROW_EDITED = (
+    " It is {path}, the one path the row for {project} may have, and the row "
+    "names it as {row_path} instead, which macOS and Windows hold as one "
+    "directory with it. The row's path: is the hand edit and this {what} is "
+    "the member's own: put {path} back in the row's path: (git log -p -- "
+    "family.yaml shows the change). No command is printed, since this {what} "
+    "is not what is wrong.")
+
+#: What the only record of a member, in the wrong case, says: no command, and
+#: the restore sentence the unnamed gitlink always had.
+WRONG_CASE = (
+    VARIANT + " The member is recorded in the wrong case, so no command is "
+    "printed: taking this {what} out could un-register it. If its row was "
+    "deleted or its path: edited by hand, put the row back as git last had "
+    "it (git log -p -- family.yaml shows the change).")
+
+#: What a hand mount's section says once its gitlink's `git rm` takes it out.
+SECTION_UNDER_GIT_RM = (
+    " If its row was deleted or its path: edited by hand, put the row back as "
+    "git last had it. Otherwise the git rm printed above for the gitlink at "
+    "{path} takes this section out too, so no command is printed here.")
+
 
 def findings(result) -> list[str]:
     """Every finding WHOLE, in the order printed: its `FINDING` line and
@@ -118,8 +168,33 @@ def stage_gitlink(root, path: str, commit: str) -> None:
                    input=f"160000 {commit}\t{path}\n".encode("utf-8"))
 
 
+def stage_unmerged_gitlink(root, path: str, commit: str) -> None:
+    """A gitlink at `path` held at the conflict stages 1, 2 and 3 and NOT at
+    stage 0, as a conflicted merge leaves it. As BYTES on stdin, like
+    `stage_gitlink`: first the zero-mode record that drops any stage-0 entry
+    (`--index-info` will not place a higher stage over one), then the three
+    stages."""
+    records = f"0 {'0' * 40}\t{path}\n" + "".join(
+        f"160000 {commit} {stage}\t{path}\n" for stage in (1, 2, 3))
+    subprocess.run(["git", "update-index", "--index-info"], cwd=str(root),
+                   capture_output=True, check=True,
+                   input=records.encode("utf-8"))
+
+
 def commit(root, message: str) -> None:
     git("commit", "-qm", message, cwd=root)
+
+
+def record_in_another_case(holder, project: str, spelling: str) -> str:
+    """`project`'s gitlink taken out of the index at its own path, recorded at
+    `spelling` instead, and committed: in the index and objects alone, so no
+    disk has to hold both names and the checkout does not move. Returns the
+    commit the gitlink names."""
+    named = pinned(holder, project)
+    git("rm", "-q", "--cached", "--", f"members/{project}", cwd=holder)
+    stage_gitlink(holder, spelling, named)
+    commit(holder, f"Record {project} at {spelling}")
+    return named
 
 
 def spare_commits(family) -> tuple[str, str]:
@@ -134,6 +209,25 @@ def spare_commits(family) -> tuple[str, str]:
 def pinned(holder, project: str) -> str:
     return next(row["pin"]["commit"] for row in manifest(holder)["members"]
                 if row["project"] == project)
+
+
+def with_path_replaced(holder, old: bytes, new: bytes) -> None:
+    """HEAD's `.gitmodules` with `old` replaced by `new` (once), hashed into
+    git's objects and committed, and the same bytes written to disk:
+    `gitmodules_with`'s mechanics for an edit in place rather than an append,
+    as BYTES, so no platform rewrites a line ending."""
+    data = subprocess.run(["git", "show", "HEAD:.gitmodules"],
+                          cwd=str(holder), capture_output=True,
+                          check=True).stdout
+    assert data.count(old) == 1, data
+    data = data.replace(old, new)
+    blob = subprocess.run(["git", "hash-object", "-w", "--stdin"],
+                          cwd=str(holder), input=data, capture_output=True,
+                          check=True).stdout.decode("ascii").strip()
+    git("update-index", "--cacheinfo", f"100644,{blob},.gitmodules",
+        cwd=holder)
+    commit(holder, "A section whose path is another case")
+    (holder / ".gitmodules").write_bytes(data)
 
 
 def with_section(holder, tmp_path, name: str, path: str, url: str) -> None:
@@ -177,7 +271,11 @@ def test_a_member_mounted_by_hand_is_two_findings(family, holder, tmp_path,
     """ROW (a): what `git submodule add` of a member leaves, with no row: a
     gitlink in `members/` that every recursive clone fetches, and the
     section that registers it. Neither is named, so each is its own
-    finding, in every mode: neither needs the member checked out."""
+    finding, in every mode: neither needs the member checked out.
+
+    The gitlink says to `git rm` it, and that takes its section out too, so
+    the section's finding says that and prints no `--unset-all` line: run
+    after the `git rm` they exit 5, the keys being gone."""
     _, tip = spare_commits(family)
     stage_gitlink(holder, f"members/{SPARE}", tip)
     with_section(holder, tmp_path, f"members/{SPARE}", f"members/{SPARE}",
@@ -192,10 +290,12 @@ def test_a_member_mounted_by_hand_is_two_findings(family, holder, tmp_path,
         f"git rm -- members/{SPARE}",
         f"{PYTHON} scripts/family.py add --family-root "
         f"{shlex.quote(str(holder.resolve()))} --member <org>/{SPARE}"]
-    assert section.splitlines()[0] == SECTION_SAID.format(
+    assert section == SECTION_SAID.format(
         path=f"members/{SPARE}", name=f"members/{SPARE}",
-        url=f"url /nowhere/{SPARE}.git") + SECTION_REMEDY
-    assert commands(section) == removal(f"members/{SPARE}", "path", "url")
+        url=f"url /nowhere/{SPARE}.git") + SECTION_UNDER_GIT_RM.format(
+            path=f"members/{SPARE}")
+    assert commands(section) == []
+    assert "--unset-all" not in result.stderr
 
 
 @MODES
@@ -355,6 +455,199 @@ def test_an_index_git_cannot_list_is_a_refusal_not_a_pass(holder):
         "its index. Mend that, then run this again.")
 
 
+# --- a path that folds to a row's: only a second one is taken out ------------
+
+def url_of(holder, project: str) -> str:
+    """The url `family.py add` wrote in `project`'s section."""
+    return git("config", "-f", ".gitmodules", "--get",
+               f"submodule.members/{project}.url",
+               cwd=holder).stdout.strip()
+
+
+@MODES
+def test_a_row_hand_edited_into_a_case_variant_of_its_mount_is_the_edit(
+        holder, extra):
+    """STATE (i), REVIEW SHOULD-1: IRSS's row says `path: Members/IRSS` and
+    the real mount is `members/IRSS`. The mount is the canonical path and the
+    ROW is the hand edit, so each finding says that and names no command: the
+    `git rm --cached` and the `--unset-all` lines these used to print took
+    the member's own gitlink and section out, after which `--no-members` said
+    `family ok` over a family with one member. Members checked, `member-path`
+    names the edit beside them; `--no-members` never runs it, which is why
+    the finding must say it."""
+    original = (holder / "family.yaml").read_bytes()
+    hand_edit(holder, "Members/IRSS")
+    commit_ = pinned(holder, "IRSS")
+    result = validate(holder, *extra)
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert "REFUSED" not in result.stderr, result.stderr
+    assert codes(result) == (
+        ["member-gitlink-unnamed", "gitmodules-path-unnamed"]
+        + ([] if extra == ("--no-members",) else ["member-path"]))
+    said = dict(path="members/IRSS", project="IRSS", row_path="Members/IRSS")
+    gitlink, section = findings(result)[:2]
+    assert gitlink == GITLINK_SAID.format(
+        path="members/IRSS", commit=commit_) + ROW_EDITED.format(
+            what="gitlink", **said)
+    assert section == SECTION_SAID.format(
+        path="members/IRSS", name="members/IRSS",
+        url=f"url {url_of(holder, 'IRSS')}") + ROW_EDITED.format(
+            what="section", **said)
+    assert "git rm" not in result.stderr, result.stderr
+    assert "--unset-all" not in result.stderr, result.stderr
+    # Said and done: the path put back in the row clears all three.
+    (holder / "family.yaml").write_bytes(original)
+    assert_passes_in_every_mode(holder, 2)
+
+
+@MODES
+def test_a_member_recorded_only_in_another_case_says_so_and_prints_no_command(
+        holder, extra):
+    """STATE (ii), REVIEW SHOULD-1: IRSS's row is canonical, and the only
+    gitlink the holder records for it is at `members/irss`. `git rm --cached`
+    of that took the member's only record out, and `--no-members` then said
+    `family ok` over a holder that records one gitlink fewer than it has rows.
+    It says the member is recorded in the wrong case instead, and sends the
+    operator to git's history, as every other unnamed gitlink does.
+
+    Members checked, the row's own gitlink is read at its exact path, finds
+    none and is the refusal `member-gitlink-absent`, which prints no finding,
+    so only `--no-members` shows the finding; a git that matched the pathspec
+    in any case would find the variant and print it, so either is accepted
+    there, and what no run may do is print a command."""
+    named = record_in_another_case(holder, "IRSS", "members/irss")
+    result = validate(holder, *extra)
+    assert "git rm" not in result.stderr + result.stdout
+    assert "--unset-all" not in result.stderr + result.stdout
+    if result.returncode == 2:
+        assert extra != ("--no-members",), result.stderr
+        assert result.stderr.startswith(
+            "REFUSED member-gitlink-absent: no gitlink (mode 160000) "
+            "recorded at 'members/IRSS'."), result.stderr
+        return
+    assert result.returncode == 1, result.stderr + result.stdout
+    (gitlink,) = findings(result)
+    assert gitlink == GITLINK_SAID.format(
+        path="members/irss", commit=named) + WRONG_CASE.format(
+            row_path="members/IRSS", project="IRSS", what="gitlink")
+
+
+@MODES
+def test_a_sections_only_path_in_another_case_says_so_and_prints_no_command(
+        holder, extra):
+    """The section's own state (ii): IRSS's row is canonical, its gitlink is
+    where it belongs, and the ONLY section that registers it gives
+    `members/irss`. `--unset-all` of that left the member with no section."""
+    url = url_of(holder, "IRSS")
+    with_path_replaced(holder, b"\tpath = members/IRSS\n",
+                       b"\tpath = members/irss\n")
+    result = validate(holder, *extra)
+    assert result.returncode == 1, result.stderr + result.stdout
+    (section,) = findings(result)
+    assert section == SECTION_SAID.format(
+        path="members/irss", name="members/IRSS", url=f"url {url}"
+    ) + WRONG_CASE.format(row_path="members/IRSS", project="IRSS",
+                          what="section")
+    assert "--unset-all" not in result.stderr, result.stderr
+
+
+def test_a_third_spelling_beside_an_edited_row_prints_no_command_either(
+        holder):
+    """The row is hand-edited AND a gitlink sits at a third spelling,
+    `MEMBERS/IRSS`: neither the row's path nor the canonical one. Nothing here
+    says it is a second path to a member that is standing, so it is not told
+    to `git rm --cached`; the row is wrong first."""
+    hand_edit(holder, "Members/IRSS")
+    stage_gitlink(holder, "MEMBERS/IRSS", pinned(holder, "IRSS"))
+    result = validate(holder, "--no-members")
+    assert result.returncode == 1, result.stderr + result.stdout
+    third = next(f for f in findings(result)
+                 if f.startswith("FINDING member-gitlink-unnamed: MEMBERS/"))
+    assert commands(third) == []
+    assert "The member is recorded in the wrong case, so no command" in third
+    assert "git rm" not in result.stderr, result.stderr
+
+
+def test_two_sections_for_a_hand_mounts_path_each_keep_their_commands(
+        family, holder, tmp_path):
+    """`git rm` of a gitlink takes out ONE section for its path, the last the
+    file gives, so the `git rm` finding cannot say it takes out both: where a
+    path is given twice (`gitmodules-path-twice`), each section keeps its own
+    `--unset-all` lines. The last assertion is the premise: after the `git
+    rm` the finding prints, one of the two sections is still there."""
+    _, tip = spare_commits(family)
+    path = f"members/{SPARE}"
+    stage_gitlink(holder, path, tip)
+    with_section(holder, tmp_path, path, path, f"/nowhere/{SPARE}.git")
+    with_section(holder, tmp_path, "second", path, "/nowhere/second.git")
+    result = validate(holder, "--no-members")
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert codes(result) == ["gitmodules-path-twice", "member-gitlink-unnamed",
+                             "gitmodules-path-unnamed",
+                             "gitmodules-path-unnamed"]
+    first, second = findings(result)[2:]
+    assert commands(first) == removal(path, "path", "url")
+    assert commands(second) == removal("second", "path", "url")
+    assert first.splitlines()[0].endswith(SECTION_REMEDY)
+    assert "takes this section out too" not in result.stderr
+    git(*shlex.split(commands(findings(result)[1])[0])[1:], cwd=holder)
+    listed = git("config", "-f", ".gitmodules", "--list", cwd=holder).stdout
+    assert listed.count(f".path={path}") == 1, listed
+
+
+# --- a conflicted index records no gitlink at stage 0 ------------------------
+
+def test_a_gitlink_held_only_at_conflict_stages_is_not_recorded(family,
+                                                                holder):
+    """`_member_gitlinks` reads the index at STAGE 0, as `recorded_gitlink`
+    does: a conflicted merge holds a path at stages 1, 2 and 3, and none of
+    them is a commit anybody is about to make. A path HEAD never recorded and
+    the index holds only so is no gitlink the holder records."""
+    _, tip = spare_commits(family)
+    stage_unmerged_gitlink(holder, f"members/{SPARE}", tip)
+    listed = git("ls-files", "-s", "--", f"members/{SPARE}",
+                 cwd=holder).stdout.split()
+    assert listed[2::4] == ["1", "2", "3"], listed
+    assert_passes_in_every_mode(holder, 2)
+
+
+def test_a_gitlink_head_records_is_head_s_when_the_index_holds_it_unmerged(
+        family, holder):
+    """The fallback to HEAD, as `recorded_gitlink` falls back: HEAD's gitlink
+    is the one named, and no stage of the conflict is, whichever came last."""
+    older, newer = spare_commits(family)
+    path = f"members/{SPARE}"
+    stage_gitlink(holder, path, older)
+    commit(holder, "A gitlink no row names")
+    stage_unmerged_gitlink(holder, path, newer)
+    result = validate(holder, "--no-members")
+    assert result.returncode == 1, result.stderr + result.stdout
+    (gitlink,) = findings(result)
+    assert gitlink.startswith(GITLINK_SAID.format(path=path, commit=older))
+
+
+# --- the add remedy quotes the member it names -------------------------------
+
+@pytest.mark.parametrize("project,quoted", [
+    ("My Proj", "<org>/'My Proj'"),
+    ("O'Brien", "<org>/'O'\"'\"'Brien'")], ids=["space", "quote"])
+def test_the_add_remedy_quotes_the_member_it_names(family, holder, project,
+                                                   quoted):
+    """`--member` is quoted as the paths beside it are, its project alone:
+    `<org>` is the operator's to fill in, and quoted whole it would be a
+    literal org of that name. Split as a POSIX shell splits it, the value is
+    the org and the project as written."""
+    _, tip = spare_commits(family)
+    stage_gitlink(holder, f"members/{project}", tip)
+    result = validate(holder, "--no-members")
+    assert result.returncode == 1, result.stderr + result.stdout
+    (gitlink,) = findings(result)
+    rm, add = commands(gitlink)
+    assert add.endswith(f" --member {quoted}"), add
+    assert shlex.split(add)[-1] == f"<org>/{project}"
+    assert shlex.split(rm)[-1] == f"members/{project}"
+
+
 # --- the remedy, run as printed, from a real mount ---------------------------
 
 def test_a_hand_mount_is_taken_out_and_added_back_as_printed(family, holder):
@@ -377,8 +670,11 @@ def test_a_hand_mount_is_taken_out_and_added_back_as_printed(family, holder):
     assert codes(result) == ["member-gitlink-unnamed",
                              "gitmodules-path-unnamed"]
     rm, add = commands(findings(result)[0])
+    assert commands(findings(result)[1]) == []
     git(*shlex.split(rm)[1:], cwd=holder)
     assert not (holder / "members" / SPARE).exists()
+    assert f"members/{SPARE}" not in (holder / ".gitmodules").read_text(
+        encoding="utf-8")
     argv = [arg.replace("<org>", ORG) for arg in shlex.split(add)]
     assert argv[:3] == [PYTHON, "scripts/family.py", "add"], add
 
