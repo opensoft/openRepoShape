@@ -4872,27 +4872,44 @@ def _leg_path_help(leg: str, default: str) -> str:
     `default` the flag's default, which the examples of a spelling Git does
     not keep are written from.
 
-    `tests/test_adopt_plan_leg_path_help.py` holds this to the tool: each code
-    and example named here is the one `plan` prints for it. The collision half
-    is the scaffold's own sentence (#288) plus the half only an adoption has,
+    `tests/test_adopt_plan_leg_path_help.py` holds this to the tool: each
+    clause below names the value `plan` refuses for it, and each value the
+    help says is refused is. The spelling half is `leg_path_problem`'s, in the
+    order it asks (`scripts/shape_materialize.py`): the spelling, then the
+    names Git and Windows keep, then the alphabet `checked_value` allows (ASCII
+    only, 255 characters, nothing that begins with `-`). The collision half is
+    the scaffold's own sentence (#288) plus the half only an adoption has,
     `shape/`, where `execute` writes its copy of a file the root already
     holds. A mount over a source path the plan KEEPS in the root is not said
     here, because `plan` refuses nothing for it (`_kept_collision_notes`).
+
+    THE LIST NEVER SAYS "ONLY". Each clause is a value `plan` refuses, and
+    each refusal prints the whole rule under `Remediation:`, where the closing
+    sentence sends the reader. A clause added later, such as a leg path the
+    project's YAML reader would read back as something other than text
+    (`null`, `2026`: #225), then makes this text incomplete and not false,
+    whichever change lands first. For the same reason it says nothing of what
+    `plan` ACCEPTS: it takes some values and does not mount them where they
+    were given (`null` is mounted at the default, #181).
     """
     return (
         f"where the {leg} leg is mounted, as a path in the assembly root "
         f"(default: {default}); the plan records it as `legs.{leg}_path`. "
         "`plan` refuses it, before it writes a plan, as `adopt-bad-leg-path` "
-        "when the path is absolute or has a `..` segment, a backslash or a "
-        "character outside letters, digits and `._/@+~-`; is not in Git's "
-        f"own spelling (`{default}/`, `./{default}` and `a//b` are not); has "
-        "a segment Git or Windows reserves (`.git`, `CON`); or is, holds or "
-        "lies inside the other leg's path, whatever the case. It refuses it "
-        "as `adopt-leg-path-collides` when the path is, holds or lies inside "
-        "a FILE the shape writes into the root (`project.yaml` is one, and "
-        "`contracts` holds several), or is at or under `shape/`. The defaults "
-        "`spec` and `code` pass. Nothing rewrites a value or picks another "
-        "for you.")
+        "when the path is empty or `.`, is absolute, begins with `-` or is "
+        "longer than 255 characters; has a `..` segment, a backslash, a "
+        "segment that ends in a dot, or a character outside ASCII letters, "
+        "digits and `._/@+~-`; is not in Git's own spelling "
+        f"(`{default}/`, `./{default}` and `a//b` are not); has a segment "
+        "Git or Windows reserves (`.git`, `CON`); or is, holds or lies "
+        "inside the other leg's path, whatever the case. As "
+        "`adopt-leg-path-collides` it refuses a path that is, holds or lies "
+        "inside a FILE the shape writes into the root (`project.yaml` is "
+        "one, and `contracts` holds several), or that is at or under "
+        "`shape/`, whatever the case. The defaults `spec` and `code` pass. "
+        "A refusal writes no plan and rewrites nothing, and its "
+        "`Remediation:` line states the whole rule; you pass the value "
+        "again.")
 
 
 def main(argv: list[str] | None = None) -> int:

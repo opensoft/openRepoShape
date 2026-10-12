@@ -378,36 +378,42 @@ options:
                         where the spec leg is mounted, as a path in the
                         assembly root (default: spec); the plan records it as
                         `legs.spec_path`. `plan` refuses it, before it writes
-                        a plan, as `adopt-bad-leg-path` when the path is
-                        absolute or has a `..` segment, a backslash or a
-                        character outside letters, digits and `._/@+~-`; is
-                        not in Git's own spelling (`spec/`, `./spec` and
-                        `a//b` are not); has a segment Git or Windows reserves
-                        (`.git`, `CON`); or is, holds or lies inside the other
-                        leg's path, whatever the case. It refuses it as
-                        `adopt-leg-path-collides` when the path is, holds or
-                        lies inside a FILE the shape writes into the root
-                        (`project.yaml` is one, and `contracts` holds
-                        several), or is at or under `shape/`. The defaults
-                        `spec` and `code` pass. Nothing rewrites a value or
-                        picks another for you.
+                        a plan, as `adopt-bad-leg-path` when the path is empty
+                        or `.`, is absolute, begins with `-` or is longer than
+                        255 characters; has a `..` segment, a backslash, a
+                        segment that ends in a dot, or a character outside
+                        ASCII letters, digits and `._/@+~-`; is not in Git's
+                        own spelling (`spec/`, `./spec` and `a//b` are not);
+                        has a segment Git or Windows reserves (`.git`, `CON`);
+                        or is, holds or lies inside the other leg's path,
+                        whatever the case. As `adopt-leg-path-collides` it
+                        refuses a path that is, holds or lies inside a FILE
+                        the shape writes into the root (`project.yaml` is one,
+                        and `contracts` holds several), or that is at or under
+                        `shape/`, whatever the case. The defaults `spec` and
+                        `code` pass. A refusal writes no plan and rewrites
+                        nothing, and its `Remediation:` line states the whole
+                        rule; you pass the value again.
   --code-path CODE_PATH
                         where the code leg is mounted, as a path in the
                         assembly root (default: code); the plan records it as
                         `legs.code_path`. `plan` refuses it, before it writes
-                        a plan, as `adopt-bad-leg-path` when the path is
-                        absolute or has a `..` segment, a backslash or a
-                        character outside letters, digits and `._/@+~-`; is
-                        not in Git's own spelling (`code/`, `./code` and
-                        `a//b` are not); has a segment Git or Windows reserves
-                        (`.git`, `CON`); or is, holds or lies inside the other
-                        leg's path, whatever the case. It refuses it as
-                        `adopt-leg-path-collides` when the path is, holds or
-                        lies inside a FILE the shape writes into the root
-                        (`project.yaml` is one, and `contracts` holds
-                        several), or is at or under `shape/`. The defaults
-                        `spec` and `code` pass. Nothing rewrites a value or
-                        picks another for you.
+                        a plan, as `adopt-bad-leg-path` when the path is empty
+                        or `.`, is absolute, begins with `-` or is longer than
+                        255 characters; has a `..` segment, a backslash, a
+                        segment that ends in a dot, or a character outside
+                        ASCII letters, digits and `._/@+~-`; is not in Git's
+                        own spelling (`code/`, `./code` and `a//b` are not);
+                        has a segment Git or Windows reserves (`.git`, `CON`);
+                        or is, holds or lies inside the other leg's path,
+                        whatever the case. As `adopt-leg-path-collides` it
+                        refuses a path that is, holds or lies inside a FILE
+                        the shape writes into the root (`project.yaml` is one,
+                        and `contracts` holds several), or that is at or under
+                        `shape/`, whatever the case. The defaults `spec` and
+                        `code` pass. A refusal writes no plan and rewrites
+                        nothing, and its `Remediation:` line states the whole
+                        rule; you pass the value again.
   --pin PIN             a neutral product this project declares a pin on — a
                         NAME only, e.g. --pin openGlass or --pin
                         opensoft/openGlass to name the owner explicitly.
