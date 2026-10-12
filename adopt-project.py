@@ -44,7 +44,7 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            `xf-project-<id>` topic on all three (skipped for local remotes),
            and then VERIFIES by blob sha that every source path landed in
            exactly one place, and that the root's only submodules are the
-           two leg mounts.
+           two leg mounts, each at the commit pushed to its leg.
 
 THE PLAN IS AN ARTIFACT A HUMAN OR AN AI EDITS. That is why it is YAML with
 reasons in it rather than a pipe between two processes: the classifier is
@@ -1069,6 +1069,22 @@ def cross_leg_references(source: "Source", entries: list["Entry"],
     the spec leg, and the code that reads them reads ACROSS the assembly root
     mount. The read is one relative path from the code leg — but only once
     somebody edits it, so the plan says which file and the human decides when.
+
+    EVERY NAME IS A NAME (#216). Both inputs are source paths, and git reads
+    each as something else unless told not to. A spec directory passed bare
+    sits where git reads OPTIONS: `-notes/` was a usage error (exit 129, no
+    follow-up), and `-O<cmd>/` was `--open-files-in-pager`, which git runs
+    through a shell -- argv and `shell=False` stop Python running a shell,
+    not git -- so `-e` makes it the pattern. The code entries are pathspecs:
+    `:cache` read as the pathspec `cache` and `*` matched files in the spec
+    leg, so `--literal-pathspecs`. `-l` C-quoted a name outside printable
+    ASCII (`"src/\\303\\234bersicht.py"`), so `-z`, read as `Source.tree`
+    reads names, and each hit is spelled as a question spells a path, with
+    no backticks: one line of UTF-8 whatever its bytes; so is the spec
+    directory's own name. `--no-color`, because `color.grep=always` wraps
+    each name in escapes. A grep that FAILS is said, never read as "no file
+    names it", and so is one that cannot be asked: `-F` splits a pattern at
+    a line feed.
     """
     code_paths = [e.path.rstrip("/") for e in entries if e.leg == "code"]
     spec_dirs = [e.path for e in entries
@@ -1077,27 +1093,53 @@ def cross_leg_references(source: "Source", entries: list["Entry"],
         return []
     out: list[str] = []
     for spec_dir in spec_dirs:
+        named = "".join(map(_spelled_character, spec_dir))
+        if "\n" in spec_dir:
+            # `-F` reads a pattern holding a line feed as one pattern per
+            # line: `a<LF>b/` was searched as `a` OR `b/` and named files
+            # that never mention it, the way `*` did.
+            out.append(_search_by_hand(
+                named, "`git grep` reads each line of a pattern as a pattern "
+                "of its own, so it cannot search for this name"))
+            continue
         proc = subprocess.run(
-            ["git", "grep", "-l", "-I", "-F", spec_dir, source.commit, "--",
-             *code_paths],
-            cwd=str(source.path), capture_output=True, text=True, check=False)
-        hits = [line.split(":", 1)[1] for line in proc.stdout.splitlines()
-                if ":" in line]
+            ["git", "--literal-pathspecs", "grep", "--no-color", "-z", "-l",
+             "-I", "-F", "-e", spec_dir, source.commit, "--", *code_paths],
+            cwd=str(source.path), capture_output=True, check=False)
+        if proc.returncode not in (0, 1):
+            why = _one_line(proc.stderr.decode("utf-8", "replace"))[:300]
+            out.append(_search_by_hand(
+                named, f"`git grep` exited {proc.returncode}: {why}"))
+            continue
+        # `<commit>:<path>` per record; the commit is hex, so the first `:`
+        # ends it and the rest is the path, raw.
+        hits = [_git_path(record.partition(b":")[2])
+                for record in proc.stdout.split(b"\x00") if b":" in record]
         # Fixtures last. A test fixture that mentions `contracts/` is usually
         # quoting a path rather than reading one, and burying the harness that
         # DOES read it under twenty of them is how a follow-up list stops
         # being read at all.
         hits.sort(key=lambda h: ("fixture" in h or h.startswith("tests/"), h))
         for hit in hits[:8]:
+            shown = "".join(map(_spelled_character, hit))
             out.append(
-                f"{code_path}/{hit} names `{spec_dir}`, which moves to the "
+                f"{code_path}/{shown} names `{named}`, which moves to the "
                 f"spec leg: it must read across the assembly root — "
-                f"`../{spec_path}/{spec_dir}` relative to `{code_path}/` — or "
+                f"`../{spec_path}/{named}` relative to `{code_path}/` — or "
                 "take the path from the environment")
         if len(hits) > 8:
             out.append(f"… and {len(hits) - 8} more file(s) under the code leg "
-                       f"naming `{spec_dir}`")
+                       f"naming `{named}`")
     return out
+
+
+def _search_by_hand(named: str, why: str) -> str:
+    """The follow-up for a spec directory git did not search for: the
+    reason, and what to look for instead."""
+    return (f"git could not search the files moving to the code leg for "
+            f"`{named}` ({why}); find the ones that name it by hand: each "
+            f"must read across the assembly root once `{named}` moves to the "
+            "spec leg")
 
 
 def follow_ups_for(source: "Source", entries: list["Entry"], names: dict,
@@ -3245,11 +3287,16 @@ def _mount_the_legs(assembly: Path, work_root: Path, names: dict, urls: dict,
         # `--force` also lets through a path the index holds with a gitlink,
         # reusing the repository there, and skips git's check for a path
         # beyond a symlink: `_refuse_an_unmountable_path` refuses both first.
-        # With that, the two paths are distinct, so the second mount's name
-        # has no `.git/modules/<name>` in this fresh clone for `--force` to
-        # reactivate; and a newer git's renaming of a name already in use
-        # can only meet a `.gitmodules` the plan KEPT here, which
-        # verification never passes (#165).
+        # With that, the two paths are distinct, and the assembly was cloned
+        # with NO TEMPLATE (`_commit_the_split`, #243), so `.git/modules`
+        # holds nothing before the first mount and only that mount's store
+        # at the second: no `.git/modules/<name>` is there for `--force` to
+        # reactivate. (An operator's template could plant one, and the mount
+        # then took the stranger's commit.) Whatever else put a different
+        # commit at a mount, `_verify` compares each gitlink with the commit
+        # pushed to its leg (`adopt-mount-commit`). A newer git's renaming of
+        # a name already in use can only meet a `.gitmodules` the plan KEPT
+        # here, which verification never passes (#165).
         _refuse_an_unmountable_path(assembly, path)
         run(["git", *FILE_PROTOCOL, "submodule", "add", "--force", "-q",
              str(work_root / names[role]), path], cwd=assembly)
@@ -3556,12 +3603,22 @@ def _stage_the_split(assembly: Path, materialized: Materialized) -> None:
     is staged as `_where_it_landed` spells it, and one whose link leads OUT of
     the assembly is not staged at all: it is not in this repository, and the
     verification reports the pinned file missing.
+
+    AND EACH ONE IS A PATH, NOT A PATHSPEC (#216). A path that landed
+    through a link is the link's target, a name the SOURCE chose, and after
+    `--` git still reads a name as a pathspec: `:ci/workflows/validate.yml`
+    is the magic `:` and the path `ci/...`, which matches nothing and fails
+    the add (`fatal: pathspec ... did not match any files`) after both legs
+    are pushed; `:!ci/...` is an EXCLUDE, which forces nothing by that name,
+    so a file the source's `.gitignore` hides is left out of the split; and
+    `ga[0]/...` is a glob, which forces an ignored `ga0/...` too. So
+    `--literal-pathspecs`: every name is the path it spells.
     """
     run(["git", "add", "-A", "--", "."], cwd=assembly)
     landed = (_where_it_landed(assembly, written)
               for written in materialized.written)
-    run(["git", "add", "-f", "--", *(path for path in landed if path)],
-        cwd=assembly)
+    run(["git", "--literal-pathspecs", "add", "-f", "--",
+         *(path for path in landed if path)], cwd=assembly)
 
 
 def _where_it_landed(assembly: Path, written: str) -> str | None:
@@ -3594,7 +3651,28 @@ def _commit_the_split(plan: Plan, source: Source, assembly: Path,
     also the pull request's body — or None when the push was REFUSED, having
     already said so. Split out of `cmd_execute` for #138.
     """
-    run(["git", *FILE_PROTOCOL, "clone", "-q", str(source.path), str(assembly)])
+    # NO TEMPLATE (#243), as the scaffold's `git init` takes none (#229).
+    # `git clone` copies the operator's template (`init.templateDir`, or
+    # `GIT_TEMPLATE_DIR`) into `.git`, and one that holds a `modules/<leg
+    # path>` store, as a copy of a working Triad root's `.git` does, plants
+    # `.git/modules/<leg path>`. `git submodule add --force` in
+    # `_mount_the_legs` REACTIVATES a store that is already there where it
+    # would refuse without `--force`, so each mount took the STRANGER's
+    # store: exit 0, a pushed split whose gitlinks were that store's commit
+    # and not the legs' tips, `adoption verified` over it, and a recursive
+    # clone that exits 128. The empty `--template=` is git's documented way
+    # to use none. The assembly is a build directory this tool fills and
+    # pushes, so no template content belongs in it, and whoever clones the
+    # pushed root still gets their template from their own `git clone`. Nothing
+    # else `execute` makes needs it: the legs' bare remotes and work trees are
+    # never mounted into, and the mounts only READ the work trees, a clone
+    # copying their objects and refs and never a `.git/modules`. With no
+    # template the assembly has no `.git/hooks`, so HOOKS a template installs
+    # no longer run on the split's commit and push, as they did before #243;
+    # hooks set with `core.hooksPath` still do, and the legs keep their
+    # template's hooks.
+    run(["git", *FILE_PROTOCOL, "clone", "-q", "--template=",
+         str(source.path), str(assembly)])
     run(["git", "checkout", "-q", "-B", branch, source.commit], cwd=assembly)
     _mount_the_legs(assembly, work_root, names, urls, paths_for, spec_path,
                     code_path)
@@ -3823,6 +3901,16 @@ def _verify(source: Source, assembly: Path, work_root: Path, names,
     because the root keeps no gitlink but the two mounts: this check fails
     closed on one, and does not lean on `check`'s refusals to keep it out.
     `_land_the_root_tree` says which.
+
+    EACH MOUNT IS THE COMMIT THAT WAS PUSHED TO ITS LEG (#243). The legs'
+    trees account for the source's blobs whichever commit the root mounts, so
+    a mount at ANOTHER commit passed every check above: a module store `git
+    submodule add --force` reactivated (an operator's template planted one)
+    made a split whose gitlinks were a stranger's commit, which was pushed
+    and said `adoption verified`. `_mount_commit_findings` compares each
+    gitlink with the `HEAD` of its leg's work directory: the commit pushed,
+    and the tree read above. It does not undo the push, as no finding does;
+    the clone's `--template=` is what keeps a planted store out.
     """
     print("\nVERIFICATION — every source path at "
           f"{source.commit[:12]}, by blob sha")
@@ -3831,9 +3919,11 @@ def _verify(source: Source, assembly: Path, work_root: Path, names,
     for role in ("spec", "code"):
         for path, _, oid, _ in _tree_of(work_root / names[role], "HEAD"):
             after.setdefault(path, []).append(f"{role}:{oid}")
-    root_findings = _land_the_root_tree(
-        after, _tree_of(assembly, split_commit), before,
-        dict(zip((spec_path, code_path), EXTRACTED_LEGS)))
+    mounts = dict(zip((spec_path, code_path), EXTRACTED_LEGS))
+    split_tree = _tree_of(assembly, split_commit)
+    root_findings = _land_the_root_tree(after, split_tree, before, mounts)
+    root_findings += _mount_commit_findings(
+        split_tree, mounts, _pushed_commits(work_root, names))
 
     counts, findings = _account_for(before, after, paths_for["drop"])
     findings += _shape_file_findings(assembly, split_commit)
@@ -3903,6 +3993,12 @@ SPLIT_DEFECT = (
     "this is not how the plan spells its leg paths: `execute` refuses "
     "before any leg exists a leg path git would record at another spelling "
     f"(`plan-bad-leg-path`), {SPLIT_IS_WRONG}")
+#: The exit of `adopt-mount-commit`: a plan never says which commit a mount is.
+MOUNT_COMMIT_DEFECT = (
+    "no plan chooses a mount's commit: each leg is mounted from its own work "
+    "directory, and a module store already under `.git/modules/<name>`, which "
+    "`git submodule add --force` reactivates, is the known way another "
+    f"repository's commit is mounted instead, {SPLIT_IS_WRONG}")
 #: The exit of `adopt-root-submodule`.
 ROOT_SUBMODULE_DEFECT = (
     "`execute` refuses before any leg exists a plan that keeps a submodule "
@@ -4000,6 +4096,39 @@ def _what_is_at(tree: list, path: str) -> str:
         if entry.startswith(path + "/"):
             return "a directory"
     return "nothing"
+
+
+def _mount_commit_findings(tree: list, mounts: dict[str, str],
+                           pushed: dict[str, str]) -> list[str]:
+    """`adopt-mount-commit` for each mount whose gitlink names any commit but
+    the one pushed to its leg (#243); `mounts` is `_land_the_root_tree`'s and
+    `pushed` is `_pushed_commits`'.
+
+    The pin the split wrote names the pushed commit, and a mount at another
+    leaves a recursive clone unable to satisfy both: it fails (exit 128), or
+    checks out a tree nobody pushed there. The question is ASKED OF A GITLINK
+    ONLY: a mount path that holds none is `adopt-mount-missing`
+    (`_land_the_root_tree`), and said once. It is asked here, beside that
+    function, because that one lands paths and knows nothing of what was
+    pushed.
+    """
+    return [f"FINDING adopt-mount-commit: {path} is a gitlink to {oid[:12]} "
+            f"in the root tree, where the {mounts[path]} leg was pushed at "
+            f"{pushed[mounts[path]][:12]}, so the mount is not the leg this "
+            "run pushed and a recursive clone of the split checks out the "
+            f"wrong commit or cannot fetch one; {MOUNT_COMMIT_DEFECT}"
+            for path, mode, oid, _ in tree
+            if mode == GITLINK_MODE and path in mounts
+            and oid != pushed[mounts[path]]]
+
+
+def _pushed_commits(work_root: Path, names: dict) -> dict[str, str]:
+    """The commit `execute` pushed to each leg: the `HEAD` of its work
+    directory, which `_extract_leg` and `_seed_leg` push as
+    `HEAD:refs/heads/<tracking>` and whose tree `_verify` accounts for."""
+    return {role: git_out(["rev-parse", "HEAD"],
+                          cwd=work_root / names[role]).lower()
+            for role in EXTRACTED_LEGS}
 
 
 def _tree_of(repo: Path, rev: str) -> list[tuple[str, str, str, int]]:
