@@ -200,8 +200,8 @@ def test_a_colour_setting_in_the_source_is_not_in_a_follow_up(tmp_path):
 def test_a_name_with_a_line_break_or_a_byte_outside_utf8_is_one_spelled_line(
         tmp_path):
     """git's `-z` gives a name as its bytes, and the follow-up spells it as a
-    question spells a path: `\\n` for the line break, `\\xe9` for the byte,
-    on one line of UTF-8. On main each came back in git's C-quoted
+    question spells a path: `\\n` for the line break, `\\udce9` for the byte
+    (#329), on one line of UTF-8. On main each came back in git's C-quoted
     spelling, quotes and octal included. The two files are put in the TREE
     (`update-index -z --index-info`) and never on the disk, which macOS
     refuses for a name that is not UTF-8."""
@@ -221,7 +221,7 @@ def test_a_name_with_a_line_break_or_a_byte_outside_utf8_is_one_spelled_line(
 
     plan = planned(source, tmp_path)
 
-    assert named(plan) == [follow_up("src/caf\\xe9.py", "notes/"),
+    assert named(plan) == [follow_up("src/caf\\udce9.py", "notes/"),
                            follow_up("src/line\\nbreak.py", "notes/")]
 
 

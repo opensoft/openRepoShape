@@ -254,7 +254,7 @@ def test_the_finding_names_the_key_git_dies_on(adopter, tmp_path, gitmodules,
     (with_line(r'update = "bo\ngus"'),
      f"invalid value for `submodule.b.update`: `bo\\ngus`, {NOT_A_STRATEGY}"),
     (with_line("shallow = caf").encode()[:-1] + b"\xe9\n",
-     "bad boolean config value `caf\\xe9` for `submodule.b.shallow`"),
+     "bad boolean config value `caf\\udce9` for `submodule.b.shallow`"),
     (b'[submodule "b\x1bc"]\n\tpath = vendor/b\n\turl = ../b\n'
      b"\tfetchRecurseSubmodules = `x`\n",
      "bad `submodule.b\\x1bc.fetchrecursesubmodules` argument: `\\`x\\``, "
