@@ -45,6 +45,15 @@ recording an identity, so this tool never records one it cannot justify:
     appends a `CONTRACTS_DIR` block to an adopted Makefile — is treated as a
     conflict the moment upstream touches it, because copying the target bytes
     over it would delete that block without saying so.
+  * Nothing is committed that was judged from other bytes (#436). Every
+    verdict — what to copy, what to re-pin, whether there is anything to
+    do — is read from the WORKING TREE, and `--branch` commits HEAD plus
+    only the paths this run writes. So before the first write the pin, the
+    manifest and every pinned copy are compared with HEAD, and a difference
+    is refused by name (`update-branch-uncommitted`): commit those changes
+    or put them back. The commit is never widened to take them in. Without
+    `--branch` the run writes as it always did, and its NEXT line names
+    those copies instead of printing a commit that would leave them out.
   * Nothing is left red: the root's OWN `validate-pins.py` and
     `validate-manifest.py` run after the rewrite, and every byte is rolled
     back if either refuses.
@@ -2717,11 +2726,17 @@ def cmd_apply(args) -> int:
                                    [str(path) for path in (args.add or [])],
                                    target)
         _note_untaken_additions(additions, taking)
-        if _nothing_to_do(rows, pinned, target, taking):
-            if _awaits_its_pull_request(root, args, kind):
-                _refuse_what_head_does_not_commit(root, rows, kind,
-                                                  args.branch, pinned, target)
-                return _finish_landing(root, args, upstream, target, kind)
+        nothing = _nothing_to_do(rows, pinned, target, taking)
+        rerun = nothing and _awaits_its_pull_request(root, args, kind)
+        if args.branch:
+            # BEFORE THE FIRST WRITE, AND BEFORE "NOTHING TO DO" (#436): that
+            # answer is read from the working tree too, and over a re-pin
+            # left uncommitted it made no branch where one was asked for.
+            _refuse_what_head_does_not_commit(root, rows, kind, args.branch,
+                                              pinned, target, rerun)
+        if rerun:
+            return _finish_landing(root, args, upstream, target, kind)
+        if nothing:
             print(f"nothing to do: every copied file matches "
                   f"{upstream.repository} @ {target[:12]}, which the pin "
                   "already names")
@@ -2749,7 +2764,8 @@ def cmd_apply(args) -> int:
         _land(root, args, paths, added, target, upstream, kind, len(copied),
               ledger)
         print()
-        next_line(root, args, paths, target, added, kind)
+        next_line(root, args, paths, target, added, kind,
+                  pinned_paths=[row.path for row in rows])
         return 0
     except (Refusal, CommandFailed) as exc:
         return _rolled_back(exc, ledger)
@@ -2925,26 +2941,36 @@ def _awaits_its_pull_request(root: Path, args, kind: Kind) -> bool:
 
 def _refuse_what_head_does_not_commit(root: Path, rows: list[Row],
                                       kind: Kind, branch: str, pinned: str,
-                                      target: str) -> None:
-    """The re-run `_awaits_its_pull_request` recognised finishes what HEAD
-    commits, so the working tree must hold HEAD's bytes wherever this run
-    read it, or the re-run is refused by name (#333).
+                                      target: str, rerun: bool) -> None:
+    """Every `--branch` run lands what HEAD commits, so the working tree
+    must hold HEAD's bytes wherever this run read it, or the run is refused
+    by name before its first write (#333, #436).
 
-    TWO DECISIONS, ONE SOURCE. "Nothing to write" is judged from the
-    working tree — `read_pin` and `classify` — and the pull request's base
-    and repository are read from the manifest there too; whether a pull
-    request is owed is judged from HEAD, and HEAD is what the re-run pushes
-    and what its pull request carries. Over a tree that IS HEAD's that is
-    one answer. Over an in-place `apply --at C` left uncommitted on a
-    branch whose commit re-pins B it was two: the re-run pushed B under a
-    pull request titled C, and said the pin on the branch named C.
+    TWO SOURCES, ONE ANSWER EXPECTED. Everything this run decides is read
+    from the working tree — `read_pin` and `classify`: what to copy, what to
+    re-pin, whether there is anything to do at all — and the pull request's
+    base and repository are read from the manifest there too. What it lands
+    is HEAD's: the re-run `_awaits_its_pull_request` recognises (`rerun`)
+    pushes HEAD as it stands, and any other `--branch` run commits HEAD plus
+    only the paths it writes (`commit_on_branch`). Over a tree that IS
+    HEAD's that is one answer. Over an in-place `apply` left uncommitted it
+    was two, each case measured:
+
+      * the re-run (#333) pushed B under a pull request titled C;
+      * a first run (#436) committed D's re-pin without C's copies, exit 0
+        with the commit's own `validate-pins.py` red; or re-pinned back to
+        what HEAD held and died on git's "nothing to commit"; or found
+        "nothing to do" in a re-pin HEAD never committed, and made no branch.
 
     So the pin, the manifest and every pinned copy are compared with HEAD
-    BY BYTES (`_not_what_head_commits`). The index is not asked: nothing
-    here commits, and neither decision reads a staged entry. Nor is any
-    other path, a README or an untracked note, which neither decision
-    reads. The refusal comes before `gh` is asked or anything is pushed,
-    with nothing written, so there is nothing to roll back.
+    BY BYTES (`_not_what_head_commits`) and a difference is refused, in the
+    words for the run it is: `update-rerun-uncommitted` for the re-run,
+    `update-branch-uncommitted` for a run that would commit. The commit's
+    pathspec is NOT widened to take the difference in: what a person left
+    uncommitted is theirs to commit or put back. The index is not asked: no
+    decision here reads a staged entry. Nor is any other path, a README or
+    an untracked note, which no decision reads. Nothing is written yet, so
+    there is nothing to roll back.
     """
     pin = "contracts/shape-pin.yaml"
     differ = _not_what_head_commits(
@@ -2954,11 +2980,22 @@ def _refuse_what_head_does_not_commit(root: Path, rows: list[Row],
         return
     head = (_git_answer(root, ["rev-parse", "HEAD"]) or "").strip()
     committed = _committed_pin(root, pin)
+    if rerun:
+        raise _rerun_uncommitted(branch, head, target, differ, pinned,
+                                 committed)
+    raise _branch_uncommitted(branch, head, differ, pinned, committed)
+
+
+def _rerun_uncommitted(branch: str, head: str, target: str,
+                       differ: list[str], pinned: str,
+                       committed: str) -> Refusal:
+    """`update-rerun-uncommitted` (#333): the re-run would push HEAD under a
+    pull request named for the working tree."""
     carried = (f"; there the pin names {pinned[:12]} and HEAD's names "
                f"{committed[:12]}, so the pull request would name one commit "
                "and carry another" if committed and committed != pinned
                else "")
-    raise Refusal(
+    return Refusal(
         "update-rerun-uncommitted",
         f"--pr would finish the landing of {branch} from what HEAD "
         f"({head[:12]}) commits, under a pull request naming {target[:12]}, "
@@ -2973,6 +3010,37 @@ def _refuse_what_head_does_not_commit(root: Path, rows: list[Row],
         "was not asked.")
 
 
+def _branch_uncommitted(branch: str, head: str, differ: list[str],
+                        pinned: str, committed: str) -> Refusal:
+    """`update-branch-uncommitted` (#436): a `--branch` run that would
+    commit HEAD plus its own paths over a working tree it judged instead.
+
+    The remedy is the one #333's gives, for a run that has not committed
+    yet: commit those changes, or put them back. Putting back is the exit
+    for an earlier `apply` left uncommitted, which this command then makes
+    again from HEAD; committing is the exit for changes the re-pin is to
+    carry, and never onto the tracking branch, which `commit_on_branch`
+    refuses for this tool's own commit too.
+    """
+    moved = (f"; there the pin names {pinned[:12]} and HEAD's names "
+             f"{committed[:12]}" if committed and committed != pinned
+             else "")
+    return Refusal(
+        "update-branch-uncommitted",
+        f"--branch {branch} would commit what HEAD "
+        f"({head[:12] or 'no commit'}) commits plus only the paths this run "
+        "writes, but the working tree does not hold what HEAD commits at "
+        + ", ".join(differ) + ". What to copy, what to re-pin and whether "
+        "there is anything to do at all are judged from the working "
+        f"tree{moved}, so the commit would not hold what this run judged.",
+        "Remediation: commit those changes first if this re-pin is to carry "
+        "them — on a branch, since the tracking branch takes no direct "
+        "commit — or put them back to HEAD's bytes if it is not, as for an "
+        "earlier `apply` left uncommitted, which this command then makes "
+        "again from HEAD. Then run the same command again. Nothing was "
+        "written, committed or pushed.")
+
+
 def _not_what_head_commits(root: Path, paths: list[str]) -> list[str]:
     """Those of `paths` whose bytes on disk are not the blob HEAD commits
     at that path, or that HEAD does not commit at all, in the order given
@@ -2983,15 +3051,50 @@ def _not_what_head_commits(root: Path, paths: list[str]) -> list[str]:
     runs, so a CRLF checkout of an LF blob is HEAD's, and no index flag
     hides an edit — `readme_is_committed`'s second question, asked of each
     path.
+
+    TWO ANSWERS THAT ARE NOT DIFFERENCES (#436), now that every `--branch`
+    run asks rather than only #333's re-run, whose rows were all present
+    and none of them links. A path neither the disk nor HEAD holds — a
+    pinned copy deleted and committed — is the same on both sides, and is
+    `update-conflict`'s to name as missing. And where a symlink stands on
+    the path's way (`symlink_on_the_way`, the path itself or a directory
+    above it), what git commits is THE LINK, its target as text, never the
+    bytes it leads to, which `hash-object` on the path would read: so the
+    link's own text is hashed against HEAD's entry for the link. A pinned
+    copy kept as a link HEAD commits is then HEAD's, as it is to git; what
+    `apply` should do with a link is not this question.
     """
     differ = []
     for path in paths:
-        disk = (_git_answer(root, ["hash-object", "--", path]) or "").strip()
-        head = (_git_answer(root, ["rev-parse", "--verify", "--quiet",
-                                   f"HEAD:{path}"]) or "").strip()
+        link = symlink_on_the_way(root, path)
+        if link is not None:
+            name, points = link
+            disk = _blob_of(root, os.fsencode(points))
+            head = _head_blob(root, name)
+        else:
+            head = _head_blob(root, path)
+            if not head and not os.path.lexists(root / path):
+                continue
+            disk = (_git_answer(root, ["hash-object", "--", path])
+                    or "").strip()
         if not disk or disk != head:
             differ.append(path)
     return differ
+
+
+def _head_blob(root: Path, path: str) -> str:
+    """The object HEAD commits at `path`, or "" where it commits none."""
+    return (_git_answer(root, ["rev-parse", "--verify", "--quiet",
+                               f"HEAD:{path}"]) or "").strip()
+
+
+def _blob_of(root: Path, data: bytes) -> str:
+    """The blob id git gives `data`, as BYTES on stdin (no filter runs on
+    stdin without `--path`), or "" when git will not say."""
+    proc = _git_quietly(["git", "hash-object", "--stdin"], root, data)
+    if proc is None or proc.returncode != 0:
+        return ""
+    return proc.stdout.decode("ascii", "replace").strip()
 
 
 def _committed_pin(root: Path, pin: str) -> str:
@@ -3129,8 +3232,29 @@ def open_pull_request(root: Path, args, create: list[str]) -> None:
     print(f"  pull request {url}")
 
 
+def _unwritten_changes(root: Path, paths: list[str],
+                       pinned_paths: list[str]) -> list[str]:
+    """The pinned copies this run did NOT write whose bytes HEAD does not
+    commit (#436): what a branchless run's commit line would leave out.
+
+    THE PIN THIS RUN WROTE RECORDS EVERY ROW FROM THE WORKING TREE, so a
+    pinned copy that differs from HEAD and is not among `paths` — an
+    earlier `apply` left uncommitted, a local edit `--accept-local` took —
+    would be HEAD's bytes in that commit under a digest of the disk's: the
+    red commit `--branch` now refuses to make. Asked only where HEAD names
+    a commit: a root with none has no commit line to get wrong, and prints
+    the one it always printed.
+    """
+    rest = [path for path in pinned_paths if path not in paths]
+    if not rest or _git_answer(root, ["rev-parse", "--verify", "--quiet",
+                                      "HEAD"]) is None:
+        return []
+    return _not_what_head_commits(root, rest)
+
+
 def next_line(root: Path, args, paths: list[str], target: str,
-              added: list[str] = (), kind: Kind = PROJECT_KIND) -> None:
+              added: list[str] = (), kind: Kind = PROJECT_KIND, *,
+              pinned_paths: list[str] = ()) -> None:
     if args.branch and args.pr:
         print("NEXT  the pull request is open; ask a human to review and merge it")
         return
@@ -3156,6 +3280,21 @@ def next_line(root: Path, args, paths: list[str], target: str,
         else:
             print(f"NEXT  git -C {root} push -u origin {args.branch} && "
                   f"{create}")
+        return
+    # NO COMMIT LINE OVER CHANGES THIS RUN DID NOT WRITE (#436). The line
+    # below commits HEAD plus only this run's paths, which is the commit
+    # `update-branch-uncommitted` refuses to make under `--branch`; here the
+    # copies are already written, so the answer is a NEXT line that names
+    # what that commit would leave out, rather than one that makes it red.
+    unwritten = _unwritten_changes(root, paths, pinned_paths)
+    if unwritten:
+        print("NEXT  no commit line: the working tree does not hold what "
+              f"HEAD commits at {', '.join(unwritten)}, paths this run did "
+              "not write and whose bytes the pin it wrote records, so a "
+              f"commit of {', '.join(paths)} alone would record digests for "
+              "bytes it does not carry. Commit those changes with them if "
+              "this re-pin is to carry them, or put both back to HEAD's "
+              "bytes and run apply again")
         return
     # A `git add` for the ADDITIONS only. A hint that a human pastes has to
     # work when they paste it, and `git commit -- <path>` refuses a path git
