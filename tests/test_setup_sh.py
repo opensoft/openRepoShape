@@ -212,7 +212,7 @@ def test_an_internal_visibility_is_accepted(tmp_path):
     assert result.returncode == 0, result.stderr + result.stdout
     assert "visibility   internal" in result.stdout
     manifest = (tmp_path / "work" / "Sample" / "project.yaml").read_text()
-    assert "visibility: internal" in manifest
+    assert 'visibility: "internal"' in manifest
 
 
 def test_a_name_outside_the_naming_policy_stops_before_the_scaffold(tmp_path):

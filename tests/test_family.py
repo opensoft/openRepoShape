@@ -1927,7 +1927,8 @@ def test_siblings_skips_a_clone_whose_project_id_is_not_the_rows(estate):
     sibling = estate["folder"] / "IRSS"
     manifest_path = sibling / "project.yaml"
     manifest_path.write_text(
-        manifest_path.read_text().replace("id: irss", "id: something-else", 1))
+        manifest_path.read_text().replace('id: "irss"', 'id: "something-else"',
+                                          1))
     result = siblings(estate["holder"])
     assert result.returncode == 1, result.stdout + result.stderr
     assert "WRONG PROJECT" in result.stdout
