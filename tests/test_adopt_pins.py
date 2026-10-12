@@ -670,6 +670,44 @@ def test_a_clone_at_a_path_check_would_refuse_is_refused_by_plan(
     assert not out.exists()
 
 
+#: The leaf of a `--pin-source` no `--pin` records, spelled so that the plan
+#: and the report can be searched for it: neither holds the word otherwise.
+UNREAD = "unreadclone"
+
+
+@pytest.mark.parametrize("name", [
+    pytest.param(f"{UNREAD}\x1bx", id="esc", marks=POSIX_NAMES),
+    pytest.param(f"{UNREAD}‍x", id="zwj"),
+])
+def test_a_pin_source_no_pin_records_is_not_asked_about(source_repo,
+                                                        tmp_path, gh_env,
+                                                        name):
+    """`plan` asks the question above only of a path a `--pin` will record
+    (#273's review, n1). With no `--pin`, `--pin-source` names nothing `plan`
+    records, reads or prints: the plan is written with `pins: []`, and
+    neither it nor the report names the path, in any spelling. Asked
+    anyway, `plan` refused a plan that writes no pin file, in a sentence
+    naming none ("`execute` writes into , and ..."). Whether an unused
+    `--pin-source` is refused or noted instead is #339's third decision,
+    left open by this change; this test holds its answer today, silence, so
+    that whoever decides it changes this test on purpose. The path need not
+    exist, because nothing reads it."""
+    typed = str(tmp_path / name)
+    out = tmp_path / "plan.yaml"
+    result = plan_with(source_repo, out, extra=("--pin-source", typed),
+                       env=gh_env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    text = out.read_bytes().decode(UTF8)
+    assert "\npins: []\n" in text, text
+    assert load_yaml(out)["pins"] == []
+    said = result.stdout + result.stderr
+    assert UNREAD not in text + said, said
+    assert "\x1b" not in said and "‍" not in said, said
+    assert not [line for line in result.stdout.splitlines()
+                if line.startswith("pin ")], result.stdout
+    assert gh_calls(gh_env) == ""
+
+
 def test_a_pin_source_printed_in_a_report_is_spelled(source_repo, tmp_path,
                                                      glass, gh_env):
     """A path that IS one printable line for `check` and still not
@@ -699,6 +737,36 @@ def test_a_pin_source_printed_in_a_report_is_spelled(source_repo, tmp_path,
     assert f"tree {tree_digest(path, commit)[:12]}… (`local-clone " \
         "(open\\xa0Glass)`)\n" in checked.stdout, checked.stdout
     assert " " not in checked.stdout
+    assert gh_calls(gh_env) == ""
+
+
+def test_a_printable_pin_source_is_printed_as_it_is(source_repo, tmp_path,
+                                                    glass, gh_env):
+    """The other half of `_shown` (#273's review, n2): a printable
+    `--pin-source` is printed byte for byte, with no backtick and no escape,
+    in `plan`'s `pin` line and in `check`'s `write` line for the plan `plan`
+    wrote, as the report prints every other printable path, a Windows
+    drive's backslashes among them. Spelled whatever it holds, the line
+    read `(`local-clone (<path>)`)`."""
+    path, commit, _ = glass
+    digest = tree_digest(path, commit)
+    out = tmp_path / "plan.yaml"
+    result = plan_with(source_repo, out, f"openGlass@{commit}",
+                       extra=("--pin-source", str(path)), env=gh_env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    pin = (f"opensoft/openGlass @ {commit[:12]} tree {digest[:12]}… -> "
+           f"{PIN_FILE} (local-clone ({path}))")
+    assert [line for line in result.stdout.splitlines()
+            if line.startswith("pin ")] == [f"pin        {pin}"], \
+        result.stdout
+    for answered, leg in ANSWERS:
+        resolve(out, answered, leg)
+    checked = run_script(ADOPT, "check", "--plan", str(out), env=gh_env)
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    assert [line for line in checked.stdout.splitlines()
+            if line.startswith("  write ")] == [
+        f"  write {PIN_FILE}: opensoft/openGlass @ {commit[:12]} tree "
+        f"{digest[:12]}… (local-clone ({path}))"], checked.stdout
     assert gh_calls(gh_env) == ""
 
 
