@@ -82,15 +82,45 @@ def without_org(base: Path, source: Path) -> subprocess.CompletedProcess:
                    str(base / WORK))
 
 
+def command_scope(key: str, value: bytes) -> dict:
+    """`key` set to `value` in git's command scope, as an environment
+    (`GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>`, `GIT_CONFIG_VALUE_<n>`, git
+    2.31), for every git the run starts. That scope outranks every config
+    file, this checkout's own `.git/config` included, which `~/.gitconfig`
+    and `GIT_CONFIG_GLOBAL` do not.
+
+    APPENDED to what the environment already holds, never in place of it:
+    the Windows job sets `GIT_CONFIG_COUNT=2` (`core.autocrlf` and
+    `core.longpaths`, `.github/workflows/tests.yml`), and a count of 1 here
+    would drop both. The last entry of a key is the one git reads.
+
+    The value goes in as the bytes it is, through `os.fsdecode`, which is how
+    `sys.argv` and `os.environ` carry a byte that is not UTF-8 on POSIX. A
+    Windows environment is text, so the caller does not use this there."""
+    held = int(os.environ.get("GIT_CONFIG_COUNT") or 0)
+    return {"GIT_CONFIG_COUNT": str(held + 1),
+            f"GIT_CONFIG_KEY_{held}": key,
+            f"GIT_CONFIG_VALUE_{held}": os.fsdecode(value)}
+
+
 def global_user_name(base: Path, name: bytes) -> dict:
-    """The environment of a person whose global `user.name` is `name`,
-    written as bytes: `GIT_CONFIG_GLOBAL` (git 2.32) stands in for
-    `~/.gitconfig` for every git the run starts. Skipped where `git config
-    user.name`, asked where `_elector` asks it, does not answer `name`: a
-    `user.name` in this checkout's own config wins over the global one."""
+    """The environment of a person whose `user.name` is `name`, written as
+    bytes, for `git config user.name` asked where `_elector` asks it.
+
+    Two routes, because two things outrank a global config. `GIT_CONFIG_GLOBAL`
+    (git 2.32) stands in for `~/.gitconfig` for every git the run starts, and
+    is the only route where an environment variable cannot carry the byte
+    (Windows). A `user.name` in this checkout's own config wins over that
+    file, though, and the shared checkout has one wherever somebody has set
+    their identity there: so on POSIX the name is given in command scope too
+    (`command_scope`), which wins over both. Without it the four tests that
+    use this skipped in such a checkout, and the `_elector` fix went untested.
+    Skipped where `git config user.name` still does not answer `name`."""
     config = base / "gitconfig"
     config.write_bytes(b"[user]\n\tname = " + name + b"\n")
     extra = {"GIT_CONFIG_GLOBAL": str(config)}
+    if os.name == "posix":
+        extra.update(command_scope("user.name", name))
     read = subprocess.run(["git", "config", "user.name"], cwd=str(REPO),
                           capture_output=True, env={**os.environ, **extra},
                           check=False)
@@ -113,6 +143,61 @@ def with_origin(source: Path, url: bytes) -> Path:
         pytest.skip(f"`git remote get-url origin` here is {read.stdout!r}, "
                     f"not {url!r}")
     return source
+
+
+# --- the `user.name` these tests give ----------------------------------------
+
+def asked(key: str, env: dict, cwd: Path = REPO) -> bytes:
+    """`git config <key>` in `cwd` under `env`: what git answers, as bytes."""
+    read = subprocess.run(["git", "config", key], cwd=str(cwd),
+                          capture_output=True, env=env, check=False)
+    return read.stdout.rstrip(b"\r\n")
+
+
+posix_only = pytest.mark.skipif(
+    os.name != "posix", reason="a Windows environment is text: there the "
+    "name is given in `GIT_CONFIG_GLOBAL`'s file only")
+
+
+@posix_only
+def test_the_user_name_given_outranks_a_checkouts_own(tmp_path):
+    """The four tests below ask `git config user.name` in this checkout, and
+    skipped, with the `_elector` fix untested, wherever its own `.git/config`
+    set one: that outranks `GIT_CONFIG_GLOBAL`. Here is such a checkout,
+    made in `tmp_path`, so the answer does not depend on whose machine this
+    is: the environment `global_user_name` gives is read as `name`, not as the
+    checkout's `Local Name`."""
+    checkout = tmp_path / "local"
+    checkout.mkdir()
+    git("init", "-q", cwd=checkout)
+    git("config", "user.name", "Local Name", cwd=checkout)
+    local = git("config", "--local", "user.name", cwd=checkout)
+    assert local.stdout.strip() == "Local Name", local.stderr
+    extra = global_user_name(tmp_path, LATIN1_NAME)
+    assert asked("user.name", {**os.environ, **extra}, checkout) \
+        == LATIN1_NAME
+
+
+@posix_only
+def test_the_user_name_given_is_appended_to_the_config_the_environment_holds(
+        tmp_path, monkeypatch):
+    """The Windows job sets `GIT_CONFIG_COUNT=2`, `core.autocrlf` and
+    `core.longpaths`, for the whole run. A count of 1 for the name would
+    drop both, and every test after it would run with git's own line-end and
+    long-path defaults. The two slots here are the job's, under keys no
+    config of a machine this runs on sets."""
+    for variable, value in {"GIT_CONFIG_COUNT": "2",
+                            "GIT_CONFIG_KEY_0": "test.heldone",
+                            "GIT_CONFIG_VALUE_0": "one",
+                            "GIT_CONFIG_KEY_1": "test.heldtwo",
+                            "GIT_CONFIG_VALUE_1": "two"}.items():
+        monkeypatch.setenv(variable, value)
+    extra = global_user_name(tmp_path, LATIN1_NAME)
+    assert extra["GIT_CONFIG_COUNT"] == "3", extra
+    env = {**os.environ, **extra}
+    assert asked("test.heldone", env) == b"one"
+    assert asked("test.heldtwo", env) == b"two"
+    assert asked("user.name", env) == LATIN1_NAME
 
 
 # --- `git config user.name` ---------------------------------------------------
