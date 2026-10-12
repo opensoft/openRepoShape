@@ -28,6 +28,17 @@ its url and printing the by-key removal of the one that is not the member's
 own; typed as printed, that removal lets the same `remove` take the member
 out and leave no section for its path.
 
+THE ROLLBACK NEVER CLONES (review 365-5d56e75, MUST-1). `remove`'s checkout
+comes back through `git submodule update`, which CLONES where git keeps no
+store for the submodule's NAME. The rollback asked about the store the
+checkout's own `.git` named instead, so a section renamed by hand had it
+clone the member from its url. It now asks about the store git will use,
+and runs `update` only where that store holds the commit; under a backstop
+(`-c protocol.allow=never`, `--no-fetch`) that a test here makes the check
+wrong to prove. A member whose store is gone is removed again, as it was
+before the rollback (SHOULD-1), and the registration a rollback writes back
+is called the same keys, not the same bytes (NIT-1).
+
 THE SAME FAMILY, RULES AND OFFLINE ENVIRONMENT as `test_family.py` and
 `test_family_dry_run.py`: members are scaffolded into local bare
 repositories, nothing is created on GitHub, a `gh` on PATH logs and exits 97,
@@ -49,7 +60,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import FILE_PROTOCOL, git, run_script
+from conftest import FILE_PROTOCOL, git, rmtree, run_script
 #: The family fixture, its names, the offline environment and the holder's
 #: byte-for-byte state, imported from the modules that own them rather than
 #: rebuilt: a holder made, or compared, any other way would test a
@@ -167,15 +178,24 @@ def bump_undone(*restored: str) -> str:
             "before this command.")
 
 
-def remove_undone(at: str, *, legs: str = "") -> str:
+#: How a fully unwound `remove` ends: its registration comes back as `git
+#: config --add` writes it, the section last in the file, so the sentence
+#: says the same keys and never calls the holder EXACTLY as it was (review
+#: 365-5d56e75, NIT-1).
+SAME_KEYS = (" Its git config holds the same keys and values as before, the "
+             "section put back written last.")
+
+
+def remove_undone(at: str, *, legs: str = "",
+                  held: str = "as it was before this command") -> str:
     """The sentence a fully unwound `remove` ends with, every step named."""
     return ("Nothing was removed: the unmount has been undone — "
             f"the gitlink at {PATH} put back in the index as it was, "
             ".gitmodules restored byte for byte, family.yaml restored byte "
             f"for byte, `submodule.{PATH}` restored in the holder's git "
             f"config, {PATH} checked out again at {at[:12]} on main from the "
-            "object store `git rm` keeps" + legs + " — and the holder is "
-            "exactly as it was before this command.")
+            "object store `git rm` keeps" + legs + f" — and the holder is "
+            f"{held}." + SAME_KEYS)
 
 
 def typed_by_hand(root: Path, sentence: str) -> list[str]:
@@ -343,12 +363,11 @@ def test_what_deinit_discarded_is_named_not_called_put_back(
     result = remove(holder, env)
 
     assert result.returncode == 2, result.stdout + result.stderr
-    assert result.stderr.splitlines()[-1] == remove_undone(at).replace(
-        " — and the holder is exactly as it was before this command.",
-        " — and the holder is as it was before this command but for what "
-        f"`git submodule deinit -f` discarded in {PATH}, which no object "
-        "store holds: the uncommitted changes and the untracked and ignored "
-        "files `git status --ignored` listed there.")
+    assert result.stderr.splitlines()[-1] == remove_undone(
+        at, held="as it was before this command but for what `git submodule "
+        f"deinit -f` discarded in {PATH}, which no object store holds: the "
+        "uncommitted changes and the untracked and ignored files `git status "
+        "--ignored` listed there")
     assert not (holder / PATH / "SCRATCH.md").exists()
     assert_same(before, snapshot(holder, env),
                 ("index", ".gitmodules", "family.yaml", "registration",
@@ -444,6 +463,31 @@ def test_a_manifest_this_tool_will_not_rewrite_is_refused_before_any_write(
     assert_same(before, after, EVERYTHING)
 
 
+def test_a_gitlink_the_index_lacks_and_that_manifest_are_refused_alike(
+        holder, offline, tmp_path):
+    """REVIEW 365-5d56e75, NIT-2. With the gitlink gone from the index AND
+    a `members:` line this tool will not rewrite, the real `remove` refused
+    `family-members-unrecognised`, which it asks first, while its dry run
+    asked `ls-files` first and printed git's loud `did not match`. The dry
+    run asks in the real run's order now: the same refusal, in the same
+    words, and nothing written."""
+    env = isolated(offline, tmp_path)
+    comment_on_members(holder, env)
+    raw(holder, env, "update-index", "--force-remove", "--", PATH)
+    before = snapshot(holder, env)
+
+    real = remove(holder, env)
+    after = snapshot(holder, env)
+    dry = remove(holder, env, "--dry-run")
+
+    assert real.returncode == dry.returncode == 2, real.stdout + real.stderr
+    assert real.stdout == dry.stdout == ""
+    assert real.stderr == dry.stderr
+    assert refusal(real.stderr)[0].startswith(
+        "REFUSED family-members-unrecognised: ")
+    assert_same(before, after, EVERYTHING)
+
+
 def test_a_to_with_no_project_yaml_is_refused_before_the_checkout(
         holder, offline, tmp_path):
     """THE COORDINATOR'S (b). `bump --to` a commit whose tree has no
@@ -475,22 +519,47 @@ GHOST = (f'[submodule "ghost"]\n\tpath = {PATH}\n'
          "\turl = /nowhere/ghost.git\n").encode("utf-8")
 
 
-def doubled(root: Path, section: bytes, first: bool) -> None:
-    """HEAD's `.gitmodules` with `section` before (`first`) or after the
-    member's own, built in git's objects from BYTES, committed, and the
-    same bytes written to the work tree."""
-    data = subprocess.run(["git", "show", "HEAD:.gitmodules"],
+def head_gitmodules(root: Path) -> bytes:
+    """HEAD's `.gitmodules`, as bytes."""
+    return subprocess.run(["git", "show", "HEAD:.gitmodules"],
                           cwd=str(root), capture_output=True,
                           check=True).stdout
-    data = section + data if first else data + section
+
+
+def commit_gitmodules(root: Path, data: bytes, message: str) -> None:
+    """`data` as `.gitmodules`, built in git's objects from BYTES,
+    committed, and the same bytes written to the work tree: no test here
+    depends on how a checkout writes a file."""
     blob = subprocess.run(["git", "hash-object", "-w", "--stdin"],
                           cwd=str(root), input=data, capture_output=True,
                           check=True).stdout.decode("ascii").strip()
     git("update-index", "--cacheinfo", f"100644,{blob},.gitmodules",
         cwd=root)
     git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm",
-        "A second section for the member's path", cwd=root)
+        message, cwd=root)
     (root / ".gitmodules").write_bytes(data)
+
+
+def doubled(root: Path, section: bytes, first: bool) -> None:
+    """HEAD's `.gitmodules` with `section` before (`first`) or after the
+    member's own, committed (`commit_gitmodules`)."""
+    data = head_gitmodules(root)
+    commit_gitmodules(root, section + data if first else data + section,
+                      "A second section for the member's path")
+
+
+def renamed_section(root: Path, name: str) -> bytes:
+    """HEAD's `.gitmodules` with the member's section renamed by hand to
+    `name`, its path and url kept, committed (`commit_gitmodules`). git now
+    keeps the member's store at `modules/<name>`, while its checkout's
+    `.git` still names `modules/members/<MEMBER>`. Returns the url."""
+    data = head_gitmodules(root)
+    renamed = data.replace(f'[submodule "{PATH}"]'.encode("utf-8"),
+                           f'[submodule "{name}"]'.encode("utf-8"))
+    assert renamed != data, "fixture drift"
+    commit_gitmodules(root, renamed, "The member's section renamed by hand")
+    return git("config", "-f", ".gitmodules", f"submodule.{name}.url",
+               cwd=root).stdout.strip()
 
 
 @pytest.mark.parametrize("first", [False, True],
@@ -558,21 +627,8 @@ def test_two_sections_neither_named_after_the_path_are_both_printed(
     which one is the member's is not guessed: the removal is printed for
     every one, and the remediation says to leave out the member's own."""
     env = isolated(offline, tmp_path)
-    data = subprocess.run(["git", "show", "HEAD:.gitmodules"],
-                          cwd=str(holder), capture_output=True,
-                          check=True).stdout
-    renamed = data.replace(f'[submodule "{PATH}"]'.encode("utf-8"),
-                           b'[submodule "old"]')
-    assert renamed != data, "fixture drift"
-    blob = subprocess.run(["git", "hash-object", "-w", "--stdin"],
-                          cwd=str(holder), input=renamed + GHOST,
-                          capture_output=True,
-                          check=True).stdout.decode("ascii").strip()
-    git("update-index", "--cacheinfo", f"100644,{blob},.gitmodules",
-        cwd=holder)
-    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm",
-        "Two sections, neither the member's name", cwd=holder)
-    (holder / ".gitmodules").write_bytes(renamed + GHOST)
+    renamed_section(holder, "old")
+    doubled(holder, GHOST, first=False)
     before = snapshot(holder, env)
 
     result = remove(holder, env)
@@ -589,6 +645,345 @@ def test_two_sections_neither_named_after_the_path_are_both_printed(
             "submodule.ghost.path` and `git config -f .gitmodules "
             "--unset-all submodule.ghost.url`, then `git add .gitmodules`"
             ) in remediation, remediation
+
+
+# --- the restore never clones (review 365-5d56e75, MUST-1) ---------------
+
+#: The name a member's section is renamed to by hand, below: git then keeps
+#: the member's store at `modules/renamed`, where none is.
+RENAMED = "renamed"
+
+
+def holds(store: Path, commit: str, work: Path) -> bool:
+    """Whether the object store `store` holds `commit`. `--work-tree`
+    because the store names a checkout of its own that may be gone."""
+    return subprocess.run(
+        ["git", "--git-dir", str(store), "--work-tree", str(work), "cat-file",
+         "-e", f"{commit}^{{commit}}"], capture_output=True).returncode == 0
+
+
+def foreign_store(store: Path, url: str, tmp_path: Path) -> None:
+    """A store at `store` that is NOT the member's: one commit of its own,
+    so git can read its HEAD, and `origin` the member's url, which has the
+    pinned commit, so a fetch into it would get that commit."""
+    work = tmp_path / "foreign"
+    git("init", "-q", "--separate-git-dir", str(store), str(work),
+        cwd=tmp_path)
+    git("commit", "-q", "--allow-empty", "-m", "Not the member's", cwd=work)
+    git("remote", "add", "origin", url, cwd=work)
+
+
+def configured(env: dict, key: str, value: str) -> dict:
+    """`env` with one more entry in git's `GIT_CONFIG_COUNT` protocol."""
+    count = int(env.get("GIT_CONFIG_COUNT", "0"))
+    return {**env, "GIT_CONFIG_COUNT": str(count + 1),
+            f"GIT_CONFIG_KEY_{count}": key,
+            f"GIT_CONFIG_VALUE_{count}": value}
+
+
+@pytest.mark.parametrize("store", ["absent", "without the commit"])
+def test_a_store_git_would_not_restore_from_is_never_used(
+        family, holder, offline, tmp_path, store):
+    """THE REVIEW'S PROBE. The member's section renamed by hand: git then
+    looks for its store at `modules/renamed`, while the checkout's own
+    `.git` names `modules/members/<MEMBER>`, which the rollback used to
+    check. With no store under the new name, `git submodule update` cloned
+    the member from its url; with one that lacks the commit, it would fetch
+    into it. Neither is run: everything else is put back, the directory is
+    made again, empty, and the sentence names the store git would use, why
+    it is not used, and the store the checkout had, still there. Nothing
+    was cloned or fetched, and the holder's git config gained no
+    `submodule.renamed.*` key."""
+    env = isolated(offline, tmp_path)
+    url = renamed_section(holder, RENAMED)
+    other = holder / ".git" / "modules" / RENAMED
+    if store != "absent":
+        foreign_store(other, url, tmp_path)
+    refusing_hook(holder, tmp_path)
+    at, pin = on_main(holder, env), pinned(holder, env)
+    own = Path(git("rev-parse", "--absolute-git-dir", cwd=holder / PATH
+                   ).stdout.strip())
+    shown = git("rev-parse", "--git-path", f"modules/{RENAMED}",
+                cwd=holder).stdout.strip()
+    before = snapshot(holder, env)
+
+    result = remove(holder, env)
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    why = ("which is not there, and clone it there" if store == "absent" else
+           f"which does not hold {pin[:12]}, and fetch it")
+    assert result.stderr.splitlines()[-1] == (
+        f"The unmount was undone only in part (the gitlink at {PATH} put back "
+        "in the index as it was, .gitmodules restored byte for byte, "
+        f"family.yaml restored byte for byte); NOT {PATH} checked out again "
+        f"at {at[:12]} on main from the object store `git rm` keeps: git "
+        f"would check it out of {shown}, {why}, so `git submodule update` "
+        f"was not run, and {PATH} was made again, empty; the object store its "
+        f"checkout had, {own.as_posix()}, is still there. The checkout of "
+        f"{PATH} comes back only from its remote, which this command never "
+        "reaches. `git status` shows whether anything else is left, before "
+        "running `remove` again.")
+    assert_same(before, snapshot(holder, env),
+                ("index", ".gitmodules", "family.yaml", "registration",
+                 ".git/config", "HEAD"))
+    assert list((holder / PATH).iterdir()) == []
+    assert not holds(other, pin, holder)
+    assert holds(own, pin, holder), "the member's own store is untouched"
+    offline.assert_left_nothing()
+
+
+@pytest.mark.parametrize("store", ["absent", "without the commit"])
+def test_a_wrong_store_check_still_reaches_no_remote(
+        family, holder, offline, tmp_path, monkeypatch, capsys, store):
+    """THE BACKSTOP, PROVED WITHOUT THE NETWORK. The store check is made
+    WRONG here (`_unrestorable` answers that git can restore), so `git
+    submodule update` runs against the renamed section's store, and the url
+    is a LOCAL bare repository that has the commit: a clone or a fetch that
+    happened would succeed, and show. No `GIT_ALLOW_PROTOCOL`, which would
+    override both.
+
+    - `absent`: `update` would CLONE. The environment allows every protocol
+      by default (`protocol.allow=always`, as git allows https and ssh), so
+      only the restore's `-c protocol.allow=never` refuses it.
+    - `without the commit`: `update` would FETCH into the store. The
+      environment allows the file protocol BY NAME (`protocol.file.allow`),
+      which `protocol.allow=never` does not override, so only `--no-fetch`
+      stops it.
+
+    The step is named as not done, with git's reason; the
+    `submodule.renamed.*` keys `update --init` wrote are named, with the
+    commands that take them out; and the commit is in no store but the
+    member's own."""
+    env = isolated(offline, tmp_path)
+    url = renamed_section(holder, RENAMED)
+    other = holder / ".git" / "modules" / RENAMED
+    if store == "absent":
+        env = configured(env, "protocol.allow", "always")
+    else:
+        foreign_store(other, url, tmp_path)
+        env = configured(env, "protocol.file.allow", "always")
+    refusing_hook(holder, tmp_path)
+    at, pin = on_main(holder, env), pinned(holder, env)
+    module = family_module()
+    monkeypatch.setattr(module, "_unrestorable", lambda *args: None)
+    monkeypatch.delenv("GIT_ALLOW_PROTOCOL", raising=False)
+
+    code = in_process(module, monkeypatch, env, [
+        "remove", "--family-root", str(holder), "--member", MEMBER])
+    out, err = capsys.readouterr()
+
+    assert code == 2, out + err
+    said = err.splitlines()[-1]
+    assert (f"; NOT {PATH} checked out again at {at[:12]} on main from the "
+            "object store `git rm` keeps: `git -c protocol.allow=never "
+            "--literal-pathspecs submodule update --init --no-fetch -q -- "
+            f"{PATH}`: ") in said, said
+    if store == "absent":
+        assert "transport 'file' not allowed" in said, said
+    left = re.search(r"; NOT the holder's git config as it was: it holds "
+                     r"`([^`]+)` and `([^`]+)`, which it did not\.", said)
+    assert left and sorted(left.groups()) == [
+        f"submodule.{RENAMED}.active", f"submodule.{RENAMED}.url"], said
+    for key in left.groups():
+        assert f"`git config --local --unset-all {key}`" in said, said
+    assert not holds(other, pin, holder), "nothing was cloned or fetched"
+    offline.assert_left_nothing()
+
+
+def test_a_checkout_whose_git_dir_deinit_absorbed_is_put_back(
+        family, holder, offline, tmp_path):
+    """THE RECORDED STORE WAS WRONG THE OTHER WAY TOO. A member checked out
+    with a `.git` DIRECTORY of its own (cloned into the mount by hand) and
+    no store in the holder's git directory: `deinit` moves that `.git` into
+    `.git/modules/<name>` before it empties the checkout, and the rollback
+    called the store gone, because the one it had recorded was the
+    directory `deinit` moved. git reuses the store it moved, and so does
+    the rollback: nothing is cloned, the checkout is back on its branch, and
+    the sentence says where git keeps its store now, since the member's
+    `.git` is a file naming it and no longer the directory it was."""
+    env = isolated(offline, tmp_path)
+    mount = holder / PATH
+    url = git("config", "-f", ".gitmodules", f"submodule.{PATH}.url",
+              cwd=holder).stdout.strip()
+    rmtree(mount)
+    rmtree(holder / ".git" / "modules" / "members" / MEMBER)
+    git(*FILE_PROTOCOL, "clone", "-q", url, str(mount), cwd=tmp_path)
+    assert (mount / ".git").is_dir(), "premise: an embedded .git directory"
+    embedded = Path(git("rev-parse", "--absolute-git-dir", cwd=mount
+                        ).stdout.strip())
+    refusing_hook(holder, tmp_path)
+    at = on_main(holder, env)
+    assert at == pinned(holder, env), "premise: the clone stands at the pin"
+    before = snapshot(holder, env)
+
+    result = remove(holder, env)
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stderr.splitlines()[-1] == remove_undone(at) + (
+        f" {PATH} now has its object store at .git/modules/{PATH}, where git "
+        f"keeps it, and no longer at {embedded.as_posix()}.")
+    after = snapshot(holder, env)
+    assert_same(before, after, ("index", ".gitmodules", "family.yaml",
+                                "registration", "member HEAD",
+                                "member branch", "status", "HEAD"))
+    assert (mount / ".git").is_file()
+
+    def but_its_git(tree: dict) -> dict:
+        return {name: data for name, data in tree.items()
+                if not name.startswith(f"{PATH}/.git")}
+
+    assert but_its_git(after["work tree"]) == but_its_git(before["work tree"])
+
+
+def test_a_leg_no_store_holds_is_left_out_not_cloned(
+        family, holder, offline, tmp_path, monkeypatch, capsys):
+    """THE SAME RULE FOR THE MEMBER'S LEGS, which `git submodule update`
+    brings back by name inside the member. A leg whose store is gone by the
+    time the rollback runs (taken away here as the manifest's rewrite fails,
+    after the unmount) would be cloned, so it is not: the member and its
+    other leg come back, and the sentence names the leg left out and says
+    its checkout comes back only from its remote."""
+    env = isolated(offline, tmp_path)
+    mount = holder / PATH
+    git(*FILE_PROTOCOL, "submodule", "update", "-q", "--init", cwd=mount)
+    assert git("config", "-f", ".gitmodules", "submodule.spec.path",
+               cwd=mount).stdout.strip() == "spec", "fixture drift"
+    leg_store = Path(git("rev-parse", "--absolute-git-dir",
+                         cwd=mount / "spec").stdout.strip())
+    shown = git("rev-parse", "--git-path", "modules/spec",
+                cwd=mount).stdout.strip()
+    module = family_module()
+    at = on_main(holder, env)
+
+    def store_gone_then_full(path, text):
+        rmtree(leg_store)
+        raise OSError(28, "No space left on device", str(path))
+
+    monkeypatch.setattr(module, "write_lf", store_gone_then_full)
+    before = snapshot(holder, env)
+    code = in_process(module, monkeypatch, env, [
+        "remove", "--family-root", str(holder), "--member", MEMBER])
+    out, err = capsys.readouterr()
+
+    assert code == 2, out + err
+    said, next_line = refusal(err)
+    assert said == (
+        "REFUSED family-manifest-unwritable: family.yaml could not be "
+        f"rewritten without {MEMBER}'s row: No space left on device. The "
+        f"unmount was undone only in part (the gitlink at {PATH} put back in "
+        "the index as it was, .gitmodules restored byte for byte, "
+        f"`submodule.{PATH}` restored in the holder's git config); NOT {PATH} "
+        f"checked out again at {at[:12]} on main from the object store `git "
+        f"rm` keeps, and code and spec in it: {PATH} is checked out again, "
+        f"but not spec in it: git would check it out of {shown}, which is "
+        "not there, and clone it there, so `git submodule update` was not "
+        f"run for it. The checkout of {PATH}/spec comes back only from its "
+        "remote, which this command never reaches. `git status` shows "
+        "whether anything else is left, before running `remove` again.")
+    assert next_line == ("Remediation: make family.yaml writable, and check "
+                         "the disk has room, then run the same command "
+                         "again.")
+    assert_same(before, snapshot(holder, env),
+                ("index", ".gitmodules", "family.yaml", "registration",
+                 "member HEAD", "member branch", "HEAD"))
+    assert (mount / "code" / ".git").exists()
+    assert not (mount / "spec" / ".git").exists()
+    assert not leg_store.exists(), "nothing was cloned"
+
+
+# --- a member whose store is gone (review 365-5d56e75, SHOULD-1) ----------
+
+def facts(root: Path, env: dict) -> dict:
+    """What can be read of a holder whose member's store is gone, where
+    `git status` itself fails: HEAD, the index, the two files and the
+    holder's `submodule.*` keys."""
+    return {
+        "HEAD": raw(root, env, "rev-parse", "HEAD").stdout,
+        "index": raw(root, env, "ls-files", "-s", "-z").stdout,
+        ".gitmodules": (root / ".gitmodules").read_bytes(),
+        "family.yaml": (root / "family.yaml").read_bytes(),
+        "registration": sorted(
+            line for line in raw(root, env, "config", "--local", "--list"
+                                 ).stdout.decode("utf-8").splitlines()
+            if line.startswith("submodule.")),
+    }
+
+
+def store_taken_away(root: Path) -> Path:
+    """The member's object store deleted, its checkout and gitfile kept."""
+    store = root / ".git" / "modules" / "members" / MEMBER
+    rmtree(store)
+    assert (root / PATH / ".git").is_file()
+    return store
+
+
+def test_a_member_whose_store_is_gone_is_removed_as_its_dry_run_says(
+        holder, offline, tmp_path):
+    """MAIN REMOVED SUCH A MEMBER; THE ROLLBACK'S SET-UP REFUSED IT. With
+    the store gone, `git status` in the holder fails, and the rollback read
+    the member with no guard before the first write, so `remove` was
+    refused `git-failed` with a LEG's remediation while its dry run exited
+    0. The read is guarded: the dry run previews exactly what it previews
+    with the store there, and the real run removes the member in one
+    commit, exit 0."""
+    env = isolated(offline, tmp_path)
+    with_store = remove(holder, env, "--dry-run")
+    store_taken_away(holder)
+
+    dry = remove(holder, env, "--dry-run")
+    real = remove(holder, env)
+
+    assert dry.returncode == with_store.returncode == 0, dry.stderr
+    assert dry.stdout == with_store.stdout
+    assert dry.stderr == with_store.stderr == ""
+    assert real.returncode == 0, real.stdout + real.stderr
+    assert re.fullmatch(rf"  removed {MEMBER} \([^)]*\) from {PATH}",
+                        real.stdout.splitlines()[0]), real.stdout
+    assert raw(holder, env, "rev-parse", "-q", "--verify", f"HEAD:{PATH}",
+               check=False).returncode != 0
+    assert PATH not in gitmodules_paths(holder)
+    assert registered_keys(holder, env, PATH) == []
+    assert [r["project"] for r in manifest(holder)["members"]] == [OTHER]
+    assert raw(holder, env, "status", "--porcelain=v1", "-z").stdout == b""
+    assert validate(holder).returncode == 0
+
+
+def test_a_member_whose_store_is_gone_is_put_back_but_its_checkout(
+        holder, offline, tmp_path):
+    """The same member under a `pre-commit` hook that refuses: the index,
+    `.gitmodules`, `family.yaml`, HEAD and the registration are put back.
+    Its checkout is in no store git has, so it is not put back and nothing
+    is cloned: the directory is made again, empty, and the sentence names
+    the checkout it could not restore, with git's own reason, and says it
+    comes back only from its remote."""
+    env = isolated(offline, tmp_path)
+    store = store_taken_away(holder)
+    refusing_hook(holder, tmp_path)
+    before = facts(holder, env)
+
+    result = remove(holder, env)
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert re.fullmatch(
+        re.escape("The unmount was undone only in part (the gitlink at "
+                  f"{PATH} put back in the index as it was, .gitmodules "
+                  "restored byte for byte, family.yaml restored byte for "
+                  "byte, "
+                  f"`submodule.{PATH}` restored in the holder's git config); "
+                  f"NOT {PATH} checked out again: git could not read its "
+                  "checkout before this command (`git rev-parse "
+                  "--absolute-git-dir`: fatal: ")
+        + r"[^`]*"
+        + re.escape("), so no object store here is known to hold it, and "
+                    f"{PATH} was made again, empty. The checkout of {PATH} "
+                    "comes back only from its remote, which this command "
+                    "never reaches. `git status` shows whether anything else "
+                    "is left, before running `remove` again."),
+        result.stderr.splitlines()[-1]), result.stderr
+    assert facts(holder, env) == before
+    assert list((holder / PATH).iterdir()) == []
+    assert not store.exists(), "nothing was cloned"
+    offline.assert_left_nothing()
 
 
 # --- what the rollback says when it cannot finish --------------------------
@@ -643,10 +1038,11 @@ def test_a_remove_whose_unwind_meets_a_lock_lists_the_commands_left(
             f"at {PATH} and .gitmodules back first. Put the rest back by "
             "hand, in the holder and in this order: `git update-index --add "
             f"--cacheinfo 160000,{gitlink},{PATH}`; `git update-index --add "
-            f"--cacheinfo 100644,{staged},.gitmodules`; `git submodule update "
-            f"--init --no-fetch -- {PATH}`; `git -C {PATH} checkout -q main "
-            "--`. Then `git status` shows whether anything is left, before "
-            "running `remove` again."), said), said
+            f"--cacheinfo 100644,{staged},.gitmodules`; `git -c "
+            "protocol.allow=never submodule update --init --no-fetch -- "
+            f"{PATH}`; `git -C {PATH} checkout -q main --`. Then `git status` "
+            "shows whether anything is left, before running `remove` "
+            "again."), said), said
     assert next_line == ("Remediation: make family.yaml writable, and check "
                          "the disk has room, then run the same command "
                          "again.")

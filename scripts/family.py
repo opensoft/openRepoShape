@@ -103,10 +103,12 @@ does (#203). `PinRollback` records what each one writes before the first
 write and puts it back on any failure after it, and the refusal ends with
 the sentence that names what was put back, or what is left and the commands
 that put it back, in order. The exit is still 2, and a failed git command is
-still quoted as it ran. `remove` also refuses, under `--dry-run` as well, a
-`.gitmodules` that gives the member's path to more than one submodule
-(#360): `git rm` takes out the section of the one git finds for that path,
-and its commit used to keep the others.
+still quoted as it ran. `remove`'s checkout comes back only from an object
+store git already has, never from a remote: where git has none, the sentence
+says the checkout is not back. `remove` also refuses, under `--dry-run` as
+well, a `.gitmodules` that gives the member's path to more than one
+submodule (#360): `git rm` takes out the section of the one git finds for
+that path, and its commit used to keep the others.
 """
 
 from __future__ import annotations
@@ -1222,11 +1224,21 @@ def _submodule_paths(
     listed. `keys` is every key the section holds, path and url included,
     once each, in the order git lists them.
 
-    THE ONE READER OF THE FILE, for both questions `_checked_mount_path`
+    `add`'s ONE READER OF THE FILE, for both questions `_checked_mount_path`
     asks of it: the path a NAME is given (`member-name-taken`, #242), and
     the names a PATH is given, each with its url and its keys
-    (`member-path-registered`, #300). A second reader could read a second
-    copy of the file.
+    (`member-path-registered`, #300). A second reader for those could read a
+    second copy of the file.
+
+    IT IS NOT THE FILE'S ONLY READER. `remove` reads the WORK TREE's copy,
+    which is the one `git rm` edits, twice more, for questions this one does
+    not answer: `_gitmodules_names` models git's own path lookup (a name
+    keeps its LAST `path`, and a name that moves on takes the old path out of
+    git's map), which is the name `git rm` drops and the name whose object
+    store `git submodule update` uses; and `_sections_giving` names every
+    section that gives a path in ANY of its `path` lines (#360). All three
+    read it through `git config --list`, never through a parser of this
+    tool's.
     """
     if os.path.lexists(root / GITMODULES):
         source = ["--file", GITMODULES]
@@ -1977,6 +1989,27 @@ class MountRollback:
         return " Nothing was added, and nothing in the holder had changed."
 
 
+def _rewrite_members(family: Family, rows: list[dict], what: str) -> None:
+    """`family.write_members`, the rows rewritten `what` (`with Atlas's
+    pin`), with a failed write made a refusal, `family-manifest-unwritable`,
+    and never a traceback.
+
+    ONE SPELLING FOR `add`, `bump` AND `remove` (#365), the rule
+    `update-shape.py` keeps for the same reason: each caller puts the holder
+    back on a refusal, and an `OSError` reaching `main` would print a
+    traceback over the one sentence that says the holder was put back.
+    """
+    try:
+        family.write_members(rows)
+    except OSError as exc:
+        raise Refusal(
+            "family-manifest-unwritable",
+            f"{MANIFEST} could not be rewritten {what}: "
+            f"{exc.strerror or exc}",
+            f"Remediation: make {MANIFEST} writable, and check the disk has "
+            "room, then run the same command again.") from exc
+
+
 def _mount_and_pin(family: Family, repository: str, project: str, path: str,
                    url: str, protocol: list[str], at: str | None,
                    rollback: MountRollback,
@@ -2035,19 +2068,7 @@ def _mount_and_pin(family: Family, repository: str, project: str, path: str,
     digest = tree_digest(member, commit)
     row = _member_row(project, project_id, repository, commit, digest)
     rows = sorted(family.members + [row], key=lambda r: str(r["project"]))
-    # A FAILED WRITE IS A REFUSAL, NEVER A TRACEBACK — the rule
-    # `update-shape.py` keeps for the same reason: the caller unwinds on a
-    # refusal, and an `OSError` reaching `main` would print a traceback over
-    # the one sentence that says the holder was put back.
-    try:
-        family.write_members(rows)
-    except OSError as exc:
-        raise Refusal(
-            "family-manifest-unwritable",
-            f"{MANIFEST} could not be rewritten with {project}'s pin: "
-            f"{exc.strerror or exc}",
-            f"Remediation: make {MANIFEST} writable, and check the disk has "
-            "room, then run the same command again.") from exc
+    _rewrite_members(family, rows, f"with {project}'s pin")
 
     rollback.step = f"committing {project} to the family"
     head = _commit_one(
@@ -2268,6 +2289,102 @@ def cmd_add(args) -> int:
 # ---------------------------------------------------------------------------
 
 
+#: What every git command that puts a checkout back runs with, first on its
+#: line (`_offline_git`): no transport at all, a local path's included.
+NO_REMOTE = ["-c", "protocol.allow=never"]
+
+
+def _offline_git(args: list[str], cwd: Path) -> str:
+    """`git -c protocol.allow=never <args>` in `cwd`, with
+    `GIT_TERMINAL_PROMPT=0` in its environment: a git command of the
+    rollback's restore (#365). Its output, as `run` returns it; a failure is
+    a `CommandFailed`, as `run`'s is.
+
+    THE BACKSTOP UNDER THE STORE CHECK (`_unrestorable`). The rollback runs
+    `git submodule update` only where git has the store and the commit, so
+    nothing needs a remote; this is for the check being wrong. `-c` reaches
+    every git the command starts, through `GIT_CONFIG_PARAMETERS`, the clone
+    `git submodule update` would make included, and `protocol.allow=never`
+    refuses each transport git would otherwise allow, https, ssh and a
+    local path alike; with no terminal prompt, a credential git would ask
+    for is a failure, not a wait. `protocol.allow` yields to a
+    `protocol.<name>.allow` set by name and to `GIT_ALLOW_PROTOCOL`, which
+    is why `update` also runs with `--no-fetch` and why the store is checked
+    before it runs at all.
+    """
+    command = ["git", *NO_REMOTE, *args]
+    check_program(command)
+    proc = subprocess.run(command, cwd=str(cwd), capture_output=True,
+                          text=True, encoding="utf-8", errors="replace",
+                          check=False,
+                          env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+    if proc.returncode != 0:
+        raise CommandFailed(command, cwd, proc.returncode,
+                            (proc.stderr or "") + (proc.stdout or ""))
+    return (proc.stdout or "").strip()
+
+
+def _store_holds(store: Path, commit: str, work: Path) -> bool:
+    """Whether the object store `store` holds `commit`.
+
+    `--work-tree`, a directory this never reads: a submodule's store names
+    its checkout in `core.worktree`, and git asked with `--git-dir` alone
+    changes into that directory first, and dies where `git rm` deleted it
+    (git 2.43, probed for #365). Under the backstop, so that a store that
+    fetches what it lacks on demand fetches nothing here either.
+    """
+    try:
+        _offline_git(["--git-dir", str(store), "--work-tree", str(work),
+                      "cat-file", "-e", f"{commit}^{{commit}}"], work)
+    except CommandFailed:
+        return False
+    return True
+
+
+def _store_git_uses(root: Path, path: str) -> tuple[str, Path] | None:
+    """`(as git spells it, on disk)` of the object store `git submodule
+    update`, run in `root`, keeps for the submodule at `path`, there or not;
+    None where no section of the work tree's `.gitmodules` gives git the
+    path.
+
+    THE STORE OF THE NAME, NOT OF THE PATH (#365). git keeps a submodule's
+    store at `modules/<name>` under the git directory (`_module_dir`, given
+    the name), `<name>` being the submodule `.gitmodules` gives the path to:
+    git's own path lookup, which `git rm` and `git submodule update` share
+    and `_gitmodules_names` models. The two are the same for every member
+    `add` mounts and differ once a section is renamed by hand.
+    """
+    name = _gitmodules_names(root, path)[0]
+    return None if name is None else _module_dir(root, name)
+
+
+def _unrestorable(root: Path, path: str, commit: str | None) -> str | None:
+    """Why `git submodule update --init --no-fetch -- <path>`, run in
+    `root`, could NOT check `commit` out of an object store git already
+    has; None when it could (#365).
+
+    THE STORE GIT WILL USE (`_store_git_uses`), NOT ONE THE ROLLBACK
+    RECORDED, because `update` CLONES a store where there is none. The store
+    a checkout's own `.git` names is not always that one: a section renamed
+    by hand sent `update` to another name's store, absent, and the rollback
+    cloned the member from its url while the store it had sat unused; and
+    `deinit` moves an embedded `.git` into the name's own, which a check of
+    the recorded one called gone. A store that does not hold `commit` is not
+    used either: `update` would fetch into it.
+    """
+    found = _store_git_uses(root, path)
+    if found is None:
+        return f"no section of {GITMODULES} gives git {path}"
+    shown, store = found
+    if not store.is_dir():
+        return (f"git would check it out of {shown}, which is not there, and "
+                "clone it there")
+    if commit is not None and not _store_holds(store, commit, root):
+        return (f"git would check it out of {shown}, which does not hold "
+                f"{commit[:12]}, and fetch it")
+    return None
+
+
 def _member_head(member: Path) -> tuple[str | None, str | None]:
     """`(the commit a checkout stands at, the branch it is on)`, each None
     where there is none: no checkout, no commit yet, a detached HEAD.
@@ -2317,11 +2434,14 @@ def _head_back(member: Path, at: str | None, branch: str | None) -> bool:
     member ON its branch, and `bump`'s checkout of `--to`, like the checkout
     `git submodule update` makes, DETACHES it: putting the commit back alone
     would leave the right commit and the branch no longer checked out.
+    Under `_offline_git`'s backstop, as every command that puts a checkout
+    back runs: a checkout reads only the store, and fetches nothing even
+    from a store that fetches what it lacks on demand.
     """
     if at is None or _member_head(member) == (at, branch):
         return False
-    run(["git", "checkout", "-q", *_head_target(member, at, branch)],
-        cwd=member)
+    _offline_git(["checkout", "-q", *_head_target(member, at, branch)],
+                 member)
     return True
 
 
@@ -2353,22 +2473,6 @@ def _entries_by_hand(name: str, entries: list[bytes]) -> str:
             "git update-index --index-info")
 
 
-def _rewrite_members(family: Family, rows: list[dict], what: str) -> None:
-    """`family.write_members`, with a failed write made a refusal rather
-    than a traceback, as `add` makes it: the caller puts the holder back on
-    a refusal, and an `OSError` reaching `main` would print a traceback over
-    the one sentence that says so."""
-    try:
-        family.write_members(rows)
-    except OSError as exc:
-        raise Refusal(
-            "family-manifest-unwritable",
-            f"{MANIFEST} could not be rewritten {what}: "
-            f"{exc.strerror or exc}",
-            f"Remediation: make {MANIFEST} writable, and check the disk has "
-            "room, then run the same command again.") from exc
-
-
 class PinRollback:
     """Everything `bump` and `remove` change in the holder once they write,
     and how to put the holder back (#365): `MountRollback`'s rule for `add`
@@ -2396,19 +2500,36 @@ class PinRollback:
     (its legs) are checked out, and whether `git status --ignored` lists
     anything in it.
 
-    `remove`'s CHECKOUT COMES BACK FROM THE STORE `git rm` KEEPS: `git
-    submodule update --init --no-fetch -- members/<P>`, once the gitlink,
-    `.gitmodules` and the registration are back, reconnects the store and
-    checks the gitlink's commit out of it. `--no-fetch`, so nothing reaches
-    the network; and only while the store is where it was, because `update`
-    CLONES a submodule whose store is gone. Its branch is put back after it,
-    and each leg that was checked out, from the store inside the member's.
-    What `deinit -f` discards — changes nobody committed, untracked and
-    ignored files — is in no store, so when `git status --ignored` listed
-    anything in the member the sentence says that much is gone instead of
-    calling the holder as it was. The registration comes back as `git config
-    --add` writes it: the same keys and values, its section last in the
-    file.
+    `remove`'s CHECKOUT COMES BACK FROM THE STORE GIT KEEPS FOR IT, AND
+    NEVER FROM A REMOTE: `git submodule update --init --no-fetch --
+    members/<P>`, once the gitlink, `.gitmodules` and the registration are
+    back, reconnects that store and checks the gitlink's commit out of it.
+    `update` takes the store of the NAME `.gitmodules` gives the path, and
+    CLONES one where there is none, so it runs only where that store is
+    there and holds the commit (`_unrestorable`), never on the strength of
+    the store the checkout's own `.git` named when it was recorded. Where it
+    is not, `update` is not run: the directory is made again, empty, as a
+    member never checked out has it, and the sentence says the checkout
+    comes back only from its remote. So too for a member whose
+    checkout git could not read before the first write, its store gone: it
+    is recorded as one no store is known to hold, and its `remove` goes
+    ahead as it always has. Every git command that puts a checkout back runs
+    under `_offline_git`'s backstop, and `update` with `--no-fetch`, so a
+    store check that is wrong still reaches no remote. The member's branch
+    is put back after it, and each leg that was checked out, by the same
+    rule, from the stores inside the member's. What `deinit -f` discards —
+    changes nobody committed, untracked and ignored files — is in no store,
+    so when `git status --ignored` listed anything in the member the
+    sentence says that much is gone instead of calling the holder as it was.
+
+    THE REGISTRATION COMES BACK AS THE SAME KEYS, NOT THE SAME BYTES.
+    `git config --add` writes a section it puts back LAST in `.git/config`,
+    so the sentence says the git config holds the same keys and values and
+    does not call it as it was. Its recorded bytes are not written back:
+    `deinit` rewrites the file, a `pre-commit` hook or another git command
+    can write it while the run goes on, and `update --init` registers a
+    name it reads, so nothing shows that the bytes recorded before the first
+    write are all the file should hold afterwards.
 
     NEVER OVER A COMMIT THAT LANDED, and "AS IT WAS" ONLY FOR WHAT WAS
     COMPARED, as `MountRollback` says them. Its steps that do the same thing
@@ -2447,38 +2568,77 @@ class PinRollback:
         self.at, self.branch = _member_head(self.member)
         self.registration = self._registration() if unmount else []
         self.existed = self.member.is_dir()
-        #: The member's object store, where `remove`'s checkout comes back
-        #: from; None where there was no checkout to bring back.
+        #: The commit the gitlink names, which `git submodule update` checks
+        #: out: its stage-0 record's, or None for one the index holds
+        #: conflicted.
+        self.pinned = next((fields[1].decode("ascii") for fields in
+                            (record.partition(b"\t")[0].split()
+                             for record in self.gitlink)
+                            if fields[2:] == [b"0"]), None)
+        #: Whether `remove` has a checkout to bring back: one with a `.git`
+        #: of its own.
+        self.checkout = unmount and os.path.lexists(self.member / ".git")
+        #: The object store the checkout's own `.git` named. For the
+        #: sentence only: the restore asks which store git will use.
         self.store: Path | None = None
-        self.legs: list[tuple[str, str | None, str | None]] = []
+        self.legs: list[tuple[str, str, str | None, str | None]] = []
         self.discards = False
-        if unmount and os.path.lexists(self.member / ".git"):
-            self.store = Path(git_out(["rev-parse", "--absolute-git-dir"],
-                                      cwd=self.member))
-            self.legs = self._legs()
-            self.discards = bool(git_out(
-                ["--no-optional-locks", "status", "--porcelain=v1", "-z",
-                 "--ignored"], cwd=self.member, binary=True))
+        #: Why git could not read the checkout before the first write — its
+        #: object store gone, most often — or None. READ WITH A GUARD (#365):
+        #: such a member was removed before the rollback existed, and a read
+        #: that raised here refused the whole `remove` as a LEG's `git-failed`
+        #: while its dry run exited 0. Its checkout is in no store this
+        #: rollback can name, so it is never put back from one.
+        self.unread: str | None = None
+        if self.checkout:
+            try:
+                self.store = Path(_git_bytes(
+                    ["rev-parse", "--absolute-git-dir"], self.member
+                ).decode("utf-8", "surrogateescape").strip())
+                self.legs = self._legs()
+                self.discards = bool(_git_bytes(
+                    ["--no-optional-locks", "status", "--porcelain=v1", "-z",
+                     "--ignored"], self.member))
+            except CommandFailed as exc:
+                self.unread = _reason(exc)
+                self.store, self.legs, self.discards = None, [], False
         #: Set once `remove`'s checkout has been brought back, which is when
         #: what `deinit -f` discarded is known to be gone.
         self.emptied = False
+        #: Set once the registration is written back: the same keys, the
+        #: section last in the file.
+        self.rewritten = False
+        #: Set once the checkout is found to have no store git could bring it
+        #: back from, by the restore or by the sentence.
+        self.storeless = False
+        #: `{leg: why}` for each leg the restore found no store for.
+        self.legs_left: dict[str, str] = {}
+        #: Set once the member's checkout, and then its legs that could be,
+        #: are back, so the commands typed by hand redo neither.
+        self.member_back = False
+        self.legs_back = False
+        #: Where git keeps the store it checked the member out of, when that
+        #: is not the store the checkout had (an embedded `.git` that
+        #: `deinit` moved into the holder's git directory).
+        self.moved_to: str | None = None
 
-    def _legs(self) -> list[tuple[str, str | None, str | None]]:
-        """`(path, commit, branch)` of each submodule of the MEMBER's that is
-        checked out in it: a member is an assembly root, and the holder's
-        own bootstrap (`git submodule update --init --recursive`) checks its
-        legs out inside the mount. `git submodule update` brings back one
-        level, so each comes back by name, and only those that were there:
-        one never checked out has no store, and `update` would clone it."""
-        listed = git_out(["ls-files", "-s", "-z"], cwd=self.member,
-                         binary=True)
-        legs: dict[str, tuple[str, str | None, str | None]] = {}
+    def _legs(self) -> list[tuple[str, str, str | None, str | None]]:
+        """`(path, its gitlink's commit, the commit it stands at, its
+        branch)` of each submodule of the MEMBER's that is checked out in
+        it: a member is an assembly root, and the holder's own bootstrap
+        (`git submodule update --init --recursive`) checks its legs out
+        inside the mount. `git submodule update` brings back one level, so
+        each comes back by name, and only those that were there: one never
+        checked out has no store, and `update` would clone it."""
+        listed = _git_bytes(["ls-files", "-s", "-z"], self.member)
+        legs: dict[str, tuple[str, str, str | None, str | None]] = {}
         for record in listed.split(b"\0"):
             head, _, name = record.partition(b"\t")
             leg = name.decode("utf-8", "surrogateescape")
             if head.startswith(b"160000 ") and leg not in legs and \
                     os.path.lexists(self.member / leg / ".git"):
-                legs[leg] = (leg, *_member_head(self.member / leg))
+                legs[leg] = (leg, head.split()[1].decode("ascii"),
+                             *_member_head(self.member / leg))
         return list(legs.values())
 
     def _registration(self) -> list[tuple[str, str]]:
@@ -2535,33 +2695,91 @@ class PinRollback:
                         cwd=self.root)
         if not moved:
             return None
+        self.rewritten = True
         return (" and ".join(f"`{section}`" for section in moved)
                 + " restored in the holder's git config")
 
+    def _storeless(self) -> str | None:
+        """Why the member's checkout cannot come back from an object store
+        git has, in the sentence's words; None when it can (#365)."""
+        if self.unread is not None:
+            return ("git could not read its checkout before this command "
+                    f"({self.unread}), so no object store here is known to "
+                    "hold it")
+        why = _unrestorable(self.root, self.path, self.pinned)
+        return (None if why is None else
+                why + ", so `git submodule update` was not run")
+
+    def _store_kept(self) -> str:
+        """`; the object store its checkout had, <it>, is still there`, where
+        that store is there and is not the one git looks in: what a human
+        who renamed the section by hand needs to know to bring it back."""
+        found = _store_git_uses(self.root, self.path)
+        if self.store is None or not self.store.is_dir() or (
+                found is not None
+                and found[1].resolve() == self.store.resolve()):
+            return ""
+        return (f"; the object store its checkout had, "
+                f"{self.store.as_posix()}, is still there")
+
+    def _made_again(self) -> bool:
+        """The member's directory made again, empty, if it was there before
+        and is not now: a gitlink with no directory reads as deleted, which a
+        later `git commit -a` would record, and an empty one is how a member
+        never checked out stands."""
+        if self.existed and not self.member.is_dir():
+            self.member.mkdir(parents=True)
+            return True
+        return False
+
     def _undo_work_tree(self) -> str | None:
-        if self.store is None:
-            if self.existed and not self.member.is_dir():
-                self.member.mkdir()
-                return f"{self.path} made again, empty, as it was"
+        if not self.checkout:
+            return (f"{self.path} made again, empty, as it was"
+                    if self._made_again() else None)
+        if os.path.lexists(self.member / ".git") and \
+                _member_head(self.member) == (self.at, self.branch):
             return None
-        if _member_head(self.member) == (self.at, self.branch):
-            return None
-        if not self.store.is_dir():
+        # THE STORE GIT WILL USE IS ASKED FIRST, and `update` is not run
+        # without it: it would clone (#365).
+        why = self._storeless()
+        if why is not None:
+            self.storeless = True
+            if self._made_again():
+                why += f", and {self.path} was made again, empty"
+            raise Refusal("member-store-gone", why + self._store_kept())
+        found = _store_git_uses(self.root, self.path)
+        _offline_git(["--literal-pathspecs", "submodule", "update", "--init",
+                      "--no-fetch", "-q", "--", self.path], self.root)
+        self.emptied = True
+        if found is not None and self.store is not None and \
+                found[1].resolve() != self.store.resolve():
+            self.moved_to = found[0]
+        _head_back(self.member, self.at, self.branch)
+        self.member_back = True
+        ready = []
+        for leg in self.legs:
+            try:
+                left = _unrestorable(self.member, leg[0], leg[1])
+            except (CommandFailed, Refusal) as exc:
+                left = _reason(exc)
+            if left is None:
+                ready.append(leg)
+            else:
+                self.legs_left[leg[0]] = left
+        if ready:
+            _offline_git(["--literal-pathspecs", "submodule", "update",
+                          "--init", "--no-fetch", "-q", "--",
+                          *[leg for leg, _, _, _ in ready]], self.member)
+            for leg, _, at, branch in ready:
+                _head_back(self.member / leg, at, branch)
+        self.legs_back = True
+        if self.legs_left:
             raise Refusal(
                 "member-store-gone",
-                f"its object store {self.store.as_posix()} is not where it "
-                "was, and `git submodule update` would clone the member "
-                "instead")
-        run(["git", "--literal-pathspecs", "submodule", "update", "--init",
-             "--no-fetch", "-q", "--", self.path], cwd=self.root)
-        self.emptied = True
-        _head_back(self.member, self.at, self.branch)
-        if self.legs:
-            run(["git", "--literal-pathspecs", "submodule", "update",
-                 "--init", "--no-fetch", "-q", "--",
-                 *[leg for leg, _, _ in self.legs]], cwd=self.member)
-            for leg, at, branch in self.legs:
-                _head_back(self.member / leg, at, branch)
+                f"{self.path} is checked out again, but "
+                + "; and ".join(f"not {leg} in it: {why}, so `git submodule "
+                                "update` was not run for it"
+                                for leg, why in self.legs_left.items()))
         return self._work_tree_said()
 
     def _head_said(self) -> str:
@@ -2571,13 +2789,15 @@ class PinRollback:
         return f"{self.path} checked out at {at} again"
 
     def _work_tree_said(self) -> str:
-        if self.store is None:
+        if not self.checkout:
             return f"{self.path} made again, empty, as it was"
-        said = (f"{self.path} checked out again at {(self.at or '')[:12]}"
+        if self.at is None:
+            return f"{self.path} checked out again"
+        said = (f"{self.path} checked out again at {self.at[:12]}"
                 + (f" on {self.branch}" if self.branch else "")
                 + " from the object store `git rm` keeps")
         if self.legs:
-            said += (", and " + " and ".join(leg for leg, _, _ in self.legs)
+            said += (", and " + " and ".join(leg for leg, _, _, _ in self.legs)
                      + " in it")
         return said
 
@@ -2622,23 +2842,76 @@ class PinRollback:
         return typed
 
     def _work_tree_by_hand(self) -> list[str]:
-        if self.store is None:
-            return [f"mkdir {shlex.quote(self.path)}"] if self.existed else []
-        typed = ["git submodule update --init --no-fetch -- "
-                 + shlex.quote(self.path)]
-        gitlink = [entry.partition(b"\t")[0].split()[1].decode("ascii")
-                   for entry in self.gitlink]
-        if self.at is not None and (self.branch is not None
-                                    or gitlink != [self.at]):
-            typed.append(_head_by_hand(self.path, self.at, self.branch))
-        if self.legs:
-            typed.append(f"git -C {shlex.quote(self.path)} submodule update "
-                         "--init --no-fetch -- " + " ".join(
-                             shlex.quote(leg) for leg, _, _ in self.legs))
+        """The commands that bring the checkout back by hand, and NONE THAT
+        COULD CLONE OR FETCH (#365): `git submodule update` only where git
+        holds the store and the commit now, and under the same backstop the
+        rollback runs it with. Where git does not, the directory is made
+        again, empty, and the sentence says the checkout comes back only
+        from its remote. Nothing already back is typed again."""
+        made = ([f"mkdir {shlex.quote(self.path)}"]
+                if self.existed and not self.member.is_dir() else [])
+        if not self.checkout:
+            return made
+        try:
+            storeless = self._storeless() is not None
+        except (CommandFailed, Refusal):
+            storeless = True
+        if storeless:
+            self.storeless = True
+            return made
+        offline = " ".join(NO_REMOTE)
+        typed = []
+        if not self.member_back:
+            typed.append(f"git {offline} submodule update --init --no-fetch "
+                         "-- " + shlex.quote(self.path))
+            if self.at is not None and (self.branch is not None
+                                        or self.pinned != self.at):
+                typed.append(_head_by_hand(self.path, self.at, self.branch))
+        legs = [] if self.legs_back else [
+            leg for leg in self.legs if leg[0] not in self.legs_left]
+        if legs:
+            typed.append(f"git -C {shlex.quote(self.path)} {offline} "
+                         "submodule update --init --no-fetch -- " + " ".join(
+                             shlex.quote(leg) for leg, _, _, _ in legs))
             typed += [_head_by_hand(f"{self.path}/{leg}", at, branch)
-                      for leg, at, branch in self.legs
+                      for leg, _, at, branch in legs
                       if at is not None and branch is not None]
         return typed
+
+    def _config_left(self, missing: list[str], typed: list[str]) -> list[str]:
+        """What a checkout that did not come back left in the holder's git
+        config, as a `NOT` clause, with the commands that take it out added
+        to `typed`; [] when it left nothing.
+
+        `git submodule update --init` registers the name it reads before it
+        checks anything out, so a restore that failed after that, or ran
+        against a store that was not the member's, leaves `submodule.<name>.*`
+        keys the registration step had already compared and passed (the
+        review's probe left `submodule.atlas.url` and `.active`). Asked only
+        once the registration was put back and the checkout was not."""
+        if "work tree" not in missing or "registration" in missing:
+            return []
+        try:
+            now = self._registration()
+        except Refusal:
+            return []
+        moved = self._sections_moved(now)
+        if not moved:
+            return []
+        new = list(dict.fromkeys(key for key, value in now
+                                 if key.rpartition(".")[0] in moved
+                                 and (key, value) not in self.registration))
+        gone = list(dict.fromkeys(key for key, value in self.registration
+                                  if key.rpartition(".")[0] in moved
+                                  and (key, value) not in now))
+        typed += self._registration_by_hand()
+        said = []
+        if new:
+            said.append("it holds " + " and ".join(f"`{key}`" for key in new)
+                        + ", which it did not")
+        if gone:
+            said.append("it lost " + " and ".join(f"`{key}`" for key in gone))
+        return ["the holder's git config as it was: " + ", and ".join(said)]
 
     def _steps(self) -> list[tuple]:
         """`(key, what it puts back, how, the keys it needs back first, the
@@ -2731,14 +3004,29 @@ class PinRollback:
                 restored.append(done if isinstance(done, str) else said)
         noun = "bump" if self.verb == "bump" else "unmount"
         if failed:
+            if self.unmount:
+                failed += self._config_left(missing, typed)
             text = (f" The {noun} was undone only in part"
                     + (" (" + ", ".join(restored) + ")" if restored else "")
                     + "; NOT " + "; NOT ".join(failed) + ".")
+            # NO COMMAND HERE CLONES (#365): a checkout no store git has can
+            # bring back is said to come back only from its remote.
+            remote_only = ([self.path] if self.storeless else []) + [
+                f"{self.path}/{leg}" for leg in self.legs_left]
+            if remote_only:
+                text += (" The checkout of " + " and ".join(remote_only)
+                         + " comes back only from "
+                         + ("its remote" if len(remote_only) == 1 else
+                            "their remotes")
+                         + ", which this command never reaches.")
             if typed:
                 return (text + " Put the rest back by hand, in the holder and "
                         "in this order: " + "; ".join(f"`{line}`"
                                                       for line in typed)
                         + f". Then `git status` shows whether anything is "
+                        f"left, before running `{self.verb}` again.")
+            if remote_only:
+                return (text + " `git status` shows whether anything else is "
                         f"left, before running `{self.verb}` again.")
             return (text + " Put those back by hand — `git status` shows what "
                     f"is left — before running `{self.verb}` again.")
@@ -2766,16 +3054,29 @@ class PinRollback:
         if not restored:
             return (f" Nothing was {did}, and nothing in the holder had "
                     "changed.")
-        if self.emptied and self.discards:
-            return (f" Nothing was {did}: the {noun} has been undone — "
-                    + ", ".join(restored) + " — and the holder is as it was "
-                    "before this command but for what `git submodule deinit "
-                    f"-f` discarded in {self.path}, which no object store "
-                    "holds: the uncommitted changes and the untracked and "
-                    "ignored files `git status --ignored` listed there.")
-        return (f" Nothing was {did}: the {noun} has been undone — "
-                + ", ".join(restored) + " — and the holder is exactly as it "
-                "was before this command.")
+        # "EXACTLY" ONLY WHEN NOTHING BELOW QUALIFIES IT: a registration
+        # written back is the same keys in another place in the file, a
+        # checkout git keeps elsewhere now is not byte for byte the one it
+        # had, and what `deinit -f` discarded is in no store.
+        discarded = self.emptied and self.discards
+        held = ("as it was before this command"
+                if discarded or self.rewritten or self.moved_to else
+                "exactly as it was before this command")
+        if discarded:
+            held += (" but for what `git submodule deinit -f` discarded in "
+                     f"{self.path}, which no object store holds: the "
+                     "uncommitted changes and the untracked and ignored "
+                     "files `git status --ignored` listed there")
+        text = (f" Nothing was {did}: the {noun} has been undone — "
+                + ", ".join(restored) + f" — and the holder is {held}.")
+        if self.rewritten:
+            text += (" Its git config holds the same keys and values as "
+                     "before, the section put back written last.")
+        if self.moved_to is not None and self.store is not None:
+            text += (f" {self.path} now has its object store at "
+                     f"{self.moved_to}, where git keeps it, and no longer at "
+                     f"{self.store.as_posix()}.")
+        return text
 
 
 # ---------------------------------------------------------------------------
@@ -3426,15 +3727,18 @@ def _remove_dry_run(family: Family, row: dict, path: str) -> int:
     """`remove --dry-run` (#326): what a real `remove` would take out, and
     no git command that writes.
 
-    THE REAL RUN'S FAILURES, IN ITS ORDER. Its first git call that writes,
-    `git submodule deinit -- <path>`, fails on a path the index holds
-    nothing at, and the real run prints that failure loudly, the exact
-    command and git's own `did not match any file(s) known to git`, exit 2.
-    `ls-files --error-unmatch` over the same LITERAL pathspec fails where it
-    fails, with the same line from git, and is printed the same way, exit
-    2; it lists what `git rm -r` would unstage when it does not fail.
-    `family.rewritten` then asks `family-members-unrecognised`, which the
-    real run asks before its unmount too (#365), without writing.
+    THE REAL RUN'S FAILURES, IN ITS ORDER. `family.rewritten` asks
+    `family-members-unrecognised` first, without writing, because the real
+    run asks it before its unmount (#365): asked after the listing below, a
+    gitlink the index does not hold beside a `members:` line this tool will
+    not rewrite got git's loud failure here and the refusal there. The real
+    run's first git call that writes, `git submodule deinit -- <path>`,
+    then fails on a path the index holds nothing at, and the real run prints
+    that failure loudly, the exact command and git's own `did not match any
+    file(s) known to git`, exit 2. `ls-files --error-unmatch` over the same
+    LITERAL pathspec fails where it fails, with the same line from git, and
+    is printed the same way, exit 2; it lists what `git rm -r` would unstage
+    when it does not fail.
 
     PRINTED: the row, each index entry under the path (the gitlink), the
     `.gitmodules` section `git rm` drops for it and any it leaves that gives
@@ -3446,6 +3750,8 @@ def _remove_dry_run(family: Family, row: dict, path: str) -> int:
     """
     project = str(row["project"])
     root = family.root
+    family.rewritten([r for r in family.members
+                      if str(r.get("project")) != project])
     try:
         listed = _git_bytes(["--literal-pathspecs", "ls-files", "-s", "-z",
                              "--error-unmatch", "--", path], root)
@@ -3459,8 +3765,6 @@ def _remove_dry_run(family: Family, row: dict, path: str) -> int:
             head, _, name = record.partition(b"\t")
             mode, oid = head.decode("ascii").split()[:2]
             entries.append((mode, oid, name.decode("utf-8", "replace")))
-    family.rewritten([r for r in family.members
-                      if str(r.get("project")) != project])
 
     pinned = str((row.get("pin") or {}).get("commit") or "")
     print(f"row          {project}  {row.get('repository')}, pinned at "
