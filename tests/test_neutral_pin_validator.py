@@ -17,12 +17,20 @@ own unreadable-pin case.
 
 from __future__ import annotations
 
+import errno
 import os
 import stat
+import subprocess
+import sys
 import textwrap
+from pathlib import Path
 
-from conftest import SCAFFOLD, WINDOWS_SKIP, run_script
-from test_scaffold_pin_and_reuse import product_repo
+import pytest
+
+from conftest import (SCAFFOLD, WINDOWS_SKIP, blank_unnamed_pin_sources, git,
+                      run_script)
+from test_scaffold_pin_and_reuse import (assert_pin_digest_recomputed,
+                                         product_repo)
 
 PROJECT = "MedxGlass"
 
@@ -188,6 +196,329 @@ def test_a_neutral_pin_with_no_reachable_source_is_skipped(tmp_path):
     assert "openGlass" in result.stdout
     assert "gh-unreadable" in result.stdout
     assert "pins ok" in result.stdout
+
+
+# --- what a --pin-source value MEANS, and what is said of it (#295) ---------
+#
+# `--pin-source` is `[PRODUCT=]PATH`, and a path may hold an `=`. Splitting
+# every value at its first `=` made `a=b/openGlass` a source keyed to a
+# product `a` that nothing declares: never consulted, so the digest went to
+# `gh api` and a `skip`, exit 0. Now the text before the first `=` is a
+# product only when it names a declared pin; a source somebody named that
+# cannot answer is a finding, never a traceback; and a value no pin used is
+# said, never silent.
+
+def logging_gh(tmp_path, **extra) -> tuple[dict, Path]:
+    """`(env, log)`: a `gh` first on PATH that records its arguments in `log`
+    and fails, as `tests/test_scaffold_pin_collisions.py`'s `world` installs
+    one, plus `extra` variables. Every run below that could reach `gh api` on
+    a regression carries it, so none can reach the forge where a `#!` script
+    runs. Windows runs no `#!` script, so there the record stays empty
+    whatever happens, and the `digest recomputes` line, or the finding,
+    carries the claim on every platform."""
+    bin_dir, log = tmp_path / "fakebin", tmp_path / "gh.log"
+    bin_dir.mkdir()
+    gh = bin_dir / "gh"
+    gh.write_text(textwrap.dedent("""\
+        #!/usr/bin/env python3
+        import os, sys
+        with open(os.environ["GH_STUB_LOG"], "a", encoding="utf-8") as log:
+            log.write(" ".join(sys.argv[1:]) + "\\n")
+        print("HTTP 404: Not Found", file=sys.stderr)
+        sys.exit(97)
+        """), encoding="utf-8")
+    gh.chmod(gh.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    env = {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+           "GH_STUB_LOG": str(log), **extra}
+    return env, log
+
+
+def gh_never_ran(log: Path) -> None:
+    assert not log.exists(), (
+        f"gh was run: {log.read_text(encoding='utf-8')}")
+
+
+def standin_at(product: Path, target: Path) -> Path:
+    """A clone of the pinned stand-in at `target`, so it holds the commit
+    the pin names. `=` is a legal character in a path on all three
+    platforms, so no test here is skipped for spelling one."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    git("clone", "-q", "--", str(product), str(target), cwd=target.parent)
+    return target
+
+
+def validate_from(cwd: Path, root: Path, *args, env=None):
+    """`validate-pins.py` run from `cwd`, so a relative `--pin-source` is
+    read the way a person standing there typed it."""
+    return run_script(root / "scripts" / "validate-pins.py", *args, cwd=cwd,
+                      env=env)
+
+
+def test_a_bare_pin_source_whose_path_holds_an_equals_sign_is_a_path(
+        tmp_path):
+    """THE DEFECT. The stand-in is cloned under a directory named `a=b` and
+    passed BARE. `a` is not a declared pin, so the whole value is the path:
+    the digest recomputes from it, nothing is skipped, and `gh` never runs.
+    It used to be read as a source for a product `a`, which no pin looks
+    up."""
+    root, product, commit = scaffold_with_pin(tmp_path)
+    standin_at(product, tmp_path / "a=b" / "openGlass")
+    env, log = logging_gh(tmp_path)
+    result = validate_from(tmp_path, root, "--pin-source", "a=b/openGlass",
+                           env=env)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert_pin_digest_recomputed(result, "openGlass", commit)
+    assert "digest recomputes (--pin-source)\n" in result.stdout, (
+        "the bare reading must be the one that answered")
+    assert "note --pin-source" not in result.stdout
+    assert "pins ok" in result.stdout
+    gh_never_ran(log)
+
+
+def test_a_declared_pin_before_the_equals_is_the_key_even_over_a_directory(
+        tmp_path):
+    """`openGlass=x/openGlass` where a directory `openGlass=x` holds the
+    stand-in and `x/openGlass` does not exist. `openGlass` IS a declared pin,
+    so the keyed reading wins — decided by the manifest, not by the disk —
+    and the missing `x/openGlass` is the `neutral-pin-source-unreadable`
+    finding, exit 1, where it used to be a `FileNotFoundError` traceback.
+    The finding names the other reading, and `./` asks for it."""
+    root, product, commit = scaffold_with_pin(tmp_path)
+    standin_at(product, tmp_path / "openGlass=x" / "openGlass")
+    env, log = logging_gh(tmp_path)
+    keyed = validate_from(tmp_path, root, "--pin-source",
+                          "openGlass=x/openGlass", env=env)
+    assert keyed.returncode == 1, keyed.stderr + keyed.stdout
+    assert "Traceback" not in keyed.stderr, keyed.stderr
+    assert ("FINDING neutral-pin-source-unreadable: contracts/openglass-"
+            f"pin.yaml: {Path('x', 'openGlass')} (--pin-source openGlass=...)"
+            in keyed.stderr), keyed.stderr
+    assert "no such directory" in keyed.stderr
+    assert ("`openGlass=x/openGlass` is also a directory; `--pin-source "
+            "./openGlass=x/openGlass` reads it as one." in keyed.stderr)
+    assert "openGlass: pin commit" not in keyed.stdout
+    assert "  note " not in keyed.stdout, (
+        "a source that was asked and failed is a finding, never also a note")
+
+    whole = validate_from(tmp_path, root, "--pin-source",
+                          "./openGlass=x/openGlass", env=env)
+    assert whole.returncode == 0, whole.stderr + whole.stdout
+    assert_pin_digest_recomputed(whole, "openGlass", commit)
+    gh_never_ran(log)
+
+
+@pytest.mark.parametrize("spelling, said", [
+    ("openGlass={missing}", "no such directory"),
+    ("openGlass={file}", "it is a file, not a directory"),
+    ("{missing}", "no such directory"),
+    ("$SHAPE_PIN_SOURCE_OPENGLASS={missing}", "no such directory"),
+], ids=["keyed-missing", "keyed-file", "bare-missing", "env-missing"])
+def test_an_explicit_pin_source_that_is_not_a_directory_is_a_finding(
+        tmp_path, spelling, said):
+    """A source somebody NAMED that is not there at all, or is a file, is
+    the same `neutral-pin-source-unreadable` finding a directory that is not
+    a checkout already was, with its remediation: never a skip, and never
+    the traceback `git`'s `cwd=` raised before (#295)."""
+    root, product, commit = scaffold_with_pin(tmp_path)
+    missing, file = tmp_path / "missing", tmp_path / "a-file"
+    file.write_text("not a checkout\n", encoding="utf-8")
+    value = spelling.format(missing=missing, file=file)
+    if value.startswith("$"):
+        name, _, path = value[1:].partition("=")
+        env, log = logging_gh(tmp_path, **{name: path})
+        args = ()
+    else:
+        env, log = logging_gh(tmp_path)
+        args = ("--pin-source", value)
+    result = validate(root, *args, env=env)
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert "Traceback" not in result.stderr, result.stderr
+    assert "FINDING neutral-pin-source-unreadable:" in result.stderr
+    assert f"could not answer for opensoft/openGlass @ {commit}: {said}" \
+        in result.stderr, result.stderr
+    assert ("Remediation: point it at a clone of opensoft/openGlass that has "
+            "that commit" in result.stderr)
+    assert "skip openGlass" not in result.stdout
+    assert "  note " not in result.stdout, (
+        "a source that was asked and failed is a finding, never also a note")
+    gh_never_ran(log)
+
+
+def test_a_pin_source_no_declared_pin_used_is_a_note_and_changes_no_exit(
+        tmp_path):
+    """Each value no pin read is NOTED on stdout, named as typed, with why,
+    and the run still exits 0. Here the keyed value answers `openGlass`; the
+    first bare one is replaced by a later bare one; and that later one is a
+    MISTYPED key, `openGlas=`, read as a path because nothing declares
+    `openGlas` — which used to be a silent `skip` and one `gh api` call."""
+    root, product, commit = scaffold_with_pin(tmp_path)
+    spare = tmp_path / "spare"
+    spare.mkdir()
+    env, log = logging_gh(tmp_path)
+    typo = f"openGlas={product}"
+    result = validate(root, "--pin-source", str(spare),
+                      "--pin-source", f"openGlass={product}",
+                      "--pin-source", typo, env=env)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert result.stderr == ""
+    assert_pin_digest_recomputed(result, "openGlass", commit)
+    assert "(--pin-source openGlass=...)" in result.stdout
+    assert (f"  note --pin-source {spare}: not used — the later `--pin-source "
+            f"{typo}` replaced it.\n" in result.stdout), result.stdout
+    assert (f"  note --pin-source {typo}: not used — each declared pin had a "
+            "more specific source" in result.stdout), result.stdout
+    assert ("It was read as a PATH: `openGlas` is not a declared "
+            "neutral-product pin (declared: openGlass).\n" in result.stdout)
+    assert f"note --pin-source openGlass={product}" not in result.stdout
+    assert result.stdout.endswith("pins ok\n")
+
+    # A keyed value a later one for the same pin replaced, in any case.
+    replaced = validate(root, "--pin-source", f"openGlass={spare}",
+                        "--pin-source", f"OPENGLASS={product}", env=env)
+    assert replaced.returncode == 0, replaced.stderr + replaced.stdout
+    assert_pin_digest_recomputed(replaced, "openGlass", commit)
+    assert (f"  note --pin-source openGlass={spare}: not used — the later "
+            f"`--pin-source OPENGLASS={product}` replaced it.\n"
+            in replaced.stdout), replaced.stdout
+
+    # The same value given twice is one value: noted once, for its own
+    # reason, and never as having replaced itself.
+    twice = validate(root, "--pin-source", f"openGlass={product}",
+                     "--pin-source", str(spare), "--pin-source", str(spare),
+                     env=env)
+    assert twice.returncode == 0, twice.stderr + twice.stdout
+    assert twice.stdout.count("  note ") == 1, twice.stdout
+    assert (f"  note --pin-source {spare}: not used — each declared pin had a "
+            "more specific source" in twice.stdout), twice.stdout
+    assert "replaced it" not in twice.stdout
+    gh_never_ran(log)
+
+
+#: A directory mode denies nothing on Windows, where `chmod` has no search
+#: bit to clear, and nothing to root.
+SEARCH_DENIED = pytest.mark.skipif(
+    os.name == "nt" or getattr(os, "geteuid", lambda: 1)() == 0,
+    reason="needs a POSIX directory mode that denies search: Windows has no "
+           "search bit for chmod to clear, and root is not stopped by one")
+
+
+@pytest.mark.parametrize("case", [
+    pytest.param("parent-not-searchable", marks=SEARCH_DENIED),
+    pytest.param("source-not-searchable", marks=SEARCH_DENIED),
+    "name-too-long",
+])
+def test_a_pin_source_that_cannot_be_entered_or_named_is_a_finding(
+        tmp_path, case):
+    """Every `OSError` a named source raises is the finding, with the
+    system's own reason (#295 review, SHOULD-1). `exists()`/`is_dir()`
+    before 3.14 raise anything but a missing path, so a source under a
+    parent this user cannot enter, or a name longer than the filesystem
+    takes, was a traceback on 3.9 to 3.13 and, on 3.14, "no such directory"
+    for a directory that is there. A source that exists but cannot be
+    entered fails in `git`'s `cwd=`, which the second guard answers.
+
+    Each value is RELATIVE, run from `tmp_path`, so the long name is one
+    path component the system has to refuse by name, both when the source
+    is looked at and when the finding asks whether the whole value is a
+    directory; an absolute one stops at its first missing component
+    instead. It runs everywhere:
+    whatever Windows calls it, it is an `OSError`, so there the finding and
+    the absent traceback are asserted, and the reason is POSIX's
+    `ENAMETOOLONG` only where that is the call."""
+    root, product, commit = scaffold_with_pin(tmp_path)
+    locked = tmp_path / "locked"
+    said = os.strerror(errno.EACCES)
+    if case == "parent-not-searchable":
+        source = Path("locked", "openGlass")
+    elif case == "source-not-searchable":
+        source = Path("locked")
+    else:
+        source, locked = Path("n" * 300), None
+        said = None if os.name == "nt" else os.strerror(errno.ENAMETOOLONG)
+    if locked is not None:
+        standin_at(product, tmp_path / source)
+    env, log = logging_gh(tmp_path)
+    if locked is not None:
+        locked.chmod(0)
+    try:
+        result = validate_from(tmp_path, root, "--pin-source",
+                               f"openGlass={source.as_posix()}", env=env)
+    finally:
+        if locked is not None:
+            locked.chmod(0o700)
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert "Traceback" not in result.stderr, result.stderr
+    assert ("FINDING neutral-pin-source-unreadable: contracts/openglass-"
+            f"pin.yaml: {source} (--pin-source openGlass=...) could not "
+            f"answer for opensoft/openGlass @ {commit}: " in result.stderr)
+    if said is not None:
+        assert f"@ {commit}: {said}\n" in result.stderr, result.stderr
+    if locked is not None:
+        assert "no such directory" not in result.stderr, result.stderr
+    assert "  note " not in result.stdout
+    gh_never_ran(log)
+
+
+@pytest.mark.parametrize("encoding, spelled", [
+    ("cp1252", "\\u65e5\\u672c"),
+    ("cp1252:surrogateescape", "\\u65e5\\u672c"),
+    ("cp1252:replace", "??"),
+])
+def test_a_note_naming_what_stdout_cannot_encode_never_raises(
+        tmp_path, encoding, spelled):
+    """The note echoes a `--pin-source` as typed, so a value stdout cannot
+    encode raised `UnicodeEncodeError` and turned a passing run into exit 1
+    (#295 review, SHOULD-2); main's copy, which printed no such line, exits
+    0 on the same arguments. cp1252 is what Windows gives a stdout that is
+    not the console, with `surrogateescape` its default handler; `cp1252`
+    alone is `strict`. Those two, the handlers that raise, now escape the
+    name as stderr would write it. A handler somebody CHOSE is theirs and
+    is kept: under `cp1252:replace` the name is `??`, never escaped over
+    their choice. The child's stdout is read as BYTES and decoded strictly
+    as cp1252, so a byte the code page could not hold fails here."""
+    root, product, commit = scaffold_with_pin(tmp_path)
+    unused = tmp_path / "日本"
+    env, log = logging_gh(tmp_path, PYTHONIOENCODING=encoding)
+    full = blank_unnamed_pin_sources({**os.environ, **env}, env)
+    result = subprocess.run(
+        [sys.executable, str(root / "scripts" / "validate-pins.py"),
+         "--pin-source", f"openGlass={product}", "--pin-source", str(unused)],
+        cwd=str(root), capture_output=True, env=full,
+        stdin=subprocess.DEVNULL, check=False)
+    stderr = result.stderr.decode("utf-8", "replace")
+    assert result.returncode == 0, stderr
+    assert "Traceback" not in stderr, stderr
+    stdout = result.stdout.decode("cp1252")
+    assert f"openGlass: pin commit {commit[:12]} digest recomputes" in stdout
+    shown = str(unused).replace("日本", spelled)
+    assert f"  note --pin-source {shown}: not used — " in stdout, stdout
+    assert stdout.endswith("pins ok\n") or stdout.endswith("pins ok\r\n")
+    gh_never_ran(log)
+
+
+def test_a_pin_source_that_is_a_symlink_to_a_checkout_recomputes(tmp_path):
+    """A named source that is itself a symlink to the stand-in answers, as
+    it always did: `_digest_from_source` asks `stat()`, which follows the
+    link to the directory, and never `lstat()`, which would call the link a
+    file and refuse a checkout somebody linked into place (#295 review,
+    NIT-B). Skipped on Windows, where a symlink needs a privilege the
+    runner's user may not hold, and wherever `os.symlink` refuses."""
+    if os.name == "nt":
+        pytest.skip("a symlink on Windows needs a privilege (or developer "
+                    "mode) this run may not have")
+    root, product, commit = scaffold_with_pin(tmp_path)
+    link = tmp_path / "linked-openGlass"
+    try:
+        os.symlink(product, link, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"this platform will not make a symlink here: {exc}")
+    env, log = logging_gh(tmp_path)
+    result = validate(root, "--pin-source", f"openGlass={link}", env=env)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert_pin_digest_recomputed(result, "openGlass", commit)
+    assert "(--pin-source openGlass=...)" in result.stdout
+    assert "  note " not in result.stdout
+    gh_never_ran(log)
 
 
 def test_a_project_with_no_declared_pins_is_unaffected(tmp_path):

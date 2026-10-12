@@ -2012,6 +2012,17 @@ REMOTE_SCHEME_ONLY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:/*$")
 #: draws for a value on a command line, for the same reason.
 REMOTE_DRIVE_RE = re.compile(r"^[A-Za-z]:$")
 
+#: A `:<port>` after the HOST of a `<scheme>://` url: where its transport
+#: connects, never which repository it reaches. Only such a url has one; in
+#: git's scp spelling `host:22/Repo.git` the `22` is the path's, and stays.
+#: Digits are required, so a drive's bare colon is never read as one.
+REMOTE_PORT_RE = re.compile(r":\d+$")
+
+#: A host that is another door into the repositories of the host it maps
+#: to: GitHub's SSH-over-the-HTTPS-port endpoint, which GitHub's own
+#: documentation spells `ssh://git@ssh.github.com:443/Org/Repo.git`.
+REMOTE_HOST_ALIASES = {"ssh.github.com": "github.com"}
+
 
 def _remote_body(url: str) -> str:
     """A remote with its scheme, its credential and its trailing `/` gone.
@@ -2125,11 +2136,24 @@ def remote_key(url: str) -> str:
     was written in. It is asked of the remote AS IT WAS WRITTEN, because the
     scp colon this function is about to turn into a `/` is the one thing that
     tells a Windows drive from a host.
+
+    A PORT COMES OFF TOO, AND `ssh.github.com` IS `github.com` (#190).
+    `ssh://git@github.com:22/Org/Repo.git` and GitHub's documented
+    `ssh://git@ssh.github.com:443/Org/Repo.git` are
+    `git@github.com:Org/Repo.git` reached through another door; with the
+    port's colon taken for the scp one they keyed as `github.com/22/org/repo`,
+    which no other spelling of that repository does, and a caller comparing
+    keys -- `adopt-project.py`'s relative-url check -- called them two.
     """
     text = _remote_body(url)
     fold_case = _remote_names_a_host(url)
-    if ":" in text.split("/", 1)[0]:     # the scp spelling's one separator
-        text = text.replace(":", "/", 1)
+    first, slash, rest = text.partition("/")
+    if REMOTE_SCHEME_RE.match(url.strip()):   # only a url's host has a port
+        first = REMOTE_PORT_RE.sub("", first)
+    # The scp spelling's one separator, `host:path`, becomes a `/`.
+    host, slash, rest = (first.replace(":", "/", 1) + slash
+                         + rest).partition("/")
+    text = REMOTE_HOST_ALIASES.get(host.lower(), host) + slash + rest
     if text.lower().endswith(".git"):
         text = text[:-4]
     return (text.lower() if fold_case else text).strip("/")
