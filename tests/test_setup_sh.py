@@ -24,6 +24,8 @@ from pathlib import Path
 
 from conftest import REPO, WINDOWS_SKIP, git
 
+from conftest import assert_refuses_for_want_of_a_terminal
+
 SETUP = REPO / "setup.sh"
 DEGRADE_LINE = "authority is not wallet-carried in this org"
 
@@ -351,7 +353,7 @@ def test_no_confirmation_and_no_terminal_refuses_after_showing_the_plan(tmp_path
                        "--into", str(tmp_path / "work"))
     assert result.returncode == 2
     assert "--dry-run: nothing was created." in result.stdout
-    assert "no terminal to confirm on" in result.stderr
+    assert_refuses_for_want_of_a_terminal(result.stderr)
     assert not (tmp_path / "remotes").exists()
 
 

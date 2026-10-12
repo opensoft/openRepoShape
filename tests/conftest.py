@@ -732,6 +732,30 @@ def pytest_runtest_teardown(item, nextitem):
     return result
 
 
+def assert_refuses_for_want_of_a_terminal(stderr: str) -> None:
+    """What a run with no terminal prints where it would have asked (#476),
+    held to ONE reading by every test that reaches it.
+
+    The refusal is read by an AI assistant whose shell has no terminal and
+    whom AGENTS.md forbids `--yes`, so it must open with the exit that keeps
+    the human in charge, and `--yes` may appear only as the person's own
+    answer. It is `setup-project.py`'s one wording: `setup.sh` and the
+    `openRepoShape` command pass it through, so their tests hold the same
+    text rather than each spelling it again.
+    """
+    assert "no terminal to confirm on" in stderr, stderr
+    assert not re.search(r"re-?run\s+with\s+--yes|if you mean it", stderr,
+                         re.IGNORECASE), (
+        f"the refusal invites a re-run with --yes, the flag an assistant "
+        f"may not pass: {stderr!r}")
+    assert "from a file and not through a pipe" in stderr, stderr
+    [yes_sentence] = [sentence for sentence in re.split(r"(?<=\.)\s+", stderr)
+                      if "--yes" in sentence]
+    assert "never an assistant's" in yes_sentence, yes_sentence
+    assert stderr.index("terminal of their own") < stderr.index("--yes"), (
+        f"the exit that keeps the human in charge comes first: {stderr!r}")
+
+
 def spelled(path) -> str:
     """`path` as `adopt-project.py` names one in a finding, a refusal or the
     late-failure notice (#212): between backticks, with a backslash or a

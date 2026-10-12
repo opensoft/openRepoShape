@@ -1612,10 +1612,23 @@ def plan_and_confirm(opts: Options, shape_root: Path, org: str,
     # is what a `Get-Content setup-project.py | py -` run gets instead of a
     # prompt nobody can answer. That is exactly why the README's Windows path
     # DOWNLOADS the file first and then runs it: a file on disk leaves stdin
-    # attached to the terminal the person is typing at.
+    # attached to the terminal the person is typing at. `curl ... | bash -s --`
+    # is the same pipe, so it lands here even in the person's own terminal.
+    #
+    # THE WORDING NAMES THE EXIT THAT KEEPS THE HUMAN IN CHARGE FIRST (#476).
+    # An AI assistant's shell has no terminal and AGENTS.md forbids it
+    # `--yes`, so a refusal that said "re-run with --yes" was the one exit
+    # open to it and the one it may not take. The way on is the person's own
+    # terminal, where the prompt can ask; `--yes` is named last, as the
+    # person's own answer given in advance, and is never put as something to
+    # re-run with.
     if not sys.stdin.isatty():
         die("this will create THREE repositories and there is no terminal to "
-            "confirm on. Re-run with --yes if you mean it.")
+            "confirm on, so nothing was created. The person deciding runs "
+            "this same command in a terminal of their own, from a file and "
+            "not through a pipe (`openRepoShape`, `./setup.sh`, or `py "
+            "setup-project.py`), and it asks them. `--yes` is that person's "
+            "own answer given in advance, never an assistant's.")
     say("")
     say("This will create THREE repositories in '%s'." % org)
     if ask("Type yes to continue: ") != "yes":

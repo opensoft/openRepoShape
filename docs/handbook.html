@@ -1731,7 +1731,8 @@ resume InkRouter                # on workstation B, and the estate is back</code
       <ul class="plain">
         <li><strong>Never create a repository without the human&rsquo;s explicit confirmation.</strong>
         Run <code>./setup.sh</code> (or the one-liner) WITHOUT <code>--yes</code> and let it ask. The
-        human types <code>yes</code> at its prompt; you never answer it for them.</li>
+        human types <code>yes</code> at its prompt; you never answer it for them. With no terminal,
+        see the paragraph after this list.</li>
         <li><strong>Never answer an install prompt.</strong> The preflight asks
         <code>Type yes to continue:</code> for each thing it offers to run &mdash; an install,
         <code>gh auth login</code>, <code>gh auth setup-git</code>. The human types it; you never
@@ -1751,8 +1752,14 @@ resume InkRouter                # on workstation B, and the estate is back</code
       </ul>
       <p>Beyond those: show the human the tool&rsquo;s output verbatim &mdash; the plan especially
       &mdash; and let them answer its prompt; &ldquo;go ahead&rdquo; about something else is not a
-      yes about this. Read a refusal rather than retrying: each one names what to run instead,
-      or, for some, the VALUE to change &mdash; among them a <code>--spec-path</code> or
+      yes about this. An assistant&rsquo;s shell almost never has a terminal, so setup stops after
+      the plan &mdash; exit 2, <code>no terminal to confirm on</code> &mdash; and that is the rule
+      working, not a fault: give the human the same command to run in their OWN terminal, from a
+      file and not a pipe, which cannot ask even there
+      (<code>bash &lt;(curl -fsSL &lt;that URL&gt;) &hellip;</code>,
+      <code>openRepoShape &hellip;</code> or <code>./setup.sh &hellip;</code>), and never pass
+      <code>--yes</code> yourself. Read a refusal rather than retrying: each one names what to run
+      instead, or, for some, the VALUE to change &mdash; among them a <code>--spec-path</code> or
       <code>--code-path</code> that is, holds or lies inside a file the shape writes, and a
       <code>--pin</code> the shape cannot write, both before anything is created &mdash; and there
       is no <code>--force</code>, deliberately. Relay the finished block &mdash; the clone
@@ -1799,9 +1806,10 @@ resume InkRouter                # on workstation B, and the estate is back</code
       name, added (#289); <code>bump-leg.py</code> refusing a workflow file, the workflows directory
       or the leg&rsquo;s pin that this user cannot open, by name, added (#383); what
       <code>setup.sh --help</code> does from a download, which clones nothing, and which commands
-      list every flag, added (#341) &mdash; a page cannot name the commit that contains it, and
+      list every flag, added (#341); the assistant&rsquo;s route when its shell has no terminal,
+      added (#476) &mdash; a page cannot name the commit that contains it, and
       the blob below is the fact a test checks.
-      README.md blob 5465d135ca7263010ee354424041f90c4553d2e7. Every command, flag, exit code
+      README.md blob aa9815a3b03b87f2b06270da00949d3f2ccff10c. Every command, flag, exit code
       and file name on this page is quoted from that README and from AGENTS.md.</p>
     </footer>
   </main>

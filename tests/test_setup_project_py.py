@@ -35,6 +35,8 @@ import pytest
 
 from conftest import REPO, git, rmtree
 
+from conftest import assert_refuses_for_want_of_a_terminal
+
 SETUP_PROJECT = REPO / "setup-project.py"
 SETUP_SH = REPO / "setup.sh"
 DEGRADE_LINE = "authority is not wallet-carried in this org"
@@ -352,8 +354,23 @@ def test_no_confirmation_and_no_terminal_refuses_after_showing_the_plan(tmp_path
                        "--into", str(tmp_path / "work"))
     assert result.returncode == 2
     assert "--dry-run: nothing was created." in result.stdout
-    assert "no terminal to confirm on" in result.stderr
+    assert_refuses_for_want_of_a_terminal(result.stderr)
     assert not (tmp_path / "remotes").exists()
+
+
+def test_agents_md_quotes_the_line_the_refusal_prints(tmp_path):
+    """#476: AGENTS.md tells an assistant that a run with no terminal stops
+    after the plan with a quoted line, and the line is the one the tool
+    prints, so a reworded refusal that left the document behind fails here.
+    The same paragraph is what the assistant is sent to by the first rule."""
+    agents = " ".join((REPO / "AGENTS.md").read_text(encoding="utf-8").split())
+    [quoted] = re.findall(r"`(no terminal[^`]*)`", agents)
+    result = run_entry("--project", "Sample", "--org", "demoorg",
+                       "--local-remote-dir", str(tmp_path / "remotes"),
+                       "--into", str(tmp_path / "work"))
+    assert result.returncode == 2
+    assert quoted in result.stderr
+    assert "you never answer it for them. No terminal: section 2." in agents
 
 
 def test_no_project_and_no_terminal_refuses(tmp_path):
@@ -641,7 +658,7 @@ def test_a_piped_script_without_yes_refuses(tmp_path):
                        "--local-remote-dir", str(tmp_path / "remotes"),
                        "--into", str(tmp_path / "work"), cwd=REPO)
     assert result.returncode == 2
-    assert "no terminal to confirm on" in result.stderr
+    assert_refuses_for_want_of_a_terminal(result.stderr)
     assert not (tmp_path / "remotes").exists()
 
 
