@@ -103,10 +103,10 @@ PLAN_EDITS = [
     pytest.param('reference: "openxFactory docs/project-repo-schema.md"',
                  'reference: " "', ("reference is ' '", "manifest-reference"),
                  id="reference-blank"),
-    pytest.param('elected_on: "2026-09-02"', "elected_on: 20261011",
+    pytest.param('elected_on: "2026-09-02"', 'elected_on: "20261011"',
                  ("elected_on is '20261011'", "manifest-elected-on"),
                  id="elected-on-basic-format"),
-    pytest.param('elected_on: "2026-09-02"', "elected_on: 2026-W41-6",
+    pytest.param('elected_on: "2026-09-02"', 'elected_on: "2026-W41-6"',
                  ("elected_on is '2026-W41-6'", "manifest-elected-on"),
                  id="elected-on-iso-week"),
     pytest.param("org: testorg", "org: test+org",
@@ -418,3 +418,21 @@ def test_a_bad_leg_path_is_one_finding_in_the_words_of_its_own_rule(world,
     assert "FINDING plan-bad-leg-path" in result.stderr
     assert FINDING not in result.stderr
     assert "1 finding(s)" in result.stderr
+
+
+@pytest.mark.parametrize("old, new", [
+    ("visibility: private", "visibility: [secret]"),
+    ('elected_on: "2026-09-02"', "elected_on: 20260902"),
+    ("id: northwind", "id: 007"),
+])
+def test_a_value_the_reader_reads_as_another_kind_is_not_this_questions(
+        world, old, new):
+    """`id: 007` is the number 7, `elected_on: 20260902` another number and
+    `visibility: [secret]` a list: what the template would write is `str` of
+    what was read, which the plan never said, so a finding about it would
+    echo text nobody typed. That is a misread and is judged as one; the
+    validator is asked about the values the plan holds as text, and as no
+    value at all."""
+    plan = edited(world, old, new)
+    result = run_script(ADOPT, "check", "--plan", str(plan))
+    assert FINDING not in result.stderr, result.stderr

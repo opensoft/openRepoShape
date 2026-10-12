@@ -1947,12 +1947,13 @@ def _code_of(finding: str) -> str | None:
     return match.group("code") if match else None
 
 
-def _sentences_of(findings: list[str], values: dict,
-                  what: dict) -> list[str]:
+def _sentences_of(findings: list[str], values: dict, what: dict,
+                  not_text: tuple = ()) -> list[str]:
     """The FINDINGs of the validator as sentences: one for each value the
     caller handed over, naming it and holding every finding about it (`--org`
     is judged once for each of the three legs it names), and one for each
-    finding that is about none of them."""
+    finding that is about none of them. A finding about a placeholder in
+    `not_text` is left out, as `manifest_invalid` says."""
     by_value: dict[str, list[str]] = {}
     sentences: list[str] = []
     for finding in findings:
@@ -1963,6 +1964,8 @@ def _sentences_of(findings: list[str], values: dict,
         code, detail = match.group("code"), match.group("detail")
         said = f"{code}: {detail if detail.endswith('.') else detail + '.'}"
         key = FINDING_PLACEHOLDER.get(code)
+        if key is not None and key in not_text:
+            continue
         if key in what and key in values:
             by_value.setdefault(key, []).append(said)
         else:
@@ -1976,7 +1979,7 @@ def _sentences_of(findings: list[str], values: dict,
 
 def manifest_invalid(values: dict, policy: NamingPolicy, what: dict,
                      template_dir: Path = ASSEMBLY_TEMPLATE,
-                     ignore: tuple = ()) -> list[str]:
+                     ignore: tuple = (), not_text: tuple = ()) -> list[str]:
     """A sentence for each FINDING the project's own validator would make of
     the `project.yaml` these `values` render; `[]` when it would pass.
 
@@ -1985,6 +1988,14 @@ def manifest_invalid(values: dict, policy: NamingPolicy, what: dict,
     `plan-bad-leg-path` and must not say it a second time as the validator's
     `manifest-leg-path`); a caller that judges nothing earlier ignores none,
     so that a rule it did not apply still refuses.
+
+    `not_text` is the placeholders whose value the caller READ as something
+    that is not text (a plan's `id: 007` is the number 7, and `str` of it is
+    what the template would write): that is a misread, which is judged in
+    words that say what was read and never in the retyped text, so the
+    validator's finding about such a value is left to that rule. A value the
+    plan holds as no value at all is not one of these: `execute` writes it as
+    blank, and the validator's finding about a blank is the one wanted.
 
     The WHOLE manifest is rendered and read, so a rule about how one value
     relates to another (`topic` to `id`, a leg's repository to its role) is
@@ -2003,7 +2014,7 @@ def manifest_invalid(values: dict, policy: NamingPolicy, what: dict,
     notes = manifest_validator(template_dir)._findings(manifest, policy, None)
     return _sentences_of(
         [note for note in notes if not note.startswith("WARNING")
-         and _code_of(note) not in ignore], values, what)
+         and _code_of(note) not in ignore], values, what, not_text)
 
 
 #: The remediation, without the sentence only the caller can write (what was
@@ -2024,6 +2035,7 @@ MANIFEST_INVALID_REMEDIATION = (
 
 def manifest_value_problems(values: dict, policy: NamingPolicy, what: dict,
                             *, misreads: bool = True, ignore: tuple = (),
+                            not_text: tuple = (),
                             template_dir: Path = ASSEMBLY_TEMPLATE
                             ) -> list[tuple[str, str]]:
     """`(kind, sentence)` for everything wrong with the values, `kind` being
@@ -2040,7 +2052,8 @@ def manifest_value_problems(values: dict, policy: NamingPolicy, what: dict,
         if misread:
             return [("misread", sentence) for sentence in misread]
     return [("invalid", sentence) for sentence
-            in manifest_invalid(values, policy, what, template_dir, ignore)]
+            in manifest_invalid(values, policy, what, template_dir, ignore,
+                                not_text)]
 
 
 def refuse_manifest_values(prefix: str, values: dict, policy: NamingPolicy,

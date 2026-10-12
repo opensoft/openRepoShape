@@ -1554,8 +1554,17 @@ def _manifest_findings(plan: Plan) -> tuple[list[str], list[str]]:
     values = _manifest_values(plan, naming)
     if values is None:
         return [], []
+    # A value the plan's reader read as a number, a boolean or a collection is
+    # a MISREAD (`id: 007` is 7), and what the template would then write is
+    # `str` of what was read, which the plan never said: it is not asked about
+    # here, in words that would echo that text.
+    not_text = tuple(
+        placeholder for placeholder, key in MANIFEST_PLAN_KEYS.items()
+        if plan.get(key) is not None
+        and not isinstance(plan.get(key), str))
     problems = manifest_value_problems(values, naming, MANIFEST_PLAN_KEYS,
-                                       misreads=False, ignore=LEG_PATH_CODES)
+                                       misreads=False, ignore=LEG_PATH_CODES,
+                                       not_text=not_text)
     if not problems:
         return [], []
     return ([f"FINDING plan-manifest-invalid: {sentence}"
