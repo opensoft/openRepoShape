@@ -711,6 +711,12 @@ class CommandFailed(Exception):
         )
 
 
+#: `{tracking}` is the run's tracking branch (`--tracking-branch`, the plan's
+#: `tracking_branch`): the branch the refused push targeted, which is also the
+#: branch a work clone is made on and the base a seeding pull request lands on
+#: (#324). Every caller passes it, after `checked_value` has admitted it, so
+#: it is a safe argument and is not quoted here. A call that leaves it out
+#: fails `tests/test_ruleset_hint_tracking_branch.py`.
 RULESET_HINT = """
 If the organisation applies a ruleset requiring changes to arrive by pull
 request, a direct push to the default branch is refused BY DESIGN and must not
@@ -719,8 +725,8 @@ be worked around. Two legitimate exits:
   (1) have an operator holding the bypass right seed the default branch once,
       then re-run this scaffold; or
   (2) push a seed BRANCH and open a pull request:
-          git -C {work} push -u origin main:seed/scaffold
-          gh pr create --repo {repo} --base main --head seed/scaffold \\
+          git -C {work} push -u origin {tracking}:seed/scaffold
+          gh pr create --repo {repo} --base {tracking} --head seed/scaffold \\
               --title 'Seed the {role} leg' --body 'Scaffolded shape.'
 
 NOTHING has been rolled back. What already exists is listed above; delete it
