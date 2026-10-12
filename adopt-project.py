@@ -2882,7 +2882,8 @@ def cmd_execute(args) -> int:
 # So `plan` and `check` passed `--elected-by b'Jos\xe9'`, and `execute`
 # created and pushed both legs before `write_lf` raised `UnicodeEncodeError`.
 # Before #247, `plan` raised on it and nothing was made. A line break or a
-# NUL in the plan went on into the manifest.
+# NUL in the plan went on into the manifest, and a bidi override or isolate
+# went into the README, which then showed the rest of its line reversed.
 #
 # So `unwritable_reason` is asked of each such value before anything exists.
 # `plan` refuses `--elected-by` and `--reference` as
@@ -2919,9 +2920,11 @@ WRITTEN_PLAN_VALUES = {"elected_by": ROOT_MANIFEST_AND_README,
 WRITTEN_AS_TEXT = (
     "`execute` writes each one as it stands, into the assembly root's files "
     "or the split commit's message, so it must be one line of UTF-8 text. A "
-    "byte that is not UTF-8, or a lone surrogate, cannot be written at all, "
-    "and a line break or a control character would be written raw into a "
-    "value that is read back as one line. A byte that is not UTF-8 reaches a "
+    "byte that is not UTF-8, or a lone surrogate, cannot be written at all; "
+    "a line break or a control character would be written raw into a value "
+    "that is read back as one line; and a bidirectional embedding, override "
+    "or isolate control would show the rest of the line it is written into "
+    "in another order than it is written. A byte that is not UTF-8 reaches a "
     "command line from a terminal or a script whose encoding is not the "
     "locale's.")
 
@@ -2978,7 +2981,13 @@ def _refuse_an_unwritable_clone_url(url: str) -> None:
     Only a local one can be refused: under `--local-remote-dir` the URL is
     the source's own path, which the assembly root's `README.md` names (and
     a seeded leg's), so a source directory whose name is not UTF-8 pushed
-    both legs and then raised in `write_lf` (#255).
+    both legs and then raised in `write_lf` (#255), and one whose name holds
+    a bidi override was written into the README raw.
+
+    THE REMEDIATION MOVES THE SOURCE AND PLANS AGAIN. A clone of it at a
+    path that is text, passed to `execute` with --source, still has the old
+    path as its `origin`, and `_remote_repository` reads that as UTF-8 and
+    raises; renaming the directory and running `plan` again adopts.
     """
     reason = unwritable_reason(url)
     if reason:
@@ -2987,10 +2996,11 @@ def _refuse_an_unwritable_clone_url(url: str) -> None:
             "under --local-remote-dir the assembly root's clone URL is the "
             f"source's own path, {url!r}, which `execute` writes into its "
             f"`README.md`, and {reason}",
-            "Remediation: nothing was created. Clone the source to a path "
-            "that is one line of UTF-8 text, and pass that path to `execute` "
-            "with --source; or adopt against GitHub, without "
-            "--local-remote-dir, where the clone URL is "
+            "Remediation: nothing was created. Rename or move the source "
+            "repository so that its path is one line of UTF-8 text with no "
+            "control character in it, then run `plan --source <its new "
+            "path>`, `check` and `execute` again; or adopt against GitHub, "
+            "without --local-remote-dir, where the clone URL is "
             "`https://github.com/<org>/<name>.git`.")
 
 

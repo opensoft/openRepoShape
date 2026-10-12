@@ -777,6 +777,15 @@ def is_trailer(value: str) -> bool:
     return bool(TRAILER_RE.fullmatch(value)) and one_printable_line(value)
 
 
+#: The nine bidirectional embedding, override and isolate controls, by code
+#: point: U+202A..U+202E (LRE, RLE, PDF, LRO, RLO) and U+2066..U+2069 (LRI,
+#: RLI, FSI, PDI). Each is `Cf`, and each sets the direction of the text
+#: after it, so a line that holds one is shown in another order than it is
+#: written. The marks U+200E, U+200F and U+061C are not among them: a mark
+#: is one character of one direction, and sets no span's.
+BIDI_CONTROLS = frozenset((*range(0x202A, 0x202F), *range(0x2066, 0x206A)))
+
+
 def unwritable_reason(value: str) -> str | None:
     r"""Why `value` is not one line of text a file can hold, in words; None
     when it is (#255).
@@ -790,18 +799,24 @@ def unwritable_reason(value: str) -> str | None:
     `write_lf` raised `UnicodeEncodeError` after both legs were pushed. This
     is the question asked of every such value before anything exists.
 
-    `one_printable_line` LESS `Cf`, AND THE EMPTY VALUE, because both are
-    text a file holds and both were adopted before #247 and since. A `Cf`
-    character is invisible, not unwritable: UTF-8 encodes it, the reader
-    reads it back, and a name may need one -- a Persian name joins its parts
-    with U+200C ZERO WIDTH NON-JOINER, which `one_printable_line` refuses.
-    An empty `elected_by` is what `plan` records when `git config user.name`
-    names nobody, and the manifest holds it as `""`. What is left is
-    refused: a lone surrogate, which UTF-8 cannot encode; a line break,
-    which ends the line the manifest's reader reads the value from (CR,
-    U+0085 and U+2028 among them, as `str.splitlines` ends lines); and any
-    other control character, NUL among them, which YAML does not allow raw
-    (TAB aside, and no name, date or reference holds one either).
+    `one_printable_line` LESS `Cf` OTHER THAN THE NINE `BIDI_CONTROLS`, AND
+    THE EMPTY VALUE, because both are text a file holds and both were
+    adopted before #247 and since. Such a `Cf` character is invisible, not
+    unwritable: UTF-8 encodes it, the reader reads it back, and a name may
+    need one -- a Persian name joins its parts with U+200C ZERO WIDTH
+    NON-JOINER, which `one_printable_line` refuses. An empty `elected_by` is
+    what `plan` records when `git config user.name` names nobody, and the
+    manifest holds it as `""`. What is left is refused: a lone surrogate,
+    which UTF-8 cannot encode; a line break, which ends the line the
+    manifest's reader reads the value from (CR, U+0085 and U+2028 among
+    them, as `str.splitlines` ends lines); a bidi embedding, override or
+    isolate control, which a file holds but which shows the rest of the line
+    it is written into -- the README's `Elected by` line, its date and
+    reference among it -- in another order than it is written, as
+    `double_quoted` in `scripts/repo_shape.py` spells one in the plan for
+    the same reason; and any other control character, NUL among them, which
+    YAML does not allow raw (TAB aside, and no name, date or reference holds
+    one either).
     """
     if value.splitlines() not in ([], [value]):
         return "it holds a line break, and it is written as one line"
@@ -811,6 +826,10 @@ def unwritable_reason(value: str) -> str | None:
             return ("it holds a byte that is not UTF-8"
                     if "\udc80" <= char <= "\udcff" else
                     "it holds a lone surrogate, which is no character")
+        if ord(char) in BIDI_CONTROLS:
+            return ("it holds a bidirectional control (an embedding, "
+                    "override or isolate), which shows the rest of the line "
+                    "in another order than it is written")
         if category in UNPRINTABLE_CATEGORIES and category != "Cf":
             return "it holds a control character"
     return None

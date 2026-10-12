@@ -21,14 +21,19 @@ a local clone URL no file can hold as `adopt-unwritable-value`; and a
 `local_path` that is not text is `source-unresolvable`. Every run is read
 for a traceback, and asked afterwards whether a leg remote exists.
 
-THE QUESTION IS `one_printable_line` LESS `Cf`. A Persian name joins its
-parts with U+200C ZERO WIDTH NON-JOINER, which UTF-8 holds and the reader
-reads back, and `execute` adopted it before #247 and since: it still adopts,
-as `José` and a source directory `café` do.
+THE QUESTION IS `one_printable_line` LESS `Cf`, EXCEPT THE NINE BIDI
+CONTROLS. A Persian name joins its parts with U+200C ZERO WIDTH NON-JOINER,
+which UTF-8 holds and the reader reads back, and `execute` adopted it before
+#247 and since: it still adopts, as `José` and a source directory `café` do.
+The embedding, override and isolate controls U+202A..U+202E and
+U+2066..U+2069 are refused: written raw into `README.md`, one shows the rest
+of its line in another order than it is written.
 
 Every subprocess runs under `PYTHONIOENCODING=utf-8:strict`, so that a value
 printed raw raises on every platform as it does on a strict terminal, and is
-answered in BYTES: a value that is not UTF-8 is not text to decode.
+answered in BYTES: a value that is not UTF-8 is not text to decode. Every
+invisible character in this file is spelled as an escape: a reader cannot
+see one typed raw, and a raw bidi control reorders the line it is on.
 """
 
 from __future__ import annotations
@@ -164,13 +169,16 @@ def in_the_split(source: Path, path: str) -> str:
 
 #: `(flag, value)`, as `plan`'s argv carries it. `\udce9` is how Python keeps
 #: the byte 0xE9 of a command line that is not UTF-8, which is what a
-#: terminal or a script whose encoding is not the locale's sends; the other
-#: two are text a file holds, but on no one line.
+#: terminal or a script whose encoding is not the locale's sends; the next
+#: two are text a file holds, but on no one line; the last two hold a bidi
+#: override or isolate, which a file holds and a reader is shown reordered.
 FLAGS = [
     ("--elected-by", "Jos\udce9"),
     ("--reference", "ref-\udce9"),
-    ("--elected-by", "Jos e"),
+    ("--elected-by", "Jos\u2028e"),
     ("--reference", "openxFactory\tdocs/project-repo-schema.md"),
+    ("--elected-by", "\u202eevil"),
+    ("--reference", "ref \u2066x\u2069 y"),
 ]
 
 
@@ -180,8 +188,9 @@ FLAGS = [
 def test_plan_refuses_a_flag_no_file_can_hold(tmp_path, flag, value):
     """The issue's first two rows. On main `plan` exited 0, `check` said
     `plan ok`, and `execute` raised in `write_lf` after both legs were
-    pushed (a surrogate), or adopted with the line break or the tab in the
-    manifest. Now `plan` refuses, and writes no plan."""
+    pushed (a surrogate), or adopted with the line break, the tab or the
+    bidi control in the manifest and the README. Now `plan` refuses, and
+    writes no plan."""
     source = make_source_repo(tmp_path / "Thing")
     runs = plan_check_execute(tmp_path, source, flag, value)
     assert_no_traceback_and_no_leg(tmp_path, runs)
@@ -195,26 +204,28 @@ def test_plan_refuses_a_flag_no_file_can_hold(tmp_path, flag, value):
 
 # --- `execute`: a local clone URL no file can hold ---------------------------
 
-@needs_filter_repo
-def test_execute_refuses_a_local_source_directory_that_is_not_utf8(tmp_path):
-    """The issue's third row. Under `--local-remote-dir` the assembly root's
-    clone URL is the source's own path, which its `README.md` names: `plan`
-    and `check` pass such a directory, as #247 made them, and `execute`
-    refuses it before any leg exists, where it raised after both were
-    pushed. Skipped where no directory can be named with the byte 0xE9
-    (Windows, macOS's APFS) or git will not work in one."""
-    try:
-        parent = Path(os.fsdecode(os.path.join(os.fsencode(tmp_path),
-                                               b"caf\xe9")))
-        parent.mkdir()
-    except (OSError, UnicodeError) as exc:
-        pytest.skip(f"no directory here is named b'caf\\xe9': {exc!r}")
+#: What the clone-URL refusal tells the person to do. `refused_then_moved`
+#: does it, as it is worded.
+MOVE_REMEDIATION = (
+    b"Remediation: nothing was created. Rename or move the source repository "
+    b"so that its path is one line of UTF-8 text with no control character "
+    b"in it, then run `plan --source <its new path>`, `check` and `execute` "
+    b"again")
+
+
+def refused_then_moved(base: Path, parent: Path, reason: bytes) -> None:
+    """A source in the directory `parent`: `plan` and `check` pass it, as
+    #247 made them, and `execute` refuses its path as the assembly root's
+    clone URL, giving `reason`, before any leg exists. Then the remediation
+    the refusal gives, followed as it is worded -- `parent` renamed, then
+    `plan --source <its new path>`, `check` and `execute` run again -- ends
+    `adoption verified`."""
     try:
         source = make_source_repo(parent / "Thing")
     except AssertionError as exc:
-        pytest.skip(f"git will not work under b'caf\\xe9' here: {exc}")
-    runs = plan_check_execute(tmp_path, source)
-    assert_no_traceback_and_no_leg(tmp_path, runs)
+        pytest.skip(f"git will not work under {parent.name!r} here: {exc}")
+    runs = plan_check_execute(base, source)
+    assert_no_traceback_and_no_leg(base, runs)
     assert runs["plan"].returncode == 0, said(runs["plan"])
     assert runs["check"].returncode == 0, said(runs["check"])
     assert PLAN_OK in runs["check"].stdout, said(runs["check"])
@@ -222,8 +233,55 @@ def test_execute_refuses_a_local_source_directory_that_is_not_utf8(tmp_path):
     assert refused.returncode == 2, said(refused)
     assert ADOPT_REFUSED + b"under --local-remote-dir the assembly root's " \
         b"clone URL is the source's own path, " \
-        + repr(str(source.resolve())).encode() in refused.stderr, said(refused)
-    assert b"nothing was created" in refused.stderr
+        + repr(str(source.resolve())).encode() + b", which " \
+        in refused.stderr, said(refused)
+    assert reason in refused.stderr, said(refused)
+    assert MOVE_REMEDIATION in refused.stderr, said(refused)
+
+    moved = parent.rename(parent.with_name("cafe")) / "Thing"
+    again = base / "again"
+    again.mkdir()
+    runs = plan_check_execute(again, moved)
+    assert_no_traceback(runs)
+    assert runs["check"].returncode == 0, said(runs["check"])
+    done = runs["execute"]
+    assert done.returncode == 0, said(done)
+    assert VERIFIED in done.stdout, said(done)
+
+
+@needs_filter_repo
+def test_execute_refuses_a_local_source_directory_that_is_not_utf8(tmp_path):
+    """The issue's third row. Under `--local-remote-dir` the assembly root's
+    clone URL is the source's own path, which its `README.md` names: `plan`
+    and `check` pass such a directory, and `execute` refuses it before any
+    leg exists, where it raised after both were pushed. Its remediation
+    once said to clone the source to a UTF-8 path and pass that with
+    --source, which ended in a traceback: the clone's `origin` is the old
+    path, which `_remote_repository` reads as UTF-8. Skipped where no
+    directory can be named with the byte 0xE9 (Windows, macOS's APFS) or
+    git will not work in one."""
+    try:
+        parent = Path(os.fsdecode(os.path.join(os.fsencode(tmp_path),
+                                               b"caf\xe9")))
+        parent.mkdir()
+    except (OSError, UnicodeError) as exc:
+        pytest.skip(f"no directory here is named b'caf\\xe9': {exc!r}")
+    refused_then_moved(tmp_path, parent, b"a byte that is not UTF-8")
+
+
+@needs_filter_repo
+def test_execute_refuses_a_local_source_directory_holding_a_bidi_control(
+        tmp_path):
+    """A source under a directory whose name begins with U+202E RIGHT-TO-LEFT
+    OVERRIDE: on main `execute` adopted it, and the shape's README showed
+    the rest of its `git clone` line reversed. Now it is refused as the
+    byte is, and moving the source adopts."""
+    parent = tmp_path / "\u202ecaf"
+    try:
+        parent.mkdir()
+    except OSError as exc:
+        pytest.skip(f"no directory here is named '\\u202ecaf': {exc!r}")
+    refused_then_moved(tmp_path, parent, b"a bidirectional control")
 
 
 # --- `check` and `execute`: a plan value edited by hand ----------------------
@@ -284,7 +342,7 @@ EDITS = [
     ("elected_by-nul", "elected_by", "T\x00", "elected_by"),
     ("elected_by-cr", "elected_by", "T\rX", "elected_by"),
     ("elected_by-nel", "elected_by", "T\x85X", "elected_by"),
-    ("elected_by-u2028", "elected_by", "T X", "elected_by"),
+    ("elected_by-u2028", "elected_by", "T\u2028X", "elected_by"),
     ("elected_by-tab", "elected_by", "T\tX", "elected_by"),
     ("elected_on-surrogate", "elected_on", "2026-09-02\ud800", "elected_on"),
     ("reference-surrogate", "reference", "x\ud800", "reference"),
@@ -292,6 +350,10 @@ EDITS = [
     ("visibility-surrogate", "visibility", "priv\ud800ate", "visibility"),
     ("pins-surrogate", "pins", "openX\ud800", "a `pins:` item"),
     ("follow_ups-surrogate", "follow_ups", "fix x\ud800",
+     "a `follow_ups:` item"),
+    ("elected_by-override", "elected_by", "\u202eevil", "elected_by"),
+    ("visibility-override", "visibility", "private\u202e", "visibility"),
+    ("follow_ups-isolate", "follow_ups", "fix \u2066x",
      "a `follow_ups:` item"),
 ]
 
@@ -315,9 +377,10 @@ def test_check_finds_and_execute_refuses_a_hand_edited_value(
         tmp_path, answered, key, value, what):
     """On main `check` said `plan ok` (or raised printing the value), and
     `execute` raised in `write_lf` after both legs were pushed, or adopted
-    with the NUL or the line break in the manifest. Now `check` has a
-    FINDING, and `execute` refuses it through `_refuse_what_check_finds`, in
-    `check`'s words, before any leg exists."""
+    with the NUL, the line break or the bidi control in the manifest or the
+    split commit's message. Now `check` has a FINDING, and `execute` refuses
+    it through `_refuse_what_check_finds`, in `check`'s words, before any
+    leg exists."""
     edit(tmp_path, answered, key, value)
     runs = {"check": checked(tmp_path), "execute": executed(tmp_path)}
     assert_no_traceback_and_no_leg(tmp_path, runs)
@@ -343,6 +406,9 @@ def test_plan_and_check_say_the_same_sentence(tmp_path, answered):
     refused = planned(flagged, answered[0], "--elected-by", value)
     edit(by_hand, answered, "elected_by", value)
     found = checked(by_hand)
+    assert_no_traceback({"plan": refused, "check": found})
+    assert refused.returncode == 2, said(refused)
+    assert found.returncode == 1, said(found)
     assert ADOPT_REFUSED in refused.stderr, said(refused)
     assert FINDING in found.stderr, said(found)
     detail = refused.stderr.split(ADOPT_REFUSED, 1)[1].split(b"\n", 1)[0]
@@ -424,7 +490,7 @@ def test_a_local_path_that_is_not_text_is_unresolvable(tmp_path, answered,
 # --- controls: valid text still adopts, as on main ---------------------------
 
 @needs_filter_repo
-@pytest.mark.parametrize("elected_by", ["José", "Ali‌Reza"],
+@pytest.mark.parametrize("elected_by", ["José", "Ali\u200cReza"],
                          ids=["accented", "zero-width-non-joiner"])
 def test_a_valid_non_ascii_elector_still_adopts(tmp_path, elected_by):
     """`José`, and a name joined with U+200C, which `one_printable_line`
@@ -460,10 +526,17 @@ def test_a_utf8_source_directory_still_adopts_with_local_remotes(tmp_path):
 
 #: Text a file holds: the empty value `plan` records when `git config
 #: user.name` names nobody, a name, a date, the default reference, a literal
-#: backslash, invisible `Cf` characters, and a space that is not ASCII's.
-WRITABLE = ["", "José", "Ali‌Reza", "2026-09-02",
+#: backslash, a space that is not ASCII's, and the invisible `Cf` characters
+#: that are not bidi controls -- the joiners U+200C and U+200D, a byte-order
+#: mark, a soft hyphen, and the marks U+200E, U+200F and U+061C, which set
+#: no span's direction.
+WRITABLE = ["", "José", "Ali\u200cReza", "2026-09-02",
             "openxFactory docs/project-repo-schema.md", "CORP\\rsmith",
-            "日本", "a b", "‮evil", "﻿bom", "a­b"]
+            "日本", "a\u00a0b", "\ufeffbom", "a\u00adb", "a\u200db",
+            "a\u200eb", "a\u200fb", "a\u061cb"]
+
+#: The nine bidi embedding, override and isolate controls, by code point.
+BIDI_CONTROLS = [*range(0x202A, 0x202F), *range(0x2066, 0x206A)]
 
 #: `(value, the words its reason holds)`.
 UNWRITABLE = [
@@ -474,10 +547,14 @@ UNWRITABLE = [
     ("a\r\nb", "a line break"), ("end\n", "a line break"),
     ("a\x0bb", "a line break"), ("a\x0cb", "a line break"),
     ("a\x1cb", "a line break"), ("a\x85b", "a line break"),
-    ("a b", "a line break"), ("a b", "a line break"),
+    ("a\u2028b", "a line break"), ("a\u2029b", "a line break"),
     ("a\x00b", "a control character"), ("a\tb", "a control character"),
     ("a\x1bb", "a control character"), ("a\x7fb", "a control character"),
     ("a\x9fb", "a control character"),
+    ("\u202eevil", "a bidirectional control"),
+    ("\u202a", "a bidirectional control"),
+    ("\u2066x\u2069", "a bidirectional control"),
+    ("\u2069", "a bidirectional control"),
 ]
 
 
@@ -491,17 +568,23 @@ def test_text_a_file_holds_has_no_reason(value):
                          ids=[ascii(v) for v, _ in UNWRITABLE])
 def test_what_no_file_holds_is_named(value, words):
     reason = shape_materialize.unwritable_reason(value)
-    assert reason is not None and words in reason, reason
-    assert reason.isprintable() and reason.isascii()
+    assert reason is not None, ascii(value)
+    assert words in reason, reason
+    assert reason.isprintable(), reason
+    assert reason.isascii(), reason
 
 
-def test_the_question_is_one_printable_line_less_cf():
+def test_the_question_is_one_printable_line_less_cf_but_the_bidi_controls():
     """Every code point, alone: refused exactly when `one_printable_line`
-    refuses it and it is not `Cf`."""
+    refuses it and it is not `Cf`, or when it is one of the nine bidi
+    controls, which are `Cf` and still refused."""
     reason = shape_materialize.unwritable_reason
     printable = shape_materialize.one_printable_line
+    assert {unicodedata.category(chr(code))
+            for code in BIDI_CONTROLS} == {"Cf"}
     wrong = [hex(code) for code in range(sys.maxunicode + 1)
              if (reason(chr(code)) is None)
-             != (printable(chr(code))
-                 or unicodedata.category(chr(code)) == "Cf")]
+             != (code not in BIDI_CONTROLS
+                 and (printable(chr(code))
+                      or unicodedata.category(chr(code)) == "Cf"))]
     assert not wrong, wrong[:20]
