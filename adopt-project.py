@@ -1079,6 +1079,22 @@ def cross_leg_references(source: "Source", entries: list["Entry"],
     the spec leg, and the code that reads them reads ACROSS the assembly root
     mount. The read is one relative path from the code leg — but only once
     somebody edits it, so the plan says which file and the human decides when.
+
+    EVERY NAME IS A NAME (#216). Both inputs are source paths, and git reads
+    each as something else unless told not to. A spec directory passed bare
+    sits where git reads OPTIONS: `-notes/` was a usage error (exit 129, no
+    follow-up), and `-O<cmd>/` was `--open-files-in-pager`, which git runs
+    through a shell -- argv and `shell=False` stop Python running a shell,
+    not git -- so `-e` makes it the pattern. The code entries are pathspecs:
+    `:cache` read as the pathspec `cache` and `*` matched files in the spec
+    leg, so `--literal-pathspecs`. `-l` C-quoted a name outside printable
+    ASCII (`"src/\\303\\234bersicht.py"`), so `-z`, read as `Source.tree`
+    reads names, and each hit is spelled as a question spells a path, with
+    no backticks: one line of UTF-8 whatever its bytes; so is the spec
+    directory's own name. `--no-color`, because `color.grep=always` wraps
+    each name in escapes. A grep that FAILS is said, never read as "no file
+    names it", and so is one that cannot be asked: `-F` splits a pattern at
+    a line feed.
     """
     code_paths = [e.path.rstrip("/") for e in entries if e.leg == "code"]
     spec_dirs = [e.path for e in entries
@@ -1087,27 +1103,53 @@ def cross_leg_references(source: "Source", entries: list["Entry"],
         return []
     out: list[str] = []
     for spec_dir in spec_dirs:
+        named = "".join(map(_spelled_character, spec_dir))
+        if "\n" in spec_dir:
+            # `-F` reads a pattern holding a line feed as one pattern per
+            # line: `a<LF>b/` was searched as `a` OR `b/` and named files
+            # that never mention it, the way `*` did.
+            out.append(_search_by_hand(
+                named, "`git grep` reads each line of a pattern as a pattern "
+                "of its own, so it cannot search for this name"))
+            continue
         proc = subprocess.run(
-            ["git", "grep", "-l", "-I", "-F", spec_dir, source.commit, "--",
-             *code_paths],
-            cwd=str(source.path), capture_output=True, text=True, check=False)
-        hits = [line.split(":", 1)[1] for line in proc.stdout.splitlines()
-                if ":" in line]
+            ["git", "--literal-pathspecs", "grep", "--no-color", "-z", "-l",
+             "-I", "-F", "-e", spec_dir, source.commit, "--", *code_paths],
+            cwd=str(source.path), capture_output=True, check=False)
+        if proc.returncode not in (0, 1):
+            why = _one_line(proc.stderr.decode("utf-8", "replace"))[:300]
+            out.append(_search_by_hand(
+                named, f"`git grep` exited {proc.returncode}: {why}"))
+            continue
+        # `<commit>:<path>` per record; the commit is hex, so the first `:`
+        # ends it and the rest is the path, raw.
+        hits = [_git_path(record.partition(b":")[2])
+                for record in proc.stdout.split(b"\x00") if b":" in record]
         # Fixtures last. A test fixture that mentions `contracts/` is usually
         # quoting a path rather than reading one, and burying the harness that
         # DOES read it under twenty of them is how a follow-up list stops
         # being read at all.
         hits.sort(key=lambda h: ("fixture" in h or h.startswith("tests/"), h))
         for hit in hits[:8]:
+            shown = "".join(map(_spelled_character, hit))
             out.append(
-                f"{code_path}/{hit} names `{spec_dir}`, which moves to the "
+                f"{code_path}/{shown} names `{named}`, which moves to the "
                 f"spec leg: it must read across the assembly root — "
-                f"`../{spec_path}/{spec_dir}` relative to `{code_path}/` — or "
+                f"`../{spec_path}/{named}` relative to `{code_path}/` — or "
                 "take the path from the environment")
         if len(hits) > 8:
             out.append(f"… and {len(hits) - 8} more file(s) under the code leg "
-                       f"naming `{spec_dir}`")
+                       f"naming `{named}`")
     return out
+
+
+def _search_by_hand(named: str, why: str) -> str:
+    """The follow-up for a spec directory git did not search for: the
+    reason, and what to look for instead."""
+    return (f"git could not search the files moving to the code leg for "
+            f"`{named}` ({why}); find the ones that name it by hand: each "
+            f"must read across the assembly root once `{named}` moves to the "
+            "spec leg")
 
 
 def follow_ups_for(source: "Source", entries: list["Entry"], names: dict,
@@ -3857,12 +3899,22 @@ def _stage_the_split(assembly: Path, materialized: Materialized) -> None:
     is staged as `_where_it_landed` spells it, and one whose link leads OUT of
     the assembly is not staged at all: it is not in this repository, and the
     verification reports the pinned file missing.
+
+    AND EACH ONE IS A PATH, NOT A PATHSPEC (#216). A path that landed
+    through a link is the link's target, a name the SOURCE chose, and after
+    `--` git still reads a name as a pathspec: `:ci/workflows/validate.yml`
+    is the magic `:` and the path `ci/...`, which matches nothing and fails
+    the add (`fatal: pathspec ... did not match any files`) after both legs
+    are pushed; `:!ci/...` is an EXCLUDE, which forces nothing by that name,
+    so a file the source's `.gitignore` hides is left out of the split; and
+    `ga[0]/...` is a glob, which forces an ignored `ga0/...` too. So
+    `--literal-pathspecs`: every name is the path it spells.
     """
     run(["git", "add", "-A", "--", "."], cwd=assembly)
     landed = (_where_it_landed(assembly, written)
               for written in materialized.written)
-    run(["git", "add", "-f", "--", *(path for path in landed if path)],
-        cwd=assembly)
+    run(["git", "--literal-pathspecs", "add", "-f", "--",
+         *(path for path in landed if path)], cwd=assembly)
 
 
 def _where_it_landed(assembly: Path, written: str) -> str | None:

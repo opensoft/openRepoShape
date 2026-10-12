@@ -264,13 +264,81 @@ def _member_lines(row: dict) -> list[str]:
     ]
 
 
+def _member_path(project: str, row: dict | None = None) -> str:
+    """The ONE path a member has, `members/<project>` (#299); given the
+    member's row, that path or the refusal that says the row names another.
+
+    THE TOOL WRITES `path:` ITSELF, as this and nothing else (`_member_row`),
+    and `bump` and `remove` used to read it back and hand it to git as it
+    stood. Git reads a path as a pathspec: `path: members/*` made `remove
+    --member Atlas` exit 0 with one commit that unmounted EVERY member while
+    dropping only Atlas's row, and `path: .` made it `git rm -r -f` the
+    holder's own files and die on the missing manifest. A hand edit is outside
+    the supported path (AGENTS.md: do not hand-edit the `members:` block), and
+    the rule this asks is the one `validate-family.py` already records as
+    `member-path`; but the validator runs after a commit, in CI and in the
+    doctor, never in front of these two verbs, so they ask it themselves,
+    BEFORE ANY GIT CALL AND ANY WRITE.
+
+    A row with no `path:` keeps defaulting to it, as it always has, and the
+    comparison is EXACT, as the validator's is: `members/IRRS/`, `members/irrs`
+    and a neighbour's path are each a different string and each refused. The
+    validator keeps its own spelling of this rule on purpose. It ships INTO
+    every holder, as `repo_shape.py` does, so sharing it would move every
+    holder's pin for a refusal of a hand edit.
+
+    A ROW'S PROJECT HAS TO BE A DIRECTORY NAME TOO. Its `path:` is checked
+    against `members/<project>`, so a row that says `project: ..` and `path:
+    members/..` is EQUAL to the expected path and passed the comparison, and
+    `remove` then ran `git rm -r -f -- members/..` over the holder's root,
+    while `project: .` and `path: members/.` unmounted every member in one
+    commit naming one (#299). Each takes two hand edits, the project and the
+    path, and `add` cannot write either: `_checked_member` refuses a `.` or
+    `..` segment as `member-malformed` before the member is read, so
+    `_member_row` is never reached with one. A project that
+    does not make `members/<project>` ONE directory directly under `members/`
+    has no path of its own to be compared with, so it is refused here, under
+    the same code, only when a row is given: what `add` writes (`_member_row`,
+    no row) is as it was.
+    """
+    expected = f"{MEMBERS_DIR}/{project}"
+    if row is not None and (project in ("", ".", "..") or "/" in project):
+        names = {".": f"the {MEMBERS_DIR} directory itself",
+                 "..": "the holder's root"}.get(
+            project, f"no single directory directly under {MEMBERS_DIR}/")
+        raise Refusal(
+            "member-path",
+            f"{project!r} is not a project name: its path would be "
+            f"{expected!r}, which is {names}, not a member. Acting on it "
+            "would unmount more than one member or remove the holder's own "
+            "files, so no git command was run and nothing was written.",
+            "Remediation: this tool never writes such a row, so it is a hand "
+            f"edit. Restore {MANIFEST} from git (`git checkout -- "
+            f"{MANIFEST}` if the edit is not committed), or put the row's "
+            "`project:` and `path:` back as the tool wrote them "
+            f"(`project: <Project>`, `path: {MEMBERS_DIR}/<Project>`), then "
+            "run the command again naming that member.")
+    declared = expected if row is None else str(row.get("path") or expected)
+    if declared != expected:
+        raise Refusal(
+            "member-path",
+            f"{project}: path is {declared!r} in {MANIFEST}, expected "
+            f"{expected!r}. Git would read that value as a pathspec, so no "
+            "git command was run and nothing was written.",
+            "Remediation: this tool writes that field itself, so a different "
+            f"value is a hand edit. Put `path: {expected}` back in "
+            f"{MANIFEST}, or `git checkout -- {MANIFEST}` if the edit is not "
+            "committed, then run the same command again.")
+    return expected
+
+
 def _member_row(project: str, project_id: str, repository: str, commit: str,
                 digest: str) -> dict:
     return {
         "project": project,
         "id": project_id,
         "repository": repository,
-        "path": f"{MEMBERS_DIR}/{project}",
+        "path": _member_path(project),
         "pin": {"revision_kind": "commit", "commit": commit,
                 "tree_sha256": digest},
     }
@@ -291,6 +359,32 @@ def _checked_member(raw: str) -> tuple[str, str]:
             "Remediation: name the owner — a family's members may live in "
             "another organisation, so there is no owner to assume. For "
             "`remove` and `bump`, the bare `<Project>` is what is wanted.")
+    # A SEGMENT THAT IS `.` OR `..` IS A DIRECTORY REFERENCE, NOT A NAME
+    # (#299). `MEMBER_RE`'s class admits the dot, for `.github`, so `<org>/..`
+    # matched, and its mount path `members/..` is the holder's root: on a
+    # fresh holder `_checked_mount_path` found the root's own files "in the
+    # index" under it and told the human to `git rm -r --cached -- members/..`,
+    # which stages the deletion of every file the holder has. The class is
+    # left as it is; only the two names that are no name are refused, before
+    # the member is read or anything is mounted. An owner of `.` or `..`
+    # names no account.
+    owner, _, project = name.partition("/")
+    for which, segment in (("owner", owner), ("project", project)):
+        if segment not in (".", ".."):
+            continue
+        if which == "owner":
+            why = "no organisation or account is called that"
+        else:
+            where = ("the members directory itself" if segment == "."
+                     else "the holder's root")
+            why = f"it would mount at {MEMBERS_DIR}/{segment}, {where}"
+        raise Refusal(
+            "member-malformed",
+            f"--member {raw!r} has `{segment}` as its {which}, which is a "
+            f"directory reference and not a name: {why}",
+            "Remediation: name the repository as `<org>/<Project>`, each a "
+            "real name; `.` and `..` are neither, though a name may contain "
+            "a dot (`.github`).")
     checked_value("--member", name)
     return name, repo_basename(name)
 
@@ -425,12 +519,47 @@ def _commit_one(root: Path, message: str, paths: list[str],
     scaffold and `update-shape.py` share, so it is called here rather than
     spelled a second time; `bump`'s re-stage before its nothing-to-record
     check is the same call, for the same reason.
+
+    THE COMMIT READS THEM LITERALLY TOO (#299). The stage above was literal
+    and `git commit -- <paths>` was not, so a path that is a glob to git
+    committed whatever else it matched: with `members/*` named, the move of
+    every OTHER member's gitlink somebody had staged went into this commit
+    beside the one it was for. `bump` and `remove` hand it a path that is
+    always `members/<project>` (`_member_path`); the magic is the guard that
+    does not depend on that being so.
+
+    PER-PATHSPEC `:(literal)`, NOT THE GLOBAL `--literal-pathspecs`, ON THIS
+    ONE CALL. The global option works by putting `GIT_LITERAL_PATHSPECS=1` in
+    git's environment, and every child of `git commit` inherits it: the
+    holder's `pre-commit`, `commit-msg` and `post-commit` hooks, its own or the
+    operator's `core.hooksPath`. A hook that picks the staged files with a
+    glob (`git diff --cached --name-only -- '*.yaml'`) then matched nothing,
+    and a linter behind it checked nothing, on every `add`, `bump` and
+    `remove` commit. The magic is spelled on each path and reaches no hook. It
+    is right for a path `git rm` took out of the index and the tree, which the
+    commit still matches in HEAD. `deinit`, `rm` and `diff` run no COMMIT
+    hooks, so they keep the global option (`rm`, like `force_stage`'s `add`,
+    writes the index, so a `post-index-change` hook still sees the variable
+    after them; that is theirs and predates this).
+
+    THE CALLER'S OWN `GIT_LITERAL_PATHSPECS` IS DROPPED FROM THIS ONE COMMIT'S
+    ENVIRONMENT. The variable turns pathspec magic OFF, and `:(literal)` is
+    magic: with it exported (a safety default, or a `family.py` run from a
+    hook or alias of a `git --literal-pathspecs` command, which exports it to
+    its children) git took `:(literal)family.yaml` as a file of that name,
+    found none, and every `add`, `bump` and `remove` commit failed, `bump` and
+    `remove` leaving the pin or the unmount staged with no rollback. The
+    commit's paths are literal by their magic and need no help from the
+    environment. Only this variable: the other pathspec variables turn magic
+    ON or change only how a glob matches, and the magic still reads.
     """
     force_stage(root, paths if add is None else add)
     message, trailer_args = commit_trailers(message, trailers)
-    args = ["git", "commit", "-q", "-F", "-", *trailer_args, "--", *paths]
+    args = ["git", "commit", "-q", "-F", "-", *trailer_args, "--",
+            *[f":(literal){path}" for path in paths]]
     check_program(args)
     env = dict(os.environ)
+    env.pop("GIT_LITERAL_PATHSPECS", None)
     for key, fallback in (("GIT_AUTHOR_NAME", "openRepoShape family"),
                           ("GIT_COMMITTER_NAME", "openRepoShape family"),
                           ("GIT_AUTHOR_EMAIL", "family@openreposhape.invalid"),
@@ -945,24 +1074,62 @@ def _module_dir(root: Path, path: str) -> tuple[str, Path]:
 INDEX_ENTRY_KINDS = {0o160000: "a submodule", 0o120000: "a symlink"}
 
 
+def _index_records(root: Path) -> dict[bytes, list[bytes]]:
+    """Every entry of the holder's index, `{name: its records}`: one record
+    per stage, each as `git ls-files -s -z` prints it, which is the form
+    `git update-index --index-info` takes back.
+
+    THE WHOLE INDEX, WITH NO PATHSPEC, so no pathspec setting in the
+    environment can narrow what is read. `_index_entries` picks a mount
+    path's entries out of it, and `MountRollback` compares all of it, before
+    the mount and after the unwind (#302). `-z`, for a name git would
+    otherwise quote.
+    """
+    listed = git_out(["ls-files", "-s", "-z"], cwd=root, binary=True)
+    records: dict[bytes, list[bytes]] = {}
+    for record in listed.split(b"\0"):
+        if record:
+            records.setdefault(record.partition(b"\t")[2], []).append(record)
+    return records
+
+
 def _index_entries(root: Path, path: str) -> list[tuple[str, str]]:
     """`(name, kind)` of every entry the holder's index holds AT `path` or
-    UNDER it: what `git submodule add` refuses, without `--force`, as
-    "already exists in the index".
+    UNDER it, IN ANY CASE: what `git submodule add` refuses, without
+    `--force`, as "already exists in the index", and what a clone on a
+    case-insensitive disk takes for the same path. One per record, as git
+    lists them, so a conflicted path counts once per stage, and each is
+    spelled as the index spells it.
 
-    The pathspec is the one git's own check is made with, taken literally:
-    `members/IRRS` selects `members/IRRS` and `members/IRRS/...`, and never
-    `members/IRRSX`. `-z`, for a name git would otherwise quote.
+    ANY CASE, ON EVERY DISK, whatever the holder's `core.ignorecase` says,
+    as adopt's `_index_entries` asks (#302). A holder is cloned on macOS and
+    Windows too, where `Members/IRRS` and `members/IRRS` are ONE path. With
+    `core.ignorecase` set, `git submodule add` staged the member's own files
+    under the variant the index held (an entry `Members/IRRS/README` had 19
+    staged beside it). The commit's pathspec then matched nothing, and the
+    unwind, which asks for exact names, left all 19 staged while saying the
+    holder was exactly as it was.
+
+    LITERAL, AND SO ASKED WITH NO PATHSPEC AT ALL. git refuses
+    `--literal-pathspecs` beside `--icase-pathspecs`, and `--icase-pathspecs`
+    alone reads `*` and `?` as globs. `:(literal,icase)` magic is not parsed
+    at all when the environment sets `GIT_LITERAL_PATHSPECS`, and then it
+    matches nothing, without a word. So the whole index is listed and the
+    names are compared here, with ASCII case folded, as git's own `icase`
+    folds it: `members/IRRS` selects `MEMBERS/irrs` and `members/IRRS/...`,
+    and never `members/IRRSX`, nor a `members/IRR?` that a glob would match.
     """
-    raw = git_out(["--literal-pathspecs", "ls-files", "-s", "-z", "--", path],
-                  cwd=root, binary=True)
+    # ASCII only, as git's `icase` folds; APFS and NTFS fold more (`ſ` is
+    # `s` to them), which no git check of a pathspec follows either.
+    wanted = path.encode("utf-8").lower()
     entries = []
-    for record in raw.split(b"\0"):
-        if record:
-            head, _, name = record.partition(b"\t")
-            entries.append((name.decode("utf-8", "replace"),
-                            INDEX_ENTRY_KINDS.get(int(head.split()[0], 8),
-                                                  "a file")))
+    for name, records in _index_records(root).items():
+        folded = name.lower()
+        if folded == wanted or folded.startswith(wanted + b"/"):
+            entries.extend((name.decode("utf-8", "replace"),
+                            INDEX_ENTRY_KINDS.get(int(record.split()[0], 8),
+                                                  "a file"))
+                           for record in records)
     return entries
 
 
@@ -1033,17 +1200,41 @@ def _checked_mount_path(root: Path, project: str, path: str) -> None:
             "directory. Remove it (`git rm -r` if it is tracked), then re-run.")
     held = _index_entries(root, path)
     if held:
-        at_it = [entry for entry in held if entry[0] == path]
+        at_it = [entry for entry in held if entry[0].lower() == path.lower()]
         name, kind = (at_it or held)[0]
         more = f" and {len(held) - 1} more" if len(held) > 1 else ""
+        # IN ANY CASE, AND NAMED AS THE INDEX SPELLS IT (#302). `git rm`
+        # matches a pathspec case-sensitively even with `core.ignorecase`
+        # set, so the remediation names each spelling of the mount path the
+        # index holds. That is `path` itself when the case is the same. A
+        # removal staged under another spelling is one the add's commit,
+        # whose pathspec is `path`, does not carry. So where HEAD holds the
+        # variant, the removal is committed first. Otherwise HEAD keeps the
+        # variant beside the member, or, with `core.ignorecase` set, records
+        # the gitlink under a spelling other than `path` (`MEMBERS/ATLAS/...`
+        # gave `MEMBERS/Atlas`, and kept its file too), or both, while
+        # `.gitmodules` and the manifest say `path`.
+        variant = name[:len(path)]
+        spelled = " ".join(sorted({entry[0][:len(path)] for entry in held}))
         raise Refusal(
             "member-path-taken",
             f"the family root's index holds `{name}` ({kind}){more}"
-            + ("" if at_it else f" under {path}") + f", though nothing is at "
-            f"{path} on disk and no `members:` row names it",
+            + ("" if at_it else f" under {variant}")
+            + ("" if variant == path else
+               f", the same path as {path} on a case-insensitive disk")
+            + f", though nothing is at {path} on disk and no `members:` row "
+            "names it",
             "Remediation: this is a half-finished add or a hand edit. `git rm "
-            f"-r --cached -- {path}` takes it out of the index and touches no "
-            "file; then re-run.")
+            f"-r --cached -- {spelled}` takes it out of the index and touches "
+            "no file; "
+            + ("then " if spelled == path else
+               "where HEAD holds it too, commit that removal first, since the "
+               f"add's own commit names {path} alone: otherwise HEAD keeps "
+               "the other spelling beside the member, or, with "
+               "`core.ignorecase` set, records the member's gitlink under a "
+               f"spelling other than the {path} that {GITMODULES} and "
+               f"{MANIFEST} say, or both; then ")
+            + "re-run.")
     try:
         run(["git", "--literal-pathspecs", "add", "--dry-run",
              "--ignore-missing", "-f", "--no-warn-embedded-repo", "--", path],
@@ -1352,6 +1543,16 @@ class MountRollback:
     moved the one commit happened: undoing the tree under it would leave a
     working copy that contradicts its own history, so nothing is undone and
     the sentence says so.
+
+    "EXACTLY AS IT WAS" ONLY FOR WHAT WAS COMPARED (#302). Each step puts
+    back what it recorded, by its exact name. git can stage under a name no
+    step asks for: with `core.ignorecase` set, a mount whose directory the
+    index already holds in another case is staged in that case, and the
+    commit's pathspec then matches nothing. So the WHOLE index is recorded
+    too, and `undo` compares it after its steps. Only when the two agree
+    does the sentence say the holder is as it was. When they do not, it
+    names what differs and sends the human to `git ls-files -s`, and the one
+    command that changes anything, `git rm -r --cached`, touches no file.
     """
 
     def __init__(self, root: Path, path: str) -> None:
@@ -1367,6 +1568,9 @@ class MountRollback:
         #: and takes a commit it names now, and did not then, as the one
         #: commit having landed.
         self.head = self._head()
+        #: The whole index, which `undo` compares with the index after its
+        #: steps (#302).
+        self.index = _index_records(root)
         self.gitlink = self._entries(path)
         self.files = {name: (self._bytes(name), self._entries(name))
                       for name in (GITMODULES, MANIFEST)}
@@ -1476,9 +1680,34 @@ class MountRollback:
                 cwd=self.root)
         return True
 
+    def _index_moved(self) -> str:
+        """What the index holds now that it did not hold before the mount,
+        what it has lost, and what it holds staged differently, each named
+        up to five times in the index's order. Returns "" when the index is
+        the one the constructor recorded (#302)."""
+        now = _index_records(self.root)
+        if now == self.index:
+            return ""
+        parts = []
+        for said, names in (
+                ("new in it", [name for name in now
+                               if name not in self.index]),
+                ("gone from it", [name for name in self.index
+                                  if name not in now]),
+                ("staged differently", [name for name in now
+                                        if name in self.index
+                                        and now[name] != self.index[name]])):
+            if names:
+                shown = ", ".join(f"`{name.decode('utf-8', 'replace')}`"
+                                  for name in names[:5])
+                more = f" and {len(names) - 5} more" if len(names) > 5 else ""
+                parts.append(f"{said}: {shown}{more}")
+        return "; ".join(parts)
+
     def undo(self) -> str:
         """Put the holder back. Returns the sentence a refusal ends with:
-        what was put back, or — if any of it could not be — what is left."""
+        what was put back, or — if any of it could not be — what is left,
+        and, where the index is not the one recorded, what differs in it."""
         # NO HEAD IS NOT A COMMIT THAT LANDED: a holder with no commit yet
         # reads None before and after, and so does one whose HEAD names no
         # readable commit. Only a commit HEAD now names and did not before
@@ -1514,12 +1743,42 @@ class MountRollback:
                               f"was: {_reason(exc.cause)}")
             except (CommandFailed, Refusal, OSError) as exc:
                 failed.append(f"{said}: {_reason(exc)}")
+        # THE WHOLE INDEX, once every step has been asked (#302). A partial
+        # unwind already says it is one, and names `git status`. An index
+        # that cannot be read back leaves the steps undone but unconfirmed,
+        # and the sentence says exactly that.
+        moved, unread = "", None
+        if not failed:
+            try:
+                moved = self._index_moved()
+            except Refusal as exc:
+                unread = _reason(exc)
         if failed:
             return (" The mount was undone only in part"
                     + (" (" + ", ".join(restored) + ")" if restored else "")
                     + "; NOT " + "; NOT ".join(failed) + ". Put those back "
                     "by hand — `git status` shows what is left — before "
                     "running `add` again.")
+        undone = ((" Nothing was committed: the mount has been undone — "
+                   + ", ".join(restored) + " —") if restored else
+                  " Nothing was committed,")
+        # `git ls-files -s` is where both sentences send the human: it lists
+        # every record the index holds now, so an entry that is new, or
+        # staged differently, can be read there record by record. An entry
+        # that is gone is in no listing at all, which is why the sentence
+        # names it. `git status` compares the index with HEAD, not with the
+        # index before this command, so it is not that comparison either.
+        if unread is not None:
+            return (undone + " but the holder's index could not be read back "
+                    "to confirm it is as it was before this command: "
+                    f"{unread}. Check it before running `add` again: `git "
+                    "ls-files -s` lists what the index now holds.")
+        if moved:
+            return (undone + " but the holder's index is NOT as it was before "
+                    f"this command ({moved}). Put it back before running "
+                    "`add` again: `git ls-files -s` lists what the index now "
+                    "holds, and `git rm -r --cached -- <path>` takes a path "
+                    "new in it back out and touches no file.")
         if restored:
             return (" Nothing was added: the mount has been undone — "
                     + ", ".join(restored) + " — and the holder is exactly as "
@@ -1620,7 +1879,7 @@ def cmd_add(args) -> int:
     """
     family = Family.open(args.family_root)
     repository, project = _checked_member(args.member)
-    path = f"{MEMBERS_DIR}/{project}"
+    path = _member_path(project)
     at = _checked_add_target(family, repository, project, path, args.at)
 
     url = _member_url(repository, args.local_remote_dir)
@@ -1681,10 +1940,15 @@ def _nothing_to_record(root: Path, paths: list[str]) -> bool:
     its HEAD is. The caller has staged the gitlink first, as `_commit_one`
     would, so a stray one in the index is not a difference. Exit 1 is git's
     "there is a difference"; any other failure is a real one and propagates.
+
+    THE PATHS ARE TAKEN LITERALLY (`--literal-pathspecs`, #299), as the
+    commit this answers for takes them: a glob here would find the
+    difference in a neighbouring member and answer "something to record" for
+    a member that has nothing, so the commit would go ahead.
     """
     try:
-        run(["git", "diff", "--quiet", "--ignore-submodules=dirty", "HEAD",
-             "--", *paths], cwd=root)
+        run(["git", "--literal-pathspecs", "diff", "--quiet",
+             "--ignore-submodules=dirty", "HEAD", "--", *paths], cwd=root)
     except CommandFailed as exc:
         if exc.code == 1:
             return False
@@ -1710,7 +1974,9 @@ def cmd_bump(args) -> int:
             f"--to {args.to!r} is not a 40-hex commit",
             "Remediation: pass the full 40 characters. A tag can be moved and "
             "a commit cannot; a pin is a commit or it is nothing.")
-    path = str(row.get("path") or f"{MEMBERS_DIR}/{project}")
+    # THE ROW'S `path:` IS CHECKED, NOT TRUSTED (#299): `member` below, the
+    # fetch and checkout in it, and every pathspec after them are this path.
+    path = _member_path(project, row)
     member = family.root / path
     if not (member / ".git").exists():
         raise Refusal(
@@ -1799,13 +2065,24 @@ def cmd_remove(args) -> int:
             "something that is not a member is a no-op worth refusing, "
             "because the argument is usually a typo for something that is.")
     project = str(row["project"])
-    path = str(row.get("path") or f"{MEMBERS_DIR}/{project}")
+    # THE ROW'S `path:` IS CHECKED, NOT TRUSTED (#299), before the first git
+    # call: `path: members/*` unmounted every member under one commit naming
+    # one, and `path: .` removed the holder's own files.
+    path = _member_path(project, row)
     # THE MEMBER REPOSITORY IS NOT TOUCHED. Removing a member unmounts it from
     # this holder and nothing else: the project keeps its name, its history,
     # its legs and its gate. A family that could delete a project by dropping
     # a row would be a family that confers something.
-    run(["git", "submodule", "deinit", "-f", "-q", "--", path], cwd=family.root)
-    run(["git", "rm", "-r", "-q", "-f", "--", path], cwd=family.root)
+    #
+    # BOTH CALLS TAKE THE PATH LITERALLY (`--literal-pathspecs`, #299), the
+    # global option, which `git submodule` honours too: the path is always
+    # `members/<project>` here, so this is defence in depth that does not
+    # depend on the row being right. Without it a glob in the path would
+    # unmount and remove every member it matched.
+    run(["git", "--literal-pathspecs", "submodule", "deinit", "-f", "-q",
+         "--", path], cwd=family.root)
+    run(["git", "--literal-pathspecs", "rm", "-r", "-q", "-f", "--", path],
+        cwd=family.root)
     family.write_members([r for r in family.members
                           if str(r.get("project")) != project])
     head = _commit_one(
