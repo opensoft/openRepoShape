@@ -687,9 +687,11 @@ options:
                         create a bare repository here instead of calling `gh
                         repo create` (the TEST path; no network)
   --into DIR            the PARENT directory the family folder is made in
-                        (default: the directory you are standing in). The
-                        holder lands at <into>/<Family>/<Family>, beside where
-                        `make siblings` clones the members.
+                        (default: the directory you are standing in, which is
+                        refused inside a checkout of openRepoShape: from its
+                        root, pass `--into ..`). The holder lands at
+                        <into>/<Family>/<Family>, beside where `make siblings`
+                        clones the members.
   --work-dir WORK_DIR   THE OVERRIDE: land the holder at <work-dir>/<Family>
                         and make no family folder at all. Mutually exclusive
                         with --into.

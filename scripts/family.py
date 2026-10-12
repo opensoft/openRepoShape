@@ -715,6 +715,85 @@ SIBLINGS_SCRIPT = (SHAPE_ROOT / "templates" / "family-root" / "scripts" /
                    "siblings.py")
 
 
+def _family_script() -> str:
+    """This file as the person who ran it names it from where they stand
+    (#488): the path its NEXT lines run it by.
+
+    `init`'s NEXT STEPS printed `Path(__file__).name`, `family.py`, which
+    runs only from `scripts/`. AGENTS.md runs `init` from the standard's
+    root, where that line failed `can't open file`, exit 2. So the path is
+    RELATIVE TO THE DIRECTORY THE COMMAND WAS RUN FROM: from the root it is
+    `scripts/family.py`, as `setup-project.py`, `validate-family.py`,
+    AGENTS.md and README spell it, and from anywhere else it is the path
+    that reaches this file from there. It is absolute where no relative path
+    exists, another drive on Windows, or where that directory is gone.
+    """
+    here = Path(__file__).resolve()
+    try:
+        return os.path.relpath(here, Path.cwd())
+    except (ValueError, OSError):
+        return str(here)
+
+
+def _standard_checkout(start: Path) -> Path | None:
+    """The checkout of openRepoShape that `start` is, or lies inside, or
+    None (#488).
+
+    A checkout is a directory holding `scripts/family.py` beside
+    `templates/family-root/`, which is what this file needs of its own
+    (`SIBLINGS_SCRIPT`, `FAMILY_TEMPLATE`), so it is found whatever the
+    directory is called and whichever copy of the standard is asked: this
+    one, another clone, an install. `os.path`'s tests, which answer False
+    for a directory this user cannot search rather than raising.
+    """
+    for directory in (start, *start.parents):
+        if os.path.isfile(directory / "scripts" / "family.py") and \
+                os.path.isdir(directory / "templates" / "family-root"):
+            return directory
+    return None
+
+
+def _refuse_landing_in_standard(into: Path, holder: Path,
+                                family: str) -> None:
+    """`family-landing-in-standard`: with neither `--into` nor `--work-dir`,
+    `init` refuses to land inside a checkout of openRepoShape (#488).
+
+    AGENTS.md spelled the command `python3 scripts/family.py init ...`, a
+    path that runs from the standard's root, and `--into` defaults to where
+    the person stands, so the command followed exactly printed `landing
+    <standard>/<Family>/<Family>` with no word, and `make siblings` would
+    then have cloned every member into the standard's tree too. README's
+    example passes `--into ..`, and so does AGENTS.md's now; this is the
+    refusal for the run that does not. An explicit `--into` or `--work-dir`
+    is somebody's choice of a place and is not second-guessed.
+
+    THE REMEDY NAMES `--into ..` FROM THE ROOT, and from deeper inside the
+    checkout the relative path that reaches its parent from there, so the
+    printed flag lands the family beside the checkout wherever the person
+    stands. Asked before anything is created, under `--dry-run` alike.
+    """
+    checkout = _standard_checkout(into)
+    if checkout is None:
+        return
+    beside = checkout.parent
+    try:
+        parent = os.path.relpath(beside, into)
+    except ValueError:  # another drive on Windows
+        parent = str(beside)
+    raise Refusal(
+        "family-landing-in-standard",
+        f"with neither --into nor --work-dir the holder lands where you are "
+        f"standing, at {holder}, which is inside {checkout}, a checkout of "
+        "openRepoShape itself (it holds scripts/family.py and "
+        "templates/family-root/). The family would be part of the "
+        "standard's tree, and `make siblings` would clone every member into "
+        "it too. Nothing was created, and `--dry-run` refuses the same.",
+        f"Remediation: pass `--into {parent}` to land it beside this "
+        f"checkout, at {beside / family / family}, or `--into <dir>` for any "
+        "other parent directory; `--work-dir <dir>` is the override "
+        "(`<dir>/<Family>`, no family folder). There is no --force.")
+
+
 def _landing(args, family: str) -> tuple[Path | None, Path]:
     """`(the family folder, the holder)` — WHERE `init` PUTS THINGS.
 
@@ -735,22 +814,28 @@ def _landing(args, family: str) -> tuple[Path | None, Path]:
     `--work-dir` keeps today's semantics untouched (`<work-dir>/<Family>`, no
     folder made) because every test and every rehearsal in this suite passes
     it, and a flag that quietly changed meaning is worse than a second flag.
+
+    THE DEFAULT IS REFUSED INSIDE A CHECKOUT OF THE STANDARD (#488,
+    `_refuse_landing_in_standard`), after the holder-already-here question:
+    a holder that exists there is the more specific answer.
     """
     if args.work_dir is not None:
         return None, args.work_dir.expanduser().resolve() / family
     into = (args.into or Path.cwd()).expanduser().resolve()
-    if into.name == family:
-        if (into / family / MANIFEST).is_file():
-            raise Refusal(
-                "family-holder-already-here",
-                f"{into} is already the {family} family folder and its holder "
-                f"is at {into / family}, so there is nothing to init",
-                "Remediation: `family.py add --family-root "
-                f"{into / family} --member <org>/<Project>` grows it, and "
-                "`make siblings` in the holder puts each member's working "
-                "clone beside it. There is no --force.")
-        return into, into / family
-    return into / family, into / family / family
+    if into.name == family and (into / family / MANIFEST).is_file():
+        raise Refusal(
+            "family-holder-already-here",
+            f"{into} is already the {family} family folder and its holder "
+            f"is at {into / family}, so there is nothing to init",
+            f"Remediation: `{PYTHON} {_family_script()} add --family-root "
+            f"{into / family} --member <org>/<Project>` grows it, and "
+            "`make siblings` in the holder puts each member's working "
+            "clone beside it. There is no --force.")
+    folder, holder = ((into, into / family) if into.name == family else
+                      (into / family, into / family / family))
+    if args.into is None:
+        _refuse_landing_in_standard(into, holder, family)
+    return folder, holder
 
 
 def _checked_family_identity(args) -> tuple[str, str, str]:
@@ -1049,7 +1134,7 @@ def _print_next_steps(args, work: Path, folder: Path | None) -> None:
     print(f"""
 NEXT STEPS
 
-    {PYTHON} {Path(__file__).name} add --family-root {work} \\
+    {PYTHON} {_family_script()} add --family-root {work} \\
         --member {args.org}/<Project>
     cd {work} && make siblings
 
@@ -4339,7 +4424,9 @@ def build_parser() -> argparse.ArgumentParser:
                            "`gh repo create` (the TEST path; no network)")
     init.add_argument("--into", type=Path, default=None, metavar="DIR",
                       help="the PARENT directory the family folder is made "
-                           "in (default: the directory you are standing in). "
+                           "in (default: the directory you are standing in, "
+                           "which is refused inside a checkout of "
+                           "openRepoShape: from its root, pass `--into ..`). "
                            "The holder lands at <into>/<Family>/<Family>, "
                            "beside where `make siblings` clones the members.")
     init.add_argument("--work-dir", type=Path, default=None,

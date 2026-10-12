@@ -359,22 +359,22 @@ nothing. Use one when the parts DEPLOY SEPARATELY; one project is what parts
 that ship together already are.
 
 ```sh
-python3 scripts/family.py init --org <org> --family <Name> [--reuse-empty-repo]
+python3 scripts/family.py init --org <org> --family <Name> --into .. [--reuse-empty-repo]
 python3 scripts/family.py add  --family-root <path> --member <org>/<Project>
 python3 scripts/family.py bump --family-root <path> --member <Project> --to <sha>
 python3 scripts/family.py siblings --family-root <path>
 ```
 
-1. **`init` creates a repository, so the human must say so first.** There is
-   no prompt here — `family.py` is not `setup.sh` — which makes it your job
-   to get an explicit yes before you run it, and to run `--dry-run` first and
-   show them the plan. If `<org>/<Name>` already exists and is EMPTY, add
-   `--reuse-empty-repo`; if it has commits, stop and ask.
+1. **`init` creates a repository, so the human must say so first.** No
+   prompt asks — `family.py` is not `setup.sh` — so get an explicit yes, and
+   run `--dry-run` first and show them the plan. If `<org>/<Name>` exists and
+   is EMPTY, add `--reuse-empty-repo`; if it has commits, stop and ask.
    **It lands at `<into>/<Family>/<Family>`** — `--into` is the PARENT
-   directory and defaults to where you are standing, the folder `<Family>/`
-   is created in it, and the holder goes inside that. Standing in the family
-   folder already, it does not nest a second one. `--work-dir <dir>` is the
-   override (`<dir>/<Family>`, no folder) and the two are refused together.
+   directory, the folder `<Family>/` is made in it (not again when you stand
+   in it already) and the holder goes inside that. `--into` defaults to where
+   you stand, refused inside a checkout of this standard, hence `--into ..`
+   above (`family-landing-in-standard`). `--work-dir <dir>` is the override
+   (`<dir>/<Family>`, no folder) and the two are refused together.
    Say the landing path back to the human: the doubled `<Family>/<Family>` is
    deliberate and reads like a mistake until somebody explains it.
 2. **A family pins ASSEMBLY ROOTS, never legs.** `--member <org>/<Project>`,
