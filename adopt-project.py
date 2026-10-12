@@ -1899,7 +1899,9 @@ def _manifest_values(plan: Plan, naming: NamingPolicy) -> dict | None:
     would build it from this plan, FOR VALIDATION AND NEVER FOR WRITING; None
     where the plan's names are not ones the naming policy classifies, which
     `check` and `execute` report in their own words (`_check_names`) and the
-    manifest cannot be rendered without.
+    manifest cannot be rendered without, and None where its `elected_on:` is
+    a date `election_date` refuses, which `_elected_on_findings` reports in
+    the plan key's own words (#294).
 
     `_template_table` is asked, not copied, and `execute`'s `_template_values`
     is that same table with the real commit and digest, so the table cannot
@@ -1909,7 +1911,8 @@ def _manifest_values(plan: Plan, naming: NamingPolicy) -> dict | None:
     `git` runs here and a checkout that cannot name its revision is asked the
     same question as any other. A refusal of the plan's own names, id,
     organisation or leg paths is raised here as it is by `check` and `execute`
-    a few lines later.
+    a few lines later. The organisation and the id are asked BEFORE the date
+    is: a bad date does not change which problem either command names first.
     """
     if not isinstance(plan.legs, dict):
         # The doctor's PLACEMENT plan writes `legs:` as a list (see
@@ -1922,12 +1925,21 @@ def _manifest_values(plan: Plan, naming: NamingPolicy) -> dict | None:
         _check_names(naming, names, pins)
     except Refusal:
         return None
+    # The organisation and the id are asked BEFORE the date's guard below.
+    # `checked_value` refuses an `org:` this tool will not put on a command
+    # line (`unsafe-value`; `execute` meets it first, in `_repository_urls`),
+    # and `Plan.project_id` refuses an `id:` that is not a project id
+    # (`plan-bad-id`; `_template_table` reads it again). After the guard,
+    # neither was asked of a plan whose date is a finding: `check` listed the
+    # date where `execute` refused the organisation, and refused the id where
+    # `execute` refused the date.
+    org = checked_value("org", plan.get("org"))
+    _ = plan.project_id
     if _elected_on_findings(plan):
         # Reported in the plan key's own words (#294), and the reference the
         # manifest records is chosen BY that date when the plan names none:
         # there is no manifest to ask about until it is one.
         return None
-    org = checked_value("org", plan.get("org"))
     repositories = {role: f"{org}/{name}" for role, name in names.items()}
     (_, spec_path), (_, code_path) = _plan_leg_paths(plan)
     return _template_table(
@@ -1940,8 +1952,8 @@ def _manifest_findings(plan: Plan, misreads_elsewhere: bool = False
                        ) -> tuple[list[str], list[str]]:
     """What the project's own validator would refuse of this plan's values,
     as `check` prints them (one FINDING each), and what it prints once after
-    them. `[]` and `[]` when it would pass, or when the plan's names are
-    refused in their own words (`_manifest_values`).
+    them. `[]` and `[]` when it would pass, or when the plan's names, or its
+    date, are refused in their own words (`_manifest_values`).
 
     `misreads_elsewhere` is for a caller whose list ALSO holds a misread
     rule's finding for each value the project's reader reads back as another

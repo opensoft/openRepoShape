@@ -670,6 +670,46 @@ def test_execute_refuses_an_elected_on_it_cannot_read_before_any_leg(
     assert DATE_FLAG not in str(refusal)
 
 
+#: An `org:` or `id:` the plan refuses in its own words, by test id: the line
+#: `plan` writes, the hand edit, and the code `check` and `execute` both
+#: refuse it under. Beside an `elected_on:` that is a finding, the date's
+#: guard in `_manifest_values` used to return before either was asked, so
+#: the two commands named different first problems.
+REFUSED_BESIDE_A_BAD_DATE = {
+    "org-unsafe": ("org: testorg", 'org: "-evil"', "unsafe-value"),
+    "id-bad": ("id: northwind", 'id: "North Wind"', "plan-bad-id"),
+}
+
+
+@pytest.mark.parametrize("reference", [True, False],
+                         ids=["reference-kept", "no-reference"])
+@pytest.mark.parametrize("edit", sorted(REFUSED_BESIDE_A_BAD_DATE))
+def test_a_bad_date_does_not_change_what_check_and_execute_refuse_first(
+        adopter, world, edit, reference):
+    """A plan with `elected_on: someday` AND an `org:` or `id:` it refuses:
+    `check` and `execute` refuse it under the same code, the organisation's
+    or the id's, as they do with no date guard, and no leg is created. With
+    both asked after the guard, `check` listed only the date (exit 1) where
+    `execute` refused `unsafe-value`, and `check` refused `plan-bad-id` where
+    `execute` refused the date."""
+    line, edited, code = REFUSED_BESIDE_A_BAD_DATE[edit]
+    text = with_elected_on(world.answered, "someday", reference)
+    assert line in text, f"`plan` wrote no `{line}` line"
+    plan = write_edited(world, text.replace(line, edited, 1))
+
+    checked = run_check(plan)
+    assert checked.returncode == 2, checked.stderr + checked.stdout
+    assert_no_traceback(checked)
+    first = next((said for said in checked.stderr.splitlines()
+                  if said.startswith("REFUSED ")), "")
+    assert first.startswith(f"REFUSED {code}: "), checked.stderr
+
+    refusal = refused_by(adopter, execute_args(world.tmp, plan))
+    assert refusal.code == code
+    no_leg_was_created(world.tmp)
+    assert source_branches(world.source) == ["main"]
+
+
 @pytest.mark.parametrize("value,reference", [
     ('"2026-09-02"', False), ('"2026-06-01"', False), ('"2026-09-02"', True),
     ("null", False)])
