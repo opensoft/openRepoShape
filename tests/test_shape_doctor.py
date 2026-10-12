@@ -2584,6 +2584,68 @@ def test_the_issues_own_merge_takes_one_side_of_the_shapes_files_whole(
     assert b"<<<<<<<" in own.read_bytes()
 
 
+def test_a_bad_pin_staged_where_head_holds_none_is_put_back_from_history(
+        standard, project):
+    """`A ` in the status: the pin was deleted in a commit, then a bad one
+    staged at its path. HEAD holds no pin, so `checkout HEAD` would name a
+    path HEAD does not have; the NEXT reaches back past the deletion."""
+    pin = project / SHAPE_PIN
+    good = pin.read_text(encoding="utf-8")
+    git("rm", "-q", "--", SHAPE_PIN, cwd=project)
+    deleting = commit_in(project, "drop the pin")
+    pin.write_bytes(not_forty_hex(good))
+    git("add", "--", SHAPE_PIN, cwd=project)
+    status = git("status", "--porcelain=v1", "--", SHAPE_PIN,
+                 cwd=project).stdout
+    assert status.startswith("A "), status
+    row = rows_of(doctor(standard, project, "--json"))["shape-currency"]
+    assert row["detail"]["error"] == "update-pin-commit", row["detail"]
+    assert row["detail"]["restore"] == "committed", row["detail"]
+    assert pasted(row["next"])[3:] == [
+        "checkout", f"{deleting}~1", "--", SHAPE_PIN], row["next"]
+    run_pasted(row["next"])
+    compliant_again(standard, project)
+
+
+def test_a_merge_where_only_the_other_side_holds_a_pin_takes_theirs(
+        standard, project):
+    """`DU`: this branch deleted the pin and the other changed it, so only
+    `--theirs` holds one -- `--ours` would refuse the path by name -- and the
+    note says that one side is all there is.
+
+    Git leaves the other side's pin in the tree, and that one reads; the
+    row is reached once somebody keeping this branch's deletion removes it
+    too, with the merge still unfinished.
+    """
+    base = git("rev-parse", "HEAD", cwd=project).stdout.strip()
+    git("checkout", "-q", "-b", "edit", base, cwd=project)
+    break_the_pin(project, pin_with(r'^commit: .*$',
+                                    'commit: "' + "1" * 40 + '"'))
+    git("add", "--", SHAPE_PIN, cwd=project)
+    commit_in(project, "edit the pin")
+    git("checkout", "-q", "-b", "drop", base, cwd=project)
+    git("rm", "-q", "--", SHAPE_PIN, cwd=project)
+    commit_in(project, "drop the pin")
+    merged = subprocess.run(["git", "merge", "-q", "edit"],
+                            cwd=str(project), capture_output=True, text=True,
+                            check=False, env={**os.environ, **GIT_IDENTITY})
+    assert merged.returncode != 0, merged.stdout + merged.stderr
+    (project / SHAPE_PIN).unlink()
+    status = git("status", "--porcelain=v1", "--", SHAPE_PIN,
+                 cwd=project).stdout
+    assert status.startswith("DU "), status
+    row = rows_of(doctor(standard, project, "--json"))["shape-currency"]
+    assert row["detail"]["error"] == "update-pin-missing", row["detail"]
+    assert row["detail"]["restore"] == "unmerged", row["detail"]
+    assert pasted(row["next"])[3:] == [
+        "checkout", "--theirs", "--", SHAPE_PIN], row["next"]
+    assert "only that side" in row["next"].split("   #", 1)[1]
+    assert_a_plain_note(row["next"])
+    run_pasted(row["next"])
+    again = rows_of(doctor(standard, project, "--json"))["shape-currency"]
+    assert again["detail"]["error"] == "update-revision-unresolvable", again
+
+
 def test_a_pin_with_no_good_copy_in_its_history_keeps_the_check_next(
         standard, project):
     """No history to put a pin back from: one root commit holds a bad pin.
