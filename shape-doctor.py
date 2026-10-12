@@ -1263,6 +1263,16 @@ def check_manifest(ctx: Context) -> Row:
                          ["--root", str(ctx.root)])
 
 
+#: THE TWO LOCKSTEP GATES, as `(the root's own copy, the standard's template)`,
+#: spelled ONCE. `check_pins` and `check_family` run them, and the `legs` and
+#: `members` rows (`lockstep_next`, #276) hand them over for what no checkout
+#: cures; a path typed in each place is a gate the rows can disagree about.
+PINS_GATE = ("scripts/validate-pins.py",
+             "templates/assembly-root/scripts/validate-pins.py")
+FAMILY_GATE = ("scripts/validate-family.py",
+               "templates/family-root/scripts/validate-family.py")
+
+
 def check_pins(ctx: Context) -> Row:
     # `validate-pins.py` reads `project.yaml` FIRST -- the legs it checks are
     # the ones declared there -- and refuses before any pin when it does not
@@ -1272,15 +1282,12 @@ def check_pins(ctx: Context) -> Row:
                           "a single pin, has nothing to check yet")
     if waiting is not None:
         return waiting
-    return validator_row(
-        ctx, "pins", "pins", "scripts/validate-pins.py",
-        "templates/assembly-root/scripts/validate-pins.py",
-        ["--root", str(ctx.root)])
+    return validator_row(ctx, "pins", "pins", *PINS_GATE,
+                         ["--root", str(ctx.root)])
 
 
 def check_family(ctx: Context) -> Row:
-    own = "scripts/validate-family.py"
-    template = "templates/family-root/scripts/validate-family.py"
+    own, template = FAMILY_GATE
     if ctx.manifest_refusal is not None:
         return unloaded_manifest_row(ctx, "family", "family", own, template)
     return validator_row(ctx, "family", "family", own, template,
@@ -1715,8 +1722,52 @@ def pin_commit(root: Path, relative: str) -> str | None:
     return commit if COMMIT_RE.match(commit) else None
 
 
+def own_bootstrap(root: Path, make_target: bool = False) -> bool:
+    """Can the root's own `scripts/bootstrap.py` RUN? It imports `repo_shape`
+    from beside itself, so it and `scripts/repo_shape.py` must both be there:
+    a root without either has no bootstrap a NEXT may name (#276).
+
+    `make_target` also asks for the Makefile target `make bootstrap` runs, for
+    the one sentence that sends a reader there. ONE DEFINITION, because the
+    `legs` and `members` rows each asked it in their own words.
+    """
+    scripts = root / "scripts"
+    if not all((scripts / name).is_file()
+               for name in ("bootstrap.py", "repo_shape.py")):
+        return False
+    if not make_target:
+        return True
+    try:
+        makefile = (root / "Makefile").read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    return re.search(r"(?m)^bootstrap\s*:", makefile) is not None
+
+
+def lockstep_next(ctx: Context, gate: tuple, noun: str) -> str | None:
+    """The line for what NO checkout cures: the lockstep gate, built the way
+    the `pins` and `family` rows build their own (`PINS_GATE`, `FAMILY_GATE`
+    and the same `--root` argument), so the template's line carries the
+    `PYTHONPATH` it needs (#238). None when neither copy is readable: that
+    is a standard with a hole in it, the gate's own row says so in the same
+    report, and a command that cannot run is the defect #276 is about.
+
+    The `legs` and `members` rows say the same thing about a leg and about a
+    member, so the sentence is written here once.
+    """
+    used, _, own_copy = validator_for(ctx, *gate)
+    if not used.is_file():
+        return None
+    command = validator_command(ctx.shape, used, own_copy,
+                                ["--root", str(ctx.root)])
+    return (f"{command}   # no submodule update cures a {noun} whose gitlink "
+            "or pin is missing or disagrees, or a mount git cannot read a "
+            f"HEAD in. {used.name} prints what it finds and names the repair "
+            "where it has one")
+
+
 def submodule_update_next(root: Path, paths: list[str], off_pin: list[Path],
-                          noun: str, after: str = "",
+                          noun: str, after: str = "", rerun: bool = False,
                           platform: str | None = None) -> tuple[str, str]:
     """`(the line, what it does)`: the script-free command that checks each
     submodule at `paths` out at the commit `root` records for it, and the
@@ -1734,9 +1785,19 @@ def submodule_update_next(root: Path, paths: list[str], off_pin: list[Path],
     <paths>` needs no script and no `PYTHONPATH`, and a probe of both cases
     shows it cures them: an empty mount is filled, and a leg committed past
     its pin is put back AT the gitlink, which is what the row compares HEAD
-    with. `--init` registers a mount the clone never initialised and
-    `--recursive` goes into the submodule's own submodules, as the holder's
-    bootstrap does (`fetch_members`).
+    with. `--init` registers a mount the clone never initialised (a plain
+    `git clone` has `submodule.active` unset, and without it the update
+    prints `not initialized` and leaves the row red) and `--recursive` goes
+    into the submodule's own submodules, as the holder's bootstrap does
+    (`fetch_members`).
+
+    `--checkout` IS THE WORD THE EXPLANATION RESTS ON. `git submodule update`
+    obeys a configured `submodule.<name>.update`, in `.git/config` or
+    committed in `.gitmodules`: under `rebase` or `merge` the same line
+    writes a rebased or a merge commit INTO THE LEG and the row stays red,
+    and under `none` it skips the mount. Each exits 0, so the reader is told
+    nothing. `--checkout` overrides the setting for this one command, so the
+    line checks the commit out whatever the clone has configured.
 
     IT MOVES HEAD, AND THAT IS NOT FREE, so the sentence says so. A commit
     made in a leg on a BRANCH stays on that branch. A commit made on a
@@ -1751,14 +1812,17 @@ def submodule_update_next(root: Path, paths: list[str], off_pin: list[Path],
     is a `   # ` tail today and a tail is pasted with the line: a shell that
     does not treat `#` as a comment reads each of those as syntax. It is
     plain words, so that moving it out of the NEXT later (#277) is a move
-    and not a rewrite. `after` is the caller's own closing sentence.
+    and not a rewrite. `after` is the caller's own closing sentence, and
+    `rerun` adds the one the `legs` and `members` rows share: some other
+    leg or member is something this line does not cure, and the next run
+    names it.
 
     `platform` is `quote_arg`'s and `copy_command`'s, and for the same
     reason: the line is spelled for the reader's shell, not the host's.
     """
     target = os.name if platform is None else platform
     line = " ".join(["git", "-C", quote_arg(root, target), "submodule",
-                     "update", "--init", "--recursive", "--",
+                     "update", "--init", "--recursive", "--checkout", "--",
                      *(quote_arg(path, target) for path in paths)])
     why = (f"checks each {noun} out at the commit this repository records "
            "for it, and fetches a mount that is empty")
@@ -1768,7 +1832,11 @@ def submodule_update_next(root: Path, paths: list[str], off_pin: list[Path],
         why += (f". A commit made in a {noun} on no branch is left only in "
                 "its reflog by this line. To keep one, run first "
                 f"{keep} with a name of your choice")
-    return line, why + after
+    why += after
+    if rerun:
+        why += (f". Run the doctor again afterwards, because a {noun} this "
+                "line does not cure is named by the next run")
+    return line, why
 
 
 def check_legs(ctx: Context) -> Row:
@@ -1871,42 +1939,24 @@ def check_legs(ctx: Context) -> Row:
     detail = {"legs": rows}
     if problems:
         if checkout:
-            # THE ROOT'S OWN BOOTSTRAP IS NAMED ONLY WHEN IT CAN RUN: it
-            # imports `repo_shape` from beside itself, so a root without
-            # either file has no `make bootstrap` to send the reader to
-            # afterwards.
-            scripts = ctx.root / "scripts"
+            # `make bootstrap` IS NAMED ONLY WHERE IT CAN RUN, and said for
+            # what it does: it puts a leg on its tracking branch, and
+            # leaves alone one whose branch is already ahead of the pin
+            # (`checkout_tracking_branch` prints "not moving an existing
+            # branch"), which is the commit-past-the-pin case this line
+            # was written for.
             after = ""
-            if all((scripts / name).is_file()
-                   for name in ("bootstrap.py", "repo_shape.py")):
-                after += (". Then make bootstrap puts each leg on its "
-                          "tracking branch at the pinned commit")
-            if lockstep:
-                after += (". Run the doctor again afterwards, because a leg "
-                          "this line does not cure is named by the next run")
+            if own_bootstrap(ctx.root, make_target=True):
+                after = (". Then make bootstrap puts each leg on its "
+                         "tracking branch, and leaves alone one whose branch "
+                         "is already ahead of the pin")
             line, why = submodule_update_next(ctx.root, checkout, off_pin,
-                                              "leg", after)
+                                              "leg", after, bool(lockstep))
             next_command = f"{line}   # {why}"
         else:
-            # THE LOCKSTEP GATE, BUILT THE WAY THE `pins` ROW BUILDS ITS OWN
-            # (`check_pins`: the same two paths and the same arguments), so
-            # the template's line carries the `PYTHONPATH` it needs (#238).
-            # NO LINE WHEN NEITHER COPY IS READABLE: that is a standard with
-            # a hole in it, the `pins` row says so in this same report, and a
-            # command that cannot run is the defect this row is being fixed
-            # for.
-            used, _, own_copy = validator_for(
-                ctx, "scripts/validate-pins.py",
-                "templates/assembly-root/scripts/validate-pins.py")
-            next_command = None
-            if used.is_file():
-                gate = validator_command(ctx.shape, used, own_copy,
-                                         ["--root", str(ctx.root)])
-                next_command = (
-                    f"{gate}   # no submodule update cures a leg whose "
-                    "gitlink or pin is missing or disagrees, or a mount git "
-                    "cannot read a HEAD in. The lockstep gate prints what it "
-                    "finds and names the repair where it has one")
+            # NO CHECKOUT CURES IT: the lockstep gate, one definition of it
+            # for this row and the `pins` row (`lockstep_next`).
+            next_command = lockstep_next(ctx, PINS_GATE, "leg")
         return Row("legs", "legs", FINDING, "; ".join(problems),
                    next_command, detail)
     return Row("legs", "legs", OK,
@@ -3474,10 +3524,15 @@ def members_verdict(ctx: Context, detail: dict, members_dir: str,
                        + "; ".join(strangers))
         # THE NEXT IS CHOSEN BY WHAT IS WRONG, as `check_legs`' is, and the
         # members that a CHECKOUT cures win over the ones none does (#276).
-        # An empty mount, or a HEAD that is not the pin, is cured by fetching
-        # and checking out; a row with no 40-hex `pin.commit`, or a mount git
+        # An empty mount, or a HEAD that is not the pin where the holder's
+        # GITLINK is, is cured by fetching and checking out. No checkout
+        # cures a member the holder records no gitlink for (the `family` row
+        # says `member-gitlink-absent`, and the git line dies on `pathspec
+        # did not match`), a gitlink that is not the pin (a checkout lands on
+        # the gitlink, so HEAD would still not be the pin, `member-gitlink-
+        # mismatch`), a row with no 40-hex `pin.commit`, or a mount git
         # cannot read a HEAD in (a populated one with no `.git` of its own
-        # answers with the HOLDER's HEAD, `member_state`), is not.
+        # answers with the HOLDER's HEAD, `member_state`).
         checkout: list[str] = []
         off_pin: list[Path] = []
         lockstep = False
@@ -3485,27 +3540,28 @@ def members_verdict(ctx: Context, detail: dict, members_dir: str,
             if member_problem(entry) is None:
                 continue
             mount = ctx.root / entry["path"]
-            if not entry["populated"]:
+            gitlink = recorded_gitlink(ctx.root, entry["path"])
+            if gitlink is None:
+                lockstep = True
+            elif not entry["populated"]:
                 checkout.append(entry["path"])
             elif (entry["pin"] is None or entry["head"] is None
                     or not (mount / ".git").exists()):
                 lockstep = True
-            elif entry["head"] != entry["pin"]:
+            elif gitlink == entry["pin"]:
                 checkout.append(entry["path"])
                 if entry["detached"]:
                     off_pin.append(mount)
-        scripts = ctx.root / "scripts"
+            else:
+                lockstep = True
         # THE HOLDER'S OWN BOOTSTRAP STAYS THE NEXT WHEN IT CAN RUN: it does
         # what the plain git line does AND carries the credential rewrite a
         # PRIVATE member needs (`fetch_members`), so replacing it would
         # trade a missing script for a fetch that fails on a private member.
-        # It imports `repo_shape` from beside itself, so a holder without
-        # either file is the holder it cannot run in.
-        own_bootstrap = all((scripts / name).is_file()
-                            for name in ("bootstrap.py", "repo_shape.py"))
-        if checkout and own_bootstrap:
+        if checkout and own_bootstrap(ctx.root):
             next_command = (
-                f"{PYTHON} {quote_arg(scripts / 'bootstrap.py')} "
+                f"{PYTHON} "
+                f"{quote_arg(ctx.root / 'scripts' / 'bootstrap.py')} "
                 f"--root {quote_arg(ctx.root)}   # what `make bootstrap` "
                 "runs in a holder: it fetches every member at its pin and "
                 "leaves it detached there")
@@ -3513,29 +3569,13 @@ def members_verdict(ctx: Context, detail: dict, members_dir: str,
             after = (". This holder has no scripts/bootstrap.py that can "
                      "run, so this is the plain git line, with no "
                      "credential rewrite for a private member")
-            if lockstep:
-                after += (". Run the doctor again afterwards, because a "
-                          "member this line does not cure is named by the "
-                          "next run")
             line, why = submodule_update_next(ctx.root, checkout, off_pin,
-                                              "member", after)
+                                              "member", after, lockstep)
             next_command = f"{line}   # {why}"
         else:
-            # THE FAMILY GATE, built the way the `family` row builds its own
-            # (`check_family`). No line when neither copy is readable, for
-            # the reason `check_legs` gives.
-            used, _, own_copy = validator_for(
-                ctx, "scripts/validate-family.py",
-                "templates/family-root/scripts/validate-family.py")
-            next_command = None
-            if used.is_file():
-                gate = validator_command(ctx.shape, used, own_copy,
-                                         ["--root", str(ctx.root)])
-                next_command = (
-                    f"{gate}   # no submodule update cures a member whose "
-                    "row carries no 40-hex pin.commit, or a mount git cannot "
-                    "read a HEAD in. The family gate prints what it finds "
-                    "and names the repair where it has one")
+            # THE FAMILY GATE, one definition of it for this row and the
+            # `family` row (`lockstep_next`).
+            next_command = lockstep_next(ctx, FAMILY_GATE, "member")
         return Row("members", "members", FINDING, reason, next_command,
                    detail)
     note = f"{len(rows)} member(s) mounted at their pins"

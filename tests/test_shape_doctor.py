@@ -356,7 +356,7 @@ def test_an_unbootstrapped_mount_is_a_finding(standard, project):
     assert "unbootstrapped clone" in rows["legs"]["reason"]
     # `bootstrap.py` never initialises a mount (it prints `NOT INITIALIZED`
     # and stops), so the line is the submodule update that does (#276).
-    assert "submodule update --init --recursive -- code" in \
+    assert "submodule update --init --recursive --checkout -- code" in \
         (rows["legs"]["next"] or ""), rows["legs"]["next"]
     assert "bootstrap.py" not in (rows["legs"]["next"] or "")
 

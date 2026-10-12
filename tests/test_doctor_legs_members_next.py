@@ -11,12 +11,12 @@ stops) and never moves an existing branch whose tip is not the pin, so the
 re-run doctor said the same thing.
 
 WHAT THE LINE IS NOW is `git -C <root> submodule update --init --recursive
--- <paths>`, which needs no script and no `PYTHONPATH`. A lockstep fact no
-checkout cures (no gitlink, no 40-hex pin, a gitlink that is not the pin, a
-mount git cannot read a HEAD in) gets the lockstep gate instead, built the way
-the `pins` and `family` rows build theirs. A holder's own bootstrap stays the
-NEXT when it can run, because it carries the credential rewrite a private
-member needs.
+--checkout -- <paths>`, which needs no script and no `PYTHONPATH`. A lockstep
+fact no checkout cures (no gitlink, no 40-hex pin, a gitlink that is not the
+pin, a mount git cannot read a HEAD in) gets the lockstep gate instead, built
+the way the `pins` and `family` rows build theirs. A holder's own bootstrap
+stays the NEXT when it can run, because it carries the credential rewrite a
+private member needs.
 
 EVERY NEXT HERE IS PASTED AND RUN, from a directory that is not the root,
 through `sh -c` exactly as the row printed it, and the row is asked again.
@@ -49,7 +49,7 @@ import pytest
 
 from conftest import WINDOWS_SKIP, git, rmtree
 from test_shape_doctor import (  # noqa: F401
-    FAMILY_MEMBER, FAMILY_NAME, GIT_IDENTITY, commit_all, doctor,
+    FAMILY_MEMBER, FAMILY_NAME, GIT_IDENTITY, PROJECT, commit_all, doctor,
     doctor_module, holder, project, record_gitlink, rows_of,
     scaffolded_here, standard,
 )
@@ -68,6 +68,12 @@ PASTE_ENV = {**{k: v for k, v in os.environ.items() if k != "PYTHONPATH"},
 
 #: The three characters between a NEXT's command and its explanation.
 TAIL = "   # "
+
+#: The git line's own words after `git -C <root>`: `--init` for a mount the
+#: clone never registered, `--recursive` for a member's own legs, and
+#: `--checkout` so that a configured `submodule.<name>.update` (rebase, merge,
+#: none) cannot turn the line into something else.
+UPDATE = "submodule update --init --recursive --checkout"
 
 
 # --- reading a row ----------------------------------------------------------
@@ -97,11 +103,13 @@ def paste(row: dict, cwd: Path) -> subprocess.CompletedProcess:
                           stdin=subprocess.DEVNULL)
 
 
-def commit_in(leg: Path) -> str:
+def commit_in(leg: Path, message: str = "work in the leg, past the pin"
+              ) -> str:
     """One commit made INSIDE a mount, which is how a leg walks off its pin;
-    its sha."""
-    subprocess.run(["git", "commit", "-q", "--allow-empty", "-m",
-                    "work in the leg, past the pin"], cwd=str(leg),
+    its sha. Two commits on one parent need two messages: empty commits made
+    in the same second with the same message are the SAME commit."""
+    subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", message],
+                   cwd=str(leg),
                    capture_output=True, check=True,
                    env={**os.environ, **GIT_IDENTITY})
     return git("rev-parse", "HEAD", cwd=leg).stdout.strip()
@@ -237,10 +245,10 @@ def test_a_leg_a_checkout_cures_is_handed_a_script_free_git_line(
         standard, project, scenario):
     """Five roots, one answer, and none of them names a script.
 
-    The line is `git -C <root> submodule update --init --recursive -- <the
-    legs>`: no interpreter, no path into the root's own `scripts/`, so a root
-    that lost `bootstrap.py` (or `repo_shape.py`, which it imports) is
-    handed something that can run.
+    The line is `git -C <root> submodule update --init --recursive --checkout
+    -- <the legs>`: no interpreter, no path into the root's own `scripts/`,
+    so a root that lost `bootstrap.py` (or `repo_shape.py`, which it imports)
+    is handed something that can run.
     """
     made = CHECKOUT_SCENARIOS[scenario](project)
     module = doctor_module(standard)
@@ -248,8 +256,8 @@ def test_a_leg_a_checkout_cures_is_handed_a_script_free_git_line(
     assert row["status"] == "FINDING", row
     root = project.resolve()
     assert command_of(row) == (
-        f"git -C {module.quote_arg(root)} submodule update --init "
-        f"--recursive -- {' '.join(made['paths'])}"), row["next"]
+        f"git -C {module.quote_arg(root)} {UPDATE} -- "
+        f"{' '.join(made['paths'])}"), row["next"]
     # (The equality above is the whole claim: a git line, no script. A
     # substring test of the command would read the TEST'S OWN tmp path.)
 
@@ -260,8 +268,8 @@ def test_a_legs_next_that_lists_two_legs_lists_both(standard, project):
     module = doctor_module(standard)
     row = row_of(standard, project, "legs")
     assert command_of(row) == (
-        f"git -C {module.quote_arg(project.resolve())} submodule update "
-        "--init --recursive -- spec code"), row["next"]
+        f"git -C {module.quote_arg(project.resolve())} {UPDATE} -- spec code"
+    ), row["next"]
 
 
 def test_the_line_is_spelled_for_the_readers_shell(standard):
@@ -275,15 +283,14 @@ def test_the_line_is_spelled_for_the_readers_shell(standard):
     line, why = module.submodule_update_next(
         posix_root, ["spec", "code"], [posix_root / "spec"], "leg",
         platform="posix")
-    assert line == ("git -C '/srv/my atlas' submodule update --init "
-                    "--recursive -- spec code"), line
+    assert line == f"git -C '/srv/my atlas' {UPDATE} -- spec code", line
     assert "git -C '/srv/my atlas/spec' branch NAME" in why, why
     nt_root = PureWindowsPath("C:/Work/My Atlas")
     line, why = module.submodule_update_next(
         nt_root, ["members/IRRS"], [nt_root / "members" / "IRRS"], "member",
         platform="nt")
-    assert line == ("git -C 'C:\\Work\\My Atlas' submodule update --init "
-                    "--recursive -- members/IRRS"), line
+    assert line == (f"git -C 'C:\\Work\\My Atlas' {UPDATE} -- "
+                    "members/IRRS"), line
     assert "git -C 'C:\\Work\\My Atlas\\members\\IRRS' branch NAME" in why
     assert "a member on no branch" in why, why
 
@@ -361,11 +368,27 @@ def test_the_bootstrap_sentence_is_said_only_where_the_script_can_run(
         standard, project, tmp_path):
     """`then make bootstrap puts each leg on its tracking branch` is what the
     old NEXT's tail said and the line now leaves to a script the root may
-    not have. It is kept when the root has what bootstrap needs and left out
-    when it has not -- a sentence that sends a reader to a command that
+    not have. It is kept when the root has what `make bootstrap` needs (the
+    script, the `repo_shape.py` it imports and a Makefile target) and left
+    out when it has not -- a sentence that sends a reader to a command that
     cannot run is the defect over again."""
     make_empty_mount(project)
     assert "make bootstrap" in why_of(row_of(standard, project, "legs"))
+    # Said for what it does, and not as "at the pinned commit": it leaves a
+    # leg whose tracking branch is already ahead of the pin where it is.
+    assert "already ahead of the pin" in why_of(row_of(standard, project,
+                                                       "legs"))
+    no_target = tmp_path / "NoTarget"
+    shutil.copytree(project, no_target, symlinks=True)
+    makefile = no_target / "Makefile"
+    makefile.write_text(re.sub(r"(?m)^bootstrap:", "unrelated:",
+                               makefile.read_text(encoding="utf-8")),
+                        encoding="utf-8")
+    assert "bootstrap" not in why_of(row_of(standard, no_target, "legs"))
+    no_makefile = tmp_path / "NoMakefile"
+    shutil.copytree(project, no_makefile, symlinks=True)
+    git("rm", "-q", "Makefile", cwd=no_makefile)
+    assert "bootstrap" not in why_of(row_of(standard, no_makefile, "legs"))
     lost = tmp_path / "Lost"
     shutil.copytree(project, lost, symlinks=True)
     git("rm", "-q", "scripts/bootstrap.py", cwd=lost)
@@ -441,6 +464,66 @@ def test_without_the_keep_line_the_detached_commit_is_in_no_branch(
     assert git("cat-file", "-t", made["commit"],
                cwd=project / "spec").stdout.strip() == "commit"
     assert made["commit"] in git("reflog", cwd=project / "spec").stdout
+
+
+@WINDOWS_SKIP
+@pytest.mark.parametrize("mode", ["merge", "rebase", "none"])
+def test_a_configured_update_mode_cannot_turn_the_line_into_a_merge(
+        standard, project, tmp_path, mode):
+    """`git submodule update` obeys `submodule.<name>.update`: under `merge`
+    or `rebase` the same line WRITES a merge or a rebased commit into the
+    leg and the row stays red, and under `none` it skips the mount, each
+    with exit 0. `--checkout` overrides the setting for the one command.
+
+    A DIVERGED leg is what shows it: a teammate's bump records P2 as the
+    gitlink and the pin, and this leg is detached at Y on the OLD pin, which
+    does not contain P2. Pasted, the row is `ok` and HEAD is P2 itself, so
+    nothing was merged or rebased."""
+    spec = project / "spec"
+    old_pin = git("rev-parse", "HEAD", cwd=spec).stdout.strip()
+    bumped = commit_in(spec, "a teammate's bump")
+    record_gitlink(project, "spec", bumped)
+    pin = project / "contracts" / "spec-pin.yaml"
+    pin.write_text(re.sub(r'(?m)^commit: "[0-9a-f]{40}"$',
+                          f'commit: "{bumped}"',
+                          pin.read_text(encoding="utf-8")), encoding="utf-8")
+    git("checkout", "-q", "--detach", old_pin, cwd=spec)
+    ours = commit_in(spec)
+    assert ours != bumped
+    git("config", "submodule.spec.update", mode, cwd=project)
+    row = row_of(standard, project, "legs")
+    assert row["status"] == "FINDING", row
+    assert "--checkout" in command_of(row), row["next"]
+    result = paste(row, tmp_path / "elsewhere")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert row_of(standard, project, "legs")["status"] == "ok", (
+        result.stdout, result.stderr)
+    assert git("rev-parse", "HEAD", cwd=spec).stdout.strip() == bumped, (
+        "a merge or a rebase wrote a commit into the leg")
+
+
+@WINDOWS_SKIP
+def test_a_plain_clones_empty_mounts_are_cured_by_the_pasted_line(
+        standard, scaffolded_here, tmp_path):
+    """The real unbootstrapped clone the row names: a plain `git clone`, with
+    no `--recurse-submodules`, leaves `submodule.active` unset and both
+    mounts empty. Without `--init` the update prints `not initialized` and
+    the row stays red; the fixture's own recursive clone sets
+    `submodule.active`, so every other paste here would pass without it."""
+    plain = tmp_path / "Plain"
+    cloned = subprocess.run(
+        ["git", "clone", "-q", str(scaffolded_here["base"] / "remotes"
+                                   / f"{PROJECT}.git"), str(plain)],
+        capture_output=True, text=True, check=False, env=PASTE_ENV)
+    assert cloned.returncode == 0, cloned.stderr
+    row = row_of(standard, plain, "legs")
+    assert row["status"] == "FINDING", row
+    assert command_of(row).endswith("-- spec code"), row["next"]
+    result = paste(row, tmp_path / "elsewhere")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "not initialized" not in result.stdout + result.stderr
+    after = row_of(standard, plain, "legs")
+    assert after["status"] == "ok", (after, result.stdout, result.stderr)
 
 
 # --- the legs row: what no checkout cures, and the lockstep gate -----------
@@ -545,8 +628,8 @@ def test_a_checkout_wins_over_a_lockstep_fact_and_a_rerun_names_the_other(
     module = doctor_module(standard)
     first = row_of(standard, project, "legs")
     assert command_of(first) == (
-        f"git -C {module.quote_arg(project.resolve())} submodule update "
-        "--init --recursive -- code"), first["next"]
+        f"git -C {module.quote_arg(project.resolve())} {UPDATE} -- code"
+    ), first["next"]
     assert "doctor again" in why_of(first), why_of(first)
     # The fix, applied by hand (no sh needed): the empty leg is now cured.
     git("-c", "protocol.file.allow=always", "submodule", "update", "--init",
@@ -639,8 +722,8 @@ def test_a_holder_that_cannot_run_its_bootstrap_is_handed_the_git_line(
     row = row_of(standard, root, "members")
     assert row["status"] == "FINDING", row
     assert command_of(row) == (
-        f"git -C {module.quote_arg(root.resolve())} submodule update --init "
-        f"--recursive -- members/{FAMILY_MEMBER}"), row["next"]
+        f"git -C {module.quote_arg(root.resolve())} {UPDATE} -- "
+        f"members/{FAMILY_MEMBER}"), row["next"]
     assert "scripts/bootstrap.py" not in command_of(row), row["next"]
     assert "credential" in why_of(row), why_of(row)
     for character in (";", "'", "`", "(", ")"):
@@ -703,6 +786,75 @@ def test_a_pasted_members_git_line_keeps_a_detached_commit_on_the_kept_branch(
     assert result.returncode == 0, result.stdout + result.stderr
     assert row_of(standard, root, "members")["status"] == "ok"
     assert "kept" in git("branch", "--contains", commit, cwd=member).stdout
+
+
+def make_member_gitlink_absent(root: Path) -> None:
+    """The holder records NO gitlink for the member, and the row is kept
+    (the `family` row says `member-gitlink-absent`): the directory is empty
+    and `git submodule update -- members/<P>` dies on `pathspec did not
+    match`."""
+    unbootstrap(root, f"members/{FAMILY_MEMBER}")
+    git("rm", "-q", "--cached", "--", f"members/{FAMILY_MEMBER}", cwd=root)
+    subprocess.run(["git", "commit", "-q", "-m", "unmount the member"],
+                   cwd=str(root), capture_output=True, check=True,
+                   env={**os.environ, **GIT_IDENTITY})
+
+
+def make_member_gitlink_mismatch(root: Path) -> None:
+    """The holder's gitlink is a commit that is not the row's `pin.commit`
+    (`member-gitlink-mismatch`): a checkout lands on the gitlink, so HEAD
+    would still not be the pin and the row would be unchanged."""
+    member = root / "members" / FAMILY_MEMBER
+    record_gitlink(root, f"members/{FAMILY_MEMBER}", commit_in(member))
+
+
+MEMBER_GITLINK_STATES = {"gitlink-absent": make_member_gitlink_absent,
+                         "gitlink-mismatch": make_member_gitlink_mismatch}
+
+
+@pytest.mark.parametrize("state", sorted(MEMBER_GITLINK_STATES))
+@pytest.mark.parametrize("bootstrap", ["with-its-own-bootstrap",
+                                       "without-it"])
+def test_a_member_whose_gitlink_is_not_its_pin_is_handed_the_family_gate(
+        standard, holder, tmp_path, state, bootstrap):
+    """No checkout cures a member the holder records no gitlink for, or one
+    whose gitlink is not its `pin.commit`: `check_legs` routes the same two
+    states of a leg to `validate-pins.py`, and the members row routes them
+    to `validate-family.py`, with or without the holder's own bootstrap. Both
+    NEXTs used to exit 0 or die and leave the row exactly as it was."""
+    root = holder_copy(holder, tmp_path)
+    MEMBER_GITLINK_STATES[state](root)
+    if bootstrap == "without-it":
+        holder_without(root, "bootstrap.py")
+    module = doctor_module(standard)
+    rows = rows_of(doctor(standard, root, "--json"))
+    members = rows["members"]
+    assert members["status"] == "FINDING", members
+    resolved = root.resolve()
+    assert command_of(members) == module.validator_command(
+        standard, resolved / "scripts" / "validate-family.py", True,
+        ["--root", str(resolved)]), members["next"]
+    assert " submodule update " not in command_of(members), members["next"]
+    assert "scripts/bootstrap.py" not in command_of(members), members["next"]
+    assert why_of(members), "the line must say why it is not a checkout"
+    # The `family` row of the same report names the same fact, and gate.
+    assert rows["family"]["status"] == "FINDING", rows["family"]
+    assert command_of(rows["family"]) == command_of(members), (
+        rows["family"]["next"], members["next"])
+
+
+def test_an_empty_member_with_a_gitlink_that_is_its_pin_is_still_a_checkout(
+        standard, holder, tmp_path):
+    """The control for the two states above: the gitlink is the pin, the
+    mount is empty, and the line is the checkout."""
+    root = holder_copy(holder, tmp_path)
+    holder_without(root, "bootstrap.py")
+    member_unbootstrapped(root)
+    module = doctor_module(standard)
+    row = row_of(standard, root, "members")
+    assert command_of(row) == (
+        f"git -C {module.quote_arg(root.resolve())} {UPDATE} -- "
+        f"members/{FAMILY_MEMBER}"), row["next"]
 
 
 def make_member_pin_not_a_commit(root: Path) -> None:
@@ -829,8 +981,8 @@ def test_an_empty_member_with_no_pin_is_still_a_checkout_first(
     module = doctor_module(standard)
     row = row_of(standard, root, "members")
     assert command_of(row) == (
-        f"git -C {module.quote_arg(root.resolve())} submodule update --init "
-        f"--recursive -- members/{FAMILY_MEMBER}"), row["next"]
+        f"git -C {module.quote_arg(root.resolve())} {UPDATE} -- "
+        f"members/{FAMILY_MEMBER}"), row["next"]
     git("-c", "protocol.file.allow=always", "submodule", "update", "--init",
         "--recursive", "--", f"members/{FAMILY_MEMBER}", cwd=root)
     again = row_of(standard, root, "members")
