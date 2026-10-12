@@ -122,6 +122,54 @@ def reference_both_legs(project: Path) -> tuple[str, str]:
     return spec, code
 
 
+#: A workflow nobody has committed yet (#207): `{uses}` is its one job.
+DRAFT = """\
+name: draft
+on: workflow_dispatch
+jobs:
+  d:
+    uses: {uses}
+"""
+
+
+def spec_ref(sha: str) -> str:
+    return f"{ORG}/{PROJECT}-spec/.github/workflows/x.yml@{sha}"
+
+
+def leave_untracked(project: Path, name: str, uses: str) -> Path:
+    """A draft workflow written into the working tree and committed nowhere."""
+    path = project / ".github" / "workflows" / name
+    path.write_text(DRAFT.format(uses=uses), encoding="utf-8")
+    return path
+
+
+def ignore_locally(project: Path, pattern: str) -> None:
+    """`.gitignore` is tracked, and editing it would dirty the root; the
+    clone's own `info/exclude` ignores a file without touching the tree."""
+    exclude = Path(git("rev-parse", "--git-path", "info/exclude",
+                       cwd=project).stdout.strip())
+    if not exclude.is_absolute():
+        exclude = project / exclude
+    with exclude.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(pattern + "\n")
+
+
+def found(project: Path) -> dict:
+    """Everything a refusal promises not to have moved: the branch tip, the
+    gitlink in the index, the leg's own checkout, the pin, the working-tree
+    status and the bytes of every workflow file."""
+    workflows = project / ".github" / "workflows"
+    return {
+        "head": git("rev-parse", "HEAD", cwd=project).stdout.strip(),
+        "gitlink": git("ls-files", "-s", "--", "spec", cwd=project).stdout,
+        "leg": git("rev-parse", "HEAD", cwd=project / "spec").stdout.strip(),
+        "pin": (project / "contracts" / "spec-pin.yaml").read_bytes(),
+        "status": git("status", "--porcelain", cwd=project).stdout,
+        "workflows": {path.name: path.read_bytes()
+                      for path in sorted(workflows.iterdir())},
+    }
+
+
 # --- the bump itself --------------------------------------------------------
 
 def test_bump_moves_the_gitlink_and_the_pin_in_one_commit(project, scaffolded,
@@ -240,6 +288,227 @@ def test_the_reference_expression_is_the_validators_own():
 
     assert expression(BUMP) == expression(
         REPO / "templates" / "assembly-root" / "scripts" / "validate-pins.py")
+
+
+# --- only TRACKED workflows are rewritten and committed (#207) --------------
+
+@pytest.mark.parametrize("name", ["draft.yml", "draft.yaml"])
+def test_an_untracked_draft_naming_the_leg_is_refused_by_name_not_committed(
+        project, scaffolded, advanced, name):
+    """THE BUG: `plan_workflows` walked the directory on disk, so an untracked
+    draft that referenced the leg was rewritten and then staged by the commit's
+    explicit pathspec — added WHOLE to "Bump spec leg", as a new file. The
+    root-clean check says untracked files are skipped because they cannot
+    reach that commit, and this one did.
+
+    It is refused rather than skipped: `validate-pins.py` reads every file on
+    disk, so a skipped draft would leave its old `@<sha>` to turn the bump red
+    after the rewrite. Refused BEFORE anything is written, and under
+    `--dry-run` as well, so the dry run is never a promise the real run
+    breaks. `.yaml` is read by the validator too, so it counts too.
+    """
+    was = git("rev-parse", "HEAD:spec", cwd=project).stdout.strip()
+    branched(project)
+    leave_untracked(project, name, spec_ref(was))
+    before = found(project)
+    assert before["status"] == f"?? .github/workflows/{name}\n"
+
+    result = bump(project, scaffolded, advanced)
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert "bump-leg-workflow-untracked" in result.stderr
+    assert f".github/workflows/{name}  1 reference(s)" in result.stderr
+    assert f"{ORG}/{PROJECT}-spec" in result.stderr
+    assert "committed" not in result.stdout
+    assert found(project) == before, "a refusal leaves the tree as it was"
+
+    dry = bump(project, scaffolded, advanced, "--dry-run")
+    assert dry.returncode == 2, dry.stderr + dry.stdout
+    assert "bump-leg-workflow-untracked" in dry.stderr
+    assert found(project) == before
+
+
+def test_an_untracked_draft_refuses_the_whole_bump_and_rewrites_nothing(
+        project, scaffolded, advanced):
+    """A TRACKED workflow that has to move does not move on its own once an
+    untracked one is in the way: half a bump is the failure the lockstep
+    commit exists to prevent."""
+    was, _ = reference_both_legs(project)
+    branched(project)
+    leave_untracked(project, "draft.yml", spec_ref(was))
+    before = found(project)
+
+    result = bump(project, scaffolded, advanced)
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert "bump-leg-workflow-untracked" in result.stderr
+    assert ".github/workflows/legs.yml" not in result.stderr, (
+        "only the file git does not hold is named")
+    assert found(project) == before
+    assert was in (project / ".github" / "workflows" / "legs.yml").read_text()
+
+
+def test_every_untracked_draft_is_named_once_with_its_count(
+        project, scaffolded, advanced):
+    was = git("rev-parse", "HEAD:spec", cwd=project).stdout.strip()
+    branched(project)
+    leave_untracked(project, "a-draft.yml", spec_ref(was))
+    twice = project / ".github" / "workflows" / "b-draft.yml"
+    twice.write_text(
+        DRAFT.format(uses=spec_ref(was)) + f"  e:\n    uses: {spec_ref(was)}\n",
+        encoding="utf-8")
+
+    result = bump(project, scaffolded, advanced)
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert "2 workflow file(s) that git does not track" in result.stderr
+    assert ".github/workflows/a-draft.yml  1 reference(s)" in result.stderr
+    assert ".github/workflows/b-draft.yml  2 reference(s)" in result.stderr
+
+
+def test_moving_the_draft_out_of_the_directory_lets_the_bump_through(
+        project, scaffolded, advanced, tmp_path):
+    """The first of the two exits the refusal names."""
+    was = git("rev-parse", "HEAD:spec", cwd=project).stdout.strip()
+    branched(project)
+    draft = leave_untracked(project, "draft.yml", spec_ref(was))
+    assert bump(project, scaffolded, advanced).returncode == 2
+
+    shutil.move(str(draft), str(tmp_path / "draft.yml"))
+    result = bump(project, scaffolded, advanced)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert committed(project) == {"spec", "contracts/spec-pin.yaml"}
+    assert validate(project).returncode == 0
+
+
+def test_committing_the_draft_first_makes_it_move_with_the_bump(
+        project, scaffolded, advanced):
+    """The other exit: a COMMITTED workflow is a tracked file, so it is the
+    ordinary case — rewritten and staged with the pin, the dry run having
+    listed it."""
+    was = git("rev-parse", "HEAD:spec", cwd=project).stdout.strip()
+    branched(project)
+    draft = leave_untracked(project, "draft.yml", spec_ref(was))
+    assert bump(project, scaffolded, advanced).returncode == 2
+
+    git("add", "--", ".github/workflows/draft.yml", cwd=project)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm",
+        "Add the draft workflow", cwd=project)
+    dry = bump(project, scaffolded, advanced, "--dry-run")
+    assert dry.returncode == 0, dry.stderr + dry.stdout
+    assert ".github/workflows/draft.yml  1 reference(s)" in dry.stdout
+
+    result = bump(project, scaffolded, advanced)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert committed(project) == {"spec", "contracts/spec-pin.yaml",
+                                  ".github/workflows/draft.yml"}
+    assert f"@{advanced}" in draft.read_text()
+    assert was not in draft.read_text()
+    assert validate(project).returncode == 0
+
+
+def test_an_untracked_workflow_with_nothing_to_move_is_left_alone(
+        project, scaffolded, advanced):
+    """Refusing is for a file the bump WOULD have rewritten. One that names no
+    leg of this project, or this leg already at `--to`, is not the bump's
+    business: not rewritten, not staged, not named, not refused — and the
+    project's own gate agrees with it afterwards."""
+    _, code = reference_both_legs(project)
+    branched(project)
+    other = leave_untracked(
+        project, "other.yml",
+        f"{ORG}/{PROJECT}-code/.github/workflows/y.yml@{code}")
+    already = leave_untracked(project, "already.yml", spec_ref(advanced))
+    kept = {path: path.read_bytes() for path in (other, already)}
+
+    result = bump(project, scaffolded, advanced)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert committed(project) == {"spec", "contracts/spec-pin.yaml",
+                                  ".github/workflows/legs.yml"}
+    assert "1 reference(s) in 1 file(s)" in result.stdout
+    assert "other.yml" not in result.stdout + result.stderr
+    assert "already.yml" not in result.stdout + result.stderr
+    assert {path: path.read_bytes() for path in kept} == kept
+    status = git("status", "--porcelain", cwd=project).stdout.splitlines()
+    assert sorted(status) == ["?? .github/workflows/already.yml",
+                              "?? .github/workflows/other.yml"]
+    assert validate(project).returncode == 0
+
+
+def test_an_ignored_workflow_naming_the_leg_is_refused_untouched(
+        project, scaffolded, advanced):
+    """Ignored is untracked: `git status` does not show it, but the validator
+    reads it, and the commit's `git add` would refuse it after the rewrite,
+    in git's words and not this tool's. It is named before anything is
+    written, and its bytes are exactly what they were."""
+    was = git("rev-parse", "HEAD:spec", cwd=project).stdout.strip()
+    branched(project)
+    ignore_locally(project, ".github/workflows/local-*.yml")
+    leave_untracked(project, "local-draft.yml", spec_ref(was))
+    before = found(project)
+    assert before["status"] == "", "an ignored file is not in the status"
+
+    result = bump(project, scaffolded, advanced)
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert "bump-leg-workflow-untracked" in result.stderr
+    assert ".github/workflows/local-draft.yml  1 reference(s)" in result.stderr
+    assert found(project) == before
+
+
+def test_an_ignored_workflow_with_nothing_to_move_is_untouched(
+        project, scaffolded, advanced):
+    _, code = reference_both_legs(project)
+    branched(project)
+    ignore_locally(project, ".github/workflows/local-*.yml")
+    local = leave_untracked(
+        project, "local-other.yml",
+        f"{ORG}/{PROJECT}-code/.github/workflows/y.yml@{code}")
+    kept = local.read_bytes()
+
+    result = bump(project, scaffolded, advanced)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert committed(project) == {"spec", "contracts/spec-pin.yaml",
+                                  ".github/workflows/legs.yml"}
+    assert local.read_bytes() == kept
+    assert "local-other.yml" not in result.stdout + result.stderr
+    assert git("status", "--porcelain", cwd=project).stdout == ""
+    assert validate(project).returncode == 0
+
+
+def test_a_tracked_workflow_with_a_non_ascii_name_is_not_taken_for_untracked(
+        project, scaffolded, advanced):
+    """The tracked set is read NUL-separated (`git ls-files -z`), and this is
+    what that buys. Asked in the plain form, git QUOTES a name holding a byte
+    outside ASCII (`core.quotePath`, on by default) as
+    `".github/workflows/l\\303\\251gs.yml"`, which is not the path the
+    directory walk yields; a tracked `l\u00e9gs.yml` that names the leg would
+    then be refused as untracked, and "commit it first" could never clear it,
+    because it is already committed. Non-ASCII is the one quoted character
+    every platform this suite runs on can spell in a file name.
+    """
+    was = git("rev-parse", "HEAD:spec", cwd=project).stdout.strip()
+    name = "l\u00e9gs.yml"
+    relative = f".github/workflows/{name}"
+    path = project / ".github" / "workflows" / name
+    path.write_text(DRAFT.format(uses=spec_ref(was)), encoding="utf-8")
+    git("add", "--", relative, cwd=project)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm",
+        "Add a workflow with an accented name", cwd=project)
+    branched(project)
+    plain = git("-c", "core.quotePath=true", "ls-files", "--",
+                ".github/workflows", cwd=project).stdout
+    assert "\\303\\251" in plain, (
+        "this test only means something while git quotes the name in the "
+        f"plain listing: {plain!r}")
+
+    result = bump(project, scaffolded, advanced)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "bump-leg-workflow-untracked" not in result.stderr
+    assert f"@{advanced}" in path.read_text(encoding="utf-8")
+    assert was not in path.read_text(encoding="utf-8")
+    # Bytes, not text: the names come back from `-z` as git stores them.
+    names = subprocess.run(
+        ["git", "show", "--name-only", "-z", "--format=", "HEAD"],
+        cwd=str(project), capture_output=True, check=True).stdout.split(b"\0")
+    assert relative.encode("utf-8") in names
+    assert validate(project).returncode == 0
 
 
 # --- --dry-run --------------------------------------------------------------

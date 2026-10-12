@@ -125,6 +125,28 @@ def product_repo(tmp_path, name: str = "openGlass"):
     return path, commit
 
 
+def assert_pin_digest_recomputed(check, product: str, commit: str) -> None:
+    """The pin's digest was RECOMPUTED from the stand-in, not skipped (#272).
+
+    `validate-pins.py` finds a neutral pin's source in four places and no
+    other (`resolve_neutral_pin_source`): `--pin-source <product>=<path>`,
+    `SHAPE_PIN_SOURCE_<PRODUCT>`, a checkout beside the assembly root, a bare
+    `--pin-source`. When none answers it runs a real `gh api`, and when that
+    fails it prints a `skip` line and still exits 0 — so a run with no source
+    is green on a digest nobody rechecked, and these tests depended on the
+    operator's `gh` login and network to get there. The exit code cannot tell
+    the two apart; the line on stdout can."""
+    recomputed = f"{product}: pin commit {commit[:12]} digest recomputes"
+    assert recomputed in check.stdout, (
+        f"the digest this test vouches for ({product} @ {commit[:12]}) must be "
+        "recomputed from the stand-in it pinned, never skipped: "
+        f"{check.stderr}{check.stdout}")
+    assert f"skip {product}:" not in check.stdout, (
+        f"`validate-pins.py` skipped {product}'s digest instead of "
+        "recomputing it — it found no source and went to `gh api`, which a "
+        f"test must never reach: {check.stdout}")
+
+
 def test_a_declared_descendant_scaffolds_with_legs(tmp_path):
     """THE MedxGlass CASE, end to end. `MedxGlass` declares a pin on
     `openGlass` and is STILL the assembly root that mounts two legs."""
@@ -170,12 +192,17 @@ def test_a_declared_descendant_scaffolds_with_legs(tmp_path):
         "product's tree at that commit")
     assert "local-clone" in pin["digest_source"]
 
+    # The stand-in is not beside `work/MedxGlass`, so `validate-pins.py` is
+    # told where it is, or it asks `gh api` and skips the digest (#272).
     for validator, args in (("validate-repository-naming.py",
                              ["--project", "project.yaml"]),
                             ("validate-manifest.py", []),
-                            ("validate-pins.py", [])):
+                            ("validate-pins.py",
+                             ["--pin-source", f"openGlass={product}"])):
         check = run_script(root / "scripts" / validator, *args, cwd=root)
         assert check.returncode == 0, f"{validator}: {check.stderr}{check.stdout}"
+        if validator == "validate-pins.py":
+            assert_pin_digest_recomputed(check, "openGlass", commit)
 
 
 def test_a_pin_that_is_not_a_full_commit_is_refused(tmp_path):
@@ -284,10 +311,14 @@ def test_a_descendant_that_pins_a_layer_scaffolds_through_the_chain(tmp_path):
         "a pin it holds")
 
     # The gate the project runs on itself agrees with what was written for it.
+    # `validate-pins.py` is told where the layer's stand-in is, or it asks
+    # `gh api` and skips the digest (#272); the other two take no source, and
+    # the link stays unverified for them.
     for validator, args in (("validate-repository-naming.py",
                              ["--project", "project.yaml"]),
                             ("validate-manifest.py", []),
-                            ("validate-pins.py", [])):
+                            ("validate-pins.py",
+                             ["--pin-source", f"openXdox={layer}"])):
         check = run_script(root / "scripts" / validator, *args, cwd=root)
         assert check.returncode == 0, f"{validator}: {check.stderr}{check.stdout}"
         if validator != "validate-pins.py":
@@ -295,6 +326,8 @@ def test_a_descendant_that_pins_a_layer_scaffolds_through_the_chain(tmp_path):
                 "openXdox is not checked out beside this root, so the link is "
                 "unverified — a warning, and exit 0"
             )
+        else:
+            assert_pin_digest_recomputed(check, "openXdox", commit)
 
 
 # The three refusals below scaffold `MedxScribe` pinning `openInk`, NOT
