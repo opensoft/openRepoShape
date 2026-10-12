@@ -890,13 +890,33 @@ def commit_the_pin_without_its_copy(root, project, env) -> None:
         "Re-pin by hand", "--", PIN, "project.yaml", cwd=root.path)
 
 
+def hidden_from_the_index(flag: str):
+    """THE ISSUE'S CASE, then every path it left uncommitted marked `flag`
+    in the index. `git status` and `git diff HEAD` then report nothing, so
+    a check that asked the index would have taken the re-run; the bytes on
+    disk are still not HEAD's."""
+    def prepare(root, project, env) -> None:
+        apply_c_in_place(root, project, env)
+        git("update-index", flag, "--", PIN, "project.yaml", PINS,
+            cwd=root.path)
+        assert git("status", "--porcelain", cwd=root.path).stdout == ""
+        assert git("diff", "--quiet", "HEAD", "--", PIN, "project.yaml", PINS,
+                   cwd=root.path, check=False).returncode == 0, (
+            f"{flag} hides the in-place apply from `git diff HEAD`")
+    return prepare
+
+
 @pytest.mark.parametrize("prepare, at, differ, two_pins", [
     (apply_c_in_place, "c", [PIN, "project.yaml", PINS], True),
+    (hidden_from_the_index("--assume-unchanged"), "c",
+     [PIN, "project.yaml", PINS], True),
+    (hidden_from_the_index("--skip-worktree"), "c",
+     [PIN, "project.yaml", PINS], True),
     (put_the_repin_back_by_hand, "a", [PIN, "project.yaml", CHANGED], True),
     (edit_the_manifest, "b", ["project.yaml"], False),
     (commit_the_pin_without_its_copy, "b", [CHANGED], False),
-], ids=["in-place-apply", "put-back-by-hand", "manifest-edit",
-        "copy-uncommitted"])
+], ids=["in-place-apply", "assume-unchanged", "skip-worktree",
+        "put-back-by-hand", "manifest-edit", "copy-uncommitted"])
 def test_a_rerun_over_a_tree_head_does_not_commit_is_refused_by_name(
         root, project, gh, prepare, at, differ, two_pins):
     """THE ISSUE (#333). `apply --branch --push --pr` on BRANCH finds nothing
@@ -906,7 +926,10 @@ def test_a_rerun_over_a_tree_head_does_not_commit_is_refused_by_name(
     over B), or one whose base and repository came from an uncommitted
     manifest, or one carrying a copy HEAD never committed. Now each is
     refused by name, listing exactly the paths HEAD does not commit, before
-    `gh` is asked or anything is pushed, and the tree is left as it was."""
+    `gh` is asked or anything is pushed, and the tree is left as it was.
+    The comparison is of bytes, so the in-place apply is refused the same
+    with its paths marked `--assume-unchanged` or `--skip-worktree`, which
+    hide it from every question put to the index."""
     prepare(root, project, gh.env)
     head = git("rev-parse", "HEAD", cwd=root.path).stdout.strip()
     remote = on_the_remote(root)
@@ -967,3 +990,48 @@ def test_dirt_neither_decision_reads_leaves_the_rerun_as_it_was(
     assert git("rev-parse", "HEAD", cwd=root.path).stdout.strip() == head
     assert git("status", "--porcelain", cwd=root.path).stdout.splitlines() \
         == [" M README.md", "?? notes.txt"]
+
+
+def test_a_crlf_pin_and_manifest_still_hold_what_head_commits(root, project,
+                                                              gh):
+    """THE CLEAN FILTER RUNS. The project's `.gitattributes` is `* text=auto
+    eol=lf`, so a pin and a manifest whose lines end CRLF and are otherwise
+    HEAD's are what git would commit there: HEAD's blobs. The re-run is not
+    refused for them and opens the pull request for B, as a clean re-run
+    does; a comparison of the raw bytes would have named both. A pinned
+    copy cannot show this here: CRLF makes it `locally-modified` before the
+    re-run is recognised."""
+    landed_without_its_pull_request(root, project, gh.env)
+    head = git("rev-parse", "HEAD", cwd=root.path).stdout.strip()
+    crlf = {}
+    for path in (PIN, "project.yaml"):
+        file = root.path / path
+        crlf[path] = file.read_bytes().replace(b"\r\n", b"\n").replace(
+            b"\n", b"\r\n")
+        file.write_bytes(crlf[path])
+        committed = git("rev-parse", f"HEAD:{path}",
+                        cwd=root.path).stdout.strip()
+        assert git("hash-object", "--no-filters", "--", path,
+                   cwd=root.path).stdout.strip() != committed, (
+            f"{path}'s raw bytes are not HEAD's blob")
+        assert git("hash-object", "--", path,
+                   cwd=root.path).stdout.strip() == committed, (
+            f"{path}, cleaned as git commits it, is HEAD's blob")
+    gh.forget()
+
+    rerun = apply(root, project, "--branch", BRANCH, "--push", "--pr",
+                  env=gh.env)
+
+    assert rerun.returncode == 0, rerun.stdout + rerun.stderr
+    assert f"pull request {URL}" in rerun.stdout
+    assert next_line_of(rerun.stdout) == PR_OPEN_NEXT
+    calls = gh.calls()
+    assert [call[:2] for call in calls] == [["pr", "list"],
+                                            ["pr", "create"]], calls
+    assert calls[1][calls[1].index("--title") + 1].endswith(
+        f"@ {project['b'][:12]}")
+    assert on_the_remote(root) == head
+    assert git("rev-parse", "HEAD", cwd=root.path).stdout.strip() == head
+    for path, data in crlf.items():
+        assert (root.path / path).read_bytes() == data, (
+            f"{path} was left as it was")
