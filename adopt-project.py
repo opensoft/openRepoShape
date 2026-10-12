@@ -110,7 +110,8 @@ from repo_shape import (  # noqa: E402
 )
 from shape_materialize import (  # noqa: E402
     ADOPT_MAKEFILE_BLOCK, BOOTSTRAP, RULESET_HINT, SHAPE_REPOSITORY,
-    SYMLINK_HOPS, CommandFailed, Materialized, assembly_root_paths,
+    SYMLINK_HOPS, TOO_MANY_SYMLINKS, CommandFailed, Materialized,
+    assembly_root_paths,
     collision_follow_up, copy_tree, default_reference, election_date,
     env_commit, escape_what_stdout_cannot_encode, git_init_commit,
     materialize_assembly_root, naming_block, run, template_files, write_lf,
@@ -3065,12 +3066,13 @@ class _PlannedRoot:
     def _through(self, walk: _Walk, link: tuple[str, str], ends: tuple,
                  queue: list) -> list:
         """The parts of the symlink's target, to be walked next; none, and
-        a problem or a place outside, when it is the hop that makes a loop,
-        has nothing to lead to, or leaves the assembly."""
+        a problem or a place outside, when it is one hop more than `open()`
+        follows, has nothing to lead to, or leaves the assembly."""
         at, target = link
         walk.links.append(link)
         if len(walk.links) > SYMLINK_HOPS:
-            walk.problem = f"it runs round a symlink loop at {_spelled(at)}"
+            walk.problem = (f"it follows too many symlinks at {_spelled(at)}: "
+                            f"{TOO_MANY_SYMLINKS}")
             return []
         if not target:
             walk.empty = at
@@ -4685,7 +4687,7 @@ class _SplitTree:
             hops, via = hops + 1, f" at the symlink {_spelled(at)}"
             if hops > SYMLINK_HOPS:
                 raise _NotInTheSplitError(
-                    f"runs round a symlink loop at {_spelled(at)} in the "
+                    f"follows too many symlinks at {_spelled(at)} in the "
                     f"split commit {self.commit}")
             parts = self._parts(target, via) + parts
         return "/".join(done)

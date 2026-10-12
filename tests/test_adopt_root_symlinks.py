@@ -122,6 +122,8 @@ COPY_FINDING = f"FINDING {COPY_IN_THE_WAY}: "
 #: A file of the source's own that a link at the copy leads onto.
 NOTES_MD = "notes.md"
 OUTSIDE = "materialize-outside"
+#: The materializer's refusal of a path that follows too many symlinks.
+SYMLINK_LOOP = "materialize-symlink-loop"
 CONFIG_VALUE = "GIT_CONFIG_VALUE_0"
 #: Case twins of paths the shape writes, as a macOS or Windows disk reads
 #: them (S1), and the rest of what several cases name.
@@ -356,6 +358,21 @@ SCRIPTS_MISPLACED = (
     "not")
 ON_A_FILE = ("a file that is already there, where the shape's copy cannot be "
              "written")
+#: Why a path that follows more than 40 symlinks cannot be written: the
+#: lookup cannot tell a loop from a long chain, and `open()` gives up on both.
+TOO_MANY = ("more than 40, round a loop or along a chain longer than Linux's "
+            "`open()` follows")
+#: 41 symlinks and no loop, `.github -> l1`, `l1 -> l2` ... `l40 -> ci`:
+#: `open()` gives up at `l40` all the same (F1 of #183's re-verify).
+CHAIN = {GITHUB: "l1", **{f"l{n}": f"l{n + 1}" for n in range(1, 40)},
+         "l40": "ci"}
+
+
+def too_many(at: str) -> str:
+    """How a refusal says that a path follows more than 40 symlinks, the
+    last at `at`."""
+    return f"follows too many symlinks at {ticked(at)}"
+
 LINK_TO_GH = {"tooling/gh/workflows/build.yml": "on: push\n"}
 
 #: `(*PLANNED, (link, target, shape path, why[, aside]))`. The first ten are
@@ -407,13 +424,17 @@ REFUSED = [
                  id="D12-out-and-back-by-name"),
     pytest.param({}, {GITHUB: GITHUB}, {GITHUB: ROOT},
                  (GITHUB, GITHUB, WORKFLOW,
-                  "it runs round a symlink loop at `.github`"),
+                  f"it {too_many(GITHUB)}: {TOO_MANY}"),
                  id="a-link-to-itself"),
     pytest.param({}, {GITHUB: LOOP, LOOP: GITHUB},
                  {GITHUB: ROOT, LOOP: ROOT},
                  (GITHUB, LOOP, WORKFLOW,
-                  "it runs round a symlink loop at `.github`"),
+                  f"it {too_many(GITHUB)}: {TOO_MANY}"),
                  id="a-loop-of-two"),
+    pytest.param({CI_FILE: ON_PUSH}, CHAIN,
+                 {CI_DIR: ROOT, **{link: ROOT for link in CHAIN}},
+                 (GITHUB, "l1", WORKFLOW, f"it {too_many('l40')}: {TOO_MANY}"),
+                 id="a-chain-of-41-links"),
     pytest.param({}, {GITHUB: README}, {GITHUB: ROOT},
                  (GITHUB, README, WORKFLOW,
                   f"it passes through {ticked(README)}, which is a file"),
@@ -985,13 +1006,15 @@ UNWRITABLE = [
                  f"{ticked(SHAPE_README)} would be written outside {{t}}: at "
                  f"the symlink {ticked(SHAPE_DIR)} it climbs above it",
                  id="the-collision-directory-out"),
-    pytest.param({GITHUB: GITHUB}, (), "materialize-symlink-loop",
-                 f"{ticked(WORKFLOW)} runs round a symlink loop at "
-                 f"{ticked(GITHUB)} in {{t}}", id="a-link-to-itself"),
-    pytest.param({GITHUB: LOOP, LOOP: GITHUB}, (),
-                 "materialize-symlink-loop",
-                 f"{ticked(WORKFLOW)} runs round a symlink loop at "
-                 f"{ticked(GITHUB)} in {{t}}", id="a-loop-of-two"),
+    pytest.param({GITHUB: GITHUB}, (), SYMLINK_LOOP,
+                 f"{ticked(WORKFLOW)} {too_many(GITHUB)} in {{t}}: {TOO_MANY}",
+                 id="a-link-to-itself"),
+    pytest.param({GITHUB: LOOP, LOOP: GITHUB}, (), SYMLINK_LOOP,
+                 f"{ticked(WORKFLOW)} {too_many(GITHUB)} in {{t}}: {TOO_MANY}",
+                 id="a-loop-of-two"),
+    pytest.param(CHAIN, ("ci/keep.txt",), SYMLINK_LOOP,
+                 f"{ticked(WORKFLOW)} {too_many('l40')} in {{t}}: {TOO_MANY}",
+                 id="a-chain-of-41-links"),
     pytest.param({GITHUB: "nowhere"}, (), BLOCKED,
                  f"{ticked(WORKFLOW)} cannot be written: {ticked(GITHUB)} is "
                  "a symlink to `nowhere`, which is not a directory here",

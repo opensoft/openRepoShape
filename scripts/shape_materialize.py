@@ -1616,10 +1616,17 @@ def materialize_family_root(shape_root: Path, target: Path,
 # `place` asks first, a symlink on the way or not; what is asked here is
 # what still holds for the copy after it, as for any other path.
 
-#: How many symlinks one lookup follows before it is a loop: Linux's own
-#: limit (MAXSYMLINKS), where `open()` gives up with ELOOP. `adopt-project.py`
-#: follows the plan's tree and the split commit's by the same count.
+#: How many symlinks one lookup follows: Linux's own limit (MAXSYMLINKS),
+#: past which `open()` gives up with ELOOP, whether the links go round a loop
+#: or only chain that far. `adopt-project.py` follows the plan's tree and the
+#: split commit's by the same count. macOS gives up after 32, so a chain of 33
+#: to 40 passes here and fails there, as it did before #183.
 SYMLINK_HOPS = 40
+#: What a lookup that follows more than `SYMLINK_HOPS` symlinks has met. It
+#: cannot tell a loop from a long chain, and need not: `open()` gives up on
+#: both. `adopt-project.py`'s finding says it in the same words.
+TOO_MANY_SYMLINKS = (f"more than {SYMLINK_HOPS}, round a loop or along a "
+                     "chain longer than Linux's `open()` follows")
 
 #: What each refusal below says to do. It is raised BEFORE the `mkdir` and the
 #: write, so nothing was written at the path it names. It does not send the
@@ -1660,15 +1667,15 @@ def _ticked(name: str) -> str:
 def _link_parts(here: Path, at: str, rel: str, target: Path, hops: int,
                 name) -> list[tuple[str, str]]:
     """The target of the symlink `here` (spelled `at`) as path parts, each
-    with `at`, or a refusal when it is the hop that makes a loop, it is
-    empty, or it is absolute. `name` writes each path a refusal names.
+    with `at`, or a refusal when it is one hop more than `open()` follows,
+    it is empty, or it is absolute. `name` writes each path a refusal names.
 
     An empty target is not `.`: `open()` finds nothing through it, and the
     parts below would read it as the directory the link is in."""
     if hops > SYMLINK_HOPS:
         raise Refusal("materialize-symlink-loop",
-                      f"{name(rel)} runs round a symlink loop at {name(at)} "
-                      f"in {target}",
+                      f"{name(rel)} follows too many symlinks at {name(at)} "
+                      f"in {target}: {TOO_MANY_SYMLINKS}",
                       UNWRITABLE_REMEDIATION)
     link = os.readlink(here)
     if not link:
@@ -1718,8 +1725,9 @@ def _from_a_directory(target: Path, rel: str, done: list[str], part: str,
 def _followed(target: Path, rel: str, name) -> list[str]:
     """`rel` under `target` with each symlink on the way followed, the way
     `open()` follows them: the parts it lands on, relative to `target`. A
-    refusal when one leads out of `target`, round a loop, or on from
-    something that is not a directory."""
+    refusal when one leads out of `target`, when there are more of them than
+    `open()` follows, or when one leads on from something that is not a
+    directory."""
     parts = [(part, "") for part in rel.split("/")]
     done: list[str] = []
     hops = 0
@@ -1776,8 +1784,9 @@ def _blocker(target: Path, rel: str, landed: list[str],
 
 def _refuse_unwritable(target: Path, rel: str, spell=None) -> None:
     """Refuse, before the `mkdir` and the write, a path the shape must not
-    write at (outside `target`, or round a loop) or cannot (#183). `spell`
-    writes each path the refusal names, `_ticked` where it is None.
+    write at (outside `target`, or through too many symlinks) or cannot
+    (#183). `spell` writes each path the refusal names, `_ticked` where it
+    is None.
     `target` itself is the directory the caller gave, and is named as it
     is, as `materialize-collision` names it."""
     name = spell or _ticked
