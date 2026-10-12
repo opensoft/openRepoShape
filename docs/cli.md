@@ -57,6 +57,8 @@ Every command below is typed at the root of a clone of this repository. `openRep
 
 ### `setup.sh`
 
+From anywhere but a checkout of the standard — a download, `curl … | bash` — `setup.sh --help` is the shim's own instead: a few lines that clone nothing, list no flag, and name `setup-project.py --help` and this file as where the flags are.
+
 `./setup.sh --help`:
 
 ```
@@ -133,8 +135,9 @@ and setup.sh asks, if a terminal is attached. `--org` comes from that flag,
 else $OPENREPOSHAPE_ORG, else a prompt — it is NEVER defaulted. Every other
 argument reaches setup.sh unchanged: --visibility, --elected-by, --family,
 --into, --yes, --local-remote-dir, and anything after `--`, which setup.sh
-hands on to scaffold-project.py. `./setup.sh --help` prints setup-project.py's
-usage, which lists them all.
+hands on to scaffold-project.py. They are setup-project.py's flags:
+`python3 setup-project.py --help` lists them all, and so does
+`./setup.sh --help` in a checkout of this standard.
 
 `--install` places ONE command, and it is this one file:
 

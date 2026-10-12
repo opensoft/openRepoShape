@@ -1570,9 +1570,12 @@ def test_a_rehearsal_that_stops_at_the_plan_makes_no_family_folder(tmp_path):
 #: (`--quiet`, `--depth`), it may pin a ref (`--shape-ref`), it owns the
 #: directory it cloned into (`--keep-shape-checkout`), it asks git one
 #: question (`--show-toplevel`), and it tells the child where the person was
-#: standing (`--into`).
+#: standing (`--into`). And `--help` since #341, which decides whether there
+#: is a checkout to make AT ALL: outside one, the shim answers it itself with
+#: a few lines that list no flag, rather than cloning the standard to print
+#: this file's usage. Its one case label is pinned below.
 SHIM_FLAGS = {"--quiet", "--depth", "--show-toplevel", "--into", "--shape-ref",
-              "--keep-shape-checkout"}
+              "--keep-shape-checkout", "--help"}
 
 #: THE ONE SPELLING IN `setup.sh` THAT LOOKS LIKE A FLAG AND IS NOT ONE.
 #: `xcode-select --install` is APPLE'S command, inside the Darwin sentence
@@ -1632,10 +1635,16 @@ def test_setup_sh_parses_no_flags_of_its_own():
         "setup.sh names --install somewhere other than inside "
         "`xcode-select --install`; SHIM_TEXT_ONLY excuses that spelling only "
         "as Apple's command quoted in a message")
-    for label in ("-y)", "-h)", "--yes)", "--help)"):
+    for label in ("-y)", "-h)", "--yes)"):
         assert label not in code, (
             f"setup.sh defines a case label {label!r} - a parser growing "
             "back one flag at a time")
+    # THE HELP IS THE ONE LABEL ALLOWED (#341), spelled exactly once and
+    # exactly so: section 0's scan answers `-h` and `--help` together
+    # outside a checkout, before any clone. A second `--help)` anywhere, or
+    # a help label of another shape, is a parser growing back after all.
+    assert code.count("--help)") == code.count("-h|--help)") == 1, (
+        "setup.sh's one help label must be section 0's `-h|--help)`, once")
 
 
 def test_the_shim_names_the_command_line_tools_on_a_mac():

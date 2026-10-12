@@ -864,9 +864,12 @@ sudo dnf install gh</code></pre></div>
             instead and nothing touches the network at all.</p>
             <p data-platform="win" class="aside">Run from a download it still clones this standard into a temporary
             directory first; run from a checkout it clones nothing.
-            <code>openRepoShape --help</code> and <code>setup.sh --help</code> list every flag, this
-            one included; <code>docs/cli.md</code> is every tool&rsquo;s help and every
-            subcommand&rsquo;s in one file, generated from the tools themselves.</p>
+            <code>openRepoShape --help</code> and, from a checkout, <code>setup.sh --help</code>
+            list every flag, this one included. From a download, <code>setup.sh --help</code>
+            clones nothing and lists none: it names <code>setup-project.py --help</code>, which
+            answers offline from that one file too, and <code>docs/cli.md</code>, every
+            tool&rsquo;s help and every subcommand&rsquo;s in one file, generated from the tools
+            themselves.</p>
           </div></li>
 
           <li><div>
@@ -1786,9 +1789,11 @@ resume InkRouter                # on workstation B, and the estate is back</code
       <code>family.yaml</code> beside <code>project.yaml</code> as a <strong>manifest kinds</strong>
       finding added (#211); <code>bump-leg.py</code> rewriting tracked workflow files only, and
       refusing an untracked or ignored one it would rewrite, added (#207); the assistant rules
-      saying that some scaffold refusals name a value to change, added (#288) &mdash; a page cannot
-      name the commit that contains it, and the blob below is the fact a test checks.
-      README.md blob e8da93817b0c1a195300800373a2895c0e0280e5. Every command, flag, exit code
+      saying that some scaffold refusals name a value to change, added (#288); what
+      <code>setup.sh --help</code> does from a download, which clones nothing, added (#341)
+      &mdash; a page cannot name the commit that contains it, and the blob below is the fact a
+      test checks.
+      README.md blob 24c1fd0c97d6dc818c1759f2dd4cdb1474e3a48e. Every command, flag, exit code
       and file name on this page is quoted from that README and from AGENTS.md.</p>
     </footer>
   </main>

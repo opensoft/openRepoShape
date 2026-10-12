@@ -305,9 +305,12 @@ flag goes on the Python entry point —
 which, run from a download, still clones the standard into a temporary
 directory first, and from a checkout clones nothing. What it leaves behind is
 `./Atlas` and three bare repositories in `./rehearsal`, both of which you can
-delete. `openRepoShape --help` and `setup.sh --help` list every flag, this one
-included; [`docs/cli.md`](docs/cli.md) is every tool's help and every
-subcommand's in one file, generated from the tools themselves.
+delete. `openRepoShape --help` and, from a checkout, `setup.sh --help` list
+every flag, this one included. From a download, `setup.sh --help` clones
+nothing and lists none: it names `setup-project.py --help`, which answers
+offline from that one file too, and [`docs/cli.md`](docs/cli.md), every
+tool's help and every subcommand's in one file, generated from the tools
+themselves.
 
 Without installing anything — no fork, no manual clone — one command:
 

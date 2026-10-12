@@ -83,10 +83,15 @@ def make_outside_checkout(tmp_path: Path) -> Path:
 
 
 def run_bare_setup(script: Path, *args: str, cwd: Path,
-                   extra_env: dict | None = None) -> subprocess.CompletedProcess:
+                   extra_env: dict | None = None,
+                   stdin: str = "") -> subprocess.CompletedProcess:
     """Like `run_setup`, but against an arbitrary script path and cwd — what
     the self-bootstrap tests need since `run_setup` always drives THIS
-    checkout's own `setup.sh` from THIS checkout's own directory."""
+    checkout's own `setup.sh` from THIS checkout's own directory.
+
+    `stdin` as `run_setup` has it: a pipe, never the terminal pytest was
+    started from, so a run that reaches the one `yes` refuses instead of
+    waiting for somebody to type it."""
     env = dict(os.environ)
     env.setdefault("GIT_AUTHOR_NAME", "openRepoShape tests")
     env.setdefault("GIT_AUTHOR_EMAIL", "tests@openreposhape.invalid")
@@ -94,7 +99,35 @@ def run_bare_setup(script: Path, *args: str, cwd: Path,
     env.setdefault("GIT_COMMITTER_EMAIL", "tests@openreposhape.invalid")
     env.update(extra_env or {})
     return subprocess.run(["bash", str(script), *args], capture_output=True,
-                          text=True, check=False, cwd=str(cwd), env=env)
+                          text=True, check=False, input=stdin, cwd=str(cwd),
+                          env=env)
+
+
+def shim_default_repo() -> str:
+    """What `setup.sh` clones when `$OPENREPOSHAPE_REPO` is unset or empty,
+    read from the shim's own source.
+
+    ONE CONSTANT, `DEFAULT_SHAPE_REPO` (the name `setup-project.py` gives the
+    same value), because two things read it since #341: the clone, and the
+    shim's own `--help` outside a checkout, which names it. The second
+    search is what keeps the value the CLONE's default, rather than merely a
+    string the help happens to print.
+    """
+    source = SETUP.read_text(encoding="utf-8")
+    default = re.search(r'^DEFAULT_SHAPE_REPO="([^"$]+)"$', source,
+                        re.MULTILINE)
+    assert default, "DEFAULT_SHAPE_REPO not found in setup.sh"
+    assert re.search(
+        r'^SHAPE_REPO="\$\{OPENREPOSHAPE_REPO:-\$DEFAULT_SHAPE_REPO\}"$',
+        source, re.MULTILINE), (
+        "setup.sh's SHAPE_REPO no longer falls back to DEFAULT_SHAPE_REPO")
+    return default.group(1)
+
+
+#: The first line of the shim's OWN `--help`, printed only outside a
+#: checkout (#341). Inside one, `--help` is `setup-project.py`'s usage.
+SHIM_HELP_FIRST_LINE = ("setup.sh: the bash front door to setup-project.py, "
+                        "which is the flow itself.")
 
 
 @pytest.fixture(scope="module")
@@ -188,6 +221,24 @@ def test_help_exits_zero():
     # execs `setup-project.py`, so `--help` is the Python's text, reached
     # under either of the two names a person can type.
     assert "usage: setup-project.py" in result.stdout
+
+
+def test_help_inside_a_checkout_is_still_setup_project_pys_own(monkeypatch):
+    """#341 changed `--help` only OUTSIDE a checkout. Inside one the shim
+    still execs `setup-project.py` before section 0 reads a word, so `-h`
+    and `--help` both print that file's usage byte for byte, and never the
+    shim's own text. `GIT_ALLOW_PROTOCOL=file`, so a regression that reached
+    the clone fails closed instead of reaching GitHub."""
+    monkeypatch.setenv("GIT_ALLOW_PROTOCOL", "file")
+    own = subprocess.run([sys.executable, str(REPO / "setup-project.py"),
+                          "--help"], capture_output=True, text=True,
+                         check=False)
+    assert own.returncode == 0, own.stderr
+    for result in (run_setup("--help"), run_setup("-h")):
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert result.stdout == own.stdout
+        assert SHIM_HELP_FIRST_LINE not in result.stdout
+        assert "(0) self-bootstrap" not in result.stdout
 
 
 def test_an_unknown_argument_refuses():
@@ -326,15 +377,21 @@ def test_passthrough_reaches_the_scaffold(tmp_path):
 def test_no_test_here_depends_on_gh_being_authenticated():
     """Every invocation either stops before the preflight or runs offline.
 
-    The three that stop early are argument-parsing refusals (`--help`, an
-    unknown flag, a bad `--visibility`), which the script answers before it
-    looks at the machine. Everything else must pass `--local-remote-dir`, or it
-    reaches `gh auth status` and passes only on a laptop that happens to be
-    logged in — which is exactly how the first version of this file went green
-    locally and red in CI.
+    The ones that stop early are the help (`--help`, `-h`) and two
+    argument-parsing refusals (an unknown flag, a bad `--visibility`). Every
+    `run_setup` runs THIS checkout's `setup.sh` from inside THIS checkout,
+    where the shim hands all of them to `setup-project.py`, which answers
+    them before it looks at the machine. From anywhere ELSE, which only the
+    self-bootstrap section below reaches (through `run_bare_setup`, never
+    scanned here), the shim answers the help itself before any clone (#341),
+    and the two refusals are made by the CLONED `setup-project.py`.
+    Everything else must pass `--local-remote-dir`, or it reaches `gh auth
+    status` and passes only on a laptop that happens to be logged in — which
+    is exactly how the first version of this file went green locally and red
+    in CI.
     """
     source = Path(__file__).read_text(encoding="utf-8")
-    early = ("--help", "--wat", '"secret"')
+    early = ("--help", '"-h"', "--wat", '"secret"')
     for match in re.finditer(r"(?<!def )run_setup\(", source):
         start = match.end()
         depth, index = 1, start
@@ -508,10 +565,7 @@ def test_an_empty_openreposhape_repo_means_unset(tmp_path):
     call that happened to succeed.
     """
     default_repo = "https://github.com/opensoft/openRepoShape.git"
-    source_default = re.search(r'^SHAPE_REPO="\$\{OPENREPOSHAPE_REPO:-([^}]+)\}"',
-                               SETUP.read_text(encoding="utf-8"), re.MULTILINE)
-    assert source_default, "SHAPE_REPO default not found in setup.sh"
-    assert source_default.group(1) == default_repo, (
+    assert shim_default_repo() == default_repo, (
         "this test's literal has drifted from setup.sh's own default")
 
     outside = make_outside_checkout(tmp_path)
@@ -532,6 +586,151 @@ def test_an_empty_openreposhape_repo_means_unset(tmp_path):
     assert match, f"the clone command was never echoed:\n{result.stdout}"
     assert default_repo in match.group(0), (
         f"the clone did not name the default repository: {match.group(0)!r}")
+
+
+# --- `--help` outside a checkout (#341) ----------------------------------------
+#
+# Asking for help is never a network act. Outside a checkout the shim used to
+# clone the standard first and print the CLONE's usage, dying with git's exit
+# 128 offline; it now answers `-h`/`--help` with a few lines of its own before
+# section 0 judges or makes anything. Every run below sets
+# `GIT_ALLOW_PROTOCOL=file`, so that a regression fails closed rather than
+# reaching GitHub, and `offline_env` gives each one a `TMPDIR` of its own (where
+# the shim's `mktemp -d` would land) and a `GIT_TRACE` file (where any `git
+# clone` at all is on record, even one whose checkout was removed on exit).
+
+def offline_env(tmp_path: Path, **extra: str) -> dict:
+    """`GIT_ALLOW_PROTOCOL=file`, a fresh `TMPDIR` and a `GIT_TRACE` file."""
+    tmpdir = tmp_path / "tmpdir"
+    tmpdir.mkdir()
+    env = {"GIT_ALLOW_PROTOCOL": "file", "TMPDIR": str(tmpdir),
+           "GIT_TRACE": str(tmp_path / "git-trace.log")}
+    env.update(extra)
+    return env
+
+
+def clones_and_checkouts(tmp_path: Path) -> tuple:
+    """Every `git clone` git traced, and every temporary checkout left."""
+    trace = tmp_path / "git-trace.log"
+    lines = (trace.read_text(encoding="utf-8", errors="replace").splitlines()
+             if trace.exists() else [])
+    clones = [line for line in lines if "git clone" in line]
+    left = sorted((tmp_path / "tmpdir").glob("openreposhape-shape-*"))
+    return clones, left
+
+
+@pytest.mark.parametrize("args", [
+    pytest.param(["--help"], id="--help"),
+    pytest.param(["-h"], id="-h"),
+    pytest.param(["Sample", "--org", "demoorg", "--help"],
+                 id="after-a-runs-arguments"),
+    pytest.param(["--keep-shape-checkout", "--shape-ref", "main", "-h"],
+                 id="beside-the-checkout-flags"),
+])
+def test_help_from_a_download_is_the_shims_own_and_clones_nothing(tmp_path,
+                                                                   args):
+    """`-h` and `--help` both, because `setup-project.py` reads both as the
+    help, and wherever they stand before `--`, because that is where it reads
+    them too. `$OPENREPOSHAPE_REPO` points at THIS checkout, so a regression
+    would clone locally and print `setup-project.py`'s usage after a `(0)
+    self-bootstrap` line — and `--keep-shape-checkout` would leave that clone
+    in `TMPDIR` for the last assertion to find."""
+    outside = make_outside_checkout(tmp_path)
+    result = run_bare_setup(outside / "setup.sh", *args, cwd=outside,
+                            extra_env=offline_env(
+                                tmp_path, OPENREPOSHAPE_REPO=str(REPO)))
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert result.stdout.startswith(SHIM_HELP_FIRST_LINE + "\n"), result.stdout
+    assert result.stderr == ""
+    assert "(0) self-bootstrap" not in result.stdout
+    assert "usage:" not in result.stdout, (
+        "a usage was printed, which outside a checkout can only be a clone's")
+    clones, left = clones_and_checkouts(tmp_path)
+    assert not clones, f"asking for help cloned: {clones}"
+    assert not left, f"asking for help left a temporary checkout: {left}"
+
+
+def test_the_shims_help_names_the_clone_and_where_the_flags_are(tmp_path):
+    """What the text must say, and the one thing it must not: a flag list.
+    There is still exactly one of those (#50), `setup-project.py --help`,
+    and the shim's text names it and `docs/cli.md` instead of copying it.
+    The default it names is the one the clone uses, read from the shim."""
+    outside = make_outside_checkout(tmp_path)
+    result = run_bare_setup(outside / "setup.sh", "--help", cwd=outside,
+                            extra_env=offline_env(tmp_path))
+    assert result.returncode == 0, result.stderr + result.stdout
+    out = result.stdout
+    assert "$OPENREPOSHAPE_REPO" in out
+    assert shim_default_repo() in out
+    assert "python3 setup-project.py --help" in out
+    assert "docs/cli.md" in out
+    flags = set(re.findall(r"(?<![\w-])--?[A-Za-z][\w-]*", out))
+    assert flags == {"--help"}, f"the shim's own help lists flags: {flags}"
+
+
+def test_help_from_a_download_never_echoes_openreposhape_repo(tmp_path):
+    """The help is answered BEFORE `$OPENREPOSHAPE_REPO`'s guard runs, as
+    `setup-project.py` answers it before reading that variable at all. So
+    it must never print the value: it names the variable and its default,
+    and a newline in the value cannot forge a line onto either stream."""
+    outside = make_outside_checkout(tmp_path)
+    result = run_bare_setup(outside / "setup.sh", "--help", cwd=outside,
+                            extra_env=offline_env(
+                                tmp_path,
+                                OPENREPOSHAPE_REPO="/nope\nREFUSED: forged"))
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "forged" not in result.stdout + result.stderr
+    assert shim_default_repo() in result.stdout
+
+
+def test_help_piped_into_bash_clones_nothing(tmp_path):
+    """`curl -fsSL …/setup.sh | bash -s -- --help`, the issue's own spelling.
+    There is no file on disk, so `$SCRIPT_DIR` falls back to the working
+    directory, which is not a checkout: the same branch, the same answer."""
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    env = dict(os.environ)
+    env.update(offline_env(tmp_path, OPENREPOSHAPE_REPO=str(REPO)))
+    result = subprocess.run(["bash", "-s", "--", "--help"],
+                            input=SETUP.read_bytes(), capture_output=True,
+                            check=False, cwd=str(cwd), env=env)
+    stdout = result.stdout.decode("utf-8")
+    assert result.returncode == 0, result.stderr.decode("utf-8") + stdout
+    assert stdout.startswith(SHIM_HELP_FIRST_LINE + "\n"), stdout
+    clones, left = clones_and_checkouts(tmp_path)
+    assert not clones, f"asking for help cloned: {clones}"
+    assert not left, f"asking for help left a temporary checkout: {left}"
+
+
+@pytest.mark.parametrize("flag", ["--help", "-h"])
+def test_help_after_double_dash_is_the_scaffolds_and_still_clones(tmp_path,
+                                                                  flag):
+    """`setup.sh <Project> -- --help` is NOT a request for the shim's help:
+    what follows `--` is `scaffold-project.py`'s. So the run takes the clone
+    path like any other (of THIS checkout, offline), `setup-project.py` reads
+    the flag as passthrough, and its plan step — `scaffold-project.py <args>
+    --help --dry-run` — prints the SCAFFOLD's usage. No `--yes` and no
+    terminal, so it stops after the plan and nothing is created.
+
+    The traced clone here is also the control for the tests above: it shows
+    `clones_and_checkouts` does see a clone when there is one."""
+    outside = make_outside_checkout(tmp_path)
+    result = run_bare_setup(outside / "setup.sh", "Sample", "--org", "demoorg",
+                            "--local-remote-dir", str(tmp_path / "remotes"),
+                            "--into", str(tmp_path / "work"), "--", flag,
+                            cwd=outside,
+                            extra_env=offline_env(
+                                tmp_path, OPENREPOSHAPE_REPO=str(REPO)))
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert "(0) self-bootstrap" in result.stdout
+    assert SHIM_HELP_FIRST_LINE not in result.stdout
+    assert "usage: setup-project.py" not in result.stdout + result.stderr
+    assert "usage: scaffold-project.py" in result.stdout, result.stdout
+    assert "no terminal to confirm on" in result.stderr
+    assert not (tmp_path / "remotes").exists()
+    clones, left = clones_and_checkouts(tmp_path)
+    assert clones, "the run never cloned, or GIT_TRACE no longer shows one"
+    assert not left, f"the temporary checkout was left behind: {left}"
 
 
 # --- the shim's own bash-side guards -----------------------------------------
