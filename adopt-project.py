@@ -1727,11 +1727,11 @@ def _worded(text: str) -> str:
     plainly a tab.
     """
     parts: list[str] = []
-    for printable, run in itertools.groupby(text, str.isprintable):
+    for printable, chars in itertools.groupby(text, str.isprintable):
         if printable:
-            parts.append(f"`{''.join(run)}`")
+            parts.append(f"`{''.join(chars)}`")
         else:
-            parts += map(_character_name, run)
+            parts += map(_character_name, chars)
     return ", then ".join(parts) or '""'
 
 
