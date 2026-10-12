@@ -152,7 +152,12 @@ def strip_the_real_additions(upstream) -> list:
                 (upstream / rel).unlink()
                 touched.append(rel)
         text = unname_everywhere(text, entry)
-        assert f'"{entry}"' not in text, (
+        # A LIST ENTRY, the line `unname_everywhere` strips, and not every
+        # string in the module: `ATTRIBUTES` spells `.gitattributes` once
+        # outside the lists (#471), for the block an adoption appends to a
+        # source's own file, and no list reads it.
+        assert not re.search(r'^\s+"%s",?\r?$' % re.escape(entry), text,
+                             flags=re.MULTILINE), (
             f"the copy lists still name {entry}, which this fixture just "
             "removed")
     if text != source.read_text(encoding="utf-8"):
