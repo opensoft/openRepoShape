@@ -2154,14 +2154,29 @@ def manifest_invalid(values: dict, policy: NamingPolicy, what: dict,
 
 #: The remediation, without the sentence only the caller can write (what was
 #: or was not created, whether `--dry-run` refuses the same).
+#:
+#: WHAT IT SAYS IS ONLY WHAT HOLDS FOR EVERY VALUE THE RULE REFUSES: the
+#: project's reader reads back something other than what was typed. What that
+#: does next differs by value and by reader, and it is NOT always a failure.
+#: `--tracking-branch 2026` and `1.5` scaffold, bootstrap and get their
+#: upstream today, because every reader of `tracking_branch` does `str()` and
+#: `str(2026)` is `2026` again (while `007` reads back as `7`, `1.50` as
+#: `1.5` and `0` as `main`). So the text names only the failures that do hold
+#: (an id that is not text fails the validator; `007` as a branch becomes the
+#: branch `7`) and says that a number which survives `str()` works because of
+#: the reader and is still a number to the project's own.
 MANIFEST_MISREAD_REMEDIATION = (
     "Remediation: choose another value for each one named, as nothing here "
     "will retype it for you. The templates write these values unquoted, so "
-    "the project would read `null` and `~` as nothing, `true` and `false` as "
-    "booleans and `007` or `2026` as numbers, and its first bootstrap would "
-    "fail, or put its legs on a branch the remotes do not have. An id or a "
-    "branch name the reader takes for text (`atlas`, `release-1`, `v2`) "
-    "passes.")
+    "the project's own YAML reader takes `null` and `~` for no value, `true` "
+    "and `false` for booleans, and `007`, `2026` or `1.5` for numbers: what "
+    "it reads back is not what was typed. What that does differs: an id "
+    "that is not text fails the project's own validate-manifest.py, and "
+    "`007` as a branch reads back as the branch `7`; `2026` or `1.5` as a "
+    "branch happens to work today, because the tools that read it turn the "
+    "number back into text, but it is still a number to the project's "
+    "reader and not a name. A value the reader takes for text (`atlas`, "
+    "`release-2026`, `v2`) passes.")
 MANIFEST_INVALID_REMEDIATION = (
     "Remediation: choose a value the project's own validate-manifest.py "
     "accepts; the words after each value are the validator's own, and a "

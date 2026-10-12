@@ -227,6 +227,52 @@ def test_a_dry_run_refuses_a_misread_value_as_the_real_run_would(
     assert_nothing_was_created(tmp_path)
 
 
+@pytest.mark.parametrize("flag, value", [
+    ("--tracking-branch", "2026"), ("--tracking-branch", "1.5"),
+    ("--tracking-branch", "007"), ("--id", "2026"), ("--id", "null"),
+])
+def test_the_remediation_says_what_is_true_of_every_value_it_refuses(
+        tmp_path, flag, value):
+    """`--tracking-branch 2026` and `1.5` are the values this refusal newly
+    takes from people: they scaffolded, bootstrapped and got their upstream,
+    because every reader of `tracking_branch` does `str()` and `str(2026)` is
+    `2026` again. The remediation once said the first bootstrap would fail or
+    put the legs on a branch the remotes lack, which is false of exactly
+    those, so it now says only what holds of all of them -- the project's
+    reader reads back something other than what was typed -- names the
+    failures that do hold, says plainly that a number which survives `str()`
+    is a number all the same, and gives the way forward: a value that is text
+    to the reader."""
+    result = scaffold(tmp_path, "--dry-run", f"{flag}={value}")
+    assert_refused(result, MISREAD)
+    said = result.stderr
+    assert "what it reads back is not what was typed" in said
+    assert ("an id that is not text fails the project's own "
+            "validate-manifest.py") in said
+    assert ("`2026` or `1.5` as a branch happens to work today, because the "
+            "tools that read it turn the number back into text, but it is "
+            "still a number to the project's reader and not a name") in said
+    assert ("A value the reader takes for text (`atlas`, `release-2026`, "
+            "`v2`) passes.") in said
+    assert "first bootstrap would fail" not in said
+    assert "branch the remotes do not have" not in said
+
+
+@pytest.mark.parametrize("typed, read_back", [
+    ("2026", "2026"), ("1.5", "1.5"),
+    ("007", "7"), ("1.50", "1.5"),
+])
+def test_the_remediations_claim_about_str_is_what_the_reader_does(
+        typed, read_back):
+    """The remediation says a branch that is a number survives `str()` only
+    when `str()` of the number is the text typed. That is a claim about the
+    project's own reader, so it is asked of the reader: `2026` and `1.5` come
+    back as typed, `007` and `1.50` as another branch."""
+    value = parse_yaml(f"tracking_branch: {typed}\n")["tracking_branch"]
+    assert not isinstance(value, str), "the reader takes it for text"
+    assert str(value) == read_back
+
+
 @pytest.mark.parametrize("project, derived, reading", [
     ("True", "true", "the boolean true"),
     ("Null", "null", "no value at all"),
