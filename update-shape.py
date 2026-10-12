@@ -87,8 +87,8 @@ EXIT CODES
             1  updates are available, or drift a human must resolve
             2  a REFUSAL: no pin, an unresolvable upstream, an unreadable root
     apply   0  applied (or there was nothing to do)
-            2  a REFUSAL, including a validator that went red or a write,
-               branch, stage or commit that failed (rolled back)
+            2  a REFUSAL, including a validator that went red or a branch,
+               stage or commit that failed (rolled back)
 
 STANDARD LIBRARY ONLY, like everything else shipped here.
 """
