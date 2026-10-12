@@ -41,8 +41,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import (REPO, WINDOWS_SKIP, assert_read_through_git,
-                      clone_just_pushed, git, rmtree, run_script)
+from conftest import (FILE_PROTOCOL, REPO, WINDOWS_SKIP,
+                      assert_read_through_git, clone_just_pushed, git, rmtree,
+                      run_script)
 from gh_guard import PROBES as GH_PROBES
 
 sys.path.insert(0, str(REPO / "scripts"))
@@ -6161,8 +6162,8 @@ def adopted_cursor(standard, tmp_path_factory) -> dict:
                       "--work-dir", str(base / "work"))
     assert done.returncode == 0, done.stdout + done.stderr
     clone = base / "clone"
-    git(*FILE_PROTOCOL, "clone", "-q", "--recurse-submodules", "-b",
-        "adopt/three-repo-shape", str(source), str(clone), cwd=base)
+    proc = clone_just_pushed(source, clone, branch="adopt/three-repo-shape")
+    assert proc.returncode == 0, proc.stderr
     return {"clone": clone,
             "commit": git("rev-parse", "main", cwd=source).stdout.strip()}
 
@@ -6173,6 +6174,18 @@ def cursor_clone(adopted_cursor, tmp_path) -> Path:
     target = tmp_path / "Northwind"
     shutil.copytree(adopted_cursor["clone"], target, symlinks=True)
     return target
+
+
+@needs_filter_repo
+def test_the_adopted_clone_was_read_through_git_not_through_the_remotes(
+        adopted_cursor):
+    """#440: `execute` pushed the split branch into the source and each leg
+    into a bare remote a moment before `adopted_cursor` cloned them, so
+    the objects are loose there; read through the transport (as the
+    scaffolded session fixtures are) the root and both legs are ONE PACK
+    each, and read as plain paths (git's local clone) they stay loose.
+    """
+    assert_read_through_git(adopted_cursor["clone"])
 
 
 def cursor_placement(standard, root: Path) -> tuple:

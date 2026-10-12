@@ -61,7 +61,9 @@ ORG = "testorg"
 FILE_PROTOCOL = ["-c", "protocol.file.allow=always"]
 
 
-def clone_just_pushed(remote: Path, dest: Path) -> subprocess.CompletedProcess:
+def clone_just_pushed(remote: Path, dest: Path,
+                      branch: str | None = None
+                      ) -> subprocess.CompletedProcess:
     """`git clone --recurse-submodules` of a bare remote a scaffold has JUST
     pushed into, READ THROUGH GIT AND NOT THROUGH ITS FILES (#440).
 
@@ -80,6 +82,11 @@ def clone_just_pushed(remote: Path, dest: Path) -> subprocess.CompletedProcess:
     clone's own `origin` and `submodule.<name>.url` keep the plain paths. The
     prefix is the directory RESOLVED, as `scaffold-project.py` writes it into
     `.gitmodules`, in both of a Windows path's spellings.
+
+    `branch` is `-b <branch>`: `adopt-project.py execute` pushes its split
+    branch into the SOURCE, a plain repository, which is then `remote`.
+    The two legs it pushed into `--local-remote-dir` are read by the
+    rewrite only while that directory sits under `remote`'s parent.
     """
     remotes = remote.parent.resolve()
     uri = remotes.as_uri().rstrip("/") + "/"
@@ -89,6 +96,7 @@ def clone_just_pushed(remote: Path, dest: Path) -> subprocess.CompletedProcess:
                 for arg in ("-c", f"url.{uri}.insteadOf={prefix}")]
     return subprocess.run(
         ["git", *FILE_PROTOCOL, *rewrites, "clone", "-q", "--no-local",
+         *(["-b", branch] if branch else []),
          "--recurse-submodules", str(remote), str(dest)],
         capture_output=True, text=True, check=False)
 
