@@ -383,10 +383,11 @@ def test_add_refuses_a_link_by_name_before_it_writes_anything(
         "the refusal says where the link points, quoted as a literal")
     assert "remove or move" in result.stderr, (
         "and what the operator does about it")
-    # The promise is `--add`'s, not the whole command's: a pinned copy, or
-    # the pin itself, kept as a link is still rewritten through it.
-    assert "`--add` never writes through a link" in result.stderr
-    assert "this command never writes through a link" not in result.stderr
+    # The promise is the whole command's again (#286): a pinned copy, the
+    # pin and the manifest kept as a link are refused too. It says SYMLINK:
+    # a hard-linked copy is still rewritten through its other name.
+    assert "this command never writes through a symlink" in result.stderr
+    assert "never writes through a link" not in result.stderr
     assert "update-validators-red" not in result.stderr
     assert "ROLLED BACK" not in result.stderr, (
         "nothing was written, so nothing is rolled back")

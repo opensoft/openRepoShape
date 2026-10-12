@@ -171,7 +171,8 @@ def apply(root, upstream_and_project, *extra):
 
 #: Every verdict `check` can print, in the column it prints them in.
 STATES = ("unchanged", "upstream-changed", "locally-modified", "both",
-          "already-at-target", "upstream-removed", "unmapped", "copy-missing")
+          "already-at-target", "upstream-removed", "unmapped", "copy-missing",
+          "copy-is-link")
 
 
 def verdicts(stdout: str) -> dict:

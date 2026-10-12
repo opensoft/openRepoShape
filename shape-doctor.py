@@ -3512,10 +3512,15 @@ def drifted_file_reasons(counts: dict) -> list:
 
     TWO GROUPS AND THEY SAY DIFFERENT THINGS. `locally-modified` and `both`
     are what MADE this repository drifted -- a copy of the standard carries
-    an edit -- so they are named first. `upstream-removed`, `unmapped` and
-    `copy-missing` are states in which the standard and the copy no longer
-    map onto each other at all, which is worth quoting beside the edits
-    because it is the same person's next question.
+    an edit -- so they are named first. `upstream-removed`, `unmapped`,
+    `copy-missing` and `copy-is-link` are states in which the standard and
+    the copy no longer map onto each other at all, which is worth quoting
+    beside the edits because it is the same person's next question.
+    `copy-is-link` (#286) is a pinned copy the tree keeps as a symlink, or
+    under one: git holds the link, not the bytes the pin's digest describes,
+    and `update-shape.py apply` refuses it. It is a conflict there, so the
+    row is `drifted`; unnamed here, that drift had no reason to print, and
+    the verdict fell through to the catch-all `INVALID (shape-currency)`.
 
     A state is named only when its count is non-zero: a verdict line reading
     `0 unmapped` would be a parenthetical contradicting the words above it.
@@ -3523,7 +3528,8 @@ def drifted_file_reasons(counts: dict) -> list:
     Split out of `verdict_for` for #134.
     """
     edited = ("locally-modified", "both")
-    unmapped = ("upstream-removed", "unmapped", "copy-missing")
+    unmapped = ("upstream-removed", "unmapped", "copy-missing",
+                "copy-is-link")
     return [f"{counts[state]} {state}" for state in edited + unmapped
             if counts.get(state)]
 

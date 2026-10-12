@@ -942,6 +942,38 @@ def test_a_deleted_pinned_agent_file_is_not_an_add(standard, project):
     assert "checkout --" in row["next"], row["next"]
 
 
+@WINDOWS_SKIP
+def test_a_pinned_copy_kept_as_a_link_is_drifted_by_name(standard, project,
+                                                         tmp_path):
+    """`AGENTS-shape.md` moved outside the root, a committed symlink in its
+    place, with the bytes unchanged (#286).
+
+    `update-shape.py` reads that row as `copy-is-link`, a conflict its
+    `apply` refuses: git holds the link, not the bytes the pin's digest
+    describes. The doctor names it the way it names `copy-missing` --
+    `DRIFTED (1 copy-is-link)` -- rather than reaching a verdict whose
+    parenthesis says nothing about the file. Main read through the link and
+    called this root COMPLIANT.
+    """
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    shutil.move(str(project / "AGENTS-shape.md"),
+                str(outside / "AGENTS-shape.md"))
+    (project / "AGENTS-shape.md").symlink_to(outside / "AGENTS-shape.md")
+    commit_all(project, "keep AGENTS-shape.md as a link")
+
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 1, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["verdict"] == "DRIFTED (1 copy-is-link)", payload["verdict"]
+    row = rows_of(result)["shape-currency"]
+    assert row["status"] == "FINDING", row
+    assert row["detail"]["counts"] == {"copy-is-link": 1,
+                                       "unchanged": 10}, row["detail"]
+    assert row["detail"]["conflicts"] == ["AGENTS-shape.md"], row["detail"]
+    assert "AGENTS-shape.md" in row["reason"], row["reason"]
+
+
 #: How the `leg shape files` row spells a copy ON THIS HOST. `cp` is not a
 #: program on Windows, it is an alias of `Copy-Item` (Microsoft's own
 #: reference: "PowerShell includes the following aliases for `Copy-Item`:
