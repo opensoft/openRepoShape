@@ -4128,13 +4128,27 @@ def origin_url(path: Path) -> str:
 
     BOTH THE SIBLING AND THE HOLDER are asked this: the holder's own remote
     is what a relative submodule url is resolved against.
+
+    AND IT IS READ AS `make siblings` READS IT: a byte that is not UTF-8 is
+    replaced, which is `siblings.py::git_text`'s `errors="replace"` (#385).
+    git keeps a URL as the bytes it was given, so a clone of a mirror under
+    a directory named in a legacy code page has one, and read strictly it
+    ended this report in a `UnicodeDecodeError` traceback. It is NOT the
+    empty string: `verify_sibling` accepts `<dir>/caf\\ufffd/Org/Repo.git`
+    as the member's clone by the row's `repository: Org/Repo` tail, so
+    `""` here would call the clone `make siblings` fetches into `(no
+    origin)` and no working clone -- the two tools disagreeing about one
+    directory, which `working_clone` exists to prevent (#146). A URL that
+    matches nothing is quoted with the replacement, and a row prints it as
+    `?`.
     """
     if not (path / ".git").exists():
         return ""
     try:
-        return git_out(["remote", "get-url", "origin"], cwd=path)
+        raw = git_out(["remote", "get-url", "origin"], cwd=path, binary=True)
     except (Refusal, OSError):
         return ""
+    return raw.decode("utf-8", "replace").strip()
 
 
 def submodule_config(root: Path) -> dict:
@@ -4625,10 +4639,21 @@ def origin_name(root: Path) -> str | None:
     containing a second colon of its own: `D` in `D:/a/.../Atlas.git` is a
     PATH, never a host, however this function is later changed to use
     what comes after it.
+
+    AND A URL THAT IS NOT UTF-8 NAMES NOTHING, as no origin names nothing
+    (#385). git keeps a URL as the bytes it was given -- a clone of a
+    directory named in a legacy code page has one -- and read strictly it
+    ended this report in a `UnicodeDecodeError` traceback, exit 1, from the
+    `naming` row, where the same repository with no origin ends NOT A SHAPE
+    ROOT, exit 2. No segment of it is salvaged: in a double-byte code page
+    the byte `\\` is the second half of many characters, so what the rules
+    above split off could be a fragment of a name. It is the answer
+    `shape_advisory.repository_names` gives the same URL, so the `naming`
+    row, `the way in` and the `Triad` row read one identity.
     """
     try:
         url = git_out(["remote", "get-url", "origin"], cwd=root)
-    except (Refusal, OSError):
+    except (Refusal, OSError, UnicodeDecodeError):
         return None
     if _WINDOWS_PATH_RE.match(url):
         url = url.replace("\\", "/")
