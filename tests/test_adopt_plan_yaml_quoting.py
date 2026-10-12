@@ -685,6 +685,35 @@ def test_text_the_loader_reads_as_other_text_is_shown_as_typed_and_read(
         f"{reading} and not as that text: choose another value"]
 
 
+#: `(a hand-edited plan's pin, the item `execute` writes for it, as a
+#: sentence shows that line)`. `execute` writes a pin into its `  - ` item as
+#: it stands, so the whitespace after it stays in the line, where the loader
+#: drops it. A space shows between the backticks; a tab makes the line one a
+#: terminal would not show as it is, so Python spells it.
+PIN_WITH_A_TRAIL = [
+    pytest.param('"openGlass "', "`- openGlass `", id="space"),
+    pytest.param('"openGlass\\t"', "'- openGlass\\t'", id="tab"),
+]
+
+
+@pytest.mark.parametrize("spelled, shown", PIN_WITH_A_TRAIL)
+def test_a_pin_is_shown_in_the_line_execute_writes_whitespace_and_all(
+        answered, tmp_path, spelled, shown):
+    """The finding said `execute` writes `- openGlass` for a pin
+    `"openGlass "`: the line was stripped after the pin was put in it, so
+    the space `execute` keeps was gone from the line the sentence named
+    (rv181f's F1). The loader drops that space, which is why the pin is
+    refused, and the line named is the one `execute` writes."""
+    _, text = answered
+    plan = tmp_path / PLAN_FILE
+    carrying(plan, text, PINS_KEY, spelled)
+    result = checked(plan)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert (f"{MANIFEST}'s neutral_product_pins as {shown}, where the "
+            "project's own YAML loader reads it back as the text `openGlass` "
+            "and not as that text") in result.stderr, result.stderr
+
+
 #: Values the manifest's own double quotes misread while `render` pasted
 #: them raw between them: an escape the loader resolved, a `"` that ended
 #: the scalar early, a last `\\` that left it unclosed, and a carriage return

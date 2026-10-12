@@ -1686,8 +1686,11 @@ def _field(what: str, placeholder: str, value) -> tuple[str, object, list]:
 
 
 def _pin_field(what: str, pin) -> tuple[str, object, list]:
+    # Only the item's indent goes: `execute` writes the pin as it stands,
+    # whitespace after it included, and the sentence names that line. The
+    # loader drops the whitespace, which is the misreading it reports.
     return what, pin, [(f"{MANIFEST_YAML}'s neutral_product_pins",
-                        _pin_item(str(pin)).strip())]
+                        _pin_item(str(pin)).lstrip())]
 
 
 def _the_loader_made(reading) -> str:
