@@ -864,9 +864,12 @@ sudo dnf install gh</code></pre></div>
             instead and nothing touches the network at all.</p>
             <p data-platform="win" class="aside">Run from a download it still clones this standard into a temporary
             directory first; run from a checkout it clones nothing.
-            <code>openRepoShape --help</code> and <code>setup.sh --help</code> list every flag, this
-            one included; <code>docs/cli.md</code> is every tool&rsquo;s help and every
-            subcommand&rsquo;s in one file, generated from the tools themselves.</p>
+            <code>python3 setup-project.py --help</code> and, from a checkout,
+            <code>setup.sh --help</code> list every flag, this one included. From a download,
+            <code>setup.sh --help</code> clones nothing and lists none: it names
+            <code>setup-project.py --help</code>, which answers offline from that one file too,
+            and <code>docs/cli.md</code>, every tool&rsquo;s help and every subcommand&rsquo;s in
+            one file, generated from the tools themselves.</p>
           </div></li>
 
           <li><div>
@@ -929,11 +932,11 @@ sudo dnf install gh</code></pre></div>
 
       <div class="stack">
         <h4>What <code>setup.sh</code> actually runs</h4>
-        <p>It is a shim &mdash; about seventy lines of code (twice that with its comments) that find
-        a Python 3.9 or newer, clone this standard into a temporary directory when you are not
-        already in a checkout of it, and hand over to <code>setup-project.py</code>, which IS the
-        flow. These are the commands that flow runs, in order, with no behaviour of its own (the
-        first only in self-bootstrap mode, from the one-liner):</p>
+        <p>It is a shim that finds a Python 3.9 or newer, clones this standard into a temporary
+        directory when you are not already in a checkout of it, and hands over to
+        <code>setup-project.py</code>, which IS the flow. These are the commands that flow runs,
+        in order, with no behaviour of its own (the first only in self-bootstrap mode, from the
+        one-liner):</p>
         <div class="code" data-lang="sh"><pre><code>git clone --depth 1 https://github.com/opensoft/openRepoShape.git &lt;tmp-dir&gt;
 python3 scripts/validate-repository-naming.py --explain Atlas Atlas-spec Atlas-code
 python3 scaffold-project.py --org &lt;your-org&gt; --project Atlas --dry-run
@@ -1312,7 +1315,12 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
       <p><span class="refuses">Refuses</span> a <code>--to</code> that is not exactly 40 hex; a
       commit no branch of the leg&rsquo;s remote contains (a pin the rest of the world cannot fetch
       is a root it cannot bootstrap); a dirty root; an untracked or ignored workflow file it would
-      rewrite; a root standing on its own tracking branch (the next step is a pull request, never a
+      rewrite; a workflow file or the leg&rsquo;s own pin that is not UTF-8, naming each file and its
+      first bad byte before anything is written (a file git does not track needs the re-save and no
+      commit); a workflow file, the <code>.github/workflows/</code> directory or the leg&rsquo;s pin
+      that this user cannot open, naming the path and the system&rsquo;s reason, with the same ids
+      and the remedy of making it readable and running the command again; a root standing on its
+      own tracking branch (the next step is a pull request, never a
       push to the default branch); and a validator that goes red &mdash; rolling the pin, the
       workflow files, the leg&rsquo;s checkout and the index back first, so a refusal leaves the
       tree exactly as it was found.</p>
@@ -1786,9 +1794,14 @@ resume InkRouter                # on workstation B, and the estate is back</code
       <code>family.yaml</code> beside <code>project.yaml</code> as a <strong>manifest kinds</strong>
       finding added (#211); <code>bump-leg.py</code> rewriting tracked workflow files only, and
       refusing an untracked or ignored one it would rewrite, added (#207); the assistant rules
-      saying that some scaffold refusals name a value to change, added (#288) &mdash; a page cannot
-      name the commit that contains it, and the blob below is the fact a test checks.
-      README.md blob e8da93817b0c1a195300800373a2895c0e0280e5. Every command, flag, exit code
+      saying that some scaffold refusals name a value to change, added (#288);
+      <code>bump-leg.py</code> refusing a workflow file or the leg&rsquo;s pin that is not UTF-8, by
+      name, added (#289); <code>bump-leg.py</code> refusing a workflow file, the workflows directory
+      or the leg&rsquo;s pin that this user cannot open, by name, added (#383); what
+      <code>setup.sh --help</code> does from a download, which clones nothing, and which commands
+      list every flag, added (#341) &mdash; a page cannot name the commit that contains it, and
+      the blob below is the fact a test checks.
+      README.md blob 5465d135ca7263010ee354424041f90c4553d2e7. Every command, flag, exit code
       and file name on this page is quoted from that README and from AGENTS.md.</p>
     </footer>
   </main>
