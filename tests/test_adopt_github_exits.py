@@ -115,24 +115,48 @@ BY_HAND = "Open the pull request by hand:"
 
 #: `gh` with no network. `repo create` makes a bare repository under
 #: $FAKE_GH_ROOT, which is what the rewritten `https://github.com/` URL then
-#: names, and the one command named in $FAKE_GH_REFUSES is refused the way a
+#: names. Each command $FAKE_GH_REFUSES names (`|` between them; `pr create`,
+#: or `repo edit <repository>` for one repository alone) is refused the way a
 #: token without the permission is, after writing the arguments it was given,
-#: NUL-separated, to $FAKE_GH_ROOT/refused-arguments. Every call records the
-#: token and the config directory it was run with in $FAKE_GH_ROOT/environment:
-#: they are what a real `gh` would have been run with.
+#: NUL-separated, to $FAKE_GH_ROOT/refused-arguments. `pr create` is refused
+#: as GitHub refuses a base that is no branch of the repository (#479), and
+#: records `<repository> <base>` in $FAKE_GH_ROOT/opened when it opens one.
+#: Every call records the token and the config directory it was run with in
+#: $FAKE_GH_ROOT/environment, which are what a real `gh` would have been run
+#: with, and its first three arguments, a line each, in $FAKE_GH_ROOT/calls.
 GH_SHIM = textwrap.dedent("""\
     #!/bin/sh
     printf '%s\\n%s\\n' "$GH_TOKEN" "$GH_CONFIG_DIR" > "$FAKE_GH_ROOT/environment"
+    printf '%s %s %s\\n' "$1" "$2" "$3" >> "$FAKE_GH_ROOT/calls"
+    refused=no
+    old_ifs=$IFS; IFS='|'
+    for one in $FAKE_GH_REFUSES; do
+      case "$one" in "$1 $2"|"$1 $2 $3") refused=yes;; esac
+    done
+    IFS=$old_ifs
+    if [ "$refused" = yes ]; then
+      : > "$FAKE_GH_ROOT/refused-arguments"
+      for argument in "$@"; do
+        printf '%s\\0' "$argument" >> "$FAKE_GH_ROOT/refused-arguments"
+      done
+      echo "HTTP 403: Resource not accessible by integration" >&2; exit 1
+    fi
     case "$1 $2" in
-      "$FAKE_GH_REFUSES")
-        : > "$FAKE_GH_ROOT/refused-arguments"
-        for argument in "$@"; do
-          printf '%s\\0' "$argument" >> "$FAKE_GH_ROOT/refused-arguments"
-        done
-        echo "HTTP 403: Resource not accessible by integration" >&2; exit 1;;
       "repo create")
         git init -q --bare -b main "$FAKE_GH_ROOT/$3.git" && echo "https://github.com/$3";;
-      "pr create") echo "https://github.com/testorg/Northwind/pull/1";;
+      "pr create")
+        repo=; base=
+        while [ $# -gt 0 ]; do
+          case "$1" in --repo) repo=$2; shift;; --base) base=$2; shift;; esac
+          shift
+        done
+        if ! git --git-dir="$FAKE_GH_ROOT/$repo.git" rev-parse -q --verify \\
+            "refs/heads/$base" > /dev/null; then
+          echo "pull request create failed: GraphQL: Base ref must be a branch" >&2
+          exit 1
+        fi
+        printf '%s %s\\n' "$repo" "$base" > "$FAKE_GH_ROOT/opened"
+        echo "https://github.com/$repo/pull/1";;
       "repo edit") ;;
       *) exit 1;;
     esac
@@ -185,7 +209,8 @@ def step_7() -> str:
 
 def github_run(tmp_path: Path, refuses: str, tree: dict = SOURCE_TREE,
                keep_contracts: bool = False, merge_stderr: bool = False,
-               stdout_closed: bool = False):
+               stdout_closed: bool = False, branch: str = "main",
+               plan_flags: tuple = ()):
     """Plan a small source and `execute` it in GitHub mode, with a `gh` that
     refuses `refuses`. Returns `(result, github)`: the run, and the directory
     that stands for github.com, with `testorg/<name>.git` in it.
@@ -196,10 +221,12 @@ def github_run(tmp_path: Path, refuses: str, tree: dict = SOURCE_TREE,
     then block-buffered, and the order the lines arrive in is the order the
     tool flushed them. `stdout_closed` gives the run a stdout whose reading end
     is already closed, as `| head` leaves it once `head` has quit, so that
-    `result.stdout` is None."""
+    `result.stdout` is None. `branch` is the source's own (default) branch,
+    and `plan_flags` go to `plan` after the ones `write_plan` passes."""
     github = tmp_path / "github"
     (github / ORG).mkdir(parents=True)
-    source = make_source_repo(tmp_path / NORTHWIND, tree=tree, edits=())
+    source = make_source_repo(tmp_path / NORTHWIND, tree=tree, edits=(),
+                              branch=branch)
     # The assembly root is the repository the source was cloned from: the
     # split branch is pushed back to it.
     git("clone", "-q", "--bare", ".", str(github / ORG / f"{NORTHWIND}.git"),
@@ -220,7 +247,7 @@ def github_run(tmp_path: Path, refuses: str, tree: dict = SOURCE_TREE,
     gh_config.mkdir()
 
     plan = tmp_path / "adoption-plan.yaml"
-    written = write_plan(source, plan)
+    written = write_plan(source, plan, extra=plan_flags)
     assert written.returncode == 0, written.stderr + written.stdout
     if keep_contracts:
         answered = plan.read_text(encoding="utf-8")
@@ -278,12 +305,34 @@ def heads(repository: Path) -> list[str]:
     return sorted(listed.split())
 
 
-def assert_pushed(github: Path) -> None:
+def assert_pushed(github: Path, branch: str = "main") -> None:
     """Both legs and the split branch ARE pushed, which is why a re-run is
-    not the way out: it would push a second pair beside these."""
+    not the way out: it would push a second pair beside these. Each leg is
+    pushed to the tracking branch, `branch`."""
     for leg in ("spec", "code"):
-        assert heads(github / ORG / f"{NORTHWIND}-{leg}.git") == ["main"]
+        assert heads(github / ORG / f"{NORTHWIND}-{leg}.git") == [branch]
     assert SPLIT_BRANCH in heads(github / ORG / f"{NORTHWIND}.git")
+
+
+def gh_calls(github: Path) -> list[str]:
+    """The `gh` commands a run made, in order, each by its first three
+    arguments (`repo edit testorg/Northwind`, `pr create --repo`)."""
+    calls = github / "calls"
+    if not calls.exists():
+        return []
+    return [line.strip() for line in
+            calls.read_text(encoding="utf-8").splitlines()]
+
+
+def topic_and_pull_request(github: Path) -> list[str]:
+    """The `gh repo edit` and `gh pr create` calls a run made, in order."""
+    return [call for call in gh_calls(github)
+            if call.startswith(("repo edit", "pr create"))]
+
+
+#: The three topic calls `execute` makes, one per repository, in its order.
+TOPIC_CALLS = [f"repo edit {ORG}/{name}" for name in
+               (NORTHWIND, f"{NORTHWIND}-spec", f"{NORTHWIND}-code")]
 
 
 # --- AGENTS.md step 7 --------------------------------------------------------
@@ -366,11 +415,15 @@ def test_each_exit_after_the_push_is_exit_2_with_a_command_to_finish_by_hand(
             in result.stdout) is opened, result.stdout
     assert "  split " in result.stdout, result.stdout
     assert NOT_BY_HAND not in result.stderr, result.stderr
-    # The topic is never SET here. After a refused pull request it is not
-    # tried, because what its by-hand message says is that the pull request
-    # IS open (the stub would have let it through); after a refused topic it
-    # was tried and refused.
-    assert "set on all three" not in result.stdout, result.stdout
+    # The topic is tried BEFORE the pull request (#481), so a refused pull
+    # request no longer leaves it unset: the stub lets it through, and it is
+    # set on all three. It used not to be tried after a refused pull request
+    # at all, and the way out never said so. The way out names what is left
+    # and nothing else: the pull request's command, or the topic's.
+    topic_set = refuses != "repo edit"
+    assert ("set on all three" in result.stdout) is topic_set, result.stdout
+    assert ("Set the topic by hand" in result.stderr) is not topic_set, \
+        result.stderr
     # `NEXT: review the pull request` is said where there is one to review,
     # and not after a refused `gh pr create`, where the command to open it is
     # the next step.
@@ -460,13 +513,15 @@ def test_a_closed_stdout_does_not_lose_the_command_to_open_the_pull_request(
 @WINDOWS_SKIP  # the `gh` is a `#!` script, which Windows does not run
 @needs_filter_repo
 def test_a_failed_verification_outranks_a_refused_pull_request(tmp_path):
-    """The split fails the verification, and `gh pr create` is refused too:
-    exit 1, the finding and its footer, and NO command to open the pull
-    request. The refusal above names the exact command that was tried, so the
-    run says that none is to be opened; it used to print the by-hand command
-    and exit 2 without ever having verified the split."""
-    result, github = github_run(tmp_path, "pr create", tree=FAILING_TREE,
-                                keep_contracts=True)
+    """The split fails the verification, and `gh pr create` and the topic are
+    refused too: exit 1, the finding and its footer, and NO command to open
+    the pull request or to set the topic. The refusal above names the exact
+    command that was tried, so the run says that none is to be opened; it
+    used to print the by-hand command and exit 2 without ever having verified
+    the split. The topic's way out is the verification's too: the re-run it
+    names sets the topic (#481)."""
+    result, github = github_run(tmp_path, "pr create|repo edit",
+                                tree=FAILING_TREE, keep_contracts=True)
 
     assert result.returncode == 1, result.stdout + result.stderr
     assert FINDING in result.stderr, result.stderr
@@ -474,8 +529,10 @@ def test_a_failed_verification_outranks_a_refused_pull_request(tmp_path):
     # What gh refused is still said, and so is what that leaves.
     assert "REFUSED opening the pull request." in result.stderr, result.stderr
     assert NOT_BY_HAND in result.stderr, result.stderr
-    # Nothing tells the person to open one, or that the adoption is done.
+    # Nothing tells the person to open one, to set the topic by hand, or that
+    # the adoption is done.
     assert "Open the pull request by hand" not in result.stderr + result.stdout
+    assert "Set the topic by hand" not in result.stderr + result.stdout
     assert "IS pushed" not in result.stderr + result.stdout
     assert NEXT not in result.stdout, result.stdout
     assert VERIFIED not in result.stdout, result.stdout
@@ -498,6 +555,125 @@ def test_the_same_source_verifies_when_gh_opens_the_pull_request(tmp_path):
     assert NEXT in result.stdout, result.stdout
     assert "Open the pull request by hand" not in result.stderr
     assert_pushed(github)
+
+
+# --- the topic comes first, and what is left is said once (#481) ------------
+
+@WINDOWS_SKIP  # the `gh` is a `#!` script, which Windows does not run
+@needs_filter_repo
+def test_a_refused_pull_request_no_longer_leaves_the_topic_unset(tmp_path):
+    """The issue's own run: `gh pr create` refused. The stub's log showed two
+    `repo create` calls, one `pr create` and no `repo edit`, so none of the
+    three repositories carried the topic `project.yaml` claims, and the way
+    out named only the pull request. The topic is now set on each of the
+    three BEFORE the pull request is tried, and the way out names the one
+    thing left."""
+    result, github = github_run(tmp_path, "pr create")
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert topic_and_pull_request(github) == [*TOPIC_CALLS, "pr create --repo"]
+    assert f"  topic     {TOPIC} set on all three" in result.stdout
+    assert BRANCH_IS_PUSHED in result.stderr, result.stderr
+    assert "Set the topic by hand" not in result.stderr, result.stderr
+
+
+@WINDOWS_SKIP  # the `gh` is a `#!` script, which Windows does not run
+@needs_filter_repo
+def test_a_refused_pull_request_and_topic_are_one_notice_after_the_table(
+        tmp_path):
+    """Both refused: each refusal is printed as it happens, and what is left
+    is ONE notice after the table, `IS pushed` as step 7 reads it, naming
+    the `gh repo edit` for each repository and then the command that opens
+    the pull request, which is still the last thing the run says."""
+    result, github = github_run(tmp_path, "pr create|repo edit",
+                                merge_stderr=True)
+    said = result.stdout
+
+    assert result.returncode == 2, said
+    notice = ("The branch IS pushed. Set the topic by hand:\n"
+              + "".join(f"    gh {call} --add-topic {TOPIC}\n"
+                        for call in TOPIC_CALLS)
+              + "Open the pull request by hand:\n"
+              f"    gh pr create --repo {ORG}/{NORTHWIND} --base main "
+              f"--head {SPLIT_BRANCH}")
+    assert said.index("VERIFICATION") < said.index(VERIFIED) \
+        < said.index(notice), said
+    assert said.count("REFUSED setting the project topic.") == 3, said
+    assert said.count("REFUSED opening the pull request.") == 1, said
+    assert said.count(BY_HAND) == 1 and said.count("IS pushed") == 1, said
+    printed = printed_command(said)
+    assert printed[:3] == ["gh", "pr", "create"] and printed[-2] == "--body"
+    assert "  topic " not in said and NEXT not in said, said
+    assert topic_and_pull_request(github) == [*TOPIC_CALLS, "pr create --repo"]
+    assert_pushed(github)
+
+
+@WINDOWS_SKIP  # the `gh` is a `#!` script, which Windows does not run
+@needs_filter_repo
+def test_a_topic_refused_on_one_repository_names_that_one_alone(tmp_path):
+    """Each repository is asked, whatever the one before it answered, and the
+    way out names the command for the one left without the topic and for no
+    repository that has it. The first refusal used to end the topic step and
+    name all three."""
+    result, github = github_run(tmp_path, f"repo edit {ORG}/{NORTHWIND}-spec")
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert topic_and_pull_request(github) == [*TOPIC_CALLS, "pr create --repo"]
+    assert (f"  topic     {TOPIC} set on {ORG}/{NORTHWIND} and "
+            f"{ORG}/{NORTHWIND}-code only") in result.stdout, result.stdout
+    assert result.stderr.count("REFUSED setting the project topic.") == 1
+    by_hand = result.stderr.split("Set the topic by hand:\n", 1)[1]
+    assert by_hand == (f"    gh repo edit {ORG}/{NORTHWIND}-spec "
+                       f"--add-topic {TOPIC}\n"), result.stderr
+    assert ("The split IS pushed and the pull request IS open. "
+            "Set the topic by hand:") in result.stderr
+    assert NEXT in result.stdout and VERIFIED in result.stdout
+
+
+# --- the pull request's base is a branch the source has (#479) --------------
+
+@WINDOWS_SKIP  # the `gh` is a `#!` script, which Windows does not run
+@needs_filter_repo
+@pytest.mark.parametrize("branch", ["master", "trunk"])
+def test_a_source_on_another_branch_opens_its_pull_request_against_it(
+        tmp_path, branch):
+    """A `master` or `trunk` source: `plan` records that branch as the
+    tracking branch, both legs are pushed to it, the root's `project.yaml`
+    tracks it, and the pull request opens against it. With `main` as the
+    tracking branch whatever the source used, all of it was pushed and then
+    GitHub refused the pull request (`Base ref must be a branch`), and the
+    printed way out was the same command."""
+    result, github = github_run(tmp_path, "never", branch=branch)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert VERIFIED in result.stdout and NEXT in result.stdout
+    assert (github / "opened").read_text(encoding="utf-8") == \
+        f"{ORG}/{NORTHWIND} {branch}\n"
+    assert_pushed(github, branch)
+    root = git("show", f"{SPLIT_BRANCH}:project.yaml",
+               cwd=github / ORG / f"{NORTHWIND}.git").stdout
+    assert f"\ntracking_branch: {branch}\n" in root, root
+    assert "Base ref must be a branch" not in result.stderr
+
+
+@WINDOWS_SKIP  # the `gh` is a `#!` script, which Windows does not run
+@needs_filter_repo
+def test_a_base_the_source_lacks_is_refused_before_any_repository(tmp_path):
+    """`--tracking-branch main` on a `master` source still wins in the plan,
+    and `execute` refuses it before it makes anything, as `check` finds it:
+    no `gh` is run at all, where both legs and the split used to be pushed
+    before GitHub refused the pull request."""
+    result, github = github_run(tmp_path, "never", branch="master",
+                                plan_flags=("--tracking-branch", "main"))
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "REFUSED plan-tracking-branch-missing:" in result.stderr
+    assert ("`tracking_branch` is `main`, which is no branch of the source "
+            "(its branches: `master`; the source's default branch is "
+            "`master`)") in result.stderr, result.stderr
+    assert "no leg repository was created" in result.stderr
+    assert gh_calls(github) == []
+    assert not (github / ORG / f"{NORTHWIND}-spec.git").exists()
 
 
 # --- the real `gh` stays out of reach ---------------------------------------

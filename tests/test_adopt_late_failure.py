@@ -1037,8 +1037,8 @@ def pull_request_fails(adopter, monkeypatch, failure):
     # The command to open it by hand is said once the split has passed
     # its verification, as `cmd_execute` says it (#304), not by the step
     # that failed.
-    adopter._open_it_by_hand(repositories, names, "main", BRANCH, "body",
-                             True)
+    adopter._finish_by_hand(True, adopter._pull_request_command(
+        repositories, names, "main", BRANCH, "body"), "", [])
     return "opening the pull request", "Open the pull request by hand"
 
 
@@ -1049,6 +1049,10 @@ def topic_fails(adopter, monkeypatch, failure):
     repositories = {role: f"{ORG}/{ASSEMBLY}-{role}"
                     for role in (*LEGS, ROOT)}
     assert not adopter._set_the_topic(repositories, "xf-project-northwind")
+    # The commands to set it by hand are said after the verification too,
+    # beside the pull request's (#481), not by the step that failed.
+    adopter._finish_by_hand(True, None, "xf-project-northwind",
+                            list(repositories.values()))
     return "setting the project topic", "Set the topic by hand"
 
 

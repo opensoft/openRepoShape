@@ -10,6 +10,8 @@ pull-request ruleset.
 
 from __future__ import annotations
 
+import importlib.util
+import re
 import shutil
 import subprocess
 import sys
@@ -213,6 +215,76 @@ def test_the_sources_own_agent_files_are_untouched(adopted, adopted_clone):
     rows = {row["path"] for row in
             load_yaml(adopted_clone / "contracts" / "shape-pin.yaml")["files"]}
     assert "AGENTS-shape.md" in rows
+
+
+def next_block(stdout: str) -> list[str]:
+    """The lines `execute` prints from `NEXT:` on, to the end of its run."""
+    return stdout.split("\nNEXT: ", 1)[1].splitlines()
+
+
+def test_next_names_the_bootstrap_a_root_with_its_own_makefile_can_run(
+        adopted, adopted_clone):
+    """The source kept its own Makefile, so the shape's is `shape/Makefile`
+    until a person merges the two, and `make bootstrap` in the root exits 2
+    (`No rule to make target 'bootstrap'`) (#480). The NEXT block names the
+    command `make bootstrap` runs instead, a line says why, and that command,
+    run in a recursive clone of the split, exits 0. (It is run with the
+    interpreter running this test, which is what `python3` names here.)"""
+    said = next_block(adopted["stdout"])
+    assert said[:3] == [f"review the pull request on {PROJECT}, then",
+                        f"    git clone --recurse-submodules <{PROJECT} url>",
+                        "    python3 scripts/bootstrap.py"], said
+    assert said[3].startswith("NOTE the root keeps its own Makefile and the "
+                              "shape's is shape/Makefile, so `make bootstrap`")
+    command = said[2].split()
+    ran = subprocess.run([sys.executable, *command[1:]], cwd=adopted_clone,
+                         capture_output=True, text=True, encoding="utf-8",
+                         errors="replace", check=False)
+    assert ran.returncode == 0, ran.stdout + ran.stderr
+    if shutil.which("make"):
+        made = subprocess.run(["make", "bootstrap"], cwd=adopted_clone,
+                              capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", check=False)
+        assert made.returncode != 0, made.stdout + made.stderr
+
+
+def test_the_makefile_follow_up_says_the_shapes_targets_arrive_with_it(
+        adopted):
+    """The follow-up the plan carries, and the split commit lists, names
+    each of the shape's make targets as arriving only with the merge, and
+    what runs meanwhile. The targets are read from the template, so a target
+    the shape gains and the follow-up does not name fails here."""
+    template = (REPO / "templates" / "assembly-root" / "Makefile").read_text(
+        encoding="utf-8")
+    targets = [name for name in re.findall(r"(?m)^([a-z][a-z-]*):", template)
+               if name != "help"]
+    assert "bootstrap" in targets, targets
+    message = git("log", "-1", "--format=%B", "adopt/three-repo-shape",
+                  cwd=adopted["source"]).stdout
+    (planned,) = [item for item in load_yaml(adopted["plan"])["follow_ups"]
+                  if item.startswith("merge shape/Makefile into Makefile")]
+    for text in (planned, " ".join(message.split())):
+        assert ("The shape's make targets ("
+                + ", ".join(f"`{target}`" for target in targets)
+                + ") arrive only with that merge; until then `python3 "
+                "scripts/bootstrap.py` is what `make bootstrap` runs") in text
+
+
+def test_next_keeps_make_bootstrap_where_the_shapes_makefile_is_the_roots(
+        capsys):
+    """Where the shape's Makefile took its own name, NEXT is what it always
+    was, byte for byte."""
+    module_spec = importlib.util.spec_from_file_location("adopt_e2e_next",
+                                                         ADOPT)
+    adopter = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(adopter)
+
+    adopter._next_steps({"assembly": PROJECT}, False)
+
+    assert capsys.readouterr().out == (
+        f"\nNEXT: review the pull request on {PROJECT}, then\n"
+        f"    git clone --recurse-submodules <{PROJECT} url>\n"
+        "    make bootstrap\n")
 
 
 def test_the_agent_file_collision_says_add_a_line_not_merge(adopted):
