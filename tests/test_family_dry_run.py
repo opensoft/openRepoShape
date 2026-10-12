@@ -39,7 +39,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import run_script
+from conftest import git, run_script
 #: The trailer lines a lane's run lands, from the file that owns them.
 from test_commit_trailers import TRAILERS, trailers_of
 #: The family fixture, its names and the offline environment, imported from
@@ -64,9 +64,9 @@ ROW_HEADER = "row          as family.yaml would carry it:"
 #: write would change: the member's checkout for `bump`, the index for
 #: `remove`.
 BUMP_ORDER = ("member HEAD", "family.yaml", "index", "status", ".gitmodules",
-              ".git/config", "work tree", "HEAD")
+              ".git/config", "work tree", "objects", "HEAD")
 REMOVE_ORDER = ("index", ".gitmodules", "family.yaml", "work tree",
-                ".git/config", "status", "member HEAD", "HEAD")
+                ".git/config", "status", "member HEAD", "objects", "HEAD")
 
 
 def work_tree(root: Path) -> dict:
@@ -88,10 +88,21 @@ def work_tree(root: Path) -> dict:
     return found
 
 
+def objects(root: Path) -> list[str]:
+    """Every file in the holder's OWN object store, `.git/objects`. A blob
+    written there is a write the index and the work tree do not show; the
+    member's store, which `bump`'s fetch writes into, is under
+    `.git/modules/` and not in this list."""
+    store = root / ".git" / "objects"
+    return sorted(path.relative_to(store).as_posix()
+                  for path in store.rglob("*") if path.is_file())
+
+
 def state(root: Path, env: dict, member: str = MEMBER) -> dict:
     """Everything a dry run must leave exactly as it found it, as bytes."""
     mount = root / "members" / member
     return {
+        "objects": objects(root),
         "HEAD": raw(root, env, "rev-parse", "HEAD").stdout,
         "index": raw(root, env, "ls-files", "-s", "-z").stdout,
         "status": raw(root, env, "status", "--porcelain=v1", "-z").stdout,
@@ -381,6 +392,31 @@ def test_bump_dry_run_of_a_commit_the_member_does_not_have_exits_2(
     assert_as_it_was(holder, env, before, BUMP_ORDER)
 
 
+def test_bump_dry_run_after_a_failed_fetch_says_what_it_resolved_from(
+        family, holder, offline, tmp_path):
+    """A fetch that fails is a note, as in the real run, and `--to` is then
+    resolved from what the member's object store already holds; the closing
+    line says THAT, not that the fetch is how `--to` was resolved."""
+    env = isolated(offline, tmp_path)
+    raw(holder / "members" / MEMBER, env, "remote", "set-url", "origin",
+        str(tmp_path / "gone.git"))
+    before = state(holder, env)
+
+    dry = bump(holder, env, older(family), "--dry-run")
+
+    assert_as_it_was(holder, env, before, BUMP_ORDER)
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    assert dry.stderr.startswith(f"  note: could not fetch members/{MEMBER} "
+                                 "from its origin")
+    assert dry.stdout.splitlines()[-1] == (
+        f"--dry-run: nothing was changed in the holder. The fetch of "
+        f"members/{MEMBER} failed, as the note says, so --to was resolved and "
+        "the digest above computed from what its object store already held, "
+        "as a real bump would; the member's checkout, family.yaml, the index "
+        "and the holder's commits are as they were.")
+    assert "`git fetch` ran" not in dry.stdout
+
+
 def test_bump_dry_run_reads_the_members_manifest_at_to_and_refuses_as_bump(
         holder, offline, tmp_path):
     """WHAT THE REAL RUN ASKS AFTER ITS CHECKOUT, ASKED OF THE OBJECTS. A
@@ -453,15 +489,20 @@ def test_remove_dry_run_prints_what_a_real_remove_takes_and_changes_nothing(
     assert dry.returncode == 0, dry.stdout + dry.stderr
     assert dry.stderr == ""
     lines = dry.stdout.splitlines()
-    assert lines[:3] == [
+    assert lines[:4] == [
         f"row          {MEMBER}  {ORG}/{MEMBER}, pinned at {gitlink[:12]}, "
         "dropped from family.yaml",
         f"gitlink      members/{MEMBER}  {gitlink[:12]}",
-        f'gitmodules   [submodule "members/{MEMBER}"]  path members/{MEMBER}',
+        f'gitmodules   [submodule "members/{MEMBER}"]  path members/{MEMBER}, '
+        "every section of that name",
+        f'registration [submodule "members/{MEMBER}"] in the holder\'s '
+        ".git/config, dropped by `git submodule deinit`",
     ]
-    assert lines[3].startswith(f"directory    members/{MEMBER}  deleted with "
+    assert lines[4].startswith(f"directory    members/{MEMBER}  deleted with "
                                "everything in it")
     assert lines[-1].startswith("--dry-run: nothing was changed")
+    assert registered_keys(holder, env, f"members/{MEMBER}"), (
+        "premise: the registration the dry run named is there")
 
     real = remove(holder, env)
 
@@ -475,38 +516,118 @@ def test_remove_dry_run_prints_what_a_real_remove_takes_and_changes_nothing(
         == [f"members/{OTHER}"]
     assert not (holder / "members" / MEMBER).exists()
     assert (holder / "members" / OTHER / "project.yaml").is_file()
+    assert registered_keys(holder, env, f"members/{MEMBER}") == []
+    assert registered_keys(holder, env, f"members/{OTHER}")
     assert validate(holder).returncode == 0
 
 
-def test_remove_dry_run_names_the_section_git_drops_and_the_one_it_leaves(
+def test_remove_dry_run_of_a_member_the_index_does_not_hold_fails_as_remove(
         holder, offline, tmp_path):
-    """TWO SECTIONS GIVE ONE PATH — a half-removed member, a hand edit —
-    and `git rm` drops only the one it reads last. The dry run names that
-    one, and the one left behind, and the real remove drops exactly the
-    section it named: the dry run says what git will do, not what a reader
-    of the file might expect."""
+    """A row whose gitlink is no longer in the index: the real `remove`'s
+    first git call, `git submodule deinit`, fails on the path, loudly, exit
+    2. The dry run fails where it fails, on git's same line, printed the
+    same way, exit 2, and never with a remediation for a LEG
+    (`validate-pins.py`, `contracts/<leg>-pin.yaml`) that a holder does not
+    have. Nothing moves, from either."""
     env = isolated(offline, tmp_path)
-    with (holder / ".gitmodules").open("ab") as gitmodules:
-        gitmodules.write(f'[submodule "ghost"]\n\tpath = members/{MEMBER}\n'
-                         "\turl = ../elsewhere\n".encode("utf-8"))
-    raw(holder, env, "add", "--", ".gitmodules")
-    raw(holder, env, "commit", "-q", "-m", "A second section for one path")
+    raw(holder, env, "rm", "-q", "--cached", "--", f"members/{MEMBER}")
+    raw(holder, env, "commit", "-q", "-m", "Unstage the gitlink by hand")
     before = state(holder, env)
 
     dry = remove(holder, env, "--dry-run")
 
+    assert_as_it_was(holder, env, before, REMOVE_ORDER)
+    real = remove(holder, env)
+    assert_as_it_was(holder, env, before, REMOVE_ORDER)
+    assert dry.returncode == real.returncode == 2, dry.stdout + dry.stderr
+    assert dry.stdout == real.stdout == ""
+    assert dry.stderr.startswith(
+        f"REFUSED listing members/{MEMBER} in the index, where a real remove "
+        "unmounts it. THE EXACT COMMAND WAS:")
+    assert real.stderr.startswith("REFUSED a git or gh command failed. THE "
+                                  "EXACT COMMAND WAS:")
+    for result in (dry, real):
+        assert (f"error: pathspec 'members/{MEMBER}' did not match any "
+                "file(s) known to git") in result.stderr
+        assert "validate-pins" not in result.stderr
+        assert "-pin.yaml" not in result.stderr
+
+
+def registered_keys(root: Path, env: dict, name: str) -> list[str]:
+    """The `submodule.<name>.*` lines of the holder's own git config, by
+    section: the part of a key before its last dot."""
+    listed = raw(root, env, "config", "--local", "--list").stdout.decode(
+        "utf-8", "replace")
+    return [line for line in listed.splitlines()
+            if line.partition("=")[0].rpartition(".")[0]
+            == f"submodule.{name}"]
+
+
+#: Hand edits that give `members/<MEMBER>` to a section of another name,
+#: appended to `.gitmodules` and committed: `(text, the name git rm then drops
+#: every section of, or None for none, the other names whose sections say that
+#: path and stay)`. Each is what git 2.43 does, probed: the work-tree file is
+#: read with overwrite, so a name keeps its LAST path, a name moving away
+#: takes the old path out of git's map, and a suspicious name is ignored.
+GHOSTS = {
+    "two-names": (
+        f'[submodule "ghost"]\n\tpath = members/{MEMBER}\n',
+        "ghost", [f"members/{MEMBER}"]),
+    "last-path-wins": (
+        '[submodule "ghost"]\n\tpath = members/ELSEWHERE\n'
+        f'[submodule "ghost"]\n\tpath = members/{MEMBER}\n',
+        "ghost", [f"members/{MEMBER}"]),
+    "path-left-behind": (
+        f'[submodule "ghost"]\n\tpath = members/{MEMBER}\n'
+        '[submodule "ghost"]\n\tpath = members/ELSEWHERE\n',
+        None, [f"members/{MEMBER}", "ghost"]),
+    "suspicious-name": (
+        f'[submodule "../ghost"]\n\tpath = members/{MEMBER}\n',
+        f"members/{MEMBER}", ["../ghost"]),
+}
+
+
+@pytest.mark.parametrize("text, dropped, kept", GHOSTS.values(), ids=GHOSTS)
+def test_remove_dry_run_names_the_sections_a_real_remove_drops(
+        holder, offline, tmp_path, text, dropped, kept):
+    """A SECOND SECTION FOR THE MEMBER'S PATH — a half-removed member, a hand
+    edit — and the dry run names the name whose sections `git rm` drops (or
+    that it drops none), the names it leaves that still say the path, and
+    the registration `deinit` drops under the same name. Then a REAL
+    `remove` takes out exactly the sections of the name the dry run named,
+    and the registration it named, and nothing else: the dry run says what
+    git will do, not what a reader of the file might expect."""
+    env = isolated(offline, tmp_path)
+    with (holder / ".gitmodules").open("ab") as gitmodules:
+        gitmodules.write(text.encode("utf-8"))
+    raw(holder, env, "add", "--", ".gitmodules")
+    raw(holder, env, "commit", "-q", "-m", "A second section for one path")
+    listed = sections((holder / ".gitmodules").read_text(encoding="utf-8"))
+    before = state(holder, env)
+
+    dry = remove(holder, env, "--dry-run")
+
+    assert_as_it_was(holder, env, before, REMOVE_ORDER)
     assert dry.returncode == 0, dry.stdout + dry.stderr
     lines = dry.stdout.splitlines()
-    assert f'gitmodules   [submodule "ghost"]  path members/{MEMBER}' in lines
+    path = f"members/{MEMBER}"
+    assert (f'gitmodules   [submodule "{dropped}"]  path {path}, every '
+            "section of that name" if dropped else
+            "gitmodules   none: git reads no section of .gitmodules in the "
+            f"work tree as giving {path}, so none is removed") in lines
     assert ("             left in place, though it gives the same path: "
-            f'[submodule "members/{MEMBER}"]') in lines
-    assert_as_it_was(holder, env, before, REMOVE_ORDER)
+            + ", ".join(f'[submodule "{name}"]' for name in kept)) in lines
+    named = [line for line in lines if line.startswith("registration ")]
+    assert named == ([f'registration [submodule "{path}"] in the holder\'s '
+                      ".git/config, dropped by `git submodule deinit`"]
+                     if dropped == path else [])
 
     real = remove(holder, env)
 
     assert real.returncode == 0, real.stdout + real.stderr
     assert sections((holder / ".gitmodules").read_text(encoding="utf-8")) \
-        == [f"members/{MEMBER}", f"members/{OTHER}"]
+        == [name for name in listed if name != dropped]
+    assert bool(registered_keys(holder, env, path)) is (not named)
 
 
 # --- both --------------------------------------------------------------------
@@ -537,11 +658,24 @@ def test_a_dry_run_asks_the_manifest_refusal_the_real_run_asks_after_it_writes(
                      BUMP_ORDER if verb == "bump" else REMOVE_ORDER)
 
 
-#: Git commands that write: to the index, a work tree, a ref or the history.
-#: A dry run runs none of them.
+#: Git commands that write: to the index, a work tree, a ref, the object
+#: store or the history. A dry run runs none of them. `hash-object` and
+#: `config` are here only when they would write (`-w`, or anything but a
+#: listing); `bump --dry-run` asks `hash-object` for a blob id, with no `-w`.
 WRITERS = {"add", "checkout", "commit", "merge", "mv", "pull", "push",
            "reset", "restore", "rm", "stash", "submodule", "switch",
            "update-index", "update-ref", "write-tree"}
+
+
+def writes(argv: list[str]) -> bool:
+    """Whether the git command `argv` writes, by `WRITERS` and the two
+    commands that write only when told to."""
+    sub = subcommand_of(argv)
+    if sub == "hash-object":
+        return "-w" in argv
+    if sub == "config":
+        return "--list" not in argv
+    return sub in WRITERS
 
 
 def subcommand_of(argv: list[str]) -> str:
@@ -555,28 +689,33 @@ def subcommand_of(argv: list[str]) -> str:
     raise AssertionError(f"no subcommand in {argv}")
 
 
-@pytest.mark.parametrize("verb", ["bump", "remove"])
+@pytest.mark.parametrize("verb, to, code", [
+    ("bump", "older", 0), ("bump", "pinned", 1), ("remove", None, 0)],
+    ids=["bump-move", "bump-nothing", "remove"])
 def test_a_dry_run_runs_no_git_command_that_writes(
-        family, holder, offline, tmp_path, monkeypatch, verb):
+        family, holder, offline, tmp_path, monkeypatch, verb, to, code):
     """"Changes nothing" is what the holder shows; this is the other half,
     that nothing which writes is RUN. Every program the dry run starts is
     recorded, in this process: no checkout, no stage, no commit, no `git
-    submodule`, and a `git config` only to list. `bump`'s does fetch, as the
-    help and the docstring say it does, and `remove`'s does not."""
+    submodule`, a `git config` only to list and a `git hash-object` with no
+    `-w`, which `nothing to do` is the run that asks. `bump`'s does fetch,
+    as the help and the docstring say it does, and `remove`'s does not."""
     module = family_module()
-    args = [verb, "--family-root", str(holder), "--member", MEMBER,
-            *(["--to", older(family)] if verb == "bump" else []), "--dry-run"]
+    args = [verb, "--family-root", str(holder), "--member", MEMBER]
+    if to is not None:
+        args += ["--to", older(family) if to == "older" else
+                 git("rev-parse", f"HEAD:members/{MEMBER}",
+                     cwd=holder).stdout.strip()]
     for key, value in isolated(offline, tmp_path).items():
         monkeypatch.setenv(key, value)
     calls = recorded(monkeypatch)
 
-    assert module.main(args) == 0
+    assert module.main([*args, "--dry-run"]) == code
 
     gits = [argv for argv in calls if Path(argv[0]).name == "git"]
     assert gits, "premise: the calls were recorded"
+    assert [argv for argv in gits if writes(argv)] == []
     ran = {subcommand_of(argv) for argv in gits}
-    assert not ran & WRITERS, sorted(ran & WRITERS)
-    for argv in gits:
-        if subcommand_of(argv) == "config":
-            assert "--list" in argv, argv
     assert ("fetch" in ran) is (verb == "bump")
+    assert ("hash-object" in ran) is (to == "pinned"), (
+        "premise: `nothing to do` is asked of `hash-object`, and only then")
