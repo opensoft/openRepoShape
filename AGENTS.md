@@ -323,6 +323,7 @@ checkout of this standard, pointed at the project.
 ```sh
 python3 scripts/bump-leg.py --root <path> --leg spec --to <40 hex> --dry-run
 # 1. show the human the printed `old -> new` line
+git -C <path> switch -c <branch>   # 3. never commit on the tracking branch
 python3 scripts/bump-leg.py --root <path> --leg spec --to <40 hex>
 git -C <path> push -u origin <branch>   # then open a pull request
 ```
@@ -334,22 +335,21 @@ git -C <path> push -u origin <branch>   # then open a pull request
    agree.** The digest is RECOMPUTED from the leg's own objects, never
    adjusted to fit; a hand-written one turns the check into a formality and
    hides exactly the drift it exists to find.
-3. **The commit is made on a BRANCH and lands as a pull request.** The tool
-   refuses to commit onto the tracking branch for that reason. Never suggest
-   a direct push to the default branch, and never `--admin`.
+3. **The commit is made on a BRANCH, created BEFORE the real run, and lands
+   as a pull request.** A new project stands on its tracking branch; the dry
+   run runs there and prints the `git switch -c`, but the real run is refused.
+   Never suggest a direct push to the default branch, and never `--admin`.
 4. **A refusal is not something to work around.** A commit no branch of the
    leg's remote contains must be PUSHED, not pinned — a pin the rest of the
    world cannot fetch is a root it cannot bootstrap. A red validator has
    already been rolled back; the finding above it is the thing to fix.
 5. The leg is left DETACHED at the new commit. `make bootstrap` in the root
-   re-places it on its tracking branch AT the new pin; say so when you relay
-   the result.
+   re-places it on its tracking branch AT the new pin; say so in your relay.
 6. **`--trailer "<Key>: <value>"` puts a line on the commit this writes.**
-   Repeatable, kept in the order given — the same flag `update-shape.py
-   apply` and `family.py bump` already take. `--dry-run` prints the
-   trailers it would write, after the `old -> new` line, so the human reads
-   them before they land rather than after. A lane passes its `Lane:` line
-   and this estate's `Co-Authored-By:` there, not by amending afterwards.
+   Repeatable, kept in the order given, as `update-shape.py apply` and
+   `family.py bump` take it. `--dry-run` prints them after the `old -> new`
+   line, so the human reads them before they land. A lane passes its `Lane:`
+   line and this estate's `Co-Authored-By:` there, not by amending.
 
 ## Creating a family, and adding a member
 
