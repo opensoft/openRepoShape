@@ -47,7 +47,11 @@ manifest's declared `kind:` -- `project-manifest`, `family-manifest`,
 it, and a `contracts/*.yaml` whose `kind` has no entry is a FINDING that says
 so by name. A manifest nobody validates is the failure this whole standard is
 against, and "we did not notice it was there" is how it happens; a future
-inventory plugs in by adding one row to that table.
+inventory plugs in by adding one row to that table. A kind whose check never
+runs on THIS kind of root is that failure too, and the same FINDING (#327):
+`validate-family.py` is registered for `family-manifest` and runs in a family
+holder only, so a `contracts/family.yaml` in an assembly root -- or a
+`contracts/project.yaml` in a holder -- is a manifest nothing here reads.
 
 THE ROWS, for an assembly root, in this order:
 
@@ -65,7 +69,7 @@ THE ROWS, for an assembly root, in this order:
     pins              the project's own `scripts/validate-pins.py` likewise:
                       the lockstep invariant, and the shape-copy digests
     manifest kinds    every `kind:`-bearing manifest in the root, against
-                      MANIFEST_VALIDATORS
+                      MANIFEST_VALIDATORS and the kind of root it is in
     shape currency    `update-shape.py check`'s per-file verdicts, summarised
     legs              each leg mounted, and its checked-out commit against the
                       pin (no fetch)
@@ -733,34 +737,73 @@ class Check:
         self.fix = fix
 
 
+#: Each kind of root that carries manifests, as a sentence names it: the
+#: `manifest kinds` row says where a validator runs in these words (#327).
+ROOT_IN_WORDS = {PROJECT: "an assembly root", FAMILY: "a family holder"}
+
+
 class ManifestKind:
     """One `kind:` this standard knows a validator for.
 
-    `covered_by` is the id of the CHECK that validates it, so the row about
-    manifest kinds can say where a kind was answered rather than merely that
-    it was recognised. A kind with no entry here is a FINDING by name: a
-    manifest nobody validates is the gap this table exists to close.
+    `covered_by` is the ids of the CHECKS that validate it, one for each kind
+    of root it is validated in, so the row about manifest kinds can say where
+    a kind was answered rather than merely that it was recognised. A kind
+    with no entry here is a FINDING by name: a manifest nobody validates is
+    the gap this table exists to close.
+
+    AND A KIND IS ANSWERED ONLY WHERE ONE OF THOSE CHECKS RUNS (#327).
+    `runs_in` reads each check's `applies_to` out of `CHECKS`, so this table
+    names checks and the registry alone says which root runs each of them --
+    there is no second list of root kinds here to drift from it. The `family`
+    check applies to a holder and to nothing else, so `family-manifest` is
+    answered in a holder only, and a `contracts/family.yaml` in an assembly
+    root is a manifest no gate there reads; `manifest` likewise, so a
+    `contracts/project.yaml` in a holder is one too. The other kinds a holder
+    carries are answered there by `family`: its `validate-family.py` reads
+    `contracts/shape-pin.yaml` and loads the naming policy itself.
+
+    `home` is the other exit for a manifest found in a root that never runs
+    its gate: a root of the kind that does, named by the commands that make
+    one. Only the two kinds a root of the other kind can hold need one. It
+    is one sentence on every platform, so it names `setup-project.py` beside
+    `setup.sh`, which is a bash script Windows cannot run -- the reason
+    `scaffold_command` spells that line per platform (Copilot, PR #102).
     """
 
-    def __init__(self, kind: str, covered_by: str, how: str):
+    def __init__(self, kind: str, covered_by: tuple, how: str,
+                 home: str | None = None):
         self.kind = kind
         self.covered_by = covered_by
         self.how = how
+        self.home = home
+
+    def runs_in(self) -> tuple:
+        """The kinds of root a check that `covered_by` names runs on."""
+        return tuple(root for root in ROOT_IN_WORDS
+                     if any(check.id in self.covered_by
+                            and root in check.applies_to
+                            for check in CHECKS))
 
 
 MANIFEST_VALIDATORS: dict[str, ManifestKind] = {
     "project-manifest": ManifestKind(
-        "project-manifest", "manifest", "scripts/validate-manifest.py"),
+        "project-manifest", ("manifest",), "scripts/validate-manifest.py",
+        "an assembly root of its own (`setup.sh`, or `setup-project.py` on "
+        "Windows, for a new one; `adopt-project.py plan` for a repository "
+        "that exists), which a holder pins with `family.py add`"),
     "family-manifest": ManifestKind(
-        "family-manifest", "family", "scripts/validate-family.py"),
+        "family-manifest", ("family",), "scripts/validate-family.py",
+        "a family holder of its own (`family.py init`, then `family.py add` "
+        "there)"),
     "pinned_contract_manifest": ManifestKind(
-        "pinned_contract_manifest", "pins",
+        "pinned_contract_manifest", ("pins", "family"),
         "scripts/validate-pins.py (or validate-family.py in a holder)"),
     "repository-naming-policy": ManifestKind(
-        "repository-naming-policy", "naming",
-        "scripts/validate-repository-naming.py, through NamingPolicy.load"),
+        "repository-naming-policy", ("naming", "family"),
+        "scripts/validate-repository-naming.py, through NamingPolicy.load "
+        "(validate-family.py, through the same, in a holder)"),
     "path-classification-policy": ManifestKind(
-        "path-classification-policy", "manifest-kinds",
+        "path-classification-policy", ("manifest-kinds",),
         "scripts/path_classify.py reads it; nothing validates it in a root"),
 }
 
@@ -1497,6 +1540,169 @@ FAMILY_BESIDE_FIX = (
     "add` here, which would mount the members inside a project")
 
 
+def registered_elsewhere(ctx: Context, found: list) -> tuple[str, str, list]:
+    """Manifests whose kind is registered to a gate this root never runs:
+    the sentence, the next command, and the facts (#327).
+
+    `found` is `(path, kind, entry)` for each, in the row's own order. The
+    sentence opens the way the unregistered kind's does -- "no validator
+    ... is registered for kind" -- because to this root it is the same
+    fact: the registry has a validator for the kind, and none that runs
+    here. Each file says which validator that is and where it does run.
+
+    A FINDING, NOT A NOTE, for the reason an unregistered kind is one. A
+    `note` is a difference nothing asserts, and a file declaring `kind:`
+    asserts what it is; the registry exists so that no such file is
+    answered by nobody, and a kind the registry knows is no better answered
+    in a root whose gate never reads it. Nor could the same bytes be a
+    FINDING as `family.yaml` (#211) and a note as `contracts/family.yaml`.
+
+    THE NEXT COMMAND IS ONE THAT EXISTS, FOR THE FILE AS GIT HAS IT. The
+    doctor reads the disk, so the file may be one nobody has committed yet,
+    and `git rm` takes out only a file whose every byte a commit holds: it
+    says "did not match any files" (exit 128) for one git does not track,
+    ignored or not, and refuses one with changes no commit holds. So
+    `git_states` asks first, and each file gets the exit that works:
+      committed   `git rm`, quoted for the reader's shell like every path
+                  this report prints, committed on a branch and landed as
+                  a pull request, the way every change here lands;
+      untracked,  deleting it, with nothing to commit;
+      ignored
+      changed     committing or dropping those changes first, since `git
+                  rm` will not discard them, and the next run names the
+                  `git rm`.
+    Where git cannot say, the line is #211's, which holds in any state:
+    take it out of this root. Each file's state is `detail`'s `git`.
+
+    The other exit is the kind's `home`, as the human decides. Renaming the
+    file to the root's own manifest name is ruled out in the line itself,
+    because that is the one move that looks like a fix: in a holder it
+    makes the root read as a project, and in an assembly root it is #211's
+    finding instead of this one.
+    """
+    names = [rel for rel, _, _ in found]
+    one = len(names) == 1
+    states = git_states(ctx.root, names)
+    clauses, detail = [], []
+    for rel, kind, entry in found:
+        runs = entry.runs_in()
+        where = (f"{entry.how} runs only in "
+                 + " or ".join(ROOT_IN_WORDS[root] for root in runs)
+                 if runs else f"no check runs {entry.how}")
+        clauses.append(f"{rel} ({kind}: {where})")
+        detail.append({"manifest": rel, "kind": kind,
+                       "validator": entry.how, "runs_in": list(runs),
+                       "git": states.get(rel)})
+    sentence = (f"no validator that runs in {ROOT_IN_WORDS[ctx.kind]} is "
+                "registered for kind " + ", ".join(clauses))
+    homes = {rel: entry.home or "a root whose gate runs its validator"
+             for rel, _, entry in found}
+    if len(set(homes.values())) == 1:
+        other_exit = (f"move what {'it describes' if one else 'they describe'}"
+                      f" to {homes[names[0]]}")
+    else:
+        other_exit = "move what each describes to " + "; ".join(
+            f"{rel}: {home}" for rel, home in homes.items())
+    fix = (f"take {', '.join(names)} out of this root"
+           f"{removal_ways(ctx, names, states)}, or {other_exit}, as the "
+           f"human decides -- never rename {'it' if one else 'one'} to "
+           f"{PROJECT_MANIFEST} or {FAMILY_MANIFEST} in this root: a family "
+           "holder is not a project, and an assembly root is not a family "
+           "holder")
+    return sentence, fix, detail
+
+
+def git_states(root: Path, names: list) -> dict:
+    """`{path: state}` for each of `names`, from ONE `git status`:
+    `committed`, `untracked`, `ignored` or `changed` -- or `{}` where git
+    cannot say (#327).
+
+    A path `status` does not list is tracked, and HEAD, the index and the
+    work tree agree on it: `committed`, the one state `git rm` takes. `??`
+    alone is `untracked`, `!!` alone is `ignored` (`--ignored`, so a file
+    the root's excludes hide is still named), and anything else -- an edit,
+    a staged change, a file staged and never committed, a removal staged
+    while the file is still on disk (`D ` and `??` at once) -- is `changed`.
+
+    READ-ONLY AND LITERAL. `--no-optional-locks`, so `status` refreshes the
+    index in memory and never writes it back: the doctor writes nothing into
+    the repository. `--literal-pathspecs`, so a name holding `[` or `*` is
+    that one file and not a pattern. `-z`, so a name comes back as itself,
+    and `--untracked-files=all`, so it is the file and not its directory.
+
+    AND ONLY IN A REPOSITORY OF ITS OWN. `git -C` discovers: in a plain
+    directory inside another repository, `status` answers about THAT one,
+    with paths relative to its top, and a `git rm` there would change it.
+    `not_its_own_repository` declines to guess, as it does for a leg.
+    """
+    if not_its_own_repository(root) is not None:
+        return {}
+    try:
+        raw = git_out(["--no-optional-locks", "--literal-pathspecs", "status",
+                       "--porcelain=v1", "-z", "--untracked-files=all",
+                       "--ignored", "--", *names], cwd=root, binary=True)
+    except (Refusal, OSError):
+        return {}
+    codes: dict[str, set] = {}
+    records = iter(raw.split(b"\0"))
+    for record in records:
+        if len(record) < 4:
+            continue
+        code = record[:2].decode("ascii", "replace")
+        codes.setdefault(record[3:].decode("utf-8", "surrogateescape"),
+                         set()).add(code)
+        if code[0] in "RC":
+            next(records, None)   # a rename's or copy's source path
+    states = {}
+    for name in names:
+        found = codes.get(name, set())
+        states[name] = ("committed" if not found
+                        else "untracked" if found == {"??"}
+                        else "ignored" if found == {"!!"}
+                        else "changed")
+    return states
+
+
+def removal_ways(ctx: Context, names: list, states: dict) -> str:
+    """How each of `names` comes out of the root, as git has it: the
+    parenthesis the `manifest kinds` row's NEXT carries (#327), or nothing
+    where git could not say. A file is named again only where the files
+    do not all come out the same way."""
+    root = quote_arg(ctx.root)
+    groups = {state: [name for name in names if states.get(name) in kinds]
+              for state, kinds in (("committed", ("committed",)),
+                                   ("loose", ("untracked", "ignored")),
+                                   ("changed", ("changed",)))}
+    groups = {state: group for state, group in groups.items() if group}
+    alone = len(groups) == 1
+
+    def subject(group: list, pronoun: str) -> str:
+        return pronoun if alone else ", ".join(group)
+
+    ways = []
+    if "committed" in groups:
+        ways.append(f"`git -C {root} rm -- "
+                    + " ".join(quote_arg(n) for n in groups["committed"])
+                    + "`, committed on a branch and landed as a pull "
+                    "request")
+    if "loose" in groups:
+        group = groups["loose"]
+        single = len(group) == 1
+        ways.append(f"delete {subject(group, 'it' if single else 'them')}, "
+                    "which git does not track, so there is nothing to "
+                    "commit")
+    if "changed" in groups:
+        group = groups["changed"]
+        single = len(group) == 1
+        ways.append(
+            f"{subject(group, 'it' if single else 'they')} "
+            f"{'has' if single else 'have'} changes no commit holds, which "
+            "`git rm` will not discard: commit or drop them (`git -C "
+            f"{root} status -- {' '.join(quote_arg(n) for n in group)}` "
+            "shows them), and the next run names the `git rm`")
+    return f" ({'; '.join(ways)})" if ways else ""
+
+
 def check_manifest_kinds(ctx: Context) -> Row:
     """Every `kind:`-bearing manifest in this root, against the registry.
 
@@ -1507,10 +1713,14 @@ def check_manifest_kinds(ctx: Context) -> Row:
     a file that DOES declare a kind that nothing here validates, which is a
     manifest travelling in a shape root with no gate behind it.
 
-    A REGISTERED KIND WHOSE GATE THIS ROOT NEVER RUNS IS THAT CASE TOO
-    (#211): a `family.yaml` declaring `family-manifest` in an assembly root.
-    It is not counted `validated`; `family_beside_project` says why, and
-    checks the members it pins against the gitlinks.
+    A REGISTERED KIND WHOSE GATE THIS ROOT NEVER RUNS IS THAT CASE TOO,
+    wherever the file is (#211, #327). A kind counts `validated` only where a
+    check it is registered to RUNS -- `ManifestKind.runs_in` -- so a
+    `contracts/family.yaml` in an assembly root, or a `contracts/project.yaml`
+    in a holder, is listed under `registered_elsewhere` and is a FINDING
+    `registered_elsewhere()` explains. A `family.yaml` at the top of an
+    assembly root is the same fact with more to say: `family_beside_project`
+    also checks the members it pins against the gitlinks.
 
     THE ROOT'S OWN MANIFEST, WHEN IT DOES NOT LOAD, IS NOT THIS ROW'S (#205).
     The `manifest` (or `family`) row quotes its refusal and names its gate,
@@ -1523,6 +1733,9 @@ def check_manifest_kinds(ctx: Context) -> Row:
     known: list[str] = []
     unknown: list[str] = []
     unreadable: list[str] = []
+    #: `(path, kind, entry)` for each manifest whose registered gate never
+    #: runs on this kind of root (#327).
+    ungated: list[tuple] = []
     elsewhere = (ctx.manifest_path if ctx.manifest_refusal is not None
                  else None)
     beside: tuple[str, dict] | None = None
@@ -1542,10 +1755,20 @@ def check_manifest_kinds(ctx: Context) -> Row:
             beside = family_beside_project(ctx, data)
             continue
         entry = MANIFEST_VALIDATORS.get(kind)
-        (known if entry else unknown).append(f"{rel} ({kind})")
+        if entry is None:
+            unknown.append(f"{rel} ({kind})")
+        elif ctx.kind not in entry.runs_in():
+            ungated.append((rel, kind, entry))
+        else:
+            known.append(f"{rel} ({kind})")
     detail = {"validated": known, "unregistered": unknown,
               "unreadable": unreadable,
               "registered_kinds": sorted(MANIFEST_VALIDATORS)}
+    ungated_said = registered_elsewhere(ctx, ungated) if ungated else None
+    if ungated_said is not None:
+        # ONLY WHEN THERE IS ONE, like `family_beside` below, so every root
+        # without such a file reports the row it reported before #327.
+        detail["registered_elsewhere"] = ungated_said[2]
     # Only when there is one, so every other root's row is the row it was.
     aside = ""
     if elsewhere is not None:
@@ -1557,7 +1780,8 @@ def check_manifest_kinds(ctx: Context) -> Row:
         # ONLY WHEN THERE IS ONE, so every root without it reports the same
         # row, byte for byte, as it did before #211.
         detail["family_beside"] = beside[1]
-    if unknown or unreadable or beside is not None:
+    if (unknown or unreadable or ungated_said is not None
+            or beside is not None):
         parts = []
         fixes = []
         if unknown:
@@ -1569,6 +1793,9 @@ def check_manifest_kinds(ctx: Context) -> Row:
             fixes.append("register the kind in shape-doctor.py's "
                          "MANIFEST_VALIDATORS, beside the check that "
                          "validates it, or remove the file from the root")
+        if ungated_said is not None:
+            parts.append(ungated_said[0])
+            fixes.append(ungated_said[1])
         if beside is not None:
             parts.append(beside[0])
             fixes.append(FAMILY_BESIDE_FIX)
