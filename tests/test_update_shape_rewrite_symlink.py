@@ -467,25 +467,34 @@ def test_a_root_reached_through_a_link_still_updates(root, standard,
 
 
 @WINDOWS_SKIP
-@pytest.mark.parametrize("arrives_at, restored", [
-    pytest.param(AGENTS, (CHANGED,), id="at-a-pinned-copy"),
-    pytest.param(PIN, (CHANGED, AGENTS), id="at-the-pin"),
+@pytest.mark.parametrize("arrives_at, rewrites, restored", [
+    pytest.param(AGENTS, AGENTS, (CHANGED,), id="at-a-pinned-copy"),
+    pytest.param(PIN, PIN, (CHANGED, AGENTS), id="at-the-pin"),
+    pytest.param(MANIFEST, MANIFEST, (CHANGED, AGENTS, PIN),
+                 id="at-the-manifest"),
+    pytest.param("contracts", PIN, (CHANGED, AGENTS),
+                 id="a-directory-link-above-the-pin"),
 ])
 def test_a_link_that_arrives_while_apply_waits_is_refused_and_rolled_back(
         update_shape, root, standard, tmp_path, monkeypatch, arrives_at,
-        restored):
+        rewrites, restored):
     """`confirm` is where an interactive `apply` waits for a human, after
-    `prepare` has looked; the operator's link arrives there. The copy
-    written before it — and, for the pin, both copies — are put back by
-    `cmd_apply`'s refusal arm, and the tree is exactly as it was when the
-    run began to write. Main wrote through the link and finished the run."""
+    `prepare` has looked; the operator's link arrives there, at `arrives_at`,
+    in the way of the write to `rewrites`. Whatever was written before it —
+    the copy, or both copies, or both copies and the pin when the manifest
+    is the one linked — is put back by `cmd_apply`'s refusal arm, and the
+    tree is exactly as it was when the run began to write. Main wrote
+    through the link and finished the run. `contracts` arrives as a
+    DIRECTORY link: the pin under it is the write refused."""
     where = outside_dir(tmp_path) / Path(arrives_at).name
+    end = where / Path(rewrites).relative_to(arrives_at)
     seen: dict = {}
 
     def a_link_arrives(*_args, **_kwargs) -> None:
         shutil.move(str(root / arrives_at), str(where))
-        (root / arrives_at).symlink_to(where)
-        seen["held"] = where.read_bytes()
+        (root / arrives_at).symlink_to(where,
+                                       target_is_directory=where.is_dir())
+        seen["held"] = end.read_bytes()
         seen["root"], seen["beyond"] = snapshot(root), beyond(tmp_path)
 
     monkeypatch.setattr(update_shape, "confirm", a_link_arrives)
@@ -496,12 +505,12 @@ def test_a_link_that_arrives_while_apply_waits_is_refused_and_rolled_back(
 
     with pytest.raises(update_shape.Refusal) as refused:
         update_shape.cmd_apply(args)
-    assert where.read_bytes() == seen["held"], (
-        f"{where} was written THROUGH the link")
+    assert end.read_bytes() == seen["held"], (
+        f"{end} was written THROUGH the link")
     assert beyond(tmp_path) == seen["beyond"]
     assert_untouched(seen["root"], snapshot(root))
     assert refused.value.code == "update-rewrite-symlink"
-    assert said(arrives_at, arrives_at, str(where)) in refused.value.detail
+    assert said(rewrites, arrives_at, str(where)) in refused.value.detail
     assert "it arrived while `apply` ran" in refused.value.detail
     assert "ROLLED BACK: every byte" in refused.value.detail, (
         refused.value.detail)
