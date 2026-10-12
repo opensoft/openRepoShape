@@ -1203,7 +1203,13 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                    is theirs.
       uncommitted  HEAD holds a pin that reads, and the tree or the index
                    differs from it. `checkout HEAD`, which drops a change no
-                   tool of this standard leaves uncommitted.
+                   tool of this standard leaves uncommitted. NOT FOR A COPY,
+                   which can hold the project's own edit -- the merge by
+                   hand `update-shape.py` asks for where a copy changed on
+                   both sides above all -- and git keeps no other copy of
+                   that edit until it is committed. A copy's NEXT is the
+                   `diff HEAD` that shows the change, and mending it is a
+                   person's call (review of PR #358).
       hidden       HEAD holds a pin that reads, and `git status` shows no
                    change to it: an index flag hides the copy here (a sparse
                    checkout, assume-unchanged), or the file cannot be read.
@@ -1233,19 +1239,20 @@ def pin_restore(ctx: Context, detail: dict | None = None,
 
     ANY FILE UNDER `contracts/` A TOOL WROTE, NOT THE SHAPE PIN ALONE (#291).
     `pin` is the root's own `contracts/shape-pin.yaml` unless the caller
-    names another file `tool_written` admits -- a leg's pin, a neutral
-    product's, the naming policy's copy -- which is how the `manifest kinds`
-    row puts back each one that does not load. The five states, their
-    commands and their notes are the same for every one, with the note
-    saying `copy` where the file is not a pin, and `pin_reads_at` says what
-    reads. Only the shape pin takes more paths with it in a merge -- the
-    copies `apply` writes in the same commit -- and only its note names a
-    conflicted manifest or README.md for a person. Any other file is named
-    alone. A leg pin moves with its gitlink, but `checkout --ours` on a
-    conflicted gitlink exits 0 and leaves all three stages where they were,
-    so naming it would be a command that changes nothing. Finishing the
-    merge takes the gitlink, and the `pins` row then says whether the two
-    agree.
+    names another file `tool_written` admits -- a pin `project.yaml`
+    declares, for a leg or a neutral product, or the naming policy's copy --
+    which is how the `manifest kinds` row puts back each one that does not
+    load. The five states, their commands and their notes are the same for
+    every one, but for a copy's uncommitted change, which is shown and not
+    put back. The note says `copy` where the file is not a pin, and
+    `pin_reads_at` says what reads. Only the shape pin takes more paths with
+    it in a merge -- the copies `apply` writes in the same commit -- and
+    only its note names a conflicted manifest or README.md for a person.
+    Any other file is named alone. A leg pin moves with its gitlink, but
+    `checkout --ours` on a conflicted gitlink exits 0 and leaves all three
+    stages where they were, so naming it would be a command that changes
+    nothing. Finishing the merge takes the gitlink, and the `pins` row then
+    says whether the two agree.
     """
     root = ctx.root
     git_c = f"git -C {quote_arg(root)}"
@@ -1299,6 +1306,16 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                 f"hand-merged {what}{then} the merge as git says and run "
                 "this doctor again")
     elif pin_reads_at(ctx, "HEAD", pin):
+        if xy and what == "copy":
+            return "uncommitted", (
+                f"{git_c} diff HEAD -- {quote_arg(pin)}   # HEAD holds a "
+                "copy that reads, and this shows the uncommitted change that "
+                "breaks the copy here. A copy can hold an edit of the "
+                "project, such as the merge by hand update-shape.py asks "
+                "for, and git keeps no other copy of it until it is "
+                "committed, so nothing is put back. Mend the change, or take "
+                "the copy as last committed once nothing in it is worth "
+                "keeping, then run this doctor again")
         if xy:
             return "uncommitted", (
                 f"{git_c} checkout HEAD -- {quote_arg(pin)}   # puts back "
@@ -1330,32 +1347,72 @@ def pin_restore(ctx: Context, detail: dict | None = None,
     return "none", None
 
 
+def declared_pins(ctx: Context) -> set:
+    """Every pin this root DECLARES, at the path the tool that writes it
+    writes it to (#291).
+
+    The shape pin, which every root carries. `contracts/<role>-pin.yaml`
+    for each leg `project.yaml` declares, the spelling `check_legs` reads,
+    `validate-pins.py` checks and `bump-leg.py` writes. And
+    `contracts/<product lowercased>-pin.yaml` for each name its
+    `neutral_product_pins:` lists, which is `shape_materialize`'s
+    `neutral_pin_path` and the spelling `validate-pins.py` checks, spelled
+    here as `check_legs` spells a leg's. A role or a product that is not
+    text names no pin.
+    """
+    pins = {SHAPE_PIN}
+    pins.update(f"contracts/{leg['role']}-pin.yaml" for leg in ctx.legs()
+                if isinstance(leg.get("role"), str) and leg["role"])
+    products = (ctx.manifest or {}).get("neutral_product_pins")
+    if isinstance(products, list):
+        pins.update(f"contracts/{product.lower()}-pin.yaml"
+                    for product in products
+                    if isinstance(product, str) and product)
+    return pins
+
+
 def tool_written(ctx: Context, rel: str) -> bool:
     """Whether `rel`, a root path under `contracts/`, is a file a tool of
     this standard writes, so that git holds the last good bytes (#291).
 
-    Every `contracts/<name>-pin.yaml` is a pin. The shape pin is written by
+    WHAT THE ROOT DECLARES DECIDES, NOT THE NAME. A file is a tool's where
+    it is one of `declared_pins` or a shape copy the root kind lists, which
+    under `contracts/` is the naming policy. The shape pin is written by
     `scaffold-project.py`, `adopt-project.py` and `update-shape.py apply`, a
     leg pin by those and by `bump-leg.py`, and a neutral product pin by
-    `scaffold-project.py --pin`. Every shape copy the root kind lists is
-    such a file too, and under `contracts/` that is the naming policy. No
-    one edits any of them by hand, so the bytes a tool last wrote are the
-    fix. Anything else under `contracts/`, and `project.yaml` or
-    `family.yaml`, is the project's own.
+    `scaffold-project.py --pin`. No one edits a pin by hand, so the bytes a
+    tool last wrote are the fix. A copy can hold an edit of the project's,
+    which is why `pin_restore` shows a copy's uncommitted change rather
+    than putting it back. Anything else under `contracts/`, and
+    `project.yaml` or `family.yaml`, is the project's own. A
+    `contracts/release-pin.yaml` that no leg and no product names is a file
+    the project wrote, whatever it is called, and putting it back from git
+    would discard the edit, the merged hunk or the commit somebody made
+    (codex, review of PR #358).
+
+    WHERE `project.yaml` DOES NOT LOAD, IT DECLARES NOTHING. A leg pin or a
+    neutral product pin that does not load either is then the project's for
+    that run, and is left alone. That is the safe side. Reading the roles
+    from HEAD's `project.yaml` instead would decide what git puts back from
+    a declaration the tree may disagree with, as the other side of a merge
+    that adds or renames a leg does. A file wrongly called a tool's loses a
+    person's edit, and one wrongly called the project's costs a run: once
+    `project.yaml` loads, the next run names the pin's restore. The shape
+    pin and the copies hang on no manifest, and stay a tool's.
     """
-    if rel.startswith("contracts/") and rel.endswith("-pin.yaml"):
-        return True
-    return rel in ctx.update_shape().root_kind(ctx.root).copy_source
+    return (rel in declared_pins(ctx)
+            or rel in ctx.update_shape().root_kind(ctx.root).copy_source)
 
 
 #: The note on the `manifest kinds` row's next command where no file that
 #: does not load has a copy git can put back (#291). No `;`, apostrophe or
 #: backtick, so a pasted line is one command in any shell (#277).
 UNREADABLE_BY_HAND = (
-    "the reason names each file that does not load and why, and no commit "
-    "in this root holds a copy a tool wrote to put back, so what each should "
-    "say -- a merge conflict resolved, a hand edit put right -- is for a "
-    "person to decide. This row reads them again once they load")
+    "the reason names each file that does not load and why, and none is a "
+    "file this root declares a tool writes with a copy that reads in its "
+    "history, so what each should say -- a merge conflict resolved, a hand "
+    "edit put right -- is for a person to decide. This row reads them again "
+    "once they load")
 
 
 def unreadable_next(ctx: Context, unreadable: list) -> tuple[dict, str]:
@@ -1368,10 +1425,11 @@ def unreadable_next(ctx: Context, unreadable: list) -> tuple[dict, str]:
     where it has a command, then each other file in the row's order. A row
     prints one command, and the next run names the next file.
 
-    A FILE OF THE PROJECT'S OWN IS NOT, and its case is `project`, with git
-    not asked. The git-state choice does not fit it: each of the three
-    commands discards somebody's edit -- the other side of their merge,
-    their uncommitted work, their last commit -- and nothing in this
+    A FILE OF THE PROJECT'S OWN IS NOT, whatever it is called, and its case
+    is `project`, with git not asked. `tool_written` reads what the root
+    declares, not the name. The git-state choice does not fit it: each of
+    the three commands discards somebody's edit -- the other side of their
+    merge, their uncommitted work, their last commit -- and nothing in this
     standard says which bytes are right. Where no file has a command to
     name, the command is this doctor again, to run once a person has mended
     the file, and its note says that what the file should say is theirs to

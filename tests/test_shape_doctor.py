@@ -2976,6 +2976,17 @@ CODE_PIN = "contracts/code-pin.yaml"
 #: The one shape copy a root keeps under `contracts/`.
 NAMING_COPY = "contracts/repository-naming.yaml"
 OWN_CONTRACT = "contracts/notes.yaml"
+#: A file of the project's own that is NAMED like a pin. No leg has the role
+#: `release`, `neutral_product_pins:` does not name it, and it is not a shape
+#: copy, so it is the project's whatever it is called (codex, PR #358).
+OWN_PIN_NAMED = "contracts/release-pin.yaml"
+RELEASE = (b"schedule: weekly\nowner: release-team\nchannels:\n"
+           b"  - stable\nnotes: first\n")
+#: The pin `neutral_product_pins:` declares for `openGlass`, at the path
+#: `scaffold-project.py --pin` writes it to.
+NEUTRAL_PIN = "contracts/openglass-pin.yaml"
+#: A slip that stops a file loading, appended to what it held.
+SLIP = b"\t: : [\n"
 
 #: How each restore's note names the file it puts back, `{what}` being
 #: `pin` or `copy`.
@@ -3070,10 +3081,39 @@ def leg_pin_not_utf8(root: Path) -> list:
     return ["checkout", "HEAD", "--", SPEC_PIN]
 
 
-def naming_copy_hand_broken(root: Path) -> list:
+def leg_pin_not_utf8_committed(root: Path) -> list:
+    # The leg pin's own history, not the shape pin's: the walk lists the
+    # commits that touched THIS file, and asks each parent for THIS file.
+    pin = root / SPEC_PIN
+    pin.write_bytes(pin.read_bytes() + b"\xff\n")
+    git("add", "--", SPEC_PIN, cwd=root)
+    breaking = commit_in(root, "a byte that is not UTF-8 in the spec pin")
+    commit_in(root, "an unrelated commit after it", "--allow-empty")
+    return ["checkout", f"{breaking}~1", "--", SPEC_PIN]
+
+
+def leg_pin_past_a_list_in_its_history(root: Path) -> list:
+    # Two commits in a row broke it, the first into a list, which loads and
+    # is not a mapping. The walk steps past that parent to the pin before
+    # both, because putting back the list would leave the row where it is.
+    pin = root / SPEC_PIN
+    good = pin.read_bytes()
+    pin.write_bytes(b"- a\n")
+    git("add", "--", SPEC_PIN, cwd=root)
+    first = commit_in(root, "the spec pin made a list")
+    pin.write_bytes(good + b"\xff\n")
+    git("add", "--", SPEC_PIN, cwd=root)
+    commit_in(root, "then a byte that is not UTF-8 in it")
+    commit_in(root, "an unrelated commit after it", "--allow-empty")
+    return ["checkout", f"{first}~1", "--", SPEC_PIN]
+
+
+def naming_copy_broken_by_a_commit(root: Path) -> list:
     copy = root / NAMING_COPY
-    copy.write_bytes(copy.read_bytes() + b"\t: : [\n")
-    return ["checkout", "HEAD", "--", NAMING_COPY]
+    copy.write_bytes(copy.read_bytes() + SLIP)
+    git("add", "--", NAMING_COPY, cwd=root)
+    breaking = commit_in(root, "a slip committed in the naming copy")
+    return ["checkout", f"{breaking}~1", "--", NAMING_COPY]
 
 
 @pytest.mark.parametrize("breaks, rel, code, restore, what, compliant", [
@@ -3088,8 +3128,15 @@ def naming_copy_hand_broken(root: Path) -> list:
                  "unmerged", "pin", False, id="a-leg-pin-conflicted"),
     pytest.param(leg_pin_not_utf8, SPEC_PIN, "yaml-unreadable",
                  "uncommitted", "pin", True, id="a-leg-pin-not-utf-8"),
-    pytest.param(naming_copy_hand_broken, NAMING_COPY, "yaml-unparsable",
-                 "uncommitted", "copy", True, id="the-naming-copy-broken"),
+    pytest.param(leg_pin_not_utf8_committed, SPEC_PIN, "yaml-unreadable",
+                 "committed", "pin", True,
+                 id="a-leg-pin-not-utf-8-committed"),
+    pytest.param(leg_pin_past_a_list_in_its_history, SPEC_PIN,
+                 "yaml-unreadable", "committed", "pin", True,
+                 id="a-leg-pin-past-a-list-in-its-history"),
+    pytest.param(naming_copy_broken_by_a_commit, NAMING_COPY,
+                 "yaml-unparsable", "committed", "copy", True,
+                 id="the-naming-copy-broken-by-a-commit"),
 ])
 def test_a_file_a_tool_wrote_that_does_not_load_is_put_back_from_git(
         standard, project, breaks, rel, code, restore, what, compliant):
@@ -3111,6 +3158,9 @@ def test_a_file_a_tool_wrote_that_does_not_load_is_put_back_from_git(
     assert row["detail"]["restore"] == {rel: restore}, row["detail"]
     said = row["detail"]["refusals"][rel]
     assert said["code"] == code, said
+    if code is None:
+        # What a file that loads as something else is said to hold.
+        assert said["detail"] == "it loads as a list, not a mapping", said
     # The loader's own words, less the path it opens with.
     words = f"{code}: {said['detail']}" if code else said["detail"]
     assert f"unreadable as YAML: {rel} ({words})" in row["reason"], \
@@ -3147,11 +3197,87 @@ def leg_pin_in_a_squashed_root_commit(root: Path) -> tuple[str, str]:
     return SPEC_PIN, "none"
 
 
+def leg_pin_added_back_after_its_deletion(root: Path) -> tuple[str, str]:
+    # The walk stops at the commit that added the file back: its parent
+    # holds none, so the pin from before the deletion is not this file's
+    # history to put back, though the parent holds a shape pin.
+    pin = root / SPEC_PIN
+    good = pin.read_bytes()
+    git("rm", "-q", "--", SPEC_PIN, cwd=root)
+    commit_in(root, "the spec pin deleted")
+    pin.write_bytes(good + b"\xff\n")
+    git("add", "--", SPEC_PIN, cwd=root)
+    commit_in(root, "the spec pin added back, with a byte that is not UTF-8")
+    return SPEC_PIN, "none"
+
+
+def own_pin_named(root: Path) -> Path:
+    """`contracts/release-pin.yaml`, committed: the project's own file,
+    named like a pin, which nothing in the root declares."""
+    path = root / OWN_PIN_NAMED
+    path.write_bytes(RELEASE)
+    git("add", "--", OWN_PIN_NAMED, cwd=root)
+    commit_in(root, "the project's own release train")
+    return path
+
+
+def own_pin_named_edited_with_a_slip(root: Path) -> tuple[str, str]:
+    # A person's edit, not yet committed, with a slip in it. `checkout
+    # HEAD` would drop `schedule: daily` along with the slip.
+    own_pin_named(root).write_bytes(RELEASE.replace(b"weekly", b"daily")
+                                    + SLIP)
+    return OWN_PIN_NAMED, "project"
+
+
+def own_pin_named_conflicted(root: Path) -> tuple[str, str]:
+    # Both sides change `schedule:`, and the other side also adds a channel
+    # that git merges cleanly. `checkout --ours` would take this side whole
+    # and drop `- nightly`.
+    own_pin_named(root)
+    base = git("rev-parse", "HEAD", cwd=root).stdout.strip()
+    for branch, body in (
+            ("edit-a", RELEASE.replace(b"weekly", b"daily").replace(
+                b"  - stable\n", b"  - stable\n  - nightly\n")),
+            ("edit-b", RELEASE.replace(b"weekly", b"hourly"))):
+        git("checkout", "-q", "-b", branch, base, cwd=root)
+        (root / OWN_PIN_NAMED).write_bytes(body)
+        git("add", "--", OWN_PIN_NAMED, cwd=root)
+        commit_in(root, branch)
+    merged = subprocess.run(["git", "merge", "-q", "edit-a"], cwd=str(root),
+                            capture_output=True, text=True, check=False,
+                            env={**os.environ, **GIT_IDENTITY})
+    assert merged.returncode != 0, merged.stdout + merged.stderr
+    status = git("status", "--porcelain=v1", cwd=root).stdout
+    assert f"UU {OWN_PIN_NAMED}" in status, status
+    assert b"  - nightly\n" in (root / OWN_PIN_NAMED).read_bytes()
+    return OWN_PIN_NAMED, "project"
+
+
+def own_pin_named_broken_by_a_commit(root: Path) -> tuple[str, str]:
+    # A commit that hands the train to another team, with a slip in it.
+    # `checkout <it>~1` would drop `owner: platform-team` with the slip.
+    path = own_pin_named(root)
+    path.write_bytes(RELEASE.replace(b"release-team", b"platform-team")
+                     + SLIP)
+    git("add", "--", OWN_PIN_NAMED, cwd=root)
+    commit_in(root, "the release train moves to the platform team")
+    commit_in(root, "an unrelated commit after it", "--allow-empty")
+    return OWN_PIN_NAMED, "project"
+
+
 @pytest.mark.parametrize("breaks", [
     pytest.param(project_contract_conflicted,
                  id="a-contract-of-the-projects-own-conflicted"),
+    pytest.param(own_pin_named_edited_with_a_slip,
+                 id="a-file-of-the-projects-own-named-like-a-pin-edited"),
+    pytest.param(own_pin_named_conflicted,
+                 id="a-file-of-the-projects-own-named-like-a-pin-conflicted"),
+    pytest.param(own_pin_named_broken_by_a_commit,
+                 id="a-file-of-the-projects-own-named-like-a-pin-committed"),
     pytest.param(leg_pin_in_a_squashed_root_commit,
                  id="a-leg-pin-with-no-good-copy-in-its-history"),
+    pytest.param(leg_pin_added_back_after_its_deletion,
+                 id="a-leg-pin-added-back-after-its-deletion"),
 ])
 def test_a_file_git_cannot_put_back_is_left_to_a_person(standard, project,
                                                         breaks):
@@ -3160,9 +3286,11 @@ def test_a_file_git_cannot_put_back_is_left_to_a_person(standard, project,
 
     A file of the project's own is never put back from git, because each
     of the three commands throws away an edit somebody made, so git is not
-    asked (`project`). A pin with no good copy in its history has nothing
-    to put back (`none`). Run as printed, the doctor finds the same file
-    and touches none of it. Once a person mends the file, the row reads it.
+    asked (`project`). That holds for one named like a pin, in each of the
+    three states: what the root declares decides, not the name. A pin with
+    no good copy in its history has nothing to put back (`none`). Run as
+    printed, the doctor finds the same file and touches none of it. Once a
+    person mends the file, the row reads it.
     """
     rel, restore = breaks(project)
     row = rows_of(doctor(standard, project, "--json"))["manifest-kinds"]
@@ -3251,6 +3379,104 @@ def test_the_shape_pin_goes_first_and_each_run_names_the_next_file(
     assert Path(pasted(kinds["next"])[1]).name == DOCTOR, kinds["next"]
     assert_no_registration(kinds)
     assert own.read_bytes() == b"colour: blue\n\xff\n"
+
+
+def declare_a_neutral_pin(root: Path) -> None:
+    """`neutral_product_pins:` naming `openGlass` in `project.yaml`, and the
+    pin it declares committed beside it, as `scaffold-project.py --pin`
+    leaves the two."""
+    manifest = root / "project.yaml"
+    text = manifest.read_bytes()
+    assert text.count(b"neutral_product_pins: []\n") == 1, text
+    manifest.write_bytes(text.replace(b"neutral_product_pins: []\n",
+                                      b"neutral_product_pins:\n"
+                                      b"  - openGlass\n"))
+    (root / NEUTRAL_PIN).write_bytes(
+        b"pin_role: neutral-product\nproduct: openGlass\n"
+        b'commit: "' + b"1" * 40 + b'"\n')
+    git("add", "--", "project.yaml", NEUTRAL_PIN, cwd=root)
+    commit_in(root, "a pin on the neutral product openGlass")
+
+
+def test_a_pin_is_what_the_root_declares_not_what_it_is_called(standard,
+                                                               project):
+    """A neutral product pin `project.yaml` declares is put back from git,
+    and a file of the project's own named like a pin is not.
+
+    IN PROCESS, through the row alone: a declared neutral pin makes the
+    `pins` row recheck its digest, and with no checkout of the product
+    beside the root that asks `gh`, which no test here may reach.
+    """
+    declare_a_neutral_pin(project)
+    own = own_pin_named(project)
+    for rel in (NEUTRAL_PIN, OWN_PIN_NAMED):
+        path = project / rel
+        path.write_bytes(path.read_bytes() + b"\xff\n")
+    module = doctor_module(standard)
+    row = module.check_manifest_kinds(module.Context(project)).as_dict()
+    assert row["detail"]["unreadable"] == [NEUTRAL_PIN, OWN_PIN_NAMED], row
+    assert row["detail"]["restore"] == {NEUTRAL_PIN: "uncommitted",
+                                        OWN_PIN_NAMED: "project"}, row
+    assert_no_registration(row)
+    assert pasted(row["next"])[3:] == ["checkout", "HEAD", "--",
+                                       NEUTRAL_PIN], row["next"]
+    run_pasted(row["next"])
+    row = module.check_manifest_kinds(module.Context(project)).as_dict()
+    assert row["detail"]["restore"] == {OWN_PIN_NAMED: "project"}, row
+    assert Path(pasted(row["next"])[1]).name == DOCTOR, row["next"]
+    assert own.read_bytes() == RELEASE + b"\xff\n"
+
+
+def test_a_leg_pin_is_left_to_a_person_while_project_yaml_does_not_load(
+        standard, project):
+    """`project.yaml` declares the leg pins, so where it does not load it
+    declares none, and a leg pin that does not load either is left alone
+    for that run. The shape pin and the copies are declared by no manifest,
+    and stay a tool's. Once `project.yaml` loads, the row puts the leg pin
+    back.
+
+    In process, because at this branch a root whose `project.yaml` does not
+    load is not a shape root, and the doctor asks no row of it.
+    """
+    for rel in ("project.yaml", SPEC_PIN):
+        path = project / rel
+        path.write_bytes(path.read_bytes() + b"\xff\n")
+    module = doctor_module(standard)
+    ctx = module.Context(project)
+    assert ctx.manifest is None
+    row = module.check_manifest_kinds(ctx).as_dict()
+    assert row["detail"]["restore"][SPEC_PIN] == "project", row["detail"]
+    assert Path(pasted(row["next"])[1]).name == DOCTOR, row["next"]
+    assert module.tool_written(ctx, SHAPE_PIN)
+    assert module.tool_written(ctx, NAMING_COPY)
+    git("checkout", "-q", "HEAD", "--", "project.yaml", cwd=project)
+    row = module.check_manifest_kinds(module.Context(project)).as_dict()
+    assert row["detail"]["restore"] == {SPEC_PIN: "uncommitted"}, row
+    assert pasted(row["next"])[3:] == ["checkout", "HEAD", "--", SPEC_PIN]
+
+
+def test_an_uncommitted_change_to_a_copy_is_shown_and_kept(standard,
+                                                           project):
+    """A copy can hold the project's own edit -- the merge by hand that
+    `update-shape.py` asks for where a copy changed on both sides -- and
+    git keeps no other copy of it until it is committed. So where HEAD's
+    copy reads and the change here breaks it, the NEXT shows the change and
+    puts nothing back. Run as printed, the bytes are still the person's.
+    """
+    copy = project / NAMING_COPY
+    copy.write_bytes(copy.read_bytes() + SLIP)
+    before = copy.read_bytes()
+    row = rows_of(doctor(standard, project, "--json"))["manifest-kinds"]
+    assert row["detail"]["restore"] == {NAMING_COPY: "uncommitted"}, row
+    assert_no_registration(row)
+    assert pasted(row["next"])[3:] == ["diff", "HEAD", "--", NAMING_COPY], \
+        row["next"]
+    assert "checkout" not in row["next"], row["next"]
+    assert "nothing is put back" in row["next"].split("   #", 1)[1]
+    run_pasted(row["next"])
+    assert copy.read_bytes() == before
+    again = rows_of(doctor(standard, project, "--json"))["manifest-kinds"]
+    assert again["detail"]["restore"] == {NAMING_COPY: "uncommitted"}, again
 
 
 # --- placement: code in spec, spec in code (#99) ----------------------------
