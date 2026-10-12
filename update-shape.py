@@ -87,7 +87,9 @@ EXIT CODES
             2  a REFUSAL: no pin, an unresolvable upstream, an unreadable root
     apply   0  applied (or there was nothing to do)
             2  a REFUSAL, including a validator that went red or a branch,
-               stage or commit that failed (rolled back)
+               stage or commit that failed (rolled back); or a push or pull
+               request failing after the commit, which is KEPT, and the
+               NEXT line printed then finishes the job (#204)
 
 STANDARD LIBRARY ONLY, like everything else shipped here.
 """
@@ -97,6 +99,7 @@ from __future__ import annotations
 import argparse
 import ast
 import hashlib
+import json
 import os
 import re
 import shlex
@@ -123,6 +126,13 @@ from shape_materialize import (  # noqa: E402
 
 #: `owner/repo`, the only remote spelling `--upstream` accepts.
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+
+#: How `--branch` may be spelled: the alphabet `checked_value` already
+#: allowed it, less the `~` git refuses anyway, and a FIRST character that is
+#: a letter or a digit, so no value reads as an option (`--upload-pack=…`) or
+#: starts with a `/` or a `.`. `checked_branch` holds it to this, then to
+#: git's own rules.
+BRANCH_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/@+-]{0,254}")
 
 #: Where `adopt-project.py` puts a template file whose name the source
 #: repository already uses. Spelled here because this tool must map
@@ -1538,6 +1548,54 @@ def current_branch(root: Path) -> str | None:
     return proc.stdout.strip() or None
 
 
+BRANCH_REMEDIATION = (
+    "Remediation: pass a branch name such as `shape/update-<sha>`. It starts "
+    "with a letter or a digit, holds only letters, digits and `. _ / @ + -`, "
+    "and is one `git check-ref-format --branch <name>` accepts: no `..`, no "
+    "`//`, no `@{`, no trailing `/` or `.`, and no part that starts with `.` "
+    "or ends in `.lock`.")
+
+
+def checked_branch(value: str) -> str:
+    """`--branch`, CHECKED ONCE, in `main`, before this tool reads, writes or
+    runs anything (#204).
+
+    The value becomes `git` arguments (the branch `apply` creates and pushes,
+    and the ref its re-run reads), `gh pr create --head`, and a word in the
+    NEXT line a human or an agent pastes and runs. A value that starts with
+    `-` is an option to whichever of those reads it first, so the alphabet
+    is checked before anything else, and only a value `BRANCH_RE` admits is
+    put to `git check-ref-format --branch`, which is the authority on what a
+    branch name is: it is asked, not copied. A spelling it would expand
+    rather than echo is refused too: `apply` names the branch it creates.
+    """
+    if not BRANCH_RE.fullmatch(value):
+        raise Refusal(
+            "update-branch-invalid",
+            f"--branch {value!r} is not a branch name this tool will put on a "
+            "`git` or `gh` command line: it must start with a letter or a "
+            "digit and hold only letters, digits and `. _ / @ + -`",
+            BRANCH_REMEDIATION)
+    try:
+        verdict = subprocess.run(["git", "check-ref-format", "--branch", value],
+                                 capture_output=True, text=True,
+                                 encoding="utf-8", errors="replace",
+                                 check=False)
+    except OSError as exc:
+        raise Refusal(
+            "update-branch-invalid",
+            f"--branch {value!r} could not be checked: `git check-ref-format "
+            f"--branch` could not be run ({exc})", BRANCH_REMEDIATION) from exc
+    if verdict.returncode != 0 or verdict.stdout.strip() != value:
+        said = (verdict.stderr or verdict.stdout).strip()
+        raise Refusal(
+            "update-branch-invalid",
+            f"--branch {value!r} is not a branch name git will create: `git "
+            "check-ref-format --branch` refuses it"
+            + (f" ({said})" if said else ""), BRANCH_REMEDIATION)
+    return value
+
+
 def branch_exists(root: Path, branch: str) -> bool:
     """Is `branch` a local branch of `root` — checked out or not?"""
     proc = subprocess.run(
@@ -1548,8 +1606,9 @@ def branch_exists(root: Path, branch: str) -> bool:
 
 def tracking_branch_of(manifest: dict | None) -> str:
     """This root's tracking branch, out of an already-loaded manifest — the
-    same field `open_pull_request` lands its pull request on, and the one
-    base `next_line` prints in the `gh pr create` it hands a human (#209).
+    same field `pull_request_target` lands `--pr`'s pull request on, and the
+    one base `next_line` prints in the `gh pr create` it hands a human
+    (#209).
     `--branch` may never commit onto it directly: these organisations are
     pull-request only, and a commit whose only next step is a push to the
     default branch is not one this tool will make.
@@ -1567,7 +1626,7 @@ def pull_request_repository(manifest: dict | None,
                             kind: Kind = PROJECT_KIND) -> tuple[str, str]:
     """`(repository, why_none)`: the repository a shape update's pull request
     is opened against, out of an already-loaded manifest, and what to say
-    where it names none (#209). One of the two values `open_pull_request`
+    where it names none (#209). One of the two values `pull_request_target`
     and `next_line` both have to agree on, beside `tracking_branch_of`: they
     used to settle them separately, and the printed line said `main` and
     `<org>/<Project>` whatever the manifest recorded.
@@ -1576,10 +1635,12 @@ def pull_request_repository(manifest: dict | None,
     own, having no legs to read one from, being a holder rather than a
     project: its `repository:`, or its `org:` and `name:` joined where there
     is no `repository:`. An empty answer is the caller's to act on:
-    `open_pull_request` refuses with `why_none`, since there is nothing to
-    open a pull request against, and `next_line` keeps the placeholder it
-    always printed, since it runs after the commit and a manifest that names
-    no repository is no reason to take that back.
+    `pull_request_target` refuses with `why_none` under `--pr`, before the
+    commit, since there is nothing to open a pull request against;
+    `next_line` keeps the placeholder it always printed, since it runs
+    after the commit and a manifest that names no repository is no reason
+    to take that back; and `pull_request_line`'s bare form, the one a
+    failed `--push` prints, leaves `--repo` off (#204).
     """
     manifest = manifest or {}
     if kind is FAMILY_KIND:
@@ -2347,17 +2408,25 @@ def _land(root: Path, args, paths: list[str], added: list[str], target: str,
     without `--branch`, which `main` refuses before this is ever reached.
     The commit goes through `ledger` and closes it (#202), so a failure up
     to and including the commit is rolled back and one after it is not.
+
+    THE COMMIT IS WHERE ROLLING BACK STOPS (#204). A push or a pull request
+    that fails after it is `landing_failed`'s: named by its own step, the
+    commit kept, and a NEXT line that finishes the job. The `gh pr create`
+    that line ends with is built HERE, BEFORE the commit, so a root with no
+    repository for `--pr` to open against is refused while there is still
+    nothing committed to keep, and the failure path reads no file at all.
     """
     if not args.branch:
         return
+    create = (pull_request_line(root, args, target, upstream, kind)
+              if args.push or args.pr else [])
     commit_on_branch(root, args.branch, paths, target, upstream,
                      count, kind, added, args.trailer, ledger=ledger)
     print(f"\n  committed on {args.branch}: " + ", ".join(paths))
     if args.push:
-        run(["git", "push", "-q", "-u", "origin", args.branch], cwd=root)
-        print(f"  pushed {args.branch} to origin")
+        push_branch(root, args, create)
     if args.pr:
-        open_pull_request(root, args.branch, target, upstream, kind)
+        open_pull_request(root, args, create)
 
 
 def cmd_apply(args) -> int:
@@ -2373,6 +2442,8 @@ def cmd_apply(args) -> int:
                                    target)
         _note_untaken_additions(additions, taking)
         if _nothing_to_do(rows, pinned, target, taking):
+            if _awaits_its_pull_request(root, args, kind):
+                return _finish_landing(root, args, upstream, target, kind)
             print(f"nothing to do: every copied file matches "
                   f"{upstream.repository} @ {target[:12]}, which the pin "
                   "already names")
@@ -2417,9 +2488,10 @@ def _rolled_back(exc: Exception, ledger: Rollback) -> int:
     staging the additions, committing) rather than always "committing".
 
     NOTHING TO PUT BACK keeps the answer each exit always gave: a refusal
-    before the first write is re-raised as it was, and a git command that
-    fails after the commit landed — a push, a pull request — is #204's, and
-    prints the line it always printed.
+    before the first write is re-raised as it was. A push or a pull request
+    that fails after the commit never reaches here: `landing_failed` names
+    it and raises `LandingIncomplete`, which is neither of this arm's two
+    classes, so the commit `ledger.land()` closed on stays (#204).
     """
     undone = ledger.undo()
     if undone is not None:
@@ -2439,23 +2511,254 @@ def _rolled_back(exc: Exception, ledger: Rollback) -> int:
     return 2
 
 
-def open_pull_request(root: Path, branch: str, target: str,
-                      upstream: Upstream, kind: Kind = PROJECT_KIND) -> None:
+class LandingIncomplete(Exception):
+    """The re-pin is COMMITTED on its branch and a step after the commit
+    failed (#204). Already reported, NEXT line included, by `landing_failed`.
+
+    ITS OWN CLASS, NEITHER A `Refusal` NOR A `CommandFailed`, because
+    `cmd_apply` has an arm for each and both are wrong here: the `Refusal`
+    arm rolls the working tree back under a commit that already holds those
+    bytes, and the `CommandFailed` arm names the commit as the step that
+    failed and prints no NEXT line, which is how a `gh pr create` that failed
+    after the commit and the push both landed came out as "REFUSED committing
+    the re-synced shape". `main` turns it into exit 2 and says nothing more.
+    """
+
+
+def landing_failed(root: Path, args, exc: CommandFailed, act: str,
+                   create: list[str]) -> LandingIncomplete:
+    """Report a step that failed AFTER the commit: the step by name, what
+    stands, and the one command that finishes the job.
+
+    WHAT STANDS IS READ FROM GIT, not from the flags: `push -u` moves
+    `refs/remotes/origin/<branch>`, so "origin has it" is that ref agreeing
+    with HEAD. Git is asked which remote-tracking refs point at HEAD and the
+    branch is looked for in its answer, so the name is never a `git`
+    argument here. A NEXT line that cannot vouch for the push carries it in
+    front of the `gh pr create` (a push origin already has is a no-op). The
+    `gh pr create` is `create` itself, quoted to be pasted: under `--pr` the
+    very command `--pr` runs, title and body included, so the pull request
+    opened by hand is the one the tool would have opened.
+
+    A RE-RUN IS PROMISED ONLY UNDER `--pr`, because only then does one finish
+    the job: `_awaits_its_pull_request` recognises it. A failed `--push`
+    without `--pr` is finished by the NEXT line alone. The re-run named
+    carries `--push` whenever origin is not known to have the branch: a
+    re-run pushes only when asked to, and `gh` opens no pull request from a
+    branch origin lacks.
+
+    STDOUT IS FLUSHED FIRST, so a combined log reads in the order things
+    happened: the commit and the push above the refusal, not below it.
+    """
+    branch = args.branch
+    head = (_git_answer(root, ["rev-parse", "HEAD"]) or "").strip()
+    at_head = (_git_answer(root, ["for-each-ref", "--format=%(refname)",
+                                  "--points-at", "HEAD", "refs/remotes/origin/"])
+               or "").splitlines()
+    pushed = bool(head) and f"refs/remotes/origin/{branch}" in at_head
+    sys.stdout.flush()
+    print(exc.loudly(act), file=sys.stderr)
+    left = ("its pull request: the NEXT line opens it" if pushed
+            else "the push and the pull request: the NEXT line makes both")
+    rerun = "apply --pr" if pushed else "apply --push --pr"
+    again = (f", and so does `{rerun}` run again on {branch} once the "
+             "step above can succeed, because with nothing left to write it "
+             "opens the pull request that is still missing" if args.pr
+             else "")
+    print(f"{branch} carries the re-pin at {head[:12] or 'HEAD'}"
+          + (", and origin has it" if pushed
+             else ", and origin does not have it yet")
+          + f": that commit stands and nothing was rolled back. What is left "
+          f"is {left}{again}.", file=sys.stderr)
+    sys.stderr.flush()
+    push = ("" if pushed else shlex.join(["git", "-C", str(root), "push", "-u",
+                                          "--", "origin", branch]) + " && ")
+    print()
+    print(f"NEXT  {push}{shlex.join(create)}")
+    return LandingIncomplete(act)
+
+
+def _landing_run(command: list[str], root: Path) -> str:
+    """`run`, for the steps after the commit (#204), with a program that
+    cannot be started reported as the failed step it is. `gh` not installed,
+    or not on PATH, is the likeliest way `gh` fails on a fresh machine, and
+    `subprocess` raises `OSError` for it rather than returning an exit code,
+    so it escaped every arm as a traceback after the commit and the push had
+    landed. It becomes a `CommandFailed` with the exit 127 a shell gives a
+    command it cannot find, which `landing_failed` then names, NEXT line
+    included."""
+    try:
+        return run(command, cwd=root)
+    except OSError as exc:
+        raise CommandFailed(
+            command, root, 127,
+            f"`{command[0]}` could not be started "
+            f"({exc.strerror or exc}): is it installed and on PATH?") from exc
+
+
+def push_branch(root: Path, args, create: list[str]) -> None:
+    """`git push -u -- origin <branch>`, for the first run and for the re-run
+    alike, `--` ending git's options before the two positionals. A refusal
+    from origin is `landing_failed`'s (#204): the commit it was pushing
+    stands, so the step is named and nothing is rolled back."""
+    try:
+        _landing_run(["git", "push", "-q", "-u", "--", "origin", args.branch],
+                     root)
+    except CommandFailed as exc:
+        raise landing_failed(root, args, exc, f"pushing {args.branch}",
+                             create) from exc
+    print(f"  pushed {args.branch} to origin")
+
+
+def _awaits_its_pull_request(root: Path, args, kind: Kind) -> bool:
+    """Is this no-write run a RE-RUN on the branch whose pull request `--pr`
+    still owes (#204)? Without this, the run that follows a failed `gh pr
+    create` found the pin already at the target, said "nothing to do" and
+    exited 0, so the tool never opened the pull request it was asked for.
+
+    `--pr` was passed; `--branch` is the branch checked out, which is where
+    the earlier run left the checkout; it is not the tracking branch, which
+    has no pull request to open onto itself; and the branch PROPOSES A PIN —
+    its `contracts/shape-pin.yaml` is not the one `origin/<tracking>` holds,
+    as far as this clone has seen. A branch cut from a tracking branch that
+    already carries the re-pin proposes nothing, however many other commits
+    it holds, and stays "nothing to do". A clone that has never seen
+    `origin/<tracking>` cannot tell, and asks `gh`, which answers for itself.
+    """
+    if not (args.pr and args.branch) or current_branch(root) != args.branch:
+        return False
+    base = tracking_branch_of(load_yaml(root / kind.manifest))
+    if args.branch == base:
+        return False
+    pin = "contracts/shape-pin.yaml"
+    proposed = _git_answer(root, ["rev-parse", "--verify", "--quiet",
+                                  f"HEAD:{pin}"])
+    landed = _git_answer(root, ["rev-parse", "--verify", "--quiet",
+                                f"refs/remotes/origin/{base}:{pin}"])
+    return proposed is not None and proposed != landed
+
+
+def _pull_requests(answer: str) -> "list[tuple[str, str]] | None":
+    """`(STATE, url)` per pull request in `gh pr list --json state,url`'s
+    answer, or None when the answer is not that shape."""
+    try:
+        pulls = json.loads(answer or "[]")
+    except ValueError:
+        return None
+    if not isinstance(pulls, list) or \
+            not all(isinstance(pull, dict) for pull in pulls):
+        return None
+    return [(str(pull.get("state") or "").upper(), str(pull.get("url") or ""))
+            for pull in pulls]
+
+
+def _finish_landing(root: Path, args, upstream: Upstream, target: str,
+                    kind: Kind) -> int:
+    """The re-run `_awaits_its_pull_request` recognised: nothing to write,
+    and the landing the flags asked for finished instead (#204).
+
+    `gh` IS ASKED FIRST, before anything is pushed or opened: a branch that
+    already has a pull request — open, merged or closed — gets no second one
+    and no push, and the run says which it has (pushing first would put back
+    a merged branch its remote had deleted). Only a branch with none is
+    pushed again under `--push` (a no-op when origin has it) and handed to
+    `open_pull_request` with the same `gh pr create` the first run built.
+    Every failure on the way is `landing_failed`'s, named by its own step.
+    """
+    branch = args.branch
+    print(f"nothing to write: every copied file matches {upstream.repository}"
+          f" @ {target[:12]}, which the pin on {branch} already names; "
+          f"--pr asked for {branch}'s pull request")
+    repository, _ = pull_request_target(root, kind)
+    create = pull_request_line(root, args, target, upstream, kind)
+    listing = ["gh", "pr", "list", "--repo", repository, "--head", branch,
+               "--state", "all", "--json", "state,url"]
+    asking = f"asking gh for {branch}'s pull request"
+    try:
+        answer = _landing_run(listing, root)
+    except CommandFailed as exc:
+        raise landing_failed(root, args, exc, asking, create) from exc
+    pulls = _pull_requests(answer)
+    if pulls is None:
+        raise landing_failed(root, args,
+                             CommandFailed(listing, root, 0, answer),
+                             asking + " (the answer is not a JSON list)",
+                             create)
+    opened = [url for state, url in pulls if state == "OPEN"]
+    if opened:
+        print(f"  pull request {opened[0]} is already open")
+    elif pulls:
+        state, url = pulls[0]
+        print(f"  pull request {url} for {branch} is {state.lower()}; a "
+              "re-run opens no second one")
+        return 0
+    else:
+        if args.push:
+            push_branch(root, args, create)
+        open_pull_request(root, args, create)
+    print()
+    print("NEXT  the pull request is open; ask a human to review and merge it")
+    return 0
+
+
+def pull_request_target(root: Path, kind: Kind) -> tuple[str, str]:
+    """`(repository, base)` the pull request is opened against, out of the
+    kind's manifest. Split out of `open_pull_request` (#204) so the command
+    is built once, before the commit, and a re-run asks `gh` about the same
+    pair."""
     manifest = load_yaml(root / kind.manifest)
     base = tracking_branch_of(manifest)
     repository, missing = pull_request_repository(manifest, kind)
     if not repository:
         raise Refusal("update-pr-no-repository", missing)
-    url = run(["gh", "pr", "create", "--repo", repository, "--base", base,
-               "--head", branch, "--title",
-               f"Re-sync the shape copies to {upstream.repository} @ "
-               f"{target[:12]}",
-               "--body",
-               "Written by openRepoShape's `update-shape.py`: the copied "
-               "shape files were re-copied from the upstream and "
-               "`contracts/shape-pin.yaml` and `project.yaml` re-pinned onto "
-               f"{target}. No copy was hand-edited and every digest was "
-               "recomputed."], cwd=root)
+    return repository, base
+
+
+def pull_request_line(root: Path, args, target: str, upstream: Upstream,
+                      kind: Kind) -> list[str]:
+    """The `gh pr create` that lands `--branch` (#204): under `--pr` the one
+    `--pr` runs, title and body included, so the NEXT line a failure prints
+    is that same command; without it, the bare form the plain `--branch`
+    NEXT line prints (#209): `--repo` the manifest's repository, then
+    `--base`/`--head` against this root's own tracking branch.
+
+    WITHOUT `--pr` A MANIFEST NAMING NO REPOSITORY LEAVES `--repo` OFF rather
+    than refusing: nothing is opened, so nothing is wrong yet, and the
+    `<org>/<Project>` placeholder `next_line` prints would be one literal
+    argument in a line quoted to be pasted as an argv."""
+    if not args.pr:
+        manifest = load_yaml(root / kind.manifest)
+        repository, _ = pull_request_repository(manifest, kind)
+        where = ["--repo", repository] if repository else []
+        return ["gh", "pr", "create", *where, "--base",
+                tracking_branch_of(manifest), "--head", args.branch]
+    repository, base = pull_request_target(root, kind)
+    return ["gh", "pr", "create", "--repo", repository, "--base", base,
+            "--head", args.branch, "--title",
+            f"Re-sync the shape copies to {upstream.repository} @ "
+            f"{target[:12]}",
+            "--body",
+            "Written by openRepoShape's `update-shape.py`: the copied "
+            "shape files were re-copied from the upstream and "
+            "`contracts/shape-pin.yaml` and `project.yaml` re-pinned onto "
+            f"{target}. No copy was hand-edited and every digest was "
+            "recomputed."]
+
+
+def open_pull_request(root: Path, args, create: list[str]) -> None:
+    """Run `create`, the `gh pr create` `pull_request_line` built, for
+    `args.branch`, which already carries the re-pin.
+
+    A FAILED `gh pr create` IS REPORTED HERE, as what it is (#204): the
+    commit, and the push when there was one, have already landed, so the
+    refusal names this step, rolls nothing back, and ends on a NEXT line.
+    """
+    try:
+        url = _landing_run(create, root)
+    except CommandFailed as exc:
+        raise landing_failed(root, args, exc,
+                             f"opening the pull request for {args.branch}",
+                             create) from exc
     print(f"  pull request {url}")
 
 
@@ -2466,7 +2769,8 @@ def next_line(root: Path, args, paths: list[str], target: str,
         return
     if args.branch:
         # The base and the repository the pull request `--pr` would have
-        # opened lands on, read the way `open_pull_request` reads them (#209).
+        # opened lands on, read the way `pull_request_target` reads them
+        # (#209).
         manifest = load_yaml(root / kind.manifest)
         base = shlex.quote(tracking_branch_of(manifest))
         repository, _ = pull_request_repository(manifest, kind)
@@ -2558,7 +2862,9 @@ def build_parser() -> argparse.ArgumentParser:
                               help="push the branch to origin (needs --branch)")
     apply_parser.add_argument("--pr", action="store_true",
                               help="open a pull request with `gh` (needs "
-                                   "--branch)")
+                                   "--branch); a later run on that branch "
+                                   "with nothing left to write opens it if "
+                                   "it is still missing")
     return parser
 
 
@@ -2570,6 +2876,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "check":
             return cmd_check(args)
+        if args.branch:
+            # BEFORE ANY USE (#204): every path below may run `git` or `gh`
+            # with it or print it in a NEXT line, the re-run's included,
+            # which never reaches the commit's own check.
+            args.branch = checked_branch(args.branch)
         # NAMED BY WHAT WAS ACTUALLY PASSED. The three fail for one
         # reason — there is no commit — and a refusal listing flags nobody
         # typed reads as a refusal of something else. `--trailer` joined them
@@ -2596,6 +2907,10 @@ def main(argv: list[str] | None = None) -> int:
         return die(exc)
     except CommandFailed as exc:
         print(exc.loudly("updating the shape"), file=sys.stderr)
+        return 2
+    except LandingIncomplete:
+        # Reported where it happened, NEXT line included (#204); the exit
+        # code is all that is left to give.
         return 2
 
 
