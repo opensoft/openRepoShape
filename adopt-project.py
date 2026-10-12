@@ -3624,11 +3624,15 @@ HERE = ("", ".")
 #: their logs, and the stores of the two legs `execute` has mounted by then,
 #: each counted with whatever is under it, which the source and the plan
 #: decide and this check does not read. A symlink AT a path the shape writes
-#: that leads to one of them finds something there, so `place` writes the
-#: shape's copy beside it and keeps the link, as on `main`. Nothing else is
-#: in that `.git` before the split's commit: a template makes `description`,
-#: `hooks` and `info`, and `execute` clones with none (#243). A link that
-#: leads the shape to anything else there writes the shape's file INTO
+#: that leads to one of them, or to anything under one of CLONE_GIT_TREES, is
+#: taken to find something there, so `place` writes the shape's copy beside
+#: it and keeps the link, as on `main`. Of a name under those directories
+#: that is NOT there, that is false, and the link is not refused here: the
+#: shape's file is written through it into `.git`, or the run stops there
+#: after both legs exist, as on `main` (J1 of #183's re-verify). Nothing
+#: else is in that `.git` before the split's commit: a template makes
+#: `description`, `hooks` and `info`, and `execute` clones with none (#243).
+#: A link that leads the shape to anything else there writes its file INTO
 #: `.git`, where no commit holds it. (On a git configured otherwise -- the
 #: reftable backend, `core.logAllRefUpdates=false` -- some of these are
 #: missing, and a link to one is not refused here: the shape is written
@@ -3680,11 +3684,11 @@ class _PlannedRoot:
     not recursive. It does not hold a path the plan sends to a leg or drops:
     the mount's `git rm` has removed it by the time the shape is written.
     A symlink AT a path the shape writes also finds what the clone's own
-    `.git` holds by then (`CLONE_GIT`, `CLONE_GIT_TREES`), and nothing else
-    in `.git`. Where `git` checks a symlink out as a plain file, a symlink AT
-    a path the shape writes is that file, wherever it leads: `probe` asks
-    this command's work directory, and only for a link a walk cannot follow
-    (`_a_file_here`).
+    `.git` holds by then (`CLONE_GIT`, and `CLONE_GIT_TREES` counted whole),
+    and nothing else in `.git`. Where `git` checks a symlink out as a plain
+    file, a symlink AT a path the shape writes is that file, wherever it
+    leads: `probe` asks this command's work directory, and only for a link
+    a walk cannot follow (`_a_file_here`).
     `walks` adds what the shape itself writes, path by path, as `place` does,
     so `CLAUDE.md -> AGENTS.md` finds the `AGENTS.md` the shape wrote first.
 
@@ -3851,11 +3855,12 @@ class _PlannedRoot:
         return self._folded.get(path.casefold()) if self.fold else None
 
     def _has(self, path: str) -> bool:
-        """Whether something is at `path`, as `Path.exists()` would say: in
-        this tree, or in the clone's own `.git` (`CLONE_GIT`, or under one
-        of `CLONE_GIT_TREES`). Only this asks the clone's `.git`; `_is_dir`
-        does not, so a link ABOVE a path the shape writes still cannot lead
-        it into `.git` (D9)."""
+        """Whether `place` is taken to find something at `path`: in this
+        tree, as `Path.exists()` would say, or in the clone's own `.git`,
+        one of `CLONE_GIT` or anything under one of `CLONE_GIT_TREES`, which
+        is not read, so a name there that is missing counts too (J1). Only
+        this asks the clone's `.git`; `_is_dir` does not, so a link ABOVE a
+        path the shape writes still cannot lead it into `.git` (D9)."""
         if self._real(path) is not None or any(
                 self._under(path, top) for top in CLONE_GIT_TREES):
             return True
@@ -4192,8 +4197,9 @@ class _SymlinkProbe:
     """`_checks_out_symlinks` of one command's work directory, asked the
     first time a walk needs the answer and then kept, so a plan that never
     needs it makes no probe (B-OFF of #183's re-verify). With no work
-    directory -- a `Source` that no command opened -- a symlink is taken to
-    be checked out as a symlink."""
+    directory -- a `Source` that no command opened -- or one where no
+    repository can be made, a symlink is taken to be checked out as a
+    symlink."""
 
     def __init__(self, work_root: Path | None) -> None:
         self.work_root = work_root
@@ -4202,8 +4208,17 @@ class _SymlinkProbe:
     def symlinks(self) -> bool:
         """Whether `git` checks a symlink out AS a symlink there."""
         if self._answer is None:
-            self._answer = (self.work_root is None
-                            or _checks_out_symlinks(self.work_root))
+            try:
+                self._answer = (self.work_root is None
+                                or _checks_out_symlinks(self.work_root))
+            except OSError:
+                # No repository can be made there, as in a `--work-dir` this
+                # user cannot write (J4 of #183's re-verify). Taken as a disk
+                # that holds symlinks, `check` prints the finding it printed
+                # before B-OFF for a link AT a path that a walk cannot follow,
+                # and `execute` refuses with it, where both would otherwise
+                # end in a traceback.
+                self._answer = True
         return self._answer
 
 

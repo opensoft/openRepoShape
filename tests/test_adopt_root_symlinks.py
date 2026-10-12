@@ -147,6 +147,10 @@ GIT_INFO = ".git/info"
 GIT_HEAD = ".git/HEAD"
 GIT_DESCRIPTION = ".git/description"
 GIT_HOOKS = ".git/hooks"
+NOWHERE_MD = "nowhere.md"
+#: The probe B-OFF makes, as tests put a stand-in in its place.
+PROBE = "_checks_out_symlinks"
+SYMLINKS_OFF_CODE = "adopt-symlinks-off"
 #: What the assembly's clone holds in its own `.git` when the shape is
 #: written, besides `HEAD`: the files git makes in every clone it checks
 #: out, and places in the directories of its objects, its refs, their logs,
@@ -177,7 +181,9 @@ BASIC = {README: "# Thing\n",
 #: `git` told to check a symlink out as a plain file, the way Git for
 #: Windows' default does, or `git init` on a filesystem without symlinks.
 #: `GIT_CONFIG_*` outranks every configuration file.
-SYMLINKS_OFF = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.symlinks",
+CONFIG_COUNT = "GIT_CONFIG_COUNT"
+CORE_SYMLINKS = "core.symlinks"
+SYMLINKS_OFF = {CONFIG_COUNT: "1", "GIT_CONFIG_KEY_0": CORE_SYMLINKS,
                 CONFIG_VALUE: "false"}
 SYMLINKS_ON = {**SYMLINKS_OFF, CONFIG_VALUE: "true"}
 
@@ -207,16 +213,33 @@ def symlink(link: Path, target: str) -> None:
         pytest.skip(f"this platform cannot create a symlink here: {exc}")
 
 
+def told_git(monkeypatch, value: str) -> None:
+    """`git` told `core.symlinks=<value>` through `GIT_CONFIG_*`, after
+    whatever entries the runner's job sets there (the Windows job sets two),
+    which stay as they were."""
+    held = int(os.environ.get(CONFIG_COUNT) or 0)
+    monkeypatch.setenv(CONFIG_COUNT, str(held + 1))
+    monkeypatch.setenv(f"GIT_CONFIG_KEY_{held}", CORE_SYMLINKS)
+    monkeypatch.setenv(f"GIT_CONFIG_VALUE_{held}", value)
+
+
+def links_as_files(monkeypatch) -> None:
+    """`git` told to check a symlink out as a plain file, after the runner's
+    own `GIT_CONFIG_*`, as Git for Windows' default does."""
+    told_git(monkeypatch, SYMLINKS_OFF[CONFIG_VALUE])
+
+
+def no_probe(_work_root):
+    """A stand-in for `_checks_out_symlinks` where no probe may be made."""
+    raise AssertionError("the probe was made")
+
+
 @pytest.fixture
 def links_as_links(monkeypatch):
-    """`git` told to check a symlink out AS a symlink, after whatever
-    `GIT_CONFIG_*` the runner's job sets (the Windows job sets two). `check`
-    follows a link AT a path the shape writes only where `git` does that,
-    and Git for Windows' own default is a plain file (B-OFF)."""
-    held = int(os.environ.get("GIT_CONFIG_COUNT") or 0)
-    monkeypatch.setenv("GIT_CONFIG_COUNT", str(held + 1))
-    monkeypatch.setenv(f"GIT_CONFIG_KEY_{held}", "core.symlinks")
-    monkeypatch.setenv(f"GIT_CONFIG_VALUE_{held}", "true")
+    """`git` told to check a symlink out AS a symlink. `check` follows a
+    link AT a path the shape writes only where `git` does that, and Git for
+    Windows' own default is a plain file (B-OFF)."""
+    told_git(monkeypatch, "true")
 
 
 @pytest.fixture(scope=MODULE)
@@ -948,7 +971,7 @@ def test_execute_refuses_a_link_it_would_check_out_as_a_file(
     for key, value in SYMLINKS_OFF.items():
         monkeypatch.setenv(key, value)
     refusal = refused_by(adopter, execute_args(tmp_path, plan))
-    assert refusal.code == "adopt-symlinks-off"
+    assert refusal.code == SYMLINKS_OFF_CODE
     work = (tmp_path / WORK).resolve()
     assert refusal.detail == (
         f"the plan keeps `.github` in the root, a symlink to `ci`, and "
@@ -974,7 +997,7 @@ def test_a_case_twin_checked_out_as_a_file_is_named_as_one(
     for key, value in SYMLINKS_OFF.items():
         monkeypatch.setenv(key, value)
     refusal = refused_by(adopter, execute_args(tmp_path, plan))
-    assert refusal.code == "adopt-symlinks-off"
+    assert refusal.code == SYMLINKS_OFF_CODE
     assert refusal.detail.startswith(
         f"the plan keeps `.GitHub` in the root, a symlink to `ci`, and "
         f"{ticked(WORKFLOW)}, a path the shape writes, runs through "
@@ -1021,10 +1044,7 @@ def test_an_adoption_with_no_link_beneath_a_shape_path_makes_no_probe(
         adopter, tmp_path, monkeypatch, files, links, legs):
     """An ordinary adoption runs exactly as before: nothing is made in the
     work directory to ask `git` a question this plan does not raise."""
-    def no_probe(_work_root):
-        raise AssertionError("the probe was made")
-
-    monkeypatch.setattr(adopter, "_checks_out_symlinks", no_probe)
+    monkeypatch.setattr(adopter, PROBE, no_probe)
     for key, value in SYMLINKS_OFF.items():
         monkeypatch.setenv(key, value)
     _, plan = planned(tmp_path, files, links, legs)
@@ -1044,7 +1064,7 @@ def test_an_adoption_with_no_link_beneath_a_shape_path_makes_no_probe(
 AT_A_FILE = [
     pytest.param({}, {CLAUDE: "/nonexistent-183/.claude/CLAUDE.md"},
                  {CLAUDE: ROOT}, id="absolute-and-nothing-there"),
-    pytest.param({}, {CLAUDE: "nowhere.md"}, {CLAUDE: ROOT},
+    pytest.param({}, {CLAUDE: NOWHERE_MD}, {CLAUDE: ROOT},
                  id="dangling"),
     pytest.param({"config/readme.md": "c\n"}, {ATTRIBUTES: CONFIG_ATTRS},
                  {CONFIG_DIR: ROOT, ATTRIBUTES: ROOT},
@@ -1066,8 +1086,7 @@ def test_with_symlinks_off_a_link_at_a_path_is_a_file_passed_by_both(
     shape writes beneath refuses it. A case twin is that file once case is
     ignored, and a second name where it is kept."""
     _, plan = planned(tmp_path, files, links, legs)
-    for key, value in SYMLINKS_OFF.items():
-        monkeypatch.setenv(key, value)
+    links_as_files(monkeypatch)
     passed_alike(adopter, tmp_path, plan)
     loaded = adopter.Plan.load(plan)
     work = tmp_path / WORK
@@ -1075,6 +1094,146 @@ def test_with_symlinks_off_a_link_at_a_path_is_a_file_passed_by_both(
     assert adopter._refuse_symlinks_checked_out_as_files(
         loaded, opened, work) is None
     assert list(work.iterdir()) == []
+
+
+def test_with_symlinks_off_a_link_above_a_path_is_still_followed(
+        tmp_path, monkeypatch):
+    """Only a link AT a path the shape writes is the file a checkout without
+    symlinks makes of it (`_a_file_here`). A link the shape writes BENEATH
+    is still followed by `check`, and its finding stands."""
+    _, plan = planned(tmp_path, {}, {GITHUB: OUTSIDE_CI}, {GITHUB: ROOT})
+    links_as_files(monkeypatch)
+    checked = check(plan)
+    assert checked.returncode == 1, checked.stderr + checked.stdout
+    assert symlink_findings(checked) == [
+        finding(GITHUB, OUTSIDE_CI, WORKFLOW, climbs(GITHUB))]
+
+
+def git_reads_symlinks_as(directory: Path) -> str:
+    """What `git config --type=bool --get core.symlinks` says in a
+    repository made in `directory`, as the probe asks it ("" for nothing)."""
+    repo = directory / "asked"
+    git("init", "-q", str(repo), cwd=directory)
+    said = subprocess.run(
+        ["git", "config", "--type=bool", "--get", CORE_SYMLINKS],
+        cwd=str(repo), capture_output=True, text=True, check=False)
+    shutil.rmtree(repo)
+    return said.stdout.strip()
+
+
+def test_each_command_asks_its_own_work_directory(adopter, tmp_path,
+                                                  monkeypatch):
+    """B-OFF asks the disk where the command makes its clone. A global
+    configuration that turns `core.symlinks` off only for repositories made
+    under one directory (`includeIf "gitdir:"`) is met by a work directory
+    there and by no other, both by `check`'s list and by `execute`'s own
+    refusal of a link the shape writes beneath."""
+    base = tmp_path.resolve()
+    off, on = base / "off", base / "on"
+    off.mkdir()
+    on.mkdir()
+    included = base / "links-as-files.gitconfig"
+    included.write_text("[core]\n\tsymlinks = false\n", encoding=UTF8)
+    config = base / "global.gitconfig"
+    config.write_text(f"[includeIf \"gitdir:{off.as_posix()}/\"]\n"
+                      f"\tpath = {included.as_posix()}\n", encoding=UTF8)
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    told = (git_reads_symlinks_as(off), git_reads_symlinks_as(on))
+    if told != (SYMLINKS_OFF[CONFIG_VALUE], ""):
+        pytest.skip(f"git here does not tell the two directories apart: "
+                    f"{told}, from this runner's own configuration")
+    _, at = planned(base / "at", {}, {CLAUDE: NOWHERE_MD}, {CLAUDE: ROOT})
+    loaded = adopter.Plan.load(at)
+    assert adopter._refuse_what_check_finds(
+        loaded, loaded.open_source(None, off)) is None
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter._refuse_what_check_finds(loaded, loaded.open_source(None, on))
+    assert caught.value.code == ROOT_SYMLINK
+    _, above = github_to_ci(base / "above")
+    loaded = adopter.Plan.load(above)
+    opened = loaded.open_source(None, base / READ)
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter._refuse_symlinks_checked_out_as_files(loaded, opened, off)
+    assert caught.value.code == SYMLINKS_OFF_CODE
+    assert adopter._refuse_symlinks_checked_out_as_files(
+        loaded, opened, on) is None
+
+
+def test_with_no_work_directory_a_symlink_is_taken_as_one(adopter,
+                                                          monkeypatch):
+    """A `Source` that no command opened has no work directory to ask: no
+    probe is made, and `git` is taken to check a symlink out as one."""
+    monkeypatch.setattr(adopter, PROBE, no_probe)
+    assert adopter._SymlinkProbe(None).symlinks() is True
+
+
+def test_the_probe_is_made_once_however_many_walks_ask(adopter, tmp_path,
+                                                       monkeypatch):
+    """The answer is kept: two links AT paths the shape writes that a walk
+    cannot follow, each met by the walk that keeps case and the one that
+    folds it, make one probe."""
+    asked = []
+
+    def probe(work_root):
+        asked.append(work_root)
+        return False
+
+    monkeypatch.setattr(adopter, PROBE, probe)
+    _, plan = planned(tmp_path, {},
+                      {CLAUDE: NOWHERE_MD, AGENTS: "nowhere-agents.md"},
+                      {CLAUDE: ROOT, AGENTS: ROOT})
+    loaded = adopter.Plan.load(plan)
+    work = tmp_path / WORK
+    work.mkdir()
+    assert adopter._refuse_what_check_finds(
+        loaded, loaded.open_source(None, work)) is None
+    assert len(asked) == 1
+
+
+def cannot_write_in(directory: Path) -> bool:
+    try:
+        (directory / "made").mkdir()
+    except PermissionError:
+        return True
+    (directory / "made").rmdir()
+    return False
+
+
+@pytest.fixture
+def unwritable_work(tmp_path):
+    """A work directory this user cannot write in, or a skip where `chmod`
+    cannot make one so (root, Windows)."""
+    work = tmp_path / WORK
+    work.mkdir()
+    work.chmod(0o500)
+    if not cannot_write_in(work):
+        work.chmod(0o700)
+        pytest.skip("chmod cannot keep this user from writing a directory")
+    yield work
+    work.chmod(0o700)
+
+
+def test_a_work_directory_no_probe_can_be_made_in_reports_as_before(
+        adopter, tmp_path, unwritable_work):
+    """J4 of #183's re-verify: where this user cannot write the work
+    directory, no repository can be made there to ask `git`, and a symlink
+    is taken to be checked out as one, as before B-OFF asked. `check`
+    prints its finding for a link AT a path that the walk cannot follow, and
+    `execute`'s list of `check`'s findings refuses with it, where both ended
+    in a PermissionError traceback."""
+    _, plan = planned(tmp_path, {}, {CLAUDE: NOWHERE_MD}, {CLAUDE: ROOT})
+    line = finding(CLAUDE, NOWHERE_MD, CLAUDE,
+                   leads(CLAUDE, NOWHERE_MD, NOT_IN_THE_TREE))
+    checked = check(plan, WORK_FLAG, str(unwritable_work))
+    assert "Traceback" not in checked.stderr, checked.stderr
+    assert checked.returncode == 1, checked.stderr + checked.stdout
+    assert symlink_findings(checked) == [line]
+    loaded = adopter.Plan.load(plan)
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter._refuse_what_check_finds(
+            loaded, loaded.open_source(None, unwritable_work))
+    assert caught.value.code == ROOT_SYMLINK
+    assert f"  {line}" in caught.value.detail.splitlines()
 
 
 # ---------------------------------------------------------------------------
