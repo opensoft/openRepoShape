@@ -391,9 +391,9 @@ options:
                         the shape writes into the root (`project.yaml` is one,
                         and `contracts` holds several), or that is at or under
                         `shape/`, whatever the case. The defaults `spec` and
-                        `code` pass. A refusal writes no plan and rewrites
-                        nothing, and its `Remediation:` line states the whole
-                        rule; you pass the value again.
+                        `code` pass. Either refusal writes no plan and
+                        rewrites nothing, and its `Remediation:` line states
+                        the whole rule; you pass the value again.
   --code-path CODE_PATH
                         where the code leg is mounted, as a path in the
                         assembly root (default: code); the plan records it as
@@ -411,9 +411,9 @@ options:
                         the shape writes into the root (`project.yaml` is one,
                         and `contracts` holds several), or that is at or under
                         `shape/`, whatever the case. The defaults `spec` and
-                        `code` pass. A refusal writes no plan and rewrites
-                        nothing, and its `Remediation:` line states the whole
-                        rule; you pass the value again.
+                        `code` pass. Either refusal writes no plan and
+                        rewrites nothing, and its `Remediation:` line states
+                        the whole rule; you pass the value again.
   --pin PIN             a neutral product this project declares a pin on — a
                         NAME only, e.g. --pin openGlass or --pin
                         opensoft/openGlass to name the owner explicitly.

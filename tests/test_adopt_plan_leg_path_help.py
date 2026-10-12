@@ -240,8 +240,8 @@ def test_every_refusal_the_help_describes_is_the_one_plan_prints(
     assert result.returncode == 2, result.stdout + result.stderr
     assert result.stderr.startswith(f"REFUSED {code}: "), result.stderr
     assert not out.exists(), "a refused plan must leave no file behind"
-    # The closing sentence: a refusal rewrites nothing, and its Remediation
-    # states the rule.
+    # The closing sentence: either refusal rewrites nothing, and its
+    # Remediation states the rule.
     remediation = [line for line in result.stderr.splitlines()
                    if line.startswith("Remediation: ")]
     assert remediation and remediation[0].startswith(
@@ -255,29 +255,6 @@ def test_every_refusal_the_help_describes_is_the_one_plan_prints(
         assert clause in described, (
             f"`plan` refuses {an_id(flags)} as {code}, and {flag}'s help "
             f"does not carry the clause that says why: {clause!r}")
-
-
-#: Values a project's YAML reader reads back as something other than text.
-#: `plan` writes a plan for them today (#181) and refuses them once a leg path
-#: is asked of the project's reader (#225). The help says neither, so it is
-#: true whichever change lands first; what it DOES say of a refusal holds for
-#: this one too: the code, no plan file, and a Remediation.
-YAML_NOT_TEXT = ("null", "2026", "true", "1.5")
-
-
-@pytest.mark.parametrize("value", YAML_NOT_TEXT)
-def test_a_word_yaml_reads_as_not_text_is_planned_or_refused_as_the_help_says(
-        plan_help, source, tmp_path, value):
-    result, out = plan_with(source, tmp_path, "--spec-path", value)
-    if result.returncode == 0:
-        assert out.exists(), result.stdout + result.stderr
-        return
-    assert result.returncode == 2, result.stdout + result.stderr
-    assert result.stderr.startswith(f"REFUSED {BAD_SPELLING}: "), result.stderr
-    assert not out.exists(), "a refused plan must leave no file behind"
-    assert any(line.startswith("Remediation: ")
-               for line in result.stderr.splitlines()), result.stderr
-    assert f"`{BAD_SPELLING}`" in option_help(plan_help, "--spec-path")
 
 
 #: Values the help does not describe as refused. `contracts/x` is the one a

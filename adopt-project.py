@@ -4885,12 +4885,12 @@ def _leg_path_help(leg: str, default: str) -> str:
 
     THE LIST NEVER SAYS "ONLY". Each clause is a value `plan` refuses, and
     each refusal prints the whole rule under `Remediation:`, where the closing
-    sentence sends the reader. A clause added later, such as a leg path the
-    project's YAML reader would read back as something other than text
-    (`null`, `2026`: #225), then makes this text incomplete and not false,
-    whichever change lands first. For the same reason it says nothing of what
-    `plan` ACCEPTS: it takes some values and does not mount them where they
-    were given (`null` is mounted at the default, #181).
+    sentence sends the reader. A value the project's YAML reader would read
+    back as something other than text (`null`, `2026`: #225) is in none of
+    them: `plan` writes a plan for it, or refuses it under a clause or a code
+    another change adds, and this text is true either way. So it says nothing
+    of what `plan` ACCEPTS, because `plan` takes some values and does not
+    mount them where they were given (`null` is mounted at the default, #181).
     """
     return (
         f"where the {leg} leg is mounted, as a path in the assembly root "
@@ -4907,7 +4907,7 @@ def _leg_path_help(leg: str, default: str) -> str:
         "inside a FILE the shape writes into the root (`project.yaml` is "
         "one, and `contracts` holds several), or that is at or under "
         "`shape/`, whatever the case. The defaults `spec` and `code` pass. "
-        "A refusal writes no plan and rewrites nothing, and its "
+        "Either refusal writes no plan and rewrites nothing, and its "
         "`Remediation:` line states the whole rule; you pass the value "
         "again.")
 
