@@ -489,6 +489,21 @@ def assert_no_traceback(result) -> None:
         assert "Traceback" not in output, output
 
 
+#: What `execute`'s refusal says of a plan `check` rejects, made before any
+#: leg exists, and the first words of the notice #445 prints after a failure
+#: once one does.
+NO_LEG_MADE = "no leg repository was created and nothing was pushed"
+LATE_NOTICE = "NOTHING has been rolled back"
+
+
+def assert_refused_before_any_leg(result) -> None:
+    """The refusal is `_refuse_what_check_finds`', made before any leg
+    exists: it says no leg was made, and no notice of what the run left
+    follows it, as one does a failure once a leg exists (#445)."""
+    assert NO_LEG_MADE in result.stderr, result.stderr
+    assert LATE_NOTICE not in result.stderr, result.stderr
+
+
 def findings_of(result) -> list[str]:
     return [line for line in result.stderr.splitlines()
             if line.startswith("FINDING ")]
@@ -879,6 +894,7 @@ def test_a_follow_ups_that_is_not_a_list_creates_no_leg_and_the_corrected_plan_r
     assert refused.returncode == 2, refused.stderr + refused.stdout
     assert f"REFUSED {BAD_FOLLOW_UPS_CODE}: " in refused.stderr
     assert_no_traceback(refused)
+    assert_refused_before_any_leg(refused)
     assert "creating the leg repositories" not in refused.stdout
     assert not remotes.exists(), "not even the directory the legs go in"
     assert source_branches(world.source) == ["main"]
@@ -905,6 +921,7 @@ def test_an_elected_on_it_cannot_read_creates_no_leg_and_the_corrected_plan_runs
     assert refused.returncode == 2, refused.stderr + refused.stdout
     assert f"REFUSED {DATE_CODE}: " in refused.stderr
     assert_no_traceback(refused)
+    assert_refused_before_any_leg(refused)
     assert DATE_FLAG not in refused.stderr
     assert "creating the leg repositories" not in refused.stdout
     assert not remotes.exists(), "not even the directory the legs go in"
