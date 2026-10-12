@@ -1555,12 +1555,55 @@ def branch_exists(root: Path, branch: str) -> bool:
 
 def tracking_branch_of(manifest: dict | None) -> str:
     """This root's tracking branch, out of an already-loaded manifest — the
-    same field `open_pull_request` lands its pull request on. `--branch` may
-    never commit onto it directly: these organisations are pull-request only,
-    and a commit whose only next step is a push to the default branch is not
-    one this tool will make.
+    same field `open_pull_request` lands its pull request on, and the one
+    base `next_line` prints in the `gh pr create` it hands a human (#209).
+    `--branch` may never commit onto it directly: these organisations are
+    pull-request only, and a commit whose only next step is a push to the
+    default branch is not one this tool will make.
+
+    `main` where the manifest records none: the default `bootstrap.py`,
+    `bump-leg.py` and `family.py` read the field with. The remote's own HEAD
+    is never asked: `apply` is otherwise offline, and a base taken from the
+    network could disagree with the one the `--branch` refusal and `--pr`
+    read from the manifest.
     """
     return str((manifest or {}).get("tracking_branch") or "main")
+
+
+def pull_request_repository(manifest: dict | None,
+                            kind: Kind = PROJECT_KIND) -> tuple[str, str]:
+    """`(repository, why_none)`: the repository a shape update's pull request
+    is opened against, out of an already-loaded manifest, and what to say
+    where it names none (#209). One of the two values `open_pull_request`
+    and `next_line` both have to agree on, beside `tracking_branch_of`: they
+    used to settle them separately, and the printed line said `main` and
+    `<org>/<Project>` whatever the manifest recorded.
+
+    A project's is its ASSEMBLY leg's `repository:`. A family declares its
+    own, having no legs to read one from, being a holder rather than a
+    project: its `repository:`, or its `org:` and `name:` joined where there
+    is no `repository:`. An empty answer is the caller's to act on:
+    `open_pull_request` refuses with `why_none`, since there is nothing to
+    open a pull request against, and `next_line` keeps the placeholder it
+    always printed, since it runs after the commit and a manifest that names
+    no repository is no reason to take that back.
+    """
+    manifest = manifest or {}
+    if kind is FAMILY_KIND:
+        # A family declares its own repository: it has no legs to read one
+        # from, being a holder rather than a project.
+        repository = str(manifest.get("repository") or "")
+        if not repository and manifest.get("org") and manifest.get("name"):
+            repository = f"{manifest['org']}/{manifest['name']}"
+        return repository, (
+            f"{kind.manifest} declares neither `repository:` nor an "
+            "`org:`/`name:` pair, so there is no repository to open a "
+            "pull request against")
+    legs = [leg for leg in manifest.get("legs") or []
+            if isinstance(leg, dict) and leg.get("role") == "assembly"]
+    return (str(legs[0].get("repository") or "") if legs else ""), (
+        "project.yaml declares no assembly leg, so there is no "
+        "repository to open a pull request against")
 
 
 def commit_on_branch(root: Path, branch: str, paths: list[str], target: str,
@@ -2361,7 +2404,7 @@ def cmd_apply(args) -> int:
         _land(root, args, paths, added, target, upstream, kind, len(copied),
               ledger)
         print()
-        next_line(root, args, paths, target, added)
+        next_line(root, args, paths, target, added, kind)
         return 0
     except (Refusal, CommandFailed) as exc:
         return _rolled_back(exc, ledger)
@@ -2407,22 +2450,7 @@ def open_pull_request(root: Path, branch: str, target: str,
                       upstream: Upstream, kind: Kind = PROJECT_KIND) -> None:
     manifest = load_yaml(root / kind.manifest)
     base = tracking_branch_of(manifest)
-    if kind is FAMILY_KIND:
-        # A family declares its own repository: it has no legs to read one
-        # from, being a holder rather than a project.
-        repository = str((manifest or {}).get("repository") or "")
-        if not repository and (manifest or {}).get("org") and \
-                (manifest or {}).get("name"):
-            repository = f"{manifest['org']}/{manifest['name']}"
-        missing = (f"{kind.manifest} declares neither `repository:` nor an "
-                   "`org:`/`name:` pair, so there is no repository to open a "
-                   "pull request against")
-    else:
-        legs = [leg for leg in (manifest or {}).get("legs") or []
-                if isinstance(leg, dict) and leg.get("role") == "assembly"]
-        repository = str(legs[0].get("repository")) if legs else ""
-        missing = ("project.yaml declares no assembly leg, so there is no "
-                   "repository to open a pull request against")
+    repository, missing = pull_request_repository(manifest, kind)
     if not repository:
         raise Refusal("update-pr-no-repository", missing)
     url = run(["gh", "pr", "create", "--repo", repository, "--base", base,
@@ -2439,17 +2467,31 @@ def open_pull_request(root: Path, branch: str, target: str,
 
 
 def next_line(root: Path, args, paths: list[str], target: str,
-              added: list[str] = ()) -> None:
+              added: list[str] = (), kind: Kind = PROJECT_KIND) -> None:
     if args.branch and args.pr:
         print("NEXT  the pull request is open; ask a human to review and merge it")
         return
-    if args.branch and args.push:
-        print(f"NEXT  gh pr create --repo <org>/<Project> --base main --head "
-              f"{args.branch}")
-        return
     if args.branch:
-        print(f"NEXT  git -C {root} push -u origin {args.branch} && gh pr "
-              f"create --base main --head {args.branch}")
+        # The base and the repository the pull request `--pr` would have
+        # opened lands on, read the way `open_pull_request` reads them (#209).
+        manifest = load_yaml(root / kind.manifest)
+        base = shlex.quote(tracking_branch_of(manifest))
+        repository, _ = pull_request_repository(manifest, kind)
+        # `--repo` in BOTH forms: the bare one's `gh` runs wherever the line
+        # is pasted, and `check`'s own NEXT line sends a human to paste from
+        # the openRepoShape checkout, whose `origin` is not this project's.
+        # Where the manifest names no repository, `--push` keeps the
+        # placeholder it always printed and the bare form leaves `--repo` off.
+        if repository:
+            where = f" --repo {shlex.quote(repository)}"
+        else:
+            where = " --repo <org>/<Project>" if args.push else ""
+        create = f"gh pr create{where} --base {base} --head {args.branch}"
+        if args.push:
+            print(f"NEXT  {create}")
+        else:
+            print(f"NEXT  git -C {root} push -u origin {args.branch} && "
+                  f"{create}")
         return
     # A `git add` for the ADDITIONS only. A hint that a human pastes has to
     # work when they paste it, and `git commit -- <path>` refuses a path git

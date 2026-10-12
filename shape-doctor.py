@@ -81,6 +81,19 @@ is NEITHER gets `naming` (what it is called, under the policy), `what is
 here`, `the way in` -- `adopt-project.py plan` for a repository that already
 exists, `setup.sh` for a new one -- and `machine`.
 
+A MANIFEST THAT IS THERE AND DOES NOT LOAD IS NOT AN ABSENT ONE (#205). A
+`project.yaml` with a merge conflict left in it, a tab, a construct the
+reader refuses or a byte that is not UTF-8 used to read as no manifest at
+all: an assembly root with both legs mounted was NOT A SHAPE ROOT, exit 2,
+told to `adopt-project.py plan` itself and called "a single repository". Now
+the FILENAME names the kind where `kind:` cannot be read, the `manifest` row
+(`family` in a holder) is a FINDING quoting `load_yaml`'s own refusal with
+the project's own validator as its next command, every row that reads what
+the manifest declares says `n/a` and waits on that row, and the verdict is
+`INVALID (manifest)` -- `(family)` in a holder -- exit 1. A file that loads
+and declares its kind still decides first, so no root that declared one
+reads differently.
+
 AND ONE MORE ROW, `Triad`, WHERE THE RULE SAYS SO. Brett Heap, 2026-10-06:
 "ratify 1249 as recommended" (openxFactory `prefer-triad-project-shape`):
 the Triad -- this shape, an assembly root with a spec leg and a code leg --
@@ -181,8 +194,9 @@ invents a rule to fail somebody by is not believed the next time.
 EXIT CODES
     0  COMPLIANT: every row ok and the shape is current
     1  findings: the shape is behind, a copy has drifted, a validator is red,
-       a leg is off its pin, or a tracked path sits in a leg the path policy
-       puts elsewhere -- COMPLIANT SHAPE BEHIND, DRIFTED, MISPLACED, INVALID
+       a leg is off its pin, a manifest is there and does not load, or a
+       tracked path sits in a leg the path policy puts elsewhere --
+       COMPLIANT SHAPE BEHIND, DRIFTED, MISPLACED, INVALID
     2  NOT A SHAPE ROOT: neither `project.yaml` nor `family.yaml` is there
     3  usage or environment -- nothing here is a statement about the tree
        that was pointed at: no such root, this file is not sitting in a
@@ -707,28 +721,81 @@ MANIFEST_VALIDATORS: dict[str, ManifestKind] = {
 
 
 class Context:
-    """The root, what it is, and the few things every check would recompute."""
+    """The root, what it is, and the few things every check would recompute.
+
+    `manifest_refusal` IS SET FOR ONE KIND OF ROOT ONLY (#205): a project or a
+    family whose manifest is THERE and does not load. Its kind is then the
+    one its filename says, `manifest` is None, and the refusal `load_yaml`
+    gave is kept whole for the row that owns the file to quote.
+    """
 
     def __init__(self, root: Path):
         self.root = root
         self.shape = SHAPE_ROOT
         self.manifest_path: Path | None = None
         self.manifest: dict | None = None
+        self.manifest_refusal: Refusal | None = None
         self.kind = NOT_A_ROOT
         self._update_shape = None
         self._adopt = None
         project = root / PROJECT_MANIFEST
         family = root / FAMILY_MANIFEST
+        # Each manifest that is there, read ONCE: what it holds, or why
+        # `load_yaml` would not hand it over.
+        loaded = {path: self._load(path) for path in (project, family)
+                  if path.is_file()}
+
+        def declares(path: Path, kind: str) -> bool:
+            data = loaded.get(path, (None, None))[0]
+            return isinstance(data, dict) and data.get("kind") == kind
+
         # `kind:` DECIDES, not the filename. A `project.yaml` that declares
         # something else is not a project manifest, and reading the name alone
         # would let a file called the right thing assert whatever it liked.
-        if project.is_file() and self._declares(project, "project-manifest"):
+        if declares(project, "project-manifest"):
             self.kind, self.manifest_path = PROJECT, project
-        elif family.is_file() and self._declares(family, "family-manifest"):
+        elif declares(family, "family-manifest"):
             self.kind, self.manifest_path = FAMILY, family
-        if self.manifest_path is not None:
-            data = self._read(self.manifest_path)
+        else:
+            # AND WHERE `kind:` CANNOT BE READ AT ALL, THE FILENAME DOES
+            # (#205). A manifest that is there and does not load -- a merge
+            # conflict left in it, a tab, a construct this reader refuses, a
+            # byte that is not UTF-8 (#192) -- used to read as NO manifest,
+            # so an assembly root with both legs mounted was NOT A SHAPE
+            # ROOT, exit 2, offered `adopt-project.py plan`: an act that cuts
+            # two new legs out of a repository that already has them, two
+            # rows above a Triad row calling it "a single repository". A file
+            # that is there is not a file that is absent. The root is the
+            # kind its filename names, it has no manifest to read, and the
+            # refusal is kept for the `manifest` (or `family`) row to quote.
+            # A file that loads and DECLARES its kind still outranks one that
+            # cannot be read, which is why this is the `else`: a holder with
+            # a broken stray `project.yaml` beside a good `family.yaml` is
+            # the holder its `family.yaml` says it is.
+            for path, kind in ((project, PROJECT), (family, FAMILY)):
+                refusal = loaded.get(path, (None, None))[1]
+                if refusal is not None:
+                    self.kind, self.manifest_path = kind, path
+                    self.manifest_refusal = refusal
+                    break
+        if self.manifest_refusal is None and self.manifest_path is not None:
+            data = loaded[self.manifest_path][0]
             self.manifest = data if isinstance(data, dict) else None
+
+    @staticmethod
+    def _load(path: Path) -> tuple:
+        """`(what the file holds, None)`, or `(None, the refusal)`.
+
+        `load_yaml` already turns every way a file can fail to become data
+        into a `Refusal` -- not openable and not UTF-8 as `yaml-unreadable`
+        (#193), not this reader's YAML as `yaml-unparsable` -- so the refusal
+        IS the answer for a file that is there, and the caller decides
+        whether it matters. For the root's own manifest it does (#205).
+        """
+        try:
+            return load_yaml(path), None
+        except Refusal as exc:
+            return None, exc
 
     @staticmethod
     def _read(path: Path):
@@ -736,10 +803,6 @@ class Context:
             return load_yaml(path)
         except (Refusal, OSError, UnicodeDecodeError):
             return None
-
-    def _declares(self, path: Path, kind: str) -> bool:
-        data = self._read(path)
-        return isinstance(data, dict) and data.get("kind") == kind
 
     def legs(self) -> list[dict]:
         """The non-assembly legs `project.yaml` declares, in its own order."""
@@ -847,6 +910,21 @@ def run_validator(ctx: Context, script: Path, args: list[str]) -> tuple:
     return proc.returncode, quoted[:200], whole
 
 
+def validator_for(ctx: Context, own: str, template: str) -> tuple:
+    """`(the validator a row runs, how the row names it)`: the root's own
+    copy when it has one, else the standard's template copy.
+
+    One choice, made in one place, because two rows make it: `validator_row`
+    runs what this picks, and `unloaded_manifest_row` names it as the next
+    command (#205). A root told to run one copy by one row and another by the
+    next would be told two different things about one gate.
+    """
+    own_path = ctx.root / own
+    if own_path.is_file():
+        return own_path, f"the project's own {own}"
+    return ctx.shape / template, f"the standard's {template}"
+
+
 def validator_row(ctx: Context, check_id: str, label: str, own: str,
                   template: str, args: list[str]) -> Row:
     """One row for a validator that the ROOT may carry its own copy of.
@@ -859,8 +937,7 @@ def validator_row(ctx: Context, check_id: str, label: str, own: str,
     had one, and the row names which of the two answered.
     """
     own_path = ctx.root / own
-    used, which = (own_path, f"the project's own {own}") if own_path.is_file() \
-        else (ctx.shape / template, f"the standard's {template}")
+    used, which = validator_for(ctx, own, template)
     if not used.is_file():
         return Row(check_id, label, FINDING,
                    f"neither {own} nor {template} is readable, so the "
@@ -888,6 +965,108 @@ def validator_row(ctx: Context, check_id: str, label: str, own: str,
                "full; it names what it refused", detail)
 
 
+#: The row that OWNS each kind's manifest, by id: the one that quotes its
+#: refusal when it does not load, and the one every row that reads it waits
+#: on (#205).
+MANIFEST_ROW = {PROJECT: "manifest", FAMILY: "family"}
+
+
+def refusal_line(refusal: Refusal) -> str:
+    """`REFUSED <code>: <detail>`: a refusal's own `str()`, less its remedy.
+
+    `Refusal.__str__` is the one place that line is spelled, and the one
+    the project's own validators print it from, so the row quotes it from
+    there rather than spelling it a second time (#205, review N2). It is
+    `str(refusal)` with the `\\n<remediation>` trailer taken OFF THE END, not
+    the text up to its first newline: `detail` opens with the path the
+    loader was given, and a root whose directory name holds a newline would
+    be cut after its first line and quoted short -- a different report from
+    the one this row has always printed, with no error to say so.
+    """
+    return str(refusal).removesuffix("\n" + refusal.remediation)
+
+
+def unloaded_manifest_row(ctx: Context, check_id: str, label: str, own: str,
+                          template: str) -> Row:
+    """The `manifest` (or `family`) row for a manifest that is THERE and does
+    not load (#205): a FINDING, the loader's refusal, and the gate to re-run.
+
+    THE LOADER'S OWN WORDS, WHOLE. `REFUSED <code>: <detail>` is what
+    `load_yaml` raised when `Context` read the file, and it is the line the
+    project's own validator prints about the same file, because it reads it
+    through the same function -- so the row and the gate say one thing in one
+    spelling, and nothing here parses YAML a second way. Quoted from the
+    refusal itself rather than from the validator's output, because a quoted
+    validator line is cut at 200 characters and this one ends with the line
+    number, after a path of any length.
+
+    NOT THE REFUSAL'S REMEDIATION. `yaml-unparsable` carries `repo_shape`'s
+    default one, which is about submodules and the lockstep invariant: it
+    would send a person resolving a merge conflict to `git submodule update`.
+
+    THE NEXT COMMAND IS THE GATE THAT OWNS THE FILE, picked by
+    `validator_for` exactly as the row would have run it, AND IT NAMES THE
+    FILE, because the file is the fix: it refuses the same way until the file
+    loads, and says so the moment it does. What the file should say at that
+    line -- which side of a merge conflict, what a hand edit meant -- is a
+    person's decision, and the line says that too. Never `adopt-project.py
+    plan`, which is what this root was offered while the refusal was read as
+    "no manifest".
+    """
+    refusal = ctx.manifest_refusal
+    name = ctx.manifest_path.name
+    used, _which = validator_for(ctx, own, template)
+    reason = f"{name} does not load: {refusal_line(refusal)}"
+    detail = {"validator": used.as_posix(),
+              "own_copy": (ctx.root / own).is_file(), "manifest": name,
+              "refusal": {"code": refusal.code, "detail": refusal.detail}}
+    if not used.is_file():
+        # Neither copy to name: `validator_row` already says so, for any
+        # root, and its next command is the one this row then needs.
+        missing = validator_row(ctx, check_id, label, own, template,
+                                ["--root", str(ctx.root)])
+        return Row(check_id, label, FINDING, f"{reason}; {missing.reason}",
+                   missing.next_command, {**missing.detail, **detail})
+    return Row(check_id, label, FINDING, reason,
+               f"{PYTHON} {quote_arg(used)} --root {quote_arg(ctx.root)}   "
+               f"# the file to fix is {quote_arg(ctx.manifest_path)}, where "
+               "the line above says; this refuses it the same way until it "
+               "loads. What it should say there -- a merge conflict "
+               "resolved, a hand edit put right -- is the person's call",
+               detail)
+
+
+def waiting_row(ctx: Context, check_id: str, label: str, needs: str,
+                detail: dict | None = None) -> Row | None:
+    """The `n/a` a row that READS the manifest gives while it does not load
+    (#205), or None when it loads and the row has its question.
+
+    ONE FAULT, ONE FINDING. Each of these rows asks its question of what the
+    manifest DECLARES -- the leg names, the legs, the members -- and the
+    project's `validate-pins.py` reads `project.yaml` before it checks a
+    single pin. With the manifest unloadable none of them has a question, and
+    each used to answer one it made up: "project.yaml declares no
+    non-assembly leg", "a family with none is empty, not wrong" (an `ok`, on
+    a holder whose every member was unknown), or the loader's refusal again
+    under a next command whose output sends a person to `git submodule
+    update`. So they say that they wait, and on which row; that row quotes
+    the refusal and names the fix, and the verdict is `INVALID` naming it.
+
+    `n/a` RATHER THAN A FINDING because the question cannot be asked here,
+    which is what `n/a` means in this file; the verdict loses nothing by it,
+    since the row these wait on is a FINDING whenever this is said. And
+    `waits_on` is in `detail`, so a caller acting on `--json` reads which row
+    to act on rather than parsing the sentence.
+    """
+    if ctx.manifest_refusal is None:
+        return None
+    owner = MANIFEST_ROW[ctx.kind]
+    return Row(check_id, label, NA,
+               f"{ctx.manifest_path.name} does not load, so {needs}; the "
+               f"`{owner}` row quotes why and names the fix", None,
+               {**(detail or {}), "waits_on": owner})
+
+
 # ---------------------------------------------------------------------------
 # The checks
 # ---------------------------------------------------------------------------
@@ -900,7 +1079,14 @@ def check_naming(ctx: Context) -> Row:
     "is this compliant with openRepoShape", and openRepoShape is the checkout
     this file is in. A project whose copied policy is older is exactly the
     thing the shape-currency row is for, and it says so there.
+
+    The names are READ OUT OF `project.yaml`, so a manifest that does not
+    load leaves none to classify: `waiting_row` (#205).
     """
+    waiting = waiting_row(ctx, "naming", "naming",
+                          "there are no leg names to classify")
+    if waiting is not None:
+        return waiting
     script = ctx.shape / "scripts" / "validate-repository-naming.py"
     code, quoted, _ = run_validator(
         ctx, script,
@@ -919,13 +1105,24 @@ def check_naming(ctx: Context) -> Row:
 
 
 def check_manifest(ctx: Context) -> Row:
-    return validator_row(
-        ctx, "manifest", "manifest", "scripts/validate-manifest.py",
-        "templates/assembly-root/scripts/validate-manifest.py",
-        ["--root", str(ctx.root)])
+    own = "scripts/validate-manifest.py"
+    template = "templates/assembly-root/scripts/validate-manifest.py"
+    if ctx.manifest_refusal is not None:
+        return unloaded_manifest_row(ctx, "manifest", "manifest", own,
+                                     template)
+    return validator_row(ctx, "manifest", "manifest", own, template,
+                         ["--root", str(ctx.root)])
 
 
 def check_pins(ctx: Context) -> Row:
+    # `validate-pins.py` reads `project.yaml` FIRST -- the legs it checks are
+    # the ones declared there -- and refuses before any pin when it does not
+    # load, so with the manifest unloadable this row has no question (#205).
+    waiting = waiting_row(ctx, "pins", "pins",
+                          "validate-pins.py, which reads it before it checks "
+                          "a single pin, has nothing to check yet")
+    if waiting is not None:
+        return waiting
     return validator_row(
         ctx, "pins", "pins", "scripts/validate-pins.py",
         "templates/assembly-root/scripts/validate-pins.py",
@@ -933,10 +1130,12 @@ def check_pins(ctx: Context) -> Row:
 
 
 def check_family(ctx: Context) -> Row:
-    return validator_row(
-        ctx, "family", "family", "scripts/validate-family.py",
-        "templates/family-root/scripts/validate-family.py",
-        ["--root", str(ctx.root)])
+    own = "scripts/validate-family.py"
+    template = "templates/family-root/scripts/validate-family.py"
+    if ctx.manifest_refusal is not None:
+        return unloaded_manifest_row(ctx, "family", "family", own, template)
+    return validator_row(ctx, "family", "family", own, template,
+                         ["--root", str(ctx.root)])
 
 
 def manifest_candidates(root: Path) -> list[Path]:
@@ -960,6 +1159,124 @@ def manifest_candidates(root: Path) -> list[Path]:
 LABEL_MANIFEST_KINDS = "manifest kinds"
 
 
+def gitlinks_under(root: Path, directory: str) -> list[str]:
+    """Every gitlink the index records under `directory/`, at stage 0.
+
+    THE INDEX, the listing `recorded_gitlink` asks first, and `-z` so a name
+    git would otherwise quote comes back as itself. A conflicted path is
+    skipped here for the reason that helper skips it: stages 1, 2 and 3 are
+    nobody's next commit. A `directory` that is empty, absolute -- in
+    either platform's spelling -- or climbs with `..` lists nothing, rather
+    than every gitlink in the root -- the two legs included -- under a
+    members directory that is not one.
+    """
+    clean = directory.strip().rstrip("/")
+    if (not clean or clean.startswith(("/", "\\"))
+            or re.match(r"[A-Za-z]:[\\/]", clean)
+            or any(part in ("", ".", "..") for part in clean.split("/"))):
+        return []
+    try:
+        listing = git_out(["ls-files", "-s", "-z", "--", clean], cwd=root)
+    except (Refusal, OSError, ValueError):
+        return []
+    found = []
+    for record in listing.split("\0"):
+        meta, _, name = record.partition("\t")
+        fields = meta.split()
+        if (len(fields) == 3 and fields[0] == GITLINK_MODE
+                and fields[2] == "0" and name.startswith(clean + "/")):
+            found.append(name)
+    return found
+
+
+def family_beside_project(ctx: Context, data: dict) -> tuple[str, dict]:
+    """A `family.yaml` an ASSEMBLY ROOT carries: the sentence, and the facts.
+
+    #211. `Context` reads ONE manifest per root and `project.yaml` wins, so
+    a `family.yaml` committed beside it -- hand-copied or mis-merged; no tool
+    here writes both -- was listed by `check_manifest_kinds` as a manifest
+    whose kind "has a registered validator". It has one, `validate-family.py`,
+    and NOTHING RUNS IT HERE: the `family` check applies to a holder, and an
+    assembly root's own gate is `validate-manifest.py` and `validate-pins.py`.
+    A family holder is not a project -- no `project.yaml`, no legs (README,
+    "Families") -- so a root declaring both is a manifest travelling with no
+    gate behind it, which is the very case this row exists to report. That
+    is why it is a FINDING even when every member below is in lockstep.
+
+    AND THE MEMBERS ARE ASKED WHAT THE FAMILY'S OWN TWO GATES ASK, with
+    their helper rather than a second reader. Each row it pins is looked up
+    with `recorded_gitlink` -- the function `validate-family.py` refuses a
+    row by (`member-gitlink-absent`, `member-gitlink-mismatch`) -- and each
+    gitlink under the members directory that no row names is the state
+    `family.py add` refuses to mount over (`member-path-taken`). That gate
+    stops at the first absent gitlink; this names every one, because a
+    reader told about IRRS and not IRSS fixes one and runs it again.
+
+    Rows and paths default exactly as `member_state` defaults them, so this
+    and the holder's `members` row cannot disagree about where a member is.
+    """
+    members = data.get("members")
+    rows = ([row for row in members if isinstance(row, dict)]
+            if isinstance(members, list) else [])
+    members_dir = str(data.get("members_dir") or "members")
+    entries: list[dict] = []
+    problems: list[str] = []
+    for row in rows:
+        project = str(row.get("project") or "?")
+        rel = str(row.get("path") or f"{members_dir}/{project}")
+        pin = row.get("pin") if isinstance(row.get("pin"), dict) else {}
+        pinned = str(pin.get("commit") or "").lower()
+        pinned = pinned if COMMIT_RE.match(pinned) else None
+        try:
+            gitlink = recorded_gitlink(ctx.root, rel)
+        except (OSError, ValueError):
+            gitlink = None
+        if gitlink is None:
+            state = "no-gitlink"
+            problems.append(f"{rel} has no gitlink (mode {GITLINK_MODE})")
+        elif pinned is None:
+            state = "no-pin"
+            problems.append(f"{project}'s row carries no 40-hex "
+                            "`pin.commit` to compare against")
+        elif gitlink != pinned:
+            state = "off-pin"
+            problems.append(f"{rel} records gitlink {gitlink[:12]} where "
+                            f"{FAMILY_MANIFEST} pins {pinned[:12]}")
+        else:
+            state = "at-pin"
+        entries.append({"project": project, "path": rel, "pin": pinned,
+                        "gitlink": gitlink, "state": state})
+    declared = {entry["path"] for entry in entries}
+    undeclared = [name for name in gitlinks_under(ctx.root, members_dir)
+                  if name not in declared]
+    problems += [f"{name} is a gitlink no {FAMILY_MANIFEST} row names"
+                 for name in undeclared]
+    sentence = (f"{FAMILY_MANIFEST} (family-manifest) sits beside "
+                f"{PROJECT_MANIFEST} (project-manifest), and validate-family"
+                ".py, the validator that kind is registered to, never runs "
+                "on an assembly root -- a family holder is not a project -- "
+                f"so nothing checks the {len(entries)} member(s) it pins")
+    if problems:
+        sentence += ": " + ", ".join(problems)
+    elif entries:
+        sentence += ", though each is recorded at its pin today"
+    return sentence, {"manifest": FAMILY_MANIFEST, "members": entries,
+                      "undeclared_gitlinks": undeclared}
+
+
+#: The `manifest kinds` row's next command for #211, named once so the row
+#: and `tests/test_shape_doctor.py` spell it the same way. NOT `family.py
+#: add`, which is what `validate-family.py`'s own refusal offers: run here,
+#: it would mount the members INSIDE a project, which is the one shape the
+#: family ruling rules out. Which of the two exits is right is a fact about
+#: the repository, so the line offers both and decides neither.
+FAMILY_BESIDE_FIX = (
+    "an assembly root is not a family holder: take family.yaml out of this "
+    "root, or move the membership to a holder of its own (`family.py init`, "
+    "then `family.py add` there), as the human decides -- never `family.py "
+    "add` here, which would mount the members inside a project")
+
+
 def check_manifest_kinds(ctx: Context) -> Row:
     """Every `kind:`-bearing manifest in this root, against the registry.
 
@@ -969,11 +1286,29 @@ def check_manifest_kinds(ctx: Context) -> Row:
     reporting on somebody else's data. What is reported is the other case --
     a file that DOES declare a kind that nothing here validates, which is a
     manifest travelling in a shape root with no gate behind it.
+
+    A REGISTERED KIND WHOSE GATE THIS ROOT NEVER RUNS IS THAT CASE TOO
+    (#211): a `family.yaml` declaring `family-manifest` in an assembly root.
+    It is not counted `validated`; `family_beside_project` says why, and
+    checks the members it pins against the gitlinks.
+
+    THE ROOT'S OWN MANIFEST, WHEN IT DOES NOT LOAD, IS NOT THIS ROW'S (#205).
+    The `manifest` (or `family`) row quotes its refusal and names its gate,
+    and the kind of the root was read off its filename for exactly that
+    reason. Listed here as well, it would be the same fault twice, under a
+    next command -- register a kind, or remove the file from the root --
+    that is the wrong remedy for a merge conflict in a project's own
+    manifest. So it is skipped, and the row says where it went.
     """
     known: list[str] = []
     unknown: list[str] = []
     unreadable: list[str] = []
+    elsewhere = (ctx.manifest_path if ctx.manifest_refusal is not None
+                 else None)
+    beside: tuple[str, dict] | None = None
     for path in manifest_candidates(ctx.root):
+        if path == elsewhere:
+            continue
         data = Context._read(path)
         if not isinstance(data, dict):
             unreadable.append(path.relative_to(ctx.root).as_posix())
@@ -982,26 +1317,46 @@ def check_manifest_kinds(ctx: Context) -> Row:
         if not isinstance(kind, str) or not kind:
             continue
         rel = path.relative_to(ctx.root).as_posix()
+        if (ctx.kind == PROJECT and rel == FAMILY_MANIFEST
+                and kind == "family-manifest"):
+            beside = family_beside_project(ctx, data)
+            continue
         entry = MANIFEST_VALIDATORS.get(kind)
         (known if entry else unknown).append(f"{rel} ({kind})")
     detail = {"validated": known, "unregistered": unknown,
               "unreadable": unreadable,
               "registered_kinds": sorted(MANIFEST_VALIDATORS)}
-    if unknown or unreadable:
+    # Only when there is one, so every other root's row is the row it was.
+    aside = ""
+    if elsewhere is not None:
+        owner = MANIFEST_ROW[ctx.kind]
+        detail["reported_by"] = {elsewhere.name: owner}
+        aside = (f"; {elsewhere.name} does not load, and the `{owner}` row "
+                 "reports it")
+    if beside is not None:
+        # ONLY WHEN THERE IS ONE, so every root without it reports the same
+        # row, byte for byte, as it did before #211.
+        detail["family_beside"] = beside[1]
+    if unknown or unreadable or beside is not None:
         parts = []
+        fixes = []
         if unknown:
             parts.append("no validator registered for kind "
                          + ", ".join(unknown))
         if unreadable:
             parts.append("unreadable as YAML: " + ", ".join(unreadable))
+        if unknown or unreadable:
+            fixes.append("register the kind in shape-doctor.py's "
+                         "MANIFEST_VALIDATORS, beside the check that "
+                         "validates it, or remove the file from the root")
+        if beside is not None:
+            parts.append(beside[0])
+            fixes.append(FAMILY_BESIDE_FIX)
         return Row("manifest-kinds", LABEL_MANIFEST_KINDS, FINDING,
-                   "; ".join(parts),
-                   "register the kind in shape-doctor.py's "
-                   "MANIFEST_VALIDATORS, beside the check that validates it, "
-                   "or remove the file from the root", detail)
+                   "; ".join(parts) + aside, "; ".join(fixes), detail)
     return Row("manifest-kinds", LABEL_MANIFEST_KINDS, OK,
                f"{len(known)} manifest(s), every declared kind has a "
-               "registered validator", None, detail)
+               f"registered validator{aside}", None, detail)
 
 
 #: Named once, like `LABEL_MANIFEST_KINDS` above: this function's four
@@ -1220,7 +1575,16 @@ def check_legs(ctx: Context) -> Row:
     neither of which needs a remote to be asked about. The GITLINK against the
     pin file is `validate-pins.py`'s question and is left to it; this row
     reports the gitlink it found so the two can be read together.
+
+    THE LEGS ARE THE MANIFEST'S, and a manifest that does not load declares
+    none that this row can name -- which is not "declares no non-assembly
+    leg", the sentence below, about a project that has none (#205).
     """
+    waiting = waiting_row(ctx, "legs", "legs",
+                          "the legs it declares are not known and none is "
+                          "checked against its pin", {"legs": []})
+    if waiting is not None:
+        return waiting
     legs = ctx.legs()
     if not legs:
         return Row("legs", "legs", NA,
@@ -1477,6 +1841,10 @@ def check_leg_shape_files(ctx: Context) -> Row:
     compare every leg, say what was found, and offer a copy for the files a
     copy would fix.
     """
+    waiting = waiting_row(ctx, "leg-shape-files", LABEL_LEG_SHAPE_FILES,
+                          "there are no legs to compare", {"legs": []})
+    if waiting is not None:
+        return waiting
     legs = ctx.legs()
     if not legs:
         return Row("leg-shape-files", LABEL_LEG_SHAPE_FILES, NA,
@@ -2075,6 +2443,14 @@ def check_placement(ctx: Context) -> Row:
             NA,
             "a family holder has no legs of its own: each member is an "
             "assembly root and answers this in its own report")
+    # Before the sentence below, which is about a project that declares no
+    # leg, not one whose manifest nobody could read (#205). And `n/a` is what
+    # makes `--placement-plan` refuse by name and write nothing: there is no
+    # leg to write a plan about until the manifest loads.
+    waiting = waiting_row(ctx, "placement", "placement",
+                          "there is no leg to classify a path in")
+    if waiting is not None:
+        return placement_row(NA, waiting.reason, None, waiting.detail)
     legs = ctx.legs()
     if not legs:
         return placement_row(
@@ -2859,6 +3235,13 @@ def check_members(ctx: Context) -> Row:
     one sentence it is: every member is looked at, and each is either a fault
     or a state worth saying.
     """
+    # NOT "no members yet", which is an `ok` about an empty family: a holder
+    # whose `family.yaml` does not load has members nobody can name (#205).
+    waiting = waiting_row(ctx, "members", "members",
+                          "the members it pins are not known and none is "
+                          "checked against its pin", {"members": []})
+    if waiting is not None:
+        return waiting
     members = ctx.members()
     members_dir = str((ctx.manifest or {}).get("members_dir") or "members")
     if not members:
@@ -3073,7 +3456,9 @@ def check_what_is_here(ctx: Context) -> Row:
     detail["family_yaml"] = (root / FAMILY_MANIFEST).is_file()
     if detail["project_yaml"] or detail["family_yaml"]:
         # A manifest is THERE and did not declare the kind that makes it one,
-        # which is a different fault from having none, and worth saying.
+        # which is a different fault from having none, and worth saying. It
+        # LOADED and said something else: one that does not load at all is
+        # never here, because its filename makes the root that kind (#205).
         facts.append("a manifest file that declares neither `kind: "
                      "project-manifest` nor `kind: family-manifest`")
     return Row("contents", "what is here", NA,
@@ -3388,10 +3773,12 @@ def check_triad_advisory(ctx: Context) -> Row | None:
     ONLY WHERE THERE IS NO MANIFEST. An assembly root whose `project.yaml`
     declares fewer than two legs is not a Triad by the detector, but it is
     not "a single repository" either -- it is a broken project root, and the
-    `manifest` row's finding is the guidance there. So the row is asked only
-    of a directory with neither manifest, which is also the one kind of root
-    whose verdict reads no row at all: nothing here could move a verdict even
-    if it tried.
+    `manifest` row's finding is the guidance there. The same is true of one
+    whose `project.yaml` does not load at all, which `Context` reads as the
+    project its filename says rather than as no manifest (#205). So the row
+    is asked only of a directory with neither manifest, which is also the one
+    kind of root whose verdict reads no row at all: nothing here could move a
+    verdict even if it tried.
 
     AND IT NEVER FAILS THE REPORT. `shape_advisory.read` already answers
     rather than raises; this says nothing rather than a traceback for
@@ -3689,6 +4076,11 @@ def report(ctx: Context, rows: list[Row], verdict: str, code: int,
     described = {PROJECT: "assembly root (project.yaml)",
                  FAMILY: "family holder (family.yaml)",
                  NOT_A_ROOT: "not a shape root"}[ctx.kind]
+    if ctx.manifest_refusal is not None:
+        # Said where the kind is, because the kind was read off the
+        # FILENAME here and a reader should know that before the rows (#205).
+        described = (f"{described[:-1]}, which does not load: see the "
+                     f"`{MANIFEST_ROW[ctx.kind]}` row)")
     print(f"root        {ctx.root}")
     print(f"kind        {described}")
     print(f"standard    {ctx.shape}")
