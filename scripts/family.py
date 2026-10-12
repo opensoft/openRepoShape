@@ -77,7 +77,7 @@ from repo_shape import (  # noqa: E402
     free_plan_secret_hint,
     COMMIT_RE, PROJECT_ID_RE, PYTHON, TREE_DIGEST_DEFINITION,
     VISIBILITY_CHOICES, NamingPolicy, Refusal, checked_value, git_out,
-    load_yaml, recorded_gitlink, repo_basename, tree_digest,
+    load_yaml, recorded_gitlink, repo_basename, same_repository, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
     RULESET_HINT, SHAPE_REPOSITORY, CommandFailed, check_program,
@@ -141,8 +141,45 @@ class Family:
                 if isinstance(row, dict)]
 
     def member(self, project: str) -> dict | None:
+        """The row for `project`, compared the way the forge compares a name.
+
+        GitHub resolves an owner and a repository name case-insensitively
+        (`repo_shape.same_repository`, #149), so `irss` and `IRSS` are ONE
+        member and a row typed the other way is not a stranger (#206). The
+        row's own spelling is the one it keeps: callers read `row["project"]`
+        and `row["path"]` back, never the spelling they were handed. An EXACT
+        match wins, so a family a pre-#206 `add` pinned twice (`IRRS` and
+        `irrs`) can still be mended by naming the row to touch; any other
+        spelling that fits two rows is refused rather than guessed.
+        """
+        rows = [row for row in self.members
+                if str(row.get("project")).lower() == project.lower()]
+        for row in rows:
+            if str(row.get("project")) == project:
+                return row
+        if len(rows) > 1:
+            raise Refusal(
+                "member-ambiguous",
+                f"{project} fits {len(rows)} rows of {self.data.get('name')}: "
+                + ", ".join(str(row.get("project")) for row in rows),
+                "Remediation: name one of them in the spelling the row uses; "
+                "the family pins one project twice, and `remove` takes the "
+                "extra one out.")
+        return rows[0] if rows else None
+
+    def holding(self, repository: str, project: str) -> dict | None:
+        """The row that already pins this repository, or None (#206).
+
+        By name first (`member`), then by the row's `repository:` — the
+        forge's own identity, which `repo_shape.same_repository` folds for
+        case — so `inkrouter/irrs` finds the row that pins `InkRouter/IRRS`.
+        """
+        row = self.member(project)
+        if row is not None:
+            return row
         return next((row for row in self.members
-                     if str(row.get("project")) == project), None)
+                     if same_repository(repository,
+                                        str(row.get("repository")))), None)
 
     def tracking(self) -> str:
         return checked_value("tracking_branch",
@@ -786,13 +823,15 @@ def cmd_init(args) -> int:
 def cmd_add(args) -> int:
     family = Family.open(args.family_root)
     repository, project = _checked_member(args.member)
-    if family.member(project) is not None:
+    held = family.holding(repository, project)
+    if held is not None:
         raise Refusal(
             "member-already-present",
-            f"{project} is already a member of {family.data.get('name')}",
+            f"{project} is already a member of {family.data.get('name')}: "
+            f"the row {held.get('project')} pins {held.get('repository')}",
             "Remediation: `family.py bump --member "
-            f"{project} --to <commit>` moves an existing member; `remove` "
-            "takes it out. Adding it twice is not a way to move it.")
+            f"{held.get('project')} --to <commit>` moves an existing member; "
+            "`remove` takes it out. Adding it twice is not a way to move it.")
     path = f"{MEMBERS_DIR}/{project}"
     if (family.root / path).exists():
         raise Refusal(
@@ -915,6 +954,7 @@ def cmd_bump(args) -> int:
             f"{project} is not a member of {family.data.get('name')}",
             "Remediation: `family.py add --member <org>/" + project
             + "` puts it in the family first.")
+    project = str(row["project"])
     commit = checked_value("--to", args.to).lower()
     if not COMMIT_RE.match(commit):
         raise Refusal(
@@ -1006,6 +1046,7 @@ def cmd_remove(args) -> int:
             "Remediation: `validate-family.py` lists what is here. Removing "
             "something that is not a member is a no-op worth refusing, "
             "because the argument is usually a typo for something that is.")
+    project = str(row["project"])
     path = str(row.get("path") or f"{MEMBERS_DIR}/{project}")
     # THE MEMBER REPOSITORY IS NOT TOUCHED. Removing a member unmounts it from
     # this holder and nothing else: the project keeps its name, its history,
