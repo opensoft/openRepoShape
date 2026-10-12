@@ -53,7 +53,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from repo_shape import Refusal, find_repo_root, load_yaml  # noqa: E402
+from repo_shape import (  # noqa: E402
+    Refusal, escape_unencodable_stdout, find_repo_root, load_yaml, spelled,
+)
 
 MANIFEST = "family.yaml"
 DEFAULT_MEMBERS_DIR = "members"
@@ -133,11 +135,14 @@ def member_path(root: Path, row: dict) -> Path:
 
 def run_member_target(root: Path, row: dict, target: str) -> str | None:
     """(b) One member's own `make <target>`. Returns a failure line, or None."""
-    project = str(row.get("project") or "?")
+    # A member row is the family manifest's text (#391): what is PRINTED of it,
+    # and of `--members-make`, is spelled. The path is built from the raw row.
+    project = spelled(row.get("project") or "?")
     path = member_path(root, row)
+    named = spelled(target)
     if not (path / ".git").exists():
-        print(f"  [{project}] {path.name}: NOT CHECKED OUT; skipped. See the "
-              "fetch above.")
+        print(f"  [{project}] {spelled(path.name)}: NOT CHECKED OUT; skipped. "
+              "See the fetch above.")
         return None
     if not (path / "Makefile").is_file():
         print(f"  [{project}] no Makefile; skipped. A member without one is "
@@ -148,16 +153,17 @@ def run_member_target(root: Path, row: dict, target: str) -> str | None:
     if not make:
         print(f"  [{project}] `make` is not on PATH; skipped.")
         return None
-    print(f"  --- {project}: make {target} ---")
+    print(f"  --- {project}: make {named} ---")
     sys.stdout.flush()
     proc = subprocess.run([make, target], cwd=str(path), check=False)
     sys.stdout.flush()
     if proc.returncode != 0:
-        return f"{project} (make {target} exited {proc.returncode})"
+        return f"{project} (make {named} exited {proc.returncode})"
     return None
 
 
 def main(argv: list[str] | None = None) -> int:
+    escape_unencodable_stdout()
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--root", type=Path, default=None)
     parser.add_argument("--no-fetch", action="store_true",
@@ -177,7 +183,8 @@ def main(argv: list[str] | None = None) -> int:
         print(str(exc), file=sys.stderr)
         return 2
 
-    print(f"bootstrap: {name} ({root}) — {len(rows)} member(s)")
+    print(f"bootstrap: {spelled(name)} ({spelled(root)}) — "
+          f"{len(rows)} member(s)")
 
     print("\n(a) members and their legs")
     if args.no_fetch:
@@ -185,7 +192,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         fetch_members(root)
 
-    print(f"\n(b) each member's own `make {args.members_make}`")
+    print(f"\n(b) each member's own `make {spelled(args.members_make)}`")
     failed: list[str] = []
     if args.skip_members:
         print("  skipped (--skip-members)")
