@@ -115,9 +115,6 @@ EXEMPT = {
     # spells each one itself), which leaves nothing here to decode; the same
     # two-pull-requests reason as above.
     ("adopt-project.py", "cross_leg_references"): frozenset(),
-    # The child is a PYTHON process, which writes its pipe in the locale's own
-    # codec, so naming UTF-8 here would misread it where the locale is not.
-    ("scripts/bump-leg.py", "run_validator"): frozenset({"errors"}),
     # The `gh api` tree listing becomes a digest: UTF-8 yes, `replace` no, for
     # a replaced byte would be a wrong digest with a confident tone.
     ("scaffold-project.py", "pin_digest_from_gh"): frozenset({"encoding"}),
