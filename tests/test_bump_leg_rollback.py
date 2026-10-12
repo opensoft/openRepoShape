@@ -9,9 +9,10 @@ workflow file, a `UnicodeError` from echoing a validator's output or an
 interrupt left the pin rewritten, the leg on the new commit and the index
 changed, behind a traceback. `tests/test_bump_leg.py` holds the red-validator
 rollback; this file holds the failures that rollback never saw: those, a
-commit git refuses, a forward checkout that moved the leg and then failed,
-and a rollback step that fails or is interrupted itself. It also holds the
-one failure that must NOT be rolled back: one after the commit landed.
+commit git refuses, a forward checkout that moved the leg and then failed or
+was cut off before it moved it, and a rollback step that fails or is
+interrupted itself. It also holds the one failure that must NOT be rolled
+back: one after the commit landed.
 
 A REPORT NEVER CLAIMS A TREE THE ROLLBACK DID NOT RESTORE. Every failure
 says, as a refusal's own text or as a line before the traceback, either that
@@ -411,6 +412,96 @@ def test_a_forward_checkout_that_moved_the_leg_and_then_failed_puts_it_back(
     assert "REFUSED advancing a leg" in result.stderr
     assert f"checkout -q --detach {advanced}" in result.stderr
     assert ROLLED_BACK in result.stderr, result.stderr
+
+
+@pytest.mark.parametrize("how", [
+    "cut-off-interrupted", "cut-off-command-failed", "moved-then-interrupted"])
+def test_a_forward_checkout_that_left_files_in_the_leg_is_not_called_put_back(
+        how, project, scaffolded, advanced, bump_leg_module, monkeypatch,
+        capsys):
+    """git writes the new commit's files BEFORE it moves the leg's index and
+    HEAD, and a terminal's Ctrl-C reaches git and this tool together, so a
+    large checkout can be cut off with the leg's branch and HEAD unmoved and
+    the files it wrote left in the leg. Read off the branch and the HEAD
+    alone, that leg looked put back, the report said the tree was exactly as
+    it was, and the re-run then failed on `untracked working tree files would
+    be overwritten`. The `cut-off` cases are that checkout, interrupted or
+    failed; `moved-then-interrupted` is one that did move the leg and left a
+    file the checkout back cannot remove, so the comparison is made after a
+    restore as well.
+
+    The leg's `git status` is read before the checkout and compared in the
+    rollback: the step is named, the operator is sent to `git -C <leg>
+    status`, and the report says THE ROLLBACK WAS NOT COMPLETE. NOTHING IN
+    THE LEG IS REMOVED: an untracked file of the operator's own is allowed
+    there, and the rollback cannot tell it from one the checkout wrote."""
+    prepared(project)
+    leg = project / "spec"
+    mine = leg / "OPERATOR-NOTES.md"
+    mine.write_bytes(b"the operator's own untracked file\n")
+    before = snapshot(project)
+    real_run = bump_leg_module.run
+
+    def cut_off(args, *rest, **kwargs):
+        if args == ["git", "checkout", "-q", "--detach", advanced]:
+            if how == "moved-then-interrupted":
+                real_run(args, *rest, **kwargs)
+            (leg / "PARTIAL.md").write_bytes(b"# written before the cut\n")
+            if how == "cut-off-command-failed":
+                raise bump_leg_module.CommandFailed(args, leg, 130, "")
+            raise KeyboardInterrupt()
+        return real_run(args, *rest, **kwargs)
+    monkeypatch.setattr(bump_leg_module, "run", cut_off)
+
+    if how != "cut-off-command-failed":
+        with pytest.raises(KeyboardInterrupt):
+            run_main(bump_leg_module, project, scaffolded, advanced)
+        lead = "KeyboardInterrupt"
+    else:
+        assert run_main(bump_leg_module, project, scaffolded, advanced) == 2
+        lead = "The command below failed"
+
+    err = capsys.readouterr().err
+    assert (f"{lead} while the bump was being applied. {NOT_COMPLETE}"
+            in err), err
+    assert ROLLED_BACK not in err, "nothing says the tree is exactly as it was"
+    assert "the checkout of spec/ could not be put back: its `git status`" \
+        in err, "the step is named"
+    assert "spec status` before anything else" in err, err
+    after = snapshot(project)
+    for key in ("head", "pin", "workflows", "gitlink", "leg_head",
+                "leg_branch"):
+        assert after[key] == before[key], f"{key} is not as it was found"
+    assert git("diff", "--cached", "--quiet", cwd=project,
+               check=False).returncode == 0, "the index was put back"
+    assert mine.read_bytes() == b"the operator's own untracked file\n"
+    assert (leg / "PARTIAL.md").is_file(), (
+        "the rollback removes nothing from the leg: only the operator can "
+        "tell a file of theirs from one the checkout wrote")
+
+
+def test_an_untracked_file_the_operator_keeps_in_the_leg_is_left_alone_and_not_counted(
+        project, scaffolded, advanced, bump_leg_module, monkeypatch, capsys):
+    """The other side of the comparison above: an untracked file that was in
+    the leg before the bump is in its `git status` before and after, so a
+    rollback that put everything back still says so, and the file is not
+    touched."""
+    prepared(project)
+    mine = project / "spec" / "OPERATOR-NOTES.md"
+    mine.write_bytes(b"the operator's own untracked file\n")
+    before = snapshot(project)
+    monkeypatch.setattr(bump_leg_module, "run_validator",
+                        lambda root, script: (1, "pin-digest-mismatch\n"))
+
+    code = run_main(bump_leg_module, project, scaffolded, advanced)
+
+    err = capsys.readouterr().err
+    assert code == 2
+    assert "REFUSED bump-leg-validators-red" in err
+    assert ROLLED_BACK in err, err
+    assert NOT_COMPLETE not in err
+    assert_nothing_changed(project, before)
+    assert mine.read_bytes() == b"the operator's own untracked file\n"
 
 
 # --- the commit, inside the rollback's reach --------------------------------

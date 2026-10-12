@@ -47,8 +47,10 @@ WHAT IT REFUSES, and why each is a refusal rather than a warning:
     `OSError` or a `UnicodeError`, and as itself for anything else, an
     interrupt included, after a line saying whether the tree is back. No
     report claims more than the rollback did: a step it could not do is
-    named, and the report says THE ROLLBACK WAS NOT COMPLETE. A failure
-    after the commit has landed rolls nothing back, and says so.
+    named, and so is a leg whose `git status` no longer reads as it did
+    before the bump (a checkout cut off part way leaves the files it wrote),
+    and the report says THE ROLLBACK WAS NOT COMPLETE. A failure after the
+    commit has landed rolls nothing back, and says so.
 
 EXIT CODES: 0 the commit was made, or a `--dry-run` printed a move it would
 make · 1 NOTHING TO DO — every fact already names that commit, under
@@ -649,6 +651,21 @@ def _restore_file(target: Path, original: bytes) -> None:
         target.write_bytes(original)
 
 
+class LegNotAsFound(Exception):
+    """The leg's `git status` does not read as it did before the bump."""
+
+
+def _leg_status(submodule: Path) -> bytes:
+    """The leg's `git status`, untracked files one by one, as raw bytes.
+
+    `-z` and bytes, so nothing strips the leading space of ` M <path>`, and
+    `--untracked-files=all`, so a file written into a directory that already
+    held an untracked file of the operator's is a line of its own.
+    """
+    return git_out(["status", "--porcelain", "-z", "--untracked-files=all"],
+                   cwd=submodule, binary=True)
+
+
 def _put_back(what: str, undo) -> bool:
     """Attempt ONE step of a rollback; say so, and carry on, if it fails.
 
@@ -673,6 +690,9 @@ def _put_back(what: str, undo) -> bool:
     except KeyboardInterrupt:
         print(f"REFUSED rolling the bump back. {what} could not be put back: "
               "interrupted", file=sys.stderr)
+    except LegNotAsFound as exc:
+        print(f"REFUSED rolling the bump back. {what} could not be put back: "
+              f"{exc}", file=sys.stderr)
     except Exception as exc:  # noqa: BLE001 - nothing may escape a rollback
         print(f"REFUSED rolling the bump back. {what} could not be put back: "
               f"{type(exc).__name__}: {exc}", file=sys.stderr)
@@ -682,8 +702,9 @@ def _put_back(what: str, undo) -> bool:
 
 
 def _restore_leg_if_moved(submodule: Path, placement: str | None,
-                          was: str) -> None:
-    """Put the leg back where it stood, if it no longer stands there.
+                          was: str, status: bytes) -> None:
+    """Put the leg back where it stood, if it no longer stands there, and
+    fail the step if its `git status` no longer reads as `status` did.
 
     DECIDED FROM THE LEG, NOT FROM WHETHER THE CHECKOUT RETURNED. git moves
     the leg's HEAD before it runs `post-checkout`, so a hook that exits
@@ -692,21 +713,36 @@ def _restore_leg_if_moved(submodule: Path, placement: str | None,
     checkout is still being waited on after git has moved it. Either way the
     leg is on the new commit and the checkout never returned. A leg that
     still stands where it stood, on the same branch at the same commit, is
-    left alone, so a checkout that never moved it does not go through a
-    refusing hook a second time.
+    not checked out again, so a checkout that never moved it does not go
+    through a refusing hook a second time.
+
+    AND FROM THE LEG'S `git status`, NOT ITS BRANCH AND HEAD ALONE. git
+    writes the new commit's files before it moves the leg's index and HEAD,
+    so a checkout cut off between the two (a terminal's Ctrl-C reaches git
+    and this tool together) leaves the leg on its branch at its commit with
+    those files in it. Nothing is removed here: an untracked file of the
+    operator's own is allowed in the leg, and only the operator can tell it
+    from one the checkout wrote, so the step fails and says where to look.
     """
-    if (leg_placement(submodule) == placement
+    if not (leg_placement(submodule) == placement
             and git_out(["rev-parse", "HEAD"],
                         cwd=submodule).lower() == was.lower()):
-        return
-    restore_leg(submodule, placement, was)
+        restore_leg(submodule, placement, was)
+    if _leg_status(submodule) != status:
+        raise LegNotAsFound(
+            "its `git status` no longer reads as it did before the bump, "
+            "which is what a checkout cut off part way leaves behind. Read "
+            f"`git -C {submodule} status` before anything else, and remove "
+            "only what you did not put there yourself.")
 
 
 def _roll_back(root: Path, submodule: Path, placement: str | None, was: str,
-               staged: list[str], written: dict[Path, bytes]) -> bool:
+               status: bytes, staged: list[str],
+               written: dict[Path, bytes]) -> bool:
     """Put back every byte `_apply_rewrite` changed: the files it wrote, the
-    leg's checkout (when the leg no longer stands where it stood) and the
-    index, in that order. Returns whether ALL of it went back.
+    leg's checkout (when the leg no longer stands where it stood, and checked
+    against the leg's `git status` from before the bump) and the index, in
+    that order. Returns whether ALL of it went back.
 
     THE ROLLBACK NEVER RAISES OVER THE FAILURE THAT STARTED IT. Whatever it
     cannot put back is printed and the original failure is still the one the
@@ -718,7 +754,8 @@ def _roll_back(root: Path, submodule: Path, placement: str | None, was: str,
               partial(_restore_file, target, original))
              for target, original in written.items()]
     steps.append((f"the checkout of {submodule.name}/",
-                  partial(_restore_leg_if_moved, submodule, placement, was)))
+                  partial(_restore_leg_if_moved, submodule, placement, was,
+                          status)))
     steps.append(("the index", partial(
         run, ["git", "reset", "-q", "HEAD", "--", *staged], cwd=root)))
     return all([_put_back(what, undo) for what, undo in steps])
@@ -802,6 +839,9 @@ def _apply_rewrite(root: Path, submodule: Path, commit: str, was: str,
     """
     written: dict[Path, bytes] = {}
     placement = leg_placement(submodule)
+    # Read BEFORE the checkout, as `placement` is: the rollback compares the
+    # leg with it (`_restore_leg_if_moved`).
+    status = _leg_status(submodule)
     head_before: str | None = None
     try:
         # A BUMP LEAVES THE LEG AT THE COMMIT, detached, and does not move any
@@ -853,7 +893,7 @@ def _apply_rewrite(root: Path, submodule: Path, commit: str, was: str,
         landed = _head_guard(root, head_before)
         if landed is None:
             verdict = (ROLLED_BACK if _roll_back(root, submodule, placement,
-                                                 was, staged, written)
+                                                 was, status, staged, written)
                        else NOT_ROLLED_BACK)
         else:
             verdict = landed
