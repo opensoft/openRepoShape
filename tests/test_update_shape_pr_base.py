@@ -274,6 +274,15 @@ def test_the_repository_is_read_where_open_pull_request_reads_it(
         assert line.startswith("NEXT  gh pr create" if push else
                                "NEXT  git -C "), line
 
+    # And every `gh pr create` `pull_request_line` builds (#204): the one
+    # `--pr` runs, and the bare one a failed `--push` prints.
+    for pr in (True, False):
+        args = SimpleNamespace(branch="shape/x", push=True, pr=pr)
+        create = update_shape.pull_request_line(
+            tmp_path, args, "0" * 40, SimpleNamespace(repository="o/r"), kind)
+        assert create[:9] == ["gh", "pr", "create", "--repo", repository,
+                              "--base", "main", "--head", "shape/x"], create
+
 
 @pytest.mark.parametrize("kind_name, manifest_text, refusal", [
     ("PROJECT_KIND", "legs:\n  - role: spec\n    repository: acme/AtlasSpec\n",
@@ -299,9 +308,7 @@ def test_a_manifest_naming_no_repository_refuses_pr_and_leaves_the_placeholder(
         update_shape.load_yaml(tmp_path / kind.manifest), kind)[0] == ""
 
     with pytest.raises(update_shape.Refusal) as raised:
-        update_shape.open_pull_request(tmp_path, "shape/x", "0" * 40,
-                                       SimpleNamespace(repository="o/r"),
-                                       kind)
+        update_shape.pull_request_target(tmp_path, kind)
     assert raised.value.code == "update-pr-no-repository"
     assert refusal in str(raised.value)
     assert gh_calls == []
@@ -314,6 +321,12 @@ def test_a_manifest_naming_no_repository_refuses_pr_and_leaves_the_placeholder(
     update_shape.next_line(tmp_path, args, [], "0" * 40, [], kind)
     assert capsys.readouterr().out.strip().endswith(
         " && gh pr create --base main --head shape/x")
+    # The line a failed `--push` prints (#204) leaves `--repo` off too: a
+    # placeholder would be one literal argument in a line quoted as an argv.
+    args = SimpleNamespace(branch="shape/x", push=True, pr=False)
+    assert update_shape.pull_request_line(
+        tmp_path, args, "0" * 40, SimpleNamespace(repository="o/r"),
+        kind) == ["gh", "pr", "create", "--base", "main", "--head", "shape/x"]
 
 
 def test_nothing_in_the_next_line_names_a_base_when_the_pull_request_is_open(
