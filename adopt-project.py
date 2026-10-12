@@ -78,6 +78,13 @@ rather than being reinterpreted later by a tool that grew a second one.
 
 EXIT CODES: 0 done · 1 findings (a plan that does not check out; a
 verification mismatch) · 2 a refusal — the question could not be asked.
+`execute` has two more exit 2s, GitHub mode's alone, and both come AFTER both
+legs and the split branch are pushed: `gh pr create` refused (`The branch IS
+pushed`; it returns before the verification, so no table is printed), and the
+topic would not set (`The split IS pushed and the pull request IS open`; after
+`adoption verified`). Each prints the command that finishes the job by hand,
+and that command is the way out: a re-run into fresh legs abandons the pushed
+pair for a second.
 """
 
 from __future__ import annotations

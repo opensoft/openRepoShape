@@ -559,9 +559,23 @@ def test_agents_md_is_short_enough_to_be_read():
     class, that a subagent says nothing, and that it never converts, writes
     the record, blocks, or puts the shape in a review or a gate -- the
     warning-in-CI the ratified text calls an amendment of the doctrine
-    rather than a realization of it."""
+    rather than a realization of it.
+
+    2026-10-12: 464 -> 469 -- step 7 of "Adopting an existing repository"
+    (#304). Five lines, inside that one numbered point and nowhere else. It
+    said that ANY non-zero exit of `adopt-project.py execute` is to fix the
+    plan and re-run into fresh legs, which holds for a failed verification
+    (exit 1) and for neither of the two exits a GitHub run adds: a refused
+    `gh pr create` and a topic that will not set. Both are exit 2, both come
+    after the legs and the split branch are pushed, and what each prints is
+    a command to finish by hand, so an assistant that followed the sentence
+    abandoned a pushed adoption for a second pair of legs. The lines buy what
+    the point could not say: that the exit decides, which message marks the
+    two (`IS pushed`), that the second pair is the harm, and that a refused
+    pull request has printed no table, so the split it opens is unverified.
+    `tests/test_adopt_github_exits.py` holds the point to both printed exits."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 464, f"AGENTS.md is {len(lines)} lines; the cap is 464"
+    assert len(lines) <= 469, f"AGENTS.md is {len(lines)} lines; the cap is 469"
 
 
 def test_claude_md_points_at_agents_md():
