@@ -186,9 +186,13 @@ def test_every_directory_the_shape_writes_into_is_found_as_a_file(adopter):
 def test_a_file_kept_at_a_path_the_shape_writes_is_not_a_finding(adopter):
     """A file where the shape writes a FILE is the collision `place` already
     handles: its copy goes under `shape/`. Only a file where a DIRECTORY is
-    needed stops it."""
+    needed stops it. The manifest is the one exception, which no copy stands
+    in for (#305): `tests/test_adopt_root_manifest.py` holds it."""
     for path in adopter.assembly_root_paths():
-        assert found(adopter, [(path, "root")], [row(path)]) == [], path
+        codes = [said.split(":")[0]
+                 for said in found(adopter, [(path, "root")], [row(path)])]
+        assert codes == (["FINDING plan-root-blocks-manifest"]
+                         if path == adopter.SHAPE_MANIFEST else []), path
 
 
 @pytest.mark.parametrize("kept, tree, said", [
