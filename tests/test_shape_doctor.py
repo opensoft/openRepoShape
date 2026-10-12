@@ -27,6 +27,7 @@ test on any other call.
 from __future__ import annotations
 
 import ast
+import hashlib
 import importlib.util
 import json
 import os
@@ -4322,7 +4323,10 @@ def test_the_doctor_writes_no_bytecode_into_the_standard(standard, project,
 # the pin, and it was not a command a shell could even split. A file a tool
 # wrote is now put back from the root's own history by `pin_restore`, the
 # helper the `shape currency` row uses (#237). A file of the project's own
-# is left to a person. Each test runs the printed NEXT, then asks again.
+# is left to a person. A copy the shape pin has a row for, and a neutral
+# product pin, can hold a person's edit, so the NEXT shows it and puts
+# nothing back (review of PR #358). Each test runs the printed NEXT, then
+# asks again.
 
 SPEC_PIN = "contracts/spec-pin.yaml"
 CODE_PIN = "contracts/code-pin.yaml"
@@ -4461,14 +4465,6 @@ def leg_pin_past_a_list_in_its_history(root: Path) -> list:
     return ["checkout", f"{first}~1", "--", SPEC_PIN]
 
 
-def naming_copy_broken_by_a_commit(root: Path) -> list:
-    copy = root / NAMING_COPY
-    copy.write_bytes(copy.read_bytes() + SLIP)
-    git("add", "--", NAMING_COPY, cwd=root)
-    breaking = commit_in(root, "a slip committed in the naming copy")
-    return ["checkout", f"{breaking}~1", "--", NAMING_COPY]
-
-
 @pytest.mark.parametrize("breaks, rel, code, restore, what, compliant", [
     pytest.param(shape_pin_conflicted, SHAPE_PIN, "yaml-unparsable",
                  "unmerged", "pin", False, id="the-shape-pin-conflicted"),
@@ -4487,9 +4483,6 @@ def naming_copy_broken_by_a_commit(root: Path) -> list:
     pytest.param(leg_pin_past_a_list_in_its_history, SPEC_PIN,
                  "yaml-unreadable", "committed", "pin", True,
                  id="a-leg-pin-past-a-list-in-its-history"),
-    pytest.param(naming_copy_broken_by_a_commit, NAMING_COPY,
-                 "yaml-unparsable", "committed", "copy", True,
-                 id="the-naming-copy-broken-by-a-commit"),
 ])
 def test_a_file_a_tool_wrote_that_does_not_load_is_put_back_from_git(
         standard, project, breaks, rel, code, restore, what, compliant):
@@ -4753,8 +4746,14 @@ def declare_a_neutral_pin(root: Path) -> None:
 
 def test_a_pin_is_what_the_root_declares_not_what_it_is_called(standard,
                                                                project):
-    """A neutral product pin `project.yaml` declares is put back from git,
-    and a file of the project's own named like a pin is not.
+    """A neutral product pin `project.yaml` declares is asked of git, and a
+    file of the project's own named like a pin is not.
+
+    The declared pin's case is its git state, and its NEXT the `diff HEAD`
+    that shows the change: no tool writes a neutral product pin after the
+    scaffold, so the change is a person's and nothing is put back (review
+    of PR #358). The file named like a pin is `project`, git not asked.
+    Run as printed, neither file's bytes move.
 
     IN PROCESS, through the row alone: a declared neutral pin makes the
     `pins` row recheck its digest, and with no checkout of the product
@@ -4765,18 +4764,20 @@ def test_a_pin_is_what_the_root_declares_not_what_it_is_called(standard,
     for rel in (NEUTRAL_PIN, OWN_PIN_NAMED):
         path = project / rel
         path.write_bytes(path.read_bytes() + b"\xff\n")
+    neutral = (project / NEUTRAL_PIN).read_bytes()
     module = doctor_module(standard)
     row = module.check_manifest_kinds(module.Context(project)).as_dict()
     assert row["detail"]["unreadable"] == [NEUTRAL_PIN, OWN_PIN_NAMED], row
     assert row["detail"]["restore"] == {NEUTRAL_PIN: "uncommitted",
                                         OWN_PIN_NAMED: "project"}, row
     assert_no_registration(row)
-    assert pasted(row["next"])[3:] == ["checkout", "HEAD", "--",
+    assert pasted(row["next"])[3:] == ["diff", "HEAD", "--",
                                        NEUTRAL_PIN], row["next"]
-    run_pasted(row["next"])
-    row = module.check_manifest_kinds(module.Context(project)).as_dict()
-    assert row["detail"]["restore"] == {OWN_PIN_NAMED: "project"}, row
-    assert Path(pasted(row["next"])[1]).name == DOCTOR, row["next"]
+    # As bytes: the diff shows the byte that is not UTF-8.
+    run_read_only(standard, project, row)
+    again = module.check_manifest_kinds(module.Context(project)).as_dict()
+    assert again == row, (again, row)
+    assert (project / NEUTRAL_PIN).read_bytes() == neutral
     assert own.read_bytes() == RELEASE + b"\xff\n"
 
 
@@ -4885,6 +4886,434 @@ def test_a_contracts_family_yaml_beside_a_file_that_does_not_load_names_the_rest
     final = doctor(standard, project, "--json")
     assert final.returncode == 0, final.stdout + final.stderr
     assert json.loads(final.stdout)["verdict"] == "COMPLIANT"
+
+
+# --- a copy or a neutral pin is a person's to mend (review of PR #358) ------
+#
+# Codex on 2745890, and rv358's probes P10 to P13. A copy can hold the
+# project's own edit, above all the merge by hand `update-shape.py` asks for
+# where a copy changed on both sides, so its `unmerged` and `committed`
+# states get what its `uncommitted` state got: a read-only `git diff` and a
+# person's merge, never one side taken whole and never a rollback (codex
+# r4250578605). A copy is what the shape pin's `files:` rows name, not what
+# this standard's copy lists name (codex r4250578619). And no tool writes a
+# neutral product pin after the scaffold, so a change to one is a person's.
+
+#: Lines a person writes into the naming copy. Comments, so that any copy
+#: of the policy stays YAML, and the end of the file is where both sides of
+#: a merge write, so git cannot merge the two tails.
+PROJECT_LINE = b"# Atlas_docs: a line the project keeps in its copy\n"
+PROJECT_TAIL = b"# a closing line the project wrote\n"
+SHAPE_TAIL = b"# a closing line the shape wrote\n"
+#: A conflict hunk, as git leaves one in the working file.
+CONFLICT_HUNK = re.compile(
+    rb"(?ms)^<<<<<<< [^\n]*\n(.*?)^=======\n(.*?)^>>>>>>> [^\n]*\n")
+
+
+def insert_after_first_line(path: Path, line: bytes) -> None:
+    first, rest = path.read_bytes().split(b"\n", 1)
+    path.write_bytes(first + b"\n" + line + rest)
+
+
+def append_to(path: Path, line: bytes) -> None:
+    path.write_bytes(path.read_bytes() + line)
+
+
+def repin(root: Path, rel: str) -> None:
+    """The shape pin's `sha256:` for `rel` set to the file's bytes, as
+    `update-shape.py apply` sets it once it has re-copied the file."""
+    pin = root / SHAPE_PIN
+    digest = hashlib.sha256((root / rel).read_bytes()).hexdigest()
+    row = (rb'(?m)^(  - path: ' + re.escape(rel.encode())
+           + rb'\n    sha256: )"[0-9a-f]{64}"$')
+    text, count = re.subn(row, rb'\1"' + digest.encode() + rb'"',
+                          pin.read_bytes())
+    assert count == 1, rel
+    pin.write_bytes(text)
+
+
+def merge_two_edits(root: Path, edit_a, edit_b, *paths: str) -> str:
+    """`edit-a` and `edit-b` from HEAD, each making its own edit of `paths`,
+    and `edit-b` merging `edit-a`, so `--ours` is edit-b's side and git
+    merges edit-a's hunks where it can. The status the merge leaves."""
+    base = git("rev-parse", "HEAD", cwd=root).stdout.strip()
+    for branch, edit in (("edit-a", edit_a), ("edit-b", edit_b)):
+        git("checkout", "-q", "-b", branch, base, cwd=root)
+        edit(root)
+        git("add", "--", *paths, cwd=root)
+        commit_in(root, branch)
+    merged = subprocess.run(["git", "merge", "-q", "edit-a"], cwd=str(root),
+                            capture_output=True, text=True, check=False,
+                            env={**os.environ, **GIT_IDENTITY})
+    assert merged.returncode != 0, merged.stdout + merged.stderr
+    return git("status", "--porcelain=v1", cwd=root).stdout
+
+
+def a_copy_conflicted_on_its_own(root: Path) -> None:
+    """P10: edit-a is the project's own edit of the naming copy, a line
+    near the top and a line at the end; edit-b is an `apply`-like re-copy
+    that writes the end its own way and re-pins the copy. Git merges the
+    project's line and conflicts on the end. Only the copy is `UU`: the
+    shape pin changed on one side alone."""
+    def project_edit(r: Path) -> None:
+        insert_after_first_line(r / NAMING_COPY, PROJECT_LINE)
+        append_to(r / NAMING_COPY, PROJECT_TAIL)
+
+    def apply_like(r: Path) -> None:
+        append_to(r / NAMING_COPY, SHAPE_TAIL)
+        repin(r, NAMING_COPY)
+
+    status = merge_two_edits(root, project_edit, apply_like, NAMING_COPY,
+                             SHAPE_PIN)
+    assert f"UU {NAMING_COPY}" in status and SHAPE_PIN not in status, status
+    held = (root / NAMING_COPY).read_bytes()
+    for line in (PROJECT_LINE, PROJECT_TAIL, SHAPE_TAIL):
+        assert line in held, line
+
+
+def merge_by_hand(path: Path) -> None:
+    """A person's merge: both sides of every conflict hunk kept, and the
+    hunks git merged left as they are."""
+    held = path.read_bytes()
+    merged, count = CONFLICT_HUNK.subn(rb"\1\2", held)
+    assert count == 1 and b"<<<<<<<" not in merged, held[-400:]
+    path.write_bytes(merged)
+
+
+def run_read_only(standard: Path, root: Path, row: dict) -> bytes:
+    """Run the printed NEXT, which must be `git -C <root> diff ...`, and
+    require that it changed nothing: the file's bytes, the status, HEAD.
+    Its output."""
+    argv = pasted(row["next"])
+    assert argv[:2] == ["git", "-C"] and argv[3] == "diff", row["next"]
+    assert "checkout" not in row["next"], row["next"]
+    rel = argv[-1]
+    before = ((root / rel).read_bytes(),
+              git("status", "--porcelain=v1", cwd=root).stdout,
+              git("rev-parse", "HEAD", cwd=root).stdout)
+    proc = subprocess.run(argv, capture_output=True, check=False,
+                          stdin=subprocess.DEVNULL,
+                          env={**os.environ, **GIT_IDENTITY})
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert ((root / rel).read_bytes(),
+            git("status", "--porcelain=v1", cwd=root).stdout,
+            git("rev-parse", "HEAD", cwd=root).stdout) == before
+    return proc.stdout
+
+
+def test_a_copy_conflicted_on_its_own_is_shown_and_merged_by_a_person(
+        standard, project):
+    """P10 (codex r4250578605). The NEXT was `checkout --ours`, the
+    apply-like side whole: run, and the merge finished as its note said,
+    the root was COMPLIANT and HEAD's copy had lost the project's line and
+    its tail, which git had merged or held for a person.
+
+    Now the NEXT is the `diff` that shows the hunk git could not merge,
+    its note says a person merges it, and it changes nothing. Merged by
+    hand, both sides kept, the row reads the copy again.
+    """
+    a_copy_conflicted_on_its_own(project)
+    row = rows_of(doctor(standard, project, "--json"))["manifest-kinds"]
+    assert row["detail"]["unreadable"] == [NAMING_COPY], row["detail"]
+    assert row["detail"]["restore"] == {NAMING_COPY: "unmerged"}, row
+    assert_no_registration(row)
+    assert pasted(row["next"])[3:] == ["diff", "--", NAMING_COPY], \
+        row["next"]
+    note = row["next"].split("   #", 1)[1]
+    assert "neither side is taken whole" in note, note
+    assert "merge it by hand, keeping the hunks git merged" in note, note
+    shown = run_read_only(standard, project, row)
+    assert SHAPE_TAIL.strip() in shown and PROJECT_TAIL.strip() in shown, \
+        shown
+    merge_by_hand(project / NAMING_COPY)
+    git("add", "--", NAMING_COPY, cwd=project)
+    commit_in(project, "the naming copy merged by hand")
+    again = rows_of(doctor(standard, project, "--json"))["manifest-kinds"]
+    assert again["status"] == "ok", again
+    kept = git("show", f"HEAD:{NAMING_COPY}", cwd=project).stdout
+    for line in (PROJECT_LINE, PROJECT_TAIL, SHAPE_TAIL):
+        assert line.decode() in kept, line
+
+
+def test_a_conflicted_copys_next_agrees_with_shape_currency_and_agents_md(
+        standard, project):
+    """P10b. In the same report the `shape currency` row names `apply
+    --accept-local` on the copy, which keeps the local bytes, while the
+    `manifest kinds` row took one side whole. AGENTS.md says `both` is a
+    merge: by hand, commit, then `--accept-local` on the file merged.
+
+    Now the `manifest kinds` row asks for that merge, and the two rows
+    are one path: the merge by hand, then the `shape currency` row's own
+    NEXT, run as its note spells it, ends COMPLIANT with every line of
+    both sides in the copy and its pin.
+    """
+    a_copy_conflicted_on_its_own(project)
+    kinds, currency = kinds_and_currency(standard, project)
+    assert "merge it by hand" in kinds["next"].split("   #", 1)[1], kinds
+    assert "checkout" not in kinds["next"], kinds["next"]
+    assert f"--accept-local {NAMING_COPY}" in currency["next"], currency
+    merge_by_hand(project / NAMING_COPY)
+    git("add", "--", NAMING_COPY, cwd=project)
+    commit_in(project, "the naming copy merged by hand")
+    kinds, currency = kinds_and_currency(standard, project)
+    assert kinds["status"] == "ok", kinds
+    argv = pasted(currency["next"])
+    assert Path(argv[1]).name == "update-shape.py" and argv[2] == "check", \
+        currency["next"]
+    then = currency["next"].split("   #", 1)[1].split()
+    assert then[:2] == ["then", "apply"], currency["next"]
+    assert then[then.index("--accept-local") + 1] == NAMING_COPY, then
+    applied = run_script(standard / "update-shape.py", "apply", "--root",
+                         str(project), "--upstream", str(standard), *then[2:])
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    compliant_again(standard, project)
+    kept = git("show", f"HEAD:{NAMING_COPY}", cwd=project).stdout
+    for line in (PROJECT_LINE, PROJECT_TAIL, SHAPE_TAIL):
+        assert line.decode() in kept, line
+
+
+def drop_the_copys_row(root: Path) -> None:
+    """The naming copy's `files:` row taken out of the shape pin and
+    committed, as an adopted project that made the file its own does."""
+    pin = root / SHAPE_PIN
+    row = (rb'(?m)^  - path: ' + re.escape(NAMING_COPY.encode())
+           + rb'\n    sha256: "[0-9a-f]{64}"\n')
+    text, count = re.subn(row, b"", pin.read_bytes())
+    assert count == 1
+    pin.write_bytes(text)
+    git("add", "--", SHAPE_PIN, cwd=root)
+    commit_in(root, "the naming policy is the project's own now")
+
+
+def test_a_file_the_shape_pin_has_no_row_for_is_the_projects(standard,
+                                                            project):
+    """P11a (codex r4250578619). The pin has no row for
+    `contracts/repository-naming.yaml`, so the file there is the
+    project's, and the root is COMPLIANT. A commit of the project's own
+    breaks it: the NEXT was `checkout <that commit>~1`, the copy this
+    standard's lists name, and it dropped the project's line.
+
+    Now the copy is what the rows say, so the file is `project`, git is not
+    asked, and the NEXT is this doctor again, which touches nothing.
+    """
+    drop_the_copys_row(project)
+    compliant_again(standard, project)
+    own = project / NAMING_COPY
+    insert_after_first_line(own, PROJECT_LINE)
+    append_to(own, SLIP)
+    git("add", "--", NAMING_COPY, cwd=project)
+    commit_in(project, "the project's own naming examples, with a slip")
+    commit_in(project, "an unrelated commit after it", "--allow-empty")
+    row = rows_of(doctor(standard, project, "--json"))["manifest-kinds"]
+    assert row["detail"]["restore"] == {NAMING_COPY: "project"}, row
+    assert "checkout" not in row["next"], row["next"]
+    argv = pasted(row["next"])
+    assert Path(argv[1]).name == DOCTOR, row["next"]
+    before = own.read_bytes()
+    proc = subprocess.run(argv, capture_output=True, text=True, check=False,
+                          stdin=subprocess.DEVNULL,
+                          env={**os.environ, **GIT_IDENTITY})
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert own.read_bytes() == before and PROJECT_LINE in before
+    module = doctor_module(standard)
+    ctx = module.Context(project)
+    assert NAMING_COPY not in module.pinned_copies(ctx)
+    assert "Makefile" in module.pinned_copies(ctx)
+    assert not module.tool_written(ctx, NAMING_COPY)
+
+
+def collision_layout(root: Path) -> None:
+    """An in-place adoption that collided on the naming policy: the shape's
+    copy under `shape/`, the pin's row naming it there, as
+    `shape_materialize` writes the two, and the source's own file at
+    `contracts/repository-naming.yaml`, which no row names."""
+    copy = (root / NAMING_COPY).read_bytes()
+    (root / "shape" / "contracts").mkdir(parents=True)
+    (root / "shape" / NAMING_COPY).write_bytes(copy)
+    pin = root / SHAPE_PIN
+    text = pin.read_bytes()
+    row = f"  - path: {NAMING_COPY}\n".encode()
+    assert text.count(row) == 1, text
+    pin.write_bytes(text.replace(row, f"  - path: shape/{NAMING_COPY}\n"
+                                 .encode()))
+    git("add", "--", SHAPE_PIN, f"shape/{NAMING_COPY}", cwd=root)
+    commit_in(root, "the shape's copy under shape/, the source's own file "
+                    "at contracts/")
+
+
+def test_the_sources_own_file_at_a_collided_copy_path_is_the_projects(
+        standard, project):
+    """P11b (codex r4250578619). In the collision layout the source's own
+    `contracts/repository-naming.yaml` is conflicted, the other side's line
+    merged cleanly. The NEXT was `checkout --ours`, which dropped that
+    line. Now the file is `project`, and the NEXT is this doctor again,
+    which leaves the merge as git left it."""
+    collision_layout(project)
+    compliant_again(standard, project)
+
+    def ours(r: Path) -> None:
+        insert_after_first_line(r / NAMING_COPY, PROJECT_LINE)
+        append_to(r / NAMING_COPY, PROJECT_TAIL)
+
+    status = merge_two_edits(
+        project, ours, lambda r: append_to(r / NAMING_COPY, SHAPE_TAIL),
+        NAMING_COPY)
+    assert f"UU {NAMING_COPY}" in status, status
+    own = project / NAMING_COPY
+    before = own.read_bytes()
+    assert PROJECT_LINE in before
+    row = rows_of(doctor(standard, project, "--json"))["manifest-kinds"]
+    assert row["detail"]["restore"] == {NAMING_COPY: "project"}, row
+    assert "checkout" not in row["next"], row["next"]
+    assert Path(pasted(row["next"])[1]).name == DOCTOR, row["next"]
+    run = subprocess.run(pasted(row["next"]), capture_output=True,
+                         text=True, check=False, stdin=subprocess.DEVNULL,
+                         env={**os.environ, **GIT_IDENTITY})
+    assert run.returncode == 1, run.stdout + run.stderr
+    assert own.read_bytes() == before
+    assert f"UU {NAMING_COPY}" in git("status", "--porcelain=v1",
+                                       cwd=project).stdout
+
+
+def test_a_conflicted_shape_pin_takes_only_the_copies_its_side_has_rows_for(
+        standard, project):
+    """Codex r4250578619 in the shape pin's own merge (#267): the pin and
+    the source's own `contracts/repository-naming.yaml` conflicted
+    together, in the collision layout. The NEXT took that file whole with
+    the pin, because this standard's copy lists name its path.
+
+    Now the side taken is read for its rows, which name the copy under
+    `shape/` and not the source's file, so the pin is named alone, by both
+    rows, and the source's file keeps both sides for its owner.
+    """
+    collision_layout(project)
+
+    def side(digit: str, tail: bytes):
+        def edit(r: Path) -> None:
+            break_the_pin(r, pin_with(r'^commit: .*$',
+                                      f'commit: "{digit * 40}"'))
+            append_to(r / NAMING_COPY, tail)
+        return edit
+
+    status = merge_two_edits(project, side("1", PROJECT_TAIL),
+                             side("2", SHAPE_TAIL), SHAPE_PIN, NAMING_COPY)
+    assert f"UU {SHAPE_PIN}" in status and f"UU {NAMING_COPY}" in status, \
+        status
+    own = project / NAMING_COPY
+    before = own.read_bytes()
+    kinds, currency = kinds_and_currency(standard, project)
+    assert currency["detail"]["restore"] == "unmerged", currency["detail"]
+    assert pasted(currency["next"])[3:] == [
+        "checkout", "--ours", "--", SHAPE_PIN], currency["next"]
+    assert kinds["next"] == currency["next"], (kinds, currency)
+    assert kinds["detail"]["restore"] == {NAMING_COPY: "project",
+                                          SHAPE_PIN: "unmerged"}, kinds
+    run_pasted(currency["next"])
+    assert own.read_bytes() == before
+    again = rows_of(doctor(standard, project, "--json"))["shape-currency"]
+    assert again["detail"].get("error") not in READ_PIN_CODES, again
+
+
+def test_a_committed_hand_merge_of_a_copy_is_shown_not_rolled_back(
+        standard, project):
+    """P12 (codex r4250578605, the committed state). A hand merge of the
+    copy, as `update-shape.py`'s `both` exit asks for, committed with a
+    slip in it. The NEXT was `checkout <that commit>~1`, which dropped the
+    merge from the tree.
+
+    Now the NEXT is the `diff` from the newest copy that reads, which shows
+    the merge and the slip and changes nothing. Mended and committed, the
+    row reads the copy again, with the merge in it.
+    """
+    copy = project / NAMING_COPY
+    insert_after_first_line(copy, PROJECT_LINE)
+    append_to(copy, SLIP)
+    git("add", "--", NAMING_COPY, cwd=project)
+    breaking = commit_in(project, "the hand merge, with a slip")
+    commit_in(project, "an unrelated commit after it", "--allow-empty")
+    row = rows_of(doctor(standard, project, "--json"))["manifest-kinds"]
+    assert row["detail"]["restore"] == {NAMING_COPY: "committed"}, row
+    assert_no_registration(row)
+    assert pasted(row["next"])[3:] == ["diff", f"{breaking}~1", "--",
+                                       NAMING_COPY], row["next"]
+    note = row["next"].split("   #", 1)[1]
+    assert breaking[:12] in note and "nothing is rolled back" in note, note
+    shown = run_read_only(standard, project, row)
+    assert PROJECT_LINE.strip() in shown and SLIP.strip() in shown, shown
+    copy.write_bytes(copy.read_bytes()[:-len(SLIP)])
+    git("add", "--", NAMING_COPY, cwd=project)
+    commit_in(project, "the slip mended")
+    again = rows_of(doctor(standard, project, "--json"))["manifest-kinds"]
+    assert again["status"] == "ok", again
+    assert PROJECT_LINE.decode() in git("show", f"HEAD:{NAMING_COPY}",
+                                        cwd=project).stdout
+
+
+def neutral_pin_body(digit: str) -> bytes:
+    return (b"pin_role: neutral-product\nproduct: openGlass\n"
+            b'commit: "' + digit.encode() * 40 + b'"\n')
+
+
+def neutral_pin_re_pinned_by_hand(root: Path) -> tuple[str, list]:
+    # P13: re-pinned by hand to another commit, with a slip, uncommitted.
+    # `checkout HEAD` discarded the re-pin.
+    (root / NEUTRAL_PIN).write_bytes(neutral_pin_body("2") + SLIP)
+    return "uncommitted", ["diff", "HEAD", "--", NEUTRAL_PIN]
+
+
+def neutral_pin_re_pin_committed(root: Path) -> tuple[str, list]:
+    # The same re-pin committed. `checkout <it>~1` rolled it back.
+    (root / NEUTRAL_PIN).write_bytes(neutral_pin_body("2") + SLIP)
+    git("add", "--", NEUTRAL_PIN, cwd=root)
+    breaking = commit_in(root, "openGlass re-pinned by hand, with a slip")
+    commit_in(root, "an unrelated commit after it", "--allow-empty")
+    return "committed", ["diff", f"{breaking}~1", "--", NEUTRAL_PIN]
+
+
+def neutral_pin_re_pins_conflicted(root: Path) -> tuple[str, list]:
+    # Two people re-pin it, each to their own commit. `checkout --ours`
+    # took one of them whole.
+    status = merge_two_edits(
+        root,
+        lambda r: (r / NEUTRAL_PIN).write_bytes(neutral_pin_body("2")),
+        lambda r: (r / NEUTRAL_PIN).write_bytes(neutral_pin_body("3")),
+        NEUTRAL_PIN)
+    assert f"UU {NEUTRAL_PIN}" in status, status
+    return "unmerged", ["diff", "--", NEUTRAL_PIN]
+
+
+@pytest.mark.parametrize("breaks", [
+    pytest.param(neutral_pin_re_pinned_by_hand,
+                 id="re-pinned-by-hand-uncommitted"),
+    pytest.param(neutral_pin_re_pin_committed, id="a-hand-re-pin-committed"),
+    pytest.param(neutral_pin_re_pins_conflicted,
+                 id="two-hand-re-pins-conflicted"),
+])
+def test_a_neutral_product_pin_is_shown_never_put_back(standard, project,
+                                                        breaks):
+    """P13. No tool writes a neutral product pin after the scaffold, and the
+    manifest template says to add one by hand, so every change to one is a
+    person's. In each git state the NEXT is a read-only `diff`, run as
+    printed it changes nothing, and the person's re-pin is still there.
+
+    In process, for the reason `test_a_pin_is_what_the_root_declares_not_
+    what_it_is_called` gives: a declared neutral pin sends the `pins` row
+    to `gh`.
+    """
+    declare_a_neutral_pin(project)
+    restore, expected = breaks(project)
+    before = (project / NEUTRAL_PIN).read_bytes()
+    module = doctor_module(standard)
+    row = module.check_manifest_kinds(module.Context(project)).as_dict()
+    assert row["detail"]["unreadable"] == [NEUTRAL_PIN], row["detail"]
+    assert row["detail"]["restore"] == {NEUTRAL_PIN: restore}, row
+    assert_no_registration(row)
+    assert pasted(row["next"])[3:] == expected, row["next"]
+    assert "No tool of this standard writes a neutral product pin" in \
+        row["next"].split("   #", 1)[1], row["next"]
+    run_read_only(standard, project, row)
+    assert (project / NEUTRAL_PIN).read_bytes() == before
+    assert b"2" * 40 in before
 
 
 # --- placement: code in spec, spec in code (#99) ----------------------------
