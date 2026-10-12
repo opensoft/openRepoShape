@@ -338,8 +338,12 @@ def _scaffold_dry_run(tmp_path: Path, request) -> tuple:
 
 
 def _family_init_dry_run(tmp_path: Path, request) -> tuple:
+    """The plan's `created by` line is a person's text. `--name` is not given
+    the name: the holder's own `validate-family.py` refuses one that is not a
+    CamelCase token (`family.py init` asks it, #307, and refuses before the
+    plan prints), so only `--created-by` can carry text no code page holds."""
     return FAMILY, ("init", "--org", ORG, "--family", "Contoso",
-                    "--name", NAME, "--created-by", NAME,
+                    "--created-by", NAME,
                     "--local-remote-dir", str(tmp_path / "remotes"),
                     "--into", str(tmp_path / "into"), "--dry-run")
 
