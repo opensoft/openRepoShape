@@ -15,7 +15,7 @@ GitHub by hand.
 Both tools now ask git (`git check-ref-format --branch`) through ONE helper,
 `shape_materialize.refuse_bad_branch`, right after `checked_value`, before any
 work directory, remote or `gh` call exists and under `--dry-run` too. The
-tests below hold three things:
+tests below hold four things:
 
   * each name the issue lists, and the neighbours that share its rules, is
     refused with the tool's own code, exit 2, no plan, no `gh` call and
@@ -23,6 +23,11 @@ tests below hold three things:
     and (where a `#!` stub can run) the GitHub route;
   * a name git accepts is not refused, the slashed ones the shape's own
     branches use included, and one of them still scaffolds;
+  * the answer does not depend on where the person stands: git is asked
+    with no repository in play, so a working directory inside a repository
+    git cannot open, or one removed under the person, changes nothing, and
+    a git that cannot answer for any name says so instead of blaming the
+    name (the review of a03abcf);
   * the helper's verdict IS git's, over a corpus, whatever git version runs
     the suite: it is asked, never copied.
 """
@@ -309,6 +314,113 @@ def test_family_init_still_takes_a_name_git_creates(tmp_path, name):
     assert "--dry-run: nothing was created." in result.stdout
 
 
+# --- wherever the person stands (review of a03abcf) ---------------------------
+
+def inside_a_repository_git_cannot_open(tmp_path: Path, kind: str) -> Path:
+    """A directory inside a repository git cannot open, of the two kinds the
+    review of a03abcf ran from: a `.git` FILE naming a gitdir that is gone
+    (a linked worktree whose main repository was moved or deleted), and a
+    repository whose `.git/config` does not parse."""
+    where = tmp_path / kind
+    if kind == "gitfile":
+        where.mkdir()
+        gone = tmp_path / "moved" / ".git" / "worktrees" / kind
+        (where / ".git").write_text(f"gitdir: {gone.as_posix()}\n",
+                                    encoding="utf-8")
+    else:
+        git("init", "-q", str(where), cwd=tmp_path)
+        with open(where / ".git" / "config", "a", encoding="utf-8") as config:
+            config.write("[core\nbroken\n")
+    return where
+
+
+@pytest.mark.parametrize("kind", ["gitfile", "bad-config"])
+def test_the_default_branch_is_not_refused_from_inside_a_repository_git_cannot_open(
+        tmp_path, kind):
+    """`--branch` sets up the repository it is run in, so asked in the
+    person's working directory git failed for EVERY name in one it could not
+    open: both tools refused the default `main` as "not a branch name git
+    will create" and told the person to pass `main`, where `main` scaffolds
+    from the same directory. The question's own empty directory is put inside
+    the broken repository too (`TMPDIR`), so a question that only moved its
+    working directory, and still let git look for a repository, fails here
+    as well."""
+    where = inside_a_repository_git_cannot_open(tmp_path, kind)
+    scratch = where / "tmp"
+    scratch.mkdir()
+    env = {"TMPDIR": str(scratch), "TMP": str(scratch), "TEMP": str(scratch)}
+    local = ["--local-remote-dir", str(tmp_path / "remotes"), "--dry-run"]
+    family = ["init", "--org", ORG, "--family", "Contoso", "--created-by",
+              "Test Human", "--created-on", "2026-09-09", "--into",
+              str(tmp_path / "into"), *local]
+
+    made = run_script(SCAFFOLD, *IDENTITY, *local, cwd=where, env=env)
+    assert made.returncode == 0, made.stderr + made.stdout
+    assert "--dry-run: nothing was created." in made.stdout
+    held = run_script(FAMILY, *family, cwd=where, env=env)
+    assert held.returncode == 0, held.stderr + held.stdout
+    assert "--dry-run: nothing was created." in held.stdout
+
+    # Still git's verdict on the name, from the same directory.
+    assert_refused(run_script(SCAFFOLD, *IDENTITY, "--tracking-branch=a..b",
+                              *local, cwd=where, env=env),
+                   SCAFFOLD_CODE, "a..b")
+    assert_refused(run_script(FAMILY, *family, "--tracking-branch=a..b",
+                              cwd=where, env=env),
+                   FAMILY_CODE, "a..b")
+    assert list(scratch.iterdir()) == [], (
+        "the question left its empty directory behind")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows does not remove a "
+                    "directory a process is standing in")
+def test_the_answer_does_not_need_the_working_directory_to_exist(
+        tmp_path, monkeypatch):
+    """A directory removed under the person: git run there dies before it
+    reads its arguments (`Unable to read current working directory`), and a
+    scaffold without the question succeeds from it."""
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    monkeypatch.chdir(gone)
+    gone.rmdir()
+    assert shape_materialize.branch_problem("--tracking-branch", "main") is None
+    problem = shape_materialize.branch_problem("--tracking-branch", "a..b")
+    assert problem is not None
+    assert problem.startswith(
+        f"--tracking-branch is 'a..b', {NOT_A_BRANCH}: "
+        "`git check-ref-format --branch` refuses it"), problem
+
+
+def test_a_git_that_cannot_answer_for_any_name_does_not_blame_the_name(
+        tmp_path, monkeypatch):
+    """Asked of no repository, git still reads the person's global config,
+    and a malformed one makes it fail for every name. That is not the name's
+    fault: the refusal says the name could not be checked, with git's words,
+    and the remedy is about git, not a name to pass instead. The two are told
+    apart by asking git about `main` as well, not by reading git's words,
+    which are localised."""
+    broken = tmp_path / "gitconfig"
+    broken.write_text("[user\nbroken\n", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(broken))
+    control = subprocess.run(["git", "config", "--global", "--list"],
+                             capture_output=True, text=True, encoding="utf-8",
+                             errors="replace", check=False)
+    assert control.returncode != 0, "this git read the malformed config"
+    for name in ("main", "a..b"):
+        with pytest.raises(Refusal) as caught:
+            shape_materialize.refuse_bad_branch("any-code",
+                                                "--tracking-branch", name)
+        refusal = caught.value
+        assert refusal.code == "any-code"
+        assert refusal.detail.startswith(
+            f"--tracking-branch is {name!r}, which could not be checked: "
+            "`git check-ref-format --branch` fails for `main` too, so git "
+            "could not answer ("), refusal.detail
+        assert NOT_A_BRANCH not in refusal.detail
+        assert (refusal.remediation
+                == shape_materialize.BRANCH_UNCHECKED_REMEDIATION)
+
+
 # --- the helper ---------------------------------------------------------------
 
 def git_says(name: str) -> bool:
@@ -376,6 +488,8 @@ def test_a_git_that_cannot_run_is_a_refusal_not_a_traceback(monkeypatch):
         shape_materialize.refuse_bad_branch("any-code", "--tracking-branch",
                                             "main")
     assert caught.value.code == "any-code"
+    assert (caught.value.remediation
+            == shape_materialize.BRANCH_UNCHECKED_REMEDIATION)
 
 
 def test_a_value_that_cannot_be_an_argument_is_a_refusal_not_a_traceback():
@@ -385,10 +499,12 @@ def test_a_value_that_cannot_be_an_argument_is_a_refusal_not_a_traceback():
 
 
 def test_a_name_git_would_expand_is_not_the_name_that_was_written(monkeypatch):
-    """`check-ref-format --branch` expands `@{-1}` to the branch before; the
-    tools write the name they were given, so a spelling that means another
-    branch is refused. The alphabet keeps `{` out, so this is the helper's own
-    guard, held here with a git that answers another name."""
+    """In a repository `check-ref-format --branch` expands `@{-1}` to the
+    branch before; the tools write the name they were given, so a spelling
+    that means another branch is refused. The helper asks git with no
+    repository, where git has nothing to expand, and the alphabet keeps `{`
+    out, so this is the helper's own guard against a git that expands
+    anyway, held here with a git that answers another name."""
     monkeypatch.setattr(shape_materialize, "run", lambda *a, **k: "main")
     problem = shape_materialize.branch_problem("--tracking-branch", "@{-1}")
     assert problem == ("--tracking-branch is '@{-1}', " + NOT_A_BRANCH
