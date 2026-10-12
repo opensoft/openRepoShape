@@ -213,13 +213,14 @@ def spec_only_source(tmp_path: Path) -> Path:
 
 
 #: The five finding classes `execute` did not refuse, each with a fragment its
-#: finding must carry. `EDITS` below makes the plan that has each one.
+#: finding must carry, every path in it `_spelled` (#212). `EDITS` below makes
+#: the plan that has each one.
 CLASSES = {
-    UNCOVERED: "src/app/main.py is in the source tree and in no plan",
-    "plan-bad-leg": "specs/ declares leg 'Spec'",
-    "plan-covered-twice": "src/app/main.py is covered by",
-    "plan-duplicate-path": "src/ appears 2 times",
-    "plan-empty-entry": "nonexistent/ covers nothing",
+    UNCOVERED: "`src/app/main.py` is in the source tree and in no plan",
+    "plan-bad-leg": "`specs/` declares leg 'Spec'",
+    "plan-covered-twice": "`src/app/main.py` is covered by",
+    "plan-duplicate-path": "`src/` appears 2 times",
+    "plan-empty-entry": "`nonexistent/` covers nothing",
 }
 
 EDITS = {
@@ -413,16 +414,21 @@ def test_a_stale_plan_is_still_reported_as_stale(adopter, world):
 
 def test_a_path_that_is_a_git_option_is_still_unsafe_not_uncovered(adopter,
                                                                     world):
-    """THE PLAN IS UNTRUSTED INPUT and its paths are checked as `git`
-    arguments first. This plan is also uncovered -- `specs/` has no entry --
-    and would be refused as that, losing the reason it is dangerous, if the
-    coverage refusal ran before them. (`test_adopt_e2e.py` has the same case
-    behind `git filter-repo`; this one runs everywhere.)"""
+    """THE PLAN IS UNTRUSTED INPUT and its paths are judged first. This plan
+    is also uncovered -- `specs/` has no entry -- and would be refused as
+    that, losing the reason it is dangerous, if the coverage finding came
+    before them. Since #196 an entry's path is `check`'s own finding,
+    `plan-unsafe-path`, listed first, where it used to be `_leg_paths`'
+    `unsafe-value`; the uncovered files are named beside it.
+    (`test_adopt_e2e.py` has the same case behind `git filter-repo`; this one
+    runs everywhere.)"""
     world.plan.write_text(world.answered.replace(
         "  - path: specs/\n", "  - path: --output=never-written\n", 1),
         encoding=UTF8)
     refusal = refused_by(adopter, execute_args(world.tmp, world.plan))
-    assert refusal.code == "unsafe-value"
+    assert refusal.code == "plan-unsafe-path"
+    assert "`--output=never-written` has leg: spec" in refusal.detail
+    assert "FINDING plan-uncovered: `specs/" in refusal.detail
     no_leg_was_created(world.tmp)
 
 

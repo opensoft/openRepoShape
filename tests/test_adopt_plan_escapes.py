@@ -228,10 +228,12 @@ def test_a_value_spelled_as_an_escape_is_not_read_as_one(adopter):
 #: about it)`. The SAME name is put at the top level, where it is an entry of
 #: its own, and under `docs/`, which the rules send to the spec leg as one
 #: entry. A name with no extension no rule places, so `plan` asks; `.txt` is
-#: code by the extension table.
+#: code by the extension table, and `plan` asks about `caf\\xe9.txt` all the
+#: same, because `execute` will not extract a name that is not UTF-8 into a
+#: leg (#319; `test_adopt_entry_paths.py`).
 ODD_NAMES = [
     pytest.param(b"Icon\r", '"Icon\\r"', True, id="carriage-return"),
-    pytest.param(b"caf\xe9.txt", '"caf\\udce9.txt"', False, id="not-utf8"),
+    pytest.param(b"caf\xe9.txt", '"caf\\udce9.txt"', True, id="not-utf8"),
     pytest.param("n\u0085el".encode(), '"n\\x85el"', True, id="next-line"),
     pytest.param("l\u2028s".encode(), '"l\\u2028s"', True,
                  id="line-separator"),
@@ -360,11 +362,12 @@ def test_plan_writes_the_name_as_one_entry_check_parses(adopter, tmp_path,
     assert said.count(UNRESOLVED) == len(ANSWERS) + asks, said
     if name == b"Icon\r":
         # Bytes, and ASCII on every platform's stderr: the FINDING names it.
-        # RAW, and that is a defect this line pins: `check` prints a FINDING's
-        # path unspelled, and a terminal hides it behind the carriage return.
-        # Filed as #212 (lane 3, `fix/adopt-spell-finding-paths`), whose fix
-        # edits this line to the spelled name.
-        assert UNRESOLVED + b"Icon\r still has `leg: null`" in said
+        # SPELLED, since #212: `check` writes every path a FINDING names
+        # through `_spelled`, as `plan` writes a question's, so the carriage
+        # return is a backslash and an `r` between backticks and the line
+        # stays one line. Before #212 it was raw, and a terminal hid the name
+        # behind the carriage return.
+        assert UNRESOLVED + b"`Icon\\r` still has `leg: null`" in said
     if asks:
         resolve(plan, spelled, "root")
     for path, leg in ANSWERS:
@@ -450,9 +453,9 @@ def test_the_paths_listing_is_written_byte_exact(tmp_path):
     reason="git filter-repo is not installed: `pip install git-filter-repo`")
 def test_a_leg_extracts_a_path_that_is_not_utf8(adopter, tmp_path):
     """`_extract_leg` itself, given an entry path holding the byte 0xE9:
-    the leg holds the name byte for byte. On this branch `execute` refuses
-    such an entry before any leg exists (`SAFE_ARG_RE`); a `check` that
-    lets it through (#196) reaches this, so the extraction is tested here,
+    the leg holds the name byte for byte. `execute` refuses such an entry
+    before any leg exists (as policy, `plan-unsafe-path`, since #196);
+    lifting that refusal reaches this, so the extraction is tested here,
     directly. Skipped where no file can be named with that byte (Windows,
     macOS's APFS): filter-repo works in a clone, which checks the name out."""
     try:

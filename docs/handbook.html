@@ -1304,17 +1304,18 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
     --to &lt;40 hex commit&gt;       # --dry-run prints the move and writes nothing</code></pre></div>
       <p>It fetches the commit into the leg, checks the leg out AT it, recomputes the
       <code>sorted-ls-tree-r-v1</code> digest from the leg&rsquo;s own objects, rewrites
-      <code>commit:</code> and <code>digests.tree_sha256</code>, rewrites every workflow
+      <code>commit:</code> and <code>digests.tree_sha256</code>, rewrites every TRACKED workflow
       <code>@&lt;sha&gt;</code> naming THAT leg&rsquo;s repository &mdash; and none naming anything
       else, <code>actions/checkout@&lt;sha&gt;</code> and the sibling leg included &mdash; then runs
       the project&rsquo;s own <code>validate-pins.py</code> and <code>validate-manifest.py</code> and
       commits ONCE with explicit pathspecs.</p>
       <p><span class="refuses">Refuses</span> a <code>--to</code> that is not exactly 40 hex; a
       commit no branch of the leg&rsquo;s remote contains (a pin the rest of the world cannot fetch
-      is a root it cannot bootstrap); a dirty root; a root standing on its own tracking branch (the
-      next step is a pull request, never a push to the default branch); and a validator that goes
-      red &mdash; rolling the pin, the workflow files, the leg&rsquo;s checkout and the index back
-      first, so a refusal leaves the tree exactly as it was found.</p>
+      is a root it cannot bootstrap); a dirty root; an untracked or ignored workflow file it would
+      rewrite; a root standing on its own tracking branch (the next step is a pull request, never a
+      push to the default branch); and a validator that goes red &mdash; rolling the pin, the
+      workflow files, the leg&rsquo;s checkout and the index back first, so a refusal leaves the
+      tree exactly as it was found.</p>
       <p>The leg is left DETACHED at the new commit; <code>make bootstrap</code> re-places it on its
       tracking branch AT the new pin. Editing the pin file by hand to make the validator agree is
       what the validator exists to refuse.</p>
@@ -1416,7 +1417,8 @@ openRepoShape --doctor                 # the repository you are standing in
       are the pinned copies, which is the point &mdash; else the template copies, and the row says
       which answered), <strong>manifest kinds</strong> (every <code>kind:</code>-bearing manifest
       against a registry, so a <code>contracts/*.yaml</code> nothing validates is a finding by name
-      rather than a silence), <strong>shape currency</strong>
+      rather than a silence, and so is a <code>family.yaml</code> beside <code>project.yaml</code>),
+      <strong>shape currency</strong>
       (<a href="#current"><code>update-shape.py check</code></a>, summarised), <strong>legs</strong>
       (each mounted, and its checked-out commit against the pin, with no fetch), <strong>leg shape
       files</strong>, <strong>placement</strong> (every tracked path of every leg, against the path
@@ -1741,8 +1743,11 @@ resume InkRouter                # on workstation B, and the estate is back</code
       </ul>
       <p>Beyond those: show the human the tool&rsquo;s output verbatim &mdash; the plan especially
       &mdash; and let them answer its prompt; &ldquo;go ahead&rdquo; about something else is not a
-      yes about this. Read a refusal rather than retrying: each one names what to run instead, and
-      there is no <code>--force</code>, deliberately. Relay the finished block &mdash; the clone
+      yes about this. Read a refusal rather than retrying: each one names what to run instead,
+      or, for some, the VALUE to change &mdash; among them a <code>--spec-path</code> or
+      <code>--code-path</code> that is, holds or lies inside a file the shape writes, and a
+      <code>--pin</code> the shape cannot write, both before anything is created &mdash; and there
+      is no <code>--force</code>, deliberately. Relay the finished block &mdash; the clone
       path, the three repository URLs and the next commands &mdash; and say that the line
       <code>authority is not wallet-carried in this org</code> is a report and not a fault. The new
       project carries <code>AGENTS-shape.md</code> at its assembly root, and you read that before
@@ -1777,10 +1782,14 @@ resume InkRouter                # on workstation B, and the estate is back</code
       <code>templates/workspace-root/</code> row, the fifth template, added (#154); the Triad as
       the preferred shape, where the advisory is said and where it is silent, the optional
       <code>single-repository.yaml</code>, the doctor&rsquo;s <code>advisory</code> row and the
-      assistant&rsquo;s &ldquo;what you do tell them&rdquo; added (#163) &mdash; a page
-      cannot name the commit that contains it, and the blob below is the fact a test checks.
-      README.md blob 095a1b9e60743fc8f8d26bd11247572956a3f144. Every command, flag, exit code and
-      file name on this page is quoted from that README and from AGENTS.md.</p>
+      assistant&rsquo;s &ldquo;what you do tell them&rdquo; added (#163); a
+      <code>family.yaml</code> beside <code>project.yaml</code> as a <strong>manifest kinds</strong>
+      finding added (#211); <code>bump-leg.py</code> rewriting tracked workflow files only, and
+      refusing an untracked or ignored one it would rewrite, added (#207); the assistant rules
+      saying that some scaffold refusals name a value to change, added (#288) &mdash; a page cannot
+      name the commit that contains it, and the blob below is the fact a test checks.
+      README.md blob e8da93817b0c1a195300800373a2895c0e0280e5. Every command, flag, exit code
+      and file name on this page is quoted from that README and from AGENTS.md.</p>
     </footer>
   </main>
 </div>

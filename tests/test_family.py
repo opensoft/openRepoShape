@@ -21,7 +21,11 @@ a real family ever needs.
 
 from __future__ import annotations
 
+import importlib.util
+import json
 import os
+import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -45,6 +49,7 @@ from shape_materialize import (  # noqa: E402
 )
 
 FAMILY = REPO / "scripts" / "family.py"
+DOCTOR = REPO / "shape-doctor.py"
 SCAFFOLD = REPO / "scaffold-project.py"
 UPDATE = REPO / "update-shape.py"
 ORG = "InkRouter"
@@ -120,6 +125,56 @@ def validate(root, *extra):
 
 def manifest(root) -> dict:
     return load_yaml(root / "family.yaml")
+
+
+def family_module():
+    """`scripts/family.py` as a module, for the lookups that touch no disk."""
+    spec = importlib.util.spec_from_file_location("family_under_test", FAMILY)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def rows_of(project_rows, root=REPO) -> object:
+    """A `Family` over in-memory rows: `member` and `holding` read no disk."""
+    return family_module().Family(
+        root, {"name": NAME, "members": list(project_rows)})
+
+
+def mount_twice(holder, remotes) -> None:
+    """Pin IRRS a SECOND time, under a row of its own (#206).
+
+    What a family holds after one project is mounted twice: a repository
+    renamed at the forge and added under both names, or — on a case-sensitive
+    host, before #206 — `add --member inkrouter/irrs` beside `InkRouter/IRRS`.
+    The second row is real in every way the gate asks about: mounted, pinned
+    at the commit it is mounted at, digested, and `project.yaml` inside it
+    says the id the row says. It is spelled `IRRS2` rather than `irrs` so the
+    fixture does not need two directories whose names differ only in case,
+    which macOS and Windows hold as one.
+    """
+    git("-c", "protocol.file.allow=always", "submodule", "add", "-q", "--",
+        str(remotes / "IRRS.git"), "members/IRRS2", cwd=holder)
+    mounted = holder / "members" / "IRRS2"
+    commit = git("rev-parse", "HEAD", cwd=mounted).stdout.strip()
+    text = (holder / "family.yaml").read_text(encoding="utf-8")
+    (holder / "family.yaml").write_text(
+        text.rstrip("\n") + "\n" + "\n".join([
+            "  - project: IRRS2",
+            "    id: irrs",
+            "    repository: InkRouter/IRRS2",
+            "    path: members/IRRS2",
+            "    pin:",
+            "      revision_kind: commit",
+            f'      commit: "{commit}"',
+            "      digest_algorithm: sha256",
+            "      digest_definition: sorted-ls-tree-r-v1",
+            f'      tree_sha256: "{tree_digest(mounted, commit)}"',
+        ]) + "\n", encoding="utf-8")
+    git("add", "--", ".gitmodules", "members/IRRS2", "family.yaml",
+        cwd=holder)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm",
+        "Pin IRRS a second time", cwd=holder)
 
 
 # --- init -------------------------------------------------------------------
@@ -436,6 +491,92 @@ def test_add_refuses_a_member_that_is_already_there(family, tmp_path):
     assert "bump" in result.stderr
 
 
+@pytest.mark.parametrize("spelling", [
+    "inkrouter/irrs",       # the whole name, folded: issue #206's own
+    "INKROUTER/IRRS",
+    "InkRouter/irrs",       # only the repository
+    "OtherOrg/Irrs",        # another owner: the project name is the row's too
+])
+def test_add_refuses_a_spelling_of_a_member_the_family_already_pins(
+        family, holder, spelling):
+    """GITHUB RESOLVES `owner/repo` CASE-INSENSITIVELY (#149, #206).
+    `--member inkrouter/irrs` on a family that pins `InkRouter/IRRS` named
+    the same repository, mounted it a second time and wrote a second row —
+    and both gates passed. It is `member-already-present`, naming the row
+    that is already there in the spelling the row uses, and nothing is
+    mounted, staged or written."""
+    head = git("rev-parse", "HEAD", cwd=holder).stdout
+    status = git("status", "--porcelain", cwd=holder).stdout
+    text = (holder / "family.yaml").read_bytes()
+    result = run_script(FAMILY, "add", "--family-root", str(holder),
+                        "--member", spelling,
+                        "--local-remote-dir", str(family["remotes"]))
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert "REFUSED member-already-present" in result.stderr
+    assert "the row IRRS pins InkRouter/IRRS" in result.stderr
+    assert "`family.py bump --member IRRS --to <commit>`" in result.stderr
+    assert "mounting" not in result.stdout
+    assert git("rev-parse", "HEAD", cwd=holder).stdout == head
+    assert git("status", "--porcelain", cwd=holder).stdout == status
+    assert (holder / "family.yaml").read_bytes() == text
+    # `listdir`, not `exists`: macOS and Windows hold `members/irrs` and
+    # `members/IRRS` as one directory, which is not what is being asked.
+    assert sorted(os.listdir(holder / "members")) == list(MEMBERS)
+
+
+def test_add_of_a_member_that_is_not_there_is_unchanged_by_the_case_rule(
+        family, holder):
+    """The comparison is a NAME, not a prefix and not a near miss: `IRQS` is
+    not `IRRS`, and it is mounted and recorded in the spelling it was given."""
+    result = run_script(FAMILY, "add", "--family-root", str(holder),
+                        "--member", f"{ORG}/{SPARE}",
+                        "--local-remote-dir", str(family["remotes"]))
+    assert result.returncode == 0, result.stderr + result.stdout
+    rows = {r["project"]: r for r in manifest(holder)["members"]}
+    assert sorted(rows) == sorted([*MEMBERS, SPARE])
+    assert rows[SPARE]["repository"] == f"{ORG}/{SPARE}"
+    assert rows[SPARE]["path"] == f"members/{SPARE}"
+    assert validate(holder).returncode == 0
+
+
+def test_member_and_holding_name_the_row_in_its_own_spelling():
+    """`Family.member` and `Family.holding`, over rows and no disk."""
+    irrs = {"project": "IRRS", "repository": "InkRouter/IRRS"}
+    irss = {"project": "IRSS", "repository": "InkRouter/IRSS"}
+    both = rows_of([irrs, irss])
+    assert both.member("IRRS") is irrs
+    assert both.member("irrs") is irrs, "the forge folds the case"
+    assert both.member("IRQS") is None
+    assert both.member("IRR") is None and both.member("IRRSS") is None
+    assert both.holding("inkrouter/irrs", "irrs") is irrs
+    assert both.holding("OtherOrg/IRRS", "IRRS") is irrs
+    assert both.holding(f"{ORG}/{SPARE}", SPARE) is None
+
+    # A ROW THAT NAMES ITS REPOSITORY UNDER ANOTHER PROJECT NAME — hand-made,
+    # which `validate-family.py` calls `member-repository-name` — still pins
+    # that repository, and `add` finds it by the repository alone.
+    alias = {"project": "Alias", "repository": "InkRouter/IRRS"}
+    assert rows_of([alias]).member("irrs") is None
+    assert rows_of([alias]).holding("inkrouter/irrs", "irrs") is alias
+
+
+def test_member_prefers_the_exact_spelling_and_refuses_to_guess_between_two():
+    """A family a pre-#206 `add` pinned twice holds `IRRS` AND `irrs`. Naming
+    either exactly reaches that row, which is how the extra one is removed;
+    a third spelling fits both, and bumping the wrong one is worse than
+    stopping."""
+    module = family_module()
+    upper = {"project": "IRRS", "repository": "InkRouter/IRRS"}
+    lower = {"project": "irrs", "repository": "inkrouter/irrs"}
+    twice = rows_of([upper, lower])
+    assert twice.member("IRRS") is upper
+    assert twice.member("irrs") is lower
+    with pytest.raises(module.Refusal) as refused:
+        twice.member("Irrs")
+    assert refused.value.code == "member-ambiguous"
+    assert "IRRS, irrs" in refused.value.detail
+
+
 def test_add_refuses_a_bare_member_name(family, tmp_path):
     holder = tmp_path / NAME
     shutil.copytree(family["root"], holder, symlinks=True)
@@ -587,6 +728,90 @@ def test_validate_finds_an_id_that_is_not_the_project_mounted_there(holder):
     assert "the source" in result.stderr
 
 
+def test_validate_finds_one_project_pinned_twice(family, holder):
+    """TWO ROWS, ONE `id:` — a project mounted twice, whichever way its
+    repository was spelled (#206). Everything else about the second row is
+    in order, so this is the only finding there is, and `--pins` (what
+    `make pins` runs) asks it too."""
+    assert validate(holder).returncode == 0
+    mount_twice(holder, family["remotes"])
+    result = validate(holder)
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert result.stderr.count("FINDING") == 1, result.stderr
+    assert "FINDING member-duplicate-id: IRRS2 and IRRS both record id " \
+        "'irrs'" in result.stderr
+    assert "one project is pinned twice" in result.stderr
+    assert "--member IRRS2` takes the later row, IRRS2, out" in result.stderr
+    assert validate(holder, "--pins").returncode == 1
+
+
+def test_validate_finds_one_project_pinned_twice_under_no_members(family,
+                                                                  holder):
+    """`--no-members` is what a private family's CI runs when its members
+    cannot be checked out. Two rows with one `id:` is a fact of `family.yaml`
+    alone, so that run still finds it, beside the members it skips."""
+    mount_twice(holder, family["remotes"])
+    result = validate(holder, "--no-members")
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert result.stderr.count("FINDING") == 1, result.stderr
+    assert "FINDING member-duplicate-id: IRRS2 and IRRS both record id " \
+        "'irrs'" in result.stderr
+    assert "member(s) SKIPPED (--no-members)" in result.stdout
+
+
+def test_the_duplicate_id_remediation_runs_as_printed(family, holder):
+    """The finding names a command, and that command is the repair: typed
+    from a checkout of openRepoShape exactly as printed, it takes the later
+    row out and the gate goes green. It carries the `--family-root` that
+    `remove` requires and the row's own spelling, not a placeholder."""
+    mount_twice(holder, family["remotes"])
+    found = validate(holder)
+    assert found.returncode == 1, found.stderr + found.stdout
+    commands = re.findall(r"`([^`]*scripts/family\.py remove [^`]*)`",
+                          found.stderr)
+    assert len(commands) == 1, found.stderr
+    argv = shlex.split(commands[0])
+    assert argv[0] in ("python3", "python"), commands[0]
+    assert argv[1] == "scripts/family.py", commands[0]
+    assert argv[argv.index("--member") + 1] == "IRRS2", commands[0]
+    assert os.path.samefile(argv[argv.index("--family-root") + 1], holder)
+    removed = run_script(REPO / argv[1], *argv[2:], cwd=REPO)
+    assert removed.returncode == 0, removed.stderr + removed.stdout
+    assert [r["project"] for r in manifest(holder)["members"]] == list(MEMBERS)
+    assert validate(holder).returncode == 0
+
+
+def test_an_exact_duplicate_row_is_one_finding(family, holder):
+    """One row written twice, byte for byte, is `member-duplicate`'s finding
+    and only that. `member-duplicate-id` saying it too would be one fault
+    reported twice, and its `remove` would take out BOTH rows, because
+    `remove` drops every row spelled the way it was given."""
+    family_root = family_module().Family.open(holder)
+    rows = family_root.members
+    irrs = next(row for row in rows if row["project"] == "IRRS")
+    family_root.write_members([*rows, dict(irrs)])
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam",
+        "Write IRRS's row twice", cwd=holder)
+    for extra in ((), ("--pins",)):
+        result = validate(holder, *extra)
+        assert result.returncode == 1, result.stderr + result.stdout
+        assert result.stderr.count("FINDING") == 1, result.stderr
+        assert "FINDING member-duplicate: IRRS appears more than once" \
+            in result.stderr
+        assert "member-duplicate-id" not in result.stderr
+
+
+def test_the_doctor_reports_a_project_pinned_twice(family, holder):
+    """The doctor's `family` row IS the holder's own validator, so the
+    finding reaches it — it is not a second check somebody has to remember."""
+    mount_twice(holder, family["remotes"])
+    result = run_script(DOCTOR, "--root", str(holder), "--json")
+    assert result.returncode != 0, result.stdout
+    rows = {row["id"]: row for row in json.loads(result.stdout)["rows"]}
+    assert rows["family"]["status"] == "FINDING"
+    assert "validate-family.py" in rows["family"]["reason"]
+
+
 def test_validate_finds_an_edited_shape_copy(holder):
     copy = holder / "scripts" / "validate-family.py"
     copy.write_text(copy.read_text() + "\n# edited in place\n")
@@ -636,6 +861,8 @@ def test_bump_moves_the_gitlink_and_the_pin_together(family, tmp_path):
     result = run_script(FAMILY, "bump", "--family-root", str(holder),
                         "--member", "IRRS", "--to", moved)
     assert result.returncode == 0, result.stderr + result.stdout
+    assert "nothing to do" not in result.stdout, (
+        "a bump that moves the pin is not the one #210 made say so")
 
     row = {r["project"]: r for r in manifest(holder)["members"]}["IRRS"]
     assert row["pin"]["commit"] == moved != was["pin"]["commit"]
@@ -658,11 +885,259 @@ def test_bump_refuses_a_member_that_is_not_there(holder):
     assert "member-unknown" in result.stderr
 
 
+def test_bump_finds_a_member_in_any_case_and_keeps_the_rows_spelling(
+        family, holder):
+    """`bump --member irss` used to refuse `member-unknown` and recommend
+    `family.py add --member <org>/irss` — which is the duplicate (#206). The
+    row is found, and the row's spelling is the one written and mounted."""
+    older = git("rev-parse", "main~1",
+                cwd=family["remotes"] / "IRSS.git").stdout.strip()
+    was = {r["project"]: r for r in manifest(holder)["members"]}["IRSS"]
+    assert was["pin"]["commit"] != older
+    result = run_script(FAMILY, "bump", "--family-root", str(holder),
+                        "--member", "irss", "--to", older)
+    assert result.returncode == 0, result.stderr + result.stdout
+    rows = {r["project"]: r for r in manifest(holder)["members"]}
+    assert sorted(rows) == list(MEMBERS), "no second row, in either spelling"
+    assert rows["IRSS"]["pin"]["commit"] == older
+    assert rows["IRSS"]["path"] == "members/IRSS"
+    assert git("rev-parse", "HEAD:members/IRSS",
+               cwd=holder).stdout.strip() == older
+    assert message_of(holder).startswith("Bump IRSS to ")
+    assert set(git("show", "--name-only", "--format=", "HEAD",
+                   cwd=holder).stdout.split()) == {"members/IRSS",
+                                                   "family.yaml"}
+    assert validate(holder).returncode == 0
+
+
 def test_bump_refuses_a_tag(holder):
     result = run_script(FAMILY, "bump", "--family-root", str(holder),
                         "--member", "IRRS", "--to", "v1.0.0")
     assert result.returncode == 2
     assert "member-to-not-a-commit" in result.stderr
+
+
+# --- bump to the commit already pinned (#210) -------------------------------
+
+def nothing_to_do_line(project: str, commit: str) -> str:
+    """The sentence `bump-leg.py` answers the same re-run with, repository
+    first, so a lane or script reads one wording from either tool."""
+    return (f"nothing to do: {ORG}/{project} is already pinned at "
+            f"{commit[:12]} and every fact agrees.")
+
+
+def commit_in_member(member, message: str = "The member moved again") -> str:
+    """An EMPTY commit on top of the member's HEAD: a new commit whose tree is
+    the old one's, so `pin.tree_sha256` still recomputes and the gitlink is the
+    only fact that moves. Returns its sha."""
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
+        "--allow-empty", "-m", message, cwd=member)
+    return git("rev-parse", "HEAD", cwd=member).stdout.strip()
+
+
+@pytest.mark.parametrize("extra", [
+    (), ("--trailer", TRAILERS[0], "--trailer", TRAILERS[1])],
+    ids=["plain", "with-trailers"])
+def test_bump_to_the_commit_already_pinned_is_nothing_to_do(holder, extra):
+    """A re-run of a bump that already landed. It used to check the member out
+    at the commit, rewrite the same row and hand `git commit` nothing, which
+    exited 1 and reached `main` as "REFUSED a git or gh command failed", exit
+    2 — a refusal, where `family.py` documents exit 1 for nothing and
+    `bump-leg.py` answers the same re-run with `nothing to do` (#210).
+
+    NOTHING IS WRITTEN: no commit, no staged path, not one byte of
+    `family.yaml`. A lane re-runs a bump with its `Lane:` and `Co-Authored-By:`
+    trailers, so the run with them is the one that has to read the same.
+    """
+    pinned = git("rev-parse", "HEAD:members/IRRS", cwd=holder).stdout.strip()
+    row = {r["project"]: r for r in manifest(holder)["members"]}["IRRS"]
+    assert row["pin"]["commit"] == pinned, "fixture drift: gitlink != pin"
+    head = git("rev-parse", "HEAD", cwd=holder).stdout.strip()
+    status = git("status", "--porcelain", cwd=holder).stdout
+    before = (holder / "family.yaml").read_bytes()
+
+    result = run_script(FAMILY, "bump", "--family-root", str(holder),
+                        "--member", "IRRS", "--to", pinned, *extra)
+
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert nothing_to_do_line("IRRS", pinned) in result.stdout
+    assert result.stderr == "", (
+        "nothing to do is not a refusal, and says nothing on stderr")
+    assert "REFUSED" not in result.stdout + result.stderr
+    assert "committed" not in result.stdout
+    assert git("rev-parse", "HEAD", cwd=holder).stdout.strip() == head, (
+        "no commit, not even an empty one")
+    assert git("status", "--porcelain", cwd=holder).stdout == status == ""
+    assert (holder / "family.yaml").read_bytes() == before
+    assert validate(holder).returncode == 0
+
+
+def test_bump_to_the_commit_already_pinned_ignores_what_the_member_holds(
+        holder):
+    """The member's own untracked and modified files are not something the
+    holder's commit can record: `git commit` finds nothing to commit with them
+    there, so a bump that asked `git diff` without `--ignore-submodules=dirty`
+    would have gone on to commit and been refused again (#210)."""
+    member = holder / "members" / "IRRS"
+    pinned = git("rev-parse", "HEAD:members/IRRS", cwd=holder).stdout.strip()
+    (member / "UNTRACKED.md").write_text("left lying in the mount\n")
+    (member / "NOTES.md").write_text("edited in place\n")
+    head = git("rev-parse", "HEAD", cwd=holder).stdout.strip()
+
+    result = run_script(FAMILY, "bump", "--family-root", str(holder),
+                        "--member", "IRRS", "--to", pinned)
+
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert nothing_to_do_line("IRRS", pinned) in result.stdout
+    assert git("rev-parse", "HEAD", cwd=holder).stdout.strip() == head
+    assert (member / "UNTRACKED.md").is_file(), "the member's files stay"
+    assert (member / "NOTES.md").read_text() == "edited in place\n"
+
+
+def test_bump_to_the_commit_already_pinned_leaves_an_uncommitted_edit_alone(
+        holder):
+    """The rewrite equals `HEAD`, so there is nothing to record, and what the
+    working copy held before is put back: an uncommitted edit to the `members:`
+    block is not this run's to discard, however wrong it is. `git status` says
+    the same before and after."""
+    pinned = git("rev-parse", "HEAD:members/IRRS", cwd=holder).stdout.strip()
+    manifest_path = holder / "family.yaml"
+    manifest_path.write_text(manifest_path.read_text().replace(
+        "    id: irrs\n", "    id: something-else\n"))
+    edited = manifest_path.read_bytes()
+    status = git("status", "--porcelain", cwd=holder).stdout
+    assert status.strip() == "M family.yaml", status
+
+    result = run_script(FAMILY, "bump", "--family-root", str(holder),
+                        "--member", "IRRS", "--to", pinned)
+
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert nothing_to_do_line("IRRS", pinned) in result.stdout
+    assert manifest_path.read_bytes() == edited
+    assert git("status", "--porcelain", cwd=holder).stdout == status
+
+
+def test_bump_to_the_pinned_commit_unstages_a_stray_gitlink_and_says_nothing(
+        holder):
+    """THE VALIDATOR'S OWN REMEDY, followed with the pinned commit. Somebody
+    moved the member and ran `git add members/IRRS` without committing:
+    `validate-family.py` reads the INDEX first, reports
+    `member-gitlink-mismatch` and names `family.py bump --member <Project> --to
+    <commit>` as the repair. `bump` checks the member out at the pinned commit,
+    which is HEAD's gitlink, but the index still differs from HEAD, so
+    `git diff HEAD` found something and `git commit` then did not: the refusal
+    #210 is about, exit 2, reached through the remedy. The gitlink is
+    re-staged before git is asked, the index agrees with HEAD again, and there
+    is nothing to record (#210)."""
+    member = holder / "members" / "IRRS"
+    pinned = git("rev-parse", "HEAD:members/IRRS", cwd=holder).stdout.strip()
+    stray = commit_in_member(member, "A stray move, staged and never committed")
+    git("add", "--", "members/IRRS", cwd=holder)
+    assert git("ls-files", "-s", "--", "members/IRRS",
+               cwd=holder).stdout.split()[1] == stray, "fixture drift"
+    broken = validate(holder)
+    assert broken.returncode == 1
+    assert "member-gitlink-mismatch" in broken.stderr
+    head = git("rev-parse", "HEAD", cwd=holder).stdout.strip()
+    before = (holder / "family.yaml").read_bytes()
+
+    result = run_script(FAMILY, "bump", "--family-root", str(holder),
+                        "--member", "IRRS", "--to", pinned)
+
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert nothing_to_do_line("IRRS", pinned) in result.stdout
+    assert "REFUSED" not in result.stdout + result.stderr
+    assert git("rev-parse", "HEAD", cwd=holder).stdout.strip() == head
+    assert git("ls-files", "-s", "--", "members/IRRS",
+               cwd=holder).stdout.split()[1] == pinned
+    assert git("status", "--porcelain", cwd=holder).stdout == ""
+    assert (holder / "family.yaml").read_bytes() == before
+    assert validate(holder).returncode == 0
+
+
+def test_bump_finishes_a_bump_an_earlier_run_staged_and_did_not_commit(holder):
+    """THE MANIFEST ALREADY NAMES `--to`, and there is still something to
+    commit: a run that wrote the row and staged both paths and then died
+    before `git commit` — a hook that refused, a lock — leaves exactly this.
+    Reading `was == --to` as "nothing to do" would call the half-finished bump
+    done and leave the commit for somebody to make by hand (#210)."""
+    member = holder / "members" / "IRRS"
+    before = git("rev-parse", "HEAD:members/IRRS", cwd=holder).stdout.strip()
+    after = commit_in_member(member)
+    manifest_path = holder / "family.yaml"
+    text = manifest_path.read_text()
+    assert text.count(before) == 1, "fixture drift: IRRS's pin is not unique"
+    manifest_path.write_text(text.replace(before, after, 1))
+    git("add", "--", "members/IRRS", "family.yaml", cwd=holder)
+    head = git("rev-parse", "HEAD", cwd=holder).stdout.strip()
+
+    result = run_script(FAMILY, "bump", "--family-root", str(holder),
+                        "--member", "IRRS", "--to", after)
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "nothing to do" not in result.stdout
+    assert git("rev-parse", "HEAD", cwd=holder).stdout.strip() != head
+    assert git("rev-parse", "HEAD:members/IRRS",
+               cwd=holder).stdout.strip() == after
+    assert set(git("show", "--name-only", "--format=", "HEAD",
+                   cwd=holder).stdout.split()) == {"members/IRRS",
+                                                  "family.yaml"}
+    assert validate(holder).returncode == 0
+
+
+def test_bump_to_the_pinned_commit_repairs_a_gitlink_that_moved_alone(holder):
+    """`validate-family.py`'s own remedy for `member-gitlink-mismatch` is
+    `family.py bump --member <Project> --to <commit>`, and when the commit it
+    is pointed at is the one the row already names the manifest agrees with
+    `--to` and the gitlink does not. That is a bump with something to commit
+    (#210)."""
+    member = holder / "members" / "IRRS"
+    pinned = git("rev-parse", "HEAD:members/IRRS", cwd=holder).stdout.strip()
+    commit_in_member(member)
+    git("add", "--", "members/IRRS", cwd=holder)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m",
+        "Move the gitlink and not the pin", cwd=holder)
+    broken = validate(holder)
+    assert broken.returncode == 1
+    assert "member-gitlink-mismatch" in broken.stderr
+
+    result = run_script(FAMILY, "bump", "--family-root", str(holder),
+                        "--member", "IRRS", "--to", pinned)
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "nothing to do" not in result.stdout
+    assert git("rev-parse", "HEAD:members/IRRS",
+               cwd=holder).stdout.strip() == pinned
+    assert validate(holder).returncode == 0, "and the lockstep rule holds"
+
+
+def test_bump_to_the_pinned_commit_repairs_a_digest_that_does_not_recompute(
+        holder):
+    """The other half of the same remedy: a row whose `tree_sha256` is wrong
+    names the commit `--to` names, and the bump rewrites the digest from the
+    member's own objects. Comparing the commit and not the digest would have
+    called it done."""
+    member = holder / "members" / "IRRS"
+    pinned = git("rev-parse", "HEAD:members/IRRS", cwd=holder).stdout.strip()
+    row = {r["project"]: r for r in manifest(holder)["members"]}["IRRS"]
+    manifest_path = holder / "family.yaml"
+    manifest_path.write_text(manifest_path.read_text().replace(
+        row["pin"]["tree_sha256"], "b" * 64))
+    git("add", "--", "family.yaml", cwd=holder)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m",
+        "Hand-edit a digest", cwd=holder)
+    broken = validate(holder)
+    assert broken.returncode == 1
+    assert "member-digest-mismatch" in broken.stderr
+
+    result = run_script(FAMILY, "bump", "--family-root", str(holder),
+                        "--member", "IRRS", "--to", pinned)
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "nothing to do" not in result.stdout
+    repaired = {r["project"]: r for r in manifest(holder)["members"]}["IRRS"]
+    assert repaired["pin"]["tree_sha256"] == tree_digest(member, pinned)
+    assert validate(holder).returncode == 0
 
 
 # --- --trailer: the lines a bump's commit ends with (#111) ------------------
@@ -750,6 +1225,30 @@ def test_remove_unmounts_the_member_and_touches_nothing_else(family, tmp_path):
     bare = family["remotes"] / "IRSS.git"
     assert bare.is_dir()
     assert git("rev-parse", "main", cwd=bare).stdout.strip()
+
+
+def test_remove_finds_a_member_in_any_case(family, holder):
+    result = run_script(FAMILY, "remove", "--family-root", str(holder),
+                        "--member", "irss")
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "removed IRSS (InkRouter/IRSS) from members/IRSS" in result.stdout
+    assert [r["project"] for r in manifest(holder)["members"]] == ["IRRS"]
+    assert sorted(os.listdir(holder / "members")) == ["IRRS"]
+    assert message_of(holder).startswith("Remove IRSS from ")
+    assert validate(holder).returncode == 0
+
+
+def test_remove_takes_the_extra_row_out_of_a_family_pinned_twice(family,
+                                                                 holder):
+    """The way out for a holder that already pins one project twice: name the
+    row to drop, and the gate goes green again."""
+    mount_twice(holder, family["remotes"])
+    assert validate(holder).returncode == 1
+    result = run_script(FAMILY, "remove", "--family-root", str(holder),
+                        "--member", "IRRS2")
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert [r["project"] for r in manifest(holder)["members"]] == list(MEMBERS)
+    assert validate(holder).returncode == 0
 
 
 def test_remove_leaves_the_object_store_and_says_so(family, tmp_path):

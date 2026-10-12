@@ -169,80 +169,148 @@ class YamlError(Exception):
 # than one document. Each of those has a meaning this reader would have to
 # invent, and an invented meaning in a validator is a wrong answer with a
 # confident tone.
+#
+# A QUOTE OPENS A QUOTED SCALAR ONLY WHERE A SCALAR BEGINS, as in YAML; in
+# the middle of a plain scalar (`it's`) it is a character of it (#249). A
+# quoted scalar must close on its own line, with nothing after its closing
+# quote but a comment or the structure that ends it, or it is REFUSED (#250):
+# a quoted scalar spanning lines is outside this subset. See `_unquoted`.
+#
+# A FLOW MAPPING READS AS ITS BLOCK TWIN (#252): an entry opening `? ` is an
+# explicit key and is refused as a block line opening `? ` is, and an empty
+# value (`{k: }`, `{k:}`) is null as a block `k:` is.
 
 _DASH_RE = re.compile(r"^-(\s+|$)")
 
-#: Marks a `_Rec` built from a block scalar, carrying its key and body
-#: instead of raw text, NUL-separated; spelled once because `python:S1192`
-#: counts three repeats of the same literal. A block scalar's KEY HOLDING A
-#: NUL COLLIDES WITH IT and is misread (`"a\x00b": |` reads as the key `a`
-#: with `b` and a NUL ahead of the body): a raw NUL, which YAML forbids and
-#: this reader does not refuse, and since #199 the escape `\x00` in a
-#: double-quoted key. No writer in this repository emits such a key: the
-#: plan writer writes no block scalar, and every key it writes is a literal.
-_BLOCK_SENTINEL = "\x00BLOCK\x00"
-
 
 class _Rec:
-    __slots__ = ("indent", "text", "dash", "line")
+    """One significant line, as `_parse_nodes` reads it.
 
-    def __init__(self, indent: int, text: str, dash: bool, line: int):
+    `block` is a block scalar's `(key, body)`, set on the record its header
+    makes and on no other, and its `text` is empty. THE PAIR IS NEVER JOINED
+    INTO ONE STRING, so no character a key can hold collides with the
+    record's own structure. It was joined, as a NUL-delimited marker + key +
+    NUL + body split again at the NULs (#248): a key holding a NUL -- the
+    escape `\\x00` in a double-quoted key since #199, or a raw NUL, which YAML
+    forbids and this reader takes -- was cut short there with the rest of it
+    read into the body, and an ordinary line whose text began with that
+    marker read as a block scalar it never was.
+    """
+
+    __slots__ = ("indent", "text", "dash", "line", "block")
+
+    def __init__(self, indent: int, text: str, dash: bool, line: int,
+                 block: tuple[str, str] | None = None):
         self.indent = indent
         self.text = text
         self.dash = dash
         self.line = line
+        self.block = block
+
+
+def _quote_end(text: str, start: int) -> int | None:
+    """The index just past the quoted scalar that opens at `text[start]`,
+    or None when nothing on the line closes it.
+
+    A `"` closes it where no backslash escapes it: the character after each
+    backslash is taken with the backslash, so the `"` of `\\\\"` closes and
+    the `"` of `\\"` does not. A `'` closes it where it is not doubled, `''`
+    being a single-quoted scalar's one escape.
+    """
+    quote = text[start]
+    i = start + 1
+    while i < len(text):
+        if quote == '"' and text[i] == "\\":
+            i += 2
+        elif text[i] != quote:
+            i += 1
+        elif quote == "'" and text[i + 1:i + 2] == "'":
+            i += 2
+        else:
+            return i + 1
+    return None
+
+
+def _unquoted(text: str, flow: bool = False):
+    """Each `(index, character)` of `text` that no quoted scalar holds: the
+    characters `_strip_comment`, `_split_key` and `_split_flow` may read as
+    structure.
+
+    THE ONE DEFINITION OF WHERE A QUOTED SCALAR STARTS AND ENDS, which those
+    three used to spell as three toggles that opened a quote at ANY `"` or
+    `'` (#249). A quote opens one only where a scalar BEGINS: at the start
+    of the text, or after `- `, `: `, `[` or `{`, or after a `,` inside a
+    flow, with any spaces after each. Anywhere else, as in `it's` or `a"b`,
+    it is a character of a plain scalar, so the `,`, `#` or `: ` after it is
+    still structure and `k: [it's, a]` is two items, as its block twin is.
+    The quoted scalar ends at `_quote_end`. When nothing closes it, the rest
+    of the text is inside it and nothing more is yielded; `_scalar` then
+    refuses it by name (#250).
+
+    `flow` says `text` is a flow collection's body, where every `,`, `[` and
+    `{` is structure. On a block line they are structure only inside a flow
+    the line opens where a scalar begins, so `k: a, 'b # c'` is the plain
+    scalar `a, 'b` and a comment, as YAML reads it.
+    """
+    depth, begins, i = 0, True, 0
+    while i < len(text):
+        ch = text[i]
+        if begins and ch in "\"'":
+            end = _quote_end(text, i)
+            if end is None:
+                return
+            i, begins = end, False
+            continue
+        yield i, ch
+        i += 1
+        if ch in "[{" and (begins or flow or depth):
+            depth += 1
+        elif ch in "]}" and depth:
+            depth -= 1
+        spaced = text[i:i + 1] in ("", " ", "\t")
+        if ch not in " \t" and not (ch == "-" and begins and spaced):
+            begins = (ch in "[{," and (flow or depth > 0)
+                      or ch == ":" and spaced)
 
 
 def _strip_comment(text: str) -> str:
-    """Drop a trailing `#` comment that is not inside a quoted scalar."""
-    out = []
-    quote = None
-    i = 0
-    while i < len(text):
-        ch = text[i]
-        if quote:
-            out.append(ch)
-            if ch == "\\" and quote == '"' and i + 1 < len(text):
-                out.append(text[i + 1])
-                i += 2
-                continue
-            if ch == quote:
-                quote = None
-        elif ch in "\"'":
-            quote = ch
-            out.append(ch)
-        elif ch == "#" and (not out or out[-1] in " \t"):
-            break
-        else:
-            out.append(ch)
-        i += 1
-    return "".join(out).rstrip()
+    """Drop a trailing `#` comment: a `#` no quoted scalar holds
+    (`_unquoted`), at the start of the text or after a space or tab."""
+    for i, ch in _unquoted(text):
+        if ch == "#" and (i == 0 or text[i - 1] in " \t"):
+            return text[:i].rstrip()
+    return text.rstrip()
 
 
 def _split_key(text: str) -> tuple[str, str] | None:
-    """Split `key: rest` on the first top-level `:` followed by space or EOL."""
-    quote = None
-    i = 0
-    while i < len(text):
-        ch = text[i]
-        if quote:
-            if ch == "\\" and quote == '"':
-                i += 2
-                continue
-            if ch == quote:
-                quote = None
-        elif ch in "\"'":
-            quote = ch
-        elif ch in "[{":
-            return None  # a flow collection cannot be a key in this subset
+    """Split `key: rest` on the first `:` followed by space or EOL that no
+    quoted scalar holds (`_unquoted`).
+
+    A `[` OR `{` THAT OPENS THE TEXT makes it a flow collection, which is not
+    a key in this subset, so `- [a, b]` and `- {a: b}` stay flow items. One
+    LATER IN A KEY, before its `: `, is REFUSED by name: YAML reads
+    `a[b]: c` as the key `a[b]`, but a block key and a flow-entry key would
+    have to be told apart to read it, and returning `None` made `- a[b]: c`
+    the string `'a[b]: c'` where a mapping was meant (#249).
+    """
+    bracket = False
+    for i, ch in _unquoted(text):
+        if ch in "[{":
+            if not text[:i].strip():
+                return None  # a flow collection cannot be a key in this subset
+            bracket = True
         elif ch == ":" and (i + 1 == len(text) or text[i + 1] in " \t"):
+            if bracket:
+                raise YamlError("a key holding `[` or `{` is not supported: "
+                                f"{text[:i].strip()!r}")
             return _unquote_key(text[:i].strip()), text[i + 1:].strip()
-        i += 1
     return None
 
 
 def _unquote_key(key: str) -> str:
-    if len(key) >= 2 and key[0] == key[-1] and key[0] in "\"'":
+    """A key that begins with a quote is one quoted scalar, or `_scalar`
+    refuses it: `"a" b: 1` is not the key `"a" b` (#250)."""
+    if key[:1] in ('"', "'"):
         return str(_scalar(key))
     return key
 
@@ -353,14 +421,33 @@ def _unescape(body: str) -> str:
     return "".join(out)
 
 
+def _quoted_scalar(text: str) -> str:
+    """The value of `text`, which begins with a quote and must be ONE whole
+    quoted scalar (#250).
+
+    Not "starts and ends with a quote": that took `"a" b "c"` for one scalar,
+    `"a\\"` for `a\\` and an unclosed `"abc` for plain text, where YAML
+    refuses each. Nothing may follow the closing quote, because a comment
+    after it is gone before this runs and the structure after it is not part
+    of `text`.
+    """
+    end = _quote_end(text, 0)
+    if end is None:
+        raise YamlError(f"quoted scalar without a closing quote: {text!r}")
+    if end < len(text):
+        raise YamlError(
+            f"quoted scalar with text after its closing quote: {text!r}")
+    if text[0] == "'":
+        return text[1:-1].replace("''", "'")
+    return _unescape(text[1:-1])
+
+
 def _scalar(raw: str) -> Any:
     text = raw.strip()
     if text == "" or text in ("null", "~", "Null", "NULL"):
         return None
-    if text[0] == "'" and text[-1] == "'" and len(text) >= 2:
-        return text[1:-1].replace("''", "'")
-    if text[0] == '"' and text[-1] == '"' and len(text) >= 2:
-        return _unescape(text[1:-1])
+    if text[0] in "\"'":
+        return _quoted_scalar(text)
     if text[0] in "&*!":
         raise YamlError(f"anchors, aliases and tags are not supported: {text!r}")
     if text in ("true", "True", "TRUE"):
@@ -374,9 +461,46 @@ def _scalar(raw: str) -> Any:
     return text
 
 
+def _refuse_flow_indicator(text: str) -> None:
+    """Refuse a PLAIN scalar of a flow collection that holds `[`, `]`, `{` or
+    `}` (#301); a quoted one is `_scalar`'s to judge, and its brackets are
+    text.
+
+    In YAML a plain scalar inside a flow collection ENDS at any of the four,
+    as it ends at the `,` `_split_flow` splits at, so a scalar holding one is
+    never the text it looks like, and PyYAML refuses the document. `k: [a]]`
+    closes the sequence after `a` and leaves a `]` nothing opened, and
+    `k: [x [a, b]]` opens a sequence while an item is still being read.
+    `_split_flow` counts brackets to find its commas and never asked whether
+    the count went below zero or ended above it, so the rest was read as
+    text: `['a]']`, `['x [a, b]']`, and the key of `k: {a"]:}` as `a"]`
+    since #284 stopped reading that `"` as a quote. Refused, a stray
+    bracket typed into `pins: [a, b]]` is a `yaml-unparsable` naming it, not
+    the pin `b]`.
+    """
+    if text.startswith(('"', "'")):
+        return
+    held = next((char for char in text if char in "[]{}"), None)
+    if held is not None:
+        raise YamlError(f"a plain scalar in a flow collection holds `{held}`, "
+                        f"which ends it in YAML: {text!r}")
+
+
 def _flow_value(text: str) -> Any:
-    """A flow entry is itself a flow collection when it opens with `[` or `{`."""
-    return _flow(text) if text[:1] in "[{" else _scalar(text)
+    """A flow entry is itself a flow collection when it OPENS with `[` or `{`.
+
+    AN EMPTY ENTRY OPENS NOTHING (#252): `{a: }` and `{a:}` give this `''`,
+    and `'' in "[{"` is True for any string, so the test used to run `_flow`
+    on it and refuse `{a: }` as `not a flow collection: ''`, a text nobody
+    wrote. `_scalar('')` is the null a block `a:` reads.
+
+    ONE THAT OPENS NOTHING HOLDS NO BRACKET OR BRACE (#301): a plain item or
+    value holding one is refused by `_refuse_flow_indicator`.
+    """
+    if text.startswith(("[", "{")):
+        return _flow(text)
+    _refuse_flow_indicator(text)
+    return _scalar(text)
 
 
 def _flow(text: str) -> Any:
@@ -405,42 +529,49 @@ def _split_key_flow(text: str) -> tuple[str, str] | None:
     after a backslash inside double quotes, so `{"a\\": b": 1}` read as the
     key `a\\` (#213). `_split_key` already lets the value open a flow -- it
     returns at the first top-level `:`, before any `[` or `{` after it.
+
+    AN ENTRY OPENING `? ` IS AN EXPLICIT KEY, AND IS REFUSED as the block
+    reader refuses it (`_refuse_unsupported`, which runs on block lines only):
+    an explicit key has a meaning this reader would have to invent, and
+    `? a: b` used to read as the literal key `? a` (#252). The block form
+    names its line, and a flow collection has none to name, so this names the
+    entry. A QUOTED key, `"? a"`, does not open with the `?`, and `?a` is not
+    the indicator, which needs a space after it: both read as they did.
+
+    A PLAIN KEY HOLDS NO `]` OR `}` EITHER (#301). `_split_key` refuses a
+    `[` or `{` later in a key, and in a flow a closer ends the key as surely,
+    so `{a"]:}` read as the key `a"]` and `{]:}` as `]`, where PyYAML
+    refuses both. `_refuse_flow_indicator` refuses them; a quoted key is
+    still text.
     """
-    return _split_key(text)
+    if text.startswith("? "):
+        raise YamlError(f"explicit keys are not supported: {text!r}")
+    kv = _split_key(text)
+    if kv is not None and not text.startswith(('"', "'")):
+        _refuse_flow_indicator(kv[0])
+    return kv
 
 
 def _split_flow(body: str) -> list[str]:
     """A flow collection's body, split at its top-level commas.
 
-    Inside a DOUBLE-quoted item the character after a backslash is taken
-    with it, as `_strip_comment` and `_split_key` take it, so `\\"` neither
-    ends the item nor lets a `,` or `]` after it read as structure (#213). A
-    single-quoted item has no backslash escape: its `''` is two quotes, and
-    the toggle reads it.
+    The commas, brackets and braces it reads are the ones `_unquoted` yields,
+    so one inside a quoted item is not structure, and neither is a quote in
+    the middle of a plain item (#249). Inside a DOUBLE-quoted item the
+    character after a backslash is taken with it, so `\\"` neither ends the
+    item nor lets a `,` or `]` after it read as structure (#213). A
+    single-quoted item has no backslash escape: its `''` is a quote.
     """
-    parts, depth, quote, cur = [], 0, None, []
-    chars = iter(body)
-    for ch in chars:
-        if quote:
-            cur.append(ch)
-            if ch == "\\" and quote == '"':
-                cur.append(next(chars, ""))
-            elif ch == quote:
-                quote = None
-            continue
-        if ch in "\"'":
-            quote = ch
-        elif ch in "[{":
+    parts, depth, start = [], 0, 0
+    for i, ch in _unquoted(body, flow=True):
+        if ch in "[{":
             depth += 1
         elif ch in "]}":
             depth -= 1
         elif ch == "," and depth == 0:
-            parts.append("".join(cur).strip())
-            cur = []
-            continue
-        cur.append(ch)
-    if cur:
-        parts.append("".join(cur).strip())
+            parts.append(body[start:i].strip())
+            start = i + 1
+    parts.append(body[start:].strip())
     return [p for p in parts if p != ""]
 
 
@@ -618,11 +749,10 @@ def _tokenise(text: str) -> list[_Rec]:
         kv = _split_key(content)
         if _opens_block_scalar(kv):
             # A block scalar: swallow every following line more indented than
-            # the key, and keep it as one string.
+            # the key, and keep the key and the body as the record's pair.
             body, i = _block_scalar_body(raw_lines, i, indent)
-            recs.append(_Rec(indent, "", False, i))
-            recs[-1].text = (_BLOCK_SENTINEL + kv[0] + "\x00"
-                             + _block_scalar_text(kv[1], body))
+            recs.append(_Rec(indent, "", False, i,
+                             (kv[0], _block_scalar_text(kv[1], body))))
             continue
         recs.append(_Rec(indent, content, False, i))
     return recs
@@ -642,7 +772,7 @@ def _parse_sequence(recs: list[_Rec], i: int, indent: int) -> tuple[list[Any], i
         i += 1
         if i < len(recs) and recs[i].indent > indent:
             rec = recs[i]
-            if not rec.dash and not rec.text.startswith(_BLOCK_SENTINEL) \
+            if not rec.dash and rec.block is None \
                     and _split_key(rec.text) is None:
                 # A plain or flow SCALAR item (`- openAvatar`, `- [a, b]`).
                 value = _flow(rec.text) if rec.text[:1] in "[{" else _scalar(rec.text)
@@ -675,8 +805,8 @@ def _parse_mapping(recs: list[_Rec], i: int, indent: int) -> tuple[dict, int]:
     out: dict[str, Any] = {}
     while i < len(recs) and not recs[i].dash and recs[i].indent == indent:
         rec = recs[i]
-        if rec.text.startswith(_BLOCK_SENTINEL):
-            _empty, _marker, key, body = rec.text.split("\x00", 3)
+        if rec.block is not None:
+            key, body = rec.block
             out[key] = body
             i += 1
             continue
@@ -804,7 +934,10 @@ def tree_digest_from_gh(repository: str, commit: str) -> str:
     try:
         proc = subprocess.run(
             ["gh", "api", GH_TREE_API.format(repo=repository, commit=commit)],
-            capture_output=True, text=True, check=False)
+            # UTF-8 and STRICT, not `errors="replace"`: this JSON becomes a
+            # digest, and a replaced byte would be a wrong digest with a
+            # confident tone (#217).
+            capture_output=True, text=True, encoding="utf-8", check=False)
     except FileNotFoundError as exc:
         raise Refusal("gh-not-found",
                       f"the `gh` CLI is not on PATH: {exc}") from exc
@@ -872,7 +1005,8 @@ def free_plan_secret_hint(org: str, repo: str, what: str) -> str | None:
     try:
         proc = subprocess.run(
             ["gh", "api", f"orgs/{org}", "--jq", ".plan.name"],
-            capture_output=True, text=True, check=False)
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", check=False)
     except OSError:  # FileNotFoundError (no `gh` on PATH) is already an OSError
         return None
     if proc.returncode != 0:
@@ -1878,6 +2012,17 @@ REMOTE_SCHEME_ONLY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:/*$")
 #: draws for a value on a command line, for the same reason.
 REMOTE_DRIVE_RE = re.compile(r"^[A-Za-z]:$")
 
+#: A `:<port>` after the HOST of a `<scheme>://` url: where its transport
+#: connects, never which repository it reaches. Only such a url has one; in
+#: git's scp spelling `host:22/Repo.git` the `22` is the path's, and stays.
+#: Digits are required, so a drive's bare colon is never read as one.
+REMOTE_PORT_RE = re.compile(r":\d+$")
+
+#: A host that is another door into the repositories of the host it maps
+#: to: GitHub's SSH-over-the-HTTPS-port endpoint, which GitHub's own
+#: documentation spells `ssh://git@ssh.github.com:443/Org/Repo.git`.
+REMOTE_HOST_ALIASES = {"ssh.github.com": "github.com"}
+
 
 def _remote_body(url: str) -> str:
     """A remote with its scheme, its credential and its trailing `/` gone.
@@ -1991,11 +2136,24 @@ def remote_key(url: str) -> str:
     was written in. It is asked of the remote AS IT WAS WRITTEN, because the
     scp colon this function is about to turn into a `/` is the one thing that
     tells a Windows drive from a host.
+
+    A PORT COMES OFF TOO, AND `ssh.github.com` IS `github.com` (#190).
+    `ssh://git@github.com:22/Org/Repo.git` and GitHub's documented
+    `ssh://git@ssh.github.com:443/Org/Repo.git` are
+    `git@github.com:Org/Repo.git` reached through another door; with the
+    port's colon taken for the scp one they keyed as `github.com/22/org/repo`,
+    which no other spelling of that repository does, and a caller comparing
+    keys -- `adopt-project.py`'s relative-url check -- called them two.
     """
     text = _remote_body(url)
     fold_case = _remote_names_a_host(url)
-    if ":" in text.split("/", 1)[0]:     # the scp spelling's one separator
-        text = text.replace(":", "/", 1)
+    first, slash, rest = text.partition("/")
+    if REMOTE_SCHEME_RE.match(url.strip()):   # only a url's host has a port
+        first = REMOTE_PORT_RE.sub("", first)
+    # The scp spelling's one separator, `host:path`, becomes a `/`.
+    host, slash, rest = (first.replace(":", "/", 1) + slash
+                         + rest).partition("/")
+    text = REMOTE_HOST_ALIASES.get(host.lower(), host) + slash + rest
     if text.lower().endswith(".git"):
         text = text[:-4]
     return (text.lower() if fold_case else text).strip("/")

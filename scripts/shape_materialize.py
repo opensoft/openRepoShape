@@ -22,12 +22,15 @@ would put a byte in the split commit that no `git rm` accounts for — which is
 precisely what `adopt-project.py --verify` would then report as a mismatch.
 So a colliding template file is written BESIDE the original under
 `collision_dir` (`shape/`) and the collision is reported for the plan's
-`follow_ups:`. The human merges it; the tool never guesses.
+`follow_ups:`. The human merges it; the tool never guesses. A copy whose own
+path is taken -- the source keeps a `shape/README.md` of its own -- is
+REFUSED, never written over (`copy_in_the_way`, #262).
 """
 
 from __future__ import annotations
 
 import argparse
+import codecs
 import datetime as _dt
 import os
 import re
@@ -40,8 +43,12 @@ from pathlib import Path, PurePath
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from repo_shape import (  # noqa: E402
     CHAIN_RECORD_FIELD, SAFE_ARG_RE, NamingPolicy, Refusal, checked_value,
-    file_sha256,
+    double_quoted, file_sha256,
 )
+# The reader's own parse and its own comment rule, for "The two lines a pin
+# is moved by" below. `_strip_comment` is that module's private name and is
+# imported on purpose: it is the reader's rule for where a comment starts.
+from repo_shape import YamlError, _strip_comment, parse_yaml  # noqa: E402
 
 SHAPE_REPOSITORY = "opensoft/openRepoShape"
 
@@ -81,6 +88,208 @@ def write_lf(path: Path, text: str) -> None:
     """
     with path.open("w", encoding="utf-8", newline="\n") as handle:
         handle.write(text)
+
+
+def escape_what_stdout_cannot_encode(stream=None) -> None:
+    """A character `stream` cannot encode is printed escaped, never raised on.
+
+    WHAT WAS WRONG (#214). The tools that call this print names a person
+    chose -- a source file, a `--source`, `--root`, `--out` or `--work-dir`
+    path, a `--name`, an `--elected-by` -- with a plain `print`, and a stdout
+    whose encoding cannot hold one raised `UnicodeEncodeError` in the middle
+    of the report. On Windows that is any stdout that is not the console
+    itself (a file, a pipe to `tee`, CI, an agent running the tool): Python
+    gives it the ANSI code page, cp1252 on a Western-European install, and a
+    Japanese file name is not in it. `adopt-project.py plan` had already
+    written the plan, then exited 1 with a traceback before `plan written
+    to` and before the questions it exists to ask.
+
+    TWO HANDLERS RAISE ON SUCH A NAME, AND ONLY THOSE TWO ARE CHANGED.
+    - `strict` (a POSIX locale that is not C or POSIX and not one Python
+      coerces C to, so `en_US.UTF-8` but not `C.UTF-8`; and any
+      `PYTHONIOENCODING=<codec>` that names no handler) becomes
+      `backslashreplace`, the handler Python already gives stderr.
+    - `surrogateescape` becomes `SURROGATEESCAPE_THEN_BACKSLASHREPLACE`,
+      registered below. It is what CPython gives EVERY Windows stdout by
+      default, the redirected cp1252 one included (`config_get_stdio_errors`
+      in `Python/initconfig.c`: "On Windows, always use surrogateescape by
+      default", 3.9 to 3.14), and what UTF-8 mode and the C, POSIX and
+      `C.UTF-8` locales give. It covers only U+DC80..U+DCFF, the bytes a
+      name that is not UTF-8 was read in with, so `日本.md` raised there
+      exactly as under `strict`. The new handler writes such a byte back as
+      that byte, which is surrogateescape's own rule, and writes anything
+      else the encoding cannot hold as `backslashreplace` does.
+    Each replacement writes what the handler it replaces would have
+    written, byte for byte, and differs only where that one would have
+    raised, so no run that succeeded prints anything different. Every other
+    handler -- one an operator chose, `replace`, `backslashreplace` itself --
+    is left as it was, and the ENCODING is never changed: a character the
+    code page holds is still written in it.
+
+    `backslashreplace` AND NOT `replace`: `\\u65e5\\u672c.md` still says which
+    file it is, and two names that differ only outside the code page do not
+    both print as `??.md`. (A backslash is not escaped, so a name that holds
+    the six characters `\\u65e5` prints as one holding `日` does.) ONCE, AT
+    THE START OF `main()`, and not at each `print`: `shape-doctor.py`'s
+    `ascii_text` and `shape_advisory.printable` flatten their own text to
+    ASCII on every console, which a name cannot afford -- it would change
+    what a UTF-8 terminal shows -- and a guard at each site is a guard the
+    next `print` goes without.
+
+    GUARDED, because failing to set a handler is no reason to refuse the
+    run: a stream a caller replaced may have no `reconfigure`, a closed or
+    detached one raises `ValueError`, and `pythonw` has no stdout at all.
+    """
+    stream = sys.stdout if stream is None else stream
+    errors = getattr(stream, "errors", None)
+    if errors == "strict":
+        handler = "backslashreplace"
+    elif errors == "surrogateescape":
+        handler = _registered_surrogateescape_then_backslashreplace()
+    else:
+        return
+    try:
+        stream.reconfigure(errors=handler)
+    except (AttributeError, ValueError, OSError):
+        pass
+
+
+#: `reconfigure` takes a handler by NAME, so it is registered under one, and
+#: under one that names this repository: a bare `surrogate-backslash` could
+#: replace a handler some other code registered, or be replaced by it.
+SURROGATEESCAPE_THEN_BACKSLASHREPLACE = (
+    "openreposhape.surrogateescape-then-backslashreplace")
+
+
+def _registered_surrogateescape_then_backslashreplace() -> str:
+    """The handler's name, registered by the first call and by no other."""
+    try:
+        codecs.lookup_error(SURROGATEESCAPE_THEN_BACKSLASHREPLACE)
+    except LookupError:
+        codecs.register_error(SURROGATEESCAPE_THEN_BACKSLASHREPLACE,
+                              _surrogateescape_then_backslashreplace)
+    return SURROGATEESCAPE_THEN_BACKSLASHREPLACE
+
+
+def _surrogateescape_then_backslashreplace(error):
+    """`surrogateescape` for a byte it escaped, `backslashreplace` for the rest.
+
+    The codec hands over a run of characters it cannot encode. This answers
+    the longest stretch at the start of it that is all escaped bytes, with
+    those bytes, or all something else, in `codecs.backslashreplace_errors`'
+    own spelling, so a stdout that was `strict` and one that was
+    `surrogateescape` escape a character identically. It says where it
+    stopped, and the codec asks again for whatever is left. Encoding only:
+    nothing here decodes through a stdout's handler.
+    """
+    if not isinstance(error, UnicodeEncodeError):
+        raise error
+    text, start = error.object, error.start
+    escaped = _is_escaped_byte(text[start])
+    end = start + 1
+    while end < error.end and _is_escaped_byte(text[end]) == escaped:
+        end += 1
+    if escaped:
+        return bytes(ord(char) - 0xDC00 for char in text[start:end]), end
+    return codecs.backslashreplace_errors(UnicodeEncodeError(
+        error.encoding, text, start, end, error.reason))
+
+
+def _is_escaped_byte(char: str) -> bool:
+    """`char` is a byte `surrogateescape` read in as U+DC80..U+DCFF."""
+    return 0xDC80 <= ord(char) <= 0xDCFF
+
+
+# ---------------------------------------------------------------------------
+# A project's own validators run as children (#254)
+# ---------------------------------------------------------------------------
+#
+# `bump-leg.py` and `update-shape.py apply` run the PROJECT'S copies of
+# `validate-pins.py` and `validate-manifest.py` after they rewrite the pin.
+# Those are digest-pinned shape copies: they print the display name with a
+# plain `print` and never call `escape_what_stdout_cannot_encode`, and a child
+# takes its stdout CONFIGURATION from its environment (`PYTHONIOENCODING`, then
+# the locale), not from the `reconfigure` the parent did. So under a stdout
+# whose code page cannot hold the name -- `PYTHONIOENCODING=cp1252`, or
+# Windows' own default for any stdout that is not the console -- the validator
+# raised `UnicodeEncodeError` at `print(f"manifest ok: {name} ...")`, exited 1,
+# and the tool refused and rolled back a bump that was fine, blaming a gate
+# that had nothing wrong with it. Both tools build the child's environment
+# here, once, and pass it as `env=`.
+
+
+#: What a validator whose output a tool CAPTURES is told to write in. UTF-8
+#: holds every name, so the child cannot raise on one; `backslashreplace`
+#: makes a lone surrogate (a byte of a file name that was not UTF-8) text
+#: rather than a raise, and is a handler a child KNOWS. The tool decodes the
+#: pipe as UTF-8 to match (`bump-leg.py`'s `run_validator`), whatever its own
+#: locale is, and shows the words through its own escaped stdout.
+CAPTURED_CHILD_IOENCODING = "utf-8:backslashreplace"
+
+#: The built-in handlers that never raise on a character an encoding cannot
+#: hold. `strict`, `surrogateescape` (which holds only U+DC80..U+DCFF) and
+#: `surrogatepass` (UTF codecs only) are not among them.
+_HANDLERS_THAT_NEVER_RAISE = frozenset({
+    "backslashreplace", "ignore", "namereplace", "replace",
+    "xmlcharrefreplace"})
+
+
+def captured_child_environment() -> dict[str, str]:
+    """The environment for a Python child whose output this process CAPTURES.
+
+    `PYTHONIOENCODING` is set to `CAPTURED_CHILD_IOENCODING` and whatever the
+    caller had is REPLACED, not respected: an operator's value describes the
+    stream their own words land in, and the pipe a tool reads a child through
+    is not it. Respecting `cp1252:strict` here would put the failure back, one
+    pipe away from the console it was meant for. The pair has to be chosen
+    together: the tool that captures the output decodes it as UTF-8 and prints
+    it through ITS stdout, which `escape_what_stdout_cannot_encode` has made
+    safe, so each stdout in the chain is written by one encoding it was told.
+
+    Matches `shape-doctor.py`'s `run_validator`, which sets `utf-8` for the
+    same two validators and reads them back as UTF-8; the handler is added.
+    """
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = CAPTURED_CHILD_IOENCODING
+    return env
+
+
+def inherited_child_environment(stream=None) -> dict[str, str]:
+    """The environment for a Python child that INHERITS this process's stdout.
+
+    The child writes straight into the same pipe or file this process writes,
+    so it has to write in the encoding this stdout is read in: UTF-8 bytes on
+    a cp1252 pipe would be a different mistake. `PYTHONIOENCODING` is
+    therefore set to the stream's OWN encoding and its own handler, which is
+    what `escape_what_stdout_cannot_encode` leaves it with: an operator's
+    `replace` (or any handler that never raises) is kept, so a run that
+    printed `??` still prints `??`, and every other handler -- `strict`, which
+    the helper has already changed to `backslashreplace` in this process, and
+    `surrogateescape`, which it changed to a handler registered HERE -- is
+    named `backslashreplace`. The child cannot use a handler only this process
+    registered: `PYTHONIOENCODING=<encoding>:<unknown handler>` still starts,
+    and fails with `LookupError: unknown error handler name` at the first
+    character it cannot encode. Built-in names only.
+
+    One difference from the in-process handler, and it is small: a byte of a
+    file name that was not UTF-8, read in as U+DC80..U+DCFF, is written by the
+    child as the text `\\udcff` where this process writes the byte back. A
+    validator prints one only for a path it lists.
+
+    A stream with no usable encoding (`pythonw` has no stdout) leaves the
+    environment as it is: there is nothing the child inherits.
+    """
+    env = dict(os.environ)
+    stream = sys.stdout if stream is None else stream
+    try:
+        encoding = codecs.lookup(stream.encoding).name
+    except (AttributeError, LookupError, TypeError):
+        return env
+    errors = getattr(stream, "errors", None)
+    if errors not in _HANDLERS_THAT_NEVER_RAISE:
+        errors = "backslashreplace"
+    env["PYTHONIOENCODING"] = f"{encoding}:{errors}"
+    return env
 
 
 def write_paths_listing(path: Path, paths: list[str]) -> None:
@@ -132,18 +341,32 @@ def election_date(elected_on: str) -> _dt.date:
 
     A date this cannot read is not one it will guess at: the guess would pick
     the reference, and the reference is a claim about a human's act.
+
+    THE FORM IS THE PROJECT'S OWN VALIDATOR'S (#261), on every Python.
+    `date.fromisoformat` reads `2026-W41-6` and `20261011` since Python 3.11,
+    and the project's `validate-manifest.py` refuses both: its `elected_on`
+    must match its own `DATE_RE`, asked here through the validator the
+    template carries (`manifest_validator`) and not copied. A date is read
+    only when that rule admits it AND it is a day on the calendar, so the
+    answer is the same on 3.9 and 3.14.
     """
+    text = str(elected_on)
     try:
-        return _dt.date.fromisoformat(str(elected_on))
+        if not manifest_validator().DATE_RE.match(text):
+            raise ValueError(f"{text!r} is not YYYY-MM-DD")
+        return _dt.date.fromisoformat(text)
     except ValueError as exc:
         raise Refusal(
             "election-date-malformed",
-            f"--elected-on {elected_on!r} is not a date; it takes YYYY-MM-DD "
+            f"--elected-on {elected_on!r} is not a YYYY-MM-DD date "
             "(and a plan file's `elected_on:` carries the same form)",
             "Remediation: re-run with a zero-padded ISO date, e.g. "
-            "--elected-on 2026-09-02 — not 2026-9-2 and not a word like "
-            "'yesterday'. The `reference:` the manifest records is chosen BY "
-            "that date, so it has to be readable before anything is written.",
+            "--elected-on 2026-09-02 — not 2026-9-2, not an ISO week or "
+            "basic-format date (`2026-W41-6`, `20261011`) that Python 3.11 "
+            "and later reads and the project's own validator refuses, and "
+            "not a word like 'yesterday'. The `reference:` the manifest "
+            "records is chosen BY that date, so it has to be readable before "
+            "anything is written.",
         ) from exc
 
 
@@ -172,6 +395,9 @@ NAMING_POLICY_YAML = "contracts/repository-naming.yaml"
 #: rather than importing one across a boundary neither module crosses
 #: otherwise.
 BOOTSTRAP = "scripts/bootstrap.py"
+#: And again for the project's manifest validator, which `COPIED_VERBATIM` and
+#: `EXECUTABLE` both carry and `manifest_validator` loads from the template.
+MANIFEST_VALIDATOR = "scripts/validate-manifest.py"
 
 #: Copied out of openRepoShape's OWN tree, so the project carries the standard
 #: it was cut from rather than a link to it.
@@ -183,7 +409,7 @@ COPIED_FROM_SHAPE = (
 #: Copied VERBATIM out of the assembly-root template (no substitution).
 COPIED_VERBATIM = (
     "scripts/validate-pins.py",
-    "scripts/validate-manifest.py",
+    MANIFEST_VALIDATOR,
     BOOTSTRAP,
     "Makefile",
     ".gitignore",
@@ -226,7 +452,7 @@ TEMPLATED = (
 #: Rendered only when the project DECLARES a neutral-product pin, and written
 #: once per declared pin at `neutral_pin_path(product)`.
 NEUTRAL_PIN_TEMPLATE = "contracts/neutral-product-pin.yaml"
-EXECUTABLE = ("scripts/validate-pins.py", "scripts/validate-manifest.py",
+EXECUTABLE = ("scripts/validate-pins.py", MANIFEST_VALIDATOR,
               BOOTSTRAP, VALIDATE_NAMING)
 #: The copy pin, rendered LAST by `_materialize` over the copies it digests.
 #: Named once because `assembly_root_paths` lists it beside the lists above,
@@ -303,7 +529,18 @@ FAMILY_EXECUTABLE = (
     "scripts/siblings.py",
 )
 
-PLACEHOLDER_RE = re.compile(r"\{\{[A-Z_]+\}\}")
+#: A `{{KEY}}` placeholder: capitals, digits and underscores between double
+#: braces. The digits are what make `{{SPEC_TREE_SHA256}}` one, which the
+#: pattern `[A-Z_]+` did not see (#260). A workflow's own `${{ github.x }}`
+#: and a Python f-string's `{{commit}}` hold a space or a lower-case letter,
+#: so neither is one. Every key of every substitution table is spelled this
+#: way, because `render` replaces only what this pattern finds.
+PLACEHOLDER_RE = re.compile(r"\{\{[A-Z0-9_]+\}\}")
+#: The same placeholder, or one standing alone between a YAML template's
+#: double quotes, `"{{ELECTED_BY}}"`, which is matched FIRST: group 1 is the
+#: quoted placeholder, and a bare one leaves it None.
+YAML_PLACEHOLDER_RE = re.compile(
+    '"(' + PLACEHOLDER_RE.pattern + ')"|' + PLACEHOLDER_RE.pattern)
 
 #: THE ONE READING OF THE LINE A FAMILY HOLDER'S README ENDS WITH.
 #: `templates/family-root/README.md` closes with ``Shape: `<repository>` @
@@ -427,6 +664,37 @@ def collision_follow_up(intended: str, actual: str) -> str:
         "overwritten")
 
 
+def copy_in_the_way(target: Path, actual: str) -> str | None:
+    """What stands where the shape's copy `actual` (`shape/README.md`) is to
+    be written under `target`, in words; None when the way is free.
+
+    `place` ASKED ABOUT THE PATH THE COPY STANDS IN FOR AND NEVER ABOUT THE
+    COPY'S OWN (#262). A source that keeps its own `shape/` in the root has a
+    real `shape/README.md`, and the shape's README was written over it, on
+    the line after `adopt-project.py` said that nothing was overwritten; a
+    directory `shape/Makefile/` raised `IsADirectoryError` and a file named
+    `shape` raised `FileExistsError`, each after both legs were pushed.
+
+    The copy is in the way when anything is AT its path, a symlink that leads
+    nowhere included (it is written through, and a file lands where nothing
+    was meant), or when something on the way to it is not a directory, which
+    a symlink to one is. `adopt-project.py check` finds what a plan keeps
+    there before any leg exists (`plan-root-blocks-shape-copy`); this is the
+    same question asked of the disk, for a caller that skipped `check`.
+    """
+    parts = actual.split("/")
+    for end in range(1, len(parts) + 1):
+        here = target.joinpath(*parts[:end])
+        if not (here.is_symlink() or here.exists()):
+            return None   # nothing here, so nothing deeper either
+        if end == len(parts):
+            return (f"`{actual}` is already there"
+                    f"{', a directory' if here.is_dir() else ''}")
+        if not here.is_dir():
+            return f"`{'/'.join(parts[:end])}` is not a directory"
+    return None
+
+
 #: Appended to the assembly root's Makefile by `adopt-project.py` ONLY. A
 #: scaffolded project's legs are empty, so nothing reads across them yet; an
 #: ADOPTED project's code leg holds tooling that used to read `contracts/`
@@ -512,8 +780,14 @@ def check_program(args: list[str]) -> None:
 
 def run(args: list[str], cwd: Path | None = None, capture: bool = True) -> str:
     check_program(args)
+    # UTF-8, whatever the locale: git writes a path as UTF-8, and the locale's
+    # codec (ASCII under a POSIX `C` locale, the ANSI code page on Windows)
+    # raises `UnicodeDecodeError` out of `subprocess.run` on one it cannot
+    # read -- before `CommandFailed` exists, so the person gets a traceback
+    # where `REFUSED <step>` and the ruleset hint belong (#217).
     proc = subprocess.run(args, cwd=str(cwd) if cwd else None,
-                          capture_output=capture, text=True, check=False)
+                          capture_output=capture, text=True,
+                          encoding="utf-8", errors="replace", check=False)
     if proc.returncode != 0:
         raise CommandFailed(args, cwd, proc.returncode,
                             (proc.stderr or "") + (proc.stdout or ""))
@@ -537,6 +811,27 @@ def env_commit(work: Path, message: str) -> None:
     A scaffold that fails on a machine with no `user.email` configured fails
     for a reason that has nothing to do with the project being scaffolded, so
     a fallback identity is supplied rather than assumed.
+
+    THE MESSAGE GOES TO GIT AS UTF-8, whatever the locale (#196). Text-mode
+    stdin encodes with the locale's codec unless Python runs in UTF-8 mode
+    -- cp1252 on a Windows without `PYTHONUTF8=1`, ASCII under a POSIX `C`
+    locale with that mode off -- and git keeps the bytes it is given. An
+    adoption's split message already carried an em dash, which reached git
+    there as a cp1252 byte, and it names each entry path as the source spells
+    it: `Übersicht.md` would land as another byte that is not UTF-8, and
+    `文書.md` would raise `UnicodeEncodeError` after both legs are pushed.
+    Every caller's message goes the same way: `scaffold-project.py`'s
+    assembly commit, `scripts/family.py`'s holder commit, and each first
+    commit `git_init_commit` makes (a scaffolded leg, a seeded one).
+
+    `errors="replace"` works BOTH WAYS. Decoding, git's own output cannot
+    raise. Encoding, a character UTF-8 cannot carry is written as `?`: the
+    one such character a message can hold is a lone surrogate, the byte of a
+    name that is not UTF-8 as `Source.tree` keeps it. `adopt-project.py`
+    refuses one in a path it extracts (`entry_path_problem`), but a `root`
+    or `drop` entry holding one is listed in the split message, so there the
+    message names it with a `?` in place of that byte, a path that does not
+    exist, rather than raising after both legs are pushed.
     """
     env = dict(os.environ)
     for key, fallback in (("GIT_AUTHOR_NAME", "openRepoShape scaffold"),
@@ -548,7 +843,8 @@ def env_commit(work: Path, message: str) -> None:
             env[key] = fallback
     check_program(COMMIT_COMMAND)
     proc = subprocess.run(COMMIT_COMMAND, cwd=str(work), input=message,
-                          capture_output=True, text=True, check=False, env=env)
+                          capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", check=False, env=env)
     if proc.returncode != 0:
         raise CommandFailed(COMMIT_COMMAND, work, proc.returncode,
                             proc.stderr + proc.stdout)
@@ -777,6 +1073,64 @@ def is_trailer(value: str) -> bool:
     return bool(TRAILER_RE.fullmatch(value)) and one_printable_line(value)
 
 
+#: The nine bidirectional embedding, override and isolate controls, by code
+#: point: U+202A..U+202E (LRE, RLE, PDF, LRO, RLO) and U+2066..U+2069 (LRI,
+#: RLI, FSI, PDI). Each is `Cf`, and each sets the direction of the text
+#: after it, so a line that holds one is shown in another order than it is
+#: written. The marks U+200E, U+200F and U+061C are not among them: a mark
+#: is one character of one direction, and sets no span's.
+BIDI_CONTROLS = frozenset((*range(0x202A, 0x202F), *range(0x2066, 0x206A)))
+
+
+def unwritable_reason(value: str) -> str | None:
+    r"""Why `value` is not one line of text a file can hold, in words; None
+    when it is (#255).
+
+    `adopt-project.py` writes a value a person gave it -- `--elected-by`,
+    `--reference`, the source's own path as a local clone URL -- into the
+    assembly root's `project.yaml` and `README.md` through `write_lf`, which
+    is strict UTF-8. Since #247 the plan keeps a lone surrogate (a byte that
+    is not UTF-8, as `sys.argv` and `os.fsdecode` keep it) as `\udce9`, and
+    the reader gives it back, so `plan` and `check` passed such a value and
+    `write_lf` raised `UnicodeEncodeError` after both legs were pushed. This
+    is the question asked of every such value before anything exists.
+
+    `one_printable_line` LESS `Cf` OTHER THAN THE NINE `BIDI_CONTROLS`, AND
+    THE EMPTY VALUE, because both are text a file holds and both were
+    adopted before #247 and since. Such a `Cf` character is invisible, not
+    unwritable: UTF-8 encodes it, the reader reads it back, and a name may
+    need one -- a Persian name joins its parts with U+200C ZERO WIDTH
+    NON-JOINER, which `one_printable_line` refuses. An empty `elected_by` is
+    what `plan` records when `git config user.name` names nobody, and the
+    manifest holds it as `""`. What is left is refused: a lone surrogate,
+    which UTF-8 cannot encode; a line break, which ends the line the
+    manifest's reader reads the value from (CR, U+0085 and U+2028 among
+    them, as `str.splitlines` ends lines); a bidi embedding, override or
+    isolate control, which a file holds but which shows the rest of the line
+    it is written into -- the README's `Elected by` line, its date and
+    reference among it -- in another order than it is written, as
+    `double_quoted` in `scripts/repo_shape.py` spells one in the plan for
+    the same reason; and any other control character, NUL among them, which
+    YAML does not allow raw (TAB aside, and no name, date or reference holds
+    one either).
+    """
+    if value.splitlines() not in ([], [value]):
+        return "it holds a line break, and it is written as one line"
+    for char in value:
+        category = unicodedata.category(char)
+        if category == "Cs":
+            return ("it holds a byte that is not UTF-8"
+                    if "\udc80" <= char <= "\udcff" else
+                    "it holds a lone surrogate, which is no character")
+        if ord(char) in BIDI_CONTROLS:
+            return ("it holds a bidirectional control (an embedding, "
+                    "override or isolate), which shows the rest of the line "
+                    "in another order than it is written")
+        if category in UNPRINTABLE_CATEGORIES and category != "Cf":
+            return "it holds a control character"
+    return None
+
+
 #: The git that learned `commit --trailer` (2.32, 2021-06-06). An older one
 #: still has `git interpret-trailers`, but not the commit option — so on that
 #: host the trailer is appended to the message TEXT instead, which produces
@@ -925,17 +1279,162 @@ def lane_trailer_argument(quote=None, env: dict | None = None) -> str:
     return f" --trailer {spelled}"
 
 
+# ---------------------------------------------------------------------------
+# The two lines a pin is moved by (#323)
+# ---------------------------------------------------------------------------
+#
+# `update-shape.py` moves `commit:` and `digests.tree_sha256:` in
+# `contracts/shape-pin.yaml` and in a manifest's `shape:` block, and
+# `bump-leg.py` moves them in a leg's `contracts/<role>-pin.yaml`: three
+# rewriters, all of them LINE rewrites, because each file opens with
+# paragraphs a YAML round trip would delete. What it is to rewrite one of
+# those lines, and what it is to know the rewrite is right, is one answer
+# here rather than three that agree until they do not.
+#
+# THE LINE KEEPS EVERYTHING BUT ITS VALUE. Each rewriter used to find its
+# line by a fixed spelling (two spaces in front of `tree_sha256:`) and write
+# it back as a fixed line, so a `digests:` child indented four spaces — which
+# the reader and both validators accept — was refused as hand-edited, and a
+# trailing `# comment` on either line was dropped without a word (#323, the
+# same assumption #208 removed from the manifest's indentation).
+#
+# AND THE RESULT IS READ BACK. A line rewrite cannot carry every layout the
+# reader accepts — a value on the line below its key is the one that comes up
+# — so what it returns is read with `parse_yaml` and must give the target.
+#
+# IT LIVES HERE AND NOT IN `scripts/repo_shape.py`, which is a SHAPE COPY:
+# anything added there would put an `upstream-changed scripts/repo_shape.py`
+# row in front of every project in the estate for a helper none of them calls
+# (see "Commit trailers" above for the same argument). This module is in no
+# copy list and both tools already import it. `_strip_comment` is imported
+# from there by its private name on purpose: it IS the reader's definition of
+# where a comment starts, quotes included, and a second one is how a rewrite
+# and a reader come to disagree about which part of a line is the value.
+
+
+def is_nested_key(line: str, key: str) -> bool:
+    """Is `line` an INDENTED `<key>:` line, a child of some block, at any
+    depth? How a pin's `digests.tree_sha256` is found (#323): by the key, not
+    by a fixed count of spaces in front of it. Spaces only: the reader refuses
+    a tab as indentation."""
+    return line.startswith(" ") and line.lstrip(" ").startswith(key + ":")
+
+
+def with_scalar(line: str, key: str, value: str) -> str:
+    """`line`, a `<indent><key>: <old value>[  # comment]` line, with only the
+    old value replaced by `value` (double-quoted, as the scaffold writes it).
+
+    The indentation, the key, the spacing between the colon and the value
+    and a trailing comment, with the spacing in front of it, are the line's
+    own. A line with no comment loses its trailing whitespace, as it always
+    has. Callers FIND the line by `key`; one that is not that key's raises
+    `ValueError`, which no caller reaches.
+    """
+    body = _strip_comment(line)
+    indent = line[:len(line) - len(line.lstrip())]
+    key_part = body[len(indent):]
+    if not key_part.startswith(key + ":"):
+        raise ValueError(f"not a `{key}:` line: {line!r}")
+    after = key_part[len(key) + 1:]
+    spacing = after[:len(after) - len(after.lstrip())] or " "
+    tail = line[len(body):]
+    return (f"{indent}{key}:{spacing}{double_quoted(value)}"
+            f"{tail if tail.strip() else ''}")
+
+
+def pin_values_in(text: str, within: tuple = ()) -> tuple[str, str]:
+    """`commit` and `digests.tree_sha256` as the validators read them out of
+    `text`, beneath the keys `within` (`("shape",)` for a manifest's block),
+    or a `ValueError` saying why they cannot be read."""
+    where = "".join(f"{name}." for name in within)
+    try:
+        node = parse_yaml(text)
+    except YamlError as exc:
+        raise ValueError(str(exc)) from exc
+    for name in within:
+        node = node.get(name) if isinstance(node, dict) else None
+    commit = node.get("commit") if isinstance(node, dict) else None
+    digests = node.get("digests") if isinstance(node, dict) else None
+    tree = digests.get("tree_sha256") if isinstance(digests, dict) else None
+    if commit is None or tree is None:
+        raise ValueError(f"no `{where}commit` and `{where}digests."
+                         "tree_sha256` where the validator reads them")
+    return str(commit), str(tree)
+
+
+def rewrite_fault(before: str, after: str, commit: str, tree: str,
+                  within: tuple = ()) -> str | None:
+    """Why `after` does not read back to `commit` and `tree`, or None.
+
+    THE FAULT IS THIS TOOL'S ONLY WHEN IT IS: None also when `before` did not
+    read either. A file that read correctly before the rewrite and does not
+    after it was broken by the rewrite, and the caller's refusal says so. One
+    that did not read before — unparsable, or no pin where the validator
+    looks — was red before the command ran: that is left to the validators,
+    which name the project's own line, and blaming this tool for it would be
+    the same wrong answer turned around (#208).
+    """
+    try:
+        found = pin_values_in(after, within)
+        if found == (commit, tree):
+            return None
+        why = (f"it would read `commit: {found[0]}` and "
+               f"`tree_sha256: {found[1]}`")
+    except ValueError as exc:
+        why = f"the reader would refuse it: {exc}"
+    try:
+        pin_values_in(before, within)
+    except ValueError:
+        return None
+    return why
+
+
 def render(text: str, values: dict[str, str], source: str) -> str:
-    out = text
-    for key, value in values.items():
-        out = out.replace("{{" + key + "}}", str(value))
-    left = PLACEHOLDER_RE.findall(out)
-    if left:
+    """`text` with every `{{KEY}}` replaced by its value, or a refusal.
+
+    A VALUE BETWEEN A YAML TEMPLATE'S DOUBLE QUOTES, `"{{ELECTED_BY}}"`, is
+    spelled by `double_quoted`, the writer `repo_shape`'s reader takes back
+    unchanged. Pasted raw, `--elected-by 'Robert "Bob" Smith'` wrote
+    `"Robert "Bob" Smith"`, which is not YAML: the reader read it by
+    accident until it learned where a quoted scalar ends (#250), and then
+    refused the manifest of three repositories already created. A name ending
+    in a backslash closed no quote, and `C:\\new` or `x" # y` were misread.
+    The spelling is the value itself for any text without a quote, a
+    backslash or a character `str.isprintable` refuses -- a commit, a digest,
+    an ordinary name -- so no other template changes by a byte.
+
+    ONE PASS, SO A VALUE IS NEVER READ AGAIN (#260). The keys used to be
+    replaced one after another, each over the whole text, so the value an
+    earlier key put in was scanned by every later key. `--elected-by
+    '{{SPEC_PATH}}'` was recorded as `elected_by: "spec"` under `adoption
+    verified`. `{{PROJECT}}`, a key that came earlier, or `{{NOPE}}`, which
+    no key names, was left in the output and refused as a defect in the
+    tool, after the legs were pushed. Now the template is read once, left to
+    right, and each placeholder is replaced by its value as it is met. The
+    text a value brings in is never searched, so it is written as typed.
+
+    THE REFUSAL ASKS THE TEMPLATE, NOT THE OUTPUT. A placeholder the TEMPLATE
+    holds and the table has no value for is the defect the remediation
+    names, and it is refused before anything is written. The output is not
+    searched: it now holds the person's own text, which may hold `{{` and
+    is no defect of anybody's.
+    """
+    missing = sorted({token for token in PLACEHOLDER_RE.findall(text)
+                      if token[2:-2] not in values})
+    if missing:
         raise Refusal("template-unsubstituted",
-                      f"{source}: no value for {sorted(set(left))}",
+                      f"{source}: no value for {missing}",
                       "Remediation: this is a defect in the substitution table "
                       "of the tool you ran, not in your invocation.")
-    return out
+
+    def value_of(placeholder: str) -> str:
+        return str(values[placeholder[2:-2]])
+
+    if not source.endswith((".yaml", ".yml")):
+        return PLACEHOLDER_RE.sub(lambda match: value_of(match[0]), text)
+    return YAML_PLACEHOLDER_RE.sub(
+        lambda match: (double_quoted(value_of(match[1])) if match[1]
+                       else value_of(match[0])), text)
 
 
 def _local_strays(src: Path) -> frozenset[str]:
@@ -1208,10 +1707,15 @@ def path_overlap(leg: str, other: str) -> tuple[str, str] | None:
     return None
 
 
-def first_and_more(paths: list[str]) -> str:
-    """`a` or `a` and 2 more: one path named, the rest counted."""
+def first_and_more(paths: list[str], spell=None) -> str:
+    """`a` or `a` and 2 more: one path named, the rest counted. `spell`
+    writes the named path, between backticks by default: the shape's own
+    paths need nothing more. `adopt-project.py` passes its `_spelled` for a
+    source path the plan keeps in the root, which can hold any character
+    (#212)."""
     more = f" and {len(paths) - 1} more" if len(paths) > 1 else ""
-    return f"`{paths[0]}`{more}"
+    named = spell(paths[0]) if spell else f"`{paths[0]}`"
+    return f"{named}{more}"
 
 
 def shape_path_collisions(what: str, value: str,
@@ -1313,6 +1817,22 @@ def _materialize(shape_root: Path, template_root: Path, target: Path,
                     "Remediation: scaffold into an empty directory, or call "
                     "with collision_dir set (which is what adopt does).")
             actual = f"{collision_dir}/{rel}"
+            in_the_way = copy_in_the_way(target, actual)
+            if in_the_way:
+                raise Refusal(
+                    "materialize-copy-blocked",
+                    f"the shape's copy of `{rel}` cannot be written to "
+                    f"`{actual}`: {in_the_way}, and nothing was written there",
+                    "Remediation: the shape writes its copy of a file the "
+                    "root already holds under its collision directory, so "
+                    "the source cannot keep its own path there. "
+                    "`adopt-project.py check` reports a plan that does as "
+                    "`plan-root-blocks-shape-copy`, before any leg exists. "
+                    "Send that path to a leg or `drop` it in the plan, and "
+                    "run `execute` again with fresh leg repositories and "
+                    "an empty `--work-dir`, or none: this run made both "
+                    "legs and cloned them into the work directory it was "
+                    "given.")
             result.collisions.append((rel, actual))
             path = target / actual
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1608,3 +2128,465 @@ def refuse_bad_leg_paths(refusal: str, spec: tuple, code: tuple) -> None:
     problems = leg_path_problems(spec, code)
     if problems:
         raise Refusal(refusal, " ".join(problems), LEG_PATH_REMEDIATION)
+
+
+# ---------------------------------------------------------------------------
+# What a tool may write into the new project's manifest (#258, #261)
+# ---------------------------------------------------------------------------
+#
+# `scaffold-project.py` and `adopt-project.py` fill `templates/assembly-root/`
+# from values a person typed (`--id`, `--tracking-branch`, `--elected-by`,
+# `--elected-on`, `--reference`, `--org`, `--name`) or edited into a plan
+# (`visibility:`, `elected_by:`), and the new project then reads the result
+# with two programs of its own: its YAML reader (`repo_shape`) and its
+# `scripts/validate-manifest.py`. Neither tool asked either of them anything,
+# so a value the project could not hold was found by the project's FIRST
+# bootstrap, after the repositories existed:
+#
+#   * READ BACK AS SOMETHING ELSE (#258). The templates write `id:` and
+#     `tracking_branch:` bare, so `--id null`, `--id true`, `--tracking-branch
+#     true` and `--tracking-branch 007` became None, True and 7. The id left
+#     the project's gate red; the branch was silent, each leg sitting on a
+#     local `True` or `7` the remote does not have, with no upstream.
+#   * REFUSED BY THE VALIDATOR (#261). A blank `--elected-by` or `--reference`,
+#     `--elected-on 2026-W41-6` or `20261011` (which `date.fromisoformat` reads
+#     from Python 3.11), `--org test+org`, a plan's `visibility: secret` or
+#     `elected_by: null`: all accepted, and `adoption verified` or a scaffold
+#     exit 0 followed by a bootstrap that said no.
+#
+# THE CURE IS TO ASK, BEFORE ANYTHING IS CREATED, AND TO REFUSE. The two
+# questions below take the values a tool is about to record and put them
+# through the very programs the project will use, so there is no second
+# definition of either rule to keep in step:
+#
+#   `manifest_misreads`  renders each template line that carries one of the
+#       values, reads that line with the project's reader (`repo_shape.
+#       parse_yaml`, of which every project carries a copy) and refuses a
+#       value that does not come back as the same text. The TEMPLATE says
+#       which values are written bare and which quoted: a placeholder the
+#       template quotes is asked as the quoted line it is, so the day the
+#       templates quote `id:` and `tracking_branch:` (#259), those values
+#       read back and this refuses nothing, with no edit here.
+#   `manifest_invalid`   renders `project.yaml` from the whole substitution
+#       table, reads it, and runs the validator the template ships
+#       (`templates/assembly-root/scripts/validate-manifest.py`, loaded from
+#       that file, never re-implemented) over it. Whatever the validator says,
+#       now or after it learns another rule, is refused here in its words.
+#
+# REFUSED, NOT QUOTED OR CORRECTED, as #225, #181 and #251 refuse: a value
+# the manifest cannot hold has no spelling that is the same value (`007` as a
+# branch is a legal git name and a different number), and rewriting a
+# person's value for them is the silent retyping this refuses. Quoting the
+# templates is #259's decision, and one decision for every tool that renders
+# them.
+#
+# IT LIVES HERE AND NOT IN `scripts/repo_shape.py` OR THE VALIDATOR, which are
+# SHAPE COPIES: the materializer writes both into every project and
+# `contracts/shape-pin.yaml` digests them, so a rule moved into either would
+# put an `upstream-changed` row in front of every project in the estate for a
+# question no project's own copy asks of itself. The validator is LOADED, so
+# its definition stays the one place the rule is written.
+
+import importlib.util  # noqa: E402
+from repo_shape import YamlError, parse_yaml  # noqa: E402
+
+#: The assembly root's template directory, and the two files in it these
+#: questions read: the manifest, and the validator the project is given
+#: (`MANIFEST_VALIDATOR`, named beside the copy lists that carry it).
+ASSEMBLY_TEMPLATE = (Path(__file__).resolve().parent.parent / "templates"
+                     / "assembly-root")
+MANIFEST_TEMPLATE = "project.yaml"
+
+#: The names this module asks of the validator: its `elected_on` pattern and
+#: the function that makes every FINDING.
+VALIDATOR_ASKS = ("DATE_RE", "_findings")
+
+#: The templated files the project's reader reads: the manifest and the two
+#: leg pins. The materializer's own list, so a templated YAML file added there
+#: is asked about here without an edit.
+TEMPLATED_YAML = tuple(rel for rel in TEMPLATED if rel.endswith(".yaml"))
+
+
+def _placeholders_of(line: str) -> list[str]:
+    """The names of the placeholders `render` finds in `line`.
+
+    From `PLACEHOLDER_RE`, the pattern `render` itself uses to find one, and
+    not from a second spelling of its alphabet: a template line this counted
+    as one placeholder while `render` saw two would be rendered here with a
+    one-key table and refused as `template-unsubstituted`. When the pattern
+    is widened (#260 admits digits, for `{{SPEC_TREE_SHA256}}`) this follows.
+    """
+    return [token[2:-2] for token in PLACEHOLDER_RE.findall(line)]
+
+
+#: The validator modules already loaded, by the file they were loaded from.
+_VALIDATORS: dict = {}
+
+
+def manifest_validator(template_dir: Path = ASSEMBLY_TEMPLATE):
+    """The new project's own `scripts/validate-manifest.py`, as a module.
+
+    LOADED FROM THE TEMPLATE IT IS COPIED FROM, so what is asked is the rule
+    the project will apply and no second spelling of it exists. By path,
+    because the filename has a hyphen and cannot be imported by name
+    (`shape-doctor.py` loads the tools it asks the same way). The directory
+    the validator puts at the front of `sys.path` for its own sibling imports
+    is taken off again: `bootstrap` and `validate-pins` are modules of the
+    project and must not shadow anything of this process's.
+
+    NO BYTECODE IS WRITTEN. Importing a source file makes CPython write
+    `scripts/__pycache__/` beside it, and this file is a TEMPLATE: a `.pyc`
+    in `templates/assembly-root/` is a file nobody put there, which every
+    reader of that tree then meets (`tests/test_scaffold_leg_path_collisions.py`
+    reads each file under it as text). The same reason `shape-doctor.py` keeps
+    the interpreter's cache out of a tree it only reads.
+    """
+    path = Path(template_dir) / MANIFEST_VALIDATOR
+    module = _VALIDATORS.get(path)
+    if module is None:
+        spec = importlib.util.spec_from_file_location(
+            "openreposhape_validate_manifest", path)
+        module = importlib.util.module_from_spec(spec)
+        saved_path, saved_flag = list(sys.path), sys.dont_write_bytecode
+        sys.dont_write_bytecode = True
+        try:
+            spec.loader.exec_module(module)
+        except Exception as exc:  # a missing, unreadable or broken file
+            raise _validator_unusable(
+                "could not be loaded", f"{type(exc).__name__}: {exc}"
+            ) from exc
+        finally:
+            sys.path[:] = saved_path
+            sys.dont_write_bytecode = saved_flag
+        # What this module asks of it, so that a file that loads and lacks one
+        # is the same refusal and not an `AttributeError` where it is used.
+        for name in VALIDATOR_ASKS:
+            if not hasattr(module, name):
+                raise _validator_unusable(
+                    "could not be used", f"it has no `{name}`")
+        _VALIDATORS[path] = module
+    return module
+
+
+def _validator_unusable(what: str, why: str) -> Refusal:
+    """The refusal for a template validator that cannot be asked, and not a
+    traceback. It is a defect of the copy of the standard that was run and
+    not of any value, and it is said so. Nothing was created, because the
+    question is asked before anything exists; and a validator that cannot
+    answer lets no manifest through unasked."""
+    return Refusal(
+        "manifest-validator-unusable",
+        f"templates/assembly-root/{MANIFEST_VALIDATOR}, the validator this "
+        f"run asks about the manifest it would write, {what}: {why}",
+        "Remediation: this is a defect in the copy of this standard you ran, "
+        "not in your values: the file is missing, unreadable or broken "
+        "there, and nothing was created. Restore it from the standard's "
+        "repository, or reinstall the standard, and run again.")
+
+
+def _reading_in_words(reading) -> str:
+    """What the project's reader made of a value, as a sentence says it."""
+    if isinstance(reading, YamlError):
+        return f"nothing at all, because it refuses the line ({reading})"
+    if reading is None:
+        return "no value at all"
+    if isinstance(reading, bool):
+        return "the boolean " + ("true" if reading else "false")
+    if isinstance(reading, (int, float)):
+        return f"the number {reading!r}"
+    if isinstance(reading, str):
+        return f"the text {reading!r}"
+    return "a list" if isinstance(reading, list) else "a mapping"
+
+
+def _line_shown(line: str) -> str:
+    """`line` in backticks, or as Python spells it where it holds a character
+    a terminal shows as something else, so that one finding stays one line."""
+    return f"`{line}`" if line.isprintable() else repr(line)
+
+
+def _reading_of(rendered: str):
+    """What the project's reader makes of the one `key: value` line
+    `rendered`: the value, the `YamlError` it raised, or the whole answer
+    when it is not one key with one value (a value with a line break in it
+    can carry a second key into the file)."""
+    try:
+        parsed = parse_yaml(rendered.lstrip() + "\n")
+    except YamlError as exc:
+        return exc
+    if isinstance(parsed, dict) and len(parsed) == 1:
+        return next(iter(parsed.values()))
+    return parsed
+
+
+def _misread_rows(values: dict, what: dict, template_dir: Path
+                  ) -> dict[str, list[tuple]]:
+    """For each placeholder of `what` whose value the project's reader would
+    not read back as that same text: `(file, rendered line, reading)` for each
+    template line that carries it."""
+    found: dict[str, list] = {}
+    for rel in TEMPLATED_YAML:
+        text = (Path(template_dir) / rel).read_text(encoding="utf-8")
+        for line in text.splitlines():
+            keys = _placeholders_of(line)
+            if (len(keys) != 1 or keys[0] not in what
+                    or keys[0] not in values
+                    or line.lstrip().startswith("#")):
+                continue
+            key, value = keys[0], str(values[keys[0]])
+            rendered = render(line, {key: value}, rel).lstrip()
+            reading = _reading_of(rendered)
+            if not (isinstance(reading, str) and reading == value):
+                found.setdefault(key, []).append((rel, rendered, reading))
+    return found
+
+
+def manifest_misreads(values: dict, what: dict,
+                      template_dir: Path = ASSEMBLY_TEMPLATE) -> list[str]:
+    """A sentence for each value the project's reader would read back as
+    anything but that same text; `[]` when every one reads back.
+
+    `values` is the substitution table; `what` names the placeholders to ask
+    about and how the caller calls each (`{"PROJECT_ID": "--id"}`), and a
+    placeholder it does not name is not asked: a block value
+    (`NEUTRAL_PRODUCT_PINS`, a naming block) is not one line's scalar, and a
+    value a rule of its own already judged is not asked twice.
+
+    Each template line that carries exactly one of them is rendered with the
+    value, as `render` writes it, and read as the project reads it.
+    """
+    return [
+        f"{what[key]} is {str(values[key])!r}, which is written "
+        + " and ".join(f"into {rel} as {_line_shown(line)}"
+                       for rel, line, _ in rows)
+        + ", where the project's own YAML reader reads it back as "
+        + f"{_reading_in_words(rows[0][2])} and not as that text."
+        for key, rows in _misread_rows(values, what, template_dir).items()]
+
+
+def misread_placeholders(values: dict, what: dict,
+                         template_dir: Path = ASSEMBLY_TEMPLATE
+                         ) -> tuple[str, ...]:
+    """The placeholders of `what` whose value `manifest_misreads` would refuse,
+    for a caller that leaves those values to a misread rule of its own and
+    must not have the validator's question asked a second time of them
+    (`manifest_invalid`'s `not_text`)."""
+    return tuple(_misread_rows(values, what, template_dir))
+
+
+#: Which placeholder carries the value a finding of the validator is about,
+#: for the ones a tool is handed a value for. A finding with no row is still
+#: refused, in the validator's words and without a flag to point at.
+FINDING_PLACEHOLDER = {
+    "manifest-id": "PROJECT_ID", "manifest-topic": "PROJECT_ID",
+    "manifest-name": "PROJECT_NAME", "manifest-elected-by": "ELECTED_BY",
+    "manifest-elected-on": "ELECTED_ON", "manifest-reference": "REFERENCE",
+    "manifest-visibility": "VISIBILITY", "manifest-leg-repository": "ORG",
+}
+
+_FINDING_RE = re.compile(r"^FINDING (?P<code>[a-z0-9-]+): (?P<detail>.*)$",
+                         re.DOTALL)
+
+
+def _code_of(finding: str) -> str | None:
+    """The code of one `FINDING <code>: <detail>`, or None for a line that is
+    not one."""
+    match = _FINDING_RE.match(finding)
+    return match.group("code") if match else None
+
+
+def _sentences_of(findings: list[str], values: dict, what: dict,
+                  not_text: tuple = ()) -> list[str]:
+    """The FINDINGs of the validator as sentences: one for each value the
+    caller handed over, naming it and holding every finding about it (`--org`
+    is judged once for each of the three legs it names), and one for each
+    finding that is about none of them. A finding about a placeholder in
+    `not_text` is left out, as `manifest_invalid` says."""
+    by_value: dict[str, list[str]] = {}
+    sentences: list[str] = []
+    for finding in findings:
+        match = _FINDING_RE.match(finding)
+        if match is None:
+            sentences.append(finding)
+            continue
+        code, detail = match.group("code"), match.group("detail")
+        said = f"{code}: {detail if detail.endswith('.') else detail + '.'}"
+        key = FINDING_PLACEHOLDER.get(code)
+        if key is not None and key in not_text:
+            continue
+        if key in what and key in values:
+            by_value.setdefault(key, []).append(said)
+        else:
+            sentences.append("the manifest this run would write is one the "
+                             f"project's own validate-manifest.py refuses: "
+                             f"{said}")
+    return [f"{what[key]} is {str(values[key])!r}, which the project's own "
+            f"validate-manifest.py refuses: {' '.join(said)}"
+            for key, said in by_value.items()] + sentences
+
+
+def manifest_invalid(values: dict, policy: NamingPolicy, what: dict,
+                     template_dir: Path = ASSEMBLY_TEMPLATE,
+                     ignore: tuple = (), not_text: tuple = ()) -> list[str]:
+    """A sentence for each FINDING the project's own validator would make of
+    the `project.yaml` these `values` render; `[]` when it would pass.
+
+    `ignore` is the codes of findings the CALLER already reports by a rule of
+    its own in the same list (`adopt-project.py check` finds a leg path
+    `plan-bad-leg-path` and must not say it a second time as the validator's
+    `manifest-leg-path`); a caller that judges nothing earlier ignores none,
+    so that a rule it did not apply still refuses.
+
+    `not_text` is the placeholders whose value the caller READ as something
+    that is not text (a plan's `id: 007` is the number 7, and `str` of it is
+    what the template would write): that is a misread, which is judged in
+    words that say what was read and never in the retyped text, so the
+    validator's finding about such a value is left to that rule. A value the
+    plan holds as no value at all is not one of these: `execute` writes it as
+    blank, and the validator's finding about a blank is the one wanted.
+
+    The WHOLE manifest is rendered and read, so a rule about how one value
+    relates to another (`topic` to `id`, a leg's repository to its role) is
+    asked as the project asks it. `values` must be the complete table;
+    `policy` is the naming policy the project carries a copy of. A WARNING of
+    the validator (a chain link it cannot check offline) is a note and never
+    a refusal, exactly as the project's own exit code treats it.
+    """
+    template = (Path(template_dir) / MANIFEST_TEMPLATE).read_text(
+        encoding="utf-8")
+    try:
+        manifest = parse_yaml(render(template, values, MANIFEST_TEMPLATE))
+    except YamlError as exc:
+        return ["the manifest this run would write is a file the project's "
+                f"own YAML reader refuses: {exc}."]
+    validator = manifest_validator(template_dir)
+    try:
+        notes = validator._findings(manifest, policy, None)
+    except Exception as exc:  # the validator's own defect, never a finding
+        raise _validator_unusable(
+            "raised when it was asked", f"{type(exc).__name__}: {exc}"
+        ) from exc
+    return _sentences_of(
+        [note for note in notes if not note.startswith("WARNING")
+         and _code_of(note) not in ignore], values, what, not_text)
+
+
+#: The remediation, without the sentence only the caller can write (what was
+#: or was not created, whether `--dry-run` refuses the same).
+#:
+#: WHAT IT SAYS IS ONLY WHAT HOLDS FOR EVERY VALUE THE RULE REFUSES: the
+#: project's reader reads back something other than what was typed. What that
+#: does next differs by value and by reader, and it is NOT always a failure.
+#: `--tracking-branch 2026` and `1.5` scaffold, bootstrap and get their
+#: upstream today, because every reader of `tracking_branch` does `str()` and
+#: `str(2026)` is `2026` again (while `007` reads back as `7`, `1.50` as
+#: `1.5` and `0` as `main`). So the text names only the failures that do hold
+#: (an id that is not text fails the validator; `007` as a branch becomes the
+#: branch `7`) and says that a number which survives `str()` works because of
+#: the reader and is still a number to the project's own.
+MANIFEST_MISREAD_REMEDIATION = (
+    "Remediation: choose another value for each one named, as nothing here "
+    "will retype it for you. The templates write these values unquoted, so "
+    "the project's own YAML reader takes `null` and `~` for no value, `true` "
+    "and `false` for booleans, and `007`, `2026` or `1.5` for numbers: what "
+    "it reads back is not what was typed. What that does differs: an id "
+    "that is not text fails the project's own validate-manifest.py, and "
+    "`007` as a branch reads back as the branch `7`; `2026` or `1.5` as a "
+    "branch happens to work today, because the tools that read it turn the "
+    "number back into text, but it is still a number to the project's "
+    "reader and not a name. A value the reader takes for text (`atlas`, "
+    "`release-2026`, `v2`) passes.")
+MANIFEST_INVALID_REMEDIATION = (
+    "Remediation: choose a value the project's own validate-manifest.py "
+    "accepts; the words after each value are the validator's own, and a "
+    "project it refuses is one whose first bootstrap would fail.")
+
+
+def manifest_value_problems(values: dict, policy: NamingPolicy, what: dict,
+                            *, misreads: bool = True, ignore: tuple = (),
+                            not_text: tuple = (),
+                            template_dir: Path = ASSEMBLY_TEMPLATE
+                            ) -> list[tuple[str, str]]:
+    """`(kind, sentence)` for everything wrong with the values, `kind` being
+    `misread` or `invalid`; `[]` when the project would hold every one.
+
+    A misread comes FIRST and alone: a value the reader turns into something
+    else makes the manifest invalid in ways that are its consequence (`id:
+    null` fails the validator as `id is None`), so the sentence about the
+    value itself is the one worth reading. `misreads=False` asks only the
+    validator's question, for a tool whose YAML-misread rule is its own.
+    """
+    if misreads:
+        misread = manifest_misreads(values, what, template_dir)
+        if misread:
+            return [("misread", sentence) for sentence in misread]
+    return [("invalid", sentence) for sentence
+            in manifest_invalid(values, policy, what, template_dir, ignore,
+                                not_text)]
+
+
+def refuse_manifest_values(prefix: str, values: dict, policy: NamingPolicy,
+                           what: dict, tail: str, *,
+                           misreads: bool = True) -> None:
+    """Raise `Refusal(<prefix>-manifest-misread)` or `<prefix>-manifest-
+    invalid`, naming every value, when the project could not hold them; the
+    caller's own `prefix` (`scaffold`, `adopt`) says which tool refused, and
+    its `tail` finishes the remediation with what only it knows."""
+    problems = manifest_value_problems(values, policy, what,
+                                       misreads=misreads)
+    if problems:
+        kind = problems[0][0]
+        remedy = (MANIFEST_MISREAD_REMEDIATION if kind == "misread"
+                  else MANIFEST_INVALID_REMEDIATION)
+        raise Refusal(f"{prefix}-manifest-{kind}",
+                      " ".join(sentence for _, sentence in problems),
+                      f"{remedy} {tail}")
+
+
+# ---------------------------------------------------------------------------
+# A repository's name is also a directory's (#261)
+# ---------------------------------------------------------------------------
+#
+# `checked_value` holds a name to 255 characters, `SAFE_ARG_RE`'s limit, and
+# the tools then make a directory of it: `<work-dir>/<name>` for each of the
+# three, and under `--local-remote-dir` a bare `<name>.git` beside them. A
+# name is at most 255 bytes on ext4, APFS and NTFS alike, so a `--project` of
+# 247 to 250 characters passed every check and died in `Path.exists` with
+# `OSError: File name too long`, a traceback and exit 1, where the first
+# directory is asked about; the scaffold died the same way from 247, and from
+# 251 characters in the work directory, where adopt's `check` had already
+# refused the name `legs.spec` with `unsafe-value`.
+
+#: The longest name a file or a directory may have, in bytes.
+NAME_MAX = 255
+
+
+def refuse_unstorable_names(refusal: str, directories: list[str],
+                            bare: list[str] = ()) -> None:
+    """Raise `Refusal(refusal)` when a repository name cannot be a directory
+    name: each of `directories` is made as it stands under the work
+    directory, each of `bare` as `<name>.git` under `--local-remote-dir`."""
+    problems = []
+    for names, suffix, where in (
+            (directories, "", "the directory this run makes for it under "
+                              "its work directory"),
+            (bare, ".git", "the bare repository's directory under "
+                           "--local-remote-dir")):
+        for name in names:
+            size = len(f"{name}{suffix}".encode("utf-8"))
+            if size > NAME_MAX:
+                # BOTH ENDS: a name this long differs from the others by its
+                # tail, `-spec` or `-code`, which a cut at the front loses.
+                shown = (name if len(name) <= 27
+                         else f"{name[:12]}...{name[-12:]}")
+                problems.append(
+                    f"{shown}{suffix} is {size} bytes long, and {where} "
+                    f"may be at most {NAME_MAX}")
+    if problems:
+        raise Refusal(
+            refusal, "; ".join(problems) + ".",
+            "Remediation: nothing was created. Use a shorter --project: the "
+            "three repositories are named `<Project>`, `<Project>-spec` and "
+            "`<Project>-code`, and a disk keeps a name of at most "
+            f"{NAME_MAX} bytes, which under --local-remote-dir includes the "
+            "`.git` each bare repository adds.")
