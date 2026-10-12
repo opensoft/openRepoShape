@@ -47,8 +47,9 @@ EXIT CODES
     2  a REFUSAL: the question could not be asked — an uninitialized submodule,
        an unresolvable commit, an unreadable pin. An unanswerable pin question
        is never an implicit pass.
-       No git to run is one too (`git-not-runnable`, #412): the gitlinks and
-       the digests are read through git.
+       No git to run is one too (`git-not-runnable`, #412), a git that is
+       missing, will not run or cannot be executed: the gitlinks and the
+       digests are read through git.
 """
 
 from __future__ import annotations
@@ -187,9 +188,11 @@ def _git_runs(unread: str) -> Iterator[None]:
     """The `git-not-runnable` refusal, exit 2, for a check that reads this
     repository through git and could not start it (#412).
 
-    `git_out` raises `FileNotFoundError` when there is no git on PATH and
-    `PermissionError` when the `git` found there will not run, and nothing
-    here caught either: the run ended in a traceback, which exits 1, a
+    `git_out` raises `FileNotFoundError` when there is no git on PATH,
+    `PermissionError` when the `git` found there will not run, and a plain
+    `OSError` (`ENOEXEC`) when it is no program this machine can execute, a
+    binary for another architecture or a script with no shebang, and nothing
+    here caught any of them: the run ended in a traceback, which exits 1, a
     FINDING's code, though nothing was found. The module's own exit codes
     make 1 "drift a reviewer can act on" and 2 "the question could not be
     asked ... never an implicit pass". So every call that runs git runs
@@ -201,14 +204,17 @@ def _git_runs(unread: str) -> Iterator[None]:
     is around the git calls alone, never around a whole check: a pin file or
     a submodule directory nobody may read is an `OSError` too, and it is not
     this, nor is telling that operator to put git on PATH any help. And
-    inside a git call, the two classes above are not enough: `subprocess`
-    raises the same `FileNotFoundError` or `PermissionError` when the
-    DIRECTORY it was to run git in cannot be entered, and on POSIX names
-    that directory in `filename` where a program that will not start names
-    `git`. An error that names a directory passes through unchanged, and so
-    does any other `OSError`: whatever that was, it is not a missing git. One
-    that names no file counts as git, since nothing then says it was the
-    directory.
+    inside a git call the class is not enough: `subprocess` raises the same
+    `FileNotFoundError` or `PermissionError` when the DIRECTORY it was to run
+    git in cannot be entered, and on POSIX names that directory in
+    `filename` where a program that will not start names `git`. So the rule
+    is the NAME: any `OSError` whose `filename` is `git` counts, `ENOEXEC`'s
+    included, and an error that names a directory or any other file passes
+    through unchanged, and so does any `OSError` that names none. The one
+    nameless error that counts is a `FileNotFoundError` or a
+    `PermissionError`: Windows' `CreateProcess` failures carry no filename,
+    so a missing git there is `[WinError 2]` with `filename` None, and
+    nothing says it was the directory.
 
     `recorded_gitlink`'s `except Refusal` is not in the way: an `OSError` is
     no `Refusal`, so a missing git reaches here instead of reading as "no
@@ -216,8 +222,10 @@ def _git_runs(unread: str) -> Iterator[None]:
     """
     try:
         yield
-    except (FileNotFoundError, PermissionError) as exc:
-        if exc.filename not in (None, "git"):
+    except OSError as exc:
+        nameless = (exc.filename is None
+                    and isinstance(exc, (FileNotFoundError, PermissionError)))
+        if exc.filename != "git" and not nameless:
             raise
         raise Refusal(
             "git-not-runnable",

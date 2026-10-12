@@ -15,10 +15,13 @@ gitlink, the pinned commit's lookup and the tree digest), never in `git_out`
 and never around a whole check. ONE code, `git-not-runnable`, the one
 `validate-family.py` uses for the same fact. And a git that will not start is
 told apart from every other `OSError`: the wrapper is around the git calls
-alone, and inside one it counts only a `FileNotFoundError` or a
-`PermissionError` that is not about a directory (`subprocess` raises the same
-two when the directory it was to run git in cannot be entered, and names that
-directory in `filename`; a program that will not start names `git`).
+alone, and inside one it counts an `OSError` whose `filename` is `git` (a
+missing git, one that will not run, and one that cannot be executed, `ENOEXEC`:
+a binary for another architecture or a script with no shebang), and a
+`FileNotFoundError` or a `PermissionError` that names no file (Windows'
+`CreateProcess` failures carry none). `subprocess` raises the same two classes
+when the directory it was to run git in cannot be entered, and names that
+directory in `filename`; a program that will not start names `git`.
 
 THE ROOT'S OWN VALIDATOR, RUN IN THIS PROCESS, with git failing as a missing
 program does, and no PATH changed for anything else, so each test means the
@@ -26,6 +29,12 @@ same on every OS. Two names reach git: the validator's own `git_out`, and the
 one `recorded_gitlink` and `tree_digest` call inside `repo_shape`, so each test
 says which of the three calls fails. The one test that does change PATH runs
 the real `subprocess` and skips on Windows, and says why.
+
+THE FAKE PICKS A CALL BY ITS SUBCOMMAND, never by `args[0]` (the review of
+#412). `repo_shape`'s `recorded_gitlink` is about to run `git
+--literal-pathspecs ls-files ...` (#367, #406), and a predicate that read the
+first argument would stop matching it, so the "gitlink" cases would stop
+failing where they should and eight tests would fail on that merge.
 """
 
 from __future__ import annotations
@@ -49,11 +58,17 @@ REMEDIATION = (
     "says whether the pins agree, and a gate that cannot answer is never a "
     "pass.")
 
-#: How a missing program, and a program that will not run, fail to start.
+#: How a missing program, a program that will not run, and a program this
+#: machine cannot execute (`ENOEXEC`: another architecture's binary, a script
+#: with no shebang) fail to start. `subprocess` names `git` in each.
 NO_GIT = FileNotFoundError(2, "No such file or directory", "git")
 NOT_EXECUTABLE = PermissionError(13, "Permission denied", "git")
-#: An error that names no file: nothing says it was a directory, so it is git.
+CANNOT_EXECUTE = OSError(errno.ENOEXEC, "Exec format error", "git")
+#: An error that names no file: Windows' `CreateProcess` failures carry no
+#: filename, so a missing git there looks like this, and nothing says it was a
+#: directory. Only these two classes count, named or not (see `NOT_GIT`).
 NO_FILE_NAMED = FileNotFoundError(2, "No such file or directory")
+NOT_EXECUTABLE_NO_FILE_NAMED = PermissionError(13, "Permission denied")
 
 #: The run options. The validator has one mode of work and these three
 #: spellings of asking it: plain, without the `ok` notes, and with a source
@@ -62,13 +77,34 @@ RUNS = pytest.mark.parametrize(
     "extra", [(), ("--quiet",), ("--pin-source", "nowhere")],
     ids=["plain", "quiet", "pin-source"])
 
+#: git's global options that take their value as the NEXT argument, which the
+#: subcommand is not.
+GLOBAL_OPTIONS_WITH_A_VALUE = ("-C", "-c", "--git-dir", "--work-tree",
+                               "--namespace", "--config-env")
+
+
+def subcommand(args: list[str]) -> str | None:
+    """The git subcommand `args` runs, wherever it sits among git's global
+    options: `git --literal-pathspecs ls-files -s -- spec` runs `ls-files`,
+    and so does `git -C there --no-pager ls-files`. `args[0]` is the
+    subcommand only until a caller adds a global option (#406 does)."""
+    rest = iter(args)
+    for arg in rest:
+        if arg in GLOBAL_OPTIONS_WITH_A_VALUE:
+            next(rest, None)
+        elif not arg.startswith("-"):
+            return arg
+    return None
+
+
 #: The three calls that run git, as the predicate on `git_out`'s argv that
 #: makes one of them fail and no other. `recorded_gitlink` lists the index
 #: (`ls-files`), the pinned commit's lookup is `rev-parse`, and the digest is
-#: a recursive `ls-tree`.
-GITLINK = ("gitlink", lambda args: args[0] == "ls-files")
-COMMIT = ("commit", lambda args: args[0] == "rev-parse")
-DIGEST = ("digest", lambda args: args[0] == "ls-tree" and "-r" in args)
+#: a recursive `ls-tree`. Each reads the SUBCOMMAND, never `args[0]`.
+GITLINK = ("gitlink", lambda args: subcommand(args) == "ls-files")
+COMMIT = ("commit", lambda args: subcommand(args) == "rev-parse")
+DIGEST = ("digest",
+          lambda args: subcommand(args) == "ls-tree" and "-r" in args)
 EVERY_CALL = ("every", lambda args: True)
 CALLS = pytest.mark.parametrize(
     "call", [GITLINK, COMMIT, DIGEST], ids=lambda call: call[0])
@@ -128,10 +164,46 @@ def spec_commit(project) -> str:
     return git("rev-parse", "HEAD:spec", cwd=project).stdout.strip()
 
 
+#: What can come before the subcommand: nothing, #406's `--literal-pathspecs`
+#: (the one a caller really adds), a flag, and options that take a value.
+GLOBAL_OPTIONS = pytest.mark.parametrize(
+    "before",
+    [(), ("--literal-pathspecs",), ("--no-pager", "--literal-pathspecs"),
+     ("-C", "elsewhere"), ("-c", "core.quotepath=off", "--literal-pathspecs")],
+    ids=["none", "literal-pathspecs", "flags", "dash-C",
+         "dash-c-then-literal-pathspecs"])
+
+
+@GLOBAL_OPTIONS
+def test_each_call_is_picked_by_its_subcommand_wherever_it_sits(before):
+    """THE REVIEW OF #412 (MUST-1): `args[0] == "ls-files"` stopped matching
+    the gitlink call the day `recorded_gitlink` began to run `git
+    --literal-pathspecs ls-files ...`, and the "gitlink" cases then ran with
+    nothing failing, so they failed for the wrong reason or passed for no
+    reason. Each of the three predicates picks its own call, and no other,
+    whatever global options come before the subcommand, and the second
+    listing `recorded_gitlink` falls back to (`ls-tree HEAD`) is none of
+    them: no case here fails it."""
+    calls = {
+        "gitlink": ["ls-files", "-s", "--", "spec"],
+        "commit": ["rev-parse", "--verify", "--quiet",
+                   f"{OTHER_SHA}^{{commit}}"],
+        "digest": ["ls-tree", "-r", "-z", OTHER_SHA],
+    }
+    every = (GITLINK, COMMIT, DIGEST)
+    for name, tail in calls.items():
+        argv = [*before, *tail]
+        assert [n for n, picks in every if picks(argv)] == [name], argv
+    fallback = [*before, "ls-tree", "HEAD", "--", "spec"]
+    assert [n for n, picks in every if picks(fallback)] == []
+
+
 @RUNS
 @pytest.mark.parametrize(
-    "error", [NO_GIT, NOT_EXECUTABLE, NO_FILE_NAMED],
-    ids=["no-git", "git-not-executable", "no-file-named"])
+    "error", [NO_GIT, NOT_EXECUTABLE, CANNOT_EXECUTE, NO_FILE_NAMED,
+              NOT_EXECUTABLE_NO_FILE_NAMED],
+    ids=["no-git", "git-not-executable", "git-cannot-execute",
+         "no-file-named", "not-executable-no-file-named"])
 def test_no_git_at_all_is_one_refusal_in_every_run(
         validator, project, monkeypatch, capsys, extra, error):
     """A SCAFFOLDED ROOT AND NO GIT: the first check to run git is the first
@@ -148,8 +220,9 @@ def test_no_git_at_all_is_one_refusal_in_every_run(
 
 
 @CALLS
-@pytest.mark.parametrize("error", [NO_GIT, NOT_EXECUTABLE],
-                         ids=["no-git", "git-not-executable"])
+@pytest.mark.parametrize("error", [NO_GIT, NOT_EXECUTABLE, CANNOT_EXECUTE],
+                         ids=["no-git", "git-not-executable",
+                              "git-cannot-execute"])
 def test_each_call_that_runs_git_names_the_check_it_is(
         validator, project, monkeypatch, capsys, call, error):
     """GIT FAILS IN ONE CALL AND RUNS IN THE REST, so every check before it
@@ -248,8 +321,11 @@ def test_with_git_running_the_same_root_says_pins_ok(
 #: will not start: the directory git was to run in, which `subprocess` names
 #: in `filename` where it names `git` for a program (here the leg's submodule,
 #: the directory two of the three calls run in, as a submodule nobody may
-#: enter), and errors of no missing-program class at all. Built in the test,
-#: which knows the paths.
+#: enter), and errors that name no file and are neither of the two classes
+#: that Windows' `CreateProcess` raises for a git it cannot start (an `ENOEXEC`
+#: with no name is the one a reader might expect to count, and does not: the
+#: nameless exceptions are those two classes only). Built in the test, which
+#: knows the paths.
 NOT_GIT = {
     "unreadable-directory": lambda root: PermissionError(
         errno.EACCES, "Permission denied", str(root / "spec")),
@@ -260,6 +336,10 @@ NOT_GIT = {
     "io-error": lambda root: OSError(errno.EIO, "Input/output error"),
     "out-of-memory": lambda root: OSError(errno.ENOMEM,
                                           "Cannot allocate memory"),
+    "exec-format-error-naming-no-file": lambda root: OSError(
+        errno.ENOEXEC, "Exec format error"),
+    "exec-format-error-naming-a-directory": lambda root: OSError(
+        errno.ENOEXEC, "Exec format error", str(root / "spec")),
 }
 
 
