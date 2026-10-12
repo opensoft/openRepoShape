@@ -36,6 +36,9 @@ assembly root), else from `gh api` when `gh` is authenticated. Neither is
 available, this is a SKIP with a named notice, never a failure: a project with
 no network and no local checkout of the product is not thereby lying about its
 descent, and this check must never punish the absence of what would answer it.
+A source somebody NAMED is the other way round (#295): a `--pin-source` or
+`SHAPE_PIN_SOURCE_<PRODUCT>` that cannot answer is a FINDING, and a
+`--pin-source` no declared pin used is a note.
 
 EXIT CODES
     0  every leg's three facts agree, every digest recomputes, and no
@@ -97,6 +100,13 @@ class Report:
         drift — printed, but never a FINDING and never the reason for a
         nonzero exit. A network absence is not evidence of anything."""
         self.notes.append(f"  skip {text}")
+
+    def unused(self, text: str) -> None:
+        """A `--pin-source` no declared pin read (#295) — printed beside the
+        skips and, like them, never a FINDING and never the reason for a
+        nonzero exit: the person named a source that did not answer, and
+        nothing about any pin is wrong for that."""
+        self.notes.append(f"  note {text}")
 
 
 def _workflow_refs(root: Path) -> list[tuple[Path, str, str]]:
@@ -349,15 +359,81 @@ def _check_shape_pin(root: Path, manifest: dict, report: Report) -> None:
         report.note(f"{rel}: {len(files)} copied shape file(s) match their digests")
 
 
+class PinSources:
+    """Every `--pin-source` value AS TYPED, read against the neutral-product
+    pins `project.yaml` declares, and which of them a pin actually read.
+
+    THE READING (#295). `PRODUCT=PATH` and a bare `PATH` are told apart by an
+    `=`, and a path may hold one: a stand-in cloned under `a=b/` is
+    `--pin-source a=b/openGlass`. Splitting every value at its first `=` made
+    that a source keyed to a product `a` that nothing declares, which no pin
+    ever looked up — the digest went to `gh api` and a `skip`, exit 0, with
+    the skip line itself suggesting the `--pin-source` the person had just
+    passed. So the text before the first `=` is a PRODUCT only when it
+    casefolds to a declared pin's name, the same casefold the lookup below
+    uses, and any other value is a bare PATH, whole. A declared name wins
+    even when a directory is spelled like the whole value
+    (`openGlass=x/openGlass` beside a directory `openGlass=x`): the reading is
+    decided by the manifest and never by what happens to be on the disk, and
+    `./openGlass=x/openGlass` is how to mean that directory.
+
+    WHAT NO PIN READ (#295). A value no declared pin used — a mistyped key, a
+    bare path every pin had a more specific answer for, an earlier value a
+    later one replaced — is said once the pins are checked, by
+    `_note_unused_pin_sources`. Saying nothing is how a mistyped key read as
+    a pass that never looked.
+    """
+
+    def __init__(self, values: list[str], declared) -> None:
+        #: The declared pins, spelled as `project.yaml` spells them.
+        self.declared = [p for p in declared if isinstance(p, str) and p]
+        names = {product.casefold(): product for product in self.declared}
+        #: `{product casefolded: (typed, path)}`, the last value given wins.
+        self.keyed: dict[str, tuple[str, Path]] = {}
+        #: `(typed, path)` of the last bare value, if any.
+        self.bare: tuple[str, Path] | None = None
+        #: Every distinct value in the order given, and the declared pin it
+        #: was read as keyed to, or None for a bare PATH.
+        self.reading: dict[str, str | None] = {}
+        #: `{typed: the later value that took its place}`.
+        self.replaced: dict[str, str] = {}
+        #: The values a pin's digest was asked of, readable or not.
+        self.used: set[str] = set()
+        for typed in values:
+            key, sep, path = typed.partition("=")
+            product = names.get(key.casefold()) if sep else None
+            self.reading[typed] = product
+            if product is not None:
+                earlier = self.keyed.get(product.casefold())
+                self.keyed[product.casefold()] = (typed, Path(path))
+            else:
+                earlier = self.bare
+                self.bare = (typed, Path(typed))
+            self.replaced.pop(typed, None)
+            if earlier is not None and earlier[0] != typed:
+                self.replaced[earlier[0]] = typed
+
+    def read_as_path(self, typed: str | None) -> str:
+        """The sentence saying a value holding `=` was read as a bare PATH,
+        or `""` — what a person who meant `PRODUCT=PATH` and mistyped the
+        product needs told, since nothing else in the run names it."""
+        if typed is None or self.reading.get(typed) is not None \
+                or "=" not in typed:
+            return ""
+        declared = ", ".join(self.declared) or "none"
+        return (f"It was read as a PATH: `{typed.partition('=')[0]}` is not "
+                f"a declared neutral-product pin (declared: {declared}).")
+
+
 def resolve_neutral_pin_source(root: Path, product: str, repository: str,
-                               keyed_sources: dict[str, Path],
-                               default_source: Path | None,
-                               ) -> tuple[Path | None, str | None]:
+                               sources: PinSources,
+                               ) -> tuple[Path | None, str | None, str | None]:
     """Where to read `product`'s tree OFFLINE, if anywhere at all.
 
     Tried in order, the most explicit ask first:
 
-      1. `--pin-source <product>=<path>` (case-insensitive on the name)
+      1. `--pin-source <product>=<path>` (case-insensitive on the name, which
+         must be a declared pin's for the value to be read this way, #295)
       2. `SHAPE_PIN_SOURCE_<PRODUCT>` in the environment
       3. a checkout sitting BESIDE this assembly root, named for the pinned
          repository (`opensoft/openGlass` -> `../openGlass`) — the ordinary
@@ -367,22 +443,50 @@ def resolve_neutral_pin_source(root: Path, product: str, repository: str,
          to whichever pin does not already have a more specific answer — the
          common case is exactly one declared neutral-product pin
 
-    Returns `(None, None)` when nothing above answers; the caller's next step
+    Returns `(path, how, typed)`, `typed` being the `--pin-source` value as
+    given when one of those answered, so the caller can mark it used (#295).
+    `(None, None, None)` when nothing above answers; the caller's next step
     is `gh api`, and after that, a SKIP.
     """
-    keyed = keyed_sources.get(product.casefold())
+    keyed = sources.keyed.get(product.casefold())
     if keyed is not None:
-        return keyed, f"--pin-source {product}=..."
+        typed, path = keyed
+        return path, f"--pin-source {product}=...", typed
     env_name = pin_source_env_name(product)
     env_value = os.environ.get(env_name)
     if env_value:
-        return Path(env_value), f"${env_name}"
+        return Path(env_value), f"${env_name}", None
     sibling = root.parent / repo_basename(repository)
     if (sibling / ".git").exists():
-        return sibling, f"sibling checkout ({sibling})"
-    if default_source is not None:
-        return default_source, "--pin-source"
-    return None, None
+        return sibling, f"sibling checkout ({sibling})", None
+    if sources.bare is not None:
+        typed, path = sources.bare
+        return path, "--pin-source", typed
+    return None, None, None
+
+
+def _digest_from_source(source: Path, commit: str) -> str:
+    """`tree_digest` over a local source, with every way that source can fail
+    to answer raised as a `Refusal` (#295).
+
+    `tree_digest` runs `git` IN the source, and a directory that is not there
+    is not a git failure but a `FileNotFoundError` out of `subprocess.run`
+    (`NotADirectoryError` for a file, `PermissionError` for a directory this
+    user cannot enter), which nothing caught: `--pin-source
+    openGlass=<missing>` died on a traceback, exit 1, where a directory that
+    is not a checkout is the `neutral-pin-source-unreadable` FINDING. An
+    explicit source that cannot answer is that finding however it fails.
+    """
+    if not source.exists():
+        raise Refusal("pin-source-missing", "no such directory")
+    if not source.is_dir():
+        raise Refusal("pin-source-not-a-directory",
+                      "it is a file, not a directory")
+    try:
+        return tree_digest(source, commit)
+    except OSError as exc:
+        raise Refusal("pin-source-unreadable",
+                      f"{exc.strerror or exc}") from exc
 
 
 def _check_neutral_pin_entry_and_load(root: Path, product, report: Report
@@ -465,10 +569,19 @@ def _check_neutral_pin_commit_and_digest_fields(pin: dict, rel: str,
     return commit, recorded
 
 
+def _also_a_directory(typed: str | None, sources: PinSources) -> str:
+    """The line for a value read as `PRODUCT=PATH` that ALSO names an
+    existing directory whole (#295): the keyed reading won, and this is how
+    to ask for the other one."""
+    if typed is None or sources.reading.get(typed) is None \
+            or not Path(typed).is_dir():
+        return ""
+    return (f"`{typed}` is also a directory; `--pin-source ./{typed}` "
+            "reads it as one.")
+
+
 def _recompute_neutral_pin_digest(root: Path, product: str, repository: str,
-                                  commit: str, rel: str,
-                                  keyed_sources: dict[str, Path],
-                                  default_source: Path | None,
+                                  commit: str, rel: str, sources: PinSources,
                                   report: Report) -> tuple[str, str] | None:
     """Recompute the referent's tree digest: offline where a source can be
     found, else from `gh api`, else a named SKIP that never fails the run.
@@ -478,16 +591,24 @@ def _recompute_neutral_pin_digest(root: Path, product: str, repository: str,
     already reported in that case, exactly as the original loop's
     `continue` left it.
     """
-    source, how = resolve_neutral_pin_source(root, product, repository,
-                                              keyed_sources, default_source)
+    source, how, typed = resolve_neutral_pin_source(root, product, repository,
+                                                    sources)
     if source is not None:
+        if typed is not None:
+            sources.used.add(typed)
         try:
-            return tree_digest(source, commit), how
+            return _digest_from_source(source, commit), how
         except Refusal as exc:
             report.finding(
                 "neutral-pin-source-unreadable",
                 f"{rel}: {source} ({how}) could not answer for "
-                f"{repository} @ {commit}: {exc.detail}",
+                f"{repository} @ {commit}: {exc.detail}"
+                + "".join(f"\n  {line}" for line in (
+                    sources.read_as_path(typed),
+                    _also_a_directory(typed, sources),
+                    f"Remediation: point it at a clone of {repository} that "
+                    "has that commit (`git fetch` in it first), or drop it "
+                    "so the next source in the order answers.") if line),
             )
             return None
     try:
@@ -504,8 +625,7 @@ def _recompute_neutral_pin_digest(root: Path, product: str, repository: str,
 
 
 def _check_one_neutral_product_pin(root: Path, product, report: Report,
-                                   keyed_sources: dict[str, Path],
-                                   default_source: Path | None) -> None:
+                                   sources: PinSources) -> None:
     """One `neutral_product_pins:` entry, start to finish.
 
     Split from `_check_neutral_product_pins` for #132 so the loop in that
@@ -522,8 +642,7 @@ def _check_one_neutral_product_pin(root: Path, product, report: Report,
         return
     commit, recorded = fields
     recomputed = _recompute_neutral_pin_digest(root, product, repository,
-                                               commit, rel, keyed_sources,
-                                               default_source, report)
+                                               commit, rel, sources, report)
     if recomputed is None:
         return
     actual, how = recomputed
@@ -542,8 +661,7 @@ def _check_one_neutral_product_pin(root: Path, product, report: Report,
 
 
 def _check_neutral_product_pins(root: Path, manifest: dict, report: Report,
-                                keyed_sources: dict[str, Path],
-                                default_source: Path | None) -> None:
+                                pin_source_values: list[str]) -> None:
     """Re-check every `neutral_product_pins:` entry `project.yaml` declares.
 
     `<Domainx><Product>` is a CLAIM of descent and a claim needs a REFERENT
@@ -553,28 +671,43 @@ def _check_neutral_product_pins(root: Path, manifest: dict, report: Report,
     local checkout when one can be found, else from `gh api`. Neither
     available is a SKIP, never a finding and never a refusal: the absence of
     a way to answer is not evidence that the pin is wrong.
+
+    The `--pin-source` values are READ here rather than in `main`, because
+    whether `a=b/openGlass` is keyed to a product or a bare path depends on
+    the pins this manifest declares (#295); each one no pin used is noted
+    once every pin has been checked.
     """
     products = manifest.get("neutral_product_pins") or []
+    sources = PinSources(pin_source_values, products)
     for product in products:
-        _check_one_neutral_product_pin(root, product, report, keyed_sources,
-                                       default_source)
+        _check_one_neutral_product_pin(root, product, report, sources)
+    _note_unused_pin_sources(sources, report)
 
 
-def _parse_pin_sources(pin_source_args: list[str]
-                       ) -> tuple[dict[str, Path], Path | None]:
-    """`--pin-source` may be repeated, each either `PRODUCT=PATH` or a bare
-    `PATH`. Split from `main` for #132. Returns the keyed sources and the
-    one bare default, exactly as `main` used to build them inline.
+def _note_unused_pin_sources(sources: PinSources, report: Report) -> None:
+    """A note for each `--pin-source` value no declared pin read (#295),
+    naming it as typed and why: a later value replaced it, its pin was never
+    recomputed, nothing is declared, or every pin had a more specific
+    answer. A value holding `=` that was read as a PATH says so, because
+    that is the mistyped key's only trace in the run.
     """
-    keyed_sources: dict[str, Path] = {}
-    default_source: Path | None = None
-    for raw in pin_source_args:
-        product, sep, path = raw.partition("=")
-        if sep:
-            keyed_sources[product.casefold()] = Path(path)
+    for typed, product in sources.reading.items():
+        if typed in sources.used:
+            continue
+        later = sources.replaced.get(typed)
+        if later is not None:
+            why = f"the later `--pin-source {later}` replaced it"
+        elif product is not None:
+            why = f"{product}'s digest was not recomputed from any source"
+        elif not sources.declared:
+            why = "project.yaml declares no neutral-product pin"
         else:
-            default_source = Path(raw)
-    return keyed_sources, default_source
+            why = ("each declared pin had a more specific source (a keyed "
+                   "--pin-source, SHAPE_PIN_SOURCE_<PRODUCT>, or a checkout "
+                   "beside this assembly root) or was not recomputed")
+        report.unused(" ".join(filter(None, (
+            f"--pin-source {typed}: not used — {why}.",
+            sources.read_as_path(typed)))))
 
 
 def _load_legs_to_check(root: Path) -> tuple[dict, list[dict]]:
@@ -600,8 +733,8 @@ def _load_legs_to_check(root: Path) -> tuple[dict, list[dict]]:
     return manifest, legs
 
 
-def _run_all_checks(root: Path, report: Report, keyed_sources: dict[str, Path],
-                    default_source: Path | None) -> None:
+def _run_all_checks(root: Path, report: Report,
+                    pin_source_values: list[str]) -> None:
     """Every check `main` runs inside its one `try`, in order. Split from
     `main` for #132 so that `try` wraps a single call.
     """
@@ -610,8 +743,7 @@ def _run_all_checks(root: Path, report: Report, keyed_sources: dict[str, Path],
     for leg in legs:
         _check_leg(root, leg, report, refs)
     _check_shape_pin(root, manifest, report)
-    _check_neutral_product_pins(root, manifest, report, keyed_sources,
-                                default_source)
+    _check_neutral_product_pins(root, manifest, report, pin_source_values)
 
 
 def _emit_report(report: Report, quiet: bool) -> int:
@@ -640,19 +772,22 @@ def main(argv: list[str] | None = None) -> int:
         metavar="[PRODUCT=]PATH",
         help="a local checkout to recompute a neutral-product pin's digest "
              "from, instead of `gh api` — e.g. --pin-source openGlass=../"
-             "openGlass. A bare PATH with no `PRODUCT=` applies to whichever "
-             "declared pin has no more specific answer (the common case is "
-             "exactly one). Repeatable. SHAPE_PIN_SOURCE_<PRODUCT> (env) and "
-             "a checkout sitting beside this assembly root are also tried, "
-             "before `gh api` and before this flag's bare form.")
+             "openGlass. The text before the first `=` is a PRODUCT only when "
+             "it names a pin project.yaml declares, and then that reading "
+             "wins even over a directory spelled like the whole value "
+             "(./PATH reads that directory); any other value is a bare PATH, "
+             "which applies to whichever declared pin has no more specific "
+             "answer (the common case is exactly one). Repeatable; a value no "
+             "pin used is noted, and one that cannot be read is a finding. "
+             "SHAPE_PIN_SOURCE_<PRODUCT> (env) and a checkout sitting beside "
+             "this assembly root are also tried, before `gh api` and before "
+             "this flag's bare form.")
     args = parser.parse_args(argv)
-
-    keyed_sources, default_source = _parse_pin_sources(args.pin_source)
 
     report = Report()
     try:
         root = find_repo_root(args.root or Path(__file__).resolve().parents[1])
-        _run_all_checks(root, report, keyed_sources, default_source)
+        _run_all_checks(root, report, args.pin_source)
     except Refusal as exc:
         print(str(exc), file=sys.stderr)
         return 2
