@@ -55,10 +55,11 @@ from repo_shape import YamlError, _strip_comment, parse_yaml  # noqa: E402
 # What a declared neutral-product pin is read with (#273): the forge's tree
 # listing, the owner an unqualified name resolves under, and the digest; and
 # which products share a `SHAPE_PIN_SOURCE_<PRODUCT>` variable, the one answer
-# the project's own `validate-pins.py` reports on (#275).
+# the project's own `validate-pins.py` reports on (#275), with two
+# declarations ONE product when they share a pin file (`pin_product_key`).
 from repo_shape import (  # noqa: E402
     GH_TREE_API, NEUTRAL_PRODUCT_OWNER, PIN_SOURCE_ENV_PREFIX,
-    pin_source_env_collisions, tree_digest,
+    pin_product_key, pin_source_env_collisions, tree_digest,
 )
 
 SHAPE_REPOSITORY = "opensoft/openRepoShape"
@@ -1840,19 +1841,40 @@ def pin_digest_from_source(source: Path, commit: str, repository: str) -> str:
     and on 3.14 "no such directory" for a directory that is there. A source
     `stat()` can read but `cwd=` cannot enter (a directory with no search
     bit) fails in `tree_digest`, which the same guard answers.
+
+    THE PATH IS NAMED AS TYPED, UNLESS IT IS NOT PRINTABLE (`shown_source`),
+    and then as Python's `repr` spells it, wherever the refusal names it --
+    git's own reason names the directory it ran in. Printed raw, an ESC in
+    it reached the terminal, and a line break or a carriage return began a
+    line of the person's choosing, a forged `REFUSED` among them; the
+    traceback it replaced had shown the path as a `repr`. A printable path
+    is named byte for byte as it always was.
     """
     try:
         return _digest_from_pin_source(source, commit)
     except (Refusal, OSError) as exc:
         why = (exc.detail if isinstance(exc, Refusal)
                else exc.strerror or str(exc))
+        named = shown_source(source)
         raise Refusal(
             "pin-source-unreadable",
-            f"{source} could not answer for {repository} @ {commit}: {why}",
+            f"{named} could not answer for {repository} @ {commit}: "
+            f"{why.replace(str(source), named)}",
             "Remediation: point --pin-source at a clone of that repository "
             "that HAS the pinned commit (`git fetch --all` first), or drop "
             "--pin-source and let `gh api` read the forge.",
         ) from exc
+
+
+def shown_source(source) -> str:
+    """A `--pin-source` path as a refusal names it: as it is, unless a
+    character in it is not printable (`str.isprintable`), and then as
+    Python's `repr` spells it -- `\\x1b`, `\\n`, `\\r`, and `\\udcff` for a
+    byte that is not UTF-8, as `sys.argv` keeps one -- which is how every
+    other value a refusal here names is spelled (`--pin {raw!r}`). The
+    question `adopt-project.py`'s `_shown` asks of a path it prints."""
+    text = str(source)
+    return text if text.isprintable() else repr(text)
 
 
 def _digest_from_pin_source(source: Path, commit: str) -> str:
@@ -1894,13 +1916,32 @@ def pin_digest_from_gh(repository: str, commit: str) -> str:
     the same number. Tree rows are dropped because `-r` emits none; a
     submodule arrives as `type: commit` with mode `160000` and is kept, as
     `ls-tree` keeps it.
+
+    NO `gh` ON PATH IS `gh-not-found`, as `repo_shape.tree_digest_from_gh`,
+    the validator's twin of this reader, names it: exit 2, before anything
+    is created, with `--pin-source` offered. It was a `FileNotFoundError`
+    traceback, exit 1, out of `subprocess.run`, from the scaffold and, since
+    #273 reads adopt's pins here, from `adopt-project.py plan --pin`, which
+    needed no `gh` before.
     """
-    proc = subprocess.run(
-        ["gh", "api", GH_TREE_API.format(repo=repository, commit=commit)],
-        # UTF-8 and STRICT, not `errors="replace"`: this JSON becomes a
-        # digest, and a replaced byte would be a wrong digest with a
-        # confident tone (#217).
-        capture_output=True, text=True, encoding="utf-8", check=False)
+    try:
+        proc = subprocess.run(
+            ["gh", "api", GH_TREE_API.format(repo=repository, commit=commit)],
+            # UTF-8 and STRICT, not `errors="replace"`: this JSON becomes a
+            # digest, and a replaced byte would be a wrong digest with a
+            # confident tone (#217).
+            capture_output=True, text=True, encoding="utf-8", check=False)
+    except FileNotFoundError as exc:
+        raise Refusal(
+            "gh-not-found",
+            f"the `gh` CLI is not on PATH, so `gh api` cannot read "
+            f"{repository} @ {commit}: {exc}",
+            "Remediation: pass --pin-source <a local clone of that "
+            "repository> to compute the digest with no network at all, or "
+            "put `gh` on PATH and run this again (`openRepoShape "
+            "--preflight` names each missing prerequisite and offers to "
+            "install it, on a typed yes).",
+        ) from exc
     if proc.returncode != 0:
         raise Refusal(
             "pin-unreadable",
@@ -2076,18 +2117,21 @@ def pin_variable_collisions(typed) -> list[str]:
     for all of them, and the project's own `validate-pins.py` reported the
     pin it was not a checkout of as `neutral-pin-source-unreadable`. The
     question is `repo_shape.pin_source_env_collisions`'s, so it is the one
-    `validate-pins.py` answers, and it takes products as their pin files do:
-    the same product typed twice is #241's `one file`, said by
-    `pin_collisions`, and is never a collision here.
+    `validate-pins.py` answers, and it takes products as their pin files do
+    (`pin_product_key`): the same product typed twice is #241's `one file`,
+    said by `pin_collisions`, and is never a collision here. Each pin is
+    named under its own product by that key too, and not by a casefold,
+    which took `openß` and `openss`, two pin files, for one product and
+    named each of the two pins twice.
     """
     said_of = {}
     for said, product in typed:
-        said_of.setdefault(product.casefold(), []).append(said)
+        said_of.setdefault(pin_product_key(product), []).append(said)
     out = []
     for variable, products in pin_source_env_collisions(
             product for _, product in typed).items():
         named = [said for product in products
-                 for said in said_of[product.casefold()]]
+                 for said in said_of[pin_product_key(product)]]
         out.append(
             " and ".join(named) + " name the products "
             + " and ".join(f"`{product}`" for product in products)
@@ -2149,8 +2193,12 @@ def refuse_colliding_pins(pins, owner: str,
     TWO PINS THAT SHARE A SOURCE VARIABLE ARE REFUSED HERE TOO (#275), in the
     same refusal and after the file collisions, by `pin_variable_collisions`:
     `--pin open-glass@<A> --pin open_glass@<B>` are two files and one
-    `SHAPE_PIN_SOURCE_OPEN_GLASS`. The refusal is the one the project's own
-    `validate-pins.py` would make as a finding, said before anything exists.
+    `SHAPE_PIN_SOURCE_OPEN_GLASS`. This is refused so that no new project is
+    made, and no plan written, with a variable it cannot use: the project's
+    own `validate-pins.py` only NOTES such a pair in one that already
+    declares it (`neutral-pin-source-collides`), since nothing it could have
+    done then is wrong, but a pair made now is said no to before anything
+    exists.
     """
     typed = [(f"--pin {raw!r}", parse_pin(raw, owner)[0]) for raw in pins]
     collisions = pin_collisions(typed)

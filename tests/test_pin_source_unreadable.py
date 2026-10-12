@@ -294,13 +294,119 @@ def test_the_source_is_printed_escaped_and_never_raised_on(
     name: the refusal is never a `UnicodeEncodeError` in its place. The
     second row is a name that is not UTF-8 (POSIX only: a Windows command
     line has no such byte), read with `surrogateescape`, so it prints as
-    the surrogate it was read as."""
+    the surrogate it was read as. `adopt-project.py plan` records the path
+    in the plan, which cannot hold that byte, so it refuses the name as a
+    value it cannot record before it reads any digest (#273's review, N2),
+    and spells it the same way."""
     typed = str(tmp_path / name)
     result = run(kind, tmp_path, adoptable, typed, env=env)
     assert result.returncode == 2, result.stdout + result.stderr
     assert "Traceback" not in result.stderr, result.stderr
     assert spelled in result.stderr, result.stderr
-    assert "REFUSED pin-source-unreadable: " in result.stderr
+    code = ("adopt-unwritable-value"
+            if kind == "adopt-plan" and "\udcff" in name
+            else "pin-source-unreadable")
+    assert f"REFUSED {code}: " in result.stderr
+    assert made(kind, tmp_path) == []
+
+
+# --- a source that is not printable is named spelled (#339's review, S1) -----
+#
+# The refusal named the path raw, so an ESC in it reached the terminal, and a
+# line break or a carriage return began a line of the path's choosing, a
+# forged `REFUSED` among them; the traceback it replaced had shown it as a
+# `repr`. The path is now spelled as Python's `repr` spells it wherever the
+# refusal names it -- git's own reason names it too -- when a character in it
+# is not printable, and named as typed otherwise, byte for byte as above.
+
+#: Names that print as something other than themselves: an ESC, a carriage
+#: return, a line break, and all three beginning a forged line.
+CONTROL_NAMES = [
+    pytest.param("miss\x1b[31mred", id="esc"),
+    pytest.param("miss\ring", id="cr"),
+    pytest.param("miss\ning", id="lf"),
+    pytest.param("miss\x1b[31mRED\nREFUSED forged-line: this line was not "
+                 "printed by the tool\r", id="forged-line"),
+]
+
+#: A Windows file name holds no control character, so neither does a path
+#: one could mean there.
+CONTROL_ARGV = pytest.mark.skipif(
+    os.name == "nt",
+    reason="needs a path holding a control character, which a Windows file "
+           "name cannot hold")
+
+
+def assert_one_refusal_of_the_tools(result: subprocess.CompletedProcess,
+                                    typed: str) -> None:
+    """Exit 2 and one refusal, with the path `repr`'d in it: no raw ESC, and
+    no line but the tool's own. (`run_script` reads in text mode, so a raw
+    carriage return would arrive as a line break.)"""
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "Traceback" not in result.stderr, result.stderr
+    assert "\x1b" not in result.stderr, result.stderr
+    lines = result.stderr.splitlines()
+    assert [line for line in lines if line.startswith("REFUSED")] \
+        == lines[:1], result.stderr
+    assert repr(typed) in result.stderr, result.stderr
+
+
+@CONTROL_ARGV
+@pytest.mark.parametrize("kind", RUNS)
+@pytest.mark.parametrize("name", CONTROL_NAMES)
+def test_a_source_holding_a_control_character_is_named_spelled(
+        kind, name, tmp_path, adoptable):
+    """Through every way in. The scaffold refuses it as
+    `pin-source-unreadable`; `adopt-project.py plan` refuses it before any
+    digest is read, as a value it cannot record (#273's review, N2), and
+    names it the same way."""
+    typed = str(tmp_path / name)
+    result = run(kind, tmp_path, adoptable, typed)
+    assert_one_refusal_of_the_tools(result, typed)
+    if kind == "adopt-plan":
+        assert result.stderr.startswith(
+            f"REFUSED adopt-unwritable-value: --pin-source is {typed!r}, "), \
+            result.stderr
+    else:
+        assert result.stderr == (
+            f"REFUSED pin-source-unreadable: {typed!r} could not answer for "
+            f"opensoft/openGlass @ {COMMIT}: {NO_SUCH_DIRECTORY}\n"
+            f"{REMEDIATION}\n")
+    assert made(kind, tmp_path) == []
+
+
+@CONTROL_ARGV
+@pytest.mark.parametrize("kind", ["scaffold-dry-run", "scaffold-run"])
+def test_git_s_own_reason_names_the_source_spelled_too(kind, tmp_path,
+                                                       adoptable):
+    """A directory that is no clone is git's own failure, and git's reason
+    names the directory it ran in: spelled there as in the refusal's head."""
+    typed = str(tmp_path / ("plain\x1b[31mRED\nREFUSED forged-line: this "
+                            "line was not printed by the tool\r"))
+    Path(typed).mkdir()
+    result = run(kind, tmp_path, adoptable, typed)
+    assert_one_refusal_of_the_tools(result, typed)
+    assert result.stderr.startswith(
+        f"REFUSED pin-source-unreadable: {typed!r} could not answer for "
+        f"opensoft/openGlass @ {COMMIT}: `git ls-tree -r -z {COMMIT}` in "
+        f"{typed!r} exited "), result.stderr
+    assert made(kind, tmp_path) == []
+
+
+@pytest.mark.parametrize("kind", RUNS)
+def test_a_source_that_is_one_line_and_not_printable_is_named_spelled(
+        kind, tmp_path, adoptable):
+    """A no-break space is one printable line to `check` (`plan` records
+    such a path) and is not `str.isprintable`, so every tool names it
+    spelled: the escape is the printable question, asked of the path alone,
+    on every platform."""
+    typed = str(tmp_path / "miss ing")
+    result = run(kind, tmp_path, adoptable, typed)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stderr == (
+        f"REFUSED pin-source-unreadable: {typed!r} could not answer for "
+        f"opensoft/openGlass @ {COMMIT}: {NO_SUCH_DIRECTORY}\n"
+        f"{REMEDIATION}\n")
     assert made(kind, tmp_path) == []
 
 

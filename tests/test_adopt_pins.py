@@ -44,12 +44,13 @@ from pathlib import Path
 import pytest
 
 from conftest import (ADOPT, FILE_PROTOCOL, REPO, SCAFFOLD, SYNTHETIC_TREE,
-                      WINDOWS_SKIP, findings, git, make_source_repo, planned,
-                      refused_before_any_leg, resolve, run_script)
+                      WINDOWS_SKIP, as_human, findings, git, make_source_repo,
+                      planned, refused_before_any_leg, resolve, run_script)
 
 sys.path.insert(0, str(REPO / "scripts"))
 import shape_materialize  # noqa: E402
-from repo_shape import load_yaml, tree_digest  # noqa: E402
+from repo_shape import (Refusal, load_yaml, pin_source_env_name,  # noqa: E402
+                        tree_digest)
 
 UTF8 = "utf-8"
 PROJECT = "MedxGlass"
@@ -520,6 +521,187 @@ def test_a_pin_the_source_does_not_have_is_refused_by_plan(source_repo,
     assert not out.exists()
 
 
+# --- no `gh` on PATH (#273's review, S2) -------------------------------------
+#
+# `gh api` is the DEFAULT way to a pin's digest: `--pin-source` is the test
+# path. With no `gh` installed, `subprocess.run(["gh", ...])` raised
+# `FileNotFoundError` out of the shared reader, a traceback, exit 1, from the
+# scaffold and, since #273, from `adopt-project.py plan --pin`, which needed
+# no `gh` before. It is `gh-not-found`, as the validator's twin
+# (`repo_shape.tree_digest_from_gh`) names it.
+
+GH_NOT_FOUND = ("REFUSED gh-not-found: the `gh` CLI is not on PATH, so `gh "
+                "api` cannot read opensoft/openGlass @ {commit}: ")
+GH_NOT_FOUND_REMEDIATION = (
+    "Remediation: pass --pin-source <a local clone of that repository> to "
+    "compute the digest with no network at all, or put `gh` on PATH and run "
+    "this again (`openRepoShape --preflight` names each missing prerequisite "
+    "and offers to install it, on a typed yes).")
+
+
+def test_with_no_gh_on_path_the_forge_reader_is_gh_not_found(monkeypatch,
+                                                             tmp_path):
+    """The shared reader itself, with a PATH that holds nothing at all: on
+    every platform, and with no `gh` of anybody's reachable."""
+    nothing = tmp_path / "nothing"
+    nothing.mkdir()
+    monkeypatch.setenv("PATH", str(nothing))
+    commit = "0" * 40
+    with pytest.raises(Refusal) as refused:
+        shape_materialize.pin_digest_from_gh("opensoft/openGlass", commit)
+    assert refused.value.code == "gh-not-found"
+    assert str(refused.value).startswith(GH_NOT_FOUND.format(commit=commit))
+    assert refused.value.remediation == GH_NOT_FOUND_REMEDIATION
+
+
+#: A PATH that finds `git` and no `gh` is a directory holding a link to git
+#: alone, and Windows grants a symlink only to an elevated user.
+GIT_ALONE = pytest.mark.skipif(
+    os.name == "nt",
+    reason="needs a PATH that finds git and no gh, made with a symlink to "
+           "git, which Windows grants only to an elevated user")
+
+
+@GIT_ALONE
+@pytest.mark.parametrize("kind", ["scaffold-dry-run", "adopt-plan"])
+def test_with_no_gh_on_path_a_pin_is_gh_not_found(kind, source_repo,
+                                                  tmp_path, glass):
+    """Both tools, end to end, with no `--pin-source`: exit 2, the refusal
+    and its remediation, no traceback, and nothing made -- no plan, no
+    remote and no work directory."""
+    _, commit, _ = glass
+    alone = tmp_path / "git-alone"
+    alone.mkdir()
+    os.symlink(shutil.which("git"), alone / "git")
+    assert shutil.which("gh", path=str(alone)) is None
+    env = {"PATH": str(alone)}
+    if kind == "adopt-plan":
+        made = [tmp_path / "plan.yaml"]
+        result = plan_with(source_repo, made[0], f"openGlass@{commit}",
+                           env=env)
+    else:
+        made = [tmp_path / "remotes", tmp_path / "work"]
+        result = run_script(
+            SCAFFOLD, "--org", ORG, "--project", PROJECT,
+            "--elected-by", "Test Human", "--elected-on", "2026-09-02",
+            "--pin", f"openGlass@{commit}",
+            "--local-remote-dir", str(made[0]), "--work-dir", str(made[1]),
+            "--dry-run", env=env)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "Traceback" not in result.stderr, result.stderr
+    assert result.stderr.startswith(GH_NOT_FOUND.format(commit=commit)), \
+        result.stderr
+    assert result.stderr.endswith(f"\n{GH_NOT_FOUND_REMEDIATION}\n"), \
+        result.stderr
+    assert not [path for path in made if path.exists()]
+
+
+# --- a `--pin-source` `plan` cannot record (#273's review, N2) ---------------
+#
+# `plan` records the path in each pin's `digest_source:`, and `check` holds
+# that to one printable line. A path with a line break, an ESC or a byte
+# that is not UTF-8 was planned, exit 0, and printed raw in `plan`'s report,
+# and `check` then found `plan-pin-malformed` with advice that wrote the
+# same plan again. `plan` now asks `check`'s question first, before any
+# digest is read: nothing is made and nothing is read.
+
+UNRECORDABLE_REMEDIATION = (
+    "Remediation: no plan was written. Point --pin-source at a clone whose "
+    "path is one line of printable UTF-8 text, or drop --pin-source and let "
+    "`gh api` read the forge. `check` refuses a `digest_source:` that is not "
+    "one printable line as `plan-pin-malformed`, because `execute` writes it "
+    "into the pin file as it stands.")
+
+#: A command line and a file name on Windows hold none of these.
+POSIX_NAMES = pytest.mark.skipif(
+    os.name == "nt",
+    reason="needs a command-line argument holding a control character or a "
+           "byte that is not UTF-8, which a Windows file name cannot hold")
+
+LINE_BREAK = "it holds a line break, and it is written as one line"
+
+
+@pytest.mark.parametrize("name, reason", [
+    pytest.param("gl\x1bass", "it holds a control character", id="esc",
+                 marks=POSIX_NAMES),
+    pytest.param("gl\nass", LINE_BREAK, id="lf", marks=POSIX_NAMES),
+    pytest.param("gl\rass", LINE_BREAK, id="cr", marks=POSIX_NAMES),
+    pytest.param("gl\x1b[31mRED\nREFUSED forged-line: not the tool's\r",
+                 LINE_BREAK, id="forged-line", marks=POSIX_NAMES),
+    pytest.param("gl\udcffass", "it holds a byte that is not UTF-8",
+                 id="not-utf-8", marks=POSIX_NAMES),
+])
+def test_a_pin_source_check_would_refuse_is_refused_by_plan(
+        source_repo, tmp_path, gh_env, name, reason):
+    """Before any digest is read, so the path need not exist: in `check`'s
+    terms and #270's words, with the value `repr`'d, so the refusal is one
+    line of the tool's and nothing of the path's reaches the terminal raw."""
+    typed = str(tmp_path / name)
+    out = tmp_path / "plan.yaml"
+    result = plan_with(source_repo, out, "openGlass@" + "0" * 40,
+                       extra=("--pin-source", typed), env=gh_env)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stderr == (
+        f"REFUSED adopt-unwritable-value: --pin-source is {typed!r}, which "
+        "`plan` records in each pin's `digest_source:` and `execute` writes "
+        f"into `{PIN_FILE}`, and {reason}.\n{UNRECORDABLE_REMEDIATION}\n")
+    assert not out.exists()
+    assert gh_calls(gh_env) == ""
+
+
+def test_a_clone_at_a_path_check_would_refuse_is_refused_by_plan(
+        source_repo, tmp_path, glass, gh_env):
+    """A clone that DOES answer, at a path `check` refuses: a zero-width
+    joiner is text a file holds (`unwritable_reason` passes it) and is not
+    one printable line (`check` does not), so `plan` says so in its own
+    words. It is the case #270's words do not name."""
+    path, commit, _ = glass
+    clone = tmp_path / "open‍Glass"
+    shutil.copytree(path, clone, symlinks=True)
+    out = tmp_path / "plan.yaml"
+    result = plan_with(source_repo, out, f"openGlass@{commit}",
+                       extra=("--pin-source", str(clone)), env=gh_env)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stderr.startswith(
+        f"REFUSED adopt-unwritable-value: --pin-source is {str(clone)!r}, "
+        f"which `plan` records"), result.stderr
+    assert (f"into `{PIN_FILE}`, and it holds an invisible formatting "
+            "character.\n") in result.stderr
+    assert not out.exists()
+
+
+def test_a_pin_source_printed_in_a_report_is_spelled(source_repo, tmp_path,
+                                                     glass, gh_env):
+    """A path that IS one printable line for `check` and still not
+    `str.isprintable` -- a no-break space -- is planned, and `plan`'s report
+    and `check`'s `write` line spell it, as every other path either prints
+    (`_shown`); the plan records it exactly."""
+    path, commit, _ = glass
+    clone = tmp_path / "open Glass"
+    shutil.copytree(path, clone, symlinks=True)
+    out = tmp_path / "plan.yaml"
+    result = plan_with(source_repo, out, f"openGlass@{commit}",
+                       extra=("--pin-source", str(clone)), env=gh_env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert load_yaml(out)["pins"][0]["digest_source"] \
+        == f"local-clone ({clone})"
+    line = next(line for line in result.stdout.splitlines()
+                if line.startswith("pin        "))
+    assert line.endswith("open\\xa0Glass)`)"), line
+    assert " " not in result.stdout
+
+    plan = planned(source_repo, tmp_path, PLANNED)
+    with_pins(plan, "pins:\n" + pin_entry(
+        commit=commit, digest=tree_digest(path, commit),
+        source="local-clone (open\\u00a0Glass)"))
+    checked = run_script(ADOPT, "check", "--plan", str(plan), env=gh_env)
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    assert f"tree {tree_digest(path, commit)[:12]}… (`local-clone " \
+        "(open\\xa0Glass)`)\n" in checked.stdout, checked.stdout
+    assert " " not in checked.stdout
+    assert gh_calls(gh_env) == ""
+
+
 # --- what `check` finds, and `execute` refuses before any leg exists ---------
 #
 # The plan is a file a person or an AI edits between `plan` and `execute`, and
@@ -549,6 +731,19 @@ def unrecorded(glass) -> dict:
         "both-blank": ("pins:\n" + pin_entry(commit="", digest=""),
                        "`pins:` entry 1 ('openGlass') records no `commit:` "
                        "and no `tree_sha256:`."),
+        # A name no `--pin` takes, holding an ESC and a line break that
+        # would begin a forged line: the entry is `repr`'d, and neither the
+        # file it names nor the `plan` it offers is spelled from it (#273's
+        # review, N3: the two name guards).
+        "old-plan-forged": ('pins:\n  - "open\\x1bGlass\\nREFUSED forged"\n',
+                            "`pins:` entry 1, 'open\\x1bGlass\\nREFUSED "
+                            "forged', is a name with no commit and no "
+                            "digest. `execute` writes each declared pin's "
+                            "file, one, from the commit and the digest "
+                            "`plan` records, and without it the root's own "
+                            "`validate-pins.py` refuses the declaration "
+                            "(`neutral-pin-missing`): re-run `plan` with "
+                            "`--pin <openProduct>@<40 hex commit>`"),
     }
 
 
@@ -582,6 +777,22 @@ def malformed(glass) -> dict:
         "no-source": ("pins:\n" + pin_entry(commit=commit, digest=digest,
                                             omit=("digest_source",)),
                       f"{entry} no `digest_source:`."),
+        # `execute` writes `digest_source:` into the pin file bare, so a
+        # line break there would be a line of the file (N3).
+        "source-line-break": ("pins:\n" + pin_entry(
+                                  commit=commit, digest=digest,
+                                  source="local-clone (/x\\nforged: y)"),
+                              f"{entry} `digest_source: 'local-clone "
+                              "(/x\\nforged: y)'`, which is not one "
+                              "printable line"),
+        # Unquoted, the reader reads a number: `not text`, and never a
+        # `TypeError` out of `COMMIT_RE` (N3).
+        "a-number-commit": ("pins:\n  - product: openGlass\n"
+                            "    repository: opensoft/openGlass\n"
+                            "    commit: 1234567\n"
+                            f'    tree_sha256: "{digest}"\n'
+                            '    digest_source: "local-clone (openGlass)"\n',
+                            f"{entry} `commit: 1234567`, which is not text"),
     }
 
 
@@ -632,10 +843,12 @@ def cases(glass):
 
 
 CASE_IDS = [("plan-pin-unrecorded", name) for name in (
-    "old-plan-name", "old-plan-owner", "no-commit", "no-digest", "both-blank")]
+    "old-plan-name", "old-plan-owner", "no-commit", "no-digest", "both-blank",
+    "old-plan-forged")]
 CASE_IDS += [("plan-pin-malformed", name) for name in (
     "not-a-list", "a-number", "short-commit", "short-digest",
-    "another-product", "no-owner", "no-source")]
+    "another-product", "no-owner", "no-source", "source-line-break",
+    "a-number-commit")]
 CASE_IDS += [("plan-pin-collides", name)
              for name in ("case-pair", "shape", "variable-pair")]
 
@@ -653,7 +866,9 @@ def test_a_plan_whose_pin_execute_cannot_write_is_found_and_refused(
         code, name):
     """`check` finds the pin, and `execute` refuses it with `check`'s own
     findings before any leg remote exists; the finding names the `plan` that
-    records the pin whole, and neither command runs `gh`."""
+    records the pin whole, and neither command runs `gh`. Whatever the plan
+    holds, nothing of it reaches the terminal raw: no ESC, and no line the
+    plan's text began."""
     block, said = cases[code][name]
     plan = planned(source_repo, tmp_path, PLANNED)
     with_pins(plan, block)
@@ -664,6 +879,10 @@ def test_a_plan_whose_pin_execute_cannot_write_is_found_and_refused(
     assert len(lines) == 1, checked.stderr
     assert lines[0].startswith(f"FINDING {code}: {said}"), lines[0]
     assert ("re-run `plan`" in lines[0]), lines[0]
+    assert "\x1b" not in checked.stderr + checked.stdout, checked.stderr
+    assert not [line for line in checked.stderr.splitlines()
+                if line.startswith(("REFUSED forged", "forged"))], \
+        checked.stderr
     refusal = refused_before_any_leg(adopter, monkeypatch, plan, tmp_path)
     assert refusal.code == code
     assert gh_calls(gh_env) == ""
@@ -717,14 +936,71 @@ def test_a_leg_moved_over_a_pins_file_in_the_plan_is_found(
 def test_a_plan_with_a_whole_pin_checks_ok(source_repo, tmp_path, glass,
                                            gh_env):
     """The control for every case above: the same plan with the pin as
-    `plan` writes it checks ok, and says the file it will write."""
+    `plan` writes it checks ok, and says the file it will write, and that
+    it writes the pin as `plan` read it (#273's review, S3: `check` and
+    `execute` read no network for a pin, by design, and the root's own gate
+    is what recomputes it)."""
     plan = planned(source_repo, tmp_path, PLANNED)
     with_pins(plan, "pins:\n" + a_good_pin(glass))
     checked = run_script(ADOPT, "check", "--plan", str(plan), env=gh_env)
     assert checked.returncode == 0, checked.stdout + checked.stderr
     assert f"  write {PIN_FILE}: opensoft/openGlass @ {glass[1][:12]}" \
         in checked.stdout
+    assert ("\n  each pin as `plan` read it, not read again here: the root's "
+            "own `validate-pins.py` recomputes its digest wherever it can "
+            "read the product\n") in checked.stdout, checked.stdout
     assert gh_calls(gh_env) == ""
+
+
+def test_a_plan_with_no_pin_says_nothing_of_pins(source_repo, tmp_path,
+                                                 gh_env):
+    """The S3 sentence is said of pins, and only where there is one."""
+    plan = planned(source_repo, tmp_path, PLANNED)
+    checked = run_script(ADOPT, "check", "--plan", str(plan), env=gh_env)
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    assert "  write contracts/" not in checked.stdout
+    assert "each pin as `plan` read it" not in checked.stdout
+
+
+def test_an_upper_cased_hand_edit_is_written_lower_cased(adopter, source_repo,
+                                                         tmp_path, glass,
+                                                         gh_env):
+    """`plan` records a commit and a digest lower-cased, as `parse_pin`
+    reads the commit and `tree_digest` spells the digest. One edited into
+    the plan upper-cased is the same pin and passes `check`; `execute`
+    writes it as `plan` would have, lower-cased, so the pin file the
+    scaffold would write for it is the one written (#273's review, N3)."""
+    path, commit, _ = glass
+    digest = tree_digest(path, commit)
+    plan = planned(source_repo, tmp_path, PLANNED)
+    with_pins(plan, "pins:\n" + pin_entry(commit=commit.upper(),
+                                          digest=digest.upper()))
+    checked = run_script(ADOPT, "check", "--plan", str(plan), env=gh_env)
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    assert (f"  write {PIN_FILE}: opensoft/openGlass @ {commit[:12]} tree "
+            f"{digest[:12]}… (local-clone (openGlass))") in checked.stdout
+    recorded = adopter._recorded_pins(adopter.Plan.load(plan))
+    assert recorded["openGlass"]["PIN_COMMIT"] == commit
+    assert recorded["openGlass"]["PIN_TREE_SHA256"] == digest
+
+
+def test_a_submodule_kept_where_the_pin_is_written_is_said_once(
+        adopter, monkeypatch, tmp_path, glass):
+    """A submodule the root keeps is `plan-submodule-root` (#166), wherever
+    it is, and the pin finding about a path kept where the pin is written
+    does not say it a second time, as the shape's own files do not (#273's
+    review, N3: the gitlink filter)."""
+    source = make_source_repo(tmp_path / "Thing")
+    head = git("rev-parse", "HEAD", cwd=source).stdout.strip()
+    git("update-index", "--add", "--cacheinfo", f"160000,{head},{PIN_FILE}",
+        cwd=source)
+    as_human("commit", "-qm", "a submodule where the pin is written",
+             cwd=source)
+    plan = planned(source, tmp_path, {**PLANNED, "contracts/": "root"})
+    with_pins(plan, "pins:\n" + a_good_pin(glass))
+    found = findings(plan)
+    assert [code for code, _ in found] == ["plan-submodule-root"], found
+    refused_before_any_leg(adopter, monkeypatch, plan, tmp_path)
 
 
 @needs_filter_repo
@@ -764,4 +1040,29 @@ def test_both_tools_read_a_pin_with_one_implementation(adopter):
         is shape_materialize.refuse_colliding_pins
     assert adopter.pin_collisions is shape_materialize.pin_collisions
     assert not hasattr(adopter, "_checked_pin_name")
+
+
+@pytest.mark.parametrize("first, second", [
+    pytest.param("openß", "openss", id="sharp-s"),
+    pytest.param("openſ", "opens", id="long-s"),
+])
+def test_two_pins_are_one_product_by_their_pin_file_not_a_casefold(first,
+                                                                   second):
+    """#275's fix round decides "the same product" by the pin file's name,
+    `repo_shape.pin_product_key` (`lower()`), as `validate-pins.py` does;
+    both tools ask it here. `casefold()` folds `ß` to `ss` and `ſ` to `s`,
+    which `lower()` does not, so the two names below are two pin files and
+    one `SHAPE_PIN_SOURCE_<PRODUCT>`: one collision, each pin named once.
+    Keyed by a casefold, each was named twice. No `--pin` or recorded
+    `pins:` entry `PIN_ARG_RE` admits can spell either, so the function is
+    asked directly."""
+    variable = pin_source_env_name(first)
+    assert variable == pin_source_env_name(second)
+    assert shape_materialize.neutral_pin_path(first) \
+        != shape_materialize.neutral_pin_path(second)
+    typed = [("`pins:` entry 1", first), ("`pins:` entry 2", second)]
+    assert shape_materialize.pin_variable_collisions(typed) == [
+        f"`pins:` entry 1 and `pins:` entry 2 name the products `{first}` "
+        f"and `{second}`, and one variable, `{variable}`, names the local "
+        "checkout of each: it cannot say which it holds."]
 

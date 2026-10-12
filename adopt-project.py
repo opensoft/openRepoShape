@@ -2019,10 +2019,49 @@ def _checked_plan_inputs(args, source: Source,
                       "named again, retyped; when `--elected-by` is not "
                       "given, `plan` reads `git config user.name`, so pass "
                       "the flag or correct that. " + WRITTEN_AS_TEXT)
+    if args.pin and args.pin_source is not None:
+        _refuse_an_unrecordable_pin_source(args.pin_source, products)
     names = _names(args.project)
     pins = declared_pin_values(args)
     _check_names(naming, names, set(pins))
     return names, pins
+
+
+def _refuse_an_unrecordable_pin_source(source: Path, products) -> None:
+    """`--pin-source` is a path `plan` can record, or this refuses it as
+    `adopt-unwritable-value`, before any digest is read and before a plan
+    is written.
+
+    `plan` records the path in each pin's `digest_source:`, `execute`
+    writes that into the pin file as it stands, and `check` holds it to
+    `one_printable_line` (`_pin_row_problem`). A path holding a line break,
+    an ESC or a byte that is not UTF-8 was planned, exit 0, and printed raw
+    in `plan`'s report -- the line break split it -- and `check` then found
+    `plan-pin-malformed` and said to re-run the `plan` that wrote it. So
+    `plan` asks `check`'s question of the value it would record, and says
+    why in #270's words (`unwritable_reason`) where they name it; the one
+    thing `check` refuses that they do not is an invisible formatting
+    character, a zero-width joiner among them. The `local-clone (` and `)`
+    that `declared_pin_values` puts around the path are printable, so the
+    path alone decides.
+    """
+    text = str(source)
+    if one_printable_line(text):
+        return
+    reason = (unwritable_reason(text)
+              or "it holds an invisible formatting character")
+    files = ", ".join(f"`{neutral_pin_path(product)}`"
+                      for product in products)
+    raise Refusal(
+        "adopt-unwritable-value",
+        f"--pin-source is {text!r}, which `plan` records in each pin's "
+        f"`digest_source:` and `execute` writes into {files}, and {reason}.",
+        "Remediation: no plan was written. Point --pin-source at a clone "
+        "whose path is one line of printable UTF-8 text, or drop "
+        "--pin-source and let `gh api` read the forge. `check` refuses a "
+        "`digest_source:` that is not one printable line as "
+        "`plan-pin-malformed`, because `execute` writes it into the pin file "
+        "as it stands.")
 
 
 def _print_triad_advisory(path: Path, commit: str | None = None) -> None:
@@ -2089,12 +2128,13 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
     print(f"project    {args.project} ({args.id}) in {args.org}, mode in-place")
     # Each pin as the scaffold's plan prints it: what is pinned, at which
     # commit and digest, the file `execute` writes, and how the digest was
-    # read (#273).
+    # read (#273), that last `_shown`, as every path this report prints is.
     for product, values in (pins or {}).items():
         print(f"pin        {values['PIN_REPOSITORY']} @ "
               f"{values['PIN_COMMIT'][:12]} tree "
               f"{values['PIN_TREE_SHA256'][:12]}… -> "
-              f"{neutral_pin_path(product)} ({values['PIN_DIGEST_SOURCE']})")
+              f"{neutral_pin_path(product)} "
+              f"({_shown(values['PIN_DIGEST_SOURCE'])})")
     _print_triad_advisory(source.path, source.commit)
     _print_entries(entries)
     _print_summary(entries)
@@ -3558,12 +3598,20 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
     print(f"  {len(stays)} path(s) stay in the assembly root; "
           f"{len(drops)} dropped")
     # Each pin `execute` writes, as the plan records it (#273): a pin it
-    # cannot write is a finding, printed after this.
-    for product, values in _recorded_pins(plan).items():
+    # cannot write is a finding, printed after this. NOT READ AGAIN, by
+    # design: `check` and `execute` read no network for a pin, so a commit
+    # or a digest edited into the plan is written as it stands, and the
+    # root's own gate is what recomputes it (#273's review, S3).
+    recorded = _recorded_pins(plan)
+    for product, values in recorded.items():
         print(f"  write {neutral_pin_path(product)}: "
               f"{values['PIN_REPOSITORY']} @ {values['PIN_COMMIT'][:12]} tree "
               f"{values['PIN_TREE_SHA256'][:12]}… "
-              f"({values['PIN_DIGEST_SOURCE']})")
+              f"({_shown(values['PIN_DIGEST_SOURCE'])})")
+    if recorded:
+        print("  each pin as `plan` read it, not read again here: the root's "
+              "own `validate-pins.py` recomputes its digest wherever it can "
+              "read the product")
     print("  the source is never deleted, never renamed, never force-pushed")
     print(_topics_line(topic, local))
     for item in plan.get("follow_ups", []):
