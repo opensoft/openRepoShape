@@ -38,7 +38,12 @@ needs_filter_repo = pytest.mark.skipif(
 
 UNREADABLE = "plan-gitmodules-unreadable"
 REMOTES = "remotes"
-REGISTRATION = '[submodule "b"]\n\tpath = vendor/b\n\turl = ../b\n'
+#: An ABSOLUTE url, which git copies as it stands. A relative one kept in a
+#: leg is resolved from the leg too (#190), and in a source with no remote
+#: `../b` is the directory beside it, which no GitHub leg reaches: a finding
+#: of its own beside every value here, which is not what these tests ask.
+REGISTRATION = ('[submodule "b"]\n\tpath = vendor/b\n'
+                '\turl = https://example.invalid/b\n')
 #: A source whose plan asks about `.gitmodules`, and about `vendor/` where
 #: the tip holds the submodule: `specs/` and `src/` classify themselves and
 #: `README.md` stays in the root.
