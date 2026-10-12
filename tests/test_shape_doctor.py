@@ -2423,6 +2423,68 @@ def test_a_sibling_origin_not_utf8_is_read_as_make_siblings_reads_it(
         is not counted, text.stdout
 
 
+@pytest.mark.parametrize("relative", [False, True],
+                         ids=["an-absolute-mount-url", "a-relative-mount-url"])
+def test_a_holders_own_origin_not_utf8_is_read_as_make_siblings_reads_it(
+        standard, holder, tmp_path, relative):
+    """#385, the OTHER route into `origin_url`: the HOLDER'S own `origin`.
+
+    The issue names two callers of `origin_url`. `working_clone` asks it of
+    the SIBLING, which the test above pins. `mounted_from` asks it of the
+    HOLDER, to resolve a relative `.gitmodules` url against, and it asks
+    whatever the url is: the call is an argument of `resolved_remote`, which
+    is handed an absolute url too and gives it straight back. So a holder
+    cloned from a mirror under a directory named in Latin-1 reached the
+    traceback through `mounted_from` with an ASCII `.gitmodules` as well.
+
+    On the base both cases raised `UnicodeDecodeError` out of
+    `origin_url`, called from `mounted_from` (the `members` row's own
+    reader, before `working_clone` asks anything). Now the holder's URL is
+    read with the byte replaced, as `make siblings` reads it, and:
+      - an absolute mount url never needed it, so the row answers exactly as
+        it does for an ASCII holder, and
+      - a relative one is resolved against it, as git does, and the clone
+        made from that resolved url is counted as the working clone. The
+        `mounted_from` the row prints carries U+FFFD.
+    The relative case is the one a lossy read could get WRONG: reading the
+    holder's URL as `""` leaves `../IRRS.git` unresolved, which matches no
+    sibling, so the member's clone is not counted.
+    """
+    root, sibling = member_beside(holder, tmp_path)
+    git("remote", "remove", "origin", cwd=root)
+    with_origin(root, NOT_UTF8 + f"{FAMILY_NAME}.git".encode("ascii"))
+    if relative:
+        git("config", "-f", str(root / ".gitmodules"),
+            f"submodule.members/{FAMILY_MEMBER}.url",
+            f"../{FAMILY_MEMBER}.git", cwd=root)
+        commit_all(root, "Mount the member by a relative url")
+        # The clone git would have made from the url that resolves to: the
+        # holder's own directory, `caf\xe9`, with the member's name in it.
+        git("remote", "remove", "origin", cwd=sibling)
+        with_origin(sibling, NOT_UTF8 + f"{FAMILY_MEMBER}.git".encode("ascii"))
+    result = doctor(standard, root, "--json")
+    assert "Traceback" not in result.stderr, result.stderr
+    payload = json.loads(result.stdout)
+    assert (payload["verdict"], result.returncode) == ("COMPLIANT", 0), \
+        payload
+    entry = rows_of(result)["members"]["detail"]["members"][0]
+    assert entry["working_clone"] == sibling.as_posix(), entry
+    assert entry["other_origin"] is None, entry
+    if relative:
+        assert entry["mounted_from"] == f"../caf\ufffd/{FAMILY_MEMBER}.git", \
+            entry
+    else:
+        # The bare repository the holder's `.gitmodules` names, as the
+        # control above compares it: separators folded, since git ESCAPES a
+        # Windows backslash on the way into the file.
+        assert entry["mounted_from"].replace("\\", "/") == str(
+            holder["base"] / "remotes" / f"{FAMILY_MEMBER}.git").replace(
+                "\\", "/"), entry
+    text = doctor(standard, root)
+    assert text.returncode == 0, text.stdout + text.stderr
+    assert "Traceback" not in text.stderr, text.stderr
+
+
 def test_a_credential_in_an_origin_is_not_printed_or_put_in_the_json(
         standard, holder, tmp_path):
     """A REPORT PRINTS WHAT IT FINDS, AND WHAT IT FINDS CAN BE A TOKEN.
