@@ -657,10 +657,46 @@ def test_a_members_row_and_the_make_target_are_spelled(holder, tmp_path):
 # --- the two functions, and the two files that carry them -------------------
 
 def load(path: Path, name: str):
+    """`path` run as a module called `name`, and no bytecode written for it.
+
+    `SourceFileLoader` caches what it compiles in a `__pycache__` beside the
+    source, and these sources are the TEMPLATES: a tree other tests read file
+    by file as text (`test_scaffold_leg_path_collisions.py` does, and a `.pyc`
+    is not UTF-8), and a tree a materializer walks. `.gitignore` hides the
+    stray, so `git status` never says it is there. The flag is process-wide, so
+    it is restored; it also covers the `repo_shape` a root imports as it runs.
+    """
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    wrote_bytecode = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = wrote_bytecode
     return module
+
+
+def test_loading_a_root_leaves_no_file_where_it_was_loaded_from(tmp_path,
+                                                                monkeypatch):
+    """The tree under `templates/` is the same after both roots are loaded.
+
+    A checkout may hold a stale `__pycache__` from an older run, so nothing
+    here asks that none exists; it asks that loading changes nothing. A tree
+    that already holds the cache would pass for any `load`, so each root is
+    loaded from a copy as well, in a directory that holds nothing."""
+    monkeypatch.setattr(sys, "path", list(sys.path))  # a root puts its own in
+    templates = REPO / "templates"
+    before = set(templates.rglob("*"))
+    for number, path in enumerate((ASSEMBLY_TEMPLATE, FAMILY_TEMPLATE)):
+        copy = tmp_path / f"copy{number}" / "scripts" / path.name
+        copy.parent.mkdir(parents=True)
+        shutil.copyfile(path, copy)
+        before_copy = set(copy.parent.rglob("*"))
+        load(path, f"bootstrap_spelling_probe_{number}")
+        assert set(templates.rglob("*")) == before, path
+        load(copy, f"bootstrap_spelling_probe_copy_{number}")
+        assert set(copy.parent.rglob("*")) == before_copy, copy.parent
 
 
 @pytest.fixture(scope="module", params=[ASSEMBLY_TEMPLATE, FAMILY_TEMPLATE],
