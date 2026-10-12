@@ -537,8 +537,21 @@ def _commit_one(root: Path, message: str, paths: list[str],
     and a linter behind it checked nothing, on every `add`, `bump` and
     `remove` commit. The magic is spelled on each path and reaches no hook. It
     is right for a path `git rm` took out of the index and the tree, which the
-    commit still matches in HEAD. `deinit`, `rm` and `diff` run no hooks, so
-    they keep the global option.
+    commit still matches in HEAD. `deinit`, `rm` and `diff` run no COMMIT
+    hooks, so they keep the global option (`rm`, like `force_stage`'s `add`,
+    writes the index, so a `post-index-change` hook still sees the variable
+    after them; that is theirs and predates this).
+
+    THE CALLER'S OWN `GIT_LITERAL_PATHSPECS` IS DROPPED FROM THIS ONE COMMIT'S
+    ENVIRONMENT. The variable turns pathspec magic OFF, and `:(literal)` is
+    magic: with it exported (a safety default, or a `family.py` run from a
+    hook or alias of a `git --literal-pathspecs` command, which exports it to
+    its children) git took `:(literal)family.yaml` as a file of that name,
+    found none, and every `add`, `bump` and `remove` commit failed, `bump` and
+    `remove` leaving the pin or the unmount staged with no rollback. The
+    commit's paths are literal by their magic and need no help from the
+    environment. Only this variable: the other pathspec variables turn magic
+    ON or change only how a glob matches, and the magic still reads.
     """
     force_stage(root, paths if add is None else add)
     message, trailer_args = commit_trailers(message, trailers)
@@ -546,6 +559,7 @@ def _commit_one(root: Path, message: str, paths: list[str],
             *[f":(literal){path}" for path in paths]]
     check_program(args)
     env = dict(os.environ)
+    env.pop("GIT_LITERAL_PATHSPECS", None)
     for key, fallback in (("GIT_AUTHOR_NAME", "openRepoShape family"),
                           ("GIT_COMMITTER_NAME", "openRepoShape family"),
                           ("GIT_AUTHOR_EMAIL", "family@openreposhape.invalid"),

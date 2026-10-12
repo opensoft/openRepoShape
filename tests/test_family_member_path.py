@@ -539,12 +539,6 @@ def recorded(monkeypatch) -> list[list[str]]:
     return calls
 
 
-def global_options(argv: list[str], subcommands: set[str]) -> list[str]:
-    """What stands between `git` and its subcommand."""
-    at = next(i for i, word in enumerate(argv) if i and word in subcommands)
-    return argv[1:at]
-
-
 def subcommand(argv: list[str], subcommands: set[str]) -> str:
     return next(word for i, word in enumerate(argv)
                 if i and word in subcommands)
@@ -637,3 +631,42 @@ def test_the_commit_hooks_see_no_literal_pathspecs_and_find_the_manifest(
     assert log.is_file(), "premise: the hook ran"
     assert log.read_bytes().decode("utf-8").split() == ["literal=unset",
                                                          "family.yaml"]
+
+
+#: What each verb's ONE commit is of, as git reports it.
+COMMITTED = {
+    "add": {".gitmodules", f"members/{SPARE}", "family.yaml"},
+    "bump": {f"members/{MEMBER}", "family.yaml"},
+    "remove": {".gitmodules", f"members/{MEMBER}", "family.yaml"},
+}
+
+
+@pytest.mark.parametrize("verb", ["add", "bump", "remove"])
+def test_a_caller_who_exports_literal_pathspecs_still_gets_one_commit(
+        family, holder, offline, tmp_path, verb):
+    """`:(literal)` is pathspec MAGIC, and `GIT_LITERAL_PATHSPECS=1` turns
+    magic off: with it in the caller's environment git read `:(literal)
+    family.yaml` as a file of that name and found none, so every commit of
+    `add`, `bump` and `remove` failed (`bump` and `remove` with the pin or the
+    unmount left staged and no rollback), where main and the first form of
+    this fix exited 0. A safety default, or a `family.py` run from a hook or an
+    alias of `git --literal-pathspecs`, puts it there. The commit drops that
+    one variable from its own environment: with it exported, each verb exits
+    0 in ONE commit of exactly the paths it is for, and leaves nothing staged
+    behind."""
+    env = {**isolated(offline, tmp_path), "GIT_LITERAL_PATHSPECS": "1"}
+    was = commits(holder, env)
+    if verb == "add":
+        args = ["add", "--family-root", str(holder), "--member",
+                f"{ORG}/{SPARE}", "--local-remote-dir",
+                str(family["remotes"])]
+    else:
+        args = verb_args(verb, holder, family)
+
+    result = run_script(FAMILY, *args, env=env)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert commits(holder, env) == was + 1
+    assert committed(holder, env) == COMMITTED[verb]
+    assert raw(holder, env, "status", "--porcelain=v1", "-z").stdout == b""
+    assert validate(holder).returncode == 0
