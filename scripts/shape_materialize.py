@@ -762,6 +762,79 @@ def run(args: list[str], cwd: Path | None = None, capture: bool = True) -> str:
     return (proc.stdout or "").strip()
 
 
+# ---------------------------------------------------------------------------
+# A branch name, asked of git (#283)
+# ---------------------------------------------------------------------------
+#
+# `checked_value` holds a `--tracking-branch` to an ALPHABET, which keeps an
+# option and a shell word off a command line, and the alphabet is wider than
+# the names git accepts as a branch: `~`, `a..b`, `x.lock`, `a/`, `/a`, `a//b`,
+# `.a` and `a.` are all inside it, and `git init -b` refuses each. Nothing
+# asked git, so `--dry-run` printed a plan and, against GitHub, the run
+# created all three repositories before the first `git init -b` died.
+#
+# GIT IS THE AUTHORITY on what a branch name is (`git check-ref-format
+# --branch`): it is ASKED, never copied here, so a rule git adds or relaxes is
+# ours the day the person upgrades. The question is its own function, beside
+# `refuse_bad_leg_paths` in what it is for: a value judged BEFORE a work
+# directory or a remote exists, and by `--dry-run` too.
+#
+# IT LIVES HERE AND NOT IN `scripts/repo_shape.py` for the reason the leg-path
+# rule does: that file is a SHAPE COPY every project digest-pins, and one
+# function added there would put an `upstream-changed scripts/repo_shape.py`
+# row in front of every project for a rule no project's own copy ever asks.
+
+BRANCH_REMEDIATION = (
+    "Remediation: pass a branch name git will create, such as `main` or "
+    "`release/1.2`: no `..`, no `//`, no `~`, no `/` at either end, no `.` at "
+    "the end, no part that starts with `.` or ends in `.lock`, and not "
+    "`HEAD`. `git check-ref-format --branch <name>` is the check, and `git "
+    "help check-ref-format` lists every rule.")
+
+
+def branch_problem(what: str, value) -> str | None:
+    """None when `git check-ref-format --branch` accepts `value` exactly as
+    written; otherwise the sentence that says what git made of it.
+
+    `what` names the value as the person met it (`--tracking-branch`,
+    `tracking_branch`), the way `leg_path_problem` is given its flag. A name
+    git would EXPAND rather than echo (`@{-1}`) is refused too: the tool
+    writes the name it was given, so a spelling that means another branch
+    is not that branch. A leading `-` is refused without asking, so the value
+    is never an option to the question itself; `checked_value` has refused it
+    already for the tools that call that first.
+    """
+    text = str(value)
+    refused = f"{what} is {text!r}, which is not a branch name git will create"
+    if text.startswith("-"):
+        return f"{refused}: it begins with `-`, which git reads as an option"
+    try:
+        answer = run(["git", "check-ref-format", "--branch", text])
+    except CommandFailed as exc:
+        said = f" ({exc.output})" if exc.output else ""
+        return f"{refused}: `git check-ref-format --branch` refuses it{said}"
+    except (OSError, ValueError) as exc:
+        # `git` itself is missing, or the value cannot be an argument at all
+        # (a NUL, a lone surrogate). Either way the answer is not git's.
+        return (f"{what} is {text!r}, which could not be checked: `git "
+                f"check-ref-format --branch` could not be run ({exc})")
+    if answer != text:
+        return (f"{refused}: `git check-ref-format --branch` reads it as "
+                f"{answer!r}, not as written")
+    return None
+
+
+def refuse_bad_branch(refusal: str, what: str, value) -> None:
+    """Raise `Refusal(refusal)` when git would not create `value` as a branch.
+
+    `refusal` is the caller's own code (`scaffold-bad-tracking-branch`), so
+    each tool refuses in its own voice, as `refuse_bad_leg_paths` lets it.
+    """
+    problem = branch_problem(what, value)
+    if problem:
+        raise Refusal(refusal, problem, BRANCH_REMEDIATION)
+
+
 #: `-F -` reads the message from STDIN. Every argument is then a literal, and
 #: the one value a caller controls — the message, which carries a project's
 #: display name and, in an adoption, every moved path out of a plan file —

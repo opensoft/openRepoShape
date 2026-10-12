@@ -85,8 +85,8 @@ from repo_shape import (  # noqa: E402
 from shape_materialize import (  # noqa: E402
     RULESET_HINT, SHAPE_REPOSITORY, CommandFailed, check_program,
     commit_trailers, env_commit, escape_what_stdout_cannot_encode,
-    force_stage, materialize_family_root, run, stage_written, trailer_line,
-    write_lf,
+    force_stage, materialize_family_root, refuse_bad_branch, run,
+    stage_written, trailer_line, write_lf,
 )
 
 NAMING_POLICY = SHAPE_ROOT / "contracts" / "repository-naming.yaml"
@@ -551,6 +551,13 @@ def _checked_family_identity(args) -> tuple[str, str, str]:
     args.org = checked_value("--org", args.org)
     args.tracking_branch = checked_value("--tracking-branch",
                                          args.tracking_branch)
+    # AND GIT'S OWN ANSWER (#283): `_create_holder_remote` runs `gh repo
+    # create` before `_create_holder_worktree`'s first `git init -b`, so a
+    # name git refuses as a branch (`~`, `a..b`, `x.lock`, `a/`) created the
+    # holder's repository and then died. Asked here, `--dry-run` refuses it
+    # too, before anything is created.
+    refuse_bad_branch("family-bad-tracking-branch", "--tracking-branch",
+                      args.tracking_branch)
     family_id = checked_value("--id", args.id or family.lower())
     if not PROJECT_ID_RE.match(family_id):
         raise Refusal("family-bad-id",
