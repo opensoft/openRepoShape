@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -60,7 +61,8 @@ from test_family import (  # noqa: F401
 )
 from test_family_add_excludes import empty_holder  # noqa: F401
 from test_family_add_refusals import (  # noqa: F401
-    GHOST, gitmodules_with, holder, offline, refusal, sections,
+    GHOST, gitmodules_with, holder, offline, one_commit_remote, refusal,
+    sections,
 )
 from test_family_member_path import (
     GLOB, MEMBER, OTHER, hand_edit, older, raw, recorded,
@@ -781,14 +783,15 @@ def add_state(root: Path, env: dict) -> dict:
     `state` reads but a member's HEAD, with a file that is not there as
     None (absent stays absent), HEAD read as a holder with no commit reads
     it, and the holder's `.git/modules` listed two deep, which is where a
-    mount keeps its object store."""
+    mount keeps its object store. In a holder that is a linked worktree,
+    `.git` is a file and the three read from inside it are None."""
     def read(name: str) -> bytes | None:
         target = root / name
         return target.read_bytes() if target.is_file() else None
 
     modules = root / ".git" / "modules"
     return {
-        "objects": objects(root),
+        "objects": objects(root) if (root / ".git").is_dir() else None,
         "HEAD": raw(root, env, "rev-parse", "-q", "--verify", "HEAD",
                     check=False).stdout,
         "index": raw(root, env, "ls-files", "-s", "-z").stdout,
@@ -796,9 +799,10 @@ def add_state(root: Path, env: dict) -> dict:
         "family.yaml": read("family.yaml"),
         ".gitmodules": read(".gitmodules"),
         ".git/config": read(".git/config"),
-        ".git/modules": sorted(path.relative_to(modules).as_posix()
-                               for depth in ("*", "*/*")
-                               for path in modules.glob(depth)),
+        ".git/modules": (sorted(path.relative_to(modules).as_posix()
+                                for depth in ("*", "*/*")
+                                for path in modules.glob(depth))
+                         if modules.is_dir() else None),
         "work tree": work_tree(root),
     }
 
@@ -1256,4 +1260,119 @@ def test_add_dry_run_reads_the_member_outside_the_holder_and_writes_nothing(
         subcommand_of(argv) == "add" and "--dry-run" in argv)] == []
     assert "submodule" not in {subcommand_of(argv) for argv, _ in gits}
     assert_add_as_it_was(holder, env, before)
+    offline.assert_left_nothing()
+
+
+def test_add_dry_run_prints_the_id_the_members_manifest_records(
+        holder, offline, tmp_path):
+    """NEVER AN INVENTED ID (#326's third ruling). Every member the family
+    fixture scaffolds records `id:` as its name lowercased, so a dry run
+    that printed `project.lower()` would pass every other test here. This
+    member is `IRDI` and its `project.yaml` says `id: routing-core`: the dry
+    run prints that id, read from the member, and the real add then writes
+    exactly the row the dry run printed."""
+    env = isolated(offline, tmp_path)
+    remotes = one_commit_remote(tmp_path, "IRDI", {
+        "project.yaml": b"schema_version: 1\nkind: project-manifest\n"
+                        b"id: routing-core\nname: IRDI\n"})
+    before = add_state(holder, env)
+
+    dry = add(holder, env, remotes, "--dry-run", member=f"{ORG}/IRDI")
+
+    assert_add_as_it_was(holder, env, before)
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    row = printed_row(dry.stdout)
+    assert row[:2] == ["  - project: IRDI", "    id: routing-core"]
+
+    real = add(holder, env, remotes, member=f"{ORG}/IRDI")
+
+    assert real.returncode == 0, real.stdout + real.stderr
+    assert "\n".join(row) + "\n" in (holder / "family.yaml").read_text(
+        encoding="utf-8"), "the row printed is the row written"
+    assert {r["project"]: r for r in manifest(holder)["members"]
+            }["IRDI"]["id"] == "routing-core"
+    offline.assert_left_nothing()
+
+
+def test_add_dry_run_removes_its_own_clone_when_reading_the_member_fails(
+        family, holder, offline, tmp_path, monkeypatch, capsys):
+    """RULING 2's "removed afterwards, also on a refusal", for the dry run's
+    OWN clone. Every other refusal here is made before that clone exists.
+    Here the probe reads the member, and the member's remote is gone by the
+    time the dry run clones it a second time, as it would be if it were
+    renamed or made private in between. That clone fails in git, and the
+    failure is printed as every failed reading of the member is: the exact
+    command, then the hint, exit 2. The directory the dry run made for its
+    clone is gone, nothing else is left in TEMP, and the holder is as it
+    was. In process, so the remote can be moved between the two clones."""
+    module = family_module()
+    env = isolated(offline, tmp_path)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(tempfile, "tempdir", str(offline.temp))
+    remotes = tmp_path / "remotes"
+    remotes.mkdir()
+    shutil.copytree(family["remotes"] / f"{SPARE}.git",
+                    remotes / f"{SPARE}.git", symlinks=True)
+    before = add_state(holder, env)
+    real_run = module.run
+    clones: list[Path] = []
+
+    def run(args, *rest, **named):
+        if "clone" in args:
+            clones.append(Path(args[-1]))
+            if len(clones) == 2:
+                (remotes / f"{SPARE}.git").rename(remotes / f"{SPARE}.gone")
+        return real_run(args, *rest, **named)
+
+    monkeypatch.setattr(module, "run", run)
+
+    code = module.main(["add", "--family-root", str(holder), "--member",
+                        f"{ORG}/{SPARE}", "--local-remote-dir", str(remotes),
+                        "--dry-run"])
+    out, err = capsys.readouterr()
+
+    assert code == 2, out + err
+    assert len(clones) == 2, "premise: the dry run's own clone was the one"
+    assert out == f"checking {ORG}/{SPARE} before mounting it\n"
+    lines = err.splitlines()
+    assert lines[0] == (f"REFUSED reading {ORG}/{SPARE}. THE EXACT COMMAND "
+                        "WAS:")
+    assert "clone -q --bare -- " in lines[1]
+    assert lines[-1] == module.UNREADABLE_HINT
+    assert not clones[1].parent.exists(), "the dry run's clone was left"
+    assert_add_as_it_was(holder, env, before)
+    offline.assert_left_nothing()
+
+
+def test_add_dry_run_names_the_store_git_keeps_for_a_linked_worktree(
+        family, holder, offline, tmp_path):
+    """THE OBJECT STORE IS NAMED WHERE GIT KEEPS IT (`_module_dir`), not
+    where it usually is. A holder that is a LINKED WORKTREE, a lane's usual
+    holder, has a `.git` FILE, and git keeps a mount's store under
+    `.git/worktrees/<name>/modules/`, not `.git/modules/`. The dry run
+    names that store, it does not exist yet, and the real add then puts
+    the store exactly there."""
+    env = isolated(offline, tmp_path)
+    lane = tmp_path / "lane"
+    git("worktree", "add", "-q", "-b", "add-irqs", str(lane), cwd=holder)
+    assert (lane / ".git").is_file(), "premise: a linked worktree"
+    before = add_state(lane, env)
+
+    dry = add(lane, env, family["remotes"], "--dry-run")
+
+    assert_add_as_it_was(lane, env, before)
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    directory = field(dry.stdout.splitlines(), "directory")
+    said = (f"{SPARE_PATH}  the member checked out at "
+            f"{tip_of(family)[:12]}; its object store at ")
+    assert directory.startswith(said), directory
+    store = lane / directory[len(said):]
+    assert not store.exists(), "premise: no store before the real add"
+
+    real = add(lane, env, family["remotes"])
+
+    assert real.returncode == 0, real.stdout + real.stderr
+    assert (store / "config").is_file(), (
+        f"the store printed, {store}, is not the one git made")
     offline.assert_left_nothing()
