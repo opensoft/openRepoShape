@@ -491,8 +491,9 @@ def misread(what: str, value: str, reading: str) -> tuple[str, str]:
 @pytest.fixture(scope="module")
 def answered(tmp_path_factory) -> tuple[Path, str]:
     """One source and one answered plan of it, which `check` passes, for the
-    tests below to copy and edit. Nothing below writes into the source: a
-    refused `check` or `execute` never reaches it, and `plan` only reads it."""
+    tests below to copy and edit. No test below writes into this source:
+    `plan` and `check` only read it, and a test that runs `execute` runs it
+    on a copy of its own (`answered_copy`)."""
     base = tmp_path_factory.mktemp("misread")
     source = make_source_repo(base / SOURCE_NAME)
     plan = base / PLAN_FILE
@@ -502,6 +503,28 @@ def answered(tmp_path_factory) -> tuple[Path, str]:
         resolve(plan, path, leg)
     assert checked(plan).returncode == 0
     return source, text_of(plan)
+
+
+#: The plan's line naming its source, which `answered_copy` points at a copy.
+SOURCE_LINE = re.compile(r"^  local_path: .*$", re.MULTILINE)
+
+
+@pytest.fixture
+def answered_copy(adopter, answered, tmp_path) -> tuple[Path, str]:
+    """`answered` for a test that runs `execute`: a copy of the source of its
+    own, and the plan's text with `local_path:` naming that copy.
+
+    `execute` commits its split branch into the source it is given. Were the
+    source shared, a regression that let one `execute` through would leave
+    that branch in the source of every test after it, and each later
+    `execute` test would fail at its last assertion for a reason that is
+    not its own: one test's run must never change another's input."""
+    source, text = answered
+    assert len(SOURCE_LINE.findall(text)) == 1, "one `local_path:` line"
+    copy = tmp_path / SOURCE_NAME
+    shutil.copytree(source, copy, symlinks=True)
+    return copy, SOURCE_LINE.sub(
+        lambda _match: f"  local_path: {adopter.y(str(copy))}", text, count=1)
 
 
 def carrying(plan: Path, text: str, key: str, spelled: str) -> None:
@@ -709,11 +732,11 @@ def test_check_says_nothing_misread_of_a_value_execute_never_writes(
 
 @needs_filter_repo
 def test_execute_refuses_that_branch_as_unsafe_before_any_leg_exists(
-        answered, tmp_path):
+        answered_copy, tmp_path):
     """What `execute` does with the branch `check` no longer calls misread:
     it refuses it as `unsafe-value`, before it creates a leg or touches the
     source, so no sentence of `check`'s says it gets further."""
-    source, text = answered
+    source, text = answered_copy
     plan = tmp_path / PLAN_FILE
     carrying(plan, text, TRACKING_KEY, QUOTED_DOMAIN_USER)
     assert MISREAD_FINDING not in checked(plan).stderr
@@ -763,11 +786,11 @@ def test_check_names_a_value_no_file_can_hold_once_as_unwritable(
 
 @needs_filter_repo
 def test_execute_refuses_a_date_no_file_can_hold_as_unwritable_not_misread(
-        answered, tmp_path):
+        answered_copy, tmp_path):
     """`execute` refuses a plan under the code of `check`'s first finding,
     which for this date was the misread one: it is refused as what it is,
     before any leg exists."""
-    source, text = answered
+    source, text = answered_copy
     plan = tmp_path / PLAN_FILE
     carrying(plan, text, ELECTED_ON_KEY, UNWRITABLE_DATE)
     result = executed(plan, tmp_path)
@@ -849,10 +872,10 @@ def test_the_validator_names_a_value_read_as_not_text_by_what_was_read(
 
 @needs_filter_repo
 def test_execute_refuses_a_visibility_it_never_writes_as_the_validators(
-        answered, tmp_path):
+        answered_copy, tmp_path):
     """`visibility: "true"`: #181 leaves it to the validator, and `execute`
     refuses it under the validator's code before any leg exists."""
-    source, text = answered
+    source, text = answered_copy
     plan = tmp_path / PLAN_FILE
     carrying(plan, text, VISIBILITY_KEY, TRUE_TEXT)
     result = executed(plan, tmp_path)
@@ -996,11 +1019,11 @@ def test_a_value_holding_a_placeholder_is_asked_as_render_puts_it_in_once(
 @pytest.mark.parametrize("key, value, reading", CARRIED,
                          ids=ids_of(CARRIED, 0, 1))
 def test_execute_refuses_a_plan_carrying_one_before_any_leg_exists(
-        adopter, answered, tmp_path, key, value, reading):
+        adopter, answered_copy, tmp_path, key, value, reading):
     """The refused half of the end-to-end run: `execute` says no through
     #168's one list of `check`'s findings, before it creates a leg or
     touches the source."""
-    source, text = answered
+    source, text = answered_copy
     plan = tmp_path / PLAN_FILE
     carrying(plan, text, key, adopter.y(value))
     result = executed(plan, tmp_path)
