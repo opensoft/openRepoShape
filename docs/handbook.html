@@ -1743,8 +1743,11 @@ resume InkRouter                # on workstation B, and the estate is back</code
       </ul>
       <p>Beyond those: show the human the tool&rsquo;s output verbatim &mdash; the plan especially
       &mdash; and let them answer its prompt; &ldquo;go ahead&rdquo; about something else is not a
-      yes about this. Read a refusal rather than retrying: each one names what to run instead, and
-      there is no <code>--force</code>, deliberately. Relay the finished block &mdash; the clone
+      yes about this. Read a refusal rather than retrying: each one names what to run instead,
+      except two that name a VALUE to change &mdash; a <code>--spec-path</code> or
+      <code>--code-path</code> over a path the shape writes, and a <code>--pin</code> the shape
+      cannot write, both before anything is created &mdash; and there is no <code>--force</code>,
+      deliberately. Relay the finished block &mdash; the clone
       path, the three repository URLs and the next commands &mdash; and say that the line
       <code>authority is not wallet-carried in this org</code> is a report and not a fault. The new
       project carries <code>AGENTS-shape.md</code> at its assembly root, and you read that before
@@ -1782,7 +1785,8 @@ resume InkRouter                # on workstation B, and the estate is back</code
       assistant&rsquo;s &ldquo;what you do tell them&rdquo; added (#163); a
       <code>family.yaml</code> beside <code>project.yaml</code> as a <strong>manifest kinds</strong>
       finding added (#211); <code>bump-leg.py</code> rewriting tracked workflow files only, and
-      refusing an untracked or ignored one it would rewrite, added (#207) &mdash; a page cannot
+      refusing an untracked or ignored one it would rewrite, added (#207); the assistant rules
+      saying that two scaffold refusals name a value to change, added (#288) &mdash; a page cannot
       name the commit that contains it, and the blob below is the fact a test checks.
       README.md blob e26fbc1b38f19807a3d859aad113c9fac9a76cf1. Every command, flag, exit code
       and file name on this page is quoted from that README and from AGENTS.md.</p>
