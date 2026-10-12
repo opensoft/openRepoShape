@@ -1174,8 +1174,16 @@ def test_readme_is_short_enough_to_be_read():
     #   before anything is created. The README's own text had said only what
     #   a `--pin` writes, so a reader met either refusal by running the
     #   scaffold.
-    assert len(lines) <= 1419, (
-        f"README.md is {len(lines)} lines; the cap is 1419")
+    # 2026-10-12: 1419 -> 1422 — `setup.sh --help` from a download (#341).
+    #   The sentence that sent a reader to `setup.sh --help` for every flag
+    #   now says that holds from a checkout, and what the same command does
+    #   from a download: it clones nothing, lists no flag, and names
+    #   `setup-project.py --help` and `docs/cli.md`. Three lines, because the
+    #   shim's answer there changed from a clone of the upstream to a few
+    #   lines of its own, and a README that still promised the flag list
+    #   would send a reader to a command that no longer prints it.
+    assert len(lines) <= 1422, (
+        f"README.md is {len(lines)} lines; the cap is 1422")
 
 
 @pytest.mark.parametrize("name", SHIPPED_BASH)
