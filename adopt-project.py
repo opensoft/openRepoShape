@@ -1298,11 +1298,18 @@ def render_plan(args, source: Source, entries: list[Entry], names: dict,
     emit(lines, "code", names["code"], 2)
     emit(lines, "spec_path", args.spec_path, 2)
     emit(lines, "code_path", args.code_path, 2)
+    # Each name through `y`, as every other value here is written: `--pin`
+    # takes `2026` and `007` (`PIN_NAME_RE`), and written bare the reader
+    # takes them for the numbers 2026 and 7, which `check` names as an item
+    # that is not text (#386), so a plan `plan` wrote would fail its own
+    # `check`. A bare YAML keyword (`true`, `null`) is still written bare and
+    # read as a boolean or null, as everywhere `y` writes one (#181); `check`
+    # names it, where it used to declare the pin `True` or drop it.
     lines += ["",
               "# Neutral products this project declares a pin on. A",
               "# `<Domainx><Product>` assembly root is a DESCENDANT only when",
               "# its `open<Product>` is listed here (2026-09-02).",
-              "pins: [" + ", ".join(pins) + "]", ""]
+              "pins: [" + ", ".join(y(pin) for pin in pins) + "]", ""]
 
     lines += [
         "# A leg that NO entry below assigns a path to is SEEDED from the",

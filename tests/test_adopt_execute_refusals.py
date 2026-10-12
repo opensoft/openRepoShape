@@ -1017,6 +1017,35 @@ def test_the_refusal_comes_before_anyone_is_asked_to_say_yes_for_a_key(
     no_leg_was_created(world.tmp)
 
 
+#: Names `plan --pin` takes (`PIN_NAME_RE`) that the plan's reader takes for
+#: a number when they are written bare: `pins: [2026]` is the number 2026,
+#: `[007]` the number 7 and `[1.5]` a float. `openGlass` is the control.
+PIN_NAMES_PLAN_WRITES = ("2026", "007", "1.5", "openGlass")
+
+
+@pytest.mark.parametrize("name", PIN_NAMES_PLAN_WRITES)
+def test_a_pin_plan_writes_reads_back_as_the_name_it_was_given(adopter,
+                                                               tmp_path,
+                                                               name):
+    """`check` passes the plan `plan` wrote, and reads back the pin it was
+    given. On #356's head `pins: [007]` was read as the pin `7`; with #386's
+    item check and the line still written bare, `plan --pin 2026` wrote a
+    plan its own `check` refused as `plan-bad-pins`. `plan` now writes each
+    name as it writes every other value, quoted where the reader would take
+    it for something else."""
+    source = make_source_repo(tmp_path / "Thing")
+    plan = tmp_path / "adoption-plan.yaml"
+    written = write_plan(source, plan, project=PROJECT,
+                         extra=("--pin", name))
+    assert written.returncode == 0, written.stderr + written.stdout
+    for path, leg in ANSWERS:
+        resolve(plan, path, leg)
+    checked = run_check(plan)
+    assert checked.returncode == 0, checked.stderr + checked.stdout
+    assert "plan ok" in checked.stdout
+    assert adopter.Plan.load(plan).pins == [name]
+
+
 # --- a plan that is not UTF-8 (#192) ----------------------------------------
 
 #: The byte `0xff` is in no UTF-8 text, so wherever it lands the file cannot be
