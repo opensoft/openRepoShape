@@ -6036,14 +6036,22 @@ def root_without_its_repo_shape(case: str, project: Path, holder: dict,
     return root
 
 
+def doctor_exporting(standard: Path, root: Path, pythonpath: str):
+    """`rows_of` this root, from a doctor whose operator EXPORTED
+    `PYTHONPATH=<pythonpath>`. `run_script` can set a variable but not remove
+    one, so "none" is the empty value, which is no entry to Python."""
+    return rows_of(run_script(standard / DOCTOR, "--root", str(root), "--json",
+                              env={"PYTHONPATH": pythonpath}))
+
+
 def doctor_with_no_pythonpath(standard: Path, root: Path):
     """`rows_of` this root, from a doctor whose environment has NO
-    `PYTHONPATH`: one the person running the suite exported would reach the
-    root's own validator through the child's inherited environment and hide
-    the very import this is asking about. An empty value is no entry to
-    Python, and `run_script` can set a variable but not remove one."""
-    return rows_of(run_script(standard / DOCTOR, "--root", str(root), "--json",
-                              env={"PYTHONPATH": ""}))
+    `PYTHONPATH`, so the tests that use it ask the import question and nothing
+    else. Since #306 the doctor takes the variable out of every validator's
+    child whatever the operator exported, so these tests would give the same
+    answer without this; the ones below that EXPORT one are the ones that hold
+    that."""
+    return doctor_exporting(standard, root, "")
 
 
 @WINDOWS_SKIP
@@ -6114,6 +6122,187 @@ def test_an_own_validator_without_repo_shape_does_not_pass(
     assert gate.returncode == row["detail"]["exit"], gate.stdout + gate.stderr
     assert "ModuleNotFoundError: No module named 'repo_shape'" in \
         gate.stdout + gate.stderr
+
+
+# --- the child gets exactly the `PYTHONPATH` the row's NEXT prints (#306) ---
+#
+# `run_validator` used to start from the doctor's own environment and only ADD
+# to it, so an operator whose `PYTHONPATH` reached a `repo_shape.py` was told
+# that a root which lost its own passes its gate (#238 had removed that for
+# everyone else), and the template copy's `PYTHONPATH` was the standard's
+# `scripts/` IN FRONT OF theirs where the printed NEXT sets it ALONE. The child
+# now has what the line prints: the one directory for the template's copy, and
+# no `PYTHONPATH` at all for the root's own. The row is about the project's own
+# gate as CI runs it, and CI exports nothing.
+
+@pytest.mark.parametrize("case", sorted(TEMPLATE_FALLBACK))
+def test_an_exported_pythonpath_does_not_stand_in_for_a_lost_repo_shape(
+        standard, project, holder, tmp_path, case):
+    """(a): the standard's `scripts/` exported, the root's own `repo_shape.py`
+    gone, the manifest VALID -- and the row is still the gate's failure.
+
+    THE ONE OPERATOR WHO WAS TOLD "passes": the variable reaches a
+    `repo_shape.py`, here the standard's own, which is exactly what stands in
+    for the file the root lost. The project's own gate fails on it in CI
+    (`test_an_own_validator_without_repo_shape_does_not_pass` runs that gate
+    and says so), so the row must not read otherwise because of what the
+    person running the doctor happens to have exported. The `pins` and
+    `family` rows are held to the same sentence: the `pins` one was already a
+    finding with a DIFFERENT message under an export, and the quoted import
+    error is the project's own gate's.
+    """
+    root = root_without_its_repo_shape(case, project, holder, tmp_path,
+                                       red=False)
+    scripts = standard.resolve() / "scripts"
+    assert (scripts / "repo_shape.py").is_file(), (
+        "the standard's own repo_shape.py is the one an export reaches, or "
+        "this test is proving nothing")
+    row = doctor_exporting(standard, root, str(scripts))[case]
+    assert row["status"] == "FINDING", row
+    assert "passes" not in row["reason"], row
+    assert row["detail"]["own_copy"] is True, row
+    assert row["detail"]["exit"] == 1, row
+    assert "ModuleNotFoundError: No module named 'repo_shape'" in \
+        row["reason"], row
+
+
+#: What the operator's directory holds in the test below, written out: a
+#: `sitecustomize.py` that ends any VALIDATOR with a distinctive exit, and a
+#: `repo_shape.py` that raises when it is imported.
+#:
+#: THE `sitecustomize.py` IS WHAT DOES THE WORK, and it catches every way the
+#: directory can reach a validator. `PYTHONPATH` entries come ahead of the
+#: standard library and of site-packages, so the first `sitecustomize` on a
+#: child's path is this one wherever the directory sits in the value -- in
+#: front of the standard's `scripts/`, behind it, or alone -- and it ends the
+#: child at start-up, before a single import. Python imports ONE
+#: `sitecustomize`, the first it finds, and the doctor is not that child: its
+#: own script is not `validate-*`, so it runs on.
+#:
+#: A `repo_shape.py` ALONE CANNOT TELL PREPENDING FROM REPLACING: the
+#: standard's `scripts/` comes first in a prepended value, so the standard's
+#: `repo_shape` wins the import and the decoy behind it is never read. The
+#: raising `repo_shape.py` decides an outcome only where `sitecustomize` does
+#: not load from the path (site customisation off, or an earlier
+#: `sitecustomize` ahead of this one), and there it is what a child that put
+#: the operator's directory FIRST would import. It is a fallback, and no test
+#: here depends on it.
+DECOY_REPO_SHAPE = (
+    "raise ImportError(\"the operator's repo_shape.py was imported by a "
+    "validator\")\n")
+DECOY_SITECUSTOMIZE = "\n".join([
+    "import os",
+    "import sys",
+    "if os.path.basename((sys.argv or [''])[0]).startswith('validate-'):",
+    "    sys.stderr.write('DECOY: a validator reached the decoy\\n')",
+    "    os._exit(86)",
+    ""])
+
+
+@pytest.mark.parametrize("case", sorted(TEMPLATE_FALLBACK))
+def test_an_exported_pythonpath_does_not_reach_a_template_validator(
+        standard, project, holder, tmp_path, case):
+    """(b): an operator's `PYTHONPATH` that holds a decoy, the root's own
+    validator gone -- and the row is still the template's real verdict.
+
+    The line the row prints SETS `PYTHONPATH=<standard>/scripts` and does not
+    add to a variable (`validator_command`), so the run it describes must not
+    either. It used to put the standard's directory in FRONT of the
+    operator's and leave theirs behind it, where Python found the decoy's
+    `sitecustomize` and ended the validator with exit 86; the line, pasted,
+    never had that directory. The verdict asserted is the real one: the
+    finding the red file produces, and the template's own exit `1`, as
+    `test_a_template_validators_next_command_runs_when_it_is_pasted` has it
+    for a doctor that exports nothing.
+    """
+    spec = TEMPLATE_FALLBACK[case]
+    root = red_root(case, project, holder, tmp_path)
+    decoy = tmp_path / "operators-pythonpath"
+    decoy.mkdir()
+    (decoy / "repo_shape.py").write_text(DECOY_REPO_SHAPE, encoding="utf-8")
+    (decoy / "sitecustomize.py").write_text(DECOY_SITECUSTOMIZE,
+                                            encoding="utf-8")
+    rows = doctor_exporting(standard, root, str(decoy))
+    row = rows[case]
+    assert row["status"] == "FINDING", row
+    assert row["detail"]["own_copy"] is False, row
+    assert row["detail"]["exit"] == 1, row
+    assert spec["finding"] in row["reason"], row
+    for leaked in ("DECOY", "operator's repo_shape", "ImportError"):
+        assert leaked not in row["reason"], row
+
+    # AND NO OTHER ROW OF THE RUN REACHED THE DECOY. The row above is the one
+    # that passes a directory; the `naming` rows and the machine's preflight
+    # pass none. On main every row whose validator the decoy reached said so,
+    # and this catches any row that reaches it, which is how it catches a
+    # `run_validator` that kept the variable for the callers that pass none
+    # (#306 review S1): popped only for a script inside the root, or with the
+    # `else` dropped, the `naming` row reads `FINDING ... (exit 86): DECOY`
+    # while `manifest` reads the real finding. So no row may quote the decoy
+    # or say it exited 86, whichever caller handed it the variable.
+    reached = [name for name, other in rows.items()
+               if "DECOY" in other["reason"]
+               or "(exit 86)" in other["reason"]
+               or (other.get("detail") or {}).get("exit") == 86]
+    assert not reached, (reached, rows)
+
+
+#: Every combination of what the operator exported and what the caller asks
+#: for. A caller that passes a directory gets that directory ALONE, however
+#: much the operator had; a caller that passes none gets no variable at all --
+#: the three callers that run the standard's own scripts (the two naming rows
+#: and the machine's preflight) among them, which need none and are unaffected
+#: (#238's review).
+ABSENT = "<no PYTHONPATH>"
+OPERATOR_AND_CALLER = [
+    (None, None),
+    ("", None),
+    (os.pathsep.join(["/operator/a", "/operator/b"]), None),
+    (None, "scripts-dir"),
+    ("", "scripts-dir"),
+    (os.pathsep.join(["/operator/a", "/operator/b"]), "scripts-dir"),
+]
+
+
+@pytest.mark.parametrize("exported,given", OPERATOR_AND_CALLER)
+def test_run_validator_gives_the_child_exactly_the_pythonpath_it_is_given(
+        standard, tmp_path, monkeypatch, exported, given):
+    """The contract of `run_validator`'s `env` block, asked of the child
+    itself: `str(pythonpath)` alone, or no variable, whatever the doctor's own
+    environment held. The probe prints what it was started with, so nothing
+    about a validator's imports comes into it.
+
+    This is the assertion the two row tests above are made of, at the level a
+    caller sees it, and it holds the callers which pass no `pythonpath` by
+    where its probe lies: beside the root, as the standard's own naming and
+    preflight scripts do, as well as inside it. Those scripts need nothing
+    from the variable, so only a probe like this one, or (b)'s decoy, can see
+    that they have none.
+    """
+    module = doctor_module(standard)
+    if exported is None:
+        monkeypatch.delenv("PYTHONPATH", raising=False)
+    else:
+        monkeypatch.setenv("PYTHONPATH", exported)
+    root = tmp_path / "root"
+    root.mkdir()
+    pythonpath = None if given is None else tmp_path / given
+    want = ABSENT if given is None else str(pythonpath)
+    # THE PROBE ON BOTH SIDES OF THE ROOT: inside it, where a root's own
+    # validator lives, and beside it, where the standard's own scripts (naming,
+    # the preflight) live. A `run_validator` that took the variable out only
+    # for a script that lies inside the root would pass the first and fail the
+    # second (#306 review S1).
+    for where in (root, tmp_path):
+        probe = where / "probe.py"
+        probe.write_text(
+            "import os\n"
+            f"print(os.environ.get('PYTHONPATH', {ABSENT!r}))\n",
+            encoding="utf-8")
+        code, _quoted, whole = module.run_validator(
+            module.Context(root), probe, [], pythonpath)
+        assert code == 0, whole
+        assert whole.strip() == want, (exported, given, probe, whole)
 
 
 #: One breakage per kind of root, and the three an assembly root's `project.yaml`
