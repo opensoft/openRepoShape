@@ -109,7 +109,8 @@ def test_the_hint_for_another_branch_changes_that_branch_and_nothing_else():
     assert printed.count("trunk") == 2, "the local branch and `--base`"
     # The exits are the ones AGENTS.md allows, and `--admin` is not one.
     assert "--admin" not in printed
-    assert "bypass right" in printed and "pull request" in printed
+    assert "bypass right" in printed
+    assert "pull request" in printed
 
 
 def test_the_local_ref_and_the_base_are_two_fields():
@@ -120,7 +121,8 @@ def test_the_local_ref_and_the_base_are_two_fields():
     assert printed == "\n" + hint_for("W", "o/r", "spec", "HEAD", "trunk") + "\n"
     assert "origin HEAD:seed/scaffold" in printed
     assert "--base trunk --head seed/scaffold" in printed
-    assert "main" not in printed and printed.count("trunk") == 1
+    assert "main" not in printed
+    assert printed.count("trunk") == 1
 
 
 def test_the_hint_takes_five_fields_two_of_them_a_branch():
