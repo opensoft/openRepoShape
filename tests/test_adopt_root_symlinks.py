@@ -25,8 +25,10 @@ The groups of tests:
   nothing is, the shape would write through it, and it is refused. Outside
   the assembly that is a question for this machine's disk, which `check` and
   `execute` each ask.
-- The shape's copy under `shape/` is written without asking again, so a link
-  that leads the copy onto something already there is refused (B2).
+- `place` asks where the shape's copy under `shape/` lands only of the disk,
+  after both legs exist (#262's `copy_in_the_way`), so `check` refuses a
+  link that leads the copy onto something already there (B2). A link AT the
+  copy is #262's own finding, `plan-root-blocks-shape-copy`.
 - A case twin, `.GitHub` for `.github`, is followed as a macOS or Windows
   disk follows it, and refused on every disk (S1).
 - `core.symlinks=false` (#183): `execute` refuses, before any leg, a link the
