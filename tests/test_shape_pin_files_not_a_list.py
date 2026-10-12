@@ -10,9 +10,14 @@ reach the `no files` refusal or finding. A TRUTHY scalar was iterated:
 `files: 5`, `files: true` and `files: 1.5` ended every one of them in
 `TypeError: 'int' object is not iterable` (or `'bool'`, `'float'`), exit 1,
 and the doctor, whose one job is to say what is wrong, printed nothing at all.
+A STRING is iterable, so `files: abc` is the case that did not die: the
+validators took its characters for rows and gave one finding each, and
+`read_pin` refused it as a bad ROW with no word about the value.
 
 Each case below commits one such pin over a clean scaffold or a clean holder
-and runs a reader on it. On the code before #290 each one is a traceback.
+and runs a reader on it. On the code before #290 each one is a traceback,
+except `files: abc`, which is a finding per character or a refusal that names
+the wrong thing.
 
 The doctor's VERDICT for a root pin `read_pin` refuses is #237's business
 (PR #267 moves it from CANNOT ANSWER, exit 3, to INVALID, exit 1), so the
@@ -48,10 +53,17 @@ HOLDER = "Fam"
 #: `(what follows `files:` in the pin, how the reader shows the value back)`.
 #: Python's `repr`, because each reader names the value with `!r` the way it
 #: already names a `commit:` or a `revision_kind:` it cannot use.
+#:
+#: `abc` is the one value here that IS iterable: a guard written as
+#: `isinstance(files, (list, str))` lets it through, and each reader then
+#: takes its characters for rows (the validators, one finding per character).
+#: The three scalars above are a TypeError before the guard and cannot tell
+#: that guard from the right one, so the string is its own case.
 NOT_A_LIST = [
     pytest.param("5", "5", id="files-5"),
     pytest.param("true", "True", id="files-true"),
     pytest.param("1.5", "1.5", id="files-1.5"),
+    pytest.param("abc", "'abc'", id="files-abc"),
 ]
 
 #: Every verdict the doctor's text report can end on.
