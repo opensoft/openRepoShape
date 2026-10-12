@@ -122,7 +122,8 @@ from shape_materialize import (  # noqa: E402
     FAMILY_COPIED_VERBATIM, SHAPE_REPOSITORY, CommandFailed, check_program,
     commit_trailers, escape_what_stdout_cannot_encode, force_stage,
     inherited_child_environment, lane_trailer_argument, readme_shape_lines,
-    readme_trailing_shape_line, run, trailer_line,
+    is_nested_key, readme_trailing_shape_line, rewrite_fault, run,
+    trailer_line, with_scalar,
 )
 
 #: `owner/repo`, the only remote spelling `--upstream` accepts.
@@ -949,6 +950,19 @@ def rewrite_shape_pin(text: str, commit: str, tree: str,
     the reason the file is trusted. Each replacement must fire exactly once or
     this refuses — a pin file this tool did not recognise is not a pin file it
     may edit.
+
+    EACH OF THE TWO LINES KEEPS ITS OWN LAYOUT (#323). `commit:` is found at
+    column 0 and `tree_sha256:` as any INDENTED line that begins with it, so a
+    `digests:` child at any depth the reader accepts is recognised, and only
+    the value after the key changes: the indentation, the spacing and a
+    trailing `# comment` are the line's own. They were written back as
+    `commit: "<sha>"` and `  tree_sha256: "<digest>"`, so a child indented
+    four spaces was refused as hand-edited and a comment was dropped. The
+    `files:` block below them is still written whole, as before.
+
+    WHAT IS RETURNED HAS BEEN READ BACK, as `rewrite_manifest`'s is
+    (`shape_materialize.rewrite_fault`): a layout this line rewrite cannot
+    carry is refused HERE as this tool's failure, before any byte is written.
     """
     lines = text.splitlines()
     out: list[str] = []
@@ -956,11 +970,11 @@ def rewrite_shape_pin(text: str, commit: str, tree: str,
     for index, line in enumerate(lines):
         if line.startswith("commit:"):
             seen["commit"] += 1
-            out.append(f'commit: "{commit}"')
+            out.append(with_scalar(line, "commit", commit))
             continue
-        if line.startswith("  tree_sha256:"):
+        if is_nested_key(line, "tree_sha256"):
             seen["tree"] += 1
-            out.append(f'  tree_sha256: "{tree}"')
+            out.append(with_scalar(line, "tree_sha256", tree))
             continue
         if line.rstrip() == "files:":
             seen["files"] += 1
@@ -978,7 +992,21 @@ def rewrite_shape_pin(text: str, commit: str, tree: str,
                 "exactly one was expected, so this tool will not rewrite it",
                 "Remediation: the pin was hand-edited into a shape this tool "
                 "does not recognise. Fix it by hand this once, or re-scaffold.")
-    return "\n".join(out) + "\n"
+    rewritten = "\n".join(out) + "\n"
+    why = rewrite_fault(text, rewritten, commit, tree)
+    if why is not None:
+        raise Refusal(
+            "update-pin-unrecognised",
+            f"contracts/shape-pin.yaml reads as it stands, but this tool's "
+            f"rewrite of it does not read back to the target ({why}), so "
+            "this tool will not write it",
+            "Remediation: the fault is this tool's line rewrite, not the "
+            "project's pin. Put each of `commit:` and `tree_sha256:` on one "
+            "line with its quoted value, as the scaffold writes them, leave "
+            "both values as they are — this command recomputes the digest, "
+            "nobody edits it to fit — and run the same command again; this "
+            "tool will not guess at a pin it does not recognise.")
+    return rewritten
 
 
 def rewrite_manifest(text: str, commit: str, tree: str, kind: Kind) -> str:
@@ -994,7 +1022,9 @@ def rewrite_manifest(text: str, commit: str, tree: str, kind: Kind) -> str:
     turned a block indented four spaces — accepted by the reader and by both
     validators — into one the reader refuses, and the validators' refusal
     that followed blamed the project for this tool's write. Only the value
-    after the key changes now; the whitespace in front of it is the line's.
+    after the key changes now; the whitespace in front of it is the line's,
+    and so is a trailing `# comment` (#323: it was dropped, as the pin
+    rewrites dropped theirs; `shape_materialize.with_scalar`).
 
     WHAT IS RETURNED HAS BEEN READ BACK. A layout this line rewrite cannot
     carry — a value on the line below its key — is refused HERE, as this
@@ -1007,13 +1037,12 @@ def rewrite_manifest(text: str, commit: str, tree: str, kind: Kind) -> str:
     for index in range(start + 1, end):
         line = lines[index]
         stripped = line.strip()
-        indent = line[:len(line) - len(line.lstrip())]
         if stripped.startswith("commit:"):
             seen["commit"] += 1
-            lines[index] = f'{indent}commit: "{commit}"'
+            lines[index] = with_scalar(line, "commit", commit)
         elif stripped.startswith("tree_sha256:"):
             seen["tree"] += 1
-            lines[index] = f'{indent}tree_sha256: "{tree}"'
+            lines[index] = with_scalar(line, "tree_sha256", tree)
     for key, count in seen.items():
         if count != 1:
             raise Refusal(
@@ -1027,24 +1056,6 @@ def rewrite_manifest(text: str, commit: str, tree: str, kind: Kind) -> str:
     return rewritten
 
 
-def _shape_pin_of(text: str) -> tuple[str, str]:
-    """`shape.commit` and `shape.digests.tree_sha256`, read out of a
-    manifest's text the way its validator reads them, or a `ValueError`
-    saying why they cannot be (#208)."""
-    try:
-        manifest = parse_yaml(text)
-    except YamlError as exc:
-        raise ValueError(str(exc)) from exc
-    shape = manifest.get("shape") if isinstance(manifest, dict) else None
-    digests = shape.get("digests") if isinstance(shape, dict) else None
-    commit = shape.get("commit") if isinstance(shape, dict) else None
-    tree = digests.get("tree_sha256") if isinstance(digests, dict) else None
-    if commit is None or tree is None:
-        raise ValueError("no `shape.commit` and `shape.digests.tree_sha256` "
-                         "where the validator reads them")
-    return str(commit), str(tree)
-
-
 def _refuse_unless_it_reads_back(before: str, after: str, commit: str,
                                  tree: str, kind: Kind) -> None:
     """Refuse a rewrite that does not read back to the target (#208).
@@ -1055,19 +1066,12 @@ def _refuse_unless_it_reads_back(before: str, after: str, commit: str,
     before — unparsable, or no pin where the validator looks — was red
     before this command ran: that is left to the validators, which name the
     project's own line, and blaming this tool for it would be the same wrong
-    answer turned around.
+    answer turned around. The reading, and that question, are
+    `shape_materialize.rewrite_fault`'s, shared with the two pin rewrites
+    (#323).
     """
-    try:
-        found = _shape_pin_of(after)
-        if found == (commit, tree):
-            return
-        why = (f"it would read `commit: {found[0]}` and "
-               f"`tree_sha256: {found[1]}`")
-    except ValueError as exc:
-        why = f"the reader would refuse it: {exc}"
-    try:
-        _shape_pin_of(before)
-    except ValueError:
+    why = rewrite_fault(before, after, commit, tree, within=("shape",))
+    if why is None:
         return
     raise Refusal(
         "update-manifest-unrecognised",
