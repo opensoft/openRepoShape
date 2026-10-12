@@ -1940,6 +1940,13 @@ _FINDING_RE = re.compile(r"^FINDING (?P<code>[a-z0-9-]+): (?P<detail>.*)$",
                          re.DOTALL)
 
 
+def _code_of(finding: str) -> str | None:
+    """The code of one `FINDING <code>: <detail>`, or None for a line that is
+    not one."""
+    match = _FINDING_RE.match(finding)
+    return match.group("code") if match else None
+
+
 def _sentences_of(findings: list[str], values: dict,
                   what: dict) -> list[str]:
     """The FINDINGs of the validator as sentences: one for each value the
@@ -1968,9 +1975,16 @@ def _sentences_of(findings: list[str], values: dict,
 
 
 def manifest_invalid(values: dict, policy: NamingPolicy, what: dict,
-                     template_dir: Path = ASSEMBLY_TEMPLATE) -> list[str]:
+                     template_dir: Path = ASSEMBLY_TEMPLATE,
+                     ignore: tuple = ()) -> list[str]:
     """A sentence for each FINDING the project's own validator would make of
     the `project.yaml` these `values` render; `[]` when it would pass.
+
+    `ignore` is the codes of findings the CALLER already reports by a rule of
+    its own in the same list (`adopt-project.py check` finds a leg path
+    `plan-bad-leg-path` and must not say it a second time as the validator's
+    `manifest-leg-path`); a caller that judges nothing earlier ignores none,
+    so that a rule it did not apply still refuses.
 
     The WHOLE manifest is rendered and read, so a rule about how one value
     relates to another (`topic` to `id`, a leg's repository to its role) is
@@ -1987,8 +2001,9 @@ def manifest_invalid(values: dict, policy: NamingPolicy, what: dict,
         return ["the manifest this run would write is a file the project's "
                 f"own YAML reader refuses: {exc}."]
     notes = manifest_validator(template_dir)._findings(manifest, policy, None)
-    return _sentences_of([note for note in notes
-                          if not note.startswith("WARNING")], values, what)
+    return _sentences_of(
+        [note for note in notes if not note.startswith("WARNING")
+         and _code_of(note) not in ignore], values, what)
 
 
 #: The remediation, without the sentence only the caller can write (what was
@@ -2008,7 +2023,7 @@ MANIFEST_INVALID_REMEDIATION = (
 
 
 def manifest_value_problems(values: dict, policy: NamingPolicy, what: dict,
-                            *, misreads: bool = True,
+                            *, misreads: bool = True, ignore: tuple = (),
                             template_dir: Path = ASSEMBLY_TEMPLATE
                             ) -> list[tuple[str, str]]:
     """`(kind, sentence)` for everything wrong with the values, `kind` being
@@ -2025,7 +2040,7 @@ def manifest_value_problems(values: dict, policy: NamingPolicy, what: dict,
         if misread:
             return [("misread", sentence) for sentence in misread]
     return [("invalid", sentence) for sentence
-            in manifest_invalid(values, policy, what, template_dir)]
+            in manifest_invalid(values, policy, what, template_dir, ignore)]
 
 
 def refuse_manifest_values(prefix: str, values: dict, policy: NamingPolicy,

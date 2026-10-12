@@ -404,3 +404,17 @@ def test_a_plan_whose_names_do_not_classify_is_the_naming_findings_not_a_crash(
     assert "FINDING naming-unclassified" in result.stderr
     assert FINDING not in result.stderr
     assert "Traceback" not in result.stderr
+
+
+@pytest.mark.parametrize("value", ["../spec", "/spec", ".", '""', "spec/"])
+def test_a_bad_leg_path_is_one_finding_in_the_words_of_its_own_rule(world,
+                                                                    value):
+    """The validator also refuses such a `path:` (`manifest-leg-path`), and the
+    plan's `legs.spec_path` is already `plan-bad-leg-path` in the same list:
+    said twice would be two findings for one value."""
+    plan = edited(world, "  spec_path: spec\n", f"  spec_path: {value}\n")
+    result = run_script(ADOPT, "check", "--plan", str(plan))
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert "FINDING plan-bad-leg-path" in result.stderr
+    assert FINDING not in result.stderr
+    assert "1 finding(s)" in result.stderr

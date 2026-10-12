@@ -531,7 +531,8 @@ def test_loading_the_validator_leaves_sys_path_as_it_found_it(tmp_path):
     and that must not outlive the load. A copy of the template is a path not
     loaded yet, so this loads for real."""
     copy = tmp_path / "assembly-root"
-    shutil.copytree(REPO / "templates" / "assembly-root", copy)
+    shutil.copytree(REPO / "templates" / "assembly-root", copy,
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     before = list(sys.path)
     module = shape_materialize.manifest_validator(copy)
     assert Path(module.__file__).resolve().parent.parent == (
@@ -564,7 +565,8 @@ def test_quoting_the_template_would_make_the_refusal_go_away(tmp_path):
     question is asked of the TEMPLATE, so the day it does, those values read
     back and nothing here refuses them, with no edit to this rule."""
     copy = tmp_path / "assembly-root"
-    shutil.copytree(REPO / "templates" / "assembly-root", copy)
+    shutil.copytree(REPO / "templates" / "assembly-root", copy,
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     manifest = copy / "project.yaml"
     text = manifest.read_text(encoding="utf-8")
     quoted = (text.replace("id: {{PROJECT_ID}}", 'id: "{{PROJECT_ID}}"')

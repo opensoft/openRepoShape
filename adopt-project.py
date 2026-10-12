@@ -1471,6 +1471,11 @@ MANIFEST_FLAGS = {
     "ORG": "--org",
 }
 
+#: The validator's findings about a leg's mount path, which `check` already
+#: reports as `plan-bad-leg-path` and `plan-leg-path-collides` from the same
+#: list (`_leg_findings`): said once, in the words of the rule that judges it.
+LEG_PATH_CODES = ("manifest-leg-path", "manifest-leg-path-collision")
+
 #: And how `check` and `execute` name the same value: its key in the plan.
 MANIFEST_PLAN_KEYS = {
     "PROJECT_ID": "id", "ELECTED_BY": "elected_by",
@@ -1550,7 +1555,7 @@ def _manifest_findings(plan: Plan) -> tuple[list[str], list[str]]:
     if values is None:
         return [], []
     problems = manifest_value_problems(values, naming, MANIFEST_PLAN_KEYS,
-                                       misreads=False)
+                                       misreads=False, ignore=LEG_PATH_CODES)
     if not problems:
         return [], []
     return ([f"FINDING plan-manifest-invalid: {sentence}"
