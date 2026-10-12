@@ -1196,6 +1196,139 @@ def test_a_copy_deleted_and_committed_is_still_a_conflict(root, project, gh):
     assert git("status", "--porcelain", cwd=root.path).stdout == ""
 
 
+#: What goes where a pinned copy was, and a commit id no repository holds.
+NOTE = "note.txt"
+SUBMODULE = "1" * 40
+
+
+def a_directory_in_place_of_the_copy(root, *, stage: bool = False) -> None:
+    """`LOCAL`, a file HEAD commits, replaced by a directory on disk."""
+    path = root.path / LOCAL
+    path.unlink()
+    path.mkdir()
+    (path / NOTE).write_bytes(b"a directory where the copy was\n")
+    if stage:
+        git("add", "--", LOCAL, cwd=root.path)
+
+
+def a_directory_committed_in_place_of_the_copy(root, project, env) -> None:
+    a_directory_in_place_of_the_copy(root, stage=True)
+    git("commit", "-q", "-m", "Replace a copy with a directory",
+        cwd=root.path)
+    assert git("cat-file", "-t", f"HEAD:{LOCAL}",
+               cwd=root.path).stdout.strip() == "tree"
+
+
+def a_gitlink_committed_in_place_of_the_copy(root, project, env) -> None:
+    """A gitlink checks out as a directory: an empty one, uninitialised."""
+    (root.path / LOCAL).unlink()
+    (root.path / LOCAL).mkdir()
+    git("rm", "-q", "--cached", "--", LOCAL, cwd=root.path)
+    git("update-index", "--add", "--cacheinfo",
+        f"160000,{SUBMODULE},{LOCAL}", cwd=root.path)
+    git("commit", "-q", "-m", "Replace a copy with a submodule",
+        cwd=root.path)
+    assert git("ls-tree", "HEAD", "--", LOCAL,
+               cwd=root.path).stdout.startswith("160000 commit ")
+
+
+@pytest.mark.parametrize("prepare", [
+    a_directory_committed_in_place_of_the_copy,
+    a_gitlink_committed_in_place_of_the_copy,
+], ids=["tree", "gitlink"])
+def test_a_copy_replaced_by_a_directory_and_committed_is_still_a_conflict(
+        root, project, gh, prepare):
+    """THE KIND IS HEAD'S, SO NOTHING DIFFERS (#436, review of e7e80c4).
+    A pinned copy replaced by a directory, the change committed, is not an
+    edit left uncommitted: HEAD commits a directory and the disk holds one.
+    `git hash-object` cannot hash it, so the comparison read an empty
+    answer as a difference, and every `--branch` run said
+    `update-branch-uncommitted` for good, a refusal no remedy it gives
+    changes. It is `update-conflict`'s `copy-missing` instead, as on main
+    and as for a deletion HEAD commits, with nothing written."""
+    prepare(root, project, gh.env)
+    head = git("rev-parse", "HEAD", cwd=root.path).stdout.strip()
+    branches = git("for-each-ref", "--format=%(refname)", "refs/heads/",
+                   cwd=root.path).stdout
+    assert git("status", "--porcelain", cwd=root.path).stdout == ""
+
+    result = apply(root, project, "--branch", BRANCH, env=gh.env)
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stderr.startswith("REFUSED update-conflict: "), \
+        result.stderr
+    assert f"{LOCAL}: pinned but absent from the root" in result.stderr
+    assert "update-branch-uncommitted" not in result.stderr
+    assert result.stdout == "", "nothing copied, re-pinned or said done"
+    assert git("rev-parse", "HEAD", cwd=root.path).stdout.strip() == head
+    assert git("for-each-ref", "--format=%(refname)", "refs/heads/",
+               cwd=root.path).stdout == branches, "no branch was made"
+    assert git("status", "--porcelain", cwd=root.path).stdout == ""
+    assert gh.calls() == []
+
+
+def a_directory_uncommitted(root, project, env) -> None:
+    """HEAD commits the file; the disk holds a directory, untracked."""
+    a_directory_in_place_of_the_copy(root)
+
+
+def a_directory_staged(root, project, env) -> None:
+    """The same, staged: the index is not HEAD."""
+    a_directory_in_place_of_the_copy(root, stage=True)
+
+
+def a_file_in_place_of_the_committed_directory(root, project, env) -> None:
+    """HEAD commits a directory; the disk holds a file again, uncommitted."""
+    a_directory_committed_in_place_of_the_copy(root, project, env)
+    shutil.rmtree(root.path / LOCAL)
+    (root.path / LOCAL).write_bytes(b"a file again, not committed\n")
+
+
+def a_directory_where_head_commits_nothing(root, project, env) -> None:
+    """The copy's deletion committed, then a directory there, untracked."""
+    git("rm", "-q", "--", LOCAL, cwd=root.path)
+    git("commit", "-q", "-m", "Drop a copy", cwd=root.path)
+    (root.path / LOCAL).mkdir()
+    (root.path / LOCAL / NOTE).write_bytes(b"a directory, not committed\n")
+
+
+@pytest.mark.parametrize("prepare", [
+    a_directory_uncommitted,
+    a_directory_staged,
+    a_file_in_place_of_the_committed_directory,
+    a_directory_where_head_commits_nothing,
+], ids=["directory", "staged-directory", "file", "untracked-directory"])
+def test_a_type_change_head_does_not_commit_is_still_refused(
+        root, project, gh, prepare):
+    """A KIND THAT DISAGREES IS A DIFFERENCE (#436). HEAD commits a file and
+    the disk holds a directory, or HEAD commits a directory and the disk
+    holds a file, or HEAD commits nothing and the disk holds a directory:
+    a type change left uncommitted, which the commit would not carry, so
+    `update-branch-uncommitted` names the path and nothing is written. Only
+    a directory over a directory HEAD commits is HEAD's."""
+    prepare(root, project, gh.env)
+    head = git("rev-parse", "HEAD", cwd=root.path).stdout.strip()
+    branches = git("for-each-ref", "--format=%(refname)", "refs/heads/",
+                   cwd=root.path).stdout
+    status = git("status", "--porcelain", cwd=root.path).stdout
+
+    result = apply(root, project, "--branch", BRANCH, env=gh.env)
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stderr.startswith(
+        f"REFUSED update-branch-uncommitted: --branch {BRANCH} would commit "
+        f"what HEAD ({head[:12]}) commits plus only the paths this run "
+        "writes, but the working tree does not hold what HEAD commits at "
+        f"{LOCAL}. "), result.stderr
+    assert "Nothing was written, committed or pushed." in result.stderr
+    assert result.stdout == "", "nothing copied, re-pinned or said done"
+    assert git("rev-parse", "HEAD", cwd=root.path).stdout.strip() == head
+    assert git("for-each-ref", "--format=%(refname)", "refs/heads/",
+               cwd=root.path).stdout == branches, "no branch was made"
+    assert git("status", "--porcelain", cwd=root.path).stdout == status
+    assert gh.calls() == []
+
+
 @pytest.mark.skipif(
     os.name == "nt",
     reason="a committed symlink is checked out as a plain file on Windows "

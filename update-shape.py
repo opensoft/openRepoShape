@@ -51,9 +51,11 @@ recording an identity, so this tool never records one it cannot justify:
     only the paths this run writes. So before the first write the pin, the
     manifest and every pinned copy are compared with HEAD, and a difference
     is refused by name (`update-branch-uncommitted`): commit those changes
-    or put them back. The commit is never widened to take them in. Without
-    `--branch` the run writes as it always did, and its NEXT line names
-    those copies instead of printing a commit that would leave them out.
+    or put them back. The commit is never widened to take them in. A
+    directory where HEAD commits one is HEAD's, not a difference: the copy
+    is `update-conflict`'s `copy-missing`. Without `--branch` the run writes
+    as it always did, and its NEXT line names those copies instead of
+    printing a commit that would leave them out.
   * Nothing is left red: the root's OWN `validate-pins.py` and
     `validate-manifest.py` run after the rewrite, and every byte is rolled
     back if either refuses.
@@ -3052,34 +3054,60 @@ def _not_what_head_commits(root: Path, paths: list[str]) -> list[str]:
     hides an edit — `readme_is_committed`'s second question, asked of each
     path.
 
-    TWO ANSWERS THAT ARE NOT DIFFERENCES (#436), now that every `--branch`
+    THREE ANSWERS THAT ARE NOT DIFFERENCES (#436), now that every `--branch`
     run asks rather than only #333's re-run, whose rows were all present
     and none of them links. A path neither the disk nor HEAD holds — a
     pinned copy deleted and committed — is the same on both sides, and is
-    `update-conflict`'s to name as missing. And where a symlink stands on
+    `update-conflict`'s to name as missing. Where a symlink stands on
     the path's way (`symlink_on_the_way`, the path itself or a directory
     above it), what git commits is THE LINK, its target as text, never the
     bytes it leads to, which `hash-object` on the path would read: so the
     link's own text is hashed against HEAD's entry for the link. A pinned
     copy kept as a link HEAD commits is then HEAD's, as it is to git; what
-    `apply` should do with a link is not this question.
+    `apply` should do with a link is not this question. And a directory
+    where HEAD commits a directory (`_head_holds_a_directory`) is HEAD's
+    too: a pinned copy replaced by a directory, that type change committed,
+    has nothing for `hash-object` to read, so it was named a difference
+    for good, though no edit is left to commit and no remedy this refusal
+    gives changes it. It is not a file, so `classify` calls it
+    `copy-missing` and `update-conflict` names it before anything is
+    written, as it does for a deletion HEAD commits. Any OTHER pair of
+    kinds is a difference: a directory over a file HEAD commits, a file
+    over a directory HEAD commits, or a directory where HEAD commits
+    nothing, is a type change nobody has committed.
     """
-    differ = []
-    for path in paths:
-        link = symlink_on_the_way(root, path)
-        if link is not None:
-            name, points = link
-            disk = _blob_of(root, os.fsencode(points))
-            head = _head_blob(root, name)
-        else:
-            head = _head_blob(root, path)
-            if not head and not os.path.lexists(root / path):
-                continue
-            disk = (_git_answer(root, ["hash-object", "--", path])
-                    or "").strip()
-        if not disk or disk != head:
-            differ.append(path)
-    return differ
+    return [path for path in paths if _differs_from_head(root, path)]
+
+
+def _differs_from_head(root: Path, path: str) -> bool:
+    """`_not_what_head_commits`' question for one path."""
+    link = symlink_on_the_way(root, path)
+    if link is not None:
+        name, points = link
+        disk = _blob_of(root, os.fsencode(points))
+        return not disk or disk != _head_blob(root, name)
+    head = _head_blob(root, path)
+    if not head and not os.path.lexists(root / path):
+        return False
+    if (root / path).is_dir():
+        # Nothing here to hash: `hash-object` on a directory fails.
+        return not _head_holds_a_directory(root, path)
+    disk = (_git_answer(root, ["hash-object", "--", path]) or "").strip()
+    return not disk or disk != head
+
+
+def _head_holds_a_directory(root: Path, path: str) -> bool:
+    """Does HEAD commit a directory at `path`: a tree, or a gitlink, which
+    git checks out as one (#436)? True for any entry that is not a blob,
+    and False where HEAD commits nothing there.
+
+    `cat-file -t` names a tree, and fails for a gitlink, whose commit is
+    not an object of this repository — so the answer is "is not a blob",
+    never "is a tree". A symlink is a blob whose text is the target.
+    """
+    entry = _head_blob(root, path)
+    return bool(entry) and (_git_answer(
+        root, ["cat-file", "-t", entry]) or "").strip() != "blob"
 
 
 def _head_blob(root: Path, path: str) -> str:
