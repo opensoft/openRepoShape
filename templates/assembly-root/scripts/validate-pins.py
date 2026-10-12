@@ -42,7 +42,8 @@ EXIT CODES
        recheckable neutral-product pin disagrees
     1  a FINDING: drift a reviewer can act on
     2  a REFUSAL: the question could not be asked — an uninitialized submodule,
-       an unresolvable commit, an unreadable pin. An unanswerable pin question
+       an unresolvable commit, an unreadable pin or workflow file (one that is
+       not UTF-8, or that this user cannot open). An unanswerable pin question
        is never an implicit pass.
 """
 
@@ -53,6 +54,7 @@ import os
 import re
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from repo_shape import (  # noqa: E402
@@ -99,17 +101,99 @@ class Report:
         self.notes.append(f"  skip {text}")
 
 
+class _Unreadable(NamedTuple):
+    """One workflow file that could not be read (#359): the line that names it,
+    and whether it failed on its ENCODING (`True`) or on being opened."""
+
+    line: str
+    encoding: bool
+
+
+def _read_workflow(root: Path, path: Path) -> tuple[str, _Unreadable | None]:
+    """`(text, None)` for a workflow file read as UTF-8, or `("", why)` for one
+    that cannot be (#359).
+
+    The line is `<path relative to root>: not UTF-8 at byte N (<reason>)`, in
+    the words `repo_shape.load_yaml` gives the same failure (#192), so a file
+    this script cannot read is named the way its other readers name one.
+    POSIX, on every platform, and never the absolute path: the reader pastes
+    it into git and into an editor that opens it from the root.
+    A file this user cannot open (`OSError`) is the same line with the
+    operating system's own reason, because it is the same unguarded read.
+    """
+    rel = path.relative_to(root).as_posix()
+    try:
+        return path.read_text(encoding="utf-8"), None
+    except UnicodeDecodeError as exc:
+        return "", _Unreadable(
+            f"{rel}: not UTF-8 at byte {exc.start} ({exc.reason})", True)
+    except OSError as exc:
+        return "", _Unreadable(
+            f"{rel}: cannot be read ({exc.strerror or type(exc).__name__})",
+            False)
+
+
+def _workflow_unreadable(files: list[_Unreadable]) -> Refusal:
+    """The ONE refusal for every workflow file that could not be read (#359).
+
+    EVERY FILE IS NAMED, in one refusal, so the operator repairs them in one
+    pass instead of meeting them one run at a time; `_workflow_refs` reads
+    them all before it raises. The first line follows the id and the rest
+    follow it, one file to a line, so `shape-doctor.py`, which quotes the
+    first `REFUSED` line of this script's output, quotes a file's name.
+    """
+    advice = ""
+    if any(one.encoding for one in files):
+        advice += (
+            "In each `not UTF-8` line the byte is counted from 0 at the start "
+            "of the file and is the first that is not UTF-8: re-save the file "
+            "as UTF-8 (a UTF-16 file with a byte-order mark needs converting, "
+            "not editing), or replace that byte with the character it was "
+            "meant to be, and commit it. ")
+    if not all(one.encoding for one in files):
+        advice += (
+            "A `cannot be read` file is not an encoding failure: this user "
+            "cannot open it, so restore read access to it. ")
+    return Refusal(
+        "workflow-unreadable",
+        "\n".join(one.line for one in files),
+        f"Remediation: {len(files)} workflow file(s) under "
+        ".github/workflows/ cannot be read, and every one is named above. "
+        "This validator reads every `.yml` and `.yaml` file there, whether or "
+        "not it names a leg, and neither skips one nor reads one lossily: a "
+        "workflow it skipped could hide a `@<sha>` reference that is out of "
+        "lockstep, which is what it exists to find, and a lossy read would "
+        "call green a tree that the project's other readers refuse. "
+        + advice + "Then run the same command again.")
+
+
 def _workflow_refs(root: Path) -> list[tuple[Path, str, str]]:
-    """Every (file, owner/repo, sha) `@<sha>` reference in the workflows."""
+    """Every (file, owner/repo, sha) `@<sha>` reference in the workflows, or
+    ONE refusal naming each workflow file that cannot be read (#359).
+
+    EVERY FILE IS READ, whether or not it names a leg: the file is opened
+    before it is known to hold a reference, so a UTF-16 workflow that names no
+    leg used to stop the run in a `UnicodeDecodeError` (a `ValueError`, which
+    `main()` does not catch: a traceback, exit 1 -- the code this validator
+    uses for a finding). It is a REFUSAL, exit 2, `workflow-unreadable`, as a
+    pin that is not UTF-8 is `yaml-unreadable`: the question cannot be asked.
+    """
     out: list[tuple[Path, str, str]] = []
+    unreadable: list[_Unreadable] = []
     workflows = root / ".github" / "workflows"
     if not workflows.is_dir():
         return out
     for path in sorted(workflows.iterdir()):
         if path.suffix not in (".yml", ".yaml") or not path.is_file():
             continue
-        for match in WORKFLOW_REF_RE.finditer(path.read_text(encoding="utf-8")):
+        text, problem = _read_workflow(root, path)
+        if problem is not None:
+            unreadable.append(problem)
+            continue
+        for match in WORKFLOW_REF_RE.finditer(text):
             out.append((path, match.group("repo"), match.group("sha").lower()))
+    if unreadable:
+        raise _workflow_unreadable(unreadable)
     return out
 
 
