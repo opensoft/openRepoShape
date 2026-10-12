@@ -48,13 +48,15 @@ recording an identity, so this tool never records one it cannot justify:
   * Nothing is left red: the root's OWN `validate-pins.py` and
     `validate-manifest.py` run after the rewrite, and every byte is rolled
     back if either refuses.
+  * A write that fails is a refusal, not a traceback (#285): a copy, an
+    addition or the pin this process cannot write is `update-write-failed`,
+    and every byte written before it is put back, as below.
   * Nothing is left half-done either (#202). With `--branch`, a branch git
     cannot create, an addition it cannot stage or a commit a hook refuses
     puts back the copies, the pin, the README line, the index and the
     branch, and the refusal names the step that failed and lists what it
     put back. A re-run then finds the tree it found the first time, rather
-    than an uncommitted re-pin it would read as already done. A copy, an
-    addition or a pin this process cannot write is the same (#285).
+    than an uncommitted re-pin it would read as already done.
 
 ONLY THE PIN'S OWN ROWS ARE CONSIDERED. The set of shape files is read from
 `contracts/shape-pin.yaml`, never re-derived from this repository's copy
