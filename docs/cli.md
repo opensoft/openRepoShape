@@ -340,7 +340,9 @@ usage: adopt-project.py plan [-h] --source SOURCE --project PROJECT
                              [--elected-on ELECTED_ON] [--reference REFERENCE]
                              [--tracking-branch TRACKING_BRANCH]
                              [--spec-path SPEC_PATH] [--code-path CODE_PATH]
-                             [--pin PIN] [--allow-empty-leg {spec,code}]
+                             [--pin openProduct@COMMIT]
+                             [--pin-owner PIN_OWNER] [--pin-source PIN_SOURCE]
+                             [--allow-empty-leg {spec,code}]
                              [--path-policy PATH_POLICY] [--out OUT]
                              [--work-dir WORK_DIR]
 
@@ -364,12 +366,26 @@ options:
   --tracking-branch TRACKING_BRANCH
   --spec-path SPEC_PATH
   --code-path CODE_PATH
-  --pin PIN             a neutral product this project declares a pin on — a
-                        NAME only, e.g. --pin openGlass or --pin
-                        opensoft/openGlass to name the owner explicitly.
-                        Adopting a project pins no commit at plan time, so a
-                        trailing @<commit> (scaffold-project.py's syntax) is
-                        refused.
+  --pin openProduct@COMMIT
+                        declare a neutral-product pin, as scaffold-project.py
+                        --pin does, e.g. --pin openGlass@<40 hex>. `plan`
+                        reads the digest of the product's tree at that commit
+                        (from --pin-source, or `gh api`) and records it in the
+                        plan; `execute` writes
+                        contracts/<openproduct>-pin.yaml from it and lists the
+                        product in the manifest. A name with no @<commit>, a
+                        product named spec, code or shape, and one product
+                        twice are refused. Repeatable.
+  --pin-owner PIN_OWNER
+                        the organisation an UNQUALIFIED --pin name resolves
+                        under (default: opensoft, where every neutral
+                        open<Product> lives — never the adopted repository's
+                        own --org). Name the owner in --pin itself
+                        (owner/openProduct@<sha>) to override it for one pin.
+  --pin-source PIN_SOURCE
+                        a local clone to compute --pin digests from, instead
+                        of reading the forge with `gh api` (the TEST path; no
+                        network)
   --allow-empty-leg {spec,code}
                         record in the plan that this leg having NO path is
                         intended, so it may be SEEDED from the shape's

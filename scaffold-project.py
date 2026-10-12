@@ -45,7 +45,6 @@ import os
 import argparse
 import datetime as _dt
 import json
-import re
 import subprocess
 import sys
 import tempfile
@@ -76,117 +75,20 @@ from shape_materialize import (  # noqa: E402
 )
 
 #: The pin argument: `openGlass@<40 hex>`, optionally organisation-qualified.
-PIN_ARG_RE = re.compile(r"^(?P<name>[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?)@(?P<commit>[0-9a-fA-F]{40})$")
-
-#: How a neutral product's tree is read when the pin is taken from the forge
-#: rather than from a clone on this machine.
-GH_TREE_API = "repos/{repo}/git/trees/{commit}?recursive=1"
+#: It, its digest and its collisions are `shape_materialize`'s since #273,
+#: because `adopt-project.py plan --pin` takes the same argument and writes
+#: the same file; imported under the names this file has always called them
+#: by, so what it refuses, and in which words, is unchanged.
+from shape_materialize import (  # noqa: E402
+    declared_pin_products, declared_pin_values,
+    refuse_colliding_pins as _refuse_colliding_pins,
+)
 
 #: The naming-policy form every link between a chain's first and last must
 #: classify as (#251). Each such link is an entry of the link before its
 #: `neutral_product_pins:`, the key a link is verified by
 #: (`referent.chain.link_declared_by`), so it is a neutral product's name.
 CHAIN_LINK_FORM = "neutral-product"
-
-
-def parse_pin(raw: str, owner: str = NEUTRAL_PRODUCT_OWNER) -> tuple[str, str, str]:
-    """`openGlass@<sha>` -> (product, `<owner>/openGlass`, commit).
-
-    THE COMMIT IS 40 HEX OR IT IS NOT A PIN. An abbreviated oid, a branch name
-    or a tag cannot pass here for the same reason `contracts/<leg>-pin.yaml`
-    refuses them: a tag can be moved and a commit cannot.
-
-    AN UNQUALIFIED NAME RESOLVES UNDER `owner` (opensoft, unless `--pin-owner`
-    said otherwise) — NEVER under the pinning project's own `--org`. Domain
-    repositories never author a neutral product; they only pin the opensoft
-    original, so `--org MedxSoft --pin openGlass@<sha>` must not go looking
-    for `MedxSoft/openGlass`, which does not exist and was never the claim.
-    """
-    match = PIN_ARG_RE.match(raw.strip())
-    if not match:
-        raise Refusal(
-            "pin-malformed",
-            f"--pin {raw!r} is not `[owner/]<openProduct>@<40 hex commit>`",
-            "Remediation: pass the full 40-character commit, e.g. "
-            "--pin openGlass@0123456789abcdef0123456789abcdef01234567 "
-            f"(resolved under {NEUTRAL_PRODUCT_OWNER}/openGlass by default), "
-            "or name the owner explicitly with --pin MedxSoft/openGlass@<sha> "
-            "or --pin-owner MedxSoft. A tag or an abbreviated oid is refused: "
-            "a tag can be moved.",
-        )
-    name = match.group("name")
-    product = name.rsplit("/", 1)[-1]
-    repository = name if "/" in name else f"{owner}/{product}"
-    return product, repository, match.group("commit").lower()
-
-
-def pin_digest_from_source(source: Path, commit: str, repository: str) -> str:
-    """The `sorted-ls-tree-r-v1` digest, read from a clone on this machine."""
-    try:
-        return tree_digest(source, commit)
-    except Refusal as exc:
-        raise Refusal(
-            "pin-source-unreadable",
-            f"{source} could not answer for {repository} @ {commit}: "
-            f"{exc.detail}",
-            "Remediation: point --pin-source at a clone of that repository "
-            "that HAS the pinned commit (`git fetch --all` first), or drop "
-            "--pin-source and let `gh api` read the forge.",
-        ) from exc
-
-
-def pin_digest_from_gh(repository: str, commit: str) -> str:
-    """The same digest, computed from the forge's own recursive tree listing.
-
-    A SHALLOW READ, not a clone: `git/trees/<commit>?recursive=1` returns one
-    row per object with `mode`, `type`, `sha` and `path` — exactly the four
-    columns `git ls-tree -r -z` emits, which is what makes the two readings
-    the same number. Tree rows are dropped because `-r` emits none; a
-    submodule arrives as `type: commit` with mode `160000` and is kept, as
-    `ls-tree` keeps it.
-    """
-    proc = subprocess.run(
-        ["gh", "api", GH_TREE_API.format(repo=repository, commit=commit)],
-        # UTF-8 and STRICT, not `errors="replace"`: this JSON becomes a
-        # digest, and a replaced byte would be a wrong digest with a
-        # confident tone (#217).
-        capture_output=True, text=True, encoding="utf-8", check=False)
-    if proc.returncode != 0:
-        raise Refusal(
-            "pin-unreadable",
-            f"`gh api` could not read {repository} @ {commit}: "
-            f"{proc.stderr.strip()}",
-            "Remediation: check the commit exists in that repository and that "
-            "`gh auth status` can see it. An unqualified --pin resolves under "
-            f"{NEUTRAL_PRODUCT_OWNER} by default (never the project's own "
-            "--org) — if this product actually lives under a different "
-            "owner, name it explicitly with --pin <owner>/<openProduct>@<sha> "
-            "or --pin-owner <owner>. You can also pass --pin-source <local "
-            "clone> to compute the digest with no network at all.",
-        )
-    try:
-        payload = json.loads(proc.stdout)
-    except json.JSONDecodeError as exc:
-        raise Refusal("pin-unreadable",
-                      f"{repository} @ {commit}: {exc}") from exc
-    if payload.get("truncated"):
-        raise Refusal(
-            "pin-tree-truncated",
-            f"the forge truncated its tree listing for {repository} @ "
-            f"{commit}, so the digest would be computed over a PARTIAL tree",
-            "Remediation: clone that repository and pass --pin-source <path>. "
-            "A digest over a partial tree is a wrong answer with a confident "
-            "tone.",
-        )
-    import hashlib
-    records = sorted(
-        f"{row['mode']} {row['type']} {row['sha']}\t{row['path']}".encode()
-        for row in payload.get("tree") or [] if row.get("type") != "tree")
-    digest = hashlib.sha256()
-    for record in records:
-        digest.update(record)
-        digest.update(b"\n")
-    return digest.hexdigest()
 
 
 def remote_is_empty(repository: str) -> bool | None:
@@ -345,47 +247,6 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
 
-def declared_pin_values(args) -> dict[str, dict[str, str]]:
-    """The template values for every `--pin`, with its digest resolved.
-
-    The digest is the same `sorted-ls-tree-r-v1` number every other pin here
-    carries, read either from a clone on this machine (`--pin-source`, and no
-    network at all) or from the forge's own recursive tree listing.
-    """
-    pins: dict[str, dict[str, str]] = {}
-    for raw in args.pin:
-        product, repository, commit = parse_pin(raw, args.pin_owner)
-        if args.pin_source is not None:
-            digest = pin_digest_from_source(args.pin_source.resolve(), commit,
-                                            repository)
-            digest_source = f"local-clone ({args.pin_source})"
-        else:
-            digest = pin_digest_from_gh(repository, commit)
-            digest_source = "gh-api-tree-recursive"
-        pins[product] = {
-            "PIN_PRODUCT": product,
-            "PIN_REPOSITORY": repository,
-            "PIN_COMMIT": commit,
-            "PIN_TREE_SHA256": digest,
-            "PIN_DIGEST_SOURCE": digest_source,
-        }
-    return pins
-
-
-def declared_pin_products(args) -> dict[str, None]:
-    """The products `declared_pin_values` keys its pins by, in its order and
-    read by the same `parse_pin`, with no digest: so no `git` and no `gh`.
-
-    #197: `_build_assembly_root` hands those pins to the materializer, which
-    writes `neutral_pin_path(product)` for each, and the leg paths are asked
-    about that file before `_identity` and `_declaration` run, which is
-    before any digest is read. A malformed `--pin` is therefore refused
-    here, by `parse_pin`'s own `pin-malformed`, rather than in
-    `_declaration`; it was refused before anything was created either way.
-    """
-    return dict.fromkeys(parse_pin(raw, args.pin_owner)[0] for raw in args.pin)
-
-
 def _reusable_remotes(names: dict, urls: dict, repositories: dict,
                       local: bool, reuse_flag: bool) -> set[str]:
     """Which remotes already exist, and whether that is allowed.
@@ -436,92 +297,6 @@ def _exists_remedy(role: str, empty: bool, reuse_flag: bool) -> str:
             "<org>/<repo> --project <Project>` to convert it in place, which "
             "keeps its name, its identity and its history. There is no "
             "--force.")
-
-
-#: What every refused `--pin` is told to do. The file a pin is written at is
-#: `neutral_pin_path`'s, spelled for a placeholder product, never by hand.
-PIN_COLLISION_REMEDIATION = (
-    "Remediation: nothing was created. A neutral product is named for the "
-    "repository it pins, as `--pin openGlass@<40 hex commit>` names "
-    f"{NEUTRAL_PRODUCT_OWNER}/openGlass by default, and its pin is written at "
-    f"`{neutral_pin_path('<openProduct>')}`, the name lowercased, beside the "
-    "pins the shape writes for its two legs and for itself. Pass each product "
-    "once, by the name of the repository it pins."
-)
-
-
-def _refuse_colliding_pins(pins, owner: str) -> None:
-    """No `--pin` is written where the shape writes a file of its own, and no
-    two `--pin`s are written at one path, or this refuses (#241).
-
-    `_build_assembly_root` hands the pins to the materializer, which writes
-    each at `neutral_pin_path(product)` after the shape's own files and
-    before the copy pin, and a second file at one path is
-    `materialize-collision`: a pin over a leg's pin, or the copy pin over a
-    pin named `shape`, or a pin over another pin. So each was met only after
-    `_create_remotes` and `_seed_legs`. On main through 39ac59c, `--pin
-    spec@<sha>` (`Spec@`, `code@`, `MedxSoft/code@`, `shape@`) and `--pin
-    openGlass@<sha> --pin OpenGlass@<sha>` planned under `--dry-run`, then
-    created all three repositories, pushed both legs, left the root with no
-    commit and exited 2, and the corrected re-run was refused as
-    `scaffold-remote-exists`. Against GitHub, each left three repositories
-    for a run that made no project.
-
-    THE QUESTION IS ASKED THROUGH THE MATERIALIZER'S OWN TWO DEFINITIONS: a
-    pin's file is `neutral_pin_path(product)`, and the shape's own files are
-    `assembly_root_paths()` with no pins. `neutral_pin_path` lowercases, so
-    `Spec` is `spec` and `openGlass` and `OpenGlass` are one file, with no
-    case rule of this tool's own. The product is read by `parse_pin` alone,
-    so a malformed `--pin` is still its `pin-malformed`, and no digest is
-    read: no `git` and no `gh`.
-
-    THE RAW `--pin` LIST, NEVER `declared_pin_products`, which collapses a
-    repeated product, as `declared_pin_values` does by keeping the last:
-    `--pin openGlass@<A> --pin openGlass@<B>` planned one pin, wrote `<B>`
-    and dropped `<A>` without a word. A declaration is a claim about what
-    the project descends from, so a repeat is refused whether or not its
-    commits agree: either way it is a typing error, and one of the two
-    would be lost. Every argument is named as it was typed.
-
-    IT RUNS BEFORE `_refuse_colliding_leg_paths`, which asks about
-    `assembly_root_paths(<the --pin products>)`. With `--pin spec@<sha>`
-    that list held `contracts/spec-pin.yaml` twice, and `--spec-path
-    contracts` was told it contains that file "and 4 more" where there
-    were three (#197's re-review, N1). Refused first, no pin path it lists
-    is the shape's or listed twice.
-    """
-    # Folded on both sides, as `path_overlap` folds the leg paths: a future
-    # mixed-case shape file under `contracts/` is still one path with a
-    # lowercased pin on the case-insensitive disk of macOS and Windows.
-    shape_files = {shape_file.casefold()
-                   for shape_file in assembly_root_paths()}
-    written: dict[str, list[tuple[str, str]]] = {}
-    for raw in pins:
-        product = parse_pin(raw, owner)[0]
-        path = neutral_pin_path(product)
-        written.setdefault(path, []).append((raw, product))
-    collisions = []
-    for path, typed in written.items():
-        in_shape = path.casefold() in shape_files
-        if not in_shape and len(typed) == 1:
-            continue
-        products = list(dict.fromkeys(product for _, product in typed))
-        said = (" and ".join(f"--pin {raw!r}" for raw, _ in typed)
-                + (" writes the pin" if len(typed) == 1 else " write the pins")
-                + " of the product" + ("s" if len(products) > 1 else "") + " "
-                + " and ".join(f"`{product}`" for product in products))
-        if in_shape:
-            collisions.append(
-                f"{said} at `{path}`, a file the shape writes into the "
-                "assembly root itself: name the product for the repository it "
-                "pins.")
-        else:
-            collisions.append(
-                f"{said} at one file, `{path}`, which holds one pin: pass "
-                "each product once.")
-    if collisions:
-        raise Refusal("scaffold-pin-collides", " ".join(collisions),
-                      PIN_COLLISION_REMEDIATION)
 
 
 def _leg_collision_remediation(neutral_pins=()) -> str:

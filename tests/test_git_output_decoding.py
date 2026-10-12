@@ -116,8 +116,11 @@ EXEMPT = {
     # two-pull-requests reason as above.
     ("adopt-project.py", "cross_leg_references"): frozenset(),
     # The `gh api` tree listing becomes a digest: UTF-8 yes, `replace` no, for
-    # a replaced byte would be a wrong digest with a confident tone.
-    ("scaffold-project.py", "pin_digest_from_gh"): frozenset({"encoding"}),
+    # a replaced byte would be a wrong digest with a confident tone. The
+    # first is `scaffold-project.py --pin`'s and `adopt-project.py plan
+    # --pin`'s, moved out of the scaffold for #273.
+    ("scripts/shape_materialize.py", "pin_digest_from_gh"):
+        frozenset({"encoding"}),
     ("scripts/repo_shape.py", "tree_digest_from_gh"): frozenset({"encoding"}),
 }
 
