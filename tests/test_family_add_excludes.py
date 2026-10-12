@@ -72,13 +72,16 @@ STAGED_REMEDIATION = (
     f"--cached -- {MOUNT}` takes it out of the index and touches no file; "
     "then re-run.")
 
-#: What every refusal of git's own dry run tells the human, whatever git said.
+#: What every refusal of git's own dry run tells the human, whatever git said:
+#: git's line is the cause, and the remediation presumes none.
 UNADDABLE_REMEDIATION = (
     "Remediation: that is git's own check of the path, made before anything "
-    "is cloned or written. Every member is mounted under `members/`, which "
-    "must be a plain directory of the holder's own: replace a symbolic link "
-    "there with a directory, or take a submodule there out (`git rm`), then "
-    "re-run.")
+    "is cloned or written, and git's line quoted above says why it refused. "
+    "Every member is mounted under `members/`, which must be a plain "
+    "directory of the holder's own: where git names a symbolic link there, "
+    "replace it with a directory, and where it names a submodule, take that "
+    "out (`git rm`); anything else it names, a held `index.lock` say, is "
+    "fixed where git says. Then re-run.")
 
 #: The dry run `member-path-unaddable` quotes, as `_reason` names it.
 DRY_RUN = ("`git --literal-pathspecs add --dry-run --ignore-missing -f "
@@ -421,6 +424,31 @@ def test_members_as_a_submodule_is_refused_before_the_member_is_cloned_into_it(
     offline.assert_left_nothing()
 
 
+def test_a_dry_run_refused_for_another_reason_quotes_git_and_guesses_nothing(
+        family, holder, offline, tmp_path):
+    """`member-path-unaddable` WHEN THE CAUSE IS NOT THE PATH. git's dry run
+    takes `index.lock`, so with one held — another git still running, or
+    one that died — it refuses before the member is read, which is right.
+    The remediation told the human to replace a symbolic link or take a
+    submodule out, and neither was there; it now sends them to git's own
+    line, which names the lock."""
+    env = under(offline, tmp_path, RULES["members"])
+    lock = holder / git("rev-parse", "--git-path", "index.lock",
+                        cwd=holder).stdout.strip()
+    lock.write_bytes(b"")
+    before = snapshot(holder)
+    result = add(env, holder, family["remotes"])
+    refused_before_the_mount(result, holder, before)
+    said, remediation = refusal(result.stderr)
+    assert said.startswith(
+        "REFUSED member-path-unaddable: git will not add the mount path "
+        f"{MOUNT}: {DRY_RUN}: fatal: Unable to create '"), said
+    assert said.endswith("index.lock': File exists"), said
+    assert remediation == UNADDABLE_REMEDIATION
+    assert lock.is_file()
+    offline.assert_left_nothing()
+
+
 @pytest.mark.parametrize("store", ["checked out", "not checked out"])
 def test_a_name_another_submodule_has_is_refused_before_the_mount(
         family, holder, offline, tmp_path, store):
@@ -456,4 +484,31 @@ def test_a_name_another_submodule_has_is_refused_before_the_mount(
         "under another name this tool does not follow (git 2.51 and later, "
         "with the `--force` this tool mounts with).")
     assert not (holder / MOUNT).exists()
+    offline.assert_left_nothing()
+
+
+@pytest.mark.parametrize("kept_in", ["the index", "HEAD"])
+def test_a_name_taken_in_a_gitmodules_off_the_disk_is_refused_before_the_mount(
+        family, holder, offline, tmp_path, kept_in):
+    """`member-name-taken`, READ WHERE `git submodule add` READS IT. With no
+    `.gitmodules` on disk git reads the index's copy, or HEAD's where the
+    index has none either, and so does `_submodule_paths`: here only that
+    copy gives the mount's name to `vendor/spec`. Read off the disk alone,
+    nothing named it, and the add went on to blame a "previously removed"
+    member for `vendor/spec`'s store instead."""
+    env = under(offline, tmp_path, RULES["members"])
+    git(*FILE_PROTOCOL, "submodule", "add", "-q", "--name", MOUNT, "--",
+        str(family["remotes"] / "IRRS-spec.git"), "vendor/spec", cwd=holder)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm",
+        f"A submodule named {MOUNT} at vendor/spec", cwd=holder)
+    if kept_in == "HEAD":
+        git("rm", "-q", "--cached", "--", ".gitmodules", cwd=holder)
+    (holder / ".gitmodules").unlink()
+    before = snapshot(holder)
+    result = add(env, holder, family["remotes"])
+    refused_before_the_mount(result, holder, before)
+    assert refusal(result.stderr)[0] == (
+        "REFUSED member-name-taken: .gitmodules already gives the name "
+        f"`{MOUNT}` to the submodule at vendor/spec, and that is the name git "
+        f"gives {SPARE}'s mount")
     offline.assert_left_nothing()

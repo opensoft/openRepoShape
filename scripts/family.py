@@ -85,7 +85,8 @@ from repo_shape import (  # noqa: E402
 from shape_materialize import (  # noqa: E402
     RULESET_HINT, SHAPE_REPOSITORY, CommandFailed, check_program,
     commit_trailers, env_commit, escape_what_stdout_cannot_encode,
-    materialize_family_root, run, stage_written, trailer_line, write_lf,
+    force_stage, materialize_family_root, run, stage_written, trailer_line,
+    write_lf,
 )
 
 NAMING_POLICY = SHAPE_ROOT / "contracts" / "repository-naming.yaml"
@@ -419,12 +420,13 @@ def _commit_one(root: Path, message: str, paths: list[str],
     reaches only the paths named, which are the ones this commit is of.
     EACH NAME IS TAKEN LITERALLY (`--literal-pathspecs`): a pathspec is a glob
     to git, and `-f` must stage the path it names and no ignored neighbour a
-    glob character would match (#202). That is the spelling PR #233 gives
-    `shape_materialize.force_stage`; once #233 lands this line can become a
-    call to it.
+    glob character would match (#202). Both are what
+    `shape_materialize.force_stage` does (#233), the one forced add the
+    scaffold and `update-shape.py` share, so it is called here rather than
+    spelled a second time; `bump`'s re-stage before its nothing-to-record
+    check is the same call, for the same reason.
     """
-    run(["git", "--literal-pathspecs", "add", "-f", "--",
-         *(paths if add is None else add)], cwd=root)
+    force_stage(root, paths if add is None else add)
     message, trailer_args = commit_trailers(message, trailers)
     args = ["git", "commit", "-q", "-F", "-", *trailer_args, "--", *paths]
     check_program(args)
@@ -1013,7 +1015,9 @@ def _checked_mount_path(root: Path, project: str, path: str) -> None:
       link (a `members` that links elsewhere, through which `--force` had
       the member CLONED, outside the holder) and one inside a submodule (a
       `members` that is one, into whose tree it was cloned) before git said
-      no.
+      no. It fails for reasons that are not about the path as well — the
+      dry run takes `index.lock`, so a held one refuses it — so the
+      remediation quotes git's own line and presumes no cause.
     - THE NAME. git names a submodule after its path; git 2.51 and later
       refuse a name another path already has, and, given `--force`, mount
       the member under a new one (`members/IRRS1`) instead. Git before 2.51
@@ -1049,10 +1053,13 @@ def _checked_mount_path(root: Path, project: str, path: str) -> None:
             "member-path-unaddable",
             f"git will not add the mount path {path}: {_reason(exc)}",
             "Remediation: that is git's own check of the path, made before "
-            "anything is cloned or written. Every member is mounted under "
-            "`members/`, which must be a plain directory of the holder's own: "
-            "replace a symbolic link there with a directory, or take a "
-            "submodule there out (`git rm`), then re-run.") from exc
+            "anything is cloned or written, and git's line quoted above says "
+            "why it refused. Every member is mounted under `members/`, which "
+            "must be a plain directory of the holder's own: where git names a "
+            "symbolic link there, replace it with a directory, and where it "
+            "names a submodule, take that out (`git rm`); anything else it "
+            "names, a held `index.lock` say, is fixed where git says. Then "
+            "re-run.") from exc
     other = _submodule_paths(root).get(path)
     if other is not None and other != path:
         raise Refusal(
@@ -1743,7 +1750,11 @@ def cmd_bump(args) -> int:
     # checkout above already moved the member to `--to`, so this stages that
     # and nothing else: a submodule path stages its gitlink, never the
     # member's files, and the manifest's own index state is left as found.
-    run(["git", "add", "--", path], cwd=family.root)
+    # FORCED, as `_commit_one`'s stage is (#242): this is a third reader of
+    # the operator's excludes, and under one naming `members` or `*` a plain
+    # `git add` refused the gitlink here, before the commit was reached, and
+    # `bump` exited 2. `-f` reaches the one path named, taken literally.
+    force_stage(family.root, [path])
     if _nothing_to_record(family.root, [path, MANIFEST]):
         # The same sentence `bump-leg.py` answers the same re-run with, and
         # exit 1, which is what this file's docstring says `nothing` is. The
