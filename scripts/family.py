@@ -85,7 +85,8 @@ from repo_shape import (  # noqa: E402
 from shape_materialize import (  # noqa: E402
     RULESET_HINT, SHAPE_REPOSITORY, CommandFailed, check_program,
     commit_trailers, env_commit, escape_what_stdout_cannot_encode,
-    materialize_family_root, run, stage_written, trailer_line, write_lf,
+    force_stage, materialize_family_root, run, stage_written, trailer_line,
+    write_lf,
 )
 
 NAMING_POLICY = SHAPE_ROOT / "contracts" / "repository-naming.yaml"
@@ -407,8 +408,25 @@ def _commit_one(root: Path, message: str, paths: list[str],
     `Co-Authored-By:` is this estate's own convention beside it. Passed none,
     the message is exactly the one this function has always written. See
     `shape_materialize.commit_trailers` for the two ways git is asked.
+
+    THE NAMED PATHS ARE FORCED PAST THE OPERATOR'S EXCLUDES (#242). `git
+    add` reads a global `core.excludesFile` too, and the gitlink at
+    `members/<Project>` sits under a directory such a file may name: under
+    `members`, `members/` or `*` it refused `git add -- .gitmodules
+    members/<Project> family.yaml` even once the mount itself was forced, and
+    `bump`, which stages `[path, MANIFEST]` here, died the same way with the
+    gitlink already tracked. `members/` is a fixed path, so there was nothing
+    in either invocation to change but the operator's own excludes. `-f`
+    reaches only the paths named, which are the ones this commit is of.
+    EACH NAME IS TAKEN LITERALLY (`--literal-pathspecs`): a pathspec is a glob
+    to git, and `-f` must stage the path it names and no ignored neighbour a
+    glob character would match (#202). Both are what
+    `shape_materialize.force_stage` does (#233), the one forced add the
+    scaffold and `update-shape.py` share, so it is called here rather than
+    spelled a second time; `bump`'s re-stage before its nothing-to-record
+    check is the same call, for the same reason.
     """
-    run(["git", "add", "--", *(paths if add is None else add)], cwd=root)
+    force_stage(root, paths if add is None else add)
     message, trailer_args = commit_trailers(message, trailers)
     args = ["git", "commit", "-q", "-F", "-", *trailer_args, "--", *paths]
     check_program(args)
@@ -922,6 +940,140 @@ def _module_dir(root: Path, path: str) -> tuple[str, Path]:
     return shown, root / shown
 
 
+#: How a refusal names an index entry by its mode, as `adopt-project.py`
+#: names one; any other mode is a file.
+INDEX_ENTRY_KINDS = {0o160000: "a submodule", 0o120000: "a symlink"}
+
+
+def _index_entries(root: Path, path: str) -> list[tuple[str, str]]:
+    """`(name, kind)` of every entry the holder's index holds AT `path` or
+    UNDER it: what `git submodule add` refuses, without `--force`, as
+    "already exists in the index".
+
+    The pathspec is the one git's own check is made with, taken literally:
+    `members/IRRS` selects `members/IRRS` and `members/IRRS/...`, and never
+    `members/IRRSX`. `-z`, for a name git would otherwise quote.
+    """
+    raw = git_out(["--literal-pathspecs", "ls-files", "-s", "-z", "--", path],
+                  cwd=root, binary=True)
+    entries = []
+    for record in raw.split(b"\0"):
+        if record:
+            head, _, name = record.partition(b"\t")
+            entries.append((name.decode("utf-8", "replace"),
+                            INDEX_ENTRY_KINDS.get(int(head.split()[0], 8),
+                                                  "a file")))
+    return entries
+
+
+def _submodule_paths(root: Path) -> dict[str, str]:
+    """`{name: path}` of every submodule the holder's `.gitmodules` names,
+    read from where `git submodule add` reads it: the file in the working
+    tree, or the index's copy where there is none, or HEAD's where the index
+    has none either."""
+    if os.path.lexists(root / GITMODULES):
+        source = ["--file", GITMODULES]
+    else:
+        for spec in (f":{GITMODULES}", f"HEAD:{GITMODULES}"):
+            try:
+                source = ["--blob", git_out(["rev-parse", "-q", "--verify",
+                                             spec], cwd=root)]
+                break
+            except Refusal:
+                continue
+        else:
+            return {}
+    listed = git_out(["config", "-z", *source, "--list"], cwd=root,
+                     binary=True)
+    found = {}
+    for record in listed.split(b"\0"):
+        key, _, value = record.decode("utf-8",
+                                      "surrogateescape").partition("\n")
+        section, _, variable = key.rpartition(".")
+        if section.startswith("submodule.") and variable == "path":
+            found[section[len("submodule."):]] = value
+    return found
+
+
+def _checked_mount_path(root: Path, project: str, path: str) -> None:
+    """Every refusal about the MOUNT PATH, made before the member is read or
+    anything is mounted (#242).
+
+    `git submodule add` makes each of these refusals on its own. But the
+    mount passes `--force`, to get past the operator's ignore rules (see
+    `_mount_and_pin`), and `--force` turns them off or moves them to after
+    the clone. So each is asked here first, the way git asks it, and named:
+
+    - SOMETHING AT THE PATH. On disk, by `lexists`, so a dangling link counts
+      as well as a directory a half-finished add or a hand left there. In
+      the INDEX, any entry at the path or under it, with nothing on disk:
+      given `--force`, git accepts a gitlink there and replaces it with the
+      member's, and whatever the human had staged is gone without a word.
+    - GIT'S OWN DRY RUN, `git add --dry-run --ignore-missing` of the path —
+      the check `--force` skips — made here with `-f`, so an ignore rule
+      passes it and nothing else does. It refuses a path beyond a symbolic
+      link (a `members` that links elsewhere, through which `--force` had
+      the member CLONED, outside the holder) and one inside a submodule (a
+      `members` that is one, into whose tree it was cloned) before git said
+      no. It fails for reasons that are not about the path as well — the
+      dry run takes `index.lock`, so a held one refuses it — so the
+      remediation quotes git's own line and presumes no cause.
+    - THE NAME. git names a submodule after its path; git 2.51 and later
+      refuse a name another path already has, and, given `--force`, mount
+      the member under a new one (`members/IRRS1`) instead. Git before 2.51
+      rewrites the other submodule's section to point at the member. Both
+      are refused here, on every git.
+    """
+    if os.path.lexists(root / path):
+        raise Refusal(
+            "member-path-taken",
+            f"{path} already exists in the family root but no `members:` row "
+            "names it",
+            "Remediation: this is a half-finished add or a hand-made "
+            "directory. Remove it (`git rm -r` if it is tracked), then re-run.")
+    held = _index_entries(root, path)
+    if held:
+        at_it = [entry for entry in held if entry[0] == path]
+        name, kind = (at_it or held)[0]
+        more = f" and {len(held) - 1} more" if len(held) > 1 else ""
+        raise Refusal(
+            "member-path-taken",
+            f"the family root's index holds `{name}` ({kind}){more}"
+            + ("" if at_it else f" under {path}") + f", though nothing is at "
+            f"{path} on disk and no `members:` row names it",
+            "Remediation: this is a half-finished add or a hand edit. `git rm "
+            f"-r --cached -- {path}` takes it out of the index and touches no "
+            "file; then re-run.")
+    try:
+        run(["git", "--literal-pathspecs", "add", "--dry-run",
+             "--ignore-missing", "-f", "--no-warn-embedded-repo", "--", path],
+            cwd=root)
+    except CommandFailed as exc:
+        raise Refusal(
+            "member-path-unaddable",
+            f"git will not add the mount path {path}: {_reason(exc)}",
+            "Remediation: that is git's own check of the path, made before "
+            "anything is cloned or written, and git's line quoted above says "
+            "why it refused. Every member is mounted under `members/`, which "
+            "must be a plain directory of the holder's own: where git names a "
+            "symbolic link there, replace it with a directory, and where it "
+            "names a submodule, take that out (`git rm`); anything else it "
+            "names, a held `index.lock` say, is fixed where git says. Then "
+            "re-run.") from exc
+    other = _submodule_paths(root).get(path)
+    if other is not None and other != path:
+        raise Refusal(
+            "member-name-taken",
+            f"{GITMODULES} already gives the name `{path}` to the submodule "
+            f"at {other}, and that is the name git gives {project}'s mount",
+            "Remediation: git names a submodule after its path, so that name "
+            "is a member's. Give that submodule a name of its own, or take it "
+            "out, by hand, then re-run. Mounting over the name would rewrite "
+            f"its section to point at {project} (git before 2.51), or mount "
+            f"{project} under another name this tool does not follow (git "
+            "2.51 and later, with the `--force` this tool mounts with).")
+
+
 def _checked_add_target(family: Family, repository: str, project: str,
                         path: str, at: str | None) -> str | None:
     """Every refusal `add` makes about the HOLDER and its own arguments,
@@ -949,19 +1101,18 @@ def _checked_add_target(family: Family, repository: str, project: str,
             "Remediation: `family.py bump --member "
             f"{held.get('project')} --to <commit>` moves an existing member; "
             "`remove` takes it out. Adding it twice is not a way to move it.")
-    if (family.root / path).exists():
-        raise Refusal(
-            "member-path-taken",
-            f"{path} already exists in the family root but no `members:` row "
-            "names it",
-            "Remediation: this is a half-finished add or a hand-made "
-            "directory. Remove it (`git rm -r` if it is tracked), then re-run.")
+    # Everything the mount's `--force` would otherwise let past git, but the
+    # cached store, which is asked below (#242).
+    _checked_mount_path(family.root, project, path)
     # `git rm` deliberately leaves a removed submodule's OBJECT STORE behind,
     # so a member that was removed and is being added back trips `git
     # submodule add` with an error about a git directory found locally. That
     # cache is not this tool's to delete — it may hold commits somebody made
     # inside the mount and never pushed — so the exit is named instead of
-    # taken.
+    # taken. And it is named HERE, before the mount, because the mount passes
+    # `--force`, which REACTIVATES such a store instead of refusing it and
+    # pins whatever commit the store has checked out, not the member's
+    # (#242).
     # NAMED IN POSIX: git spells this `.git/modules/<path>`, and so does the
     # human who retypes the remediation below.
     _, cached = _module_dir(family.root, path)
@@ -1390,8 +1541,37 @@ def _mount_and_pin(family: Family, repository: str, project: str, path: str,
     any other.
     """
     rollback.step = f"mounting {repository}"
-    run(["git", *protocol, "submodule", "add", "-q", "--", url, path],
-        cwd=family.root)
+    # `--force`, git's documented way past an ignore rule (#242). `members/`
+    # is a fixed path and `add` has no flag that moves it, so an operator
+    # whose own excludes name `members`, `members/`, `*` or the member's name
+    # had the mount refused for every member of every family, with nothing in
+    # the invocation to change: by git's dry run before the clone, or — for a
+    # rule like `IRRS/`, which matches only once the clone is a directory —
+    # by git's last `git add` after it. That is #174 (adopt, fixed by #200)
+    # and #229 (scaffold) on the family side. A gitlink once added is
+    # tracked, so no rule touches it again; `_commit_one` is the second
+    # reader of the rules and is forced past them too.
+    # `--force` changes four more things, and each is refused before the
+    # member is read, by `_checked_add_target`, while the holder is exactly as
+    # the human left it:
+    #   - a `.git/modules/<path>` already there is REACTIVATED, and the
+    #     gitlink is that store's commit, not the member's:
+    #     `member-git-dir-cached`, at the store git's own `--git-path` names,
+    #     a linked worktree's included.
+    #   - a GITLINK the index already holds at the path is accepted, and a
+    #     repository already checked out there is REUSED instead of cloned:
+    #     `member-path-taken`, for anything at the path on disk (a dangling
+    #     link included) and for any index entry at it or under it.
+    #   - git's early dry run is skipped, so a path beyond a symlink, or
+    #     inside a submodule, had the member CLONED through the link or into
+    #     the submodule before git refused it: `member-path-unaddable` makes
+    #     that same dry run first, with `-f`, so an ignore rule passes it and
+    #     nothing else does.
+    #   - git 2.51 and later RENAME a mount whose name another path already
+    #     has (`members/IRRS1`), giving it a store and a registration
+    #     `MountRollback` would not find: `member-name-taken`.
+    run(["git", *protocol, "submodule", "add", "-q", "--force", "--", url,
+         path], cwd=family.root)
     member = family.root / path
     if at:
         rollback.step = f"checking {repository} out at {at[:12]}"
@@ -1570,7 +1750,11 @@ def cmd_bump(args) -> int:
     # checkout above already moved the member to `--to`, so this stages that
     # and nothing else: a submodule path stages its gitlink, never the
     # member's files, and the manifest's own index state is left as found.
-    run(["git", "add", "--", path], cwd=family.root)
+    # FORCED, as `_commit_one`'s stage is (#242): this is a third reader of
+    # the operator's excludes, and under one naming `members` or `*` a plain
+    # `git add` refused the gitlink here, before the commit was reached, and
+    # `bump` exited 2. `-f` reaches the one path named, taken literally.
+    force_stage(family.root, [path])
     if _nothing_to_record(family.root, [path, MANIFEST]):
         # The same sentence `bump-leg.py` answers the same re-run with, and
         # exit 1, which is what this file's docstring says `nothing` is. The
