@@ -79,12 +79,13 @@ rather than being reinterpreted later by a tool that grew a second one.
 EXIT CODES: 0 done · 1 findings (a plan that does not check out; a
 verification mismatch) · 2 a refusal — the question could not be asked.
 `execute` has two more exit 2s, GitHub mode's alone, and both come AFTER both
-legs and the split branch are pushed: `gh pr create` refused (`The branch IS
-pushed`; it returns before the verification, so no table is printed), and the
-topic would not set (`The split IS pushed and the pull request IS open`; after
-`adoption verified`). Each prints the command that finishes the job by hand,
-and that command is the way out: a re-run into fresh legs abandons the pushed
-pair for a second.
+legs and the split branch are pushed and the verification has passed: `gh pr
+create` refused (`The branch IS pushed`, printed after the table) and the
+topic would not set (`The split IS pushed and the pull request IS open`). Each
+prints the command that finishes the job by hand, and that command is the way
+out: a re-run into fresh legs abandons the pushed pair for a second. A
+verification that fails outranks both, with exit 1 and no command to open the
+pull request.
 """
 
 from __future__ import annotations
@@ -3483,9 +3484,12 @@ def _open_the_pull_request(repositories: dict, names: dict, tracking: str,
     """(c′) The pull request, because these organisations are pull-request
     only.
 
-    Returns False when `gh` refused, having printed why and the command that
-    finishes the job by hand — the branch IS pushed by the time this runs, so
-    the exit is never "start again". Split out of `cmd_execute` for #138.
+    Returns False when `gh` refused, having printed why. The branch IS pushed
+    by the time this runs, so the exit is never "start again". The command
+    that finishes the job by hand is `_open_it_by_hand`'s, which the caller
+    prints AFTER the verification and only once it has passed (#304): until
+    then nothing says the split is the one to open a pull request for. Split
+    out of `cmd_execute` for #138.
     """
     try:
         url = run(["gh", "pr", "create", "--repo", repositories["assembly"],
@@ -3496,11 +3500,30 @@ def _open_the_pull_request(repositories: dict, names: dict, tracking: str,
         print(f"  pull request {url}")
     except CommandFailed as exc:
         print(exc.loudly("opening the pull request"), file=sys.stderr)
-        print("The branch IS pushed. Open the pull request by hand:\n"
-              f"    gh pr create --repo {repositories['assembly']} "
-              f"--base {tracking} --head {branch}", file=sys.stderr)
         return False
     return True
+
+
+def _open_it_by_hand(repositories: dict, tracking: str, branch: str,
+                     passed: bool) -> None:
+    """What a refused `gh pr create` leaves to do, said once `execute` knows
+    whether the split it pushed is the one the plan asked for (#304).
+
+    A split that PASSED verification gets the command that opens its pull
+    request. One that did not gets the opposite: the refusal printed above
+    names the exact command that was tried, and a person who sees only that,
+    with findings under it, may paste it. Stdout is flushed first. The table
+    is on it and a pipe holds it in a block buffer, so without the flush this
+    would come before the table it depends on in a merged log.
+    """
+    sys.stdout.flush()
+    if not passed:
+        print("No pull request was opened, and none should be: the split "
+              "above did not pass verification.", file=sys.stderr)
+        return
+    print("The branch IS pushed. Open the pull request by hand:\n"
+          f"    gh pr create --repo {repositories['assembly']} "
+          f"--base {tracking} --head {branch}", file=sys.stderr)
 
 
 def _set_the_topic(repositories: dict, topic: str) -> bool:
@@ -3692,19 +3715,28 @@ def cmd_execute(args) -> int:
         return 2
     split_commit, message = split
 
-    topics_failed = False
+    # A pull request `gh` refused does not end the run here: the legs and the
+    # split ARE pushed, and what the person needs to know before they open it
+    # is whether the split is right (#304). The topic is not tried after a
+    # refused pull request, because what it says is that the pull request IS
+    # open.
+    pull_request_refused = topics_failed = False
     if not local:
-        if not _open_the_pull_request(repositories, names, tracking, branch,
-                                      message):
-            return 2
-        topics_failed = not _set_the_topic(repositories, topic)
+        pull_request_refused = not _open_the_pull_request(
+            repositories, names, tracking, branch, message)
+        if not pull_request_refused:
+            topics_failed = not _set_the_topic(repositories, topic)
 
     # ---- (d) verification, by blob sha ------------------------------------
     verified = _verify(source, assembly, work_root, names, paths_for,
                        split_commit, spec_path, code_path, seeded)
+    if pull_request_refused:
+        _open_it_by_hand(repositories, tracking, branch, not verified)
     if verified:
-        return verified   # a verification mismatch outranks a missing topic
-    return 2 if topics_failed else 0
+        # A verification mismatch outranks a refused pull request and a
+        # missing topic.
+        return verified
+    return 2 if pull_request_refused or topics_failed else 0
 
 
 def _template_values(plan: Plan, names, repositories, urls, spec_path,

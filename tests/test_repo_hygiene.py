@@ -561,8 +561,8 @@ def test_agents_md_is_short_enough_to_be_read():
     warning-in-CI the ratified text calls an amendment of the doctrine
     rather than a realization of it.
 
-    2026-10-12: 464 -> 469 -- step 7 of "Adopting an existing repository"
-    (#304). Five lines, inside that one numbered point and nowhere else. It
+    2026-10-12: 464 -> 468 -- step 7 of "Adopting an existing repository"
+    (#304). Four lines, inside that one numbered point and nowhere else. It
     said that ANY non-zero exit of `adopt-project.py execute` is to fix the
     plan and re-run into fresh legs, which holds for a failed verification
     (exit 1) and for neither of the two exits a GitHub run adds: a refused
@@ -571,11 +571,13 @@ def test_agents_md_is_short_enough_to_be_read():
     a command to finish by hand, so an assistant that followed the sentence
     abandoned a pushed adoption for a second pair of legs. The lines buy what
     the point could not say: that the exit decides, which message marks the
-    two (`IS pushed`), that the second pair is the harm, and that a refused
-    pull request has printed no table, so the split it opens is unverified.
+    two (`IS pushed`), and that the second pair is the harm. They are four
+    and not five because `execute` now verifies before it exits on a refused
+    `gh pr create` too, so both exits are of a split that passed the table
+    and the point need not say that one of them printed none (fix round 1).
     `tests/test_adopt_github_exits.py` holds the point to both printed exits."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 469, f"AGENTS.md is {len(lines)} lines; the cap is 469"
+    assert len(lines) <= 468, f"AGENTS.md is {len(lines)} lines; the cap is 468"
 
 
 def test_claude_md_points_at_agents_md():

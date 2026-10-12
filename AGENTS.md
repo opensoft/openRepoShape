@@ -139,9 +139,8 @@ order, and step 4 is the one you must not skip.
    source is untouched — nothing is deleted, `main` is where it was, the split
    is on a branch — so fix the plan and re-run into fresh legs. Exit 2 saying
    `IS pushed` (GitHub only: `gh pr create` or the topic refused) comes after
-   both legs and the split are pushed: finish with the command it prints and
-   never re-run into fresh legs, which abandons that pair. A refused
-   `gh pr create` prints no table, so say the split is unverified.
+   both legs and the split are pushed and verified: finish with the command it
+   prints and never re-run into fresh legs, which abandons that pair.
 
 `execute` opens a pull request, because these organisations are pull-request
 only. Never suggest a direct push to the default branch, and never `--admin`.
