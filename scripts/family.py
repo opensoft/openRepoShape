@@ -262,14 +262,22 @@ def _member_id(value) -> str:
     would `2026`, `20261011`, `true` and `null`. The reader is asked, not a
     list of the words it treats as something else, so a word it learns later
     is quoted with no edit here. An id that reads back bare, which is every
-    ordinary one, is written as it always was, so no existing holder's
-    `members:` block moves by a byte.
+    ordinary one, is written as it always was, so a row whose id reads back
+    as text does not move.
+
+    A ROW WHOSE BARE ID THE READER MISREADS MOVES, ONCE. A holder written
+    before #259 holds `id: 2026` for a member scaffolded with `--id 2026`,
+    and the next `bump`, `add` or `remove` of that holder rewrites the row as
+    `id: "2026"`. That is harmless: `validate-family.py` compares the id with
+    `str()`, and passes before and after.
     """
     text = str(value)
     try:
         if parse_yaml(f"id: {text}\n") == {"id": text}:
             return text
     except YamlError:
+        # Bare, `[`, `{`, `&a`, `*a`, `!t` and an unclosed quote are not read
+        # as another type: the reader raises, and the holder would not load.
         pass
     return double_quoted(text)
 

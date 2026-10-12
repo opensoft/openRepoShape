@@ -41,9 +41,12 @@ import pytest
 
 from conftest import (ADOPT, FILE_PROTOCOL, REPO, SCAFFOLD, git,
                       make_source_repo, run_script)
+from test_family import family_module
 
 sys.path.insert(0, str(REPO / "scripts"))
-from repo_shape import load_yaml, parse_yaml  # noqa: E402
+from repo_shape import (  # noqa: E402
+    YamlError, double_quoted, load_yaml, parse_yaml,
+)
 from shape_materialize import render  # noqa: E402
 
 FAMILY = REPO / "scripts" / "family.py"
@@ -357,7 +360,8 @@ def test_a_member_whose_id_yaml_would_misread_is_pinned_under_that_id(
     That id is read back exactly now, so the row has to be too: written bare,
     `007` came back as 7 and the holder's validator reported
     `member-id-mismatch` for a member it had just pinned. An ordinary id is
-    written as it always was, so no existing holder's block moves."""
+    written as it always was, so a row whose id reads back as text does not
+    move."""
     remotes, work = tmp_path / "remotes", tmp_path / "work"
     members = {"IRRS": "007", "IRSS": "true", "IRQS": None}
     for project, project_id in members.items():
@@ -388,3 +392,54 @@ def test_a_member_whose_id_yaml_would_misread_is_pinned_under_that_id(
     assert b"    id: irqs" in lines
     checked = run_script(root / "scripts" / "validate-family.py", cwd=root)
     assert checked.returncode == 0, checked.stdout + checked.stderr
+
+
+#: Ids the holder's reader RAISES on, rather than reads as another type, when
+#: they stand bare after `id:`. `PROJECT_ID_RE` keeps every one out of a
+#: scaffold and out of `family.py add`, so no tool writes one; a hand-edited
+#: row holds one between double quotes, and the next `bump`, `add` or
+#: `remove` spells the whole block again.
+UNREADABLE_BARE_IDS = ("[", "{", "&a", "*a", "!t", "'a", '"a')
+
+HAND_EDITED_HOLDER = """\
+name: Contoso
+kind: family-manifest
+members:
+  - project: IRRS
+    id: {spelled}
+    repository: testorg/IRRS
+    path: members/IRRS
+    pin:
+      revision_kind: commit
+      commit: "{commit}"
+      digest_algorithm: sha256
+      digest_definition: sorted-ls-tree-r-v1
+      tree_sha256: "{tree}"
+"""
+
+
+@pytest.mark.parametrize(
+    "member_id", UNREADABLE_BARE_IDS,
+    ids=["flow-sequence", "flow-mapping", "anchor", "alias", "tag",
+         "open-single-quote", "open-double-quote"])
+def test_a_member_id_the_reader_refuses_bare_is_rewritten_between_quotes(
+        tmp_path, member_id):
+    """`_member_id` asks the reader whether the bare id reads back as that
+    text, and an id the reader RAISES on is not read back as anything: it
+    gets the quotes, and the rewrite goes on. A call that let the error out
+    would stop `bump`, `add` and `remove` on a holder that holds such a row,
+    though the row itself is a quoted scalar the reader takes exactly."""
+    with pytest.raises(YamlError):
+        parse_yaml(f"id: {member_id}\n")
+    spelled = double_quoted(member_id)
+    text = HAND_EDITED_HOLDER.format(spelled=spelled, commit="a" * 40,
+                                     tree="b" * 64)
+    (tmp_path / "family.yaml").write_bytes(text.encode("utf-8"))
+    family = family_module().Family.open(tmp_path)
+    assert [row["id"] for row in family.members] == [member_id]
+
+    again = family.rewritten(family.members)
+
+    assert parse_yaml(again)["members"][0]["id"] == member_id
+    assert f"    id: {spelled}\n" in again
+    assert again == text
