@@ -396,9 +396,32 @@ def _name_finding(manifest: dict) -> list[str]:
     """`name`.
 
     Split from `_findings` for #132.
+
+    A NAME HOLDING A LONE SURROGATE IS A FINDING (#280). The double-quoted
+    escape `"a\\ud83db"` reads as one, as PyYAML's own Python reader reads it
+    (libyaml refuses the file). The reader keeps that escape on purpose: it
+    is how an adoption plan spells a path byte that is not UTF-8 (#199). A
+    display name is text a person chose, and no UTF-8 file, commit message
+    or console can hold a surrogate, so this file's `manifest ok` line
+    raised `UnicodeEncodeError` on it; `make validate` and `shape-doctor.py`
+    reported that traceback, while `bump-leg.py` and `update-shape.py apply`
+    passed the name, and the bump wrote it into its commit as `a?b`. Every
+    launcher now meets this finding instead. A pair of `\\u` escapes is two
+    surrogates here, as it is to PyYAML, so the finding asks for the
+    character itself or its one `\\U` escape.
     """
-    if not isinstance(manifest.get("name"), str) or not manifest.get("name").strip():
-        return [_finding("manifest-name", f"name is {manifest.get('name')!r}")]
+    name = manifest.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return [_finding("manifest-name", f"name is {name!r}")]
+    surrogate = next((char for char in name if "\ud800" <= char <= "\udfff"),
+                     None)
+    if surrogate is not None:
+        return [_finding(
+            "manifest-name",
+            f"name is {name!r}, which holds U+{ord(surrogate):04X}, a lone "
+            "surrogate: no UTF-8 file, commit message or console can hold "
+            "it. Write each character as itself, or as one `\\U` escape "
+            "(`\\U0001F600`, not the pair `\\uD83D\\uDE00`).")]
     return []
 
 
