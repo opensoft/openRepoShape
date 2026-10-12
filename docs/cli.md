@@ -274,7 +274,17 @@ options:
                         exist yet.
   --tracking-branch TRACKING_BRANCH
   --spec-path SPEC_PATH
+                        where the spec leg is mounted, as a path in the
+                        assembly root (default: spec). A path that is, holds
+                        or lies inside a FILE the shape writes into the root
+                        is refused before anything is created: `project.yaml`
+                        is one, and `contracts` holds several.
   --code-path CODE_PATH
+                        where the code leg is mounted, as a path in the
+                        assembly root (default: code). A path that is, holds
+                        or lies inside a FILE the shape writes into the root
+                        is refused before anything is created: `project.yaml`
+                        is one, and `contracts` holds several.
   --dry-run
   --local-remote-dir LOCAL_REMOTE_DIR
                         create bare repositories here instead of calling `gh
@@ -290,7 +300,9 @@ options:
                         contracts/<openproduct>-pin.yaml and lists the product
                         in the manifest, which is what makes a
                         `<Domainx><Product>` name a DESCENDANT rather than a
-                        name shaped like one. Repeatable.
+                        name shaped like one. Repeatable, once per product
+                        (the same name in another case, or under another
+                        owner, is the same product).
   --referent-chain openLayer,openProduct
                         the CHAIN of neutral-product pins this project reaches
                         its referent through, e.g. --referent-chain
