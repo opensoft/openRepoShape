@@ -87,6 +87,10 @@ PLAN_REFUSED = [
 
 #: `(old line, new line, what `check` names)`: the same values, edited into a
 #: plan by hand, which is what a plan is for.
+#: A text value the reader reads as a number (`elected_on: "20261011"`) is
+#: not here but in `TEXT_THE_READER_MISREADS` below: where a misread rule is
+#: also in the list (#181) it is that rule's finding, and these rows name the
+#: validator's.
 PLAN_EDITS = [
     pytest.param("visibility: private", "visibility: secret",
                  ("visibility is 'secret'", "manifest-visibility"),
@@ -103,9 +107,6 @@ PLAN_EDITS = [
     pytest.param('reference: "openxFactory docs/project-repo-schema.md"',
                  'reference: " "', ("reference is ' '", "manifest-reference"),
                  id="reference-blank"),
-    pytest.param('elected_on: "2026-09-02"', 'elected_on: "20261011"',
-                 ("elected_on is '20261011'", "manifest-elected-on"),
-                 id="elected-on-basic-format"),
     pytest.param('elected_on: "2026-09-02"', 'elected_on: "2026-W41-6"',
                  ("elected_on is '2026-W41-6'", "manifest-elected-on"),
                  id="elected-on-iso-week"),
@@ -462,6 +463,35 @@ TEXT_THE_READER_MISREADS = [
 
 
 @pytest.mark.parametrize("old, new, named", TEXT_THE_READER_MISREADS)
+def test_check_refuses_a_text_value_the_reader_misreads(world, old, new,
+                                                        named):
+    """Whichever rule says it: the validator's finding here, or a misread
+    rule's (#181) where one is in the list. What is asked is that `check`
+    finds the value, and names it."""
+    plan = edited(world, old, new)
+    result = run_script(ADOPT, "check", "--plan", str(plan))
+    assert result.returncode == 1, result.stderr + result.stdout
+    value = new.split(": ", 1)[1].strip('"')
+    findings = [line for line in result.stderr.splitlines()
+                if line.startswith("FINDING ")]
+    assert findings and any(value in f for f in findings), result.stderr
+
+
+@needs_filter_repo
+@pytest.mark.parametrize("old, new, named", TEXT_THE_READER_MISREADS)
+def test_execute_refuses_a_text_value_the_reader_misreads_before_any_leg(
+        world, old, new, named):
+    plan = edited(world, old, new)
+    result = execute(world, plan)
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert "REFUSED plan-manifest-" in result.stderr
+    assert new.split(": ", 1)[1].strip('"') in result.stderr
+    assert "adoption verified" not in result.stdout
+    assert "Traceback" not in result.stderr
+    no_leg_was_created(world)
+
+
+@pytest.mark.parametrize("old, new, named", TEXT_THE_READER_MISREADS)
 def test_a_text_value_the_reader_misreads_is_one_finding_on_this_rule_alone(
         adopter, world, old, new, named):
     """With nothing else asking the misread question the validator's finding
@@ -507,14 +537,20 @@ def test_a_value_that_is_not_a_misread_is_still_asked_where_one_judges_the_rest(
     assert not any("manifest-id" in f for f in shared)
 
 
-def test_the_entry_findings_of_this_rule_alone_are_unchanged(adopter, world):
-    """`_entry_findings` does not pass `misreads_elsewhere`: nothing else
-    here asks the misread question, so the list `check` prints and `execute`
-    refuses on still holds the validator's finding for `id: "007"`."""
-    plan = adopter.Plan.load(edited(world, "id: northwind", 'id: "007"'))
+@pytest.mark.parametrize("old, new, named", TEXT_THE_READER_MISREADS)
+def test_a_text_value_the_reader_misreads_is_one_finding_in_the_list_check_prints(
+        adopter, world, old, new, named):
+    """NOT ZERO AND NOT TWO, whatever rules the list holds. This rule alone,
+    `_entry_findings` does not pass `misreads_elsewhere`, and the validator's
+    finding is the one. With #181 in the list as well, the call there must pass
+    it, or this is the pair the two rules each make of one value: this test
+    fails on a merge that has not."""
+    plan = adopter.Plan.load(edited(world, old, new))
     source = plan.open_source(str(world["source"]), world["tmp"] / "read")
     findings, _ = adopter._entry_findings(plan, source)
-    assert len([f for f in findings if f.startswith(FINDING)]) == 1, findings
+    value = new.split(": ", 1)[1].strip('"')
+    about = [f for f in findings if value in f]
+    assert len(about) == 1, findings
 
 
 # --- a validator that cannot be asked ---------------------------------------
