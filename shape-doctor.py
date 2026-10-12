@@ -24,8 +24,10 @@ named and nothing else: `--placement-plan <file>`, below. The upstream a
 project's copies are compared against is THE CHECKOUT THIS FILE IS RUN FROM,
 which is the whole of why the verdict is offline: no clone, no authenticated
 call, and the same answer on a machine that has never spoken to github.com.
-It runs the project's own validators, which are offline by their own
-contract. ONE ROW IS THE EXCEPTION AND IT IS NAMED: `machine` asks `gh` who
+It runs the project's own validators OFFLINE: `run_validator` starts each
+child with no token, no `gh` configuration and a proxy that goes nowhere
+(#297), so they are offline whatever their own contract says. ONE ROW IS THE
+EXCEPTION AND IT IS NAMED: `machine` asks `gh` who
 it is logged in as (`setup-project.py --preflight` runs `gh --version`, `gh
 auth status` and `gh api user`), which `gh` answers by talking to its host. That row
 is `n/a` by status and cannot move the verdict -- a workstation missing `gh`
@@ -955,8 +957,184 @@ def validator_scripts(shape: Path, own_copy: bool) -> Path | None:
     return None if own_copy else shape / "scripts"
 
 
+def pythonpath_unnamable(shape: Path, own_copy: bool) -> str | None:
+    """Why no `PYTHONPATH` can name the directory `validator_scripts` gives
+    this copy, or None when one can (#278).
+
+    `PYTHONPATH` IS A LIST, AND A LIST HAS A SEPARATOR. Python splits the
+    variable at `os.pathsep` -- `:` on POSIX, `;` on Windows -- and nothing in
+    the variable can quote one, so a standard checked out under
+    `/srv/dir:with-colon/` gives the template copy two entries, neither of
+    which holds `repo_shape.py`. The doctor's child then died on the import
+    and the row read that crash as the project's finding: `INVALID
+    (manifest)` for a manifest that is valid, from one directory name. The
+    line a row prints has the same limit, because it is the same variable.
+
+    ONE HELPER, FOR EVERY PLACE THAT WOULD GIVE OR PRINT IT: `validator_row`
+    must RUN the template to answer, so there it is an environment row and
+    nothing is run; `unloaded_manifest_row` already knows its answer, so
+    there only the printed line is withheld. Both ask this, with the
+    `own_copy` `validator_for` made, so the run and the line cannot disagree
+    about which directories are refused. The root's own copy is given no
+    `PYTHONPATH` at all, and is never refused here. A `;` on POSIX, or a `:`
+    on Windows, is an ordinary character in an entry and is not refused
+    either.
+
+    THE SENTENCE NAMES NO DESTINATION. Where the standard should be checked
+    out is the person's choice, and a command with a made-up path in it is
+    one more thing to correct before it runs.
+    """
+    scripts = validator_scripts(shape, own_copy)
+    if scripts is None or os.pathsep not in str(scripts):
+        return None
+    return (f"it imports repo_shape from {scripts}, which only PYTHONPATH "
+            f"can give it, and that path holds {os.pathsep!r}, the character "
+            "PYTHONPATH splits on, so no PYTHONPATH can name it; run the "
+            "doctor from a checkout of the standard whose path holds no "
+            f"{os.pathsep!r}")
+
+
+def repo_shape_for(shape: Path, used: Path, own_copy: bool) -> Path:
+    """The `repo_shape.py` the validator `used` imports (#298): the one beside
+    the root's OWN copy, or the standard's for its TEMPLATE copy, which is
+    the directory `validator_scripts` gives that copy and no other.
+    """
+    directory = validator_scripts(shape, own_copy) or used.parent
+    return directory / "repo_shape.py"
+
+
+def imports_repo_shape(shape: Path, used: Path, own_copy: bool) -> bool:
+    """Whether the validator `used` can import `repo_shape` (#298, R298-1).
+
+    DECIDED HERE, ONCE, for both rows that need it: `validator_row` adds it
+    to a crash's reason, and `unloaded_manifest_row`, which runs no gate,
+    uses it to decide what its NEXT may promise. NOT a fourth value of
+    `validator_for`, which three callers unpack: an arity change merges
+    cleanly and then fails at run time on whichever change lands second.
+    """
+    return repo_shape_for(shape, used, own_copy).is_file()
+
+
+def head_holds(root: Path, relative: str) -> bool:
+    """Whether the root's HEAD has a file at `relative`, so that `git
+    checkout HEAD -- <relative>` puts it back (#298). `./` makes the path
+    the root's, as the restore line's pathspec is, and not the toplevel's.
+    A root that is no repository, or has no HEAD, holds nothing.
+    """
+    try:
+        kind = git_out(["cat-file", "-t", f"HEAD:./{relative}"], cwd=root)
+    except (Refusal, OSError):
+        return False
+    return kind == "blob"
+
+
+#: The four variables `gh` reads a token from, which no validator's child
+#: keeps (#297).
+GH_TOKEN_VARIABLES = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN",
+                      "GITHUB_ENTERPRISE_TOKEN")
+#: Where a validator's child is told its proxy is: the discard port on
+#: loopback, which nothing a validator talks to answers on, so a request
+#: that gets past `gh`'s missing login fails on this machine rather than
+#: reaching a host (#297).
+UNREACHABLE_PROXY = "http://127.0.0.1:9"
+PROXY_VARIABLES = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy")
+NO_PROXY_VARIABLES = ("NO_PROXY", "no_proxy")
+
+
+def offline(env: dict) -> dict:
+    """`env`, changed in place so a child started with it cannot reach a
+    network through `gh` (#297): no token, no `gh` configuration, and every
+    proxy variable pointed at `UNREACHABLE_PROXY` with no exception list.
+
+    `gh` with no token and `GH_CONFIG_DIR` naming the null device knows no
+    host and no login, and stops at its own login check before a request;
+    `tree_digest_from_gh` turns that failure into `gh-unreadable`, the skip
+    `validate-pins.py` documents. The proxy is the second wall, for a
+    `gh` that sends a request anyway: it has nowhere to go. NOT A `gh` SHIM
+    ON `PATH`: that needs a directory written somewhere, which this command
+    never does, and a Windows child finds `gh.exe` past any shim that is
+    not one.
+
+    ON WINDOWS A VARIABLE IS ONE VARIABLE WHATEVER ITS CASE, so only the
+    upper-case spelling of each proxy name is set there: the two spellings
+    are one name to the child, and one entry is what it should be handed.
+    """
+    for name in GH_TOKEN_VARIABLES + NO_PROXY_VARIABLES:
+        env.pop(name, None)
+    env["GH_CONFIG_DIR"] = os.devnull
+    env["GH_NO_UPDATE_NOTIFIER"] = "1"
+    for name in PROXY_VARIABLES:
+        if os.name == "nt" and not name.isupper():
+            continue
+        env[name] = UNREACHABLE_PROXY
+    return env
+
+
+#: The line Python prints first when an exception reaches the top of a
+#: program -- and one a validator that reached a verdict never prints (#278).
+TRACEBACK_HEADER = "Traceback (most recent call last):"
+
+
+def crashed(code: int, whole: str) -> str | None:
+    """The line to quote when a validator CRASHED before reaching a verdict,
+    or None when it reached one (#278).
+
+    THE EXIT CODE CANNOT SAY. The validators' protocol is `0 valid, 1
+    findings, 2 refusal`, and an exception that reaches the top of a Python
+    program exits 1 too -- so a validator that could not import `repo_shape`,
+    or raised on a line of its own, read as a project with a finding, quoting
+    the exception. A crash is told by three things together: a non-zero
+    exit, no line starting `FINDING` or `REFUSED` (every finding and refusal
+    a validator prints starts with one), and a `TRACEBACK_HEADER` line. The
+    line quoted is the output's last, which for a traceback is the exception
+    itself -- what the row quoted before, kept so a reader still sees why.
+    """
+    lines = [line.strip() for line in whole.splitlines() if line.strip()]
+    if code == 0 or TRACEBACK_HEADER not in lines:
+        return None
+    if any(line.startswith(("FINDING", "REFUSED")) for line in lines):
+        return None
+    return lines[-1][:200]
+
+
+#: The first line of an ITEM in a validator's report, as against a line that
+#: CONTINUES the item above it: an `  ok`, `  skip` or `  --` line, a
+#: `FINDING`, `REFUSED` or `WARNING`, and the success summary a validator ends
+#: on (`pins ok`, `manifest ok: ...`, `family ok: ...`).
+REPORT_ITEM = re.compile(
+    r"  (?:ok|skip|--)\s|(?:FINDING|REFUSED|WARNING)\b|[a-z]+ ok\b")
+
+
+def skipped(whole: str) -> list[str]:
+    """What each `  skip <text>` block a validator printed did not check, as
+    `<text>` (#297): `validate-pins.py`'s line for a neutral product's digest
+    it found no source to recompute, which it reports and still exits 0.
+
+    THE WHOLE BLOCK, NOT ITS FIRST LINE: the skip embeds `gh`'s own stderr
+    verbatim, and `gh` prints its not-logged-in help over two lines (four
+    under `GITHUB_ACTIONS`), so the text `validate-pins.py` meant to say runs
+    on past the first newline -- to the `--pin-source`,
+    `SHAPE_PIN_SOURCE_<PRODUCT>` and `../<product>` ways to give it a source,
+    which are why the row has no NEXT. Every line after the `  skip ` line is
+    kept, up to the next `REPORT_ITEM` or the end, and the lines are joined
+    with a space. Flattened by `ascii_text`, as the machine row's `report`
+    is, so `detail` says what the reason says."""
+    skips: list[list[str]] = []
+    inside = False
+    for line in whole.splitlines():
+        if line.startswith("  skip "):
+            skips.append([line.strip()[len("skip "):]])
+            inside = True
+        elif REPORT_ITEM.match(line):
+            inside = False
+        elif inside and line.strip():
+            skips[-1].append(line.strip())
+    return [ascii_text(" ".join(lines)) for lines in skips]
+
+
 def run_validator(ctx: Context, script: Path, args: list[str],
-                  pythonpath: Path | None = None) -> tuple:
+                  pythonpath: Path | None = None, *,
+                  reach_network: bool = False) -> tuple:
     """`(exit code, first line worth quoting, whole output)`.
 
     THE CHILD'S `PYTHONPATH` IS EXACTLY WHAT THE ROW'S NEXT PRINTS, AND THE
@@ -1011,12 +1189,26 @@ def run_validator(ctx: Context, script: Path, args: list[str],
     `repo_shape` can see a pasted own-copy line pass where the row says
     FINDING. That is their variable, and the gate has no such variable: the
     row is about the gate.
+
+    AND NO CHILD REACHES A NETWORK UNLESS ITS CALLER SAYS SO (#297). A
+    project that pins a neutral product has a `validate-pins.py` that, with
+    no local checkout of the product to read, asks `gh api` for its tree --
+    so the row this command calls offline started a call to GitHub, on the
+    operator's login wherever there was one. Every child is now started
+    `offline`: no token, no `gh` configuration, a proxy that goes nowhere.
+    `gh` fails, the validator prints its `skip` line and exits 0, and
+    `validator_row` reports that skip. `reach_network=True` is the ONE
+    exception, and its one caller is `check_machine`, whose preflight asks
+    `gh` who is logged in: the row the module docstring names as the
+    network's.
     """
     env = dict(os.environ)
     if pythonpath is not None:
         env["PYTHONPATH"] = str(pythonpath)
     else:
         env.pop("PYTHONPATH", None)
+    if not reach_network:
+        offline(env)
     # UTF-8 whatever the console is: these validators print this repository's
     # own prose, and `ascii_text` flattens it for the report afterwards.
     env["PYTHONIOENCODING"] = "utf-8"
@@ -1152,6 +1344,30 @@ def validator_row(ctx: Context, check_id: str, label: str, own: str,
     "does this project pass its gate" but "would it pass a gate it does not
     have". The template copy is the fallback for a root that has lost or never
     had one, and the row names which of the two answered.
+
+    A VALIDATOR THAT CRASHED HAS NOT ANSWERED (#278). Exit 1 is a finding
+    AND an exception that reached the top, so the row asks `crashed` before
+    it believes the code. The root's OWN copy crashing is still a FINDING --
+    a project whose gate cannot run has a broken gate, which is a fact about
+    the project (#237 draws the same line from the other side) -- but it
+    says it crashed, carries `detail.crashed`, and says when the cause is
+    the `repo_shape.py` it imports (`imports_repo_shape`). The TEMPLATE copy
+    crashing is this checkout's failure and not the project's: it carries
+    `detail.environment`, so the verdict is CANNOT ANSWER, exit 3. Either
+    way the NEXT is the validator's own line, which shows the traceback.
+
+    AND A TEMPLATE THIS CHECKOUT CANNOT GIVE ITS `PYTHONPATH` IS NOT RUN
+    (#278): `pythonpath_unnamable` says why, the row is an environment row
+    with no NEXT, and no `PYTHONPATH=` line is printed, because no such line
+    could be pasted and work.
+
+    A PASS THAT SKIPPED SOMETHING SAYS SO (#297). Exit 0 with `  skip `
+    lines is `validate-pins.py` reporting a neutral product's digest it had
+    nothing to recompute from. That is its documented answer, never a
+    failure, so the row is a `note`, which moves no verdict -- and its
+    reason quotes what was not rechecked, because "passes" alone said a
+    digest was verified that nobody verified. The skip line already names
+    the three ways to give it a source, so there is no NEXT.
     """
     used, which, own_copy = validator_for(ctx, own, template)
     if not used.is_file():
@@ -1163,12 +1379,41 @@ def validator_row(ctx: Context, check_id: str, label: str, own: str,
                    f"{quote_arg(ctx.root)}   # from a complete checkout of "
                    "the standard; this one is missing that file",
                    {"validator": None})
-    code, quoted, _ = run_validator(ctx, used, args,
-                                    validator_scripts(ctx.shape, own_copy))
+    unnamable = pythonpath_unnamable(ctx.shape, own_copy)
+    if unnamable is not None:
+        return Row(check_id, label, FINDING, f"{which} was not run: "
+                   f"{unnamable}", None,
+                   {"validator": used.as_posix(), "own_copy": own_copy,
+                    "exit": None, "environment": True})
+    code, quoted, whole = run_validator(ctx, used, args,
+                                        validator_scripts(ctx.shape, own_copy))
     detail = {"validator": used.as_posix(), "own_copy": own_copy,
               "exit": code}
     if code == 0:
-        return Row(check_id, label, OK, f"{which} passes", None, detail)
+        skips = skipped(whole)
+        if not skips:
+            return Row(check_id, label, OK, f"{which} passes", None, detail)
+        detail["skipped"] = skips
+        return Row(check_id, label, NOTE, f"{which} passes, but did not "
+                   f"recheck: {'; '.join(skips)}", None, detail)
+    crash = crashed(code, whole)
+    if crash is not None:
+        detail["crashed"] = True
+        reason = f"{which} crashed before reaching a verdict (exit {code}): " \
+            f"{crash}"
+        if not imports_repo_shape(ctx.shape, used, own_copy):
+            lost = repo_shape_for(ctx.shape, used, own_copy)
+            reason += (f"; {lost.relative_to(ctx.root).as_posix()}, which it "
+                       "imports from beside itself, is not there"
+                       if own_copy else f"; {lost} is not there")
+        if not own_copy:
+            detail["environment"] = True
+            reason += ("; that copy is this checkout's, not the project's, "
+                       "so nothing here is a statement about the project")
+        command = validator_command(ctx.shape, used, own_copy, args)
+        return Row(check_id, label, FINDING, reason,
+                   f"{command}   # read its output in full, it shows where "
+                   "the validator stopped", detail)
     verb = "refuses" if code >= 2 else "reports a finding"
     reason = f"{which} {verb} (exit {code})" + (f": {quoted}" if quoted else "")
     # A COMMAND THAT RUNS WHEN IT IS PASTED. This row used to print
@@ -1234,10 +1479,32 @@ def unloaded_manifest_row(ctx: Context, check_id: str, label: str, own: str,
     person's decision, and the line says that too. Never `adopt-project.py
     plan`, which is what this root was offered while the refusal was read as
     "no manifest".
+
+    BUT THE GATE HAS TO BE ABLE TO RUN FOR THAT TO BE TRUE (#298). This row
+    runs no gate, so it asks `imports_repo_shape` instead: a root's own copy
+    with no `repo_shape.py` beside it dies on the import, pasted or not, and
+    the promise above would send the person to a traceback that says nothing
+    about the file. Such a root is told to put the file back FIRST, with the
+    one command that restores the copy HEAD holds -- the project's own
+    committed bytes, where `update-shape.py apply` would copy a newer
+    upstream, as `check_agent_files` restores a deleted copy -- and that the
+    gate comes after it. That is the
+    order the verdict already gives: `DRIFTED (copy-missing)` outranks
+    `INVALID`. A deletion already COMMITTED is not in HEAD, so the line
+    could not restore it: the row then has no NEXT, and says the file comes
+    back from the parent of the commit that deleted it.
+
+    AND A TEMPLATE LINE THAT CANNOT CARRY ITS `PYTHONPATH` IS NOT PRINTED
+    (#278). The finding stands, since the manifest does not load either way,
+    but `pythonpath_unnamable` says why the standard's copy cannot be named
+    as a command, and the row has no NEXT rather than a line that splits
+    when pasted. Only the template copy can be refused that way: the root's
+    own copy needs no `PYTHONPATH`, and `validator_for` names it whenever
+    the root has one.
     """
     refusal = ctx.manifest_refusal
     name = ctx.manifest_path.name
-    used, _which, own_copy = validator_for(ctx, own, template)
+    used, which, own_copy = validator_for(ctx, own, template)
     reason = f"{name} does not load: {refusal_line(refusal)}"
     detail = {"validator": used.as_posix(), "own_copy": own_copy,
               "manifest": name,
@@ -1249,6 +1516,31 @@ def unloaded_manifest_row(ctx: Context, check_id: str, label: str, own: str,
                                 ["--root", str(ctx.root)])
         return Row(check_id, label, FINDING, f"{reason}; {missing.reason}",
                    missing.next_command, {**missing.detail, **detail})
+    if own_copy and not imports_repo_shape(ctx.shape, used, own_copy):
+        lost = repo_shape_for(ctx.shape, used, own_copy).relative_to(
+            ctx.root).as_posix()
+        if not head_holds(ctx.root, lost):
+            return Row(check_id, label, FINDING,
+                       f"{reason}; {lost} is gone too, and HEAD does not hold "
+                       f"it, so {own}, the gate that owns {name}, cannot "
+                       f"import repo_shape to refuse it: a deletion already "
+                       "committed comes back from the parent of the commit "
+                       f"that deleted it, and then {own} refuses {name} by "
+                       "name until it loads", None, detail)
+        return Row(check_id, label, FINDING, reason,
+                   f"git -C {quote_arg(ctx.root)} checkout HEAD -- "
+                   f"{quote_arg(lost)}   # it puts back the {lost} HEAD "
+                   f"holds, the copy this project committed and {own} "
+                   "imports, where update-shape.py apply would copy a newer "
+                   f"one, then run {own} again: it refuses {name} by name "
+                   "until it loads. "
+                   "A deletion already committed comes back from the parent "
+                   "of the commit that made it, not from HEAD", detail)
+    unnamable = pythonpath_unnamable(ctx.shape, own_copy)
+    if unnamable is not None:
+        return Row(check_id, label, FINDING,
+                   f"{reason}; {which}, the gate that owns it, has no line "
+                   f"here: {unnamable}", None, detail)
     command = validator_command(ctx.shape, used, own_copy,
                                 ["--root", ctx.root])
     return Row(check_id, label, FINDING, reason,
@@ -2270,13 +2562,17 @@ def lockstep_next(ctx: Context, gate: tuple, noun: str) -> str | None:
     and the same `--root` argument), so the template's line carries the
     `PYTHONPATH` it needs (#238). None when neither copy is readable: that
     is a standard with a hole in it, the gate's own row says so in the same
-    report, and a command that cannot run is the defect #276 is about.
+    report, and a command that cannot run is the defect #276 is about. None
+    too when no `PYTHONPATH` can name the template's `scripts/` (#278): the
+    gate's own row is then an environment row that says why, and a line that
+    splits when pasted is the same defect.
 
     The `legs` and `members` rows say the same thing about a leg and about a
     member, so the sentence is written here once.
     """
     used, _, own_copy = validator_for(ctx, *gate)
-    if not used.is_file():
+    if (not used.is_file()
+            or pythonpath_unnamable(ctx.shape, own_copy) is not None):
         return None
     command = validator_command(ctx.shape, used, own_copy,
                                 ["--root", str(ctx.root)])
@@ -4407,7 +4703,10 @@ def check_machine(ctx: Context) -> Row:
         return Row("machine", "machine", NA,
                    f"{entry} is not here, so the preflight could not be run",
                    None, detail)
-    code, quoted, whole = run_validator(ctx, entry, ["--preflight"])
+    # The ONE child that keeps the operator's `gh` login and proxies: every
+    # other is started `offline` (#297), and this row exists to ask `gh`.
+    code, quoted, whole = run_validator(ctx, entry, ["--preflight"],
+                                        reach_network=True)
     detail["exit"] = code
     # The preflight's own `[ok]`/`[!!]`/`[??]` lines, which are its report.
     marks = [ascii_text(line.strip()) for line in whole.splitlines()
@@ -5008,8 +5307,14 @@ def report(ctx: Context, rows: list[Row], verdict: str, code: int,
         print(note)
     blocked = cannot_answer(rows)
     if blocked is not None:
-        print(f"\nREFUSED shape-doctor-cannot-answer: {blocked.reason}\n"
-              f"  Remediation: {blocked.next_command}", file=sys.stderr)
+        print(f"\nREFUSED shape-doctor-cannot-answer: {blocked.reason}",
+              file=sys.stderr)
+        # A ROW WITH NO NEXT HAS NO REMEDIATION TO PRINT (#278). The separator
+        # environment row is a FINDING with a NEXT of None by ruling -- no
+        # command could be pasted and work -- and its reason already says what
+        # to do instead; `Remediation: None` was a literal `None` after it.
+        if blocked.next_command:
+            print(f"  Remediation: {blocked.next_command}", file=sys.stderr)
 
 
 #: The line NOT A SHAPE ROOT adds, and the one thing in this file that is
