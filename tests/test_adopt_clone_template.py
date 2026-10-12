@@ -418,11 +418,18 @@ def split_of(root: Path, links: dict | None = None) -> str:
 
 def verify(adopter, capsys, source: tuple, root: Path, legs: SimpleNamespace,
            split: str, mounts: dict) -> tuple:
-    """`_verify` of `split`, whose mounts are at `mounts`. `(exit, out, err)`."""
+    """`_verify` of `split`, whose mounts are at `mounts`. `(exit, out, err)`.
+
+    `_verify` names the legs' repositories and the split branch in the way
+    out it prints after a finding (#188), so it is given them as `execute`
+    has them: each leg's under `REMOTES`, and the source as the assembly's.
+    Nothing is pushed to them here."""
     repo, commit = source
     code = adopter._verify(adopter.Source(repo, None, "main", commit), root,
                            legs.work, NAMES, PATHS_FOR, split, mounts[SPEC],
-                           mounts[CODE])
+                           mounts[CODE],
+                           urls=dict(legs.urls, assembly=str(repo)),
+                           branch=BRANCH)
     captured = capsys.readouterr()
     return code, captured.out, captured.err
 

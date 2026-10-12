@@ -588,9 +588,21 @@ def test_agents_md_is_short_enough_to_be_read():
     lines buy what the point could not say: that the exit decides, which
     message marks the two (`IS pushed`), and that the second pair is the
     harm. `tests/test_adopt_github_exits.py` holds the point to both printed
-    exits."""
+    exits.
+
+    2026-10-12: 481 -> 482 — step 7 again, for #188's exit 1 (one line).
+    #188 makes `execute` refuse what an earlier run left: the split branch
+    (`adopt-branch-exists`) and a `--work-dir` that holds a leg or the split
+    (`adopt-work-dir-occupied`). So "fix the plan and re-run into fresh
+    legs" alone is a way out the tool now refuses, and an assistant that
+    followed it would meet those refusals one at a time. The line buys the
+    rest of the exit the failed verification prints: delete the split
+    branch, and re-run into a fresh `--work-dir`, or none.
+    `tests/test_adopt_late_failure.py` holds the point to it, and
+    `tests/test_adopt_github_exits.py` still holds the two exits after the
+    push."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 481, f"AGENTS.md is {len(lines)} lines; the cap is 481"
+    assert len(lines) <= 482, f"AGENTS.md is {len(lines)} lines; the cap is 482"
 
 
 def test_claude_md_points_at_agents_md():

@@ -54,8 +54,8 @@ subcommand runs that file rather than a second copy of its logic.
 
 EXIT CODES: 0 done, or a `--dry-run` printed what it would do · 1 nothing to
 do · 2 a refusal, and a refusal made before the first write is the same
-refusal under `--dry-run`. `init`, `bump`, `remove` and `siblings` take
-`--dry-run`; `add` takes none yet (#326).
+refusal under `--dry-run`. Every subcommand takes `--dry-run`: `init`, `add`,
+`bump`, `remove` and `siblings` (#326).
 `siblings` exits with the template script's own code, unchanged. A `bump` whose
 commit would record nothing — the member is already pinned at `--to`, in the
 gitlink and in `family.yaml` alike — is `nothing`: it says `nothing to do`, as
@@ -74,12 +74,26 @@ its commit would end with; it never checks the member out, rewrites
 `remove` makes before its first write and prints the row, the gitlink, the
 `.gitmodules` section, the holder's registration of the member and the
 directory it would remove, and runs no git command that writes.
+`add --dry-run` makes every refusal `add` makes before its first write, the
+member's own included, and READS THE MEMBER to ask them, as a real add does:
+a bare clone from its remote into a temporary directory outside the holder,
+deleted whatever the answer. It reads the member once more the same way, at
+the commit that clone resolved, for the `id:` and the digest the row records,
+and prints that row, the gitlink, the `.gitmodules` section, the registration
+and the directory the mount would make, and the trailers its commit would end
+with; it never runs `git submodule add` and writes nothing of the holder's.
 
 WHAT ONLY THE WRITE ITSELF CAN ANSWER IS NOT ASKED. A member whose local
 changes `git checkout` would refuse to overwrite gets exit 0 and a row from
 `bump --dry-run`, and exit 2 from the real `bump`'s checkout; an unmerged
 `.gitmodules` is refused by the real `remove`'s `git rm` and not by its dry
-run. Each is git's own refusal, made with the holder unchanged.
+run; a `.gitmodules` the index or HEAD holds and the work tree does not is
+refused by the real `add`'s `git submodule add`, and its dry run exits 0 with
+a note that says so. Each is git's own refusal, made with the holder
+unchanged. A `project.yaml` that is a symbolic link is read through the link
+by a real `add`'s mount and by nothing before it, so `add --dry-run` leaves
+its `id:` to the real run and says so; what fails only once the mount is made
+is unwound by the real run and never reached by its dry run.
 """
 
 from __future__ import annotations
@@ -1953,9 +1967,11 @@ class MountRollback:
 
 def _mount_and_pin(family: Family, repository: str, project: str, path: str,
                    url: str, protocol: list[str], at: str | None,
-                   rollback: MountRollback) -> tuple[str, str, str, str]:
+                   rollback: MountRollback,
+                   trailers: list[str] = ()) -> tuple[str, str, str, str]:
     """The part of `add` that writes: `git submodule add`, the pin and the
-    ONE commit. Returns `(commit, digest, project id, the new HEAD)`.
+    ONE commit, ending with `trailers`, as `bump`'s does (#326). Returns
+    `(commit, digest, project id, the new HEAD)`.
 
     Every step runs inside the caller's `MountRollback` and moves its `step`
     on first, so a git command that fails is named by what `add` was doing.
@@ -2030,13 +2046,145 @@ def _mount_and_pin(family: Family, repository: str, project: str, path: str,
         "which is the whole of the lockstep rule.\n\nIt remains a whole "
         "project: its own assembly root, its own legs, its own gate. "
         "Membership confers nothing.\n",
-        [GITMODULES, path, MANIFEST])
+        [GITMODULES, path, MANIFEST], trailers=trailers)
     return commit, digest, project_id, head
+
+
+#: The `id:` `add --dry-run` prints for a member whose `project.yaml` is a
+#: symbolic link: the objects hold only the link's text, and only a checkout
+#: reads through it, so the id is the real run's to read and none is guessed.
+LINKED_ID = "(read through the link by the real run)"
+
+
+def _resolves(root: Path, spec: str) -> bool:
+    """Whether `spec` names an object in the holder (`git rev-parse -q
+    --verify`). `git submodule add` asks it of `:.gitmodules` and
+    `HEAD:.gitmodules` when the work tree has no `.gitmodules`, and refuses
+    to write the file if either answers."""
+    try:
+        git_out(["rev-parse", "-q", "--verify", spec], cwd=root)
+    except Refusal:
+        return False
+    return True
+
+
+def _add_dry_run(family: Family, repository: str, project: str, path: str,
+                 url: str, protocol: list[str], commit: str, at: str | None,
+                 trailers: list[str]) -> int:
+    """`add --dry-run` (#326), entered once every refusal `add` makes before
+    its first write has been asked — the holder's (`_checked_add_target`),
+    the member's (`_probe_member`) and whether the `id:` the probe read is
+    one a row already pins (`_checked_member_id`, #330, which `cmd_add` asks
+    of the probe's reading before it comes here, so the dry run refuses
+    `member-duplicate-id` through the one function the real run does) — and
+    before `MountRollback` is taken or anything is mounted: what a real
+    `add` would write, and no write to the holder.
+
+    THE MEMBER IS READ A SECOND TIME, AS THE REAL RUN READS IT A SECOND
+    TIME. A real `add` reads the member twice: the probe's throwaway clone,
+    which asks the refusals, and the mount, whose reading the row records.
+    The dry run has no mount, so its second reading is a second throwaway
+    clone, made as the probe makes its own: bare, in a temporary directory
+    OUTSIDE the holder, and deleted whatever the answer, so nothing the
+    holder has is written. It is read at the commit the probe resolved,
+    which is the one the mount checks out unless the member moves on in
+    between: the `id:` by `_member_id_at`, which reads `project.yaml` with
+    the function the mount's checkout is read with, and the digest by
+    `tree_digest`, which reads objects and never a checkout, so the digest
+    printed is the one the real run computes from the same tree, never a
+    guess. The row is `_member_row`'s, as the real run's is.
+
+    A LINKED `project.yaml` IS LEFT TO THE REAL RUN, as the probe leaves it
+    to the mount: the objects hold only the link's text and a checkout reads
+    through it, so the `id:` is printed as the real run's to read
+    (`LINKED_ID`) and never guessed.
+
+    PRINTED, in `bump --dry-run`'s layout: the commit and its digest; the
+    gitlink `git submodule add` stages at the path; the `.gitmodules` section
+    it writes, under the name git gives it (the path), with the url git is
+    handed, and whether the file is new; the registration it writes in the
+    holder's `.git/config`, or the one there whose url it rewrites; the
+    directory it checks the member out into and the object store it keeps,
+    where git keeps it (`_module_dir`); the row as `family.yaml` would carry
+    it; and the trailers its commit would end with (`_print_trailers`).
+
+    GIT'S OWN REFUSAL AT THE MOUNT IS NAMED, NOT MADE. With no `.gitmodules`
+    in the work tree and one in the index or HEAD, `git submodule add`
+    refuses to write the file (`please make sure that the .gitmodules file
+    is in the working tree`) before it writes anything, and the real run
+    exits 2 there. Only git can say that sentence, so the dry run says what
+    will happen in a `note` and how to put the file back, and exits 0, as
+    `bump --dry-run` does for the checkout's own refusal.
+    """
+    scratch = Path(tempfile.mkdtemp(prefix="openreposhape-member-"))
+    try:
+        clone = scratch / "member.git"
+        run(["git", *protocol, "clone", "-q", "--bare", "--", url, str(clone)])
+        project_id = _member_id_at(clone, commit, project, repository)
+        digest = tree_digest(clone, commit)
+    except CommandFailed as exc:
+        print(exc.loudly(f"reading {repository}"), file=sys.stderr)
+        print(UNREADABLE_HINT, file=sys.stderr)
+        return 2
+    finally:
+        try:
+            _rmtree(scratch)
+        except OSError as exc:
+            print(f"  note: the throwaway clone {scratch} could not be "
+                  f"deleted ({exc.strerror or exc}); nothing in the holder "
+                  "refers to it", file=sys.stderr)
+    root = family.root
+    linked = project_id is None
+    row = _member_row(project, LINKED_ID if linked else project_id,
+                      repository, commit, digest)
+    store, _ = _module_dir(root, path)
+    print(f"member       {project}  {repository} at {path}")
+    print(f"commit       none -> {commit[:12]}")
+    print(f"tree         {digest[:12]}… ({digest})")
+    if linked:
+        print("note         project.yaml is a symbolic link at "
+              f"{commit[:12]}, which only a checkout reads through: the real "
+              "run reads the `id:` through the link, and the row below leaves "
+              "it to that run")
+    if at is None:
+        print("note         without --at a real add pins the tip it finds "
+              f"when it mounts, which is {commit[:12]} unless {repository} "
+              f"moves on first; --at {commit} pins this one")
+    print(f"gitlink      {path} none -> {commit[:12]}")
+    on_disk = os.path.lexists(root / GITMODULES)
+    elsewhere = [] if on_disk else [
+        where for where, spec in (("the index", f":{GITMODULES}"),
+                                  ("HEAD", f"HEAD:{GITMODULES}"))
+        if _resolves(root, spec)]
+    print(f'gitmodules   [submodule "{path}"]  path {path}, url {url}'
+          + ("" if on_disk or elsewhere else f", in a new {GITMODULES}"))
+    if elsewhere:
+        print(f"note         {GITMODULES} is in {' and '.join(elsewhere)} but "
+              "not in the work tree, where `git submodule add` refuses to "
+              "write it: the real run exits 2 at its mount with the holder "
+              "unchanged. Put back the copy git read first: `git checkout -- "
+              f"{GITMODULES}` (the index's), or `git checkout HEAD -- "
+              f"{GITMODULES}`")
+    print(f'registration [submodule "{path}"] in the holder\'s .git/config, '
+          + ("its url rewritten" if _registered(root, path) else "written")
+          + " by `git submodule add`")
+    print(f"directory    {path}  the member checked out at {commit[:12]}; "
+          f"its object store at {store}")
+    print(f"row          as {MANIFEST} would carry it:")
+    for line in _member_lines(row):
+        print(line)
+    _print_trailers(trailers)
+    print(f"\n--dry-run: nothing was changed in the holder. {repository} was "
+          "read from throwaway clones in temporary directories outside the "
+          f"holder, now deleted; {GITMODULES}, {MANIFEST}, the index, the "
+          "work tree and the holder's git directory are as they were.")
+    return 0
 
 
 def cmd_add(args) -> int:
     """Mount one member and pin it in ONE commit, or refuse and leave the
-    holder exactly as it was (#203).
+    holder exactly as it was (#203); or with `--dry-run`, print what it
+    would write and change nothing in the holder (#326, `_add_dry_run`).
 
     IN THIS ORDER, AND ONLY THIS ORDER: the holder's refusals
     (`_checked_add_target`), then the member's (`_probe_member`, of a
@@ -2072,12 +2220,18 @@ def cmd_add(args) -> int:
     if probed_id is not None:
         _checked_member_id(family, repository, project, probed_id)
 
+    # Every refusal above is the same under `--dry-run`, which leaves here,
+    # before `MountRollback` is taken and anything is mounted (#326).
+    if args.dry_run:
+        return _add_dry_run(family, repository, project, path, url,
+                            protocol, commit, at, args.trailer)
+
     rollback = MountRollback(family.root, path)
     print(f"mounting {repository} at {path}", flush=True)
     try:
         commit, digest, project_id, head = _mount_and_pin(
             family, repository, project, path, url, protocol,
-            commit if at else None, rollback)
+            commit if at else None, rollback, args.trailer)
     except Refusal as exc:
         exc.detail = _ended(exc.detail) + rollback.undo()
         raise
@@ -2729,6 +2883,18 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("--local-remote-dir", type=Path, default=None,
                      help="resolve the member to a bare repository here "
                           "instead of github.com (the TEST path)")
+    add.add_argument("--trailer", action="append", metavar='"KEY: VALUE"',
+                     default=[], type=trailer_line,
+                     help="append this `<Key>: <value>` line to the commit "
+                          "this writes; repeatable, kept in the order given")
+    add.add_argument("--dry-run", action="store_true",
+                     help="print the row, the gitlink and the .gitmodules "
+                          "section this would write, and its trailers, and "
+                          "change nothing in the holder: it READS the member, "
+                          "as a real add does, from throwaway clones in "
+                          "temporary directories outside the holder, which "
+                          "it deletes, and mounts, writes, stages and commits "
+                          "nothing")
     add.set_defaults(func=cmd_add)
 
     bump = subparsers.add_parser("bump", help="move a member's pin")
