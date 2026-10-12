@@ -9,6 +9,13 @@ with `adoption verified`, because `_verify` accounts for the SOURCE's paths and
 never for the ones the shape added. The assembly then failed its first
 bootstrap with `shape-copy-missing`.
 
+The source that tracks its OWN `.gitattributes` is also where Windows failed
+(#471): the shape's `* text=auto eol=lf` goes beside it, under `shape/`, and
+governs nothing at the root, so a checkout that writes CRLF -- Git for
+Windows' default -- broke every pinned copy's digest there. The split now
+appends one block of `text eol=lf` lines for those copies to the source's
+own file, and the end-to-end tests clone it with a checkout that writes CRLF.
+
 Two halves, so two groups of tests: the split now FORCES the shape's own paths
 (and only those), and the verification now FAILS when a pinned file is not in
 the split commit. Both read a path the way a checkout does, through any
@@ -38,7 +45,9 @@ from conftest import (ADOPT, FILE_PROTOCOL, REPO, clear_ambient_pin_sources,
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import parse_yaml  # noqa: E402
-from shape_materialize import Materialized, root_key  # noqa: E402
+from shape_materialize import (  # noqa: E402
+    EOL_BLOCK_HEAD, Materialized, eol_block, root_key,
+)
 
 #: What the end-to-end tests need and the rest do not: they call the two new
 #: helpers on hand-made repositories, so they run on a machine with no
@@ -529,9 +538,21 @@ def test_the_split_lands_the_files_the_pin_names(adopted):
     assert {adopted.attributes, WORKFLOW} <= rows
     assert rows <= tree, f"pinned but not in the split: {sorted(rows - tree)}"
     if adopted.own:
-        # Beside, not over: the source's own bytes are where they were.
-        assert git("show", f"{BRANCH}:{ATTRIBUTES}",
-                   cwd=adopted.source).stdout == OWN_ATTRIBUTES
+        # Beside, and ONE BLOCK AFTER (#471, Brett Heap 2026-10-12T22:48Z):
+        # the source's own bytes are where they were and come first, and all
+        # that follows them is a `text eol=lf` line for each pinned copy
+        # outside `shape/`, in the pin's order. Nothing under `shape/`, which
+        # the shape's own copy governs.
+        outside = [row["path"] for row in pin["files"]
+                   if not row["path"].startswith("shape/")]
+        text = git("show", f"{BRANCH}:{ATTRIBUTES}",
+                   cwd=adopted.source).stdout
+        assert text == OWN_ATTRIBUTES + eol_block(outside), text
+        assert text.startswith(f"{OWN_ATTRIBUTES}{EOL_BLOCK_HEAD}\n")
+        for path in (MAKEFILE, WORKFLOW, "AGENTS-shape.md",
+                     "scripts/bootstrap.py", "scripts/validate-pins.py"):
+            assert f"\n/{path} text eol=lf\n" in text, path
+        assert "/shape/" not in text and README not in text
 
 
 @needs_filter_repo
@@ -543,6 +564,59 @@ def test_the_assembly_bootstraps_where_it_failed_with_shape_copy_missing(
     bootstrapped = run_script(clone / "scripts" / "bootstrap.py", cwd=clone)
     output = bootstrapped.stderr + bootstrapped.stdout
     assert "shape-copy-missing" not in output, output
+    assert bootstrapped.returncode == 0, output
+
+
+#: Two ways a checkout writes CRLF: Git for Windows' installer default, and
+#: the line ending a `text` file takes on Windows when its attributes say
+#: `text=auto` and no `eol` (`core.eol=native`). Either is what a Windows
+#: colleague's first clone of the assembly does (#471); CI's Windows job has
+#: the second, with `core.autocrlf=false`.
+CRLF_CHECKOUTS = [pytest.param("core.autocrlf", "true", id="autocrlf"),
+                  pytest.param("core.eol", "crlf", id="eol-crlf")]
+
+
+def command_scope(key: str, value: str) -> dict:
+    """`key=value` in git's command scope for every git a run starts,
+    APPENDED to what the environment holds: the Windows job sets
+    `core.autocrlf=false` there, which outranks any config file, so a
+    clone's own `--config` would not reach its checkout. The last entry of a
+    key is the one git reads."""
+    held = int(os.environ.get("GIT_CONFIG_COUNT") or 0)
+    return {**os.environ, "GIT_CONFIG_COUNT": str(held + 1),
+            f"GIT_CONFIG_KEY_{held}": key, f"GIT_CONFIG_VALUE_{held}": value}
+
+
+@needs_filter_repo
+@pytest.mark.parametrize(("key", "value"), CRLF_CHECKOUTS)
+def test_a_checkout_that_writes_crlf_still_bootstraps(adopted, tmp_path, key,
+                                                     value):
+    """The assembly cloned the way Windows clones it: every pinned copy is
+    on the disk with the bytes the pin records, and the first bootstrap
+    passes. Before #471 the source with attributes of its own failed here
+    with shape-copy-drift on all nine copies at the root.
+
+    THE CONTROL IS IN THE SAME CLONE: the source's own `README.md` is not a
+    shape copy, its `* text=auto` alone governs it, and it IS checked out
+    with CRLF, so the setting reached the checkout and the pass means what
+    it says."""
+    clone = tmp_path / PROJECT
+    cloned = subprocess.run(
+        ["git", *FILE_PROTOCOL, "clone", "-q", "--recurse-submodules", "-b",
+         BRANCH, str(adopted.source), str(clone)], cwd=str(tmp_path),
+        env=command_scope(key, value), capture_output=True, text=True,
+        check=False)
+    assert cloned.returncode == 0, cloned.stderr
+    if adopted.own:
+        assert b"\r\n" in (clone / README).read_bytes(), \
+            "this clone did not write CRLF, so it tests nothing"
+    pin = parse_yaml((clone / PIN).read_text(encoding="utf-8"))
+    crlf = [row["path"] for row in pin["files"]
+            if b"\r\n" in (clone / row["path"]).read_bytes()]
+    assert crlf == [], f"pinned copies checked out with CRLF: {crlf}"
+    bootstrapped = run_script(clone / "scripts" / "bootstrap.py", cwd=clone)
+    output = bootstrapped.stderr + bootstrapped.stdout
+    assert "shape-copy-drift" not in output, output
     assert bootstrapped.returncode == 0, output
 
 

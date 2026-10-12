@@ -46,6 +46,7 @@ from conftest import FILE_PROTOCOL, ORG, REPO, git, run_script
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import file_sha256, load_yaml  # noqa: E402
+from shape_materialize import with_eol_block  # noqa: E402
 
 UPDATE = REPO / "update-shape.py"
 SCAFFOLD_ARGS = ("--elected-by", "Test Human", "--elected-on", "2026-09-02")
@@ -451,6 +452,76 @@ def test_a_red_validator_rolls_the_added_file_back_out(root, standard):
         "back (#202), and not again in the refusal's own detail")
     assert not (root / ADDED).exists(), "every byte, including the new file"
     assert pin(root)["commit"].lower() == standard["c1"]
+
+
+# --- an adopted root that keeps its OWN `.gitattributes` (#471) --------------
+#
+# Its source had a `.gitattributes`, so the shape's went to `shape/`, where it
+# governs that directory alone, and `adopt-project.py` appended a block of
+# `text eol=lf` lines for the pinned copies at the root (Brett Heap,
+# 2026-10-12T22:48Z). A file `--add` writes is one more such copy, and a
+# Windows clone reports shape-copy-drift on any copy the block does not name.
+
+#: The source's own line, which the block follows.
+OWN_ATTRIBUTES = b"* text=auto\n"
+
+
+def keep_own_attributes(root, data: bytes) -> bytes:
+    """Give the root `data` as its own committed `.gitattributes`."""
+    (root / ATTRIBUTES).write_bytes(data)
+    git("add", "--", ATTRIBUTES, cwd=root)
+    git("commit", "-qm", "Keep our own attributes", "--", ATTRIBUTES,
+        cwd=root)
+    return data
+
+
+def test_add_extends_the_block_in_a_root_that_keeps_its_own_attributes(
+        root, standard):
+    """Each new copy gets its line inside the block, after the lines already
+    there and before a line the project wrote after it; the commit carries
+    the file with the copies."""
+    keep_own_attributes(root, with_eol_block(OWN_ATTRIBUTES, [PINNED])
+                        + b"*.jpg binary\n")
+    result = apply(root, standard, "--add", ADDED, "--add", ADDED_SCRIPT,
+                   "--branch", "shape/add-test")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (root / ATTRIBUTES).read_bytes() == with_eol_block(
+        OWN_ATTRIBUTES, [PINNED, ADDED, ADDED_SCRIPT]) + b"*.jpg binary\n"
+    committed = set(git("show", "--name-only", "--format=", "HEAD",
+                        cwd=root).stdout.split())
+    assert committed == {ADDED, ADDED_SCRIPT, ATTRIBUTES,
+                         "contracts/shape-pin.yaml", "project.yaml"}
+    validators_are_green(root)
+
+
+def test_add_leaves_a_root_without_the_block_alone(root, standard):
+    """A `.gitattributes` with no block is not this tool's to write: a
+    scaffolded root's is the shape's own, and one adopted before #471 never
+    had a block."""
+    keep_own_attributes(root, OWN_ATTRIBUTES)
+    result = apply(root, standard, "--add", ADDED,
+                   "--branch", "shape/add-test")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (root / ATTRIBUTES).read_bytes() == OWN_ATTRIBUTES
+    committed = set(git("show", "--name-only", "--format=", "HEAD",
+                        cwd=root).stdout.split())
+    assert ATTRIBUTES not in committed
+
+
+def test_a_refused_apply_puts_the_block_back(root, standard):
+    """The block's new line is in the same transaction as the copy it names:
+    a red validator puts both back."""
+    before = keep_own_attributes(
+        root, with_eol_block(OWN_ATTRIBUTES, [PINNED]))
+    spec = root / "contracts" / "spec-pin.yaml"
+    spec.write_text(spec.read_text(encoding="utf-8")
+                    .replace('commit: "', 'commit: "' + "0" * 40 + '" # ', 1),
+                    encoding="utf-8")
+    result = apply(root, standard, "--add", ADDED)
+    assert result.returncode == 2, result.stdout
+    assert "update-validators-red" in result.stderr
+    assert (root / ATTRIBUTES).read_bytes() == before
+    assert not (root / ADDED).exists()
 
 
 # --- the family holder -------------------------------------------------------

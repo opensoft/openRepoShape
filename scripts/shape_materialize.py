@@ -25,6 +25,11 @@ So a colliding template file is written BESIDE the original under
 `follow_ups:`. The human merges it; the tool never guesses. A copy whose own
 path is taken -- the source keeps a `shape/README.md` of its own -- is
 REFUSED, never written over (`copy_in_the_way`, #262).
+
+ONE EXCEPTION, `.gitattributes` (#471, ruled by Brett Heap 2026-10-12T22:48Z):
+the shape's copy still goes beside, and one marked block of line-ending rules
+for the pinned copies is APPENDED to the source's own file, because no file
+beside it can reach them. "The shape's line endings" below says why and how.
 """
 
 from __future__ import annotations
@@ -661,6 +666,139 @@ ASSISTANT_INSTRUCTIONS = ("AGENTS.md", "CLAUDE.md")
 SHAPE_MAKE_TARGETS = ("bootstrap", "validate", "pins", "park", "resume")
 
 
+# ---------------------------------------------------------------------------
+# The shape's line endings, in a source's OWN `.gitattributes` (#471)
+# ---------------------------------------------------------------------------
+#
+# THE ONE FILE OF THE SOURCE'S THAT AN ADOPTION WRITES INTO, by Brett Heap's
+# ruling of 2026-10-12T22:48Z. Every other collision is written BESIDE, under
+# `shape/`, and left to a human to merge. `.gitattributes` cannot be: git
+# reads attributes for a path from the `.gitattributes` files of its own
+# directory and those above it, so `shape/.gitattributes` governs `shape/`
+# alone, and a pinned copy at the root -- `Makefile`, `AGENTS-shape.md`,
+# `scripts/bootstrap.py` -- answers to the source's file and nothing else. A
+# source with `* text=auto` there, or with any `.gitattributes` at all under
+# Git for Windows' default `core.autocrlf=true`, then checked every such copy
+# out with CRLF on Windows, and the first `make bootstrap` reported
+# shape-copy-drift on each: `validate-pins.py` digests the bytes on disk
+# (#51). Adoption's first run on a Windows runner found it.
+#
+# So the split APPENDS one marked block to the source's file: a comment line,
+# then `/<path> text eol=lf` for each pinned copy outside `shape/`. Later lines
+# win in a `.gitattributes`, and each line names one file, so the block
+# settles those copies' line endings and nothing else of the source's. None of
+# the source's own lines is changed; a file that does not end in a newline
+# gets one before the block, which is the only byte written that is not the
+# block's. `adopt-project.py`'s verification counts the file as the source's
+# bytes followed by exactly this block, and `update-shape.py apply --add`
+# extends it when the standard adds a copy at the root later.
+
+#: The `.gitattributes` a source may already hold at its root.
+ATTRIBUTES = ".gitattributes"
+
+#: The comment line that opens the block, and that `extend_eol_block` finds it
+#: by. Spelled once: three tools read it.
+EOL_BLOCK_HEAD = ("# openRepoShape (#471): the pinned shape copies below check "
+                  "out with LF everywhere, as contracts/shape-pin.yaml "
+                  "records their bytes")
+
+#: A path the block can name as a literal, anchored pattern. Every copy the
+#: shape pins is spelled this way; a name with a space, a glob character or a
+#: backslash would be read by git as something else, and is refused rather
+#: than written.
+EOL_PATH_RE = re.compile(r"[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*")
+
+
+def eol_line(path: str) -> str:
+    """The block's line for the pinned copy at `path`."""
+    if not EOL_PATH_RE.fullmatch(path):
+        raise Refusal(
+            "materialize-attributes-path",
+            f"{path!r} cannot be named as a literal path in a "
+            f"`{ATTRIBUTES}` line",
+            f"Remediation: this is a defect in {SHAPE_REPOSITORY}: every "
+            "pinned copy has a plain name. Report it there.")
+    return f"/{path} text eol=lf"
+
+
+def eol_block_paths(shape_files, collision_dir: str) -> list[str]:
+    """The pinned copies a source's own root `.gitattributes` governs: each
+    one not under `collision_dir`, where the shape's own copy of the file
+    governs, in the pin's order."""
+    return [path for path in shape_files
+            if not path.startswith(f"{collision_dir}/")]
+
+
+def eol_block(paths) -> str:
+    """The block for `paths`: its head, then one line per copy."""
+    return "".join(f"{line}\n"
+                   for line in (EOL_BLOCK_HEAD, *map(eol_line, paths)))
+
+
+def with_eol_block(existing: bytes, paths) -> bytes:
+    """`existing`, a source's `.gitattributes`, with the block after it.
+
+    Its bytes are kept as they are. One that does not end in a newline gets
+    one first, or the head would be read as part of its last line."""
+    gap = b"\n" if existing and not existing.endswith(b"\n") else b""
+    return existing + gap + eol_block(paths).encode("utf-8")
+
+
+def extend_eol_block(existing: bytes, paths) -> bytes | None:
+    """`existing` with a line for each of `paths` the block lacks, put after
+    its last line; None when `existing` holds no block.
+
+    The block is the head line and the `/<path> text eol=lf` lines straight
+    after it. Lines a human wrote after the block stay after the new ones.
+
+    A WINDOWS CHECKOUT OF THE FILE MAY BE CRLF: the source's own rules
+    govern `.gitattributes` too, and `* text=auto` there, or Git for
+    Windows' `core.autocrlf=true`, writes it with CRLF. So lines are matched
+    without their ending, and a new line takes the ending the block's last
+    line has; git normalises the file when it is committed either way."""
+    lines = existing.splitlines(keepends=True)
+    bare = [line.rstrip(b"\r\n") for line in lines]
+    try:
+        start = bare.index(EOL_BLOCK_HEAD.encode("utf-8"))
+    except ValueError:
+        return None
+    end, named = start + 1, set()
+    while end < len(lines):
+        match = re.fullmatch(rb"/(\S+) text eol=lf", bare[end])
+        if not match:
+            break
+        named.add(match.group(1).decode("utf-8", "surrogateescape"))
+        end += 1
+    newline = b"\r\n" if lines[end - 1].endswith(b"\r\n") else b"\n"
+    if not lines[end - 1].endswith(b"\n"):
+        lines[end - 1] += newline
+    new = []
+    for path in paths:
+        if path not in named:
+            named.add(path)
+            new.append(eol_line(path).encode("utf-8") + newline)
+    return b"".join(lines[:end] + new + lines[end:])
+
+
+def _append_eol_block(target: Path, result: "Materialized",
+                      collision_dir: str) -> None:
+    """Append the block to the source's own `.gitattributes`, when the
+    shape's copy of that file had to be written beside it.
+
+    A SYMLINK IS NOT WRITTEN THROUGH: what it leads to may be another file of
+    the source's, or nothing in this repository, and git reads no
+    `.gitattributes` through a link anyway. It is left as it is, and the
+    follow-up names the lines to add where it leads."""
+    if (ATTRIBUTES, f"{collision_dir}/{ATTRIBUTES}") not in result.collisions:
+        return
+    path = target / ATTRIBUTES
+    if path.is_symlink() or not path.is_file():
+        return
+    paths = eol_block_paths(result.shape_files, collision_dir)
+    path.write_bytes(with_eol_block(path.read_bytes(), paths))
+    result.eol_block = paths
+
+
 def collision_follow_up(intended: str, actual: str,
                         beside: dict | None = None) -> str:
     """The follow-up for ONE collision, in one place.
@@ -680,6 +818,21 @@ def collision_follow_up(intended: str, actual: str,
     runs the source's script and exits 0, so the follow-up names no command,
     and says both merges come first (#493's review, F2).
     """
+    if intended == ATTRIBUTES:
+        return (
+            f"keep the block at the end of {intended} that opens with "
+            f"`{EOL_BLOCK_HEAD}`: the source repository already has a "
+            f"{intended}, so the shape's copy was written beside it as "
+            f"{actual}, which governs only its own directory, and the split "
+            f"appends one `text eol=lf` line to {intended} for each pinned "
+            "copy outside it. That block is what makes every checkout, "
+            "Windows included, write those copies with the bytes "
+            "contracts/shape-pin.yaml records; without it a Windows clone "
+            "reports shape-copy-drift on each one. None of the source's own "
+            f"lines is changed. Merge the rest of {actual} into {intended} "
+            "only if the whole project should check out with LF. A "
+            f"{intended} that is a symlink is not written through: add the "
+            "block's lines where it leads")
     if intended in ASSISTANT_INSTRUCTIONS:
         return (
             f"add the line `{SHAPE_POINTER_LINE}` to the existing {intended} "
@@ -1922,12 +2075,18 @@ class Materialized:
     `shape_files` is the ordered list of paths the shape pin digests, at the
     paths they ACTUALLY landed on — a pin that names a path nothing is at is
     a refusal in `validate-pins.py`, and rightly.
+
+    `eol_block` is the copies named in the block appended to the source's own
+    `.gitattributes` (#471), and empty when none was: no source file of that
+    name, one the plan did not keep in the root, or one that is a symlink.
+    That file is the source's, so it is in neither list above.
     """
 
     def __init__(self) -> None:
         self.written: list[str] = []
         self.collisions: list[tuple[str, str]] = []
         self.shape_files: list[str] = []
+        self.eol_block: list[str] = []
 
     def follow_ups(self) -> list[str]:
         beside = dict(self.collisions)
@@ -1952,12 +2111,18 @@ def materialize_assembly_root(shape_root: Path, target: Path,
 
     `neutral_pins` maps a neutral product name to the values for its pin file,
     each rendered from `contracts/neutral-product-pin.yaml`.
+
+    With a `collision_dir`, a `.gitattributes` the target already held gets
+    the shape's line-ending block appended (#471, `_append_eol_block`).
     """
-    return _materialize(
+    result = _materialize(
         shape_root, shape_root / "templates" / "assembly-root", target, values,
         templated=TEMPLATED, verbatim=COPIED_VERBATIM,
         from_shape=COPIED_FROM_SHAPE, executable=EXECUTABLE,
         collision_dir=collision_dir, append=append, neutral_pins=neutral_pins)
+    if collision_dir is not None:
+        _append_eol_block(target, result, collision_dir)
+    return result
 
 
 def assembly_root_paths(neutral_pins=()) -> tuple[str, ...]:
