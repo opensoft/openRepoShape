@@ -1862,15 +1862,64 @@ def test_the_unverified_warning_says_a_tree_was_reached_when_it_was(
         f"declaration ({why}). The recorded chain still classifies."]
 
 
-def _scaffold_with_link_tree(tmp_path, manifest_body: bytes | None):
+#: The other trees a `--pin-source` REACHES and cannot read as a declaration,
+#: those whose manifest is not a pins list at all (reviewW2's NIT-R1). The
+#: scaffold's reached branch is keyed on the fact that the source ANSWERED, not
+#: on the reason, so a manifest that is not a mapping or does not parse says
+#: "reached but could not be read" too, where on main (and at 4b21263) it said
+#: "is not reachable here" of a file it had just opened. Narrowing the branch
+#: to the not-a-list reasons (`why.endswith(("is not a list", "is not text"))`
+#: before `unreadable[...] = why` in `link_pins_from_trees`) passed every
+#: `NOT_A_LIST_OF_NAMES` row; these two kill it. The reasons are the
+#: repository's own parser's, so they hold on every platform.
+UNREADABLE_AS_A_DECLARATION = [
+    pytest.param(b"- openInk\n", "not a mapping", id="not-a-mapping"),
+    pytest.param(
+        b"schema_version: 1\nkind: project-manifest\n"
+        b"neutral_product_pins: [openInk\n",
+        "not a flow collection: '[openInk'", id="does-not-parse"),
+]
+
+
+@pytest.mark.parametrize("body,said", UNREADABLE_AS_A_DECLARATION)
+def test_the_lookup_remembers_why_a_manifest_it_reached_cannot_be_read(
+        policy, tmp_path, monkeypatch, body, said):
+    """The same two manifests in this process (NIT-R1): a manifest that is
+    not a mapping, or does not parse, is a tree the source REACHED, so asked to
+    say why, the lookup keeps the reason for the link, the mapping is still
+    equal to a plain one with the link absent, and the warning names the
+    reason instead of saying the tree is not reachable."""
+    clear_ambient_pin_sources(monkeypatch)
+    tree = tmp_path / "openXdox"
+    tree.mkdir()
+    manifest = tree / "project.yaml"
+    manifest.write_bytes(body)
+    found = link_pins_from_trees(("openXdox", "openDox"),
+                                 root=tmp_path / "codexDox",
+                                 with_reasons=True)
+    why = f"{manifest}: {said}"
+    assert isinstance(found, dict) and found == {}
+    assert found.unreadable == {"openxdox": why}
+    assert _unverified_warnings(policy, found) == [
+        "declared-unverified: openXdox declaring a pin on openDox is a fact "
+        "in openXdox's own tree, which was reached but could not be read as a "
+        f"declaration ({why}). The recorded chain still classifies."]
+
+
+def _scaffold_with_link_tree(tmp_path, manifest_body: bytes | None, *,
+                             raw: bool = False):
     """`scaffold-project.py --dry-run` for `codexInk` with `--pin-source` a
     git clone of a stand-in `openXdox` whose `project.yaml` is
-    `manifest_body` (none: the clone holds no `project.yaml`), and the chain
+    `manifest_body` after a two-line header (none: the clone holds no
+    `project.yaml`; `raw`: the manifest is `manifest_body` and nothing else,
+    for one that must not begin with a mapping), and the chain
     `openXdox,openInk`. Returns the result and the manifest's path."""
     source = tmp_path / "trees" / "openXdox"
     source.mkdir(parents=True)
     if manifest_body is None:
         (source / "README").write_bytes(b"no manifest here\n")
+    elif raw:
+        (source / "project.yaml").write_bytes(manifest_body)
     else:
         (source / "project.yaml").write_bytes(
             b"schema_version: 1\nkind: project-manifest\n" + manifest_body)
@@ -1908,6 +1957,31 @@ def test_scaffold_says_a_pin_source_it_reached_could_not_be_read(
         "WARNING declared-unverified: openXdox declaring a pin on openInk is "
         "a fact in openXdox's own tree, which was reached but could not be "
         f"read as a declaration ({manifest}: neutral_product_pins {said}). "
+        "The recorded chain still classifies.\n") in result.stderr, (
+        result.stderr)
+    assert "(1 link declared-unverified)" in result.stdout
+    assert "--dry-run: nothing was created." in result.stdout
+
+
+@pytest.mark.parametrize("body,said", UNREADABLE_AS_A_DECLARATION)
+def test_scaffold_says_a_pin_source_whose_manifest_cannot_be_read_was_reached(
+        tmp_path, body, said):
+    """NIT-R1. `--pin-source` is a clone whose `project.yaml` is a list, or is
+    a flow list that never closes. The tree was REACHED and its manifest could
+    not be read, so the scaffold's declared-unverified warning says so, with
+    the reason, as it does for a `neutral_product_pins:` that is not a list:
+    "is not reachable here" blamed a path that was right, and a narrower
+    reading of "reached" (the not-a-list reasons only) would leave that
+    untruth for every manifest the lookup cannot parse."""
+    result, manifest = _scaffold_with_link_tree(tmp_path, body, raw=True)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "Traceback" not in result.stderr, result.stderr
+    assert "REFUSED" not in result.stderr, result.stderr
+    assert "not reachable here" not in result.stderr, result.stderr
+    assert (
+        "WARNING declared-unverified: openXdox declaring a pin on openInk is "
+        "a fact in openXdox's own tree, which was reached but could not be "
+        f"read as a declaration ({manifest}: {said}). "
         "The recorded chain still classifies.\n") in result.stderr, (
         result.stderr)
     assert "(1 link declared-unverified)" in result.stdout
