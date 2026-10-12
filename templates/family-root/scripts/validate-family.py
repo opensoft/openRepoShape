@@ -23,6 +23,10 @@ WHAT IS CHECKED
     terms.
   - `shape`: a commit-and-digest pin of the openRepoShape revision this root
     was cut from, `revision_kind: commit`, never a tag
+  - across the rows, that no two name ONE `project:`, in any case:
+    `members/IRRS` and `members/irrs` are one directory on macOS and Windows,
+    whatever `id:` each row records (#331). This one reads `family.yaml`
+    alone, so `--no-members` asks it too.
   - EVERY MEMBER, three ways:
       1. the GITLINK this repository records at `members/<Project>` equals
          `members[].pin.commit` — the same lockstep rule an assembly root
@@ -545,22 +549,31 @@ def _check_member_names_unique(members: list, report: Report) -> None:
     question is a different one: it asks whether one PROJECT is mounted
     twice, this asks whether one DIRECTORY is named twice.
 
-    THE FOLD IS `str.lower()`, NOT `str.casefold()`, because every name this
-    standard admits for `project:` is ASCII, and on ASCII the two agree.
-    `family.py add` takes the name through `checked_value`
-    (`[A-Za-z0-9._/@+~-]`); a members-checked run refuses any other as
-    `member-repository` (`QUALIFIED_RE` holds the repository to ASCII) and
-    `member-repository-name` (the repository's name must BE the project).
-    `Family.member` in `family.py` compares with `lower()` (#206), so the tool
-    that writes the rows and this gate cannot disagree about which rows are
-    one. `casefold()` would only add folds (the German sharp s to `ss`) for
-    names no member can have.
+    THE FOLD IS `str.casefold()`, as the standard's other same-path-in-any-case
+    checks use it (`shape_materialize.py`, `adopt-project.py`). `family.py add`
+    only writes ASCII names (`checked_value`: `[A-Za-z0-9._/@+~-]`), and a
+    members-checked run refuses any other as `member-repository`
+    (`QUALIFIED_RE`) or `member-repository-name`. Under `--no-members` neither
+    runs, so a hand edit can put ANY string in `project:`, and a disk folds
+    more than ASCII case: the long s (U+017F) folds to `s`, and a final sigma
+    (U+03C2) to a small sigma (U+03C3), so `IRRS` and `irrs` spelt with the
+    long s, or a name in capital sigmas and the same name in small ones, are
+    one directory there, and `lower()` keeps each pair apart. On every name
+    `family.py` can write the two folds agree, and `Family.member` in
+    `family.py` compares with `lower()` (#206), so the tool that writes the
+    rows and this gate cannot disagree about a row the tool wrote.
+    `casefold()` is no one disk's own fold either: NTFS's table does not fold
+    the German sharp s (U+00DF) to `ss`, so for such a pair this may name a
+    collision that disk does not make, and APFS also ignores normalization,
+    which no fold here handles. It errs on the side of a gate that says one
+    row has to go.
 
     A row whose spelling an earlier row already has, to the byte, keeps the
-    finding it always had. A row that differs only in case names BOTH rows as
-    written. Either way each later row is one finding, against the first row
-    that holds its name. A row with no `project:` is `member-project`'s, and
-    a row that is no mapping is `member-row`'s: both are skipped here, as
+    finding it always had. A row that differs only in case, as a
+    case-insensitive disk folds it, names BOTH rows as written. Either way
+    each later row is one finding, against the first row that holds its name.
+    A row with no `project:` is `member-project`'s, and a row that is no
+    mapping is `member-row`'s: both are skipped here, as
     `_check_member_ids_unique` skips them.
     """
     spelled: set[str] = set()
@@ -576,15 +589,17 @@ def _check_member_names_unique(members: list, report: Report) -> None:
                            f"{project} appears more than once in `members:`")
             continue
         spelled.add(project)
-        first = first_folded.setdefault(project.lower(), project)
+        first = first_folded.setdefault(project.casefold(), project)
         if first != project:
             report.finding(
                 "member-duplicate",
                 f"{first} and {project} are two rows of `members:` whose "
                 f"`project:` differs only in case, so `members/{first}` and "
                 f"`members/{project}` are one directory on a case-insensitive "
-                "disk (macOS, Windows), where a holder can mount only one of "
-                "them. A family pins each project once.")
+                "disk (macOS, Windows), and a holder there can keep only one "
+                "of them. Whether the rows pin one project or two, one of "
+                "them has to go: keep the row whose `repository:` is the "
+                "member's and drop the other.")
 
 
 def _check_member_ids_unique(root: Path, members: list,

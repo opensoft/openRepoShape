@@ -15,7 +15,9 @@ hand edit makes such rows; this is the gate that finds the hand edit.
 The finding is now its own function, `_check_member_names_unique`, which
 reads `members:` alone and is called before the `--no-members` return, as
 `member-duplicate-id` (#206, `tests/test_family.py`) is. It is made ONCE,
-whatever the mode, and an exact repeat keeps the text it always had.
+whatever the mode, and an exact repeat keeps the text it always had. Case is
+folded with `str.casefold()`, so a pair a disk holds as one directory and
+`str.lower()` keeps apart (the long s, the sigmas) is found too.
 
 The same family and the same offline rules as `tests/test_family.py`: the
 fixture is imported rather than rebuilt, because a holder made any other way
@@ -34,7 +36,7 @@ from __future__ import annotations
 
 import pytest
 
-from conftest import git
+from conftest import git, run_script
 from test_family import (  # noqa: F401
     ORG, SPARE, family, family_module, holder, manifest, tree_digest,
     validate,
@@ -43,6 +45,23 @@ from test_family import (  # noqa: F401
 #: The finding an exact repeat has always had, byte for byte. A holder's CI
 #: matches on text, so it is pinned here and not rebuilt from a template.
 EXACT = "FINDING member-duplicate: IRRS appears more than once in `members:`"
+
+#: A commit nothing can resolve. A repeated row pinned to it is what makes the
+#: members-checked loop refuse (`member-commit-unresolvable`, exit 2, and the
+#: finding lost) if `_member_project_name` ever stops skipping a name it has
+#: already seen: a repeat copied byte for byte checks out as cleanly as the
+#: row it repeats, so it would never notice.
+NOWHERE = "0" * 40
+
+#: Pairs one case-insensitive disk holds as one directory and `str.lower()`
+#: keeps apart, which only `str.casefold()` finds: IRRS and IRR with the long s
+#: (U+017F, folds to `s`), and capital sigmas against small ones (`lower()`
+#: gives the final sigma U+03C2 where the small spelling has U+03C3). Written as
+#: escapes so no editor or console re-encodes them.
+FOLDS = {
+    "long-s": ("IRRS", "irr\u017f"),
+    "sigma": ("\u03a3\u0391\u03a3", "\u03c3\u03b1\u03c3"),
+}
 
 
 def irrs_row(holder) -> dict:
@@ -102,18 +121,30 @@ def test_a_row_written_twice_is_found_under_no_members(holder):
 
 @pytest.mark.parametrize("extra", [(), ("--pins",)],
                          ids=["members-checked", "pins"])
-def test_with_members_checked_a_repeat_is_one_finding_not_two(holder, extra):
+@pytest.mark.parametrize("repeat", ["identical", "other-pin"])
+def test_with_members_checked_a_repeat_is_one_finding_not_two(holder, extra,
+                                                              repeat):
     """`_member_project_name` used to make this finding and still stops that
     row's checks, silently. A finding made in both places would be one fault
-    reported twice, and the count is what says so."""
+    reported twice, and the count is what says so.
+
+    THE REPEAT IS ALSO PINNED TO A COMMIT NOWHERE (`other-pin`), because a
+    repeat that is byte for byte the row it repeats passes every check the
+    first one did, so deleting the skip would cost it nothing: it is the row
+    that would be checked, refused `member-commit-unresolvable` (exit 2) and
+    lose the finding, that holds the skip in place.
+    """
     row = irrs_row(holder)
+    again = (dict(row) if repeat == "identical" else
+             {**row, "pin": {**row["pin"], "commit": NOWHERE}})
     other = next(r for r in manifest(holder)["members"]
                  if r["project"] == "IRSS")
-    rewrite(holder, [row, dict(row), other])
+    rewrite(holder, [row, again, other])
     result = validate(holder, *extra)
     assert result.returncode == 1, result.stderr + result.stdout
     assert findings(result) == [EXACT], result.stderr
     assert result.stderr.count("member-duplicate") == 1, result.stderr
+    assert "REFUSED" not in result.stderr, result.stderr
 
 
 # --- two rows that differ only in case ---------------------------------------
@@ -147,6 +178,49 @@ def test_a_case_variant_is_not_the_exact_finding(holder):
     assert result.returncode == 1, result.stderr + result.stdout
     assert len(findings(result)) == 1, result.stderr
     assert "appears more than once" not in result.stderr, result.stderr
+
+
+@pytest.mark.parametrize("pair", FOLDS.values(), ids=FOLDS.keys())
+def test_rows_that_a_disk_folds_but_lower_does_not_are_found_under_no_members(
+        holder, pair):
+    """`--no-members` reads any string as a `project:` (the checks that hold a
+    name to ASCII run only with members checked), so a hand edit can write a
+    pair that `str.lower()` keeps apart and a case-insensitive disk does not.
+    The fold is `casefold()`, as the standard's other same-path-in-any-case
+    checks use. The child is run in UTF-8 mode so the names print as written
+    on every platform."""
+    first, second = pair
+    assert first.lower() != second.lower(), "the point is that lower() fails"
+    base = irrs_row(holder)
+    rewrite(holder, [spelled(base, first, "irrs-first"),
+                     spelled(base, second, "irrs-second")])
+    result = run_script(holder / "scripts" / "validate-family.py",
+                        "--no-members", cwd=holder,
+                        env={"PYTHONUTF8": "1"})
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert len(findings(result)) == 1, result.stderr
+    assert findings(result)[0].startswith(case_pair(first, second)), \
+        result.stderr
+
+
+def test_the_case_finding_does_not_assume_one_project(holder):
+    """Rows with distinct ids may be two projects (`OrgA/IRRS` and
+    `OrgB/irrs`): the fault is one DIRECTORY, not one project pinned twice, so
+    the finding says so and says one row has to go. It names no command,
+    because `family.py remove` cannot take out a row that was never mounted,
+    which is the only kind a macOS or Windows holder can hold."""
+    base = irrs_row(holder)
+    rewrite(holder, [base, spelled(base, "irrs", "irrs-twin")])
+    result = validate(holder, "--no-members")
+    assert result.returncode == 1, result.stderr + result.stdout
+    (line,) = findings(result)
+    assert line.startswith(case_pair("IRRS", "irrs")), line
+    assert ("and a holder there can keep only one of them. Whether the rows "
+            "pin one project or two, one of them has to go: keep the row "
+            "whose `repository:` is the member's and drop the other."
+            ) in line, line
+    assert "pins each project once" not in result.stderr
+    assert "family.py" not in line
 
 
 def test_each_later_row_is_one_finding_against_the_first_that_holds_its_name(
