@@ -26,24 +26,22 @@ import re
 import shutil
 import stat
 import subprocess
-from argparse import Namespace
 from pathlib import Path
 
 import pytest
 
-from conftest import ADOPT, git, make_source_repo, resolve, run_script, \
-    write_plan
+from conftest import ADOPT, GITLINK, GITMODULES, as_human, \
+    exported_in_a_clone, findings, git, in_the_history, link, \
+    make_source_repo, named, planned, put_gitmodules, \
+    refused_before_any_leg, run_script
 
 needs_filter_repo = pytest.mark.skipif(
     shutil.which("git-filter-repo") is None,
     reason="git filter-repo is not installed: `pip install git-filter-repo`")
 
 PROJECT = "Northwind"
-GITMODULES = ".gitmodules"
 UNREADABLE = "plan-gitmodules-unreadable"
 REMOTES = "remotes"
-#: The submodule the history holds, registered under the name `b`.
-GITLINK = "vendor/b"
 REGISTRATION = '[submodule "b"]\n\tpath = vendor/b\n\turl = ../b\n'
 #: The issue's tip `.gitmodules`: a key with no value.
 BARE_PATH = '[submodule "b"]\n\tpath\n'
@@ -55,12 +53,6 @@ SMALL_TREE = {"README.md": "# Thing\n", "src/app/util.py": "VALUE = 1\n",
               "specs/001-feature/tasks.md": "- [ ] one\n"}
 
 
-def named(verb: str = "(adds|removes|changes)") -> str:
-    """How `_exported_gitlink` names a commit's change to the gitlink, as a
-    pattern: `verb` is what that commit does to it."""
-    return rf"commit [0-9a-f]{{12}} {verb} `vendor/b`"
-
-
 @pytest.fixture(scope="module")
 def adopter():
     spec = importlib.util.spec_from_file_location("adopt_history_gitlinks",
@@ -68,29 +60,6 @@ def adopter():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
-
-
-def as_human(*args: str, cwd: Path):
-    """`git <args>` with an identity, for the commits and merges below."""
-    return git("-c", "user.name=Source Human",
-               "-c", "user.email=source@invalid.example", *args, cwd=cwd)
-
-
-def put_gitmodules(source: Path, text: str) -> None:
-    """`text` as the source's `.gitmodules`, staged: BYTES, so it is LF on
-    every platform, as a hand edit would leave it."""
-    (source / GITMODULES).write_bytes(text.encode())
-    git("add", "--", GITMODULES, cwd=source)
-
-
-def link(source: Path) -> None:
-    """A gitlink at GITLINK, staged straight into the index, as `git add` of
-    an embedded clone records one; no checkout of it is needed. It names
-    `main`'s commit, which an orphan branch's first commit has no HEAD to
-    give."""
-    head = git("rev-parse", "main", cwd=source).stdout.strip()
-    git("update-index", "--add", "--cacheinfo", f"160000,{head},{GITLINK}",
-        cwd=source)
 
 
 def unlink(source: Path) -> None:
@@ -274,17 +243,6 @@ def opened(adopter, source: Path, tmp_path: Path):
     return adopter.Source.open(str(source), tmp_path / "read")
 
 
-def exported_in_a_clone(source: Path, base: Path):
-    """`git fast-export --all` in a clone of `source`, as `git filter-repo`
-    runs it in the extraction's clone: the run whose failure the scan
-    foretells. It needs git alone, so it runs where `git filter-repo` is
-    not installed; bytes, because it exports the source's own content."""
-    clone = base / "export-clone"
-    git("clone", "-q", "--", str(source), str(clone), cwd=base)
-    return subprocess.run(["git", "fast-export", "--all"], cwd=clone,
-                          capture_output=True, check=False)
-
-
 # --- where the history holds a gitlink -------------------------------------
 
 @pytest.mark.parametrize("history, verb", HISTORIES.values(),
@@ -445,43 +403,6 @@ def test_the_scan_starts_at_the_plans_commit_not_the_source_head(adopter,
 
 # --- what `check` finds -----------------------------------------------------
 
-def planned(source: Path, base: Path, answers: dict) -> Path:
-    """`plan` for `source`, its `.gitmodules` question answered and any
-    other entry's `leg:` set as `answers` says."""
-    plan = base / "plan" / "adoption-plan.yaml"
-    plan.parent.mkdir()
-    written = write_plan(source, plan, project=PROJECT)
-    assert written.returncode == 0, written.stderr + written.stdout
-    text = plan.read_bytes().decode()
-    for path, leg in answers.items():
-        entry = re.search(rf"  - path: {re.escape(path)}\n    leg: (\S+)\n",
-                          text)
-        assert entry, f"no entry {path} in the plan"
-        if entry[1] == "null":
-            resolve(plan, path, leg)
-            text = plan.read_bytes().decode()
-        else:
-            text = text.replace(entry[0],
-                                f"  - path: {path}\n    leg: {leg}\n", 1)
-    plan.write_bytes(text.encode())
-    return plan
-
-
-def findings(plan: Path) -> list[tuple[str, str]]:
-    result = run_script(ADOPT, "check", "--plan", str(plan))
-    found = [tuple(line.split(" ", 1)[1].split(": ", 1))
-             for line in result.stderr.splitlines()
-             if line.startswith("FINDING ")]
-    assert result.returncode == (1 if found else 0), result.stderr
-    return found
-
-
-def in_the_history(adopter, verb: str = "removes") -> re.Pattern:
-    """The end of the finding for a gitlink only the history holds."""
-    return re.compile(re.escape(adopter.FAILS_IN_THE_HISTORY).replace(
-        re.escape("{}"), named(verb)) + "$")
-
-
 #: Where the plan sends `.gitmodules`; the two legs are extracted either way.
 EITHER_WAY = pytest.mark.parametrize("modules_leg", ["code", "drop"])
 
@@ -612,23 +533,12 @@ def test_execute_refuses_it_before_any_leg_exists(adopter, tmp_path,
                                                   monkeypatch, modules_leg):
     """The refusal is `check`'s finding, raised by `_refuse_what_check_finds`
     before `_create_leg_remotes`: the directory the legs go in is never
-    made."""
-    monkeypatch.setattr(adopter, "_require_filter_repo", lambda: None)
+    made (`refused_before_any_leg`)."""
     plan = planned(history_source(tmp_path), tmp_path,
                    {GITMODULES: modules_leg})
-    found = findings(plan)
-    remotes = tmp_path / REMOTES
-    with pytest.raises(adopter.Refusal) as caught:
-        adopter.cmd_execute(Namespace(
-            plan=str(plan), source=None, local_remote_dir=remotes,
-            allow_empty_leg=[], yes=True, work_dir=tmp_path / "work"))
-    refusal = caught.value
+    refusal = refused_before_any_leg(adopter, monkeypatch, plan, tmp_path)
     assert refusal.code == UNREADABLE
-    assert refusal.detail.splitlines()[1:] == [
-        f"  FINDING {code}: {detail}" for code, detail in found]
-    assert "no leg repository was created" in refusal.remediation
     assert refusal.remediation.endswith("\n" + adopter.SUBMODULE_REMEDIATION)
-    assert not remotes.exists()
 
 
 # --- end to end -------------------------------------------------------------
