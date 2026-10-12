@@ -625,6 +625,131 @@ def test_a_manifest_that_did_not_read_before_is_left_to_its_validators(
     assert "\tstray: tab" in new
 
 
+# --- the pin's own layout (#323) --------------------------------------------
+
+def commit_shape_pin(root, text: str, message: str) -> None:
+    """Write `contracts/shape-pin.yaml` as exactly these bytes and commit it,
+    as `commit_manifest` does for the manifest."""
+    (root / "contracts" / "shape-pin.yaml").write_bytes(text.encode("utf-8"))
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m",
+        message, "--", "contracts/shape-pin.yaml", cwd=root)
+
+
+def above_the_files_block(text: str) -> str:
+    """The pin up to its `files:` line: everything `apply` moves by line.
+    The block under it is rewritten whole, from the recomputed rows."""
+    return text.split("\nfiles:\n", 1)[0]
+
+
+@pytest.mark.parametrize("width", [4, 3, 1])
+def test_apply_takes_a_shape_pin_whose_digests_child_is_indented_its_own_way(
+        root, upstream_and_project, width):
+    """THE ISSUE'S REPRODUCTION, end to end. `shape-pin.yaml` read fine with
+    `tree_sha256:` indented four spaces, and `apply` refused it as
+    `update-pin-unrecognised` — "0 `tree` line(s)", rolled back — as a hand
+    edit. It takes the update now, both validators stay green, and the diff
+    to the pin above its `files:` block is the two values."""
+    a, target = upstream_and_project["a"], upstream_and_project["b"]
+    upstream = upstream_and_project["upstream"]
+    pin = root / "contracts" / "shape-pin.yaml"
+    scaffolded = pin.read_text(encoding="utf-8")
+    laid = scaffolded.replace("\n  tree_sha256:",
+                              "\n" + " " * width + "tree_sha256:", 1)
+    assert laid != scaffolded, "fixture: the scaffold's layout was found"
+    commit_shape_pin(root, laid, "Re-indent the pin's digests child")
+    validators_are_green(root)
+    old_tree = load_yaml(pin)["digests"]["tree_sha256"]
+
+    result = apply(root, upstream_and_project)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    tree = tree_digest(upstream, target)
+    assert above_the_files_block(pin.read_text(encoding="utf-8")) == (
+        above_the_files_block(laid)
+        .replace(f'commit: "{a}"', f'commit: "{target}"')
+        .replace(f'tree_sha256: "{old_tree}"', f'tree_sha256: "{tree}"'))
+    loaded = load_yaml(pin)
+    assert loaded["commit"].lower() == target
+    assert loaded["digests"]["tree_sha256"].lower() == tree
+    assert pin_rows(root)[CHANGED] == file_sha256(root / CHANGED)
+    validators_are_green(root)
+
+
+def test_apply_keeps_a_comment_on_the_pins_lines_and_the_manifests(
+        root, upstream_and_project):
+    """A TRAILING COMMENT IS NOT THE VALUE (#323). `commit:` and
+    `tree_sha256:` were written back bare in the pin and in the manifest's
+    `shape:` block, and the comment a person left on either was gone from the
+    commit `apply` made. Four lines are commented here, two in each file, and
+    all four are what they were with only the values moved."""
+    a, target = upstream_and_project["a"], upstream_and_project["b"]
+    upstream = upstream_and_project["upstream"]
+    pin = root / "contracts" / "shape-pin.yaml"
+    manifest = root / "project.yaml"
+    old_tree = load_yaml(pin)["digests"]["tree_sha256"]
+
+    def comment(text: str, note: str) -> str:
+        return (text.replace(f'commit: "{a}"', f'commit: "{a}"  # {note} cut')
+                .replace(f'tree_sha256: "{old_tree}"',
+                         f'tree_sha256: "{old_tree}" # {note} digest'))
+
+    commented_pin = comment(pin.read_text(encoding="utf-8"), "pin")
+    commented_manifest = comment(manifest.read_text(encoding="utf-8"),
+                                 "manifest")
+    for note in ("pin cut", "pin digest"):
+        assert commented_pin.count(f"# {note}") == 1
+    for note in ("manifest cut", "manifest digest"):
+        assert commented_manifest.count(f"# {note}") == 1
+    commit_shape_pin(root, commented_pin, "Comment the pin")
+    commit_manifest(root, commented_manifest, "Comment the manifest")
+    validators_are_green(root)
+
+    result = apply(root, upstream_and_project)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    tree = tree_digest(upstream, target)
+    moved = {f'commit: "{a}"': f'commit: "{target}"',
+             f'tree_sha256: "{old_tree}"': f'tree_sha256: "{tree}"'}
+
+    def only_the_values_moved(text: str) -> str:
+        for was, now in moved.items():
+            text = text.replace(was, now)
+        return text
+
+    assert above_the_files_block(pin.read_text(encoding="utf-8")) == (
+        only_the_values_moved(above_the_files_block(commented_pin)))
+    assert manifest.read_text(encoding="utf-8") == (
+        only_the_values_moved(commented_manifest))
+    validators_are_green(root)
+
+
+def test_a_pin_layout_the_rewrite_cannot_carry_is_refused_as_its_own_fault(
+        root, upstream_and_project):
+    """THE PIN IS READ BACK, as the manifest is (#208). A `commit:` whose
+    value sits on the line below it reads and validates, and is the one
+    layout a line rewrite cannot move. `apply` says the fault is its own,
+    before the pin is written, rather than leaving the red pin to the
+    validators and their lockstep remedy; the copies it had already made are
+    rolled back and the tree ends exactly as it was."""
+    a = upstream_and_project["a"]
+    pin = root / "contracts" / "shape-pin.yaml"
+    text = pin.read_text(encoding="utf-8")
+    folded = text.replace(f'commit: "{a}"\n', f"commit: >-\n  {a}\n", 1)
+    assert folded != text, "fixture: the scaffold's commit line was found"
+    commit_shape_pin(root, folded, "Fold the pin's commit onto its own line")
+    validators_are_green(root)
+
+    result = apply(root, upstream_and_project)
+
+    assert result.returncode == 2, result.stdout
+    assert "update-pin-unrecognised" in result.stderr
+    assert "the fault is this tool's line rewrite" in result.stderr
+    assert "unexpected indentation" in result.stderr
+    assert "update-validators-red" not in result.stderr
+    assert pin.read_bytes() == folded.encode("utf-8")
+    assert git("status", "--porcelain", cwd=root).stdout == ""
+
+
 # --- drift the project introduced ------------------------------------------
 
 def edit_locally(root, rel: str) -> None:

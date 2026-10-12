@@ -433,12 +433,28 @@ def repository_names(root: Path) -> list[str]:
     `origin` is asked only when `root` ITSELF carries a `.git`: git walks up
     to an ancestor otherwise, and an ancestor's name is not this directory's
     -- the trap `shape-doctor.py`'s `repo_local_origin_name` guards against.
+
+    AN ORIGIN URL THAT IS NOT UTF-8 NAMES NOTHING, as no origin names nothing
+    (#385). git keeps a URL as the bytes it was given, so a clone of a
+    directory named in a legacy code page has one, and nobody did anything
+    wrong. Read strictly, it raised `UnicodeDecodeError` into `read()`'s net,
+    which answered `NOT_ANSWERED`: a single repository lost the advisory, and
+    a leg clone its instruction, even one whose own `AGENTS.md` says what it
+    is without any URL. NOT EVEN THE LAST SEGMENT IS SALVAGED. In a
+    double-byte code page (Shift_JIS, GBK, Big5) the byte `\\` is the second
+    half of many characters, and `repository_name` splits on `\\`, so a
+    segment read out of such a URL can be a fragment of a name. It is also
+    the answer `adopt-project.py`'s `_remote_repository` gives the same URL
+    (#292), and `shape-doctor.py`'s `origin_name` gives it too, so the
+    `naming` row and the `Triad` row read one identity. The directory's own
+    name, the leg's `AGENTS.md` and the person's `workspace.yaml` still
+    answer.
     """
     names = [root.name]
     if (root / ".git").exists():
         try:
             url = git_out(["remote", "get-url", "origin"], cwd=root)
-        except (Refusal, OSError):
+        except (Refusal, OSError, UnicodeDecodeError):
             url = ""
         name = repository_name(url) if url else None
         if name and name not in names:
