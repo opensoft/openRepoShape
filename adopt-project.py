@@ -130,7 +130,7 @@ from repo_shape import (  # noqa: E402
     tree_digest,
 )
 from shape_materialize import (  # noqa: E402
-    ADOPT_MAKEFILE_BLOCK, RULESET_HINT, SHAPE_REPOSITORY,
+    ADOPT_MAKEFILE_BLOCK, SHAPE_REPOSITORY,
     CommandFailed, Materialized, assembly_root_paths, collision_follow_up,
     copy_tree, default_reference, election_date, env_commit,
     escape_what_stdout_cannot_encode, git_init_commit,
@@ -3649,6 +3649,32 @@ def _refuse_an_unrunnable_plan(plan: Plan, source: Source) -> None:
             "goes missing.")
 
 
+#: The adoption's own ruleset hint (#462). `RULESET_HINT` is the scaffold's,
+#: and its one exit, a re-run with `--reuse-empty-repo`, is not an
+#: adoption's: `adopt-project.py` has no such flag, and a re-run into the leg
+#: repositories this run created is refused as `leg-remote-exists`. So an
+#: adoption names ITS one exit, a re-run by an operator holding the bypass
+#: right once those legs are deleted, and names the pull request only as what
+#: cannot finish it (Brett Heap, 2026-10-12, "Offer only exits that work"):
+#: the refused push was the first into a leg this run created, so there is no
+#: tracking branch for it to target, and nothing would run the rest of the
+#: adoption after it was merged. The same two fields as the scaffold's, which
+#: both leg builders pass.
+ADOPT_RULESET_HINT = """
+If the organisation applies a ruleset requiring changes to arrive by pull
+request, a direct push to the default branch is refused BY DESIGN and must not
+be worked around. An adoption has ONE legitimate exit: have an operator
+holding the bypass right re-run it, with a new --work-dir or none, once the
+two leg repositories this run created are deleted, since a re-run is refused
+while they exist. A seed branch and a pull request cannot finish an
+adoption: {repo} has no {tracking} for that pull request to target, and
+nothing would run the rest of this adoption after it was merged.
+
+NOTHING has been rolled back. What already exists is listed above; delete it
+by hand if you want a clean re-run.
+"""
+
+
 def _flush_stdout() -> None:
     """Flush stdout before a failure is written to stderr (#171, #177, #188).
 
@@ -3736,8 +3762,7 @@ def _extract_leg(role: str, source: Source, work: Path, paths: list[str],
         run(["git", "push", "-q", url, f"HEAD:refs/heads/{tracking}"], cwd=work)
     except CommandFailed as exc:
         print(exc.loudly(f"pushing the {role} leg"), file=sys.stderr)
-        print(RULESET_HINT.format(work=work, repo=repository, role=role,
-                                  local="HEAD", tracking=tracking),
+        print(ADOPT_RULESET_HINT.format(repo=repository, tracking=tracking),
               file=sys.stderr)
         raise
     count = git_out(["rev-list", "--count", "HEAD"], cwd=work)
@@ -3785,8 +3810,7 @@ def _seed_leg(role: str, work: Path, values: dict, branch: str, url: str,
         run(["git", "push", "-q", url, f"HEAD:refs/heads/{tracking}"], cwd=work)
     except CommandFailed as exc:
         print(exc.loudly(f"pushing the seeded {role} leg"), file=sys.stderr)
-        print(RULESET_HINT.format(work=work, repo=repository, role=role,
-                                  local="HEAD", tracking=tracking),
+        print(ADOPT_RULESET_HINT.format(repo=repository, tracking=tracking),
               file=sys.stderr)
         raise
     print(f"  {role:<5}   0 path(s) -> {commit[:12]} (SEEDED from "
