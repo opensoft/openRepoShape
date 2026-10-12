@@ -44,6 +44,18 @@ DETERMINISM IS THE WHOLE DESIGN CONSTRAINT, because the guard compares bytes:
     as in `tests/test_repo_hygiene.py`, because this is the one file in the
     repository whose bytes come from running programs on somebody's machine.
 
+A CHECKOUT OF THE STANDARD, AND NOTHING ELSE, IS RENDERED (#341). `setup.sh
+--help` is `setup-project.py`'s usage only where the shim finds itself in a
+checkout; anywhere else it answers with a short text of its own, and before
+#341 it cloned the public upstream to answer at all. So a rendering made in a
+download, a `git archive` or a release extraction reached GitHub and then
+documented UPSTREAM's flags under this tree's heading, `--check` included.
+`require_a_checkout` asks the shim's own question first and refuses, naming
+the tree; and every child runs under `GIT_ALLOW_PROTOCOL=file`, so that if
+the question ever stops matching the shim's, the clone fails closed instead
+of reaching the network. A checkout clones nothing, so neither changes a
+byte of `docs/cli.md`.
+
 THE PROJECT-SIDE COPIES CANNOT PRINT THEIR HELP AS THEY STAND from a checkout
 of this standard. Each of the six does `sys.path.insert(0, <its own
 directory>)` and then `from repo_shape import …`, and `repo_shape.py` is beside
@@ -108,7 +120,12 @@ CHECKOUT_TOOLS = [
     Tool("setup.sh", "bash", "./setup.sh",
          "The front door for a NEW project: preflight, the naming check, the "
          "plan, one typed `yes`, then three repositories. A SHIM over "
-         "`setup-project.py`, so the help below is that tool's own."),
+         "`setup-project.py`, so the help below is that tool's own.",
+         note="From anywhere but a checkout of the standard — a download, "
+              "`curl … | bash` — `setup.sh --help` is the shim's own instead: "
+              "a few lines that clone nothing, list no flag, and name "
+              "`setup-project.py --help` and this file as where the flags "
+              "are."),
     Tool("openRepoShape", "bash", "openRepoShape",
          "The same front door as an installed command, plus `--install` "
          "(itself, into `~/.local/bin`), `--preflight` (this MACHINE) and "
@@ -261,6 +278,13 @@ def child_env() -> dict:
     to depend on which locales happen to be installed on whichever machine
     runs this script next, which is exactly the noise this capture must not
     have on one platform and not another.
+
+    `GIT_ALLOW_PROTOCOL=file` (#341), replacing whatever the caller had:
+    asking a tool for its help is never a network act, and no child here
+    clones anything from a checkout, which `require_a_checkout` insists on.
+    If that ever stops being true, git refuses the transport, the tool's
+    `--help` exits non-zero, and `capture_help` turns that into a refusal
+    naming the tool — the regression fails closed, offline.
     """
     env = dict(os.environ)
     env.pop("LINES", None)
@@ -275,8 +299,83 @@ def child_env() -> dict:
         "NO_COLOR": "1",
         "TERM": "dumb",
         "LC_ALL": "C",
+        "GIT_ALLOW_PROTOCOL": "file",
     })
     return env
+
+
+#: WHAT `setup.sh`'s `is_shape_checkout` ASKS FOR, read from the shim rather
+#: than guessed: git's top level for the directory the shim sits in must hold
+#: both of these files. `tests/test_cli_reference.py` reads the shim's probe
+#: and fails if the two lists ever part.
+SHAPE_CHECKOUT_FILES = ("scaffold-project.py",
+                        "contracts/repository-naming.yaml")
+
+#: The second half of every refusal `require_a_checkout` makes.
+RENDER_FROM_A_CLONE = (
+    "Outside a checkout `setup.sh --help` is the shim's own short text, not "
+    "`setup-project.py`'s usage, so a rendering here would document the "
+    "wrong thing. Run this script in a `git clone` of the standard instead.")
+
+
+def require_a_checkout(tree: Path = REPO) -> None:
+    """Refuse, naming `tree`, unless it is the top level of a checkout.
+
+    THE SHIM'S OWN QUESTION, asked first: `git -C <tree> rev-parse
+    --show-toplevel` answers, and that top level holds every one of
+    `SHAPE_CHECKOUT_FILES`. Where it does not, `setup.sh --help` is not
+    `setup-project.py`'s usage, which is the text this script renders.
+
+    AND ONE QUESTION THE SHIM DOES NOT ASK: that the top level IS `tree`. A
+    copy of the standard nested inside another checkout of it passes the
+    shim's probe, and its `setup.sh --help` then prints the OUTER checkout's
+    `setup-project.py` usage — somebody else's flags under this tree's
+    heading. `os.path.samefile`, because git spells the path its own way
+    (forward slashes on Windows, a symlink resolved).
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(tree), "rev-parse", "--show-toplevel"],
+            env=child_env(), stdin=subprocess.DEVNULL, capture_output=True,
+            check=False)
+    except OSError as error:
+        raise Refusal(
+            f"cannot tell whether {tree} is a checkout of openRepoShape: git "
+            f"could not be run ({error}). {RENDER_FROM_A_CLONE}") from error
+    # THE PATH, BYTE FOR BYTE. Bash's `$(...)` in the shim's
+    # `is_shape_checkout` drops the trailing newlines and keeps every other
+    # byte, so a checkout whose directory name ends in a space, or is not
+    # UTF-8, is a checkout to the shim and has to be one here. `.strip()`
+    # would eat the space that belongs to the name, and a `replace` decode
+    # would turn a byte that is not UTF-8 into U+FFFD, naming a directory that
+    # is not there. `os.fsdecode` is how this process spells such a name to
+    # the file system; the `\r` goes with the newline, as `.strip()` took it,
+    # for a git that ends its lines the Windows way.
+    toplevel = os.fsdecode(proc.stdout).rstrip("\r\n")
+    if proc.returncode != 0 or not toplevel:
+        said = proc.stderr.decode("utf-8", "replace").strip().splitlines()
+        raise Refusal(
+            f"{tree} is not a checkout of openRepoShape: git finds no work "
+            f"tree there (a download, or a `git archive` or release "
+            f"extraction, has none){'; git said: ' + said[0] if said else ''}"
+            f". {RENDER_FROM_A_CLONE}")
+    missing = [name for name in SHAPE_CHECKOUT_FILES
+               if not (Path(toplevel) / name).is_file()]
+    if missing:
+        raise Refusal(
+            f"{tree} is not a checkout of openRepoShape: it lies in the git "
+            f"work tree {toplevel}, whose top level has no "
+            f"{' and no '.join(missing)}. {RENDER_FROM_A_CLONE}")
+    try:
+        same = os.path.samefile(toplevel, tree)
+    except OSError:
+        same = False
+    if not same:
+        raise Refusal(
+            f"{tree} is not the top level of a checkout of openRepoShape: it "
+            f"lies inside the checkout {toplevel}, so its `setup.sh --help` "
+            f"would print THAT checkout's `setup-project.py` usage. "
+            f"{RENDER_FROM_A_CLONE}")
 
 
 def capture_help(tool: Tool, *subcommand: str) -> str:
@@ -548,7 +647,13 @@ def _refuse_host_paths(text: str) -> None:
 
 
 def render(skip_bash: bool = False) -> str:
-    """The whole document."""
+    """The whole document.
+
+    `require_a_checkout` first, here as well as in `main`: the guard in
+    `tests/test_cli_reference.py` calls this directly, and a test suite run
+    in an extraction is a rendering made in one.
+    """
+    require_a_checkout()
     tools = [(title, _active_tools(group, skip_bash), blurb)
              for title, group, blurb in GROUPS]
 
@@ -616,6 +721,15 @@ def main(argv: list | None = None) -> int:
                         help="print a unified diff against the file that is "
                              "there and write nothing; exit 1 if they differ")
     args = parser.parse_args(argv)
+
+    # A TREE THAT IS NOT A CHECKOUT IS REFUSED FIRST (#341), before the
+    # questions about this machine below: it is the same refusal on every
+    # machine, and a windows runner should hear it rather than the bash one.
+    try:
+        require_a_checkout()
+    except Refusal as refusal:
+        print(f"[!!] {refusal}", file=sys.stderr)
+        return 2
 
     # `os.name` BEFORE `shutil.which`, and the order is the point:
     # `tests/conftest.py::WINDOWS_SKIP` says at length that the `bash` on a

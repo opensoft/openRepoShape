@@ -578,6 +578,142 @@ def test_a_workspace_path_no_machine_can_hold_fails_nothing(tmp_path,
     assert "This is a single repository." in result.stdout
 
 
+#: The start of an `origin` URL holding the byte 0xE9, as a clone of a
+#: directory named `café` in Latin-1 has one (#385): git keeps a URL as the
+#: bytes it was given, and nobody did anything wrong. Relative, so no host
+#: path goes into `.git/config`, where a Windows backslash is an escape.
+NOT_UTF8 = b"../caf\xe9/"
+
+
+def with_origin(here: Path, url: bytes) -> Path:
+    """`here`, its `origin` set to `url`.
+
+    Written into `.git/config` as bytes, as #292's
+    `tests/test_adopt_git_reads.py` writes it, so the byte reaches git as it
+    is on every platform (a Windows command line is text). Skipped where
+    `git remote get-url origin` does not give it back as written.
+    """
+    config = here / ".git" / "config"
+    config.write_bytes(config.read_bytes()
+                       + b'[remote "origin"]\n\turl = ' + url + b"\n")
+    read = subprocess.run(["git", "remote", "get-url", "origin"],
+                          cwd=str(here), capture_output=True, check=False)
+    if read.stdout.rstrip(b"\r\n") != url:
+        pytest.skip(f"`git remote get-url origin` here is {read.stdout!r}, "
+                    f"not {url!r}")
+    return here
+
+
+def doctor_text(here: Path, env: dict) -> subprocess.CompletedProcess:
+    """The printed report on an ASCII console, read for a traceback."""
+    result = run_script(DOCTOR, "--root", str(here),
+                        env={**env, "PYTHONIOENCODING": "ascii"})
+    assert no_traceback(result), result.stdout + result.stderr
+    return result
+
+
+def test_a_single_repository_whose_origin_is_not_utf8_hears_it(tmp_path,
+                                                               quiet_env):
+    """`advise`, and every row the same repository with NO origin gets.
+
+    On the base `repository_names` raised `UnicodeDecodeError` into
+    `read()`'s net, which answered `not-answered` and said nothing, and
+    `shape-doctor.py --root` ended in that traceback, exit 1, from the
+    `naming` row's `origin_name`. Such a URL names nothing, as no origin
+    names nothing, so the twin here is the same repository under another
+    parent with no `origin` at all, and the two reports must agree row for
+    row: the verdict, the advisory, the names classified and the project
+    `the way in` suggests.
+    """
+    here = with_origin(repository(tmp_path / "a" / "Thing"),
+                       NOT_UTF8 + b"repo.git")
+    twin = repository(tmp_path / "b" / "Thing")
+    reading = shape_advisory.read(here, env=quiet_env)
+    assert reading.state == shape_advisory.ADVISE, reading.as_dict()
+    assert shape_advisory.repository_names(here) == ["Thing"]
+
+    code, rows, payload = doctor_json(here, quiet_env)
+    twin_code, twin_rows, twin_payload = doctor_json(twin, quiet_env)
+    assert (code, payload["verdict"]) == (2, "NOT A SHAPE ROOT"), payload
+    assert (twin_code, twin_payload["verdict"]) == (code, payload["verdict"])
+    assert rows[ROW]["status"] == "advisory", rows[ROW]
+    for row in (ROW, "naming", "way-in"):
+        assert rows[row]["status"] == twin_rows[row]["status"], row
+        assert rows[row]["detail"] == twin_rows[row]["detail"], row
+    assert rows["naming"]["detail"]["origin"] is None, rows["naming"]
+
+    text = doctor_text(here, quiet_env)
+    assert text.returncode == 2, text.stdout + text.stderr
+    assert "advisory  Triad" in text.stdout, text.stdout
+    assert "NOT A SHAPE ROOT" in text.stdout, text.stdout
+
+
+@pytest.mark.parametrize("how", ["agents", "name"])
+def test_a_leg_clone_whose_origin_is_not_utf8_is_still_sent_to_its_root(
+        tmp_path, quiet_env, how):
+    """By its own `AGENTS.md`, or by its directory's name: `leg-clone`.
+
+    Neither route needs the URL: the leg's `AGENTS.md` is read from its own
+    tree and its name from its directory. On the base neither ran, because
+    `repository_names` raised before them, so the advisory said nothing and
+    the leg was not sent to its root; and `--root` ended in the traceback.
+    """
+    if how == "agents":
+        here = repository(tmp_path / "renamed-clone",
+                          {"AGENTS.md": rendered_leg_agents("spec")})
+        said = "this is a clone of the spec leg of a Triad"
+    else:
+        here = repository(tmp_path / "Northwind-spec")
+        said = "`Northwind-spec` is named as the spec leg of `Northwind`"
+    with_origin(here, NOT_UTF8 + b"Northwind-spec.git")
+    reading = shape_advisory.read(here, env=quiet_env)
+    assert reading.state == shape_advisory.LEG_CLONE, reading.as_dict()
+    assert reading.leg["by"] == how, reading.leg
+
+    code, rows, payload = doctor_json(here, quiet_env)
+    assert (code, payload["verdict"]) == (2, "NOT A SHAPE ROOT"), payload
+    row = rows[ROW]
+    assert row["status"] == "n/a", row
+    assert said in row["reason"], row["reason"]
+    assert rows["way-in"]["next"] is None, rows["way-in"]
+    text = doctor_text(here, quiet_env)
+    assert text.returncode == 2, text.stdout + text.stderr
+    assert "NOT A SHAPE ROOT" in text.stdout, text.stdout
+
+
+@pytest.mark.parametrize("directory, names_it", [
+    (b"cafe/", True), ("café/".encode("utf-8"), True), (NOT_UTF8[3:], False),
+], ids=["ascii", "utf-8", "latin-1"])
+def test_only_an_origin_that_is_text_names_the_repository(
+        tmp_path, quiet_env, directory, names_it):
+    """A clone in a directory named for nothing, its URL ending in a leg's
+    name: read under an ASCII or a UTF-8 directory, and not under Latin-1.
+
+    THE ISSUE LEFT THIS TO ITS AUTHOR, and this pins the choice: a URL that
+    is not UTF-8 names nothing, NOT EVEN ITS LAST SEGMENT. In a double-byte
+    code page (Shift_JIS, GBK, Big5) the byte `\\` is the second half of many
+    characters, and `repository_name` splits on `\\`, so a segment read out
+    of such a URL can be a fragment of a name. It is what
+    `adopt-project.py`'s `_remote_repository` (#292) and the doctor's
+    `origin_name` read too. The clone is then what one with no origin is: a
+    single repository, advised, and the doctor's `naming` row classifies its
+    directory's name alone.
+    """
+    here = with_origin(repository(tmp_path / "clone"),
+                       b"../" + directory + b"Northwind-spec.git")
+    names = ["clone", "Northwind-spec"] if names_it else ["clone"]
+    assert shape_advisory.repository_names(here) == names
+    reading = shape_advisory.read(here, env=quiet_env)
+    if names_it:
+        assert reading.state == shape_advisory.LEG_CLONE, reading.as_dict()
+        assert reading.leg["by"] == "name", reading.leg
+    else:
+        assert reading.state == shape_advisory.ADVISE, reading.as_dict()
+    code, rows, _payload = doctor_json(here, quiet_env)
+    assert code == 2
+    assert rows["naming"]["detail"]["names"] == names, rows["naming"]
+
+
 def test_a_byte_order_mark_is_the_editors_and_not_the_persons(tmp_path,
                                                               quiet_env):
     """A UTF-8 BOM ahead of the first key changes no answer.
