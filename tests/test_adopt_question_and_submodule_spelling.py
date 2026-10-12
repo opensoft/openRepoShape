@@ -1,26 +1,30 @@
 # SPDX-License-Identifier: Apache-2.0
-"""A plan's `question:` and a submodule's name are `_spelled` in a FINDING (#328).
+"""A plan's `question:`, its `source: commit:` and a submodule's name are
+`_spelled` in a FINDING (#328).
 
 #212 spelled every PATH a finding names, so that a line break, an ESC or a
 byte that is not UTF-8 in a source name cannot escape the line it is printed
-on. Two other texts reached a finding as typed, measured on c7c02fa:
+on. Three other texts reached a finding as typed, measured on c7c02fa:
 
   * a plan entry's `question:`, which people and AIs edit by hand, repeated
     after `The question was:` in `plan-unresolved`. A line feed in it ended
     the finding's line and began another, `grep '^FINDING'` read as `check`'s
     own; a carriage return and an ESC reached the terminal; and a byte that
-    is not UTF-8 reached it as Python's own `\\udce9`, which no tool of this
-    standard writes;
+    is not UTF-8 reached it as Python's own raw surrogate, which `print`
+    writes to stderr as `\\udce9` and refuses on a stream strict about UTF-8;
   * the key git reports, `missing value for 'submodule.<name>.update'`, in
     `plan-gitmodules-unreadable`: the `<name>` is the source author's choice,
     and git prints it as it is. `_refused_value`'s messages spell the same
-    key; this one did not. It is also the one of the two that `execute`
-    repeats as its refusal.
+    key; this one did not. `execute` repeats it as its refusal, and the
+    third too;
+  * the first 12 characters of the plan's hand-edited `source: commit:`, in
+    `plan-stale`, which `check` prints and `execute` refuses with (found by
+    the review of this change, not by the issue).
 
-Both now go through `_spelled`. A question prints as it did unless a character
-in it is not printable (`_shown`), and a key keeps git's single quotes unless
-`_spelled` has anything to write differently, so every finding that holds
-nothing unsafe is byte-identical to what it was.
+All three now go through `_spelled`. A question and a commit print as they
+did unless a character in them is not printable (`_shown`), and a key keeps
+git's single quotes unless `_spelled` has anything to write differently, so
+every finding that holds nothing unsafe is byte-identical to what it was.
 
 NOTHING HERE WRITES A SPELLING `_spelled` MAY CHANGE. The characters pinned
 by their spelling are the ones whose escape is the same before and after the
@@ -42,12 +46,13 @@ from pathlib import Path
 import pytest
 
 from conftest import (ADOPT, GITLINK, GITMODULES, as_human,
-                      blank_unnamed_pin_sources, link, make_source_repo,
+                      blank_unnamed_pin_sources, git, link, make_source_repo,
                       planned, put_gitmodules, resolve, write_plan)
 
 UTF8 = "utf-8"
 UNRESOLVED = "plan-unresolved"
 UNREADABLE = "plan-gitmodules-unreadable"
+STALE = "plan-stale"
 PROJECT = "Northwind"
 #: Each character, by the id its tests wear: `(raw, as _spelled writes it)`.
 CHARACTERS = {
@@ -56,7 +61,7 @@ CHARACTERS = {
     "escape": ("\x1b", "\\x1b"),
     "tab": ("\t", "\\t"),
     "next-line": ("\x85", "\\x85"),
-    "line-separator": (" ", "\\u2028"),
+    "line-separator": ("\u2028", "\\u2028"),
 }
 EACH_CHARACTER = pytest.mark.parametrize(
     ("char", "spelled"), list(CHARACTERS.values()), ids=list(CHARACTERS))
@@ -535,3 +540,130 @@ def test_execute_refuses_on_the_lines_check_prints(adopter, tmp_path, name,
     assert any(f"(missing value for {adopter._spelled(key)}), " in line
                for line in said), said
     assert not remotes.exists(), "not even the directory the legs go in"
+
+
+# --- the plan's `source: commit:`: what is spelled -------------------------
+#
+# Found by the review of this change, on a96297e: `plan-stale` prints the
+# first 12 characters of the plan's `commit:` as typed, in `check`'s finding
+# and in `execute`'s refusal, which is the same class as the two above.
+
+#: `(the scalar as the plan's writer spells one, the text it reads back as,
+#: how the finding spells that text's first 12 characters)`; None where
+#: `_spelled` decides, as it does for a byte that is not UTF-8. The slice is
+#: taken before the spelling, so that twenty escapes print as twelve.
+COMMITS = {
+    "an-esc-and-a-line-feed": (
+        '"a\\u001b[2K\\nFINDING ok"', "a\x1b[2K\nFINDING ok",
+        "`a\\x1b[2K\\nFINDIN`"),
+    "a-leading-line-feed": (
+        '"\\nFINDING ok: x"', "\nFINDING ok: x", "`\\nFINDING ok:`"),
+    "a-carriage-return": (
+        '"abc\\rFINDING plan-ok: x"', "abc\rFINDING plan-ok: x",
+        "`abc\\rFINDING `"),
+    "next-line": ('"ab\\u0085cd"', "ab\x85cd", "`ab\\x85cd`"),
+    "line-separator": ('"ab\\u2028cd"', "ab\u2028cd", "`ab\\u2028cd`"),
+    "a-byte-that-is-not-utf8": ('"abc\\udce9def"', f"abc{BYTE}def", None),
+    "twenty-escapes": ('"' + "\\u001b" * 20 + '"', "\x1b" * 20,
+                       "`" + "\\x1b" * 12 + "`"),
+}
+EACH_COMMIT = pytest.mark.parametrize(
+    ("commit_yaml", "commit", "spelled"), list(COMMITS.values()),
+    ids=list(COMMITS))
+
+
+def stale_plan(adopter, base: Path, commit_yaml: str) -> tuple[Path, str]:
+    """A plan for a source `plan` has no question for, whose `source:
+    commit:` is the scalar `commit_yaml`, and the tip git names for that
+    source: so the plan is stale, and `check` and `execute` say so."""
+    source = make_source_repo(base / "Thing", tree=SMALL_TREE, edits=())
+    plan = planned(source, base, {})
+    assert [entry for entry in adopter.Plan.load(plan).entries
+            if entry.get("leg") is None] == [], "an unanswered entry"
+    text = plan.read_text(encoding=UTF8)
+    edited, count = re.subn(r"(?m)^(  commit: ).*$",
+                            lambda found: found[1] + commit_yaml, text,
+                            count=1)
+    assert count == 1, text
+    with plan.open("w", encoding=UTF8, newline="\n") as handle:
+        handle.write(edited)
+    return plan, git("rev-parse", "HEAD", cwd=source).stdout.strip()
+
+
+def spelled_commit(adopter, commit: str, spelled: str | None) -> str:
+    """The first 12 characters of `commit`, as the finding spells them: by
+    the table, or by `_spelled` itself where it decides."""
+    return spelled if spelled is not None else adopter._spelled(commit[:12])
+
+
+@EACH_COMMIT
+def test_check_spells_the_plans_commit_in_the_one_line_of_plan_stale(
+        adopter, tmp_path, commit_yaml, commit, spelled):
+    plan, tip = stale_plan(adopter, tmp_path, commit_yaml)
+    done = check_bytes(plan, tmp_path / "work")
+    assert done.returncode == 1, done.stderr + done.stdout
+    said = printed_lines(done.stderr) + printed_lines(done.stdout)
+    for line in said:
+        assert_one_readable_line(line, "\r", "\x1b", "\x85", "\u2028", BYTE)
+    [line] = findings_printed(done, STALE)
+    assert line.startswith(
+        "FINDING plan-stale: the plan was written against "
+        f"{spelled_commit(adopter, commit, spelled)} but `main` is now "
+        f"at {tip[:12]}. Re-run `plan`: "), line
+    forged = [line for line in said if line.startswith("FIND")
+              and not line.startswith("FINDING plan-")]
+    assert forged == [], "a finding `check` did not write"
+
+
+@EACH_COMMIT
+def test_execute_refuses_plan_stale_on_the_line_check_prints(
+        adopter, tmp_path, commit_yaml, commit, spelled):
+    """`execute` repeats `plan-stale` in its refusal, and creates nothing."""
+    plan, tip = stale_plan(adopter, tmp_path, commit_yaml)
+    remotes = tmp_path / "remotes"
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter.cmd_execute(Namespace(
+            plan=str(plan), source=None, local_remote_dir=remotes,
+            allow_empty_leg=[], yes=True, work_dir=tmp_path / "work"))
+    assert caught.value.code == STALE
+    said = str(caught.value).split("\n")
+    for line in said:
+        assert_one_readable_line(line, "\r", "\x1b", "\x85", "\u2028", BYTE)
+    assert said[0] == (
+        "REFUSED plan-stale: the plan was written against "
+        f"{spelled_commit(adopter, commit, spelled)} and `main` is now "
+        f"at {tip[:12]}"), said
+    assert not remotes.exists(), "not even the directory the legs go in"
+
+
+# --- the plan's `source: commit:`: what is not -----------------------------
+
+#: A plan's `commit:` that holds only printable characters, and the first 12
+#: of them: printed as they were, with no backticks.
+UNCHANGED_COMMITS = {
+    "a-hash": ("0123456789abcdef0123456789abcdef01234567", "0123456789ab"),
+    "a-name": ("release-1.0.0-rc1", "release-1.0."),
+}
+
+
+@pytest.mark.parametrize("commit, printed", UNCHANGED_COMMITS.values(),
+                         ids=list(UNCHANGED_COMMITS))
+def test_a_printable_stale_commit_prints_exactly_as_it_did(adopter, tmp_path,
+                                                           commit, printed):
+    """The case that happens: a plan written against a commit the source has
+    since moved on from. Its first 12 characters print as they were, in
+    `check` and in `execute`."""
+    plan, tip = stale_plan(adopter, tmp_path, f'"{commit}"')
+    done = check_bytes(plan, tmp_path / "work")
+    assert done.returncode == 1, done.stderr + done.stdout
+    [line] = findings_printed(done, STALE)
+    assert line.startswith(
+        f"FINDING plan-stale: the plan was written against {printed} but "
+        f"`main` is now at {tip[:12]}. Re-run `plan`: ")
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter.cmd_execute(Namespace(
+            plan=str(plan), source=None, local_remote_dir=tmp_path / "remotes",
+            allow_empty_leg=[], yes=True, work_dir=tmp_path / "work"))
+    assert str(caught.value).split("\n")[0] == (
+        f"REFUSED plan-stale: the plan was written against {printed} and "
+        f"`main` is now at {tip[:12]}")

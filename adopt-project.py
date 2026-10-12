@@ -2913,10 +2913,14 @@ def cmd_check(args) -> int:
                           plan.source_commit or source.commit)
 
     if plan.source_commit and source.commit != plan.source_commit:
+        # `commit:` is a plan value people and AIs edit: sliced first, so the
+        # spelling stays bounded, and `_shown`, so a real hash reads as it did
+        # and a line break or an ESC in it (#328) cannot leave the line.
         findings.append(
             f"FINDING plan-stale: the plan was written against "
-            f"{plan.source_commit[:12]} but {_spelled(source.branch)} is now "
-            f"at {source.commit[:12]}. Re-run `plan`: a coverage check "
+            f"{_shown(plan.source_commit[:12])} but "
+            f"{_spelled(source.branch)} is now at {source.commit[:12]}. "
+            "Re-run `plan`: a coverage check "
             "against a tree that has moved proves nothing about the tree that "
             "will be split.")
 
@@ -3021,9 +3025,11 @@ def _refuse_an_unrunnable_plan(plan: Plan, source: Source) -> None:
             "and adding a `resolution:` line, then run `check`. An unanswered "
             "question is never an implicit `root`.")
     if plan.source_commit and source.commit != plan.source_commit:
+        # `commit:` is `_shown` as `check` shows it (#328).
         raise Refusal(
             "plan-stale",
-            f"the plan was written against {plan.source_commit[:12]} and "
+            f"the plan was written against "
+            f"{_shown(plan.source_commit[:12])} and "
             f"{_spelled(source.branch)} is now at {source.commit[:12]}",
             "Remediation: re-run `plan`, re-answer anything new, then "
             "`check`. Splitting a tree the plan has not seen is how a path "
