@@ -171,7 +171,8 @@ def submodule_urls(root: Path) -> dict[str, str]:
     if not path.is_file():
         return {}
     proc = subprocess.run(["git", "config", "-f", str(path), "--list"],
-                          capture_output=True, text=True, check=False)
+                          capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", check=False)
     if proc.returncode != 0:
         return {}
     paths: dict[str, str] = {}
@@ -299,7 +300,8 @@ def scrub(text: str, token: str) -> str:
 
 def git_text(args: list[str], cwd: Path) -> str | None:
     proc = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True,
-                          text=True, check=False)
+                          text=True, encoding="utf-8", errors="replace",
+                          check=False)
     return proc.stdout.strip() if proc.returncode == 0 else None
 
 
@@ -451,7 +453,8 @@ def place(root: Path, row: dict, urls: dict[str, str], prefix: list[str],
         proc = subprocess.run(
             ["git", *prefix, "clone", "-q", "--recurse-submodules", "--",
              url, str(target)],
-            capture_output=True, text=True, check=False)
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", check=False)
         if proc.returncode != 0:
             sibling.state = "CLONE FAILED"
             sibling.finding = (
@@ -475,7 +478,7 @@ def place(root: Path, row: dict, urls: dict[str, str], prefix: list[str],
     print(f"  [{project}] present at {target}; fetching only")
     fetched = subprocess.run(["git", *prefix, "fetch", "--quiet", "origin"],
                              cwd=str(target), capture_output=True, text=True,
-                             check=False)
+                             encoding="utf-8", errors="replace", check=False)
     # NO CHECKOUT, NO RESET, NO PULL: somebody is working in here.
     sibling.state = "present, fetched" if fetched.returncode == 0 \
         else "present, fetch failed"
