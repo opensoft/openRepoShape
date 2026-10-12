@@ -186,6 +186,19 @@ command, because a refusal that does not say what to run is a refusal the
 reader improvises around -- which is the house rule the rest of this standard
 is built on.
 
+AND THE NEXT IS THE COMMAND AND NOTHING ELSE (#277). The sentence saying why
+it is the fix -- "read its output in full", "then apply --at ...", "what
+`make bootstrap` runs" -- used to ride on the same line as `   # <comment>`,
+because a terminal shows both at once. `sh`, bash and `zsh -c` read that `#`
+as a comment. An INTERACTIVE zsh without `interactivecomments` -- zsh's
+default, and macOS's login shell, the one a person pastes into -- reads it as
+a word: the pasted line handed the comment to the command as arguments, ran
+whatever followed a `;` as a second command, and ran whatever sat in
+backticks, `make bootstrap` among them. So `next` and the `NEXT` line are the
+bare command, pasted whole, and the sentence is the row's `why`: a `WHY` line
+under `NEXT` in the table, `"why"` on every row of `--json` (null where there
+is none), and a line after `Remediation:` when the report cannot answer.
+
 AND ONLY A `FINDING` MOVES THE VERDICT. A row is `ok`, `note`, `FINDING`,
 `n/a` or -- the Triad row alone -- `advisory`, and `FINDING` means exactly
 "something ELSE asserts this" -- a
@@ -651,10 +664,22 @@ def quote_arg(value, platform: str | None = None, *,
 
 
 class Row:
-    """One line of the report: what was asked, the answer, and the exit."""
+    """One line of the report: what was asked, the answer, and the exit.
+
+    `next_command` IS A COMMAND, WHOLE, AND `why` IS WHAT IS SAID ABOUT IT
+    (#277). The two were one string, `<command>   # <why>`, and the `#` is a
+    comment only to a shell that reads it as one: pasted into an interactive
+    zsh it was a word, the comment's text became arguments, a `;` in it ran a
+    second command and a pair of backticks ran a third. So a builder hands
+    the sentence over as `why`, a keyword of its own, and `next_command`
+    holds only what a reader pastes. `why` is never folded back into the
+    command line: `report` prints it on a `WHY` line of its own and `as_dict`
+    as its own key.
+    """
 
     def __init__(self, check_id: str, label: str, status: str, reason: str,
-                 next_command: str | None = None, detail: dict | None = None):
+                 next_command: str | None = None, detail: dict | None = None,
+                 *, why: str | None = None):
         self.id = check_id
         self.label = label
         self.status = status
@@ -665,14 +690,18 @@ class Row:
         # ordinary job, flattening this repository's own typography, on the
         # literal words a caller wrote around those values.
         self.next_command = ascii_text(next_command) if next_command else None
+        #: The sentence that explains `next_command`, kept off its line.
+        self.why = ascii_text(why) if why else None
         #: Structured facts for `--json`, so a caller reads numbers rather
         #: than parsing the sentence a human is meant to read.
         self.detail = detail or {}
 
     def as_dict(self) -> dict:
+        # `why` ON EVERY ROW, null where there is none, so a caller reads a
+        # key rather than testing for its absence -- as `placement_plan` is.
         return {"id": self.id, "label": self.label, "status": self.status,
                 "reason": self.reason, "next": self.next_command,
-                "detail": self.detail}
+                "why": self.why, "detail": self.detail}
 
 
 class Check:
@@ -920,7 +949,7 @@ def run_validator(ctx: Context, script: Path, args: list[str],
     DOCTOR'S OWN IS NEVER PART OF IT (#306). `pythonpath` is the directory to
     put on it, and `validator_row` passes `validator_scripts`'s answer: given
     one, the child's `PYTHONPATH` is that directory ALONE, the way the printed
-    `PYTHONPATH=<dir> python3 ...` sets it; given none, the child has NO
+    `env PYTHONPATH=<dir> python3 ...` sets it; given none, the child has NO
     `PYTHONPATH`, and the variable is taken OUT of the copy of the doctor's
     environment this builds, not left in it. ONE PLACE DECIDES, and it is the
     `env` block below: it does not ask whether the script is a root's own copy
@@ -1057,14 +1086,22 @@ def validator_command(shape: Path, used: Path, own_copy: bool, args: list,
 
     SO THE TEMPLATE'S LINE SETS IT, in the reader's dialect, which is the
     same two this file already speaks (`quote_arg`, `copy_command`,
-    `scaffold_command`): `PYTHONPATH=<shape>/scripts python3 <template> ...`
-    for `sh`, and `$env:PYTHONPATH = '<shape>\scripts'; python <template> ...`
-    for PowerShell. Both are ONE directory, so this is a plain assignment and
-    not a list, and it is what the doctor's child was given: that directory
-    ALONE (#306). The child used to have it PREPENDED to whatever the
-    environment already held, which a printed line cannot do, because it
-    cannot see the reader's value -- so the run and the line named two
-    different `PYTHONPATH`s.
+    `scaffold_command`): `env PYTHONPATH=<shape>/scripts python3
+    <template> ...` for `sh`, and `$env:PYTHONPATH = '<shape>\scripts';
+    python <template> ...` for PowerShell. Both are ONE directory, so this is
+    a plain assignment and not a list, and it is what the doctor's child was
+    given: that directory ALONE (#306). The child used to have it PREPENDED
+    to whatever the environment already held, which a printed line cannot
+    do, because it cannot see the reader's value -- so the run and the line
+    named two different `PYTHONPATH`s.
+
+    `env`, NOT A BARE `NAME=value` PREFIX (#277). The prefix is syntax of
+    `sh`, bash and zsh, and of nothing else a person may be pasting into:
+    csh and tcsh read `PYTHONPATH=...` as the name of a command and say
+    `Command not found`, and fish before 3.1 refused it, by those shells'
+    own documentation (none of the three was run for this change). `env` is
+    a PROGRAM, so the same line runs in every one of them, for four
+    characters, and it still sets the variable for this one command only.
 
     ONLY `PYTHONPATH`, and not the rest of the child's environment.
     `PYTHONIOENCODING` and `PYTHONDONTWRITEBYTECODE` exist so the DOCTOR can
@@ -1076,8 +1113,8 @@ def validator_command(shape: Path, used: Path, own_copy: bool, args: list,
     `quote_arg`'s `always`: what follows `=` is a pipeline, so a bare
     `C:\shape\scripts` would be run as a command and not assigned as a
     string. THE ASSIGNMENT LASTS FOR THE POWERSHELL SESSION, not for the one
-    command, and it REPLACES any `PYTHONPATH` the reader had: `sh`'s prefix
-    applies to one command and leaves the reader's environment alone, and
+    command, and it REPLACES any `PYTHONPATH` the reader had: `env` applies
+    it to one command and leaves the reader's environment alone, and
     this does not. That is accepted: the issue and the plan for this change
     named this spelling, `$env:` is PowerShell's idiom, and the effect ends
     with the session (review N1 on #238).
@@ -1096,7 +1133,7 @@ def validator_command(shape: Path, used: Path, own_copy: bool, args: list,
     if target == "nt":
         return (f"$env:PYTHONPATH = {quote_arg(scripts, target, always=True)}; "
                 f"{command}")
-    return f"PYTHONPATH={quote_arg(scripts, target)} {command}"
+    return f"env PYTHONPATH={quote_arg(scripts, target)} {command}"
 
 
 def validator_row(ctx: Context, check_id: str, label: str, own: str,
@@ -1117,9 +1154,10 @@ def validator_row(ctx: Context, check_id: str, label: str, own: str,
                    "question cannot be asked",
                    f"{PYTHON} "
                    f"{quote_arg(ctx.shape / 'shape-doctor.py')} --root "
-                   f"{quote_arg(ctx.root)}   # from a complete checkout of "
-                   "the standard; this one is missing that file",
-                   {"validator": None})
+                   f"{quote_arg(ctx.root)}",
+                   {"validator": None},
+                   why="from a complete checkout of the standard; this one "
+                       "is missing that file")
     code, quoted, _ = run_validator(ctx, used, args,
                                     validator_scripts(ctx.shape, own_copy))
     detail = {"validator": used.as_posix(), "own_copy": own_copy,
@@ -1137,11 +1175,11 @@ def validator_row(ctx: Context, check_id: str, label: str, own: str,
     # copy the line carries the `PYTHONPATH` the doctor ran it under, or it
     # dies on an import and exits with a finding's code (#238); the root's own
     # copy was run with no `PYTHONPATH` at all (#306), and its line carries
-    # none.
+    # none. AND IT IS ONLY THE COMMAND: what to do with its output is the
+    # row's `why`, on a line of its own (#277).
     command = validator_command(ctx.shape, used, own_copy, args)
-    return Row(check_id, label, FINDING, reason,
-               f"{command}   # read its output in full; it names what it "
-               "refused", detail)
+    return Row(check_id, label, FINDING, reason, command, detail,
+               why="read its output in full; it names what it refused")
 
 
 #: The row that OWNS each kind's manifest, by id: the one that quotes its
@@ -1205,16 +1243,16 @@ def unloaded_manifest_row(ctx: Context, check_id: str, label: str, own: str,
         missing = validator_row(ctx, check_id, label, own, template,
                                 ["--root", str(ctx.root)])
         return Row(check_id, label, FINDING, f"{reason}; {missing.reason}",
-                   missing.next_command, {**missing.detail, **detail})
+                   missing.next_command, {**missing.detail, **detail},
+                   why=missing.why)
     command = validator_command(ctx.shape, used, own_copy,
                                 ["--root", ctx.root])
-    return Row(check_id, label, FINDING, reason,
-               f"{command}   "
-               f"# the file to fix is {quote_arg(ctx.manifest_path)}, where "
-               "the line above says; this refuses it the same way until it "
-               "loads. What it should say there -- a merge conflict "
-               "resolved, a hand edit put right -- is the person's call",
-               detail)
+    return Row(check_id, label, FINDING, reason, command, detail,
+               why=f"the file to fix is {quote_arg(ctx.manifest_path)}, "
+                   "where the line above says; this refuses it the same way "
+                   "until it loads. What it should say there -- a merge "
+                   "conflict resolved, a hand edit put right -- is the "
+                   "person's call")
 
 
 def waiting_row(ctx: Context, check_id: str, label: str, needs: str,
@@ -1643,11 +1681,11 @@ def check_shape_currency(ctx: Context) -> Row:
         # evidence that our copy of the standard is short a commit.
         return Row("shape-currency", LABEL_SHAPE_CURRENCY, FINDING,
                    f"the copies cannot be compared: {exc.detail}",
-                   f"git -C {quote_arg(ctx.shape)} fetch --all   # this "
-                   "checkout of the standard does not carry the commit the "
-                   "pin names; fetch "
-                   "it, or run the doctor from a clone that has it",
-                   {"error": exc.code, "environment": True})
+                   f"git -C {quote_arg(ctx.shape)} fetch --all",
+                   {"error": exc.code, "environment": True},
+                   why="this checkout of the standard does not carry the "
+                       "commit the pin names; fetch it, or run the doctor "
+                       "from a clone that has it")
     try:
         added = [add for add in additions if not add.present]
         reported = list(rows) + added
@@ -1709,25 +1747,30 @@ def check_shape_currency(ctx: Context) -> Row:
                        f"{PYTHON} "
                        f"{quote_arg(ctx.shape / 'update-shape.py')} check "
                        f"--root {quote_arg(ctx.root)} --upstream "
-                       f"{quote_arg(ctx.shape)}   # then apply --at "
-                       f"{quote_arg(target)} --yes --branch "
-                       f"{quote_arg('shape/update-' + target[:12])}"
-                       f"{lane_trailer_command()}", detail)
+                       f"{quote_arg(ctx.shape)}", detail,
+                       why=f"then apply --at {quote_arg(target)} --yes "
+                           "--branch "
+                           f"{quote_arg('shape/update-' + target[:12])}"
+                           f"{lane_trailer_command()}")
         accept = "".join(f" --accept-local {quote_arg(row.path)}"
                          for row in rows
                          if row.state == us.LOCALLY_MODIFIED)
         named = ", ".join(row.path for row in moved[:4])
         if len(moved) > 4:
             named += f", and {len(moved) - 4} more"
+        # The `check` is the NEXT, and the `apply` that follows the human's
+        # yes is the row's `why`, `--accept-local` and the lane's trailer
+        # included (#111): it is the second of two acts, never pasted with
+        # the first, and the `   # ` that joined them is what #277 removed.
         return Row("shape-currency", LABEL_SHAPE_CURRENCY, FINDING,
                    f"{summary} ({where}): {named}{note}",
                    f"{PYTHON} "
                    f"{quote_arg(ctx.shape / 'update-shape.py')} check --root "
-                   f"{quote_arg(ctx.root)} --upstream {quote_arg(ctx.shape)}"
-                   f"   # then apply --at {quote_arg(target)} --yes{accept} "
-                   f"--branch {quote_arg('shape/update-' + target[:12])}"
-                   f"{lane_trailer_command()}",
-                   detail)
+                   f"{quote_arg(ctx.root)} --upstream {quote_arg(ctx.shape)}",
+                   detail,
+                   why=f"then apply --at {quote_arg(target)} --yes{accept} "
+                       f"--branch {quote_arg('shape/update-' + target[:12])}"
+                       f"{lane_trailer_command()}")
     finally:
         upstream.close()
 
@@ -1805,9 +1848,9 @@ def check_legs(ctx: Context) -> Row:
         return Row("legs", "legs", FINDING, "; ".join(problems),
                    f"{PYTHON} "
                    f"{quote_arg(ctx.root / 'scripts' / 'bootstrap.py')} "
-                   f"--root {quote_arg(ctx.root)}   # what `make bootstrap` "
-                   "runs: it puts every leg on its tracking branch AT the "
-                   "pinned commit", detail)
+                   f"--root {quote_arg(ctx.root)}", detail,
+                   why="what `make bootstrap` runs: it puts every leg on its "
+                       "tracking branch AT the pinned commit")
     return Row("legs", "legs", OK,
                f"{len(rows)} leg(s) mounted and checked out at their pins",
                None, detail)
@@ -1823,7 +1866,9 @@ def lane_trailer_command(platform: str | None = None) -> str:
     printed the apply without it handed somebody a command whose result they
     then had to amend by hand. Four InkRouter re-pins landed on 2026-09-11
     with no trailer at all, each one run exactly as the line printed it
-    (#111).
+    (#111). The `apply` it ends is the `shape currency` row's `why` since
+    #277 -- the words that used to follow `   # ` on its NEXT line -- and the
+    trailer went with it, unchanged.
 
     NOTHING WHEN NO LANE IS SET, which is what keeps every row this file has
     ever printed byte-identical for everybody who is not in a lane; and only
@@ -1975,8 +2020,8 @@ def leg_shape_summary(rel: str, entry: dict) -> str:
     return f"{rel}: {named}"
 
 
-def missing_shape_file_fix(ctx: Context, missing: list) -> str:
-    """The next command for a leg missing a shape file, or why there is none.
+def missing_shape_file_fix(ctx: Context, missing: list) -> tuple:
+    """`(next command, why)` for a leg missing a shape file.
 
     A COPY IS OFFERED ONLY FOR A FILE A COPY WOULD FIX -- `cp` for a POSIX
     reader and `Copy-Item -LiteralPath` for a PowerShell one, which is
@@ -1987,11 +2032,20 @@ def missing_shape_file_fix(ctx: Context, missing: list) -> str:
     those the row says what the file IS, and the repair is a human's until the
     repair mode lands.
 
+    AND THE COMMAND IS A COMMAND (#277). Where every missing file is
+    rendered, the NEXT used to be that sentence itself -- prose in the
+    command's place, with a whole command in backticks inside it, which an
+    interactive zsh pasted as command substitution. It is now the
+    `scaffold-project.py --help` the sentence names, and the sentence is the
+    `why`; so is the note a partial copy used to carry after `   # `.
+
     Split out of `check_leg_shape_files` for #134.
     """
     copyable = [entry for entry in missing if entry[2] not in LEG_RENDERED]
     if not copyable:
-        return (f"the missing file(s) are RENDERED per project from "
+        return (f"{PYTHON} {quote_arg(ctx.shape / 'scaffold-project.py')} "
+                "--help",
+                f"the missing file(s) are RENDERED per project from "
                 f"templates/<role>-root/ — `{PYTHON} "
                 f"{quote_arg(ctx.shape / 'scaffold-project.py')} --help` "
                 "shows what writes them; copying a template verbatim "
@@ -2001,10 +2055,10 @@ def missing_shape_file_fix(ctx: Context, missing: list) -> str:
     source = ctx.shape / "templates" / f"{role}-root" / name
     fix = copy_command(source, ctx.root / rel / name)
     if len(copyable) < len(missing):
-        fix += ("   # and the rest are RENDERED per project "
-                "(placeholders): scaffold-project.py writes those, "
-                "and copying a template verbatim would not")
-    return fix
+        return fix, ("and the rest are RENDERED per project "
+                     "(placeholders): scaffold-project.py writes those, "
+                     "and copying a template verbatim would not")
+    return fix, None
 
 
 def check_leg_shape_files(ctx: Context) -> Row:
@@ -2051,9 +2105,9 @@ def check_leg_shape_files(ctx: Context) -> Row:
         # so every project cut before that template existed was failed by a
         # rule this standard never made. The difference is worth a reader's
         # eye and is not a verdict.
+        fix, why = missing_shape_file_fix(ctx, missing)
         return Row("leg-shape-files", LABEL_LEG_SHAPE_FILES, NOTE,
-                   f"{summary}  (missing: {named})",
-                   missing_shape_file_fix(ctx, missing), detail)
+                   f"{summary}  (missing: {named})", fix, detail, why=why)
     return Row("leg-shape-files", LABEL_LEG_SHAPE_FILES, OK, summary, None,
                detail)
 
@@ -2303,7 +2357,7 @@ def submodule_placement(policy, role: str, path: str) -> dict:
 
 
 def placement_row(status: str, reason: str, next_command=None,
-                  detail=None) -> Row:
+                  detail=None, why=None) -> Row:
     """One `placement` row with the `--json` keys ALWAYS present.
 
     A caller reads `detail.misplaced` and `detail.review_required`; a row that
@@ -2319,7 +2373,8 @@ def placement_row(status: str, reason: str, next_command=None,
             "misplaced": [], "review_required": [],
             "counts": {"misplaced": 0, "review_required": 0}}
     base.update(detail or {})
-    return Row("placement", "placement", status, reason, next_command, base)
+    return Row("placement", "placement", status, reason, next_command, base,
+               why=why)
 
 
 def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
@@ -2462,9 +2517,10 @@ def placement_policy(ctx: Context, policy_path: Path) -> tuple:
             f"this checkout of the standard is missing {missing}, so the "
             "adoption's own classification cannot be run over the legs",
             f"{PYTHON} {quote_arg(ctx.shape / 'shape-doctor.py')} --root "
-            f"{quote_arg(ctx.root)}   # from a COMPLETE checkout of the "
-            f"standard; this one is short {missing}",
-            {"policy": policy_path.as_posix()})
+            f"{quote_arg(ctx.root)}",
+            {"policy": policy_path.as_posix()},
+            why=f"from a COMPLETE checkout of the standard; this one is "
+                f"short {missing}")
     try:
         policy = adopt.PathPolicy.load(policy_path)
     except Refusal as exc:
@@ -2499,7 +2555,8 @@ def leg_audit_summary(entry: dict) -> str:
     return f"{entry['path']}: {counted}"
 
 
-def placement_verdict(detail: dict, audited: str, plan: str) -> Row:
+def placement_verdict(detail: dict, audited: str, plan: str,
+                      plan_why: str) -> Row:
     """What the audited legs add up to, in the order the answers outrank.
 
     A PATH IN THE WRONG LEG OUTRANKS A QUESTION ABOUT ONE. Misplaced first
@@ -2526,7 +2583,9 @@ def placement_verdict(detail: dict, audited: str, plan: str) -> Row:
 
     Reads what it needs out of `detail` rather than taking the same six
     numbers a second time: the row prints that dictionary, so a count this
-    judged on and a count the reader is shown cannot drift apart.
+    judged on and a count the reader is shown cannot drift apart. `plan` is
+    the `--placement-plan` command and `plan_why` what it does, which travel
+    together onto every row that offers the plan (#277).
 
     Split out of `check_placement` for #134.
     """
@@ -2550,13 +2609,13 @@ def placement_verdict(detail: dict, audited: str, plan: str) -> Row:
             f"{len(misplaced)} path(s) sit in a leg the policy puts "
             f"elsewhere: {named_offenders(misplaced)}{extra}{held}  "
             f"[{audited}]",
-            plan, detail)
+            plan, detail, plan_why)
     if review:
         return placement_row(
             NOTE,
             f"nothing is in the wrong leg; {len(review)} path(s) the policy "
             f"will not call: {named_offenders(review)}{held}  [{audited}]",
-            plan, detail)
+            plan, detail, plan_why)
     if counts["unread_legs"] or counts["unwritable_names"]:
         # `note`, because what is missing is a READ and not a fault of this
         # repository's -- and never `ok`, because "every tracked path
@@ -2676,11 +2735,12 @@ def check_placement(ctx: Context) -> Row:
     audited = "; ".join(leg_audit_summary(entry) for entry in per_leg)
     plan = (f"{PYTHON} {quote_arg(ctx.shape / 'shape-doctor.py')} --root "
             f"{quote_arg(ctx.root)} "
-            "--placement-plan placement-plan.yaml   # writes the paths above "
-            "as a plan to resolve by hand. Moving one is a pull request on "
-            "each leg and a pin bump in the root, so this command makes "
-            "neither")
-    return placement_verdict(detail, audited, plan)
+            "--placement-plan placement-plan.yaml")
+    return placement_verdict(
+        detail, audited, plan,
+        "writes the paths above as a plan to resolve by hand. Moving one is "
+        "a pull request on each leg and a pin bump in the root, so this "
+        "command makes neither")
 
 
 #: The header of the file `--placement-plan` writes. It is long because the
@@ -2991,10 +3051,13 @@ def check_agent_files(ctx: Context) -> Row:
     # `update-shape.py`, and `--add` refuses it BY NAME as already pinned; a
     # path with no row is `upstream-added`, which is exactly what `--add`
     # takes (Copilot, PR #96).
+    # Each branch is the COMMAND and, apart from it, the sentence that says
+    # why it is that command (#277).
     if detail["pinned"]:
         first = detail["pinned"][0]
         fix = (f"git -C {quote_arg(ctx.root)} checkout -- "
-               f"{quote_arg(first)}   # the pin has a "
+               f"{quote_arg(first)}")
+        why = ("the pin has a "
                "`files:` row for it, so it was deleted rather than never "
                "copied; restore it from this repository's own history, then "
                f"`{PYTHON} "
@@ -3003,12 +3066,14 @@ def check_agent_files(ctx: Context) -> Row:
     elif "AGENTS-shape.md" in absent:
         fix = (f"{PYTHON} {quote_arg(ctx.shape / 'update-shape.py')} "
                f"check --root {quote_arg(ctx.root)} --upstream "
-               f"{quote_arg(ctx.shape)}   # no pin row names it, "
+               f"{quote_arg(ctx.shape)}")
+        why = ("no pin row names it, "
                "so it is reported upstream-added and taken, on the human's "
                "word, with `apply --add AGENTS-shape.md`")
     else:
         fix = (f"{PYTHON} {quote_arg(ctx.shape / 'scaffold-project.py')} "
-               f"--help   # {' and '.join(absent)} is RENDERED per project, "
+               "--help")
+        why = (f"{' and '.join(absent)} is RENDERED per project, "
                "not copied; "
                "write it, or take a rendered one from a scaffolded root")
     # FINDING ONLY FOR A FILE SOMETHING ELSE ASSERTS. `AGENTS-shape.md` is a
@@ -3020,7 +3085,7 @@ def check_agent_files(ctx: Context) -> Row:
     # along.
     status = FINDING if detail["pinned"] else NOTE
     return Row("agent-files", LABEL_AGENT_FILES, status,
-               "absent: " + ", ".join(absent), fix, detail)
+               "absent: " + ", ".join(absent), fix, detail, why=why)
 
 
 def detached(path: Path) -> bool | None:
@@ -3374,9 +3439,9 @@ def members_verdict(ctx: Context, detail: dict, members_dir: str,
         return Row("members", "members", FINDING, reason,
                    f"{PYTHON} "
                    f"{quote_arg(ctx.root / 'scripts' / 'bootstrap.py')} "
-                   f"--root {quote_arg(ctx.root)}   # what `make bootstrap` "
-                   "runs in a holder: it fetches every member at its pin and "
-                   "leaves it detached there", detail)
+                   f"--root {quote_arg(ctx.root)}", detail,
+                   why="what `make bootstrap` runs in a holder: it fetches "
+                       "every member at its pin and leaves it detached there")
     note = f"{len(rows)} member(s) mounted at their pins"
     if on_a_branch:
         note += ("; on a BRANCH rather than detached: "
@@ -3700,12 +3765,12 @@ def check_machine(ctx: Context) -> Row:
     reason = f"{ready} (setup-project.py --preflight, exit {code}){extra}"
     if code != 0 and quoted:
         reason += f": {quoted}"
+    if code == 0:
+        return Row("machine", "machine", NA, reason, None, detail)
     return Row("machine", "machine", NA, reason,
-               None if code == 0 else
-               f"{PYTHON} {quote_arg(entry)} --preflight   # it names each "
-               "missing prerequisite and offers to install it, on a typed "
-               "yes",
-               detail)
+               f"{PYTHON} {quote_arg(entry)} --preflight", detail,
+               why="it names each missing prerequisite and offers to install "
+                   "it, on a typed yes")
 
 
 def python_command(platform: str | None = None) -> str:
@@ -3884,7 +3949,7 @@ def check_the_way_in(ctx: Context) -> Row:
         # above a `Triad` row that says "work from its assembly root" would
         # be this report contradicting itself (#164 review). No `next` here:
         # the Triad row names the root to work from.
-        fix = None
+        fix = why = None
         reason = ("this is a git repository with no shape manifest, NAMED OR "
                   "WRITTEN AS A LEG: a leg is not adopted or scaffolded on "
                   "its own -- see the Triad row for its assembly root")
@@ -3892,19 +3957,21 @@ def check_the_way_in(ctx: Context) -> Row:
         fix = (f"{PYTHON} {quote_arg(ctx.shape / 'adopt-project.py')} "
                f"plan --source {quote_arg(root)} --project "
                f"{quote_arg(project)}")
+        why = None
         reason = ("this is a git repository with no shape manifest: it is "
                   "ADOPTED in place, keeping its name, identity and history")
     else:
         # `<your-org>` IS NOT QUOTED and must not be: it is a placeholder
         # the reader replaces, not a value this command knows. Quoting it
         # would tell them to type the angle brackets.
-        fix = (scaffold_command(ctx.shape, project)
-               + "   # without --yes; it asks")
+        fix = scaffold_command(ctx.shape, project)
+        why = "without --yes; it asks"
         reason = ("there is no repository here to adopt: a new project is "
                   "SCAFFOLDED, which creates three repositories and asks "
                   "first")
     return Row("way-in", "the way in", NA, reason, fix,
-               {"git_repository": is_repo, "suggested_project": project})
+               {"git_repository": is_repo, "suggested_project": project},
+               why=why)
 
 
 #: Named once, like `LABEL_MANIFEST_KINDS` above: this function's three
@@ -4274,6 +4341,11 @@ def report(ctx: Context, rows: list[Row], verdict: str, code: int,
         if row.next_command:
             print(f"  {'':<{status_width}}  {'NEXT':<{width}}  "
                   f"{row.next_command}")
+        # A LINE OF ITS OWN, UNDER THE COMMAND AND NEVER ON IT (#277): what
+        # follows a NEXT on its line is pasted with it, and an interactive
+        # zsh runs it.
+        if row.why:
+            print(f"  {'':<{status_width}}  {'WHY':<{width}}  {row.why}")
     print()
     # BEFORE THE VERDICT, because the verdict is the conclusion and reads
     # last, and this line belongs with the row it came out of.
@@ -4289,6 +4361,8 @@ def report(ctx: Context, rows: list[Row], verdict: str, code: int,
     if blocked is not None:
         print(f"\nREFUSED shape-doctor-cannot-answer: {blocked.reason}\n"
               f"  Remediation: {blocked.next_command}", file=sys.stderr)
+        if blocked.why:
+            print(f"  Why: {blocked.why}", file=sys.stderr)
 
 
 #: The line NOT A SHAPE ROOT adds, and the one thing in this file that is

@@ -208,7 +208,7 @@ def test_every_row_of_a_compliant_project_is_ok_or_na(standard, project):
         assert row["status"] in ("ok", "n/a"), (name, row)
         assert row["status"] != "FINDING", (name, row)
         assert set(row) == {"id", "label", "status", "reason", "next",
-                            "detail"}
+                            "why", "detail"}
     # The project carries its OWN validators, so those are what ran.
     assert rows["pins"]["detail"]["own_copy"] is True
     assert rows["manifest"]["detail"]["own_copy"] is True
@@ -964,7 +964,8 @@ def test_a_directory_that_is_not_a_repository_says_scaffold(standard,
     assert ("setup-project.py" if os.name == "nt" else "setup.sh") in \
         rows["way-in"]["next"], rows["way-in"]["next"]
     assert "--org <your-org>" in rows["way-in"]["next"]
-    assert "without --yes" in rows["way-in"]["next"]
+    # Said beside the command, never on it (#277).
+    assert "without --yes" in rows["way-in"]["why"]
     assert rows["way-in"]["detail"]["git_repository"] is False
     assert "an ordinary directory" in rows["contents"]["reason"]
 
@@ -1244,8 +1245,10 @@ def test_the_json_report_of_an_unloaded_manifest_is_the_same_report(
     assert manifest["detail"]["manifest"] == "project.yaml"
     assert manifest["detail"]["own_copy"] is True
     assert_next_runs_the_roots_own(manifest, project, "validate-manifest.py")
-    assert "the file to fix is" in manifest["next"], manifest["next"]
-    assert "project.yaml" in manifest["next"].split("#", 1)[1]
+    # The file to fix is named in the row's `why`, off the command's line
+    # (#277).
+    assert "the file to fix is" in manifest["why"], manifest["why"]
+    assert "project.yaml" in manifest["why"]
 
     for name in WAITING_ROWS:
         row = rows[name]
@@ -1368,7 +1371,8 @@ def test_a_family_yaml_that_does_not_load_is_invalid_and_not_absent(
     assert family["reason"] == \
         f"family.yaml does not load: {loader_line(refusal)}", family
     assert_next_runs_the_roots_own(family, root, "validate-family.py")
-    assert "family.yaml" in family["next"].split("#", 1)[1]
+    # Named in the row's `why`, off the command's line (#277).
+    assert "family.yaml" in family["why"], family["why"]
     members = rows["members"]
     assert members["status"] == "n/a", members
     assert members["detail"]["waits_on"] == "family", members
@@ -1865,8 +1869,9 @@ def powershell_tokens(line: str) -> list[str]:
     Doe\\...'` -- and a test that split on whitespace tore that value in
     half and then failed a correct command. `#` has the same shape of
     answer: it opens a comment where a TOKEN starts and is an ordinary
-    character anywhere else, so a path with one in it survives and the
-    trailing `# and the rest are RENDERED...` the row appends does not.
+    character anywhere else, so a path with one in it survives and a
+    trailing `# and the rest are RENDERED...` does not. (The row appended
+    that note until #277 moved it to its `why`; `RENDERED_NOTE` keeps it.)
 
     Verbatim `'...'` only, because that is the one quoting `quote_arg`
     emits: nothing inside is expanded and an apostrophe is doubled.
@@ -1905,11 +1910,11 @@ def copied_paths(line: str, platform: str | None = None) -> tuple[str, str]:
     """The source and the target back out of the row's copy line.
 
     `shlex` on POSIX because that is the reader's own parser there --
-    `comments=True` so it drops the row's trailing `#` note the way the
-    shell would, rather than a naive `split("#")` cutting a path that has
-    one in it. On Windows the cmdlet's spelling, read by a parser that
-    knows PowerShell's verbatim string; `platform` so either branch can be
-    asserted from either host, as `copy_command` itself can be.
+    `comments=True` so it drops a trailing `#` note the way `sh` would,
+    rather than a naive `split("#")` cutting a path that has one in it. On
+    Windows the cmdlet's spelling, read by a parser that knows PowerShell's
+    verbatim string; `platform` so either branch can be asserted from either
+    host, as `copy_command` itself can be.
     """
     if (os.name if platform is None else platform) != "nt":
         parts = shlex.split(line, comments=True)
@@ -1933,7 +1938,8 @@ def test_a_missing_rendered_leg_file_is_not_offered_a_cp(standard, project):
     row = rows_of(doctor(standard, project, "--json"))["leg-shape-files"]
     assert row["status"] == "note"
     assert not row["next"].startswith(COPY_VERB), row["next"]
-    assert "RENDERED" in row["next"], row["next"]
+    # What the file IS is the row's `why`; the NEXT is a command (#277).
+    assert "RENDERED" in row["why"], row["why"]
 
     (project / "spec" / "CLAUDE.md").unlink()
     row = rows_of(doctor(standard, project, "--json"))["leg-shape-files"]
@@ -2026,9 +2032,9 @@ def test_the_copy_line_is_literal_where_cp_is_a_cmdlet(platform, source,
 #: A path that breaks a naive parser three ways at once -- a space, an
 #: apostrophe (doubled inside PowerShell's verbatim string, closed-escaped-
 #: reopened by `sh`'s) and a `#`, which opens a comment where a TOKEN starts
-#: and is an ordinary character anywhere else. The row appends a real
-#: trailing comment of its own when only some of the missing files are
-#: copyable, so a reader of these lines has to tell those two apart
+#: and is an ordinary character anywhere else. The row appended a real
+#: trailing comment of its own when only some of the missing files were
+#: copyable, so a reader of these lines had to tell those two apart
 #: (Copilot, PR #107). Each row is its own platform's spelling of a path,
 #: and both are asserted from whichever host runs the suite.
 AWKWARD_COPY = [
@@ -2038,10 +2044,12 @@ AWKWARD_COPY = [
      "C:\\work #2\\O'Brien\\spec\\CLAUDE.md"),
 ]
 
-#: What `check_leg_shape_files` appends when some of the missing files are
-#: RENDERED per project and only the rest can be copied -- a real trailing
-#: comment on a real line, kept here verbatim so the parser above is proved
-#: against what the row actually prints.
+#: What `check_leg_shape_files` APPENDED, until #277, when some of the
+#: missing files are RENDERED per project and only the rest can be copied --
+#: a real trailing comment on a real line. The row now prints that sentence
+#: as its `why`, on a line of its own, and its NEXT is the copy alone; the
+#: note is kept here verbatim so the parser above is still proved to drop a
+#: comment without taking a `#` inside a quotation with it.
 RENDERED_NOTE = ("   # and the rest are RENDERED per project (placeholders): "
                  "scaffold-project.py writes those, and copying a template "
                  "verbatim would not")
@@ -2057,8 +2065,8 @@ def test_the_copy_line_is_read_back_by_the_quoting_it_was_written_with(
     space and then fails a command that was perfectly correct, and truncates
     a path with a `#` in it before the assertion is even made (Copilot, PR
     #107). Both shells' quoting is now read by something that knows it, and
-    the row's own trailing comment is dropped without taking a `#` that sits
-    inside a quotation with it.
+    a trailing comment is dropped without taking a `#` that sits inside a
+    quotation with it.
     """
     module = doctor_module(REPO)
     line = module.copy_command(source, target, platform) + RENDERED_NOTE
@@ -3066,10 +3074,16 @@ def behind_row(standard, root, lane: str | None):
 def test_the_apply_a_behind_row_prints_carries_the_lane_when_one_is_set(
         advanced_standard, project):
     """The copied-file branch of the row: `--trailer` last, after
-    `--branch`, quoted whole so the paste survives the space in it."""
-    plain = behind_row(advanced_standard, project, None)["next"]
-    lane = behind_row(advanced_standard, project, LANE)["next"]
-    assert lane == plain + f" --trailer 'Lane: {LANE}'"
+    `--branch`, quoted whole so the paste survives the space in it.
+
+    THE `apply` IS THE ROW'S `why` since #277 -- the words that followed
+    `   # ` on its NEXT line -- and the trailer is read there. The NEXT, the
+    `check`, is the same line with or without a lane."""
+    plain = behind_row(advanced_standard, project, None)
+    laned = behind_row(advanced_standard, project, LANE)
+    assert laned["next"] == plain["next"]
+    lane = laned["why"]
+    assert lane == plain["why"] + f" --trailer 'Lane: {LANE}'"
     assert shlex.split(lane)[-2:] == ["--trailer", f"Lane: {LANE}"]
     assert "Co-Authored-By" not in lane, (
         "the second trailer names a person or a model, which no environment "
@@ -3088,8 +3102,9 @@ def test_the_behind_pin_only_row_carries_it_too(standard, project, tmp_path):
     commit_all(ahead, "An upstream change to a file no project copies")
     row = behind_row(ahead, project, LANE)
     assert row["detail"]["behind_pin_only"] is True
-    assert row["next"].endswith(f" --trailer 'Lane: {LANE}'")
-    assert shlex.split(row["next"])[-2:] == ["--trailer", f"Lane: {LANE}"]
+    assert row["why"].endswith(f" --trailer 'Lane: {LANE}'")
+    assert shlex.split(row["why"])[-2:] == ["--trailer", f"Lane: {LANE}"]
+    assert "--trailer" not in row["next"], row["next"]
 
 
 def test_a_row_says_nothing_about_a_lane_when_none_is_set(advanced_standard,
@@ -3097,19 +3112,21 @@ def test_a_row_says_nothing_about_a_lane_when_none_is_set(advanced_standard,
     """Today's report, byte for byte, for everybody who is not in a lane."""
     row = behind_row(advanced_standard, project, None)
     assert "--trailer" not in row["next"]
-    assert row["next"].rstrip().endswith("--branch shape/update-"
-                                         + row["detail"]["standard"][:12])
+    assert "--trailer" not in row["why"]
+    assert row["why"].rstrip().endswith("--branch shape/update-"
+                                        + row["detail"]["standard"][:12])
 
 
 def test_no_other_row_grows_a_trailer(advanced_standard, project):
     """A `Lane:` trailer belongs on an `apply` and nowhere else: the row is
     naming the flag of a command that writes a commit, not decorating every
-    remediation in the table."""
+    remediation in the table. Read in `next` AND `why`, since the `apply`
+    moved to the second (#277)."""
     result = run_script(advanced_standard / DOCTOR, "--root", str(project),
                         "--json", env={"LANES_LANE": LANE})
     rows = rows_of(result)
     carrying = [name for name, row in rows.items()
-                if row["next"] and "--trailer" in row["next"]]
+                if "--trailer" in (row["next"] or "") + (row["why"] or "")]
     assert carrying == ["shape-currency"], rows
 
 
@@ -4755,9 +4772,9 @@ def test_the_way_in_row_matches_the_host_platform_end_to_end(standard,
     here.mkdir()
     (here / "notes.txt").write_text("nothing to see\n", encoding="utf-8")
     scaffolds = module.check_the_way_in(module.Context(here))
-    assert scaffolds.next_command == (
-        module.scaffold_command(module.SHAPE_ROOT, "Loose", os.name)
-        + "   # without --yes; it asks"), scaffolds.next_command
+    assert scaffolds.next_command == module.scaffold_command(
+        module.SHAPE_ROOT, "Loose", os.name), scaffolds.next_command
+    assert scaffolds.why == "without --yes; it asks", scaffolds.why
     # The other way in, from the same directory once it is a repository.
     git("init", "-q", "-b", "main", ".", cwd=here)
     adopts = module.check_the_way_in(module.Context(here))
@@ -5365,8 +5382,8 @@ def pasted_from_elsewhere(command: str, tmp_path: Path):
     The three things a reader's shell can have that the doctor's child did
     not: a different working directory (the line names every path absolutely,
     so it needs none), a different environment (this is the one under test),
-    and the whole line -- trailing `#` comment and all -- rather than an argv
-    the test split. `PYTHONDONTWRITEBYTECODE` is the one thing put back, so
+    and the whole line, exactly as printed, rather than an argv the test
+    split. `PYTHONDONTWRITEBYTECODE` is the one thing put back, so
     that running the standard's validators from the session's `standard`
     leaves no `__pycache__` in it, as every other paste here does.
     """
@@ -5418,9 +5435,12 @@ def test_a_template_validators_next_command_runs_when_it_is_pasted(
     # is the traceback, exit 1, and says nothing about the project.
     scripts = doctor_module(standard).quote_arg(standard.resolve() / "scripts",
                                                 "posix")
-    assert row["next"].startswith(f"PYTHONPATH={scripts} python3 "), row["next"]
+    # `env`, not a bare `NAME=value` prefix, which csh and tcsh cannot run
+    # (#277).
+    assert row["next"].startswith(f"env PYTHONPATH={scripts} python3 "), \
+        row["next"]
     bare = pasted_from_elsewhere(
-        row["next"].removeprefix(f"PYTHONPATH={scripts} "), tmp_path)
+        row["next"].removeprefix(f"env PYTHONPATH={scripts} "), tmp_path)
     assert bare.returncode == 1, bare.stdout + bare.stderr
     assert "ModuleNotFoundError: No module named 'repo_shape'" in \
         bare.stdout + bare.stderr, bare.stdout + bare.stderr
@@ -5448,9 +5468,9 @@ def test_a_template_validators_next_runs_when_pasted_into_powershell(
 
     TWO THINGS ABOUT `-Command`. A native command's non-zero exit is
     `$LASTEXITCODE`, and `-Command` ends the session with 1 whatever it was,
-    so `; exit $LASTEXITCODE` is appended -- to the COMMAND, with the row's
-    trailing `   # ...` comment cut off first, because PowerShell reads a
-    comment to the end of the line and would swallow the `exit` with it. And
+    so `; exit $LASTEXITCODE` is appended to the line as printed -- which is
+    the command alone since #277, with no trailing `#` comment to swallow
+    the `exit` the way PowerShell reads one, to the end of the line. And
     the output is read as BYTES and decoded here as UTF-8 with replacement,
     on purpose: the finding id this asserts is ASCII, and what the console's
     code page does to anything else is not under test. Nothing is fed to
@@ -5465,7 +5485,7 @@ def test_a_template_validators_next_runs_when_pasted_into_powershell(
     assert row["status"] == "FINDING", row
     assert row["detail"]["own_copy"] is False, row
     assert row["next"].startswith("$env:PYTHONPATH = '"), row["next"]
-    line = row["next"].split("   # ", 1)[0]
+    line = row["next"]
     env = {name: value for name, value in os.environ.items()
            if name.upper() != "PYTHONPATH"}
     env["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -5500,11 +5520,11 @@ def test_a_template_validators_row_carries_the_same_next_in_text_and_json(
     expected = module.validator_command(shape, shape / spec["template"],
                                         False, ["--root", root])
     assert expected.startswith("$env:PYTHONPATH = " if os.name == "nt"
-                               else "PYTHONPATH="), expected
-    assert row["next"].startswith(expected + "   # "), (expected, row["next"])
+                               else "env PYTHONPATH="), expected
+    # THE COMMAND ALONE, and what to do with its output beside it (#277).
+    assert row["next"] == expected, (expected, row["next"])
     assert row["next"] in doctor(standard, root).stdout
-    assert row["next"].split("#", 1)[1].strip().startswith(
-        "read its output in full"), row["next"]
+    assert row["why"].startswith("read its output in full"), row["why"]
 
 
 @pytest.mark.parametrize("case", sorted(TEMPLATE_FALLBACK))
@@ -5527,8 +5547,9 @@ def test_a_roots_own_validators_next_command_is_unchanged(
     module = doctor_module(standard)
     assert row["next"] == (
         f"{module.PYTHON} {module.quote_arg(root / spec['own'])} --root "
-        f"{module.quote_arg(root)}   # read its output in full; it names "
-        "what it refused"), row["next"]
+        f"{module.quote_arg(root)}"), row["next"]
+    # The sentence that rode on the line as `   # ...` until #277.
+    assert row["why"] == "read its output in full; it names what it refused"
     assert "PYTHONPATH" not in row["next"], row["next"]
     assert_next_runs_the_roots_own(row, root, Path(spec["own"]).name)
 
@@ -5881,7 +5902,7 @@ def test_an_unloaded_manifests_template_next_command_runs_when_it_is_pasted(
     assert Path(row["detail"]["validator"]).name == script, row
     assert Path(row["detail"]["validator"]).resolve() != \
         (root / own).resolve(), row
-    assert row["next"].startswith("PYTHONPATH="), row["next"]
+    assert row["next"].startswith("env PYTHONPATH="), row["next"]
 
     pasted = pasted_from_elsewhere(row["next"], tmp_path)
     whole = pasted.stdout + pasted.stderr
@@ -5897,7 +5918,8 @@ def test_an_unloaded_manifests_own_copy_next_command_is_unchanged(
         standard, project, holder, tmp_path, kind, case):
     """The same row, the root's own copy present: no environment, and the
     line is what #205 printed -- the interpreter, the root's own validator
-    as a path, `--root` the root, and the comment that names the file to fix.
+    as a path, `--root` the root -- with the sentence that names the file to
+    fix as the row's `why`, where #277 moved the comment that used to end it.
     """
     if kind == "family":
         root = tmp_path / FAMILY_NAME
@@ -5915,11 +5937,12 @@ def test_an_unloaded_manifests_own_copy_next_command_is_unchanged(
     row = rows_of(doctor(standard, root, "--json"))[row_id]
     assert row["detail"]["own_copy"] is True, row
     module = doctor_module(standard)
-    assert row["next"].startswith(
+    assert row["next"] == (
         f"{module.PYTHON} {module.quote_arg(root / own)} --root "
-        f"{module.quote_arg(root)}   # the file to fix is "
-        f"{module.quote_arg(root / name)}, where the line above says; "), \
-        row["next"]
+        f"{module.quote_arg(root)}"), row["next"]
+    assert row["why"].startswith(
+        f"the file to fix is {module.quote_arg(root / name)}, where the line "
+        "above says; "), row["why"]
     assert "PYTHONPATH" not in row["next"], row["next"]
 
 
@@ -5930,10 +5953,12 @@ def test_an_unloaded_manifests_own_copy_next_command_is_unchanged(
 #: before it for PowerShell -- and what each does to a path that needs quoting.
 VALIDATOR_TEMPLATE = "templates/assembly-root/scripts/validate-manifest.py"
 VALIDATOR_COMMAND = [
-    # `sh`: `NAME=value command ...`, and a root's own copy has none.
+    # `sh`: `env NAME=value command ...` -- `env`, which csh, tcsh and fish
+    # run too, where a bare `NAME=value` prefix is `sh` syntax (#277) -- and
+    # a root's own copy has none.
     ("posix", PurePosixPath("/srv/openRepoShape"), False, PurePosixPath(
         "/srv/work/Atlas"),
-     "PYTHONPATH=/srv/openRepoShape/scripts python3 "
+     "env PYTHONPATH=/srv/openRepoShape/scripts python3 "
      "/srv/openRepoShape/templates/assembly-root/scripts/validate-manifest.py "
      "--root /srv/work/Atlas"),
     ("posix", PurePosixPath("/srv/openRepoShape"), True, PurePosixPath(
@@ -5944,7 +5969,7 @@ VALIDATOR_COMMAND = [
     # and the assignment's quote closes at the value's end.
     ("posix", PurePosixPath("/srv/my shape"), False, PurePosixPath(
         "/srv/work/Atlas"),
-     "PYTHONPATH='/srv/my shape/scripts' python3 "
+     "env PYTHONPATH='/srv/my shape/scripts' python3 "
      "'/srv/my shape/templates/assembly-root/scripts/validate-manifest.py' "
      "--root /srv/work/Atlas"),
     # PowerShell: `$env:NAME = 'value'; command ...`, the value ALWAYS quoted.
@@ -5969,7 +5994,7 @@ VALIDATOR_COMMAND = [
     # path on `sh` is quoted whole, every `\` a literal character.
     ("posix", PureWindowsPath(r"C:\srv\openRepoShape"), False,
      PureWindowsPath(r"C:\work\Atlas"),
-     r"PYTHONPATH='C:\srv\openRepoShape\scripts' python3 "
+     r"env PYTHONPATH='C:\srv\openRepoShape\scripts' python3 "
      r"'C:\srv\openRepoShape\templates\assembly-root\scripts"
      r"\validate-manifest.py' --root 'C:\work\Atlas'"),
 ]
@@ -5996,8 +6021,9 @@ def test_the_posix_validator_line_is_read_back_whole_by_sh_quoting():
     """A standard at an awkward path arrives as one value, apostrophe and all.
 
     `shlex.split` is the reader's own shell for the `sh` dialect, as it is
-    for every other line asserted that way here: the first word is the
-    assignment whole, the next the interpreter, the next the template.
+    for every other line asserted that way here: the first word is `env`
+    (#277), the next the assignment whole, the next the interpreter, the
+    next the template.
     """
     module = doctor_module(REPO)
     shape = PurePosixPath("/srv/Jane O'Neill/open Repo Shape")
@@ -6005,6 +6031,7 @@ def test_the_posix_validator_line_is_read_back_whole_by_sh_quoting():
         shape, shape / VALIDATOR_TEMPLATE, False,
         ["--root", PurePosixPath("/srv/work dir/Atlas")], "posix")
     assert shlex.split(line) == [
+        "env",
         "PYTHONPATH=/srv/Jane O'Neill/open Repo Shape/scripts", "python3",
         f"/srv/Jane O'Neill/open Repo Shape/{VALIDATOR_TEMPLATE}", "--root",
         "/srv/work dir/Atlas"], line
