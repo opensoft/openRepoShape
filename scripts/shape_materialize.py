@@ -1943,12 +1943,27 @@ ASSEMBLY_TEMPLATE = (Path(__file__).resolve().parent.parent / "templates"
 MANIFEST_TEMPLATE = "project.yaml"
 MANIFEST_VALIDATOR = "scripts/validate-manifest.py"
 
+#: The names this module asks of the validator: its `elected_on` pattern and
+#: the function that makes every FINDING.
+VALIDATOR_ASKS = ("DATE_RE", "_findings")
+
 #: The templated files the project's reader reads: the manifest and the two
 #: leg pins. The materializer's own list, so a templated YAML file added there
 #: is asked about here without an edit.
 TEMPLATED_YAML = tuple(rel for rel in TEMPLATED if rel.endswith(".yaml"))
 
-_PLACEHOLDER_KEY_RE = re.compile(r"\{\{([A-Z_]+)\}\}")
+
+def _placeholders_of(line: str) -> list[str]:
+    """The names of the placeholders `render` finds in `line`.
+
+    From `PLACEHOLDER_RE`, the pattern `render` itself uses to find one, and
+    not from a second spelling of its alphabet: a template line this counted
+    as one placeholder while `render` saw two would be rendered here with a
+    one-key table and refused as `template-unsubstituted`. When the pattern
+    is widened (#260 admits digits, for `{{SPEC_TREE_SHA256}}`) this follows.
+    """
+    return [token[2:-2] for token in PLACEHOLDER_RE.findall(line)]
+
 
 #: The validator modules already loaded, by the file they were loaded from.
 _VALIDATORS: dict = {}
@@ -1982,11 +1997,37 @@ def manifest_validator(template_dir: Path = ASSEMBLY_TEMPLATE):
         sys.dont_write_bytecode = True
         try:
             spec.loader.exec_module(module)
+        except Exception as exc:  # a missing, unreadable or broken file
+            raise _validator_unusable(
+                "could not be loaded", f"{type(exc).__name__}: {exc}"
+            ) from exc
         finally:
             sys.path[:] = saved_path
             sys.dont_write_bytecode = saved_flag
+        # What this module asks of it, so that a file that loads and lacks one
+        # is the same refusal and not an `AttributeError` where it is used.
+        for name in VALIDATOR_ASKS:
+            if not hasattr(module, name):
+                raise _validator_unusable(
+                    "could not be used", f"it has no `{name}`")
         _VALIDATORS[path] = module
     return module
+
+
+def _validator_unusable(what: str, why: str) -> Refusal:
+    """The refusal for a template validator that cannot be asked, and not a
+    traceback. It is a defect of the copy of the standard that was run and
+    not of any value, and it is said so. Nothing was created, because the
+    question is asked before anything exists; and a validator that cannot
+    answer lets no manifest through unasked."""
+    return Refusal(
+        "manifest-validator-unusable",
+        f"templates/assembly-root/{MANIFEST_VALIDATOR}, the validator this "
+        f"run asks about the manifest it would write, {what}: {why}",
+        "Remediation: this is a defect in the copy of this standard you ran, "
+        "not in your values: the file is missing, unreadable or broken "
+        "there, and nothing was created. Restore it from the standard's "
+        "repository, or reinstall the standard, and run again.")
 
 
 def _reading_in_words(reading) -> str:
@@ -2024,6 +2065,28 @@ def _reading_of(rendered: str):
     return parsed
 
 
+def _misread_rows(values: dict, what: dict, template_dir: Path
+                  ) -> dict[str, list[tuple]]:
+    """For each placeholder of `what` whose value the project's reader would
+    not read back as that same text: `(file, rendered line, reading)` for each
+    template line that carries it."""
+    found: dict[str, list] = {}
+    for rel in TEMPLATED_YAML:
+        text = (Path(template_dir) / rel).read_text(encoding="utf-8")
+        for line in text.splitlines():
+            keys = _placeholders_of(line)
+            if (len(keys) != 1 or keys[0] not in what
+                    or keys[0] not in values
+                    or line.lstrip().startswith("#")):
+                continue
+            key, value = keys[0], str(values[keys[0]])
+            rendered = render(line, {key: value}, rel).lstrip()
+            reading = _reading_of(rendered)
+            if not (isinstance(reading, str) and reading == value):
+                found.setdefault(key, []).append((rel, rendered, reading))
+    return found
+
+
 def manifest_misreads(values: dict, what: dict,
                       template_dir: Path = ASSEMBLY_TEMPLATE) -> list[str]:
     """A sentence for each value the project's reader would read back as
@@ -2038,27 +2101,23 @@ def manifest_misreads(values: dict, what: dict,
     Each template line that carries exactly one of them is rendered with the
     value, as `render` writes it, and read as the project reads it.
     """
-    found: dict[str, list] = {}
-    for rel in TEMPLATED_YAML:
-        text = (Path(template_dir) / rel).read_text(encoding="utf-8")
-        for line in text.splitlines():
-            keys = _PLACEHOLDER_KEY_RE.findall(line)
-            if (len(keys) != 1 or keys[0] not in what
-                    or keys[0] not in values
-                    or line.lstrip().startswith("#")):
-                continue
-            key, value = keys[0], str(values[keys[0]])
-            rendered = render(line, {key: value}, rel).lstrip()
-            reading = _reading_of(rendered)
-            if not (isinstance(reading, str) and reading == value):
-                found.setdefault(key, []).append((rel, rendered, reading))
     return [
         f"{what[key]} is {str(values[key])!r}, which is written "
         + " and ".join(f"into {rel} as {_line_shown(line)}"
                        for rel, line, _ in rows)
         + ", where the project's own YAML reader reads it back as "
         + f"{_reading_in_words(rows[0][2])} and not as that text."
-        for key, rows in found.items()]
+        for key, rows in _misread_rows(values, what, template_dir).items()]
+
+
+def misread_placeholders(values: dict, what: dict,
+                         template_dir: Path = ASSEMBLY_TEMPLATE
+                         ) -> tuple[str, ...]:
+    """The placeholders of `what` whose value `manifest_misreads` would refuse,
+    for a caller that leaves those values to a misread rule of its own and
+    must not have the validator's question asked a second time of them
+    (`manifest_invalid`'s `not_text`)."""
+    return tuple(_misread_rows(values, what, template_dir))
 
 
 #: Which placeholder carries the value a finding of the validator is about,
@@ -2146,7 +2205,13 @@ def manifest_invalid(values: dict, policy: NamingPolicy, what: dict,
     except YamlError as exc:
         return ["the manifest this run would write is a file the project's "
                 f"own YAML reader refuses: {exc}."]
-    notes = manifest_validator(template_dir)._findings(manifest, policy, None)
+    validator = manifest_validator(template_dir)
+    try:
+        notes = validator._findings(manifest, policy, None)
+    except Exception as exc:  # the validator's own defect, never a finding
+        raise _validator_unusable(
+            "raised when it was asked", f"{type(exc).__name__}: {exc}"
+        ) from exc
     return _sentences_of(
         [note for note in notes if not note.startswith("WARNING")
          and _code_of(note) not in ignore], values, what, not_text)
@@ -2256,7 +2321,10 @@ def refuse_unstorable_names(refusal: str, directories: list[str],
         for name in names:
             size = len(f"{name}{suffix}".encode("utf-8"))
             if size > NAME_MAX:
-                shown = name if len(name) <= 24 else name[:24] + "..."
+                # BOTH ENDS: a name this long differs from the others by its
+                # tail, `-spec` or `-code`, which a cut at the front loses.
+                shown = (name if len(name) <= 27
+                         else f"{name[:12]}...{name[-12:]}")
                 problems.append(
                     f"{shown}{suffix} is {size} bytes long, and {where} "
                     f"may be at most {NAME_MAX}")

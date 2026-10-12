@@ -441,3 +441,136 @@ def test_a_value_the_reader_reads_as_another_kind_is_not_this_questions(
     plan = edited(world, old, new)
     result = run_script(ADOPT, "check", "--plan", str(plan))
     assert FINDING not in result.stderr, result.stderr
+
+
+# --- a text value the reader misreads: judged once, not twice ---------------
+
+#: `(old line, new line, what the validator says of it)`: TEXT in the plan,
+#: which the template writes bare and the project's reader reads as a number
+#: or a boolean. The validator refuses each; where a misread rule is also in
+#: the list (#181) it refuses the same value, and the sentence should be one.
+TEXT_THE_READER_MISREADS = [
+    pytest.param("id: northwind", 'id: "007"', "manifest-id: id is 7",
+                 id="id-007"),
+    pytest.param("visibility: private", 'visibility: "true"',
+                 "manifest-visibility: visibility is True",
+                 id="visibility-true"),
+    pytest.param('elected_on: "2026-09-02"', 'elected_on: "20261011"',
+                 "manifest-elected-on: elected_on is 20261011",
+                 id="elected-on-basic-format"),
+]
+
+
+@pytest.mark.parametrize("old, new, named", TEXT_THE_READER_MISREADS)
+def test_a_text_value_the_reader_misreads_is_one_finding_on_this_rule_alone(
+        adopter, world, old, new, named):
+    """With nothing else asking the misread question the validator's finding
+    is the only one, so `check` and `execute` still refuse the value: it must
+    not be dropped for want of a rule that is not here."""
+    plan = adopter.Plan.load(edited(world, old, new))
+    findings, remediation = adopter._manifest_findings(plan)
+    assert len(findings) == 1, findings
+    assert findings[0].startswith(FINDING) and named in findings[0]
+    assert remediation
+
+
+@pytest.mark.parametrize("old, new, named", TEXT_THE_READER_MISREADS)
+def test_where_a_misread_rule_judges_it_the_validator_is_not_asked_again(
+        adopter, world, old, new, named):
+    """`misreads_elsewhere`: a list that holds the misread rule's finding for
+    such a value (#181's `plan-manifest-misread`) is not given a second one
+    about the same value, in the validator's words and with the retyped text
+    (`id is 7`) that the misread finding exists to avoid."""
+    plan = adopter.Plan.load(edited(world, old, new))
+    assert adopter._manifest_findings(plan, misreads_elsewhere=True) == (
+        [], [])
+
+
+def test_a_value_that_is_not_a_misread_is_still_asked_where_one_judges_the_rest(
+        adopter, world):
+    """Only what the reader misreads is left out. `visibility: secret` is text
+    to the reader and the validator refuses it, so it is still a finding, and
+    so is a blank `elected_by`; `id: "007"` beside them is not."""
+    text = world["text"].replace("id: northwind", 'id: "007"')
+    text = text.replace("visibility: private", "visibility: secret")
+    text = text.replace('elected_by: "Test Human"', 'elected_by: " "')
+    path = world["tmp"] / "mixed.yaml"
+    with path.open("w", encoding=UTF8, newline="\n") as handle:
+        handle.write(text)
+    plan = adopter.Plan.load(path)
+    alone, _ = adopter._manifest_findings(plan)
+    shared, _ = adopter._manifest_findings(plan, misreads_elsewhere=True)
+    assert len(alone) == 3, alone
+    assert len(shared) == 2, shared
+    assert any("visibility is 'secret'" in f for f in shared)
+    assert any("elected_by is ' '" in f for f in shared)
+    assert not any("manifest-id" in f for f in shared)
+
+
+def test_the_entry_findings_of_this_rule_alone_are_unchanged(adopter, world):
+    """`_entry_findings` does not pass `misreads_elsewhere`: nothing else
+    here asks the misread question, so the list `check` prints and `execute`
+    refuses on still holds the validator's finding for `id: "007"`."""
+    plan = adopter.Plan.load(edited(world, "id: northwind", 'id: "007"'))
+    source = plan.open_source(str(world["source"]), world["tmp"] / "read")
+    findings, _ = adopter._entry_findings(plan, source)
+    assert len([f for f in findings if f.startswith(FINDING)]) == 1, findings
+
+
+# --- a validator that cannot be asked ---------------------------------------
+
+def a_copy_of_the_standard(base: Path, remake) -> Path:
+    """The standard, as its own git checkout (the tools name their revision),
+    with its template's `validate-manifest.py` made over by `remake`, which is
+    given the real text and returns the text to put there, or None to remove
+    the file."""
+    copy = base / "standard"
+    shutil.copytree(REPO, copy, symlinks=True, ignore=shutil.ignore_patterns(
+        ".git", "__pycache__", ".pytest_cache", "tests", "docs", "handoffs"))
+    git("init", "-q", cwd=copy)
+    git("add", "-A", cwd=copy)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
+        "--no-gpg-sign", "-m", "a copy of the standard", cwd=copy)
+    path = copy / "templates" / "assembly-root" / "scripts" / (
+        "validate-manifest.py")
+    remade = remake(path.read_text(encoding=UTF8))
+    if remade is None:
+        path.unlink()
+    else:
+        with path.open("w", encoding=UTF8, newline="\n") as handle:
+            handle.write(remade)
+    return copy
+
+
+BROKEN_VALIDATORS = [
+    pytest.param(lambda real: None, "could not be loaded: FileNotFoundError",
+                 id="missing"),
+    pytest.param(lambda real: real + "\n\ndef _findings(manifest, policy, "
+                                    "other):\n    raise KeyError('boom')\n",
+                 "raised when it was asked: KeyError: 'boom'",
+                 id="raises-when-asked"),
+]
+
+
+@pytest.mark.parametrize("remake, said", BROKEN_VALIDATORS)
+def test_plan_and_check_name_a_validator_that_cannot_be_asked(
+        world, tmp_path, remake, said):
+    """The validator the template ships is asked of the values in `plan`,
+    `check` and `execute`; one that is missing or raises was a traceback and
+    exit 1. `plan` writes no plan and `check` reads none, and both say that the
+    defect is the copy's."""
+    copy = a_copy_of_the_standard(tmp_path, remake)
+    out = tmp_path / "not-written.yaml"
+    planned = run_script(
+        copy / "adopt-project.py", "plan", "--source", str(world["source"]),
+        "--project", PROJECT, "--org", "testorg", "--elected-by", "Test Human",
+        "--elected-on", "2026-09-02", "--out", str(out))
+    checked = run_script(copy / "adopt-project.py", "check", "--plan",
+                         str(world["plan"]))
+    for result in (planned, checked):
+        assert result.returncode == 2, result.stderr + result.stdout
+        assert "REFUSED manifest-validator-unusable" in result.stderr
+        assert said in result.stderr, result.stderr
+        assert "a defect in the copy of this standard you ran" in result.stderr
+        assert "Traceback" not in result.stderr
+    assert not out.exists(), "a plan was written"

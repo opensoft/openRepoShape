@@ -139,7 +139,7 @@ from shape_materialize import (  # noqa: E402
 # asked of the plan's values by `plan`, `check` and `execute` (#261).
 from shape_materialize import (  # noqa: E402
     MANIFEST_INVALID_REMEDIATION, manifest_value_problems,
-    refuse_manifest_values, refuse_unstorable_names,
+    misread_placeholders, refuse_manifest_values, refuse_unstorable_names,
 )
 
 #: The naming policy this tool classifies leg names against. One constant,
@@ -1679,11 +1679,23 @@ def _manifest_values(plan: Plan, naming: NamingPolicy) -> dict | None:
         shape_commit, pins, naming)
 
 
-def _manifest_findings(plan: Plan) -> tuple[list[str], list[str]]:
+def _manifest_findings(plan: Plan, misreads_elsewhere: bool = False
+                       ) -> tuple[list[str], list[str]]:
     """What the project's own validator would refuse of this plan's values,
     as `check` prints them (one FINDING each), and what it prints once after
     them. `[]` and `[]` when it would pass, or when the plan's names are
-    refused in their own words (`_manifest_values`)."""
+    refused in their own words (`_manifest_values`).
+
+    `misreads_elsewhere` is for a caller whose list ALSO holds a misread
+    rule's finding for each value the project's reader reads back as another
+    type (`elected_on: "20261011"`, `visibility: "true"`, `id: "007"`: text in
+    the plan, a number or a boolean to the reader once the template writes it
+    bare), so that such a value is judged once and not twice. It is False
+    wherever nothing else asks that question, so that this rule alone still
+    refuses the value, with the validator's finding as the only one. Who is
+    left out is the reader's answer (`shape_materialize.manifest_misreads`,
+    the rule the scaffold applies) and not a list.
+    """
     naming = NamingPolicy.load(NAMING_POLICY)
     values = _manifest_values(plan, naming)
     if values is None:
@@ -1696,6 +1708,8 @@ def _manifest_findings(plan: Plan) -> tuple[list[str], list[str]]:
         placeholder for placeholder, key in MANIFEST_PLAN_KEYS.items()
         if plan.get(key) is not None
         and not isinstance(plan.get(key), str))
+    if misreads_elsewhere:
+        not_text += misread_placeholders(values, MANIFEST_PLAN_KEYS)
     problems = manifest_value_problems(values, naming, MANIFEST_PLAN_KEYS,
                                        misreads=False, ignore=LEG_PATH_CODES,
                                        not_text=not_text)

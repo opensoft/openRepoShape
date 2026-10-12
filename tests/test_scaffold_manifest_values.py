@@ -520,6 +520,25 @@ def test_the_name_rule_is_the_same_bytes_the_tools_make():
     assert "256 bytes" in caught.value.detail
 
 
+def test_the_names_a_refusal_shows_are_told_apart_by_their_tails():
+    """The three repositories are `<Project>`, `<Project>-spec` and
+    `<Project>-code`. Cut at the front, `-spec` and `-code` were lost and two
+    of the sentences read the same; each name is shown at both ends."""
+    name = "N" * 251
+    with pytest.raises(shape_materialize.Refusal) as caught:
+        shape_materialize.refuse_unstorable_names(
+            "r", [name, f"{name}-spec", f"{name}-code"])
+    sentences = caught.value.detail.rstrip(".").split("; ")
+    assert len(sentences) == 2 and len(set(sentences)) == 2, sentences
+    assert sentences[0].startswith("NNNNNNNNNNNN...NNNNNNN-spec is 256 bytes")
+    assert sentences[1].startswith("NNNNNNNNNNNN...NNNNNNN-code is 256 bytes")
+    # the bare repository's directory adds `.git`, after the tail
+    with pytest.raises(shape_materialize.Refusal) as caught:
+        shape_materialize.refuse_unstorable_names("r", [], [f"{name}-code"])
+    assert caught.value.detail.startswith(
+        "NNNNNNNNNNNN...NNNNNNN-code.git is 260 bytes")
+
+
 # --- never GitHub ----------------------------------------------------------
 
 @WINDOWS_SKIP  # the `gh` below is a `#!` script, which Windows does not run
@@ -626,3 +645,172 @@ def test_quoting_the_template_would_make_the_refusal_go_away(tmp_path):
     assert shape_materialize.manifest_misreads(values, what, copy) == []
     # and what the quoted line holds is the text, through the project's reader
     assert parse_yaml('tracking_branch: "007"\n') == {"tracking_branch": "007"}
+
+
+# --- one alphabet for a placeholder ----------------------------------------
+
+def test_a_placeholder_is_what_render_calls_one(tmp_path, monkeypatch):
+    """The question counts the placeholders of a template line with the
+    pattern `render` finds them by, not with a second spelling of its
+    alphabet. #260 widens `PLACEHOLDER_RE` to admit digits
+    (`{{SPEC_TREE_SHA256}}`); a line holding one asked placeholder and one
+    with a digit must then count as two and not be asked, as a line that is
+    asked is rendered with a one-key table and refused as
+    `template-unsubstituted`."""
+    monkeypatch.setattr(shape_materialize, "PLACEHOLDER_RE",
+                        re.compile(r"\{\{[A-Z0-9_]+\}\}"))
+    assert shape_materialize._placeholders_of(
+        "x: {{PROJECT_ID}}-{{SPEC_TREE_SHA256}}") == [
+            "PROJECT_ID", "SPEC_TREE_SHA256"]
+    copy = tmp_path / "assembly-root"
+    shutil.copytree(REPO / "templates" / "assembly-root", copy,
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    manifest = copy / "project.yaml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8")
+        + "extra: {{PROJECT_ID}}-{{SPEC_TREE_SHA256}}\n", encoding="utf-8")
+    values = {"PROJECT_ID": "null", "SPEC_TREE_SHA256": "0" * 64}
+    what = {"PROJECT_ID": "--id"}
+    # only the line that holds the one placeholder is asked, and nothing raises
+    sentences = shape_materialize.manifest_misreads(values, what, copy)
+    assert len(sentences) == 1
+    assert "id: null" in sentences[0] and "extra" not in sentences[0]
+
+
+# --- what is shown of a line ----------------------------------------------
+
+def test_a_line_a_terminal_would_show_as_something_else_is_quoted_by_python():
+    """A character a terminal shows as something else (a vertical tab, a
+    line separator) is spelled the way Python does, so that one sentence stays
+    one line and the character can be seen; a printable line is in
+    backticks."""
+    shown = shape_materialize._line_shown
+    assert shown("id: atlas") == "`id: atlas`"
+    assert shown("tracking_branch: a\x0bb") == "'tracking_branch: a\\x0bb'"
+    assert shown("id: a\u2028b") == "'id: a\\u2028b'"
+
+
+@pytest.mark.parametrize("char", ["\x0b", "\x1c", "\u2028"])
+def test_a_misread_sentence_holding_a_line_break_is_one_printable_line(char):
+    """The manifest is split at the break, so the reader refuses it; the
+    sentence says so without printing the break itself."""
+    what = {"TRACKING_BRANCH": "--tracking-branch"}
+    (sentence,) = shape_materialize.manifest_misreads(
+        {"TRACKING_BRANCH": f"a{char}b"}, what)
+    assert len(sentence.splitlines()) == 1 and sentence.isprintable()
+    assert "into project.yaml as 'tracking_branch: a\\" in sentence
+    # a printable misread is quoted in backticks, as before
+    (plain,) = shape_materialize.manifest_misreads(
+        {"TRACKING_BRANCH": "007"}, what)
+    assert "into project.yaml as `tracking_branch: 007`" in plain
+
+
+# --- the placeholders a misread rule would refuse ---------------------------
+
+def test_the_misread_placeholders_are_the_ones_the_misread_rule_refuses():
+    """What a caller that leaves misreads to a rule of its own asks of the
+    validator is whatever `manifest_misreads` would refuse, as an answer of
+    the project's reader and not a list of values."""
+    what = {"PROJECT_ID": "--id", "TRACKING_BRANCH": "--tracking-branch",
+            "ELECTED_BY": "--elected-by", "ELECTED_ON": "--elected-on",
+            "VISIBILITY": "--visibility", "ORG": "--org"}
+    values = {"PROJECT_ID": "007", "TRACKING_BRANCH": "2026",
+              "ELECTED_BY": " ", "ELECTED_ON": "2026-09-02",
+              "VISIBILITY": "true", "ORG": "acme"}
+    asked = shape_materialize.misread_placeholders(values, what)
+    assert sorted(asked) == ["PROJECT_ID", "TRACKING_BRANCH", "VISIBILITY"]
+    assert len(shape_materialize.manifest_misreads(values, what)) == len(asked)
+    assert shape_materialize.misread_placeholders(
+        {"PROJECT_ID": "atlas"}, what) == ()
+
+
+# --- a validator that cannot be asked -------------------------------------
+
+#: `(how the template's validator is made over, what the refusal says)`: the
+#: function is given the real file's text and returns the new text, or None to
+#: remove the file.
+BROKEN_VALIDATORS = [
+    pytest.param(lambda real: None, "could not be loaded: FileNotFoundError",
+                 id="missing"),
+    pytest.param(lambda real: "def (:\n",
+                 "could not be loaded: SyntaxError", id="syntax"),
+    pytest.param(lambda real: "raise RuntimeError('boom at import')\n",
+                 "could not be loaded: RuntimeError: boom at import",
+                 id="raises-at-import"),
+    pytest.param(lambda real: "ANSWER = 42\n",
+                 "could not be used: it has no `DATE_RE`",
+                 id="lacks-what-is-asked"),
+    pytest.param(lambda real: real + "\n\ndef _findings(manifest, policy, "
+                                    "other):\n    raise KeyError('boom')\n",
+                 "raised when it was asked: KeyError: 'boom'",
+                 id="raises-when-asked"),
+]
+
+
+def a_copy_of_the_standard(base: Path, remake) -> Path:
+    """The standard, as its own git checkout (the tools name their revision),
+    with its template's `validate-manifest.py` made over by `remake`, which is
+    given the real text and returns the text to put there, or None to remove
+    the file."""
+    copy = base / "standard"
+    shutil.copytree(REPO, copy, symlinks=True, ignore=shutil.ignore_patterns(
+        ".git", "__pycache__", ".pytest_cache", "tests", "docs", "handoffs"))
+    git("init", "-q", cwd=copy)
+    git("add", "-A", cwd=copy)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
+        "--no-gpg-sign", "-m", "a copy of the standard", cwd=copy)
+    path = copy / "templates" / "assembly-root" / "scripts" / (
+        "validate-manifest.py")
+    remade = remake(path.read_text(encoding="utf-8"))
+    if remade is None:
+        path.unlink()
+    else:
+        with path.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(remade)
+    return copy
+
+
+@pytest.mark.parametrize("remake, said", BROKEN_VALIDATORS)
+def test_a_validator_that_cannot_be_asked_is_a_named_refusal_not_a_traceback(
+        tmp_path, remake, said):
+    """The validator the template ships is loaded and asked, so a copy of the
+    standard that lost it, or holds one that raises, would have been a
+    traceback and exit 1 from deep inside the tool. Nothing is created
+    either way; it is now a refusal that names the file and says the defect is
+    the copy's, not the values'."""
+    copy = a_copy_of_the_standard(tmp_path, remake)
+    run = tmp_path / "run"
+    (run / SCRATCH).mkdir(parents=True)
+    result = run_script(
+        copy / "scaffold-project.py", *IDENTITY,
+        "--local-remote-dir", str(run / REMOTES),
+        "--work-dir", str(run / WORK),
+        env={"TMPDIR": str(run / SCRATCH), "TMP": str(run / SCRATCH),
+             "TEMP": str(run / SCRATCH)})
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert "REFUSED manifest-validator-unusable" in result.stderr
+    assert "validate-manifest.py" in result.stderr
+    assert said in result.stderr, result.stderr
+    assert "a defect in the copy of this standard you ran" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert result.stdout == "", "a plan was printed for a refused scaffold"
+    assert sorted(p.name for p in run.iterdir()) == [SCRATCH]
+    assert list((run / SCRATCH).iterdir()) == []
+    assert not list((copy / "templates").rglob("__pycache__")), (
+        "bytecode was written into the template tree")
+
+
+def test_a_validator_that_failed_to_load_is_not_remembered(tmp_path):
+    """A failed load is not cached: the file put right, the next ask loads
+    it."""
+    copy = tmp_path / "assembly-root"
+    shutil.copytree(REPO / "templates" / "assembly-root", copy,
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    validator = copy / "scripts" / "validate-manifest.py"
+    good = validator.read_bytes()
+    validator.write_text("def (:\n", encoding="utf-8")
+    with pytest.raises(shape_materialize.Refusal) as caught:
+        shape_materialize.manifest_validator(copy)
+    assert caught.value.code == "manifest-validator-unusable"
+    validator.write_bytes(good)
+    assert hasattr(shape_materialize.manifest_validator(copy), "_findings")
