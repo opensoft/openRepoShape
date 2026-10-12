@@ -401,7 +401,19 @@ def read_pin(root: Path) -> tuple[dict, list[Row]]:
             "Remediation: this command updates a project that was scaffolded "
             "or adopted with this shape. A project without a shape pin is "
             "adopted with `adopt-project.py`, not updated.")
-    pin = load_yaml(pin_path)
+    return check_pin(load_yaml(pin_path), pin_path)
+
+
+def check_pin(pin, pin_path) -> tuple[dict, list[Row]]:
+    """`read_pin`'s checks, over a pin already parsed: the pin and its rows,
+    or the refusal `read_pin` raises for it.
+
+    APART FROM THE READ so a pin can be checked where it is not a file on
+    disk: `shape-doctor.py` reads the pins in a root's history out of git,
+    in memory, before it names one to put back (#237), and a second copy of
+    these checks there could pass a pin this tool then refuses. `pin_path`
+    only names the pin in a refusal's words.
+    """
     if not isinstance(pin, dict):
         raise Refusal("update-pin-unreadable", f"{pin_path}: not a mapping")
     commit = str(pin.get("commit") or "").lower()
