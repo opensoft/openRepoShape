@@ -1563,10 +1563,10 @@ def _misread_reason(text: str) -> str | None:
     read = parse_yaml(LEG_PATH_LINE.format(text))["path"]
     if read == text:
         return None
-    return ("`project.yaml` and the leg's `contracts/` pin hold a leg path "
-            f"unquoted (`path: {text}`), and the project's own YAML reader "
-            f"reads that as {_read_as(read)}, so its first bootstrap would "
-            "fail")
+    return ("the assembly root's `project.yaml` and "
+            "`contracts/<role>-pin.yaml` hold a leg path unquoted "
+            f"(`path: {text}`), and the project's own YAML reader reads that "
+            f"as {_read_as(read)}, so its first bootstrap would fail")
 
 
 def _canonical_spelling(text: str) -> str | None:

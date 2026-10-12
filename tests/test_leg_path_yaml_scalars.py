@@ -159,10 +159,10 @@ ANSWERS = (("examples/", "spec"), (".claude/", "root"),
 
 def sentence(what: str, value: str, reading: str) -> str:
     """The whole sentence the rule says, written out here as its oracle."""
-    return (f"{what} is {value!r}, {NOT_READ_BACK}`project.yaml` and the "
-            "leg's `contracts/` pin hold a leg path unquoted "
-            f"(`path: {value}`), and the project's own YAML reader reads that "
-            f"as {reading}, so its first bootstrap would fail.")
+    return (f"{what} is {value!r}, {NOT_READ_BACK}the assembly root's "
+            "`project.yaml` and `contracts/<role>-pin.yaml` hold a leg path "
+            f"unquoted (`path: {value}`), and the project's own YAML reader "
+            f"reads that as {reading}, so its first bootstrap would fail.")
 
 
 def scaffold(tmp_path: Path, *args: str):
