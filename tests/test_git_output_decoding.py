@@ -133,14 +133,6 @@ ALWAYS_TEXT = {"getoutput", "getstatusoutput"}
 #: by (file, the function the call is in); the value is what it must still
 #: name, and the reason it differs.
 EXEMPT = {
-    # #196's branch gives this call both arguments; until it lands, the two
-    # tools' fixes stay in separate pull requests rather than one conflicting
-    # hunk.
-    ("scripts/shape_materialize.py", "env_commit"): frozenset(),
-    # #216's branch reads this `git grep` as BYTES (a path is bytes, and it
-    # spells each one itself), which leaves nothing here to decode; the same
-    # two-pull-requests reason as above.
-    ("adopt-project.py", "cross_leg_references"): frozenset(),
     # The `gh api` tree listing becomes a digest: UTF-8 yes, `replace` no, for
     # a replaced byte would be a wrong digest with a confident tone.
     ("scaffold-project.py", "pin_digest_from_gh"): frozenset({"encoding"}),
