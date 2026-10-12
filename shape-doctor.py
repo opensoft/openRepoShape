@@ -944,7 +944,11 @@ def run_validator(ctx: Context, script: Path, args: list[str],
     preflight) are given none: the naming script inserts its own directory
     ahead of its `repo_shape` import, and the machine's preflight needs
     nothing from `repo_shape` at all and never imports it (#238), so taking
-    the variable out of their child changes nothing they do.
+    the variable out of their child changes nothing they NEED. It does change
+    what their row can SAY, for the better: a `sitecustomize.py`, or a module
+    that shadows the standard library, in an operator's `PYTHONPATH` used to
+    end the naming validator and turn a compliant root's `naming` row into a
+    FINDING (exit 86), and it no longer can.
 
     A PASTED COMMAND IS A SECOND PROCESS, AND THIS `env` IS NOT IN IT. What a
     row prints as its NEXT is run later, by a person, in their own shell -- so
