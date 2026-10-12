@@ -106,8 +106,14 @@ from shape_materialize import (  # noqa: E402
 MANIFEST = "project.yaml"
 
 #: The root's OWN validators, run after the rewrite and before the commit.
-#: Copies, not this checkout's: a project runs its own gate offline, and the
-#: only opinion that matters here is the one its pull request will report.
+#: Copies, not this checkout's: a project runs its own gate, and the only
+#: opinion that matters here is the one its pull request will report.
+#: NOT NETWORK-FREE, and the child gets this process's environment (#411): for
+#: a project declaring `neutral_product_pins:` whose product has no local
+#: checkout (a sibling of the root or `SHAPE_PIN_SOURCE_<PRODUCT>`; this tool
+#: takes no `--pin-source`), `validate-pins.py` asks `gh api` for the pinned
+#: tree with the operator's `gh` credentials. Without `gh`, a login or a
+#: network that is its `skip` line, exit 0, and the bump goes on.
 VALIDATORS = ("scripts/validate-pins.py", "scripts/validate-manifest.py")
 
 #: A local-path remote is a `file://` fetch, which git has refused for

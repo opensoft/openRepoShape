@@ -693,17 +693,17 @@ link that broke. `LedgerxWallet` -> `openXwallet` -> `openWallet` is the same
 shape, and `openWallet` need not exist anywhere for that to be the answer.
 
 **`validate-pins.py` rechecks the referent too, not only the declaration.**
-Every `neutral_product_pins:` entry's `contracts/<product lowercased>-pin.yaml`
-has its `commit`, `revision_kind` and `sorted-ls-tree-r-v1` digest recomputed
-exactly the way `scaffold-project.py --pin` computed them: OFFLINE from a
-local checkout when one can be found — `--pin-source [PRODUCT=]<path>`,
-`SHAPE_PIN_SOURCE_<PRODUCT>` in the environment, or a checkout sitting beside
-the assembly root and named for the pinned repository — else from `gh api`
-when `gh` can read it. Neither answering is a named SKIP, never a finding and
-never a failure: a project with no local checkout of its referent and no
-network is not thereby lying about its descent. A digest that recomputes
-differently, or a pin file the declaration names but that is not there, is
-reported as drift like every other pin in this file.
+Each `neutral_product_pins:` entry's `contracts/<product lowercased>-pin.yaml`
+has its `commit`, `revision_kind` and `sorted-ls-tree-r-v1` digest recomputed as
+`scaffold-project.py --pin` computed them: OFFLINE from a local checkout when
+one is found — `--pin-source [PRODUCT=]<path>`, `SHAPE_PIN_SOURCE_<PRODUCT>` in
+the environment, or a checkout beside the assembly root named for the pinned
+repository — else by `gh api`, with the operator's `gh` credentials, when `gh`
+can read it. Neither answering is a named SKIP, exit 0, never a finding or a
+failure: no checkout and no network does not make a descent a lie. `make
+bootstrap`, `bump-leg.py` and `update-shape.py apply` run this gate in the
+operator's environment, so each makes that call too; none takes `--pin-source`.
+A differing digest or missing pin file is drift, as everywhere.
 
 ### A neutral product may elect the shape and be its own assembly root
 
@@ -1022,12 +1022,12 @@ the rest is the project's own, which an upstream fix must never overwrite.
 
 ## Keeping a project's shape current
 
-The copies are the trade: a project runs its own gate offline, and an upstream
-FIX to a copied file reaches it never. On 2026-09-03 that bill came due — one
-change to the assembly-root `validate.yml`, and both projects carrying the
-shape were updated BY HAND: re-copy, recompute the file's `sha256` row, move
-`commit` and `digests.tree_sha256`, mirror both into `project.yaml`, re-run the
-validators. `update-shape.py` is that, as one command:
+The copies are the trade: a project runs its own gate, which never consults this
+standard (its one possible network read is `validate-pins.py`'s `gh api` recheck
+of a neutral product's pin, above), and an upstream FIX to a copied file reaches
+it never. On 2026-09-03 that bill came due — one change to the assembly-root
+`validate.yml`, and both projects with the shape were updated BY HAND: re-copy,
+re-pin, re-validate. `update-shape.py` is that, as one command:
 
 ```sh
 ./update-shape.py check --root ../MedxEHR          # writes nothing
@@ -1089,9 +1089,9 @@ by every `check` until it is taken or a file arrives at that path.
 `owner/repo` it bare-clones itself; it defaults to the repository the pin
 names. `make bootstrap` prints one line when the upstream has moved past the
 pin AND this machine can already tell offline — `SHAPE_UPSTREAM_PATH` points at
-a clone, or a `.shape-upstream-tip` file carries a commit. It adds no network
-call: a bootstrap that paused to ask GitHub a question would have made the
-shape a dependency again.
+a clone, or a `.shape-upstream-tip` file carries a commit. That line adds no
+network call: a bootstrap that paused to ask GitHub a question would have
+made the shape a dependency again. (Its pins gate may ask `gh api`; see above.)
 
 ### Is this repository compliant? `openRepoShape --doctor`
 
