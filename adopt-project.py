@@ -2904,6 +2904,17 @@ ON_THIS_MACHINE = ("an absolute path: a place on this machine, not in the "
                    "assembly")
 #: The parts of a path that name no entry, and leave a walk where it is.
 HERE = ("", ".")
+#: What the assembly's clone holds in its own `.git` whatever the git
+#: version: `execute` clones with no template (#243), and git makes these in
+#: every repository. A symlink AT a path the shape writes that leads to one
+#: of them finds something there, so `place` writes the shape's copy beside
+#: it and keeps the link, as on main. Nothing else under `.git` is counted:
+#: what else is there depends on git's version and configuration, and a
+#: link that leads the shape INTO `.git` writes where no commit holds it.
+CLONE_GIT = frozenset({".git", ".git/HEAD", ".git/config", ".git/objects",
+                       ".git/refs"})
+#: `CLONE_GIT` as a disk that ignores case finds it.
+CLONE_GIT_FOLDED = frozenset(path.casefold() for path in CLONE_GIT)
 
 
 def _absolute_here(target: str) -> bool:
@@ -2944,6 +2955,8 @@ class _PlannedRoot:
     an empty directory for each submodule, because the assembly's clone is
     not recursive. It does not hold a path the plan sends to a leg or drops:
     the mount's `git rm` has removed it by the time the shape is written.
+    A symlink AT a path the shape writes also finds what every clone's own
+    `.git` holds (`CLONE_GIT`), and nothing else in `.git`.
     `walks` adds what the shape itself writes, path by path, as `place` does,
     so `CLAUDE.md -> AGENTS.md` finds the `AGENTS.md` the shape wrote first.
 
@@ -3091,8 +3104,14 @@ class _PlannedRoot:
         return self._folded.get(path.casefold()) if self.fold else None
 
     def _has(self, path: str) -> bool:
-        """Whether something is at `path`, as `Path.exists()` would say."""
-        return self._real(path) is not None
+        """Whether something is at `path`, as `Path.exists()` would say: in
+        this tree, or in the clone's own `.git` (`CLONE_GIT`). Only this
+        asks the clone's `.git`; `_is_dir` does not, so a link ABOVE a path
+        the shape writes still cannot lead it into `.git` (D9)."""
+        if self._real(path) is not None:
+            return True
+        return (path.casefold() in CLONE_GIT_FOLDED if self.fold
+                else path in CLONE_GIT)
 
     def _is_dir(self, path: str) -> bool:
         real = self._real(path)

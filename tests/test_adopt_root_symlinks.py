@@ -132,6 +132,8 @@ GITIGNORE_TWIN = ".GITIGNORE"
 NOWHERE_GITIGNORE = "nowhere/gitignore"
 BUILD_MAKEFILE = "build/Makefile"
 GIT_INFO = ".git/info"
+GIT_HEAD = ".git/HEAD"
+GIT_DESCRIPTION = ".git/description"
 SPEC_OTHER = "spec/docs/other.md"
 VENDOR = "vendor"
 PERSONAL = "a personal file\n"
@@ -487,6 +489,13 @@ REFUSED = [
                   leads(AGENTS, SPEC_OTHER,
                         "the spec leg, mounted at `spec`, does not hold")),
                  id="at-a-path-into-a-leg-that-lacks-it"),
+    # Only a template puts `description` in `.git`, and `execute` clones
+    # with none: the shape would write through the link into the clone's own
+    # `.git`, where no commit holds it.
+    pytest.param({}, {CLAUDE: GIT_DESCRIPTION}, {CLAUDE: ROOT},
+                 (CLAUDE, GIT_DESCRIPTION, CLAUDE,
+                  leads(CLAUDE, GIT_DESCRIPTION, NOT_IN_THE_TREE)),
+                 id="at-a-path-to-what-only-a-template-puts-in-dot-git"),
     # B2: the copy under `shape/` lands on something already there.
     pytest.param({}, {SHAPE_DIR: "."}, {SHAPE_DIR: ROOT},
                  (SHAPE_DIR, ".", SHAPE_README,
@@ -846,6 +855,11 @@ ACCEPTED = [
     pytest.param({CI_FILE: ON_PUSH}, {GITHUB_TWIN: "ci"},
                  {CI_DIR: ROOT, GITHUB_TWIN: ROOT},
                  id="a-case-twin-that-stays-inside"),
+    # A link AT a path to what git makes in every clone's own `.git`:
+    # `place` finds it there and writes the copy beside, as on main (F3 of
+    # #183's re-verify).
+    pytest.param({}, {CLAUDE: GIT_HEAD}, {CLAUDE: ROOT},
+                 id="at-a-path-to-the-clones-own-head"),
 ]
 
 #: Links no path the shape writes runs through: main keeps each exactly as
@@ -1337,6 +1351,23 @@ def test_a_link_at_a_path_to_a_file_outside_adopts_beside_it(
 def test_that_assembly_bootstraps_too(claude_md_outside, tmp_path):
     assert claude_md_outside.result.returncode == 0
     bootstraps(claude_md_outside.source, tmp_path)
+
+
+@needs_filter_repo
+@needs_disk_symlinks
+def test_a_link_at_a_path_into_the_clones_own_git_adopts_beside_it(tmp_path):
+    """`CLAUDE.md -> .git/HEAD`: every clone has that file, so `place`
+    writes the shape's copy beside the link and keeps it, and the adoption
+    verifies, as on main (F3 of #183's re-verify)."""
+    source, plan = disk_source(tmp_path, {}, {CLAUDE: GIT_HEAD},
+                               {CLAUDE: ROOT})
+    result = execute(tmp_path, plan)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert VERIFIED in result.stdout
+    assert (f"  beside  {SHAPE_DIR}/{CLAUDE} (the source already has "
+            f"{CLAUDE}; nothing was overwritten)") in result.stdout
+    assert split_modes(source)[CLAUDE] == SYMLINK
+    assert git("show", f"{BRANCH}:{CLAUDE}", cwd=source).stdout == GIT_HEAD
 
 
 @needs_filter_repo
