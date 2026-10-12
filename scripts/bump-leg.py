@@ -55,7 +55,10 @@ WHAT IT REFUSES, and why each is a refusal rather than a warning:
     anything is written and under `--dry-run` as well (#289). Never read
     lossily — the rewritten text is written back, and would carry U+FFFD
     where the operator's byte was — and never skipped, since `validate-pins.py`
-    reads every workflow file on disk and cannot read it either.
+    reads every workflow file on disk and cannot read it either. A workflow
+    file git does not track is refused the same way and marked `(untracked or
+    ignored)`: it needs the re-save and no commit, where a tracked one is
+    committed after it.
   * a validator that goes red after the rewrite. Every byte is rolled back
     first — the pin file, the workflow files, the leg's checkout and the index
     — so a refusal leaves the tree exactly as it was found.
@@ -315,7 +318,8 @@ def _leg_pin_text(root: Path, pin_path: Path) -> str:
             "index or the leg's checkout was changed.") from exc
 
 
-def _workflow_texts(root: Path, workflows: Path) -> list[tuple[Path, str]]:
+def _workflow_texts(root: Path, workflows: Path, tracked: set[str],
+                    listed: set[str]) -> list[tuple[Path, str]]:
     """Every `.yml` and `.yaml` file in `workflows`, read as UTF-8 — or ONE
     refusal naming each that is not (#289).
 
@@ -331,21 +335,44 @@ def _workflow_texts(root: Path, workflows: Path) -> list[tuple[Path, str]]:
     each in one pass instead of meeting them one run at a time. The read is
     before anything is written, so the refusal promises only what is true:
     the working tree, the index and the leg's checkout are as they were.
+
+    EACH LINE SAYS WHETHER GIT TRACKS THE FILE, because the advice differs.
+    A tracked file is committed after the re-save. One git does not track,
+    untracked or ignored, needs only the re-save: committing it would put a
+    draft on the bump branch, which `plan_workflows` refuses an untracked
+    file for (#207), and `git add` refuses an ignored one. `tracked` and
+    `listed` are `plan_workflows`' own, and `_tracked_spelling` answers with
+    them, so a tracked file the disk spells another way (#332) is not marked.
+    It is asked only of a file already refused and reads no file (`tracked` is
+    in hand, `_same_file` is a `stat`), so every read still comes before
+    anything is written.
     """
     texts: list[tuple[Path, str]] = []
-    unreadable: list[str] = []
+    unreadable: list[tuple[str, bool]] = []
     for path in sorted(workflows.iterdir()):
         if path.suffix not in (".yml", ".yaml") or not path.is_file():
             continue
         try:
             texts.append((path, path.read_text(encoding="utf-8")))
         except UnicodeDecodeError as exc:
-            unreadable.append(_not_utf8(root, path, exc))
+            held = _tracked_spelling(root, path, tracked, listed) is not None
+            unreadable.append((_not_utf8(root, path, exc), held))
     if unreadable:
+        advice = ""
+        if any(held for _, held in unreadable):
+            advice += "Commit each file git tracks. "
+        if not all(held for _, held in unreadable):
+            advice += ("A file marked (untracked or ignored) needs no "
+                       "commit, only the re-save: committing it would put "
+                       "it on this branch, so either leave it uncommitted "
+                       "or move it out of .github/workflows/ until the bump "
+                       "has landed. ")
         raise Refusal(
             "bump-leg-workflow-unreadable",
             f"{len(unreadable)} workflow file(s) are not UTF-8:\n"
-            + "\n".join(f"    {line}" for line in unreadable),
+            + "\n".join(f"    {line}" + ("" if held
+                                        else "  (untracked or ignored)")
+                        for line, held in unreadable),
             "Remediation: this tool rewrites each workflow file as UTF-8 "
             "text and reads none lossily, because the rewritten text is "
             "written back and would carry U+FFFD where your byte was; "
@@ -354,9 +381,10 @@ def _workflow_texts(root: Path, workflows: Path) -> list[tuple[Path, str]]:
             "In each line above, the byte is counted from 0 at the start of "
             "the file and is the first that is not UTF-8: re-save every file "
             "named as UTF-8 (a UTF-16 file with a byte-order mark needs "
-            "converting, not editing), whether or not it names this leg, "
-            "commit it, and run the same command again. Nothing in the "
-            "working tree, the index or the leg's checkout was changed.")
+            "converting, not editing), whether or not it names this leg. "
+            + advice
+            + "Then run the same command again. Nothing in the working "
+            "tree, the index or the leg's checkout was changed.")
     return texts
 
 
@@ -461,7 +489,7 @@ def plan_workflows(root: Path, repository: str,
     tracked = _tracked_workflows(root, workflows)
     listed = {child.name for child in workflows.iterdir()}
     untracked: list[tuple[str, int]] = []
-    for path, text in _workflow_texts(root, workflows):
+    for path, text in _workflow_texts(root, workflows, tracked, listed):
         moved = 0
 
         def swap(match: re.Match) -> str:
