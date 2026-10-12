@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """A doctor NEXT is the command and only the command (#277).
 
-THE DEFECT. Sixteen of the doctor's NEXT builders ended the command with
-`   # <comment>`, and one printed prose in the command's place; doctor A
-(#276) and doctor B (#278, #298) wrote five more tails while this was open.
+THE DEFECT. Twenty of the doctor's NEXT builders ended the command with
+`   # <comment>`, and one printed prose in the command's place. Sixteen were
+there when this began (3ae0109). Doctor A (#276) then rewrote the `legs`
+tail and added two more (`lockstep_next` and the `members` git line), and
+doctor B (#278, #298) added two (its crash line and its restore line).
 A tail was harmless in exactly the shells that read `#` as a comment where
 a word starts -- `sh -c`, bash, `zsh -c` -- which is how every test and
 every agent tool call had read one. An INTERACTIVE zsh without
@@ -495,7 +497,11 @@ def paste_into_zsh(line: str, cwd: Path, timeout: float = 120.0) -> tuple:
     The environment is the test's own, less `PYTHONPATH` (a NEXT carries
     what it needs, #238) and with file-protocol git for the one child that
     may clone from the suite's local remotes -- per process, never
-    `GIT_ALLOW_PROTOCOL` (see `tests/conftest.py`).
+    `GIT_ALLOW_PROTOCOL` (see `tests/conftest.py`). It is read from
+    `os.environ` HERE, at the call, and is not doctor A's `PASTE_ENV`: that
+    dict is built when its module is imported, at collection, before the
+    session fixture puts the `gh` guard first on `PATH`, so a line pasted
+    with it would reach whatever `gh` the machine has.
     """
     import pty  # POSIX only: `tty` beneath it needs `termios`
     env = {name: value for name, value in os.environ.items()
