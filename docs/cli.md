@@ -661,7 +661,7 @@ options:
 
 ```
 usage: family.py bump [-h] --family-root FAMILY_ROOT --member PROJECT
-                      --to COMMIT [--trailer "KEY: VALUE"]
+                      --to COMMIT [--trailer "KEY: VALUE"] [--dry-run]
 
 options:
   -h, --help            show this help message and exit
@@ -672,6 +672,11 @@ options:
   --trailer "KEY: VALUE"
                         append this `<Key>: <value>` line to the commit this
                         writes; repeatable, kept in the order given
+  --dry-run             print the row this would write, and its trailers, and
+                        change nothing in the holder: it FETCHES the member,
+                        as a real bump does, to resolve --to and digest it,
+                        and checks nothing out, writes, stages and commits
+                        nothing; exit 1 if there is nothing to do
 ```
 
 #### `scripts/family.py remove`
@@ -680,11 +685,15 @@ options:
 
 ```
 usage: family.py remove [-h] --family-root FAMILY_ROOT --member PROJECT
+                        [--dry-run]
 
 options:
   -h, --help            show this help message and exit
   --family-root FAMILY_ROOT
   --member PROJECT
+  --dry-run             print the row, the gitlink, the .gitmodules section
+                        and the directory this would remove, and change
+                        nothing
 ```
 
 #### `scripts/family.py siblings`
