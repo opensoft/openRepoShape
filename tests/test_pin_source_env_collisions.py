@@ -10,16 +10,24 @@ FINDING (exit 1, a red `validate.yml`) for the one it was not a checkout of;
 with no source given the same variable was offered as the way to verify either.
 
 Every existing variable name is kept: an operator may have set one and the docs
-name them. What is refused instead is DECLARING a set of products whose
-variables collide, in each place that declares or reads pins:
+name them. What is done instead, in each place that declares or reads pins:
 
-- `scaffold-project.py --pin`, beside #241's file collisions, dry run and real
-  run alike, before any process starts;
-- the project's own `validate-pins.py`, as the finding
-  `neutral-pin-source-collides`, after which neither product reads the
-  variable;
-- the chain readers in `repo_shape.py`, which never read a variable two links
-  of one chain share and never offer it.
+- `scaffold-project.py --pin` REFUSES a set of products whose variables
+  collide, beside #241's file collisions, dry run and real run alike, before
+  any process starts: no new project is made with a variable it cannot use;
+- the project's own `validate-pins.py` NOTES a pair a project already declares
+  (`neutral-pin-source-collides`) and never fails it, after which neither
+  product reads the variable and each is verified from its own source. It was
+  a finding in the first round, and a project declaring such a pair could not
+  take `update-shape.py apply` (`update-validators-red`) until a person dropped
+  a true declaration; the second round made it a note, and
+  `test_a_project_declaring_a_colliding_pair_takes_a_shape_update` holds that;
+- the chain readers in `repo_shape.py` never read a variable two links of one
+  chain share and never offer it.
+
+Two declarations are one product when they are one PIN FILE (`pin_product_key`,
+`lower()`), and not when `casefold()` says so: `openß` and `openss` share
+`SHAPE_PIN_SOURCE_OPENSS` and have two files.
 
 `adopt-project.py --pin` is not here: its half arrives with #273's change,
 which routes adopt through the one function this file pins.
@@ -33,10 +41,15 @@ where the run would otherwise have reached the forge.
 
 from __future__ import annotations
 
+import itertools
+import json
 import os
+import shutil
 import stat
+import subprocess
 import sys
 import textwrap
+import types
 from pathlib import Path
 
 import pytest
@@ -45,6 +58,9 @@ from conftest import (
     REPO, SCAFFOLD, WINDOWS_SKIP, clear_ambient_pin_sources, git, run_script,
 )
 from test_scaffold_pin_and_reuse import product_repo
+from test_update_shape import (
+    PROJECT, commit_upstream_changes, scaffold_upstream_and_project, verdicts,
+)
 # Fixtures and constants of #241's file, shared rather than re-made: the
 # stand-in `openGlass` with two commits, the module-level `scaffold`, the
 # refusal of every process start, and the remote and `gh` world.
@@ -56,10 +72,13 @@ from test_scaffold_pin_collisions import (  # noqa: F401
 
 sys.path.insert(0, str(REPO / "scripts"))
 import repo_shape  # noqa: E402
-from repo_shape import NamingPolicy, tree_digest  # noqa: E402
+from repo_shape import NamingPolicy, Refusal, tree_digest  # noqa: E402
+from shape_materialize import neutral_pin_path  # noqa: E402
 
 UTF8 = "utf-8"
 POLICY_PATH = REPO / "contracts" / "repository-naming.yaml"
+VALIDATE_PINS = (REPO / "templates" / "assembly-root" / "scripts"
+                 / "validate-pins.py")
 
 #: The two refusals' remediation for the variable, word for word. Alone it
 #: stands after `Remediation: nothing was created.`, and beside a file
@@ -142,6 +161,95 @@ def test_it_reads_a_generator_once():
     products = (p for p in ("a-b", "a_b"))
     assert repo_shape.pin_source_env_collisions(products) == {
         "SHAPE_PIN_SOURCE_A_B": ["a-b", "a_b"]}
+
+
+# --- two declarations are one product when they are one PIN FILE (#275, N2) ---
+
+#: Pairs of names that share a variable and have TWO pin files, though
+#: `casefold()` makes one of each. Hand-written `project.yaml` cases only:
+#: scaffold's `--pin` and adopt's `pins:` take ASCII, as a GitHub repository
+#: name is.
+FOLDED_APART = [
+    pytest.param("open\u00df", "openss", "SHAPE_PIN_SOURCE_OPENSS",
+                 id="sharp-s"),
+    pytest.param("open\u017f", "opens", "SHAPE_PIN_SOURCE_OPENS",
+                 id="long-s"),
+    pytest.param("open\ufb01", "openfi", "SHAPE_PIN_SOURCE_OPENFI",
+                 id="fi-ligature"),
+    pytest.param("open\u03c2", "open\u03c3", "SHAPE_PIN_SOURCE_OPEN_",
+                 id="final-sigma"),
+]
+
+
+@pytest.mark.parametrize("first, second, variable", FOLDED_APART)
+def test_names_one_variable_cannot_tell_apart_are_found_beyond_ascii(
+        first, second, variable):
+    """The four pairs the first round missed. Each shares a variable and has
+    two pin files, so one checkout answered for both and the pin it was not a
+    checkout of was reported against the project; `casefold()`, which was the
+    rule, made each pair one product."""
+    assert first.casefold() == second.casefold(), "the reason they were missed"
+    assert neutral_pin_path(first) != neutral_pin_path(second)
+    assert repo_shape.pin_source_env_name(first) == variable
+    assert repo_shape.pin_source_env_name(second) == variable
+    assert repo_shape.pin_source_env_collisions([first, second]) == {
+        variable: [first, second]}
+    assert repo_shape.pin_source_env_collisions([second, first]) == {
+        variable: [second, first]}
+    assert repo_shape.pin_source_env_shared([first, second]) == {first, second}
+
+
+#: A pool of names covering every way two of them can relate: the same name in
+#: another case, punctuation that folds to `_`, a non-ASCII letter whose
+#: upper-case is ASCII (`\u0131` is `I`, `\u017f` is `S`), a character that
+#: upper-cases to two (`\u00df`, `\ufb01`), one that upper-cases to a letter
+#: that is no ASCII (`\u03c2`, `\u03c3`) and one that is only `_` once folded.
+NAME_POOL = [
+    "openGlass", "OpenGlass", "OPENGLASS", "open-glass", "Open-Glass",
+    "open_glass", "open.glass", "open-x", "open_x", "open.x", "openPane",
+    "open\u0131", "openi", "openI", "open\u00e9", "open-", "open_",
+    "open\uff47", "open\u00df", "openss", "openSS", "open\u017f", "opens",
+    "openS", "open\ufb01", "openfi", "openFI", "open\u03c2", "open\u03c3",
+    "open\u03a3", "open\u0130",
+]
+
+
+def test_every_pair_sharing_a_variable_with_two_pin_files_is_found():
+    """Over every pair of the pool: found exactly when the variable is shared
+    AND the pin files are two. The oracle is `neutral_pin_path`, which names
+    the pin file, and `pin_source_env_name`, which names the variable; no
+    casefold, no case rule of this test's own."""
+    for first, second in itertools.combinations(NAME_POOL, 2):
+        shares = (repo_shape.pin_source_env_name(first)
+                  == repo_shape.pin_source_env_name(second))
+        two_files = neutral_pin_path(first) != neutral_pin_path(second)
+        found = repo_shape.pin_source_env_collisions([first, second])
+        assert bool(found) is (shares and two_files), (first, second, found)
+        if found:
+            (variable, group), = found.items()
+            assert group == [first, second]
+            assert variable == repo_shape.pin_source_env_name(first)
+            assert repo_shape.pin_source_env_shared([first, second]) == {
+                repo_shape.pin_product_key(first),
+                repo_shape.pin_product_key(second)}
+
+
+@pytest.mark.parametrize("name", NAME_POOL)
+def test_no_single_product_is_ever_a_collision(name):
+    """Nor is one product declared twice, in any spelling of its pin file."""
+    assert repo_shape.pin_source_env_collisions([name]) == {}
+    assert repo_shape.pin_source_env_collisions([name, name]) == {}
+    assert repo_shape.pin_source_env_shared([name]) == set()
+    assert repo_shape.pin_source_env_collisions([name, name.lower()]) == {}
+
+
+@pytest.mark.parametrize("name", NAME_POOL)
+def test_the_key_is_the_name_the_pin_file_carries(name):
+    """`pin_product_key` is not a second rule: it is the stem of the file
+    `shape_materialize.neutral_pin_path` writes, and `validate-pins.py` reads
+    the same file under `contracts/<product lowercased>-pin.yaml`."""
+    assert neutral_pin_path(name) == (
+        f"contracts/{repo_shape.pin_product_key(name)}-pin.yaml")
 
 
 # --- scaffold-project.py --pin: refused, dry and real, before any process ----
@@ -338,7 +446,7 @@ def test_pins_whose_variables_differ_still_scaffold(glass, world, values,
     assert not world["log"].exists()
 
 
-# --- validate-pins.py: a finding naming each product and the variable ---------
+# --- validate-pins.py: a note naming each product and the variable -------------
 
 PIN_FILE = textwrap.dedent("""\
     schema_version: 1
@@ -416,33 +524,51 @@ def gh_shim(tmp_path):
         "GH_STUB_LOG": str(log)}}
 
 
-COLLIDES = "FINDING neutral-pin-source-collides: "
+#: The note's line, and what it says after naming the products and the
+#: variable, word for word. It is a NOTE (#275, fix round 1, S1): the lines the
+#: validator prints that fail nothing are `ok`, `skip` and `note`.
+NOTE = "  note neutral-pin-source-collides: "
 
 
-def test_two_pins_sharing_a_variable_are_one_finding_naming_both(
+def collides(names: str, variable: str) -> str:
+    """The whole note, after its code, for the products `names` quotes."""
+    return (f"project.yaml neutral_product_pins declares {names}, and one "
+            f"variable, {variable}, names the local checkout of each: it "
+            "cannot say which it holds, so it is read for none of them. Each "
+            "pin still verifies from the keyed `--pin-source "
+            "<product>=<path>` or from a checkout beside this assembly "
+            "root; a bare `--pin-source` answers for every pin that has no "
+            "more specific source. Which declaration stays is the human's "
+            "decision, and nothing here fails on it.")
+
+
+def collision_notes(result) -> list[str]:
+    return [line for line in result.stdout.splitlines()
+            if line.startswith(NOTE)]
+
+
+def test_two_pins_sharing_a_variable_are_one_note_naming_both(
         project, tmp_path):
-    """Every source named by product answers, so what is reported is the
-    declaration and nothing else: one finding, both products, the variable."""
+    """Every source named by product answers, so what is said about the
+    declaration is a note and nothing else: one line, both products, the
+    variable, and a run that passes."""
     stand_ins = declare_pins(project, tmp_path / "products",
                              ["open-glass", "open_glass"])
     result = validate(project, "--pin-source",
                       f"open-glass={stand_ins['open-glass']}",
                       "--pin-source", f"open_glass={stand_ins['open_glass']}")
-    assert result.returncode == 1, result.stdout + result.stderr
-    assert result.stderr.count("FINDING") == 1, result.stderr
-    assert (f"{COLLIDES}project.yaml neutral_product_pins declares "
-            "'open-glass' and 'open_glass', and one variable, "
-            "SHAPE_PIN_SOURCE_OPEN_GLASS, names the local checkout of each: "
-            "it cannot say which it holds, so it is read for none of them."
-            ) in result.stderr
-    assert "Remediation: `SHAPE_PIN_SOURCE_<PRODUCT>`" in result.stderr
-    assert "1 finding(s)" in result.stderr
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "FINDING" not in result.stderr and "finding(s)" not in result.stderr
+    assert collision_notes(result) == [
+        NOTE + collides("'open-glass' and 'open_glass'",
+                        "SHAPE_PIN_SOURCE_OPEN_GLASS")]
+    assert result.stdout.rstrip().endswith("pins ok")
     for name in ("open-glass", "open_glass"):
         assert f"  ok  {name}: pin commit " in result.stdout
         assert f"digest recomputes (--pin-source {name}=...)" in result.stdout
 
 
-def test_three_products_one_variable_are_one_finding_naming_all_three(
+def test_three_products_one_variable_are_one_note_naming_all_three(
         project, tmp_path):
     names = ["open-glass", "open.glass", "open_glass"]
     stand_ins = declare_pins(project, tmp_path / "products",
@@ -451,12 +577,25 @@ def test_three_products_one_variable_are_one_finding_naming_all_three(
                                  for arg in ("--pin-source",
                                              f"{name}={stand_ins[name]}")),
                       "--pin-source", f"openGlass={stand_ins['openGlass']}")
-    assert result.returncode == 1, result.stdout + result.stderr
-    assert result.stderr.count("FINDING") == 1, result.stderr
-    assert (f"{COLLIDES}project.yaml neutral_product_pins declares "
-            "'open-glass' and 'open.glass' and 'open_glass', and one "
-            "variable, SHAPE_PIN_SOURCE_OPEN_GLASS,") in result.stderr
-    assert "openGlass'" not in result.stderr.split("Remediation")[0]
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "FINDING" not in result.stderr
+    assert collision_notes(result) == [
+        NOTE + collides("'open-glass' and 'open.glass' and 'open_glass'",
+                        "SHAPE_PIN_SOURCE_OPEN_GLASS")]
+    assert "openGlass'" not in collision_notes(result)[0]
+    assert result.stdout.count("digest recomputes (--pin-source") == 4
+
+
+def test_a_quiet_run_prints_no_note_and_still_passes(project, tmp_path):
+    """`--quiet` prints the notes of no kind, as it always did: nothing else
+    is said about a pair that nothing fails on."""
+    stand_ins = declare_pins(project, tmp_path / "products",
+                             ["open-glass", "open_glass"])
+    result = validate(project, "--quiet", "--pin-source",
+                      f"open-glass={stand_ins['open-glass']}",
+                      "--pin-source", f"open_glass={stand_ins['open_glass']}")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip() == "pins ok" and result.stderr == ""
 
 
 @WINDOWS_SKIP  # the stub `gh` is a `#!` script; Windows executes none
@@ -467,26 +606,54 @@ def test_a_shared_variable_answers_for_neither_pin(project, tmp_path, gh_shim,
     main through c7c02fa, answered for both: the other was reported
     `neutral-pin-source-unreadable`, a finding about the project made by a
     checkout of another. Now it answers for neither, so both fall through to
-    `gh` (stubbed, and asked about each) and the only finding is the
-    declaration's; the hint no longer offers the variable."""
+    `gh` (stubbed, and asked about each); the declaration is a note, so the
+    run passes with the two skips; and the hint offers the keyed
+    `--pin-source <product>=<path>`, the one source that says which pin it is
+    for, and never the variable or the bare form."""
     stand_ins = declare_pins(project, tmp_path / "products",
                              ["open-glass", "open_glass"])
     env = {**gh_shim["env"],
            "SHAPE_PIN_SOURCE_OPEN_GLASS": str(stand_ins[named])}
     result = validate(project, env=env)
-    assert result.returncode == 1, result.stdout + result.stderr
+    assert result.returncode == 0, result.stdout + result.stderr
     assert "neutral-pin-source-unreadable" not in result.stderr
-    assert result.stderr.count("FINDING") == 1, result.stderr
-    assert COLLIDES in result.stderr
+    assert "FINDING" not in result.stderr
+    assert len(collision_notes(result)) == 1
     calls = gh_shim["log"].read_text(encoding=UTF8).splitlines()
     assert [call.split("/git/trees")[0] for call in calls] == [
         "api repos/opensoft/open-glass", "api repos/opensoft/open_glass"]
     skips = [line for line in result.stdout.splitlines()
              if line.startswith("  skip ")]
     assert len(skips) == 2
-    for line in skips:
+    for name, line in zip(("open-glass", "open_glass"), skips):
         assert "SHAPE_PIN_SOURCE" not in line
-        assert "A --pin-source or a checkout at ../open" in line
+        assert f"A --pin-source {name}=<path> or a checkout at ../{name} " \
+            "beside this assembly root would verify it offline." in line
+
+
+@pytest.mark.parametrize("named", ["open-glass", "open_glass"])
+def test_a_shared_variable_answers_for_neither_pin_with_no_gh(project, named):
+    """THE SAME GUARD, WITH NO `gh` AT ALL, so it runs on Windows too (the
+    test above needs a `#!` stub). Each pin has a checkout BESIDE the project,
+    `../open-glass` and `../open_glass`, and the variable names ONE of them.
+    On ab623dd the variable answered for both pins, so the other was
+    `neutral-pin-source-unreadable` (a commit its checkout does not hold), exit
+    1. Now neither reads it: each pin is recomputed from its own sibling, the
+    variable is named by no line, and only the note is said. No pin reaches
+    `gh`, which the session's guard would fail this test for."""
+    stand_ins = declare_pins(project, project.parent,
+                             ["open-glass", "open_glass"])
+    result = validate(project, env={
+        "SHAPE_PIN_SOURCE_OPEN_GLASS": str(stand_ins[named])})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "neutral-pin-source-unreadable" not in result.stderr
+    assert "FINDING" not in result.stderr
+    assert len(collision_notes(result)) == 1
+    for name in ("open-glass", "open_glass"):
+        line = next(line for line in result.stdout.splitlines()
+                    if line.startswith(f"  ok  {name}: pin commit "))
+        assert "digest recomputes (sibling checkout (" in line, line
+    assert "($SHAPE_PIN_SOURCE" not in result.stdout
 
 
 @WINDOWS_SKIP  # the stub `gh` is a `#!` script; Windows executes none
@@ -535,6 +702,222 @@ def test_a_product_declared_twice_is_not_a_shared_variable(project, tmp_path):
     assert "neutral-pin-source-collides" not in result.stderr
     assert result.stdout.count("digest recomputes ($SHAPE_PIN_SOURCE_OPEN_GLASS)"
                                ) == 2
+
+
+# --- the skip hint, with no `gh` and no filesystem: runs on every OS ---------
+
+@pytest.fixture(scope="module")
+def validate_pins():
+    """The template's `validate-pins.py` as a module, so its functions are
+    called in-process. A hyphenated name is not importable, and
+    `importlib.util.spec_from_file_location` (which `tests/test_update_shape.py`
+    uses for `update-shape.py`) would write `__pycache__` BESIDE the template,
+    inside `templates/assembly-root`, where `tests/test_scaffold_leg_path_
+    collisions.py` reads every file under that directory as text and dies on
+    the bytecode. So the source is compiled and run into a module here, and
+    nothing is written. `repo_shape` resolves to the module cached above, so
+    `Refusal` is the one the file raises."""
+    module = types.ModuleType("validate_pins_under_test")
+    module.__file__ = str(VALIDATE_PINS)
+    exec(compile(VALIDATE_PINS.read_bytes(), str(VALIDATE_PINS), "exec",
+                 dont_inherit=True), module.__dict__)
+    return module
+
+
+def skip_hint(validate_pins, monkeypatch, tmp_path, products, product):
+    """The `skip` line `product` gets when nothing answers for it: no source,
+    no sibling, and a `gh` that is not there (`tree_digest_from_gh` refuses as
+    it does when `gh` is not on PATH, which is no process at all)."""
+    clear_ambient_pin_sources(monkeypatch)
+
+    def no_gh(repository, commit):
+        raise Refusal("gh-not-found", "the `gh` CLI is not on PATH")
+
+    monkeypatch.setattr(validate_pins, "tree_digest_from_gh", no_gh)
+    report = validate_pins.Report()
+    answered = validate_pins._recompute_neutral_pin_digest(
+        tmp_path / PROJECT, product, f"opensoft/{product}", "1" * 40,
+        f"contracts/{product}-pin.yaml",
+        validate_pins.PinSources([], products), report,
+        frozenset(repo_shape.pin_source_env_shared(products)))
+    assert answered is None
+    assert len(report.notes) == 1 and report.findings == []
+    assert report.notes[0].startswith(f"  skip {product}: pin commit ")
+    return report.notes[0]
+
+
+def test_a_product_two_pins_share_is_offered_the_keyed_pin_source(
+        validate_pins, monkeypatch, tmp_path):
+    """A shared product's hint offers `--pin-source <product>=<path>` (N3): the
+    bare `--pin-source` answers for every pin with no more specific source,
+    so with two pins it gives the other the finding #275 was about, and the
+    variable answers for neither. The keyed form is the one source that says
+    which pin it is for."""
+    for product in ("open-glass", "open_glass"):
+        line = skip_hint(validate_pins, monkeypatch, tmp_path,
+                         ["open-glass", "open_glass"], product)
+        assert line.endswith(
+            f"A --pin-source {product}=<path> or a checkout at ../{product} "
+            "beside this assembly root would verify it offline.")
+        assert "SHAPE_PIN_SOURCE" not in line
+        assert "A --pin-source or" not in line
+
+
+@pytest.mark.parametrize("products", [
+    pytest.param(["open-glass"], id="alone"),
+    pytest.param(["open-glass", "openGlass"], id="variables-differ"),
+    pytest.param(["open-glass", "Open-Glass"], id="one-product-twice"),
+])
+def test_a_product_with_a_variable_to_itself_is_offered_it_as_before(
+        validate_pins, monkeypatch, tmp_path, products):
+    """The control: the hint's text for every product no other shares a
+    variable with is unchanged, the variable and the bare `--pin-source`."""
+    line = skip_hint(validate_pins, monkeypatch, tmp_path, products,
+                     "open-glass")
+    assert line.endswith(
+        "A --pin-source, SHAPE_PIN_SOURCE_OPEN_GLASS, or a checkout at "
+        "../open-glass beside this assembly root would verify it offline.")
+
+
+@pytest.mark.parametrize("first, second, variable", FOLDED_APART)
+def test_the_note_is_made_for_names_casefold_took_for_one_product(
+        validate_pins, tmp_path, first, second, variable):
+    """A hand-written `project.yaml` naming `openß` and `openss` (and the
+    three other pairs) declares two pins one variable names: the manifest is
+    READ, as the validator reads it, and `_report_pin_source_collisions` is
+    asked of what it declares. Every name is written as an escape in this
+    file, and the manifest holds it as UTF-8, so no part of the run depends
+    on the console's code page."""
+    manifest = tmp_path / "project.yaml"
+    write(manifest, f"schema_version: 1\nneutral_product_pins:\n"
+                    f"  - {first}\n  - {second}\n")
+    products = repo_shape.load_yaml(manifest)["neutral_product_pins"]
+    assert products == [first, second]
+    report = validate_pins.Report()
+    validate_pins._report_pin_source_collisions(products, report)
+    assert report.findings == []
+    assert report.notes == [
+        NOTE + collides(f"{first!r} and {second!r}", variable)]
+
+
+# --- a project that already declares such a pair takes a shape update ---------
+
+#: The two copied files #275's change ships into every project, as upstream
+#: commit B changes them: a line appended to each, which is all an update that
+#: carries `validate-pins.py` and `repo_shape.py` has to be for `apply` to
+#: rewrite both and then run the project's validators.
+VALIDATE_PINS_SOURCE = "templates/assembly-root/scripts/validate-pins.py"
+SHIPPED = {VALIDATE_PINS_SOURCE: "validate-pins",
+           "scripts/repo_shape.py": "repo_shape"}
+SHIPPED_COPIES = ("scripts/validate-pins.py", "scripts/repo_shape.py")
+
+
+@pytest.fixture(scope="module")
+def behind(tmp_path_factory) -> dict:
+    """A clone of this repository at A, and B, which changes the two files a
+    project's pin validator is made of."""
+    _base, upstream, commit_a, clone = scaffold_upstream_and_project(
+        tmp_path_factory, "pin-source-collides-update")
+    commit_b = commit_upstream_changes(
+        upstream, "Ship the pin validator's change",
+        {source: f"\n# {label}, as an update ships it.\n"
+         for source, label in SHIPPED.items()})
+    return {"upstream": upstream, "clone": clone, "a": commit_a, "b": commit_b}
+
+
+def declared_project(behind, base: Path, names) -> Path:
+    """A copy of the project as it was scaffolded at A, then declaring a pin
+    on each of `names` as an older scaffold's project does (main through
+    ab623dd scaffolded `--pin open-glass@A --pin open_glass@B`, exit 0, and
+    this is what that left), committed. A stand-in repository for each name
+    sits BESIDE the project, so each pin is recomputed offline and no `gh` is
+    asked."""
+    root = base / PROJECT
+    shutil.copytree(behind["clone"], root, symlinks=True)
+    declare_pins(root, base, names)
+    git("add", "-A", cwd=root)
+    git("commit", "-q", "-m", "Declare the pins", cwd=root)
+    return root
+
+
+def update(behind, root: Path, verb: str, *args: str):
+    return run_script(behind["upstream"] / "update-shape.py", verb, "--root",
+                      str(root), "--upstream", str(behind["upstream"]),
+                      "--at", behind["b"], *args)
+
+
+def doctor_of(behind, root: Path) -> dict:
+    result = run_script(behind["upstream"] / "shape-doctor.py", "--root",
+                        str(root), "--json")
+    payload = json.loads(result.stdout)
+    return {"exit": result.returncode, "verdict": payload["verdict"],
+            "rows": {row["id"]: row for row in payload["rows"]}}
+
+
+@pytest.mark.parametrize("names", [
+    pytest.param(["open-glass", "open_glass"], id="hyphen-underscore"),
+    pytest.param(["open-glass", "open.glass", "open_glass"], id="three"),
+])
+def test_a_project_declaring_a_colliding_pair_takes_a_shape_update(
+        behind, tmp_path, names):
+    """THE FIRST ROUND'S FINDING LOCKED SUCH A PROJECT OUT. Main through
+    ab623dd scaffolds `--pin open-glass@A --pin open_glass@B`, and the first
+    round made `neutral-pin-source-collides` a finding, so the NEW
+    `validate-pins.py` that `update-shape.py apply` runs over the rewritten
+    root exited 1 and the whole apply ended `REFUSED update-validators-red`,
+    rolled back, for this update and every later one, until a person dropped a
+    true declaration of descent. Now it is a note: the update applies, the
+    project's validator passes and says the note, each pin still verifies from
+    its own checkout, and the doctor's `pins` row stays `ok` before and after
+    and moves no verdict a project declaring no pair does not have."""
+    root = declared_project(behind, tmp_path, names)
+    control = declared_project(behind, tmp_path / "control", ["openGlass"])
+
+    before, before_control = doctor_of(behind, root), doctor_of(behind,
+                                                                control)
+    assert before["rows"]["pins"]["status"] == "ok", before["rows"]["pins"]
+    assert before["rows"]["shape-currency"]["status"] == "FINDING"
+    assert (before["verdict"], before["exit"]) == (
+        before_control["verdict"], before_control["exit"]), (before,
+                                                              before_control)
+
+    checked = update(behind, root, "check")
+    assert checked.returncode == 1, checked.stdout + checked.stderr
+    behind_by = verdicts(checked.stdout)
+    for copy in SHIPPED_COPIES:
+        assert behind_by[copy] == "upstream-changed", checked.stdout
+
+    applied = update(behind, root, "apply", "--yes")
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    assert "update-validators-red" not in applied.stdout + applied.stderr
+    # The blob at B, never the upstream's working-tree file: a helper that
+    # appended to it with `write_text` wrote CRLF on Windows.
+    shipped = subprocess.run(
+        ["git", "show", f"{behind['b']}:{VALIDATE_PINS_SOURCE}"],
+        cwd=str(behind["upstream"]), capture_output=True, check=True).stdout
+    assert (root / "scripts" / "validate-pins.py").read_bytes() == shipped, (
+        "the update was applied")
+
+    result = validate(root)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "FINDING" not in result.stderr
+    (note,) = collision_notes(result)
+    assert "SHAPE_PIN_SOURCE_OPEN_GLASS" in note
+    assert all(repr(name) in note for name in names)
+    for name in names:
+        assert f"  ok  {name}: pin commit " in result.stdout
+    assert result.stdout.count("digest recomputes (sibling checkout (") == len(
+        names)
+
+    controlled = update(behind, control, "apply", "--yes")
+    assert controlled.returncode == 0, controlled.stdout + controlled.stderr
+    after, after_control = doctor_of(behind, root), doctor_of(behind, control)
+    assert after["rows"]["pins"]["status"] == "ok", after["rows"]["pins"]
+    assert after["rows"]["shape-currency"]["status"] == "ok"
+    assert (after["verdict"], after["exit"]) == (
+        after_control["verdict"], after_control["exit"]), (after,
+                                                            after_control)
+    assert after["exit"] == 0, after
 
 
 # --- the chain readers: a variable two links share is read for neither --------
