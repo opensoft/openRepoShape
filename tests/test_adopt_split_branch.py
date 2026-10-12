@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import importlib.util
 import shutil
-import subprocess
 from argparse import Namespace
 from pathlib import Path
 
@@ -194,24 +193,35 @@ BESIDE_IT = [f"{SPLIT_BRANCH}-old", "adopt/other", "adopt-three-repo-shape",
              "three-repo-shape"]
 
 
+def in_the_extraction(source: Path, name: str, at: str) -> str:
+    """`check`'s finding for a source branch `name` at `at` that git cannot
+    hold beside the split branch: about the extraction, which both runs
+    make."""
+    return (f"the source {source} holds the branch `{name}`, at {at[:12]}. "
+            "`execute`, with `--local-remote-dir` or without it, extracts a "
+            "leg from a clone of the source with the plan's split branch "
+            f"`{SPLIT_BRANCH}` checked out in it, after both leg repositories "
+            f"were created, and `git filter-repo` cannot create `{name}` "
+            f"beside `{SPLIT_BRANCH}` there: git holds no branch whose name "
+            "is a directory of another's, or lies under it. Delete "
+            f"`{name}` there, or set `adopt_branch:` in the plan to a branch "
+            "git can create there.")
+
+
 @pytest.mark.parametrize("name", IN_THE_WAY)
 def test_a_branch_in_gits_way_of_the_split_branch_is_taken(adopter,
                                                            tmp_path,
                                                            monkeypatch,
                                                            name):
+    """Said as the extraction's failure, for both runs: the review of #320
+    measured a run without `--local-remote-dir` failing there too, after
+    both GitHub leg repositories were made, while this finding said it was
+    about `execute --local-remote-dir` alone."""
     source = small_source(tmp_path)
     git("branch", name, cwd=source)
     at = git("rev-parse", name, cwd=source).stdout.strip()
     plan = plan_for(source, tmp_path)
-    found = findings(plan)
-    assert [code for code, _ in found] == [TAKEN], found
-    assert found[0][1].startswith(
-        f"the source {source} holds the branch `{name}`, at {at[:12]}. ")
-    assert (f"git cannot create `{SPLIT_BRANCH}` beside `{name}`: "
-            f"`'refs/heads/{name}' exists; cannot create "
-            f"'refs/heads/{SPLIT_BRANCH}'`. Delete `{name}` there, or set "
-            "`adopt_branch:` in the plan to a branch git can create there."
-            ) in found[0][1]
+    assert findings(plan) == [(TAKEN, in_the_extraction(source, name, at))]
     refusal = refused_before_any_leg(adopter, monkeypatch, plan, tmp_path)
     assert refusal.code == TAKEN
 
@@ -328,6 +338,28 @@ def test_the_extraction_exports_the_old_branch_only_under_another_name(
     assert ".gitmodules" in caught.value.output, caught.value.output
 
 
+@needs_filter_repo
+@pytest.mark.parametrize("name", IN_THE_WAY)
+def test_the_extraction_stops_at_a_source_branch_in_its_way(adopter,
+                                                            tmp_path, name):
+    """`_extract_leg` itself, over a source holding `name`: its clone has
+    the split branch checked out, and `git filter-repo`, which makes each
+    of the clone's remote-tracking branches a branch, cannot make `name`
+    beside it, so nothing is pushed to the leg. That is before the split is
+    pushed anywhere, so the finding is about both runs."""
+    source = small_source(tmp_path)
+    git("branch", name, cwd=source)
+    read = adopter.Source.open(str(source), tmp_path / "read")
+    leg = tmp_path / "leg.git"
+    git("init", "-q", "--bare", "-b", "main", str(leg), cwd=tmp_path)
+    with pytest.raises(adopter.CommandFailed) as caught:
+        adopter._extract_leg(
+            "code", read, tmp_path / "clone", ["src/"], tmp_path / "paths.txt",
+            SPLIT_BRANCH, str(leg), "main", f"{ORG}/{PROJECT}-code")
+    assert caught.value.args_list[1] == "filter-repo", caught.value.args_list
+    assert git("for-each-ref", cwd=leg).stdout == ""
+
+
 # --- the assembly repository on GitHub --------------------------------------
 
 def github_repository(tmp_path: Path, branches=(SPLIT_BRANCH,)) -> Path:
@@ -428,6 +460,96 @@ def test_execute_refuses_a_repository_it_cannot_list(adopter, tmp_path,
     assert asked == []
 
 
+def test_a_branch_in_gits_way_on_github_is_refused_in_the_pushs_words(
+        adopter, tmp_path, monkeypatch):
+    """GitHub holds `adopt`, and the source does not: the push of the
+    split would meet it there, so the finding is about the run that pushes
+    there, in git's own words."""
+    source = small_source(tmp_path)
+    plan = plan_for(source, tmp_path)
+    bare = a_github(tmp_path, monkeypatch, branches=("adopt",))
+    at = git("rev-parse", "adopt", cwd=bare).stdout.strip()
+    asked = no_gh(adopter, monkeypatch)
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter.cmd_execute(execute_args(plan, tmp_path, local=False))
+    assert caught.value.code == TAKEN
+    assert (f"  FINDING {TAKEN}: `{ORG}/{PROJECT}` on GitHub holds the "
+            f"branch `adopt`, at {at[:12]}. `execute` without "
+            "`--local-remote-dir` pushes its split commit to "
+            f"`{SPLIT_BRANCH}` there, after both leg repositories were "
+            "created and pushed, and git cannot create "
+            f"`{SPLIT_BRANCH}` beside `adopt`: `'refs/heads/adopt' exists; "
+            f"cannot create 'refs/heads/{SPLIT_BRANCH}'`. Delete `adopt` "
+            "there, or set `adopt_branch:` in the plan to a branch git can "
+            "create there.") in caught.value.detail.splitlines()
+    assert asked == []
+
+
+@pytest.mark.parametrize("name", IN_THE_WAY)
+def test_a_github_run_is_refused_for_a_source_branch_in_the_extractions_way(
+        adopter, tmp_path, monkeypatch, name):
+    """The review of #320: without `--local-remote-dir`, a local source
+    holding `adopt` made both GitHub leg repositories, and the run exited 2
+    at `git filter-repo`, saying nothing. GitHub holds no such branch here;
+    the source does, and `execute` asks it as well, before `gh repo
+    create`, and refuses with `check`'s finding, word for word."""
+    source = small_source(tmp_path)
+    git("branch", name, cwd=source)
+    at = git("rev-parse", name, cwd=source).stdout.strip()
+    plan = plan_for(source, tmp_path)
+    a_github(tmp_path, monkeypatch, branches=())
+    asked = no_gh(adopter, monkeypatch)
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter.cmd_execute(execute_args(plan, tmp_path, local=False))
+    assert caught.value.code == TAKEN
+    lines = caught.value.detail.splitlines()
+    assert lines[0].startswith("1 finding(s) in "), lines
+    assert lines[1] == (f"  FINDING {TAKEN}: "
+                        + in_the_extraction(source, name, at))
+    assert asked == []
+
+
+def test_a_github_run_is_not_refused_for_the_split_branch_in_the_source(
+        adopter, tmp_path, monkeypatch):
+    """The split branch's own name in the source stops only the run that
+    pushes there. The extraction's `checkout -B` shadows it in its clone
+    (`test_the_extraction_exports_the_old_branch_only_under_another_name`),
+    and this run pushes to GitHub, which holds none."""
+    source = small_source(tmp_path)
+    split_branch_by_hand(source)
+    plan = plan_for(source, tmp_path)
+    a_github(tmp_path, monkeypatch, branches=())
+    asked = no_gh(adopter, monkeypatch)
+    with pytest.raises(Proceeded):
+        adopter.cmd_execute(execute_args(plan, tmp_path, local=False))
+    assert asked[0][:3] == ["gh", "repo", "create"]
+
+
+def test_a_plan_that_seeds_both_legs_is_not_asked_about_the_extraction(
+        adopter, tmp_path, monkeypatch):
+    """Nothing is extracted, so a source branch `adopt` stops only the push
+    of the split to the source: `check` says that of `execute
+    --local-remote-dir`, in the push's words, and a run without it goes
+    on."""
+    source = small_source(tmp_path)
+    git("branch", "adopt", cwd=source)
+    at = git("rev-parse", "adopt", cwd=source).stdout.strip()
+    plan = plan_for(source, tmp_path, {"specs/": "root", "src/": "root"})
+    found = findings(plan)
+    assert [code for code, _ in found] == [TAKEN], found
+    assert found[0][1].startswith(
+        f"the source {source} holds the branch `adopt`, at {at[:12]}. "
+        "`execute --local-remote-dir` pushes its split commit to "
+        f"`{SPLIT_BRANCH}` there, "), found
+    a_github(tmp_path, monkeypatch, branches=())
+    asked = no_gh(adopter, monkeypatch)
+    args = execute_args(plan, tmp_path, local=False)
+    args.allow_empty_leg = ["spec", "code"]
+    with pytest.raises(Proceeded):
+        adopter.cmd_execute(args)
+    assert asked[0][:3] == ["gh", "repo", "create"]
+
+
 def with_origin(source: Path, bare: Path) -> None:
     """`bare` as the source's `origin`, fetched: its branches are the
     source's remote-tracking branches, and its path ends in
@@ -475,6 +597,25 @@ def test_an_origin_that_is_not_the_assembly_repository_is_not_asked(
                          "--elected-on", "2026-09-02", "--out", str(plan))
     assert written.returncode == 0, written.stderr + written.stdout
     assert findings(plan) == []
+
+
+def test_a_branch_gone_from_github_leaves_check_once_the_source_prunes(
+        adopter, tmp_path):
+    """What the remediation says of a branch named as the source's `origin`
+    last fetched it: deleted there, it stays a finding until `git fetch
+    --prune origin` in the source, which `execute`, asking GitHub itself,
+    does not wait for."""
+    bare = github_repository(tmp_path)
+    source = small_source(tmp_path)
+    with_origin(source, bare)
+    plan = plan_for(source, tmp_path)
+    assert [code for code, _ in findings(plan)] == [TAKEN]
+    git("update-ref", "-d", f"refs/heads/{SPLIT_BRANCH}", cwd=bare)
+    assert [code for code, _ in findings(plan)] == [TAKEN]
+    git(*FILE_PROTOCOL, "fetch", "-q", "--prune", "origin", cwd=source)
+    assert findings(plan) == []
+    assert ("once `git fetch --prune origin` in the source finds it gone "
+            "there") in adopter.SPLIT_BRANCH_REMEDIATION
 
 
 # --- end to end -------------------------------------------------------------
