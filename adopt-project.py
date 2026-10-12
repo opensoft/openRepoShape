@@ -872,9 +872,21 @@ class Source:
 
 
 def _remote_repository(path: Path) -> str | None:
+    """The `org/repo` the source's `origin` URL ends in; None when it has
+    no origin, or one that ends in no such pair.
+
+    NOR DOES A URL THAT IS NOT UTF-8 NAME ONE (#292). git keeps the URL as
+    the bytes it was given: a clone of a directory named in a code page that
+    is not UTF-8 has that path as its origin, and nobody did anything wrong.
+    Read strictly, it ended `plan`, `check` and `execute` in a
+    `UnicodeDecodeError` traceback in `Source.open`, before any question was
+    asked. Now it is no origin: `plan` takes `--org`, or refuses as
+    `adopt-no-org` and asks for it, and `check` and `execute` name the
+    source by its path.
+    """
     try:
         url = git_out(["remote", "get-url", "origin"], cwd=path)
-    except Refusal:
+    except (Refusal, UnicodeDecodeError):
         return None
     match = re.search(r"[:/]([^/:]+/[^/]+?)(?:\.git)?$", url)
     return match.group(1) if match else None
@@ -1749,12 +1761,21 @@ def _checked_plan_inputs(args, source: Source,
         raise Refusal("adopt-bad-id",
                       f"--id {args.id!r} must match {PROJECT_ID_RE.pattern}",
                       "Remediation: pass an explicit lowercase --id.")
-    args.org = checked_value(
-        "--org", args.org or (source.repository or "/").split("/")[0] or "-")
+    # NO ORG IS `adopt-no-org`, asked before `checked_value` (#292). The `-`
+    # that once stood in for a missing one reached `checked_value` first,
+    # which refused `--org is '-'`, a value nobody passed; this refusal was
+    # never reached. A source with no `origin`, one whose URL is not UTF-8,
+    # and one whose URL ends in no `org/repo` (`_remote_repository`) all name
+    # no org, and the refusal says each of the three: it is asked of a source
+    # that HAS an origin as often as of one that has none.
+    args.org = args.org or (source.repository or "/").split("/")[0]
     if not args.org:
         raise Refusal(
-            "adopt-no-org", "the source has no `origin` to read an "
-            "organisation from", "Remediation: pass --org <org>.")
+            "adopt-no-org", "the source's `origin` names no organisation "
+            "this tool can read: it has none, its URL is not UTF-8, or its "
+            "URL ends in no `org/repo`",
+            "Remediation: pass --org <org>.")
+    args.org = checked_value("--org", args.org)
     args.elected_on = args.elected_on or _dt.date.today().isoformat()
     # Read before the plan is written, whether or not it is what chooses the
     # reference: a date the tools cannot parse would reach `execute` as a
@@ -4653,10 +4674,11 @@ def _refuse_an_unwritable_clone_url(url: str) -> None:
     both legs and then raised in `write_lf` (#255), and one whose name holds
     a bidi override was written into the README raw.
 
-    THE REMEDIATION MOVES THE SOURCE AND PLANS AGAIN. A clone of it at a
-    path that is text, passed to `execute` with --source, still has the old
-    path as its `origin`, and `_remote_repository` reads that as UTF-8 and
-    raises; renaming the directory and running `plan` again adopts.
+    THE REMEDIATION MOVES THE SOURCE AND PLANS AGAIN: renaming the directory
+    and running `plan` again adopts. A clone of it at a path that is text,
+    passed to `execute` with --source, has the old path as its `origin`;
+    `_remote_repository` read that as UTF-8 and raised until #292, and now
+    reads it as no origin, so that route adopts too.
     """
     reason = unwritable_reason(url)
     if reason:
@@ -5289,10 +5311,23 @@ def _check_names(policy: NamingPolicy, names: dict[str, str],
 
 
 def _elector() -> str:
+    """`git config user.name`, which `plan` records when `--elected-by` is
+    not given; "" when it names nobody.
+
+    A BYTE THAT IS NOT UTF-8 IS KEPT, AS `sys.argv` KEEPS ONE (#292). git
+    keeps the name as the bytes it was given, and one saved in a legacy code
+    page is no UTF-8. Read strictly, it ended `plan` in a `UnicodeDecodeError`
+    traceback, exit 1, naming neither the setting nor `--elected-by`. Kept
+    as a lone surrogate, it is asked what `_checked_plan_inputs` asks of
+    every value `execute` writes (#255), and is refused there as
+    `adopt-unwritable-value`, named as `git config user.name`, with
+    `--elected-by` as the way past it, before any plan is written.
+    """
     try:
-        return git_out([GIT_CONFIG, "user.name"], cwd=SHAPE_ROOT)
+        name = git_out([GIT_CONFIG, "user.name"], cwd=SHAPE_ROOT, binary=True)
     except Refusal:
         return ""
+    return name.decode("utf-8", "surrogateescape").strip()
 
 
 def _work_root(args) -> Path:
