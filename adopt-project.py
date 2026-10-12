@@ -503,19 +503,34 @@ def _refused_value(key: str, value: str) -> str | None:
                if refusers == EVERY_GIT else refusers))
 
 
+def _git_quoted(key: str) -> str:
+    """`key` as git's own words quote it, between single quotes: `missing
+    value for 'submodule.b.update'`; or, where `_spelled` has anything to
+    write differently, `_spelled`'s own form, which is how `_refused_value`
+    names the same key. A key's `<name>` is the source author's choice, and
+    git prints it as it is: an ESC, a carriage return or a byte that is not
+    UTF-8 in it reached a finding that way (#328). A key `_spelled` leaves
+    as it is keeps git's quotes, so that finding reads exactly as it did.
+    It asks `_spelled` and writes no escape of its own, so whatever way
+    `_spelled` spells a character, this does too."""
+    spelled = _spelled(key)
+    return f"'{key}'" if spelled == f"`{key}`" else spelled
+
+
 def _registrations(listed: bytes) -> Registrations | str:
     """`git config -z --list` output, read by `Registrations`; or what git's
     submodule reader dies on, at the first key in the file it dies on: one
     SUBMODULE_VALUED_KEY_RE names with no value at all, or one whose value
     it refuses (`_refused_value`, #215). `-z` prints a key with no value
     with no newline, and git looks for its value after it has filtered the
-    name and before it filters the value."""
+    name and before it filters the value. The key is `_git_quoted`, because
+    the finding that says what git died on is one line."""
     registrations = Registrations()
     for record in listed.split(b"\x00"):
         key, newline, value = _git_path(record).partition("\n")
         valued = SUBMODULE_VALUED_KEY_RE.fullmatch(key)
         if valued and not newline and not _a_name_git_ignores(valued["name"]):
-            return f"missing value for '{key}'"
+            return f"missing value for {_git_quoted(key)}"
         refused = _refused_value(key, value) if newline else None
         if refused:
             return refused
@@ -2016,6 +2031,13 @@ def _leg_findings(plan: Plan, tree: list | None) -> list[str]:
     which is true only of the doctor's PLACEMENT plan, whose `legs:` is a
     list with no mount path to ask about; beside a `legs:` mapping it raises
     too, rather than reading as a source that keeps nothing in the root.
+
+    THE QUESTION a finding repeats is the one value of a plan that people and
+    AIs edit, so it is `_shown`: as it is, and printed exactly as before,
+    unless a character in it is not printable, and then `_spelled` whole. A
+    line feed in it ended the finding's line and began another that
+    `grep '^FINDING'` read as `check`'s own, and an ESC reached the terminal
+    (#328). Every question `plan` writes is printable.
     """
     findings: list[str] = []
     # Only a `legs:` MAPPING has mount paths to check. The doctor's PLACEMENT
@@ -2040,7 +2062,7 @@ def _leg_findings(plan: Plan, tree: list | None) -> list[str]:
         if leg is None:
             findings.append(
                 f"FINDING plan-unresolved: {path} still has `leg: null`. The "
-                f"question was: {entry.get('question')}")
+                f"question was: {_shown(str(entry.get('question')))}")
         elif str(leg) not in LEG_VALUES:
             findings.append(
                 f"FINDING plan-bad-leg: {path} declares leg {leg!r}; it is "
