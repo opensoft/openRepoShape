@@ -995,9 +995,10 @@ def env_commit(work: Path, message: str) -> None:
 def force_stage(work: Path, paths=()) -> None:
     """Stage exactly `paths`, FORCED past any ignore rule, and nothing else.
 
-    THE FORCED ADD THE SCAFFOLD, `family.py init`, `adopt-project.py`'S
-    SEEDED LEG AND `update-shape.py` SHARE; the seeded leg reaches it
-    through `git_init_commit`, as `stage_written` says. A file the shape
+    THE FORCED ADD THE SCAFFOLD, `family.py` (`init`, and every `add`, `bump`
+    and `remove` commit), `adopt-project.py`'S SEEDED LEG AND
+    `update-shape.py` SHARE; the seeded leg reaches it through
+    `git_init_commit`, as `stage_written` says. A file the shape
     wrote and pinned has to reach the commit whatever the operator's own
     excludes say — a global `core.excludesFile`, `.git/info/exclude`, a
     `.gitignore` the project keeps — because a pin row naming a file the
@@ -1014,13 +1015,21 @@ def force_stage(work: Path, paths=()) -> None:
     No copy-list entry holds a glob character today; the day one does, it
     stages itself and no neighbour.
 
-    TWO CALLERS, AND ONLY ONE OF THEM SWEEPS FIRST. `stage_written` runs
-    `git add -A` before it, because it stages a tree this tool has just
-    made. `update-shape.py apply --add` calls this ALONE (#202): it writes
-    into a checkout somebody may be working in, where `-A` would stage their
-    work beside the shape's, and its plain `git add --` died on an ignored
-    addition after the copies, the pin and the branch were already written.
-    Empty, this runs nothing.
+    A CALLER THAT WRITES INTO A CHECKOUT SOMEBODY WORKS IN CALLS THIS ALONE,
+    NEVER AFTER A SWEEP. `stage_written` runs `git add -A` before it, and is
+    for a caller that stages a tree this tool has just made, where every path
+    is its own. In a checkout somebody may be working in, `-A` would stage
+    their work beside the shape's, so such a caller names its paths and
+    forces those and nothing else, and this function never sweeps: a caller
+    that wants a sweep makes it first, as `stage_written` does. The rule
+    began with `update-shape.py apply --add` (#202), whose plain `git add --`
+    died on an ignored addition after the copies, the pin and the branch were
+    already written. `family.py`'s commits took it up (#242), each in a
+    holder somebody may be working in: `add` stages the gitlink,
+    `.gitmodules` and `family.yaml`; `bump` the gitlink and `family.yaml`;
+    `remove` `.gitmodules` and `family.yaml`, the gitlink's deletion already
+    staged by its `git rm`. The next caller of that kind is bound by the same
+    rule without being named here. Empty, this runs nothing.
     """
     paths = list(paths)
     if paths:
@@ -1046,10 +1055,12 @@ def stage_written(work: Path, written=()) -> None:
     landed, in `root_key`'s POSIX spelling, which `git` takes as a pathspec
     on Windows too. Empty, this is `git add -A -- .` and nothing else.
 
-    ONE HELPER, THREE CALLERS: `git_init_commit` (the scaffold's two legs and
-    `adopt-project.py`'s seeded leg), the scaffold's assembly root and
-    `family.py init`'s holder. The forced half is `force_stage`, which
-    `update-shape.py apply --add` calls on its own (#202).
+    A CALLER THAT HAS JUST MADE THE TREE IT STAGES CALLS THIS.
+    `git_init_commit` does (the scaffold's two legs and `adopt-project.py`'s
+    seeded leg), and so do the scaffold's assembly root and `family.py init`'s
+    holder. A caller that writes into a checkout somebody works in does not:
+    `-A` would stage their work beside the shape's, so it calls the forced
+    half, `force_stage`, on its own (#202, #242).
     """
     run(["git", "add", "-A", "--", "."], cwd=work)
     force_stage(work, written)
