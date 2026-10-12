@@ -67,6 +67,7 @@ import json
 import os
 import re
 import runpy
+import shlex
 import shutil
 import stat
 import subprocess
@@ -966,11 +967,18 @@ def _index_entries(root: Path, path: str) -> list[tuple[str, str]]:
     return entries
 
 
-def _submodule_paths(root: Path) -> dict[str, str]:
-    """`{name: path}` of every submodule the holder's `.gitmodules` names,
-    read from where `git submodule add` reads it: the file in the working
-    tree, or the index's copy where there is none, or HEAD's where the index
-    has none either."""
+def _submodule_paths(root: Path) -> dict[str, tuple[str, str | None]]:
+    """`{name: (path, url)}` of every submodule the holder's `.gitmodules`
+    names, read from where `git submodule add` reads it: the file in the
+    working tree, or the index's copy where there is none, or HEAD's where
+    the index has none either. `url` is None for a section that gives no
+    url; a section that gives no path is no submodule and is not listed.
+
+    THE ONE READER OF THE FILE, for both questions `_checked_mount_path`
+    asks of it: the path a NAME is given (`member-name-taken`, #242), and
+    the names a PATH is given, each with its url (`member-path-registered`,
+    #300). A second reader could read a second copy of the file.
+    """
     if os.path.lexists(root / GITMODULES):
         source = ["--file", GITMODULES]
     else:
@@ -985,14 +993,15 @@ def _submodule_paths(root: Path) -> dict[str, str]:
             return {}
     listed = git_out(["config", "-z", *source, "--list"], cwd=root,
                      binary=True)
-    found = {}
+    found: dict[str, dict[str, str]] = {}
     for record in listed.split(b"\0"):
         key, _, value = record.decode("utf-8",
                                       "surrogateescape").partition("\n")
         section, _, variable = key.rpartition(".")
-        if section.startswith("submodule.") and variable == "path":
-            found[section[len("submodule."):]] = value
-    return found
+        if section.startswith("submodule.") and variable in ("path", "url"):
+            found.setdefault(section[len("submodule."):], {})[variable] = value
+    return {name: (keys["path"], keys.get("url"))
+            for name, keys in found.items() if "path" in keys}
 
 
 def _checked_mount_path(root: Path, project: str, path: str) -> None:
@@ -1023,6 +1032,18 @@ def _checked_mount_path(root: Path, project: str, path: str) -> None:
       the member under a new one (`members/IRRS1`) instead. Git before 2.51
       rewrites the other submodule's section to point at the member. Both
       are refused here, on every git.
+    - THE PATH UNDER ANOTHER NAME (#300), the mirror of the name: a section
+      that already gives the mount path to a submodule named something
+      else — a half-removed member, a hand edit, a merge that kept both
+      sides. This one git does not make at all, with `--force` or without
+      it: it writes the member's own section beside that one, so `add`
+      committed two sections for one path, `validate-family.py` passed
+      them, and a recursive clone followed the LATER of the two, the other
+      one's url as soon as an edit put it last. It is refused, naming the
+      section and its url, and left exactly as it is: it is somebody's
+      registration, and dropping or rewriting it as part of the add would
+      decide whose without asking. The path is compared exactly; git reads
+      `.gitmodules` that way too.
     """
     if os.path.lexists(root / path):
         raise Refusal(
@@ -1060,7 +1081,8 @@ def _checked_mount_path(root: Path, project: str, path: str) -> None:
             "names a submodule, take that out (`git rm`); anything else it "
             "names, a held `index.lock` say, is fixed where git says. Then "
             "re-run.") from exc
-    other = _submodule_paths(root).get(path)
+    sections = _submodule_paths(root)
+    other = sections.get(path, (None, None))[0]
     if other is not None and other != path:
         raise Refusal(
             "member-name-taken",
@@ -1072,6 +1094,29 @@ def _checked_mount_path(root: Path, project: str, path: str) -> None:
             f"its section to point at {project} (git before 2.51), or mount "
             f"{project} under another name this tool does not follow (git "
             "2.51 and later, with the `--force` this tool mounts with).")
+    ghosts = [(name, url) for name, (at, url) in sections.items()
+              if at == path and name != path]
+    if ghosts:
+        named = " and ".join(
+            f"`{name}` ({'no url' if url is None else 'url ' + url})"
+            for name, url in ghosts)
+        removal = " and ".join(
+            f"`git config -f {GITMODULES} --remove-section "
+            f"{shlex.quote('submodule.' + name)}`" for name, _ in ghosts)
+        raise Refusal(
+            "member-path-registered",
+            f"{GITMODULES} already gives the path {path} to the submodule"
+            + ("s" if len(ghosts) > 1 else "") + f" named {named}, and that "
+            f"is the path {project} is mounted at",
+            "Remediation: git would write the member's own section beside "
+            "it, and a recursive clone of the holder follows whichever "
+            "section for that path comes last in the file. A section "
+            "somebody wrote is not this tool's to drop or rewrite, so take it "
+            f"out by hand — {removal}, then `git add {GITMODULES}` — or, if "
+            "it was a member, with `family.py remove`; then re-run. With no "
+            f"{GITMODULES} in the working tree, put back the copy git read "
+            f"first: `git checkout -- {GITMODULES}` (the index's), or `git "
+            f"checkout HEAD -- {GITMODULES}`.")
 
 
 def _checked_add_target(family: Family, repository: str, project: str,
