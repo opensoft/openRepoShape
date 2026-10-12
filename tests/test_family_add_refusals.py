@@ -1363,6 +1363,21 @@ def gitmodules_with(root: Path, extra: bytes, kept_in: str) -> bytes:
     return data
 
 
+def git_section(scratch: Path, name: str, **values: str) -> bytes:
+    """`[submodule "<name>"]` holding `values`, in the bytes GIT writes for
+    them, for `gitmodules_with` to append. A value read from git must be
+    escaped as git escapes it: a Windows path's backslashes written raw
+    (`D:\\a\\...`) are escapes git does not know, and the file is then one it
+    cannot read at all (`bad config line`). `scratch` is a file of the
+    test's own, written afresh."""
+    if scratch.exists():
+        scratch.unlink()
+    for key, value in values.items():
+        git("config", "-f", str(scratch), f"submodule.{name}.{key}", value,
+            cwd=scratch.parent)
+    return scratch.read_bytes()
+
+
 def gitmodules_paths(root: Path) -> list[str]:
     """Every `path` HEAD's `.gitmodules` gives, in file order, as git lists
     them."""
@@ -1545,7 +1560,7 @@ def test_a_section_git_cannot_name_by_section_is_taken_out_as_printed(
 @pytest.mark.parametrize("same_url", [False, True],
                          ids=["another url", "the same url"])
 def test_the_validator_finds_two_sections_for_one_path(family, holder,
-                                                       same_url):
+                                                       tmp_path, same_url):
     """`gitmodules-path-twice`, so a holder that already has a ghost fails
     its own gate instead of passing it. One section per path is clean; one
     more for `members/IRRS`, under another name and LAST in the file — the
@@ -1558,8 +1573,11 @@ def test_the_validator_finds_two_sections_for_one_path(family, holder,
     url = git("config", "-f", ".gitmodules", "submodule.members/IRRS.url",
               cwd=holder).stdout.strip()
     other = url if same_url else "/nowhere/ghost.git"
-    gitmodules_with(holder, (f'[submodule "ghost"]\n\tpath = members/IRRS\n'
-                             f"\turl = {other}\n").encode(), "the work tree")
+    # Written by git, so the member's url — a path with backslashes on
+    # Windows — is escaped as git escapes it.
+    gitmodules_with(holder, git_section(tmp_path / "ghost-section", "ghost",
+                                        path="members/IRRS", url=other),
+                    "the work tree")
     for extra in ((), ("--pins",), ("--no-members",)):
         result = validate(holder, *extra)
         assert result.returncode == 1, result.stderr + result.stdout
