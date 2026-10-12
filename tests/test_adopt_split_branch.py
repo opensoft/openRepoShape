@@ -4,19 +4,19 @@
 `execute` pushes its one split commit to the plan's `adopt_branch:`
 (`adopt/three-repo-shape`) in the repository the split goes to: the source
 itself under `--local-remote-dir`, the assembly repository on GitHub
-otherwise. An earlier run leaves that branch behind, verified or failed after
-the push, and nothing looked for it. On main at 71b58a1 the same plan re-run
-into fresh legs passed `check` as `plan ok`, made and pushed both legs, and
-was refused at the push of the split as a non-fast-forward; a source branch
-`adopt`, which git cannot hold beside `adopt/three-repo-shape`, failed the
-run after both legs were made as well. Over a source whose tip `.gitmodules`
-git's submodule reader cannot read, #226's history scan refused the re-run,
-but named a commit of the old split branch that the extraction never
-exports.
+otherwise, and extracts each leg from a clone of the source with that branch
+checked out. On main at ec4a7a0 `check` passed as `plan ok` a plan whose
+split branch an earlier run had left there, which `execute` refuses as
+`adopt-branch-exists` before any leg exists (#188 N1), and one whose split
+branch git cannot hold beside a branch already there or in the source
+(`adopt`, `adopt/three-repo-shape/old`), which `execute` met only after both
+legs were made: at `git filter-repo`, or at the push of the split.
 
-Now a branch at the split branch's name, or in git's way of it, is `check`'s
-finding `plan-split-branch-taken`, and `execute` refuses it before any leg
-exists, first among `check`'s findings.
+Now `check` reports the first under `execute`'s own code,
+`adopt-branch-exists`, by `execute`'s rule, so a branch the push
+fast-forwards is no finding; and the second as `plan-split-branch-taken`,
+which `execute` refuses before any leg exists, after every refusal of what
+an earlier run left (`tests/test_adopt_late_failure.py` holds that order).
 
 All repositories here are local, GitHub included: a run without
 `--local-remote-dir` is pointed at a bare repository on disk by git's own
@@ -37,13 +37,14 @@ import pytest
 
 from conftest import ADOPT, FILE_PROTOCOL, GITMODULES, as_human, findings, \
     git, make_source_repo, planned, put_gitmodules, refused_before_any_leg, \
-    run_script
+    run_script, spelled
 
 needs_filter_repo = pytest.mark.skipif(
     shutil.which("git-filter-repo") is None,
     reason="git filter-repo is not installed: `pip install git-filter-repo`")
 
 TAKEN = "plan-split-branch-taken"
+BRANCH_EXISTS = "adopt-branch-exists"
 UNREADABLE = "plan-gitmodules-unreadable"
 SPLIT_BRANCH = "adopt/three-repo-shape"
 PROJECT, ORG = "Northwind", "testorg"
@@ -126,22 +127,28 @@ def stop_at_the_legs(adopter, monkeypatch) -> None:
 
 # --- what `check` finds, and `execute` refuses, in the source ---------------
 
-def test_check_finds_an_earlier_split_branch_in_the_source(adopter,
-                                                           tmp_path):
-    """On main this was `plan ok`, and `execute` made both legs before the
-    push of the split was refused as a non-fast-forward."""
+def left_behind(where: str, run: str, at: str, source_commit: str) -> str:
+    """`check`'s `adopt-branch-exists` finding: `where` has the split branch
+    at `at`, which `run` pushes to, as `execute`'s refusal says it."""
+    return (f"{where} already has `{SPLIT_BRANCH}`, the branch {run} pushes "
+            f"its split commit to, at {at[:12]}: neither the source commit "
+            f"{source_commit[:12]} nor a commit behind it. The split commit "
+            "is made on top of the source commit, and git moves a branch to "
+            "it without force only from that commit or one behind it, so "
+            "`execute` refuses that run before it creates a leg, as "
+            f"`{BRANCH_EXISTS}`. Delete `{SPLIT_BRANCH}` there, or set "
+            "`adopt_branch:` in the plan to a name no branch has there.")
+
+
+def test_check_finds_an_earlier_split_branch_in_the_source(tmp_path):
+    """On main this was `plan ok`, and `execute` refused it as
+    `adopt-branch-exists`: `check` now says so first, under that code."""
     source = small_source(tmp_path)
     old = split_branch_by_hand(source)
     found = findings(plan_for(source, tmp_path))
-    assert found == [(TAKEN, (
-        f"the source {source} already holds the plan's split branch "
-        f"`{SPLIT_BRANCH}`, at {old[:12]}. `execute --local-remote-dir` "
-        f"pushes its split commit to `{SPLIT_BRANCH}` there, after both leg "
-        "repositories were created and pushed, and as a new branch: a "
-        "branch already there refuses that push unless the split "
-        "fast-forwards it, and then the split lands on a branch this "
-        f"adoption did not make. Delete `{SPLIT_BRANCH}` there, or set "
-        "`adopt_branch:` in the plan to a branch git can create there."))]
+    head = git("rev-parse", "main", cwd=source).stdout.strip()
+    assert found == [(BRANCH_EXISTS, left_behind(
+        f"the source {source}", "`execute --local-remote-dir`", old, head))]
 
 
 def test_check_says_how_to_go_on_once_after_its_findings(adopter, tmp_path):
@@ -153,40 +160,52 @@ def test_check_says_how_to_go_on_once_after_its_findings(adopter, tmp_path):
     assert result.stderr.count(adopter.SPLIT_BRANCH_REMEDIATION) == 1
 
 
-def test_execute_refuses_it_before_any_leg_exists(adopter, tmp_path,
-                                                  monkeypatch):
-    """`check`'s finding, raised by `_refuse_what_check_finds` before
-    `_create_leg_remotes`: the directory the legs go in is never made, and
-    the source's branch is where it was."""
+def test_execute_refuses_it_under_the_same_code_before_any_leg_exists(
+        adopter, tmp_path, monkeypatch):
+    """One situation, one code: `execute` refuses the branch `check` names
+    as `adopt-branch-exists`, `_refuse_a_split_branch_left_behind`'s own
+    refusal, before `_create_leg_remotes`. The directory the legs go in is
+    never made, and the source's branch is where it was."""
     source = small_source(tmp_path)
     old = split_branch_by_hand(source)
-    refusal = refused_before_any_leg(adopter, monkeypatch,
-                                     plan_for(source, tmp_path), tmp_path)
-    assert refusal.code == TAKEN
-    assert refusal.remediation.endswith(
-        "\n" + adopter.SPLIT_BRANCH_REMEDIATION)
+    plan = plan_for(source, tmp_path)
+    assert [code for code, _ in findings(plan)] == [BRANCH_EXISTS]
+    stop_at_the_legs(adopter, monkeypatch)
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter.cmd_execute(execute_args(plan, tmp_path))
+    assert caught.value.code == BRANCH_EXISTS
+    assert caught.value.detail.startswith(
+        f"{spelled(source)} already has `{SPLIT_BRANCH}`, the branch this "
+        f"adoption pushes its split commit to, at {old[:12]}: ")
+    assert not (tmp_path / REMOTES).exists()
     assert git("rev-parse", SPLIT_BRANCH, cwd=source).stdout.strip() == old
 
 
-def test_a_branch_the_split_would_fast_forward_is_taken_too(adopter,
-                                                            tmp_path,
-                                                            monkeypatch):
-    """At the plan's own commit, the split fast-forwards it, and on main it
-    was pushed onto that branch and verified: a branch this adoption did
-    not make. It is refused like any other."""
+@pytest.mark.parametrize("behind", [0, 1],
+                         ids=["at-the-source-commit", "behind-it"])
+def test_a_branch_the_split_push_fast_forwards_is_no_finding(
+        adopter, tmp_path, monkeypatch, behind):
+    """`execute` pushes the split over a branch at the source commit or
+    behind it, and verifies (#188's review, N1), so `check` names none:
+    the two commands agree, and `execute` goes on to the legs."""
     source = small_source(tmp_path)
     git("branch", SPLIT_BRANCH, cwd=source)
+    for count in range(behind):
+        (source / "README.md").write_text(f"# Thing {count}\n",
+                                          encoding="utf-8")
+        as_human("commit", "-qam", f"After the branch, {count}", cwd=source)
     plan = plan_for(source, tmp_path)
-    assert [code for code, _ in findings(plan)] == [TAKEN]
-    refusal = refused_before_any_leg(adopter, monkeypatch, plan, tmp_path)
-    assert refusal.code == TAKEN
+    assert findings(plan) == []
+    stop_at_the_legs(adopter, monkeypatch)
+    with pytest.raises(Proceeded):
+        adopter.cmd_execute(execute_args(plan, tmp_path))
 
 
 #: Branch names git cannot hold beside the split branch: one whose name is
-#: a directory of it, and one under it. On main each passed `check`, and
-#: `execute` failed after both legs were made -- for `adopt`, silently, at
-#: the `git filter-repo` that could not create `refs/heads/adopt` beside the
-#: split branch `_extract_leg` checks out.
+#: a directory of it, and one under it. On main at ec4a7a0 each passed
+#: `check`, and `execute` failed after both legs were made, at the `git
+#: filter-repo` that could not create the branch beside the split branch
+#: `_extract_leg` checks out.
 IN_THE_WAY = ["adopt", f"{SPLIT_BRANCH}/old"]
 #: Names that only look like it, which git holds beside it.
 BESIDE_IT = [f"{SPLIT_BRANCH}-old", "adopt/other", "adopt-three-repo-shape",
@@ -216,7 +235,8 @@ def test_a_branch_in_gits_way_of_the_split_branch_is_taken(adopter,
     """Said as the extraction's failure, for both runs: the review of #320
     measured a run without `--local-remote-dir` failing there too, after
     both GitHub leg repositories were made, while this finding said it was
-    about `execute --local-remote-dir` alone."""
+    about `execute --local-remote-dir` alone. `execute` refuses it with
+    `check`'s finding, word for word, before any leg exists."""
     source = small_source(tmp_path)
     git("branch", name, cwd=source)
     at = git("rev-parse", name, cwd=source).stdout.strip()
@@ -224,6 +244,7 @@ def test_a_branch_in_gits_way_of_the_split_branch_is_taken(adopter,
     assert findings(plan) == [(TAKEN, in_the_extraction(source, name, at))]
     refusal = refused_before_any_leg(adopter, monkeypatch, plan, tmp_path)
     assert refusal.code == TAKEN
+    assert refusal.remediation == adopter.SPLIT_BRANCH_TAKEN_REMEDIATION
 
 
 @pytest.mark.parametrize("name", BESIDE_IT)
@@ -254,7 +275,44 @@ def test_each_branch_in_the_way_is_named(tmp_path):
     assert f"holds the branch `{SPLIT_BRANCH}/older`" in found[1][1]
 
 
-# --- #226's history scan, with this finding first --------------------------
+# --- after every refusal of what an earlier run left -----------------------
+
+def test_an_occupied_work_dir_is_refused_before_a_branch_in_the_way(
+        adopter, tmp_path, monkeypatch):
+    """`adopt-work-dir-occupied` is the first refusal of what an earlier
+    run left (`tests/test_adopt_late_failure.py`), so every later refusal's
+    way out meets a free work directory; a branch in the way comes after
+    it, as `adopt-branch-exists` does."""
+    source = small_source(tmp_path)
+    git("branch", "adopt", cwd=source)
+    plan = plan_for(source, tmp_path)
+    assert [code for code, _ in findings(plan)] == [TAKEN]
+    (tmp_path / WORK / f"{PROJECT}-spec").mkdir(parents=True)
+    (tmp_path / WORK / f"{PROJECT}-spec" / "left.txt").write_text(
+        "an earlier run's\n", encoding="utf-8")
+    stop_at_the_legs(adopter, monkeypatch)
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter.cmd_execute(execute_args(plan, tmp_path))
+    assert caught.value.code == "adopt-work-dir-occupied"
+
+
+def test_a_live_leg_is_refused_before_a_branch_in_the_way(adopter, tmp_path,
+                                                          monkeypatch):
+    """A leg repository still there under `--local-remote-dir` keeps its
+    own refusal, `leg-remote-exists`, over a branch in the way, as it does
+    over the split branch an earlier run left."""
+    source = small_source(tmp_path)
+    git("branch", "adopt", cwd=source)
+    plan = plan_for(source, tmp_path)
+    (tmp_path / REMOTES / f"{PROJECT}-spec.git").mkdir(parents=True)
+    monkeypatch.setattr(adopter, "_require_filter_repo", lambda: None)
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter.cmd_execute(execute_args(plan, tmp_path))
+    assert caught.value.code == "leg-remote-exists"
+    assert not (tmp_path / REMOTES / f"{PROJECT}-code.git").exists()
+
+
+# --- #226's history scan, with the branch named first ---------------------
 
 def issue_source(base: Path) -> tuple[Path, str]:
     """The issue's second shape: a tip `.gitmodules` with a key with no
@@ -273,20 +331,28 @@ def scan_names(commit: str) -> str:
     return f"where commit {commit[:12]} adds `code`"
 
 
-def test_the_branch_is_named_before_the_history_it_adds(adopter, tmp_path,
-                                                        monkeypatch):
-    """On main `check` and `execute` named only the history scan's finding,
-    for a commit the extraction never exports while the plan names the
-    branch that holds it. The branch is now the first finding, and the code
-    of `execute`'s refusal."""
+def test_check_names_the_branch_before_the_history_it_adds(adopter, tmp_path,
+                                                           monkeypatch):
+    """On main `check` named only the history scan's finding, for a commit
+    the extraction never exports while the plan names the branch that holds
+    it. `check` now names the branch first, and its remediation says the
+    scan's finding stands until that branch is deleted. `execute` refuses
+    as on main: the scan's finding, in `_refuse_what_check_finds`, which
+    runs before `_refuse_a_split_branch_left_behind` asks for the branch."""
     source, old = issue_source(tmp_path)
     plan = plan_for(source, tmp_path, {GITMODULES: "code"})
     found = findings(plan)
-    assert [code for code, _ in found] == [TAKEN, UNREADABLE], found
+    assert [code for code, _ in found] == [BRANCH_EXISTS, UNREADABLE], found
     assert f"at {old[:12]}" in found[0][1]
     assert scan_names(old) in found[1][1]
-    refusal = refused_before_any_leg(adopter, monkeypatch, plan, tmp_path)
-    assert refusal.code == TAKEN
+    assert ("a finding that names one of its commits stands until that "
+            "branch is deleted") in adopter.SPLIT_BRANCH_REMEDIATION
+    stop_at_the_legs(adopter, monkeypatch)
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter.cmd_execute(execute_args(plan, tmp_path))
+    assert caught.value.code == UNREADABLE
+    assert scan_names(old) in caught.value.detail
+    assert not (tmp_path / REMOTES).exists()
 
 
 def test_with_the_branch_deleted_nothing_names_its_history(tmp_path):
@@ -363,15 +429,22 @@ def test_the_extraction_stops_at_a_source_branch_in_its_way(adopter,
 # --- the assembly repository on GitHub --------------------------------------
 
 def github_repository(tmp_path: Path, branches=(SPLIT_BRANCH,)) -> Path:
-    """A bare `testorg/Northwind` under `tmp_path/github`, holding `main`
-    and `branches`, each at a commit of another repository's `main`."""
+    """A bare `testorg/Northwind` under `tmp_path/github`, holding another
+    repository's `main`, and `branches` at a commit made on top of it, as an
+    earlier run's split commit is. Not at that `main`: a source made in the
+    same second has the same tree, identity and time, so the same commit,
+    and the split push would fast-forward a branch at it."""
     bare = tmp_path / "github" / ORG / f"{PROJECT}.git"
     bare.mkdir(parents=True)
     seed = small_source(tmp_path / "seed")
+    split = as_human("commit-tree", "main^{tree}", "-p", "main", "-m",
+                     "An earlier split", cwd=seed).stdout.strip()
     git("init", "-q", "--bare", "-b", "main", str(bare), cwd=tmp_path)
-    for name in ("main", *branches):
-        git(*FILE_PROTOCOL, "push", "-q", str(bare), f"main:refs/heads/{name}",
-            cwd=seed)
+    git(*FILE_PROTOCOL, "push", "-q", str(bare), "main:refs/heads/main",
+        cwd=seed)
+    for name in branches:
+        git(*FILE_PROTOCOL, "push", "-q", str(bare),
+            f"{split}:refs/heads/{name}", cwd=seed)
     return bare
 
 
@@ -414,7 +487,8 @@ def no_gh(adopter, monkeypatch) -> list:
 def test_execute_asks_github_where_it_pushes_without_local_remotes(
         adopter, tmp_path, monkeypatch):
     """The source holds no such branch; the repository the split is pushed
-    to does, and `execute` asks it, before `gh repo create`."""
+    to does, and `execute` asks it, before `gh repo create`, as
+    `adopt-branch-exists`."""
     source = small_source(tmp_path)
     plan = plan_for(source, tmp_path)
     bare = a_github(tmp_path, monkeypatch)
@@ -422,11 +496,11 @@ def test_execute_asks_github_where_it_pushes_without_local_remotes(
     asked = no_gh(adopter, monkeypatch)
     with pytest.raises(adopter.Refusal) as caught:
         adopter.cmd_execute(execute_args(plan, tmp_path, local=False))
-    assert caught.value.code == TAKEN
-    assert (f"  FINDING {TAKEN}: `{ORG}/{PROJECT}` on GitHub already holds "
-            f"the plan's split branch `{SPLIT_BRANCH}`, at {at[:12]}. "
-            "`execute` without `--local-remote-dir` pushes its split commit "
-            f"to `{SPLIT_BRANCH}` there") in caught.value.detail
+    assert caught.value.code == BRANCH_EXISTS
+    assert caught.value.detail.startswith(
+        f"`https://github.com/{ORG}/{PROJECT}.git` already has "
+        f"`{SPLIT_BRANCH}`, the branch this adoption pushes its split commit "
+        f"to, at {at[:12]}: ")
     assert asked == []
 
 
@@ -444,19 +518,17 @@ def test_execute_goes_on_to_the_legs_when_github_has_no_such_branch(
 def test_execute_refuses_a_repository_it_cannot_list(adopter, tmp_path,
                                                      monkeypatch):
     """No `testorg/Northwind` where git is pointed: the push of the split
-    would fail there after both legs were made, so nothing is made."""
+    would fail there after both legs were made, so nothing is made. The
+    first to list it is `_refuse_a_split_branch_left_behind`, as on main,
+    and its `git ls-remote` fails the run before `gh repo create`."""
     source = small_source(tmp_path)
     plan = plan_for(source, tmp_path)
     github_at(tmp_path / "nowhere", monkeypatch)
     asked = no_gh(adopter, monkeypatch)
-    with pytest.raises(adopter.Refusal) as caught:
+    with pytest.raises(adopter.CommandFailed) as caught:
         adopter.cmd_execute(execute_args(plan, tmp_path, local=False))
-    assert caught.value.code == adopter.SPLIT_TARGET_UNREADABLE
-    assert caught.value.detail.startswith(
-        f"could not list the branches of https://github.com/{ORG}/{PROJECT}"
-        f".git, where `execute` pushes the split, to see whether "
-        f"`{SPLIT_BRANCH}` is new there: `git ls-remote` exited ")
-    assert "no leg repository was created" in caught.value.remediation
+    assert caught.value.args_list[:2] == ["git", "ls-remote"]
+    assert f"https://github.com/{ORG}/{PROJECT}.git" in caught.value.args_list
     assert asked == []
 
 
@@ -506,6 +578,22 @@ def test_a_github_run_is_refused_for_a_source_branch_in_the_extractions_way(
     assert lines[0].startswith("1 finding(s) in "), lines
     assert lines[1] == (f"  FINDING {TAKEN}: "
                         + in_the_extraction(source, name, at))
+    assert asked == []
+
+
+def test_the_split_branch_left_behind_is_refused_before_a_branch_in_the_way(
+        adopter, tmp_path, monkeypatch):
+    """GitHub holds an earlier run's split branch and the source holds
+    `adopt`: `_refuse_a_split_branch_left_behind` asks first, as on main,
+    and the run is refused as `adopt-branch-exists`."""
+    source = small_source(tmp_path)
+    git("branch", "adopt", cwd=source)
+    plan = plan_for(source, tmp_path)
+    a_github(tmp_path, monkeypatch)
+    asked = no_gh(adopter, monkeypatch)
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter.cmd_execute(execute_args(plan, tmp_path, local=False))
+    assert caught.value.code == BRANCH_EXISTS
     assert asked == []
 
 
@@ -569,18 +657,12 @@ def test_check_reads_github_as_the_sources_origin_last_fetched_it(
     source = small_source(tmp_path)
     with_origin(source, bare)
     at = git("rev-parse", f"origin/{SPLIT_BRANCH}", cwd=source).stdout.strip()
+    head = git("rev-parse", "main", cwd=source).stdout.strip()
     plan = plan_for(source, tmp_path)
     found = findings(plan)
-    assert found == [(TAKEN, (
+    assert found == [(BRANCH_EXISTS, left_behind(
         f"`{ORG}/{PROJECT}` on GitHub, as the source's `origin` last fetched "
-        f"it, already holds the plan's split branch `{SPLIT_BRANCH}`, at "
-        f"{at[:12]}. `execute` without `--local-remote-dir` pushes its split "
-        f"commit to `{SPLIT_BRANCH}` there, after both leg repositories were "
-        "created and pushed, and as a new branch: a branch already there "
-        "refuses that push unless the split fast-forwards it, and then the "
-        "split lands on a branch this adoption did not make. Delete "
-        f"`{SPLIT_BRANCH}` there, or set `adopt_branch:` in the plan to a "
-        "branch git can create there."))]
+        "it,", "`execute` without `--local-remote-dir`", at, head))]
     stop_at_the_legs(adopter, monkeypatch)
     with pytest.raises(Proceeded):
         adopter.cmd_execute(execute_args(plan, tmp_path))
@@ -609,13 +691,26 @@ def test_a_branch_gone_from_github_leaves_check_once_the_source_prunes(
     source = small_source(tmp_path)
     with_origin(source, bare)
     plan = plan_for(source, tmp_path)
-    assert [code for code, _ in findings(plan)] == [TAKEN]
+    assert [code for code, _ in findings(plan)] == [BRANCH_EXISTS]
     git("update-ref", "-d", f"refs/heads/{SPLIT_BRANCH}", cwd=bare)
-    assert [code for code, _ in findings(plan)] == [TAKEN]
+    assert [code for code, _ in findings(plan)] == [BRANCH_EXISTS]
     git(*FILE_PROTOCOL, "fetch", "-q", "--prune", "origin", cwd=source)
     assert findings(plan) == []
     assert ("once `git fetch --prune origin` in the source finds it gone "
             "there") in adopter.SPLIT_BRANCH_REMEDIATION
+
+
+def test_a_fetched_branch_the_split_push_fast_forwards_is_no_finding(
+        tmp_path):
+    """GitHub's split branch at the source commit, as the source last
+    fetched it: `execute` without `--local-remote-dir` pushes over it and
+    verifies, so `check` names nothing."""
+    bare = github_repository(tmp_path, branches=())
+    source = small_source(tmp_path)
+    git(*FILE_PROTOCOL, "push", "-q", str(bare),
+        f"main:refs/heads/{SPLIT_BRANCH}", cwd=source)
+    with_origin(source, bare)
+    assert findings(plan_for(source, tmp_path)) == []
 
 
 # --- end to end -------------------------------------------------------------
@@ -623,11 +718,12 @@ def test_a_branch_gone_from_github_leaves_check_once_the_source_prunes(
 @needs_filter_repo
 def test_the_issue_re_run_is_refused_and_runs_once_the_branch_is_gone(
         tmp_path):
-    """#320 as measured on main: a verified run, then the same plan re-run
-    into fresh legs, which passed `check` and died at the push of the split
-    after both legs were made. Now `check` names the branch and the first
-    run's split commit, `execute` refuses before any leg exists, and once
-    the branch is deleted the same command adopts."""
+    """#320 as measured on main at 71b58a1: a verified run, then the same
+    plan re-run into fresh legs, which passed `check` and died at the push
+    of the split after both legs were made. `execute` now refuses it before
+    any leg exists as `adopt-branch-exists` (#188 N1); `check` names the
+    branch and the first run's split commit under that code, and once the
+    branch is deleted the same command adopts."""
     source = small_source(tmp_path)
     plan = plan_for(source, tmp_path)
     flags = ("--plan", str(plan), "--yes")
@@ -639,9 +735,43 @@ def test_the_issue_re_run_is_refused_and_runs_once_the_branch_is_gone(
 
     checked = run_script(ADOPT, "check", "--plan", str(plan))
     assert checked.returncode == 1, checked.stderr + checked.stdout
-    assert (f"FINDING {TAKEN}: the source {source} already holds the plan's "
-            f"split branch `{SPLIT_BRANCH}`, at {split[:12]}.") \
+    assert (f"FINDING {BRANCH_EXISTS}: the source {source} already has "
+            f"`{SPLIT_BRANCH}`, the branch `execute --local-remote-dir` "
+            f"pushes its split commit to, at {split[:12]}: ") \
         in checked.stderr
+    remotes = tmp_path / REMOTES
+    again = ("--local-remote-dir", str(remotes), "--work-dir",
+             str(tmp_path / WORK))
+    refused = run_script(ADOPT, "execute", *flags, *again)
+    assert refused.returncode == 2, refused.stderr + refused.stdout
+    assert f"REFUSED {BRANCH_EXISTS}: " in refused.stderr
+    assert "creating the leg repositories" not in refused.stdout
+    assert not remotes.exists()
+    assert git("rev-parse", SPLIT_BRANCH, cwd=source).stdout.strip() == split
+
+    git("branch", "-q", "-D", SPLIT_BRANCH, cwd=source)
+    assert run_script(ADOPT, "check", "--plan", str(plan)).returncode == 0
+    adopted = run_script(ADOPT, "execute", *flags, *again)
+    assert adopted.returncode == 0, adopted.stderr + adopted.stdout
+    assert "adoption verified" in adopted.stdout
+
+
+@needs_filter_repo
+def test_a_source_branch_in_the_way_is_refused_and_runs_once_it_is_gone(
+        tmp_path):
+    """A source branch `adopt`: on main at ec4a7a0 `check` said `plan ok`
+    and `execute` made both legs and exited 2 at `git filter-repo`. Now
+    `check` names the branch, `execute` refuses before any leg exists, and
+    once the branch is deleted the same command adopts."""
+    source = small_source(tmp_path)
+    git("branch", "adopt", cwd=source)
+    plan = plan_for(source, tmp_path)
+    flags = ("--plan", str(plan), "--yes")
+
+    checked = run_script(ADOPT, "check", "--plan", str(plan))
+    assert checked.returncode == 1, checked.stderr + checked.stdout
+    assert (f"FINDING {TAKEN}: the source {source} holds the branch "
+            "`adopt`, at ") in checked.stderr
     remotes = tmp_path / REMOTES
     again = ("--local-remote-dir", str(remotes), "--work-dir",
              str(tmp_path / WORK))
@@ -650,9 +780,8 @@ def test_the_issue_re_run_is_refused_and_runs_once_the_branch_is_gone(
     assert f"REFUSED {TAKEN}: 1 finding(s) in " in refused.stderr
     assert "creating the leg repositories" not in refused.stdout
     assert not remotes.exists()
-    assert git("rev-parse", SPLIT_BRANCH, cwd=source).stdout.strip() == split
 
-    git("branch", "-q", "-D", SPLIT_BRANCH, cwd=source)
+    git("branch", "-q", "-D", "adopt", cwd=source)
     assert run_script(ADOPT, "check", "--plan", str(plan)).returncode == 0
     adopted = run_script(ADOPT, "execute", *flags, *again)
     assert adopted.returncode == 0, adopted.stderr + adopted.stdout

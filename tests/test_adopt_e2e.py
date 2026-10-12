@@ -300,32 +300,13 @@ def test_a_dropped_path_is_accounted_for_as_dropped(source_repo, tmp_path):
 
 def test_re_running_into_a_live_leg_refuses(adopted, tmp_path):
     """There is no --force here either: re-running over a seeded leg is not
-    an adoption. The plan names another split branch, because the first
-    run's is still in the source, and the same plan is refused for it first
-    (#320, `tests/test_adopt_split_branch.py`)."""
-    plan = tmp_path / "plan.yaml"
-    plan.write_bytes(adopted["plan"].read_bytes().replace(
-        b"adopt_branch: adopt/three-repo-shape\n",
-        b"adopt_branch: adopt/again\n", 1))
-    result = run_script(ADOPT, "execute", "--plan", str(plan),
+    an adoption."""
+    result = run_script(ADOPT, "execute", "--plan", str(adopted["plan"]),
                         "--yes", "--local-remote-dir", str(adopted["remotes"]),
                         "--work-dir", str(tmp_path / "work2"))
     assert result.returncode == 2
     assert "leg-remote-exists" in result.stderr
     assert "There is no --force" in result.stderr
-
-
-def test_re_running_over_the_first_runs_split_branch_refuses(adopted,
-                                                             tmp_path):
-    """The same plan again is refused before `leg-remote-exists`: the first
-    run's split branch is still in the source, where this run pushes."""
-    result = run_script(ADOPT, "execute", "--plan", str(adopted["plan"]),
-                        "--yes", "--local-remote-dir", str(adopted["remotes"]),
-                        "--work-dir", str(tmp_path / "work2"))
-    assert result.returncode == 2
-    assert "REFUSED plan-split-branch-taken: " in result.stderr
-    assert "REFUSED leg-remote-exists" not in result.stderr
-    assert "creating the leg repositories" not in result.stdout
 
 
 def test_the_tool_never_touches_the_source_working_tree(adopted):

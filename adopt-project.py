@@ -40,9 +40,10 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            any case), the source's own submodules kept on one leg with
            their `.gitmodules`, registered there and never in the root, each
            relative url naming the same repository from the leg as from the
-           source, and the split branch a new one where `execute` pushes it,
-           which git can hold beside the source's own branches. It prints
-           what will happen and changes nothing.
+           source, and the split branch one `execute` can make: none of its
+           name where the split is pushed that the push cannot fast-forward,
+           and none git cannot hold beside it there or in the source. It
+           prints what will happen and changes nothing.
   execute  creates the two legs, extracts them with `git filter-repo`, makes
            the one split commit on a branch of the source, sets the
            `xf-project-<id>` topic on all three (skipped for local remotes),
@@ -3501,91 +3502,120 @@ def _entry_findings(plan: Plan, source: Source,
 #
 # `_commit_the_split` pushes the one split commit to `refs/heads/<adopt_branch>`
 # of the repository the split goes to: the source itself under
-# `--local-remote-dir` (`_repository_urls`), and otherwise the assembly
-# repository on GitHub, which an in-place adoption keeps as the source.
-# Nothing asked whether that branch was already there, and an earlier run
-# leaves it: a verified one, and one that failed after the push. On main at
-# 71b58a1 the same plan, re-run into fresh legs after a verified run, passed
-# `check` as `plan ok`, made and pushed both legs, and was refused at the push
-# of the split as a non-fast-forward. A source branch `adopt` failed the run
-# after both legs were made as well, at `git filter-repo`, which could not
-# create `refs/heads/adopt` beside the split branch `_extract_leg` checked
-# out: git cannot hold a branch whose name is a directory of another's, or
-# lies under it.
+# `--local-remote-dir` (`_remote_urls`), and otherwise the assembly
+# repository on GitHub, which an in-place adoption keeps as the source. And
+# `_extract_leg` clones the source, checks that branch out in the clone and
+# runs `git filter-repo`, which makes each of the clone's
+# `refs/remotes/origin/*` a branch. Two kinds of branch stop it, and `check`
+# passed both as `plan ok`:
 #
-# So a branch AT the split branch's name, or in git's way of it, in the
-# repository the split is pushed to, is `plan-split-branch-taken`: `check`
-# reports it, and `execute` refuses it, FIRST among `check`'s findings and
-# with them, before any leg exists. Whatever the branch holds: one the split
-# would fast-forward is a branch this adoption did not make, and on main the
-# split was pushed onto it and verified.
+# - THE SPLIT BRANCH ITSELF, where the split is pushed, at a commit the push
+#   cannot fast-forward: what an earlier run leaves there, verified or
+#   failed after its push. `execute` refuses it as `adopt-branch-exists`
+#   before any leg exists (`_refuse_a_split_branch_left_behind`, #188 N1).
+#   One at the source commit or behind it is pushed over, and verifies.
+# - A BRANCH IN GIT'S WAY OF IT, whose name is a directory of the split
+#   branch's, or lies under it: git cannot hold the two side by side. In the
+#   source it stops the extraction of either run, at `git filter-repo`;
+#   where the split is pushed, it stops that push. Nothing refused it.
+#   Measured on main at ec4a7a0 with git 2.43 and `git filter-repo` 2.47.0:
+#   a source branch `adopt` or `adopt/three-repo-shape/old` made both legs,
+#   two bare repositories or two `gh repo create`s, and the run exited 2 at
+#   the filter; a plan seeding both legs from a source holding `adopt`, and a
+#   GitHub assembly repository holding `adopt`, made both legs and exited 2
+#   at the push of the split.
 #
-# WHERE IT IS ASKED. `execute` knows where it pushes, and asks that
-# repository with `git ls-remote`, as the push will meet it. `check` does not
-# know whether `--local-remote-dir` will be passed, so it asks the two places
-# it can see without the network, and each finding says which run it is
-# about: the source's own branches, and, where the source's `origin` is the
-# assembly repository, what that remote held when the source last fetched it
-# -- for an `org/repo` source, which `Source.open` clones, when it was cloned.
+# So `check` reports both, and `execute` refuses the second, before any leg
+# exists, as `plan-split-branch-taken`.
 #
-# THE EXTRACTION MEETS THE SOURCE'S BRANCHES WHEREVER THE SPLIT IS PUSHED.
-# `_extract_leg` clones the source, checks the split branch out in the clone
-# and runs `git filter-repo`, which makes each of the clone's
-# `refs/remotes/origin/*` a branch, and cannot make one git cannot hold
-# beside the split branch. So a run WITHOUT `--local-remote-dir` from a
-# source holding `adopt` created both leg repositories on GitHub and exited 2
-# at the filter, saying nothing, while `check`'s finding said it was about
-# `execute --local-remote-dir` alone (measured with a recorded `gh`, the
-# review of #320). A source branch in git's way is therefore this finding
-# for both runs, said as the extraction's failure, and `execute` without
-# `--local-remote-dir` asks the source's branches for it too, reading no
-# network. The split branch's own name is not: the clone's `checkout -B`
-# shadows it, so only the run that pushes to the source is refused for it.
-# A plan that seeds both legs extracts nothing and is not asked.
+# ONE CODE FOR ONE SITUATION. `check`'s finding for the split branch itself
+# is `adopt-branch-exists`: the code `execute` refuses that branch under, and
+# the one `_left_by_the_split` tells a run that pushed its split the re-run
+# will meet. It is asked by that refusal's own rule (`_in_the_history_of`),
+# so a branch the push fast-forwards is no finding, and the two commands
+# cannot disagree about it, as #168 has them agree about every other finding.
+# A branch in the way is `plan-split-branch-taken` in both.
+#
+# WHERE `check` ASKS. It does not know whether `--local-remote-dir` will be
+# passed, so it asks the two places it can see without the network, and each
+# finding says which run it is about: the source's own branches, and, where
+# the source's `origin` is the assembly repository, what that remote held
+# when the source last fetched it -- for an `org/repo` source, which
+# `Source.open` clones, when it was cloned. A source branch in the way is
+# about both runs, said as the extraction's failure, unless the plan seeds
+# both legs and extracts nothing. The split branch's own name in the source
+# is about the run that pushes there alone: the extraction's `checkout -B`
+# shadows it in its clone.
+#
+# WHERE `execute` ASKS (`_refuse_a_branch_in_the_split_branchs_way`). Right
+# after `_refuse_a_split_branch_left_behind`, before `_confirm`: every
+# refusal of what an earlier run left keeps its place and its words, the
+# work directory first and then the split branch itself, and a leg
+# repository still there under `--local-remote-dir`, which
+# `_create_leg_remotes` refuses as `leg-remote-exists`, keeps its precedence
+# over this refusal as over that one. It lists the repository it pushes to
+# with `git ls-remote --heads`, as the push will meet it, and, without
+# `--local-remote-dir`, the source's own branches for the extraction,
+# reading no network for them.
 #
 # THE HISTORY SCAN IS NOT CHANGED (#226). `_exported_gitlink` reads
 # `--branches`, so a split branch the source keeps is in it, and
 # `_extract_leg`'s `git checkout -B` shadows that branch in the extraction's
-# clone: on main the scan named a commit of it which the extraction never
-# exports. With this finding first, a plan that leaves the branch where it
-# is and names it is refused for the branch, and a run that gets past it
-# reads what the scan reads: with the branch deleted neither holds it, and
-# with another `adopt_branch:` `git filter-repo` exports it, and failed on
-# the tip `.gitmodules` the scan's finding names (measured with git 2.43 and
-# `git filter-repo` 2.47.0).
+# clone: the scan can name a commit of it which the extraction never
+# exports. `check` names the branch first, before the entries' findings, and
+# its remediation says that such a finding stands until the branch is
+# deleted. `execute` refuses the scan's finding, in
+# `_refuse_what_check_finds`, before `_refuse_a_split_branch_left_behind`
+# asks for the branch. With the branch deleted neither holds it, and under
+# another `adopt_branch:` `git filter-repo` exports it, and fails on the tip
+# `.gitmodules` the scan's finding names (measured with git 2.43 and `git
+# filter-repo` 2.47.0).
 
-#: `check`'s finding, and the code of `execute`'s refusal, for a branch at or
-#: in the way of the split branch where the split is pushed.
+#: `check`'s finding, and the code of `execute`'s refusal, for a branch in
+#: git's way of the split branch where the split is pushed or extracted.
 SPLIT_BRANCH_TAKEN = "plan-split-branch-taken"
-#: `execute`'s refusal when the repository it pushes the split to cannot be
-#: listed: a push to it would fail the same way, after both legs exist.
-SPLIT_TARGET_UNREADABLE = "adopt-split-target-unreadable"
+#: `check`'s finding for the split branch itself where the split is pushed,
+#: at a commit the push cannot fast-forward: the code
+#: `_refuse_a_split_branch_left_behind` refuses that branch under.
+SPLIT_BRANCH_EXISTS = "adopt-branch-exists"
 #: How a finding names the run that pushes to each place `check` asks.
 LOCAL_RUN = "`execute --local-remote-dir`"
 GITHUB_RUN = "`execute` without `--local-remote-dir`"
 #: How a finding names the runs that extract a leg from the source: both.
 EITHER_RUN = "`execute`, with `--local-remote-dir` or without it,"
 
-#: What a plan whose split branch is taken is told to do. Said by `check`,
-#: once after its findings, and by `execute`'s refusal.
+#: What `check` says once after its findings when one of them is about the
+#: split branch.
 SPLIT_BRANCH_REMEDIATION = (
     "Remediation: `execute` pushes its one split commit to the plan's "
-    "`adopt_branch:` as a NEW branch of the repository the split goes to: the "
-    "source itself under `--local-remote-dir`, and otherwise the assembly "
-    "repository on GitHub. It also extracts each leg from a clone of the "
-    "source with that branch checked out, so a source branch git cannot "
-    "hold beside it stops either run. A verified run leaves its split branch "
-    "where it pushed it, and so does a run that failed after that push, so "
-    "an earlier run's split is what this finding names most often. Delete "
-    "the branch a finding names, where it names it, once neither it nor a "
-    "pull request from it is wanted, or set `adopt_branch:` to a branch git "
-    "can create there, and run `check` again. A branch named as the source's "
-    "`origin` last fetched it leaves `check`'s findings once `git fetch "
-    "--prune origin` in the source finds it gone there. A branch the source "
-    "itself holds is also in the history `check` reads for the source's "
-    "submodules, and `git filter-repo` exports it once the plan names "
-    "another branch, so a finding that names one of its commits stands "
-    "until that branch is deleted.")
+    "`adopt_branch:` in the repository the split goes to: the source itself "
+    "under `--local-remote-dir`, and otherwise the assembly repository on "
+    "GitHub. It moves a branch already there only as a fast-forward, and it "
+    "extracts each leg from a clone of the source with that branch checked "
+    "out, so a branch git cannot hold beside it, there or in the source, "
+    "stops either run. A run leaves its split branch where it pushed it, "
+    "verified or not, so an earlier run's split is what "
+    "`adopt-branch-exists` names most often: if that run verified and its "
+    "pull request is the adoption you want, review that instead. Otherwise "
+    "delete each branch a finding names, where it names it, once neither it "
+    "nor a pull request from it is wanted, or set `adopt_branch:` to a name "
+    "git can create there, and run `check` again. A branch named as the "
+    "source's `origin` last fetched it leaves `check`'s findings once `git "
+    "fetch --prune origin` in the source finds it gone there. A branch the "
+    "source itself holds is also in the history `check` reads for the "
+    "source's submodules, and `git filter-repo` exports it once the plan "
+    "names another branch, so a finding that names one of its commits "
+    "stands until that branch is deleted.")
+
+#: `execute`'s remediation for `plan-split-branch-taken`.
+SPLIT_BRANCH_TAKEN_REMEDIATION = (
+    "Remediation: no leg repository was created and nothing was pushed. Git "
+    "holds no branch whose name is a directory of another's, or lies under "
+    "it, so the plan's split branch cannot be made beside a branch named "
+    "above, where it is named. Delete that branch there, once neither it "
+    "nor a pull request from it is wanted, or set `adopt_branch:` in the "
+    "plan to a name git can create there, then run `check` and `execute` "
+    "again.")
 
 
 def _listed_branches(raw: bytes, prefix: str) -> dict[str, str]:
@@ -3602,26 +3632,17 @@ def _listed_branches(raw: bytes, prefix: str) -> dict[str, str]:
     return out
 
 
-def _branches_at(url: str, cwd: Path, branch: str) -> dict[str, str]:
+def _branches_at(url: str, cwd: Path) -> dict[str, str]:
     """Every branch of the repository at `url`, as a push to it meets them:
-    `git ls-remote --heads`. One that cannot be listed is refused before any
-    leg exists, because `execute` pushes the split there after both."""
-    listed = subprocess.run(
-        ["git", *FILE_PROTOCOL, "ls-remote", "--heads", "--", url],
-        cwd=cwd, capture_output=True, check=False)
+    `git ls-remote --heads`. One that cannot be listed fails as `run` fails
+    a command, `CommandFailed`, and in `execute` before any leg exists:
+    `_refuse_a_split_branch_left_behind` has just listed the same
+    repository, and a failure there is the same."""
+    args = ["git", *FILE_PROTOCOL, "ls-remote", "--heads", "--", url]
+    listed = subprocess.run(args, cwd=cwd, capture_output=True, check=False)
     if listed.returncode:
-        raise Refusal(
-            SPLIT_TARGET_UNREADABLE,
-            f"could not list the branches of {_shown(url)}, where `execute` "
-            f"pushes the split, to see whether {_spelled(branch)} is new "
-            f"there: `git ls-remote` exited {listed.returncode}: "
-            + _one_line(listed.stderr.decode("utf-8", "replace")),
-            "Remediation: no leg repository was created and nothing was "
-            "pushed. `execute` pushes the split to that same repository once "
-            "it has made both leg repositories, so a run that cannot read it "
-            "now cannot push to it then. Check that the repository exists and "
-            "that git can reach it (`gh auth status`; `gh auth setup-git` "
-            "lets git use that login), then run the command again.")
+        raise CommandFailed(args, cwd, listed.returncode,
+                            listed.stderr.decode("utf-8", "replace"))
     return _listed_branches(listed.stdout, "refs/heads/")
 
 
@@ -3636,28 +3657,38 @@ def _in_the_way(branches: dict[str, str], branch: str) -> list[tuple]:
                   key=lambda found: (found[0] != branch, found[0]))
 
 
+def _left_behind(where: str, run: str, branch: str, commit: str,
+                 source_commit: str) -> str:
+    """One `adopt-branch-exists` finding: `where` already has the split
+    branch `branch`, at `commit`, which is neither `source_commit` nor a
+    commit behind it, and `run` pushes the split there. Said as
+    `_refuse_a_split_branch_left_behind` says it."""
+    split = _spelled(branch)
+    return (f"{where} already has {split}, the branch {run} pushes its "
+            f"split commit to, at {commit[:12]}: neither the source commit "
+            f"{source_commit[:12]} nor a commit behind it. The split commit "
+            "is made on top of the source commit, and git moves a branch to "
+            "it without force only from that commit or one behind it, so "
+            "`execute` refuses that run before it creates a leg, as "
+            f"`{SPLIT_BRANCH_EXISTS}`. Delete {split} there, or set "
+            "`adopt_branch:` in the plan to a name no branch has there.")
+
+
 def _taken(where: str, run: str, branch: str, name: str,
            commit: str) -> str:
-    """One `plan-split-branch-taken` finding: `where` holds the branch
-    `name` at `commit`, which takes the split branch `branch`, and `run`
-    pushes the split there."""
-    split = _spelled(branch)
-    if name == branch:
-        held = f"{where} already holds the plan's split branch {split}"
-        why = ("and as a new branch: a branch already there refuses that "
-               "push unless the split fast-forwards it, and then the split "
-               "lands on a branch this adoption did not make")
-    else:
-        held = f"{where} holds the branch {_spelled(name)}"
-        # git's own words, each name spelled as `_spelled` spells it, so a
-        # backtick a branch name may hold cannot end the quotation.
-        why = (f"and git cannot create {split} beside {_spelled(name)}: "
-               f"`'refs/heads/{_spelled(name)[1:-1]}' exists; cannot create "
-               f"'refs/heads/{split[1:-1]}'`")
-    return (f"{held}, at {commit[:12]}. {run} pushes its split commit to "
-            f"{split} there, after both leg repositories were created and "
-            f"pushed, {why}. Delete {_spelled(name)} there, or set "
-            "`adopt_branch:` in the plan to a branch git can create there.")
+    """One `plan-split-branch-taken` finding about the push: `where` holds
+    the branch `name`, at `commit`, which git cannot hold beside the split
+    branch `branch`, and `run` pushes the split there."""
+    split, held = _spelled(branch), _spelled(name)
+    # git's own words, each name spelled as `_spelled` spells it, so a
+    # backtick a branch name may hold cannot end the quotation.
+    return (f"{where} holds the branch {held}, at {commit[:12]}. {run} "
+            f"pushes its split commit to {split} there, after both leg "
+            "repositories were created and pushed, and git cannot create "
+            f"{split} beside {held}: `'refs/heads/{held[1:-1]}' exists; "
+            f"cannot create 'refs/heads/{split[1:-1]}'`. Delete {held} "
+            "there, or set `adopt_branch:` in the plan to a branch git can "
+            "create there.")
 
 
 def _in_the_extraction(where: str, branch: str, name: str,
@@ -3678,28 +3709,40 @@ def _in_the_extraction(where: str, branch: str, name: str,
             "git can create there.")
 
 
-def _split_branch_findings(branch: str | None, places: list
-                           ) -> tuple[list[str], list[str]]:
-    """`plan-split-branch-taken`, one FINDING per branch in the way in each
-    of `places`, `(where, pushed_by, extracted, branches)`; and what to
-    print ONCE after every finding, as `_submodule_findings` returns it.
+def _split_branch_findings(branch: str | None, places: list,
+                           source: Source | None = None) -> list[str]:
+    """One FINDING per branch that stops the split branch `branch` in each
+    of `places`, `(where, pushed_by, extracted, branches)`.
 
     `pushed_by` is the run that pushes the split there, or None, and
     `extracted` is whether `_extract_leg` clones it: the source, when a leg
-    is extracted. There a branch in git's way stops the extraction of
-    either run (`_in_the_extraction`), and the split branch's own name is
-    asked about only as the run that pushes there, because the clone's
-    `checkout -B` shadows it. `branch` None is a split branch `execute`
-    refuses as `unsafe-value`, and nothing is asked about it here."""
+    is extracted. A branch in git's way is `plan-split-branch-taken`: about
+    the extraction, for either run, where it is extracted
+    (`_in_the_extraction`), and otherwise about the push (`_taken`).
+
+    The split branch's own name is asked only where the split is pushed,
+    because the extraction's `checkout -B` shadows it, and only by `check`,
+    which hands its `source` in: `adopt-branch-exists`, by
+    `_refuse_a_split_branch_left_behind`'s rule, so a branch the push
+    fast-forwards is none. `execute` leaves that branch to that function.
+    `branch` None is a split branch `execute` refuses as `unsafe-value`,
+    and nothing is asked about it here."""
     found = []
     for where, pushed_by, extracted, branches in (places if branch else []):
         for name, commit in _in_the_way(branches, branch):
-            if extracted and name != branch:
-                found.append(_in_the_extraction(where, branch, name, commit))
-            elif pushed_by:
-                found.append(_taken(where, pushed_by, branch, name, commit))
-    found = [f"FINDING {SPLIT_BRANCH_TAKEN}: {finding}" for finding in found]
-    return found, [SPLIT_BRANCH_REMEDIATION] if found else []
+            if name != branch and extracted:
+                found.append(f"FINDING {SPLIT_BRANCH_TAKEN}: "
+                             + _in_the_extraction(where, branch, name,
+                                                  commit))
+            elif name != branch and pushed_by:
+                found.append(f"FINDING {SPLIT_BRANCH_TAKEN}: "
+                             + _taken(where, pushed_by, branch, name, commit))
+            elif (name == branch and pushed_by and source is not None
+                  and not _in_the_history_of(source, commit)):
+                found.append(f"FINDING {SPLIT_BRANCH_EXISTS}: "
+                             + _left_behind(where, pushed_by, branch, commit,
+                                            source.commit))
+    return found
 
 
 def _extracts_a_leg(assigned: dict) -> bool:
@@ -3725,18 +3768,15 @@ def _branches_in(path: Path, refs: str) -> dict[str, str]:
                  refs], cwd=path, binary=True), refs)
 
 
-def _places_check_asks(plan: Plan, source: Source, branch: str,
-                       extracting: bool) -> list:
-    """The places `check` asks for the split branch `branch`, `(where,
-    pushed_by, extracted, branches)`: the source, which a run with
-    `--local-remote-dir` pushes to and either run extracts from while
-    `extracting`, and, where the source's `origin` is the assembly
-    repository, that repository's branches as the source last fetched them,
-    which a run without it pushes to. `check` reads no network for
-    either."""
+def _places_check_asks(plan: Plan, source: Source, extracting: bool) -> list:
+    """The places `check` asks for the split branch, `(where, pushed_by,
+    extracted, branches)`: the source, which a run with `--local-remote-dir`
+    pushes to and either run extracts from while `extracting`, and, where
+    the source's `origin` is the assembly repository, that repository's
+    branches as the source last fetched them, which a run without it pushes
+    to. `check` reads no network for either."""
     places = [(f"the source {_shown(str(source.path))}", LOCAL_RUN,
-               extracting,
-               _branches_at(str(source.path), source.path, branch))]
+               extracting, _branches_at(str(source.path), source.path))]
     assembly = _assembly_repository(plan)
     if assembly and (source.repository or "").lower() == assembly.lower():
         places.append((f"`{assembly}` on GitHub, as the source's `origin` "
@@ -3747,41 +3787,62 @@ def _places_check_asks(plan: Plan, source: Source, branch: str,
 
 def _check_split_branch(plan: Plan, source: Source
                         ) -> tuple[list[str], list[str]]:
-    """`_split_branch_findings` as `check` asks it. A split branch that is
-    not a value `execute` puts on a command line is not asked about: it is
-    `execute`'s refusal `unsafe-value`, before any leg exists."""
+    """`_split_branch_findings` as `check` asks it, the split branch's own
+    name included, and what to print ONCE after every finding, as
+    `_submodule_findings` returns it. A split branch that is not a value
+    `execute` puts on a command line is not asked about: it is `execute`'s
+    refusal `unsafe-value`, before any leg exists."""
     try:
         branch = checked_value("adopt_branch",
                                plan.get("adopt_branch", ADOPT_BRANCH))
     except Refusal:
         return [], []
     extracting = _extracts_a_leg(assigned_paths(plan.entries))
-    return _split_branch_findings(
-        branch, _places_check_asks(plan, source, branch, extracting))
+    found = _split_branch_findings(
+        branch, _places_check_asks(plan, source, extracting), source)
+    return found, [SPLIT_BRANCH_REMEDIATION] if found else []
 
 
-def _execute_split_branch(branch: str, local: bool, repositories: dict,
-                          urls: dict, source: Source, extracting: bool
-                          ) -> tuple[list[str], list[str]]:
-    """`_split_branch_findings` as `execute` asks it: of the one repository
-    this run pushes the split to, listed as the push will meet it, and,
-    while `extracting`, of the source the extraction clones. A run with
-    `--local-remote-dir` pushes to the source and says what `check` says of
-    it, word for word, so that its refusal carries `check`'s findings as
-    `check` prints them; a run without it asks the source's own branches
-    first, as `check` lists them, and then GitHub."""
+def _refuse_a_branch_in_the_split_branchs_way(
+        plan: Plan, source: Source, repositories: dict, urls: dict,
+        branch: str, local: bool, extracting: bool) -> None:
+    """Refuse a branch git cannot hold beside the split branch, where this
+    run pushes the split or, while `extracting`, in the source it extracts
+    the legs from, BEFORE a leg repository exists (#320): `check`'s finding
+    `plan-split-branch-taken`, which nothing refused.
+
+    `cmd_execute` runs it right after `_refuse_a_split_branch_left_behind`,
+    which asks for the split branch's own name, and it keeps that
+    function's precedence: a leg repository still there under
+    `--local-remote-dir` is `leg-remote-exists`'s to refuse, and this asks
+    nothing then.
+
+    Under `--local-remote-dir` the split is pushed to the source, which is
+    also what the extraction clones: one listing, `git ls-remote --heads`,
+    as the push will meet it, and each finding is `check`'s, word for word.
+    Without it, the source's own branches are asked for the extraction,
+    reading no network, and each finding is `check`'s, word for word; then
+    the assembly repository on GitHub, as the push will meet it, which
+    `check` reads as the source's `origin` last fetched it, if at all.
+    """
+    if local and any(Path(urls[role]).exists() for role in EXTRACTED_LEGS):
+        return
     the_source = f"the source {_shown(str(source.path))}"
     if local:
-        return _split_branch_findings(branch, [
-            (the_source, LOCAL_RUN, extracting,
-             _branches_at(urls["assembly"], source.path, branch))])
-    places = [(the_source, None, True,
-               _branches_in(source.path, "refs/heads/"))
-              ] if extracting else []
-    places.append((f"`{repositories['assembly']}` on GitHub", GITHUB_RUN,
-                   False,
-                   _branches_at(urls["assembly"], source.path, branch)))
-    return _split_branch_findings(branch, places)
+        places = [(the_source, LOCAL_RUN, extracting,
+                   _branches_at(urls["assembly"], source.path))]
+    else:
+        places = [(the_source, None, True,
+                   _branches_in(source.path, "refs/heads/"))
+                  ] if extracting else []
+        places.append((f"`{repositories['assembly']}` on GitHub", GITHUB_RUN,
+                       False, _branches_at(urls["assembly"], source.path)))
+    found = _split_branch_findings(branch, places)
+    if found:
+        raise Refusal(SPLIT_BRANCH_TAKEN, "\n".join(
+            [f"{len(found)} finding(s) in {plan.path}:",
+             *(f"  {finding}" for finding in found)]),
+            SPLIT_BRANCH_TAKEN_REMEDIATION)
 
 
 def _topics_line(topic: str, local: bool) -> str:
@@ -3845,9 +3906,8 @@ def cmd_check(args) -> int:
             "against a tree that has moved proves nothing about the tree that "
             "will be split.")
 
-    # Before the entries (#320): a split branch that is already there is the
-    # one cause of a re-run's failure, and the history scan the entries'
-    # findings make reads that branch too.
+    # Before the entries (#320): the history scan their findings make reads
+    # a split branch the source keeps, and the branch is named first.
     taken, taken_remediation = _check_split_branch(plan, source)
     findings.extend(taken)
     entry_findings, remediation, notes = _entry_findings(plan, source)
@@ -4841,8 +4901,7 @@ REFUSED_FINDINGS_SHOWN = 8
 
 
 def _refuse_what_check_finds(plan: Plan, source: Source,
-                             local_remote_dir: Path | None = None,
-                             taken: tuple = ((), ())) -> None:
+                             local_remote_dir: Path | None = None) -> None:
     """Refuse a plan `check` rejects, BEFORE a leg repository exists (#168).
 
     Of `check`'s findings, `execute` used to refuse only `plan-unresolved`,
@@ -4914,22 +4973,8 @@ def _refuse_what_check_finds(plan: Plan, source: Source,
     a finding is this run's own, and the refusal says so. A url `check` finds
     from GitHub's remotes may name the same repository from these, and one it
     passes may not.
-
-    THE SPLIT BRANCH COMES FIRST OF ALL (#320). `taken` is
-    `_execute_split_branch`'s `(findings, remediation)`: a branch at or in
-    the way of the split branch in the one repository this run pushes the
-    split to, and one in its way in the source the extraction clones, which
-    `cmd_execute` asks before this runs. Its findings lead
-    the list, as `check` lists its own, so a re-run over an earlier run's
-    split branch is refused as `plan-split-branch-taken`, and never as a
-    finding of the history that branch adds to the scan (#226). `check`
-    asks where it can see without the network (`_places_check_asks`), and
-    for a run without `--local-remote-dir` this asks the repository itself.
     """
-    entry_findings, entry_remediation, _ = _entry_findings(
-        plan, source, local_remote_dir)
-    findings = [*taken[0], *entry_findings]
-    remediation = [*taken[1], *entry_remediation]
+    findings, remediation, _ = _entry_findings(plan, source, local_remote_dir)
     if not findings:
         return
     # `FINDING <code>: <detail>` is the one shape both functions write.
@@ -5321,10 +5366,7 @@ def cmd_execute(args) -> int:
     local, repositories, urls = _repository_urls(args, plan, names, source)
     _refuse_an_unwritable_clone_url(urls["assembly"])
     paths_for = _leg_paths(plan)
-    _refuse_what_check_finds(plan, source, args.local_remote_dir,
-                             _execute_split_branch(
-                                 branch, local, repositories, urls, source,
-                                 _extracts_a_leg(paths_for)))
+    _refuse_what_check_finds(plan, source, args.local_remote_dir)
 
     seeded = seeded_legs(paths_for)
     _refuse_unconsented_seeding(args, plan, seeded)
@@ -5332,6 +5374,11 @@ def cmd_execute(args) -> int:
     # whose way out is "run `execute` again" then meets one that is free.
     _refuse_an_occupied_work_dir(work_root, names, seeded)
     _refuse_a_split_branch_left_behind(source, urls, branch, local)
+    # Then a branch in git's way of the split branch, which no run of this
+    # tool leaves behind (#320).
+    _refuse_a_branch_in_the_split_branchs_way(
+        plan, source, repositories, urls, branch, local,
+        _extracts_a_leg(paths_for))
     for line in plan.seeding_record_disagreements(seeded):
         print(line)
     topic = naming.topic_for(plan.project_id)
