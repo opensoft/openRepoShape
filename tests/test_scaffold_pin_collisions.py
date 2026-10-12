@@ -61,8 +61,9 @@ REMEDIATION = (
     "repository it pins, as `--pin openGlass@<40 hex commit>` names "
     "opensoft/openGlass by default, and its pin is written at "
     "`contracts/<openproduct>-pin.yaml`, the name lowercased, beside the "
-    "pins the shape writes for its two legs and for itself. Pass each "
-    "product once, by the name of the repository it pins.")
+    "pins the shape writes for its two legs and for itself, so `spec`, "
+    "`code` and `shape`, in any case, are names no product can be pinned "
+    "under. Pass each product once, by the name of the repository it pins.")
 
 #: `(the --pin values, what the refusal says)`, `{A}` and `{B}` being two
 #: commits of the `--pin-source` clone. The first five are the three names
