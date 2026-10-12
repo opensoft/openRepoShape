@@ -1699,7 +1699,8 @@ def _the_loader_made(reading) -> str:
     if reading is None:
         return "no value at all"
     if isinstance(reading, bool):
-        return "the boolean " + ("true" if reading else "false")
+        # In the words `y` writes it into a plan, which are YAML's own.
+        return "the boolean " + y(reading)
     if isinstance(reading, (int, float)):
         return f"the number {reading!r}"
     if isinstance(reading, str):
