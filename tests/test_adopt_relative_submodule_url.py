@@ -177,10 +177,11 @@ def moved(adopter, url: str, base: str, which: str, here: str, remote: str,
     """The detail of the finding, for the submodule at `path` kept in code.
     `here` and `there` are git's resolutions, spelled; every other url is
     spelled here as the tool spells it, which on Windows doubles each
-    backslash of a path."""
+    backslash of a path. The submodule and its entry are between backticks,
+    as every path a finding names is (#212)."""
     spelled = adopter._spelled
-    return (f"the submodule {path} (entry {entry}) has leg: code, and its "
-            f"url in the source's {GITMODULES} is the relative "
+    return (f"the submodule `{path}` (entry `{entry}`) has leg: code, and "
+            f"its url in the source's {GITMODULES} is the relative "
             f"{spelled(url)}, which git resolves against the remote of the "
             f"repository holding that file: from the source, at "
             f"{spelled(base)} ({which}), {here}, and from the code leg, at "
@@ -472,7 +473,7 @@ def test_execute_resolves_again_from_the_remotes_it_would_create(
         "GitHub's:")
     leg = adopter._spelled(str(remotes.resolve() / CODE_BARE))
     assert finding.startswith(f"  FINDING {RELATIVE}: the submodule "
-                              f"{DEPENDENCY} (entry {UPSTREAM})"), finding
+                              f"`{DEPENDENCY}` (entry `{UPSTREAM}`)"), finding
     assert f", and from the code leg, at {leg}, to " in finding
     assert refusal.remediation.endswith(
         "\n" + adopter.RELATIVE_URL_REMEDIATION)
