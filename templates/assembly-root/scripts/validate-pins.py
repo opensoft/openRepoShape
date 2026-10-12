@@ -57,6 +57,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shlex
 import stat
 import sys
 from collections.abc import Iterator
@@ -64,6 +65,8 @@ from contextlib import contextmanager
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+#: The interpreter the `pin-gitlink-mismatch` repair lines name (#478).
+from repo_shape import PYTHON  # noqa: E402
 from repo_shape import (  # noqa: E402
     COMMIT_RE, SHA256_RE, TREE_DIGEST_DEFINITION, Refusal, file_sha256,
     find_repo_root, git_out, load_yaml, pin_source_env_name, recorded_gitlink,
@@ -237,6 +240,33 @@ def _git_runs(unread: str) -> Iterator[None]:
             "cannot answer is never a pass.") from exc
 
 
+def _gitlink_repairs(root: Path, role, gitlink: str, commit: str) -> str:
+    """The two commands a `pin-gitlink-mismatch` ends on (#478).
+
+    WHICH COMMIT STAYS IS THE PERSON'S CALL, so both are named and neither
+    is chosen. A gitlink moved and committed by hand (`git -C spec pull`,
+    then `git add spec` in the root) wants the first, `--to` the gitlink's
+    commit, if the move was meant and the second, `--to` the pin's, if it
+    was not; a pin edited by hand reads the same with the two the other way
+    round. Either is `bump-leg.py`, which puts all three facts at one commit
+    in ONE commit and runs this validator before it commits: a gitlink put
+    back by hand is the same single-fact move this check refuses.
+
+    FROM A CHECKOUT OF openRepoShape, as `validate-family.py` names
+    `family.py`: no project carries `bump-leg.py`, and this file cannot know
+    where the reader's checkout is, so the script is relative to one and the
+    root, which it does know, is absolute and quoted.
+    """
+    bump = (f"{PYTHON} scripts/bump-leg.py --root {shlex.quote(str(root))} "
+            f"--leg {shlex.quote(str(role))} --to")
+    return ("Which commit stays is the person's call. From a checkout of "
+            "openRepoShape, the first command keeps the gitlink's commit and "
+            "the second the pin's. Either puts all three at it in one commit, "
+            "on a branch other than the tracking branch, and refuses a commit "
+            "no branch of the leg's remote contains, so push one made in the "
+            f"leg first:\n    {bump} {gitlink}\n    {bump} {commit}")
+
+
 def _check_gitlink_matches_pin(root: Path, role, path: str, commit: str,
                                rel: str, report: Report) -> str:
     """Fact 1 vs fact 2: the recorded gitlink against the pin file's
@@ -256,7 +286,8 @@ def _check_gitlink_matches_pin(root: Path, role, path: str, commit: str,
     if gitlink != commit:
         report.finding(
             "pin-gitlink-mismatch",
-            f"{path}: gitlink {gitlink} != {rel} commit {commit}\n  " + LOCKSTEP,
+            f"{path}: gitlink {gitlink} != {rel} commit {commit}\n  " + LOCKSTEP
+            + "\n  " + _gitlink_repairs(root, role, gitlink, commit),
         )
     else:
         report.note(f"{path}: gitlink == {rel} commit {commit[:12]}")

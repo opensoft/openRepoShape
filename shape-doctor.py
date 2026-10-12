@@ -1649,8 +1649,113 @@ def check_pins(ctx: Context) -> Row:
                           "a single pin, has nothing to check yet")
     if waiting is not None:
         return waiting
-    return validator_row(ctx, "pins", "pins", *PINS_GATE,
-                         ["--root", str(ctx.root)])
+    return with_gitlink_repairs(ctx, validator_row(
+        ctx, "pins", "pins", *PINS_GATE, ["--root", str(ctx.root)]))
+
+
+def bump_leg_command(shape: Path, root: Path, role: str, commit: str,
+                     platform: str | None = None) -> str:
+    """The `scripts/bump-leg.py` line that puts a leg's gitlink, its pin and
+    every workflow reference at `commit` in one commit, spelled for the
+    READER'S shell (#478).
+
+    From any directory: the standard's own copy of the script by its
+    absolute path, `--root` the root's, and every value through `quote_arg`
+    for the platform asked for, as `copy_command` and `validator_command`
+    spell theirs. It carries the lane's `--trailer` where `LANES_LANE` names
+    one, as the `shape currency` row's `apply` does, because it writes a
+    commit too (#111).
+    """
+    target = os.name if platform is None else platform
+    return " ".join([
+        python_command(platform),
+        quote_arg(shape / "scripts" / "bump-leg.py", target),
+        "--root", quote_arg(root, target), "--leg", quote_arg(role, target),
+        "--to", quote_arg(commit, target)]) + lane_trailer_command(platform)
+
+
+def gitlinks_off_their_pins(ctx: Context) -> list[dict]:
+    """Each declared leg whose gitlink and pin name two different commits,
+    as `{"role", "path", "gitlink", "pin"}`, in the manifest's order (#478).
+
+    The `legs` row's two reads, `recorded_gitlink` (the index first, as the
+    gate reads it and as `bump-leg.py` reads the commit it replaces) and
+    `pin_commit`. A leg where either is not a 40-hex commit is left out:
+    `bump-leg.py --to` takes nothing else, and `validate-pins.py` refuses
+    such a pin before it compares it.
+    """
+    off = []
+    for leg in ctx.legs():
+        role = str(leg.get("role") or "")
+        path = str(leg.get("path") or "")
+        if not role or not path:
+            continue
+        pinned = pin_commit(ctx.root, f"contracts/{role}-pin.yaml")
+        gitlink = recorded_gitlink(ctx.root, path)
+        if pinned and gitlink and COMMIT_RE.match(gitlink) \
+                and gitlink != pinned:
+            off.append({"role": role, "path": path, "gitlink": gitlink,
+                        "pin": pinned})
+    return off
+
+
+def with_gitlink_repairs(ctx: Context, row: Row) -> Row:
+    """The `pins` row, naming both repairs for a gitlink that is not its pin
+    (#478).
+
+    THE DEFECT. A leg moved by hand and committed (`git -C spec pull`, then
+    `git add spec && git commit` in the root) made this row a FINDING whose
+    NEXT is the gate, and the gate printed THE LOCKSTEP RULE and no command,
+    so a person told that "a finding names its fix" was named none.
+
+    WHICH COMMIT STAYS IS THE PERSON'S CALL, so the reason names two
+    `bump-leg.py` lines and chooses neither: `--to` the gitlink's commit
+    keeps the move, and `--to` the pin's undoes it. `bump-leg.py` either
+    way, because it moves the gitlink, the pin and every workflow reference
+    in one commit and runs the gate before it commits. `git submodule
+    update` is no undo: it checks the leg out at the gitlink, which is the
+    commit being undone. The two lines are in the reason and in
+    `detail.gitlink_repairs`, never in the NEXT, as the `merge` row offers
+    its choice (#424): a NEXT is run as printed, and this one is the gate,
+    which now names the same two.
+
+    THE COMMIT MUST BE ON A BRANCH OF THE LEG'S REMOTE, and offline that
+    cannot be known: `bump-leg.py` fetches before it asks, and a
+    remote-tracking ref here says what the remote held at the last fetch,
+    not what it holds. So the reason says what the command needs, and the
+    doctor still fetches nothing.
+
+    ONLY A GATE THAT REPORTED FINDINGS, exit 1, and did not crash. A refusal
+    stops `validate-pins.py` before it reports any finding, and that is the
+    thing to fix first; any other row is returned untouched. The row is
+    changed IN PLACE, reason and detail, so whatever else a `Row` carries is
+    kept.
+    """
+    if row.status != FINDING or row.detail.get("exit") != 1 \
+            or row.detail.get("crashed"):
+        return row
+    off = gitlinks_off_their_pins(ctx)
+    if not off:
+        return row
+    for leg in off:
+        leg["keep_gitlink"] = bump_leg_command(ctx.shape, ctx.root,
+                                               leg["role"], leg["gitlink"])
+        leg["keep_pin"] = bump_leg_command(ctx.shape, ctx.root, leg["role"],
+                                           leg["pin"])
+    tracking = str((ctx.manifest or {}).get("tracking_branch") or "main")
+    each = "; ".join(
+        f"for {leg['path']}, `{leg['keep_gitlink']}` keeps the gitlink's "
+        f"{leg['gitlink'][:12]} and `{leg['keep_pin']}` keeps the pin's "
+        f"{leg['pin'][:12]}" for leg in off)
+    row.reason = ascii_text(
+        f"{row.reason}. The gitlink and the pin name two commits, and which "
+        "stays is the person's call; bump-leg.py puts the gitlink, the pin "
+        f"and every workflow reference at it in one commit: {each}. Either "
+        f"commits on a branch other than {tracking} and refuses a commit no "
+        "branch of the leg's remote contains, so a commit made in the leg "
+        "is pushed first")
+    row.detail["gitlink_repairs"] = off
+    return row
 
 
 def check_family(ctx: Context) -> Row:
