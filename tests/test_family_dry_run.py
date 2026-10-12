@@ -34,6 +34,7 @@ of the test's own. No test pushes to the fixture's own remotes.
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -53,8 +54,30 @@ from test_family_add_refusals import (  # noqa: F401
     holder, offline, refusal, sections,
 )
 from test_family_member_path import (
-    GLOB, MEMBER, OTHER, hand_edit, isolated, older, raw, recorded,
+    GLOB, MEMBER, OTHER, hand_edit, older, raw, recorded,
 )
+from test_family_member_path import isolated as member_path_env
+
+#: GIT'S AUTOMATIC MAINTENANCE, OFF for every git this module starts, through
+#: git's `GIT_CONFIG_COUNT` protocol and never a global file. A `git commit`
+#: may start `git maintenance run --auto` in the background (a newer git on
+#: the macOS runner does), and it took `.git/objects/maintenance.lock` while
+#: a test snapshotted the holder and released it before the comparison: five
+#: `objects changed` failures on PR #345's first macOS run, none of them the
+#: tool's. With it off, no background job packs or locks objects mid-test.
+NO_MAINTENANCE = {"GIT_CONFIG_COUNT": "3",
+                  "GIT_CONFIG_KEY_0": "maintenance.auto",
+                  "GIT_CONFIG_VALUE_0": "false",
+                  "GIT_CONFIG_KEY_1": "gc.auto", "GIT_CONFIG_VALUE_1": "0",
+                  "GIT_CONFIG_KEY_2": "gc.autoDetach",
+                  "GIT_CONFIG_VALUE_2": "false"}
+
+
+def isolated(offline, tmp_path: Path) -> dict:
+    """`test_family_member_path.isolated`'s offline, identity-carrying
+    environment, with git's automatic maintenance off (`NO_MAINTENANCE`)."""
+    return {**member_path_env(offline, tmp_path), **NO_MAINTENANCE}
+
 
 #: The header `bump --dry-run` prints above the row it would write.
 ROW_HEADER = "row          as family.yaml would carry it:"
@@ -88,14 +111,25 @@ def work_tree(root: Path) -> dict:
     return found
 
 
+#: An OBJECT FILE under `.git/objects`: a loose object (two hex digits, then
+#: the rest of a sha-1 or sha-256 id) or a pack and its index. Only these are
+#: listed. A `*.lock`, `info/` and git's other transient files are not
+#: objects, and a lock a background job held at the first snapshot and not
+#: at the second failed five tests on PR #345's first macOS run.
+OBJECT_FILE = re.compile(r"[0-9a-f]{2}/[0-9a-f]{38}(?:[0-9a-f]{24})?"
+                         r"|pack/pack-[0-9a-f]+\.(?:pack|idx)")
+
+
 def objects(root: Path) -> list[str]:
-    """Every file in the holder's OWN object store, `.git/objects`. A blob
-    written there is a write the index and the work tree do not show; the
-    member's store, which `bump`'s fetch writes into, is under
-    `.git/modules/` and not in this list."""
+    """Every OBJECT FILE (`OBJECT_FILE`) in the holder's OWN object store,
+    `.git/objects`. A blob written there is a write the index and the work
+    tree do not show; the member's store, which `bump`'s fetch writes into,
+    is under `.git/modules/` and not in this list."""
     store = root / ".git" / "objects"
-    return sorted(path.relative_to(store).as_posix()
-                  for path in store.rglob("*") if path.is_file())
+    return sorted(name for name in (path.relative_to(store).as_posix()
+                                    for path in store.rglob("*")
+                                    if path.is_file())
+                  if OBJECT_FILE.fullmatch(name))
 
 
 def state(root: Path, env: dict, member: str = MEMBER) -> dict:
