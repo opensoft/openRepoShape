@@ -885,16 +885,17 @@ class Context:
 
 def validator_scripts(shape: Path, own_copy: bool) -> Path | None:
     """The directory a validator run has on `PYTHONPATH`, or None for a run
-    that has none: the standard's own `scripts/` for the standard's TEMPLATE
-    copy, and nothing for the root's OWN copy (#238).
+    that has no `PYTHONPATH` at all: the standard's own `scripts/` for the
+    standard's TEMPLATE copy, and nothing for the root's OWN copy (#238).
 
     ONE DEFINITION OF THE DIRECTORY AND OF THE CONDITION, for the two places
-    that have to agree about both. `run_validator` sets what this returns on
-    the doctor's child and `validator_command` prints what it returns in the
-    line a row hands over, and each is asked with the one `own_copy` that
-    `validator_for` made -- so the run and the line apply `PYTHONPATH` under
-    the same condition, and there is no second test of `own_copy` to drift
-    from the first (review S1 on #238).
+    that have to agree about both. `run_validator` gives the doctor's child
+    exactly what this returns -- that directory alone, or no variable -- and
+    `validator_command` prints what it returns in the line a row hands over,
+    and each is asked with the one `own_copy` that `validator_for` made -- so
+    the run and the line apply `PYTHONPATH` under the same condition, and
+    there is no second test of `own_copy` to drift from the first (review S1
+    on #238).
 
     THE TEMPLATE'S IS THE STANDARD'S `scripts/`, because that is the only
     place `repo_shape.py` is: the template has none beside it. THE ROOT'S OWN
@@ -903,7 +904,10 @@ def validator_scripts(shape: Path, own_copy: bool) -> Path | None:
     `repo_shape` from beside itself. A root that has lost its own
     `scripts/repo_shape.py` has a gate that cannot import it, and the row
     must say what that gate says (`ModuleNotFoundError` as a finding), not a
-    "passes" the project's own gate would never give.
+    "passes" the project's own gate would never give. NOTHING IS NOTHING: the
+    operator's own `PYTHONPATH` is taken out of that child as well (#306),
+    because one that reaches a `repo_shape.py` would stand in for the file the
+    root lost, and the row would say what CI never does -- see `run_validator`.
     """
     return None if own_copy else shape / "scripts"
 
@@ -912,38 +916,60 @@ def run_validator(ctx: Context, script: Path, args: list[str],
                   pythonpath: Path | None = None) -> tuple:
     """`(exit code, first line worth quoting, whole output)`.
 
-    THE PYTHONPATH IS THE POINT OF THE `env` BLOCK, AND IT IS SET ONLY WHEN
-    A CALLER ASKS: `pythonpath` is the directory to put on it, and
-    `validator_row` passes `validator_scripts`'s answer. A project's own
-    `scripts/validate-pins.py` sits beside its own copy of `repo_shape.py` and
-    imports it from there, so it is run with nothing added -- the way the
-    project's own gate runs it. The STANDARD's template copy has no
-    `repo_shape.py` beside it -- that file is copied out of the shape itself,
-    not out of the template -- so when a row falls back to the template it
-    must put `<shape>/scripts` on the path or the fallback dies on an
-    ImportError that says nothing about the project being checked. The
-    standard's own scripts (naming, the machine's preflight) are not given
-    one either: the naming script inserts its own directory ahead of its
-    `repo_shape` import, and the machine's preflight needs nothing from
-    `repo_shape` at all and never imports it (#238).
+    THE CHILD'S `PYTHONPATH` IS EXACTLY WHAT THE ROW'S NEXT PRINTS, AND THE
+    DOCTOR'S OWN IS NEVER PART OF IT (#306). `pythonpath` is the directory to
+    put on it, and `validator_row` passes `validator_scripts`'s answer: given
+    one, the child's `PYTHONPATH` is that directory ALONE, the way the printed
+    `PYTHONPATH=<dir> python3 ...` sets it; given none, the child has NO
+    `PYTHONPATH`, and the variable is taken OUT of the copy of the doctor's
+    environment this builds, not left in it. ONE PLACE DECIDES, and it is the
+    `env` block below: it does not ask whether the script is a root's own copy
+    and it does not leave the answer to a caller, so a caller that passes
+    nothing gets the same child as any other.
+
+    A project's own `scripts/validate-pins.py` sits beside its own copy of
+    `repo_shape.py` and imports it from there, so it is run with NONE -- the
+    way the project's own gate runs it, in CI, where nothing exports one. A
+    `PYTHONPATH` left in would reach a `repo_shape.py` of the operator's and
+    stand in for the file a root that lost its own cannot import: the row said
+    `passes` for a gate that fails there, the false pass #238 removed for
+    everyone whose environment held no such variable. The STANDARD's template
+    copy has no `repo_shape.py` beside it -- that file is copied out of the
+    shape itself, not out of the template -- so when a row falls back to the
+    template it must put `<shape>/scripts` on the path or the fallback dies on
+    an ImportError that says nothing about the project being checked, and it
+    puts it there ALONE: put in front of the operator's, theirs stayed on the
+    path behind it for the validator to import from, which the line the row
+    printed does not have. The standard's own scripts (naming, the machine's
+    preflight) are given none: the naming script inserts its own directory
+    ahead of its `repo_shape` import, and the machine's preflight needs
+    nothing from `repo_shape` at all and never imports it (#238), so taking
+    the variable out of their child changes nothing they do.
 
     A PASTED COMMAND IS A SECOND PROCESS, AND THIS `env` IS NOT IN IT. What a
-    row prints as its NEXT is run later, by a person, in their own shell --
-    so the `PYTHONPATH` set here reaches the doctor's child and never the
-    reader's, and `validator_command` is what puts the same directory in the
-    printed line (#238). Both are `validator_scripts`'s, asked with the same
-    `own_copy`, so the run and the line apply `PYTHONPATH` under one
-    condition: a template copy gets it in both and the root's own copy gets
-    it in neither. A root's own copy that cannot import `repo_shape` from
-    beside itself therefore fails here as it fails when pasted, and the row
-    reports that failure rather than a pass the pasted line would not give.
+    row prints as its NEXT is run later, by a person, in their own shell -- so
+    what is set here reaches the doctor's child and never the reader's, and
+    `validator_command` is what puts the same directory in the printed line
+    (#238). Both are `validator_scripts`'s, asked with the same `own_copy`, so
+    the run and the line apply `PYTHONPATH` under one condition: a template
+    copy gets it in both and the root's own copy gets it in neither. A root's
+    own copy that cannot import `repo_shape` from beside itself therefore
+    fails here as the project's own gate fails, and the row reports that
+    failure rather than a pass.
+
+    WHICH AGREEMENT THE ROW KEEPS (#306): the row reports the project's own
+    GATE as CI runs it, with no inherited `PYTHONPATH`; it does not predict
+    what a pasted line prints in the reader's shell. The pasted line runs under
+    the READER'S environment, so a reader whose own `PYTHONPATH` reaches a
+    `repo_shape` can see a pasted own-copy line pass where the row says
+    FINDING. That is their variable, and the gate has no such variable: the
+    row is about the gate.
     """
     env = dict(os.environ)
     if pythonpath is not None:
-        existing = env.get("PYTHONPATH")
-        scripts = str(pythonpath)
-        env["PYTHONPATH"] = (f"{scripts}{os.pathsep}{existing}" if existing
-                             else scripts)
+        env["PYTHONPATH"] = str(pythonpath)
+    else:
+        env.pop("PYTHONPATH", None)
     # UTF-8 whatever the console is: these validators print this repository's
     # own prose, and `ascii_text` flattens it for the report afterwards.
     env["PYTHONIOENCODING"] = "utf-8"
@@ -1030,10 +1056,11 @@ def validator_command(shape: Path, used: Path, own_copy: bool, args: list,
     `scaffold_command`): `PYTHONPATH=<shape>/scripts python3 <template> ...`
     for `sh`, and `$env:PYTHONPATH = '<shape>\scripts'; python <template> ...`
     for PowerShell. Both are ONE directory, so this is a plain assignment and
-    not a list: `os.pathsep` is the doctor's child's business, where it
-    PREPENDS to whatever the environment already holds, and a printed line
-    sets the one path it needs rather than splicing into a value it cannot
-    see.
+    not a list, and it is what the doctor's child was given: that directory
+    ALONE (#306). The child used to have it PREPENDED to whatever the
+    environment already held, which a printed line cannot do, because it
+    cannot see the reader's value -- so the run and the line named two
+    different `PYTHONPATH`s.
 
     ONLY `PYTHONPATH`, and not the rest of the child's environment.
     `PYTHONIOENCODING` and `PYTHONDONTWRITEBYTECODE` exist so the DOCTOR can
@@ -1105,7 +1132,8 @@ def validator_row(ctx: Context, check_id: str, label: str, own: str,
     # NO ENVIRONMENT FROM THE READER: where `used` is the standard's template
     # copy the line carries the `PYTHONPATH` the doctor ran it under, or it
     # dies on an import and exits with a finding's code (#238); the root's own
-    # copy was run under none, and its line carries none.
+    # copy was run with no `PYTHONPATH` at all (#306), and its line carries
+    # none.
     command = validator_command(ctx.shape, used, own_copy, args)
     return Row(check_id, label, FINDING, reason,
                f"{command}   # read its output in full; it names what it "
