@@ -1097,14 +1097,33 @@ CHAIN_UNVERIFIED = "declared-unverified"
 #: product's name and all become `_`, so `open-glass`, `open_glass` and
 #: `open.glass` share `SHAPE_PIN_SOURCE_OPEN_GLASS` while naming three pin
 #: files. Every existing name is kept, because an operator may have set it and
-#: the docs name it; what is refused instead is DECLARING two products that
-#: share one (`pin_source_env_collisions`), and a variable two declared
-#: products share answers for neither.
+#: the docs name it. What is done instead (`pin_source_env_collisions`): a
+#: variable two declared products share answers for NEITHER, wherever it is
+#: read; `scaffold-project.py --pin` refuses to create such a pair; and
+#: `validate-pins.py` NOTES a pair a project already declares, and never fails
+#: it, because the project did nothing wrong that an update could undo.
 PIN_SOURCE_ENV_PREFIX = "SHAPE_PIN_SOURCE_"
 
 
 def pin_source_env_name(product: str) -> str:
     return PIN_SOURCE_ENV_PREFIX + re.sub(r"[^A-Z0-9_]", "_", product.upper())
+
+
+def pin_product_key(product: str) -> str:
+    """What makes two declarations ONE product: the name its pin file carries,
+    `contracts/<product lowercased>-pin.yaml` (`neutral_pin_path` in
+    `shape_materialize.py` writes it; `validate-pins.py` reads it, and spells
+    it again because it ships into projects).
+
+    `lower()`, and not `casefold()`. The two agree over ASCII and part
+    company outside it: `casefold()` folds `ß` to `ss`, `ſ` to `s`, `ﬁ` to
+    `fi` and `ς` to `σ`, which `lower()` leaves alone, so `openß` and `openss`
+    are two pin files that a casefold took for one product (#275's re-review,
+    N2). Whether two names are the same pin is whether they are the same
+    file, so that is what is asked here, and
+    `tests/test_pin_source_env_collisions.py` holds it to `neutral_pin_path`.
+    """
+    return product.lower()
 
 
 def pin_source_env_collisions(products) -> dict[str, list[str]]:
@@ -1118,14 +1137,15 @@ def pin_source_env_collisions(products) -> dict[str, list[str]]:
     not a name and is left out, as `validate-pins.py` reports it as
     malformed on its own.
 
-    DISTINCT MEANS DISTINCT AFTER A CASEFOLD, the fold every other lookup of a
-    product makes (`contracts/<product lowercased>-pin.yaml`, the key of
-    `--pin-source` and `--link-source`). `openGlass` and `OpenGlass` are one
-    product and name one variable rightly: whether the same product is
-    declared twice is a different question, which `scaffold-project.py`
-    answers as `scaffold-pin-collides` (#241). A product listed twice is
-    therefore never a collision here, and two that differ in more than case
-    are, when `pin_source_env_name` maps them to one name.
+    DISTINCT MEANS DISTINCT PIN FILES (`pin_product_key`): `openGlass` and
+    `OpenGlass` are one product and name one variable rightly, and whether the
+    same product is declared twice is a different question, which
+    `scaffold-project.py` answers as `scaffold-pin-collides` (#241). A product
+    listed twice is therefore never a collision here, and two that differ in
+    more than the case `lower()` folds are, when `pin_source_env_name` maps
+    them to one name. That includes names no ASCII `--pin` can spell, such as
+    `openß` and `openss`, which share `SHAPE_PIN_SOURCE_OPENSS` and have two
+    pin files.
 
     Variables are in the order their first product was given, and each
     group's products are in that order too, each in the spelling it was first
@@ -1136,16 +1156,17 @@ def pin_source_env_collisions(products) -> dict[str, list[str]]:
         if not isinstance(product, str) or not product:
             continue
         group = by_variable.setdefault(pin_source_env_name(product), {})
-        group.setdefault(product.casefold(), product)
+        group.setdefault(pin_product_key(product), product)
     return {variable: list(group.values())
             for variable, group in by_variable.items() if len(group) > 1}
 
 
 def pin_source_env_shared(products) -> set[str]:
-    """The casefolded names, among `products`, whose variable another of them
-    shares (#275): the products a variable must not answer for, because it
-    does not say which."""
-    return {product.casefold()
+    """The `pin_product_key` of each of `products` whose variable another of
+    them shares (#275): the products a variable must not answer for, because
+    it does not say which. A caller asks `pin_product_key(name) in` the
+    result."""
+    return {pin_product_key(product)
             for group in pin_source_env_collisions(products).values()
             for product in group}
 
@@ -1310,9 +1331,9 @@ def _chain_link_findings(chain, link_pins) -> tuple:
         declared = available.get(holder.casefold())
         if declared is None:
             unverified.append(holder)
-            offered = ("a sibling checkout or" if holder.casefold() in shared
-                       else f"a sibling checkout, {pin_source_env_name(holder)}, "
-                            "or")
+            alone = pin_product_key(holder) not in shared
+            offered = (f"a sibling checkout, {pin_source_env_name(holder)}, or"
+                       if alone else "a sibling checkout or")
             warnings.append(
                 f"{CHAIN_UNVERIFIED}: {holder} declaring a pin on {held} "
                 f"is a fact in {holder}'s own tree, which is not "
@@ -2467,7 +2488,7 @@ def link_pins_from_trees(links, root: Path | None = None,
         name = repo_basename(str(link))
         path, _how = resolve_link_source(name, root, keyed_sources,
                                          default_source,
-                                         name.casefold() in shared)
+                                         pin_product_key(name) in shared)
         if path is None:
             continue
         pins = declared_neutral_pins(path, key)
