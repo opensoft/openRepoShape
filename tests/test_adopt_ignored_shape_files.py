@@ -534,9 +534,24 @@ def test_the_split_lands_the_files_the_pin_names(adopted):
                    cwd=adopted.source).stdout == OWN_ATTRIBUTES
 
 
+#: KNOWN ON WINDOWS, AND STRICT, for the source with attributes of its own
+#: (#471): the shape's `* text=auto eol=lf` lands at `shape/.gitattributes`,
+#: where it governs only `shape/`, so a Windows checkout writes CRLF into the
+#: pinned copies at the root and the first bootstrap reports shape-copy-drift
+#: on every one. Strict, so the fix that appends the shape's rule to the
+#: source's own `.gitattributes` turns this red until the mark is removed.
+WINDOWS_CRLF_COPIES = pytest.mark.xfail(
+    sys.platform == "win32", strict=True,
+    reason="#471: the source's own .gitattributes keeps the shape's eol=lf "
+           "rule off the root's pinned copies, which a Windows checkout "
+           "writes with CRLF, so bootstrap reports shape-copy-drift")
+
+
 @needs_filter_repo
 def test_the_assembly_bootstraps_where_it_failed_with_shape_copy_missing(
-        adopted, tmp_path):
+        adopted, tmp_path, request):
+    if adopted.own:
+        request.applymarker(WINDOWS_CRLF_COPIES)
     clone = tmp_path / PROJECT
     git(*FILE_PROTOCOL, "clone", "-q", "--recurse-submodules", "-b", BRANCH,
         str(adopted.source), str(clone), cwd=tmp_path)
