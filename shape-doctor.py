@@ -24,8 +24,10 @@ named and nothing else: `--placement-plan <file>`, below. The upstream a
 project's copies are compared against is THE CHECKOUT THIS FILE IS RUN FROM,
 which is the whole of why the verdict is offline: no clone, no authenticated
 call, and the same answer on a machine that has never spoken to github.com.
-It runs the project's own validators, which are offline by their own
-contract. ONE ROW IS THE EXCEPTION AND IT IS NAMED: `machine` asks `gh` who
+It runs the project's own validators OFFLINE: `run_validator` starts each
+child with no token, no `gh` configuration and a proxy that goes nowhere
+(#297), so they are offline whatever their own contract says. ONE ROW IS THE
+EXCEPTION AND IT IS NAMED: `machine` asks `gh` who
 it is logged in as (`setup-project.py --preflight` runs `gh --version`, `gh
 auth status` and `gh api user`), which `gh` answers by talking to its host. That row
 is `n/a` by status and cannot move the verdict -- a workstation missing `gh`
@@ -1052,14 +1054,39 @@ def crashed(code: int, whole: str) -> str | None:
     return lines[-1][:200]
 
 
+#: The first line of an ITEM in a validator's report, as against a line that
+#: CONTINUES the item above it: an `  ok`, `  skip` or `  --` line, a
+#: `FINDING`, `REFUSED` or `WARNING`, and the success summary a validator ends
+#: on (`pins ok`, `manifest ok: ...`, `family ok: ...`).
+REPORT_ITEM = re.compile(
+    r"  (?:ok|skip|--)\s|(?:FINDING|REFUSED|WARNING)\b|[a-z]+ ok\b")
+
+
 def skipped(whole: str) -> list[str]:
-    """What each `  skip <text>` line a validator printed did not check, as
+    """What each `  skip <text>` block a validator printed did not check, as
     `<text>` (#297): `validate-pins.py`'s line for a neutral product's digest
     it found no source to recompute, which it reports and still exits 0.
-    Flattened by `ascii_text`, as the machine row's `report` is, so `detail`
-    says what the reason says."""
-    return [ascii_text(line.strip()[len("skip "):])
-            for line in whole.splitlines() if line.startswith("  skip ")]
+
+    THE WHOLE BLOCK, NOT ITS FIRST LINE: the skip embeds `gh`'s own stderr
+    verbatim, and `gh` prints its not-logged-in help over two lines (four
+    under `GITHUB_ACTIONS`), so the text `validate-pins.py` meant to say runs
+    on past the first newline -- to the `--pin-source`,
+    `SHAPE_PIN_SOURCE_<PRODUCT>` and `../<product>` ways to give it a source,
+    which are why the row has no NEXT. Every line after the `  skip ` line is
+    kept, up to the next `REPORT_ITEM` or the end, and the lines are joined
+    with a space. Flattened by `ascii_text`, as the machine row's `report`
+    is, so `detail` says what the reason says."""
+    skips: list[list[str]] = []
+    inside = False
+    for line in whole.splitlines():
+        if line.startswith("  skip "):
+            skips.append([line.strip()[len("skip "):]])
+            inside = True
+        elif REPORT_ITEM.match(line):
+            inside = False
+        elif inside and line.strip():
+            skips[-1].append(line.strip())
+    return [ascii_text(" ".join(lines)) for lines in skips]
 
 
 def run_validator(ctx: Context, script: Path, args: list[str],
@@ -4555,8 +4582,14 @@ def report(ctx: Context, rows: list[Row], verdict: str, code: int,
         print(note)
     blocked = cannot_answer(rows)
     if blocked is not None:
-        print(f"\nREFUSED shape-doctor-cannot-answer: {blocked.reason}\n"
-              f"  Remediation: {blocked.next_command}", file=sys.stderr)
+        print(f"\nREFUSED shape-doctor-cannot-answer: {blocked.reason}",
+              file=sys.stderr)
+        # A ROW WITH NO NEXT HAS NO REMEDIATION TO PRINT (#278). The separator
+        # environment row is a FINDING with a NEXT of None by ruling -- no
+        # command could be pasted and work -- and its reason already says what
+        # to do instead; `Remediation: None` was a literal `None` after it.
+        if blocked.next_command:
+            print(f"  Remediation: {blocked.next_command}", file=sys.stderr)
 
 
 #: The line NOT A SHAPE ROOT adds, and the one thing in this file that is

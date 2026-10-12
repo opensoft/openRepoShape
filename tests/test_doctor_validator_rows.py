@@ -68,6 +68,12 @@ SENTINEL_HOST = "sentinel.invalid"
 
 PRODUCT = "openGlass"
 CRASH = 'raise RuntimeError("boom")\n'
+#: A validator that REPORTS a finding, as the real ones do -- a `FINDING` line
+#: on stderr -- and then dies on a line of its own (#278, R278-1).
+FINDING_THEN_CRASH = ("import sys\n"
+                      "print('FINDING pin-x: a made-up finding', "
+                      "file=sys.stderr)\n"
+                      'raise RuntimeError("boom")\n')
 
 
 def payload_of(result) -> dict:
@@ -109,21 +115,23 @@ def run_argv(command: list) -> subprocess.CompletedProcess:
 # --- #278: a crash is not a finding -----------------------------------------
 
 def crashing(setup: str, standard: Path, project: Path, holder: dict,
-             tmp_path: Path) -> tuple:
+             tmp_path: Path, source: str = CRASH) -> tuple:
     """`(standard to run, root, row id, own_copy)` for one way a validator
     crashes: a root's OWN copy that raises (`own-manifest`, `own-pins`,
     `own-family`), or the standard's TEMPLATE copy that raises, for a root
-    with none of its own (`template`)."""
+    with none of its own (`template`). `source` is what the copy is made to
+    run."""
     if setup == "template":
         here = standard_under(standard, tmp_path, "crashing")
         (here / TEMPLATE_FALLBACK["manifest"]["template"]).write_text(
-            CRASH, encoding="utf-8")
+            source, encoding="utf-8")
         root = project.resolve()
         (root / TEMPLATE_FALLBACK["manifest"]["own"]).unlink()
         return here, root, "manifest", False
     case = setup.removeprefix("own-")
     root = own_root(case, project, holder, tmp_path)
-    (root / TEMPLATE_FALLBACK[case]["own"]).write_text(CRASH, encoding="utf-8")
+    (root / TEMPLATE_FALLBACK[case]["own"]).write_text(source,
+                                                      encoding="utf-8")
     return standard, root, case, True
 
 
@@ -168,6 +176,11 @@ def test_a_validator_that_crashed_says_so_and_never_reports_a_finding(
             shape, shape / TEMPLATE_FALLBACK["manifest"]["template"], False,
             ["--root", root])
         assert row["next"].startswith(expected + "   # "), row["next"]
+        # A ROW WITH A NEXT STILL PRINTS ITS REMEDIATION (the control of the
+        # colon row below, which has none and prints no `Remediation:`).
+        stderr = doctor(here, root).stderr
+        assert "REFUSED shape-doctor-cannot-answer: " in stderr, stderr
+        assert f"\n  Remediation: {row['next']}" in stderr, stderr
 
 
 @WINDOWS_SKIP
@@ -186,6 +199,37 @@ def test_a_crashed_validators_next_shows_the_traceback_when_pasted(
     assert pasted.returncode == row["detail"]["exit"], whole
     assert "Traceback (most recent call last):" in whole, whole
     assert "RuntimeError: boom" in whole, whole
+
+
+@pytest.mark.parametrize("setup", ["own-pins", "template"])
+def test_a_validator_that_reported_a_finding_before_it_died_still_reports_one(
+        standard, project, holder, tmp_path, setup):
+    """R278-1's other half: a `FINDING` line is a verdict, and an exception
+    after it does not take it back.
+
+    `crashed` is true only of a validator that said nothing of its own before
+    the traceback. Without that clause a template that reported a real finding
+    and then raised would be CANNOT ANSWER -- "nothing here is a statement
+    about the project" -- and the finding it printed would be hidden. Both
+    copies are run: the root's own, whose row would say `crashed` and carry
+    `detail.crashed`, and the template, whose row would be an environment row
+    and exit 3. The row quotes the finding, as it always did.
+    """
+    here, root, row_id, own_copy = crashing(setup, standard, project, holder,
+                                            tmp_path, FINDING_THEN_CRASH)
+    result = doctor(here, root, "--json")
+    payload = payload_of(result)
+    row = rows_of(result)[row_id]
+    assert row["status"] == "FINDING", row
+    assert row["detail"]["own_copy"] is own_copy, row
+    assert row["detail"]["exit"] == 1, row
+    assert "crashed" not in row["detail"], row
+    assert "environment" not in row["detail"], row
+    assert "reports a finding" in row["reason"], row
+    assert "crashed" not in row["reason"], row
+    assert "FINDING pin-x: a made-up finding" in row["reason"], row
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert not payload["verdict"].startswith("CANNOT ANSWER"), payload
 
 
 @WINDOWS_SKIP
@@ -221,6 +265,10 @@ def test_a_standard_under_a_colon_is_cannot_answer_and_runs_nothing(
     assert text.returncode == 3, text.stdout + text.stderr
     for said in (result.stdout, text.stdout, text.stderr):
         assert "PYTHONPATH=" not in said, said
+    # THE REFUSAL ON STDERR HAS NO REMEDIATION TO NAME: a row with no NEXT
+    # printed a literal `Remediation: None` after its reason.
+    assert "REFUSED shape-doctor-cannot-answer: " in text.stderr, text.stderr
+    assert "Remediation" not in text.stderr, text.stderr
 
 
 @WINDOWS_SKIP
@@ -287,12 +335,14 @@ def test_a_standard_under_a_semicolon_is_refused_only_where_it_separates(
 
 # --- #297: no validator child reaches a network, and a skip is said ---------
 
-def logging_gh(where: Path) -> tuple:
+def logging_gh(where: Path, says: str = "", status: int = 97) -> tuple:
     """`(directory to put first on PATH, directory of calls)`: a `gh` that
     runs NOTHING. Each call writes its argv and its whole environment to a
-    new file and exits 97, so a test can say which process called it and
-    what that process could have authenticated with. A shebang script, so
-    its tests are `WINDOWS_SKIP`."""
+    new file and exits `status` (97, which no real `gh` exits), so a test can
+    say which process called it and what that process could have
+    authenticated with. Given `says`, it prints that to stderr first, as a
+    `gh` that is not logged in prints its help. A shebang script, so its
+    tests are `WINDOWS_SKIP`."""
     bin_dir, calls = where / "bin", where / "calls"
     bin_dir.mkdir(parents=True)
     calls.mkdir()
@@ -302,7 +352,8 @@ def logging_gh(where: Path) -> tuple:
         f"out=$(mktemp {shlex.quote(str(calls))}/call.XXXXXX)\n"
         "printf '%s\\n' \"$*\" > \"$out\"\n"
         "env >> \"$out\"\n"
-        "exit 97\n", encoding="utf-8")
+        + (f"printf '%s\\n' {shlex.quote(says)} >&2\n" if says else "")
+        + f"exit {status}\n", encoding="utf-8")
     stub.chmod(0o755)
     return bin_dir, calls
 
@@ -361,7 +412,7 @@ def descendant_run(standard, tmp_path_factory) -> dict:
              **{name: SENTINEL_TOKEN for name in TOKENS},
              "GH_CONFIG_DIR": operators_config,
              **{name: SENTINEL_HOST for name in NO_PROXIES}})
-    return {"result": result, "calls": gh_calls(calls),
+    return {"result": result, "calls": gh_calls(calls), "clone": clone,
             "operators_config": operators_config}
 
 
@@ -426,6 +477,72 @@ def test_only_the_machine_rows_gh_keeps_the_login_and_the_proxies(
             assert env.get(name) == SENTINEL_HOST, (argv, name)
         for name in PROXIES:
             assert env.get(name) != UNREACHABLE, (argv, name)
+
+
+#: What a `gh` that is not logged in prints, over TWO lines (its auth help;
+#: under `GITHUB_ACTIONS` it is four).
+GH_NOT_LOGGED_IN = (
+    "To get started with GitHub CLI, please run:  gh auth login\n"
+    "Alternatively, populate the GH_TOKEN environment variable with a GitHub "
+    "API authentication token.")
+
+
+@WINDOWS_SKIP
+def test_a_two_line_gh_stderr_in_a_skip_keeps_the_ways_to_give_a_source(
+        descendant_run, standard, tmp_path):
+    """`validate-pins.py`'s skip embeds `gh`'s stderr verbatim, so a `gh` whose
+    help is two lines splits the skip in two: the row's reason used to stop at
+    the first, which told the reader to `gh auth login` -- a login the
+    doctor's own offline environment would then undo -- and dropped the
+    `--pin-source`, `SHAPE_PIN_SOURCE_<PRODUCT>` and `../<product>` ways to
+    give the product a source, which are why the row has no NEXT.
+
+    The same descendant, the same clone, with a stub that prints that help for
+    every call and exits 4. The summary line the validator ends on is not
+    folded into the reason.
+    """
+    bin_dir, _calls = logging_gh(tmp_path / "gh-help", GH_NOT_LOGGED_IN, 4)
+    result = run_script(
+        standard / DOCTOR, "--root", str(descendant_run["clone"]), "--json",
+        env={"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"})
+    assert result.returncode == 0, result.stdout + result.stderr
+    row = rows_of(result)["pins"]
+    assert row["status"] == "note", row
+    assert row["next"] is None, row
+    assert len(row["detail"]["skipped"]) == 1, row
+    for said in (row["reason"], row["detail"]["skipped"][0]):
+        assert "gh auth login" in said, row
+        assert "GH_TOKEN environment variable" in said, row
+        assert "--pin-source" in said, row
+        assert f"SHAPE_PIN_SOURCE_{PRODUCT.upper()}" in said, row
+        assert f"../{PRODUCT}" in said, row
+        assert said.index("GH_TOKEN") < said.index("--pin-source"), row
+        assert "pins ok" not in said, row
+
+
+def test_skipped_keeps_the_whole_block_and_stops_at_the_next_item(standard):
+    """`skipped` on a constructed output, on every platform: a block is the
+    `  skip ` line and the lines after it up to the next item -- `  ok`,
+    `  skip`, `FINDING`, `WARNING` or the validator's summary -- joined by a
+    space, blank lines dropped; and a line before any skip is not one."""
+    skipped = doctor_module(standard).skipped
+    whole = ("Notice: not part of a block\n"
+             "  ok  a: pin commit 0123456789ab digest recomputes\n"
+             "  skip b: NOT rechecked -- no source (gh-unreadable: one\n"
+             "two\n"
+             "\n"
+             "three). A --pin-source would verify it offline.\n"
+             "  ok  c: fine\n"
+             "  skip d: NOT rechecked (gh-unreadable: x). A --pin-source.\n"
+             "WARNING w: a note\n"
+             "  skip e: NOT rechecked.\n"
+             "pins ok\n")
+    assert skipped(whole) == [
+        "b: NOT rechecked -- no source (gh-unreadable: one two three). A "
+        "--pin-source would verify it offline.",
+        "d: NOT rechecked (gh-unreadable: x). A --pin-source.",
+        "e: NOT rechecked."]
+    assert skipped("  ok  a: fine\nmanifest ok: x\n") == []
 
 
 #: The variables the env probe below prints, in one list.
@@ -607,3 +724,29 @@ def test_a_committed_deletion_of_repo_shape_gets_no_head_line(
     assert row["reason"].startswith(
         f"project.yaml does not load: {loader_line(refusal)}; "), row
     assert "parent of the commit" in row["reason"], row
+
+
+@pytest.mark.parametrize("kind", sorted(UNLOADED_ROOT))
+def test_a_crash_for_want_of_repo_shape_says_which_file_is_not_there(
+        standard, project, holder, tmp_path, kind):
+    """R298-1's fact, in a CRASH reason (#298): a root's own gate that dies on
+    `import repo_shape` because `scripts/repo_shape.py` is gone says that file
+    is not there, after the exception it quotes -- so a reader is not left
+    with `ModuleNotFoundError` and a guess. The manifest is VALID here, so the
+    row runs the gate and the gate crashes, rather than the loader refusing.
+
+    Only the root's own copy can be asked: the standard's template copy has no
+    `repo_shape.py` beside it by design, and a standard that lost its own
+    cannot start the doctor at all.
+    """
+    _name, _own, row_id, _breakages = UNLOADED_ROOT[kind]
+    root = own_root("family" if kind == "family" else "manifest", project,
+                    holder, tmp_path)
+    (root / LOST).unlink()
+    row = rows_of(doctor(standard, root, "--json"))[row_id]
+    assert row["status"] == "FINDING", row
+    assert row["detail"]["crashed"] is True, row
+    assert row["detail"]["own_copy"] is True, row
+    assert "ModuleNotFoundError" in row["reason"], row
+    assert (f"{LOST}, which it imports from beside itself, is not there"
+            in row["reason"]), row
