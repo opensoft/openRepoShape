@@ -130,6 +130,9 @@ from shape_materialize import (  # noqa: E402
     is_nested_key, readme_trailing_shape_line, rewrite_fault, run,
     trailer_line, with_scalar,
 )
+# Where a root keeps its shape pin. The materializer that writes it names it
+# once; this module spells the path by that name and never by a literal (#290).
+from shape_materialize import SHAPE_PIN  # noqa: E402
 
 #: `owner/repo`, the only remote spelling `--upstream` accepts.
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -389,6 +392,30 @@ class Row:
         return self.state in CONFLICTS
 
 
+def pin_rows_remediation(root: Path) -> str:
+    """What `update-pin-row` tells the person whose pin's `files:` does not
+    read as rows (#290). Without it the refusal carried `repo_shape`'s
+    default trailer, which is about submodules and the lockstep invariant and
+    fixes nothing in this file.
+
+    A FUNCTION OF THE ROOT, not a constant, because the `git log` it points
+    at has to read the PROJECT's history. This tool is run from a checkout of
+    openRepoShape with `--root /path/to/project`, so a bare `git log --
+    contracts/shape-pin.yaml` inspects the checkout instead and shows no pin
+    history, or the wrong one (codex, PR #343). It is spelled `git -C <root>`
+    by `_by_hand`, this module's one quoter for a line a person pastes, so a
+    root holding a space is one argument there.
+    """
+    log = _by_hand(root, "log", "--", SHAPE_PIN)
+    return (
+        "Remediation: `files:` is a list with one `path:`/`sha256:` row per "
+        "copied file. The tool that cut this root wrote it and only "
+        "`update-shape.py apply` moves it, so it is never mended by hand: "
+        "put back the pin a tool last wrote from this repository's own "
+        f"history (`{log}` names the commit that changed it), then run this "
+        "again.")
+
+
 def read_pin(root: Path) -> tuple[dict, list[Row]]:
     pin_path = root / "contracts" / "shape-pin.yaml"
     if not pin_path.is_file():
@@ -400,10 +427,10 @@ def read_pin(root: Path) -> tuple[dict, list[Row]]:
             "Remediation: this command updates a project that was scaffolded "
             "or adopted with this shape. A project without a shape pin is "
             "adopted with `adopt-project.py`, not updated.")
-    return check_pin(load_yaml(pin_path), pin_path)
+    return check_pin(load_yaml(pin_path), pin_path, root)
 
 
-def check_pin(pin, pin_path) -> tuple[dict, list[Row]]:
+def check_pin(pin, pin_path, root: Path) -> tuple[dict, list[Row]]:
     """`read_pin`'s checks, over a pin already parsed: the pin and its rows,
     or the refusal `read_pin` raises for it.
 
@@ -411,7 +438,8 @@ def check_pin(pin, pin_path) -> tuple[dict, list[Row]]:
     disk: `shape-doctor.py` reads the pins in a root's history out of git,
     in memory, before it names one to put back (#237), and a second copy of
     these checks there could pass a pin this tool then refuses. `pin_path`
-    only names the pin in a refusal's words.
+    only names the pin in a refusal's words, and `root` is the repository
+    whose history a refusal's `git log` reads (#290).
     """
     if not isinstance(pin, dict):
         raise Refusal("update-pin-unreadable", f"{pin_path}: not a mapping")
@@ -431,11 +459,25 @@ def check_pin(pin, pin_path) -> tuple[dict, list[Row]]:
             "meaning nobody stated.",
             "Remediation: a pin written under another definition is updated "
             "by whatever wrote it.")
+    # A LIST IS ASKED FOR, NOT ASSUMED (#290). `or []` rescues only the falsy
+    # values -- `files: 0`, `false`, `null`, `[]` reach `update-pin-no-files`
+    # below -- and a truthy scalar was iterated: `files: 5`, `true` or `1.5`
+    # ended `check`, `apply` and `shape-doctor.py` in a `TypeError`, exit 1,
+    # with nothing naming the pin. A string or a mapping lands here too, and
+    # is named for what it is rather than as its first character or key.
+    files = pin.get("files") or []
+    if not isinstance(files, list):
+        raise Refusal(
+            "update-pin-row",
+            f"{pin_path}: `files:` is {files!r}, not a list of "
+            "`path:`/`sha256:` rows, so no copied file can be read from it",
+            pin_rows_remediation(root))
     rows: list[Row] = []
-    for raw in pin.get("files") or []:
+    for raw in files:
         if not isinstance(raw, dict) or not raw.get("path"):
             raise Refusal("update-pin-row",
-                          f"{pin_path}: a `files:` row is not `path:`/`sha256:`")
+                          f"{pin_path}: a `files:` row is not `path:`/`sha256:`",
+                          pin_rows_remediation(root))
         rows.append(Row(str(raw["path"]), str(raw.get("sha256") or "")))
     if not rows:
         raise Refusal(
@@ -2744,7 +2786,7 @@ def cmd_apply(args) -> int:
         _refuse_red_validators(root, kind)
         added = [add.path for add in taking]
         paths = sorted({row.path for row in copied} | set(added)
-                       | {"contracts/shape-pin.yaml", kind.manifest}
+                       | {SHAPE_PIN, kind.manifest}
                        | ({README} if readme.rewritten else set()))
         _land(root, args, paths, added, target, upstream, kind, len(copied),
               ledger)
@@ -2915,7 +2957,7 @@ def _awaits_its_pull_request(root: Path, args, kind: Kind) -> bool:
     base = tracking_branch_of(load_yaml(root / kind.manifest))
     if args.branch == base:
         return False
-    pin = "contracts/shape-pin.yaml"
+    pin = SHAPE_PIN
     proposed = _git_answer(root, ["rev-parse", "--verify", "--quiet",
                                   f"HEAD:{pin}"])
     landed = _git_answer(root, ["rev-parse", "--verify", "--quiet",
