@@ -39,6 +39,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -2323,13 +2324,80 @@ def same_repository(one: str, two: str) -> bool:
 # product's checkout, down to the same environment variable, because it is the
 # same checkout answering a second question about the same product.
 
+#: Why a source did not answer when there is nothing at its path, and when it
+#: is a directory holding no manifest: the two ORDINARY absences, which a
+#: checkout looked for beside the project is allowed to have without anybody
+#: being told. Every other reason is the system's own (#338).
+LINK_SOURCE_ABSENT = "no such file or directory"
+LINK_SOURCE_NO_MANIFEST = "it holds no project.yaml"
 
-def link_manifest_path(path) -> Path | None:
-    """`<dir>` -> `<dir>/project.yaml`; a file is taken as the manifest."""
+
+def _os_reason(exc: BaseException) -> str:
+    """The system's own reason for an `OSError` (`Permission denied`, `File
+    name too long`), or the exception's text where it carries none (a
+    `ValueError` for a name the system cannot be handed at all)."""
+    return getattr(exc, "strerror", None) or str(exc)
+
+
+def link_manifest_lookup(path) -> tuple[Path | None, str | None]:
+    """`(manifest, None)` where `path` can answer as a link's tree, else
+    `(None, why)`. `<dir>` -> `<dir>/project.yaml`; a file is taken as the
+    manifest. IT NEVER RAISES (#338). It replaces `link_manifest_path`,
+    which said only `None` and had no caller left once both of its callers
+    needed the reason.
+
+    `stat()` INSIDE THE GUARD, not `is_dir()` and `is_file()`: before 3.14
+    those two swallow only ENOENT, ENOTDIR, EBADF and ELOOP and raise every
+    other `OSError`, so a source under a parent this user cannot enter, a
+    checkout beside the project at mode 000, or a name longer than the
+    filesystem takes ended the naming gate in a traceback on 3.9 to 3.13 and,
+    on 3.14, went unread with nobody told why. `validate-pins.py`'s
+    `_digest_from_source` asks the same way for the same reason (#295).
+    `stat()` follows a symlink, as `is_dir()` did, so a checkout linked into
+    place still answers.
+    """
     candidate = Path(path)
-    if candidate.is_dir():
+    try:
+        mode = candidate.stat().st_mode
+    except (FileNotFoundError, NotADirectoryError):
+        return None, LINK_SOURCE_ABSENT
+    except (OSError, ValueError) as exc:
+        return None, _os_reason(exc)
+    if stat.S_ISDIR(mode):
         candidate = candidate / "project.yaml"
-    return candidate if candidate.is_file() else None
+        try:
+            mode = candidate.stat().st_mode
+        except (FileNotFoundError, NotADirectoryError):
+            return None, LINK_SOURCE_NO_MANIFEST
+        except (OSError, ValueError) as exc:
+            return None, f"its project.yaml: {_os_reason(exc)}"
+        if not stat.S_ISREG(mode):
+            return None, "its project.yaml is not a file"
+    elif not stat.S_ISREG(mode):
+        return None, "it is neither a directory nor a file"
+    return candidate, None
+
+
+def link_declarations(manifest_path, key: str = CHAIN_LINK_DECLARED_BY
+                      ) -> tuple[set[str] | None, str | None]:
+    """`declared_neutral_pins`, with why the tree could not answer beside it:
+    `(pins, None)`, or `(None, why)` (#338)."""
+    path, why = link_manifest_lookup(manifest_path)
+    if path is None:
+        return None, why
+    try:
+        data = load_yaml(path)
+    except Refusal as exc:
+        cause = exc.__cause__
+        if isinstance(cause, OSError):
+            return None, f"{path}: {_os_reason(cause)}"
+        return None, exc.detail
+    except (YamlError, OSError, UnicodeDecodeError) as exc:
+        return None, f"{path}: {exc}"
+    if not isinstance(data, dict):
+        return None, f"{path}: not a mapping"
+    return ({repo_basename(str(pin)) for pin in (data.get(key) or []) if pin},
+            None)
 
 
 def declared_neutral_pins(manifest_path,
@@ -2340,44 +2408,53 @@ def declared_neutral_pins(manifest_path,
     a file that is not a mapping — and is deliberately distinct from the empty
     set, which means "this tree answered, and declares no pin at all". The
     first is unverified and the second breaks a chain that runs through it.
+    `link_declarations` says why it could not.
     """
-    path = link_manifest_path(manifest_path)
-    if path is None:
-        return None
-    try:
-        data = load_yaml(path)
-    except (YamlError, Refusal, OSError, UnicodeDecodeError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    return {repo_basename(str(pin)) for pin in (data.get(key) or []) if pin}
+    return link_declarations(manifest_path, key)[0]
 
 
 def resolve_link_source(product: str, root: Path | None = None,
                         keyed_sources: dict | None = None,
-                        default_source=None) -> tuple[Path | None, str | None]:
+                        default_source=None, *, tried: list | None = None
+                        ) -> tuple[Path | None, str | None]:
     """Where `product`'s own manifest can be read, if anywhere at all.
 
       1. `--link-source <product>=<path>` (case-insensitive on the name)
       2. `SHAPE_PIN_SOURCE_<PRODUCT>` in the environment
       3. a checkout sitting BESIDE this project (`../openXdox`)
       4. a bare `--link-source <path>` with no `product=` prefix
+
+    The first that holds a manifest answers, and one that does not is passed
+    over whatever the reason: one that cannot be entered no longer raises
+    (#338).
+
+    WHAT WAS ASKED (#338). `tried`, when given, receives one `(rule, how,
+    path, why)` per source asked, in order: `rule` is `keyed`, `env`,
+    `sibling` or `bare`, the four above; `why` is None for the one that
+    answered, else `link_manifest_lookup`'s reason. Nothing here prints, so
+    each caller says what it needs to: the naming validator names a
+    `--link-source` that could not be read, and one no link used.
     """
-    candidates: list[tuple[Path, str]] = []
+    candidates: list[tuple[str, Path, str]] = []
     keyed = (keyed_sources or {}).get(product.casefold())
     if keyed is not None:
-        candidates.append((Path(keyed), f"--link-source {product}=..."))
+        candidates.append(("keyed", Path(keyed),
+                           f"--link-source {product}=..."))
     env_name = pin_source_env_name(product)
     env_value = os.environ.get(env_name)
     if env_value:
-        candidates.append((Path(env_value), f"${env_name}"))
+        candidates.append(("env", Path(env_value), f"${env_name}"))
     if root is not None:
         sibling = Path(root).resolve().parent / product
-        candidates.append((sibling, f"sibling checkout ({sibling})"))
+        candidates.append(("sibling", sibling,
+                           f"sibling checkout ({sibling})"))
     if default_source is not None:
-        candidates.append((Path(default_source), "--link-source"))
-    for path, how in candidates:
-        if link_manifest_path(path) is not None:
+        candidates.append(("bare", Path(default_source), "--link-source"))
+    for rule, path, how in candidates:
+        manifest, why = link_manifest_lookup(path)
+        if tried is not None:
+            tried.append((rule, how, path, why))
+        if manifest is not None:
             return path, how
     return None, None
 
@@ -2385,21 +2462,34 @@ def resolve_link_source(product: str, root: Path | None = None,
 def link_pins_from_trees(links, root: Path | None = None,
                          keyed_sources: dict | None = None,
                          default_source=None,
-                         key: str = CHAIN_LINK_DECLARED_BY) -> dict[str, set]:
+                         key: str = CHAIN_LINK_DECLARED_BY, *,
+                         tried: dict | None = None) -> dict[str, set]:
     """`{link: the pins ITS manifest declares}` for the links that answered.
 
     A link whose tree is not on the disk is simply ABSENT from the mapping,
     which is what `NamingPolicy.resolve_referent` reads as declared-unverified.
+    So is one whose tree cannot be entered or whose manifest cannot be read:
+    nothing a source does raises out of here (#338).
+
+    `tried`, when given, maps each link, by the name `repo_basename` gives
+    it, to what `resolve_link_source` asked for it. The source that answered
+    carries the reason its manifest could not be read, when it could not,
+    because that is where the link stopped (#338).
     """
     found: dict[str, set] = {}
     for link in links:
         name = repo_basename(str(link))
+        asked: list = []
         path, _how = resolve_link_source(name, root, keyed_sources,
-                                         default_source)
+                                         default_source, tried=asked)
+        if tried is not None:
+            tried[name] = asked
         if path is None:
             continue
-        pins = declared_neutral_pins(path, key)
+        pins, why = link_declarations(path, key)
         if pins is None:
+            rule, how, _path, _answered = asked[-1]
+            asked[-1] = (rule, how, path, why)
             continue
         found[name.casefold()] = pins
     return found
