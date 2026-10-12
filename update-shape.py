@@ -382,6 +382,19 @@ class Row:
         return self.state in CONFLICTS
 
 
+#: What `update-pin-row` tells the person whose pin's `files:` does not read
+#: as rows (#290). Without it the refusal carried `repo_shape`'s default
+#: trailer, which is about submodules and the lockstep invariant and fixes
+#: nothing in this file.
+PIN_ROWS_REMEDIATION = (
+    "Remediation: `files:` is a list with one `path:`/`sha256:` row per "
+    "copied file. The tool that cut this root wrote it and only "
+    "`update-shape.py apply` moves it, so it is never mended by hand: put "
+    "back the pin a tool last wrote from this repository's own history "
+    "(`git log -- contracts/shape-pin.yaml` names the commit that changed "
+    "it), then run this again.")
+
+
 def read_pin(root: Path) -> tuple[dict, list[Row]]:
     pin_path = root / "contracts" / "shape-pin.yaml"
     if not pin_path.is_file():
@@ -412,11 +425,25 @@ def read_pin(root: Path) -> tuple[dict, list[Row]]:
             "meaning nobody stated.",
             "Remediation: a pin written under another definition is updated "
             "by whatever wrote it.")
+    # A LIST IS ASKED FOR, NOT ASSUMED (#290). `or []` rescues only the falsy
+    # values -- `files: 0`, `false`, `null`, `[]` reach `update-pin-no-files`
+    # below -- and a truthy scalar was iterated: `files: 5`, `true` or `1.5`
+    # ended `check`, `apply` and `shape-doctor.py` in a `TypeError`, exit 1,
+    # with nothing naming the pin. A string or a mapping is refused here too,
+    # once, rather than one character or one key at a time.
+    files = pin.get("files") or []
+    if not isinstance(files, list):
+        raise Refusal(
+            "update-pin-row",
+            f"{pin_path}: `files:` is {files!r}, not a list of "
+            "`path:`/`sha256:` rows, so no copied file can be read from it",
+            PIN_ROWS_REMEDIATION)
     rows: list[Row] = []
-    for raw in pin.get("files") or []:
+    for raw in files:
         if not isinstance(raw, dict) or not raw.get("path"):
             raise Refusal("update-pin-row",
-                          f"{pin_path}: a `files:` row is not `path:`/`sha256:`")
+                          f"{pin_path}: a `files:` row is not `path:`/`sha256:`",
+                          PIN_ROWS_REMEDIATION)
         rows.append(Row(str(raw["path"]), str(raw.get("sha256") or "")))
     if not rows:
         raise Refusal(

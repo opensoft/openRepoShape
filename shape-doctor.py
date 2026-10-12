@@ -2934,7 +2934,13 @@ def pinned_paths(root: Path) -> set:
     pin = Context._read(root / "contracts" / "shape-pin.yaml")
     if not isinstance(pin, dict):
         return set()
-    return {str(row.get("path")) for row in (pin.get("files") or [])
+    # A `files:` that is not a list pins nothing, as a pin that is not a
+    # mapping pins nothing (#290): `files: 5` was iterated, a TypeError. The
+    # shape-currency row is where that pin is reported.
+    rows = pin.get("files")
+    if not isinstance(rows, list):
+        return set()
+    return {str(row.get("path")) for row in rows
             if isinstance(row, dict) and row.get("path")}
 
 
