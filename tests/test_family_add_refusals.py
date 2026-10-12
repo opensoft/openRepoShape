@@ -33,6 +33,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -1280,4 +1281,674 @@ def test_the_first_add_to_a_holder_with_no_commit_makes_its_root_commit(
     row = {r["project"]: r for r in manifest(root)["members"]}[SPARE]
     assert row["pin"]["commit"] == tip
     assert git("status", "--porcelain", cwd=root).stdout == ""
+    offline.assert_left_nothing()
+
+
+# --- a case variant of the mount path, and the whole index (#302) -----------
+
+#: `add`'s mount path for the spare member.
+SPARE_MOUNT = f"members/{SPARE}"
+
+#: What a refused `add` ends with when the unwind put back everything it
+#: recorded but the index still differs: the middle names what was put back,
+#: and `{moved}` what differs.
+INDEX_MOVED = (
+    "Nothing was committed: the mount has been undone — {restored} — but the "
+    "holder's index is NOT as it was before this command ({moved}). Put it "
+    "back before running `add` again: `git ls-files -s` lists what the index "
+    "now holds, and `git rm -r --cached -- <path>` takes a path new in it "
+    "back out and touches no file.")
+
+#: Each case variant of the mount path the index can hold, as `(mode, name,
+#: whether HEAD holds it as well)`: a file under it and a gitlink at it,
+#: staged, and a file under it that a commit already holds.
+CASE_VARIANTS = {
+    "a file under it, staged": ("100644", f"Members/{SPARE}/README", False),
+    "a submodule at it, staged": ("160000", f"members/{SPARE.lower()}", False),
+    "a file under it, committed": ("100644", f"Members/{SPARE}/README", True),
+}
+
+
+def index_bytes(root: Path) -> bytes:
+    """`git ls-files -s -z` of `root`, as bytes: the whole index, every
+    record and every byte of each name, which is the strongest form of "the
+    index is as it was"."""
+    return subprocess.run(["git", "ls-files", "-s", "-z"], cwd=str(root),
+                          capture_output=True, check=True).stdout
+
+
+def plant(root: Path, mode: str, name: str) -> None:
+    """An index entry `name` and nothing on disk, by `update-index
+    --cacheinfo`: a case variant needs no case-insensitive disk this way, so
+    the state is the same on every OS. A gitlink names a commit nothing has;
+    a file is a blob written as BYTES. `core.protectNTFS` is off for this
+    one command, so git for Windows indexes a `*` it would refuse to check
+    out."""
+    oid = "1" * 40
+    if mode != "160000":
+        oid = subprocess.run(["git", "hash-object", "-w", "--stdin"],
+                             cwd=str(root), input=b"a file\n",
+                             capture_output=True,
+                             check=True).stdout.decode("ascii").strip()
+    git("-c", "core.protectNTFS=false", "update-index", "--add", "--cacheinfo",
+        f"{mode},{oid},{name}", cwd=root)
+
+
+@pytest.mark.parametrize("ignorecase", ["true", "false"])
+@pytest.mark.parametrize("variant", list(CASE_VARIANTS))
+def test_a_case_variant_of_the_mount_path_in_the_index_is_refused_first(
+        family, holder, offline, variant, ignorecase):
+    """THE ISSUE'S STATE (#302): the index holds the mount path in another
+    case, and nothing is on disk. With `core.ignorecase` set, `git submodule
+    add` staged the member's own files under the variant (19 of them beside
+    `Members/IRQS/README`). The commit's pathspec then matched nothing, and
+    the unwind, asking for exact names, left all 19 staged while saying the
+    holder was exactly as it was. Now it is refused before the member is
+    even read, on every disk and whatever `core.ignorecase` says, because a
+    holder is cloned on macOS and Windows too, where the two spellings are
+    one path. The refusal names the entry as the index spells it, and its
+    remediation, run as printed, lets the same command through with the
+    member under one spelling only. Where HEAD holds the variant, the
+    removal is committed first: the add's own commit names `members/IRQS`
+    alone, so without it HEAD keeps the variant, records the gitlink under
+    another spelling, or both."""
+    mode, name, committed = CASE_VARIANTS[variant]
+    git("config", "--local", "core.ignorecase", ignorecase, cwd=holder)
+    plant(holder, mode, name)
+    if committed:
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm",
+            f"Track {name}", cwd=holder)
+    spelled = name[:len(SPARE_MOUNT)]
+    assert spelled != SPARE_MOUNT and spelled.lower() == SPARE_MOUNT.lower()
+    kind = "a submodule" if mode == "160000" else "a file"
+    before, index = snapshot(holder), index_bytes(holder)
+
+    result = offline.add(holder, SPARE, remotes=family["remotes"])
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stdout == ""
+    assert refusal(result.stderr) == (
+        f"REFUSED member-path-taken: the family root's index holds `{name}` "
+        f"({kind})" + ("" if name == spelled else f" under {spelled}")
+        + f", the same path as {SPARE_MOUNT} on a case-insensitive disk, "
+        f"though nothing is at {SPARE_MOUNT} on disk and no `members:` row "
+        "names it",
+        "Remediation: this is a half-finished add or a hand edit. `git rm -r "
+        f"--cached -- {spelled}` takes it out of the index and touches no "
+        "file; where HEAD holds it too, commit that removal first, since the "
+        f"add's own commit names {SPARE_MOUNT} alone: otherwise HEAD keeps "
+        "the other spelling beside the member, or, with `core.ignorecase` "
+        "set, records the member's gitlink under a spelling other than the "
+        f"{SPARE_MOUNT} that .gitmodules and family.yaml say, or both; then "
+        "re-run.")
+    assert index_bytes(holder) == index
+    assert snapshot(holder) == before
+    offline.assert_left_nothing()
+
+    git("rm", "-r", "-q", "--cached", "--", spelled, cwd=holder)
+    if committed:
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm",
+            f"Untrack {spelled}", cwd=holder)
+    again = offline.add(holder, SPARE, remotes=family["remotes"])
+    assert again.returncode == 0, again.stdout + again.stderr
+    held = [line for line in git("ls-tree", "-r", "--name-only", "HEAD",
+                                 cwd=holder).stdout.splitlines()
+            if line.lower() == SPARE_MOUNT.lower()
+            or line.lower().startswith(SPARE_MOUNT.lower() + "/")]
+    assert held == [SPARE_MOUNT]
+    offline.assert_left_nothing()
+
+
+def test_a_gitlink_git_stages_under_another_spelling_is_named_not_hidden(
+        family, holder, offline):
+    """THE CLOSING SENTENCE SAYS "EXACTLY AS IT WAS" ONLY FOR WHAT IT
+    COMPARED (#302). The index holds `Members/README`, a case variant of
+    `members/` and not of the mount path, so `member-path-taken` lets it
+    by: it is not at `members/IRQS` or under it in any spelling. With
+    `core.ignorecase` set, git stages the new gitlink in the spelling the
+    index already gives the directory, `Members/IRQS`, and the commit, whose
+    pathspec is `members/IRQS`, matches nothing. The unwind puts back every
+    piece it recorded by name, and the gitlink it never recorded is still
+    staged. That used to end "the holder is exactly as it was". The whole
+    index is compared now, so the sentence names the entry, and the command
+    it names takes it back out, touching no file."""
+    git("config", "--local", "core.ignorecase", "true", cwd=holder)
+    plant(holder, "100644", "Members/README")
+    tip = git("rev-parse", "main",
+              cwd=family["remotes"] / f"{SPARE}.git").stdout.strip()
+    before, index = snapshot(holder), index_bytes(holder)
+
+    result = offline.add(holder, SPARE, remotes=family["remotes"])
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stdout == (f"checking {ORG}/{SPARE} before mounting it\n"
+                             f"mounting {ORG}/{SPARE} at {SPARE_MOUNT}\n")
+    # The step that failed, and not the command's own spelling, which is the
+    # commit's business and changes with it.
+    lines = result.stderr.splitlines()
+    assert lines[0] == (f"REFUSED committing {SPARE} to the family. THE "
+                        "EXACT COMMAND WAS:")
+    assert lines[-1] == INDEX_MOVED.format(
+        restored=f"{SPARE_MOUNT} removed, .git/modules/{SPARE_MOUNT} removed, "
+                 ".gitmodules restored byte for byte, family.yaml restored "
+                 f"byte for byte, `submodule.{SPARE_MOUNT}` dropped from the "
+                 "holder's git config",
+        moved=f"new in it: `Members/{SPARE}`")
+    # What it says is what is there: one record more, the member's gitlink
+    # in the other spelling, and nothing lost.
+    was, now = set(index.split(b"\0")), set(index_bytes(holder).split(b"\0"))
+    assert now - was == {f"160000 {tip} 0\tMembers/{SPARE}".encode()}
+    assert was - now == set()
+    offline.assert_left_nothing()
+
+    git("rm", "-r", "-q", "--cached", "--", f"Members/{SPARE}", cwd=holder)
+    assert index_bytes(holder) == index
+    assert snapshot(holder) == before
+
+
+def test_the_closing_sentence_names_what_the_index_gained_lost_and_changed(
+        holder, family_module):
+    """THE SENTENCE AT UNIT LEVEL (#302), for the differences no mount makes
+    on its own. The rollback records the index, which is then changed by
+    hand. With nothing changed, `undo` keeps the sentence it had. With ONE
+    entry restaged and nothing else, its name is unchanged and its record is
+    not: comparing names alone would call that holder unchanged. Then six
+    entries are new and one is gone as well. `undo` has nothing of its own
+    to put back, and it names each kind, five names at most, never calling
+    the holder unchanged."""
+    rollback = family_module.MountRollback(holder, SPARE_MOUNT)
+    assert rollback.undo() == (
+        " Nothing was added, and nothing in the holder had changed.")
+    then = ("Put it back before running `add` again: `git ls-files -s` lists "
+            "what the index now holds, and `git rm -r --cached -- <path>` "
+            "takes a path new in it back out and touches no file.")
+    plant(holder, "100644", "Makefile")
+    assert rollback.undo() == (
+        " Nothing was committed, but the holder's index is NOT as it was "
+        f"before this command (staged differently: `Makefile`). {then}")
+    for n in range(1, 7):
+        plant(holder, "100644", f"new/{n}")
+    git("update-index", "--force-remove", "--", "README.md", cwd=holder)
+    assert rollback.undo() == (
+        " Nothing was committed, but the holder's index is NOT as it was "
+        "before this command (new in it: `new/1`, `new/2`, `new/3`, `new/4`, "
+        "`new/5` and 1 more; gone from it: `README.md`; staged differently: "
+        f"`Makefile`). {then}")
+
+
+def test_an_index_that_cannot_be_read_back_is_never_called_as_it_was(
+        holder, family_module, monkeypatch):
+    """The comparison is a git command too. If the index cannot be read
+    back after the unwind, every step may still have been undone, but the
+    index has not been shown to be as it was. The sentence says exactly
+    that, with git's reason, and sends the human to `git ls-files -s`, as
+    the sentence for an index that differs does. It never calls the holder
+    as it was, nor the unwind partial, and the refusal it ends is still the
+    one printed."""
+    rollback = family_module.MountRollback(holder, SPARE_MOUNT)
+
+    def unreadable(root):
+        raise family_module.Refusal(
+            "git-failed", f"`git ls-files -s -z` in {root} exited 128: "
+            "fatal: index file corrupt")
+
+    monkeypatch.setattr(family_module, "_index_records", unreadable)
+    assert rollback.undo() == (
+        " Nothing was committed, but the holder's index could not be read "
+        "back to confirm it is as it was before this command: `git ls-files "
+        f"-s -z` in {holder} exited 128: fatal: index file corrupt. Check it "
+        "before running `add` again: `git ls-files -s` lists what the index "
+        "now holds.")
+
+
+def test_the_index_is_asked_at_the_mount_path_in_any_case_and_literally(
+        holder, family_module):
+    """`_index_entries` (#302): every entry AT the path or UNDER it, in any
+    case, each as the index spells it. Never a neighbour the path is only a
+    prefix of (`members/IRQSX`), never a variant of `members/` alone, and
+    never what a glob would add: `members/IRQ*` is a name, so it selects
+    itself in any case, where `git --icase-pathspecs` would read it as a
+    glob and select `members/IRQS`, `members/IRQSX/b` and `MEMBERS/irqs/a`
+    besides. (The entries are planted, with nothing on disk.)"""
+    for name in ("MEMBERS/irqs/a", SPARE_MOUNT, f"{SPARE_MOUNT}X/b",
+                 "Members/README", "members/IRQ*/c", "members/irq*"):
+        plant(holder, "100644", name)
+    plant(holder, "160000", f"members/{SPARE.lower()}/d")
+    assert family_module._index_entries(holder, SPARE_MOUNT) == [
+        ("MEMBERS/irqs/a", "a file"), (SPARE_MOUNT, "a file"),
+        (f"members/{SPARE.lower()}/d", "a submodule")]
+    assert family_module._index_entries(holder, "members/IRQ*") == [
+        ("members/IRQ*/c", "a file"), ("members/irq*", "a file")]
+
+
+def test_a_conflicted_entry_at_the_mount_path_is_counted_once_per_stage(
+        holder, family_module):
+    """`member-path-taken` counts as main counted (#302): one per index
+    record, so a path conflicted at three stages is named "and 2 more". The
+    read now lists the whole index, and an exact-case entry still gets the
+    text #242 wrote, byte for byte. (The three stages are written as BYTES
+    on stdin.)"""
+    blob = subprocess.run(["git", "hash-object", "-w", "--stdin"],
+                          cwd=str(holder), input=b"a file\n",
+                          capture_output=True,
+                          check=True).stdout.decode("ascii").strip()
+    subprocess.run(["git", "update-index", "--index-info"], cwd=str(holder),
+                   input=b"".join(f"100644 {blob} {stage}\t{SPARE_MOUNT}/"
+                                  "README\n".encode("ascii")
+                                  for stage in (1, 2, 3)),
+                   capture_output=True, check=True)
+    with pytest.raises(family_module.Refusal) as caught:
+        family_module._checked_mount_path(holder, SPARE, SPARE_MOUNT)
+    assert (caught.value.code, caught.value.detail,
+            caught.value.remediation) == (
+        "member-path-taken",
+        f"the family root's index holds `{SPARE_MOUNT}/README` (a file) and "
+        f"2 more under {SPARE_MOUNT}, though nothing is at {SPARE_MOUNT} on "
+        "disk and no `members:` row names it",
+        "Remediation: this is a half-finished add or a hand edit. `git rm -r "
+        f"--cached -- {SPARE_MOUNT}` takes it out of the index and touches no "
+        "file; then re-run.")
+
+
+# --- a section under ANOTHER name at the mount path (#300) ------------------
+#
+# The mirror of `member-name-taken` (#242), which refuses a section whose NAME
+# is the mount path for another path: here a section under another name
+# already gives the mount PATH. git writes the member's own section beside it
+# without a word, so `add` exited 0 and committed two sections for one path,
+# `validate-family.py` said `family ok`, and a recursive clone followed the
+# one LAST in the file — the other's url, as soon as an edit put it there.
+# Each holder below is built in git's index and objects, never through a
+# checkout of the file.
+
+#: A section under another name whose path is the spare's mount path, with a
+#: url nothing can fetch: what a half-removed member, a hand edit or a merge
+#: that kept both sides leaves behind.
+GHOST = (f'[submodule "ghost"]\n\tpath = members/{SPARE}\n'
+         "\turl = /nowhere/ghost.git\n").encode("utf-8")
+
+GHOST_REFUSED = (
+    "REFUSED member-path-registered: .gitmodules already gives the path "
+    f"members/{SPARE} to the submodule named `ghost` (url "
+    f"/nowhere/ghost.git), and that is the path {SPARE} is mounted at")
+
+#: How the refusal spells taking GHOST out: by key, which reaches every
+#: section, one command for each key it holds, in the order git lists
+#: them.
+GHOST_REMOVAL = (
+    "`git config -f .gitmodules --unset-all submodule.ghost.path` and "
+    "`git config -f .gitmodules --unset-all submodule.ghost.url`")
+
+
+def ghost_remediation(removal: str, off_disk: bool = False) -> str:
+    """What `member-path-registered` tells the human to do, around the
+    `git config` command(s), `removal`, that take each section out — and,
+    only where the working tree has no `.gitmodules` (`off_disk`), how to
+    put back the copy git read."""
+    return (
+        "Remediation: git would write the member's own section beside it, "
+        "and a recursive clone of the holder follows whichever section for "
+        "that path comes last in the file. A section somebody wrote is not "
+        "this tool's to drop or rewrite, so take it out by hand, in a POSIX "
+        f"shell — {removal}, then `git add .gitmodules` — or, if it was a "
+        "member, with `family.py remove`; then re-run."
+        + (" With no .gitmodules in the working tree, put back the copy git "
+           "read first: `git checkout -- .gitmodules` (the index's), or `git "
+           "checkout HEAD -- .gitmodules`." if off_disk else ""))
+
+
+def gitmodules_with(root: Path, extra: bytes, kept_in: str) -> bytes:
+    """HEAD's `.gitmodules` with `extra` appended, kept ONLY where `kept_in`
+    says, and built in git's index and objects rather than through a
+    checkout: "the work tree only" writes it to disk and neither stages nor
+    commits it — a hand edit nobody has staged, the commonest ghost, which
+    only a reader that asks the working tree FIRST sees; "the work tree"
+    commits it and writes the same bytes to disk; "the index" stages it over
+    HEAD's and leaves no file on disk; "HEAD" commits it, then takes it off
+    the disk AND out of the index, where `git submodule add` still reads it.
+    Returns the bytes."""
+    data = subprocess.run(["git", "show", "HEAD:.gitmodules"],
+                          cwd=str(root), capture_output=True,
+                          check=True).stdout + extra
+    if kept_in == "the work tree only":
+        (root / ".gitmodules").write_bytes(data)
+        return data
+    blob = subprocess.run(["git", "hash-object", "-w", "--stdin"],
+                          cwd=str(root), input=data, capture_output=True,
+                          check=True).stdout.decode("ascii").strip()
+    git("update-index", "--cacheinfo", f"100644,{blob},.gitmodules",
+        cwd=root)
+    if kept_in != "the index":
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm",
+            "A section of somebody else's", cwd=root)
+    if kept_in == "the work tree":
+        (root / ".gitmodules").write_bytes(data)
+    else:
+        (root / ".gitmodules").unlink()
+    if kept_in == "HEAD":
+        git("rm", "-q", "--cached", "--", ".gitmodules", cwd=root)
+    return data
+
+
+def git_section(scratch: Path, name: str, **values: str) -> bytes:
+    """`[submodule "<name>"]` holding `values`, in the bytes GIT writes for
+    them, for `gitmodules_with` to append. A value read from git must be
+    escaped as git escapes it: a Windows path's backslashes written raw
+    (`D:\\a\\...`) are escapes git does not know, and the file is then one it
+    cannot read at all (`bad config line`). `scratch` is a file of the
+    test's own, written afresh."""
+    if scratch.exists():
+        scratch.unlink()
+    for key, value in values.items():
+        git("config", "-f", str(scratch), f"submodule.{name}.{key}", value,
+            cwd=scratch.parent)
+    return scratch.read_bytes()
+
+
+def gitmodules_paths(root: Path) -> list[str]:
+    """Every `path` HEAD's `.gitmodules` gives, in file order, as git lists
+    them."""
+    listed = git("config", "--blob", "HEAD:.gitmodules", "--list",
+                 cwd=root).stdout.splitlines()
+    return [line.partition("=")[2] for line in listed
+            if line.partition("=")[0].rpartition(".")[2] == "path"]
+
+
+def take_out_as_printed(root: Path, remediation: str) -> list[str]:
+    """Run each `git config` command `remediation` prints, exactly as
+    printed (split as a POSIX shell splits it, run with no shell), then
+    stage `.gitmodules`, as the remediation says. Returns the commands."""
+    commands = re.findall(r"`(git config [^`]*)`", remediation)
+    for command in commands:
+        git(*shlex.split(command)[1:], cwd=root)
+    git("add", "--", ".gitmodules", cwd=root)
+    return commands
+
+
+def refused_unchanged(result: subprocess.CompletedProcess, root: Path,
+                      before: dict) -> tuple[str, str]:
+    """Refused before the member was read — nothing on stdout, nothing
+    cloned or mounted — with the holder byte for byte as `before` recorded
+    it. Returns `(the REFUSED line, the remediation)`."""
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stdout == ""
+    assert snapshot(root) == before
+    assert not (root / "members" / SPARE).exists()
+    assert not (root / ".git" / "modules" / "members" / SPARE).exists()
+    return refusal(result.stderr)
+
+
+@pytest.mark.parametrize("kept_in", ["the work tree only", "the work tree",
+                                     "the index", "HEAD"])
+def test_a_section_under_another_name_at_the_mount_path_is_refused(
+        family, holder, offline, kept_in):
+    """THE ISSUE'S PROBE, from each copy of the file `git submodule add`
+    reads: the working tree's — an unstaged hand edit as well as a committed
+    ghost — else the index's, else HEAD's. A section named `ghost` gives
+    `members/IRQS` to a url nothing can fetch, and `add --member
+    InkRouter/IRQS` is refused before the member is read — not one line on
+    stdout, nothing cloned, nothing mounted — naming the section and its
+    url, and the holder is byte for byte as it was, the ghost included: it
+    is somebody's registration, not this tool's to drop. Only where the
+    working tree has no `.gitmodules` does the remediation say how to put
+    one back."""
+    gitmodules_with(holder, GHOST, kept_in)
+    before = snapshot(holder)
+    result = offline.add(holder, SPARE, remotes=family["remotes"])
+    assert refused_unchanged(result, holder, before) == (
+        GHOST_REFUSED, ghost_remediation(
+            GHOST_REMOVAL, off_disk=kept_in in ("the index", "HEAD")))
+    offline.assert_left_nothing()
+
+
+def test_a_section_named_the_mount_path_in_another_case_is_another_name(
+        family, holder, offline):
+    """git's submodule names are case-sensitive, so `Members/IRQS` is
+    ANOTHER name than the `members/IRQS` git gives the mount, and its
+    section for the mount path is a ghost like any other: refused, named in
+    its own spelling."""
+    gitmodules_with(holder, (f'[submodule "Members/{SPARE}"]\n'
+                             f"\tpath = members/{SPARE}\n"
+                             "\turl = /nowhere/ghost.git\n").encode(),
+                    "the work tree")
+    before = snapshot(holder)
+    result = offline.add(holder, SPARE, remotes=family["remotes"])
+    said, _ = refused_unchanged(result, holder, before)
+    assert said == (
+        "REFUSED member-path-registered: .gitmodules already gives the path "
+        f"members/{SPARE} to the submodule named `Members/{SPARE}` (url "
+        f"/nowhere/ghost.git), and that is the path {SPARE} is mounted at")
+    offline.assert_left_nothing()
+
+
+@pytest.mark.parametrize("other", [
+    None, (f"members/{SPARE}X", "ghost"), (f"members/{SPARE}/", "ghost"),
+    (f"members/{SPARE}", f"members/{SPARE}")],
+    ids=["no other section", "another path", "a trailing slash",
+         "the member's own name"])
+def test_a_section_that_is_not_another_name_at_the_mount_path_is_added_past(
+        family, holder, offline, other):
+    """THE CONTROL. The plain add still exits 0, and so does one past a
+    section for ANOTHER path: one that only begins like the mount path, or
+    one that ends in a slash — git compares a section's path exactly, so a
+    recursive clone never fetches the mount path from it, and neither does
+    this refusal. So does one past a section that already carries the
+    member's own name for its own path — what `remove` leaves behind when a
+    ghost came after the member's section (#300) — which git rewrites in
+    place. Each commits ONE section for the mount path, with the member's
+    url, and the holder passes its own gate."""
+    if other is not None:
+        path, name = other
+        gitmodules_with(holder, (f'[submodule "{name}"]\n\tpath = {path}\n'
+                                 "\turl = /nowhere/ghost.git\n").encode(),
+                        "the work tree")
+    # The member's url, spelled the way `add` spelled IRRS's beside it.
+    url = git("config", "-f", ".gitmodules", "submodule.members/IRRS.url",
+              cwd=holder).stdout.strip()[:-len("IRRS.git")] + f"{SPARE}.git"
+    result = offline.add(holder, SPARE, remotes=family["remotes"])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stderr == ""
+    assert gitmodules_paths(holder).count(f"members/{SPARE}") == 1
+    assert git("config", "--blob", "HEAD:.gitmodules",
+               f"submodule.members/{SPARE}.url",
+               cwd=holder).stdout.strip() == url
+    assert git("status", "--porcelain", cwd=holder).stdout == ""
+    assert validate(holder).returncode == 0
+    offline.assert_left_nothing()
+
+
+def test_every_section_at_the_mount_path_is_named_and_taken_out_as_printed(
+        family, holder, offline):
+    """TWO SECTIONS under other names at one mount path, one named with a
+    space and one with no url: the refusal names both, each with its url or
+    the want of one, and its `git config` commands, typed exactly as
+    printed, take both out — after which the same `add` runs, and the holder
+    gives the mount path to one section, the member's."""
+    gitmodules_with(holder, GHOST + (f'[submodule "old {SPARE}"]\n'
+                                     f"\tpath = members/{SPARE}\n").encode(),
+                    "the work tree")
+    before = snapshot(holder)
+    refused = offline.add(holder, SPARE, remotes=family["remotes"])
+    said, remediation = refused_unchanged(refused, holder, before)
+    assert said == (
+        "REFUSED member-path-registered: .gitmodules already gives the path "
+        f"members/{SPARE} to the submodules named `ghost` (url "
+        f"/nowhere/ghost.git) and `old {SPARE}` (no url), and that is the "
+        f"path {SPARE} is mounted at")
+    assert remediation == ghost_remediation(
+        f"{GHOST_REMOVAL} and `git config -f .gitmodules --unset-all "
+        f"'submodule.old {SPARE}.path'`")
+    assert len(take_out_as_printed(holder, remediation)) == 3, remediation
+    added = offline.add(holder, SPARE, remotes=family["remotes"])
+    assert added.returncode == 0, added.stdout + added.stderr
+    assert gitmodules_paths(holder) == [
+        "members/IRRS", "members/IRSS", f"members/{SPARE}"]
+    assert git("status", "--porcelain", cwd=holder).stdout == ""
+    assert validate(holder).returncode == 0
+    offline.assert_left_nothing()
+
+
+@pytest.mark.parametrize("header, name", [
+    (f'[submodule "old]{SPARE}"]', f"old]{SPARE}"),
+    ('[Submodule "ghost"]', "ghost")],
+    ids=["a name with ]", "a header a hand capitalised"])
+def test_a_section_git_cannot_name_by_section_is_taken_out_as_printed(
+        family, holder, offline, header, name):
+    """THE PRINTED COMMANDS WORK FOR EVERY SECTION. `git config
+    --remove-section` cannot address a section whose name holds `]`, nor one
+    whose header a hand spelled `[Submodule "..."]` (git 2.43 says `no such
+    section` for both), so the refusal takes a section out by its keys,
+    which reach every section `git config --list` names. Run exactly as
+    printed, they clear the way for the same `add`."""
+    gitmodules_with(holder, (f"{header}\n\tpath = members/{SPARE}\n"
+                             "\turl = /nowhere/ghost.git\n").encode(),
+                    "the work tree only")
+    before = snapshot(holder)
+    refused = offline.add(holder, SPARE, remotes=family["remotes"])
+    said, remediation = refused_unchanged(refused, holder, before)
+    assert said == (
+        "REFUSED member-path-registered: .gitmodules already gives the path "
+        f"members/{SPARE} to the submodule named `{name}` (url "
+        f"/nowhere/ghost.git), and that is the path {SPARE} is mounted at")
+    quoted = [shlex.quote(f"submodule.{name}.{key}")
+              for key in ("path", "url")]
+    assert remediation == ghost_remediation(
+        f"`git config -f .gitmodules --unset-all {quoted[0]}` and "
+        f"`git config -f .gitmodules --unset-all {quoted[1]}`")
+    assert len(take_out_as_printed(holder, remediation)) == 2, remediation
+    added = offline.add(holder, SPARE, remotes=family["remotes"])
+    assert added.returncode == 0, added.stdout + added.stderr
+    assert gitmodules_paths(holder) == [
+        "members/IRRS", "members/IRSS", f"members/{SPARE}"]
+    assert validate(holder).returncode == 0
+    offline.assert_left_nothing()
+
+
+@pytest.mark.parametrize("same_url", [False, True],
+                         ids=["another url", "the same url"])
+def test_the_validator_finds_two_sections_for_one_path(family, holder,
+                                                       tmp_path, same_url):
+    """`gitmodules-path-twice`, so a holder that already has a ghost fails
+    its own gate instead of passing it. One section per path is clean; one
+    more for `members/IRRS`, under another name and LAST in the file — the
+    one a recursive clone follows — is the only finding, under `--pins` and
+    `--no-members` as well, because it reads `.gitmodules` alone. Two
+    sections for one path are a finding whatever their urls: the same url
+    twice is still one path given twice, and the next edit can change
+    either."""
+    assert validate(holder).returncode == 0
+    url = git("config", "-f", ".gitmodules", "submodule.members/IRRS.url",
+              cwd=holder).stdout.strip()
+    other = url if same_url else "/nowhere/ghost.git"
+    # Written by git, so the member's url — a path with backslashes on
+    # Windows — is escaped as git escapes it.
+    gitmodules_with(holder, git_section(tmp_path / "ghost-section", "ghost",
+                                        path="members/IRRS", url=other),
+                    "the work tree")
+    for extra in ((), ("--pins",), ("--no-members",)):
+        result = validate(holder, *extra)
+        assert result.returncode == 1, result.stderr + result.stdout
+        assert [line for line in result.stderr.splitlines()
+                if line.startswith("FINDING")] == [
+            "FINDING gitmodules-path-twice: .gitmodules gives the path "
+            f"members/IRRS to 2 submodules, `members/IRRS` (url {url}), "
+            f"`ghost` (url {other}). A recursive clone fetches that path "
+            "from only one of them, the last in the file, so the order of "
+            "the sections decides which repository lands there. Keep the one "
+            "whose url is the member's (`family.py add` names it after its "
+            "path, `members/IRRS`) and take each other out by hand, `git "
+            "config -f .gitmodules --unset-all submodule.<name>.<key>` for "
+            "every key that section holds, so a submodule later given its "
+            "name inherits none of them, then commit .gitmodules."], extra
+
+
+def test_a_gitmodules_git_cannot_read_is_a_refusal_not_a_pass(holder):
+    """The validator reads `.gitmodules` as git reads it, so a file git
+    cannot read is a question it cannot answer: a refusal, exit 2, never an
+    implicit pass."""
+    (holder / ".gitmodules").write_bytes(b'[submodule "broken"\n')
+    result = validate(holder)
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert result.stderr.startswith(
+        "REFUSED gitmodules-unreadable: .gitmodules could not be read as git "
+        "reads it: `git config -z --file .gitmodules --list` in ")
+    assert result.stderr.splitlines()[-1] == (
+        "Remediation: git cannot read it either, so none of this holder's "
+        "submodules can be cloned from it as it stands. Mend the file by "
+        "hand (`git config -f .gitmodules --list` says where it breaks), "
+        "then run this again.")
+
+
+def test_a_validator_with_no_git_to_run_refuses_instead_of_crashing(
+        holder, monkeypatch, capsys):
+    """`--no-members` ran no git before `.gitmodules` was read, so a
+    machine without git now meets one here. That is a question this run
+    cannot answer — a refusal, exit 2 — never the traceback that exits 1, a
+    finding's code. The holder's own validator is run IN THIS PROCESS with
+    its one git call failing as a missing program does, so no PATH is
+    changed for anything else."""
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    spec = importlib.util.spec_from_file_location(
+        "holder_validate_family", holder / "scripts" / "validate-family.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    def no_git(args, cwd, binary=False):
+        raise FileNotFoundError(2, "No such file or directory", "git")
+
+    monkeypatch.setattr(module, "git_out", no_git)
+    code = module.main(["--root", str(holder), "--no-members"])
+    out, err = capsys.readouterr()
+    assert code == 2, out + err
+    assert err.splitlines() == [
+        "REFUSED gitmodules-unreadable: .gitmodules could not be read as git "
+        "reads it: git could not be run (No such file or directory)",
+        "Remediation: put git on PATH and run this again; this check reads "
+        "the file the way git does, and nothing could fetch this holder's "
+        "submodules without git either."]
+
+
+def test_every_key_of_a_ghost_goes_so_a_later_member_of_its_name_inherits_none(
+        family, holder, offline, tmp_path):
+    """EVERY KEY, NOT ITS PATH AND URL ALONE. A ghost named `members/IRQZ`
+    for the spare's mount path also carries `branch`, `shallow` and
+    `update`. The refusal prints one `git config --unset-all` per key it
+    holds, and run as printed they take the whole section out, header and
+    all. Had any key stayed, the add of a member that IS called IRQZ would
+    have had git write its path and url into that same section and inherit
+    the rest — a `branch = dev` that `git submodule update --remote` then
+    fails on, under a gate that says ok. Here IRQZ's section holds its path
+    and its url and nothing else."""
+    remotes = tmp_path / "remotes"
+    remotes.mkdir()
+    for name in (SPARE, "IRQZ"):
+        shutil.copytree(family["remotes"] / f"{SPARE}.git",
+                        remotes / f"{name}.git", symlinks=True)
+    gitmodules_with(holder, (
+        '[submodule "members/IRQZ"]\n'
+        f"\tpath = members/{SPARE}\n\turl = /nowhere/ghost.git\n"
+        "\tbranch = dev\n\tshallow = true\n\tupdate = none\n").encode(),
+        "the work tree")
+    before = snapshot(holder)
+    refused = offline.add(holder, SPARE, remotes=remotes)
+    said, remediation = refused_unchanged(refused, holder, before)
+    assert said == (
+        "REFUSED member-path-registered: .gitmodules already gives the path "
+        f"members/{SPARE} to the submodule named `members/IRQZ` (url "
+        f"/nowhere/ghost.git), and that is the path {SPARE} is mounted at")
+    assert remediation == ghost_remediation(" and ".join(
+        "`git config -f .gitmodules --unset-all "
+        f"submodule.members/IRQZ.{key}`"
+        for key in ("path", "url", "branch", "shallow", "update")))
+    assert len(take_out_as_printed(holder, remediation)) == 5, remediation
+    assert git("config", "-f", ".gitmodules", "--get-regexp",
+               r"^submodule\.members/IRQZ\.", cwd=holder,
+               check=False).stdout == ""
+    assert "members/IRQZ" not in (holder / ".gitmodules").read_text(
+        encoding="utf-8")
+    added = offline.add(holder, "IRQZ", remotes=remotes)
+    assert added.returncode == 0, added.stdout + added.stderr
+    listed = git("config", "--blob", "HEAD:.gitmodules", "--get-regexp",
+                 r"^submodule\.members/IRQZ\.", cwd=holder).stdout
+    assert [line.split(" ", 1)[0] for line in listed.splitlines()] == [
+        "submodule.members/IRQZ.path", "submodule.members/IRQZ.url"]
+    assert git("status", "--porcelain", cwd=holder).stdout == ""
     offline.assert_left_nothing()

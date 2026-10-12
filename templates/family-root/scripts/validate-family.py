@@ -41,6 +41,10 @@ WHAT IS CHECKED
     and, across the rows, that no two record ONE `id`: that is one project
     pinned twice, however each row spelled its repository (#206). This one
     reads `family.yaml` alone, so `--no-members` asks it too.
+  - that no two sections of `.gitmodules` give ONE path (#300): a recursive
+    clone fetches that path from only one of them, so the other is a url
+    the next edit can make the one. It reads that file alone, so
+    `--no-members` asks it too.
   - the COPIED shape files, each against its `sha256` row in
     `contracts/shape-pin.yaml`. Editing a copy in place is drift and the exit
     is to carry it upstream, never to update the digest.
@@ -56,6 +60,7 @@ EXIT CODES
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shlex
 import sys
@@ -71,6 +76,7 @@ from repo_shape import (  # noqa: E402
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 QUALIFIED_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$")
 MANIFEST = "family.yaml"
+GITMODULES = ".gitmodules"
 DEFAULT_MEMBERS_DIR = "members"
 
 LOCKSTEP = (
@@ -650,14 +656,91 @@ def _check_member_ids_unique(root: Path, members: list,
             f"name {first} there instead to keep {project}.")
 
 
+def _check_gitmodules_paths(root: Path, report: Report) -> None:
+    """No two sections of `.gitmodules` give ONE path (#300).
+
+    `family.py add` committed a second section for a mount path that a
+    section under another name already gave — a half-removed member, a hand
+    edit, a merge that kept both sides — and this gate passed the result. A
+    recursive clone fetches the path from only one of them, the last in the
+    file, so the other is a url the next edit to the file can make the one
+    fetched. `add` refuses to write one now; this finds a holder that
+    already has one.
+
+    READ AS GIT READS IT, with `git config -z --file .gitmodules --list` as
+    `family.py` reads it, and no parser of this file's own: the working-tree
+    file, which in CI is HEAD's. A holder with no members has no
+    `.gitmodules`, and that is no finding; one git cannot read is a refusal,
+    because nothing could be cloned from it either. A section whose path no
+    row names is another question, and not asked here.
+    """
+    if not os.path.lexists(root / GITMODULES):
+        return
+    try:
+        listed = git_out(["config", "-z", "--file", GITMODULES, "--list"],
+                         cwd=root, binary=True)
+    except Refusal as exc:
+        raise Refusal(
+            "gitmodules-unreadable",
+            f"{GITMODULES} could not be read as git reads it: {exc.detail}",
+            "Remediation: git cannot read it either, so none of this "
+            "holder's submodules can be cloned from it as it stands. Mend "
+            f"the file by hand (`git config -f {GITMODULES} --list` says "
+            "where it breaks), then run this again.") from exc
+    except OSError as exc:
+        # NO GIT TO RUN is a question this run cannot answer, so a refusal
+        # (exit 2), never the traceback that exits 1, a finding's code:
+        # `--no-members` ran no git at all before this check.
+        raise Refusal(
+            "gitmodules-unreadable",
+            f"{GITMODULES} could not be read as git reads it: git could not "
+            f"be run ({exc.strerror or exc})",
+            "Remediation: put git on PATH and run this again; this check "
+            "reads the file the way git does, and nothing could fetch this "
+            "holder's submodules without git either.") from exc
+    sections: dict[str, dict[str, str]] = {}
+    for record in listed.split(b"\0"):
+        key, _, value = record.decode("utf-8",
+                                      "surrogateescape").partition("\n")
+        section, _, variable = key.rpartition(".")
+        if section.startswith("submodule.") and variable in ("path", "url"):
+            sections.setdefault(section[len("submodule."):],
+                                {})[variable] = value
+    paths: dict[str, list[str]] = {}
+    for name, keys in sections.items():
+        if "path" in keys:
+            paths.setdefault(keys["path"], []).append(name)
+    for path, names in paths.items():
+        if len(names) < 2:
+            continue
+        listing = ", ".join(
+            f"`{name}` (" + (f"url {sections[name]['url']}"
+                             if "url" in sections[name] else "no url") + ")"
+            for name in names)
+        report.finding(
+            "gitmodules-path-twice",
+            f"{GITMODULES} gives the path {path} to {len(names)} "
+            f"submodules, {listing}. A recursive clone fetches that path "
+            "from only one of them, the last in the file, so the order of "
+            "the sections decides which repository lands there. Keep the one "
+            "whose url is the member's (`family.py add` names it after its "
+            f"path, `{path}`) and take each other out by hand, `git config "
+            f"-f {GITMODULES} --unset-all submodule.<name>.<key>` for every "
+            "key that section holds, so a submodule later given its name "
+            f"inherits none of them, then commit {GITMODULES}.")
+
+
 def _check_members(root: Path, members: list, no_members: bool,
                   report: Report) -> None:
     """Every row in `members:`, or the `--no-members` skip line.
 
-    Split from `main` for #137.
+    Split from `main` for #137. The two checks that read a file alone —
+    `family.yaml`'s ids (#206) and `.gitmodules`'s paths (#300) — come
+    first, so `--no-members` asks them too.
     """
     _check_member_names_unique(members, report)
     _check_member_ids_unique(root, members, report)
+    _check_gitmodules_paths(root, report)
     if no_members:
         print(f"  --  {len(members)} member(s) SKIPPED (--no-members): "
               "their gitlinks, digests and project ids are not checked "
