@@ -1249,12 +1249,28 @@ def _chain_link_findings(chain, link_pins) -> tuple:
     not answer is `declared-unverified` and never a failure: the recorded
     declaration is the offline fact, and reading the other tree is the
     stronger check, available or not.
+
+    A `LinkPins` carries, beside the links that answered, why a tree that WAS
+    reached could not: a warning for such a link says so, where a plain
+    mapping's says the tree is not reachable (#338).
     """
     available = _link_declarations(link_pins)
+    unreadable = getattr(link_pins, "unreadable", None) or {}
     warnings: list[str] = []
     unverified: list[str] = []
     for holder, held in zip(chain, chain[1:]):
         declared = available.get(holder.casefold())
+        why = unreadable.get(holder.casefold())
+        if declared is None and why is not None:
+            # A source REACHED this tree and could not read a declaration out
+            # of it, so "not reachable here" would be untrue (#338).
+            unverified.append(holder)
+            warnings.append(
+                f"{CHAIN_UNVERIFIED}: {holder} declaring a pin on {held} "
+                f"is a fact in {holder}'s own tree, which was reached but "
+                f"could not be read as a declaration ({why}). The recorded "
+                "chain still classifies.")
+            continue
         if declared is None:
             unverified.append(holder)
             warnings.append(
@@ -2487,11 +2503,30 @@ def resolve_link_source(product: str, root: Path | None = None,
     return None, None
 
 
+class LinkPins(dict):
+    """`link_pins_from_trees`'s answer for a caller that asks it to say why:
+    the same `{link: the pins ITS manifest declares}`, equal to a plain one,
+    with `unreadable` beside it, `{link casefolded: why}` for each link whose
+    source REACHED a manifest that could not be read as a declaration (#338).
+
+    A link in `unreadable` is absent from the mapping, as one that is not on
+    the disk is. What differs is the warning `_chain_link_findings` writes for
+    it, which names the reason instead of saying the tree is "not reachable
+    here". Only a caller that asks for one gets one, so every other
+    reader's warning is exactly the text it always was.
+    """
+
+    def __init__(self, found=(), unreadable: dict | None = None) -> None:
+        super().__init__(found)
+        self.unreadable: dict[str, str] = dict(unreadable or {})
+
+
 def link_pins_from_trees(links, root: Path | None = None,
                          keyed_sources: dict | None = None,
                          default_source=None,
                          key: str = CHAIN_LINK_DECLARED_BY, *,
-                         tried: dict | None = None) -> dict[str, set]:
+                         tried: dict | None = None,
+                         with_reasons: bool = False) -> dict[str, set]:
     """`{link: the pins ITS manifest declares}` for the links that answered.
 
     A link whose tree is not on the disk is simply ABSENT from the mapping,
@@ -2503,8 +2538,14 @@ def link_pins_from_trees(links, root: Path | None = None,
     it, to what `resolve_link_source` asked for it. The source that answered
     carries the reason its manifest could not be read, when it could not,
     because that is where the link stopped (#338).
+
+    `with_reasons` returns a `LinkPins`, which remembers that reason for each
+    link a source reached and could not read, so that the caller that has no
+    line of its own for it (the scaffold) can have the warning say so. It is
+    off for the callers that print the reason themselves, and for the rest.
     """
     found: dict[str, set] = {}
+    unreadable: dict[str, str] = {}
     for link in links:
         name = repo_basename(str(link))
         asked: list = []
@@ -2518,9 +2559,10 @@ def link_pins_from_trees(links, root: Path | None = None,
         if pins is None:
             rule, how, _path, _answered = asked[-1]
             asked[-1] = (rule, how, path, why)
+            unreadable[name.casefold()] = why
             continue
         found[name.casefold()] = pins
-    return found
+    return LinkPins(found, unreadable) if with_reasons else found
 
 
 def find_repo_root(start: Path) -> Path:
