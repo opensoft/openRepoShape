@@ -12,7 +12,7 @@ kept it out.
 
 EVERY TEST BUT THE LAST TWO CALLS `_verify` DIRECTLY on hand-made commits,
 their gitlinks written with `git update-index --cacheinfo 160000,...`. No `git
-filter-repo` is involved, so the Windows job, which installs none, runs all of
+filter-repo` is involved, so a machine that has none still runs all of
 those. The last two run `execute`, so they need `git filter-repo` and are
 skipped without it, as every `execute` test is: one proves `cmd_execute` hands
 `_verify` the PLAN'S mount paths and that the assembly clones and bootstraps
