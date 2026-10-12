@@ -563,8 +563,8 @@ def test_agents_md_is_short_enough_to_be_read():
 
     2026-10-12: 464 -> 477 — the scaffold's two path-collision refusals
     (#288), `scaffold-leg-path-collides` (#197) and `scaffold-pin-collides`
-    (#241). Thirteen lines: ten in section 2, beside "If it refuses, read the
-    refusal", and three in "Scaffolding a project that DECLARES descent".
+    (#241). Thirteen lines: nine in section 2, beside "If it refuses, read the
+    refusal", and four in "Scaffolding a project that DECLARES descent".
     They buy what that sentence could not say for these two: it promised a
     command, and some refusals name a VALUE, so an assistant briefed from
     this file alone could not say beforehand that `--pin code@<sha>`, a
