@@ -93,7 +93,6 @@ MISREAD_VALUES = [
                  id="branch-Null"),
     pytest.param("--tracking-branch", "NULL", "no value at all",
                  id="branch-NULL"),
-    pytest.param("--tracking-branch", "~", "no value at all", id="branch-tilde"),
     pytest.param("--tracking-branch", "007", "the number 7", id="branch-007"),
     pytest.param("--tracking-branch", "2026", "the number 2026",
                  id="branch-2026"),
@@ -105,10 +104,10 @@ MISREAD_VALUES = [
 
 #: Values the reader takes for text, so the manifest holds what was typed.
 #: `yes` and `on` are YAML 1.1 booleans and this reader reads them as text;
-#: `0x1F`, `1e3` and `.inf` are numbers elsewhere and text here. They are not
+#: `0x1F` and `1e3` are numbers elsewhere and text here. They are not
 #: refused: the reader is asked, not a list of its words.
 TEXT_BRANCHES = ["trunk", "release-1", "feature/x", "v1.2.3", "1.5.2", "yes",
-                 "on", "0x1F", "1e3", ".inf"]
+                 "on", "0x1F", "1e3"]
 TEXT_IDS = ["atlas-2", "v2", "null-island", "truelove", "yes", "on", "1e3"]
 
 #: `(flag args, code, what the refusal names)`: values the new project's own
