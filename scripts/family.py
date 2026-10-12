@@ -148,6 +148,9 @@ from repo_shape import YamlError, parse_yaml  # noqa: E402
 from shape_materialize import (  # noqa: E402
     FAMILY_TEMPLATED, PLACEHOLDER_RE, render,
 )
+# How every command this prints for a person to paste spells its paths
+# (#486), the quoting the holder's `scripts/siblings.py` uses too.
+from repo_shape import shell_quoted  # noqa: E402
 
 NAMING_POLICY = SHAPE_ROOT / "contracts" / "repository-naming.yaml"
 MANIFEST = "family.yaml"
@@ -735,6 +738,17 @@ def _family_script() -> str:
         return str(here)
 
 
+def _add_command(holder: Path, org: str) -> str:
+    """The `add` that grows the holder at `holder`, as `init` prints it:
+    ONE line, so it pastes into PowerShell too, with this file's path, the
+    holder's and the organisation each spelled by `shell_quoted` for the
+    reader's shell (#486). A holder under `my work/` used to print
+    `--family-root .../my work/Orbit`, two arguments to argparse.
+    `<Project>` is left for the person to fill in."""
+    return (f"{PYTHON} {shell_quoted(_family_script())} add --family-root "
+            f"{shell_quoted(holder)} --member {shell_quoted(org)}/<Project>")
+
+
 def _standard_checkout(start: Path) -> Path | None:
     """The checkout of openRepoShape that `start` is, or lies inside, or
     None (#488).
@@ -827,10 +841,9 @@ def _landing(args, family: str) -> tuple[Path | None, Path]:
             "family-holder-already-here",
             f"{into} is already the {family} family folder and its holder "
             f"is at {into / family}, so there is nothing to init",
-            f"Remediation: `{PYTHON} {_family_script()} add --family-root "
-            f"{into / family} --member <org>/<Project>` grows it, and "
-            "`make siblings` in the holder puts each member's working "
-            "clone beside it. There is no --force.")
+            f"Remediation: `{_add_command(into / family, args.org)}` grows "
+            "it, and `make siblings` in the holder puts each member's "
+            "working clone beside it. There is no --force.")
     folder, holder = ((into, into / family) if into.name == family else
                       (into / family, into / family / family))
     if args.into is None:
@@ -1134,9 +1147,8 @@ def _print_next_steps(args, work: Path, folder: Path | None) -> None:
     print(f"""
 NEXT STEPS
 
-    {PYTHON} {_family_script()} add --family-root {work} \\
-        --member {args.org}/<Project>
-    cd {work} && make siblings
+    {_add_command(work, args.org)}
+    cd {shell_quoted(work)} && make siblings
 
 `add` mounts the member at {MEMBERS_DIR}/<Project>, records its pin, and
 writes ONE commit; land it as a pull request. `make siblings` then puts each
@@ -1791,7 +1803,10 @@ def _checked_mount_path(root: Path, project: str, path: str) -> None:
         # gave `MEMBERS/Atlas`, and kept its file too), or both, while
         # `.gitmodules` and the manifest say `path`.
         variant = name[:len(path)]
-        spelled = " ".join(sorted({entry[0][:len(path)] for entry in held}))
+        spellings = sorted({entry[0][:len(path)] for entry in held})
+        # QUOTED (#486), each one: it names an index entry somebody else
+        # made, and that is not held to a member's alphabet.
+        spelled = " ".join(shell_quoted(name) for name in spellings)
         raise Refusal(
             "member-path-taken",
             f"the family root's index holds `{name}` ({kind}){more}"
@@ -1803,7 +1818,7 @@ def _checked_mount_path(root: Path, project: str, path: str) -> None:
             "Remediation: this is a half-finished add or a hand edit. `git rm "
             f"-r --cached -- {spelled}` takes it out of the index and touches "
             "no file; "
-            + ("then " if spelled == path else
+            + ("then " if spellings == [path] else
                "where HEAD holds it too, commit that removal first, since the "
                f"add's own commit names {path} alone: otherwise HEAD keeps "
                "the other spelling beside the member, or, with "
@@ -1875,6 +1890,31 @@ def _checked_mount_path(root: Path, project: str, path: str) -> None:
                f"index's), or `git checkout HEAD -- {GITMODULES}`."))
 
 
+def _deletion(store: Path) -> list[str]:
+    """The lines that let a person delete an object store `git rm` left
+    behind: the directory alone on its own line, to be checked before
+    anything is pasted, then the one command that deletes it and nothing
+    else (#486).
+
+    THE ONE DESTRUCTIVE COMMAND THIS FILE PRINTS, and it printed its path
+    bare: under a holder at `.../my work/Sonata/Sonata` a shell split `rm
+    -rf .../my work/Sonata/Sonata/.git/modules/members/Beacon` into `rm -rf
+    .../my`, an absolute directory that is NOT the store (a `Code` beside
+    the `Code Projects` the holder is in), and a second argument relative to
+    wherever the person stood. So its one argument is quoted, by
+    `repo_shape.shell_quoted`, for the POSIX shell `rm -rf` is a command of
+    (Git Bash is one on Windows; PowerShell refuses `-rf` and deletes
+    nothing), and the sentence says which shell.
+
+    NAMED IN POSIX, as git spells `.git/modules/<path>` and as the person
+    who retypes it does.
+    """
+    shown = store.as_posix()
+    return ["It is this directory:", f"    {shown}",
+            "and in a POSIX shell (Git Bash on Windows) this deletes it and "
+            "nothing else:", f"    rm -rf {shell_quoted(shown, 'posix')}"]
+
+
 def _checked_add_target(family: Family, repository: str, project: str,
                         path: str, at: str | None) -> str | None:
     """Every refusal `add` makes about the HOLDER and its own arguments,
@@ -1925,9 +1965,10 @@ def _checked_add_target(family: Family, repository: str, project: str,
             "write over it",
             "Remediation: if nothing unpushed lives in it — and nothing does "
             "unless somebody committed inside the mount — delete it and "
-            f"re-run:\n    rm -rf {cached.as_posix()}\nIt is left behind by "
-            "`git rm` on purpose, which is why this tool will not remove it "
-            "for you.")
+            "re-run. "
+            + "\n".join(_deletion(cached))
+            + "\nIt is left behind by `git rm` on purpose, which is why this "
+            "tool will not remove it for you.")
     # The pin is written into a `members:` block `write_members` has to be
     # able to find; a manifest it would refuse is refused NOW, while there is
     # nothing to undo.
@@ -2740,8 +2781,8 @@ def cmd_add(args) -> int:
     print(f"  {project:<16} {commit[:12]} tree {digest[:12]}… "
           f"(project {project_id})")
     print(f"  committed {head[:12]}: .gitmodules, {path}, {MANIFEST}")
-    print(f"\nNEXT  git -C {family.root} push -u origin <branch> && open a "
-          "pull request")
+    print(f"\nNEXT  git -C {shell_quoted(family.root)} push -u origin "
+          "<branch> && open a pull request")
     return 0
 
 
@@ -4212,10 +4253,12 @@ def _unmount_and_drop(family: Family, row: dict, path: str) -> int:
     # `.git/modules/<path>`, and so does the human who deletes it.
     cached = family.root / ".git" / "modules" / path
     if cached.exists():
-        print(f"  NOTE {cached.as_posix()} still holds that member's object "
-              "store. `git rm` leaves it on purpose, in case somebody "
-              "committed inside the mount; delete it (`rm -rf`) before adding "
-              "this member back.")
+        # The directory alone on a line, then the command, quoted (#486),
+        # exactly as `add`'s `member-git-dir-cached` names the same store.
+        print("  NOTE that member's object store is left behind. `git rm` "
+              "leaves it on purpose, in case somebody committed inside the "
+              "mount; delete it before adding this member back. "
+              + "\n  ".join(_deletion(cached)))
     return 0
 
 

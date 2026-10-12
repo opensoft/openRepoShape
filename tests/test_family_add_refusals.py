@@ -563,8 +563,12 @@ def test_a_cached_store_in_a_linked_worktree_is_refused_where_git_keeps_it(
         f"object store of a previously removed {SPARE}, and `git submodule "
         "add` will not write over it",
         "Remediation: if nothing unpushed lives in it — and nothing does "
-        "unless somebody committed inside the mount — delete it and re-run:",
-        f"    rm -rf {store.as_posix()}",
+        "unless somebody committed inside the mount — delete it and re-run. "
+        "It is this directory:",
+        f"    {store.as_posix()}",
+        "and in a POSIX shell (Git Bash on Windows) this deletes it and "
+        "nothing else:",
+        f"    rm -rf {shlex.quote(store.as_posix())}",
         "It is left behind by `git rm` on purpose, which is why this tool "
         "will not remove it for you.",
     ]

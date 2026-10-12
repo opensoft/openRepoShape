@@ -1820,11 +1820,14 @@ def test_siblings_warns_about_the_parent_folder_and_moves_nothing(family,
     assert "NOTHING WAS MOVED" in result.stderr
     assert "LINKED WORKTREE" in result.stderr
     # The exact commands, and the staging name the one-step `mv A A/A` cannot
-    # be spelled without.
-    assert f"mv {holder} {tmp_path / 'InkRouter.holder'}" in result.stderr
-    assert f"mkdir -p {tmp_path / 'InkRouter'}" in result.stderr
-    assert f"mv {tmp_path / 'InkRouter.holder'} " \
-           f"{tmp_path / 'InkRouter' / 'InkRouter'}" in result.stderr
+    # be spelled without. Each is a POSIX shell's and quoted for one (#486):
+    # `shlex.join` is the standard library's spelling of that, which leaves
+    # these paths bare everywhere but in Windows' backslashes.
+    staged, wanted = tmp_path / "InkRouter.holder", tmp_path / "InkRouter"
+    assert shlex.join(["mv", str(holder), str(staged)]) in result.stderr
+    assert shlex.join(["mkdir", "-p", str(wanted)]) in result.stderr
+    assert shlex.join(["mv", str(staged), str(wanted / "InkRouter")]) \
+        in result.stderr
     assert holder.is_dir(), "it moves nothing, and that is the whole point"
     assert (holder / "family.yaml").is_file(), (
         "it moves nothing, and that is the whole point")

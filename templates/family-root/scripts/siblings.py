@@ -119,7 +119,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 # arithmetic `resolve_relative` hands git's relative-url rule to.
 from repo_shape import (  # noqa: E402
     PYTHON, Refusal, find_repo_root, join_remote, load_yaml,
-    remote_local_path, repo_basename, same_repository,
+    remote_local_path, repo_basename, same_repository, shell_line,
 )
 # THE CREDENTIAL AND THE MEMBER ROWS ARE READ BY `bootstrap.py` ALREADY, and a
 # second definition of either is how the two start disagreeing about which
@@ -758,7 +758,9 @@ def parent_folder_warning(root: Path, family: str) -> str | None:
         "shell, an editor",
         "        and any LINKED WORKTREE (its `.git` file carries an absolute "
         "path), so it",
-        "        is yours to run, when nothing is standing in it:",
+        "        is yours to run, when nothing is standing in it, in a POSIX "
+        "shell (Git Bash",
+        "        on Windows):",
         "",
     ]
     wanted = folder.parent / family
@@ -767,12 +769,15 @@ def parent_folder_warning(root: Path, family: str) -> str | None:
         # `<parent>/<Family>` IS the holder itself and the move needs a
         # staging name — `mv A A/A` cannot be spelled in one command.
         staged = folder.parent / f"{family}.holder"
-        lines += [f"            mv {root} {staged}",
-                  f"            mkdir -p {wanted}",
-                  f"            mv {staged} {wanted / family}"]
+        steps = [["mv", root, staged], ["mkdir", "-p", wanted],
+                 ["mv", staged, wanted / family]]
     else:
-        lines += [f"            mkdir -p {wanted}",
-                  f"            mv {root} {wanted / family}"]
+        steps = [["mkdir", "-p", wanted], ["mv", root, wanted / family]]
+    # EVERY PATH QUOTED (#486), by `repo_shape.shell_line`, the quoting
+    # `family.py` prints its commands with: under `my work/` a bare `mv`
+    # moved nothing and pasted as four arguments. For the POSIX shell `mv`
+    # and `mkdir -p` are commands of, as the sentence above says.
+    lines += [f"            {shell_line(step, 'posix')}" for step in steps]
     lines += ["",
               "        Then re-run `make siblings` from the moved holder; the "
               "members are",
