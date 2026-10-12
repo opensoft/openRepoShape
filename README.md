@@ -93,20 +93,19 @@ and is reported beside the advisory, and nothing fails on its account.
 Command Line Tools supply `git`, `make` and a `python3` — install them with
 `xcode-select --install`, or type `git` once on a fresh Mac and the installer
 offers itself; step 4 opens with a preflight that prints the `python3` it found
-and refuses anything below 3.9. If it refuses the one the Tools supplied —
-older macOS shipped 3.8 — install a newer one from
-<https://www.python.org/downloads/> or with `brew install python`, and the
-preflight will find it first on `PATH`. `gh` comes from Homebrew, which is its
-own install if `brew` is absent (<https://brew.sh>): on Apple Silicon Homebrew
-lives in `/opt/homebrew`, which is on no `PATH` by default, and its installer
-finishes by printing the line that puts it there — run that line, or the next
-shell cannot find `brew`. Then `brew install gh`, and `brew install
-git-filter-repo` only if you are ADOPTING an existing repository rather than
-scaffolding a new one. The stock `/bin/bash` is 3.2 and is enough: `setup.sh`
-and the `openRepoShape` command use no syntax newer than that, and CI runs the
-whole suite on `macos-latest`, parsing both there with `/bin/bash` itself. That
-the login shell is zsh changes nothing — both entry points are run under `bash`
-explicitly.
+and refuses anything below 3.9. If it refuses the one the Tools supplied — older
+macOS shipped 3.8 — install a newer one from <https://www.python.org/downloads/>
+or with `brew install python`, and the preflight will find it first on `PATH`.
+`gh` comes from Homebrew, which is its own install if `brew` is absent
+(<https://brew.sh>): on Apple Silicon Homebrew lives in `/opt/homebrew`, which
+is on no `PATH` by default, and its installer finishes by printing the line that
+puts it there — run that line, or the next shell cannot find `brew`. Then `brew
+install gh`, and `brew install git-filter-repo` only if you are ADOPTING an
+existing repository rather than scaffolding a new one. The stock `/bin/bash` is
+3.2 and is enough: `setup.sh` and the `openRepoShape` command use no syntax
+newer than that, and CI runs the whole suite on `macos-latest`, parsing both
+there with `/bin/bash` itself. That the login shell is zsh changes nothing —
+both entry points are run under `bash` explicitly.
 
 </details>
 
@@ -172,16 +171,17 @@ run the four steps below INSIDE the WSL shell.
 > [!NOTE]
 > **The tool offers the rest.** The four steps below are the reference — what
 > each platform needs, and how to install it by hand. You do not have to: step 4
-> opens with a preflight that names what is missing and, for `gh` and its login,
-> prints the command for THIS machine and asks once — `Type yes to continue:`,
-> the same words it asks everything else with — then runs it and carries on.
-> Nothing is installed without that typed `yes`; `--yes` does not answer it, and
-> with no terminal attached there is no offer at all. Homebrew is the one
-> install never run for you: on a Mac without `brew` the preflight names
-> <https://brew.sh> and stops there. To check a machine and stop, creating
-> nothing, run `openRepoShape --preflight` — `py setup-project.py --preflight`
-> on Windows — which exits 0 when everything is present and 1 when it is not
-> (`openRepoShape --preflight` exits 2 when `git` or Python 3.9 is missing).
+> opens with a preflight that names what is missing and, for `gh`, its login and
+> its credential helper, prints the command for THIS machine and asks once —
+> `Type yes to continue:`, the same words it asks everything else with — then
+> runs it and carries on. Nothing is installed without that typed `yes`; `--yes`
+> does not answer it, and with no terminal attached there is no offer at all.
+> Homebrew is the one install never run for you: on a Mac without `brew` the
+> preflight names <https://brew.sh> and stops there. To check a machine and
+> stop, creating nothing, run `openRepoShape --preflight` — `py setup-project.py
+> --preflight` on Windows — which exits 0 when everything is present and 1 when
+> it is not (`openRepoShape --preflight` exits 2 when `git` or a Python 3.9 or
+> newer is missing).
 
 **1. Install the GitHub CLI**, `gh`. The official instructions are at
 <https://cli.github.com/> (and <https://github.com/cli/cli#installation>):
@@ -316,16 +316,16 @@ subcommand's in one file, generated from the tools themselves.
 Without installing anything — no fork, no manual clone — one command:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup.sh \
-    | bash -s -- --org <your-org> --project Atlas
+bash <(curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup.sh) \
+    --org <your-org> --project Atlas
 ```
 
 An organisation whose policy blocks raw GitHub downloads can fetch the same
 bytes through the API instead:
 
 ```sh
-gh api repos/opensoft/openRepoShape/contents/setup.sh --jq .content \
-    | base64 --decode | bash -s -- --org <your-org> --project Atlas
+bash <(gh api repos/opensoft/openRepoShape/contents/setup.sh --jq .content \
+    | base64 --decode) --org <your-org> --project Atlas
 ```
 
 Shorter still, once: install the `openRepoShape` command and this becomes
@@ -371,15 +371,14 @@ create repositories in. `make` is not used by the entry point — it runs
 Or run `openRepoShape --preflight`, which checks this machine, offers what is
 missing and creates nothing.
 
-**2. Login.** `gh auth login`, as the account that will own the act: a member
-of `Northwind` with permission to create repositories there, or an owner —
+**2. Login.** `gh auth login`, as the account that will own the act: a member of
+`Northwind` with permission to create repositories there, or an owner —
 `scaffold-project.py` creates the three with `gh repo create` under whatever
 account `gh auth status` shows. Accept the offer to configure git's credential
-helper, or run `gh auth setup-git`: the first commits go up with a plain
-`git push` over HTTPS, and without it the three repositories are created and
-the push fails. `--elected-by` authenticates nothing — it is only the name
-`project.yaml` records as whose act the election was, and it defaults to the
-`gh` login.
+helper, or run `gh auth setup-git`: the first commits go up with a plain `git
+push` over HTTPS, and without it the three repositories are created and the push
+fails. `--elected-by` authenticates nothing — it is only the name `project.yaml`
+records as whose act the election was, and it defaults to the `gh` login.
 
 #### Install the command
 
@@ -415,9 +414,9 @@ curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoTools/main/openRep
 Or type the long line, on a machine you would rather install nothing on:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup.sh \
-    | bash -s -- --org Northwind --project Atlas \
-      --visibility private --elected-by 'Dana Okafor'
+bash <(curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup.sh) \
+    --org Northwind --project Atlas \
+    --visibility private --elected-by 'Dana Okafor'
 ```
 
 #### Run
@@ -573,8 +572,9 @@ is no repository of a project at all — a person's own workspace repository
 `<user>-wip` (#81, and
 [below](#carrying-in-flight-work-to-another-workstation)). The leg suffixes are
 lowercase and hyphenated precisely so they sit in a different visual class from
-every other family but `<user>-wip`, all of which are CamelCase words. Every
-repository of a project also carries the GitHub topic `xf-project-<id>`.
+the neutral-product, domain-descendant and family forms, all of which are
+CamelCase words. Every repository of a project also carries the GitHub topic
+`xf-project-<id>`.
 
 ### Reading private legs in CI: a GitHub App first, `SHAPE_LEGS_TOKEN` as fallback
 
@@ -719,14 +719,13 @@ confers nothing, so `openDox` mounting `openDox-spec` and `openDox-code` is a
 fact about LAYOUT and not a claim about neutrality: exactly the reasoning that
 already lets a declared descendant be a root. `open` in front still WINS the
 classification — the manifest records `form: neutral-product, role: assembly`
-with `also_matches: [project-leg/assembly]`, so the overlap the scaffold used
-to compute and then throw away is now recorded like every other one, and
+with `also_matches: [project-leg/assembly]`, so the overlap the scaffold used to
+compute and then throw away is now recorded like every other one, and
 `validate-repository-naming.py --explain --role assembly openDox` names the
 admission. The legs are untouched: `openDox-spec` carries the lowercase suffix
-and is an ordinary project leg, a descendant of nothing and a neutral product
-of nothing. `<X>-Install` is admitted into nothing at all — it carries a
-hyphen, so it satisfies no leg form to be admitted into, and is still refused
-as any leg.
+and is an ordinary project leg, a descendant of nothing and a neutral product of
+nothing. `<X>-Install` is admitted into nothing at all — it carries a hyphen, so
+it satisfies no leg form to be admitted into, and is still refused as any leg.
 
 ## Adopting an existing repository
 
@@ -1158,8 +1157,9 @@ one verdict, and its exit code:
 | `INVALID (<rows>)` | 1 | a validator went red |
 | `NOT A SHAPE ROOT` | 2 | neither manifest is there — adopt, or scaffold |
 
-Exit 3 is environment alone (a usage error is exit 2) — nothing about it is a statement
-about the tree you pointed at: no such path, a `shape-doctor.py` not sitting in a
+Exit 3 is usage or environment (a flag argparse rejects is exit 2) — nothing about
+it is a statement about the tree you pointed at: no such path, a refused
+`--placement-plan`, a `shape-doctor.py` not sitting in a
 checkout of the standard, or a pin naming a commit **this** checkout does not
 carry (`CANNOT ANSWER`). **Drift outranks a red validator**
 on the verdict line, deliberately — an edited shape copy is exactly what makes
@@ -1176,19 +1176,20 @@ each row carrying its `id`.
 adoption's own policy — `contracts/path-classification.yaml`, walked with
 `adopt-project.py`'s own `walk()`, so there is no second copy of that
 classification to drift — over every tracked path of every mounted leg, and
-names the paths the policy would have put somewhere else, each with the rule
-id that judged it. What belongs to **every** repository is never judged: the
-four files `templates/spec-root/` and `templates/code-root/` themselves ship
-(`README.md`, `AGENTS.md`, `CLAUDE.md`, `.gitignore`), read from those
-templates at run time so the scaffold's own output can never be a finding,
-plus `LICENSE`, `.gitattributes`, `CODEOWNERS`, `.github/**` and the rest of
-the forge furniture — `--json` prints the whole list under `everywhere`,
-because what a report declined to look at belongs in the report. A path the
-policy will not call carries `review_required` and is a **`note`**: it is a
-question for a human, and an unanswered question is never a finding. One
-`git ls-files` per leg, one process for the classifying, and a directory whose
-files agree is ONE path however many are under it — so a leg of several
-thousand files answers in seconds and reads in a line.
+names the paths the policy would have put somewhere else, each with the rule id
+that judged it, and a submodule in the other leg than its `submodules:`
+record's. What belongs to **every** repository is never judged: the four files
+`templates/spec-root/` and `templates/code-root/` themselves ship (`README.md`,
+`AGENTS.md`, `CLAUDE.md`, `.gitignore`), read from those templates at run time
+so the scaffold's own output can never be a finding, plus `LICENSE`,
+`.gitattributes`, `CODEOWNERS`, `.github/**` and the rest of the forge furniture
+— `--json` prints the whole list under `everywhere`, because what a report
+declined to look at belongs in the report. A path the policy will not call
+carries `review_required` and is a **`note`**: it is a question for a human, and
+an unanswered question is never a finding. One `git ls-files` per leg, one
+process for the classifying, and a directory whose files agree is ONE path
+however many are under it — so a leg of several thousand files answers in
+seconds and reads in a line.
 
 **And the doctor still moves nothing.** A path changing legs is a pull request
 on the leg it leaves, a pull request on the leg it joins, and one pin bump in
@@ -1275,13 +1276,13 @@ current directory is used: the nearest holder beside you, or project root above
 you. With no estate around it either, `park` lists every estate it finds under
 your projects directory and ASKS whether to park them all (with no terminal on
 stdin it refuses and names `--all`); `park --all`, or `-a`, parks them all
-unasked, in name order, continuing past a refusal and skipping a root with no
-Speckit overlay (Brett Heap's RULINGs of 2026-09-10, the later superseding #91's
-unasked sweep). `resume` has no `--all`, and its bare form still refuses —
-rebuilding every estate on a fresh machine by accident is the opposite risk from
-failing to park the one you meant. `--repo <owner/name>` names the estate by the
-`origin` of a clone you ALREADY have, in any url spelling; it never clones one,
-because `resume` is the command that clones and it clones from the record.
+unasked, in name order, continuing past a refusal and skipping a standalone root
+with no Speckit overlay (Brett Heap's RULING of 2026-09-10, superseding #91).
+`resume` has no `--all`, and its bare form still refuses — rebuilding every
+estate on a fresh machine by accident is the opposite risk from failing to park
+the one you meant. `--repo <owner/name>` names the estate by the `origin` of a
+clone you ALREADY have, in any url spelling; it never clones one, because
+`resume` is the command that clones and it clones from the record.
 
 **What they leave behind, said out loud.** `park` finishes by printing what
 did NOT park and why none of it is park's to touch: commits on a `main` that
@@ -1302,9 +1303,8 @@ left behind, which is the point of printing that report.
 **This repository implements neither, deliberately** (ruled by Brett Heap,
 2026-09-09, #77). The WIP commit, the push, the `git worktree add`, the
 `.specify/feature.json` rewrite and the soft reset are the **Speckit git
-extension's**, which `setup-openspeckit` installs — one implementation. The
-two targets are three lines each and refuse BY NAME when the overlay is not
-there:
+extension's**, which `setup-openspeckit` installs — one implementation. The two
+targets are three lines each and refuse BY NAME when the overlay is not there:
 
     make park needs the Speckit worktree overlay; install it with: setup-openspeckit
 

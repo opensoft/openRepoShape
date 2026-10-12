@@ -1,13 +1,12 @@
 # AGENTS.md — scaffolding, adopting, updating, advancing a leg, families
 
-You are an AI assistant a human has asked to "scaffold a new project with
-this shape", or "convert this repository to it", or "put these services in a
-family". This is the whole procedure; `README.md` says what the shape is.
-Sections 1-3 scaffold a NEW project; the ones after them cover an EXISTING
-repository (including one with no code yet), a project that declares descent
-from a neutral product, a repository nobody is sure about, a project whose
-copied shape files have fallen behind the upstream, a leg that has moved on,
-and a FAMILY holder.
+You are an AI assistant a human has asked to "scaffold a new project with this
+shape", or "convert this repository to it", or "put these services in a family".
+This is the whole procedure; `README.md` says what the shape is. Sections 1-3
+scaffold a NEW project; the ones after them cover an EXISTING repository
+(including one with no code yet), a project that declares descent from a neutral
+product, a repository nobody is sure about, a project whose copied shape files
+have fallen behind the upstream, a leg that has moved on, and a FAMILY holder.
 
 `docs/cli.md` is the flag-level reference: every tool's own `--help`, and
 every subcommand's, in one file — the ones you run from a checkout of this
@@ -56,9 +55,9 @@ visibility they want, ask — do not assume. `elected_by` records whose act it w
 ## 2. Run the one-liner, without `--yes`
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup.sh \
-    | bash -s -- --org <org> --project <Project> \
-      --visibility <private|public|internal> --elected-by '<Name>'
+bash <(curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup.sh) \
+    --org <org> --project <Project> \
+    --visibility <private|public|internal> --elected-by '<Name>'
 ```
 
 `openRepoShape <Project> --org <org> --visibility <…> --elected-by '<Name>'`
@@ -162,11 +161,10 @@ only. Never suggest a direct push to the default branch, and never `--admin`.
 
 ### Adopting a repository that has NO code yet (or no spec)
 
-A leg no plan entry assigns a path to is SEEDED from
-`templates/<role>-root/`, not extracted — `git filter-repo` over an empty
-path list yields an empty history, not an empty repository. `plan` and
-`check` both WARN; `check` still passes, because a spec-only repository is a
-legitimate thing to adopt.
+A leg no plan entry assigns a path to is SEEDED from `templates/<role>-root/`,
+not extracted — `git filter-repo` over an empty path list yields an empty
+history, not an empty repository. `plan` and `check` both WARN; `check` still
+passes, because a spec-only repository is a legitimate thing to adopt.
 
 ```sh
 ./adopt-project.py plan --source <org>/<Repo> --project <Project> \
@@ -232,13 +230,13 @@ command) run `./shape-doctor.py --root <path>` from a checkout.
    rendered `AGENTS.md`. It never moves the verdict. Report it; propose a
    change only if the human asks.
 3. **A FINDING names its fix, and you run THAT.** Every one carries the exact
-   next command — `update-shape.py check …` and the `apply` it leads to, `git
-   submodule update …` (in a holder, its `scripts/bootstrap.py`), the project's
-   own validator. Run the one the row names. Do not improvise a repair, and
-   never edit a pinned file, a digest or a manifest to make a row go green: that
-   is the hand-edited pin this standard spends a section refusing. Each of those
-   tools has its own section in this file and its own refusals, and they all
-   still apply.
+   next command, where one can be named — `update-shape.py check …` and the
+   `apply` it leads to, `git submodule update …` (in a holder, its
+   `scripts/bootstrap.py`), the project's own validator. Run the one the row
+   names. Do not improvise a repair, and never edit a pinned file, a digest or a
+   manifest to make a row go green: that is the hand-edited pin this standard
+   spends a section refusing. Each of those commands keeps its own refusals, and
+   they all still apply.
 4. **`placement` says what is in the wrong leg, and you never move a file
    to answer it.** It runs the adoption's own path policy over each mounted
    leg and names the paths it would have put elsewhere — code in the spec
@@ -265,7 +263,7 @@ command) run `./shape-doctor.py --root <path>` from a checkout.
 6. **The `machine` row is not about the repository.** It is `n/a` by status and
    never changes the verdict: it says whether THIS workstation can run the fixes
    the other rows named. Relay a missing prerequisite; `openRepoShape
-   --preflight` is what offers to install one, and the human types that yes.
+   --preflight` offers only the `gh` set-up, and the human types that yes.
 7. `./shape-doctor.py --json` is the same report as one object, each row
    carrying its `id`, for when you have to act on a row rather than quote it.
 
@@ -285,10 +283,12 @@ git -C <path> push -u origin shape/update-<sha>   # then open a pull request
 ```
 
 1. **`check` first, always.** It writes nothing and prints one verdict per
-   PINNED file: `unchanged`, `upstream-changed`, `locally-modified` (the
-   project edited its own copy) or `both`. A file with no row in
-   `contracts/shape-pin.yaml` is not a shape copy and is none of your business
-   — an adopted project merged some of them away on purpose.
+   PINNED file: `unchanged`, `upstream-changed`, `locally-modified` (the project
+   edited its own copy) or `both`; also `already-at-target` and
+   `upstream-removed`, `unmapped` and `copy-missing`; `apply` refuses the last
+   three. A file with no row in `contracts/shape-pin.yaml` is not a shape copy
+   and is none of your business — an adopted project merged some of them away on
+   purpose.
 2. **Show the human the verdicts and let them say yes.** Re-pinning records
    which openRepoShape this project is a copy of. Do not pass `--yes` on your
    own initiative.

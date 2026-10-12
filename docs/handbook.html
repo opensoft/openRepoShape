@@ -640,8 +640,8 @@ sudo dnf install gh</code></pre></div>
           <code>setup-project.py --preflight</code> offers to run for you; the run and
           <code>openRepoShape</code> need <code>git</code> before their preflight starts.</p>
           <h4>The tool offers the rest</h4>
-          <p>The run opens with a preflight that names what is missing and, for <code>gh</code> and
-          its login, prints the command for THIS machine and asks once &mdash;
+          <p>The run opens with a preflight that names what is missing and, for <code>gh</code>, its
+          login and its credential helper, prints the command for THIS machine and asks once &mdash;
           <code>Type yes to continue:</code>, the same words it asks everything else with &mdash;
           then runs it and carries on. A missing <code>git</code> is refused before the preflight
           starts, with where to get it (<code>setup.sh</code> does the same for a Python older than
@@ -678,8 +678,8 @@ sudo dnf install gh</code></pre></div>
           That the login shell is zsh changes nothing &mdash; both entry points are run under
           <code>bash</code> explicitly.</p>
           <h4>The tool offers the rest</h4>
-          <p>The preflight names what is missing and, for <code>gh</code> and its login, prints the
-          command for THIS machine and asks once &mdash; <code>Type yes to continue:</code> &mdash;
+          <p>The preflight names what is missing and, for <code>gh</code>, its login and its
+          credential helper, prints the command for THIS machine and asks once &mdash; <code>Type yes to continue:</code> &mdash;
           then runs it and carries on.
           <strong>Homebrew is the one install never run for you</strong>: on a Mac without
           <code>brew</code> the preflight names <a href="https://brew.sh">brew.sh</a> and stops
@@ -699,8 +699,8 @@ sudo dnf install gh</code></pre></div>
           <a href="https://git-scm.com/downloads">git-scm.com/downloads</a>, and <code>gh</code>
           with <code>winget install --id GitHub.cli -e</code>.</p>
           <h4>The tool offers the rest</h4>
-          <p>The preflight names anything missing and, for <code>gh</code> and its login, prints the
-          command for THIS machine and asks once &mdash; <code>Type yes to continue:</code> &mdash;
+          <p>The preflight names anything missing and, for <code>gh</code>, its login and its
+          credential helper, prints the command for THIS machine and asks once &mdash; <code>Type yes to continue:</code> &mdash;
           then runs it and carries on. On Windows those offers are the winget ones:
           <code>winget install --id GitHub.cli -e</code> for <code>gh</code> and, only under
           <code>py setup-project.py --preflight</code>, <code>winget install --id Git.Git -e</code>
@@ -732,8 +732,8 @@ sudo dnf install gh</code></pre></div>
 	&amp;&amp; sudo apt update \
 	&amp;&amp; sudo apt install gh -y</code></pre></div>
           <h4>The tool offers the rest</h4>
-          <p>The preflight names anything missing and where to get it and, for <code>gh</code> and
-          its login, prints the command for THIS machine and asks once &mdash;
+          <p>The preflight names anything missing and where to get it and, for <code>gh</code>, its
+          login and its credential helper, prints the command for THIS machine and asks once &mdash;
           <code>Type yes to continue:</code> &mdash; then runs it and carries on.</p>
         </div>
 
@@ -1119,9 +1119,8 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
       &mdash; <code>&lt;user&gt;-wip</code>, <a href="#park">a person&rsquo;s own workspace
       repository</a>, unambiguous by construction because nothing else here spells that suffix. The
       leg suffixes are lowercase and hyphenated precisely so they sit in a different visual class
-      from every other family but one, all of which are CamelCase words; the exception is the
-      workspace form <code>&lt;user&gt;-wip</code>, lowercase and hyphenated too, with a suffix no
-      leg form admits. Every repository of a project also carries the GitHub topic
+      from the neutral-product, domain-descendant and family forms, all of which are CamelCase
+      words. Every repository of a project also carries the GitHub topic
       <code>xf-project-&lt;id&gt;</code>.</p>
       <p>A descendant form is a claim, and a claim needs a referent:
       <code>&lt;Domainx&gt;&lt;Product&gt;</code> counts as a descendant only if it PINS
@@ -1485,8 +1484,9 @@ openRepoShape --doctor                 # the repository you are standing in
           <tr><td><code>NOT A SHAPE ROOT</code></td><td>2</td><td>neither manifest is there &mdash; adopt, or scaffold</td></tr>
         </tbody>
       </table>
-      <p>A malformed command line is exit 2, as argparse makes it. Exit 3 is environment &mdash;
-      nothing about it is a statement about the tree you pointed at: no such path, a <code>shape-doctor.py</code> not in a checkout of the
+      <p>Exit 3 is usage or environment (a flag argparse rejects is exit 2) &mdash; nothing about
+      it is a statement about the tree you pointed at: no such path, a refused
+      <code>--placement-plan</code>, a <code>shape-doctor.py</code> not in a checkout of the
       standard, or a pin naming a commit <em>this</em> checkout does not carry
       (<code>CANNOT ANSWER</code>). <strong>Drift outranks a red validator</strong> on the
       verdict line, deliberately: an edited shape copy is exactly what makes
@@ -1504,7 +1504,8 @@ openRepoShape --doctor                 # the repository you are standing in
       <code>contracts/path-classification.yaml</code>, walked with
       <code>adopt-project.py</code>&rsquo;s own <code>walk()</code>, so there is no second copy of
       that classification to drift &mdash; over every tracked path of every mounted leg, and names
-      the paths the policy would have put somewhere else, each with the rule id that judged it.
+      the paths the policy would have put somewhere else, each with the rule id that judged it,
+      and a submodule in the other leg than its <code>submodules:</code> record&rsquo;s.
       What belongs to <strong>every</strong> repository is never judged: the four files
       <code>templates/spec-root/</code> and <code>templates/code-root/</code> themselves ship
       (<code>README.md</code>, <code>AGENTS.md</code>, <code>CLAUDE.md</code>,
@@ -1599,7 +1600,7 @@ resume InkRouter                # on workstation B, and the estate is back</code
       <code>park</code> lists every estate it finds under your projects directory and ASKS whether
       to park them all (with no terminal on stdin it cannot ask, so it refuses and names
       <code>--all</code>); <code>park --all</code>, or <code>-a</code>, parks them all unasked,
-      from anywhere, in name order, continuing past a refusal and skipping a root that carries no
+      from anywhere, in name order, continuing past a refusal and skipping a standalone root that carries no
       Speckit overlay (Brett Heap&rsquo;s RULINGs of 2026-09-10: #91&rsquo;s unasked sweep,
       superseded the same day by this question).
       <code>--repo &lt;owner/name&gt;</code> names the estate by the <code>origin</code> of a clone
@@ -1829,7 +1830,7 @@ resume InkRouter                # on workstation B, and the estate is back</code
       list every flag, added (#341); the statements the v1.0.0 accuracy pass found false,
       corrected here as in the README, added (#483) &mdash; a page cannot name the commit that
       contains it, and the blob below is the fact a test checks.
-      README.md blob 6252b58b32dc7b72cfd57baeb04c9e175a991336. Every command, flag, exit code
+      README.md blob c5c3c1817026e82b875245e69d6daee0ff3908c9. Every command, flag, exit code
       and file name on this page is quoted from that README and from AGENTS.md.</p>
     </footer>
   </main>
