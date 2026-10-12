@@ -216,15 +216,18 @@ def _member_project_name(row: dict, seen: dict, report: Report) -> str | None:
     """The row's own `project:`, or None when nothing else about this member
     should run — it has none, or its name was already seen once in
     `members:`. Split from `_check_member` for #137: the two ways this
-    member's checks stop before they start, in one place."""
+    member's checks stop before they start, in one place.
+
+    A name seen once already stops this row's checks and says nothing: the
+    finding for it is `_check_member_names_unique`'s (#331), made before any
+    row is checked so `--no-members` makes it too, and made once, not here as
+    well."""
     project = row.get("project")
     if not isinstance(project, str) or not project:
         report.finding("member-project", f"a member row has no `project:`: "
                                          f"{row!r}")
         return None
     if project in seen:
-        report.finding("member-duplicate",
-                       f"{project} appears more than once in `members:`")
         return None
     seen[project] = True
     return project
@@ -522,6 +525,68 @@ def _check_shape_pin(root: Path, manifest: dict, report: Report) -> None:
     _check_shape_pin_files(root, pin, rel, report)
 
 
+def _check_member_names_unique(members: list, report: Report) -> None:
+    """No two rows of `members:` name ONE project, in any case — the
+    `member-duplicate` finding (#331).
+
+    It reads `members:` alone, so it runs under `--no-members` too, the run a
+    private family's CI falls back to when its members cannot be checked out,
+    and it runs before any row is checked, as `member-duplicate-id` does
+    (#206). `_member_project_name` used to make this finding, and only the
+    members-checked loop reaches that, so `--no-members` passed a
+    `family.yaml` that named one row twice. It is made HERE and once, in
+    every mode: `_member_project_name` still skips a row it has already seen,
+    and says nothing.
+
+    Two spellings that differ only in case are one row: `members/IRRS` and
+    `members/irrs` are ONE directory on a case-insensitive disk (macOS,
+    Windows), where a holder can mount only one of them, whatever `id:` each
+    row records. The rows' ids are no help here and `member-duplicate-id`'s
+    question is a different one: it asks whether one PROJECT is mounted
+    twice, this asks whether one DIRECTORY is named twice.
+
+    THE FOLD IS `str.lower()`, NOT `str.casefold()`, because every name this
+    standard admits for `project:` is ASCII, and on ASCII the two agree.
+    `family.py add` takes the name through `checked_value`
+    (`[A-Za-z0-9._/@+~-]`); a members-checked run refuses any other as
+    `member-repository` (`QUALIFIED_RE` holds the repository to ASCII) and
+    `member-repository-name` (the repository's name must BE the project).
+    `Family.member` in `family.py` compares with `lower()` (#206), so the tool
+    that writes the rows and this gate cannot disagree about which rows are
+    one. `casefold()` would only add folds (the German sharp s to `ss`) for
+    names no member can have.
+
+    A row whose spelling an earlier row already has, to the byte, keeps the
+    finding it always had. A row that differs only in case names BOTH rows as
+    written. Either way each later row is one finding, against the first row
+    that holds its name. A row with no `project:` is `member-project`'s, and
+    a row that is no mapping is `member-row`'s: both are skipped here, as
+    `_check_member_ids_unique` skips them.
+    """
+    spelled: set[str] = set()
+    first_folded: dict[str, str] = {}
+    for row in members:
+        if not isinstance(row, dict):
+            continue
+        project = row.get("project")
+        if not isinstance(project, str) or not project:
+            continue
+        if project in spelled:
+            report.finding("member-duplicate",
+                           f"{project} appears more than once in `members:`")
+            continue
+        spelled.add(project)
+        first = first_folded.setdefault(project.lower(), project)
+        if first != project:
+            report.finding(
+                "member-duplicate",
+                f"{first} and {project} are two rows of `members:` whose "
+                f"`project:` differs only in case, so `members/{first}` and "
+                f"`members/{project}` are one directory on a case-insensitive "
+                "disk (macOS, Windows), where a holder can mount only one of "
+                "them. A family pins each project once.")
+
+
 def _check_member_ids_unique(root: Path, members: list,
                              report: Report) -> None:
     """No two rows record ONE `id:` — that is one project pinned twice (#206).
@@ -576,6 +641,7 @@ def _check_members(root: Path, members: list, no_members: bool,
 
     Split from `main` for #137.
     """
+    _check_member_names_unique(members, report)
     _check_member_ids_unique(root, members, report)
     if no_members:
         print(f"  --  {len(members)} member(s) SKIPPED (--no-members): "
