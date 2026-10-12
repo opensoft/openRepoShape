@@ -6,6 +6,15 @@ NO NETWORK AND NO GITHUB. Every test here runs `scaffold-project.py` with
 directory and uses them as origins. Nothing in this suite may create a real
 repository; if a test ever needs `gh`, it is the wrong test.
 
+AND THAT IS ENFORCED, NOT HOPED FOR (#296). A session fixture at the end of
+this file puts a GUARD `gh` (`tests/gh_guard.py`) first on PATH for every
+child of every test: it answers the two questions the doctor's `machine` row
+and the installed command's machine report ask -- `gh --version` and `gh
+auth status` -- as an installed `gh` with no login, and refuses and logs
+anything else, and a check after each test fails that test by name if the
+guard refused one of its calls. A test that means to run `gh` puts a stub
+of its own ahead of the guard, as the existing ones do.
+
 The scaffold and the recursive clone happen ONCE per session because they are
 the slow part; each test that mutates a tree gets its own `copytree` of the
 clone. A submodule's `.git` is a file holding a RELATIVE path into
@@ -18,6 +27,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -500,3 +510,133 @@ def refused_before_any_leg(adopter, monkeypatch: pytest.MonkeyPatch,
     assert "no leg repository was created" in refusal.remediation
     assert not remotes.exists()
     return refusal
+
+
+# --- the `gh` guard (#296) ---------------------------------------------------
+#
+# NO TEST REACHES THE OPERATOR'S `gh`, and the doctor's `machine` row is still
+# tested. 149 tests in four files used to run whatever `gh` was on PATH -- the
+# doctor's `machine` row runs `setup-project.py --preflight`, which asks `gh
+# --version`, `gh auth status` and, logged in, `gh api user`, and the
+# installed command's `--install` asks `gh auth status` -- and the module
+# docstring's promise above was a sentence nothing held to. `tests/gh_guard.py`
+# says what the guard answers and why it answers the two probes instead of
+# refusing them; this block puts it in front of every child and fails a test
+# whose calls it refused.
+#
+# ONE SCRIPT, TWO LAUNCHERS. `gh` is a POSIX `#!/bin/sh` that `exec`s this
+# interpreter on the script; `gh.cmd` does the same for Windows, where a
+# shebang means nothing. WHAT REACHES THE GUARD ON WINDOWS IS LESS, and the
+# code under test decides it, not this block: every tool here starts `gh` as
+# a bare `["gh", ...]` argv, and CreateProcess looks that up as `gh.exe` alone
+# -- it does not read PATHEXT -- so a doctor run there still reaches the real
+# `gh.exe` if one is installed (the Windows runner's, which holds no login),
+# and the guard logs nothing. `shutil.which("gh")` does read PATHEXT and finds
+# `gh.cmd`, which is how `tests/test_gh_guard.py` reaches the launcher there.
+# The guard can therefore never fail a Windows test spuriously: only a call
+# made through a PATHEXT-aware lookup can reach it at all.
+#
+# NO PRODUCT SEAM. No flag or variable in the doctor, `setup-project.py` or
+# `openRepoShape` leaves the row out: PATH alone does it, so no CLI surface
+# and no line of `docs/cli.md` moved for a test's sake.
+#
+# THE SCRIPT IS IMPORTED HERE TOO: the probe table, the log format and the
+# decision the per-test check makes are the ones the guard itself uses.
+from gh_guard import LOG_NAME as GH_GUARD_LOG  # noqa: E402
+from gh_guard import failure as gh_guard_failure  # noqa: E402
+
+GH_GUARD_SCRIPT = Path(__file__).resolve().with_name("gh_guard.py")
+
+
+def install_gh_guard(directory: Path) -> Path:
+    """`tests/gh_guard.py` and its two launchers in `directory`, and an empty
+    log beside them; returns the log.
+
+    A COPY of the script, so that the log it writes beside itself lands in
+    `directory` and never in this checkout. The launchers name this
+    interpreter and that copy by absolute path, quoted for their own shell;
+    they are written as BYTES because `Path.write_text` has no `newline=`
+    before 3.10, and `gh.cmd` keeps cmd.exe's CRLF.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    script = directory / GH_GUARD_SCRIPT.name
+    shutil.copyfile(GH_GUARD_SCRIPT, script)
+    posix = directory / "gh"
+    posix.write_bytes(
+        f"#!/bin/sh\nexec {shlex.quote(sys.executable)} "
+        f"{shlex.quote(str(script))} \"$@\"\n".encode("utf-8"))
+    posix.chmod(0o755)
+    # `exit /b %ERRORLEVEL%` hands the script's status back as the batch
+    # file's own, so 0, 1 and 97 survive the trip through cmd.exe.
+    (directory / "gh.cmd").write_bytes(
+        f"@echo off\r\n\"{sys.executable}\" \"{script}\" %*\r\n"
+        "exit /b %ERRORLEVEL%\r\n".encode("utf-8"))
+    log = directory / GH_GUARD_LOG
+    log.write_bytes(b"")
+    return log
+
+
+class GhGuard:
+    """The session's guard: its directory, its log, and how much of the log
+    has been read.
+
+    `take` is the ONE way a line is marked read. The per-test check takes
+    after every test, so a line counts against the test whose setup, call or
+    teardown wrote it -- a session fixture that a test's setup started
+    included. A test that runs the guard on purpose (`tests/test_gh_guard.py`)
+    takes its own lines and asserts on them, which is what keeps them out of
+    the check: no marker is needed for that, and none is added.
+    """
+
+    def __init__(self, directory: Path, log: Path) -> None:
+        self.directory = directory
+        self.log = log
+        self.read = 0
+
+    def take(self) -> list:
+        """Every line logged since the last `take`, now marked read."""
+        lines = self.log.read_text(encoding="utf-8").splitlines()
+        taken, self.read = lines[self.read:], len(lines)
+        return taken
+
+
+@pytest.fixture(scope="session", autouse=True)
+def gh_guard(tmp_path_factory):
+    """The guard, FIRST on `os.environ["PATH"]` for the whole session.
+
+    `os.environ`, so every child inherits it however it is started:
+    `run_script`, `run_cmd` in `tests/test_openreposhape_command.py`, or a
+    bare `subprocess.run`. A test that installs its own `gh` stub puts its
+    directory ahead of this one and keeps winning, as it always did. Session
+    scope and autouse, so it is set up before any other session fixture --
+    `scaffolded` included -- and torn down after all of them; PATH is put
+    back as it was, and a refused call nobody took by then fails the run at
+    the last teardown rather than passing unread.
+    """
+    directory = tmp_path_factory.mktemp("gh-guard")
+    guard = GhGuard(directory, install_gh_guard(directory))
+    before = os.environ.get("PATH")
+    os.environ["PATH"] = str(directory) + (os.pathsep + before
+                                           if before else "")
+    try:
+        yield guard
+        found = gh_guard_failure(guard.take())
+        if found:
+            pytest.fail(found, pytrace=False)
+    finally:
+        if before is None:
+            os.environ.pop("PATH", None)
+        else:
+            os.environ["PATH"] = before
+
+
+@pytest.fixture(autouse=True)
+def gh_guard_check(gh_guard):
+    """Fail the test, at its teardown, when the guard refused one of its
+    calls, naming each call and the test phase that made it.
+
+    The two probes pass: they are what the `machine` row asks, answered."""
+    yield
+    found = gh_guard_failure(gh_guard.take())
+    if found:
+        pytest.fail(found, pytrace=False)
