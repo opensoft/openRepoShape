@@ -226,6 +226,88 @@ def test_the_refusal_names_what_the_template_lacks_and_nothing_a_value_holds(
     assert caught.value.remediation == REMEDIATION
 
 
+@pytest.mark.parametrize("text, source", [
+    pytest.param("{{ZULU}} {{HAVE}} {{ALPHA}} {{MIKE}} {{ZULU}} {{ALPHA}}\n",
+                 "README.md", id="markdown"),
+    pytest.param('z: "{{ZULU}}"\nh: "{{HAVE}}"\na: {{ALPHA}}\n'
+                 'm: "{{MIKE}}"\nz2: {{ZULU}}\n',
+                 "project.yaml", id="yaml"),
+])
+def test_the_refusal_names_the_missing_placeholders_sorted_and_each_once(
+        text, source):
+    """The refusal's list is the SORTED set of what the template lacks.
+    Here the template holds ZULU, ALPHA and MIKE in that order, so neither
+    the order they are met in nor its reverse is the sorted one, and ZULU
+    and ALPHA stand twice, so a list that kept every sighting names them
+    twice. HAVE has a value and is not named."""
+    with pytest.raises(Refusal) as caught:
+        render(text, {"HAVE": "have"}, source)
+    assert caught.value.code == "template-unsubstituted"
+    assert caught.value.detail == (
+        f"{source}: no value for "
+        f"{[token('ALPHA'), token('MIKE'), token('ZULU')]}")
+    assert caught.value.remediation == REMEDIATION
+
+
+#: What a person can type for `--elected-by` that the YAML reader takes back
+#: only if it is double-quoted: a quote, a backslash, and both together.
+QUOTE_AND_BACKSLASH = [
+    pytest.param('Robert "Bob" Smith', id="double-quotes"),
+    pytest.param("C:\\new", id="backslash-letter"),
+    pytest.param('say "hi" to C:\\new\\', id="both-ending-in-a-backslash"),
+]
+
+
+@pytest.mark.parametrize("value", QUOTE_AND_BACKSLASH)
+@pytest.mark.parametrize("source", ["project.yaml", "workflow.yml"])
+def test_a_quoted_placeholder_in_either_yaml_extension_reads_back_exactly(
+        source, value):
+    """`.yml` is spelled as `.yaml` is, though no `.yml` template holds a
+    placeholder today (the two `validate.yml` workflows hold none): a
+    synthetic source renders a quoted placeholder with a quote and a
+    backslash in its value, and the reader takes back what was typed."""
+    text = 'elected_by: "{{ELECTED_BY}}"\nreference: "{{ELECTED_BY}}"\n'
+    written = render(text, {"ELECTED_BY": value}, source)
+    assert parse_yaml(written) == {"elected_by": value, "reference": value}
+    assert written == render(text, {"ELECTED_BY": value}, "project.yaml")
+    assert written != render(text, {"ELECTED_BY": value}, "README.md")
+
+
+@pytest.mark.parametrize("source", ["README.md", "project.yaml",
+                                    "workflow.yml"])
+def test_an_empty_value_is_a_value_and_never_a_missing_one(source):
+    """The leg commit and the leg digest are `""` until the legs exist
+    (`adopt-project.py` fills them with `.get(role, "")`). An empty string in
+    the table is a value, written as empty text, bare or between a YAML
+    template's quotes, and never refused as `template-unsubstituted`."""
+    text = 'commit: {{COMMIT}}\nby: "{{ELECTED_BY}}"\nother: {{OTHER}}\n'
+    values = {"COMMIT": "", "ELECTED_BY": "", "OTHER": "kept"}
+    assert render(text, values, source) == (
+        'commit: \nby: ""\nother: kept\n')
+
+
+@pytest.mark.parametrize("template", sorted(
+    rel for rel, text in TEMPLATE_TEXT.items() if KEY_TOKEN.search(text)))
+def test_every_template_renders_with_every_value_empty(template):
+    """Each template that holds a placeholder, with an empty value for every
+    key it names, renders as the template with its placeholders removed: the
+    quotes round a YAML placeholder stay, and no key is refused for being
+    empty."""
+    text = TEMPLATE_TEXT[template]
+    values = dict.fromkeys(KEY_TOKEN.findall(text), "")
+    assert render(text, values, template) == KEY_TOKEN.sub("", text)
+
+
+def test_a_pin_with_an_empty_commit_and_digest_reads_back_empty():
+    """The real pin template: the quoted commit and digest are `""`."""
+    rel = "templates/assembly-root/contracts/spec-pin.yaml"
+    text = TEMPLATE_TEXT[rel]
+    pin = parse_yaml(render(text, table(text, {
+        "SPEC_COMMIT": "", "SPEC_TREE_SHA256": ""}), rel))
+    assert pin["commit"] == ""
+    assert pin["digests"] == {"tree_sha256": ""}
+
+
 def test_text_that_is_no_placeholder_is_left_alone():
     """A workflow's own `${{ github.x }}` and a Python f-string's doubled
     braces hold a space or a lower-case letter: neither is a placeholder,
