@@ -71,19 +71,23 @@ IDENTITY_EMAIL = "tests@openreposhape.invalid"
 #: the suite's commonest spelling, would record the default, and the test
 #: would assert on the wrong author.
 #:
-#: WHERE IT RANKS, strongest first: an identity EXPORTED in the environment
-#: (the three CI jobs export `openRepoShape CI`); a `-c` LATER on the same
-#: command line, which is how a call site's own `-c user.name=...` beats it;
-#: this default; then every identity read from a config FILE, global, system
-#: or the repository's own `user.name`. It fills a gap and overrides no call
-#: site and no exported identity, but it DOES outrank a developer's own
+#: WHERE IT RANKS, strongest first: the four `GIT_AUTHOR_NAME`,
+#: `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME` and `GIT_COMMITTER_EMAIL` where
+#: EXPORTED in the environment, each for its own role (the three CI jobs export
+#: all four as `openRepoShape CI`); a `-c` LATER on the same command line,
+#: which is how a call site's own `-c user.name=...` beats it; this default;
+#: then every identity read from a config FILE, global, system or the
+#: repository's own `user.name`. An exported `EMAIL` is NOT in the top group:
+#: git reads it only where no `user.email` is set, so the default's address
+#: hides it. The default fills a gap and overrides no call site and none of
+#: those four variables, but it DOES outrank a developer's own
 #: `~/.gitconfig`: a commit through `git()` that gives no identity records
 #: `openRepoShape tests` where it used to record the developer. That is
 #: harmless here, because no test reads such an author and nothing in the
 #: suite writes `user.name` into a repository's config. A test that needs its
 #: own identity to take effect through `git()` passes it as `-c` ahead of the
-#: verb, or exports it; `git("config", "user.name", ...)` would lose to this
-#: default. `tests/test_git_helper_identity.py` holds all of it to account,
+#: verb, or exports the four variables; `git("config", "user.name", ...)`, or an
+#: exported `EMAIL`, would lose to this default. `tests/test_git_helper_identity.py` holds all of it to account,
 #: on a runner that exports an identity as well as on one that does not.
 IDENTITY_CONFIG = ["-c", f"user.name={IDENTITY_NAME}",
                    "-c", f"user.email={IDENTITY_EMAIL}"]
@@ -128,8 +132,9 @@ def git(*args: str, cwd: Path, check: bool = True) -> subprocess.CompletedProces
     `Author identity unknown` wherever git could not (`stage_unmerged`'s
     `commit-tree` in `tests/test_shape_doctor.py`, `commit` in
     `tests/test_pin_validator.py`). The default goes in as CONFIG so that it
-    yields to a later `-c` in `args` and to an identity the environment
-    exports, and outranks one a config file gives; the comment on
+    yields to a later `-c` in `args` and to the four `GIT_AUTHOR_*` and
+    `GIT_COMMITTER_*` variables where exported, and outranks an identity a
+    config file gives, or an exported `EMAIL`; the comment on
     `IDENTITY_CONFIG` says where it ranks and why it must not be an
     environment variable. The failure message below names `args` only: the
     two `-c` pairs are the helper's, not the test's.

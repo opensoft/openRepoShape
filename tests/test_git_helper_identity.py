@@ -9,8 +9,9 @@ properties make that the right mechanism, and neither was guarded by a test:
   machine git cannot work one out on;
 - the default is WEAK: a call site's own `-c user.name=...` (`as_human`, and
   the `-c user.name=t -c user.email=t@t` that most commits in this suite spell)
-  and an identity exported in the environment both beat it. A default exported
-  through `env` instead would silently replace every call site's own.
+  and the four `GIT_AUTHOR_*` and `GIT_COMMITTER_*` variables, where exported,
+  both beat it. A default exported through `env` instead would silently
+  replace every call site's own.
 
 CI exports an identity in all three jobs, so on CI the default is invisible and
 a helper that lost it, put it in the environment, or placed it after a call
@@ -49,8 +50,9 @@ def idless(monkeypatch, tmp_path) -> Path:
     The four variables, `EMAIL` and the config injectors are removed; the
     global config is an empty file and the system config is off, so neither a
     developer's `~/.gitconfig` nor a runner's exported identity reaches the
-    commit. `HOME` is moved too, because git falls back to `~/.gitconfig`
-    where `GIT_CONFIG_GLOBAL` is unset on some builds.
+    commit. `HOME` and `USERPROFILE`, the home directory on Windows, are moved
+    too, because git older than 2.32 ignores `GIT_CONFIG_GLOBAL` and reads
+    `~/.gitconfig` all the same.
     """
     for name in IDENTITY_VARIABLES:
         monkeypatch.delenv(name, raising=False)
@@ -83,6 +85,19 @@ def test_a_call_with_no_identity_records_the_default(idless):
     assert who(idless) == DEFAULT
 
 
+def test_an_unrelated_dash_c_leaves_the_default_in_place(idless):
+    """A leading `-c` that gives no identity does not turn the default off.
+
+    `FILE_PROTOCOL`'s `-c protocol.file.allow=always`, `-c core.quotePath=...`
+    and the like are the suite's other leading `-c` spellings. A helper that
+    skipped the default whenever a call already carried a `-c`, on the guess
+    that the call had given its own identity, would leave them identity-less.
+    """
+    git("-c", "core.protectNTFS=false", "commit", "-q", "--allow-empty",
+        "-m", "x", cwd=idless)
+    assert who(idless) == DEFAULT
+
+
 def test_a_call_sites_own_dash_c_beats_the_default(idless):
     """The commonest spelling in the suite, `-c user.name=t -c user.email=t@t`.
 
@@ -103,10 +118,13 @@ def test_as_human_beats_the_default(idless):
 
 
 def test_an_exported_identity_beats_both(idless, monkeypatch):
-    """What an operator or CI exports outranks the default AND a call's `-c`.
+    """The four variables an operator or CI exports outrank the default AND a
+    call's `-c`.
 
     That is git's own order, and it is why the default is safe to ship: it can
-    only fill a gap, never override what a run was told.
+    only fill a gap, never override what a run was told. (An exported `EMAIL`
+    is not among them: git reads it only where no `user.email` is set, so the
+    default's address hides it.)
     """
     for name, value in (("GIT_AUTHOR_NAME", "EA"),
                         ("GIT_AUTHOR_EMAIL", "ea@e"),
