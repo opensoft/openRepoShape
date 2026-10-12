@@ -20,10 +20,16 @@ rolls the bump back. A tree, a blob, or a tag of either is named for what it
 is. A `--to` the member does not hold at all is still git's to report, as
 `test_family_dry_run.py` holds it.
 
+ASKED AFTER THE FETCH. A release tag is pushed to the member's remote and
+reaches the member's mount only through `bump`'s own `git fetch`, which is the
+issue's own flow; a check asked before the fetch finds nothing there and lets
+the tag through to the checkout. One test holds that order.
+
 The holder, the offline environment and "changes nothing" are
 `test_family_dry_run.py`'s, imported rather than rebuilt. Every tag is made
-in the holder's own copy of the member's mount: the fixture's remotes are
-never written to.
+in the holder's own copy of the member's mount, or in a private bare copy of
+the member's remote that the mount is pointed at: the fixture's remotes are
+only ever read.
 """
 
 from __future__ import annotations
@@ -57,6 +63,18 @@ def oid(mount: Path, env: dict, rev: str) -> str:
     """The object `rev` names in `mount`, as git resolves it."""
     return raw(mount, env, "rev-parse", "--verify", rev
                ).stdout.decode("ascii").strip()
+
+
+def tag_refusal(to: str, target: str) -> tuple[str, str]:
+    """The two lines `bump --to <to>` is refused with when `to` is an
+    annotated tag that peels to the commit `target`."""
+    return (
+        f"REFUSED member-to-not-a-commit: --to {to} is an annotated tag in "
+        f"{ORG}/{MEMBER}, not a commit; the commit it names is {target}",
+        f"Remediation: pass that commit, `--to {target}`. A pin is a commit "
+        f"or it is nothing: checking the tag out would put {target[:12]} in "
+        f"the gitlink at {PATH} and the tag's own id in the row, which "
+        "`validate-family.py` refuses as `member-gitlink-mismatch`.")
 
 
 def both_runs(holder: Path, env: dict, to: str) -> str:
@@ -97,13 +115,68 @@ def test_bump_to_an_annotated_tag_is_refused_naming_the_commit_it_tags(
 
     stderr = both_runs(holder, env, to)
 
-    assert refusal(stderr) == (
-        f"REFUSED member-to-not-a-commit: --to {to} is an annotated tag in "
-        f"{ORG}/{MEMBER}, not a commit; the commit it names is {target}",
-        f"Remediation: pass that commit, `--to {target}`. A pin is a commit "
-        f"or it is nothing: checking the tag out would put {target[:12]} in "
-        f"the gitlink at {PATH} and the tag's own id in the row, which "
-        "`validate-family.py` refuses as `member-gitlink-mismatch`.")
+    assert refusal(stderr) == tag_refusal(to, target)
+    offline.assert_left_nothing()
+
+    again = bump(holder, env, target)
+
+    assert again.returncode == 0, again.stdout + again.stderr
+    row = {r["project"]: r for r in manifest(holder)["members"]}[MEMBER]
+    assert row["pin"]["commit"] == target == pinned_at(holder, env)
+    assert validate(holder).returncode == 0
+
+
+def test_a_release_tag_only_the_fetch_brings_is_refused_after_the_fetch(
+        family, holder, offline, tmp_path):
+    """THE ISSUE'S OWN FLOW, AND THE ORDER IT NEEDS. The member releases: a
+    new commit and an annotated tag on it, both pushed, after the holder was
+    made. Neither is in the member's mount until `bump` fetches, so the
+    question is asked of what the fetch brought, after it: asked before, it
+    found no such object, let `--to` through, and the checkout and the row
+    split the tag from its commit again.
+
+    THE REAL RUN GOES FIRST, so no dry run's fetch has handed the mount the
+    tag before it. Both runs then refuse in the same two lines and move
+    nothing, and the re-run with the commit the refusal names pins it in the
+    gitlink and the row alike."""
+    env = isolated(offline, tmp_path)
+    mount = holder / PATH
+    # A PRIVATE COPY of the member's remote, which the mount is pointed at:
+    # the fixture's own remote is read here and never written to.
+    remote = tmp_path / f"{MEMBER}-private.git"
+    raw(tmp_path, env, "clone", "-q", "--bare", "--",
+        str(family["remotes"] / f"{MEMBER}.git"), str(remote))
+    work = tmp_path / f"{MEMBER}-release"
+    raw(tmp_path, env, "clone", "-q", "--", str(remote), str(work))
+    (work / "RELEASE.md").write_bytes(b"release 2\n")
+    raw(work, env, "add", "--", "RELEASE.md")
+    raw(work, env, "commit", "-q", "-m", "Release 2")
+    target = oid(work, env, "HEAD")
+    to = annotated(work, env, "v2", target)
+    raw(work, env, "push", "-q", "origin", "HEAD:refs/heads/main",
+        "refs/tags/v2")
+    raw(mount, env, "remote", "set-url", "origin", str(remote))
+    for name in (target, to):
+        assert raw(mount, env, "cat-file", "-e", name,
+                   check=False).returncode != 0, (
+            f"premise: {name} reaches the mount only through the fetch")
+    before = state(holder, env)
+
+    real = bump(holder, env, to)
+
+    assert_as_it_was(holder, env, before, BUMP_ORDER)
+    assert real.returncode == 2, real.stdout + real.stderr
+    assert real.stdout == ""
+    assert refusal(real.stderr) == tag_refusal(to, target)
+    assert oid(mount, env, f"{to}^{{commit}}") == target, (
+        "the fetch brought the tag, and the refusal was made after it")
+
+    dry = bump(holder, env, to, "--dry-run")
+
+    assert_as_it_was(holder, env, before, BUMP_ORDER)
+    assert dry.returncode == 2, dry.stdout + dry.stderr
+    assert dry.stdout == ""
+    assert dry.stderr == real.stderr
     offline.assert_left_nothing()
 
     again = bump(holder, env, target)
