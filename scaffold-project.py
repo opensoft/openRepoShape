@@ -300,8 +300,20 @@ def main(argv: list[str] | None = None) -> int:
                              "project does not claim it followed a document "
                              "that did not exist yet.")
     parser.add_argument("--tracking-branch", default="main")
-    parser.add_argument("--spec-path", default="spec")
-    parser.add_argument("--code-path", default="code")
+    parser.add_argument("--spec-path", default="spec",
+                        help="where the spec leg is mounted, as a path in "
+                             "the assembly root (default: spec). A path that "
+                             "is, holds or lies inside a FILE the shape "
+                             "writes into the root is refused before anything "
+                             "is created: `project.yaml` is one, and "
+                             "`contracts` holds several.")
+    parser.add_argument("--code-path", default="code",
+                        help="where the code leg is mounted, as a path in "
+                             "the assembly root (default: code). A path that "
+                             "is, holds or lies inside a FILE the shape "
+                             "writes into the root is refused before anything "
+                             "is created: `project.yaml` is one, and "
+                             "`contracts` holds several.")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--local-remote-dir", type=Path, default=None,
                         help="create bare repositories here instead of calling "
@@ -319,7 +331,10 @@ def main(argv: list[str] | None = None) -> int:
                              "contracts/<openproduct>-pin.yaml and lists the "
                              "product in the manifest, which is what makes a "
                              "`<Domainx><Product>` name a DESCENDANT rather "
-                             "than a name shaped like one. Repeatable.")
+                             "than a name shaped like one. Repeatable, "
+                             "once per product (the same name in another "
+                             "case, or under another owner, is the same "
+                             "product).")
     parser.add_argument("--referent-chain", default="",
                         metavar="openLayer,openProduct",
                         help="the CHAIN of neutral-product pins this project "
@@ -446,14 +461,18 @@ def _exists_remedy(role: str, empty: bool, reuse_flag: bool) -> str:
 
 
 #: What every refused `--pin` is told to do. The file a pin is written at is
-#: `neutral_pin_path`'s, spelled for a placeholder product, never by hand.
+#: `neutral_pin_path`'s, spelled for a placeholder product, never by hand. It
+#: names `spec`, `code` and `shape` outright (#288): for a repository truly
+#: called one of them, "name the product for the repository it pins" is no
+#: remedy at all, because no spelling of that name can be pinned.
 PIN_COLLISION_REMEDIATION = (
     "Remediation: nothing was created. A neutral product is named for the "
     "repository it pins, as `--pin openGlass@<40 hex commit>` names "
     f"{NEUTRAL_PRODUCT_OWNER}/openGlass by default, and its pin is written at "
     f"`{neutral_pin_path('<openProduct>')}`, the name lowercased, beside the "
-    "pins the shape writes for its two legs and for itself. Pass each product "
-    "once, by the name of the repository it pins."
+    "pins the shape writes for its two legs and for itself, so `spec`, `code` "
+    "and `shape`, in any case, are names no product can be pinned under. Pass "
+    "each product once, by the name of the repository it pins."
 )
 
 
