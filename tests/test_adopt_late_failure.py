@@ -1374,15 +1374,17 @@ def test_a_work_dir_an_earlier_run_built_in_is_refused_before_any_leg_exists(
 CODE_ONLY_TREE = {path: text for path, text in SMALL_TREE.items()
                   if not path.startswith("specs/")}
 CLONE_REFUSES = "`git clone` refuses a directory that is not empty"
-SEED_TAKES_IN = ("a seeded leg's first commit would take in what it holds "
-                 "and push it to the new leg")
+SEEDS_ONLY_INTO_EMPTY = ("a seeded leg is written and committed in its own "
+                         "directory, and only in one that is new or empty")
+#: Where each reason follows in the detail.
+BOTH_LEGS_FIRST = "and only after it has made both leg repositories: "
 
 
 @pytest.mark.parametrize("occupied, reasons", [
     ([CODE], [CLONE_REFUSES]),
     ([ROOT], [CLONE_REFUSES]),
-    ([SPEC], [SEED_TAKES_IN]),
-    ([SPEC, ROOT], [SEED_TAKES_IN, CLONE_REFUSES]),
+    ([SPEC], [SEEDS_ONLY_INTO_EMPTY]),
+    ([SPEC, ROOT], [SEEDS_ONLY_INTO_EMPTY, CLONE_REFUSES]),
     ([CODE, ROOT], [CLONE_REFUSES]),
 ], ids=["extracted-leg", "the-split", "seeded-leg",
         "seeded-leg-and-the-split", "extracted-leg-and-the-split"])
@@ -1394,8 +1396,9 @@ def test_adopt_work_dir_occupied_gives_each_builder_its_reason(
     `<work>/<spec leg>` went into the new leg and were pushed. The
     refusal comes before any leg exists either way, and its reason is the
     one of what builds in each directory: `git clone` for an extracted
-    leg and the split, the first commit for a seeded leg. Each reason is
-    given once, in the order the run would build."""
+    leg and the split, and for a seeded leg the rule, written and
+    committed in its own directory, which must be new or empty. Each
+    reason is given once, in the order the run would build."""
     no_filter_repo_probe(adopter, monkeypatch)
     plan = planned(tmp_path, make_source_repo(tmp_path / SOURCE,
                                               tree=CODE_ONLY_TREE,
@@ -1412,8 +1415,46 @@ def test_adopt_work_dir_occupied_gives_each_builder_its_reason(
 
     assert caught.value.code == WORK_DIR_OCCUPIED
     assert caught.value.detail.endswith(
-        "and only after it has made both leg repositories: "
-        + ", and ".join(reasons)), caught.value.detail
+        BOTH_LEGS_FIRST + ", and ".join(reasons)), caught.value.detail
+    assert not (tmp_path / REMOTES).exists()
+    assert listing(work) == before
+
+
+#: What a seeded leg's directory may hold that its first commit would NOT take
+#: in: a `.DS_Store`, which the spec template's `.gitignore` ignores, an empty
+#: subdirectory, and a repository with no commit.
+NOTHING_A_COMMIT_TAKES = {
+    "ignored-file": lambda path: (path / ".DS_Store").write_bytes(b"\0"),
+    "empty-subdirectory": lambda path: (path / "drafts").mkdir(),
+    "empty-repository": lambda path: git("init", "-q", ".", cwd=path),
+}
+
+
+@pytest.mark.parametrize("leave", list(NOTHING_A_COMMIT_TAKES.values()),
+                         ids=list(NOTHING_A_COMMIT_TAKES))
+def test_a_seeded_legs_directory_is_refused_by_the_rule_whatever_it_holds(
+        adopter, monkeypatch, tmp_path, leave):
+    """`execute` seeds a leg only into a directory that is new or empty,
+    and the reason it prints is that rule, not what the first commit would
+    take in, which for each of these is nothing (#188's review, N-2). The
+    refusal is kept, and still comes before any leg exists."""
+    no_filter_repo_probe(adopter, monkeypatch)
+    plan = planned(tmp_path, make_source_repo(tmp_path / SOURCE,
+                                              tree=CODE_ONLY_TREE, edits=()))
+    work = tmp_path / WORK
+    seeded = work / leg_names()[SPEC]
+    seeded.mkdir(parents=True)
+    leave(seeded)
+    before = listing(work)
+    args = execute_args(tmp_path, plan)
+    args.allow_empty_leg = [SPEC]
+
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter.cmd_execute(args)
+
+    assert caught.value.code == WORK_DIR_OCCUPIED
+    assert caught.value.detail.endswith(
+        BOTH_LEGS_FIRST + SEEDS_ONLY_INTO_EMPTY), caught.value.detail
     assert not (tmp_path / REMOTES).exists()
     assert listing(work) == before
 

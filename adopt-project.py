@@ -3498,18 +3498,23 @@ BUILT_IN = {"spec": "the spec leg", "code": "the code leg",
 #: builds in it. The split and an extracted leg are cloned into theirs; a
 #: seeded leg is not, so `git clone` was no reason for its directory
 #: (#188's confirmation check, N-1). `_seed_leg` writes its template into
-#: the directory and commits what is there: on main, a person's own files
-#: and history left there went into the new leg and were pushed.
+#: the directory and commits there: on main, a person's own files and
+#: history left there went into the new leg and were pushed. So a seeded
+#: leg's reason is the rule, not a guess at what its first commit would
+#: take in: an ignored `.DS_Store`, an empty directory or a repository with
+#: no commit would not go in, and the directory is refused all the same
+#: (#188's review, N-2).
 CLONE_REFUSES = "`git clone` refuses a directory that is not empty"
-SEED_TAKES_IN = ("a seeded leg's first commit would take in what it holds "
-                 "and push it to the new leg")
+SEEDS_ONLY_INTO_EMPTY = ("a seeded leg is written and committed in its own "
+                         "directory, and only in one that is new or empty")
 
 
 def _holds_something(path: Path) -> bool:
     """Whether `path` is anything but absent or an empty directory: what `git
     clone` refuses with `destination path ... already exists and is not an
-    empty directory`, and what a seeded leg's first commit would take in. A
-    directory that cannot be listed counts, as it does for git."""
+    empty directory`, and what `execute` will not seed a leg into, whether
+    or not git would commit any of it (#188's review, N-2). A directory
+    that cannot be listed counts, as it does for git."""
     if not (path.exists() or path.is_symlink()):
         return False
     try:
@@ -3700,10 +3705,11 @@ def _refuse_an_occupied_work_dir(work_root: Path, names: dict,
     leg repositories, and `git clone` refuses a directory that is not empty.
     So a run into a `--work-dir` an earlier run had built in made two legs
     (two real repositories, against GitHub) and then stopped at the clone.
-    A SEEDED leg (`seeded`, its roles) is not cloned: its first commit
-    takes in whatever the directory holds and pushes it to the new leg, so
-    the detail gives each directory the reason of what builds in it
-    (`CLONE_REFUSES`, `SEED_TAKES_IN`; #188's confirmation check, N-1).
+    A SEEDED leg (`seeded`, its roles) is not cloned: it is written and
+    committed in its own directory, which must be new or empty, so the
+    detail gives each directory the reason of what builds in it
+    (`CLONE_REFUSES`, `SEEDS_ONLY_INTO_EMPTY`; #188's confirmation check,
+    N-1, and its review, N-2).
     The notice says not to reuse such a directory, but one printed way out
     left it unsaid -- `adopt-branch-exists`'s "delete the branch, then run
     `execute` again" -- and followed as written, it looped: a new pair of
@@ -3736,10 +3742,10 @@ def _refuse_an_occupied_work_dir(work_root: Path, names: dict,
 def _why_occupied(built: list[tuple[str, str]], names: dict,
                   seeded: list[str]) -> str:
     """Why `built`'s directories are refused: each builder's reason once,
-    in the order `BUILT_IN` builds them, a seeded leg's `SEED_TAKES_IN`
-    and every other's `CLONE_REFUSES`."""
+    in the order `BUILT_IN` builds them, a seeded leg's
+    `SEEDS_ONLY_INTO_EMPTY` and every other's `CLONE_REFUSES`."""
     seeds = {names[role] for role in seeded}
-    reasons = [SEED_TAKES_IN if name in seeds else CLONE_REFUSES
+    reasons = [SEEDS_ONLY_INTO_EMPTY if name in seeds else CLONE_REFUSES
                for name, _ in built]
     return ", and ".join(dict.fromkeys(reasons))
 
