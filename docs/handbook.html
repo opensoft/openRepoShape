@@ -1312,7 +1312,12 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
       <p><span class="refuses">Refuses</span> a <code>--to</code> that is not exactly 40 hex; a
       commit no branch of the leg&rsquo;s remote contains (a pin the rest of the world cannot fetch
       is a root it cannot bootstrap); a dirty root; an untracked or ignored workflow file it would
-      rewrite; a root standing on its own tracking branch (the next step is a pull request, never a
+      rewrite; a workflow file or the leg&rsquo;s own pin that is not UTF-8, naming each file and its
+      first bad byte before anything is written (a file git does not track needs the re-save and no
+      commit); a workflow file, the <code>.github/workflows/</code> directory or the leg&rsquo;s pin
+      that this user cannot open, naming the path and the system&rsquo;s reason, with the same ids
+      and the remedy of making it readable and running the command again; a root standing on its
+      own tracking branch (the next step is a pull request, never a
       push to the default branch); and a validator that goes red &mdash; rolling the pin, the
       workflow files, the leg&rsquo;s checkout and the index back first, so a refusal leaves the
       tree exactly as it was found.</p>
@@ -1786,7 +1791,10 @@ resume InkRouter                # on workstation B, and the estate is back</code
       <code>family.yaml</code> beside <code>project.yaml</code> as a <strong>manifest kinds</strong>
       finding added (#211); <code>bump-leg.py</code> rewriting tracked workflow files only, and
       refusing an untracked or ignored one it would rewrite, added (#207); the assistant rules
-      saying that some scaffold refusals name a value to change, added (#288) &mdash; a page cannot
+      saying that some scaffold refusals name a value to change, added (#288);
+      <code>bump-leg.py</code> refusing a workflow file or the leg&rsquo;s pin that is not UTF-8, by
+      name, added (#289); <code>bump-leg.py</code> refusing a workflow file, the workflows directory
+      or the leg&rsquo;s pin that this user cannot open, by name, added (#383) &mdash; a page cannot
       name the commit that contains it, and the blob below is the fact a test checks.
       README.md blob e8da93817b0c1a195300800373a2895c0e0280e5. Every command, flag, exit code
       and file name on this page is quoted from that README and from AGENTS.md.</p>

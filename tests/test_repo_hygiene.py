@@ -574,9 +574,35 @@ def test_agents_md_is_short_enough_to_be_read():
     late; the lines are there so that an assistant says so first, relays the
     refusal, asks the human for the value and does not retry with another
     spelling of it. Section 2 is also where the file says that `setup.sh`
-    takes the three flags only after `--`, which nothing else here did."""
+    takes the three flags only after `--`, which nothing else here did.
+
+    2026-10-12: 477 -> 481 — step 7 of "Adopting an existing repository"
+    (#304). Four lines, inside that one numbered point and nowhere else. It
+    said that ANY non-zero exit of `adopt-project.py execute` is to fix the
+    plan and re-run into fresh legs, which holds for a failed verification
+    (exit 1) and for neither of the two exits a GitHub run adds: a refused
+    `gh pr create` and a topic that will not set. Both are exit 2, both come
+    after the legs and the split branch are pushed and verified, and what
+    each prints is a command to finish by hand, so an assistant that followed
+    the sentence abandoned a pushed adoption for a second pair of legs. The
+    lines buy what the point could not say: that the exit decides, which
+    message marks the two (`IS pushed`), and that the second pair is the
+    harm. `tests/test_adopt_github_exits.py` holds the point to both printed
+    exits.
+
+    2026-10-12: 481 -> 482 — step 7 again, for #188's exit 1 (one line).
+    #188 makes `execute` refuse what an earlier run left: the split branch
+    (`adopt-branch-exists`) and a `--work-dir` that holds a leg or the split
+    (`adopt-work-dir-occupied`). So "fix the plan and re-run into fresh
+    legs" alone is a way out the tool now refuses, and an assistant that
+    followed it would meet those refusals one at a time. The line buys the
+    rest of the exit the failed verification prints: delete the split
+    branch, and re-run into a fresh `--work-dir`, or none.
+    `tests/test_adopt_late_failure.py` holds the point to it, and
+    `tests/test_adopt_github_exits.py` still holds the two exits after the
+    push."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 477, f"AGENTS.md is {len(lines)} lines; the cap is 477"
+    assert len(lines) <= 482, f"AGENTS.md is {len(lines)} lines; the cap is 482"
 
 
 def test_claude_md_points_at_agents_md():
