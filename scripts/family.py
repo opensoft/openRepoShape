@@ -52,11 +52,34 @@ this standard so it works before the holder is anywhere else; there is ONE
 implementation of it, `templates/family-root/scripts/siblings.py`, and this
 subcommand runs that file rather than a second copy of its logic.
 
-EXIT CODES: 0 done · 1 nothing (a dry run prints and exits 0) · 2 a refusal.
+EXIT CODES: 0 done, or a `--dry-run` printed what it would do · 1 nothing to
+do · 2 a refusal, and a refusal made before the first write is the same
+refusal under `--dry-run`. `init`, `bump`, `remove` and `siblings` take
+`--dry-run`; `add` takes none yet (#326).
 `siblings` exits with the template script's own code, unchanged. A `bump` whose
 commit would record nothing — the member is already pinned at `--to`, in the
 gitlink and in `family.yaml` alike — is `nothing`: it says `nothing to do`, as
-`bump-leg.py` does for a leg, and writes no commit.
+`bump-leg.py` does for a leg, and writes no commit; its dry run says the same
+and exits 1 too.
+
+A DRY RUN ASKS WHAT THE REAL RUN ASKS, AND STOPS BEFORE ITS FIRST WRITE
+(#326). `bump --dry-run` makes every refusal `bump` makes before its first
+write and FETCHES the member, as a real bump does: a fetch writes into the
+member's object store, which nothing in the holder records, and it is how
+`--to` is resolved and digested. It then reads the member's `project.yaml`
+and tree from those objects, so the refusals the real run makes after its
+checkout are asked too, and prints the row it would write and the trailers
+its commit would end with; it never checks the member out, rewrites
+`family.yaml`, stages or commits. `remove --dry-run` makes every refusal
+`remove` makes before its first write and prints the row, the gitlink, the
+`.gitmodules` section, the holder's registration of the member and the
+directory it would remove, and runs no git command that writes.
+
+WHAT ONLY THE WRITE ITSELF CAN ANSWER IS NOT ASKED. A member whose local
+changes `git checkout` would refuse to overwrite gets exit 0 and a row from
+`bump --dry-run`, and exit 2 from the real `bump`'s checkout; an unmerged
+`.gitmodules` is refused by the real `remove`'s `git rm` and not by its dry
+run. Each is git's own refusal, made with the holder unchanged.
 """
 
 from __future__ import annotations
@@ -2016,7 +2039,206 @@ def _nothing_to_record(root: Path, paths: list[str]) -> bool:
     return True
 
 
+def _nothing_to_do(row: dict, commit: str) -> str:
+    """The sentence a bump that records nothing ends with, real or dry run:
+    the one `bump-leg.py` answers the same re-run with, repository first."""
+    return (f"\nnothing to do: {row['repository']} is already pinned at "
+            f"{commit[:12]} and every fact agrees.")
+
+
+def _bumped_rows(family: Family, row: dict, project_id: str, commit: str,
+                 digest: str) -> tuple[dict, list[dict]]:
+    """`(the member's new row, every row as `bump` writes them)`.
+
+    ONE FUNCTION FOR THE REAL RUN AND ITS DRY RUN (#326), so the row `bump
+    --dry-run` prints is the row a real `bump` writes by construction, not
+    by two spellings that happen to agree today.
+    """
+    project = str(row["project"])
+    new = _member_row(project, project_id, str(row["repository"]), commit,
+                      digest)
+    return new, [new if str(r.get("project")) == project else r
+                 for r in family.members]
+
+
+def _member_id_at(member: Path, commit: str, project: str,
+                  repository: str) -> str | None:
+    """The member's `project.yaml` id at `commit`, read from its OBJECTS
+    rather than from a checkout, or None where only a checkout can read it.
+
+    WHAT `bump` READS AFTER ITS CHECKOUT, ASKED WITHOUT ONE (#326), so `bump
+    --dry-run` makes the same refusals (`member-not-a-project`,
+    `member-manifest-unreadable`, `member-bad-id` and `load_yaml`'s own) and
+    prints the id the real run would write. The one blob is copied into a
+    directory of its own and read by `_read_member_project`, the function
+    the checkout is read with, so every sentence is the real run's but the
+    file's name: `<repository> @ <commit>:project.yaml`, where a temporary
+    path would name a file deleted before anybody reads the line. A
+    `project.yaml` that is absent, a directory or a submodule is no file,
+    which is what a checkout's `is_file()` says about it too.
+
+    A SYMLINK IS None. A checkout reads THROUGH a link and the objects hold
+    only the link's text, so its id is the real run's to read; the dry run
+    says so rather than refusing a member the real run would pin.
+    """
+    listed = _git_bytes(["ls-tree", "-z", commit, "--", "project.yaml"],
+                        member)
+    mode, kind, oid = (listed.split(b"\t", 1)[0].split() + [b""] * 3)[:3]
+    if mode == b"120000":
+        return None
+    with tempfile.TemporaryDirectory(prefix="openreposhape-member-") as tmp:
+        if kind == b"blob":
+            (Path(tmp) / "project.yaml").write_bytes(
+                _git_bytes(["cat-file", "blob", oid.decode("ascii")], member))
+        return _read_member_project(
+            Path(tmp), project, repository,
+            shown=f"{repository} @ {commit[:12]}:project.yaml")
+
+
+def _head_oid(root: Path, path: str) -> str | None:
+    """The object HEAD records at `path` — for a gitlink, the commit — or
+    None where HEAD records nothing there. A tree path, not a pathspec, so
+    no glob in it is ever expanded."""
+    try:
+        return git_out(["rev-parse", "-q", "--verify", f"HEAD:{path}"],
+                       cwd=root).lower()
+    except Refusal:
+        return None
+
+
+def _git_bytes(args: list[str], cwd: Path, data: bytes | None = None) -> bytes:
+    """`git <args>` in `cwd`, its output as BYTES, `data` (if any) on stdin
+    as bytes for the reason `_git_input` gives; a failure is a
+    `CommandFailed`.
+
+    WHAT THE DRY RUNS ASK GIT WITH (#326). `git_out`'s failure is a
+    `Refusal` that carries `repo_shape`'s default remediation, which is a
+    LEG's (run `validate-pins.py`, advance `contracts/<leg>-pin.yaml`), and
+    a holder has neither. A `CommandFailed` is printed as every failed git
+    command in this file is: the exact command, where, and git's own words,
+    exit 2, which is how the real run reports the same failure.
+    """
+    command = ["git", *args]
+    check_program(command)
+    proc = subprocess.run(command, cwd=str(cwd), input=data,
+                          capture_output=True, check=False)
+    if proc.returncode != 0:
+        raise CommandFailed(command, cwd, proc.returncode,
+                            (proc.stderr + proc.stdout).decode("utf-8",
+                                                               "replace"))
+    return proc.stdout
+
+
+def _manifest_blob(root: Path, text: str) -> str:
+    """The blob id `family.yaml` would have with `text` in it, as `git add`
+    would store it — `git hash-object --path`, which applies the holder's
+    own attributes and filters — and WITHOUT `-w`, so nothing is written."""
+    return _git_bytes(["hash-object", "--stdin", f"--path={MANIFEST}"], root,
+                      text.encode("utf-8")).decode("ascii").strip().lower()
+
+
+def _print_trailers(trailers: list[str]) -> None:
+    """The `--trailer` lines the commit would end with, verbatim and in the
+    order given, which is the order `commit_trailers` appends them in.
+
+    `bump --dry-run` prints them after the row (#326), worded as
+    `bump-leg.py --dry-run` prints its own, so a lane reads one form from
+    either tool before the lines land rather than after. Never printed for
+    `nothing to do`: a run that writes no commit has nothing to end.
+    """
+    if trailers:
+        print(f"trailers     {len(trailers)} to append, in order:")
+        for line in trailers:
+            print(f"  {line}")
+    else:
+        print("trailers     none")
+
+
+def _bump_dry_run(family: Family, row: dict, path: str, commit: str,
+                  trailers: list[str], fetched: bool) -> int:
+    """`bump --dry-run`, entered after the member is fetched (or the fetch
+    failed, `fetched` False, and said so) and before it is checked out
+    (#326): the answers a real `bump` gives, and no write.
+
+    THE REAL RUN'S QUESTIONS, IN ITS ORDER, ASKED OF THE MEMBER'S OBJECTS.
+    `--to` is resolved as the checkout would take it (`^{commit}`, which is
+    what `git checkout` accepts), and one the member does not have after the
+    fetch is exit 2, where the real run's checkout fails. The manifest is
+    read by `_member_id_at` and the digest by `tree_digest`, which reads
+    objects and never a checkout, so the digest printed is the one the real
+    run computes, never a guess. The rows are `_bumped_rows`', and
+    `family.rewritten` asks `family-members-unrecognised` without writing.
+
+    `nothing to do` IS THE REAL RUN'S OWN RULE (#210), asked without the
+    write: the commit would record nothing when HEAD's gitlink is already
+    the commit `--to` resolves to AND the rewritten manifest is the blob
+    HEAD already has. Not `--to` against the row alone: a row naming `--to`
+    over a gitlink that moved alone, or a digest that does not recompute, is
+    a bump with something to commit, under `--dry-run` as well.
+
+    THE CHECKOUT'S OWN QUESTION IS NOT ASKED. Local changes in the member
+    that `git checkout` would refuse to overwrite are found by the real run,
+    exit 2, while the dry run prints the row and exits 0: only the checkout
+    knows which of them the move touches.
+    """
+    project, repository = str(row["project"]), str(row.get("repository"))
+    member = family.root / path
+    try:
+        resolved = run(["git", "rev-parse", "--verify",
+                        f"{commit}^{{commit}}"], cwd=member).lower()
+    except CommandFailed as exc:
+        print(exc.loudly(f"resolving {commit[:12]} in {path}, where a real "
+                         "bump checks it out"), file=sys.stderr)
+        return 2
+    project_id = _member_id_at(member, resolved, project, repository)
+    linked = project_id is None
+    if linked:
+        project_id = str(row.get("id") or "")
+    digest = tree_digest(member, commit)
+    new, rows = _bumped_rows(family, row, project_id, commit, digest)
+    text = family.rewritten(rows)
+    was = str((row.get("pin") or {}).get("commit") or "")
+    recorded = _head_oid(family.root, path)
+
+    print(f"member       {project}  {repository} at {path}")
+    print(f"commit       {was[:12]} -> {commit[:12]}")
+    print(f"tree         {digest[:12]}… ({digest})")
+    if linked:
+        print("note         project.yaml is a symbolic link at "
+              f"{resolved[:12]}, which only a checkout reads through: the "
+              "`id:` below is the row's own, and the real run reads it "
+              "through the link")
+    if recorded == resolved and \
+            _head_oid(family.root, MANIFEST) == _manifest_blob(family.root,
+                                                               text):
+        print(_nothing_to_do(row, commit))
+        return 1
+    print(f"gitlink      {path} {(recorded or 'none')[:12]} -> "
+          f"{resolved[:12]}")
+    print(f"row          as {MANIFEST} would carry it:")
+    for line in _member_lines(new):
+        print(line)
+    _print_trailers(trailers)
+    how = (f"`git fetch` ran in {path}, as a real bump's does, which is how "
+           "--to was resolved and the digest above computed" if fetched else
+           f"The fetch of {path} failed, as the note says, so --to was "
+           "resolved and the digest above computed from what its object "
+           "store already held, as a real bump would")
+    print(f"\n--dry-run: nothing was changed in the holder. {how}; the "
+          f"member's checkout, {MANIFEST}, the index and the holder's commits "
+          "are as they were.")
+    return 0
+
+
 def cmd_bump(args) -> int:
+    """Move one member's gitlink and pin in ONE commit, or with `--dry-run`
+    print the row it would write and change nothing in the holder (#326).
+
+    The refusals before the fetch are the same under `--dry-run`. The dry run
+    leaves after the fetch and before the checkout, which is the real run's
+    first write, and asks what the real run asks after it of the member's
+    objects instead (`_bump_dry_run`).
+    """
     family = Family.open(args.family_root)
     project = checked_value("--member", repo_basename(args.member))
     row = family.member(project)
@@ -2046,11 +2268,16 @@ def cmd_bump(args) -> int:
             "Remediation: `git submodule update --init " + path + "`, or "
             "`make bootstrap`, which resolves a credential for a private "
             "member first.")
+    fetched = True
     try:
         run(["git", "fetch", "-q", "origin"], cwd=member)
     except CommandFailed:
+        fetched = False
         print(f"  note: could not fetch {path} from its origin; the commit "
               "must already be in its object store", file=sys.stderr)
+    if args.dry_run:
+        return _bump_dry_run(family, row, path, commit, args.trailer,
+                             fetched)
     try:
         run(["git", "checkout", "-q", commit], cwd=member)
     except CommandFailed as exc:
@@ -2062,9 +2289,7 @@ def cmd_bump(args) -> int:
     project_id = _read_member_project(member, project,
                                       str(row.get("repository")))
     digest = tree_digest(member, commit)
-    rows = [(_member_row(project, project_id, str(row["repository"]), commit,
-                         digest) if str(r.get("project")) == project else r)
-            for r in family.members]
+    _, rows = _bumped_rows(family, row, project_id, commit, digest)
     original = family.path.read_bytes()
     family.write_members(rows)
     # THE GITLINK IS RE-STAGED BEFORE GIT IS ASKED, as `_commit_one` does it
@@ -2090,8 +2315,7 @@ def cmd_bump(args) -> int:
         family.path.write_bytes(original)
         print(f"  {project:<16} {was[:12]} -> {commit[:12]} tree "
               f"{digest[:12]}…")
-        print(f"\nnothing to do: {row['repository']} is already pinned at "
-              f"{commit[:12]} and every fact agrees.")
+        print(_nothing_to_do(row, commit))
         return 1
 
     head = _commit_one(
@@ -2113,6 +2337,150 @@ def cmd_bump(args) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _suspicious_name(name: str) -> bool:
+    """Whether git IGNORES a submodule of this name: an empty one, or one
+    with a `..` component between `/` or `\\` on any platform — git's own
+    `check_submodule_name`, which warns "ignoring suspicious submodule name"
+    and reads nothing in that section."""
+    return not name or ".." in re.split(r"[/\\]", name)
+
+
+def _gitmodules_names(root: Path, path: str) -> tuple[str | None, list[str]]:
+    """`(the name whose sections `git rm` drops for the gitlink at `path`,
+    or None, every other name with a `path = <path>` line)` (#326).
+
+    GIT'S OWN LOOKUP, MODELLED OVER GIT'S OWN READING OF THE FILE. `git rm`
+    edits `.gitmodules` only where the work tree has one. It asks which
+    submodule has the gitlink's path (`submodule_from_path`), and drops EVERY
+    section of that name. Its reading of the WORK-TREE file is the one with
+    overwrite on (`parse_config`, as `gitmodules_cb` calls it), and three
+    rules follow from it, each one a hand edit `remove --dry-run` must not
+    misreport:
+
+    - a name keeps the LAST `path` it is given;
+    - a name moving to another path takes the OLD path out of git's path map,
+      whichever name held it there, so a path a ghost name passed through can
+      end up with no submodule at all, and then `git rm` drops nothing
+      ("Could not find section in .gitmodules");
+    - a suspicious name (`_suspicious_name`) and a path that reads as an
+      option (a leading `-`) are ignored.
+
+    The file is read by `git config --list`, never by a parser of this
+    tool's, as `add`'s `_submodule_paths` reads it; the rules are git's, as
+    git 2.43 applies them and as the tests check them against a real
+    `remove` on every runner.
+    """
+    if not (root / GITMODULES).is_file():
+        return None, []
+    listed = _git_bytes(["config", "-z", "--file", GITMODULES, "--list"],
+                        root)
+    paths: dict[str, str] = {}
+    owner: dict[str, str] = {}
+    giving: list[str] = []
+    for record in listed.split(b"\0"):
+        key, _, value = record.decode("utf-8",
+                                      "surrogateescape").partition("\n")
+        section, _, variable = key.rpartition(".")
+        if not section.startswith("submodule.") or variable != "path":
+            continue
+        name = section[len("submodule."):]
+        if value == path and name not in giving:
+            giving.append(name)
+        if _suspicious_name(name) or value.startswith("-"):
+            continue
+        if name in paths:
+            owner.pop(paths[name], None)
+        paths[name] = value
+        owner[value] = name
+    dropped = owner.get(path)
+    return dropped, [name for name in giving if name != dropped]
+
+
+def _registered(root: Path, name: str) -> bool:
+    """Whether the holder's own git config holds a `submodule.<name>`
+    section: the registration `git submodule deinit` drops, looked up by the
+    same name `git rm` drops in `.gitmodules`. By section — the part of a
+    key before its LAST dot — as `MountRollback` reads one, so a dotted
+    neighbour's keys are not taken for this name's."""
+    listed = _git_bytes(["config", "--local", "-z", "--list"], root)
+    return any(record.decode("utf-8", "surrogateescape").partition("\n")[0]
+               .rpartition(".")[0] == f"submodule.{name}"
+               for record in listed.split(b"\0") if record)
+
+
+def _remove_dry_run(family: Family, row: dict, path: str) -> int:
+    """`remove --dry-run` (#326): what a real `remove` would take out, and
+    no git command that writes.
+
+    THE REAL RUN'S FAILURES, IN ITS ORDER. Its first git call, `git
+    submodule deinit -- <path>`, fails on a path the index holds nothing at,
+    and the real run prints that failure loudly, the exact command and git's
+    own `did not match any file(s) known to git`, exit 2. `ls-files
+    --error-unmatch` over the same LITERAL pathspec fails where it fails,
+    with the same line from git, and is printed the same way, exit 2; it
+    lists what `git rm -r` would unstage when it does not fail.
+    `family.rewritten` then asks `family-members-unrecognised`, which the
+    real run asks after its unmount, without writing.
+
+    PRINTED: the row, each index entry under the path (the gitlink), the
+    `.gitmodules` section `git rm` drops for it and any it leaves that gives
+    the same path (`_gitmodules_names`), the registration `deinit` drops
+    from the holder's git config under that same name (`_registered`), and
+    the directory `deinit -f` empties and `git rm` deletes, uncommitted work
+    in the member included. The member's object store is not removed, by
+    either run, so it is not on the list.
+    """
+    project = str(row["project"])
+    root = family.root
+    try:
+        listed = _git_bytes(["--literal-pathspecs", "ls-files", "-s", "-z",
+                             "--error-unmatch", "--", path], root)
+    except CommandFailed as exc:
+        print(exc.loudly(f"listing {path} in the index, where a real remove "
+                         "unmounts it"), file=sys.stderr)
+        return 2
+    entries = []
+    for record in listed.split(b"\0"):
+        if record:
+            head, _, name = record.partition(b"\t")
+            mode, oid = head.decode("ascii").split()[:2]
+            entries.append((mode, oid, name.decode("utf-8", "replace")))
+    family.rewritten([r for r in family.members
+                      if str(r.get("project")) != project])
+
+    pinned = str((row.get("pin") or {}).get("commit") or "")
+    print(f"row          {project}  {row.get('repository')}, pinned at "
+          f"{pinned[:12]}, dropped from {MANIFEST}")
+    for mode, oid, name in entries:
+        if mode == "160000":
+            print(f"gitlink      {name}  {oid[:12]}")
+        else:
+            print(f"index        {name}  {oid[:12]} (mode {mode})")
+    for name in [name for mode, _, name in entries if mode == "160000"]:
+        dropped, kept = _gitmodules_names(root, name)
+        if dropped is None:
+            print(f"gitmodules   none: git reads no section of {GITMODULES} "
+                  f"in the work tree as giving {name}, so none is removed")
+        else:
+            print(f'gitmodules   [submodule "{dropped}"]  path {name}, every '
+                  "section of that name")
+        if kept:
+            print("             left in place, though it gives the same "
+                  "path: " + ", ".join(f'[submodule "{other}"]'
+                                       for other in kept))
+        if dropped is not None and _registered(root, dropped):
+            print(f'registration [submodule "{dropped}"] in the holder\'s '
+                  ".git/config, dropped by `git submodule deinit`")
+    print(f"directory    {path}  " + (
+        "deleted with everything in it: `git submodule deinit -f` discards "
+        "uncommitted work in the member, and `git rm` the directory"
+        if os.path.lexists(root / path) else "not on disk"))
+    print("\n--dry-run: nothing was changed: the index, .gitmodules, "
+          f"{MANIFEST}, the work tree and the holder's git config are as they "
+          "were, and no git command that writes was run.")
+    return 0
+
+
 def cmd_remove(args) -> int:
     family = Family.open(args.family_root)
     project = checked_value("--member", repo_basename(args.member))
@@ -2129,6 +2497,10 @@ def cmd_remove(args) -> int:
     # call: `path: members/*` unmounted every member under one commit naming
     # one, and `path: .` removed the holder's own files.
     path = _member_path(project, row)
+    # Every refusal above is the same under `--dry-run`, which leaves here,
+    # before the unmount, the real run's first write (#326).
+    if args.dry_run:
+        return _remove_dry_run(family, row, path)
     # THE MEMBER REPOSITORY IS NOT TOUCHED. Removing a member unmounts it from
     # this holder and nothing else: the project keeps its name, its history,
     # its legs and its gate. A family that could delete a project by dropping
@@ -2274,11 +2646,22 @@ def build_parser() -> argparse.ArgumentParser:
                       default=[], type=trailer_line,
                       help="append this `<Key>: <value>` line to the commit "
                            "this writes; repeatable, kept in the order given")
+    bump.add_argument("--dry-run", action="store_true",
+                      help="print the row this would write, and its "
+                           "trailers, and change nothing in the holder: it "
+                           "FETCHES the member, as a real bump does, to "
+                           "resolve --to and digest it, and checks nothing "
+                           "out, writes, stages and commits nothing; exit 1 "
+                           "if there is nothing to do")
     bump.set_defaults(func=cmd_bump)
 
     remove = subparsers.add_parser("remove", help="unmount a member")
     remove.add_argument("--family-root", required=True)
     remove.add_argument("--member", required=True, metavar="PROJECT")
+    remove.add_argument("--dry-run", action="store_true",
+                        help="print the row, the gitlink, the .gitmodules "
+                             "section and the directory this would remove, "
+                             "and change nothing")
     remove.set_defaults(func=cmd_remove)
 
     siblings = subparsers.add_parser(
