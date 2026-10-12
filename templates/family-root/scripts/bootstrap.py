@@ -68,6 +68,61 @@ CREDENTIAL_ENV = ("SHAPE_LEGS_APP_TOKEN", "SHAPE_LEGS_TOKEN")
 REWRITE_TARGETS = ("https://github.com/", "git@github.com:")
 
 
+def escape_unencodable_stdout() -> None:
+    """A character stdout cannot encode is printed escaped, never raised on (#391).
+
+    WHAT WAS WRONG. `main` printed the manifest's `name` with a plain `print`
+    before any step ran, so `name: "a\\ud83db"` (a lone surrogate, which no
+    UTF-8 stdout can write) or `name: "日本"` on a stdout that is not UTF-8
+    (`PYTHONIOENCODING=ascii`, or the ANSI code page Windows gives a stdout that
+    is not the console) ended `make bootstrap` in a `UnicodeEncodeError`
+    traceback one step before `validate-manifest.py`, the validator that names
+    the problem, was reached. This file's own wording raised on such a stdout
+    too, wherever it carries a dash or a middle dot.
+
+    A `strict` or `surrogateescape` stdout, the two handlers that raise, is
+    reconfigured ONCE, at the start of `main`, to `backslashreplace`, the
+    handler stderr already has: what the stdout holds is written as it was, and
+    what it cannot hold as `\\u65e5`. Any other handler, one somebody chose, is
+    left alone, and the ENCODING is never changed. `scripts/validate-pins.py`
+    does the same for its report (#295). The tools run from a checkout of the
+    standard use `shape_materialize.escape_what_stdout_cannot_encode` (#214),
+    which no project carries, and this file imports nothing but `repo_shape`.
+    This function and `spelled` are the same in the assembly root's
+    `bootstrap.py` and the family root's.
+
+    GUARDED, because failing to set a handler is no reason to refuse the run: a
+    stream a caller replaced may have no `reconfigure`, a closed one raises
+    `ValueError`, and `pythonw` has no stdout at all.
+    """
+    if getattr(sys.stdout, "errors", None) in ("strict", "surrogateescape"):
+        try:
+            sys.stdout.reconfigure(errors="backslashreplace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
+def spelled(value: object) -> str:
+    """`value` as ONE line of text a terminal can be shown (#391).
+
+    What `escape_unencodable_stdout` cannot do. A raw ESC or CR is encodable on
+    every stdout, so it reaches the terminal as the control it is, and a
+    manifest's `name` or a register row is a person's text. Every character
+    `str.isprintable` refuses is written as the escape Python spells it
+    (`\\x1b`, `\\r`, `\\n`, `\\u2028`, `\\ud83d`), so the value stays on
+    its line and a lone surrogate is named, whatever handler the stdout has. A
+    printable character is kept as it is, a backslash included, so what a UTF-8
+    stdout can hold prints byte for byte; the cost is that a name holding the
+    four characters `\\x1b` prints as one holding ESC does.
+
+    Applied to every value this script prints that it read from the manifest, a
+    register row or the disk, and to none of its own wording.
+    """
+    return "".join(char if char.isprintable()
+                   else char.encode("unicode_escape").decode("ascii")
+                   for char in str(value))
+
+
 def credential() -> tuple[str, str]:
     """`(source, token)`; `("none", "")` when the environment carries none."""
     for name in CREDENTIAL_ENV:
@@ -133,11 +188,14 @@ def member_path(root: Path, row: dict) -> Path:
 
 def run_member_target(root: Path, row: dict, target: str) -> str | None:
     """(b) One member's own `make <target>`. Returns a failure line, or None."""
-    project = str(row.get("project") or "?")
+    # A member row is the family manifest's text (#391): what is PRINTED of it,
+    # and of `--members-make`, is spelled. The path is built from the raw row.
+    project = spelled(row.get("project") or "?")
     path = member_path(root, row)
+    named = spelled(target)
     if not (path / ".git").exists():
-        print(f"  [{project}] {path.name}: NOT CHECKED OUT; skipped. See the "
-              "fetch above.")
+        print(f"  [{project}] {spelled(path.name)}: NOT CHECKED OUT; skipped. "
+              "See the fetch above.")
         return None
     if not (path / "Makefile").is_file():
         print(f"  [{project}] no Makefile; skipped. A member without one is "
@@ -148,16 +206,17 @@ def run_member_target(root: Path, row: dict, target: str) -> str | None:
     if not make:
         print(f"  [{project}] `make` is not on PATH; skipped.")
         return None
-    print(f"  --- {project}: make {target} ---")
+    print(f"  --- {project}: make {named} ---")
     sys.stdout.flush()
     proc = subprocess.run([make, target], cwd=str(path), check=False)
     sys.stdout.flush()
     if proc.returncode != 0:
-        return f"{project} (make {target} exited {proc.returncode})"
+        return f"{project} (make {named} exited {proc.returncode})"
     return None
 
 
 def main(argv: list[str] | None = None) -> int:
+    escape_unencodable_stdout()
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--root", type=Path, default=None)
     parser.add_argument("--no-fetch", action="store_true",
@@ -177,7 +236,8 @@ def main(argv: list[str] | None = None) -> int:
         print(str(exc), file=sys.stderr)
         return 2
 
-    print(f"bootstrap: {name} ({root}) — {len(rows)} member(s)")
+    print(f"bootstrap: {spelled(name)} ({spelled(root)}) — "
+          f"{len(rows)} member(s)")
 
     print("\n(a) members and their legs")
     if args.no_fetch:
@@ -185,7 +245,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         fetch_members(root)
 
-    print(f"\n(b) each member's own `make {args.members_make}`")
+    print(f"\n(b) each member's own `make {spelled(args.members_make)}`")
     failed: list[str] = []
     if args.skip_members:
         print("  skipped (--skip-members)")
