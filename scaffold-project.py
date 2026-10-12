@@ -11,9 +11,10 @@ WHAT IT DOES
      repositories and a rename. A leg path that is, holds or lies inside a
      path the shape writes into the assembly root (`contracts`,
      `project.yaml`, a `--pin`'s `contracts/<product>-pin.yaml`) is refused
-     just as early, for the same reason (#197), and so is a `--referent-chain`
-     link between the first and the last that is not a neutral product's
-     name (#251).
+     just as early, for the same reason (#197), and so is a `--pin` whose
+     file the shape writes itself or another `--pin` writes (#241), and a
+     `--referent-chain` link between the first and the last that is not a
+     neutral product's name (#251).
   2. Creates the three remotes: `gh repo create` normally, or three BARE
      repositories in a directory with `--local-remote-dir`, which is the test
      path and touches no network.
@@ -437,6 +438,92 @@ def _exists_remedy(role: str, empty: bool, reuse_flag: bool) -> str:
             "--force.")
 
 
+#: What every refused `--pin` is told to do. The file a pin is written at is
+#: `neutral_pin_path`'s, spelled for a placeholder product, never by hand.
+PIN_COLLISION_REMEDIATION = (
+    "Remediation: nothing was created. A neutral product is named for the "
+    "repository it pins, as `--pin openGlass@<40 hex commit>` names "
+    f"{NEUTRAL_PRODUCT_OWNER}/openGlass by default, and its pin is written at "
+    f"`{neutral_pin_path('<openProduct>')}`, the name lowercased, beside the "
+    "pins the shape writes for its two legs and for itself. Pass each product "
+    "once, by the name of the repository it pins."
+)
+
+
+def _refuse_colliding_pins(pins, owner: str) -> None:
+    """No `--pin` is written where the shape writes a file of its own, and no
+    two `--pin`s are written at one path, or this refuses (#241).
+
+    `_build_assembly_root` hands the pins to the materializer, which writes
+    each at `neutral_pin_path(product)` after the shape's own files and
+    before the copy pin, and a second file at one path is
+    `materialize-collision`: a pin over a leg's pin, or the copy pin over a
+    pin named `shape`, or a pin over another pin. So each was met only after
+    `_create_remotes` and `_seed_legs`. On main through 39ac59c, `--pin
+    spec@<sha>` (`Spec@`, `code@`, `MedxSoft/code@`, `shape@`) and `--pin
+    openGlass@<sha> --pin OpenGlass@<sha>` planned under `--dry-run`, then
+    created all three repositories, pushed both legs, left the root with no
+    commit and exited 2, and the corrected re-run was refused as
+    `scaffold-remote-exists`. Against GitHub, each left three repositories
+    for a run that made no project.
+
+    THE QUESTION IS ASKED THROUGH THE MATERIALIZER'S OWN TWO DEFINITIONS: a
+    pin's file is `neutral_pin_path(product)`, and the shape's own files are
+    `assembly_root_paths()` with no pins. `neutral_pin_path` lowercases, so
+    `Spec` is `spec` and `openGlass` and `OpenGlass` are one file, with no
+    case rule of this tool's own. The product is read by `parse_pin` alone,
+    so a malformed `--pin` is still its `pin-malformed`, and no digest is
+    read: no `git` and no `gh`.
+
+    THE RAW `--pin` LIST, NEVER `declared_pin_products`, which collapses a
+    repeated product, as `declared_pin_values` does by keeping the last:
+    `--pin openGlass@<A> --pin openGlass@<B>` planned one pin, wrote `<B>`
+    and dropped `<A>` without a word. A declaration is a claim about what
+    the project descends from, so a repeat is refused whether or not its
+    commits agree: either way it is a typing error, and one of the two
+    would be lost. Every argument is named as it was typed.
+
+    IT RUNS BEFORE `_refuse_colliding_leg_paths`, which asks about
+    `assembly_root_paths(<the --pin products>)`. With `--pin spec@<sha>`
+    that list held `contracts/spec-pin.yaml` twice, and `--spec-path
+    contracts` was told it contains that file "and 4 more" where there
+    were three (#197's re-review, N1). Refused first, no pin path it lists
+    is the shape's or listed twice.
+    """
+    # Folded on both sides, as `path_overlap` folds the leg paths: a future
+    # mixed-case shape file under `contracts/` is still one path with a
+    # lowercased pin on the case-insensitive disk of macOS and Windows.
+    shape_files = {shape_file.casefold()
+                   for shape_file in assembly_root_paths()}
+    written: dict[str, list[tuple[str, str]]] = {}
+    for raw in pins:
+        product = parse_pin(raw, owner)[0]
+        path = neutral_pin_path(product)
+        written.setdefault(path, []).append((raw, product))
+    collisions = []
+    for path, typed in written.items():
+        in_shape = path.casefold() in shape_files
+        if not in_shape and len(typed) == 1:
+            continue
+        products = list(dict.fromkeys(product for _, product in typed))
+        said = (" and ".join(f"--pin {raw!r}" for raw, _ in typed)
+                + (" writes the pin" if len(typed) == 1 else " write the pins")
+                + " of the product" + ("s" if len(products) > 1 else "") + " "
+                + " and ".join(f"`{product}`" for product in products))
+        if in_shape:
+            collisions.append(
+                f"{said} at `{path}`, a file the shape writes into the "
+                "assembly root itself: name the product for the repository it "
+                "pins.")
+        else:
+            collisions.append(
+                f"{said} at one file, `{path}`, which holds one pin: pass "
+                "each product once.")
+    if collisions:
+        raise Refusal("scaffold-pin-collides", " ".join(collisions),
+                      PIN_COLLISION_REMEDIATION)
+
+
 def _leg_collision_remediation(neutral_pins=()) -> str:
     """What a leg-path collision tells the person to do. The paths are
     `assembly_root_paths(neutral_pins)`, the materializer's own list for this
@@ -469,10 +556,10 @@ def _refuse_colliding_leg_paths(spec_path: str, code_path: str,
 
     THE QUESTION IS `adopt-project.py`'s (#172), asked through the one
     definition both tools import: `shape_path_collisions` over
-    `assembly_root_paths()`, so a file the shape gains is refused here
-    without anybody editing this tool. It is asked with no collision
-    directory, because the scaffold hands the materializer none and writes
-    nothing under adopt's `shape/`.
+    `assembly_root_paths(neutral_pins)`, so a file the shape gains is
+    refused here without anybody editing this tool. It is asked with no
+    collision directory, because the scaffold hands the materializer none
+    and writes nothing under adopt's `shape/`.
 
     A `--pin` IS ONE MORE PATH. `_build_assembly_root` hands the materializer
     `neutral_pins=pins`, which writes `neutral_pin_path(product)` for each,
@@ -482,7 +569,9 @@ def _refuse_colliding_leg_paths(spec_path: str, code_path: str,
     repositories, and `Contracts/OpenGlass-pin.yaml` exited 0 with a gitlink
     beside the pin, one path on a macOS or Windows disk. With no `--pin`,
     `contracts/openglass-pin.yaml` lies inside a directory the shape writes
-    into, not a path it writes, and it mounts.
+    into, not a path it writes, and it mounts. `_refuse_colliding_pins` runs
+    first (#241), so each pin's path is listed once and is none of the
+    shape's own, and a count here counts distinct paths.
     """
     collisions = [sentence
                   for what, value in (("--spec-path", spec_path),
@@ -1101,6 +1190,12 @@ def _scaffold(args) -> int:
     args.code_path = checked_value(*code_leg)
     args.org = checked_value("--org", args.org)
     args.pin_owner = checked_value("--pin-owner", args.pin_owner)
+    # EACH `--pin`'S FILE AGAINST THE SHAPE'S OWN AND AGAINST EACH OTHER, from
+    # the arguments as typed (#241), and first: the leg-path question below
+    # asks about every pin's file, and would miscount one written over the
+    # shape's or listed twice. Here for the reasons the leg paths are, so a
+    # dry run refuses it too and no process has been started.
+    _refuse_colliding_pins(args.pin, args.pin_owner)
     # THE LEG PATHS AGAINST THE SHAPE'S OWN, before anything else runs
     # (#197): `_identity` may read git's config, `_declaration` asks `gh api`
     # for a `--pin` with no `--pin-source`, `_leg_visibility` asks `gh repo
