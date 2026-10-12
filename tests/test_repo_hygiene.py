@@ -590,7 +590,19 @@ def test_agents_md_is_short_enough_to_be_read():
     harm. `tests/test_adopt_github_exits.py` holds the point to both printed
     exits.
 
-    2026-10-12: 481 -> 489 — the adoption's `submodules:` record (#189).
+    2026-10-12: 481 -> 482 — step 7 again, for #188's exit 1 (one line).
+    #188 makes `execute` refuse what an earlier run left: the split branch
+    (`adopt-branch-exists`) and a `--work-dir` that holds a leg or the split
+    (`adopt-work-dir-occupied`). So "fix the plan and re-run into fresh
+    legs" alone is a way out the tool now refuses, and an assistant that
+    followed it would meet those refusals one at a time. The line buys the
+    rest of the exit the failed verification prints: delete the split
+    branch, and re-run into a fresh `--work-dir`, or none.
+    `tests/test_adopt_late_failure.py` holds the point to it, and
+    `tests/test_adopt_github_exits.py` still holds the two exits after the
+    push.
+
+    2026-10-12: 482 -> 490 — the adoption's `submodules:` record (#189).
     Four lines and a blank one under "Adopting an existing repository" say
     that `execute` now writes one more thing into the split: the plan's
     answer for each source submodule a leg keeps, under `project.yaml`'s
@@ -603,7 +615,7 @@ def test_agents_md_is_short_enough_to_be_read():
     manifest edit an assistant makes to turn the row green, the hand-edited
     pin arriving through a new door."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 489, f"AGENTS.md is {len(lines)} lines; the cap is 489"
+    assert len(lines) <= 490, f"AGENTS.md is {len(lines)} lines; the cap is 490"
 
 
 def test_claude_md_points_at_agents_md():
