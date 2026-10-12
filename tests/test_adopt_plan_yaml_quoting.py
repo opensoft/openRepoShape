@@ -849,6 +849,25 @@ def test_check_names_a_plan_value_that_is_not_text_by_what_was_read(
     assert INVALID_FINDING not in result.stderr, result.stderr
 
 
+def test_the_misread_rule_names_a_set_id_by_what_was_read(
+        adopter, answered, tmp_path):
+    """`id: 007` is the number 7 to the plan's reader. Should #181 be the
+    rule that reports it, its sentence names what was READ, as the plan's
+    `id:` holds it, and never `str` of what `Plan.project_id` makes of it
+    (review181's N2). The validator refuses it today, and is asked first
+    (`NOT_TEXT_INVALID`), so this is the rule's own answer, asked of it
+    directly."""
+    _, text = answered
+    plan = tmp_path / PLAN_FILE
+    carrying(plan, text, "id", "007")
+    (said,) = adopter.manifest_misreads([adopter._id_field(
+        adopter.Plan.load(plan))])
+    assert said.startswith(f"id was read out of the plan as {SEVEN_READ}, "
+                           "which `execute` writes into "), said
+    assert said.endswith(f"reads it back as {SEVEN_READ} and not as the "
+                         "text `7`: choose another value"), said
+
+
 #: `(plan key, as a plan edited by hand spells it)`: values the project's
 #: loader would misread, which `execute` never writes. It refuses the branch
 #: as `unsafe-value` (`_checked_plan_values`), and `gh repo create` takes no
