@@ -53,6 +53,7 @@ LOCAL `core.hooksPath` so a global one cannot point git elsewhere.
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 import subprocess
@@ -691,9 +692,12 @@ def test_a_store_git_would_not_restore_from_is_never_used(
     the member from its url; with one that lacks the commit, it would fetch
     into it. Neither is run: everything else is put back, the directory is
     made again, empty, and the sentence names the store git would use, why
-    it is not used, and the store the checkout had, still there. Nothing
-    was cloned or fetched, and the holder's git config gained no
-    `submodule.renamed.*` key."""
+    it is not used, and the store the checkout had, still there; it ends by
+    saying the checkout can come back from that store with no network, or
+    from its remote, and never that it comes back ONLY from its remote while
+    its own store is still there (review 365-7cca975, NIT-B), and it prints
+    no command, so nothing in it could clone. Nothing was cloned or fetched,
+    and the holder's git config gained no `submodule.renamed.*` key."""
     env = isolated(offline, tmp_path)
     url = renamed_section(holder, RENAMED)
     other = holder / ".git" / "modules" / RENAMED
@@ -720,9 +724,11 @@ def test_a_store_git_would_not_restore_from_is_never_used(
         f"would check it out of {shown}, {why}, so `git submodule update` "
         f"was not run, and {PATH} was made again, empty; the object store its "
         f"checkout had, {own.as_posix()}, is still there. The checkout of "
-        f"{PATH} comes back only from its remote, which this command never "
-        "reaches. `git status` shows whether anything else is left, before "
-        "running `remove` again.")
+        f"{PATH} can come back from the object store named above with no "
+        "network, or from its remote; this command did neither. `git "
+        "status` shows whether anything else is left, before running "
+        "`remove` again.")
+    assert "comes back only from" not in result.stderr
     assert_same(before, snapshot(holder, env),
                 ("index", ".gitmodules", "family.yaml", "registration",
                  ".git/config", "HEAD"))
@@ -750,6 +756,10 @@ def test_a_wrong_store_check_still_reaches_no_remote(
       which `protocol.allow=never` does not override, so only `--no-fetch`
       stops it.
 
+    `OFFLINE_ENV`'s empty `GIT_ALLOW_PROTOCOL` would stop both as well, so it
+    is taken off here, for each guard to prove itself; the next test proves
+    that one.
+
     The step is named as not done, with git's reason; the
     `submodule.renamed.*` keys `update --init` wrote are named, with the
     commands that take them out; and the commit is in no store but the
@@ -766,6 +776,7 @@ def test_a_wrong_store_check_still_reaches_no_remote(
     at, pin = on_main(holder, env), pinned(holder, env)
     module = family_module()
     monkeypatch.setattr(module, "_unrestorable", lambda *args: None)
+    monkeypatch.setattr(module, "OFFLINE_ENV", {"GIT_TERMINAL_PROMPT": "0"})
     monkeypatch.delenv("GIT_ALLOW_PROTOCOL", raising=False)
 
     code = in_process(module, monkeypatch, env, [
@@ -787,6 +798,54 @@ def test_a_wrong_store_check_still_reaches_no_remote(
     for key in left.groups():
         assert f"`git config --local --unset-all {key}`" in said, said
     assert not holds(other, pin, holder), "nothing was cloned or fetched"
+    offline.assert_left_nothing()
+
+
+def test_a_callers_protocol_settings_do_not_let_a_wrong_store_check_clone(
+        family, holder, offline, tmp_path, monkeypatch, capsys):
+    """THE BACKSTOP'S TWO GAPS (review 365-7cca975, NIT-A). A caller whose
+    environment says `GIT_ALLOW_PROTOCOL=file`, or whose configuration says
+    `protocol.file.allow=always`, had `-c protocol.allow=never` overridden,
+    because `protocol.allow` yields to both: a store check that is wrong
+    (made so here, as in the test above) and a url that is a LOCAL bare
+    repository, which a clone would reach and show, and `update` cloned the
+    member into the store of the renamed section. `_offline_git` now
+    empties `GIT_ALLOW_PROTOCOL`, which overrides the caller's value and
+    every `protocol.<name>.allow` alike: the clone is refused as a transport
+    git does not allow, and nothing is cloned.
+
+    The premise is checked first: with both settings, a clone under
+    `-c protocol.allow=never` of the same url succeeds, which is what the
+    restore would have done."""
+    env = isolated(offline, tmp_path)
+    url = renamed_section(holder, RENAMED)
+    other = holder / ".git" / "modules" / RENAMED
+    env = {**configured(env, "protocol.file.allow", "always"),
+           "GIT_ALLOW_PROTOCOL": "file"}
+    premise = subprocess.run(
+        ["git", "-c", "protocol.allow=never", "clone", "-q", url,
+         str(tmp_path / "premise")], cwd=str(tmp_path), capture_output=True,
+        env={**os.environ, **env})
+    assert premise.returncode == 0, (
+        "premise: the caller's settings defeat `-c protocol.allow=never`: "
+        + premise.stderr.decode("utf-8", "replace"))
+    refusing_hook(holder, tmp_path)
+    at, pin = on_main(holder, env), pinned(holder, env)
+    module = family_module()
+    monkeypatch.setattr(module, "_unrestorable", lambda *args: None)
+
+    code = in_process(module, monkeypatch, env, [
+        "remove", "--family-root", str(holder), "--member", MEMBER])
+    out, err = capsys.readouterr()
+
+    assert code == 2, out + err
+    said = err.splitlines()[-1]
+    assert (f"; NOT {PATH} checked out again at {at[:12]} on main from the "
+            "object store `git rm` keeps: `git -c protocol.allow=never "
+            "--literal-pathspecs submodule update --init --no-fetch -q -- "
+            f"{PATH}`: ") in said, said
+    assert "transport 'file' not allowed" in said, said
+    assert not holds(other, pin, holder), "nothing was cloned"
     offline.assert_left_nothing()
 
 

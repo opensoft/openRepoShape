@@ -2293,12 +2293,20 @@ def cmd_add(args) -> int:
 #: line (`_offline_git`): no transport at all, a local path's included.
 NO_REMOTE = ["-c", "protocol.allow=never"]
 
+#: What `_offline_git` puts in the environment of every git command it runs,
+#: over the caller's: no terminal prompt, and an EMPTY `GIT_ALLOW_PROTOCOL`,
+#: which allows no transport at all and, unlike `NO_REMOTE`, is not
+#: overridden by a `protocol.<name>.allow` set by name or by the caller's own
+#: `GIT_ALLOW_PROTOCOL` (review 365-7cca975, NIT-A).
+OFFLINE_ENV = {"GIT_TERMINAL_PROMPT": "0", "GIT_ALLOW_PROTOCOL": ""}
+
 
 def _offline_git(args: list[str], cwd: Path) -> str:
-    """`git -c protocol.allow=never <args>` in `cwd`, with
-    `GIT_TERMINAL_PROMPT=0` in its environment: a git command of the
-    rollback's restore (#365). Its output, as `run` returns it; a failure is
-    a `CommandFailed`, as `run`'s is.
+    """`git -c protocol.allow=never <args>` in `cwd`, with `OFFLINE_ENV` in
+    its environment (`GIT_TERMINAL_PROMPT=0` and an empty
+    `GIT_ALLOW_PROTOCOL`): a git command of the rollback's restore (#365).
+    Its output, as `run` returns it; a failure is a `CommandFailed`, as
+    `run`'s is.
 
     THE BACKSTOP UNDER THE STORE CHECK (`_unrestorable`). The rollback runs
     `git submodule update` only where git has the store and the commit, so
@@ -2307,17 +2315,27 @@ def _offline_git(args: list[str], cwd: Path) -> str:
     `git submodule update` would make included, and `protocol.allow=never`
     refuses each transport git would otherwise allow, https, ssh and a
     local path alike; with no terminal prompt, a credential git would ask
-    for is a failure, not a wait. `protocol.allow` yields to a
-    `protocol.<name>.allow` set by name and to `GIT_ALLOW_PROTOCOL`, which
-    is why `update` also runs with `--no-fetch` and why the store is checked
-    before it runs at all.
+    for is a failure, not a wait. `--no-fetch` stops the fetch into a store
+    that lacks the commit, and the store is checked before `update` runs at
+    all.
+
+    WHY `GIT_ALLOW_PROTOCOL` IS EMPTY HERE. `protocol.allow` yields to a
+    `protocol.<name>.allow` set by name and to the caller's
+    `GIT_ALLOW_PROTOCOL`, so a person whose environment or configuration
+    allows the file protocol, or any other, had `-c protocol.allow=never`
+    defeated and a wrong store check cloned from the member's url (measured
+    with a local bare repository, review 365-7cca975, NIT-A). The variable
+    OVERRIDES both: git then behaves as if `protocol.allow` were `never` and
+    each protocol it lists, none here, `always`, whatever the configuration
+    says. The restore reads local object stores and needs no transport, so
+    nothing is lost; the `-c` and `--no-fetch` guards stay as the layers
+    under it.
     """
     command = ["git", *NO_REMOTE, *args]
     check_program(command)
     proc = subprocess.run(command, cwd=str(cwd), capture_output=True,
                           text=True, encoding="utf-8", errors="replace",
-                          check=False,
-                          env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+                          check=False, env={**os.environ, **OFFLINE_ENV})
     if proc.returncode != 0:
         raise CommandFailed(command, cwd, proc.returncode,
                             (proc.stderr or "") + (proc.stdout or ""))
@@ -2510,7 +2528,11 @@ class PinRollback:
     the store the checkout's own `.git` named when it was recorded. Where it
     is not, `update` is not run: the directory is made again, empty, as a
     member never checked out has it, and the sentence says the checkout
-    comes back only from its remote. So too for a member whose
+    comes back only from its remote; where the store its checkout had is
+    still there under a name git does not look for (a section renamed by
+    hand) and the sentence has named it, it says the checkout can come back
+    from that store with no network, or from its remote, and prints no
+    command that does either. So too for a member whose
     checkout git could not read before the first write, its store gone: it
     is recorded as one no store is known to hold, and its `remove` goes
     ahead as it always has. Every git command that puts a checkout back runs
@@ -2611,6 +2633,9 @@ class PinRollback:
         #: Set once the checkout is found to have no store git could bring it
         #: back from, by the restore or by the sentence.
         self.storeless = False
+        #: Set once the sentence has named the store the checkout had as
+        #: still there (`_store_kept`), which the closing words refer to.
+        self.store_said = False
         #: `{leg: why}` for each leg the restore found no store for.
         self.legs_left: dict[str, str] = {}
         #: Set once the member's checkout, and then its legs that could be,
@@ -2719,6 +2744,7 @@ class PinRollback:
                 found is not None
                 and found[1].resolve() == self.store.resolve()):
             return ""
+        self.store_said = True
         return (f"; the object store its checkout had, "
                 f"{self.store.as_posix()}, is still there")
 
@@ -2846,8 +2872,8 @@ class PinRollback:
         COULD CLONE OR FETCH (#365): `git submodule update` only where git
         holds the store and the commit now, and under the same backstop the
         rollback runs it with. Where git does not, the directory is made
-        again, empty, and the sentence says the checkout comes back only
-        from its remote. Nothing already back is typed again."""
+        again, empty, and the sentence says where the checkout comes back
+        from (`undo`). Nothing already back is typed again."""
         made = ([f"mkdir {shlex.quote(self.path)}"]
                 if self.existed and not self.member.is_dir() else [])
         if not self.checkout:
@@ -3010,9 +3036,18 @@ class PinRollback:
                     + (" (" + ", ".join(restored) + ")" if restored else "")
                     + "; NOT " + "; NOT ".join(failed) + ".")
             # NO COMMAND HERE CLONES (#365): a checkout no store git has can
-            # bring back is said to come back only from its remote.
-            remote_only = ([self.path] if self.storeless else []) + [
-                f"{self.path}/{leg}" for leg in self.legs_left]
+            # bring back is said to come back only from its remote, and
+            # one whose old store the sentence named as still there, that
+            # it can come back from that store with no network as well
+            # (review 365-7cca975, NIT-B), with no command to do it.
+            kept = self.storeless and self.store_said
+            remote_only = ([self.path] if self.storeless and not kept
+                           else []) + [f"{self.path}/{leg}"
+                                       for leg in self.legs_left]
+            if kept:
+                text += (f" The checkout of {self.path} can come back from "
+                         "the object store named above with no network, or "
+                         "from its remote; this command did neither.")
             if remote_only:
                 text += (" The checkout of " + " and ".join(remote_only)
                          + " comes back only from "
@@ -3025,7 +3060,7 @@ class PinRollback:
                                                       for line in typed)
                         + f". Then `git status` shows whether anything is "
                         f"left, before running `{self.verb}` again.")
-            if remote_only:
+            if remote_only or kept:
                 return (text + " `git status` shows whether anything else is "
                         f"left, before running `{self.verb}` again.")
             return (text + " Put those back by hand — `git status` shows what "
