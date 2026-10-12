@@ -57,6 +57,8 @@ Every command below is typed at the root of a clone of this repository. `openRep
 
 ### `setup.sh`
 
+From anywhere but a checkout of the standard — a download, `curl … | bash` — `setup.sh --help` is the shim's own instead: a few lines that clone nothing, list no flag, and name `setup-project.py --help` and this file as where the flags are.
+
 `./setup.sh --help`:
 
 ```
@@ -133,8 +135,9 @@ and setup.sh asks, if a terminal is attached. `--org` comes from that flag,
 else $OPENREPOSHAPE_ORG, else a prompt — it is NEVER defaulted. Every other
 argument reaches setup.sh unchanged: --visibility, --elected-by, --family,
 --into, --yes, --local-remote-dir, and anything after `--`, which setup.sh
-hands on to scaffold-project.py. `./setup.sh --help` prints setup-project.py's
-usage, which lists them all.
+hands on to scaffold-project.py. They are setup-project.py's flags:
+`python3 setup-project.py --help` lists them all, and so does
+`./setup.sh --help` in a checkout of this standard.
 
 `--install` places ONE command, and it is this one file:
 
@@ -246,7 +249,9 @@ options:
   -h, --help            show this help message and exit
   --org ORG
   --project PROJECT     the assembly-root name, e.g. Atlas
-  --id ID               lowercase project id
+  --id ID               lowercase project id (default: --project lowercased).
+                        One the project's YAML reader would read as another
+                        type -- `null`, `true`, `007` -- is refused.
   --name NAME           display name
   --visibility {private,public,internal}
                         default: private for a fresh scaffold; with --reuse-
@@ -262,6 +267,9 @@ options:
                         (owner/openProduct@<sha>) to override it for one pin
                         without changing this default for the others.
   --elected-by ELECTED_BY
+                        the human electing the shape (default:
+                        GIT_AUTHOR_NAME, then `git config user.name`); not
+                        blank
   --elected-on ELECTED_ON
                         YYYY-MM-DD
   --reference REFERENCE
@@ -273,8 +281,22 @@ options:
                         does not claim it followed a document that did not
                         exist yet.
   --tracking-branch TRACKING_BRANCH
+                        the branch every repository is created on (default:
+                        main). One the project's YAML reader would read as
+                        another type -- `null`, `true`, `007`, `2026` -- is
+                        refused.
   --spec-path SPEC_PATH
+                        where the spec leg is mounted, as a path in the
+                        assembly root (default: spec). A path that is, holds
+                        or lies inside a FILE the shape writes into the root
+                        is refused before anything is created: `project.yaml`
+                        is one, and `contracts` holds several.
   --code-path CODE_PATH
+                        where the code leg is mounted, as a path in the
+                        assembly root (default: code). A path that is, holds
+                        or lies inside a FILE the shape writes into the root
+                        is refused before anything is created: `project.yaml`
+                        is one, and `contracts` holds several.
   --dry-run
   --local-remote-dir LOCAL_REMOTE_DIR
                         create bare repositories here instead of calling `gh
@@ -290,7 +312,9 @@ options:
                         contracts/<openproduct>-pin.yaml and lists the product
                         in the manifest, which is what makes a
                         `<Domainx><Product>` name a DESCENDANT rather than a
-                        name shaped like one. Repeatable.
+                        name shaped like one. Repeatable, once per product
+                        (the same name in another case, or under another
+                        owner, is the same product).
   --referent-chain openLayer,openProduct
                         the CHAIN of neutral-product pins this project reaches
                         its referent through, e.g. --referent-chain
@@ -353,6 +377,8 @@ options:
   --id ID
   --visibility {private,public,internal}
   --elected-by ELECTED_BY
+                        the human electing the shape (default: `git config
+                        user.name`); not blank
   --elected-on ELECTED_ON
                         YYYY-MM-DD
   --reference REFERENCE
@@ -640,6 +666,7 @@ options:
 ```
 usage: family.py add [-h] --family-root FAMILY_ROOT --member ORG/PROJECT
                      [--at COMMIT] [--local-remote-dir LOCAL_REMOTE_DIR]
+                     [--trailer "KEY: VALUE"] [--dry-run]
 
 options:
   -h, --help            show this help message and exit
@@ -651,6 +678,15 @@ options:
   --local-remote-dir LOCAL_REMOTE_DIR
                         resolve the member to a bare repository here instead
                         of github.com (the TEST path)
+  --trailer "KEY: VALUE"
+                        append this `<Key>: <value>` line to the commit this
+                        writes; repeatable, kept in the order given
+  --dry-run             print the row, the gitlink and the .gitmodules section
+                        this would write, and its trailers, and change nothing
+                        in the holder: it READS the member, as a real add
+                        does, from throwaway clones in temporary directories
+                        outside the holder, which it deletes, and mounts,
+                        writes, stages and commits nothing
 ```
 
 #### `scripts/family.py bump`
@@ -659,7 +695,7 @@ options:
 
 ```
 usage: family.py bump [-h] --family-root FAMILY_ROOT --member PROJECT
-                      --to COMMIT [--trailer "KEY: VALUE"]
+                      --to COMMIT [--trailer "KEY: VALUE"] [--dry-run]
 
 options:
   -h, --help            show this help message and exit
@@ -670,6 +706,11 @@ options:
   --trailer "KEY: VALUE"
                         append this `<Key>: <value>` line to the commit this
                         writes; repeatable, kept in the order given
+  --dry-run             print the row this would write, and its trailers, and
+                        change nothing in the holder: it FETCHES the member,
+                        as a real bump does, to resolve --to and digest it,
+                        and checks nothing out, writes, stages and commits
+                        nothing; exit 1 if there is nothing to do
 ```
 
 #### `scripts/family.py remove`
@@ -678,11 +719,15 @@ options:
 
 ```
 usage: family.py remove [-h] --family-root FAMILY_ROOT --member PROJECT
+                        [--dry-run]
 
 options:
   -h, --help            show this help message and exit
   --family-root FAMILY_ROOT
   --member PROJECT
+  --dry-run             print the row, the gitlink, the .gitmodules section
+                        and the directory this would remove, and change
+                        nothing
 ```
 
 #### `scripts/family.py siblings`
@@ -814,12 +859,18 @@ options:
   --pin-source [PRODUCT=]PATH
                         a local checkout to recompute a neutral-product pin's
                         digest from, instead of `gh api` — e.g. --pin-source
-                        openGlass=../openGlass. A bare PATH with no `PRODUCT=`
+                        openGlass=../openGlass. The text before the first `=`
+                        is a PRODUCT only when it names a pin project.yaml
+                        declares, and then that reading wins even over a
+                        directory spelled like the whole value (./PATH reads
+                        that directory); any other value is a bare PATH, which
                         applies to whichever declared pin has no more specific
-                        answer (the common case is exactly one). Repeatable.
-                        SHAPE_PIN_SOURCE_<PRODUCT> (env) and a checkout
-                        sitting beside this assembly root are also tried,
-                        before `gh api` and before this flag's bare form.
+                        answer (the common case is exactly one). Repeatable; a
+                        value no pin used is noted, and one that cannot be
+                        read is a finding. SHAPE_PIN_SOURCE_<PRODUCT> (env)
+                        and a checkout sitting beside this assembly root are
+                        also tried, before `gh api` and before this flag's
+                        bare form.
 ```
 
 ### `templates/family-root/scripts/bootstrap.py`

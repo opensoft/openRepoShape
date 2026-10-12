@@ -11,6 +11,11 @@ any leg exists, and what a source tree legitimately holds -- a space, a letter
 outside ASCII, `#`, `?`, `[`, `;` -- is extracted, because every place such a
 path reaches `git` reads it literally.
 
+`plan` asks the same test since #319: an entry it refuses is written
+`leg: null` with a question giving the reason and the only two answers,
+`root` and `drop`, where `plan` used to answer `spec` for it and leave
+`check` to refuse that answer.
+
 NO NETWORK AND NO GITHUB. `git filter-repo` is needed only by the end-to-end
 test at the bottom, which skips without it as `test_adopt_e2e.py` does; the
 Windows job installs none, so there it is the tests above it that run. They
@@ -36,7 +41,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import ADOPT, REPO, git, make_source_repo, run_script, write_plan
+from conftest import (ADOPT, REPO, blank_unnamed_pin_sources, git,
+                      make_source_repo, run_script, write_plan)
 
 PROJECT = "Northwind"
 UTF8 = "utf-8"
@@ -171,9 +177,9 @@ POLICY = [
     ("line\u2028sep.md", "line separator `\\u2028`"),
     # A byte that is not UTF-8, as `Source.tree` keeps it: since #199 the
     # path list carries it byte-exact.
-    ("caf\udce9.md", "`\\xe9`, which is not UTF-8"),
-    ("docs/\udcff/", "`\\xff`, which is not UTF-8"),
-    ("\udc80.md", "`\\x80`, which is not UTF-8"),
+    ("caf\udce9.md", "`\\udce9`, which is not UTF-8"),
+    ("docs/\udcff/", "`\\udcff`, which is not UTF-8"),
+    ("\udc80.md", "`\\udc80`, which is not UTF-8"),
 ]
 
 
@@ -307,15 +313,33 @@ def test_execute_refuses_it_in_checks_words_before_any_leg(adopter, tmp_path,
     no_leg_was_created(tmp_path)
 
 
+def asked(tmp_path: Path, tree: dict, answers: dict) -> tuple[Path, Path]:
+    """`(source, plan)` for a source holding `tree`, with each entry
+    `answers` names, as the plan file spells it, answered as `answers`
+    says. Every other entry needs no answer: `plan` asks only about those
+    (#319)."""
+    source = make_source_repo(tmp_path / "Thing", tree, edits=())
+    plan = tmp_path / "adoption-plan.yaml"
+    written = write_plan(source, plan, project=PROJECT)
+    assert written.returncode == 0, written.stderr + written.stdout
+    for spelled, leg in answers.items():
+        answer(plan, spelled, "null", leg)
+    assert "leg: null" not in plan.read_text(encoding=UTF8)
+    return source, plan
+
+
 @pytest.mark.parametrize("answered", ["root", "drop"])
 def test_an_entry_answered_root_or_drop_is_not_judged(adopter, tmp_path,
                                                       answered):
     """A path that is never extracted reaches no line of the filter's list:
     `root` keeps it where it is and `drop` hands it to `git rm` after `--`.
-    So the remediation's `drop` is true; answered `spec` it is refused."""
-    source, plan = planned(tmp_path, {"-notes.md": "notes\n",
-                                      "src/app.py": "VALUE = 1\n",
-                                      "docs/spec.md": "# spec\n"})
+    So the remediation's `drop` is true; answered `spec` it is refused.
+    `plan` asks about it since #319, so `spec` is answered here by hand, as
+    `plan` used to write it."""
+    source, plan = asked(tmp_path, {"-notes.md": "notes\n",
+                                    "src/app.py": "VALUE = 1\n",
+                                    "docs/spec.md": "# spec\n"},
+                         {'"-notes.md"': "spec"})
     findings = [line for line in run_check(plan).stderr.splitlines()
                 if line.startswith(f"FINDING {UNSAFE}:")]
     assert findings == [f"FINDING {UNSAFE}: `-notes.md` has leg: spec, and "
@@ -334,10 +358,12 @@ def test_an_entry_answered_root_or_drop_is_not_judged(adopter, tmp_path,
 def test_a_control_character_in_the_source_is_found_and_refused(adopter,
                                                                 tmp_path):
     """Not a hand edit: the SOURCE holds `notes\\t.md`, `plan` writes it into
-    the plan as it stands, and the plan parses. `check` names it and
-    `execute` refuses it before any leg exists."""
-    source, plan = planned(tmp_path, {"notes\t.md": "notes\n",
-                                      "src/app.py": "VALUE = 1\n"})
+    the plan as it stands, and the plan parses. Answered `spec` -- what
+    `plan` wrote for it before #319 -- `check` names it and `execute`
+    refuses it before any leg exists."""
+    source, plan = asked(tmp_path, {"notes\t.md": "notes\n",
+                                    "src/app.py": "VALUE = 1\n"},
+                         {'"notes\\t.md"': "spec"})
     result = run_check(plan)
     assert result.returncode == 1, result.stderr + result.stdout
     assert f"FINDING {UNSAFE}: `notes\\t.md` has leg: spec" in result.stderr
@@ -347,6 +373,227 @@ def test_a_control_character_in_the_source_is_found_and_refused(adopter,
     no_leg_was_created(tmp_path)
     assert git("branch", "--format=%(refname:short)",
                cwd=source).stdout.split() == ["main"]
+
+
+# --- `plan` asks about them (#319) ----------------------------------------
+#
+# On main at 71b58a1 `plan` asked `entry_path_problem` nothing: each name
+# below that a rule places was written `leg: spec`, `review_required:
+# false`, no question, and `check` then refused that answer as
+# `plan-unsafe-path`; `Icon\r` and `   `, which no rule places, were asked
+# the policy's question, which offers `spec` and `code` too. Now each is
+# asked, with the reason, and offered the only two answers `execute` takes.
+
+#: `(the name as git records it, as the plan file spells it, a piece of the
+#: question as the plan FILE shows it)`: one of each kind
+#: `entry_path_problem` refuses that a source tree can hold, at the top
+#: level, where it is an entry of its own. `.md` is spec by the extension
+#: table; `Icon\r` and `   ` no rule places. The piece is the writer's
+#: escaping measured (`repo_shape.double_quoted`): the question spells a
+#: character as `_spelled` does, `\t` as a backslash and a `t`, and the
+#: file doubles that backslash, so the line reads back as the question.
+#: `{byte}` is the byte 0xE9 as `_spelled_character` spells it, doubled as
+#: the file doubles it: `\xe9` at 71b58a1, and #329 respells it.
+REFUSED_IN_THE_SOURCE = [
+    pytest.param(b"-notes.md", '"-notes.md"',
+                 "because it begins with `-`, which `execute` refuses as "
+                 "policy", id="leading-dash"),
+    pytest.param(b"notes\t.md", '"notes\\t.md"',
+                 "because it holds the control character `\\\\t`, which",
+                 id="tab"),
+    pytest.param(b"a\rb.md", '"a\\rb.md"',
+                 "because it holds the control character `\\\\r`, which",
+                 id="carriage-return-inside"),
+    pytest.param(b"Icon\r", '"Icon\\r"',
+                 "because it ends in a carriage return (`\\\\r`), which `git "
+                 "filter-repo` strips from the end of each line of the path "
+                 "list it reads, so its line would name `Icon`, another "
+                 "path. So", id="carriage-return-at-the-end"),
+    pytest.param(b"a\nb.md", '"a\\nb.md"',
+                 "because it holds a line feed (`\\\\n`), which ends its line",
+                 id="line-feed"),
+    pytest.param(b"caf\xe9.md", '"caf\\udce9.md"',
+                 "because it holds `{byte}`, which is not UTF-8",
+                 id="not-utf8"),
+    pytest.param(b"a==>b.md", '"a==>b.md"',
+                 "because it holds `==>`, which `git filter-repo "
+                 "--paths-from-file` reads as a rename", id="rename-arrow"),
+    pytest.param(b"   ", '"   "', "because it is nothing but whitespace",
+                 id="whitespace-only"),
+]
+
+#: How the question `plan` asks about such a path ends, whatever it is.
+ONLY_ROOT_OR_DROP = (
+    "So `root` or `drop` is the only answer `execute` takes for it. To put "
+    "it in a leg, rename it in the source, commit, and re-run `plan`.")
+
+#: The files beside it, which `plan` places with no question.
+BESIDE = {"README.md": "# Thing\n", "docs/guide.md": "# guide\n",
+          "src/main.py": "print(1)\n"}
+
+
+def indexed_source(base: Path, name: bytes) -> Path:
+    """A source holding `BESIDE` and `name` at the top level, the name put
+    straight into git's index and committed as `git add` records it, so no
+    file system has to hold it (NTFS holds no tab or carriage return, APFS
+    no byte that is not UTF-8). `core.protectNTFS` is off for the two calls
+    that write it, as in `test_adopt_plan_escapes.py`: nothing here checks
+    it out. Skipped where git does not keep the name in the tree, which
+    only git can say: `update-index` ignores a path it will not record."""
+    source = make_source_repo(base / "Thing", BESIDE, edits=())
+    unguarded = ("-c", "core.protectNTFS=false")
+    blob = subprocess.run(["git", "hash-object", "-w", "--stdin"],
+                          cwd=str(source), input=b"notes\n",
+                          capture_output=True, check=True).stdout.strip()
+    added = subprocess.run(
+        ["git", *unguarded, "update-index", "--add", "-z", "--index-info"],
+        cwd=str(source), input=b"100644 " + blob + b"\t" + name + b"\0",
+        capture_output=True, check=False)
+    if added.returncode:
+        pytest.skip(f"git update-index refuses {name!r} here: "
+                    f"{added.stderr!r}")
+    git(*unguarded, "-c", "user.name=Source Human",
+        "-c", "user.email=human@source.invalid",
+        "commit", "-q", "-m", "Add a name execute refuses", cwd=source)
+    held = subprocess.run(["git", "ls-tree", "-r", "-z", "--name-only",
+                           "HEAD"], cwd=str(source), capture_output=True,
+                          check=True).stdout.split(b"\0")
+    if name not in held:
+        pytest.skip(f"git does not keep {name!r} in a tree here")
+    return source
+
+
+def plan_in_bytes(source: Path, plan: Path) -> subprocess.CompletedProcess:
+    """`plan`, as `conftest.write_plan` runs it, answered in BYTES and in
+    UTF-8 on every platform: a name printed raw, `Icon\\r`, would read as
+    `Icon\\n` through text mode, and the policy's question holds an em
+    dash."""
+    env = blank_unnamed_pin_sources(
+        {**os.environ, "LANES_LANE": "", "PYTHONIOENCODING": UTF8}, {})
+    return subprocess.run(
+        [sys.executable, str(ADOPT), "plan", "--source", str(source),
+         "--project", PROJECT, "--org", "testorg", "--elected-by",
+         "Test Human", "--elected-on", "2026-09-02", "--out", str(plan)],
+        capture_output=True, env=env, stdin=subprocess.DEVNULL, check=False)
+
+
+def expected_question(adopter, name: str) -> str:
+    """The question `plan` asks about `name`: after the policy's own, when it
+    asks one, or after where the rules put it; then why `execute` will not
+    extract it, in `entry_path_problem`'s words, and the two answers."""
+    verdict = adopter.PathPolicy.load(adopter.PATH_POLICY).classify_file(name)
+    tail = (f" into a leg as it is named, because "
+            f"{adopter.entry_path_problem(name)}. {ONLY_ROOT_OR_DROP}")
+    if verdict.leg:
+        return (f"The rules put this path in the {verdict.leg} leg (rule "
+                f"`{verdict.rule}`), but `execute` will not extract it"
+                + tail)
+    return f"{verdict.question} But `execute` will not extract this path" \
+        + tail
+
+
+@pytest.mark.parametrize("name, spelled, in_the_file", REFUSED_IN_THE_SOURCE)
+def test_plan_asks_about_a_path_execute_refuses(adopter, tmp_path, name,
+                                                spelled, in_the_file):
+    """THE ISSUE. `plan` writes `leg: null`, `review_required: true` and a
+    question saying `execute` will not extract the path as it is named, why,
+    and that `root` or `drop` is the only answer; it prints that question
+    with the paths still to answer. `check` and `execute` say of the plan as
+    written what they say of any entry still asked: `plan-unsafe-path`
+    (`leg: null`, judged so the person knows what `spec` would meet) and
+    `plan-unresolved`, and `execute` refuses before any leg exists."""
+    text_name = name.decode(UTF8, "surrogateescape")
+    in_the_file = in_the_file.replace(
+        "{byte}", adopter._spelled_character("\udce9").replace("\\", "\\\\"))
+    source = indexed_source(tmp_path, name)
+    plan = tmp_path / "adoption-plan.yaml"
+    written = plan_in_bytes(source, plan)
+    assert written.returncode == 0, written.stderr + written.stdout
+    question = expected_question(adopter, text_name)
+    assert in_the_file.replace("\\\\", "\\") in question
+    assert ONLY_ROOT_OR_DROP in question
+
+    row = {str(row["path"]): row
+           for row in adopter.load_yaml(plan)["paths"]}[text_name]
+    assert (row["leg"], row["review_required"], row["confidence"]) == (
+        None, True, "review")
+    assert row["question"] == question
+    raw = plan.read_bytes().decode(UTF8)
+    question_line = f"    question: {adopter.y(question)}"
+    assert raw.count(f"\n  - path: {spelled}\n") == 1
+    assert raw.count(f"\n{question_line}\n") == 1
+    assert question_line.isprintable() and in_the_file in question_line
+
+    report = written.stdout.replace(os.linesep.encode(), b"\n").decode(UTF8)
+    if not text_name.isprintable():
+        assert name not in written.stdout, written.stdout
+    assert f"\n  {adopter._shown(text_name)}\n      {question}\n" in report
+
+    checked = run_check(plan)
+    assert checked.returncode == 1, checked.stderr + checked.stdout
+    found = [line for line in checked.stderr.splitlines()
+             if line.startswith("FINDING ")]
+    named = adopter._spelled(text_name)
+    assert found[0] == (
+        f"FINDING {UNSAFE}: {named} has leg: null, and `execute` will not "
+        f"extract it into a leg: {adopter.entry_path_problem(text_name)}")
+    assert found[1].startswith(f"FINDING plan-unresolved: {named} still has "
+                               "`leg: null`. The question was: ")
+    assert len(found) == 2, found
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter.cmd_execute(execute_args(tmp_path, plan))
+    assert caught.value.code == "plan-unresolved"
+    no_leg_was_created(tmp_path)
+
+
+@pytest.mark.parametrize("answered", ["root", "drop"])
+def test_the_answer_the_question_offers_checks_ok(adopter, tmp_path,
+                                                  answered):
+    """The question's answers are answers: `-notes.md` answered `root` or
+    `drop` checks ok, and `execute` raises nothing over the plan before it
+    would make a leg. (`test_the_answers_it_offers_are_adopted_and_verified`
+    runs it to the end, where `git filter-repo` is installed.)"""
+    source = make_source_repo(tmp_path / "Thing",
+                              {**BESIDE, "-notes.md": "notes\n"}, edits=())
+    plan = tmp_path / "adoption-plan.yaml"
+    assert write_plan(source, plan, project=PROJECT).returncode == 0
+    answer(plan, '"-notes.md"', "null", answered)
+    assert "leg: null" not in plan.read_text(encoding=UTF8)
+    checked = run_check(plan)
+    assert checked.returncode == 0, checked.stderr + checked.stdout
+    assert "plan ok" in checked.stdout
+    loaded = adopter.Plan.load(plan)
+    assert adopter._refuse_what_check_finds(
+        loaded, loaded.open_source(str(source), tmp_path / "read")) is None
+
+
+def test_a_leg_only_a_refused_path_fed_is_recorded_as_seeded(adopter,
+                                                             tmp_path):
+    """What the rules imply is read with such a path ASKED: it is in no leg
+    whatever the answer, so a leg it alone fed is seeded, and the plan says
+    so -- the `seeding:` record and the warning naming `--allow-empty-leg` --
+    as `check` says of the plan as written and once it is answered, with no
+    note that the record is stale. On main at 71b58a1 `plan` wrote
+    `-spec.md: spec`, recorded the spec leg as extracted, and warned of
+    nothing."""
+    source = make_source_repo(tmp_path / "Thing",
+                              {"-spec.md": "# spec\n", "README.md": "# T\n",
+                               "src/main.py": "print(1)\n"}, edits=())
+    plan = tmp_path / "adoption-plan.yaml"
+    written = write_plan(source, plan, project=PROJECT)
+    assert written.returncode == 0, written.stderr + written.stdout
+    assert adopter.load_yaml(plan)["seeding"]["spec"] == {
+        "seeded_from_template": True, "template": "templates/spec-root",
+        "reason": "no entry assigns a path to the spec leg"}
+    assert "WARNING the spec leg will be SEEDED" in written.stdout
+    assert "--allow-empty-leg spec" in written.stdout
+    for answered in (None, "drop"):
+        if answered:
+            answer(plan, '"-spec.md"', "null", answered)
+        checked = run_check(plan)
+        assert "WARNING the spec leg will be SEEDED" in checked.stdout
+        assert "the `seeding:` record says" not in checked.stdout
+    assert checked.returncode == 0, checked.stderr + checked.stdout
 
 
 # --- a byte that is not UTF-8 ---------------------------------------------
@@ -406,8 +653,8 @@ def with_a_name_that_is_not_utf8(adopter, tmp_path: Path):
 #: The finding `check` must print first for `NOT_UTF8`, spelled as
 #: `_spelled` spells a byte that is not UTF-8.
 NOT_UTF8_FINDING = (
-    f"FINDING {UNSAFE}: `docs/caf\\xe9.md` has leg: spec, and `execute` "
-    "will not extract it into a leg: it holds `\\xe9`, which is not UTF-8 "
+    f"FINDING {UNSAFE}: `docs/caf\\udce9.md` has leg: spec, and `execute` "
+    "will not extract it into a leg: it holds `\\udce9`, which is not UTF-8 "
     "and which `execute` refuses as policy, though git and `git filter-repo` "
     "would take it literally: a name that holds one prints as an escape and "
     "never as itself, the split commit's message would list it with a `?` "
@@ -551,7 +798,7 @@ def test_a_source_with_such_names_is_adopted_and_verified(tmp_path):
     plan = tmp_path / "adoption-plan.yaml"
     written = write_plan(source, plan, project=PROJECT)
     assert written.returncode == 0, written.stderr + written.stdout
-    answer(plan, '"-notes.md"', "spec", "drop")
+    answer(plan, '"-notes.md"', "null", "drop")
     answer(plan, "D.tsx", "code", "root")
     if os.name != "nt":
         for spelled, old, new in POSIX_ANSWERS:
@@ -589,3 +836,44 @@ def test_a_source_with_such_names_is_adopted_and_verified(tmp_path):
                              capture_output=True, check=True
                              ).stdout.decode(UTF8).splitlines()
         assert log == [edited, "Initial import"], f"{path}: {log}"
+
+
+@needs_filter_repo
+@pytest.mark.parametrize("answered", ["root", "drop"])
+@pytest.mark.parametrize("name", [
+    "-notes.md", pytest.param("notes\t.md", marks=POSIX_ONLY)])
+def test_the_answers_it_offers_are_adopted_and_verified(adopter, tmp_path,
+                                                        name, answered):
+    """#319's ACCEPTANCE: `plan` asks about the path, the person gives one of
+    the two answers its question offers, `check` says `plan ok`, and
+    `execute` runs to `adoption verified`, the path where that answer put
+    it: in the root tree of the split, or nowhere. A tab is a name only a
+    POSIX disk holds, and `execute` checks the source out."""
+    source = make_source_repo(tmp_path / "Thing", {**BESIDE, name: "n\n"},
+                              edits=())
+    plan = tmp_path / "adoption-plan.yaml"
+    written = write_plan(source, plan, project=PROJECT)
+    assert written.returncode == 0, written.stderr + written.stdout
+    row = {str(row["path"]): row
+           for row in adopter.load_yaml(plan)["paths"]}[name]
+    assert row["leg"] is None and row["question"].endswith(ONLY_ROOT_OR_DROP)
+    answer(plan, adopter.y(name), "null", answered)
+    checked = run_check(plan)
+    assert checked.returncode == 0, checked.stderr + checked.stdout
+    assert "plan ok" in checked.stdout
+
+    remotes = tmp_path / REMOTES
+    result = run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
+                        "--local-remote-dir", str(remotes),
+                        "--work-dir", str(tmp_path / WORK))
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "adoption verified" in result.stdout
+    root = subprocess.run(["git", "ls-tree", "-r", "-z", "--name-only",
+                           "adopt/three-repo-shape"], cwd=str(source),
+                          capture_output=True, check=True).stdout
+    held = {path.decode(UTF8) for path in root.split(b"\0") if path}
+    assert (name in held) == (answered == "root")
+    spec = subprocess.run(["git", "ls-tree", "-r", "--name-only", "main"],
+                          cwd=str(remotes / f"{PROJECT}-spec.git"),
+                          capture_output=True, text=True, check=True).stdout
+    assert spec.split() == ["docs/guide.md"]
