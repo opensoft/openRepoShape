@@ -742,6 +742,31 @@ def test_a_value_between_the_manifests_quotes_is_asked_as_render_writes_it(
         [adopter._field(key, placeholder, value)]) == []
 
 
+#: Free text holding a placeholder's token, as #260's values may: each
+#: field's own, bare after a letter and between double quotes, and one that
+#: no table names.
+HOLDING_A_TOKEN = ["x{{ELECTED_BY}}", '"{{ELECTED_BY}}"', "x{{REFERENCE}}",
+                   '"{{REFERENCE}}"', "{{NOPE}}"]
+
+
+@pytest.mark.parametrize("placeholder, key", [
+    (ELECTED_BY_PLACEHOLDER, ELECTED_BY_KEY),
+    (REFERENCE_PLACEHOLDER, REFERENCE_KEY)],
+    ids=[ELECTED_BY_KEY, REFERENCE_KEY])
+@pytest.mark.parametrize("text", HOLDING_A_TOKEN)
+def test_a_value_holding_a_placeholder_is_asked_as_render_puts_it_in_once(
+        adopter, placeholder, key, text):
+    """Since #260 `render` puts each value in once and never searches it
+    again. The gate built the line in two steps, the quoted placeholder and
+    then the bare one over that output, so a value holding its own token
+    was put in twice: `"x{{ELECTED_BY}}"` became `"xx{{ELECTED_BY}}"`, and
+    the gate refused a value `execute` writes as typed. It asks `render`."""
+    assert adopter._written(placeholder, text) == [
+        (MANIFEST, f"{key}: {repo_shape.double_quoted(text)}")]
+    assert adopter.manifest_misreads(
+        [adopter._field(key, placeholder, text)]) == []
+
+
 @needs_filter_repo
 @pytest.mark.parametrize("key, value, reading", CARRIED,
                          ids=ids_of(CARRIED, 0, 1))

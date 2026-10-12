@@ -108,11 +108,11 @@ from repo_shape import (  # noqa: E402
     parse_yaml, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
-    ADOPT_MAKEFILE_BLOCK, RULESET_HINT, SHAPE_REPOSITORY, TEMPLATED,
-    CommandFailed, Materialized, assembly_root_paths, collision_follow_up,
-    copy_tree, default_reference, election_date, env_commit,
-    escape_what_stdout_cannot_encode, git_init_commit,
-    materialize_assembly_root, naming_block, run, write_lf,
+    ADOPT_MAKEFILE_BLOCK, PLACEHOLDER_RE, RULESET_HINT, SHAPE_REPOSITORY,
+    TEMPLATED, CommandFailed, Materialized, assembly_root_paths,
+    collision_follow_up, copy_tree, default_reference, election_date,
+    env_commit, escape_what_stdout_cannot_encode, git_init_commit,
+    materialize_assembly_root, naming_block, render, run, write_lf,
     write_paths_listing,
 )
 # The leg-path rule (#179) is `scaffold-project.py`'s as much as adopt's, so it
@@ -1700,23 +1700,33 @@ def _written(placeholder: str, value: str) -> list[tuple[str, str]]:
     `{{placeholder}}`: with `value` in its place, as `execute` writes it, and
     without its indent, which says nothing about how the value is read.
 
-    AS `execute` WRITES IT is as the materializer's `render` writes it, in
-    its two steps: between a YAML template's double quotes,
-    `"{{ELECTED_BY}}"`, the value is spelled by `double_quoted`, which the
-    loader reads back as typed; anywhere else it stands as it is (#284).
-    Pasted raw between the quotes, as `render` once did, the gate refused
-    `--elected-by 'CORP\\tom'` for a line `execute` no longer writes, and a
-    name holding a `"`. Every file here is `.yaml`, which is what makes
-    `render` take the first step.
+    AS `execute` WRITES IT is what the materializer's own `render` makes of
+    the line, asked here as the loader is asked, so no copy of its rules can
+    go stale. Between a YAML template's double quotes, `"{{ELECTED_BY}}"`,
+    `render` spells the value with `double_quoted`, which the loader reads
+    back as typed (#284), and it puts each value in once, never searching
+    it again (#260). A copy of those rules in two steps, the second run over
+    the first's output, asked `--elected-by '"{{ELECTED_BY}}"'` about a line
+    `execute` never writes, and refused it. Every file here is `.yaml`,
+    which is what makes `render` take the quoted step.
     """
     token = "{{" + placeholder + "}}"
-    quoted = f'"{token}"'
-    return [(rel, line.strip().replace(quoted, double_quoted(value))
-             .replace(token, value))
-            for rel in TEMPLATED_YAML
-            for line in (ASSEMBLY_TEMPLATE / rel).read_text(
-                encoding="utf-8").splitlines()
-            if token in line]
+    lines = [(rel, line.strip())
+             for rel in TEMPLATED_YAML
+             for line in (ASSEMBLY_TEMPLATE / rel).read_text(
+                 encoding="utf-8").splitlines()
+             if token in line]
+    return [(rel, render(line, {**_as_they_stand(line), placeholder: value},
+                         rel))
+            for rel, line in lines]
+
+
+def _as_they_stand(line: str) -> dict[str, str]:
+    """A `render` table that gives each placeholder on `line` back as its own
+    token. Bare, the token is written as it was; between quotes,
+    `double_quoted` spells `{{KEY}}` as `"{{KEY}}"`, as it was. So the line
+    `_written` asks about differs from the template's by one value only."""
+    return {token[2:-2]: token for token in PLACEHOLDER_RE.findall(line)}
 
 
 def _field(what: str, placeholder: str, value) -> tuple[str, object, list]:
