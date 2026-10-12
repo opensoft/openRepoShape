@@ -37,6 +37,7 @@ import subprocess
 import sys
 
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from types import SimpleNamespace
 
 import pytest
 
@@ -312,15 +313,18 @@ def test_a_project_behind_the_standard_is_compliant_but_behind(
 
 # --- a leg that is not at its pin ------------------------------------------
 
-def test_a_leg_off_its_pin_is_a_finding_that_names_bootstrap(standard,
-                                                             project):
+def test_a_leg_off_its_pin_is_a_finding_that_names_a_submodule_update(
+        standard, project):
     """A commit made INSIDE a mount, which is how a leg walks off its pin.
 
     The gitlink in the superproject's index is untouched, so
     `validate-pins.py` is still green — it reads what the next commit would
     RECORD — and the only thing that can notice is a tool that looks at the
-    mount's HEAD. That is this row, and its exit is `make bootstrap`, which
-    puts the leg back on its tracking branch AT the pin.
+    mount's HEAD. That is this row, and its exit is `git submodule update`,
+    which puts the leg back AT the gitlink, which is the pin. It names no
+    script of the root's: `scripts/bootstrap.py` may be what is missing, and
+    never moved an existing branch (#276; `test_doctor_legs_members_next.py`
+    pastes the line).
     """
     leg = project / "spec"
     subprocess.run(["git", "commit", "-q", "--allow-empty", "-m",
@@ -331,8 +335,10 @@ def test_a_leg_off_its_pin_is_a_finding_that_names_bootstrap(standard,
     assert result.returncode == 1, result.stdout + result.stderr
     assert verdict_line(result).startswith("DRIFTED ("), result.stdout
     assert "leg(s) not at the pin" in verdict_line(result), result.stdout
-    assert "bootstrap.py" in result.stdout, (
-        "the row must name what `make bootstrap` runs")
+    assert "submodule update --init --recursive" in result.stdout, (
+        "the row must name the command that puts the leg back at its pin")
+    assert "bootstrap.py" not in result.stdout, (
+        "and no script the root may lack (#276)")
     rows = rows_of(doctor(standard, project, "--json"))
     assert rows["legs"]["status"] == "FINDING"
     assert rows["pins"]["status"] == "ok", (
@@ -353,7 +359,11 @@ def test_an_unbootstrapped_mount_is_a_finding(standard, project):
     rows = rows_of(result)
     assert rows["legs"]["status"] == "FINDING"
     assert "unbootstrapped clone" in rows["legs"]["reason"]
-    assert "bootstrap" in (rows["legs"]["next"] or "")
+    # `bootstrap.py` never initialises a mount (it prints `NOT INITIALIZED`
+    # and stops), so the line is the submodule update that does (#276).
+    assert "submodule update --init --recursive --checkout -- code" in \
+        (rows["legs"]["next"] or ""), rows["legs"]["next"]
+    assert "bootstrap.py" not in (rows["legs"]["next"] or "")
 
 
 # --- a manifest kind nothing validates -------------------------------------
@@ -769,6 +779,408 @@ def test_a_root_with_no_family_yaml_beside_gets_the_row_it_always_got(
     assert row["status"] == "ok", row
     assert set(row["detail"]) == MANIFEST_KINDS_DETAIL_KEYS, row["detail"]
     assert "family.yaml (family-manifest)" in row["detail"]["validated"], row
+
+
+# --- a registered kind in a root that never runs its gate (#327) ------------
+#
+# #211 acted on ONE path: `family.yaml` at the top of an assembly root. Any
+# other file declaring a registered kind was still counted `validated`
+# wherever it sat, so a `contracts/family.yaml` in an assembly root and a
+# `contracts/project.yaml` in a family holder were `ok` and COMPLIANT, exit
+# 0, though the gate registered for each kind never runs on that kind of root.
+
+#: The words the row's next command closes with, spelt out here for the
+#: reason `FAMILY_BESIDE_NEXT` is: a test that read them back from the doctor
+#: would pass whatever it said.
+NEVER_RENAME = ("never rename it to project.yaml or family.yaml in this "
+                "root: a family holder is not a project, and an assembly "
+                "root is not a family holder")
+
+#: Where each kind's manifest goes instead, as the next command offers it.
+FAMILY_HOME = ("a family holder of its own (`family.py init`, then "
+               "`family.py add` there)")
+#: `setup-project.py` beside `setup.sh`, on every OS: `setup.sh` is a bash
+#: script, and a Windows reader has no bash to run it in.
+PROJECT_HOME = ("an assembly root of its own (`setup.sh`, or "
+                "`setup-project.py` on Windows, for a new one; "
+                "`adopt-project.py plan` for a repository that exists), "
+                "which a holder pins with `family.py add`")
+
+
+def removal_named(standard: Path, row: dict, payload: dict,
+                  names: list) -> list:
+    """The `git rm` a registered-elsewhere row's NEXT names, as the argv it
+    is, after asserting the NEXT spells exactly that command.
+
+    The spelling is held to the doctor's own `quote_arg` -- the quoter whose
+    two dialects the tests further down pin -- so the line is the one the
+    reader's shell hands back whole, on Windows as on POSIX. Where the
+    reader's shell IS POSIX `sh`, `shlex.split` reads the line back too.
+    """
+    module = doctor_module(standard)
+    root = Path(payload["root"])
+    spelled = (f"git -C {module.quote_arg(root)} rm -- "
+               + " ".join(module.quote_arg(name) for name in names))
+    assert f"(`{spelled}`, committed on a branch and landed as a pull " \
+        "request)" in row["next"], row["next"]
+    argv = ["git", "-C", str(root), "rm", "--", *names]
+    if os.name != "nt":
+        assert shlex.split(spelled) == argv, spelled
+    return argv
+
+
+def run_the_removal(argv: list, root: Path) -> None:
+    """Run the NEXT's own `git rm`, and commit it as the line says."""
+    proc = subprocess.run(argv, capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    commit_all(root, "Take the manifest no gate here reads out of the root")
+
+
+def only_finding_is_manifest_kinds(result) -> dict:
+    rows = rows_of(result)
+    others = {name: row["status"] for name, row in rows.items()
+              if row["status"] == "FINDING" and name != "manifest-kinds"}
+    assert others == {}, others
+    return rows["manifest-kinds"]
+
+
+def test_a_contracts_family_yaml_in_an_assembly_root_is_a_finding(
+        standard, project, holder):
+    """THE DEFECT #327 WAS FILED FOR, in an assembly root.
+
+    The holder's own `family.yaml`, committed under the root's `contracts/`:
+    it declares `family-manifest`, whose registered gate `validate-family.py`
+    runs in a family holder and nowhere else. The doctor said `ok`, "every
+    declared kind has a registered validator", COMPLIANT, exit 0. It is the
+    FINDING the same bytes are at the top of the root (#211) now: not
+    `validated`, named with the validator and where it runs, and a next
+    command that exists -- run here, it puts the root back to COMPLIANT.
+    """
+    shutil.copy2(holder["root"] / "family.yaml",
+                 project / "contracts" / "family.yaml")
+    commit_all(project, "A family manifest under contracts/")
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 1, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert (payload["kind"], payload["verdict"]) == (
+        "project", "INVALID (manifest-kinds)"), payload
+    row = only_finding_is_manifest_kinds(result)
+    assert row["status"] == "FINDING", row
+    assert row["reason"] == (
+        "no validator that runs in an assembly root is registered for kind "
+        "contracts/family.yaml (family-manifest: scripts/validate-family.py "
+        "runs only in a family holder)"), row["reason"]
+    assert set(row["detail"]) == MANIFEST_KINDS_DETAIL_KEYS | {
+        "registered_elsewhere"}, row["detail"]
+    assert not any("contracts/family.yaml" in entry
+                   for entry in row["detail"]["validated"]), row["detail"]
+    assert row["detail"]["registered_elsewhere"] == [
+        {"manifest": "contracts/family.yaml", "kind": "family-manifest",
+         "validator": "scripts/validate-family.py", "runs_in": ["family"],
+         "git": "committed"}]
+    argv = removal_named(standard, row, payload, ["contracts/family.yaml"])
+    assert row["next"].startswith(
+        "take contracts/family.yaml out of this root (`git -C "), row["next"]
+    assert row["next"].endswith(
+        f", or move what it describes to {FAMILY_HOME}, as the human "
+        f"decides -- {NEVER_RENAME}"), row["next"]
+
+    text = doctor(standard, project)
+    assert text.returncode == 1, text.stdout + text.stderr
+    lines = text.stdout.splitlines()
+    [at] = [index for index, line in enumerate(lines)
+            if "manifest kinds" in line]
+    assert lines[at].split()[:3] == ["FINDING", "manifest", "kinds"], \
+        lines[at]
+    assert lines[at].endswith("  " + row["reason"]), lines[at]
+    assert lines[at + 1].endswith("  " + row["next"]), lines[at + 1]
+    assert verdict_line(text) == "INVALID (manifest-kinds)   (exit 1)", \
+        text.stdout
+
+    run_the_removal(argv, project)
+    after = doctor(standard, project, "--json")
+    assert after.returncode == 0, after.stdout + after.stderr
+    assert json.loads(after.stdout)["verdict"] == "COMPLIANT"
+
+
+def test_a_contracts_project_yaml_in_a_family_holder_is_a_finding(
+        standard, scaffolded_here, holder, tmp_path):
+    """THE MIRROR CASE, in a family holder, which #220's review read from the
+    code and #327 ran: an assembly root's `project.yaml` committed under the
+    holder's `contracts/`. Its gate, `validate-manifest.py`, runs in an
+    assembly root and nowhere else. The holder's own two contracts are still
+    answered -- by `validate-family.py`, which reads the shape pin and the
+    naming policy itself -- so they stay `validated`, and only this file is
+    named."""
+    root = tmp_path / FAMILY_NAME
+    shutil.copytree(holder["root"], root, symlinks=True)
+    shutil.copy2(scaffolded_here["clone"] / "project.yaml",
+                 root / "contracts" / "project.yaml")
+    commit_all(root, "A project manifest under contracts/")
+    result = doctor(standard, root, "--json")
+    assert result.returncode == 1, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert (payload["kind"], payload["verdict"]) == (
+        "family", "INVALID (manifest-kinds)"), payload
+    row = only_finding_is_manifest_kinds(result)
+    assert row["status"] == "FINDING", row
+    assert row["reason"] == (
+        "no validator that runs in a family holder is registered for kind "
+        "contracts/project.yaml (project-manifest: "
+        "scripts/validate-manifest.py runs only in an assembly root)"), \
+        row["reason"]
+    assert row["detail"]["registered_elsewhere"] == [
+        {"manifest": "contracts/project.yaml", "kind": "project-manifest",
+         "validator": "scripts/validate-manifest.py", "runs_in": ["project"],
+         "git": "committed"}]
+    assert sorted(row["detail"]["validated"]) == [
+        "contracts/repository-naming.yaml (repository-naming-policy)",
+        "contracts/shape-pin.yaml (pinned_contract_manifest)",
+        "family.yaml (family-manifest)"], row["detail"]
+    argv = removal_named(standard, row, payload, ["contracts/project.yaml"])
+    assert row["next"].endswith(
+        f", or move what it describes to {PROJECT_HOME}, as the human "
+        f"decides -- {NEVER_RENAME}"), row["next"]
+
+    run_the_removal(argv, root)
+    after = doctor(standard, root, "--json")
+    assert after.returncode == 0, after.stdout + after.stderr
+    assert json.loads(after.stdout)["verdict"] == "COMPLIANT"
+
+
+def test_a_contracts_family_yaml_and_one_beside_project_yaml_say_both(
+        standard, project, holder):
+    """Two family manifests in one assembly root, one under `contracts/` and
+    one at the top: two reasons in one row, each with its own exit, the
+    general one first and #211's -- which also checks the members -- after
+    it. Neither is counted `validated`."""
+    shutil.copy2(holder["root"] / "family.yaml",
+                 project / "contracts" / "family.yaml")
+    family_beside(project, holder)
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert json.loads(result.stdout)["verdict"] == "INVALID (manifest-kinds)"
+    row = only_finding_is_manifest_kinds(result)
+    assert row["reason"] == (
+        "no validator that runs in an assembly root is registered for kind "
+        "contracts/family.yaml (family-manifest: scripts/validate-family.py "
+        f"runs only in a family holder); {FAMILY_BESIDE_OPENING}: "
+        f"members/{FAMILY_MEMBER} has no gitlink (mode 160000)"), \
+        row["reason"]
+    assert row["next"].endswith(f"{NEVER_RENAME}; {FAMILY_BESIDE_NEXT}"), \
+        row["next"]
+    assert set(row["detail"]) == MANIFEST_KINDS_DETAIL_KEYS | {
+        "registered_elsewhere", "family_beside"}, row["detail"]
+    assert not any("family" in entry for entry in row["detail"]["validated"])
+
+
+# --- the NEXT, for the file as git has it (#327, review of PR #375) ---------
+#
+# The doctor reads the disk, and `git rm` takes out only a file a commit
+# holds whole. The NEXT named it for every file, and it said "did not match
+# any files" (exit 128) for one git does not track, ignored or not, and
+# refused one with changes no commit holds.
+
+def plant_family_yaml(project: Path, holder: dict,
+                      name: str = "family.yaml") -> Path:
+    """The holder's `family.yaml`, copied under the root's `contracts/` as
+    `name`, and nothing committed."""
+    planted = project / "contracts" / name
+    shutil.copy2(holder["root"] / "family.yaml", planted)
+    return planted
+
+
+def next_for_one(ways: str) -> str:
+    """The NEXT for one `contracts/family.yaml`, `ways` its parenthesis."""
+    return (f"take contracts/family.yaml out of this root ({ways}), or move "
+            f"what it describes to {FAMILY_HOME}, as the human decides -- "
+            f"{NEVER_RENAME}")
+
+
+def git_rm_refuses(project: Path, planted: Path) -> None:
+    """The `git rm` the NEXT used to name, run as it named it: it fails, and
+    the file is still there."""
+    proc = subprocess.run(
+        ["git", "-C", str(project), "rm", "--",
+         planted.relative_to(project).as_posix()],
+        capture_output=True, text=True, check=False)
+    assert proc.returncode != 0, proc.stdout + proc.stderr
+    assert planted.is_file()
+
+
+@pytest.mark.parametrize("state", ["untracked", "ignored"])
+def test_a_contracts_family_yaml_git_does_not_track_is_deleted(
+        standard, project, holder, state):
+    """A `contracts/family.yaml` nobody has committed -- copied in and not
+    added, or hidden by the root's own excludes -- is the same FINDING, and
+    its NEXT is to delete it, with nothing to commit. It names no `git rm`,
+    which fails on it; deleting it is COMPLIANT again."""
+    planted = plant_family_yaml(project, holder)
+    if state == "ignored":
+        exclude = project / git("rev-parse", "--git-path", "info/exclude",
+                                cwd=project).stdout.strip()
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        with open(exclude, "ab") as handle:
+            handle.write(b"\ncontracts/family.yaml\n")
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert json.loads(result.stdout)["verdict"] == "INVALID (manifest-kinds)"
+    row = only_finding_is_manifest_kinds(result)
+    assert row["next"] == next_for_one(
+        "delete it, which git does not track, so there is nothing to "
+        "commit"), row["next"]
+    assert row["detail"]["registered_elsewhere"] == [
+        {"manifest": "contracts/family.yaml", "kind": "family-manifest",
+         "validator": "scripts/validate-family.py", "runs_in": ["family"],
+         "git": state}]
+    git_rm_refuses(project, planted)
+
+    planted.unlink()
+    after = doctor(standard, project, "--json")
+    assert after.returncode == 0, after.stdout + after.stderr
+    assert json.loads(after.stdout)["verdict"] == "COMPLIANT"
+
+
+@pytest.mark.parametrize("state", ["edited", "staged"])
+def test_a_contracts_family_yaml_with_changes_no_commit_holds(
+        standard, project, holder, state):
+    """Committed and then edited, or staged and never committed: `git rm`
+    refuses both, because it will not discard changes no commit holds. The
+    NEXT says to commit or drop them, names the `git status` that shows
+    them, and leaves the `git rm` to the next run -- which, once they are
+    committed, names it, and running that is COMPLIANT again."""
+    planted = plant_family_yaml(project, holder)
+    if state == "edited":
+        commit_all(project, "A family manifest under contracts/")
+        with open(planted, "ab") as handle:
+            handle.write(b"# an edit no commit holds\n")
+    else:
+        git("add", "--", "contracts/family.yaml", cwd=project)
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 1, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["verdict"] == "INVALID (manifest-kinds)", payload
+    row = only_finding_is_manifest_kinds(result)
+    root = doctor_module(standard).quote_arg(Path(payload["root"]))
+    assert row["next"] == next_for_one(
+        "it has changes no commit holds, which `git rm` will not discard: "
+        f"commit or drop them (`git -C {root} status -- "
+        "contracts/family.yaml` shows them), and the next run names the "
+        "`git rm`"), row["next"]
+    assert [entry["git"] for entry in
+            row["detail"]["registered_elsewhere"]] == ["changed"], row
+    git_rm_refuses(project, planted)
+
+    commit_all(project, "Commit what the row said to commit first")
+    again = doctor(standard, project, "--json")
+    row = only_finding_is_manifest_kinds(again)
+    argv = removal_named(standard, row, json.loads(again.stdout),
+                         ["contracts/family.yaml"])
+    run_the_removal(argv, project)
+    after = doctor(standard, project, "--json")
+    assert after.returncode == 0, after.stdout + after.stderr
+    assert json.loads(after.stdout)["verdict"] == "COMPLIANT"
+
+
+def test_manifests_that_come_out_differently_are_each_named(
+        standard, project, holder):
+    """Three family manifests under `contracts/` -- one committed, one git
+    does not track, one edited since its commit -- get one NEXT with a way
+    for each, each naming its own file, in the row's order.
+
+    AND THE DOCTOR ASKED GIT WITHOUT WRITING THE INDEX. The committed one is
+    rewritten with its own bytes and a newer mtime, so its index entry is
+    stat-dirty: a `git status` refreshes that entry and, without
+    `--no-optional-locks`, writes `.git/index` back. It must stay byte for
+    byte as it was, because the doctor writes nothing into the repository.
+    """
+    committed = plant_family_yaml(project, holder)
+    edited = plant_family_yaml(project, holder, "x-family.yaml")
+    commit_all(project, "Two family manifests under contracts/")
+    with open(edited, "ab") as handle:
+        handle.write(b"# an edit no commit holds\n")
+    plant_family_yaml(project, holder, "old-family.yaml")
+    committed.write_bytes(committed.read_bytes())
+    stat = committed.stat()
+    os.utime(committed, (stat.st_atime + 100, stat.st_mtime + 100))
+    index = project / git("rev-parse", "--git-path", "index",
+                          cwd=project).stdout.strip()
+    before = index.read_bytes()
+
+    result = doctor(standard, project, "--json")
+    assert index.read_bytes() == before, "the doctor wrote the index"
+    assert result.returncode == 1, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["verdict"] == "INVALID (manifest-kinds)", payload
+    row = only_finding_is_manifest_kinds(result)
+    root = doctor_module(standard).quote_arg(Path(payload["root"]))
+    assert row["next"] == (
+        "take contracts/family.yaml, contracts/old-family.yaml, "
+        "contracts/x-family.yaml out of this root "
+        f"(`git -C {root} rm -- contracts/family.yaml`, committed on a "
+        "branch and landed as a pull request; delete "
+        "contracts/old-family.yaml, which git does not track, so there is "
+        "nothing to commit; contracts/x-family.yaml has changes no commit "
+        "holds, which `git rm` will not discard: commit or drop them "
+        f"(`git -C {root} status -- contracts/x-family.yaml` shows them), "
+        "and the next run names the `git rm`), or move what they describe "
+        f"to {FAMILY_HOME}, as the human decides -- never rename one to "
+        "project.yaml or family.yaml in this root: a family holder is not a "
+        "project, and an assembly root is not a family holder"), row["next"]
+    assert [(entry["manifest"], entry["git"]) for entry in
+            row["detail"]["registered_elsewhere"]] == [
+        ("contracts/family.yaml", "committed"),
+        ("contracts/old-family.yaml", "untracked"),
+        ("contracts/x-family.yaml", "changed")], row["detail"]
+
+
+def test_git_states_answers_only_in_a_repository_of_its_own(tmp_path):
+    """`git -C` discovers. In a plain directory inside another repository,
+    `status` answers about THAT repository, with paths relative to its top,
+    so `contracts/family.yaml` was never listed, read as `committed`, and
+    the NEXT named a `git rm` aimed at the enclosing repository. Now git is
+    not asked there, and the NEXT carries no way at all: #211's "take it out
+    of this root", which holds in any state. Its own repository is asked."""
+    module = doctor_module(REPO)
+    outer = tmp_path / "outer"
+    outer.mkdir()
+    git("init", "-q", "-b", "main", ".", cwd=outer)
+    root = outer / PROJECT
+    (root / "contracts").mkdir(parents=True)
+    (root / "contracts" / "family.yaml").write_bytes(
+        b"kind: family-manifest\n")
+    names = ["contracts/family.yaml"]
+    assert module.git_states(root, names) == {}
+    assert module.removal_ways(SimpleNamespace(root=root), names, {}) == ""
+
+    git("init", "-q", "-b", "main", ".", cwd=root)
+    assert module.git_states(root, names) == {
+        "contracts/family.yaml": "untracked"}
+
+
+def test_a_registered_kind_is_answered_only_where_its_check_runs():
+    """THE RULE, read straight off the registry (#327).
+
+    A kind is answered on a kind of root only where a check it is
+    `covered_by` APPLIES -- `CHECKS` says which, and nothing else does. So
+    the two root manifests are answered each in its own kind of root and
+    never in the other, and every kind a holder ships is answered there by
+    `family`, which is what keeps a fresh holder COMPLIANT. Every check a
+    kind names exists, or the kind would be answered nowhere at all.
+    """
+    module = doctor_module(REPO)
+    runs = {kind: entry.runs_in()
+            for kind, entry in module.MANIFEST_VALIDATORS.items()}
+    assert runs == {
+        "project-manifest": ("project",),
+        "family-manifest": ("family",),
+        "pinned_contract_manifest": ("project", "family"),
+        "repository-naming-policy": ("project", "family"),
+        "path-classification-policy": ("project", "family"),
+    }, runs
+    checks = {check.id for check in module.CHECKS}
+    for kind, entry in module.MANIFEST_VALIDATORS.items():
+        assert set(entry.covered_by) <= checks, (kind, entry.covered_by)
 
 
 def test_gitlinks_under_lists_one_directory_and_nothing_above_it(project):
@@ -1820,8 +2232,12 @@ def test_the_legs_next_command_is_runnable(standard, project):
                    env={**os.environ, **GIT_IDENTITY})
     row = rows_of(doctor(standard, project, "--json"))["legs"]
     command = row["next"].split("#")[0].split()
-    assert "--root" in command, row["next"]
-    assert Path(command[1]).is_file(), command
+    # A git line and not a script of the root's (#276): `git -C <root>
+    # submodule update --init --recursive -- spec`.
+    assert command[:2] == ["git", "-C"], row["next"]
+    assert command[3:7] == ["submodule", "update", "--init", "--recursive"], \
+        row["next"]
+    assert command[-1] == "spec", row["next"]
     proc = subprocess.run(command, capture_output=True, text=True,
                           check=False, env={**os.environ, **GIT_IDENTITY,
                                             "PYTHONDONTWRITEBYTECODE": "1"})
@@ -2730,6 +3146,38 @@ def test_the_doctor_and_siblings_run_ONE_definition_of_one_repository(
     assert repo_shape.resolved_remote("../IRRS.git", "") == "../IRRS.git"
     assert repo_shape.resolved_remote(
         "https://host/IRRS.git", "https://host/x") == "https://host/IRRS.git"
+
+
+def test_a_port_and_githubs_ssh_host_are_not_part_of_a_remotes_key():
+    """`remote_key` TAKES A PORT, AND `ssh.github.com`, OFF THE HOST (#190).
+
+    `ssh://git@github.com:22/Acme/Widget.git`, and
+    `ssh://git@ssh.github.com:443/Acme/Widget.git` as GitHub documents SSH
+    over the HTTPS port, are the scp `git@github.com:Acme/Widget.git`
+    reached another way, and keyed as `github.com/22/acme/widget`.
+    `same_repository`'s forge-tail match hid that for an `Owner/Repo`, but
+    not for a repository at a host's top level, and `adopt-project.py`
+    compares keys and nothing else, so it refused a source cloned that way.
+    """
+    scp = repo_shape.remote_key("git@github.com:Acme/Widget.git")
+    for url in ("ssh://git@github.com:22/Acme/Widget.git",
+                "ssh://git@ssh.github.com:443/Acme/Widget.git",
+                "ssh://git@SSH.GitHub.com:443/Acme/Widget.git",
+                "https://github.com:443/Acme/Widget.git",
+                "https://x-access-token:token@github.com:443/Acme/Widget.git",
+                "git@ssh.github.com:Acme/Widget.git"):
+        assert repo_shape.remote_key(url) == scp, url
+    assert repo_shape.same_repository("ssh://git@host:2222/Repo.git",
+                                      "git@host:Repo.git")
+    # ...and nothing that is not a port: the scp spelling has none, so its
+    # `22` is a path component; a drive's colon carries no digits; and
+    # another repository, or another host, is still another.
+    for url in ("git@github.com:22/Acme/Widget.git",
+                "ssh://git@github.com:22/Acme/Other.git",
+                "ssh://git@gitlab.com:22/Acme/Widget.git"):
+        assert repo_shape.remote_key(url) != scp, url
+    assert repo_shape.remote_key("file:///E:/mirrors/Widget.git") \
+        == repo_shape.remote_key("E:\\mirrors\\Widget.git")
 
 
 def test_a_symlinked_prefix_is_ONE_directory_to_both_callers(tmp_path,
