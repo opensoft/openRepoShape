@@ -18,8 +18,8 @@ THREE WAYS A ROW USED TO SAY MORE THAN THE VALIDATOR DID.
   dies on the import instead.
 
 EVERY ASSERTION IS ON WHAT A COMMAND DOES -- the row's status, its `detail`,
-the verdict, and a NEXT that is run -- and never on a NEXT's `   # ` tail,
-whose text another change moves. The fixtures are those of
+the verdict, and a NEXT that is run -- and never on the words of a row's
+`why`, the sentence beside its NEXT (#277). The fixtures are those of
 `tests/test_shape_doctor.py`, imported, so the standard, the project and the
 holder are the ones every other doctor test reads.
 
@@ -106,10 +106,11 @@ def standard_under(standard: Path, tmp_path: Path, directory: str) -> Path:
 
 
 def command_of(row: dict) -> list:
-    """The row's NEXT as the argv it runs, its `   # ` tail cut off. The
-    paths in these tests need no quoting on either platform, which is what
-    lets the same list run on Windows, where no `sh` pastes it."""
-    return row["next"].split("   # ", 1)[0].split()
+    """The row's NEXT as the argv it runs: the whole of it, since a NEXT is
+    only the command (#277). The paths in these tests need no quoting on
+    either platform, which is what lets the same list run on Windows, where
+    no `sh` pastes it."""
+    return row["next"].split()
 
 
 def run_argv(command: list) -> subprocess.CompletedProcess:
@@ -181,12 +182,17 @@ def test_a_validator_that_crashed_says_so_and_never_reports_a_finding(
         expected = doctor_module(here).validator_command(
             shape, shape / TEMPLATE_FALLBACK["manifest"]["template"], False,
             ["--root", root])
-        assert row["next"].startswith(expected + "   # "), row["next"]
+        # THE NEXT IS THE LINE ALONE and what to do with its output is the
+        # row's `why` (#277).
+        assert row["next"] == expected, row["next"]
+        assert row["why"].startswith("read its output in full"), row
         # A ROW WITH A NEXT STILL PRINTS ITS REMEDIATION (the control of the
-        # colon row below, which has none and prints no `Remediation:`).
+        # colon row below, which has none and prints no `Remediation:`), and
+        # its `why` after it.
         stderr = doctor(here, root).stderr
         assert "REFUSED shape-doctor-cannot-answer: " in stderr, stderr
-        assert f"\n  Remediation: {row['next']}" in stderr, stderr
+        assert (f"\n  Remediation: {row['next']}\n  Why: {row['why']}"
+                in stderr), stderr
 
 
 @WINDOWS_SKIP
@@ -331,7 +337,7 @@ def test_a_standard_under_a_semicolon_is_refused_only_where_it_separates(
     assert "environment" not in row["detail"], row
     assert row["detail"]["exit"] == 1, row
     assert spec["finding"] in row["reason"], row
-    assert row["next"].startswith("PYTHONPATH='"), row["next"]
+    assert row["next"].startswith("env PYTHONPATH='"), row["next"]
     if shutil.which("sh") is not None:
         pasted = pasted_from_elsewhere(row["next"], tmp_path)
         whole = pasted.stdout + pasted.stderr
@@ -782,9 +788,9 @@ def test_a_colon_standard_withholds_the_legs_rows_lockstep_line(
     path is (#278).
 
     THE CONTROL is the same root asked from a plain directory, where the line
-    is printed and is the command the `pins` row hands over (the tails that
-    explain it differ), so the None below is the separator's doing and not a
-    fixture that never had a line.
+    is printed and is the command the `pins` row hands over (the `why`s
+    that explain it differ), so the None below is the separator's doing and
+    not a fixture that never had a line.
     `WINDOWS_SKIP`: Windows refuses `:` in a file name; the semicolon half of
     the helper is held by the semicolon test above.
     """
@@ -793,7 +799,7 @@ def test_a_colon_standard_withholds_the_legs_rows_lockstep_line(
     control = rows_of(doctor(standard, project, "--json"))
     plain = control["legs"]
     assert plain["status"] == "FINDING", plain
-    assert plain["next"].startswith("PYTHONPATH="), plain
+    assert plain["next"].startswith("env PYTHONPATH="), plain
     assert "validate-pins.py" in plain["next"], plain
     assert command_of(plain) == command_of(control["pins"]), (
         plain, control["pins"])
@@ -831,7 +837,7 @@ def test_a_colon_standard_withholds_the_members_rows_lockstep_line_too(
     control = rows_of(doctor(standard, root, "--json"))
     plain = control["members"]
     assert plain["status"] == "FINDING", plain
-    assert plain["next"].startswith("PYTHONPATH="), plain
+    assert plain["next"].startswith("env PYTHONPATH="), plain
     assert "validate-family.py" in plain["next"], plain
     assert command_of(plain) == command_of(control["family"]), (
         plain, control["family"])

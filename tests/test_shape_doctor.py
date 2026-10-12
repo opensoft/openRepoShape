@@ -273,6 +273,24 @@ def test_an_edited_shape_copy_is_drift_and_names_update_shape(standard,
 
 # --- the standard has moved on ---------------------------------------------
 
+def standard_ahead(standard: Path, tmp_path: Path, path: str = "README.md",
+                   appended: str = "\nA fix.\n",
+                   message: str = "An upstream change to a file no project "
+                                  "copies") -> Path:
+    """A COPY of the standard at `<tmp>/standard-ahead`, with one more commit
+    that appends `appended` to `path`. By default that is `README.md`, a file
+    no copy list names, so nothing a project holds can differ and the pin
+    alone is behind. One helper, because the tests here and the ones in
+    `tests/test_doctor_next_is_a_command.py` each built it by hand (#277)."""
+    ahead = tmp_path / "standard-ahead"
+    shutil.copytree(standard, ahead, symlinks=True)
+    target = ahead / path
+    target.write_text(target.read_text(encoding="utf-8") + appended,
+                      encoding="utf-8")
+    commit_all(ahead, message)
+    return ahead
+
+
 @pytest.fixture
 def advanced_standard(standard, tmp_path) -> Path:
     """A COPY of the standard with one more commit on a copied template.
@@ -282,14 +300,9 @@ def advanced_standard(standard, tmp_path) -> Path:
     `standard`, and advancing it in place would make them all say `SHAPE
     BEHIND` depending on the order they ran in.
     """
-    ahead = tmp_path / "standard-ahead"
-    shutil.copytree(standard, ahead, symlinks=True)
-    target = ahead / UPSTREAM_TARGET
-    target.write_text(target.read_text(encoding="utf-8")
-                      + "\n# an upstream fix, after this project was cut\n",
-                      encoding="utf-8")
-    commit_all(ahead, "An upstream fix to a copied file")
-    return ahead
+    return standard_ahead(standard, tmp_path, UPSTREAM_TARGET,
+                          "\n# an upstream fix, after this project was cut\n",
+                          "An upstream fix to a copied file")
 
 
 def test_a_project_behind_the_standard_is_compliant_but_behind(
@@ -2188,13 +2201,8 @@ def test_a_pin_behind_with_no_file_differing_is_still_behind(standard,
     there too, because `apply` would move the pin alone. Reporting COMPLIANT
     would have made the verdict disagree with the sentence that defines it.
     """
-    ahead = tmp_path / "standard-ahead"
-    shutil.copytree(standard, ahead, symlinks=True)
     # A file no copy list names, so nothing a project holds can differ.
-    (ahead / "README.md").write_text(
-        (ahead / "README.md").read_text(encoding="utf-8") + "\nA fix.\n",
-        encoding="utf-8")
-    commit_all(ahead, "An upstream change to a file no project copies")
+    ahead = standard_ahead(standard, tmp_path)
     result = doctor(ahead, project, "--json")
     assert result.returncode == 1, result.stdout + result.stderr
     payload = json.loads(result.stdout)
@@ -3437,12 +3445,7 @@ def test_shape_behind_names_the_pin_when_no_file_differs(standard, project,
     was a clause contradicting its own verdict — and it fired on both real
     estates on this machine, which makes it the common case.
     """
-    ahead = tmp_path / "standard-ahead"
-    shutil.copytree(standard, ahead, symlinks=True)
-    (ahead / "README.md").write_text(
-        (ahead / "README.md").read_text(encoding="utf-8") + "\nA fix.\n",
-        encoding="utf-8")
-    commit_all(ahead, "An upstream change to a file no project copies")
+    ahead = standard_ahead(standard, tmp_path)
     result = doctor(ahead, project, "--json")
     payload = json.loads(result.stdout)
     assert result.returncode == 1
@@ -3510,12 +3513,7 @@ def test_the_behind_pin_only_row_carries_it_too(standard, project, tmp_path):
     """The other branch of the same row -- no copied file differs and the pin
     alone is behind -- because it spells its own apply and would otherwise be
     the one line in the report that forgot."""
-    ahead = tmp_path / "standard-ahead"
-    shutil.copytree(standard, ahead, symlinks=True)
-    (ahead / "README.md").write_text(
-        (ahead / "README.md").read_text(encoding="utf-8") + "\nA fix.\n",
-        encoding="utf-8")
-    commit_all(ahead, "An upstream change to a file no project copies")
+    ahead = standard_ahead(standard, tmp_path)
     row = behind_row(ahead, project, LANE)
     assert row["detail"]["behind_pin_only"] is True
     assert row["why"].endswith(f" --trailer 'Lane: {LANE}'")
@@ -3546,15 +3544,11 @@ def test_no_other_row_grows_a_trailer(advanced_standard, project):
     assert carrying == ["shape-currency"], rows
 
 
-def test_a_pin_this_standard_cannot_resolve_is_exit_three(standard, project,
-                                                          tmp_path):
-    """Not a verdict about the repository: this CHECKOUT cannot answer.
-
-    A pin naming a commit this standard does not carry — a fork, a branch
-    pin, a clone made before the commit landed — used to fall through to
-    `INVALID`, telling somebody their repository was wrong on the evidence
-    that our copy of the standard was short a commit.
-    """
+def standard_of_another_history(standard: Path, tmp_path: Path) -> Path:
+    """A standard that does not carry the commit a project's pin names: the
+    standard's files under a history of their own, so the `shape currency`
+    row is the CANNOT ANSWER one, exit 3. One helper, for the test below and
+    the ones in `tests/test_doctor_next_is_a_command.py` (#277)."""
     stranger = tmp_path / "stranger"
     stranger.mkdir()
     for name in ("contracts", "scripts", "templates"):
@@ -3564,6 +3558,19 @@ def test_a_pin_this_standard_cannot_resolve_is_exit_three(standard, project,
         shutil.copy2(standard / name, stranger / name)
     git("init", "-q", "-b", "main", ".", cwd=stranger)
     commit_all(stranger, "A standard with a history of its own")
+    return stranger
+
+
+def test_a_pin_this_standard_cannot_resolve_is_exit_three(standard, project,
+                                                          tmp_path):
+    """Not a verdict about the repository: this CHECKOUT cannot answer.
+
+    A pin naming a commit this standard does not carry — a fork, a branch
+    pin, a clone made before the commit landed — used to fall through to
+    `INVALID`, telling somebody their repository was wrong on the evidence
+    that our copy of the standard was short a commit.
+    """
+    stranger = standard_of_another_history(standard, tmp_path)
     result = doctor(stranger, project, "--json")
     assert result.returncode == 3, result.stdout + result.stderr
     payload = json.loads(result.stdout)
@@ -6706,12 +6713,7 @@ def test_the_pin_alone_clause_and_the_readme_note_never_say_opposite_things(
     precisely the case it is made most often.
     """
     pinned = git("rev-parse", "HEAD", cwd=standard).stdout.strip()
-    ahead = tmp_path / "standard-ahead"
-    shutil.copytree(standard, ahead, symlinks=True)
-    (ahead / "README.md").write_text(
-        (ahead / "README.md").read_text(encoding="utf-8") + "\nA fix.\n",
-        encoding="utf-8")
-    commit_all(ahead, "An upstream change to a file no project copies")
+    ahead = standard_ahead(standard, tmp_path)
     target = git("rev-parse", "HEAD", cwd=ahead).stdout.strip()
     assert pinned != target, "fixture: the standard has moved past the pin"
 

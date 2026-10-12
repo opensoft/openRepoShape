@@ -1449,9 +1449,9 @@ def validator_row(ctx: Context, check_id: str, label: str, own: str,
             reason += ("; that copy is this checkout's, not the project's, "
                        "so nothing here is a statement about the project")
         command = validator_command(ctx.shape, used, own_copy, args)
-        return Row(check_id, label, FINDING, reason,
-                   f"{command}   # read its output in full, it shows where "
-                   "the validator stopped", detail)
+        return Row(check_id, label, FINDING, reason, command, detail,
+                   why="read its output in full, it shows where the "
+                       "validator stopped")
     verb = "refuses" if code >= 2 else "reports a finding"
     reason = f"{which} {verb} (exit {code})" + (f": {quoted}" if quoted else "")
     # A COMMAND THAT RUNS WHEN IT IS PASTED. This row used to print
@@ -1568,13 +1568,13 @@ def unloaded_manifest_row(ctx: Context, check_id: str, label: str, own: str,
                        "name until it loads", None, detail)
         return Row(check_id, label, FINDING, reason,
                    f"git -C {quote_arg(ctx.root)} checkout HEAD -- "
-                   f"{quote_arg(lost)}   # it puts back the {lost} HEAD "
-                   f"holds, the copy this project committed and {own} "
-                   "imports, where update-shape.py apply would copy a newer "
-                   f"one, then run {own} again: it refuses {name} by name "
-                   "until it loads. "
-                   "A deletion already committed comes back from the parent "
-                   "of the commit that made it, not from HEAD", detail)
+                   f"{quote_arg(lost)}", detail,
+                   why=f"it puts back the {lost} HEAD holds, the copy this "
+                       f"project committed and {own} imports, where "
+                       "update-shape.py apply would copy a newer one, then "
+                       f"run {own} again: it refuses {name} by name until it "
+                       "loads. A deletion already committed comes back from "
+                       "the parent of the commit that made it, not from HEAD")
     unnamable = pythonpath_unnamable(ctx.shape, own_copy)
     if unnamable is not None:
         return Row(check_id, label, FINDING,
@@ -2409,10 +2409,11 @@ def submodule_update_next(root: Path, paths: list[str], off_pin: list[Path],
     learns to skip the sentence on the day it can.
 
     THE SENTENCE CARRIES NONE OF `;`, `'`, A BACKTICK OR A PARENTHESIS. It
-    is a `   # ` tail today and a tail is pasted with the line: a shell that
-    does not treat `#` as a comment reads each of those as syntax. It is
-    plain words, so that moving it out of the NEXT later (#277) is a move
-    and not a rewrite. `after` is the caller's own closing sentence, and
+    was written as a `   # ` tail, and a tail is pasted with the line: a
+    shell that does not treat `#` as a comment reads each of those as
+    syntax. It was plain words so that moving it out of the NEXT (#277)
+    would be a move and not a rewrite, and it was: it is the row's `why`,
+    on a line of its own. `after` is the caller's own closing sentence, and
     `rerun` adds the one the `legs` and `members` rows share: some other
     leg or member is something this line does not cure, and the next run
     names it.

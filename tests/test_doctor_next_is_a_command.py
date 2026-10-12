@@ -2,34 +2,38 @@
 """A doctor NEXT is the command and only the command (#277).
 
 THE DEFECT. Sixteen of the doctor's NEXT builders ended the command with
-`   # <comment>`, and one printed prose in the command's place. The tail was
-harmless in exactly the shells that read `#` as a comment where a word
-starts -- `sh -c`, bash, `zsh -c` -- which is how every test and every agent
-tool call had read one. An INTERACTIVE zsh without `interactivecomments` --
-zsh's default, and macOS's login shell, the one a person pastes into -- reads
-`#` as a word. Pasted there, the manifest NEXT handed `# read its output in
-full` to the validator as arguments, ran `it names what it refused` as a
-second command and exited 127; the `legs` and `members` NEXTs ran the `make
-bootstrap` their comments put in backticks, in whatever directory the person
-was standing in.
+`   # <comment>`, and one printed prose in the command's place; doctor A
+(#276) and doctor B (#278, #298) wrote five more tails while this was open.
+A tail was harmless in exactly the shells that read `#` as a comment where
+a word starts -- `sh -c`, bash, `zsh -c` -- which is how every test and
+every agent tool call had read one. An INTERACTIVE zsh without
+`interactivecomments` -- zsh's default, and macOS's login shell, the one a
+person pastes into -- reads `#` as a word. Pasted there, the manifest NEXT
+handed `# read its output in full` to the validator as arguments, ran `it
+names what it refused` as a second command and exited 127; the `legs` and
+`members` NEXTs ran the `make bootstrap` their comments put in backticks,
+in whatever directory the person was standing in.
 
 THE FIX IS A FIELD, NOT A SPELLING. Each sentence moved, verbatim, to the
 row's `why` -- `"why"` in `--json`, a `WHY` line under `NEXT` in the table,
 `Why:` after `Remediation:` -- and `next` is the bare command. So this file
 holds three things, and the code before #277 fails each of them:
 
-  * a PROPERTY over one fixture per converted builder: the NEXT has no shell
-    comment (`shlex` reads it the same with and without comments), no
-    backtick and, on POSIX, no unquoted `;` (PowerShell's `$env:` line ends
-    its assignment with one, by design);
+  * a PROPERTY over one fixture per converted builder and branch: the NEXT
+    has no shell comment (`shlex` reads it the same with and without
+    comments), no backtick, no `$(` that `sh` would run and, on POSIX, none
+    of `;`, `&`, `|`, `(`, `)` outside a quotation (PowerShell's `$env:`
+    line ends its assignment with a `;`, by design);
   * a PASTE into `zsh -f -i` through a pty, as a person pastes: the manifest
     NEXT is the validator's own finding and exit, and the legs NEXT, pasted
     in a directory whose Makefile's `bootstrap` target leaves a marker,
-    leaves none -- each beside the line main printed, pasted the same way,
-    so the harness is shown to see the defect it guards;
+    leaves none -- each beside a line the doctor printed before #277, pasted
+    the same way, so the harness is shown to see the defect it guards;
   * an AST GUARD over `shape-doctor.py`: no string that is not a docstring
-    holds `   # `, outside the two functions where that text is not a NEXT.
-    It is what turns a tail landed later, by any lane, into a red test.
+    holds a tail -- two or more blanks, or a tab, then `#` and a blank --
+    except `placement_plan_leg`'s YAML comment lines and the one `placement
+    plan written to` line in `report`, where that text is not a NEXT. It is
+    what turns a tail landed later, by any lane, into a red test.
 
 The fixtures are `tests/test_shape_doctor.py`'s, imported rather than rebuilt
 (the precedent is `tests/test_family_add_refusals.py`); importing a fixture
@@ -50,65 +54,29 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO, WINDOWS_SKIP, git, rmtree, run_script
+from conftest import REPO, WINDOWS_SKIP, rmtree
 #: The lane a lane's run sets, from the file that owns that rule.
 from test_commit_trailers import LANE
 #: The doctor's own fixtures and helpers, from the module that owns them. A
 #: project or a holder made any other way would be a different project.
 from test_shape_doctor import (  # noqa: F401
-    BREAKAGES, DOCTOR, DRIFT_TARGET, FAMILY_MEMBER, FAMILY_NAME, GIT_IDENTITY,
-    UPSTREAM_TARGET, break_manifest, commit_all, doctor, doctor_module,
+    BREAKAGES, DOCTOR, DRIFT_TARGET, FAMILY_MEMBER, FAMILY_NAME,
+    UPSTREAM_TARGET, behind_row, break_manifest, doctor, doctor_module,
     holder, project, red_root, rows_of, scaffolded_here, stage, standard,
+    standard_ahead, standard_of_another_history,
 )
+#: Doctor A's ways to make a leg or a member red (#276), from the module that
+#: owns them: the `legs` and `members` lines are A's, so the roots are too.
+from test_doctor_legs_members_next import (
+    commit_in, holder_copy, holder_without, make_gitlink_moved,
+    make_member_gitlink_mismatch, member_unbootstrapped,
+)
+#: Doctor B's crashing validator and unloaded manifest (#278, #298), from the
+#: module that owns them.
+from test_doctor_validator_rows import crashing, unloaded
 
 
 # --- making each converted row print its NEXT -------------------------------
-
-def walk_off_the_pin(leg: Path) -> None:
-    """A commit made INSIDE a mount, which is how a leg walks off its pin."""
-    subprocess.run(["git", "commit", "-q", "--allow-empty", "-m",
-                    "work in the leg, past the pin"], cwd=str(leg),
-                   capture_output=True, check=True,
-                   env={**os.environ, **GIT_IDENTITY})
-
-
-def standard_ahead(standard: Path, tmp_path: Path, path: str,
-                   appended: str) -> Path:
-    """A COPY of the standard with one more commit, on `path`."""
-    ahead = tmp_path / "standard-ahead"
-    shutil.copytree(standard, ahead, symlinks=True)
-    target = ahead / path
-    target.write_text(target.read_text(encoding="utf-8") + appended,
-                      encoding="utf-8")
-    commit_all(ahead, f"An upstream change to {path}")
-    return ahead
-
-
-def standard_of_another_history(standard: Path, tmp_path: Path) -> Path:
-    """A standard that does not carry the commit the project's pin names.
-
-    The same stranger `test_a_pin_this_standard_cannot_resolve_is_exit_three`
-    builds: the standard's files under a history of their own, so the
-    `shape currency` row is the CANNOT ANSWER one, exit 3.
-    """
-    stranger = tmp_path / "stranger"
-    stranger.mkdir()
-    for name in ("contracts", "scripts", "templates"):
-        shutil.copytree(standard / name, stranger / name, symlinks=True)
-    for name in ("update-shape.py", "shape-doctor.py", "scaffold-project.py",
-                 "setup-project.py", "setup.sh", "openRepoShape"):
-        shutil.copy2(standard / name, stranger / name)
-    git("init", "-q", "-b", "main", ".", cwd=stranger)
-    commit_all(stranger, "A standard with a history of its own")
-    return stranger
-
-
-def laned_rows(standard: Path, root: Path) -> dict:
-    """`rows_of` a doctor run inside a lane, so an `apply` grows its
-    trailer -- which is `why`'s to carry now, and never `next`'s."""
-    return rows_of(run_script(standard / DOCTOR, "--root", str(root),
-                              "--json", env={"LANES_LANE": LANE}))
-
 
 def a_short_standard(tmp_path: Path, name: str) -> Path:
     """A directory standing in for a standard that lacks what a row needs:
@@ -163,8 +131,9 @@ def _shape_currency_cannot_answer(standard, project, holder, tmp_path):
 
 
 def _shape_currency_behind_pin_only(standard, project, holder, tmp_path):
-    ahead = standard_ahead(standard, tmp_path, "README.md", "\nA fix.\n")
-    row = laned_rows(ahead, project)["shape-currency"]
+    # Run inside a lane, so the `apply` grows its trailer -- which is `why`'s
+    # to carry now, and never `next`'s.
+    row = behind_row(standard_ahead(standard, tmp_path), project, LANE)
     assert row["detail"].get("behind_pin_only") is True, row
     assert row["why"].endswith(f" --trailer 'Lane: {LANE}'"), row["why"]
     return row
@@ -172,12 +141,13 @@ def _shape_currency_behind_pin_only(standard, project, holder, tmp_path):
 
 def _shape_currency_moved(standard, project, holder, tmp_path):
     ahead = standard_ahead(standard, tmp_path, UPSTREAM_TARGET,
-                           "\n# an upstream fix, after this project was cut\n")
+                           "\n# an upstream fix, after this project was cut\n",
+                           "An upstream fix to a copied file")
     edited = project / DRIFT_TARGET
     edited.write_text(edited.read_text(encoding="utf-8")
                       + "\n# a local edit nobody carried upstream\n",
                       encoding="utf-8")
-    row = laned_rows(ahead, project)["shape-currency"]
+    row = behind_row(ahead, project, LANE)
     # The `apply` -- its `--accept-local` and the lane's trailer with it --
     # is the row's `why`, and nothing of it is on the NEXT.
     assert f"--accept-local {DRIFT_TARGET}" in row["why"], row["why"]
@@ -188,7 +158,16 @@ def _shape_currency_moved(standard, project, holder, tmp_path):
 
 
 def _legs(standard, project, holder, tmp_path):
-    walk_off_the_pin(project / "spec")
+    # A leg committed past its pin where the gitlink IS the pin: doctor A's
+    # git line, which a checkout cures (#276).
+    commit_in(project / "spec")
+    return rows_of(doctor(standard, project, "--json"))["legs"]
+
+
+def _legs_lockstep(standard, project, holder, tmp_path):
+    # A gitlink that is not the pin, which no checkout cures: doctor A's
+    # lockstep line, the root's own `validate-pins.py` (`lockstep_next`).
+    make_gitlink_moved(project)
     return rows_of(doctor(standard, project, "--json"))["legs"]
 
 
@@ -255,6 +234,37 @@ def _members(standard, project, holder, tmp_path):
     return rows_of(doctor(standard, root, "--json"))["members"]
 
 
+def _members_git_line(standard, project, holder, tmp_path):
+    # A holder whose own bootstrap cannot run: doctor A's plain git line.
+    root = holder_copy(holder, tmp_path)
+    holder_without(root, "bootstrap.py")
+    member_unbootstrapped(root)
+    return rows_of(doctor(standard, root, "--json"))["members"]
+
+
+def _members_lockstep(standard, project, holder, tmp_path):
+    # A member whose gitlink is not its pin: the family gate, through the
+    # same `lockstep_next` as the `legs` row.
+    root = holder_copy(holder, tmp_path)
+    make_member_gitlink_mismatch(root)
+    return rows_of(doctor(standard, root, "--json"))["members"]
+
+
+def _validator_crashed(standard, project, holder, tmp_path):
+    # The root's own `validate-pins.py` raising: doctor B's crash line (#278).
+    here, root, row_id, _own = crashing("own-pins", standard, project, holder,
+                                        tmp_path)
+    return rows_of(doctor(here, root, "--json"))[row_id]
+
+
+def _unloaded_manifest_restore(standard, project, holder, tmp_path):
+    # A manifest that does not load and a gate whose `repo_shape.py` is gone
+    # from the tree, which HEAD still holds: doctor B's restore line (#298).
+    root, row_id, _refusal = unloaded("project", project, holder, tmp_path,
+                                      "tree")
+    return rows_of(doctor(standard, root, "--json"))[row_id]
+
+
 def _machine(standard, project, holder, tmp_path):
     # A preflight that is not ready, on every host: whether the real one is
     # depends on the machine, and the row's NEXT only exists when it is not.
@@ -276,9 +286,9 @@ def _way_in(standard, project, holder, tmp_path):
 
 #: One fixture per NEXT #277 converted, by the builder and branch it reaches,
 #: and how the sentence that used to follow `   # ` on it now opens -- moved
-#: VERBATIM, less the `#`, so these are main's own words. Not
-#: `check_manifest_kinds`, whose prose NEXTs are lane 2's (#291), and not a
-#: `Refusal.remediation` printed as one.
+#: VERBATIM, less the `#`, so these are the words main and doctors A and B
+#: printed. Not `check_manifest_kinds`, whose prose NEXTs are lane 2's
+#: (#291), and not a `Refusal.remediation` printed as one.
 CASES = {
     "validator_row-neither-readable": (
         _validator_neither_readable,
@@ -304,10 +314,23 @@ CASES = {
         _shape_currency_behind_pin_only, "then apply --at "),
     "check_shape_currency-copies-moved": (
         _shape_currency_moved, "then apply --at "),
+    "validator_row-crashed": (
+        _validator_crashed,
+        "read its output in full, it shows where the validator stopped"),
+    "unloaded_manifest_row-restore": (
+        _unloaded_manifest_restore,
+        "it puts back the scripts/repo_shape.py HEAD holds, the copy this "
+        "project committed and scripts/validate-manifest.py imports, where "
+        "update-shape.py apply would copy a newer one"),
     "check_legs": (
         _legs,
-        "what `make bootstrap` runs: it puts every leg on its tracking branch "
-        "AT the pinned commit"),
+        "checks each leg out at the commit this repository records for it, "
+        "and fetches a mount that is empty"),
+    "lockstep_next-legs": (
+        _legs_lockstep,
+        "no submodule update cures a leg whose gitlink or pin is missing or "
+        "disagrees, or a mount git cannot read a HEAD in. validate-pins.py "
+        "prints what it finds and names the repair where it has one"),
     "missing_shape_file_fix-partly-copyable": (
         _leg_shape_files_partly_copyable,
         "and the rest are RENDERED per project (placeholders): "
@@ -342,6 +365,16 @@ CASES = {
         _members,
         "what `make bootstrap` runs in a holder: it fetches every member at "
         "its pin and leaves it detached there"),
+    "members_verdict-git-line": (
+        _members_git_line,
+        "checks each member out at the commit this repository records for "
+        "it, and fetches a mount that is empty"),
+    "lockstep_next-members": (
+        _members_lockstep,
+        "no submodule update cures a member whose gitlink or pin is missing "
+        "or disagrees, or a mount git cannot read a HEAD in. "
+        "validate-family.py prints what it finds and names the repair where "
+        "it has one"),
     "check_machine": (
         _machine,
         "it names each missing prerequisite and offers to install it, on a "
@@ -366,17 +399,63 @@ def unquoted_operators(command: str) -> list[str]:
             if token and set(token) <= set("();<>|&")]
 
 
+#: The operators a NEXT must not carry outside a quotation on POSIX: a list
+#: (`;`, `&`, `&&`, `|`, `||`) runs a second command, a parenthesis opens a
+#: subshell -- and an unquoted `$(` is read as `$` then the operator `(`,
+#: so it is one of them. `<` and `>` are not here: the way-in row's
+#: `<your-org>` is a placeholder the reader replaces, unquoted on purpose.
+LIVE_OPERATORS = ";&|()"
+
+
+def outside_single_quotes(command: str) -> str:
+    """`command` less what `sh` reads literally: single-quoted spans and the
+    character after a backslash. A `$(` left in it is run -- inside double
+    quotes as much as outside them -- which `shlex`'s tokens cannot show:
+    they read `"$(make)"` as the one word `$(make)`, exactly as they read
+    the quoted path `'$(make)'`, which runs nothing."""
+    kept, single, double, at = [], False, False, 0
+    while at < len(command):
+        char = command[at]
+        if single:
+            single = char != "'"
+        elif char == "\\":
+            at += 1
+        elif char == "'" and not double:
+            single = True
+        else:
+            double = double != (char == '"')
+            kept.append(char)
+        at += 1
+    return "".join(kept)
+
+
+def test_the_operator_readers_see_what_sh_runs_and_not_a_quoted_path():
+    """The property below is only as good as these two readers, so each is
+    shown to find an operator `sh` acts on, and to pass one that sits in a
+    quoted path."""
+    assert set("".join(unquoted_operators("a; b && c | d (e)"))) == set(
+        LIVE_OPERATORS)
+    assert unquoted_operators("git -C '/w/a;b&c|d (e)' status") == []
+    assert "(" in unquoted_operators("echo $(make)")
+    assert "$(" in outside_single_quotes('echo "$(make)"')
+    assert "$(" not in outside_single_quotes("echo '$(make)'")
+    assert "$(" not in outside_single_quotes("echo \\$(make)")
+    assert "$(" not in outside_single_quotes("echo 'it'\"'\"'s $(here)'")
+
+
 @pytest.mark.parametrize("case", list(CASES))
 def test_every_converted_next_is_a_command_and_nothing_else(
         standard, project, holder, tmp_path, case):
-    """The property, over one red fixture per converted builder.
+    """The property, over one red fixture per converted builder and branch.
 
     NO SHELL COMMENT: `shlex` reads the line the same with comments on and
-    off, so nothing in it is a `#` where a word starts. NO BACKTICK: command
-    substitution in sh, bash and zsh alike. NO UNQUOTED `;` on POSIX: what
-    followed one in a tail was the second command an interactive zsh ran.
-    AND THE SENTENCE IS NOT LOST: it is the row's `why`, opening with the
-    words main printed after `   # `.
+    off, so nothing in it is a `#` where a word starts. NO BACKTICK, AND NO
+    `$(` THAT RUNS: command substitution in sh, bash and zsh alike. On
+    POSIX, NO `;`, `&`, `|`, `(` OR `)` OUTSIDE A QUOTATION, read from
+    `shlex`'s tokens so that a quoted path holding one is a path: what
+    followed a `;` in a tail was the second command an interactive zsh ran,
+    and the others start one too. AND THE SENTENCE IS NOT LOST: it is the
+    row's `why`, opening with the words printed after `   # ` before #277.
     """
     build, opens = CASES[case]
     row = build(standard, project, holder, tmp_path)
@@ -387,7 +466,10 @@ def test_every_converted_next_is_a_command_and_nothing_else(
         case, command)
     assert "`" not in command, (case, command)
     if os.name != "nt":
-        assert ";" not in unquoted_operators(command), (case, command)
+        live = "".join(unquoted_operators(command))
+        for operator in LIVE_OPERATORS:
+            assert operator not in live, (case, operator, command)
+        assert "$(" not in outside_single_quotes(command), (case, command)
     assert "   # " not in command, (case, command)
 
 
@@ -508,6 +590,24 @@ def test_the_manifest_next_pasted_into_an_interactive_zsh_is_the_validator(
     assert "command not found: it" in transcript, transcript
 
 
+def legs_line_before_277(standard: Path, root: Path) -> str:
+    """The `legs` NEXT the doctor printed for `root` before #276 and #277
+    (`check_legs` at 3ae0109, the line #277 was filed against): the root's
+    own bootstrap, and a tail holding `make bootstrap` in backticks.
+
+    SPELLED HERE BECAUSE NOTHING PRINTS IT ANY MORE. #276 made the `legs`
+    NEXT a git line whose sentence carries no backtick, so the line it
+    prints today, with its `why` put back after `   # `, runs no `make`
+    pasted, and could not show that this harness runs a backtick at all.
+    """
+    module = doctor_module(standard)
+    return (f"{module.PYTHON} "
+            f"{module.quote_arg(root / 'scripts' / 'bootstrap.py')} "
+            f"--root {module.quote_arg(root)}   # what `make bootstrap` "
+            "runs: it puts every leg on its tracking branch AT the pinned "
+            "commit")
+
+
 @WINDOWS_SKIP
 @pytest.mark.skipif(shutil.which("zsh") is None or shutil.which("make") is None,
                     reason="needs zsh and make")
@@ -518,11 +618,11 @@ def test_the_legs_next_pasted_into_an_interactive_zsh_runs_no_make(
     The `legs` comment said "what `make bootstrap` runs" -- a pair of
     backticks, which an interactive zsh runs as command substitution in the
     directory the person is standing in, before the command it was pasted
-    with. The line main printed is pasted second, in the same directory, and
-    leaves the marker, so the first half cannot be passing because the
-    harness never runs a backtick.
+    with. That line (`legs_line_before_277`) is pasted second, in the same
+    directory, and leaves the marker, so the first half cannot be passing
+    because the harness never runs a backtick.
     """
-    walk_off_the_pin(project / "spec")
+    commit_in(project / "spec")
     row = rows_of(doctor(standard, project, "--json"))["legs"]
     assert row["status"] == "FINDING", row
     here = tmp_path / "standing-here"
@@ -537,10 +637,10 @@ def test_the_legs_next_pasted_into_an_interactive_zsh_runs_no_make(
     for misread in MISREAD:
         assert misread not in transcript, (misread, transcript)
 
-    paste_into_zsh(f"{row['next']}   # {row['why']}", here)
+    paste_into_zsh(legs_line_before_277(standard, project.resolve()), here)
     assert marker.exists(), (
-        "the line main printed must run `make bootstrap` here, or this test "
-        "is proving nothing about the backticks")
+        "the line the doctor printed before #277 must run `make bootstrap` "
+        "here, or this test is proving nothing about the backticks")
 
 
 # --- the report says the sentence, off the command's line -------------------
@@ -552,7 +652,7 @@ def test_the_table_prints_why_on_its_own_line_under_next(standard, project,
     pairing is shown to be per row, and every row of the run carries the key.
     """
     root = red_root("manifest", project, holder, tmp_path, keep_own=True)
-    walk_off_the_pin(root / "spec")
+    commit_in(root / "spec")
     rows = rows_of(doctor(standard, root, "--json"))
     for name, row in rows.items():
         assert "why" in row, (name, row)
@@ -582,20 +682,49 @@ def test_a_report_that_cannot_answer_says_why_after_the_remediation(
     assert said[at + 1] == "  Why: " + row["why"], said
 
 
+def test_a_cannot_answer_row_with_no_command_still_says_why(
+        standard, project, capsys):
+    """`Why:` is printed whenever the row has a `why`, whether or not it has
+    a command for `Remediation:` (the coordinator's ruling on #277's merge
+    with #278, which prints no `Remediation:` for a row with no NEXT). No
+    row the doctor builds today is that row, so the report is handed one."""
+    module = doctor_module(standard)
+    ctx = module.Context(project.resolve())
+    row = module.Row("cannot", "cannot", module.FINDING, "it could not ask",
+                     None, {"environment": True}, why="what to do instead")
+    module.report(ctx, [row], "CANNOT ANSWER (cannot: it could not ask)", 3)
+    said = capsys.readouterr().err.splitlines()
+    at = said.index("REFUSED shape-doctor-cannot-answer: it could not ask")
+    assert said[at + 1:] == ["  Why: what to do instead"], said
+
+
 # --- the guard: no tail comes back -------------------------------------------
 
-#: The functions whose strings may hold `   # `, BY NAME, and why: neither
-#: is a NEXT. A line number would move with every edit above it.
+#: What the guard calls a tail: two or more blanks, or a tab, then `#` and a
+#: blank. The house spelling was three spaces; two, or a tab, is the same
+#: comment to a shell, and the same word to an interactive zsh.
+TAIL = re.compile(r"(?:[ \t]{2,}|\t)#[ \t]")
+
+#: The strings that may hold one, by the def they are written in -- its
+#: whole path from the module, so a nested def or a method that shares the
+#: name is not waved through -- and why: neither is a NEXT. `None` allows
+#: every string in that def; text allows that one string and no other, so a
+#: tail written anywhere else in `report` is still found. A line number
+#: would move with every edit above it.
 TAIL_ALLOWED = {
-    "placement_plan_leg": "writes YAML comment lines into the placement plan",
-    "report": "prints `placement plan written to ...   # nothing moved`, a "
-              "line of the report and not a command",
+    # YAML comment lines, written into the placement plan.
+    "placement_plan_leg": None,
+    # `placement plan written to <file>   # nothing moved: ...`, a line of
+    # the report and not a command.
+    "report": "   # nothing moved: answer every `resolution:` before a repair "
+              "runs it",
 }
 
 
 def tails_in(source: str) -> list[tuple[int, str, str]]:
-    """`(line, function, text)` for every string constant in `source` that
-    holds `   # ` and is not a docstring, by its innermost function.
+    """`(line, def, text)` for every string constant in `source` that holds
+    a `TAIL` and is not a docstring, by the path of the defs it is written
+    in (`outer/inner`, or `<module>`).
 
     The pieces of an f-string are constants too, so a tail spelled after a
     `{command}` is found like any other.
@@ -614,12 +743,14 @@ def tails_in(source: str) -> list[tuple[int, str, str]]:
 
     def visit(node, owner: str) -> None:
         for child in ast.iter_child_nodes(node):
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                visit(child, child.name)
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                  ast.ClassDef)):
+                visit(child, child.name if owner == "<module>"
+                      else f"{owner}/{child.name}")
                 continue
             if isinstance(child, ast.Constant) and \
                     isinstance(child.value, str) and \
-                    id(child) not in docstrings and "   # " in child.value:
+                    id(child) not in docstrings and TAIL.search(child.value):
                 found.append((child.lineno, owner, child.value))
             visit(child, owner)
 
@@ -627,30 +758,54 @@ def tails_in(source: str) -> list[tuple[int, str, str]]:
     return found
 
 
+def disallowed(found: list[tuple[int, str, str]]) -> list:
+    """The tails `TAIL_ALLOWED` does not allow."""
+    return [(line, owner, text) for line, owner, text in found
+            if owner not in TAIL_ALLOWED
+            or TAIL_ALLOWED[owner] not in (None, text)]
+
+
 def test_no_string_in_the_doctor_ends_a_command_with_a_comment():
     """The CLASS of the defect, for every builder, including later ones.
 
     Every NEXT is built from string constants in `shape-doctor.py`, so a
-    `   # ` in one is a tail on its way to a NEXT. Two functions hold that
-    text for other reasons (`TAIL_ALLOWED`). A builder that wants to say why
-    its command is the fix says it as the row's `why`.
+    tail in one is on its way to a NEXT. Two places hold that text for
+    other reasons (`TAIL_ALLOWED`). A builder that wants to say why its
+    command is the fix says it as the row's `why`.
 
-    THE SCANNER IS SHOWN TO SEE ONE FIRST, on a sample spelled the way the
-    tails were -- after an f-string's `{command}` -- beside a docstring that
-    mentions one and must not count. And both allowed functions are found
-    in the real file, so the guard is reading the strings it should.
+    THE SCANNER IS SHOWN TO SEE ONE FIRST, on samples spelled the ways a
+    tail can be -- three spaces after an f-string's `{command}`, two spaces,
+    a tab, a second tail in `report` beside its allowed line, and one in a
+    nested def that shares the name `report` -- beside a docstring that
+    mentions one and must not count. And both allowed strings are found in
+    the real file, so the guard is reading the strings it should.
     """
     sample = ('def builder(command):\n'
               '    """Its docstring may say `   # x`."""\n'
-              '    return f"{command}   # a tail"\n')
-    assert [(owner, text) for _, owner, text in tails_in(sample)] == \
-        [("builder", "   # a tail")]
+              '    return f"{command}   # a tail"\n'
+              'def two(command):\n'
+              '    return command + "  # two spaces"\n'
+              'def tab(command):\n'
+              '    return command + "\\t# a tab"\n'
+              'def report(plan):\n'
+              f'    print(f"{{plan}}{TAIL_ALLOWED["report"]}")\n'
+              '    print(f"{plan}   # a second one")\n'
+              'def outer():\n'
+              '    def report():\n'
+              '        return "x   # nested"\n'
+              '    return report\n')
+    assert [(owner, text) for _, owner, text in
+            disallowed(tails_in(sample))] == [
+        ("builder", "   # a tail"), ("two", "  # two spaces"),
+        ("tab", "\t# a tab"), ("report", "   # a second one"),
+        ("outer/report", "x   # nested")]
 
     found = tails_in((REPO / DOCTOR).read_text(encoding="utf-8"))
-    outside = [(line, owner, text) for line, owner, text in found
-               if owner not in TAIL_ALLOWED]
+    outside = disallowed(found)
     assert not outside, (
         f"{DOCTOR} builds a string with a `   # ` tail at {outside}; an "
         "interactive zsh reads that `#` as a word and runs what follows it "
         "(#277). Pass the sentence as the row's `why=` instead.")
     assert {owner for _, owner, _ in found} == set(TAIL_ALLOWED), found
+    assert TAIL_ALLOWED["report"] in [text for _, owner, text in found
+                                      if owner == "report"], found
