@@ -114,6 +114,8 @@ READ = "read"
 ASSEMBLY = "assembly"
 OUTSIDE_DIR = "outside"
 BLOCKED = "materialize-blocked"
+#: #262's refusal, in `place`, of a copy whose place is taken.
+COPY_BLOCKED = "materialize-copy-blocked"
 #: #262's finding for a path the plan keeps where the shape writes its copy.
 COPY_IN_THE_WAY = "plan-root-blocks-shape-copy"
 COPY_FINDING = f"FINDING {COPY_IN_THE_WAY}: "
@@ -944,11 +946,11 @@ def test_a_file_where_the_shape_needs_a_directory_is_a_refusal(tmp_path):
     """What a `core.symlinks=false` checkout makes of `.github -> ci`: a
     plain FILE holding `ci`. It used to be a NotADirectoryError traceback.
 
-    A source that keeps a plain file named `.github` meets the same refusal
-    with both legs already made, and `check` says `plan ok` for it, because
-    `check` follows symlinks. So the remediation must not say that `check`
-    names what is in the way; it names the work directory, which by then
-    holds both legs' clones."""
+    A source that keeps a plain file named `.github` is #263's
+    `plan-root-blocks-shape` in `check`, and `execute` refuses it before any
+    leg exists, so only a caller that skipped `check` meets this refusal.
+    The remediation does not send that caller to `check`; it names the work
+    directory, which by then holds both legs' clones."""
     target = tmp_path / ASSEMBLY
     target.mkdir()
     (target / GITHUB).write_text("ci", encoding=UTF8)
@@ -1015,15 +1017,20 @@ UNWRITABLE = [
                  f"{ticked(MAKEFILE)} cannot be written: the target of the "
                  f"symlink {ticked(MAKEFILE)} goes on from {ticked(README)}, "
                  "which is not a directory here", id="dot-dot-after-a-file"),
-    # B2: the copy under `shape/` led onto something already there.
-    pytest.param({SHAPE_DIR: "."}, (README,), BLOCKED,
-                 f"{ticked(SHAPE_README)} cannot be written: a symlink on the "
-                 f"way leads it to {ticked(README)}, a file that is already "
-                 "there", id="the-copy-onto-a-file"),
-    pytest.param({SHAPE_DIR: ".", MAKEFILE: "docs"}, ("docs/x.md",), BLOCKED,
-                 f"{ticked(SHAPE_DIR + '/' + MAKEFILE)} cannot be written: a "
-                 "symlink on the way leads it to `docs`, a directory that is "
-                 "already there", id="the-copy-into-a-directory"),
+    # B2: the copy under `shape/` led onto something already there. Where a
+    # copy lands is #262's `copy_in_the_way`, which `place` asks first.
+    pytest.param({SHAPE_DIR: "."}, (README,), COPY_BLOCKED,
+                 f"the shape's copy of {ticked(README)} cannot be written to "
+                 f"{ticked(SHAPE_README)}: {ticked(SHAPE_README)} is already "
+                 "there, and nothing was written there",
+                 id="the-copy-onto-a-file"),
+    pytest.param({SHAPE_DIR: ".", MAKEFILE: "docs"}, ("docs/x.md",),
+                 COPY_BLOCKED,
+                 f"the shape's copy of {ticked(MAKEFILE)} cannot be written to "
+                 f"{ticked(SHAPE_DIR + '/' + MAKEFILE)}: "
+                 f"{ticked(SHAPE_DIR + '/' + MAKEFILE)} is already there, a "
+                 "directory, and nothing was written there",
+                 id="the-copy-into-a-directory"),
 ]
 
 
@@ -1032,10 +1039,11 @@ UNWRITABLE = [
 def test_the_materializer_refuses_before_it_writes(tmp_path, links, files,
                                                    code, detail):
     """A symlink in the way is a named refusal: never a write outside the
-    target, never one over what is already there, never a traceback. On main
-    the two links out wrote `validate.yml` into `outside/`, the copies wrote
-    over README.md or raised IsADirectoryError, and the rest raised OSError,
-    FileExistsError, FileNotFoundError or NotADirectoryError."""
+    target, never one over what is already there, never a traceback. Before
+    this rule the two links out wrote `validate.yml` into `outside/`, and the
+    rest raised OSError, FileExistsError, FileNotFoundError or
+    NotADirectoryError; before #262 the copies wrote over README.md or raised
+    IsADirectoryError, and #262's `copy_in_the_way` refuses them now."""
     target, outside = tmp_path / ASSEMBLY, tmp_path / OUTSIDE_DIR
     target.mkdir()
     outside.mkdir()

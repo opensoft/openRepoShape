@@ -1612,7 +1612,9 @@ def materialize_family_root(shape_root: Path, target: Path,
 # shape's copy beside it, under the collision directory. A symlink at or above
 # that COPY was followed, and the copy landed on whatever it led to: over the
 # source's own `README.md` for `shape -> .`, or into a directory, in a
-# traceback. So a path reached through a symlink must lead where nothing is.
+# traceback. Where a copy lands is `copy_in_the_way`'s question (#262), which
+# `place` asks first, a symlink on the way or not; what is asked here is
+# what still holds for the copy after it, as for any other path.
 
 #: How many symlinks one lookup follows before it is a loop: Linux's own
 #: limit (MAXSYMLINKS), where `open()` gives up with ELOOP. `adopt-project.py`
@@ -1620,10 +1622,12 @@ def materialize_family_root(shape_root: Path, target: Path,
 SYMLINK_HOPS = 40
 
 #: What each refusal below says to do. It is raised BEFORE the `mkdir` and the
-#: write, so nothing was written at the path it names. It does not say that
-#: `adopt-project.py check` names what is in the way: `check` follows the
-#: plan's SYMLINKS, and a plain FILE kept where the shape needs a directory
-#: (a source file named `.github`) reaches this refusal with `check` silent.
+#: write, so nothing was written at the path it names. It does not send the
+#: reader to `adopt-project.py check`: `check` reports what is in the way
+#: before any leg exists (a symlink as `plan-root-symlink`, #183; a plain
+#: FILE where the shape needs a directory as `plan-root-blocks-shape`, #263),
+#: and `execute` refuses it there, so this refusal is met only by a caller
+#: that skipped `check`.
 #: It names the work directory as #200's mount remediation does: by now
 #: `execute` has cloned both legs into it, and a re-run cannot clone there.
 UNWRITABLE_REMEDIATION = (
@@ -1711,11 +1715,11 @@ def _from_a_directory(target: Path, rel: str, done: list[str], part: str,
             UNWRITABLE_REMEDIATION)
 
 
-def _followed(target: Path, rel: str, name) -> tuple[list[str], int]:
+def _followed(target: Path, rel: str, name) -> list[str]:
     """`rel` under `target` with each symlink on the way followed, the way
-    `open()` follows them: the parts it lands on, relative to `target`, and
-    how many symlinks led there. A refusal when one leads out of `target`,
-    round a loop, or on from something that is not a directory."""
+    `open()` follows them: the parts it lands on, relative to `target`. A
+    refusal when one leads out of `target`, round a loop, or on from
+    something that is not a directory."""
     parts = [(part, "") for part in rel.split("/")]
     done: list[str] = []
     hops = 0
@@ -1733,24 +1737,22 @@ def _followed(target: Path, rel: str, name) -> tuple[list[str], int]:
                                 hops, name) + parts
         else:
             done.append(part)
-    return done, hops
+    return done
 
 
-def _blocker(target: Path, rel: str, landed: list[str], hops: int,
+def _blocker(target: Path, rel: str, landed: list[str],
              name) -> str | None:
-    """What stands where `rel` needs a directory, or where a symlink leads
-    it, or None.
+    """What stands where `rel` needs a directory, or where a symlink at it
+    leads, or None.
 
     `mkdir(parents=True)` makes a MISSING directory and everything below it,
     and passes through a directory or a symlink to one. It cannot pass a
     file, or a symlink that leads to no directory, and it raised a traceback
     there. A symlink at `rel` itself is written through only into a
-    directory that is already there. And a path reached through a symlink
-    must land where nothing is: only a collision COPY gets this far with
-    something there, and it was written over a file, or raised
-    IsADirectoryError on a directory. A copy with NO symlink on the way that
-    lands on a file is still written there: that is `place`'s own question,
-    not a symlink's.
+    directory that is already there. No path reaches here with something
+    already where it lands: `place` writes the shape's copy beside a path
+    that is taken, and asks `copy_in_the_way` (#262) where the copy lands
+    before it asks this.
     """
     parts = rel.split("/")
     for end in range(1, len(parts)):
@@ -1769,12 +1771,6 @@ def _blocker(target: Path, rel: str, landed: list[str], hops: int,
     if path.is_symlink() and not target.joinpath(*landed[:-1]).is_dir():
         return (f"the symlink {name(rel)} leads to {name(os.readlink(path))}, "
                 "and there is no directory there to write it in")
-    there = target.joinpath(*landed)
-    if hops and there.exists():
-        where = name(root_key(there, target)) if landed else str(target)
-        what = "a directory" if there.is_dir() else "a file"
-        return (f"a symlink on the way leads it to {where}, {what} that is "
-                "already there")
     return None
 
 
@@ -1785,7 +1781,7 @@ def _refuse_unwritable(target: Path, rel: str, spell=None) -> None:
     `target` itself is the directory the caller gave, and is named as it
     is, as `materialize-collision` names it."""
     name = spell or _ticked
-    blocker = _blocker(target, rel, *_followed(target, rel, name), name)
+    blocker = _blocker(target, rel, _followed(target, rel, name), name)
     if blocker:
         raise Refusal(BLOCKED,
                       f"{name(rel)} cannot be written: {blocker}",
