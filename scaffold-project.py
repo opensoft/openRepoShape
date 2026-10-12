@@ -14,7 +14,11 @@ WHAT IT DOES
      just as early, for the same reason (#197), and so is a `--pin` whose
      file the shape writes itself or another `--pin` writes (#241), and a
      `--referent-chain` link between the first and the last that is not a
-     neutral product's name (#251).
+     neutral product's name (#251). So is an `--elected-by`, `--reference`
+     or `--name` that no file can hold as one line of text -- a byte that is
+     not UTF-8, a line break, a control character, a bidi embedding,
+     override or isolate -- given as the flag or read from the elector's
+     fallback (#282).
   2. Creates the three remotes: `gh repo create` normally, or three BARE
      repositories in a directory with `--local-remote-dir`, which is the test
      path and touches no network.
@@ -31,6 +35,17 @@ the upstream again; a project that needed the upstream mounted to run its own
 gate would have made the shape a dependency rather than a shape. The copies are
 digest-pinned in `contracts/shape-pin.yaml`, so "which openRepoShape is this a
 copy of, and has anyone edited it since" both have answers.
+
+WHAT THE NEW PROJECT MUST BE ABLE TO HOLD (#258, #261). The manifest is
+rendered from the values the run is about to use, read with the project's own
+YAML reader and put through the validator the template ships, BEFORE anything
+is created and under `--dry-run` alike. A value the reader turns into something
+else (`--id null`, `--tracking-branch true` or `007`: the template writes them
+bare) is refused as `scaffold-manifest-misread`, and one the validator refuses
+(a blank `--elected-by`, `--reference` or `--name`, an `--org` it cannot hold)
+as `scaffold-manifest-invalid`, in the validator's own words; an
+`--elected-on` is read in the validator's form only, on every Python. A name
+that cannot be a directory's is refused as `scaffold-name-too-long`.
 
 IDEMPOTENCY. It refuses to write into a remote or a working directory that
 already exists. There is no --force: re-running over a live project is not a
@@ -63,17 +78,36 @@ from shape_materialize import (  # noqa: E402
     RULESET_HINT, SHAPE_REPOSITORY, CommandFailed,
     copy_tree, default_reference, descendant_note, election_date, env_commit,
     escape_what_stdout_cannot_encode, git_init_commit,
-    materialize_assembly_root, naming_block, run, stage_written,
+    materialize_assembly_root, naming_block, refuse_bad_branch, run,
+    stage_written,
 )
 # The leg-path rule `adopt-project.py` asks of its own paths (#179).
 from shape_materialize import refuse_bad_leg_paths  # noqa: E402
+# What the new project's own reader and `validate-manifest.py` would make of
+# the values written into its manifest, and whether a repository's name can
+# be a directory's: asked before anything is created (#258, #261).
+from shape_materialize import (  # noqa: E402
+    refuse_manifest_values, refuse_unstorable_names,
+)
 from shape_advisory import scaffold_lines  # noqa: E402
+# Whether `--elected-by`, `--reference` and `--name` are text a file can
+# hold: the question `adopt-project.py` asks of the same values (#282).
+from shape_materialize import unwritable_reason  # noqa: E402
 # The shape half of the leg-path collision rule, which `adopt-project.py`
 # asks of its own mount paths (#172), imported as one unit (#197), with the
 # one spelling of the file a `--pin` adds to what the shape writes.
 from shape_materialize import (  # noqa: E402
     assembly_root_paths, neutral_pin_path, shape_path_collisions,
 )
+
+#: How a refusal names each value the manifest records (#258, #261). The leg
+#: paths are not here: `refuse_bad_leg_paths` asks for them (#179, #225).
+MANIFEST_FLAGS = {
+    "PROJECT_ID": "--id", "PROJECT_NAME": "--name",
+    "ELECTED_BY": "--elected-by", "ELECTED_ON": "--elected-on",
+    "REFERENCE": "--reference", "VISIBILITY": "--visibility",
+    "TRACKING_BRANCH": "--tracking-branch", "ORG": "--org",
+}
 
 #: The pin argument: `openGlass@<40 hex>`, optionally organisation-qualified.
 PIN_ARG_RE = re.compile(r"^(?P<name>[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?)@(?P<commit>[0-9a-fA-F]{40})$")
@@ -264,7 +298,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--org", required=True)
     parser.add_argument("--project", required=True,
                         help="the assembly-root name, e.g. Atlas")
-    parser.add_argument("--id", default=None, help="lowercase project id")
+    parser.add_argument("--id", default=None,
+                        help="lowercase project id (default: --project "
+                             "lowercased). One the project's YAML reader "
+                             "would read as another type -- `null`, `true`, "
+                             "`007` -- is refused.")
     parser.add_argument("--name", default=None, help="display name")
     parser.add_argument("--visibility", choices=VISIBILITY_CHOICES,
                         default=None,
@@ -281,7 +319,10 @@ def main(argv: list[str] | None = None) -> int:
                              "--pin itself (owner/openProduct@<sha>) to "
                              "override it for one pin without changing this "
                              "default for the others.")
-    parser.add_argument("--elected-by", default=None)
+    parser.add_argument("--elected-by", default=None,
+                        help="the human electing the shape (default: "
+                             "GIT_AUTHOR_NAME, then `git config user.name`); "
+                             "not blank")
     parser.add_argument("--elected-on", default=None, help="YYYY-MM-DD")
     parser.add_argument("--reference", default=None,
                         help="the document the election followed. Default: "
@@ -292,9 +333,25 @@ def main(argv: list[str] | None = None) -> int:
                              "--elected-on chooses it, and a back-dated "
                              "project does not claim it followed a document "
                              "that did not exist yet.")
-    parser.add_argument("--tracking-branch", default="main")
-    parser.add_argument("--spec-path", default="spec")
-    parser.add_argument("--code-path", default="code")
+    parser.add_argument("--tracking-branch", default="main",
+                        help="the branch every repository is created on "
+                             "(default: main). One the project's YAML reader "
+                             "would read as another type -- `null`, `true`, "
+                             "`007`, `2026` -- is refused.")
+    parser.add_argument("--spec-path", default="spec",
+                        help="where the spec leg is mounted, as a path in "
+                             "the assembly root (default: spec). A path that "
+                             "is, holds or lies inside a FILE the shape "
+                             "writes into the root is refused before anything "
+                             "is created: `project.yaml` is one, and "
+                             "`contracts` holds several.")
+    parser.add_argument("--code-path", default="code",
+                        help="where the code leg is mounted, as a path in "
+                             "the assembly root (default: code). A path that "
+                             "is, holds or lies inside a FILE the shape "
+                             "writes into the root is refused before anything "
+                             "is created: `project.yaml` is one, and "
+                             "`contracts` holds several.")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--local-remote-dir", type=Path, default=None,
                         help="create bare repositories here instead of calling "
@@ -312,7 +369,10 @@ def main(argv: list[str] | None = None) -> int:
                              "contracts/<openproduct>-pin.yaml and lists the "
                              "product in the manifest, which is what makes a "
                              "`<Domainx><Product>` name a DESCENDANT rather "
-                             "than a name shaped like one. Repeatable.")
+                             "than a name shaped like one. Repeatable, "
+                             "once per product (the same name in another "
+                             "case, or under another owner, is the same "
+                             "product).")
     parser.add_argument("--referent-chain", default="",
                         metavar="openLayer,openProduct",
                         help="the CHAIN of neutral-product pins this project "
@@ -439,14 +499,18 @@ def _exists_remedy(role: str, empty: bool, reuse_flag: bool) -> str:
 
 
 #: What every refused `--pin` is told to do. The file a pin is written at is
-#: `neutral_pin_path`'s, spelled for a placeholder product, never by hand.
+#: `neutral_pin_path`'s, spelled for a placeholder product, never by hand. It
+#: names `spec`, `code` and `shape` outright (#288): for a repository truly
+#: called one of them, "name the product for the repository it pins" is no
+#: remedy at all, because no spelling of that name can be pinned.
 PIN_COLLISION_REMEDIATION = (
     "Remediation: nothing was created. A neutral product is named for the "
     "repository it pins, as `--pin openGlass@<40 hex commit>` names "
     f"{NEUTRAL_PRODUCT_OWNER}/openGlass by default, and its pin is written at "
     f"`{neutral_pin_path('<openProduct>')}`, the name lowercased, beside the "
-    "pins the shape writes for its two legs and for itself. Pass each product "
-    "once, by the name of the repository it pins."
+    "pins the shape writes for its two legs and for itself, so `spec`, `code` "
+    "and `shape`, in any case, are names no product can be pinned under. Pass "
+    "each product once, by the name of the repository it pins."
 )
 
 
@@ -583,20 +647,57 @@ def _refuse_colliding_leg_paths(spec_path: str, code_path: str,
                       _leg_collision_remediation(neutral_pins))
 
 
+def _refuse_unholdable_manifest(args, values: dict, policy) -> None:
+    """The manifest this run would write is one the project can hold, or this
+    refuses (#258, #261), before a work directory or a remote exists and
+    under `--dry-run` alike.
+
+    `values` is the whole substitution table, so the project's own YAML
+    reader and `validate-manifest.py` are asked about the `project.yaml` the
+    run is about to write: a value the reader turns into something else
+    (`--id null`, `--tracking-branch 007`) is `scaffold-manifest-misread`, and
+    one the validator refuses (a blank `--elected-by`, `--org test+org`) is
+    `scaffold-manifest-invalid`. `shape_materialize.refuse_manifest_values`
+    asks both, and says why each is refused.
+
+    A value a flag did not supply is named by where it came from, so the
+    sentence does not point at a flag nobody typed.
+    """
+    flags = dict(MANIFEST_FLAGS)
+    for key, flag, given, source in (
+            ("PROJECT_ID", "--id", args.id, "--project lowercased"),
+            ("PROJECT_NAME", "--name", args.name, "--project"),
+            ("ELECTED_BY", "--elected-by", args.elected_by,
+             "GIT_AUTHOR_NAME or `git config user.name`")):
+        if not given:
+            flags[key] = f"{flag} (not given, so {source})"
+    refuse_manifest_values(
+        "scaffold", values, policy, flags,
+        "Nothing was created, and `--dry-run` refuses the same.")
+
+
 def _elector(args) -> str:
     """(a) Whose act electing this shape was, or a refusal.
 
     Split out of `_scaffold` for #138. `--elected-by` first, then this
     machine's git identity; the manifest records a name either way, because
     electing this shape is a human's act and `elected_by` is the record of
-    whose.
+    whose. `_elector_named` says which of the three answered, in this order.
     """
     elected_by = args.elected_by
     if not elected_by:
         try:
             # Per-invocation identity first, then the config — never a global
-            # config write (see the CI workflow note, 2026-09-03).
-            elected_by = (os.environ.get("GIT_AUTHOR_NAME") or "").strip() or git_out(["config", "user.name"], cwd=SHAPE_ROOT)
+            # config write (see the CI workflow note, 2026-09-03). The config
+            # is DECODED AS `sys.argv` AND `os.environ` ARE (#282): a byte
+            # that is not UTF-8 is kept as `surrogateescape` keeps one, for
+            # `unwritable_reason` to name. `git_out`'s own strict decode
+            # raised `UnicodeDecodeError` on a `user.name` holding one, a
+            # traceback where `--elected-by` holding it is a refusal.
+            elected_by = ((os.environ.get("GIT_AUTHOR_NAME") or "").strip()
+                          or git_out(["config", "user.name"], cwd=SHAPE_ROOT,
+                                     binary=True).decode(
+                                         "utf-8", "surrogateescape").strip())
         except Refusal:
             elected_by = ""
     if not elected_by:
@@ -618,14 +719,93 @@ def _identity(args, project: str) -> tuple[str, str, str, str, str]:
     `--elected-on` is PARSED HERE, before anything is created, whether or not
     it is the value that chooses the reference: an explicit --reference must
     not let a malformed --elected-on through into a manifest field no reader
-    can use.
+    can use. The three free-text values are asked here too, beside the date
+    and for the same reason, whether a file can hold them (#282): before a
+    work directory or a remote exists, and under `--dry-run` alike.
     """
     project_id = checked_value("--id", args.id or project.lower())
     display = args.name or project
     elected_on = args.elected_on or _dt.date.today().isoformat()
     election_date(elected_on)
     reference = args.reference or default_reference(elected_on)
-    return project_id, display, elected_on, reference, _elector(args)
+    elected_by = _elector(args)
+    _refuse_unwritable_values((
+        (_elector_named(args), elected_by, ROOT_MANIFEST_AND_README),
+        ("--reference", reference, ROOT_MANIFEST_AND_README),
+        ("--name", display, NAME_WRITTEN_INTO)))
+    return project_id, display, elected_on, reference, elected_by
+
+
+#: How a refusal names an elector `_elector` did not get from `--elected-by`
+#: (#282), so the sentence says where the value came from and not a flag
+#: nobody typed: the words #255's `plan` uses for its own fallback.
+ELECTOR_FROM_ENV = "--elected-by (not given, so GIT_AUTHOR_NAME)"
+ELECTOR_FROM_CONFIG = "--elected-by (not given, so `git config user.name`)"
+
+#: Where the scaffold writes each free-text value, for the sentence that
+#: refuses one (#282). `--name` also goes into each repository's description
+#: on GitHub, where `gh repo create` is asked.
+ROOT_MANIFEST_AND_README = "the assembly root's `project.yaml` and `README.md`"
+NAME_WRITTEN_INTO = (
+    "the assembly root's `project.yaml` and `README.md`, each repository's "
+    "`AGENTS.md` and each first commit's message")
+
+#: What every `scaffold-unwritable-value` is told to do (#282).
+UNWRITABLE_REMEDIATION = (
+    "Remediation: nothing was created, and `--dry-run` refuses the same. Pass "
+    "each value named again, retyped; when `--elected-by` is not given, the "
+    "scaffold reads GIT_AUTHOR_NAME, then `git config user.name`, so pass the "
+    "flag or correct that. The manifest escapes what it records, but the "
+    "README, each `AGENTS.md` and each commit message take the value as it "
+    "stands, so it must be one line of UTF-8 text: a byte that is not UTF-8, "
+    "or a lone surrogate, cannot be written at all; a line break or a control "
+    "character would break or garble the line it is written into; and a "
+    "bidirectional embedding, override or isolate control would show the rest "
+    "of that line in another order than it is written. A byte that is not "
+    "UTF-8 reaches a command line from a terminal or a script whose encoding "
+    "is not the locale's.")
+
+
+def _elector_named(args) -> str:
+    """Where `_elector`'s answer came from, as a refusal names it (#282):
+    `--elected-by`, else `ELECTOR_FROM_ENV` when GIT_AUTHOR_NAME holds more
+    than whitespace, else `ELECTOR_FROM_CONFIG` -- `_elector`'s own order."""
+    if args.elected_by:
+        return "--elected-by"
+    if (os.environ.get("GIT_AUTHOR_NAME") or "").strip():
+        return ELECTOR_FROM_ENV
+    return ELECTOR_FROM_CONFIG
+
+
+def _refuse_unwritable_values(fields) -> None:
+    """Each `(what, value, where)` is text a file can hold, or this refuses
+    as `scaffold-unwritable-value`, naming every one that is not (#282).
+
+    `unwritable_reason` is the question `adopt-project.py` asks of the same
+    values (#255), so the two tools refuse the same values in the same
+    words: a lone surrogate (a byte that is not UTF-8, as `sys.argv` keeps
+    one), a line break, a control character, a bidi embedding, override or
+    isolate control. `double_quoted` spells each of them in `project.yaml`
+    (#284), so the manifest reads back what was typed, but `README.md`, each
+    `AGENTS.md` and each commit message take the value raw: a surrogate
+    raised `UnicodeEncodeError` in `write_lf` after both legs were pushed
+    (`--name`: after all three repositories were created), and a line break
+    split the line it was written into, in the README and each `AGENTS.md`,
+    each commit's subject, and the `manifest ok:` line `validate-manifest.py`
+    prints.
+
+    The value is spelled as Python spells it, so the sentence is one line of
+    text whatever the value holds.
+    """
+    problems = []
+    for what, value, where in fields:
+        reason = unwritable_reason(value)
+        if reason:
+            problems.append(f"{what} is {value!r}, which the scaffold writes "
+                            f"into {where}, and {reason}.")
+    if problems:
+        raise Refusal("scaffold-unwritable-value", " ".join(problems),
+                      UNWRITABLE_REMEDIATION)
 
 
 def referent_chain_links(raw: str) -> tuple:
@@ -1210,6 +1390,13 @@ def _scaffold(args) -> int:
 
     names = {"assembly": project, "spec": f"{project}-spec",
              "code": f"{project}-code"}
+    # Each name is a directory's too, in the work directory and, under
+    # `--local-remote-dir`, as a bare `<name>.git` (#261): a `--project` of
+    # 247 to 250 characters died in `Path.exists` with a traceback, and one
+    # of 251 or more in the work directory, where adopt's `check` refused it.
+    refuse_unstorable_names(
+        "scaffold-name-too-long", list(names.values()),
+        list(names.values()) if args.local_remote_dir is not None else [])
     policy = NamingPolicy.load(SHAPE_ROOT / "contracts" / "repository-naming.yaml")
     if not PROJECT_ID_RE.match(project_id):
         raise Refusal("scaffold-bad-id",
@@ -1241,6 +1428,23 @@ def _scaffold(args) -> int:
     pins, declared_pins, chain, link_pins = _declaration(args)
     _check_declared_names(policy, names, declared_pins, chain, link_pins)
     topic = policy.topic_for(project_id)
+    # THE BRANCH, ASKED OF GIT (#283). `checked_value`'s alphabet is wider
+    # than the names git accepts as a branch (`~`, `a..b`, `x.lock`, `a/`),
+    # and nothing asked git, so `--dry-run` printed a plan and, against
+    # GitHub, `gh repo create` had made all three repositories before the
+    # first `git init -b` died. Asked here a dry run refuses it as the real
+    # run would, before a work directory or a remote exists.
+    #
+    # HERE, AFTER `_declaration`, AND NOT BESIDE THE ALPHABET CHECK AT THE
+    # TOP: the refusals that come before `_identity` and `_declaration` start
+    # no process, and three test files hold that, each with a control that
+    # the first process is `git config user.name` or `_declaration`'s
+    # (`test_scaffold_pin_collisions`, `..._leg_path_collisions`,
+    # `..._referent_chain_links`). This one has to ask `git`. It still comes
+    # before `_shape_revision`, the work directory and every remote, so
+    # nothing exists when it refuses.
+    refuse_bad_branch("scaffold-bad-tracking-branch", "--tracking-branch",
+                      args.tracking_branch)
 
     shape_commit, shape_tree = _shape_revision()
     local, repositories, urls = _repository_urls(args, names)
@@ -1275,6 +1479,12 @@ def _scaffold(args) -> int:
         "SPEC_NAMING": naming_block(policy, names["spec"], "spec", declared_pins),
         "CODE_NAMING": naming_block(policy, names["code"], "code", declared_pins),
     }
+
+    # THE PROJECT MUST BE ABLE TO HOLD WHAT IS ABOUT TO BE WRITTEN (#258,
+    # #261): the manifest is rendered from this very table and put through
+    # the project's own reader and `validate-manifest.py`, so what its first
+    # bootstrap would refuse is refused here, before the plan is printed.
+    _refuse_unholdable_manifest(args, values, policy)
 
     _print_plan(args, values, names, repositories, urls, local, policy,
                 declared_pins, chain, link_pins, pins)

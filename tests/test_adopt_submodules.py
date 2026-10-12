@@ -349,8 +349,11 @@ DEPENDENCY_TREE = {"value.txt": "dependency\n"}
 THE_DEPENDENCY = "<the dependency>"
 
 
-def registration(name: str = DEPENDENCY, url: str = "../dependency") -> str:
-    """`DEPENDENCY` registered by hand, under `name`, with `url`."""
+def registration(name: str = DEPENDENCY, url: str = THE_DEPENDENCY) -> str:
+    """`DEPENDENCY` registered by hand, under `name`, with `url`: by
+    default the dependency's absolute path, because `check` finds a RELATIVE
+    url its leg resolves elsewhere (#190), and these sources have no remote
+    to resolve one alike from."""
     return f'[submodule "{name}"]\n\tpath = {DEPENDENCY}\n\turl = {url}\n'
 
 
@@ -870,9 +873,9 @@ def raw_source(base: Path, gitlink: bytes, beside: bytes | None) -> Path:
     # Not UTF-8: `Source.tree` keeps the byte as a surrogate, which no UTF-8
     # plan can hold.
     (b"upstream/d\xe9p", None, UPSTREAM,
-     " This entry holds the submodule(s) `upstream/d\\xe9p`: it is asked"),
+     " This entry holds the submodule(s) `upstream/d\\udce9p`: it is asked"),
     (b"src/vendored", b"src/caf\xe9.py", "src/",
-     "an entry for each of `src/app/`, `src/caf\\xe9.py`, `src/vendored`,"),
+     "an entry for each of `src/app/`, `src/caf\\udce9.py`, `src/vendored`,"),
     # A newline would end the plan's line, and read back as a space.
     (b"src/vendored", b"src/a\nb.py", "src/",
      "an entry for each of `src/a\\nb.py`, `src/app/`, `src/vendored`,"),
@@ -898,16 +901,184 @@ def test_a_name_no_plan_line_can_hold_is_spelled_in_the_question(
 def test_a_newline_spelled_in_the_question_is_the_entry_to_write(tmp_path):
     """The spelling is the entry: `src/a\\nb.py` between double quotes is a
     YAML scalar holding the newline, so the split the question names covers
-    the file, where the name read back as `src/a b.py` covered nothing."""
+    the file, where the name read back as `src/a b.py` covered nothing.
+
+    COVERING IT IS NOT EXTRACTING IT (#196). A line break would end the
+    path's line in the list `git filter-repo` reads, so answered `code` the
+    entry is `plan-unsafe-path` and nothing else -- no file uncovered, no
+    entry covering nothing -- where on main at e4decfb `check` said `plan ok`
+    and `execute` refused the same plan as `unsafe-value`. Answered `drop`,
+    as the remediation offers, it checks ok. Since #319 the question says
+    so itself: it names that entry, why, and its two answers."""
     source = raw_source(tmp_path, b"src/vendored", b"src/a\nb.py")
+    plan = planned(source, tmp_path)[0]
+    question = plan_rows(plan)["src/"]["question"]
+    named = REPLACE_WITH_RE.search(question)
+    own = re.findall(r"`([^`]+)`", named[1])
+    assert own == ["src/a\\nb.py", APP, VENDORED]
+    assert question.endswith(
+        " Of those entries, `execute` will not extract `src/a\\nb.py` into a "
+        "leg as it is named, because it holds a line feed (`\\n`), which "
+        "ends its line of the path list `git filter-repo` reads, so the rest "
+        "of the name would be read as a line of its own; so `root` or `drop` "
+        "is the only answer for it."), question
+    split = answered(plan, tmp_path, {GITMODULES: "code"})
+    edited(split, "src/", {f'"{path}"': "code" for path in own})
+    result = check_plan(split)
+    assert findings(result.stderr) == [(
+        "plan-unsafe-path", "`src/a\\nb.py` has leg: code, and `execute` "
+        "will not extract it into a leg: it holds a line feed (`\\n`), "
+        "which ends its line of the path list `git filter-repo` reads, so "
+        "the rest of the name would be read as a line of its own")], \
+        result.stderr
+    newline_entry = f'"{own[0]}"'
+    edited(split, newline_entry, {newline_entry: "drop"})
+    result = check_plan(split)
+    assert result.returncode == 0, result.stderr
+
+
+def test_the_split_names_each_entry_execute_refuses_and_its_answers(
+        adopter, tmp_path):
+    """#319, in #166's split. Of the entries that replace `src/`, a file
+    whose name holds a line feed and a SUBMODULE whose name holds a tab are
+    each named, with `entry_path_problem`'s reason, and told `root` or
+    `drop` -- `drop` for the submodule. On main at 71b58a1 the question
+    named both as entries to write and offered each any `leg:`, and `check`
+    refused `spec` or `code` for either as `plan-unsafe-path`. The edit the
+    question names, given those answers, checks ok."""
+    source = raw_source(tmp_path, b"src/ven\tdored", b"src/a\nb.py")
+    plan = planned(source, tmp_path)[0]
+    question = plan_rows(plan)["src/"]["question"]
+    own = re.findall(r"`([^`]+)`", REPLACE_WITH_RE.search(question)[1])
+    assert own == ["src/a\\nb.py", APP, "src/ven\\tdored"]
+    reasons = [adopter.entry_path_problem(path)
+               for path in ("src/a\nb.py", "src/ven\tdored")]
+    assert question.endswith(
+        " Of those entries, `execute` will not extract these into a leg as "
+        "they are named, so `root` or `drop` is the only answer for each, "
+        "and `drop` for a submodule, which the assembly root never keeps: "
+        f"`src/a\\nb.py`, because {reasons[0]}; `src/ven\\tdored`, because "
+        f"{reasons[1]}."), question
+    split = answered(plan, tmp_path, {GITMODULES: "code"})
+    edited(split, "src/", {'"src/a\\nb.py"': "root", f'"{APP}"': "code",
+                           '"src/ven\\tdored"': "drop"})
+    result = check_plan(split)
+    assert result.returncode == 0, result.stderr
+    assert "plan ok" in result.stdout
+
+
+#: A name `execute` will not extract, and why, as `entry_path_problem` says.
+TAB_NAME = "d/a\tb.md"
+
+
+@pytest.mark.parametrize("own, held, said", [
+    # None refused: the question is what it was.
+    (["d/ok.md", "d/sub"], ["d/sub"], ""),
+    # One file: `root` or `drop`.
+    ([TAB_NAME, "d/sub"], ["d/sub"],
+     " Of those entries, `execute` will not extract `d/a\\tb.md` into a leg "
+     "as it is named, because {0}; so `root` or `drop` is the only answer "
+     "for it."),
+    # One submodule: `drop` alone.
+    (["d/ok.md", TAB_NAME], [TAB_NAME],
+     " Of those entries, `execute` will not extract `d/a\\tb.md` into a leg "
+     "as it is named, because {0}; so `drop` is the only answer for it: the "
+     "assembly root keeps no submodule of the source's."),
+], ids=["none", "one-file", "one-submodule"])
+def test_the_split_sentence_says_each_refused_entry_s_answers(adopter, own,
+                                                              held, said):
+    assert adopter._refused_replacements(own, held) == said.format(
+        adopter.entry_path_problem(TAB_NAME))
+
+
+def test_past_split_entries_named_the_rest_are_counted(adopter):
+    """Ten refused entries: the first SPLIT_ENTRIES_NAMED are named, each
+    with its reason, and the rest counted, as `_replacements` counts the
+    entries it does not name."""
+    own = [f"d/f{i}\t.md" for i in range(10)]
+    said = adopter._refused_replacements(own, [])
+    cap = adopter.SPLIT_ENTRIES_NAMED
+    assert said.startswith(
+        " Of those entries, `execute` will not extract these into a leg as "
+        "they are named, so `root` or `drop` is the only answer for each: "
+        "`d/f0\\t.md`, because "), said
+    assert said.count(", because ") == cap
+    assert f"`d/f{cap - 1}\\t.md`" in said and f"`d/f{cap}\\t.md`" not in said
+    assert said.endswith(
+        f"; and {10 - cap} more, each `plan-unsafe-path` in `check` if it is "
+        "answered `spec` or `code`.")
+
+
+@pytest.mark.parametrize("leg, expected", [
+    ("drop", []),
+    # What `check` says of the answers the question rules out, unchanged.
+    ("root", [ROOT]),
+    ("code", ["plan-unsafe-path", UNREGISTERED]),
+])
+def test_a_submodule_execute_refuses_as_named_is_told_drop(plan_of, tmp_path,
+                                                           leg, expected):
+    """#319. An entry that holds a submodule AND that `execute` will not
+    extract as it is named -- the orphan `-dep`, at the top level -- is
+    asked `.gitmodules`' question and then told why, and that `drop` is its
+    only answer: `root` keeps a submodule in the assembly root, which
+    `check` refuses as `plan-submodule-root`."""
+    plan = plan_of({"registered": (), "orphan": "-dep"})[0]
+    row = plan_rows(plan)["-dep"]
+    question = row["question"]
+    assert (row["leg"], row["review_required"]) == (None, True)
+    assert question.startswith(
+        "When a repository is adopted, a source's own `.gitmodules` goes to "
+        "the SAME leg as every submodule it registers;"), question
+    assert (" This entry holds the submodule(s) `-dep`: it is asked this "
+            "question, not classified by its rule `default`. But `execute` "
+            "will not extract this path into a leg as it is named, because "
+            "it begins with `-`, ") in question
+    assert question.endswith(
+        " So `drop` is the only answer `execute` takes for this entry as it "
+        "stands: `root` would keep a submodule in the assembly root, which "
+        "keeps none of the source's. To put it in a leg, rename it in the "
+        "source, commit, and re-run `plan`."), question
+    result = check_plan(answered(plan, tmp_path, {'"-dep"': leg}))
+    assert finding_codes(result.stderr) == expected, result.stderr
+    assert result.returncode == (1 if expected else 0)
+
+
+def test_a_run_of_spaces_in_a_name_the_question_names_is_kept(tmp_path):
+    """`src/a  b.md`, two spaces, beside a submodule. `Verdict` folds each
+    run of spaces in a question to one, so on main at 71b58a1 the question
+    named `src/a b.md`, and the split it named covered nothing and left the
+    file uncovered. The question is set as it is written now (#319, whose
+    sentences spell names too), and the split it names checks ok."""
+    source = raw_source(tmp_path, b"src/vendored", b"src/a  b.md")
     plan = planned(source, tmp_path)[0]
     named = REPLACE_WITH_RE.search(plan_rows(plan)["src/"]["question"])
     own = re.findall(r"`([^`]+)`", named[1])
-    assert own == ["src/a\\nb.py", APP, VENDORED]
+    assert own == ["src/a  b.md", APP, VENDORED]
     split = answered(plan, tmp_path, {GITMODULES: "code"})
     edited(split, "src/", {f'"{path}"': "code" for path in own})
     result = check_plan(split)
     assert result.returncode == 0, result.stderr
+
+
+def test_a_space_in_a_name_the_question_names_is_extracted(adopter, tmp_path):
+    """#196's own case of #166's split: `docs/User Guide.md` beside a
+    submodule at `docs/theme`. The question names it as an entry to write;
+    written so, the plan checks ok and `execute` refuses nothing over the
+    entries' paths, where on main at e4decfb it refused `docs/User Guide.md`
+    as `unsafe-value` after `check` had said `plan ok`."""
+    source = raw_source(tmp_path, b"docs/theme", b"docs/User Guide.md")
+    plan = planned(source, tmp_path)[0]
+    named = REPLACE_WITH_RE.search(plan_rows(plan)["docs/"]["question"])
+    own = re.findall(r"`([^`]+)`", named[1])
+    assert own == ["docs/User Guide.md", "docs/theme"]
+    split = answered(plan, tmp_path, {GITMODULES: "spec"})
+    edited(split, "docs/", {f'"{path}"': "spec" for path in own})
+    result = check_plan(split)
+    assert result.returncode == 0, result.stderr
+    loaded = adopter.Plan.load(split)
+    assert adopter._refuse_what_check_finds(
+        loaded, loaded.open_source(None, tmp_path / "read")) is None
+    assert adopter._leg_paths(loaded)["spec"][:2] == own
 
 
 @pytest.mark.parametrize("gitlink, beside", [
@@ -975,7 +1146,7 @@ def test_check_refuses_to_keep_a_gitlink_its_gitmodules_does_not_register(
 LATIN_1_COMMENT = b"# caf\xe9 \xff\xfe\n"
 #: Upper-case section and keys, which git lower-cases.
 UPPER_CASE_KEYS = ('[Submodule "upstream/dependency"]\n'
-                   "\tPATH = upstream/dependency\n\tURL = ../dependency\n")
+                   f"\tPATH = upstream/dependency\n\tURL = {THE_DEPENDENCY}\n")
 
 
 @pytest.mark.parametrize("gitmodules, expected", [
@@ -1081,10 +1252,21 @@ def test_an_unregistered_submodule_is_told_why_git_ignores_its_entry(
         adopter, tmp_path, source, answers, submodule, why):
     """#166's N2. An entry of `.gitmodules` that names the submodule's path
     and that git ignores is named, with the reason, rather than "no entry"
-    beside an entry the person can see."""
+    beside an entry the person can see.
+
+    A submodule at `-dep` is also an entry path that begins with `-`, which
+    no leg takes (#196): `plan-unsafe-path` comes first, as it does for every
+    plan, and the reason git ignores the entry is still said after it."""
     plan = answered(planned(registered_source(tmp_path, **source),
                             tmp_path)[0], tmp_path, answers)
-    assert findings(check_plan(plan).stderr) == [(
+    # `submodule` is spelled as a finding names it (#212); the entry's own
+    # path is the case's `orphan`, where it has one.
+    path = source.get("orphan", "")
+    unsafe = [("plan-unsafe-path",
+               f"{submodule} has leg: code, and `execute` will not extract "
+               f"it into a leg: {adopter.entry_path_problem(path)}")
+              ] if path.startswith("-") else []
+    assert findings(check_plan(plan).stderr) == unsafe + [(
         UNREGISTERED, f"the submodule {submodule} has leg: code but {why}, "
                       + adopter.NO_URL_IN_THE_LEG)]
 
@@ -1487,7 +1669,7 @@ def test_execute_refuses_a_submodule_plan_before_anything_exists(
     ("code", "drop", None),
     # Hand-written registrations `check` reads as the leg's clone reads them:
     # upper-case keys, and two `git config --blob` refused.
-    ("code", "code", UPPER_CASE_KEYS.replace("../dependency", THE_DEPENDENCY)),
+    ("code", "code", UPPER_CASE_KEYS),
     ("code", "code",
      LATIN_1_COMMENT + registration(url=THE_DEPENDENCY).encode()),
     ("code", "code", registration(url=THE_DEPENDENCY)

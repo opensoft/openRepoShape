@@ -313,10 +313,11 @@ def test_adopt_mount_occupied_spells_the_kept_path_under_the_mount(
 def test_adopt_mount_occupied_spells_a_byte_that_is_not_utf8(adopter,
                                                              tmp_path):
     """`_index_entries` reads the index as `Source.tree` reads a tree: a byte
-    that is not UTF-8 is kept, so the refusal spells 0xFE `\\xfe`, as
-    `plan-uncovered` would. Decoded with `replace`, `a<0xFE>` and `a<0xFF>`
-    both read `a<U+FFFD>`. The entries go in with `git update-index
-    --index-info`, fed bytes, so no filesystem has to hold them."""
+    that is not UTF-8 is kept, so the refusal spells 0xFE `\\udcfe`, as
+    `plan-uncovered` would, and as the plan's own `path:` does (#329).
+    Decoded with `replace`, `a<0xFE>` and `a<0xFF>` both read `a<U+FFFD>`.
+    The entries go in with `git update-index --index-info`, fed bytes, so no
+    filesystem has to hold them."""
     repo = tmp_path / "assembly"
     repo.mkdir()
     git_out(repo, "init", "-q")
@@ -326,13 +327,13 @@ def test_adopt_mount_occupied_spells_a_byte_that_is_not_utf8(adopter,
         for name in (b"spec/a\xfe", b"spec/a\xff")))
     assert [adopter._entry_named(entry) for entry in
             adopter._index_entries(repo, ["spec"])] == [
-        "`spec/a\\xfe` (a file)", "`spec/a\\xff` (a file)"]
+        "`spec/a\\udcfe` (a file)", "`spec/a\\udcff` (a file)"]
     with pytest.raises(adopter.Refusal) as caught:
         adopter._refuse_an_unmountable_path(repo, "spec")
     assert caught.value.code == "adopt-mount-occupied"
     assert caught.value.detail == (
         "the assembly's index already holds paths under spec, the leg mount "
-        "path: `spec/a\\xfe` (a file) and 1 more")
+        "path: `spec/a\\udcfe` (a file) and 1 more")
 
 
 #: The root tree's two leg mounts, as `_verify` passes them to

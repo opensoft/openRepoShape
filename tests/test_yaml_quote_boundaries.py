@@ -28,8 +28,11 @@ them, so it refuses them rather than read a mapping as the string
 (`- [a, b]`, `- {a: b}`).
 
 Every expected read below is PyYAML 6.0.3's, and every refused document is
-one PyYAML refuses, except `k: "a"#c`: PyYAML reads `a`, but YAML requires a
-space before a comment, and the subset refuses rather than guess. PyYAML is
+one PyYAML refuses, except eight. `k: "a"#c`: PyYAML reads `a`, but YAML
+requires a space before a comment, and the subset refuses rather than guess.
+And seven of the eight `BRACKET_IN_A_KEY` rows, every one but the flow entry
+`k: {a[b]: c}`: PyYAML reads each block key, and the subset refuses them by
+design, as the paragraph above says (#301 corrected this count). PyYAML is
 not imported here; nothing in this suite depends on it.
 
 NO NETWORK AND NO GITHUB: strings, one temporary file and an import.

@@ -48,6 +48,9 @@ recording an identity, so this tool never records one it cannot justify:
   * Nothing is left red: the root's OWN `validate-pins.py` and
     `validate-manifest.py` run after the rewrite, and every byte is rolled
     back if either refuses.
+  * A write that fails is a refusal, not a traceback (#285): a copy, an
+    addition or the pin this process cannot write is `update-write-failed`,
+    and every byte written before it is put back, as below.
   * Nothing is left half-done either (#202). With `--branch`, a branch git
     cannot create, an addition it cannot stage or a commit a hook refuses
     puts back the copies, the pin, the README line, the index and the
@@ -98,15 +101,18 @@ from __future__ import annotations
 
 import argparse
 import ast
+import contextlib
 import hashlib
 import json
 import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 
 SHAPE_ROOT = Path(__file__).resolve().parent
@@ -120,8 +126,9 @@ from shape_materialize import (  # noqa: E402
     COPIED_FROM_SHAPE, COPIED_VERBATIM, FAMILY_COPIED_FROM_SHAPE,
     FAMILY_COPIED_VERBATIM, SHAPE_REPOSITORY, CommandFailed, check_program,
     commit_trailers, escape_what_stdout_cannot_encode, force_stage,
-    lane_trailer_argument, readme_shape_lines, readme_trailing_shape_line, run,
-    trailer_line,
+    inherited_child_environment, lane_trailer_argument, readme_shape_lines,
+    is_nested_key, readme_trailing_shape_line, rewrite_fault, run,
+    trailer_line, with_scalar,
 )
 
 #: `owner/repo`, the only remote spelling `--upstream` accepts.
@@ -393,7 +400,19 @@ def read_pin(root: Path) -> tuple[dict, list[Row]]:
             "Remediation: this command updates a project that was scaffolded "
             "or adopted with this shape. A project without a shape pin is "
             "adopted with `adopt-project.py`, not updated.")
-    pin = load_yaml(pin_path)
+    return check_pin(load_yaml(pin_path), pin_path)
+
+
+def check_pin(pin, pin_path) -> tuple[dict, list[Row]]:
+    """`read_pin`'s checks, over a pin already parsed: the pin and its rows,
+    or the refusal `read_pin` raises for it.
+
+    APART FROM THE READ so a pin can be checked where it is not a file on
+    disk: `shape-doctor.py` reads the pins in a root's history out of git,
+    in memory, before it names one to put back (#237), and a second copy of
+    these checks there could pass a pin this tool then refuses. `pin_path`
+    only names the pin in a refusal's words.
+    """
     if not isinstance(pin, dict):
         raise Refusal("update-pin-unreadable", f"{pin_path}: not a mapping")
     commit = str(pin.get("commit") or "").lower()
@@ -739,18 +758,120 @@ class Addition(Row):
     rather than filtered away: `--add` on such a path must refuse BY NAME, and
     a refusal that cannot say which of three things went wrong sends a human to
     read this file's source.
+
+    A SYMLINK IS THE OPERATOR'S, AND IS NEVER "NOTHING THERE" (#239). `present`
+    is the root's own answer from `lstat`, which a dangling link gives where
+    `exists()` follows it and says no, and `link` names the first symlink (or
+    Windows junction) on the path's way down from the root — the path itself
+    or a directory above it — and where it points. A write at such a path goes
+    THROUGH the link, to wherever it leads, outside the root included.
+
+    AND A DIRECTORY THE ROOT HOLDS AS SOMETHING ELSE IS IN THE WAY (#285).
+    `blocked` names the first directory above the path that the root keeps as
+    a plain file, a FIFO, anything but a directory. The path is NOT present —
+    nothing can be under a file, and `lexists` says so — so it is still
+    reported; but `--add` cannot write it without moving the operator's file,
+    which it never does, so `check` says why instead of offering the flag.
     """
 
-    def __init__(self, copy: Copy, present: bool, target_bytes: bytes):
+    def __init__(self, copy: Copy, present: bool, target_bytes: bytes,
+                 link: tuple[str, str] | None = None,
+                 blocked: str | None = None):
         super().__init__(copy.path, "")
         self.source = copy.source
         self.executable = copy.executable
         self.present = present
+        self.link = link
+        self.blocked = blocked
         self.target_bytes = target_bytes
         self.digest = file_bytes_sha256(target_bytes)
         self.state = UPSTREAM_ADDED
         self.detail = ("the standard added this file after this pin; `apply` "
                        "writes it only when --add names that path")
+        if blocked is not None:
+            self.detail = ("the standard added this file after this pin, but "
+                           f"{blocked} in this root is not a directory, so "
+                           f"--add refuses it until {blocked} is moved")
+
+
+#: An NTFS junction's reparse tag. `stat` names IO_REPARSE_TAG_MOUNT_POINT on
+#: Windows only — it comes from `_stat` there, and naming it bare is an
+#: AttributeError everywhere else — so it is looked up, with the value
+#: Windows' own headers give it as the fallback.
+JUNCTION_TAG = getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003)
+
+
+def is_link_info(info: os.stat_result) -> bool:
+    """A symlink, or on Windows a JUNCTION, from an `lstat` result (#239).
+
+    A junction is Windows' ordinary directory link, and `lstat` reads it as
+    a directory: CPython sets `S_IFLNK` for IO_REPARSE_TAG_SYMLINK only, which
+    is why 3.12 added `os.path.isjunction` as a call of its own. That call is
+    too new for the 3.9 this standard runs on, so this asks what it asks:
+    `st_reparse_tag` (3.8+), absent on POSIX and 0 for anything that is not
+    a reparse point. NOT the `FILE_ATTRIBUTE_REPARSE_POINT` bit, which
+    `lstat` keeps for a OneDrive placeholder or a deduplicated file it has
+    traversed, and which would call a plain directory in a synced checkout a
+    link.
+    """
+    return (stat.S_ISLNK(info.st_mode)
+            or getattr(info, "st_reparse_tag", 0) == JUNCTION_TAG)
+
+
+def symlink_on_the_way(root: Path, rel: str) -> tuple[str, str] | None:
+    """The first link on `rel`'s way down from `root`, `rel` itself
+    included, as `(its path inside the root, where it points)`; None when
+    nothing on that way is one (#239). A link is a symlink, or a junction on
+    Windows (`is_link_info`); `os.readlink` reads either since 3.8.
+
+    `lstat`, ONE COMPONENT AT A TIME, because every other question this file
+    asks of a path FOLLOWS a link: `Path.exists()` says no for a link whose
+    target is missing, and a write at the path or under a directory link then
+    creates what the link points at, which a root is free to point outside
+    itself. The first component that cannot be `lstat`ed ends the walk: the
+    ones after a missing component are missing too.
+    """
+    here = root
+    walked: list[str] = []
+    for part in Path(rel).parts:
+        here = here / part
+        walked.append(part)
+        try:
+            info = os.lstat(here)
+        except (OSError, ValueError):
+            return None
+        if is_link_info(info):
+            return "/".join(walked), os.readlink(here)
+    return None
+
+
+def not_a_directory_on_the_way(root: Path, rel: str) -> str | None:
+    """The first directory `rel` needs that the root holds as something
+    ELSE — a plain file, a FIFO — as its path inside the root; None when
+    every one there is a directory (#285).
+
+    `symlink_on_the_way`'s walk, over the components ABOVE `rel` only: what
+    is AT `rel` is `present`'s question. A file at `docs` makes
+    `docs/shape-guide.md` absent, since the kernel answers `ENOTDIR`, so
+    the path was offered and `--add` taken, and `Rollback.write_added` then
+    died making `docs/` after the copies were written. A link ends the walk
+    with no answer, because it is `symlink_on_the_way`'s and refused first;
+    so does a component that cannot be `lstat`ed, as there.
+    """
+    here = root
+    walked: list[str] = []
+    for part in Path(rel).parts[:-1]:
+        here = here / part
+        walked.append(part)
+        try:
+            info = os.lstat(here)
+        except (OSError, ValueError):
+            return None
+        if is_link_info(info):
+            return None
+        if not stat.S_ISDIR(info.st_mode):
+            return "/".join(walked)
+    return None
 
 
 def find_additions(root: Path, rows: list[Row], upstream: Upstream,
@@ -761,6 +882,11 @@ def find_additions(root: Path, rows: list[Row], upstream: Upstream,
     its own name: that is where an in-place adoption's collision landed, so a
     root whose pin carries `shape/Makefile` has a row for the shape's Makefile
     and is not owed another one.
+
+    A PATH THE ROOT HOLDS ANYTHING AT IS PRESENT (#239): `lexists`, not
+    `exists`, so a symlink whose target is missing, and a symlink above the
+    path, are the operator's and not an absence this tool may write into.
+    A path under a FILE is absent, and is remembered as `blocked` (#285).
     """
     pinned = {row.path for row in rows}
     additions: list[Addition] = []
@@ -773,8 +899,40 @@ def find_additions(root: Path, rows: list[Row], upstream: Upstream,
             # nothing to copy, and inventing a row for absent bytes is the one
             # thing a pin may never do.
             continue
-        additions.append(Addition(copy, (root / copy.path).exists(), data))
+        link = symlink_on_the_way(root, copy.path)
+        additions.append(Addition(
+            copy, link is not None or os.path.lexists(root / copy.path),
+            data, link, not_a_directory_on_the_way(root, copy.path)))
     return additions
+
+
+def link_refusal(path: str, link: tuple[str, str]) -> Refusal:
+    """`update-add-symlink`: `--add <path>` with a link at the path or above
+    it, `link` being `symlink_on_the_way`'s answer (#239). Raised where
+    `resolve_additions` finds the link, and again by `Rollback.write_added`
+    for one that arrived after that.
+
+    WHERE THE LINK POINTS IS QUOTED, `!r`, because it is the operator's text
+    and a file name may hold a newline: printed as it is, a target spelled
+    `out<LF>REFUSED fake` puts a line on stderr that reads as a second
+    refusal. And the promise is `--add`'s alone: a pinned copy, or the pin,
+    kept as a link is still rewritten through it.
+    """
+    name, points = link
+    above = "" if name == path else f", on the way to {path}"
+    return Refusal(
+        "update-add-symlink",
+        f"--add {path} names a file the upstream's lists add, but {name} in "
+        f"this root is a symlink{above}, pointing at {points!r}. A write at "
+        f"{path} would go THROUGH it, to wherever it leads — outside this "
+        "root, if that is where it points — and `--add` never writes through "
+        "a link",
+        f"Remediation: if the link is yours to keep, leave {path} alone: "
+        "`check` stops reporting a path the root holds, and the standard's "
+        "file is yours to carry in whatever the link leads to. To take the "
+        f"standard's file instead, remove or move {name} and run this command "
+        f"again with the same --add: with nothing at {path} it is written "
+        "there, as for any addition.")
 
 
 def resolve_additions(rows: list[Row], additions: list[Addition],
@@ -788,6 +946,18 @@ def resolve_additions(rows: list[Row], additions: list[Addition],
     And a path the ROOT ALREADY HAS A FILE AT is a merge: that is the
     `--accept-local` posture, taken for the same reason, because overwriting
     bytes no row records would delete somebody's work without saying so.
+
+    A FOURTH, ASKED BEFORE THAT ONE: a SYMLINK at the path, or above it, is
+    refused as its own answer (#239), and so is a Windows junction there. It
+    is not a file to merge — a dangling one holds nothing — and a write there
+    goes through the link to wherever it points, so the remedy is the
+    operator's own link, not a merge.
+
+    A FIFTH, ASKED NEXT (#285): a directory the path needs that the root
+    holds as a file or a FIFO (`Addition.blocked`). Nothing is at the path,
+    so it is not a merge either, and the write would fail making the
+    directory — after the copies — so it is refused here, before the first
+    byte, by the name of what is in the way.
     """
     by_path = {add.path: add for add in additions}
     pinned = {row.path for row in rows}
@@ -812,6 +982,23 @@ def resolve_additions(rows: list[Row], additions: list[Addition],
                 f"`{UPSTREAM_ADDED}` path at that commit; a path in none of "
                 "them is not a shape copy there. Check the spelling, and the "
                 "commit.")
+        if add.link is not None:
+            raise link_refusal(path, add.link)
+        if add.blocked is not None:
+            raise Refusal(
+                "update-add-not-a-directory",
+                f"--add {path} names a file the upstream's lists add, but "
+                f"{add.blocked} in this root is not a directory: the file "
+                f"goes inside {add.blocked}, and the root keeps something "
+                "else under that name. `--add` never moves or replaces what "
+                "a root holds",
+                f"Remediation: {add.blocked} is the project's. To take the "
+                f"standard's file, move {add.blocked} out of the way and run "
+                "this command again with the same --add: with nothing at "
+                f"{add.blocked}, the directory is made and the file written "
+                f"there, as for any addition. To keep {add.blocked} as it "
+                f"is, leave the flag off; `check` goes on listing {path}, "
+                "with no --add for it.")
         if add.present:
             raise Refusal(
                 "update-add-would-overwrite",
@@ -844,6 +1031,19 @@ def rewrite_shape_pin(text: str, commit: str, tree: str,
     the reason the file is trusted. Each replacement must fire exactly once or
     this refuses — a pin file this tool did not recognise is not a pin file it
     may edit.
+
+    EACH OF THE TWO LINES KEEPS ITS OWN LAYOUT (#323). `commit:` is found at
+    column 0 and `tree_sha256:` as any INDENTED line that begins with it, so a
+    `digests:` child at any depth the reader accepts is recognised, and only
+    the value after the key changes: the indentation, the spacing and a
+    trailing `# comment` are the line's own. They were written back as
+    `commit: "<sha>"` and `  tree_sha256: "<digest>"`, so a child indented
+    four spaces was refused as hand-edited and a comment was dropped. The
+    `files:` block below them is still written whole, as before.
+
+    WHAT IS RETURNED HAS BEEN READ BACK, as `rewrite_manifest`'s is
+    (`shape_materialize.rewrite_fault`): a layout this line rewrite cannot
+    carry is refused HERE as this tool's failure, before any byte is written.
     """
     lines = text.splitlines()
     out: list[str] = []
@@ -851,11 +1051,11 @@ def rewrite_shape_pin(text: str, commit: str, tree: str,
     for index, line in enumerate(lines):
         if line.startswith("commit:"):
             seen["commit"] += 1
-            out.append(f'commit: "{commit}"')
+            out.append(with_scalar(line, "commit", commit))
             continue
-        if line.startswith("  tree_sha256:"):
+        if is_nested_key(line, "tree_sha256"):
             seen["tree"] += 1
-            out.append(f'  tree_sha256: "{tree}"')
+            out.append(with_scalar(line, "tree_sha256", tree))
             continue
         if line.rstrip() == "files:":
             seen["files"] += 1
@@ -873,7 +1073,21 @@ def rewrite_shape_pin(text: str, commit: str, tree: str,
                 "exactly one was expected, so this tool will not rewrite it",
                 "Remediation: the pin was hand-edited into a shape this tool "
                 "does not recognise. Fix it by hand this once, or re-scaffold.")
-    return "\n".join(out) + "\n"
+    rewritten = "\n".join(out) + "\n"
+    why = rewrite_fault(text, rewritten, commit, tree)
+    if why is not None:
+        raise Refusal(
+            "update-pin-unrecognised",
+            f"contracts/shape-pin.yaml reads as it stands, but this tool's "
+            f"rewrite of it does not read back to the target ({why}), so "
+            "this tool will not write it",
+            "Remediation: the fault is this tool's line rewrite, not the "
+            "project's pin. Put each of `commit:` and `tree_sha256:` on one "
+            "line with its quoted value, as the scaffold writes them, leave "
+            "both values as they are — this command recomputes the digest, "
+            "nobody edits it to fit — and run the same command again; this "
+            "tool will not guess at a pin it does not recognise.")
+    return rewritten
 
 
 def rewrite_manifest(text: str, commit: str, tree: str, kind: Kind) -> str:
@@ -889,7 +1103,9 @@ def rewrite_manifest(text: str, commit: str, tree: str, kind: Kind) -> str:
     turned a block indented four spaces — accepted by the reader and by both
     validators — into one the reader refuses, and the validators' refusal
     that followed blamed the project for this tool's write. Only the value
-    after the key changes now; the whitespace in front of it is the line's.
+    after the key changes now; the whitespace in front of it is the line's,
+    and so is a trailing `# comment` (#323: it was dropped, as the pin
+    rewrites dropped theirs; `shape_materialize.with_scalar`).
 
     WHAT IS RETURNED HAS BEEN READ BACK. A layout this line rewrite cannot
     carry — a value on the line below its key — is refused HERE, as this
@@ -902,13 +1118,12 @@ def rewrite_manifest(text: str, commit: str, tree: str, kind: Kind) -> str:
     for index in range(start + 1, end):
         line = lines[index]
         stripped = line.strip()
-        indent = line[:len(line) - len(line.lstrip())]
         if stripped.startswith("commit:"):
             seen["commit"] += 1
-            lines[index] = f'{indent}commit: "{commit}"'
+            lines[index] = with_scalar(line, "commit", commit)
         elif stripped.startswith("tree_sha256:"):
             seen["tree"] += 1
-            lines[index] = f'{indent}tree_sha256: "{tree}"'
+            lines[index] = with_scalar(line, "tree_sha256", tree)
     for key, count in seen.items():
         if count != 1:
             raise Refusal(
@@ -922,24 +1137,6 @@ def rewrite_manifest(text: str, commit: str, tree: str, kind: Kind) -> str:
     return rewritten
 
 
-def _shape_pin_of(text: str) -> tuple[str, str]:
-    """`shape.commit` and `shape.digests.tree_sha256`, read out of a
-    manifest's text the way its validator reads them, or a `ValueError`
-    saying why they cannot be (#208)."""
-    try:
-        manifest = parse_yaml(text)
-    except YamlError as exc:
-        raise ValueError(str(exc)) from exc
-    shape = manifest.get("shape") if isinstance(manifest, dict) else None
-    digests = shape.get("digests") if isinstance(shape, dict) else None
-    commit = shape.get("commit") if isinstance(shape, dict) else None
-    tree = digests.get("tree_sha256") if isinstance(digests, dict) else None
-    if commit is None or tree is None:
-        raise ValueError("no `shape.commit` and `shape.digests.tree_sha256` "
-                         "where the validator reads them")
-    return str(commit), str(tree)
-
-
 def _refuse_unless_it_reads_back(before: str, after: str, commit: str,
                                  tree: str, kind: Kind) -> None:
     """Refuse a rewrite that does not read back to the target (#208).
@@ -950,19 +1147,12 @@ def _refuse_unless_it_reads_back(before: str, after: str, commit: str,
     before — unparsable, or no pin where the validator looks — was red
     before this command ran: that is left to the validators, which name the
     project's own line, and blaming this tool for it would be the same wrong
-    answer turned around.
+    answer turned around. The reading, and that question, are
+    `shape_materialize.rewrite_fault`'s, shared with the two pin rewrites
+    (#323).
     """
-    try:
-        found = _shape_pin_of(after)
-        if found == (commit, tree):
-            return
-        why = (f"it would read `commit: {found[0]}` and "
-               f"`tree_sha256: {found[1]}`")
-    except ValueError as exc:
-        why = f"the reader would refuse it: {exc}"
-    try:
-        _shape_pin_of(before)
-    except ValueError:
+    why = rewrite_fault(before, after, commit, tree, within=("shape",))
+    if why is None:
         return
     raise Refusal(
         "update-manifest-unrecognised",
@@ -1457,7 +1647,11 @@ def cmd_check(args) -> int:
         if conflicts:
             print("REFUSAL AHEAD: `apply` will refuse while these are "
                   "unresolved — " + ", ".join(row.path for row in conflicts))
-        if added:
+        # NOT AN --add `apply` WOULD REFUSE (#285): a path under a file the
+        # root keeps is reported above, with why, but a flag to paste that
+        # is known to fail is the tool handing a human a wrong answer.
+        offered = [add for add in added if add.blocked is None]
+        if offered:
             # Spelled out, but deliberately NOT folded into the NEXT command:
             # a file the standard has added lands in a project because a human
             # named it, and a command line that names it for them is the tool
@@ -1465,7 +1659,7 @@ def cmd_check(args) -> int:
             print("ADDED UPSTREAM: the standard has gained these since this "
                   "pin, and `apply` writes none of them unless it is told to, "
                   "one path at a time — "
-                  + " ".join(f"--add {add.path}" for add in added))
+                  + " ".join(f"--add {add.path}" for add in offered))
         accept = "".join(f" --accept-local {row.path}" for row in local)
         # THE LANE, WHEN THE ENVIRONMENT NAMES ONE (2026-09-11, #111). A run
         # that pastes this line then lands a commit carrying the `Lane:`
@@ -1530,7 +1724,14 @@ def run_validator(root: Path, script: str) -> int:
         print(f"  {script} is absent; SKIPPED")
         return 0
     sys.stdout.flush()
-    proc = subprocess.run([sys.executable, script], cwd=str(root), check=False)
+    # The child writes straight into this process's stdout, and takes its
+    # encoding from its environment, not from the `reconfigure` `main()` did
+    # (#214): under a cp1252 stdout `validate-manifest.py` raised on a display
+    # name such as `日本` and this refused an `apply` the pins had no quarrel
+    # with (#254). So it is told this stdout's own encoding and a handler that
+    # cannot raise.
+    proc = subprocess.run([sys.executable, script], cwd=str(root), check=False,
+                          env=inherited_child_environment())
     sys.stdout.flush()
     return proc.returncode
 
@@ -1861,14 +2062,86 @@ class Rollback:
         to create to put the file in. The mode is set the way `_materialize`
         sets it, which is to chmod the executables and leave everything else to
         the umask.
+
+        CREATED EXCLUSIVELY, AND RECORDED ONLY ONCE IT EXISTS (#239). `prepare`
+        looked at the path, but this runs later — after `confirm` has waited
+        for a human — and a link or a file can arrive in between. `xb` is
+        `O_CREAT|O_EXCL`, which POSIX fails on any name already there, a
+        dangling link included, where `write_bytes` followed the link and
+        created what it points at; `mkdir` fails the same way on a dangling
+        directory link above the path. The ledger had recorded the path before
+        writing it, so a red validator's undo then unlinked the operator's link
+        and left the file at its end. Now a path is recorded once this run has
+        made it, and a name already taken is a refusal, which `cmd_apply`'s
+        arm answers by putting back the copies written before it. What an
+        exclusive create cannot see is a LIVE directory link that arrives
+        ABOVE the path in that window: the create follows it, as every `open`
+        does.
         """
-        for parent in reversed([p for p in path.parents if not p.exists()]):
-            parent.mkdir()
-            self.created.append(parent)
+        try:
+            for parent in reversed([p for p in path.parents
+                                    if not p.exists()]):
+                parent.mkdir()
+                self.created.append(parent)
+            handle = path.open("xb")
+        except FileExistsError:
+            raise self._taken(path) from None
         self.created.append(path)
-        path.write_bytes(data)
+        with handle:
+            handle.write(data)
         if executable:
             path.chmod(0o755)
+
+    def _taken(self, path: Path) -> Refusal:
+        """The refusal for a name `write_added` found taken: the link, by
+        name, when there is one on the way to `path`, and otherwise whatever
+        the root now has there."""
+        rel = self._name(path)
+        link = symlink_on_the_way(self.root, rel)
+        if link is not None:
+            return link_refusal(rel, link)
+        return Refusal(
+            "update-add-would-overwrite",
+            f"--add {rel}: this root had nothing at {rel} when this run "
+            "looked, and has something there now. Writing over it would "
+            "replace bytes no pin row records",
+            f"Remediation: look at what is at {rel}. If it is the project's, "
+            "a human merges, as for any path the root holds, and `check` "
+            "stops reporting it; if it is not, remove it and run this command "
+            "again with the same --add.")
+
+    @contextlib.contextmanager
+    def writing(self, step: str) -> Iterator[None]:
+        """`step`, a phase that writes bytes through this ledger, with an
+        `OSError` out of it turned into a refusal that names the step, the
+        path and the error (#285).
+
+        A WRITE THAT FAILS IS A REFUSAL, NEVER A TRACEBACK, for the reason
+        `_rewrite_readme` gives for its own: `cmd_apply` rolls back on
+        `Refusal` and `CommandFailed` and on nothing else. A directory this
+        process cannot write, a file where `--add` has to make a directory,
+        a read-only pin, a disk that filled — each escaped as a traceback
+        with every copy written before it left in place and the pin
+        unmoved, so the next `check` read those copies as
+        `already-at-target`. Named as a refusal, the arm that exists puts
+        every byte back, and lists what it put back under this detail
+        (`_rolled_back`), so the detail does not claim it as well.
+
+        `step` is the refusal's own, not `self.step`, which names the git
+        act a `CommandFailed` is reported under.
+        """
+        try:
+            yield
+        except OSError as exc:
+            name = exc.filename
+            at = (f" at {self._name(Path(os.fsdecode(name)))}"
+                  if isinstance(name, (str, bytes, os.PathLike)) else "")
+            raise Refusal(
+                "update-write-failed",
+                f"{step} failed{at}: {exc.strerror or exc}",
+                "Remediation: clear what stopped the write — a permission, "
+                "a read-only or full disk, a file where a directory has to "
+                "be — and run the same command again.") from exc
 
     def new_branch(self, branch: str) -> None:
         """`git checkout -b <branch>`, remembered so `undo` can take it back.
@@ -2247,12 +2520,15 @@ def _note_untaken_additions(additions: list[Addition],
     is the report rather than the act: a run that then refuses has still told
     the human which files the standard has gained and what to pass to take
     one. An addition the root already HAS a file at is silent here for the
-    reason `Addition` gives.
+    reason `Addition` gives, and one under a file the root keeps says what
+    is in the way rather than name an `--add` that is refused (#285).
     """
     for add in additions:
         if not add.present and add not in taking:
-            print(f"  note     {add.path} is new upstream; not added; "
-                  f"pass --add {add.path}")
+            take = (f"pass --add {add.path}" if add.blocked is None else
+                    f"{add.blocked} in this root is not a directory, so "
+                    f"--add refuses it until {add.blocked} is moved")
+            print(f"  note     {add.path} is new upstream; not added; {take}")
 
 
 def _nothing_to_do(rows: list[Row], pinned: str, target: str,
@@ -2443,6 +2719,8 @@ def cmd_apply(args) -> int:
         _note_untaken_additions(additions, taking)
         if _nothing_to_do(rows, pinned, target, taking):
             if _awaits_its_pull_request(root, args, kind):
+                _refuse_what_head_does_not_commit(root, rows, kind,
+                                                  args.branch, pinned, target)
                 return _finish_landing(root, args, upstream, target, kind)
             print(f"nothing to do: every copied file matches "
                   f"{upstream.repository} @ {target[:12]}, which the pin "
@@ -2457,8 +2735,11 @@ def cmd_apply(args) -> int:
         # through it, so a classification taken after `_write_copies` would
         # be made under the standard's NEW attributes (#158).
         readme = _read_readme(root, upstream, target)
-        copied = _write_copies(root, rows, taking, ledger)
-        _repin(root, kind, ledger, rows, pinned, target, target_tree)
+        with ledger.writing("writing the copies and the --add files"):
+            copied = _write_copies(root, rows, taking, ledger)
+        with ledger.writing("re-pinning contracts/shape-pin.yaml and "
+                            f"{kind.manifest}"):
+            _repin(root, kind, ledger, rows, pinned, target, target_tree)
         _rewrite_readme(readme, ledger)
         _refuse_red_validators(root, kind)
         added = [add.path for add in taking]
@@ -2624,6 +2905,10 @@ def _awaits_its_pull_request(root: Path, args, kind: Kind) -> bool:
     already carries the re-pin proposes nothing, however many other commits
     it holds, and stays "nothing to do". A clone that has never seen
     `origin/<tracking>` cannot tell, and asks `gh`, which answers for itself.
+
+    THIS READS HEAD, AND "NOTHING TO DO" READ THE WORKING TREE (#333). What
+    it recognises is finished only once `_refuse_what_head_does_not_commit`
+    has found the two to be the same bytes wherever either was read.
     """
     if not (args.pr and args.branch) or current_branch(root) != args.branch:
         return False
@@ -2636,6 +2921,88 @@ def _awaits_its_pull_request(root: Path, args, kind: Kind) -> bool:
     landed = _git_answer(root, ["rev-parse", "--verify", "--quiet",
                                 f"refs/remotes/origin/{base}:{pin}"])
     return proposed is not None and proposed != landed
+
+
+def _refuse_what_head_does_not_commit(root: Path, rows: list[Row],
+                                      kind: Kind, branch: str, pinned: str,
+                                      target: str) -> None:
+    """The re-run `_awaits_its_pull_request` recognised finishes what HEAD
+    commits, so the working tree must hold HEAD's bytes wherever this run
+    read it, or the re-run is refused by name (#333).
+
+    TWO DECISIONS, ONE SOURCE. "Nothing to write" is judged from the
+    working tree — `read_pin` and `classify` — and the pull request's base
+    and repository are read from the manifest there too; whether a pull
+    request is owed is judged from HEAD, and HEAD is what the re-run pushes
+    and what its pull request carries. Over a tree that IS HEAD's that is
+    one answer. Over an in-place `apply --at C` left uncommitted on a
+    branch whose commit re-pins B it was two: the re-run pushed B under a
+    pull request titled C, and said the pin on the branch named C.
+
+    So the pin, the manifest and every pinned copy are compared with HEAD
+    BY BYTES (`_not_what_head_commits`). The index is not asked: nothing
+    here commits, and neither decision reads a staged entry. Nor is any
+    other path, a README or an untracked note, which neither decision
+    reads. The refusal comes before `gh` is asked or anything is pushed,
+    with nothing written, so there is nothing to roll back.
+    """
+    pin = "contracts/shape-pin.yaml"
+    differ = _not_what_head_commits(
+        root, list(dict.fromkeys([pin, kind.manifest,
+                                  *(row.path for row in rows)])))
+    if not differ:
+        return
+    head = (_git_answer(root, ["rev-parse", "HEAD"]) or "").strip()
+    committed = _committed_pin(root, pin)
+    carried = (f"; there the pin names {pinned[:12]} and HEAD's names "
+               f"{committed[:12]}, so the pull request would name one commit "
+               "and carry another" if committed and committed != pinned
+               else "")
+    raise Refusal(
+        "update-rerun-uncommitted",
+        f"--pr would finish the landing of {branch} from what HEAD "
+        f"({head[:12]}) commits, under a pull request naming {target[:12]}, "
+        "but the working tree does not hold what HEAD commits at "
+        + ", ".join(differ) + ". \"Nothing to write\" was judged from the "
+        "working tree, and the pull request's base and repository are read "
+        f"from it too{carried}.",
+        f"Remediation: a re-run finishes only what {branch} already "
+        "commits. Commit those changes on it if they are the re-pin to "
+        "propose, or put them back to HEAD's bytes if they are not, then "
+        "run the same command again. Nothing was written or pushed, and gh "
+        "was not asked.")
+
+
+def _not_what_head_commits(root: Path, paths: list[str]) -> list[str]:
+    """Those of `paths` whose bytes on disk are not the blob HEAD commits
+    at that path, or that HEAD does not commit at all, in the order given
+    (#333). A path git will not hash is one this cannot vouch for, and is
+    named with them.
+
+    `git hash-object` on the file, against `HEAD:<path>`: the clean filter
+    runs, so a CRLF checkout of an LF blob is HEAD's, and no index flag
+    hides an edit — `readme_is_committed`'s second question, asked of each
+    path.
+    """
+    differ = []
+    for path in paths:
+        disk = (_git_answer(root, ["hash-object", "--", path]) or "").strip()
+        head = (_git_answer(root, ["rev-parse", "--verify", "--quiet",
+                                   f"HEAD:{path}"]) or "").strip()
+        if not disk or disk != head:
+            differ.append(path)
+    return differ
+
+
+def _committed_pin(root: Path, pin: str) -> str:
+    """The `commit:` HEAD's shape pin names, or "" when that pin does not
+    read as a mapping (#333). Said in the refusal, never decided on."""
+    try:
+        parsed = parse_yaml(_git_answer(root, ["show", f"HEAD:{pin}"]) or "")
+    except YamlError:
+        return ""
+    return (str(parsed.get("commit") or "").lower()
+            if isinstance(parsed, dict) else "")
 
 
 def _pull_requests(answer: str) -> "list[tuple[str, str]] | None":

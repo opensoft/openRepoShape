@@ -6,6 +6,15 @@ NO NETWORK AND NO GITHUB. Every test here runs `scaffold-project.py` with
 directory and uses them as origins. Nothing in this suite may create a real
 repository; if a test ever needs `gh`, it is the wrong test.
 
+AND THAT IS ENFORCED, NOT HOPED FOR (#296). A session fixture at the end of
+this file puts a GUARD `gh` (`tests/gh_guard.py`) first on PATH for every
+child of every test: it answers the two questions the doctor's `machine` row
+and the installed command's machine report ask -- `gh --version` and `gh
+auth status` -- as an installed `gh` with no login, and refuses and logs
+anything else, and a check after each test fails that test by name if the
+guard refused one of its calls. A test that means to run `gh` puts a stub
+of its own ahead of the guard, as the existing ones do.
+
 The scaffold and the recursive clone happen ONCE per session because they are
 the slow part; each test that mutates a tree gets its own `copytree` of the
 clone. A submodule's `.git` is a file holding a RELATIVE path into
@@ -18,6 +27,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -49,6 +59,49 @@ ORG = "testorg"
 #: using bare repositories on disk as origins, not something a real project
 #: ever needs.
 FILE_PROTOCOL = ["-c", "protocol.file.allow=always"]
+
+#: THE DEFAULT IDENTITY `git()` GIVES GIT (#279). A commit needs an author and
+#: a committer, and git guesses them from the passwd entry and a hostname with
+#: a domain; a container whose hostname has none cannot, and the commit dies
+#: with `Author identity unknown`. `git()` below puts the two values here ahead
+#: of every verb as `-c` CONFIG (`IDENTITY_CONFIG`), and `run_script` reuses
+#: the same two for the environment of the script it starts, so this file
+#: names its default once, for both. Other test files still spell the same
+#: pair for their own commits, and are not changed here. It is the spelling
+#: the suite already used; the `.invalid` TLD is reserved (RFC 2606), so no
+#: address here can ever be a real one.
+IDENTITY_NAME = "openRepoShape tests"
+IDENTITY_EMAIL = "tests@openreposhape.invalid"
+
+#: THE DEFAULT AS CONFIG, NEVER AS ENVIRONMENT (#279). `GIT_AUTHOR_NAME` and
+#: `GIT_COMMITTER_NAME` OUTRANK `user.name` in git's own precedence, so a
+#: default exported through `env` would silently replace the identity of every
+#: call site that gives its own: `as_human`'s `Source Human`, and the
+#: `git("-c", "user.name=t", "-c", "user.email=t@t", "commit", ...)` that is
+#: the suite's commonest spelling, would record the default, and the test
+#: would assert on the wrong author.
+#:
+#: WHERE IT RANKS, strongest first: the four `GIT_AUTHOR_NAME`,
+#: `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME` and `GIT_COMMITTER_EMAIL` where
+#: EXPORTED in the environment, each for its own role (the three CI jobs export
+#: all four as `openRepoShape CI`); a `-c` LATER on the same command line,
+#: which is how a call site's own `-c user.name=...` beats it; this default;
+#: then every identity read from a config FILE, global, system or the
+#: repository's own `user.name`. An exported `EMAIL` is NOT in the top group:
+#: git reads it only where no `user.email` is set, so the default's address
+#: hides it. The default fills a gap and overrides no call site and none of
+#: those four variables, but it DOES outrank a developer's own
+#: `~/.gitconfig`: a commit through `git()` that gives no identity records
+#: `openRepoShape tests` where it used to record the developer. That is
+#: harmless here, because no test reads such an author and nothing in the
+#: suite writes `user.name` into a repository's config. A test that needs its
+#: own identity to take effect through `git()` passes it as `-c` ahead of the
+#: verb, or exports the four variables; `git("config", "user.name", ...)`, or
+#: an exported `EMAIL`, would lose to this default.
+#: `tests/test_git_helper_identity.py` holds all of it to account, on a runner
+#: that exports an identity as well as on one that does not.
+IDENTITY_CONFIG = ["-c", f"user.name={IDENTITY_NAME}",
+                   "-c", f"user.email={IDENTITY_EMAIL}"]
 
 #: THE ENTRY-POINT TESTS THAT CANNOT RUN ON WINDOWS. Two shapes of test wear
 #: this: one that runs `bash`, and one that puts a `#!`-shebang script named
@@ -83,8 +136,22 @@ def rmtree(path: Path) -> None:
 
 
 def git(*args: str, cwd: Path, check: bool = True) -> subprocess.CompletedProcess:
-    proc = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True,
-                          text=True, check=False)
+    """`git <args>` in `cwd`, under `IDENTITY_CONFIG` (#279).
+
+    A test that makes a commit, a tag or a merge through here and gives no
+    identity of its own used to depend on git guessing one, and failed with
+    `Author identity unknown` wherever git could not (`stage_unmerged`'s
+    `commit-tree` in `tests/test_shape_doctor.py`, `commit` in
+    `tests/test_pin_validator.py`). The default goes in as CONFIG so that it
+    yields to a later `-c` in `args` and to the four `GIT_AUTHOR_*` and
+    `GIT_COMMITTER_*` variables where exported, and outranks an identity a
+    config file gives, or an exported `EMAIL`; the comment on
+    `IDENTITY_CONFIG` says where it ranks and why it must not be an
+    environment variable. The failure message below names `args` only: the
+    two `-c` pairs are the helper's, not the test's.
+    """
+    proc = subprocess.run(["git", *IDENTITY_CONFIG, *args], cwd=str(cwd),
+                          capture_output=True, text=True, check=False)
     if check and proc.returncode != 0:
         raise AssertionError(f"git {' '.join(args)} in {cwd} failed:\n"
                              f"{proc.stderr}{proc.stdout}")
@@ -168,7 +235,8 @@ def clear_ambient_pin_sources(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def run_script(script: Path, *args: str, cwd: Path | None = None,
                env: dict | None = None, input: str | None = None,
-               stdin: int | None = None) -> subprocess.CompletedProcess:
+               stdin: int | None = None,
+               merge_stderr: bool = False) -> subprocess.CompletedProcess:
     """Run one tool under test, with stdin closed by default.
 
     A test in this suite is often asserting what a tool does when nobody is
@@ -184,6 +252,11 @@ def run_script(script: Path, *args: str, cwd: Path | None = None,
     something else entirely — a real pty, say — passes `stdin=` explicitly;
     `subprocess.run` itself refuses to accept `input` together with `stdin`,
     so there is nothing to reconcile between the two here.
+
+    `merge_stderr` sends stderr into the same pipe as stdout, as `> log 2>&1`
+    does, and leaves `stderr` None. A tool's piped stdout is block-buffered
+    and its stderr is not, so this is the only way a test sees the order a
+    person reading that log sees.
     """
     asked = env or {}
     env = {**os.environ, **asked}
@@ -213,14 +286,17 @@ def run_script(script: Path, *args: str, cwd: Path | None = None,
     #: `blank_unnamed_pin_sources` above for the Windows case-folding this
     #: needs that `LANES_LANE`, a single fixed name, never did.
     env = blank_unnamed_pin_sources(env, asked)
-    env.setdefault("GIT_AUTHOR_NAME", "openRepoShape tests")
-    env.setdefault("GIT_AUTHOR_EMAIL", "tests@openreposhape.invalid")
-    env.setdefault("GIT_COMMITTER_NAME", "openRepoShape tests")
-    env.setdefault("GIT_COMMITTER_EMAIL", "tests@openreposhape.invalid")
+    env.setdefault("GIT_AUTHOR_NAME", IDENTITY_NAME)
+    env.setdefault("GIT_AUTHOR_EMAIL", IDENTITY_EMAIL)
+    env.setdefault("GIT_COMMITTER_NAME", IDENTITY_NAME)
+    env.setdefault("GIT_COMMITTER_EMAIL", IDENTITY_EMAIL)
     if input is None and stdin is None:
         stdin = subprocess.DEVNULL
     return subprocess.run([sys.executable, str(script), *args],
-                          cwd=str(cwd) if cwd else None, capture_output=True,
+                          cwd=str(cwd) if cwd else None,
+                          stdout=subprocess.PIPE,
+                          stderr=(subprocess.STDOUT if merge_stderr
+                                  else subprocess.PIPE),
                           text=True, check=False, env=env, input=input,
                           stdin=stdin)
 
@@ -500,3 +576,166 @@ def refused_before_any_leg(adopter, monkeypatch: pytest.MonkeyPatch,
     assert "no leg repository was created" in refusal.remediation
     assert not remotes.exists()
     return refusal
+
+
+# --- the `gh` guard (#296) ---------------------------------------------------
+#
+# NO TEST REACHES THE OPERATOR'S `gh`, and the doctor's `machine` row is still
+# tested. 149 tests in four files used to run whatever `gh` was on PATH -- the
+# doctor's `machine` row runs `setup-project.py --preflight`, which asks `gh
+# --version`, `gh auth status` and, logged in, `gh api user`, and the
+# installed command's `--install` asks `gh auth status` -- and the module
+# docstring's promise above was a sentence nothing held to. `tests/gh_guard.py`
+# says what the guard answers and why it answers the two probes instead of
+# refusing them; this block puts it in front of every child and fails a test
+# whose calls it refused.
+#
+# ONE SCRIPT, TWO LAUNCHERS. `gh` is a POSIX `#!/bin/sh` that `exec`s this
+# interpreter on the script; `gh.cmd` does the same for Windows, where a
+# shebang means nothing. WHAT REACHES THE GUARD ON WINDOWS IS LESS, and the
+# code under test decides it, not this block: every tool here starts `gh` as
+# a bare `["gh", ...]` argv, and CreateProcess looks that up as `gh.exe` alone
+# -- it does not read PATHEXT -- so on Windows every such call bypasses the
+# guard. A doctor run there still asks a real `gh.exe` where one is
+# installed: two calls on the runner, which holds no login, and three on a
+# machine that is logged in, whose preflight goes on to `gh api user`. Where
+# none is installed those calls cannot start, yet `shutil.which("gh")`, which
+# does read PATHEXT, finds `gh.cmd` -- so during a test the preflight there
+# reports `[ok] gh (unknown version)` and `[!!] gh is not authenticated`
+# rather than `gh is not installed`. That same lookup is how
+# `tests/test_gh_guard.py` reaches the launcher on Windows. The guard can
+# never fail a Windows test spuriously: only a call made through a
+# PATHEXT-aware lookup can reach it at all.
+#
+# NO PRODUCT SEAM. No flag or variable in the doctor, `setup-project.py` or
+# `openRepoShape` leaves the row out: PATH alone does it, so no CLI surface
+# and no line of `docs/cli.md` moved for a test's sake.
+#
+# THE SCRIPT IS IMPORTED HERE TOO: the probe table, the log format and the
+# decision the teardown check makes are the ones the guard itself uses.
+from gh_guard import LOG_NAME as GH_GUARD_LOG  # noqa: E402
+from gh_guard import failure as gh_guard_failure  # noqa: E402
+
+GH_GUARD_SCRIPT = Path(__file__).resolve().with_name("gh_guard.py")
+
+
+def install_gh_guard(directory: Path) -> Path:
+    """`tests/gh_guard.py` and its two launchers in `directory`, and an empty
+    log beside them; returns the log.
+
+    A COPY of the script, so that the log it writes beside itself lands in
+    `directory` and never in this checkout. The launchers name this
+    interpreter and that copy by absolute path, quoted for their own shell;
+    they are written as BYTES because `Path.write_text` has no `newline=`
+    before 3.10, and `gh.cmd` keeps cmd.exe's CRLF.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    script = directory / GH_GUARD_SCRIPT.name
+    shutil.copyfile(GH_GUARD_SCRIPT, script)
+    posix = directory / "gh"
+    posix.write_bytes(
+        f"#!/bin/sh\nexec {shlex.quote(sys.executable)} "
+        f"{shlex.quote(str(script))} \"$@\"\n".encode("utf-8"))
+    posix.chmod(0o755)
+    # `exit /b %ERRORLEVEL%` hands the script's status back as the batch
+    # file's own, so 0, 1 and 97 survive the trip through cmd.exe.
+    (directory / "gh.cmd").write_bytes(
+        f"@echo off\r\n\"{sys.executable}\" \"{script}\" %*\r\n"
+        "exit /b %ERRORLEVEL%\r\n".encode("utf-8"))
+    log = directory / GH_GUARD_LOG
+    log.write_bytes(b"")
+    return log
+
+
+class GhGuard:
+    """The session's guard: its directory, its log, and how much of the log
+    has been read.
+
+    `take` is the ONE way a line is marked read. `pytest_runtest_teardown`
+    below takes once a test's whole teardown is over -- its own fixtures and
+    every module, class or session fixture that teardown finalized -- so a
+    line counts against the test whose setup, call or teardown wrote it, a
+    scoped fixture's finalizer and a session fixture its setup started
+    included. ONE CALL IT CANNOT PLACE: a child a test left running that runs
+    `gh` after that test's teardown lands on the next test whose teardown
+    reads the log, and the message still names the test and phase that made
+    it. A test that runs the guard on purpose (`tests/test_gh_guard.py`) takes
+    its own lines and asserts on them, which is what keeps them out of the
+    check: no marker is needed for that, and none is added.
+    """
+
+    def __init__(self, directory: Path, log: Path) -> None:
+        self.directory = directory
+        self.log = log
+        self.read = 0
+
+    def take(self) -> list:
+        """Every line logged since the last `take`, now marked read."""
+        lines = self.log.read_text(encoding="utf-8").splitlines()
+        taken, self.read = lines[self.read:], len(lines)
+        return taken
+
+
+#: Where `gh_guard` leaves itself for `pytest_runtest_teardown` to read.
+GH_GUARD_KEY = pytest.StashKey()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def gh_guard(tmp_path_factory, pytestconfig):
+    """The guard, FIRST on `os.environ["PATH"]` for the whole session.
+
+    `os.environ`, so every child inherits it however it is started:
+    `run_script`, `run_cmd` in `tests/test_openreposhape_command.py`, or a
+    bare `subprocess.run`. A test that installs its own `gh` stub puts its
+    directory ahead of this one and keeps winning, as it always did. Session
+    scope and autouse, so it is set up before any other session fixture --
+    `scaffolded` included -- and torn down after all of them, inside the
+    last test's teardown, where `pytest_runtest_teardown` reads whatever
+    they logged; PATH is put back as it was.
+    """
+    directory = tmp_path_factory.mktemp("gh-guard")
+    guard = GhGuard(directory, install_gh_guard(directory))
+    pytestconfig.stash[GH_GUARD_KEY] = guard
+    before = os.environ.get("PATH")
+    os.environ["PATH"] = str(directory) + (os.pathsep + before
+                                           if before else "")
+    try:
+        yield guard
+    finally:
+        if before is None:
+            os.environ.pop("PATH", None)
+        else:
+            os.environ["PATH"] = before
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_teardown(item, nextitem):
+    """Fail a test, at its teardown, when the guard refused one of its calls,
+    naming each call and the phase that made it; the two probes pass.
+
+    A HOOK WRAPPER, NOT AN AUTOUSE FIXTURE (#296, the review of b111b51). A
+    function fixture is torn down BEFORE the module, class and session
+    fixtures a test's teardown finalizes, so a call one of those made in its
+    own finalizer was charged to the NEXT test, and under `-x` the run
+    stopped on an innocent one. Everything after `yield` here runs once the
+    whole teardown -- every finalizer it triggered -- is over, so the call is
+    charged to the test whose teardown made it; and the LAST test's teardown
+    finalizes every session fixture, the guard's own included, so nothing a
+    session fixture logs goes unread. A teardown that raised on its own
+    account reports that instead, and its lines are read by the next one.
+    """
+    result = yield
+    guard = item.config.stash.get(GH_GUARD_KEY, None)
+    found = gh_guard_failure(guard.take()) if guard is not None else None
+    if found:
+        pytest.fail(found, pytrace=False)
+    return result
+
+
+def spelled(path) -> str:
+    """`path` as `adopt-project.py` names one in a finding, a refusal or the
+    late-failure notice (#212): between backticks, with a backslash or a
+    backtick escaped. A path a test builds is otherwise printable, which
+    `_spelled` writes as it is; a Windows path keeps its separators, each
+    one escaped."""
+    return "`" + str(path).replace("\\", "\\\\").replace("`", "\\`") + "`"
