@@ -164,7 +164,7 @@ from shape_materialize import (  # noqa: E402
 # into its manifest, and whether a repository's name can be a directory's:
 # asked of the plan's values by `plan`, `check` and `execute` (#261).
 from shape_materialize import (  # noqa: E402
-    MANIFEST_INVALID_REMEDIATION, manifest_value_problems,
+    MANIFEST_INVALID_REMEDIATION, manifest_judged, manifest_value_problems,
     refuse_manifest_values, refuse_unstorable_names,
 )
 # Whether a value this tool writes into a file is text a file can hold
@@ -2064,23 +2064,33 @@ GIT_ARGUMENT_KEYS = (TRACKING_KEY,)
 
 
 def _execute_gets_to_write(key: str, value) -> bool:
-    """Does `execute` get as far as writing `value` into the project? Not for
-    a `git` argument `checked_value` refuses: `_checked_plan_values` refuses
-    it as `unsafe-value` before any leg exists, so a sentence saying
+    """Does `execute` get as far as writing `value` into the project, in
+    EVERY mode it runs in? `check` is not told which one it will be.
+
+    Not for a `git` argument `checked_value` refuses: `_checked_plan_values`
+    refuses it as `unsafe-value` before any leg exists, so a sentence saying
     `execute` writes it, and that the run would end `adoption verified`,
-    would be false (rv181f's F2). Nor for a visibility that is not one of
-    `VISIBILITY_CHOICES`, text or not. Outside `--local-remote-dir`
-    `_create_leg_remotes` would hand it to `gh repo create` as
-    `--<visibility>` before anything is written, and no other is a
-    visibility gh creates a repository with (rv181f's F2b); `check` is not
-    told which mode `execute` will run in. It is the project's own
-    validator's to name instead, in either mode (`manifest-visibility`,
-    #261, `_manifest_findings`), and `execute` refuses a plan holding it
-    before anything exists. None of the three choices is misread. Nor for
-    any other value no file can hold
-    (`unwritable_reason`): `check` names it as `plan-unwritable-value`, and
-    `execute` refuses a plan holding it before any leg exists (#255), so one
-    wrong value is one finding, and none says the run gets further."""
+    would be false (rv181f's F2).
+
+    Nor for a visibility that is not one of `VISIBILITY_CHOICES`, text or
+    not. In gh mode, `execute`'s default, `_create_leg_remotes` hands it to
+    `gh repo create` as `--<visibility>` before anything is written, and gh
+    creates a repository with no other (rv181f's F2b), so such a sentence
+    would be false there. Where the project's own validator refuses what
+    the loader reads (`secret`, `"true"`, `[secret]`), `check` names it in
+    the validator's words (`manifest-visibility`, #261, `_manifest_findings`)
+    and `execute` refuses the plan before anything exists, in either mode.
+    Where it accepts what is read -- a text the loader reads as no value
+    (`"null"`, `""`, `"~"`), or as one of the three (`"'private'"`) --
+    nothing names it, as on main: with `--local-remote-dir` the run ends
+    `adoption verified` with the field read as that, and in gh mode it stops
+    at the first `gh repo create`, before any leg exists. None of the three
+    choices is misread.
+
+    Nor for any other value no file can hold (`unwritable_reason`): `check`
+    names it as `plan-unwritable-value`, and `execute` refuses a plan
+    holding it before any leg exists (#255), so one wrong value is one
+    finding, and none says the run gets further."""
     if key == VISIBILITY_KEY:
         return str(value) in VISIBILITY_CHOICES
     if key not in GIT_ARGUMENT_KEYS:
@@ -2095,8 +2105,8 @@ def _execute_gets_to_write(key: str, value) -> bool:
 def _plan_fields(plan: Plan) -> list[tuple[str, tuple]]:
     """A plan's values as its loader read them, each named by its key in the
     plan, with the lines `_template_values` would write them into: `(the
-    placeholder that carries it, the field)`, so that what a sentence is
-    about can be told to the validator (`_misread_findings`).
+    placeholder that carries it, the field)`, so that `_misread_findings`
+    can leave to the project's own validator a value it judges.
 
     A key the plan does not carry is left out: `execute` fills it with a
     default of this tool's own (`main`, `private`, today's date), and none of
@@ -2129,20 +2139,30 @@ def _plan_fields(plan: Plan) -> list[tuple[str, tuple]]:
                      if pin and _execute_gets_to_write("pins", pin)]
 
 
-def _misread_findings(plan: Plan) -> tuple[list[str], tuple[str, ...]]:
+def _misread_findings(plan: Plan) -> list[str]:
     """`check`'s FINDING for each plan value the project's loader would
-    misread (#181), and the placeholders they are about, so that the
-    project's own validator, asked in the same list, is not asked about
-    those again (`_manifest_findings`): one wrong value is one finding."""
-    found: list[str] = []
-    reported: list[str] = []
-    for placeholder, field in _plan_fields(plan):
-        problems = manifest_misreads([field])
-        found += [f"FINDING plan-manifest-misread: {problem}."
-                  for problem in problems]
-        if problems:
-            reported.append(placeholder)
-    return found, tuple(reported)
+    misread (#181) and the project's own validator would NOT refuse as the
+    loader reads it, of the values `execute` writes in every mode
+    (`_execute_gets_to_write`).
+
+    THE VALIDATOR IS ASKED FIRST, as `check` asks it (`_manifest_findings`,
+    the same `ignore`), and a value it makes a finding about is its alone:
+    `id: "007"` is `manifest-id: id is 7`, as on main, and not also this.
+    Where it refuses the whole file (`elected_on: "!"`, which its reader
+    cannot read) or makes a finding about no one value, no value can be
+    said to pass it, so every value is its, as on main (rv181f's G1, G2).
+    That is what makes this rule's remediation true of every value it
+    follows: `execute` writes it as it stands, and the run would still end
+    `adoption verified`. A leg path the loader reads as no value is still
+    this rule's: `check` leaves the validator's leg-path codes to
+    `_leg_findings` (`LEG_PATH_CODES`), and `execute` writes it."""
+    judged = _validator_judged(plan)
+    if judged is None:
+        return []
+    return [f"FINDING plan-manifest-misread: {problem}."
+            for placeholder, field in _plan_fields(plan)
+            if placeholder not in judged
+            for problem in manifest_misreads([field])]
 
 
 def _checked_plan_inputs(args, source: Source,
@@ -2226,10 +2246,14 @@ def _checked_plan_inputs(args, source: Source,
     pins = [_checked_pin_name(p) for p in (args.pin or []) if p.strip()]
     _check_names(naming, names, set(pins))
     # LAST here, over every value as the plan will record it: `execute`
-    # writes them into the project's own YAML, and one its loader would read
-    # as something else is refused before the plan exists (#181). The
-    # project's own validator is asked next (`_refuse_unholdable_values`,
-    # #261), of values that read back.
+    # writes them into the project's own YAML. The project's own validator
+    # is asked FIRST (#261): a value it refuses is refused in its words
+    # alone, as on main, `--id true` and `--spec-path null` among them
+    # (rv181f's G1). Then one its loader would read as something else that
+    # the validator accepts is refused before the plan exists (#181), so
+    # every value that refusal names is one `execute` would write and end
+    # `adoption verified` with, as its remediation says.
+    _refuse_unholdable_values(args, names, pins, naming)
     misread = manifest_misreads(_flag_fields(args, given, pins))
     if misread:
         raise Refusal("adopt-manifest-misread",
@@ -2258,10 +2282,11 @@ def _checked_plan_inputs(args, source: Source,
 # template ships, through `shape_materialize.manifest_value_problems`, which
 # loads that validator rather than copying a rule of it. The table is built by
 # `_template_table`, which `execute`'s `_template_values` also calls, so it is
-# the one `execute` renders from. Only the validator's question is asked here:
-# whether the project's YAML reader reads a value back as the text it is --
-# `--id true`, `--tracking-branch 007` -- is #181's, and the scaffold asks
-# both.
+# the one `execute` renders from. Only the validator's question is asked here,
+# and it is asked FIRST: a value it refuses is its alone, `--id true` among
+# them. Whether the project's YAML reader reads back as the text it is a value
+# the validator accepts -- `--tracking-branch 007` -- is #181's, asked after
+# (`_misread_findings`), and the scaffold asks both.
 
 #: How `check` and `execute` name each value the manifest records: its key
 #: in the plan. The id's placeholder and `MANIFEST_FIELDS` are #181's, so
@@ -2356,36 +2381,28 @@ def _manifest_values(plan: Plan, naming: NamingPolicy) -> dict | None:
         _VALIDATION_SHAPE_COMMIT, _VALIDATION_SHAPE_DIGEST, pins, naming)
 
 
-def _manifest_findings(plan: Plan, reported: tuple[str, ...] = ()
-                       ) -> tuple[list[str], list[str]]:
+def _manifest_findings(plan: Plan) -> tuple[list[str], list[str]]:
     """What the project's own validator would refuse of this plan's values,
     as `check` prints them (one FINDING each), and what it prints once after
     them. `[]` and `[]` when it would pass, or when the plan's names are
     refused in their own words (`_manifest_values`).
 
-    `reported` is the placeholders whose value a misread rule in the same
-    list has ALREADY reported (#181's `plan-manifest-misread`, which
-    `_misread_findings` returns them with): the validator's finding about
-    such a value is left out, so that it is judged once and not twice
-    (`elected_on: "20261011"`, `id: "007"`). Empty wherever nothing else
-    asks that question, so that this rule alone still refuses the value.
-
-    EVERY OTHER VALUE IS ASKED, ONE THE PLAN'S READER READ AS NOT TEXT
-    INCLUDED, so that no value is left to a rule that does not judge it. The
-    misread rule judges what the loader would misread of what `execute`
-    gets as far as writing, and nothing else (`_execute_gets_to_write`): a
-    `visibility` outside the three choices, `true` and `[secret]` among
-    them, is this rule's. Such a value is named by what was read
-    (`_named_as_read`), because the sentence goes on to quote `str` of it,
-    the text `execute` would write and not what the plan says.
+    EVERY VALUE IS ASKED, ONE THE PLAN'S READER READ AS NOT TEXT INCLUDED,
+    and one #181's misread rule would also call misread: a value this rule
+    refuses is this rule's alone, and the misread rule leaves it here
+    (`_misread_findings`, rv181f's G1). So `id: "007"` is `manifest-id: id
+    is 7`, as on main, `elected_on: 20260902` and `visibility: true` are
+    this rule's too, and one wrong value is one finding. A value read as not
+    text is named by what was read (`_named_as_read`), because the sentence
+    goes on to quote `str` of it, the text `execute` would write and not
+    what the plan says.
     """
     naming = NamingPolicy.load(NAMING_POLICY)
     values = _manifest_values(plan, naming)
     if values is None:
         return [], []
     problems = manifest_value_problems(values, naming, _named_as_read(plan),
-                                       misreads=False, ignore=LEG_PATH_CODES,
-                                       not_text=tuple(reported))
+                                       misreads=False, ignore=LEG_PATH_CODES)
     if not problems:
         return [], []
     return ([f"FINDING plan-manifest-invalid: {sentence}"
@@ -2394,6 +2411,19 @@ def _manifest_findings(plan: Plan, reported: tuple[str, ...] = ()
              "values into the project's `project.yaml` as they stand, so "
              "correct each one named here in the plan, or re-run `plan` with "
              "a value the validator accepts."])
+
+
+def _validator_judged(plan: Plan) -> frozenset[str] | None:
+    """The placeholders whose value the project's own validator makes a
+    finding about, asked as `_manifest_findings` asks it; None where no
+    value can be said to pass it (`manifest_judged`), or where the plan's
+    names are refused in their own words and there is no manifest to ask
+    about (`_manifest_values`)."""
+    naming = NamingPolicy.load(NAMING_POLICY)
+    values = _manifest_values(plan, naming)
+    if values is None:
+        return None
+    return manifest_judged(values, naming, ignore=LEG_PATH_CODES)
 
 
 def _named_as_read(plan: Plan) -> dict[str, str]:
@@ -2512,8 +2542,8 @@ def cmd_plan(args) -> int:
     policy = PathPolicy.load(args.path_policy or PATH_POLICY)
     naming = NamingPolicy.load(NAMING_POLICY)
 
+    # The project's own validator is asked inside, before #181's question.
     names, pins = _checked_plan_inputs(args, source, naming)
-    _refuse_unholdable_values(args, names, pins, naming)
 
     tree = source.tree()
     # WHAT THE RULES IMPLY is read from `walk`'s entries, BEFORE
@@ -3904,13 +3934,17 @@ def _entry_findings(plan: Plan, source: Source,
     what the person retypes. Both are listed, and both refuse before any leg
     exists. The relative urls of #190 still come after both, last.
 
-    A VALUE #181 CALLS MISREAD IS #181'S ALONE. Its `plan-manifest-misread`
-    names what the loader would read back, and the validator is not asked
-    about that value again: `id: "007"` is not also `manifest-id: id is 7`.
-    The validator is asked about every other value, a `visibility` outside
-    the three choices among them, text or not, which #181 does not judge
-    (`_execute_gets_to_write`). So the two never both name one value
-    (`_manifest_findings`).
+    A VALUE THE VALIDATOR REFUSES IS THE VALIDATOR'S ALONE (rv181f's G1,
+    G2). The validator is asked about every value (`_manifest_findings`),
+    and #181's `plan-manifest-misread` names a value only where the loader
+    misreads it, the validator makes no finding about what the loader
+    reads, and `execute` gets to write it in every mode
+    (`_execute_gets_to_write`, `_misread_findings`): `id: "007"` is
+    `manifest-id: id is 7` alone, as on main. A manifest the validator's
+    own reader refuses, or a finding of its about no one value, leaves
+    every value to it. So the two never both name one value, and every
+    value #181 names is one `execute` writes as it stands, with the run
+    still ending `adoption verified`, as its remediation says.
     """
     tree = source.tree()
     unsafe, unsafe_remediation = _unsafe_path_findings(plan)
@@ -3919,11 +3953,13 @@ def _entry_findings(plan: Plan, source: Source,
                                       for e in plan.entries],
                                      [path for path, _, _, _ in tree])
                 + _leg_findings(plan, tree))
-    misread, reported = _misread_findings(plan)
     (split, split_remediation), (moved, moved_remediation), notes = \
         _submodule_findings(plan, source, tree, local_remote_dir)
     unwritable_findings, unwritable_remediation = _value_findings(plan)
-    value_findings, value_remediation = _manifest_findings(plan, reported)
+    value_findings, value_remediation = _manifest_findings(plan)
+    # Asked after the validator, whose judgement it follows; listed where
+    # it always was, after the mount paths.
+    misread = _misread_findings(plan)
     return (findings + misread + split + unwritable_findings + value_findings
             + moved,
             unsafe_remediation

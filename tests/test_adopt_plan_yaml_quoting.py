@@ -40,10 +40,17 @@ or that put the legs on a branch other than the one they were pushed on. So
 read back as something else, by the same question `y` asks
 (`loader_reading`), put into each template line that carries the value; and
 the end-to-end test clones and bootstraps what is still accepted.
+
+THE PROJECT'S OWN VALIDATOR IS ASKED FIRST (#261, rv181f's G1). A value it
+refuses as the loader reads it -- `id: true`, `elected_on: 20260902`, and at
+`plan` a leg path read as no value -- is refused in its words alone, as on
+main. The misread finding is for what the validator accepts and `execute`
+writes in every mode, which is what its remediation says.
 """
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import itertools
 import random
@@ -352,8 +359,22 @@ UNWRITABLE_FINDING = "FINDING plan-unwritable-value: "
 #: How `check` begins #261's line about a value the project's own
 #: validate-manifest.py refuses.
 INVALID_FINDING = "FINDING plan-manifest-invalid: "
-#: `true` as text, as a plan edited by hand quotes it.
+#: How #181's remediation begins, which no other remediation does.
+MANIFEST_MISREAD_REMEDIATION_START = (
+    "Remediation: choose another value for each one named. `execute` writes")
+#: `true` as text, as a plan edited by hand quotes it, and `007` and
+#: `null` too.
 TRUE_TEXT = '"true"'
+QUOTED_007 = '"007"'
+QUOTED_NULL = '"null"'
+#: How `plan`'s and `check`'s codes for #181's rule end, and the
+#: validator's code for an election date.
+MISREAD_CODE = "manifest-misread"
+ELECTED_ON_CODE = "manifest-elected-on"
+#: The plan key of the assembly's name, which an id nobody set comes from.
+ASSEMBLY_KEY = "legs.assembly"
+#: The election date a plan below is written with.
+ELECTION_DATE = "2026-09-02"
 #: The plan keys the rows below name, and the flag `plan` takes each as.
 SPEC_PATH_KEY = "legs.spec_path"
 TRACKING_KEY = "tracking_branch"
@@ -390,45 +411,78 @@ DOMAIN_USER_READ = "the text `CORP`, then a tab, then `om`"
 QUOTED_DOMAIN_USER = f"'\"{DOMAIN_USER}\"'"
 
 #: `(flag, value, plan key, what the project's loader reads)`. At 76a6153
-#: each of the first fifteen went through `execute` to `adoption verified`
-#: and then to a bootstrap that failed, or that put the legs on another branch
-#: than the one they were pushed on (lane 2's review, and this fix's own repro
-#: of it); `2026`, `1.5` and `~` did so on `main` too (#187's review). `007`
-#: is a branch bootstrap would read as `7`. No value `project.yaml` writes
-#: between its quotes is here: `render` spells those with `double_quoted`
-#: since #284, and `BETWEEN_THE_QUOTES` below holds the ones that misread
-#: before it.
+#: each went through `execute` to `adoption verified` and then to a
+#: bootstrap that failed, or that put the legs on another branch than the
+#: one they were pushed on (lane 2's review, and this fix's own repro of
+#: it). `007` is a branch bootstrap would read as `7`. The project's own
+#: validator makes no finding about what the loader reads of any of them,
+#: so each is #181's, at `plan` and in a plan. No value `project.yaml`
+#: writes between its quotes is here: `render` spells those with
+#: `double_quoted` since #284, and `BETWEEN_THE_QUOTES` below holds the ones
+#: that misread before it.
 REFUSED = [
-    (SPEC_FLAG, "null", SPEC_PATH_KEY, NO_VALUE),
-    (SPEC_FLAG, "Null", SPEC_PATH_KEY, NO_VALUE),
-    (SPEC_FLAG, "NULL", SPEC_PATH_KEY, NO_VALUE),
-    (SPEC_FLAG, "~", SPEC_PATH_KEY, NO_VALUE),
-    (SPEC_FLAG, "true", SPEC_PATH_KEY, TRUE_READ),
-    (SPEC_FLAG, FALSE_TITLE, SPEC_PATH_KEY, "the boolean false"),
-    (SPEC_FLAG, "2026", SPEC_PATH_KEY, "the number 2026"),
-    (SPEC_FLAG, "1.5", SPEC_PATH_KEY, "the number 1.5"),
-    ("--code-path", "null", "legs.code_path", NO_VALUE),
     (TRACKING_FLAG, "true", TRACKING_KEY, TRUE_READ),
     (TRACKING_FLAG, "null", TRACKING_KEY, NO_VALUE),
-    ("--id", "true", "id", TRUE_READ),
-    ("--id", "null", "id", NO_VALUE),
     (PIN_FLAG, "null", PINS_KEY, NO_VALUE),
     (PIN_FLAG, "True", PINS_KEY, TRUE_READ),
     (TRACKING_FLAG, "007", TRACKING_KEY, SEVEN_READ),
 ]
-#: `(plan key, value, what the loader reads)` that only an edited plan can
+#: How the validator's finding about a leg's mount path begins.
+LEG_PATH_SAID = "manifest-leg-path: leg 'spec': path is "
+#: `(flag, value, plan key, what the loader reads, the validator's words for
+#: what it reads)`: leg paths that went the same way at 76a6153, and `2026`,
+#: `1.5` and `~` on `main` too (#187's review). `plan` asks the validator
+#: first, which refuses each (`manifest-leg-path`), so `plan` refuses it in
+#: the validator's words alone, as main does (rv181f's G1). A PLAN carrying
+#: one is #181's: `check` leaves the validator's leg-path codes to
+#: `_leg_findings` (`LEG_PATH_CODES`), which passes the text, and `execute`
+#: writes it and ends `adoption verified`, as on main.
+LEG_PATHS = [
+    (SPEC_FLAG, "null", SPEC_PATH_KEY, NO_VALUE, f"{LEG_PATH_SAID}None"),
+    (SPEC_FLAG, "Null", SPEC_PATH_KEY, NO_VALUE, f"{LEG_PATH_SAID}None"),
+    (SPEC_FLAG, "NULL", SPEC_PATH_KEY, NO_VALUE, f"{LEG_PATH_SAID}None"),
+    (SPEC_FLAG, "~", SPEC_PATH_KEY, NO_VALUE, f"{LEG_PATH_SAID}None"),
+    (SPEC_FLAG, "true", SPEC_PATH_KEY, TRUE_READ, f"{LEG_PATH_SAID}True"),
+    (SPEC_FLAG, FALSE_TITLE, SPEC_PATH_KEY, "the boolean false",
+     f"{LEG_PATH_SAID}False"),
+    (SPEC_FLAG, "2026", SPEC_PATH_KEY, "the number 2026",
+     f"{LEG_PATH_SAID}2026"),
+    (SPEC_FLAG, "1.5", SPEC_PATH_KEY, "the number 1.5", f"{LEG_PATH_SAID}1.5"),
+    ("--code-path", "null", "legs.code_path", NO_VALUE,
+     "manifest-leg-path: leg 'code': path is None"),
+]
+#: How the validator's finding about an id begins.
+ID_SAID = "manifest-id: id is "
+#: `(flag, value, plan key, the validator's words for what the loader
+#: reads)`: an id the loader reads as a boolean or as no value. The
+#: validator refuses it (`manifest-id`), and is asked first, so it is the
+#: validator's finding alone, at `plan` and in a plan, as on main (rv181f's
+#: G1): a misread finding there said `execute` writes it and the run ends
+#: `adoption verified`, and `execute` refuses it before anything exists.
+VALIDATORS = [
+    ("--id", "true", "id", f"{ID_SAID}True; it must match "),
+    ("--id", "null", "id", f"{ID_SAID}None; it must match "),
+]
+#: `(plan key, value, the validator's words)` that only an edited plan can
 #: carry here: `plan` refuses `--elected-on 20260902` as
 #: `election-date-malformed` on every Python since #261, which holds the date
-#: to the validator's own `YYYY-MM-DD`. The validator refuses it too
-#: (`manifest-elected-on`), and `check` names it once, as the misread it is
-#: (`JUDGED_ONCE`). No visibility is here: `plan` takes one from a fixed
-#: choice, and any other is the validator's (`JUDGED_ONCE`).
+#: to the validator's own `YYYY-MM-DD`. The loader reads it as a number, and
+#: the validator refuses that (`manifest-elected-on`): its finding alone.
+#: No visibility is here: `plan` takes one from a fixed choice, and none
+#: other is #181's (`_execute_gets_to_write`, `NEVER_WRITTEN`).
 EDITED_ONLY = [
-    (ELECTED_ON_KEY, DATE_DIGITS, f"the number {DATE_DIGITS}"),
+    (ELECTED_ON_KEY, DATE_DIGITS, f"{ELECTED_ON_CODE}: elected_on is "
+     f"{DATE_DIGITS}, expected an ISO date YYYY-MM-DD"),
 ]
-#: REFUSED as `plan` is given it, and as a plan carries it.
+#: #181's, as `plan` is given it, and as a plan carries it.
 PLANNED = [(flag, value, reading) for flag, value, _, reading in REFUSED]
 CARRIED = [(key, value, reading) for _, value, key, reading in REFUSED] \
+    + [(key, value, reading) for _, value, key, reading, _ in LEG_PATHS]
+#: The validator's alone, as `plan` is given it, and as a plan carries it.
+PLANNED_INVALID = [
+    (flag, value, said) for flag, value, _, _, said in LEG_PATHS] + [
+    (flag, value, said) for flag, value, _, said in VALIDATORS]
+CARRIED_INVALID = [(key, value, said) for _, value, key, said in VALIDATORS] \
     + EDITED_ONLY
 
 
@@ -562,20 +616,67 @@ def test_plan_refuses_a_value_the_projects_loader_would_misread(
     assert not plan.exists()
 
 
-@pytest.mark.parametrize("project, value, reading", [
-    ("True", "true", TRUE_READ), ("Null", "null", NO_VALUE)],
+#: How a refusal or a finding in the validator's words goes on, once it has
+#: named the value.
+VALIDATOR_REFUSES = "which the project's own validate-manifest.py refuses: "
+
+
+@pytest.mark.parametrize("flag, value, said", PLANNED_INVALID,
+                         ids=ids_of(PLANNED_INVALID, 0, 1))
+def test_plan_refuses_a_value_the_validator_refuses_in_its_words_alone(
+        adopter, answered, tmp_path, flag, value, said):
+    """The project's own validator is asked first. A value it refuses as
+    the loader reads it was refused as a misread, whose remediation says
+    `execute` writes it and the run would still end `adoption verified`:
+    neither is true of a value the validator refuses (rv181f's G1). It is
+    refused in the validator's words alone, as on main."""
+    source, _ = answered
+    plan = tmp_path / PLAN_FILE
+    result = write_plan(source, plan, extra=(flag, value))
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stderr.startswith("REFUSED adopt-manifest-invalid: "), (
+        result.stderr)
+    assert said in result.stderr, result.stderr
+    assert MISREAD_CODE not in result.stderr, result.stderr
+    assert adopter.MANIFEST_MISREAD_REMEDIATION not in result.stderr
+    assert "No plan was written." in result.stderr
+    assert not plan.exists()
+
+
+@pytest.mark.parametrize("project, value, said", [
+    ("True", "true", f"{ID_SAID}True; "), ("Null", "null", f"{ID_SAID}None; ")],
     ids=["True", "Null"])
-def test_plan_names_an_id_it_derived_from_the_project(
-        answered, tmp_path, project, value, reading):
+def test_plan_leaves_an_id_it_derived_from_the_project_to_the_validator(
+        answered, tmp_path, project, value, said):
     """`--project True` passes no `--id`, and `plan` lowercases the project
-    into one: the refusal says where the value came from, so the person
-    knows the flag that chooses another."""
+    into one, which the loader reads as a boolean and the validator then
+    refuses: the validator's refusal, as on main, and no misread."""
     source, _ = answered
     result = write_plan(source, tmp_path / PLAN_FILE, project=project)
     assert result.returncode == 2, result.stdout + result.stderr
-    who, what = misread("--id (not given, so --project lowercased)", value,
-                        reading)
-    assert who in result.stderr and what in result.stderr, result.stderr
+    assert result.stderr.startswith(
+        f"REFUSED adopt-manifest-invalid: --id is {value!r}, "
+        f"{VALIDATOR_REFUSES}{said}"), result.stderr
+    assert MISREAD_CODE not in result.stderr, result.stderr
+
+
+def test_the_misread_rule_names_an_id_plan_derived_by_where_it_came_from(
+        adopter):
+    """Should #181 be the rule that reports an id `plan` derived, its
+    sentence says where the value came from, so the person knows the flag
+    that chooses another. The validator refuses every id the loader
+    misreads today, and is asked first, so this is the rule's own answer,
+    asked of it directly."""
+    args = argparse.Namespace(
+        id="true", tracking_branch="main", visibility="private",
+        elected_by="Test Human", elected_on=ELECTION_DATE, reference="r",
+        spec_path="spec", code_path="code")
+    who, what = misread("--id (not given, so --project lowercased)", "true",
+                        TRUE_READ)
+    said = adopter.manifest_misreads(adopter._flag_fields(args, set(), []))
+    assert [sentence for sentence in said
+            if sentence.startswith(who)
+            and sentence.endswith(what.rstrip("."))], said
 
 
 def test_plan_takes_an_elector_from_git_the_manifests_quotes_read_back(
@@ -589,7 +690,7 @@ def test_plan_takes_an_elector_from_git_the_manifests_quotes_read_back(
     plan = tmp_path / PLAN_FILE
     result = run_script(
         ADOPT, "plan", "--source", str(source), "--project", PROJECT_NAME,
-        "--org", "testorg", "--elected-on", "2026-09-02", "--out", str(plan),
+        "--org", "testorg", "--elected-on", ELECTION_DATE, "--out", str(plan),
         env={"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "user.name",
              "GIT_CONFIG_VALUE_0": DOMAIN_USER})
     assert result.returncode == 0, result.stdout + result.stderr
@@ -598,7 +699,7 @@ def test_plan_takes_an_elector_from_git_the_manifests_quotes_read_back(
         resolve(plan, path, leg)
     passed = checked(plan)
     assert passed.returncode == 0, passed.stdout + passed.stderr
-    assert "manifest-misread" not in passed.stderr
+    assert MISREAD_CODE not in passed.stderr
 
 
 @pytest.mark.parametrize("key, value, reading", CARRIED,
@@ -607,8 +708,10 @@ def test_check_reports_a_plan_carrying_one(adopter, answered, tmp_path, key,
                                            value, reading):
     """A plan carrying the value -- spelled by the plan writer, so the plan
     itself reads it back -- is a FINDING, with the remediation once after.
-    It is #181's alone: the project's own validator is not asked about it
-    again (#261), though it refuses `id: "true"` and the date too."""
+    It is #181's alone: the project's own validator, asked first, makes no
+    finding about what the loader reads of it (a leg path's are
+    `_leg_findings`' to judge, which passes the text), and `execute` writes
+    it in every mode."""
     _, text = answered
     plan = tmp_path / PLAN_FILE
     carrying(plan, text, key, adopter.y(value))
@@ -620,6 +723,32 @@ def test_check_reports_a_plan_carrying_one(adopter, answered, tmp_path, key,
     assert result.stderr.count(adopter.MANIFEST_MISREAD_REMEDIATION) == 1
     assert INVALID_FINDING not in result.stderr, result.stderr
     assert "plan ok" not in result.stdout
+
+
+def judged_lines(stderr: str) -> list[str]:
+    """The lines of #181's rule and the validator's, in the order printed."""
+    return [line for line in stderr.splitlines()
+            if line.startswith((MISREAD_FINDING, INVALID_FINDING))]
+
+
+@pytest.mark.parametrize("key, value, said", CARRIED_INVALID,
+                         ids=ids_of(CARRIED_INVALID, 0, 1))
+def test_check_leaves_a_value_the_validator_refuses_to_it(
+        adopter, answered, tmp_path, key, value, said):
+    """`id: "true"` was #181's finding, with a remediation saying `execute`
+    writes it and the run would still end `adoption verified`; `execute`
+    refuses it before anything exists, as the validator's (rv181f's G1).
+    It is the validator's finding alone, as on main, and no misread."""
+    _, text = answered
+    plan = tmp_path / PLAN_FILE
+    carrying(plan, text, key, adopter.y(value))
+    result = checked(plan)
+    assert result.returncode == 1, result.stdout + result.stderr
+    (line,) = judged_lines(result.stderr)
+    assert line.startswith(
+        f"{INVALID_FINDING}{key} is {value!r}, {VALIDATOR_REFUSES}{said}"), (
+        result.stderr)
+    assert adopter.MANIFEST_MISREAD_REMEDIATION not in result.stderr
 
 
 #: How a plan sets no id, each beside how it spells the assembly the id is
@@ -635,26 +764,50 @@ NO_ID = [
 ]
 
 
+def without_an_id(text: str, id_line: str) -> str:
+    """The answered plan's text with its `id:` line put as `id_line`."""
+    edited = re.sub(r"^id: .*\n", id_line, text, count=1, flags=re.MULTILINE)
+    assert edited != text, "no `id:` line in the plan"
+    return edited
+
+
 @pytest.mark.parametrize("id_line, assembly", NO_ID)
-def test_check_names_an_id_it_derived_from_the_assembly(
+def test_check_leaves_an_id_it_derived_from_the_assembly_to_the_validator(
         answered, tmp_path, id_line, assembly):
     """A plan that sets no id gets one from `execute`, which lowercases
-    `legs.assembly`: the finding says so, because the line to change is not
-    the one with the value. It says "not set in the plan" and not "not in
-    the plan": an `id: null` is in the plan and sets nothing (review181's
-    N3), and `Plan.get` reads it exactly as a missing key."""
+    `legs.assembly`: `true`, which the loader reads as a boolean and the
+    validator refuses. The validator's finding alone, as on main."""
     _, text = answered
-    without_id = re.sub(r"^id: .*\n", id_line, text, count=1,
-                        flags=re.MULTILINE)
-    assert without_id != text, "no `id:` line in the plan"
     plan = tmp_path / PLAN_FILE
-    carrying(plan, without_id, "legs.assembly", assembly)
+    carrying(plan, without_an_id(text, id_line), ASSEMBLY_KEY, assembly)
     result = checked(plan)
     assert result.returncode == 1, result.stdout + result.stderr
+    (line,) = judged_lines(result.stderr)
+    assert line.startswith(
+        f"{INVALID_FINDING}id is 'true', {VALIDATOR_REFUSES}{ID_SAID}True; "
+    ), result.stderr
+
+
+@pytest.mark.parametrize("id_line, assembly", NO_ID)
+def test_the_misread_rule_names_an_id_it_derived_from_the_assembly(
+        adopter, answered, tmp_path, id_line, assembly):
+    """Should #181 be the rule that reports an id `execute` derives from
+    `legs.assembly`, its sentence says so, because the line to change is not
+    the one with the value. It says "not set in the plan" and not "not in
+    the plan": an `id: null` is in the plan and sets nothing (review181's
+    N3), and `Plan.get` reads it exactly as a missing key. The validator
+    refuses this id today, and is asked first, so this is the rule's own
+    answer, asked of it directly."""
+    _, text = answered
+    plan = tmp_path / PLAN_FILE
+    carrying(plan, without_an_id(text, id_line), ASSEMBLY_KEY, assembly)
     who, what = misread("id (not set in the plan, so legs.assembly "
                         "lowercased)", "true", TRUE_READ)
-    assert f"{MISREAD_FINDING}{who}" in result.stderr
-    assert what in result.stderr, result.stderr
+    said = adopter.manifest_misreads([adopter._id_field(
+        adopter.Plan.load(plan))])
+    assert len(said) == 1, said
+    assert said[0].startswith(who) and said[0].endswith(what.rstrip(".")), (
+        said)
 
 
 #: `(plan key, as a hand-edited plan spells it, what the plan's loader reads
@@ -662,20 +815,15 @@ def test_check_names_an_id_it_derived_from_the_assembly(
 #: something that is not text, so the plan does not say what `str` of it
 #: says: `007` is read as 7, and `TRUE` as true. The sentence names what was
 #: READ, with its kind, and then the text `execute` writes (review181's N2).
-#: The project's loader reads that text back as the same kind again. The
-#: list and the mapping are an `elected_on`'s, which `execute` writes as it
-#: stands: as a `tracking_branch` it refuses either as `unsafe-value`, and
-#: as a `visibility` `gh` takes neither, before anything is written
-#: (`NEVER_WRITTEN`).
+#: The project's loader reads that text back as the same kind again, and the
+#: project's own validator makes no finding about it: it does not judge a
+#: branch, and a pin only as a name it classifies. An id, a date or a
+#: visibility read as not text is the validator's (`NOT_TEXT_INVALID`).
 READ_AS_NOT_TEXT = [
     (TRACKING_KEY, "007", SEVEN_READ, "7"),
     (TRACKING_KEY, "TRUE", TRUE_READ, "True"),
     (TRACKING_KEY, "1.50", "the number 1.5", "1.5"),
-    (ELECTED_ON_KEY, "[a]", "a list", "['a']"),
-    (ELECTED_ON_KEY, "{a: b}", "a mapping", "{'a': 'b'}"),
-    ("id", "007", SEVEN_READ, "7"),
     (PINS_KEY, "TRUE", TRUE_READ, "True"),
-    (ELECTED_ON_KEY, DATE_DIGITS, f"the number {DATE_DIGITS}", DATE_DIGITS),
 ]
 
 
@@ -708,19 +856,34 @@ def test_check_names_a_plan_value_that_is_not_text_by_what_was_read(
 #: written and the run ends `adoption verified`: for these neither is true
 #: (rv181f's F2, F2b). Since #261 the visibility is the project's own
 #: validator's finding instead (`JUDGED_ONCE`).
+#:
+#: So is every other visibility outside the three choices, in gh mode,
+#: `execute`'s default: `gh repo create` is handed `--null`, `--` or
+#: `--'private'` before any leg exists, and `check` is not told the mode.
+#: The texts the loader reads as no value, or as one of the three, are ones
+#: the validator accepts as read, so nothing names them, as on main: with
+#: `--local-remote-dir` the run ends `adoption verified`, the field read as
+#: that (rv181f's G3, a residual this change shares with main).
 NEVER_WRITTEN = [
     pytest.param(TRACKING_KEY, QUOTED_DOMAIN_USER, id=TRACKING_KEY),
     pytest.param(VISIBILITY_KEY, TRUE_TEXT, id=VISIBILITY_KEY),
+    *[pytest.param(VISIBILITY_KEY, spelled, id=f"visibility-{name}")
+      for spelled, name in [
+          ('""', "empty"), ("''", "empty-single"), (QUOTED_NULL, "null"),
+          ('"Null"', "Null"), ('"NULL"', "NULL"), ('"~"', "null-tilde"),
+          ('"#"', "hash"), ('"#x"', "hash-x"), ('" "', "space"),
+          ('"  "', "spaces"), ("|-", "block"), ("\"'private'\"", "private"),
+          ("'\"public\"'", "public"), ("\"'internal'\"", "internal")]],
 ]
 
 
 @pytest.mark.parametrize("key, spelled", NEVER_WRITTEN)
 def test_check_says_nothing_misread_of_a_value_execute_never_writes(
         adopter, answered, tmp_path, key, spelled):
-    """`check` asked the loader about every value, and named these two as
+    """`check` asked the loader about every value, and named these as
     misread, with a remediation saying the run would still end `adoption
-    verified`. It asks only about a value `execute` gets as far as
-    writing."""
+    verified`. It asks only about a value `execute` gets as far as writing
+    in every mode."""
     _, text = answered
     plan = tmp_path / PLAN_FILE
     carrying(plan, text, key, spelled)
@@ -804,17 +967,30 @@ def test_execute_refuses_a_date_no_file_can_hold_as_unwritable_not_misread(
 
 #: `(plan key, as a plan edited by hand spells it, the one finding `check`
 #: prints about it)`: a value of each kind #181's gate and #261's validator
-#: (`plan-manifest-invalid`) divide between them. Text the loader misreads is
-#: #181's, though the validator refuses it too; text it reads back is the
-#: validator's; a value read as not text is #181's where #181 asks about it,
-#: and the validator's where it does not, as for a visibility outside the
-#: three choices, text or not (`_execute_gets_to_write`).
+#: (`plan-manifest-invalid`) divide between them. The validator is asked
+#: first, and a value it refuses as the loader reads it is its alone, text
+#: the loader misreads included (rv181f's G1); so is any value of a manifest
+#: its reader cannot read at all, and that one finding names no value twice
+#: (rv181f's G2). What the loader misreads and the validator accepts is
+#: #181's: a branch, a pin, a leg path (`check` leaves its codes to
+#: `_leg_findings`), and a date read back as other text that is a date.
 JUDGED_ONCE = [
-    pytest.param(ELECTED_ON_KEY, f'"{DATE_DIGITS}"', MISREAD_FINDING,
+    pytest.param(ELECTED_ON_KEY, f'"{DATE_DIGITS}"', INVALID_FINDING,
                  id="date-text-misread"),
-    pytest.param("id", '"007"', MISREAD_FINDING, id="id-text-misread"),
-    pytest.param(ELECTED_ON_KEY, DATE_DIGITS, MISREAD_FINDING,
+    pytest.param("id", QUOTED_007, INVALID_FINDING, id="id-text-misread"),
+    pytest.param(ELECTED_ON_KEY, DATE_DIGITS, INVALID_FINDING,
                  id="date-read-as-a-number"),
+    pytest.param(ELECTED_ON_KEY, '"!"', INVALID_FINDING,
+                 id="date-the-reader-refuses"),
+    pytest.param(PINS_KEY, '"? x"', INVALID_FINDING,
+                 id="pin-the-reader-refuses"),
+    pytest.param(TRACKING_KEY, QUOTED_007, MISREAD_FINDING,
+                 id="branch-text-misread"),
+    pytest.param(PINS_KEY, QUOTED_NULL, MISREAD_FINDING, id="pin-text-misread"),
+    pytest.param(SPEC_PATH_KEY, QUOTED_NULL, MISREAD_FINDING,
+                 id="leg-path-text-misread"),
+    pytest.param(ELECTED_ON_KEY, "'\"2026-09-02\"'", MISREAD_FINDING,
+                 id="date-read-as-another-date"),
     pytest.param(ELECTED_BY_KEY, '" "', INVALID_FINDING, id="elector-blank"),
     pytest.param(VISIBILITY_KEY, "secret", INVALID_FINDING,
                  id="visibility-secret"),
@@ -832,42 +1008,117 @@ def test_check_judges_each_value_once_by_the_rule_true_of_it(
         answered, tmp_path, key, spelled, finding):
     """At the merge of main dd8d0ea, `id: "007"` and `elected_on:
     "20260902"` were two findings each, #181's and the validator's, and a
-    visibility that is not text was none: #181 does not judge it, and the
-    validator left every value read as not text to #181. Each is one."""
+    visibility that is not text was none. At 7ac2358 each was one, but
+    #181's, whose remediation said `execute` writes the value and the run
+    ends `adoption verified` where `execute` refuses it as the validator's
+    (rv181f's G1), and `elected_on: "!"` was still two (G2). Each is one,
+    in the words of the rule true of it."""
     _, text = answered
     plan = tmp_path / PLAN_FILE
     carrying(plan, text, key, spelled)
     result = checked(plan)
     assert result.returncode == 1, result.stdout + result.stderr
-    judged = [line for line in result.stderr.splitlines()
-              if line.startswith((MISREAD_FINDING, INVALID_FINDING))]
-    assert len(judged) == 1, result.stderr
-    assert judged[0].startswith(finding), result.stderr
+    (line,) = judged_lines(result.stderr)
+    assert line.startswith(finding), result.stderr
+    remediation = (MANIFEST_MISREAD_REMEDIATION_START
+                   if finding == MISREAD_FINDING else
+                   "Remediation: choose a value the project's own "
+                   "validate-manifest.py accepts")
+    assert result.stderr.count("Remediation: ") == 1, result.stderr
+    assert remediation in result.stderr, result.stderr
 
 
-#: `(a visibility as a plan edited by hand spells it, how the validator's
-#: sentence names it)`: read as not text, it is named by what was read, as
-#: #181 names such a value, before the text `execute` would write for it.
-NOT_TEXT_VISIBILITY = [
-    pytest.param("true", "visibility, read out of the plan as the boolean "
-                 "true, is 'True', which", id="boolean"),
-    pytest.param("[secret]", "visibility, read out of the plan as a list, "
-                 "is \"['secret']\", which", id="list"),
+#: `(plan key, as a plan edited by hand spells it, whether the leg-path
+#: codes `check` leaves to `_leg_findings` are left out, what
+#: `manifest_judged` answers)`.
+JUDGED_BY_THE_VALIDATOR = [
+    pytest.param("id", QUOTED_007, False, frozenset({"PROJECT_ID"}),
+                 id="its-finding-names-the-value"),
+    pytest.param(TRACKING_KEY, QUOTED_007, False, frozenset(),
+                 id="a-value-it-does-not-judge"),
+    pytest.param(ELECTED_ON_KEY, '"!"', False, None,
+                 id="its-reader-refuses-the-file"),
+    pytest.param(SPEC_PATH_KEY, QUOTED_NULL, False, None,
+                 id="a-finding-about-no-one-value"),
+    pytest.param(SPEC_PATH_KEY, QUOTED_NULL, True, frozenset(),
+                 id="a-code-check-leaves-to-its-own-rule"),
 ]
 
 
-@pytest.mark.parametrize("spelled, named", NOT_TEXT_VISIBILITY)
+@pytest.mark.parametrize("key, spelled, as_check, judged",
+                         JUDGED_BY_THE_VALIDATOR)
+def test_the_validator_says_which_values_it_judges(
+        adopter, answered, tmp_path, key, spelled, as_check, judged):
+    """`manifest_judged`: the placeholders whose value the validator makes
+    a finding about, which #181 leaves to it; None where no value can be
+    said to pass it -- its reader refuses the file, or it makes a finding
+    about no one value -- and #181 then leaves every value to it (rv181f's
+    G1, G2)."""
+    _, text = answered
+    plan = tmp_path / PLAN_FILE
+    carrying(plan, text, key, spelled)
+    naming = adopter.NamingPolicy.load(adopter.NAMING_POLICY)
+    values = adopter._manifest_values(adopter.Plan.load(plan), naming)
+    ignore = adopter.LEG_PATH_CODES if as_check else ()
+    assert adopter.manifest_judged(values, naming, ignore=ignore) == judged
+
+
+def test_no_value_passes_a_validator_that_is_not_asked(
+        adopter, answered, tmp_path):
+    """Names the naming policy does not classify are `check`'s finding in
+    their own words, and no manifest is rendered from them, so the
+    validator is asked nothing: no value can be said to pass it, and #181
+    names none until it can be asked."""
+    _, text = answered
+    plan = tmp_path / PLAN_FILE
+    carrying(plan, text, ASSEMBLY_KEY, "north_wind")
+    carrying(plan, text_of(plan), TRACKING_KEY, QUOTED_007)
+    loaded = adopter.Plan.load(plan)
+    assert adopter._validator_judged(loaded) is None
+    assert adopter._misread_findings(loaded) == []
+
+
+#: `(plan key, as a plan edited by hand spells it, how the validator's
+#: sentence names it, the validator's code)`: read as not text, each is
+#: named by what was read, as #181 names such a value, before the text
+#: `execute` would write for it. The validator refuses what the loader
+#: reads of each, so each is its finding alone (rv181f's G1); the id and
+#: the dates were #181's at 7ac2358.
+NOT_TEXT_INVALID = [
+    pytest.param(VISIBILITY_KEY, "true", "visibility, read out of the plan "
+                 "as the boolean true, is 'True',",
+                 "manifest-visibility", id="visibility-boolean"),
+    pytest.param(VISIBILITY_KEY, "[secret]", "visibility, read out of the "
+                 "plan as a list, is \"['secret']\",",
+                 "manifest-visibility", id="visibility-list"),
+    pytest.param("id", "007", "id, read out of the plan as the number 7, is "
+                 "'7',", "manifest-id", id="id-number"),
+    pytest.param(ELECTED_ON_KEY, DATE_DIGITS, "elected_on, read out of the "
+                 f"plan as the number {DATE_DIGITS}, is '{DATE_DIGITS}',",
+                 ELECTED_ON_CODE, id="date-number"),
+    pytest.param(ELECTED_ON_KEY, "[a]", "elected_on, read out of the plan "
+                 "as a list, is \"['a']\",", ELECTED_ON_CODE,
+                 id="date-list"),
+    pytest.param(ELECTED_ON_KEY, "{a: b}", "elected_on, read out of the "
+                 "plan as a mapping, is \"{'a': 'b'}\",",
+                 ELECTED_ON_CODE, id="date-mapping"),
+]
+
+
+@pytest.mark.parametrize("key, spelled, named, code", NOT_TEXT_INVALID)
 def test_the_validator_names_a_value_read_as_not_text_by_what_was_read(
-        answered, tmp_path, spelled, named):
+        answered, tmp_path, key, spelled, named, code):
     """Its sentence quotes `str` of the value, the text `execute` would
     write: `visibility is 'True'` alone, for a plan that says `true`, would
     name text the plan never said (review181's N2)."""
     _, text = answered
     plan = tmp_path / PLAN_FILE
-    carrying(plan, text, VISIBILITY_KEY, spelled)
+    carrying(plan, text, key, spelled)
     result = checked(plan)
-    assert (f"{INVALID_FINDING}{named} the project's own validate-manifest.py "
-            "refuses: manifest-visibility: ") in result.stderr, result.stderr
+    assert result.returncode == 1, result.stdout + result.stderr
+    (line,) = judged_lines(result.stderr)
+    assert line.startswith(f"{INVALID_FINDING}{named} {VALIDATOR_REFUSES}"
+                           f"{code}: "), result.stderr
 
 
 @needs_filter_repo
@@ -1034,6 +1285,28 @@ def test_execute_refuses_a_plan_carrying_one_before_any_leg_exists(
     assert what in result.stderr
     assert adopter.MANIFEST_MISREAD_REMEDIATION in result.stderr
     assert INVALID_FINDING not in result.stderr, result.stderr
+    assert not (tmp_path / REMOTES).exists()
+    assert SPLIT_BRANCH not in branches_of(source)
+
+
+@needs_filter_repo
+@pytest.mark.parametrize("key, value, said", CARRIED_INVALID,
+                         ids=ids_of(CARRIED_INVALID, 0, 1))
+def test_execute_refuses_a_value_the_validator_refuses_as_the_validators(
+        adopter, answered_copy, tmp_path, key, value, said):
+    """`execute` refuses such a plan under the validator's code, before it
+    creates a leg or touches the source, so no sentence it prints says the
+    value is written or that the run gets further (rv181f's G1)."""
+    source, text = answered_copy
+    plan = tmp_path / PLAN_FILE
+    carrying(plan, text, key, adopter.y(value))
+    result = executed(plan, tmp_path)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stderr.startswith(
+        "REFUSED plan-manifest-invalid: "), result.stderr
+    assert said in result.stderr, result.stderr
+    assert MISREAD_FINDING not in result.stderr, result.stderr
+    assert adopter.MANIFEST_MISREAD_REMEDIATION not in result.stderr
     assert not (tmp_path / REMOTES).exists()
     assert SPLIT_BRANCH not in branches_of(source)
 
@@ -1222,7 +1495,7 @@ def test_the_plan_writer_quotes_a_pin_whatever_refuses_it_later(
         assert adopter.main([
             "plan", "--source", str(source), "--project", PROJECT_NAME,
             "--org", "testorg", ELECTED_BY_FLAG, "Test Human",
-            "--elected-on", "2026-09-02", PIN_FLAG, pin,
+            "--elected-on", ELECTION_DATE, PIN_FLAG, pin,
             "--work-dir", str(tmp_path / "work"), "--out", str(plan)]) == 0
         assert f'\npins: ["{pin}"]\n' in text_of(plan)
         assert load_yaml(plan)[PINS_KEY] == [pin]
