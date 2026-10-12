@@ -55,7 +55,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from repo_shape import (  # noqa: E402
-    Refusal, find_repo_root, git_out, load_yaml, recorded_gitlink,
+    Refusal, escape_unencodable_stdout, find_repo_root, git_out, load_yaml,
+    recorded_gitlink, spelled,
 )
 
 DEGRADE_LINE = "authority is not wallet-carried in this org"
@@ -104,12 +105,15 @@ def _short(sha: str | None) -> str:
 def checkout_tracking_branch(root: Path, leg: dict, branch: str) -> None:
     """Step (a) for one leg. Prints; never raises; never moves the pin."""
     path = str(leg.get("path") or "")
-    role = leg.get("role")
     sub = root / path
+    # What is PRINTED of the leg is spelled (#391): `role`, `path` and `branch`
+    # are the manifest's text, read before any validator has had its say.
+    where = f"[{spelled(leg.get('role'))}] {spelled(path)}"
+    named = spelled(branch)
     if not (sub / ".git").exists():
-        print(f"  [{role}] {path}: NOT INITIALIZED. Run "
-              f"`git submodule update --init {path}` — the validators below "
-              f"will refuse until you do.")
+        print(f"  {where}: NOT INITIALIZED. Run "
+              f"`git submodule update --init {spelled(path)}` — the "
+              f"validators below will refuse until you do.")
         return
     pin = recorded_gitlink(root, path)
     local = _try_git(["rev-parse", "--verify", "--quiet",
@@ -119,10 +123,10 @@ def checkout_tracking_branch(root: Path, leg: dict, branch: str) -> None:
 
     if local is None:
         if pin is None:
-            print(f"  [{role}] {path}: no gitlink recorded; leaving as is")
+            print(f"  {where}: no gitlink recorded; leaving as is")
             return
         if _try_git(["checkout", "-q", "-b", branch, pin], sub) is None:
-            print(f"  [{role}] {path}: could not create branch {branch!r} at "
+            print(f"  {where}: could not create branch {branch!r} at "
                   f"the pin {_short(pin)}; leaving detached")
             return
         if remote is not None:
@@ -130,19 +134,19 @@ def checkout_tracking_branch(root: Path, leg: dict, branch: str) -> None:
                       branch], sub)
         state = "at the pin"
         if remote is not None and remote != pin:
-            state = (f"at the pin; origin/{branch} is {_short(remote)}, which "
+            state = (f"at the pin; origin/{named} is {_short(remote)}, which "
                      f"the pin deliberately does NOT follow")
-        print(f"  [{role}] {path}: branch {branch} created at "
+        print(f"  {where}: branch {named} created at "
               f"{_short(pin)} — {state}")
         return
 
     if local == pin:
         _try_git(["checkout", "-q", branch], sub)
-        print(f"  [{role}] {path}: on {branch} at {_short(pin)} "
+        print(f"  {where}: on {named} at {_short(pin)} "
               f"(branch tip == pin)")
         return
 
-    print(f"  [{role}] {path}: PIN {_short(pin)} != branch {branch} tip "
+    print(f"  {where}: PIN {_short(pin)} != branch {named} tip "
           f"{_short(local)}")
     print("          not moving an existing branch. The checkout stays at "
           "the pin; the recorded pin is authoritative and advancing it is an "
@@ -236,7 +240,8 @@ def _load_register_rows(register_path: Path) -> list[dict] | None:
     try:
         data = load_yaml(register_path)
     except Refusal as exc:
-        print(f"    unreadable, so nothing is claimed from it: {exc.detail}")
+        print("    unreadable, so nothing is claimed from it: "
+              f"{spelled(exc.detail)}")
         return None
     rows = []
     if isinstance(data, dict):
@@ -258,11 +263,12 @@ def _row_report_line(row: dict, repositories: set[str],
               if _matches(o, repositories, prefixes)]
     if not objects:
         return None
-    holder = row.get("holder_ref") or row.get("holder") or "?"
-    act = row.get("act") or row.get("acts") or "?"
-    state = row.get("state") or "?"
-    expires = row.get("expires_at") or "-"
-    return (f"    {holder} · {act} · {', '.join(objects)} · "
+    # A register row is a file's text (#391): each value is spelled.
+    holder = spelled(row.get("holder_ref") or row.get("holder") or "?")
+    act = spelled(row.get("act") or row.get("acts") or "?")
+    state = spelled(row.get("state") or "?")
+    expires = spelled(row.get("expires_at") or "-")
+    return (f"    {holder} · {act} · {', '.join(map(spelled, objects))} · "
            f"{state} · expires {expires}")
 
 
@@ -277,7 +283,8 @@ def _report_one_register(register_path: Path, root: Path,
     """
     # POSIX, on every platform: this line names a file in the repository,
     # and git and the reader both spell it that way.
-    print(f"  register: {register_path.relative_to(root).as_posix()}")
+    print("  register: "
+          f"{spelled(register_path.relative_to(root).as_posix())}")
     rows = _load_register_rows(register_path)
     if rows is None:
         return
@@ -378,6 +385,7 @@ def _run_neutral_validators(root: Path, manifest: dict | None,
 
 
 def main(argv: list[str] | None = None) -> int:
+    escape_unencodable_stdout()
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--root", type=Path, default=None)
     parser.add_argument("--branch", default=None,
@@ -397,7 +405,7 @@ def main(argv: list[str] | None = None) -> int:
     sub_legs = [leg for leg in legs if leg.get("role") != "assembly"]
 
     name = (manifest or {}).get("name") or root.name
-    print(f"bootstrap: {name} ({root})")
+    print(f"bootstrap: {spelled(name)} ({spelled(root)})")
 
     print("\n(a) legs on tracking branches, pins untouched")
     _checkout_all_tracking_branches(root, sub_legs, manifest, args.branch)
