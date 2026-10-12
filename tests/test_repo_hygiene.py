@@ -576,7 +576,21 @@ def test_agents_md_is_short_enough_to_be_read():
     spelling of it. Section 2 is also where the file says that `setup.sh`
     takes the three flags only after `--`, which nothing else here did.
 
-    2026-10-12: 477 -> 485 — the adoption's `submodules:` record (#189).
+    2026-10-12: 477 -> 481 — step 7 of "Adopting an existing repository"
+    (#304). Four lines, inside that one numbered point and nowhere else. It
+    said that ANY non-zero exit of `adopt-project.py execute` is to fix the
+    plan and re-run into fresh legs, which holds for a failed verification
+    (exit 1) and for neither of the two exits a GitHub run adds: a refused
+    `gh pr create` and a topic that will not set. Both are exit 2, both come
+    after the legs and the split branch are pushed and verified, and what
+    each prints is a command to finish by hand, so an assistant that followed
+    the sentence abandoned a pushed adoption for a second pair of legs. The
+    lines buy what the point could not say: that the exit decides, which
+    message marks the two (`IS pushed`), and that the second pair is the
+    harm. `tests/test_adopt_github_exits.py` holds the point to both printed
+    exits.
+
+    2026-10-12: 481 -> 489 — the adoption's `submodules:` record (#189).
     Four lines and a blank one under "Adopting an existing repository" say
     that `execute` now writes one more thing into the split: the plan's
     answer for each source submodule a leg keeps, under `project.yaml`'s
@@ -589,7 +603,7 @@ def test_agents_md_is_short_enough_to_be_read():
     manifest edit an assistant makes to turn the row green, the hand-edited
     pin arriving through a new door."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 485, f"AGENTS.md is {len(lines)} lines; the cap is 485"
+    assert len(lines) <= 489, f"AGENTS.md is {len(lines)} lines; the cap is 489"
 
 
 def test_claude_md_points_at_agents_md():

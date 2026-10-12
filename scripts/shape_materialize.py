@@ -46,6 +46,10 @@ from repo_shape import (  # noqa: E402
     SAFE_ARG_RE, NamingPolicy, Refusal, checked_value, double_quoted,
     file_sha256, path_spelling_fault,
 )
+# The reader's own parse and its own comment rule, for "The two lines a pin
+# is moved by" below. `_strip_comment` is that module's private name and is
+# imported on purpose: it is the reader's rule for where a comment starts.
+from repo_shape import YamlError, _strip_comment, parse_yaml  # noqa: E402
 
 SHAPE_REPOSITORY = "opensoft/openRepoShape"
 
@@ -1257,6 +1261,116 @@ def lane_trailer_argument(quote=None, env: dict | None = None) -> str:
         return ""
     spelled = quote(line) if quote else '"' + line + '"'
     return f" --trailer {spelled}"
+
+
+# ---------------------------------------------------------------------------
+# The two lines a pin is moved by (#323)
+# ---------------------------------------------------------------------------
+#
+# `update-shape.py` moves `commit:` and `digests.tree_sha256:` in
+# `contracts/shape-pin.yaml` and in a manifest's `shape:` block, and
+# `bump-leg.py` moves them in a leg's `contracts/<role>-pin.yaml`: three
+# rewriters, all of them LINE rewrites, because each file opens with
+# paragraphs a YAML round trip would delete. What it is to rewrite one of
+# those lines, and what it is to know the rewrite is right, is one answer
+# here rather than three that agree until they do not.
+#
+# THE LINE KEEPS EVERYTHING BUT ITS VALUE. Each rewriter used to find its
+# line by a fixed spelling (two spaces in front of `tree_sha256:`) and write
+# it back as a fixed line, so a `digests:` child indented four spaces — which
+# the reader and both validators accept — was refused as hand-edited, and a
+# trailing `# comment` on either line was dropped without a word (#323, the
+# same assumption #208 removed from the manifest's indentation).
+#
+# AND THE RESULT IS READ BACK. A line rewrite cannot carry every layout the
+# reader accepts — a value on the line below its key is the one that comes up
+# — so what it returns is read with `parse_yaml` and must give the target.
+#
+# IT LIVES HERE AND NOT IN `scripts/repo_shape.py`, which is a SHAPE COPY:
+# anything added there would put an `upstream-changed scripts/repo_shape.py`
+# row in front of every project in the estate for a helper none of them calls
+# (see "Commit trailers" above for the same argument). This module is in no
+# copy list and both tools already import it. `_strip_comment` is imported
+# from there by its private name on purpose: it IS the reader's definition of
+# where a comment starts, quotes included, and a second one is how a rewrite
+# and a reader come to disagree about which part of a line is the value.
+
+
+def is_nested_key(line: str, key: str) -> bool:
+    """Is `line` an INDENTED `<key>:` line, a child of some block, at any
+    depth? How a pin's `digests.tree_sha256` is found (#323): by the key, not
+    by a fixed count of spaces in front of it. Spaces only: the reader refuses
+    a tab as indentation."""
+    return line.startswith(" ") and line.lstrip(" ").startswith(key + ":")
+
+
+def with_scalar(line: str, key: str, value: str) -> str:
+    """`line`, a `<indent><key>: <old value>[  # comment]` line, with only the
+    old value replaced by `value` (double-quoted, as the scaffold writes it).
+
+    The indentation, the key, the spacing between the colon and the value
+    and a trailing comment, with the spacing in front of it, are the line's
+    own. A line with no comment loses its trailing whitespace, as it always
+    has. Callers FIND the line by `key`; one that is not that key's raises
+    `ValueError`, which no caller reaches.
+    """
+    body = _strip_comment(line)
+    indent = line[:len(line) - len(line.lstrip())]
+    key_part = body[len(indent):]
+    if not key_part.startswith(key + ":"):
+        raise ValueError(f"not a `{key}:` line: {line!r}")
+    after = key_part[len(key) + 1:]
+    spacing = after[:len(after) - len(after.lstrip())] or " "
+    tail = line[len(body):]
+    return (f"{indent}{key}:{spacing}{double_quoted(value)}"
+            f"{tail if tail.strip() else ''}")
+
+
+def pin_values_in(text: str, within: tuple = ()) -> tuple[str, str]:
+    """`commit` and `digests.tree_sha256` as the validators read them out of
+    `text`, beneath the keys `within` (`("shape",)` for a manifest's block),
+    or a `ValueError` saying why they cannot be read."""
+    where = "".join(f"{name}." for name in within)
+    try:
+        node = parse_yaml(text)
+    except YamlError as exc:
+        raise ValueError(str(exc)) from exc
+    for name in within:
+        node = node.get(name) if isinstance(node, dict) else None
+    commit = node.get("commit") if isinstance(node, dict) else None
+    digests = node.get("digests") if isinstance(node, dict) else None
+    tree = digests.get("tree_sha256") if isinstance(digests, dict) else None
+    if commit is None or tree is None:
+        raise ValueError(f"no `{where}commit` and `{where}digests."
+                         "tree_sha256` where the validator reads them")
+    return str(commit), str(tree)
+
+
+def rewrite_fault(before: str, after: str, commit: str, tree: str,
+                  within: tuple = ()) -> str | None:
+    """Why `after` does not read back to `commit` and `tree`, or None.
+
+    THE FAULT IS THIS TOOL'S ONLY WHEN IT IS: None also when `before` did not
+    read either. A file that read correctly before the rewrite and does not
+    after it was broken by the rewrite, and the caller's refusal says so. One
+    that did not read before — unparsable, or no pin where the validator
+    looks — was red before the command ran: that is left to the validators,
+    which name the project's own line, and blaming this tool for it would be
+    the same wrong answer turned around (#208).
+    """
+    try:
+        found = pin_values_in(after, within)
+        if found == (commit, tree):
+            return None
+        why = (f"it would read `commit: {found[0]}` and "
+               f"`tree_sha256: {found[1]}`")
+    except ValueError as exc:
+        why = f"the reader would refuse it: {exc}"
+    try:
+        pin_values_in(before, within)
+    except ValueError:
+        return None
+    return why
 
 
 def render(text: str, values: dict[str, str], source: str) -> str:
