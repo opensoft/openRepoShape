@@ -321,7 +321,7 @@ def test_check_and_execute_read_one_list(adopter, world):
     plan_path = edited(world, "visibility: private", "visibility: secret")
     plan = adopter.Plan.load(plan_path)
     source = plan.open_source(str(world["source"]), world["tmp"] / "read")
-    findings, remediation = adopter._entry_findings(plan, source)
+    findings, remediation, _ = adopter._entry_findings(plan, source)
     assert [f for f in findings if f.startswith(FINDING)]
     with pytest.raises(adopter.Refusal) as caught:
         adopter._refuse_what_check_finds(plan, source)
@@ -763,7 +763,7 @@ def test_a_text_value_the_reader_misreads_is_one_finding_in_the_list_check_print
     fails on a merge that has not."""
     plan = adopter.Plan.load(edited(world, old, new))
     source = plan.open_source(str(world["source"]), world["tmp"] / "read")
-    findings, _ = adopter._entry_findings(plan, source)
+    findings, _, _ = adopter._entry_findings(plan, source)
     value = new.split(": ", 1)[1].strip('"')
     about = [f for f in findings if value in f]
     assert len(about) == 1, findings
