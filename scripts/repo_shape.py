@@ -461,6 +461,31 @@ def _scalar(raw: str) -> Any:
     return text
 
 
+def _refuse_flow_indicator(text: str) -> None:
+    """Refuse a PLAIN scalar of a flow collection that holds `[`, `]`, `{` or
+    `}` (#301); a quoted one is `_scalar`'s to judge, and its brackets are
+    text.
+
+    In YAML a plain scalar inside a flow collection ENDS at any of the four,
+    as it ends at the `,` `_split_flow` splits at, so a scalar holding one is
+    never the text it looks like, and PyYAML refuses the document. `k: [a]]`
+    closes the sequence after `a` and leaves a `]` nothing opened, and
+    `k: [x [a, b]]` opens a sequence while an item is still being read.
+    `_split_flow` counts brackets to find its commas and never asked whether
+    the count went below zero or ended above it, so the rest was read as
+    text: `['a]']`, `['x [a, b]']`, and the key of `k: {a"]:}` as `a"]`
+    since #284 stopped reading that `"` as a quote. Refused, a stray
+    bracket typed into `pins: [a, b]]` is a `yaml-unparsable` naming it, not
+    the pin `b]`.
+    """
+    if text.startswith(('"', "'")):
+        return
+    held = next((char for char in text if char in "[]{}"), None)
+    if held is not None:
+        raise YamlError(f"a plain scalar in a flow collection holds `{held}`, "
+                        f"which ends it in YAML: {text!r}")
+
+
 def _flow_value(text: str) -> Any:
     """A flow entry is itself a flow collection when it OPENS with `[` or `{`.
 
@@ -468,8 +493,14 @@ def _flow_value(text: str) -> Any:
     and `'' in "[{"` is True for any string, so the test used to run `_flow`
     on it and refuse `{a: }` as `not a flow collection: ''`, a text nobody
     wrote. `_scalar('')` is the null a block `a:` reads.
+
+    ONE THAT OPENS NOTHING HOLDS NO BRACKET OR BRACE (#301): a plain item or
+    value holding one is refused by `_refuse_flow_indicator`.
     """
-    return _flow(text) if text.startswith(("[", "{")) else _scalar(text)
+    if text.startswith(("[", "{")):
+        return _flow(text)
+    _refuse_flow_indicator(text)
+    return _scalar(text)
 
 
 def _flow(text: str) -> Any:
@@ -506,10 +537,19 @@ def _split_key_flow(text: str) -> tuple[str, str] | None:
     names its line, and a flow collection has none to name, so this names the
     entry. A QUOTED key, `"? a"`, does not open with the `?`, and `?a` is not
     the indicator, which needs a space after it: both read as they did.
+
+    A PLAIN KEY HOLDS NO `]` OR `}` EITHER (#301). `_split_key` refuses a
+    `[` or `{` later in a key, and in a flow a closer ends the key as surely,
+    so `{a"]:}` read as the key `a"]` and `{]:}` as `]`, where PyYAML
+    refuses both. `_refuse_flow_indicator` refuses them; a quoted key is
+    still text.
     """
     if text.startswith("? "):
         raise YamlError(f"explicit keys are not supported: {text!r}")
-    return _split_key(text)
+    kv = _split_key(text)
+    if kv is not None and not text.startswith(('"', "'")):
+        _refuse_flow_indicator(kv[0])
+    return kv
 
 
 def _split_flow(body: str) -> list[str]:

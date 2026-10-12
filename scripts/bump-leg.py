@@ -48,6 +48,17 @@ WHAT IT REFUSES, and why each is a refusal rather than a warning:
   * the root standing on its own tracking branch. The next step this prints
     would then be a push to the default branch, and these organisations are
     pull-request only.
+  * a workflow file under `.github/workflows/`, or the leg's
+    `contracts/<role>-pin.yaml`, that is not UTF-8 (a Latin-1 comment, a
+    UTF-16 file with a byte-order mark): `bump-leg-workflow-unreadable` and
+    `bump-leg-pin-unreadable`, naming each file and its first bad byte, before
+    anything is written and under `--dry-run` as well (#289). Never read
+    lossily — the rewritten text is written back, and would carry U+FFFD
+    where the operator's byte was — and never skipped, since `validate-pins.py`
+    reads every workflow file on disk and cannot read it either. A workflow
+    file git does not track is refused the same way and marked `(untracked or
+    ignored)`: it needs the re-save and no commit, where a tracked one is
+    committed after it.
   * a validator that goes red after the rewrite. Every byte is rolled back
     first — the pin file, the workflow files, the leg's checkout and the index
     — so a refusal leaves the tree exactly as it was found.
@@ -88,7 +99,8 @@ from repo_shape import (  # noqa: E402
 )
 from shape_materialize import (  # noqa: E402
     CommandFailed, captured_child_environment, check_program, commit_trailers,
-    escape_what_stdout_cannot_encode, run, trailer_line, write_lf,
+    escape_what_stdout_cannot_encode, is_nested_key, rewrite_fault, run,
+    trailer_line, with_scalar, write_lf,
 )
 
 MANIFEST = "project.yaml"
@@ -227,17 +239,31 @@ def rewrite_pin(text: str, commit: str, digest: str) -> str:
 
     Each replacement must fire exactly once or this refuses: a pin file this
     tool did not recognise is not a pin file it may edit.
+
+    EACH OF THE TWO LINES KEEPS ITS OWN LAYOUT (#323). `commit:` is found at
+    column 0 and `tree_sha256:` as any INDENTED line that begins with it, so a
+    `digests:` child at any depth the reader accepts is recognised, and only
+    the value after the key changes: the indentation, the spacing and a
+    trailing `# comment` are the line's own. They were written back as
+    `commit: "<sha>"` and `  tree_sha256: "<digest>"`, so a child indented
+    four spaces was refused as hand-edited and a comment was dropped.
+
+    WHAT IS RETURNED HAS BEEN READ BACK, as `update-shape.py`'s pin and
+    manifest rewrites are (`shape_materialize.rewrite_fault`): a layout this
+    line rewrite cannot carry is refused HERE as this tool's failure, before
+    any byte is written. The digest is the one this command RECOMPUTED from
+    the leg's own objects; the read-back only asks that it landed.
     """
     out: list[str] = []
     seen = {"commit": 0, "tree_sha256": 0}
     for line in text.splitlines():
         if line.startswith("commit:"):
             seen["commit"] += 1
-            out.append(f'commit: "{commit}"')
+            out.append(with_scalar(line, "commit", commit))
             continue
-        if line.startswith("  tree_sha256:"):
+        if is_nested_key(line, "tree_sha256"):
             seen["tree_sha256"] += 1
-            out.append(f'  tree_sha256: "{digest}"')
+            out.append(with_scalar(line, "tree_sha256", digest))
             continue
         out.append(line)
     for key, count in seen.items():
@@ -248,9 +274,23 @@ def rewrite_pin(text: str, commit: str, digest: str) -> str:
                 "was expected, so this tool will not rewrite it",
                 "Remediation: the pin was hand-edited into a shape this tool "
                 "does not recognise. Fix it by hand this once — `commit:` at "
-                "column 0 and `  tree_sha256:` under `digests:` — or re-"
-                "scaffold.")
-    return "\n".join(out) + "\n"
+                "column 0 and `tree_sha256:` indented under `digests:` — or "
+                "re-scaffold.")
+    rewritten = "\n".join(out) + "\n"
+    why = rewrite_fault(text, rewritten, commit, digest)
+    if why is not None:
+        raise Refusal(
+            "bump-leg-pin-unrecognised",
+            "the pin file reads as it stands, but this tool's rewrite of it "
+            f"does not read back to the target ({why}), so this tool will not "
+            "write it",
+            "Remediation: the fault is this tool's line rewrite, not the "
+            "project's pin. Put each of `commit:` and `tree_sha256:` on one "
+            "line with its quoted value, as the scaffold writes them, leave "
+            "both values as they are — this command recomputes the digest, "
+            "nobody edits it to fit — and run the same command again; this "
+            "tool will not guess at a pin it does not recognise.")
+    return rewritten
 
 
 def _tracked_workflows(root: Path, workflows: Path) -> set[str]:
@@ -266,6 +306,115 @@ def _tracked_workflows(root: Path, workflows: Path) -> set[str]:
                    workflows.relative_to(root).as_posix()],
                   cwd=root, binary=True)
     return {os.fsdecode(name) for name in raw.split(b"\0") if name}
+
+
+def _not_utf8(root: Path, path: Path, exc: UnicodeDecodeError) -> str:
+    """`<path relative to root>: not UTF-8 at byte N (<reason>)`, in the
+    words `repo_shape.load_yaml` gives the same failure (#192), so a file this
+    tool cannot read is named the way every other reader names one."""
+    return (f"{path.relative_to(root).as_posix()}: not UTF-8 at byte "
+            f"{exc.start} ({exc.reason})")
+
+
+def _leg_pin_text(root: Path, pin_path: Path) -> str:
+    """The leg's `contracts/<role>-pin.yaml` as text, or a refusal naming it
+    when it is not UTF-8 (#289).
+
+    Read here rather than through `load_yaml` because `rewrite_pin` is a LINE
+    REWRITE of the file's own text, which a parsed mapping cannot be. A
+    `UnicodeDecodeError` is a `ValueError`: nothing on the path catches it and
+    `main()` names `Refusal` and `CommandFailed` alone, so it ended the run in
+    a traceback, exit 1, under `--dry-run` as well, because this read comes
+    before that early return. It comes before anything is written, so the
+    refusal promises only what is true: the working tree, the index and the
+    leg's checkout are as they were. (The leg's object store was fetched into
+    already, which `--dry-run` says it does.)
+    """
+    try:
+        return pin_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise Refusal(
+            "bump-leg-pin-unreadable",
+            _not_utf8(root, pin_path, exc),
+            "Remediation: this tool rewrites `commit:` and "
+            "`digests.tree_sha256` in this file as UTF-8 text, and reads no "
+            "file lossily, because the rewritten text is written back and "
+            "would carry U+FFFD where your byte was. Byte "
+            f"{exc.start}, counting from 0 at the start of the file, is the "
+            "first that is not UTF-8: re-save the file as UTF-8, or replace "
+            "that byte with the character it was meant to be, commit it, and "
+            "run the same command again. Nothing in the working tree, the "
+            "index or the leg's checkout was changed.") from exc
+
+
+def _workflow_texts(root: Path, workflows: Path, tracked: set[str],
+                    listed: set[str]) -> list[tuple[Path, str]]:
+    """Every `.yml` and `.yaml` file in `workflows`, read as UTF-8 — or ONE
+    refusal naming each that is not (#289).
+
+    EVERY FILE IS READ, whether or not it names the leg, so a file that is not
+    UTF-8 is REFUSED BY NAME and never skipped, never read lossily.
+    `read_text(encoding="utf-8")` on a Latin-1 comment or a UTF-16 file with a
+    byte-order mark raised `UnicodeDecodeError`, which nothing caught: a
+    traceback, exit 1, under `--dry-run` too, because this read comes before
+    that early return. Skipping the file would leave `validate-pins.py`, which
+    reads every workflow on disk, unable to read it either, and
+    `errors="replace"` would write U+FFFD over the operator's byte into the
+    lockstep commit. All of them are named at once, so the operator re-saves
+    each in one pass instead of meeting them one run at a time. The read is
+    before anything is written, so the refusal promises only what is true:
+    the working tree, the index and the leg's checkout are as they were.
+
+    EACH LINE SAYS WHETHER GIT TRACKS THE FILE, because the advice differs.
+    A tracked file is committed after the re-save. One git does not track,
+    untracked or ignored, needs only the re-save: committing it would put a
+    draft on the bump branch, which `plan_workflows` refuses an untracked
+    file for (#207), and `git add` refuses an ignored one. `tracked` and
+    `listed` are `plan_workflows`' own, and `_tracked_spelling` answers with
+    them, so a tracked file the disk spells another way (#332) is not marked.
+    It is asked only of a file already refused and reads no file (`tracked` is
+    in hand, `_same_file` is a `stat`), so every read still comes before
+    anything is written.
+    """
+    texts: list[tuple[Path, str]] = []
+    unreadable: list[tuple[str, bool]] = []
+    for path in sorted(workflows.iterdir()):
+        if path.suffix not in (".yml", ".yaml") or not path.is_file():
+            continue
+        try:
+            texts.append((path, path.read_text(encoding="utf-8")))
+        except UnicodeDecodeError as exc:
+            held = _tracked_spelling(root, path, tracked, listed) is not None
+            unreadable.append((_not_utf8(root, path, exc), held))
+    if unreadable:
+        advice = ""
+        if any(held for _, held in unreadable):
+            advice += "Commit each file git tracks. "
+        if not all(held for _, held in unreadable):
+            advice += ("A file marked (untracked or ignored) needs no "
+                       "commit, only the re-save: committing it would put "
+                       "it on this branch, so either leave it uncommitted "
+                       "or move it out of .github/workflows/ until the bump "
+                       "has landed. ")
+        raise Refusal(
+            "bump-leg-workflow-unreadable",
+            f"{len(unreadable)} workflow file(s) are not UTF-8:\n"
+            + "\n".join(f"    {line}" + ("" if held
+                                        else "  (untracked or ignored)")
+                        for line, held in unreadable),
+            "Remediation: this tool rewrites each workflow file as UTF-8 "
+            "text and reads none lossily, because the rewritten text is "
+            "written back and would carry U+FFFD where your byte was; "
+            "`scripts/validate-pins.py` reads every workflow file on disk as "
+            "UTF-8 too, so skipping one would only move the failure there. "
+            "In each line above, the byte is counted from 0 at the start of "
+            "the file and is the first that is not UTF-8: re-save every file "
+            "named as UTF-8 (a UTF-16 file with a byte-order mark needs "
+            "converting, not editing), whether or not it names this leg. "
+            + advice
+            + "Then run the same command again. Nothing in the working "
+            "tree, the index or the leg's checkout was changed.")
+    return texts
 
 
 def _same_file(first: Path, second: Path) -> bool:
@@ -359,6 +508,8 @@ def plan_workflows(root: Path, repository: str,
     names the path git tracks and no other, and the rewrite reaches the one
     file through it, read through the disk's name and written through
     git's, which the filesystem has already said are the same file.
+
+    A file that is not UTF-8 is a refusal (`_workflow_texts`, #289).
     """
     plans: list[tuple[Path, str, int]] = []
     workflows = root / ".github" / "workflows"
@@ -367,9 +518,7 @@ def plan_workflows(root: Path, repository: str,
     tracked = _tracked_workflows(root, workflows)
     listed = {child.name for child in workflows.iterdir()}
     untracked: list[tuple[str, int]] = []
-    for path in sorted(workflows.iterdir()):
-        if path.suffix not in (".yml", ".yaml") or not path.is_file():
-            continue
+    for path, text in _workflow_texts(root, workflows, tracked, listed):
         moved = 0
 
         def swap(match: re.Match) -> str:
@@ -382,7 +531,6 @@ def plan_workflows(root: Path, repository: str,
             return (f"{match.group('repo')}{match.group('path') or ''}"
                     f"@{commit}")
 
-        text = path.read_text(encoding="utf-8")
         rewritten = WORKFLOW_REF_RE.sub(swap, text)
         if not moved:
             continue
@@ -1085,7 +1233,7 @@ def cmd_bump(args) -> int:
     digest = tree_digest(submodule, commit)
     pin_rel = f"contracts/{role}-pin.yaml"
     pin_path = _leg_pin_path(root, pin_rel)
-    pin_text = pin_path.read_text(encoding="utf-8")
+    pin_text = _leg_pin_text(root, pin_path)
     plans = plan_workflows(root, repository, commit)
 
     print(f"commit       {was[:12]} -> {commit[:12]}")

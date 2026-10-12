@@ -21,6 +21,9 @@ WHAT THESE TESTS HOLD, in the order the ratified rule says it:
   * a `single-repository.yaml` that does not parse, or declares another
     kind, silences nothing and is REPORTED beside the advisory, failing
     nothing;
+  * this repository is one of them: its own root carries the record Brett
+    Heap decided on 2026-10-11 (#337), so the standard's own checkout is not
+    advised either;
   * it writes nothing, records nothing, and is read by the three tools and
     by no validator, template script or workflow.
 
@@ -659,6 +662,39 @@ def test_the_schema_the_template_and_the_module_agree():
                             "REVISIT_ON": "2027-04-01"}, "template")
     from repo_shape import parse_yaml
     assert shape_advisory.field_problems(parse_yaml(filled)) == []
+
+
+def test_this_repository_records_that_it_stays_single(quiet_env):
+    """#337: openRepoShape is not a Triad and says so, once, in its own root.
+
+    Brett Heap decided on 2026-10-11 that this repository stays a single
+    repository, so the doctor gave every session that began work in this
+    checkout the advisory about the standard itself. The record is the
+    standard's own `single-repository.yaml`: it must be there, of the right
+    kind and with every field its schema asks for, and the doctor must not
+    give the advisory about it.
+
+    ASKED OF THE DISK, as the doctor asks, and of two readers: `read_record`
+    for the file alone, which cannot depend on what this checkout is called
+    or where it sits, and the doctor's own rows for what a person actually
+    meets. The second asks for no `advisory` row rather than for no
+    `triad-advisory` row at all, because a checkout cloned under a leg's name
+    is sent to its assembly root instead and that row is not the advisory.
+    Nothing here pins a value of the record: the day Brett Heap amends his
+    decision, the file changes and this test does not.
+    """
+    state, silences_nothing, notes = shape_advisory.read_record(REPO)
+    assert state == shape_advisory.RECORD_SILENCES, (
+        f"this repository's root has no {RECORD} of the right kind: "
+        f"{state}, {silences_nothing}")
+    assert notes == [], (
+        f"this repository's {RECORD} departs from "
+        f"{shape_advisory.RECORD_SCHEMA}: {notes}")
+
+    _, rows, _ = doctor_json(REPO, quiet_env)
+    assert all(row["status"] != "advisory" for row in rows.values()), (
+        "the doctor still gives this repository the Triad advisory: "
+        f"{rows.get(ROW)}")
 
 
 @pytest.mark.parametrize("field, value, problem", [
