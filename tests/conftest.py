@@ -50,30 +50,41 @@ ORG = "testorg"
 #: ever needs.
 FILE_PROTOCOL = ["-c", "protocol.file.allow=always"]
 
-#: THE ONE DEFAULT IDENTITY THIS SUITE GIVES GIT (#279). A commit needs an
-#: author and a committer, and git guesses them from the passwd entry and a
-#: hostname with a domain; a container whose hostname has none cannot, and the
-#: commit dies with `Author identity unknown`. `git()` below puts the two
-#: values here ahead of every verb as `-c` CONFIG (`IDENTITY_CONFIG`), and
-#: `run_script` puts the same two into the environment of the script it
-#: starts, so the suite names its default once. They are the spelling the
-#: suite already used; the `.invalid` TLD is reserved (RFC 2606), so no
+#: THE DEFAULT IDENTITY `git()` GIVES GIT (#279). A commit needs an author and
+#: a committer, and git guesses them from the passwd entry and a hostname with
+#: a domain; a container whose hostname has none cannot, and the commit dies
+#: with `Author identity unknown`. `git()` below puts the two values here ahead
+#: of every verb as `-c` CONFIG (`IDENTITY_CONFIG`), and `run_script` reuses
+#: the same two for the environment of the script it starts, so this file
+#: names its default once, for both. Other test files still spell the same
+#: pair for their own commits, and are not changed here. It is the spelling
+#: the suite already used; the `.invalid` TLD is reserved (RFC 2606), so no
 #: address here can ever be a real one.
 IDENTITY_NAME = "openRepoShape tests"
 IDENTITY_EMAIL = "tests@openreposhape.invalid"
 
 #: THE DEFAULT AS CONFIG, NEVER AS ENVIRONMENT (#279). `GIT_AUTHOR_NAME` and
 #: `GIT_COMMITTER_NAME` OUTRANK `user.name` in git's own precedence, so a
-#: default exported through `env` would silently replace the identity of
-#: every call site that gives its own: `git("-c", "user.name=t", "-c",
-#: "user.email=t@t", "commit", ...)` is the suite's commonest spelling, and a
-#: test that commits as `Source Human` on purpose (`make_source_repo`,
-#: `as_human`) would record the default and assert on the wrong author. As
-#: `-c` ahead of the verb it is the weakest identity there is: a later `-c`
-#: on the same command line wins over it, and an identity the operator or CI
-#: EXPORTS (the three CI jobs export `openRepoShape CI`) wins over both.
-#: Every call keeps exactly the identity it had; only a call that had none
-#: gains one.
+#: default exported through `env` would silently replace the identity of every
+#: call site that gives its own: `as_human`'s `Source Human`, and the
+#: `git("-c", "user.name=t", "-c", "user.email=t@t", "commit", ...)` that is
+#: the suite's commonest spelling, would record the default, and the test
+#: would assert on the wrong author.
+#:
+#: WHERE IT RANKS, strongest first: an identity EXPORTED in the environment
+#: (the three CI jobs export `openRepoShape CI`); a `-c` LATER on the same
+#: command line, which is how a call site's own `-c user.name=...` beats it;
+#: this default; then every identity read from a config FILE, global, system
+#: or the repository's own `user.name`. It fills a gap and overrides no call
+#: site and no exported identity, but it DOES outrank a developer's own
+#: `~/.gitconfig`: a commit through `git()` that gives no identity records
+#: `openRepoShape tests` where it used to record the developer. That is
+#: harmless here, because no test reads such an author and nothing in the
+#: suite writes `user.name` into a repository's config. A test that needs its
+#: own identity to take effect through `git()` passes it as `-c` ahead of the
+#: verb, or exports it; `git("config", "user.name", ...)` would lose to this
+#: default. `tests/test_git_helper_identity.py` holds all of it to account,
+#: on a runner that exports an identity as well as on one that does not.
 IDENTITY_CONFIG = ["-c", f"user.name={IDENTITY_NAME}",
                    "-c", f"user.email={IDENTITY_EMAIL}"]
 
@@ -117,10 +128,11 @@ def git(*args: str, cwd: Path, check: bool = True) -> subprocess.CompletedProces
     `Author identity unknown` wherever git could not (`stage_unmerged`'s
     `commit-tree` in `tests/test_shape_doctor.py`, `commit` in
     `tests/test_pin_validator.py`). The default goes in as CONFIG so that it
-    yields to every identity a call site or the environment gives; the
-    comment on `IDENTITY_CONFIG` says why it must not be an environment
-    variable. The failure message below names `args` only: the two `-c`
-    pairs are the helper's, not the test's.
+    yields to a later `-c` in `args` and to an identity the environment
+    exports, and outranks one a config file gives; the comment on
+    `IDENTITY_CONFIG` says where it ranks and why it must not be an
+    environment variable. The failure message below names `args` only: the
+    two `-c` pairs are the helper's, not the test's.
     """
     proc = subprocess.run(["git", *IDENTITY_CONFIG, *args], cwd=str(cwd),
                           capture_output=True, text=True, check=False)
