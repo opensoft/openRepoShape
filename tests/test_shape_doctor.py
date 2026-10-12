@@ -6680,6 +6680,578 @@ def test_a_submodule_at_a_path_the_doctor_never_judges_is_still_named(
     assert data["submodules"][0]["in_leg"] == "code"
 
 
+# --- placement: a submodule held to the leg the adoption recorded (#189) ----
+#
+# Which leg holds a source submodule is a human's answer in the adoption plan
+# (#166), and the plan is committed nowhere. So until `execute` wrote it into
+# `project.yaml`, the row could only NOTE a submodule -- kept, or a placement
+# it cannot verify -- and a submodule added by hand looked the same as one a
+# person placed. With the record, one in the leg recorded is placed and one in
+# the other leg is MISPLACED; one no record names is still #186's note.
+
+#: The source commit a hand-written record names. Any 40 hex: the doctor reads
+#: the leg, not the commit.
+RECORDED_AT = "0123456789abcdef0123456789abcdef01234567"
+
+
+def record_submodules(project: Path, *rows: tuple) -> None:
+    """Append `project.yaml`'s `submodules:` block, as `adopt-project.py
+    execute` writes it, one `(path, leg)` or `(path, leg, resolution)` row
+    each.
+
+    SPELT OUT HERE, not written by the adoption's own function: what is
+    under test is that the doctor reads the record a manifest carries, and
+    `test_an_adopted_submodule_is_recorded_and_placed` below proves the
+    writer's own output is that record. Written as BYTES, so the file keeps
+    the LF line endings it was written with on every platform.
+    """
+    lines = ["", "submodules:"]
+    for path, leg, *why in rows:
+        lines += [f'  - path: "{path}"', f"    leg: {leg}"]
+        if why:
+            lines.append(f'    resolution: "{why[0]}"')
+        lines.append(f'    source_commit: "{RECORDED_AT}"')
+    manifest = project / "project.yaml"
+    manifest.write_bytes((manifest.read_text(encoding="utf-8")
+                          + "\n".join(lines) + "\n").encode("utf-8"))
+
+
+def recorded_note(leg: str) -> str:
+    """What a `recorded` submodule's note says, spelt out (see KEPT_NOTE)."""
+    return (f"a submodule project.yaml's `submodules:` records in the {leg} "
+            "leg, where it is (#189)")
+
+
+def audited_legs(row: dict) -> str:
+    """The `[...]` the row's reason ends with, from the legs it printed."""
+    return "; ".join(
+        f"{leg['path']}: {leg['paths']} path(s) over "
+        f"{leg['classified']} of {leg['tracked']} tracked file(s)"
+        for leg in row["detail"]["legs"])
+
+
+def test_a_submodule_in_the_leg_its_record_names_is_placed(standard,
+                                                           project):
+    """THE ANSWER IS CHECKED, AND THE ROW IS `ok`.
+
+    `.cursor` is rooted by a rule for a FILE, and a leg keeps the submodule
+    there because the root keeps none (#166). Recorded in the code leg, and
+    in the code leg, it is placed: the row is `ok` and not the note #186 had
+    to give it, it says the record placed it, and the project's own
+    validator accepts the record.
+    """
+    stage_gitlink(project / "code", ".cursor")
+    record_submodules(project, (".cursor", "code", "editor rules"))
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout)["verdict"] == "COMPLIANT"
+    rows = rows_of(result)
+    assert rows["manifest"]["status"] == "ok", rows["manifest"]
+    row = rows["placement"]
+    assert row["status"] == "ok", row
+    assert row["detail"]["misplaced"] == []
+    assert row["detail"]["review_required"] == []
+    assert row["detail"]["submodules"] == [{
+        "path": "code/.cursor", "leg": "code", "path_in_leg": ".cursor",
+        "placement": "recorded", "rule": "root-assistant-instructions",
+        "recorded_leg": "code", "resolution": "editor rules",
+        "note": recorded_note("code")}]
+    assert row["reason"] == (
+        "every tracked file classifies as the leg it is in; 1 submodule(s) "
+        "in the leg project.yaml's `submodules:` records for them (#189): "
+        f"code/.cursor  [{audited_legs(row)}]"), row["reason"]
+    assert row["next"] is None, row
+
+    text = doctor(standard, project)
+    assert text.returncode == 0, text.stdout + text.stderr
+    assert verdict_line(text).startswith("COMPLIANT   (exit 0)"), text.stdout
+
+
+def test_a_submodule_in_the_other_leg_from_its_record_is_misplaced(
+        standard, project, tmp_path):
+    """THE RECORD SAYS SPEC AND THE CODE LEG HOLDS IT: MISPLACED (1 path).
+
+    The manifest asserts where it belongs, so it is a path in the wrong leg
+    like any other: in `misplaced`, counted in the verdict and the leg, named
+    with the leg recorded, and an entry under `paths:` in the plan that the
+    adoption's own reader accepts. Nothing else is in the wrong leg here, so
+    the reason is that one clause and no separator hangs after it.
+    """
+    stage_gitlink(project / "code", ".cursor")
+    record_submodules(project, (".cursor", "spec", "rules the spec reads"))
+    out = tmp_path / "placement-plan.yaml"
+    result = doctor(standard, project, "--json", "--placement-plan", str(out))
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert json.loads(result.stdout)["verdict"] == "MISPLACED (1 path)"
+    row = rows_of(result)["placement"]
+    assert row["status"] == "FINDING", row
+    reason = ("project.yaml's `submodules:` records this submodule in the "
+              "spec leg (#189): rules the spec reads")
+    assert row["detail"]["misplaced"] == [{
+        "path": "code/.cursor", "leg": "code", "path_in_leg": ".cursor",
+        "classified_as": "spec", "rule": None, "reason": reason,
+        "confidence": "recorded", "question": None, "files": 1, "bytes": 0,
+        "review_required": False, "direction": "spec in the code leg",
+        "submodule": True}]
+    [held] = row["detail"]["submodules"]
+    assert held["placement"] == "misplaced", held
+    assert held["recorded_leg"] == "spec", held
+    assert held["note"] == (
+        "a submodule project.yaml's `submodules:` records in the spec leg, "
+        "and it is in the code leg (#189)"), held
+    code = [leg for leg in row["detail"]["legs"] if leg["role"] == "code"][0]
+    assert code["misplaced"] == 1, code
+    assert row["reason"] == (
+        "1 submodule(s) sit in a leg other than the one project.yaml's "
+        "`submodules:` records for them (#189): code/.cursor (recorded in "
+        f"the spec leg)  [{audited_legs(row)}]"), row["reason"]
+    assert "--placement-plan" in row["next"], row
+
+    adopt = adoption_module(standard)
+    data = adopt.load_yaml(out)
+    [entry] = data["paths"]
+    assert entry == {"path": "code/.cursor", "in_leg": "code", "leg": "spec",
+                     "confidence": "recorded", "rule": None,
+                     "reason": reason, "files": 1, "bytes": 0,
+                     "review_required": False, "resolution": ""}, entry
+    [listed] = data["submodules"]
+    assert listed == {"path": "code/.cursor", "in_leg": "code",
+                      "placement": "misplaced", "recorded_leg": "spec",
+                      "rule": "root-assistant-instructions",
+                      "note": held["note"]}, listed
+    assert "`placement: misplaced`" in out.read_text(encoding="utf-8")
+    as_plan = dict(data)
+    as_plan["kind"], as_plan["mode"] = adopt.PLAN_KIND, "in-place"
+    assert adopt._leg_findings(adopt.Plan(out, as_plan), None) == []
+
+    text = doctor(standard, project)
+    assert text.returncode == 1, text.stdout + text.stderr
+    assert verdict_line(text).startswith("MISPLACED (1 path)"), text.stdout
+
+
+def test_a_submodule_no_record_names_is_still_the_note(standard, project,
+                                                        tmp_path):
+    """A SUBMODULE ADDED BY HAND, beside one the adoption recorded.
+
+    `docs/theme` is in no row, so the doctor still cannot tell an answer
+    from none, and it is #186's `unverifiable` note, word for word, while
+    `.cursor` beside it is placed. A row with a note in it is not `ok`, and
+    nothing is MISPLACED. The plan lists both, the recorded one with the leg
+    recorded and the other without one.
+    """
+    stage_gitlink(project / "code", ".cursor")
+    stage_gitlink(project / "code", "docs/theme")
+    record_submodules(project, (".cursor", "code"))
+    out = tmp_path / "placement-plan.yaml"
+    result = doctor(standard, project, "--json", "--placement-plan", str(out))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout)["verdict"] == "COMPLIANT"
+    row = rows_of(result)["placement"]
+    assert row["status"] == "note", row
+    assert row["detail"]["misplaced"] == []
+    by_path = {held["path"]: held for held in row["detail"]["submodules"]}
+    assert by_path["code/.cursor"]["placement"] == "recorded"
+    assert by_path["code/.cursor"]["resolution"] is None, (
+        "a row with no `resolution:` gives none")
+    theme = by_path["code/docs/theme"]
+    assert theme == {"path": "code/docs/theme", "leg": "code",
+                     "path_in_leg": "docs/theme", "placement": "unverifiable",
+                     "rule": "spec-governance",
+                     "note": unverifiable_note("spec-governance", "spec")}
+    recorded, apart, unverified = row["reason"].partition(
+        "; 1 submodule(s) at a path a rule assigns")
+    assert apart, row["reason"]
+    assert recorded == (
+        "nothing is in the wrong leg; 1 submodule(s) in the leg "
+        "project.yaml's `submodules:` records for them (#189): code/.cursor")
+    assert "code/docs/theme (rule spec-governance)" in unverified
+    data = adoption_module(standard).load_yaml(out)
+    listed = {held["path"]: held for held in data["submodules"]}
+    assert listed["code/.cursor"]["recorded_leg"] == "code"
+    assert "recorded_leg" not in listed["code/docs/theme"]
+
+
+def test_a_record_row_the_validator_refuses_decides_nothing(standard,
+                                                            project):
+    """`leg: root` IS NO ANSWER FOR A SUBMODULE, and it places nothing.
+
+    The project's own validator names the row, which makes the verdict
+    INVALID, and the placement row treats `.cursor` as one no record names:
+    a row nobody can hold a submodule to must not make it look checked.
+    """
+    stage_gitlink(project / "code", ".cursor")
+    record_submodules(project, (".cursor", "root"))
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 1, result.stdout + result.stderr
+    rows = rows_of(result)
+    assert rows["manifest"]["status"] == "FINDING", rows["manifest"]
+    assert "manifest-submodule-leg" in json.dumps(rows["manifest"])
+    [held] = rows["placement"]["detail"]["submodules"]
+    assert held["placement"] == "kept", held
+    assert "recorded_leg" not in held, held
+
+
+@pytest.mark.parametrize("legs, placement, recorded_leg", [
+    (("code", "spec"), "recorded", "code"),
+    (("spec", "code"), "misplaced", "spec"),
+    (("root", "code"), "kept", None),
+], ids=["code-then-spec", "spec-then-code", "refused-leg-then-code"])
+def test_where_two_rows_name_one_path_the_first_decides(standard, project,
+                                                        legs, placement,
+                                                        recorded_leg):
+    """TWO ROWS FOR ONE PATH: THE FIRST DECIDES, AND THE VERDICT IS RED.
+
+    The project's own validator accepts the first row and names the second
+    as `recorded twice`, so the doctor holds `.cursor` to the first, as it
+    ignores every row the validator refuses -- and where it refuses the
+    first row's `leg: root`, nothing decides, and the second row does not
+    stand in for it. `execute` writes one row per gitlink, so only an edit
+    makes two; whichever row decides, the `manifest` row is a FINDING and
+    the doctor exits 1.
+    """
+    stage_gitlink(project / "code", ".cursor")
+    record_submodules(project, *((".cursor", leg) for leg in legs))
+    named = run_script(project / "scripts" / "validate-manifest.py",
+                       cwd=project)
+    assert "submodules[1]: path '.cursor' is recorded twice" in (
+        named.stderr), named.stderr
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 1, result.stdout + result.stderr
+    rows = rows_of(result)
+    assert rows["manifest"]["status"] == "FINDING", rows["manifest"]
+    [held] = rows["placement"]["detail"]["submodules"]
+    assert held["placement"] == placement, held
+    assert held.get("recorded_leg") == recorded_leg, held
+
+
+#: A leg's `.gitmodules` registering `.cursor`, as an adoption leaves one.
+CURSOR_GITMODULES = ('[submodule ".cursor"]\n\tpath = .cursor\n'
+                     "\turl = https://example.invalid/rules.git\n")
+
+#: What the row says of a `.gitmodules` whose question the record answered.
+ANSWERED_CLAUSE = ("project.yaml's `submodules:` answers the question the "
+                   "policy asks of code/.gitmodules: which leg owns the "
+                   "submodules it registers")
+
+
+@pytest.mark.parametrize("recorded, status, asked", [
+    ("code", "ok", []),
+    ("spec", "FINDING", ["code/.gitmodules"]),
+    (None, "note", ["code/.gitmodules"]),
+], ids=["recorded-in-this-leg", "recorded-in-the-other-leg", "no-record"])
+def test_the_record_answers_the_question_about_the_gitmodules_beside_it(
+        standard, project, recorded, status, asked):
+    """THE POLICY ASKS WHICH LEG OWNS THE SUBMODULES A `.gitmodules`
+    REGISTERS, AND THE RECORD SAYS (#189).
+
+    An adoption's leg always holds the `.gitmodules` that registers its
+    submodules, and rule `ambiguous-gitmodules` asks that of every one. In a
+    leg that keeps a submodule the record places there, the record is the
+    answer, and it is this leg: the file is placed, the row is `ok`, and the
+    reason says where the answer came from. Where the record puts the
+    submodule in the other leg, or there is no record, it says nothing about
+    this file, which stays the question it was.
+    """
+    stage(project / "code", ".gitmodules", CURSOR_GITMODULES)
+    stage_gitlink(project / "code", ".cursor")
+    if recorded:
+        record_submodules(project, (".cursor", recorded))
+    result = doctor(standard, project, "--json")
+    assert result.returncode == (1 if status == "FINDING" else 0), (
+        result.stdout + result.stderr)
+    row = rows_of(result)["placement"]
+    assert row["status"] == status, row
+    assert [item["path"] for item in row["detail"]["review_required"]] == (
+        asked), row["detail"]["review_required"]
+    code = [leg for leg in row["detail"]["legs"] if leg["role"] == "code"][0]
+    if asked:
+        assert "answered" not in code, code
+        assert ANSWERED_CLAUSE not in row["reason"], row["reason"]
+        return
+    assert code["answered"] == ["code/.gitmodules"], code
+    assert row["reason"] == (
+        "every tracked file classifies as the leg it is in; 1 submodule(s) "
+        "in the leg project.yaml's `submodules:` records for them (#189): "
+        f"code/.cursor; {ANSWERED_CLAUSE}  [{audited_legs(row)}]"), (
+        row["reason"])
+
+
+@pytest.mark.parametrize("other, rows, status, unread", [
+    ("vendor/lib", (), "note", []),
+    ("docs/theme", (("docs/theme", "spec"),), "FINDING", []),
+    pytest.param("bad\x01name", (), "note", ["'bad\\x01name'"],
+                 marks=pytest.mark.skipif(
+                     os.name == "nt", reason="Git for Windows records no "
+                     "path that holds a control character")),
+], ids=["one-no-row-names", "one-recorded-in-the-other-leg",
+        "one-whose-name-cannot-be-read"])
+def test_the_question_stays_where_the_record_does_not_place_every_submodule(
+        standard, project, other, rows, status, unread):
+    """THE RECORD ANSWERS FOR A `.gitmodules` ONLY WHERE IT PLACES EVERY
+    SUBMODULE THE LEG KEEPS (#189).
+
+    Beside the recorded `.cursor` the code leg keeps a second submodule,
+    registered in the same `.gitmodules` as `git submodule add` registers
+    one: added by hand, which no row names, or one the record puts in the
+    spec leg. The record does not say this leg owns everything the file
+    registers, so the file stays the policy's question, and the row never
+    says the record answered it; the note or the finding about the second
+    submodule is what it was.
+
+    Or one whose name the doctor cannot read (#189's second review, F1). A
+    control character, like a byte that is not UTF-8, sets the name aside
+    before its mode is read, so no row was held to it: the leg reports the
+    name by `repr`, and the question stays.
+    """
+    stage(project / "code", ".gitmodules", CURSOR_GITMODULES + (
+        f'[submodule "{other}"]\n\tpath = {other}\n'
+        "\turl = https://example.invalid/other.git\n"))
+    stage_gitlink(project / "code", ".cursor")
+    stage_gitlink(project / "code", other)
+    record_submodules(project, (".cursor", "code"), *rows)
+    result = doctor(standard, project, "--json")
+    assert result.returncode == (1 if status == "FINDING" else 0), (
+        result.stdout + result.stderr)
+    row = rows_of(result)["placement"]
+    assert row["status"] == status, row
+    assert [item["path"] for item in row["detail"]["review_required"]] == [
+        "code/.gitmodules"], row["detail"]["review_required"]
+    code = [leg for leg in row["detail"]["legs"] if leg["role"] == "code"][0]
+    assert "answered" not in code, code
+    assert code["unwritable"] == unread, code
+    assert ANSWERED_CLAUSE not in row["reason"], row["reason"]
+
+
+#: Names the record cannot write raw -- `str.isprintable` refuses a character
+#: in each -- and the doctor still reads: none holds a control character or a
+#: byte that is not UTF-8, the names it reports as ones no report can carry.
+ESCAPED_NAMES = ("vendor/nb\u00a0sp", "vendor/ideo\u3000graphic",
+                 "vendor/zero\u200bwidth", "vendor/soft\u00adhyphen",
+                 "vendor/nel\u0085x", "vendor/line\u2028sep")
+
+
+def held_placements(result) -> dict:
+    """`{path: placement}` of every submodule the `placement` row holds."""
+    return {held["path"]: held["placement"] for held in
+            rows_of(result)["placement"]["detail"].get("submodules") or []}
+
+
+def append_written_record(standard: Path, project: Path, names,
+                          leg: str = "code") -> str:
+    """The record the adoption's OWN writer makes for `names` in `leg`,
+    appended to `project.yaml` as bytes, and returned."""
+    adopt = adoption_module(standard)
+    block = adopt.submodule_record(
+        [{"path": name, "leg": leg} for name in names],
+        sorted((name, adopt.GITLINK_MODE, RECORDED_AT, 0) for name in names),
+        RECORDED_AT)
+    manifest = project / "project.yaml"
+    manifest.write_bytes((manifest.read_text(encoding="utf-8")
+                          + block).encode("utf-8"))
+    return block
+
+
+def test_a_name_the_record_spells_with_an_escape_still_names_its_submodule(
+        standard, project):
+    """THE ROW READS BACK AS THE NAME, so the submodule is held to it (#189).
+
+    The adoption's own writer spells each of these names' unprintable
+    character by its code point -- `\\xa0`, `\\u3000`, `\\u2028` -- and the
+    reader resolves that escape. So in the leg recorded each submodule is
+    placed, and staged in the other leg instead each one is MISPLACED. When
+    the reader kept the backslash, no row named any of them: they were
+    `kept`, and the move was COMPLIANT.
+    """
+    block = append_written_record(standard, project, ESCAPED_NAMES)
+    spelled = [line for line in block.splitlines() if "- path:" in line]
+    assert len(spelled) == len(ESCAPED_NAMES), block
+    assert all("\\" in line for line in spelled), (
+        "each name must be one the record spells with an escape", block)
+    for name in ESCAPED_NAMES:
+        stage_gitlink(project / "code", name)
+    placed = doctor(standard, project, "--json")
+    assert placed.returncode == 0, placed.stdout + placed.stderr
+    assert rows_of(placed)["manifest"]["status"] == "ok"
+    assert held_placements(placed) == {
+        f"code/{name}": "recorded" for name in ESCAPED_NAMES}
+
+    for name in ESCAPED_NAMES:
+        git("rm", "-q", "--cached", "--", name, cwd=project / "code")
+        stage_gitlink(project / "spec", name)
+    moved = doctor(standard, project, "--json")
+    assert moved.returncode == 1, moved.stdout + moved.stderr
+    assert json.loads(moved.stdout)["verdict"] == (
+        f"MISPLACED ({len(ESCAPED_NAMES)} paths)")
+    assert held_placements(moved) == {
+        f"spec/{name}": "misplaced" for name in ESCAPED_NAMES}
+
+
+@pytest.mark.skipif(os.name == "nt",
+                    reason="Git for Windows records no path with a backslash")
+def test_a_recorded_name_with_a_backslash_is_valid_and_placed(standard,
+                                                              project):
+    """A BACKSLASH IS A CHARACTER OF THE NAME, and the record may hold it.
+
+    On POSIX Git records `vendor/a\\b`, an adoption of a source with a
+    submodule there records it, and the doctor holds the gitlink to that
+    row. So the project's own validator accepts the row: the spelling rule
+    it holds a recorded path to is the one Git records paths by (#189), and
+    the leg-path rule's refusal of a backslash, which a person TYPING a path
+    for Windows gets wrong, is not part of it.
+    """
+    name = "vendor/a\\b"
+    append_written_record(standard, project, [name])
+    stage_gitlink(project / "code", name)
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert rows_of(result)["manifest"]["status"] == "ok", (
+        rows_of(result)["manifest"])
+    assert held_placements(result) == {f"code/{name}": "recorded"}
+
+
+# --- the record, written by a real adoption and read by the doctor (#189) ---
+
+#: `execute` REQUIRES `git filter-repo`; see tests/test_adopt_e2e.py.
+needs_filter_repo = pytest.mark.skipif(
+    shutil.which("git-filter-repo") is None,
+    reason="git filter-repo is not installed: `pip install git-filter-repo`")
+
+#: Why the adoption below answered `.cursor` and its `.gitmodules` `code`.
+CURSOR_ANSWER = "editor rules the code leg's tooling reads"
+
+
+@pytest.fixture(scope="module")
+def adopted_cursor(standard, tmp_path_factory) -> dict:
+    """A source whose `.cursor` is a SUBMODULE, adopted by the standard
+    under test with `.cursor` and `.gitmodules` answered `code`, and cloned
+    recursively from the split branch."""
+    base = tmp_path_factory.mktemp("adopted-cursor")
+    dependency = base / "rules"
+    dependency.mkdir()
+    git("init", "-q", "-b", "main", ".", cwd=dependency)
+    (dependency / "rules.md").write_text("editor rules\n", encoding="utf-8")
+    commit_all(dependency, "rules")
+    source = base / "Thing"
+    source.mkdir()
+    git("init", "-q", "-b", "main", ".", cwd=source)
+    for name, body in (("README.md", "# Thing\n"),
+                       ("src/app/util.py", "VALUE = 1\n"),
+                       ("docs/index.md", "# Docs\n")):
+        (source / name).parent.mkdir(parents=True, exist_ok=True)
+        (source / name).write_text(body, encoding="utf-8")
+    commit_all(source, "init")
+    git(*FILE_PROTOCOL, "submodule", "add", "-q", str(dependency), ".cursor",
+        cwd=source)
+    commit_all(source, "vendor the editor rules")
+    adopt = standard / "adopt-project.py"
+    plan = base / "adoption-plan.yaml"
+    written = run_script(adopt, "plan", "--source", str(source), "--project",
+                         "Northwind", "--org", ORG, "--elected-by", "T",
+                         "--elected-on", "2026-09-02", "--out", str(plan))
+    assert written.returncode == 0, written.stdout + written.stderr
+    text = plan.read_text(encoding="utf-8")
+    for path in (".cursor", ".gitmodules"):
+        needle = f"  - path: {path}\n    leg: null\n"
+        assert needle in text, (path, text)
+        text = text.replace(needle, f"  - path: {path}\n    leg: code\n"
+                            f"    resolution: \"{CURSOR_ANSWER}\"\n")
+    plan.write_bytes(text.encode("utf-8"))
+    done = run_script(adopt, "execute", "--plan", str(plan), "--yes",
+                      "--local-remote-dir", str(base / "remotes"),
+                      "--work-dir", str(base / "work"))
+    assert done.returncode == 0, done.stdout + done.stderr
+    clone = base / "clone"
+    git(*FILE_PROTOCOL, "clone", "-q", "--recurse-submodules", "-b",
+        "adopt/three-repo-shape", str(source), str(clone), cwd=base)
+    return {"clone": clone,
+            "commit": git("rev-parse", "main", cwd=source).stdout.strip()}
+
+
+@pytest.fixture
+def cursor_clone(adopted_cursor, tmp_path) -> Path:
+    """A private, mutable copy of that clone."""
+    target = tmp_path / "Northwind"
+    shutil.copytree(adopted_cursor["clone"], target, symlinks=True)
+    return target
+
+
+def cursor_placement(standard, root: Path) -> tuple:
+    """The verdict and the `.cursor` submodule's entry, from `--json`."""
+    result = doctor(standard, root, "--json")
+    row = rows_of(result)["placement"]
+    held = {item["path"]: item for item in row["detail"]["submodules"]}
+    return result, json.loads(result.stdout)["verdict"], row, held
+
+
+@needs_filter_repo
+def test_an_adopted_submodule_is_recorded_and_placed(standard,
+                                                     adopted_cursor,
+                                                     cursor_clone):
+    """`execute` WRITES THE ANSWER, AND THE DOCTOR PLACES THE SUBMODULE BY IT.
+
+    The split's `project.yaml` carries one row for `.cursor`: its path in
+    the leg, the leg answered, the plan's `resolution:` and the source
+    commit. The doctor holds the code leg's `.cursor` to it: recorded, and
+    COMPLIANT. And the row is `ok`: the code leg's `.gitmodules`, which
+    registers `.cursor`, is the policy's question about which leg owns that
+    submodule, and the record is its answer.
+    """
+    manifest = adoption_module(standard).load_yaml(
+        cursor_clone / "project.yaml")
+    assert manifest["submodules"] == [{
+        "path": ".cursor", "leg": "code", "resolution": CURSOR_ANSWER,
+        "source_commit": adopted_cursor["commit"]}], manifest["submodules"]
+    result, verdict, row, held = cursor_placement(standard, cursor_clone)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert verdict == "COMPLIANT"
+    assert rows_of(result)["manifest"]["status"] == "ok"
+    assert row["status"] == "ok", row
+    assert row["detail"]["review_required"] == [], row["detail"]
+    assert held["code/.cursor"]["placement"] == "recorded", held
+    assert held["code/.cursor"]["resolution"] == CURSOR_ANSWER
+    assert ("1 submodule(s) in the leg project.yaml's `submodules:` records "
+            "for them (#189): code/.cursor") in row["reason"], row["reason"]
+    assert ANSWERED_CLAUSE in row["reason"], row["reason"]
+    assert "keeps no source submodule" not in row["reason"], row["reason"]
+
+
+@needs_filter_repo
+def test_an_adopted_submodule_whose_record_is_edited_is_misplaced(
+        standard, cursor_clone):
+    """THE SAME ASSEMBLY, ITS RECORD EDITED TO SAY SPEC: MISPLACED (1 path)."""
+    manifest = cursor_clone / "project.yaml"
+    text = manifest.read_text(encoding="utf-8")
+    assert text.count("    leg: code\n") == 1, text
+    manifest.write_bytes(
+        text.replace("    leg: code\n", "    leg: spec\n").encode("utf-8"))
+    result, verdict, row, held = cursor_placement(standard, cursor_clone)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert verdict == "MISPLACED (1 path)"
+    assert row["status"] == "FINDING", row
+    assert held["code/.cursor"]["placement"] == "misplaced", held
+    assert [entry["path"] for entry in row["detail"]["misplaced"]] == [
+        "code/.cursor"]
+
+
+@needs_filter_repo
+def test_a_submodule_added_by_hand_after_adoption_is_the_note(standard,
+                                                              cursor_clone):
+    """A SUBMODULE NOBODY ANSWERED, in the same leg as one somebody did.
+
+    `vendor/lib` is in no row of the record, so it is #186's `kept` note;
+    `.cursor` is still recorded, and the verdict stays COMPLIANT.
+    """
+    stage_gitlink(cursor_clone / "code", "vendor/lib")
+    result, verdict, row, held = cursor_placement(standard, cursor_clone)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert verdict == "COMPLIANT"
+    assert row["status"] == "note", row
+    assert held["code/.cursor"]["placement"] == "recorded", held
+    assert held["code/vendor/lib"]["placement"] == "kept", held
+    assert held["code/vendor/lib"]["note"] == KEPT_NOTE
+    assert "code/vendor/lib" in row["reason"], row["reason"]
+
+
 # --- the platform-aware quoter (#101) ---------------------------------------
 #
 # Copilot asked for shell quoting on PR #100, against the placement row. The

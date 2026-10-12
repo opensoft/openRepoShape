@@ -371,6 +371,16 @@ def test_a_windows_path_survives_the_plan_it_was_written_into(adopt, tmp_path):
     (r'"a\\\\b"', "a\\\\b"),        # two backslashes
     (r'"say \"hi\""', 'say "hi"'),
     (r'"a\qb"', "a\\qb"),           # not an escape; the backslash survives
+    # YAML's code-point escapes, which `adopt-project.py` writes a recorded
+    # submodule's name with when a character in it is not printable (#189):
+    (r'"nb\xa0sp"', "nb\xa0sp"),    # U+00A0, the character, not the byte
+    (r'"\u3000\u2028"', "\u3000\u2028"),
+    (r'"\U0001F600"', "\U0001F600"),
+    (r'"caf\udce9"', "caf\udce9"),  # the surrogate a non-UTF-8 byte is kept as
+    (r'"\\x41"', "\\x41"),          # an escaped backslash, then x41: never `A`
+    (r'"\x4"', "\\x4"),             # too few digits; the backslash survives
+    (r'"\xzz"', "\\xzz"),           # not hex; the backslash survives
+    (r'"\U00110000"', "\\U00110000"),  # past U+10FFFF; so does this one
 ])
 def test_a_double_quoted_scalar_resolves_one_escape_at_a_time(
         tmp_path, written, read_back):
