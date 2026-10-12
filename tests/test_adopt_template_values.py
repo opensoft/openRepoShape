@@ -523,7 +523,12 @@ def test_a_local_path_that_is_not_text_is_unresolvable(tmp_path, answered,
                          ids=["accented", "zero-width-non-joiner"])
 def test_a_valid_non_ascii_elector_still_adopts(tmp_path, elected_by):
     """`José`, and a name joined with U+200C, which `one_printable_line`
-    refuses and a file holds: adopted, and written into the manifest."""
+    refuses and a file holds: adopted, read back from the manifest as
+    itself, and named in the shape's README.
+
+    The manifest is asked through the reader, not for a line: since #250 a
+    YAML template's value is written as `double_quoted` spells it, so the
+    line holds U+200C as an escape there, and as it stands before."""
     source = make_source_repo(tmp_path / "Thing")
     runs = plan_check_execute(tmp_path, source, "--elected-by", elected_by)
     assert_no_traceback(runs)
@@ -531,8 +536,11 @@ def test_a_valid_non_ascii_elector_still_adopts(tmp_path, elected_by):
     done = runs["execute"]
     assert done.returncode == 0, said(done)
     assert VERIFIED in done.stdout, said(done)
-    assert f'\nelected_by: "{elected_by}"\n' in in_the_split(source,
-                                                             "project.yaml")
+    manifest = tmp_path / "project.yaml"
+    manifest.write_bytes(in_the_split(source, "project.yaml").encode("utf-8"))
+    assert load_yaml(manifest)["elected_by"] == elected_by
+    assert f"Elected by {elected_by} on 2026-09-02" in in_the_split(
+        source, "shape/README.md")
 
 
 @needs_filter_repo
