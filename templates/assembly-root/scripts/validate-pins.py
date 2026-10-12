@@ -47,6 +47,9 @@ EXIT CODES
     2  a REFUSAL: the question could not be asked — an uninitialized submodule,
        an unresolvable commit, an unreadable pin. An unanswerable pin question
        is never an implicit pass.
+       No git to run is one too (`git-not-runnable`, #412), a git that is
+       missing, will not run or cannot be executed: the gitlinks and the
+       digests are read through git.
 """
 
 from __future__ import annotations
@@ -56,6 +59,8 @@ import os
 import re
 import stat
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -178,13 +183,69 @@ def _load_leg_pin(root: Path, role, path: str, repository: str,
     return pin, rel, commit
 
 
+@contextmanager
+def _git_runs(unread: str) -> Iterator[None]:
+    """The `git-not-runnable` refusal, exit 2, for a check that reads this
+    repository through git and could not start it (#412).
+
+    `git_out` raises `FileNotFoundError` when there is no git on PATH,
+    `PermissionError` when the `git` found there will not run, and a plain
+    `OSError` (`ENOEXEC`) when it is no program this machine can execute, a
+    binary for another architecture or a script with no shebang, and nothing
+    here caught any of them: the run ended in a traceback, which exits 1, a
+    FINDING's code, though nothing was found. The module's own exit codes
+    make 1 "drift a reviewer can act on" and 2 "the question could not be
+    asked ... never an implicit pass". So every call that runs git runs
+    inside this, and `unread` says which check it was and what it could not
+    read. ONE code, whichever check meets the missing git first; every one
+    of them is the same fact about the machine.
+
+    ONLY AN ERROR FROM STARTING GIT COUNTS, told apart two ways. The block
+    is around the git calls alone, never around a whole check: a pin file or
+    a submodule directory nobody may read is an `OSError` too, and it is not
+    this, nor is telling that operator to put git on PATH any help. And
+    inside a git call the class is not enough: `subprocess` raises the same
+    `FileNotFoundError` or `PermissionError` when the DIRECTORY it was to run
+    git in cannot be entered, and on POSIX names that directory in
+    `filename` where a program that will not start names `git`. So the rule
+    is the NAME: any `OSError` whose `filename` is `git` counts, `ENOEXEC`'s
+    included, and an error that names a directory or any other file passes
+    through unchanged, and so does any `OSError` that names none. The one
+    nameless error that counts is a `FileNotFoundError` or a
+    `PermissionError`: Windows' `CreateProcess` failures carry no filename,
+    so a missing git there is `[WinError 2]` with `filename` None, and
+    nothing says it was the directory.
+
+    `recorded_gitlink`'s `except Refusal` is not in the way: an `OSError` is
+    no `Refusal`, so a missing git reaches here instead of reading as "no
+    gitlink recorded", which would be a false `pin-gitlink-absent`.
+    """
+    try:
+        yield
+    except OSError as exc:
+        nameless = (exc.filename is None
+                    and isinstance(exc, (FileNotFoundError, PermissionError)))
+        if exc.filename != "git" and not nameless:
+            raise
+        raise Refusal(
+            "git-not-runnable",
+            f"{unread}: git could not be run ({exc.strerror or exc})",
+            "Remediation: put git on PATH and run `scripts/validate-pins.py` "
+            "again. This assembly root's lockstep gate reads each leg's "
+            "gitlink and recomputes its pinned tree digest through git, so "
+            "without it nothing says whether the pins agree, and a gate that "
+            "cannot answer is never a pass.") from exc
+
+
 def _check_gitlink_matches_pin(root: Path, role, path: str, commit: str,
                                rel: str, report: Report) -> str:
     """Fact 1 vs fact 2: the recorded gitlink against the pin file's
     `commit:`. Split from `_check_leg` for #132. Returns the gitlink so the
     caller can check it again against fact 3, the workflow references.
     """
-    gitlink = recorded_gitlink(root, path)
+    with _git_runs(f"the {role} leg's gitlink recorded at {path!r} could "
+                   "not be read"):
+        gitlink = recorded_gitlink(root, path)
     if gitlink is None:
         raise Refusal(
             "pin-gitlink-absent",
@@ -216,15 +277,20 @@ def _check_pin_digest(root: Path, path: str, commit: str, pin: dict, rel: str,
             "digest cannot be recomputed. Presence is not identity and an "
             "unreadable surface must fail rather than degrade.",
         )
-    try:
-        git_out(["rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}"],
-                cwd=submodule)
-    except Refusal as exc:
-        raise Refusal(
-            "pin-commit-unresolvable",
-            f"{path}: the pinned commit {commit} is not in that submodule's "
-            f"object store ({exc.detail})",
-        ) from exc
+    # `_git_runs` OUTSIDE the `try`: the refusal it raises is a `Refusal`, and
+    # inside, the `except Refusal` below would turn "no git to run" into
+    # `pin-commit-unresolvable`, which says the commit is missing.
+    with _git_runs(f"{path}: the pinned commit {commit[:12]} could not be "
+                   "looked up in that submodule"):
+        try:
+            git_out(["rev-parse", "--verify", "--quiet",
+                     f"{commit}^{{commit}}"], cwd=submodule)
+        except Refusal as exc:
+            raise Refusal(
+                "pin-commit-unresolvable",
+                f"{path}: the pinned commit {commit} is not in that "
+                f"submodule's object store ({exc.detail})",
+            ) from exc
     recorded = (pin.get("digests") or {}).get("tree_sha256")
     if not isinstance(recorded, str) or not SHA256_RE.match(recorded):
         report.finding("pin-digest-malformed",
@@ -237,7 +303,9 @@ def _check_pin_digest(root: Path, path: str, commit: str, pin: dict, rel: str,
             "unstated is a number, not an identity.",
         )
     else:
-        actual = tree_digest(submodule, commit)
+        with _git_runs(f"{path}: the tree digest at {commit[:12]} could not "
+                       "be recomputed"):
+            actual = tree_digest(submodule, commit)
         if actual.lower() != recorded.lower():
             report.finding(
                 "pin-digest-mismatch",
