@@ -14,7 +14,11 @@ WHAT IT DOES
      just as early, for the same reason (#197), and so is a `--pin` whose
      file the shape writes itself or another `--pin` writes (#241), and a
      `--referent-chain` link between the first and the last that is not a
-     neutral product's name (#251).
+     neutral product's name (#251). So is an `--elected-by`, `--reference`
+     or `--name` that no file can hold as one line of text -- a byte that is
+     not UTF-8, a line break, a control character, a bidi embedding,
+     override or isolate -- given as the flag or read from the elector's
+     fallback (#282).
   2. Creates the three remotes: `gh repo create` normally, or three BARE
      repositories in a directory with `--local-remote-dir`, which is the test
      path and touches no network.
@@ -68,6 +72,9 @@ from shape_materialize import (  # noqa: E402
 # The leg-path rule `adopt-project.py` asks of its own paths (#179).
 from shape_materialize import refuse_bad_leg_paths  # noqa: E402
 from shape_advisory import scaffold_lines  # noqa: E402
+# Whether `--elected-by`, `--reference` and `--name` are text a file can
+# hold: the question `adopt-project.py` asks of the same values (#282).
+from shape_materialize import unwritable_reason  # noqa: E402
 # The shape half of the leg-path collision rule, which `adopt-project.py`
 # asks of its own mount paths (#172), imported as one unit (#197), with the
 # one spelling of the file a `--pin` adds to what the shape writes.
@@ -589,14 +596,22 @@ def _elector(args) -> str:
     Split out of `_scaffold` for #138. `--elected-by` first, then this
     machine's git identity; the manifest records a name either way, because
     electing this shape is a human's act and `elected_by` is the record of
-    whose.
+    whose. `_elector_named` says which of the three answered, in this order.
     """
     elected_by = args.elected_by
     if not elected_by:
         try:
             # Per-invocation identity first, then the config — never a global
-            # config write (see the CI workflow note, 2026-09-03).
-            elected_by = (os.environ.get("GIT_AUTHOR_NAME") or "").strip() or git_out(["config", "user.name"], cwd=SHAPE_ROOT)
+            # config write (see the CI workflow note, 2026-09-03). The config
+            # is DECODED AS `sys.argv` AND `os.environ` ARE (#282): a byte
+            # that is not UTF-8 is kept as `surrogateescape` keeps one, for
+            # `unwritable_reason` to name. `git_out`'s own strict decode
+            # raised `UnicodeDecodeError` on a `user.name` holding one, a
+            # traceback where `--elected-by` holding it is a refusal.
+            elected_by = ((os.environ.get("GIT_AUTHOR_NAME") or "").strip()
+                          or git_out(["config", "user.name"], cwd=SHAPE_ROOT,
+                                     binary=True).decode(
+                                         "utf-8", "surrogateescape").strip())
         except Refusal:
             elected_by = ""
     if not elected_by:
@@ -618,14 +633,93 @@ def _identity(args, project: str) -> tuple[str, str, str, str, str]:
     `--elected-on` is PARSED HERE, before anything is created, whether or not
     it is the value that chooses the reference: an explicit --reference must
     not let a malformed --elected-on through into a manifest field no reader
-    can use.
+    can use. The three free-text values are asked here too, beside the date
+    and for the same reason, whether a file can hold them (#282): before a
+    work directory or a remote exists, and under `--dry-run` alike.
     """
     project_id = checked_value("--id", args.id or project.lower())
     display = args.name or project
     elected_on = args.elected_on or _dt.date.today().isoformat()
     election_date(elected_on)
     reference = args.reference or default_reference(elected_on)
-    return project_id, display, elected_on, reference, _elector(args)
+    elected_by = _elector(args)
+    _refuse_unwritable_values((
+        (_elector_named(args), elected_by, ROOT_MANIFEST_AND_README),
+        ("--reference", reference, ROOT_MANIFEST_AND_README),
+        ("--name", display, NAME_WRITTEN_INTO)))
+    return project_id, display, elected_on, reference, elected_by
+
+
+#: How a refusal names an elector `_elector` did not get from `--elected-by`
+#: (#282), so the sentence says where the value came from and not a flag
+#: nobody typed: the words #255's `plan` uses for its own fallback.
+ELECTOR_FROM_ENV = "--elected-by (not given, so GIT_AUTHOR_NAME)"
+ELECTOR_FROM_CONFIG = "--elected-by (not given, so `git config user.name`)"
+
+#: Where the scaffold writes each free-text value, for the sentence that
+#: refuses one (#282). `--name` also goes into each repository's description
+#: on GitHub, where `gh repo create` is asked.
+ROOT_MANIFEST_AND_README = "the assembly root's `project.yaml` and `README.md`"
+NAME_WRITTEN_INTO = (
+    "the assembly root's `project.yaml` and `README.md`, each repository's "
+    "`AGENTS.md` and each first commit's message")
+
+#: What every `scaffold-unwritable-value` is told to do (#282).
+UNWRITABLE_REMEDIATION = (
+    "Remediation: nothing was created, and `--dry-run` refuses the same. Pass "
+    "each value named again, retyped; when `--elected-by` is not given, the "
+    "scaffold reads GIT_AUTHOR_NAME, then `git config user.name`, so pass the "
+    "flag or correct that. The manifest escapes what it records, but the "
+    "README, each `AGENTS.md` and each commit message take the value as it "
+    "stands, so it must be one line of UTF-8 text: a byte that is not UTF-8, "
+    "or a lone surrogate, cannot be written at all; a line break or a control "
+    "character would break or garble the line it is written into; and a "
+    "bidirectional embedding, override or isolate control would show the rest "
+    "of that line in another order than it is written. A byte that is not "
+    "UTF-8 reaches a command line from a terminal or a script whose encoding "
+    "is not the locale's.")
+
+
+def _elector_named(args) -> str:
+    """Where `_elector`'s answer came from, as a refusal names it (#282):
+    `--elected-by`, else `ELECTOR_FROM_ENV` when GIT_AUTHOR_NAME holds more
+    than whitespace, else `ELECTOR_FROM_CONFIG` -- `_elector`'s own order."""
+    if args.elected_by:
+        return "--elected-by"
+    if (os.environ.get("GIT_AUTHOR_NAME") or "").strip():
+        return ELECTOR_FROM_ENV
+    return ELECTOR_FROM_CONFIG
+
+
+def _refuse_unwritable_values(fields) -> None:
+    """Each `(what, value, where)` is text a file can hold, or this refuses
+    as `scaffold-unwritable-value`, naming every one that is not (#282).
+
+    `unwritable_reason` is the question `adopt-project.py` asks of the same
+    values (#255), so the two tools refuse the same values in the same
+    words: a lone surrogate (a byte that is not UTF-8, as `sys.argv` keeps
+    one), a line break, a control character, a bidi embedding, override or
+    isolate control. `double_quoted` spells each of them in `project.yaml`
+    (#284), so the manifest reads back what was typed, but `README.md`, each
+    `AGENTS.md` and each commit message take the value raw: a surrogate
+    raised `UnicodeEncodeError` in `write_lf` after both legs were pushed
+    (`--name`: after all three repositories were created), and a line break
+    split the line it was written into, in the README and each `AGENTS.md`,
+    each commit's subject, and the `manifest ok:` line `validate-manifest.py`
+    prints.
+
+    The value is spelled as Python spells it, so the sentence is one line of
+    text whatever the value holds.
+    """
+    problems = []
+    for what, value, where in fields:
+        reason = unwritable_reason(value)
+        if reason:
+            problems.append(f"{what} is {value!r}, which the scaffold writes "
+                            f"into {where}, and {reason}.")
+    if problems:
+        raise Refusal("scaffold-unwritable-value", " ".join(problems),
+                      UNWRITABLE_REMEDIATION)
 
 
 def referent_chain_links(raw: str) -> tuple:
