@@ -2498,7 +2498,8 @@ def test_a_family_holders_conflicted_pin_is_invalid_too(standard, holder,
 #
 # Each test below runs the printed NEXT and asks the doctor again. The NEXT
 # is chosen from the pin's own git state, read-only: unmerged, then
-# uncommitted (the parametrised test above), then committed, then none.
+# uncommitted (the parametrised test above), then hidden, then committed,
+# then none.
 
 #: `commit: "zzzz"`, the committed fault the review probed beside a deletion.
 not_forty_hex = pin_with(r'^commit: .*$', 'commit: "zzzz"')
@@ -2576,12 +2577,158 @@ def test_the_issues_own_merge_takes_one_side_of_the_shapes_files_whole(
     argv = pasted(row["next"])
     assert argv[3:] == ["checkout", "--ours", "--", "Makefile", SHAPE_PIN], \
         argv
+    assert "left_for_a_person" not in row["detail"], row["detail"]
     assert_a_plain_note(row["next"])
     run_pasted(row["next"])
     again = rows_of(doctor(standard, project, "--json"))["shape-currency"]
     assert again["detail"]["error"] not in READ_PIN_CODES, again
     assert again["detail"]["error"] == "update-revision-unresolvable", again
     assert b"<<<<<<<" in own.read_bytes()
+
+
+def test_a_readme_conflicted_over_the_projects_own_lines_is_left_to_a_person(
+        standard, project):
+    """Both branches rewrite the pin's `commit:` and README.md's first line,
+    and edit-a also adds a paragraph at the end, which git merges cleanly.
+
+    README.md holds no `Shape:` line here, so nothing in it is the shape's,
+    and where it holds one every other line is still the project's own.
+    Taken whole, edit-a's paragraph went with it (review of PR #267). The
+    NEXT takes the pin alone, and its note and `left_for_a_person` say that
+    README.md is a person's to merge.
+    """
+    readme = project / "README.md"
+    assert b"Shape:" not in readme.read_bytes()
+    base = git("rev-parse", "HEAD", cwd=project).stdout.strip()
+    for branch, digit in (("edit-a", "1"), ("edit-b", "2")):
+        git("checkout", "-q", "-b", branch, base, cwd=project)
+        break_the_pin(project, pin_with(r'^commit: .*$',
+                                        f'commit: "{digit * 40}"'))
+        lines = readme.read_bytes().split(b"\n")
+        lines[0] = f"# Atlas, as {branch} writes it".encode()
+        if branch == "edit-a":
+            lines.append(b"A paragraph only edit-a wrote.\n")
+        readme.write_bytes(b"\n".join(lines))
+        git("add", "--", SHAPE_PIN, "README.md", cwd=project)
+        commit_in(project, branch)
+    merged = subprocess.run(["git", "merge", "-q", "edit-a"],
+                            cwd=str(project), capture_output=True, text=True,
+                            check=False, env={**os.environ, **GIT_IDENTITY})
+    assert merged.returncode != 0, merged.stdout + merged.stderr
+    status = git("status", "--porcelain=v1", cwd=project).stdout
+    assert f"UU {SHAPE_PIN}" in status and "UU README.md" in status, status
+    assert b"only edit-a wrote" in readme.read_bytes()
+    row = rows_of(doctor(standard, project, "--json"))["shape-currency"]
+    assert row["detail"]["restore"] == "unmerged", row["detail"]
+    assert pasted(row["next"])[3:] == [
+        "checkout", "--ours", "--", SHAPE_PIN], row["next"]
+    assert row["detail"]["left_for_a_person"] == ["README.md"], row["detail"]
+    note = row["next"].split("   #", 1)[1]
+    assert "README.md is conflicted too" in note, note
+    assert "a person merges it" in note, note
+    assert_a_plain_note(row["next"])
+    run_pasted(row["next"])
+    assert b"only edit-a wrote" in readme.read_bytes(), \
+        "edit-a's paragraph was dropped"
+    again = rows_of(doctor(standard, project, "--json"))["shape-currency"]
+    assert again["detail"]["error"] not in READ_PIN_CODES, again
+
+
+def standard_moved_on(standard: Path, tmp_path: Path) -> tuple:
+    """`(a copy of standard, C2, C3)`: two more commits, each moving
+    `UPSTREAM_TARGET`, so two real `apply` runs re-pin one project to two
+    different commits. A copy, byte for byte with its `.git`, so the
+    session's `standard` is left as every other test finds it."""
+    moved = tmp_path / "moved" / "openRepoShape"
+    shutil.copytree(standard, moved, symlinks=True)
+    commits = []
+    for label in ("c2", "c3"):
+        target = moved / UPSTREAM_TARGET
+        target.write_bytes(target.read_bytes() + f"# {label}\n".encode())
+        commit_all(moved, label)
+        commits.append(git("rev-parse", "HEAD", cwd=moved).stdout.strip())
+    return moved, commits[0], commits[1]
+
+
+def test_the_issues_two_apply_merge_leaves_the_projects_manifest_to_a_person(
+        standard, project, tmp_path):
+    """The issue's own merge, with real re-pins: `apply --at C2` on shape/a,
+    `apply --at C3` on shape/b, and shape/a merged into shape/b.
+
+    Shape/a also renamed the project in `project.yaml` and added a README
+    paragraph, lines of its own far from any `apply` writes. Git merges both
+    cleanly, and `project.yaml` is still `UU` over its `shape:` block.
+    Taking `project.yaml` whole dropped the rename, and the doctor then said
+    COMPLIANT (review of PR #267). The NEXT takes the files the shape writes
+    whole, `project.yaml` is left to a person, and the rename survives the
+    NEXT, that person's merge and the merge commit.
+
+    The row is `check_shape_currency`'s own, asked in process: without
+    #232 a `project.yaml` that does not load is NOT A SHAPE ROOT and the
+    command runs no row, and with it the command prints this row.
+    """
+    moved, c2, c3 = standard_moved_on(standard, tmp_path)
+    manifest, readme = project / "project.yaml", project / "README.md"
+    for commit, branch in ((c2, "shape/a"), (c3, "shape/b")):
+        git("checkout", "-q", "main", cwd=project)
+        applied = run_script(moved / "update-shape.py", "apply", "--root",
+                             str(project), "--upstream", str(moved), "--at",
+                             commit, "--yes", "--branch", branch)
+        assert applied.returncode == 0, applied.stdout + applied.stderr
+        if branch == "shape/a":
+            text = manifest.read_bytes()
+            renamed = re.sub(rb'(?m)^name: .*$', b'name: "Atlas Renamed"',
+                             text, count=1)
+            assert renamed != text
+            manifest.write_bytes(renamed)
+            readme.write_bytes(readme.read_bytes()
+                               + b"\nA paragraph only shape/a wrote.\n")
+            git("add", "--", "project.yaml", "README.md", cwd=project)
+            commit_in(project, "the project's own edits")
+    merged = subprocess.run(["git", "merge", "-q", "shape/a"],
+                            cwd=str(project), capture_output=True, text=True,
+                            check=False, env={**os.environ, **GIT_IDENTITY})
+    assert merged.returncode != 0, merged.stdout + merged.stderr
+    status = git("status", "--porcelain=v1", cwd=project).stdout
+    for name in ("Makefile", SHAPE_PIN, "project.yaml"):
+        assert f"UU {name}" in status, status
+    assert "UU README.md" not in status, status
+    assert b'name: "Atlas Renamed"' in manifest.read_bytes()
+    module = doctor_module(standard)
+    row = module.check_shape_currency(module.Context(project)).as_dict()
+    assert row["detail"]["error"] == "yaml-unparsable", row["detail"]
+    assert row["detail"]["restore"] == "unmerged", row["detail"]
+    assert pasted(row["next"])[3:] == [
+        "checkout", "--ours", "--", "Makefile", SHAPE_PIN], row["next"]
+    assert row["detail"]["left_for_a_person"] == ["project.yaml"], \
+        row["detail"]
+    note = row["next"].split("   #", 1)[1]
+    assert "project.yaml is conflicted too" in note, note
+    assert_a_plain_note(row["next"])
+    run_pasted(row["next"])
+    assert b'name: "Atlas Renamed"' in manifest.read_bytes(), \
+        "shape/a's rename was dropped"
+    assert b"only shape/a wrote" in readme.read_bytes()
+    again = module.check_shape_currency(module.Context(project)).as_dict()
+    assert again["detail"].get("error") not in READ_PIN_CODES, again
+    # A person's merge of `project.yaml`: each conflicting hunk to the side
+    # the NEXT took, each clean one kept, over git's own three stages.
+    stages = []
+    for number in (1, 2, 3):
+        held = subprocess.run(["git", "show", f":{number}:project.yaml"],
+                              cwd=str(project), capture_output=True,
+                              check=True).stdout
+        stages.append(tmp_path / f"project.yaml.{number}")
+        stages[-1].write_bytes(held)
+    subprocess.run(["git", "merge-file", "--ours", str(stages[1]),
+                    str(stages[0]), str(stages[2])],
+                   capture_output=True, check=True)
+    manifest.write_bytes(stages[1].read_bytes())
+    git("add", "--", "project.yaml", "Makefile", SHAPE_PIN, cwd=project)
+    commit_in(project, "merge shape/a")
+    kept = git("show", "HEAD:project.yaml", cwd=project).stdout
+    assert 'name: "Atlas Renamed"' in kept, kept
+    compliant_again(moved, project)
 
 
 def test_a_bad_pin_staged_where_head_holds_none_is_put_back_from_history(
@@ -2644,6 +2791,132 @@ def test_a_merge_where_only_the_other_side_holds_a_pin_takes_theirs(
     run_pasted(row["next"])
     again = rows_of(doctor(standard, project, "--json"))["shape-currency"]
     assert again["detail"]["error"] == "update-revision-unresolvable", again
+
+
+def test_two_commits_that_each_broke_the_pin_are_reached_past(standard,
+                                                              project):
+    """`commit: "zzzz"` committed, then `commit: "yyyy"` committed over it.
+
+    Rolling back the last commit put back the first break's pin, and the
+    NEXT after it was `checkout HEAD`, which put back the second: a circle
+    (review of PR #267). Each pin is read before it is named, so the NEXT
+    reaches past both, to the pin before the first.
+    """
+    break_the_pin(project, not_forty_hex)
+    git("add", "--", SHAPE_PIN, cwd=project)
+    first = commit_in(project, "break the pin")
+    break_the_pin(project, pin_with(r'^commit: .*$', 'commit: "yyyy"'))
+    git("add", "--", SHAPE_PIN, cwd=project)
+    commit_in(project, "break it again")
+    row = rows_of(doctor(standard, project, "--json"))["shape-currency"]
+    assert row["detail"]["restore"] == "committed", row["detail"]
+    assert pasted(row["next"])[3:] == [
+        "checkout", f"{first}~1", "--", SHAPE_PIN], row["next"]
+    assert first[:12] in row["next"].split("   #", 1)[1], row["next"]
+    assert_a_plain_note(row["next"])
+    run_pasted(row["next"])
+    compliant_again(standard, project)
+
+
+def test_an_uncommitted_change_over_a_committed_break_goes_to_history(
+        standard, project):
+    """HEAD's own pin does not read either, so `checkout HEAD` would put
+    back a broken pin: the NEXT goes straight to the pin before the commit
+    that broke it."""
+    break_the_pin(project, not_forty_hex)
+    git("add", "--", SHAPE_PIN, cwd=project)
+    breaking = commit_in(project, "break the pin")
+    break_the_pin(project, lambda text: b"\t: : [\n")
+    status = git("status", "--porcelain=v1", "--", SHAPE_PIN,
+                 cwd=project).stdout
+    assert status.startswith(" M"), status
+    row = rows_of(doctor(standard, project, "--json"))["shape-currency"]
+    assert row["detail"]["error"] == "yaml-unparsable", row["detail"]
+    assert row["detail"]["restore"] == "committed", row["detail"]
+    assert pasted(row["next"])[3:] == [
+        "checkout", f"{breaking}~1", "--", SHAPE_PIN], row["next"]
+    run_pasted(row["next"])
+    compliant_again(standard, project)
+
+
+def recommit_a_good_pin(root: Path) -> str:
+    """A second commit to the pin that leaves it reading: a comment added.
+
+    So a NEXT that rolled back the last commit to the pin has one to name,
+    and the pin it would roll back is a good one. The new HEAD."""
+    pin = root / SHAPE_PIN
+    pin.write_bytes(pin.read_bytes() + b"# a comment a later commit added\n")
+    git("add", "--", SHAPE_PIN, cwd=root)
+    return commit_in(root, "a comment in the pin")
+
+
+def assert_hidden(standard: Path, root: Path, code: str, letter: str) -> None:
+    """The row says `hidden`, names no rollback, and its NEXT, run as
+    printed, shows the index flag that hides the pin."""
+    assert git("status", "--porcelain=v1", "--", SHAPE_PIN,
+               cwd=root).stdout == ""
+    row = rows_of(doctor(standard, root, "--json"))["shape-currency"]
+    assert row["detail"]["error"] == code, row["detail"]
+    assert row["detail"]["restore"] == "hidden", row["detail"]
+    argv = pasted(row["next"])
+    assert argv[3:] == ["ls-files", "-v", "--", SHAPE_PIN], row["next"]
+    assert "checkout" not in argv, row["next"]
+    assert_a_plain_note(row["next"])
+    shown = subprocess.run(argv, capture_output=True, text=True, check=False)
+    assert shown.returncode == 0, shown.stderr
+    assert shown.stdout == f"{letter} {SHAPE_PIN}\n", shown.stdout
+
+
+def test_a_broken_copy_assume_unchanged_hides_is_not_rolled_back(standard,
+                                                                 project):
+    """HEAD's pin reads, and `git status` shows no change to the copy here
+    because assume-unchanged hides it. No commit broke the pin, so naming
+    the commit before the last good re-pin rolled back a good pin (review
+    of PR #267): the NEXT shows the flag instead."""
+    recommit_a_good_pin(project)
+    git("update-index", "--assume-unchanged", "--", SHAPE_PIN, cwd=project)
+    break_the_pin(project, not_forty_hex)
+    assert_hidden(standard, project, "update-pin-commit", "h")
+
+
+def test_a_pin_a_sparse_checkout_leaves_out_is_not_rolled_back(standard,
+                                                               project):
+    """A sparse checkout leaves the pin out of the tree: `read_pin` finds no
+    file, `git status` shows nothing, and HEAD's pin reads. The NEXT shows
+    the `S` that says why, and names no rollback."""
+    recommit_a_good_pin(project)
+    sparse = project / git("rev-parse", "--git-path", "info/sparse-checkout",
+                           cwd=project).stdout.strip()
+    sparse.parent.mkdir(parents=True, exist_ok=True)
+    sparse.write_bytes(b"/*\n!/" + SHAPE_PIN.encode() + b"\n")
+    git("config", "core.sparseCheckout", "true", cwd=project)
+    git("read-tree", "-mu", "HEAD", cwd=project)
+    assert not (project / SHAPE_PIN).exists()
+    assert_hidden(standard, project, "update-pin-missing", "S")
+
+
+def test_reading_the_pins_git_state_leaves_a_stat_dirty_index_alone(
+        standard, project):
+    """The pin's `git status` must not refresh the root's index: that is the
+    doctor writing into it. `--no-optional-locks` is what stops it, and a
+    plain `git status`, as the control, does rewrite it."""
+    break_the_pin(project, not_forty_hex)
+    git("add", "--", SHAPE_PIN, cwd=project)
+    commit_in(project, "break the pin")
+    later = os.stat(project / SHAPE_PIN).st_mtime + 120
+    for path in project.rglob("*"):
+        if (".git" not in path.relative_to(project).parts and path.is_file()
+                and not path.is_symlink()):
+            os.utime(path, (later, later))
+    index = project / ".git" / "index"
+    before = index.read_bytes()
+    row = rows_of(doctor(standard, project, "--json"))["shape-currency"]
+    assert row["detail"]["restore"] == "committed", row["detail"]
+    assert index.read_bytes() == before, "the doctor rewrote the root's index"
+    subprocess.run(["git", "status", "--porcelain=v1", "--", SHAPE_PIN],
+                   cwd=str(project), capture_output=True, check=False)
+    assert index.read_bytes() != before, \
+        "control: a plain status must refresh it"
 
 
 def test_a_pin_with_no_good_copy_in_its_history_keeps_the_check_next(
