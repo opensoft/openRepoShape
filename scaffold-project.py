@@ -8,7 +8,13 @@ WHAT IT DOES
   1. Validates the three names — `<Project>`, `<Project>-spec`,
      `<Project>-code` — against `contracts/repository-naming.yaml` BEFORE it
      creates anything, so a naming mistake costs a message rather than three
-     repositories and a rename.
+     repositories and a rename. A leg path that is, holds or lies inside a
+     path the shape writes into the assembly root (`contracts`,
+     `project.yaml`, a `--pin`'s `contracts/<product>-pin.yaml`) is refused
+     just as early, for the same reason (#197), and so is a `--pin` whose
+     file the shape writes itself or another `--pin` writes (#241), and a
+     `--referent-chain` link between the first and the last that is not a
+     neutral product's name (#251).
   2. Creates the three remotes: `gh repo create` normally, or three BARE
      repositories in a directory with `--local-remote-dir`, which is the test
      path and touches no network.
@@ -51,17 +57,23 @@ from repo_shape import (  # noqa: E402
     free_plan_secret_hint,
     COMMIT_RE, NEUTRAL_PRODUCT_OWNER, PROJECT_ID_RE, TREE_DIGEST_DEFINITION,
     VISIBILITY_CHOICES, NamingPolicy, Refusal, accepts_role, checked_value,
-    git_out, link_pins_from_trees, tree_digest,
+    git_out, link_pins_from_trees, repo_basename, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
     RULESET_HINT, SHAPE_REPOSITORY, CommandFailed,
     copy_tree, default_reference, descendant_note, election_date, env_commit,
-    git_init_commit, materialize_assembly_root, naming_block, run,
-    stage_written,
+    escape_what_stdout_cannot_encode, git_init_commit,
+    materialize_assembly_root, naming_block, run, stage_written,
 )
 # The leg-path rule `adopt-project.py` asks of its own paths (#179).
 from shape_materialize import refuse_bad_leg_paths  # noqa: E402
 from shape_advisory import scaffold_lines  # noqa: E402
+# The shape half of the leg-path collision rule, which `adopt-project.py`
+# asks of its own mount paths (#172), imported as one unit (#197), with the
+# one spelling of the file a `--pin` adds to what the shape writes.
+from shape_materialize import (  # noqa: E402
+    assembly_root_paths, neutral_pin_path, shape_path_collisions,
+)
 
 #: The pin argument: `openGlass@<40 hex>`, optionally organisation-qualified.
 PIN_ARG_RE = re.compile(r"^(?P<name>[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?)@(?P<commit>[0-9a-fA-F]{40})$")
@@ -69,6 +81,12 @@ PIN_ARG_RE = re.compile(r"^(?P<name>[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?)@(?P<co
 #: How a neutral product's tree is read when the pin is taken from the forge
 #: rather than from a clone on this machine.
 GH_TREE_API = "repos/{repo}/git/trees/{commit}?recursive=1"
+
+#: The naming-policy form every link between a chain's first and last must
+#: classify as (#251). Each such link is an entry of the link before its
+#: `neutral_product_pins:`, the key a link is verified by
+#: (`referent.chain.link_declared_by`), so it is a neutral product's name.
+CHAIN_LINK_FORM = "neutral-product"
 
 
 def parse_pin(raw: str, owner: str = NEUTRAL_PRODUCT_OWNER) -> tuple[str, str, str]:
@@ -129,7 +147,10 @@ def pin_digest_from_gh(repository: str, commit: str) -> str:
     """
     proc = subprocess.run(
         ["gh", "api", GH_TREE_API.format(repo=repository, commit=commit)],
-        capture_output=True, text=True, check=False)
+        # UTF-8 and STRICT, not `errors="replace"`: this JSON becomes a
+        # digest, and a replaced byte would be a wrong digest with a
+        # confident tone (#217).
+        capture_output=True, text=True, encoding="utf-8", check=False)
     if proc.returncode != 0:
         raise Refusal(
             "pin-unreadable",
@@ -177,12 +198,14 @@ def remote_is_empty(repository: str) -> bool | None:
     reliable signal — `size: 0` is also what a repository of small files says.
     """
     probe = subprocess.run(["gh", "repo", "view", repository, "--json", "name"],
-                           capture_output=True, text=True, check=False)
+                           capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", check=False)
     if probe.returncode != 0:
         return None
     commits = subprocess.run(
         ["gh", "api", f"repos/{repository}/commits?per_page=1"],
-        capture_output=True, text=True, check=False)
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        check=False)
     if commits.returncode != 0:
         blob = (commits.stderr + commits.stdout).lower()
         if "empty" in blob:
@@ -207,7 +230,8 @@ def remote_visibility(repository: str) -> str | None:
     """
     proc = subprocess.run(
         ["gh", "repo", "view", repository, "--json", "visibility"],
-        capture_output=True, text=True, check=False)
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        check=False)
     if proc.returncode != 0:
         return None
     try:
@@ -222,7 +246,8 @@ def local_remote_is_empty(bare: Path) -> bool | None:
     if not bare.exists():
         return None
     out = subprocess.run(["git", "-C", str(bare), "rev-list", "--count", "--all"],
-                         capture_output=True, text=True, check=False)
+                         capture_output=True, text=True,
+                         encoding="utf-8", errors="replace", check=False)
     if out.returncode != 0:
         raise Refusal("remote-unreadable",
                       f"{bare} exists but is not a git repository")
@@ -230,6 +255,9 @@ def local_remote_is_empty(bare: Path) -> bool | None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # FIRST, so that every `print` after it -- `--help` included -- escapes
+    # a name stdout cannot encode rather than raising on it (#214).
+    escape_what_stdout_cannot_encode()
     parser = argparse.ArgumentParser(
         description=__doc__.splitlines()[0],
         formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -291,11 +319,13 @@ def main(argv: list[str] | None = None) -> int:
                              "reaches its referent through, e.g. "
                              "--referent-chain openXdox,openDox. Its first "
                              "entry must be one of the --pin products (the "
-                             "pin this project actually holds) and its last "
-                             "must be the `open<Product>` the name claims; "
-                             "the manifest RECORDS it, which is what makes a "
-                             "descendant that pins a LAYER a descendant "
-                             "(2026-09-05).")
+                             "pin this project actually holds), its last "
+                             "must be the `open<Product>` the name claims, "
+                             "and every link between them must be a neutral "
+                             "product's name (`open<Product>`, e.g. "
+                             "openXdox); the manifest RECORDS it, which is "
+                             "what makes a descendant that pins a LAYER a "
+                             "descendant (2026-09-05).")
     parser.add_argument("--pin-source", type=Path, default=None,
                         help="a local clone to compute --pin digests from, "
                              "instead of reading the forge with `gh api` (the "
@@ -340,6 +370,20 @@ def declared_pin_values(args) -> dict[str, dict[str, str]]:
             "PIN_DIGEST_SOURCE": digest_source,
         }
     return pins
+
+
+def declared_pin_products(args) -> dict[str, None]:
+    """The products `declared_pin_values` keys its pins by, in its order and
+    read by the same `parse_pin`, with no digest: so no `git` and no `gh`.
+
+    #197: `_build_assembly_root` hands those pins to the materializer, which
+    writes `neutral_pin_path(product)` for each, and the leg paths are asked
+    about that file before `_identity` and `_declaration` run, which is
+    before any digest is read. A malformed `--pin` is therefore refused
+    here, by `parse_pin`'s own `pin-malformed`, rather than in
+    `_declaration`; it was refused before anything was created either way.
+    """
+    return dict.fromkeys(parse_pin(raw, args.pin_owner)[0] for raw in args.pin)
 
 
 def _reusable_remotes(names: dict, urls: dict, repositories: dict,
@@ -394,6 +438,151 @@ def _exists_remedy(role: str, empty: bool, reuse_flag: bool) -> str:
             "--force.")
 
 
+#: What every refused `--pin` is told to do. The file a pin is written at is
+#: `neutral_pin_path`'s, spelled for a placeholder product, never by hand.
+PIN_COLLISION_REMEDIATION = (
+    "Remediation: nothing was created. A neutral product is named for the "
+    "repository it pins, as `--pin openGlass@<40 hex commit>` names "
+    f"{NEUTRAL_PRODUCT_OWNER}/openGlass by default, and its pin is written at "
+    f"`{neutral_pin_path('<openProduct>')}`, the name lowercased, beside the "
+    "pins the shape writes for its two legs and for itself. Pass each product "
+    "once, by the name of the repository it pins."
+)
+
+
+def _refuse_colliding_pins(pins, owner: str) -> None:
+    """No `--pin` is written where the shape writes a file of its own, and no
+    two `--pin`s are written at one path, or this refuses (#241).
+
+    `_build_assembly_root` hands the pins to the materializer, which writes
+    each at `neutral_pin_path(product)` after the shape's own files and
+    before the copy pin, and a second file at one path is
+    `materialize-collision`: a pin over a leg's pin, or the copy pin over a
+    pin named `shape`, or a pin over another pin. So each was met only after
+    `_create_remotes` and `_seed_legs`. On main through 39ac59c, `--pin
+    spec@<sha>` (`Spec@`, `code@`, `MedxSoft/code@`, `shape@`) and `--pin
+    openGlass@<sha> --pin OpenGlass@<sha>` planned under `--dry-run`, then
+    created all three repositories, pushed both legs, left the root with no
+    commit and exited 2, and the corrected re-run was refused as
+    `scaffold-remote-exists`. Against GitHub, each left three repositories
+    for a run that made no project.
+
+    THE QUESTION IS ASKED THROUGH THE MATERIALIZER'S OWN TWO DEFINITIONS: a
+    pin's file is `neutral_pin_path(product)`, and the shape's own files are
+    `assembly_root_paths()` with no pins. `neutral_pin_path` lowercases, so
+    `Spec` is `spec` and `openGlass` and `OpenGlass` are one file, with no
+    case rule of this tool's own. The product is read by `parse_pin` alone,
+    so a malformed `--pin` is still its `pin-malformed`, and no digest is
+    read: no `git` and no `gh`.
+
+    THE RAW `--pin` LIST, NEVER `declared_pin_products`, which collapses a
+    repeated product, as `declared_pin_values` does by keeping the last:
+    `--pin openGlass@<A> --pin openGlass@<B>` planned one pin, wrote `<B>`
+    and dropped `<A>` without a word. A declaration is a claim about what
+    the project descends from, so a repeat is refused whether or not its
+    commits agree: either way it is a typing error, and one of the two
+    would be lost. Every argument is named as it was typed.
+
+    IT RUNS BEFORE `_refuse_colliding_leg_paths`, which asks about
+    `assembly_root_paths(<the --pin products>)`. With `--pin spec@<sha>`
+    that list held `contracts/spec-pin.yaml` twice, and `--spec-path
+    contracts` was told it contains that file "and 4 more" where there
+    were three (#197's re-review, N1). Refused first, no pin path it lists
+    is the shape's or listed twice.
+    """
+    # Folded on both sides, as `path_overlap` folds the leg paths: a future
+    # mixed-case shape file under `contracts/` is still one path with a
+    # lowercased pin on the case-insensitive disk of macOS and Windows.
+    shape_files = {shape_file.casefold()
+                   for shape_file in assembly_root_paths()}
+    written: dict[str, list[tuple[str, str]]] = {}
+    for raw in pins:
+        product = parse_pin(raw, owner)[0]
+        path = neutral_pin_path(product)
+        written.setdefault(path, []).append((raw, product))
+    collisions = []
+    for path, typed in written.items():
+        in_shape = path.casefold() in shape_files
+        if not in_shape and len(typed) == 1:
+            continue
+        products = list(dict.fromkeys(product for _, product in typed))
+        said = (" and ".join(f"--pin {raw!r}" for raw, _ in typed)
+                + (" writes the pin" if len(typed) == 1 else " write the pins")
+                + " of the product" + ("s" if len(products) > 1 else "") + " "
+                + " and ".join(f"`{product}`" for product in products))
+        if in_shape:
+            collisions.append(
+                f"{said} at `{path}`, a file the shape writes into the "
+                "assembly root itself: name the product for the repository it "
+                "pins.")
+        else:
+            collisions.append(
+                f"{said} at one file, `{path}`, which holds one pin: pass "
+                "each product once.")
+    if collisions:
+        raise Refusal("scaffold-pin-collides", " ".join(collisions),
+                      PIN_COLLISION_REMEDIATION)
+
+
+def _leg_collision_remediation(neutral_pins=()) -> str:
+    """What a leg-path collision tells the person to do. The paths are
+    `assembly_root_paths(neutral_pins)`, the materializer's own list for this
+    run, never a copy of it: each `--pin` adds the file it writes."""
+    return (
+        "Remediation: nothing was created, and nothing here picks a path for "
+        "you, so pass another one yourself. A leg path neither is, holds nor "
+        "lies inside, whatever the case, a path the shape writes into the "
+        "assembly root ("
+        + ", ".join(f"`{path}`" for path in assembly_root_paths(neutral_pins))
+        + "). The defaults `spec` and `code` pass."
+    )
+
+
+def _refuse_colliding_leg_paths(spec_path: str, code_path: str,
+                                neutral_pins=()) -> None:
+    """Neither leg is mounted over a path the shape writes into the assembly
+    root, or this refuses (#197).
+
+    `_build_assembly_root` writes the shape into the root FIRST and mounts
+    the legs after it, so a leg path the shape had just written was met only
+    by `git submodule add`. On main through 20e13f0, `--spec-path contracts`
+    and `--code-path project.yaml` planned under `--dry-run`, then created
+    all three repositories, pushed both legs, left the root empty and exited
+    2 (`'contracts' already exists and is not a valid git repo`).
+    `--code-path Makefile/code` died the same way, and `--spec-path
+    Contracts` exited 0 with a gitlink beside the shape's `contracts/`,
+    which a macOS or Windows disk keeps as one path. Against GitHub, each
+    left three repositories for a run that made no project.
+
+    THE QUESTION IS `adopt-project.py`'s (#172), asked through the one
+    definition both tools import: `shape_path_collisions` over
+    `assembly_root_paths(neutral_pins)`, so a file the shape gains is
+    refused here without anybody editing this tool. It is asked with no
+    collision directory, because the scaffold hands the materializer none
+    and writes nothing under adopt's `shape/`.
+
+    A `--pin` IS ONE MORE PATH. `_build_assembly_root` hands the materializer
+    `neutral_pins=pins`, which writes `neutral_pin_path(product)` for each,
+    so `neutral_pins` is those products (`declared_pin_products`) and they
+    are asked about with the rest. Without them, `--pin openGlass@<sha>
+    --spec-path contracts/openglass-pin.yaml` planned and then made three
+    repositories, and `Contracts/OpenGlass-pin.yaml` exited 0 with a gitlink
+    beside the pin, one path on a macOS or Windows disk. With no `--pin`,
+    `contracts/openglass-pin.yaml` lies inside a directory the shape writes
+    into, not a path it writes, and it mounts. `_refuse_colliding_pins` runs
+    first (#241), so each pin's path is listed once and is none of the
+    shape's own, and a count here counts distinct paths.
+    """
+    collisions = [sentence
+                  for what, value in (("--spec-path", spec_path),
+                                      ("--code-path", code_path))
+                  for sentence in shape_path_collisions(
+                      what, value, neutral_pins=neutral_pins)]
+    if collisions:
+        raise Refusal("scaffold-leg-path-collides", " ".join(collisions),
+                      _leg_collision_remediation(neutral_pins))
+
+
 def _elector(args) -> str:
     """(a) Whose act electing this shape was, or a refusal.
 
@@ -439,6 +628,73 @@ def _identity(args, project: str) -> tuple[str, str, str, str, str]:
     return project_id, display, elected_on, reference, _elector(args)
 
 
+def referent_chain_links(raw: str) -> tuple:
+    """`--referent-chain`'s links: split on commas, each stripped, an empty
+    one dropped. ONE reading, for `_declaration` and for the check below, so
+    the links that are judged are the links that are recorded."""
+    return tuple(link.strip() for link in raw.split(",") if link.strip())
+
+
+def _refuse_malformed_chain_links(policy, chain: tuple) -> None:
+    """Every link between the chain's first and last is a neutral product's
+    name, or this refuses (#251).
+
+    `naming_block` writes the chain into `project.yaml` as a plain flow
+    sequence, `[openXdox, openDox]`, and nothing else looked at a MIDDLE
+    link: `_chain_shape_problem` asks the length, a repeat, the first link and
+    the last, and a link whose tree is not on the disk is declared-unverified,
+    a warning. On main through 150c41d, `--referent-chain openXdox,a #b,openDox`
+    created all three repositories, pushed both legs and exited 0 with a
+    manifest the project's own `validate-manifest.py` refused as
+    `yaml-unparsable` (the `#` began a comment), and `it's`, `a]b`, `null` and
+    `007` were each recorded as a different chain than the one typed.
+
+    THE NAMING POLICY ALREADY SAYS WHAT A LINK IS. Each link past the first is
+    read out of the link before its `neutral_product_pins:`, so it is the
+    name of a neutral product, and `CHAIN_LINK_FORM` is that family. A name of
+    that form is one plain YAML word, so the manifest stays plain and reads
+    back as typed. The link is judged at its basename, as `resolve_referent`
+    reads it and `naming_block` records it.
+
+    The FIRST and LAST links are left to the checks that already anchor them:
+    the first must be a `--pin` product and the last the referent the name
+    claims, both compared casefolded because a pin names WHICH repository, not
+    how it was typed. Each must casefold to a name this run already holds
+    (`[A-Za-z0-9_.-]`, or `open<Product>`), so neither can carry a `#`, a
+    quote, a bracket, a comma or a space.
+
+    Asked before `_declaration`, so before `gh api` reads a pin's tree and
+    before `--dry-run` returns: a dry run refuses exactly as the real run
+    does, and nothing has been created.
+
+    The chain and each bad link are quoted with `repr`, as `--pin` and `--id`
+    are in their refusals: a link is the operator's own argument, and one
+    that holds a newline, a carriage return or an escape byte prints as
+    `\\n`, `\\r` or `\\x1b`, so it cannot end the refusal's line and start
+    another that reads as a refusal of its own.
+    """
+    malformed = [link for link in chain[1:-1]
+                 if CHAIN_LINK_FORM not in {family for family, _role
+                                            in policy.matches(
+                                                repo_basename(link))}]
+    if not malformed:
+        return
+    form = (policy.family(CHAIN_LINK_FORM) or {}).get("pattern", "")
+    raise Refusal(
+        "chain-link-malformed",
+        f"--referent-chain {','.join(chain)!r}: "
+        + ", ".join(repr(link) for link in malformed)
+        + (" is not" if len(malformed) == 1 else " are not")
+        + " the name of a neutral product. Every link between the first and "
+        "the last is a product the link before it pins, and the manifest "
+        "records each one as a name.",
+        "Remediation: nothing was created. Spell each link between the first "
+        "and the last as the neutral product's repository name, "
+        f"`open<Product>` (the naming policy's `{form}`, e.g. openXdox). "
+        "`validate-repository-naming.py --explain <link>` says which form a "
+        "name is.")
+
+
 def _declaration(args) -> tuple[dict, set, tuple, dict]:
     """(c) What the project DECLARES about itself: `(pins, declared_pins,
     chain, link_pins)`.
@@ -453,7 +709,7 @@ def _declaration(args) -> tuple[dict, set, tuple, dict]:
     """
     pins = declared_pin_values(args)
     declared_pins: set[str] = set(pins)
-    chain = tuple(c.strip() for c in args.referent_chain.split(",") if c.strip())
+    chain = referent_chain_links(args.referent_chain)
     link_pins = link_pins_from_trees(chain, None, {}, args.pin_source) \
         if chain else {}
     return pins, declared_pins, chain, link_pins
@@ -631,7 +887,7 @@ def _print_plan(args, values: dict, names: dict, repositories: dict,
         print(f"pin          {pin_values['PIN_REPOSITORY']} @ "
               f"{pin_values['PIN_COMMIT'][:12]} tree "
               f"{pin_values['PIN_TREE_SHA256'][:12]}… -> "
-              f"contracts/{product.lower()}-pin.yaml ({pin_values['PIN_DIGEST_SOURCE']})")
+              f"{neutral_pin_path(product)} ({pin_values['PIN_DIGEST_SOURCE']})")
     _print_declared_classification(policy, names, declared_pins, chain,
                                    link_pins, pins)
     _print_plan_actions(args, values["TOPIC"], local)
@@ -798,13 +1054,72 @@ def _build_assembly_root(args, values: dict, names: dict, repositories: dict,
     materialized = materialize_assembly_root(SHAPE_ROOT, assembly, values,
                                              neutral_pins=pins)
 
-    run(["git", "init", "-q", "-b", args.tracking_branch, str(assembly)])
+    # NO TEMPLATE (#229). `git init` copies the operator's template
+    # (`init.templateDir`, or `GIT_TEMPLATE_DIR`) into `.git`, and one that
+    # holds a `modules/<leg path>` store, as a copy of a working Triad root's
+    # `.git` does, plants `.git/modules/<leg path>`. `git submodule add
+    # --force` below REACTIVATES a store that is already there ("Reactivating
+    # local git directory") where it would refuse without `--force`, so the
+    # mount took the STRANGER's store: exit 0, a pushed root whose gitlink is
+    # that store's commit and not the leg's tip, and a recursive clone that
+    # fails. The empty `--template=` is git's documented way to use none. The
+    # root is a build directory this tool fills and pushes, so no template
+    # content belongs in it, and whoever clones the pushed root still gets
+    # their template from `git clone`.
+    run(["git", "init", "-q", "--template=", "-b", args.tracking_branch,
+         str(assembly)])
     # `git submodule add` from the LEG WORKING TREE, then the recorded URL is
     # rewritten to the canonical remote: this way the scaffold never depends on
     # a push having propagated, and `--no-push` produces the same tree.
     for role, path in (("spec", args.spec_path), ("code", args.code_path)):
+        # `--force`, git's documented way past an ignore rule (git's flag, not
+        # one of this tool's: it still has none), for the reason
+        # `stage_written` forces what the materializer wrote (#175). The root
+        # is a fresh `git init` the materializer has just filled, so two sets
+        # of rules reach the MOUNT PATH: the shape's own `.gitignore`, copied
+        # into the root (`__pycache__/`, `*.py[cod]`, `.venv/`, `.DS_Store`),
+        # and the operator's own excludes. A path either matches (`__pycache__`
+        # as `--code-path`, or the DEFAULT `spec` under a global
+        # `core.excludesFile` that names it) was refused HERE, after
+        # `_create_remotes` and `_seed_legs` had made all three repositories
+        # and pushed both legs: three repositories and no project, a corrected
+        # re-run met `scaffold-remote-exists`, and `--dry-run`, which asks no
+        # ignore rule anything, had planned it (#229; #174 and #200 for the
+        # same cure in `adopt-project.py`). A gitlink once added is TRACKED,
+        # so no rule touches it again.
+        # Besides the ignore rule, `--force` changes three things in git 2.43,
+        # and none can arise here, so there is no guard like adopt's
+        # `_refuse_an_unmountable_path`:
+        #   - a `.git/modules/<path>` already there is REACTIVATED instead of
+        #     refused. `_refuse_existing_trees` refuses a
+        #     `<work-dir>/<assembly>` that is not empty, so no `.git` was
+        #     there when the run began, and the root is `git init`ed with no
+        #     template (above), so `.git/modules` holds nothing before the
+        #     first mount and only that mount's store at the second.
+        #   - a GITLINK the index already holds at the path is accepted
+        #     instead of refused, and a repository already checked out there
+        #     is REUSED instead of the leg cloned. (A regular file or a
+        #     tracked directory there is refused either way.)
+        #     When the second mount runs, the index holds `.gitmodules` and
+        #     the first gitlink and nothing else (the materialized files are
+        #     staged after both, `stage_written`). No leg path can be
+        #     `.gitmodules`, which `refuse_bad_leg_paths` refuses (#201), and
+        #     the two paths are different and not nested, whatever the case
+        #     (#169, #179), so the second add meets neither.
+        #   - git's early dry run of the path is skipped. That dry run is what
+        #     refuses a path beyond a symlink or inside a submodule before
+        #     anything is cloned. With `--force` git still refuses both, but
+        #     later: a path beyond a symlink only at the last step, after the
+        #     leg has been cloned into the link's target. The materializer
+        #     writes only regular files, and a mount inside the other is the
+        #     nesting that was just refused.
+        # A leg AT a path the shape wrote (`contracts`, `project.yaml`) is a
+        # collision of another kind: refused up front by the collision check
+        # where there is one, and by git at the mount where there is not.
+        # `--force` changes neither.
         run(["git", "-c", "protocol.file.allow=always", "submodule", "add",
-             "-q", str(work_root / names[role]), path], cwd=assembly)
+             "--force", "-q", str(work_root / names[role]), path],
+            cwd=assembly)
         run(["git", "config", "-f", ".gitmodules", f"submodule.{path}.url",
              urls[role]], cwd=assembly)
         run(["git", "remote", "set-url", "origin", urls[role]],
@@ -875,6 +1190,21 @@ def _scaffold(args) -> int:
     args.code_path = checked_value(*code_leg)
     args.org = checked_value("--org", args.org)
     args.pin_owner = checked_value("--pin-owner", args.pin_owner)
+    # EACH `--pin`'S FILE AGAINST THE SHAPE'S OWN AND AGAINST EACH OTHER, from
+    # the arguments as typed (#241), and first: the leg-path question below
+    # asks about every pin's file, and would miscount one written over the
+    # shape's or listed twice. Here for the reasons the leg paths are, so a
+    # dry run refuses it too and no process has been started.
+    _refuse_colliding_pins(args.pin, args.pin_owner)
+    # THE LEG PATHS AGAINST THE SHAPE'S OWN, before anything else runs
+    # (#197): `_identity` may read git's config, `_declaration` asks `gh api`
+    # for a `--pin` with no `--pin-source`, `_leg_visibility` asks `gh repo
+    # view` about a reused root, and `--dry-run` returns only after all of
+    # them. Refused here, a dry run refuses exactly as the real run would,
+    # and no process has been started. Each `--pin`'s file is among the
+    # shape's paths, its product read off the argument by `parse_pin` alone.
+    _refuse_colliding_leg_paths(args.spec_path, args.code_path,
+                                declared_pin_products(args))
     project_id, display, elected_on, reference, elected_by = _identity(
         args, project)
 
@@ -903,6 +1233,11 @@ def _scaffold(args) -> int:
     # satisfies no leg form at all, offered as ANY leg; and either of the two
     # CamelCase forms offered as the `spec` or `code` leg, because those names
     # carry the lowercase suffix and are ordinary project legs.
+    #
+    # A chain's middle links are NAMES, judged before `_declaration` asks
+    # `gh api` or git for any pin's tree (#251).
+    _refuse_malformed_chain_links(policy,
+                                  referent_chain_links(args.referent_chain))
     pins, declared_pins, chain, link_pins = _declaration(args)
     _check_declared_names(policy, names, declared_pins, chain, link_pins)
     topic = policy.topic_for(project_id)

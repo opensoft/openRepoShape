@@ -28,6 +28,7 @@ So a colliding template file is written BESIDE the original under
 from __future__ import annotations
 
 import argparse
+import codecs
 import datetime as _dt
 import os
 import re
@@ -40,7 +41,7 @@ from pathlib import Path, PurePath
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from repo_shape import (  # noqa: E402
     CHAIN_RECORD_FIELD, SAFE_ARG_RE, NamingPolicy, Refusal, checked_value,
-    file_sha256,
+    double_quoted, file_sha256,
 )
 
 SHAPE_REPOSITORY = "opensoft/openRepoShape"
@@ -81,6 +82,133 @@ def write_lf(path: Path, text: str) -> None:
     """
     with path.open("w", encoding="utf-8", newline="\n") as handle:
         handle.write(text)
+
+
+def escape_what_stdout_cannot_encode(stream=None) -> None:
+    """A character `stream` cannot encode is printed escaped, never raised on.
+
+    WHAT WAS WRONG (#214). The tools that call this print names a person
+    chose -- a source file, a `--source`, `--root`, `--out` or `--work-dir`
+    path, a `--name`, an `--elected-by` -- with a plain `print`, and a stdout
+    whose encoding cannot hold one raised `UnicodeEncodeError` in the middle
+    of the report. On Windows that is any stdout that is not the console
+    itself (a file, a pipe to `tee`, CI, an agent running the tool): Python
+    gives it the ANSI code page, cp1252 on a Western-European install, and a
+    Japanese file name is not in it. `adopt-project.py plan` had already
+    written the plan, then exited 1 with a traceback before `plan written
+    to` and before the questions it exists to ask.
+
+    TWO HANDLERS RAISE ON SUCH A NAME, AND ONLY THOSE TWO ARE CHANGED.
+    - `strict` (a POSIX locale that is not C or POSIX and not one Python
+      coerces C to, so `en_US.UTF-8` but not `C.UTF-8`; and any
+      `PYTHONIOENCODING=<codec>` that names no handler) becomes
+      `backslashreplace`, the handler Python already gives stderr.
+    - `surrogateescape` becomes `SURROGATEESCAPE_THEN_BACKSLASHREPLACE`,
+      registered below. It is what CPython gives EVERY Windows stdout by
+      default, the redirected cp1252 one included (`config_get_stdio_errors`
+      in `Python/initconfig.c`: "On Windows, always use surrogateescape by
+      default", 3.9 to 3.14), and what UTF-8 mode and the C, POSIX and
+      `C.UTF-8` locales give. It covers only U+DC80..U+DCFF, the bytes a
+      name that is not UTF-8 was read in with, so `日本.md` raised there
+      exactly as under `strict`. The new handler writes such a byte back as
+      that byte, which is surrogateescape's own rule, and writes anything
+      else the encoding cannot hold as `backslashreplace` does.
+    Each replacement writes what the handler it replaces would have
+    written, byte for byte, and differs only where that one would have
+    raised, so no run that succeeded prints anything different. Every other
+    handler -- one an operator chose, `replace`, `backslashreplace` itself --
+    is left as it was, and the ENCODING is never changed: a character the
+    code page holds is still written in it.
+
+    `backslashreplace` AND NOT `replace`: `\\u65e5\\u672c.md` still says which
+    file it is, and two names that differ only outside the code page do not
+    both print as `??.md`. (A backslash is not escaped, so a name that holds
+    the six characters `\\u65e5` prints as one holding `日` does.) ONCE, AT
+    THE START OF `main()`, and not at each `print`: `shape-doctor.py`'s
+    `ascii_text` and `shape_advisory.printable` flatten their own text to
+    ASCII on every console, which a name cannot afford -- it would change
+    what a UTF-8 terminal shows -- and a guard at each site is a guard the
+    next `print` goes without.
+
+    GUARDED, because failing to set a handler is no reason to refuse the
+    run: a stream a caller replaced may have no `reconfigure`, a closed or
+    detached one raises `ValueError`, and `pythonw` has no stdout at all.
+    """
+    stream = sys.stdout if stream is None else stream
+    errors = getattr(stream, "errors", None)
+    if errors == "strict":
+        handler = "backslashreplace"
+    elif errors == "surrogateescape":
+        handler = _registered_surrogateescape_then_backslashreplace()
+    else:
+        return
+    try:
+        stream.reconfigure(errors=handler)
+    except (AttributeError, ValueError, OSError):
+        pass
+
+
+#: `reconfigure` takes a handler by NAME, so it is registered under one, and
+#: under one that names this repository: a bare `surrogate-backslash` could
+#: replace a handler some other code registered, or be replaced by it.
+SURROGATEESCAPE_THEN_BACKSLASHREPLACE = (
+    "openreposhape.surrogateescape-then-backslashreplace")
+
+
+def _registered_surrogateescape_then_backslashreplace() -> str:
+    """The handler's name, registered by the first call and by no other."""
+    try:
+        codecs.lookup_error(SURROGATEESCAPE_THEN_BACKSLASHREPLACE)
+    except LookupError:
+        codecs.register_error(SURROGATEESCAPE_THEN_BACKSLASHREPLACE,
+                              _surrogateescape_then_backslashreplace)
+    return SURROGATEESCAPE_THEN_BACKSLASHREPLACE
+
+
+def _surrogateescape_then_backslashreplace(error):
+    """`surrogateescape` for a byte it escaped, `backslashreplace` for the rest.
+
+    The codec hands over a run of characters it cannot encode. This answers
+    the longest stretch at the start of it that is all escaped bytes, with
+    those bytes, or all something else, in `codecs.backslashreplace_errors`'
+    own spelling, so a stdout that was `strict` and one that was
+    `surrogateescape` escape a character identically. It says where it
+    stopped, and the codec asks again for whatever is left. Encoding only:
+    nothing here decodes through a stdout's handler.
+    """
+    if not isinstance(error, UnicodeEncodeError):
+        raise error
+    text, start = error.object, error.start
+    escaped = _is_escaped_byte(text[start])
+    end = start + 1
+    while end < error.end and _is_escaped_byte(text[end]) == escaped:
+        end += 1
+    if escaped:
+        return bytes(ord(char) - 0xDC00 for char in text[start:end]), end
+    return codecs.backslashreplace_errors(UnicodeEncodeError(
+        error.encoding, text, start, end, error.reason))
+
+
+def _is_escaped_byte(char: str) -> bool:
+    """`char` is a byte `surrogateescape` read in as U+DC80..U+DCFF."""
+    return 0xDC80 <= ord(char) <= 0xDCFF
+
+
+def write_paths_listing(path: Path, paths: list[str]) -> None:
+    """The listing `git filter-repo --paths-from-file` reads: one path to a
+    line, LF, BYTE-EXACT.
+
+    A path is bytes, and `adopt-project.py` keeps a byte of one that is not
+    UTF-8 as a lone surrogate (`surrogateescape`, as `Source.tree` decodes
+    it), which `write_lf`'s strict UTF-8 cannot encode: the write raised
+    `UnicodeEncodeError` inside `_extract_leg`, after both leg repositories
+    existed (#199). Encoded with `surrogateescape`, each such surrogate is
+    the byte it stands for again, and filter-repo reads the file as bytes,
+    so the line is the path git records. A path that is UTF-8 is written
+    exactly as `write_lf` wrote it: the same text, LF on every platform.
+    """
+    path.write_bytes(("\n".join(paths) + "\n").encode("utf-8",
+                                                      "surrogateescape"))
 
 # ---------------------------------------------------------------------------
 # The `reference:` an election followed, and why one default cannot serve
@@ -207,7 +335,7 @@ TEMPLATED = (
     # copies above after they have been written.
 )
 #: Rendered only when the project DECLARES a neutral-product pin, and written
-#: once per declared pin as `contracts/<product lowercased>-pin.yaml`.
+#: once per declared pin at `neutral_pin_path(product)`.
 NEUTRAL_PIN_TEMPLATE = "contracts/neutral-product-pin.yaml"
 EXECUTABLE = ("scripts/validate-pins.py", "scripts/validate-manifest.py",
               BOOTSTRAP, VALIDATE_NAMING)
@@ -215,6 +343,23 @@ EXECUTABLE = ("scripts/validate-pins.py", "scripts/validate-manifest.py",
 #: Named once because `assembly_root_paths` lists it beside the lists above,
 #: and a second spelling is how that list would stop matching what is written.
 SHAPE_PIN = "contracts/shape-pin.yaml"
+
+
+def neutral_pin_path(product: str) -> str:
+    """Where a declared neutral-product pin is written: `contracts/<product
+    lowercased>-pin.yaml`, `contracts/openglass-pin.yaml` for `openGlass`.
+
+    SPELLED ONCE, for `SHAPE_PIN`'s reason (#197). `_materialize` writes the
+    pin here, `assembly_root_paths` lists it for a call that declares one,
+    and `scaffold-project.py` refuses a leg path over it from that list. The
+    refusal first read a list with no pin in it, so `--pin openGlass@<sha>
+    --spec-path contracts/openglass-pin.yaml` planned under `--dry-run`, then
+    created all three repositories and died at `git submodule add`. The
+    validators a project carries spell it again: they ship into the project
+    and import nothing from here.
+    """
+    return f"contracts/{product.lower()}-pin.yaml"
+
 
 # ---------------------------------------------------------------------------
 # The FAMILY root's own lists (2026-09-04)
@@ -478,8 +623,14 @@ def check_program(args: list[str]) -> None:
 
 def run(args: list[str], cwd: Path | None = None, capture: bool = True) -> str:
     check_program(args)
+    # UTF-8, whatever the locale: git writes a path as UTF-8, and the locale's
+    # codec (ASCII under a POSIX `C` locale, the ANSI code page on Windows)
+    # raises `UnicodeDecodeError` out of `subprocess.run` on one it cannot
+    # read -- before `CommandFailed` exists, so the person gets a traceback
+    # where `REFUSED <step>` and the ruleset hint belong (#217).
     proc = subprocess.run(args, cwd=str(cwd) if cwd else None,
-                          capture_output=capture, text=True, check=False)
+                          capture_output=capture, text=True,
+                          encoding="utf-8", errors="replace", check=False)
     if proc.returncode != 0:
         raise CommandFailed(args, cwd, proc.returncode,
                             (proc.stderr or "") + (proc.stdout or ""))
@@ -503,6 +654,27 @@ def env_commit(work: Path, message: str) -> None:
     A scaffold that fails on a machine with no `user.email` configured fails
     for a reason that has nothing to do with the project being scaffolded, so
     a fallback identity is supplied rather than assumed.
+
+    THE MESSAGE GOES TO GIT AS UTF-8, whatever the locale (#196). Text-mode
+    stdin encodes with the locale's codec unless Python runs in UTF-8 mode
+    -- cp1252 on a Windows without `PYTHONUTF8=1`, ASCII under a POSIX `C`
+    locale with that mode off -- and git keeps the bytes it is given. An
+    adoption's split message already carried an em dash, which reached git
+    there as a cp1252 byte, and it names each entry path as the source spells
+    it: `Übersicht.md` would land as another byte that is not UTF-8, and
+    `文書.md` would raise `UnicodeEncodeError` after both legs are pushed.
+    Every caller's message goes the same way: `scaffold-project.py`'s
+    assembly commit, `scripts/family.py`'s holder commit, and each first
+    commit `git_init_commit` makes (a scaffolded leg, a seeded one).
+
+    `errors="replace"` works BOTH WAYS. Decoding, git's own output cannot
+    raise. Encoding, a character UTF-8 cannot carry is written as `?`: the
+    one such character a message can hold is a lone surrogate, the byte of a
+    name that is not UTF-8 as `Source.tree` keeps it. `adopt-project.py`
+    refuses one in a path it extracts (`entry_path_problem`), but a `root`
+    or `drop` entry holding one is listed in the split message, so there the
+    message names it with a `?` in place of that byte, a path that does not
+    exist, rather than raising after both legs are pushed.
     """
     env = dict(os.environ)
     for key, fallback in (("GIT_AUTHOR_NAME", "openRepoShape scaffold"),
@@ -514,10 +686,47 @@ def env_commit(work: Path, message: str) -> None:
             env[key] = fallback
     check_program(COMMIT_COMMAND)
     proc = subprocess.run(COMMIT_COMMAND, cwd=str(work), input=message,
-                          capture_output=True, text=True, check=False, env=env)
+                          capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", check=False, env=env)
     if proc.returncode != 0:
         raise CommandFailed(COMMIT_COMMAND, work, proc.returncode,
                             proc.stderr + proc.stdout)
+
+
+def force_stage(work: Path, paths=()) -> None:
+    """Stage exactly `paths`, FORCED past any ignore rule, and nothing else.
+
+    THE FORCED ADD THE SCAFFOLD, `family.py init`, `adopt-project.py`'S
+    SEEDED LEG AND `update-shape.py` SHARE; the seeded leg reaches it
+    through `git_init_commit`, as `stage_written` says. A file the shape
+    wrote and pinned has to reach the commit whatever the operator's own
+    excludes say — a global `core.excludesFile`, `.git/info/exclude`, a
+    `.gitignore` the project keeps — because a pin row naming a file the
+    commit lacks is a red `validate-pins.py` on the next clone (#175). `-f`
+    over the NAMED paths and never over `.`, for the reason `stage_written`
+    gives. (`adopt-project.py` still spells two forced adds of its own,
+    which predate this helper and do not call it.)
+
+    EACH NAME IS TAKEN LITERALLY (`--literal-pathspecs`, #202). A pathspec
+    is a glob to git, so a copy-list entry named `docs/guide[1].md` also
+    matched an operator's `docs/guide1.md`, and `-f` forced that ignored
+    file in beside it and into the commit — the "nothing else" this
+    promises, broken by the one flag that exists to stage the named paths.
+    No copy-list entry holds a glob character today; the day one does, it
+    stages itself and no neighbour.
+
+    TWO CALLERS, AND ONLY ONE OF THEM SWEEPS FIRST. `stage_written` runs
+    `git add -A` before it, because it stages a tree this tool has just
+    made. `update-shape.py apply --add` calls this ALONE (#202): it writes
+    into a checkout somebody may be working in, where `-A` would stage their
+    work beside the shape's, and its plain `git add --` died on an ignored
+    addition after the copies, the pin and the branch were already written.
+    Empty, this runs nothing.
+    """
+    paths = list(paths)
+    if paths:
+        run(["git", "--literal-pathspecs", "add", "-f", "--", *paths],
+            cwd=work)
 
 
 def stage_written(work: Path, written=()) -> None:
@@ -540,12 +749,11 @@ def stage_written(work: Path, written=()) -> None:
 
     ONE HELPER, THREE CALLERS: `git_init_commit` (the scaffold's two legs and
     `adopt-project.py`'s seeded leg), the scaffold's assembly root and
-    `family.py init`'s holder.
+    `family.py init`'s holder. The forced half is `force_stage`, which
+    `update-shape.py apply --add` calls on its own (#202).
     """
     run(["git", "add", "-A", "--", "."], cwd=work)
-    paths = list(written)
-    if paths:
-        run(["git", "add", "-f", "--", *paths], cwd=work)
+    force_stage(work, written)
 
 
 def git_init_commit(work: Path, message: str, branch: str,
@@ -857,8 +1065,24 @@ def lane_trailer_argument(quote=None, env: dict | None = None) -> str:
 
 
 def render(text: str, values: dict[str, str], source: str) -> str:
+    """`text` with every `{{KEY}}` replaced by its value, or a refusal.
+
+    A VALUE BETWEEN A YAML TEMPLATE'S DOUBLE QUOTES, `"{{ELECTED_BY}}"`, is
+    spelled by `double_quoted`, the writer `repo_shape`'s reader takes back
+    unchanged. Pasted raw, `--elected-by 'Robert "Bob" Smith'` wrote
+    `"Robert "Bob" Smith"`, which is not YAML: the reader read it by
+    accident until it learned where a quoted scalar ends (#250), and then
+    refused the manifest of three repositories already created. A name ending
+    in a backslash closed no quote, and `C:\\new` or `x" # y` were misread.
+    The spelling is the value itself for any text without a quote, a
+    backslash or a character `str.isprintable` refuses -- a commit, a digest,
+    an ordinary name -- so no other template changes by a byte.
+    """
     out = text
+    yaml_file = source.endswith((".yaml", ".yml"))
     for key, value in values.items():
+        if yaml_file:
+            out = out.replace('"{{' + key + '}}"', double_quoted(str(value)))
         out = out.replace("{{" + key + "}}", str(value))
     left = PLACEHOLDER_RE.findall(out)
     if left:
@@ -1025,7 +1249,7 @@ def descendant_note(policy: NamingPolicy, name: str, role: str,
                 f"descendant because {found.referent.reason}")
     return (f"NOTE {name} also matches the descendant form; it is not a "
             f"descendant because no pin on {referent} is declared — declare "
-            f"`contracts/{referent.lower()}-pin.yaml` later if it becomes one, "
+            f"`{neutral_pin_path(referent)}` later if it becomes one, "
             f"or record the chain that reaches it")
 
 
@@ -1072,21 +1296,132 @@ def materialize_assembly_root(shape_root: Path, target: Path,
         collision_dir=collision_dir, append=append, neutral_pins=neutral_pins)
 
 
-def assembly_root_paths() -> tuple[str, ...]:
+def assembly_root_paths(neutral_pins=()) -> tuple[str, ...]:
     """Every path `materialize_assembly_root` writes when nothing is in the
-    way and no neutral-product pin is declared, in the order it writes them.
+    way, in the order it writes them. `neutral_pins` names the products of
+    the `neutral_pins` that call is handed (iterating that mapping yields
+    them); with none, no neutral-product pin is declared.
 
-    READ FROM THE LISTS THAT CALL HANDS `_materialize`, plus the pin it
-    writes last, never kept by hand: `adopt-project.py` refuses a leg mount
-    path that overlaps one of these (#172), and a second list would let the
-    shape gain a file the refusal does not know about. `EXECUTABLE` adds no
-    path (it marks paths the lists already write), and a collision moves a
-    path under the caller's `collision_dir`, which is the caller's to name.
-    `tests/test_adopt_leg_path_collisions.py` materializes into an empty
-    directory and holds this to what was written.
+    READ FROM THE LISTS THAT CALL HANDS `_materialize`, plus the file each
+    declared pin is written to (`neutral_pin_path`) and the pin it writes
+    last, never kept by hand: `adopt-project.py` (#172) and
+    `scaffold-project.py` (#197) refuse a leg mount path that overlaps one of
+    these, and a second list would let the shape gain a file the refusal
+    does not know about. `EXECUTABLE` adds no path (it marks paths the lists
+    already write), and a collision moves a path under the caller's
+    `collision_dir`, which is the caller's to name.
+    `tests/test_adopt_leg_path_collisions.py` and
+    `tests/test_scaffold_leg_path_collisions.py` materialize into an empty
+    directory and hold this to what was written, the second with pins too.
     """
     return (*TEMPLATED, *COPIED_VERBATIM,
-            *(rel for _, rel in COPIED_FROM_SHAPE), SHAPE_PIN)
+            *(rel for _, rel in COPIED_FROM_SHAPE),
+            *(neutral_pin_path(product) for product in neutral_pins),
+            SHAPE_PIN)
+
+
+# ---------------------------------------------------------------------------
+# A leg's mount path overlaps nothing the shape writes (#172, #197)
+# ---------------------------------------------------------------------------
+#
+# `adopt-project.py` asked this first (#172). `--spec-path contracts` is
+# canonical, so #169 passed it, and `execute` made and pushed both legs,
+# mounted one at `contracts`, wrote the shape's `contracts/spec-pin.yaml`
+# INTO the mounted leg, and died staging the split.
+#
+# THE SHAPE HALF OF THAT RULE MOVED HERE, beside the list it reads, because
+# `scaffold-project.py` asks the same question of its own two leg paths
+# (#197), and a second copy of the relation or of the sentence is how two
+# tools start refusing different paths. Two halves are adopt's alone and
+# stayed there: the one that reads a SOURCE tree, a path an adoption plan
+# keeps in the root, and the one about `shape/`, the directory only an
+# adoption writes the shape's copies into.
+#
+# A mount path is refused when it EQUALS, CONTAINS or LIES INSIDE a path
+# `assembly_root_paths` lists, compared WITHOUT REGARD TO CASE: a macOS or
+# Windows disk keeps `Scripts` and `scripts` as one directory.
+
+#: Said where an overlap holds only once case is ignored.
+CASE_ASIDE = " once case is ignored, as a macOS or Windows disk does"
+#: The exit every collision has; a root-kept one has a second.
+MOVE_THE_LEG = "choose another path for the leg"
+
+
+def path_overlap(leg: str, other: str) -> tuple[str, str] | None:
+    """How the mount path `leg` stands to the path `other`: `(relation,
+    aside)`, the relation `is`, `contains` or `is inside`, and the aside
+    `CASE_ASIDE` when it holds only once case is ignored. None when the two
+    do not overlap at all."""
+    for mine, theirs, aside in ((leg, other, ""),
+                                (leg.casefold(), other.casefold(), CASE_ASIDE)):
+        if mine == theirs:
+            return "is", aside
+        if theirs.startswith(mine + "/"):
+            return "contains", aside
+        if mine.startswith(theirs + "/"):
+            return "is inside", aside
+    return None
+
+
+def first_and_more(paths: list[str], spell=None) -> str:
+    """`a` or `a` and 2 more: one path named, the rest counted. `spell`
+    writes the named path, between backticks by default: the shape's own
+    paths need nothing more. `adopt-project.py` passes its `_spelled` for a
+    source path the plan keeps in the root, which can hold any character
+    (#212)."""
+    more = f" and {len(paths) - 1} more" if len(paths) > 1 else ""
+    named = spell(paths[0]) if spell else f"`{paths[0]}`"
+    return f"{named}{more}"
+
+
+def shape_path_collisions(what: str, value: str,
+                          collision_dir: str | None = None, *,
+                          neutral_pins=()) -> list[str]:
+    """Where the mount path `value` overlaps a path of `assembly_root_paths`:
+    one sentence, naming the first path it overlaps and counting the rest,
+    or none. `what` names the value as its caller does (`--spec-path`,
+    `legs.spec_path`).
+
+    `collision_dir` IS THE ONE THE CALLER HANDS `materialize_assembly_root`,
+    so the two callers differ here by the argument they differ by there.
+    `adopt-project.py` passes its `COLLISION_DIR`, `shape` with no slash,
+    from `_shape_collisions`, which `plan`, `check` and `execute` all reach
+    through `leg_path_collisions`. `execute` is the act that mounts the legs
+    FIRST and materializes over them, so a shape file at a mount goes into
+    the mounted leg or beside it under that directory, and the sentence
+    names `execute` whichever of the three asks. Whether `value` overlaps
+    `collision_dir` itself is the caller's question, not this one's.
+    `scaffold-project.py` passes none (#197): it materializes into an empty
+    directory and mounts the legs AFTER, so `git submodule add` meets a path
+    the shape already wrote.
+
+    `neutral_pins` IS THE SAME KIND OF ARGUMENT: the products whose pins the
+    caller hands the materializer, so the paths asked about are
+    `assembly_root_paths(neutral_pins)`, each pin's file among them. The
+    scaffold passes its `--pin` products (#197); adopt hands the materializer
+    no pin and passes none, so its list and its sentences are unchanged.
+    """
+    out: list[str] = []
+    files = [path for path in assembly_root_paths(neutral_pins)
+             if path_overlap(value, path)]
+    if files:
+        relation, aside = path_overlap(value, files[0])
+        them = "them" if len(files) > 1 else "it"
+        if collision_dir is None:
+            consequence = (
+                " before the legs are mounted, and Git cannot mount a leg at "
+                "a path the root already holds, or beyond a file it holds on "
+                "the way there")
+        else:
+            consequence = (
+                f", and `execute` would write {them} into the mounted leg or "
+                f"beside it under `{collision_dir}/`, leaving the root "
+                f"without {them}")
+        out.append(
+            f"{what} {value!r} {relation} {first_and_more(files)}{aside}. "
+            f"The shape writes {them} into the assembly root{consequence}: "
+            f"{MOVE_THE_LEG}.")
+    return out
 
 
 def materialize_family_root(shape_root: Path, target: Path,
@@ -1161,7 +1496,7 @@ def _materialize(shape_root: Path, template_root: Path, target: Path,
         result.shape_files.append(
             place(rel, lambda p, t=text: write_lf(p, t)))
     for product, pin_values in (neutral_pins or {}).items():
-        rel = f"contracts/{product.lower()}-pin.yaml"
+        rel = neutral_pin_path(product)
         text = render((template_root / NEUTRAL_PIN_TEMPLATE)
                       .read_text(encoding="utf-8"), {**values, **pin_values}, rel)
         place(rel, lambda p, t=text: write_lf(p, t))
