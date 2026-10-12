@@ -18,13 +18,13 @@ operator's chain links as given. A person editing the adoption plan, or
 rather than guessing.
 
 A single-quoted scalar has no backslash escape. Its one escape is `''`, which
-both scanners read by toggling twice, and that is unchanged.
+both scanners read as a quote rather than the end of the item, and that is
+unchanged.
 
 A backslash that is the last character of a double-quoted flow item's text has
-no character after it to take. That is not valid YAML, and the reader must say
-so as a `YamlError` or read it as its block twin does, never die with a
-`StopIteration` out of the scanner (the `""` default of `next(chars, "")` in
-`_split_flow`).
+no character after it to take. That is not valid YAML, and the reader says so
+as a `YamlError`, for the flow item and its block twin alike (#250), never as a
+bare exception out of the scanner (#213 guarded a `StopIteration` there).
 
 NO NETWORK AND NO GITHUB: strings, a few temporary files and an import.
 """
@@ -97,37 +97,34 @@ def test_a_single_quoted_flow_item_keeps_its_toggle(text, expected):
 
 #: A double-quoted flow item whose last character is a backslash. The closing
 #: bracket right after it belongs to the collection, so the scanner reaches
-#: the end of the body with an escape still open. Each is the read at the head
-#: of this change, and each equals what the block twin reads: the backslash is
-#: kept, and the quote is not closed, so the item is plain text. The text is
-#: raw: the one backslash in each is one backslash in the YAML.
+#: the end of the body with an escape still open. The text is raw: the one
+#: backslash in each is one backslash in the YAML.
 #:
-#: These are not valid YAML (PyYAML refuses every one), so what they pin is
-#: that the reader does not crash. If a later change refuses an unterminated
-#: double-quoted scalar, in a block as well as in a flow, these become
-#: refusals together with their block twins, and that is the change to make
-#: here, not a regression.
+#: These are not valid YAML (PyYAML refuses every one): the backslash escapes
+#: the only quote that could close the item. Until the reader learned where a
+#: quoted scalar ends (#250) each read as plain text, quote and backslash
+#: kept, the same as its block twin. Now each is refused by name, together
+#: with its block twin, which is the change this table was written to expect.
 DANGLING_BACKSLASH_BEFORE_THE_CLOSER = [
-    pytest.param(r'k: ["a\]', {"k": ['"a\\']}, 'k:\n  - "a\\',
-                 id="sequence"),
-    pytest.param(r'k: ["\]', {"k": ['"\\']}, 'k:\n  - "\\',
+    pytest.param(r'k: ["a\]', 'k:\n  - "a\\', id="sequence"),
+    pytest.param(r'k: ["\]', 'k:\n  - "\\',
                  id="sequence-the-quote-and-the-backslash-only"),
-    pytest.param(r'k: {a: "x\}', {"k": {"a": '"x\\'}}, 'k:\n  a: "x\\',
-                 id="mapping-value"),
-    pytest.param(r'k: [["\]]', {"k": [['"\\']]}, 'k:\n  - - "\\',
-                 id="nested-sequence"),
+    pytest.param(r'k: {a: "x\}', 'k:\n  a: "x\\', id="mapping-value"),
+    pytest.param(r'k: [["\]]', 'k:\n  - - "\\', id="nested-sequence"),
 ]
 
 
-@pytest.mark.parametrize("text, expected, block_twin",
+@pytest.mark.parametrize("text, block_twin",
                          DANGLING_BACKSLASH_BEFORE_THE_CLOSER)
-def test_a_dangling_backslash_before_the_closer_reads_as_plain_text(
-        text, expected, block_twin):
-    """With `next(chars)` for `next(chars, "")` these die with a bare
-    `StopIteration` out of `parse_yaml`, and `load_yaml` would let it through
-    as a traceback rather than a `REFUSED` line."""
-    assert parse_yaml(text) == expected
-    assert parse_yaml(block_twin) == expected, "its block twin reads the same"
+def test_a_dangling_backslash_before_the_closer_is_refused_with_its_twin(
+        text, block_twin):
+    """A `YamlError` naming the unclosed scalar, never a bare exception out
+    of a scanner, which `load_yaml` would let through as a traceback rather
+    than a `REFUSED` line."""
+    for document in (text, block_twin):
+        with pytest.raises(YamlError,
+                           match="quoted scalar without a closing quote"):
+            parse_yaml(document)
 
 
 #: The same backslash where nothing follows it. At the very end of the text

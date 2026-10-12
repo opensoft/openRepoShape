@@ -973,20 +973,20 @@ python3 scripts/bump-leg.py --root <path-to-the-project> --leg spec \
 It fetches the commit into the leg, checks the leg out AT it, recomputes the
 `sorted-ls-tree-r-v1` digest from the leg's own objects, rewrites `commit:`
 and `digests.tree_sha256` in `contracts/<role>-pin.yaml`, rewrites every
-`.github/workflows/*.yml` `@<sha>` naming THAT leg's repository — and none
-naming anything else, `actions/checkout@<sha>` and the sibling leg included —
-then runs the project's own `validate-pins.py` and `validate-manifest.py` and
-commits ONCE with explicit pathspecs.
+TRACKED `.github/workflows/*.yml` `@<sha>` naming THAT leg's repository — and
+none naming anything else, `actions/checkout@<sha>` and the sibling leg
+included — then runs the project's own `validate-pins.py` and
+`validate-manifest.py` and commits ONCE with explicit pathspecs.
 
-It REFUSES a `--to` that is not exactly 40 hex, a commit no branch of the
-leg's remote contains (including one committed inside the mount and never
-pushed — a pin the rest of the world cannot fetch is a root it cannot
-bootstrap), a dirty root, a root standing on its own tracking branch (the next
-step is a pull request, never a push to the default branch), and a validator
-that goes red — rolling the pin, the workflow files, the leg's checkout and
-the index back first, so a refusal leaves the tree exactly as it was found.
-The leg is left DETACHED at the new commit; `make bootstrap` re-places it on
-its tracking branch AT the new pin.
+It REFUSES a `--to` that is not exactly 40 hex, a commit no branch of the leg's
+remote contains (including one committed inside the mount and never pushed — a
+pin the rest of the world cannot fetch is a root it cannot bootstrap), a dirty
+root, an untracked or ignored workflow file it would rewrite, a root standing on
+its own tracking branch (the next step is a pull request, never a push to the
+default branch), and a validator that goes red — rolling the pin, the workflow
+files, the leg's checkout and the index back first, so a refusal leaves the tree
+exactly as it was found. The leg is left DETACHED at the new commit; `make
+bootstrap` re-places it on its tracking branch AT the new pin.
 
 ## Bootstrap is COPIED into the project, not fetched
 
@@ -1114,19 +1114,19 @@ OWN `scripts/validate-manifest.py` and `scripts/validate-pins.py` when it
 carries them — they are the pinned copies, which is the point — else the
 template copies, and the row says which answered), **manifest kinds** (every
 `kind:`-bearing manifest in the root against a registry, so a `contracts/*.yaml`
-nothing validates is a finding by name rather than a silence), **shape
-currency** (`update-shape.py check`'s per-file verdicts, summarised),
-**legs** (each one mounted, and its checked-out commit against the pin, with
-no fetch), **leg shape files** (each leg's `AGENTS.md`, `CLAUDE.md` and
-`.gitignore` against `templates/<role>-root/` — a comparison and not a gate,
-because no leg file is pinned anywhere), **placement** (every tracked path of
-every leg, against the path policy), **agent files**, and **machine**. A
-FAMILY holder gets **family**, **manifest kinds**, **shape currency**,
-**placement** (`n/a` — a holder has no legs of its own), **members** and
-**machine**; a directory that is neither gets what it is CALLED under the
-naming policy, what IS in it, and the way in — and a repository the advisory
-is not silent about gets the **Triad** row, status `advisory`: the preference
-said once and stepped over by the verdict (a leg gets its assembly root).
+nothing validates is a finding by name rather than a silence, and so is a
+`family.yaml` beside `project.yaml`), **shape currency** (`update-shape.py
+check`'s per-file verdicts, summarised), **legs** (each one mounted, and its
+checked-out commit against the pin, with no fetch), **leg shape files** (each
+leg's `AGENTS.md`, `CLAUDE.md` and `.gitignore` against `templates/<role>-root/`
+— a comparison and not a gate: no leg file is pinned anywhere), **placement**
+(every tracked path of every leg, against the path policy), **agent files**, and
+**machine**. A FAMILY holder gets **family**, **manifest kinds**, **shape
+currency**, **placement** (`n/a` — a holder has no legs of its own), **members**
+and **machine**; a directory that is neither gets what it is CALLED under the
+naming policy, what IS in it, and the way in — and a repository the advisory is
+not silent about gets the **Triad** row, status `advisory`: the preference said
+once and stepped over by the verdict (a leg gets its assembly root).
 
 Every row is `ok`, `note`, `FINDING` or `n/a` — or `advisory`, the Triad row
 alone — and every one that is not `ok` names the exact command that fixes it,
