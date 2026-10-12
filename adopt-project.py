@@ -3066,10 +3066,6 @@ def _entry_findings(plan: Plan, source: Source
     THE PATHS COME FIRST (#196), so that `_refuse_what_check_finds` wears
     `plan-unsafe-path` for a plan that has one: a path that is a `git` option
     is refused as that, and never as the uncovered file it also leaves.
-
-    THE PINS COME AFTER THE LEGS (#273), from `_leg_findings`: each `pins:`
-    entry `execute` cannot write a pin file from, two pins at one file, and
-    a path the root keeps where a pin is written (`_pin_findings`).
     """
     tree = source.tree()
     unsafe, unsafe_remediation = _unsafe_path_findings(plan)
