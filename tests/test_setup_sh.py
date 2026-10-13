@@ -24,6 +24,10 @@ from pathlib import Path
 
 from conftest import REPO, WINDOWS_SKIP, assert_read_through_git, git
 
+from conftest import assert_refuses_for_want_of_a_terminal
+
+from conftest import PTY_SKIP, run_in_a_terminal
+
 SETUP = REPO / "setup.sh"
 DEGRADE_LINE = "authority is not wallet-carried in this org"
 
@@ -39,6 +43,10 @@ pytestmark = [pytest.mark.skipif(shutil.which("bash") is None,
 
 def run_setup(*args: str, stdin: str = "",
              cwd: Path | None = None) -> subprocess.CompletedProcess:
+    """`setup.sh` with stdin a pipe and NO controlling terminal: a session of
+    its own (#492), because setup asks at the controlling terminal when stdin
+    is not one, and the terminal pytest was started from is nobody's answer.
+    """
     env = dict(os.environ)
     env.setdefault("GIT_AUTHOR_NAME", "openRepoShape tests")
     env.setdefault("GIT_AUTHOR_EMAIL", "tests@openreposhape.invalid")
@@ -46,7 +54,8 @@ def run_setup(*args: str, stdin: str = "",
     env.setdefault("GIT_COMMITTER_EMAIL", "tests@openreposhape.invalid")
     return subprocess.run(["bash", str(SETUP), *args], capture_output=True,
                           text=True, check=False, input=stdin, env=env,
-                          cwd=str(cwd) if cwd is not None else str(REPO))
+                          cwd=str(cwd) if cwd is not None else str(REPO),
+                          start_new_session=True)
 
 
 def make_fork_dir(tmp_path: Path, origin_url: str, upstream_url: str) -> Path:
@@ -89,9 +98,10 @@ def run_bare_setup(script: Path, *args: str, cwd: Path,
     the self-bootstrap tests need since `run_setup` always drives THIS
     checkout's own `setup.sh` from THIS checkout's own directory.
 
-    `stdin` as `run_setup` has it: a pipe, never the terminal pytest was
-    started from, so a run that reaches the one `yes` refuses instead of
-    waiting for somebody to type it."""
+    `stdin` as `run_setup` has it: a pipe, and no controlling terminal
+    either (#492), never the terminal pytest was started from, so a run that
+    reaches the one `yes` refuses instead of waiting for somebody to type
+    it."""
     env = dict(os.environ)
     env.setdefault("GIT_AUTHOR_NAME", "openRepoShape tests")
     env.setdefault("GIT_AUTHOR_EMAIL", "tests@openreposhape.invalid")
@@ -100,7 +110,7 @@ def run_bare_setup(script: Path, *args: str, cwd: Path,
     env.update(extra_env or {})
     return subprocess.run(["bash", str(script), *args], capture_output=True,
                           text=True, check=False, input=stdin, cwd=str(cwd),
-                          env=env)
+                          env=env, start_new_session=True)
 
 
 def shim_default_repo() -> str:
@@ -272,7 +282,7 @@ def test_an_internal_visibility_is_accepted(tmp_path):
     assert result.returncode == 0, result.stderr + result.stdout
     assert "visibility   internal" in result.stdout
     manifest = (tmp_path / "work" / "Sample" / "project.yaml").read_text()
-    assert "visibility: internal" in manifest
+    assert 'visibility: "internal"' in manifest
 
 
 def test_a_name_outside_the_naming_policy_stops_before_the_scaffold(tmp_path):
@@ -356,7 +366,7 @@ def test_no_confirmation_and_no_terminal_refuses_after_showing_the_plan(tmp_path
                        "--into", str(tmp_path / "work"))
     assert result.returncode == 2
     assert "--dry-run: nothing was created." in result.stdout
-    assert "no terminal to confirm on" in result.stderr
+    assert_refuses_for_want_of_a_terminal(result.stderr)
     assert not (tmp_path / "remotes").exists()
 
 
@@ -876,3 +886,157 @@ def test_the_shim_refuses_before_cloning_when_git_is_missing(tmp_path):
     assert result.returncode == 2, result.stderr + result.stdout
     assert "git is not installed" in result.stderr
     assert "git clone" not in result.stdout
+
+
+# --- the one-liner, in the person's own terminal (#492) -----------------------
+#
+# `curl -fsSL …/setup.sh | bash -s -- …` is README's first command and
+# AGENTS.md's, and its stdin is the pipe the script arrives down. These run
+# exactly that shape - `cat setup.sh | bash -s -- …`, offline - with a
+# pseudo-terminal as the run's CONTROLLING terminal, as a person's own
+# terminal is (`conftest.run_in_a_terminal`), and with none at all, as an AI
+# assistant's shell is. `checkout` runs it from inside this checkout, the
+# hand-over; `download` from a directory that is not one, so the shim clones
+# this checkout (`$OPENREPOSHAPE_REPO`) and RUNS, not execs, the flow, with
+# the rest of the script still waiting in the pipe.
+
+ONE_LINER = 'cat "$0" | bash -s -- "$@"'
+
+
+def one_liner(*args: str) -> list:
+    """`cat setup.sh | bash -s -- <args>`, every path an argument rather than
+    text spliced into the shell's."""
+    return ["bash", "-c", ONE_LINER, str(SETUP), *args]
+
+
+def terminal_env(tmp_path: Path, *first_on_path: Path) -> dict:
+    """A run's environment: the suite's identity, `$OPENREPOSHAPE_REPO` at
+    THIS checkout, and a `gh` that reaches nothing - a token that is not one,
+    an empty configuration, and any stub directory first on `PATH`."""
+    env = dict(os.environ)
+    env.setdefault("GIT_AUTHOR_NAME", "openRepoShape tests")
+    env.setdefault("GIT_AUTHOR_EMAIL", "tests@openreposhape.invalid")
+    env.setdefault("GIT_COMMITTER_NAME", "openRepoShape tests")
+    env.setdefault("GIT_COMMITTER_EMAIL", "tests@openreposhape.invalid")
+    config = tmp_path / "gh-config"
+    config.mkdir(exist_ok=True)
+    env.update({"GH_TOKEN": "bogus", "GH_CONFIG_DIR": str(config),
+                "OPENREPOSHAPE_REPO": str(REPO)})
+    env["PATH"] = os.pathsep.join([*map(str, first_on_path), env["PATH"]])
+    return env
+
+
+def rehearsal(tmp_path: Path) -> tuple:
+    """A scaffold of `Sample` into bare repositories under `tmp_path`."""
+    return ("--org", "demoorg", "--project", "Sample", "--elected-by",
+            "Test Human", "--local-remote-dir", str(tmp_path / "remotes"),
+            "--into", str(tmp_path / "work"))
+
+
+def standing_in(tmp_path: Path, where: str) -> Path:
+    """Where the one-liner is typed: this checkout, or a directory that is
+    not one."""
+    if where == "checkout":
+        return REPO
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    return cwd
+
+
+WHERE = ("checkout", "download")
+
+
+@PTY_SKIP
+@pytest.mark.parametrize("where", WHERE)
+@pytest.mark.parametrize("typed", [pytest.param("no\n", id="no"),
+                                   pytest.param("EOF", id="eof")])
+def test_the_one_liner_asks_in_the_persons_own_terminal(tmp_path, where,
+                                                        typed):
+    """It ASKS, at the terminal, though its stdin is the pipe: and `no`, or
+    Ctrl-D, refuses and creates nothing. On main it never asked: exit 2, `no
+    terminal to confirm on`, in the person's own terminal."""
+    status, screen, answered = run_in_a_terminal(
+        one_liner(*rehearsal(tmp_path)), cwd=standing_in(tmp_path, where),
+        env=terminal_env(tmp_path), answers=[typed])
+    assert answered == 1, f"the one-liner never asked:\n{screen}"
+    assert "This will create THREE repositories in 'demoorg'." in screen
+    assert "no terminal to confirm on" not in screen, screen
+    assert status == 1, screen
+    assert "REFUSED: not confirmed; nothing was created." in screen
+    assert not (tmp_path / "remotes").exists()
+    assert not (tmp_path / "work").exists()
+
+
+@PTY_SKIP
+@pytest.mark.parametrize("where", WHERE)
+def test_the_one_liner_scaffolds_only_after_the_yes_typed_at_the_terminal(
+        tmp_path, where):
+    """The `yes` typed at the terminal is the one that creates the three
+    repositories, and nothing is created before it is typed: the plan is a
+    dry run, and the scaffold starts after the question."""
+    status, screen, answered = run_in_a_terminal(
+        one_liner(*rehearsal(tmp_path)), cwd=standing_in(tmp_path, where),
+        env=terminal_env(tmp_path), answers=["yes\n"])
+    assert answered == 1, f"the one-liner never asked:\n{screen}"
+    assert status == 0, screen
+    assert (screen.index("--dry-run: nothing was created.")
+            < screen.index("Type yes to continue:")
+            < screen.index("(6) scaffold")), screen
+    assert "DONE. Sample is scaffolded and bootstrapped." in screen
+    for name in ("Sample.git", "Sample-spec.git", "Sample-code.git"):
+        assert (tmp_path / "remotes" / name).is_dir(), name
+    assert (tmp_path / "work" / "Sample" / "project.yaml").is_file()
+
+
+@pytest.mark.parametrize("where", WHERE)
+def test_the_one_liner_with_no_terminal_refuses_with_the_route(tmp_path,
+                                                               where):
+    """An AI assistant's shell: a session with no controlling terminal, so
+    `/dev/tty` cannot be opened. It refuses after the plan, creates nothing,
+    and names the person's own terminal as the way on (#476)."""
+    proc = subprocess.run(one_liner(*rehearsal(tmp_path)),
+                          cwd=str(standing_in(tmp_path, where)),
+                          env=terminal_env(tmp_path), capture_output=True,
+                          text=True, stdin=subprocess.DEVNULL, check=False,
+                          start_new_session=True)
+    assert proc.returncode == 2, proc.stderr + proc.stdout
+    assert "--dry-run: nothing was created." in proc.stdout
+    assert_refuses_for_want_of_a_terminal(proc.stderr)
+    assert not (tmp_path / "remotes").exists()
+    assert not (tmp_path / "work").exists()
+
+
+#: A `gh` that is installed and not logged in, and logs each call with
+#: whether its stdin was a terminal: the one question this file asks of the
+#: offers is where their answer came from and what the command ran with.
+GH_NOT_LOGGED_IN = """#!/bin/sh
+if [ -t 0 ]; then on=terminal; else on=pipe; fi
+printf '%s|%s\\n' "$*" "$on" >> "$(dirname "$0")/calls.log"
+case "$*" in
+--version) echo "gh version 2.0.0 (stub)"; exit 0 ;;
+esac
+exit 1
+"""
+
+
+@PTY_SKIP
+@pytest.mark.parametrize("typed", ["no", "yes"])
+def test_the_one_liners_preflight_offers_are_asked_at_the_terminal(tmp_path,
+                                                                    typed):
+    """Every yes in the run is the terminal's, the preflight's offers too:
+    `gh auth login` is offered at the terminal, `no` runs nothing, and `yes`
+    runs it with the terminal as its stdin, never the pipe. On main the
+    one-liner made no offer at all."""
+    stub = tmp_path / "stub"
+    stub.mkdir()
+    (stub / "gh").write_text(GH_NOT_LOGGED_IN, encoding="utf-8")
+    (stub / "gh").chmod(0o755)
+    status, screen, answered = run_in_a_terminal(
+        one_liner("--preflight"), cwd=REPO, env=terminal_env(tmp_path, stub),
+        answers=[typed + "\n"])
+    assert answered == 1, f"the preflight made no offer:\n{screen}"
+    assert "Run `gh auth login` now? Type yes to continue:" in screen
+    assert status == 1, screen
+    calls = (stub / "calls.log").read_text(encoding="utf-8").splitlines()
+    logins = [call for call in calls if call.startswith("auth login|")]
+    assert logins == ([] if typed == "no" else ["auth login|terminal"]), calls

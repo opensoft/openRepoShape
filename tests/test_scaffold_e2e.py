@@ -82,7 +82,7 @@ def test_a_descendant_form_project_scaffolds_and_records_the_overlap(tmp_path):
     # a leg whose name does NOT match the claim form records an empty overlap
     assert ("  - role: spec\n"
             "    repository: MedxSoft/MedxScribe-spec\n"
-            "    path: spec\n"
+            '    path: "spec"\n'
             "    naming:\n"
             "      form: project-leg\n"
             "      role: spec\n"
@@ -132,7 +132,7 @@ def test_a_neutral_product_elects_the_shape_and_carries_three_repositories(tmp_p
             # matches the neutral form not at all.
             "  - role: spec\n"
             "    repository: testorg/openDox-spec\n"
-            "    path: spec\n"
+            '    path: "spec"\n'
             "    naming:\n"
             "      form: project-leg\n"
             "      role: spec\n"

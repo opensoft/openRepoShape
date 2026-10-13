@@ -19,7 +19,7 @@ kind: pinned_contract_manifest
 
 leg_role: code
 source_repository: {{CODE_REPOSITORY}}
-submodule_path: {{CODE_PATH}}
+submodule_path: "{{CODE_PATH}}"
 
 commit: "{{CODE_COMMIT}}"
 revision_kind: commit

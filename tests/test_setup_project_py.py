@@ -36,6 +36,10 @@ import pytest
 from conftest import (FILE_PROTOCOL, REPO, assert_read_through_git,
                       assert_store_read_through_git, git, rmtree)
 
+from conftest import assert_refuses_for_want_of_a_terminal
+
+from conftest import PTY_SKIP, run_in_a_terminal
+
 SETUP_PROJECT = REPO / "setup-project.py"
 SETUP_SH = REPO / "setup.sh"
 DEGRADE_LINE = "authority is not wallet-carried in this org"
@@ -53,6 +57,9 @@ def run_entry(*args: str, stdin: str = "", cwd: Path | None = None,
 
     `script` is what the self-bootstrap cases need - a lone COPY of the file
     somewhere that is not a checkout - and defaults to this checkout's own.
+    Stdin is a pipe and the run has NO controlling terminal: a session of its
+    own (#492), because the file asks at the controlling terminal when stdin
+    is not one, and the terminal pytest was started from is nobody's answer.
     """
     env = dict(os.environ)
     env.setdefault("GIT_AUTHOR_NAME", "openRepoShape tests")
@@ -64,7 +71,8 @@ def run_entry(*args: str, stdin: str = "", cwd: Path | None = None,
         [sys.executable, str(script or SETUP_PROJECT), *args],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
         check=False, input=stdin,
-        cwd=str(cwd) if cwd is not None else str(REPO), env=env)
+        cwd=str(cwd) if cwd is not None else str(REPO), env=env,
+        start_new_session=True)
 
 
 def entry_point_module():
@@ -332,7 +340,7 @@ def test_an_internal_visibility_is_accepted(tmp_path):
     assert result.returncode == 0, result.stderr + result.stdout
     assert "visibility   internal" in result.stdout
     manifest = (tmp_path / "work" / "Sample" / "project.yaml").read_text()
-    assert "visibility: internal" in manifest
+    assert 'visibility: "internal"' in manifest
 
 
 def test_a_name_outside_the_naming_policy_stops_before_the_scaffold(tmp_path):
@@ -412,8 +420,23 @@ def test_no_confirmation_and_no_terminal_refuses_after_showing_the_plan(tmp_path
                        "--into", str(tmp_path / "work"))
     assert result.returncode == 2
     assert "--dry-run: nothing was created." in result.stdout
-    assert "no terminal to confirm on" in result.stderr
+    assert_refuses_for_want_of_a_terminal(result.stderr)
     assert not (tmp_path / "remotes").exists()
+
+
+def test_agents_md_quotes_the_line_the_refusal_prints(tmp_path):
+    """#476: AGENTS.md tells an assistant that a run with no terminal stops
+    after the plan with a quoted line, and the line is the one the tool
+    prints, so a reworded refusal that left the document behind fails here.
+    The same paragraph is what the assistant is sent to by the first rule."""
+    agents = " ".join((REPO / "AGENTS.md").read_text(encoding="utf-8").split())
+    [quoted] = re.findall(r"`(no terminal[^`]*)`", agents)
+    result = run_entry("--project", "Sample", "--org", "demoorg",
+                       "--local-remote-dir", str(tmp_path / "remotes"),
+                       "--into", str(tmp_path / "work"))
+    assert result.returncode == 2
+    assert quoted in result.stderr
+    assert "you never answer it for them. No terminal: section 2." in agents
 
 
 def test_no_project_and_no_terminal_refuses(tmp_path):
@@ -443,10 +466,11 @@ def test_anything_but_yes_refuses_and_creates_nothing(monkeypatch, tmp_path):
     """The one `yes` is EXACT: `no`, `y`, `Yes` and an empty line all refuse.
 
     Driven in-process rather than through `run_entry` because the prompt only
-    happens when stdin is a terminal, and there is no portable way to hand a
-    subprocess one - `pty` is POSIX-only and this suite runs on Windows, which
-    is the platform this entry point is for. What is asserted is the ruling
-    itself: anything but exactly `yes` is exit 1 and nothing was created.
+    happens where there is a terminal to ask on, and there is no portable way
+    to hand a subprocess one - `pty` is POSIX-only and this suite runs on
+    Windows, which is the platform this entry point is for. What is asserted
+    is the ruling itself: anything but exactly `yes` is exit 1 and nothing was
+    created. The POSIX terminal itself is driven at the end of this file.
     """
     module = entry_point_module()
 
@@ -670,7 +694,8 @@ def test_a_version_line_shorter_than_the_field_is_not_an_index_error():
 
 def run_piped(*args: str, cwd: Path) -> subprocess.CompletedProcess:
     """The file's own text on stdin, which is what `Get-Content ... | py -`
-    does - and what the README's Windows path deliberately does NOT do."""
+    does - and what the README's Windows path deliberately does NOT do. No
+    controlling terminal either, as `run_entry` (#492)."""
     env = dict(os.environ)
     env.setdefault("GIT_AUTHOR_NAME", "openRepoShape tests")
     env.setdefault("GIT_AUTHOR_EMAIL", "tests@openreposhape.invalid")
@@ -679,7 +704,8 @@ def run_piped(*args: str, cwd: Path) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, "-", *args], capture_output=True, text=True,
         encoding="utf-8", errors="replace", check=False, env=env,
-        input=SETUP_PROJECT.read_text(encoding="utf-8"), cwd=str(cwd))
+        input=SETUP_PROJECT.read_text(encoding="utf-8"), cwd=str(cwd),
+        start_new_session=True)
 
 
 def test_a_piped_script_scaffolds_when_told_yes(tmp_path):
@@ -701,7 +727,7 @@ def test_a_piped_script_without_yes_refuses(tmp_path):
                        "--local-remote-dir", str(tmp_path / "remotes"),
                        "--into", str(tmp_path / "work"), cwd=REPO)
     assert result.returncode == 2
-    assert "no terminal to confirm on" in result.stderr
+    assert_refuses_for_want_of_a_terminal(result.stderr)
     assert not (tmp_path / "remotes").exists()
 
 
@@ -996,13 +1022,16 @@ def test_an_empty_openreposhape_repo_means_unset(tmp_path):
 
 #: NOTHING IN THIS SECTION EVER INSTALLS ANYTHING, on any platform, in CI or
 #: on a laptop, and that is STRUCTURAL rather than a promise. An offer needs
-#: `sys.stdin.isatty()`, and no run in this suite has a terminal: `run_entry`
-#: passes `input=`, `conftest.run_script` forces `stdin=DEVNULL`, and
-#: `test_openreposhape_command.run_cmd` passes `input=""`. The tests that DO
-#: exercise an offer are in-process with a fake terminal and with `module.run`
-#: replaced by a recorder that executes nothing at all - so `brew`, `apt-get`,
-#: `dnf`, `winget`, `xcode-select` and `gh auth login` are named here and run
-#: nowhere.
+#: a terminal to ask on (`can_ask`: stdin, or the controlling terminal, #492),
+#: and no run in this suite has one: `run_entry` and
+#: `test_openreposhape_command.run_cmd` pass a pipe in a session with no
+#: controlling terminal, and `conftest.run_script` forces `stdin=DEVNULL`
+#: (the doctor starts its preflight in a session of its own). The tests that
+#: DO exercise an offer are in-process with a fake terminal and with
+#: `module.run` replaced by a recorder that executes nothing at all - so
+#: `brew`, `apt-get`, `dnf`, `winget`, `xcode-select` and `gh auth login` are
+#: named here and run nowhere; the one that drives a real terminal answers a
+#: stub `gh` (`tests/test_setup_sh.py`).
 
 
 class _Terminal:
@@ -1015,6 +1044,14 @@ class _Terminal:
 class _NoTerminal:
     def isatty(self):
         return False
+
+
+def _no_terminal(monkeypatch, module) -> None:
+    """No terminal at all: stdin is not one, and there is no controlling
+    terminal to open (#492) - which the pytest process may well have, and
+    which is nobody's answer to a question a test asks."""
+    monkeypatch.setattr(sys, "stdin", _NoTerminal())
+    monkeypatch.setattr(module, "open_terminal", lambda: None)
 
 
 class _Runs:
@@ -1171,10 +1208,11 @@ def test_a_refused_offer_is_todays_text_and_todays_exit(monkeypatch, capsys,
 
 
 def test_no_terminal_makes_no_offer(monkeypatch, capsys, tmp_path):
-    """The only gate is `sys.stdin.isatty()`, so a piped or scheduled run is
-    byte for byte what it was before any of this existed."""
+    """The only gate is `can_ask()`, so a run with no terminal at all -
+    scheduled, or in an assistant's shell - is byte for byte what it was
+    before any of this existed."""
     module = entry_point_module()
-    monkeypatch.setattr(sys, "stdin", _NoTerminal())
+    _no_terminal(monkeypatch, module)
     monkeypatch.setattr(module.shutil, "which", _which("git", *EVERY_MANAGER))
     monkeypatch.setattr(module, "run", _Runs())
 
@@ -1294,7 +1332,7 @@ def test_the_credential_helper_is_a_warning_not_a_refusal(monkeypatch, capsys,
     exists - and is worth saying with `[??]`, because an SSH remote and every
     system helper make a refusal wrong."""
     module = entry_point_module()
-    monkeypatch.setattr(sys, "stdin", _NoTerminal())
+    _no_terminal(monkeypatch, module)
     monkeypatch.setattr(module.shutil, "which", _which("git", "gh"))
     monkeypatch.setattr(module, "run", _Runs({"config --get-all": (1, "")}))
     opts = module.parse_args([], str(tmp_path))
@@ -1313,7 +1351,7 @@ def test_a_credential_helper_that_is_not_ghs_is_left_alone(monkeypatch,
     warning about them would be this tool disliking somebody's
     ~/.gitconfig."""
     module = entry_point_module()
-    monkeypatch.setattr(sys, "stdin", _NoTerminal())
+    _no_terminal(monkeypatch, module)
     monkeypatch.setattr(module.shutil, "which", _which("git", "gh"))
     monkeypatch.setattr(module, "run",
                         _Runs({"credential.helper": (0, "osxkeychain\n"),
@@ -1346,7 +1384,7 @@ def test_preflight_exits_one_when_a_prerequisite_is_missing(monkeypatch, capsys,
     """In-process on purpose: a PATH-stripped subprocess is a POSIX trick and
     this file carries no Windows skip."""
     module = entry_point_module()
-    monkeypatch.setattr(sys, "stdin", _NoTerminal())
+    _no_terminal(monkeypatch, module)
     monkeypatch.setattr(module.shutil, "which", _which())
     monkeypatch.setattr(module, "run", _Runs())
     opts = module.parse_args([], str(tmp_path))
@@ -1772,3 +1810,206 @@ def test_the_two_entry_points_say_self_bootstrap_the_same_way():
     for line in SELF_BOOTSTRAP_LINES:
         assert line in shim, f"setup.sh no longer prints {line!r}"
         assert line in entry, f"setup-project.py no longer prints {line!r}"
+
+
+# --- every question at the person's own terminal (#492) ---------------------
+#
+# `curl … | bash -s --` hands this file the rest of `setup.sh` as its stdin,
+# so every question - the project name, each install offer, the one `yes` -
+# is asked at the CONTROLLING terminal when stdin is not a terminal, and an
+# answer is never read from the pipe. With no controlling terminal at all, as
+# in an AI assistant's shell, nothing is asked and the run refuses as #476
+# words it. The one-liner itself, through `setup.sh`, is driven in
+# `tests/test_setup_sh.py`.
+
+
+def test_every_question_is_asked_through_one_helper():
+    """`ask` is the one function that reads an answer and `can_ask` the one
+    gate: nothing else calls `input` or decides for itself whether stdin is a
+    terminal, and nothing reads stdin at all. A prompt with a gate of its own
+    is how one of them came to read the pipe, or to refuse where the others
+    ask."""
+    source = SETUP_PROJECT.read_text(encoding="utf-8")
+    readers, deciders = set(), set()
+    for node in ast.parse(source).body:
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for inner in ast.walk(node):
+            if (isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name)
+                    and inner.func.id == "input"):
+                readers.add(node.name)
+            if (isinstance(inner, ast.Attribute) and inner.attr == "isatty"
+                    and isinstance(inner.value, ast.Attribute)
+                    and inner.value.attr == "stdin"):
+                deciders.add(node.name)
+    assert readers == {"ask"}, f"these read an answer themselves: {readers}"
+    assert deciders == {"can_ask", "ask", "run_at_the_terminal"}, (
+        f"these decide for themselves whether there is a terminal: {deciders}")
+    assert "stdin.read" not in source, "stdin is read somewhere"
+
+
+def test_a_controlling_terminal_that_is_a_file_never_answers(monkeypatch,
+                                                             tmp_path):
+    """Whether a thing is a terminal is the device's answer, not its name's:
+    a `/dev` populated by hand - a chroot, a container image - can hold a
+    regular FILE called `tty`, and a file holding `yes` is nobody's answer.
+    So there is no terminal, and the one `yes` refuses as #476 words it."""
+    module = entry_point_module()
+    planted = tmp_path / "tty"
+    planted.write_bytes(b"yes\nyes\n")
+    monkeypatch.setattr(sys, "stdin", _NoTerminal())
+    monkeypatch.setattr(module, "CONTROLLING_TERMINAL", str(planted))
+    assert module.open_terminal() is None
+    assert module.can_ask() is False
+    assert module.ask("Type yes to continue: ") == ""
+    monkeypatch.setattr(module, "run", lambda *a, **k: subprocess.CompletedProcess(
+        args=[], returncode=0, stdout="", stderr=""))
+    opts = module.parse_args(["--project", "Sample", "--org", "demoorg"],
+                             str(tmp_path))
+    with pytest.raises(module.Refusal) as refused:
+        module.plan_and_confirm(opts, REPO, "demoorg", [])
+    assert refused.value.code == 2
+    assert_refuses_for_want_of_a_terminal(str(refused.value))
+
+
+def test_a_yes_down_the_pipe_with_no_terminal_still_refuses(tmp_path):
+    """An assistant's shell that pipes `yes` in: no controlling terminal, so
+    nobody is there to ask, and the pipe is not somebody. It refuses with the
+    route (#476) and creates nothing - on every platform."""
+    result = run_entry("--project", "Sample", "--org", "demoorg",
+                       "--local-remote-dir", str(tmp_path / "remotes"),
+                       "--into", str(tmp_path / "work"), stdin="yes\nyes\n")
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert "--dry-run: nothing was created." in result.stdout
+    assert_refuses_for_want_of_a_terminal(result.stderr)
+    assert not (tmp_path / "remotes").exists()
+
+
+def terminal_env() -> dict:
+    """The environment of a run in a terminal: the suite's identity, and a
+    `gh` that reaches nothing were one asked."""
+    env = dict(os.environ)
+    env.setdefault("GIT_AUTHOR_NAME", "openRepoShape tests")
+    env.setdefault("GIT_AUTHOR_EMAIL", "tests@openreposhape.invalid")
+    env.setdefault("GIT_COMMITTER_NAME", "openRepoShape tests")
+    env.setdefault("GIT_COMMITTER_EMAIL", "tests@openreposhape.invalid")
+    env["GH_TOKEN"] = "bogus"
+    return env
+
+
+def piped(text: str, *args: str) -> list:
+    """This file run with `text` on its stdin, from a pipe, as `curl |
+    bash` runs it: everything else is the terminal's."""
+    return ["sh", "-c", 'text=$1; shift; printf "%s" "$text" | "$0" "$@"',
+            sys.executable, text, str(SETUP_PROJECT), *args]
+
+
+@PTY_SKIP
+def test_a_yes_down_the_pipe_is_never_an_answer(tmp_path):
+    """The pipe on stdin holds `yes`, the person types `no` at the terminal:
+    the terminal's answer is the one taken, and nothing is created."""
+    status, screen, answered = run_in_a_terminal(
+        piped("yes\nyes\n", "--project", "Sample", "--org", "demoorg",
+              "--local-remote-dir", str(tmp_path / "remotes"),
+              "--into", str(tmp_path / "work")),
+        cwd=REPO, env=terminal_env(), answers=["no\n"])
+    assert answered == 1, f"it never asked at the terminal:\n{screen}"
+    assert status == 1, screen
+    assert "REFUSED: not confirmed; nothing was created." in screen
+    assert not (tmp_path / "remotes").exists()
+
+
+@PTY_SKIP
+def test_a_missing_project_is_asked_for_at_the_terminal(tmp_path):
+    """The project name is a question too, and the same helper asks it: at
+    the terminal, though stdin is a pipe, and the name typed there is the one
+    the plan names. The `no` after it creates nothing."""
+    status, screen, answered = run_in_a_terminal(
+        piped("", "--org", "demoorg",
+              "--local-remote-dir", str(tmp_path / "remotes"),
+              "--into", str(tmp_path / "work")),
+        cwd=REPO, env=terminal_env(), answers=["Sample\n", "no\n"],
+        prompt=["project name (ONE CamelCase token, e.g. Atlas): ",
+                "Type yes to continue:"])
+    assert answered == 2, f"it never asked at the terminal:\n{screen}"
+    assert "project      Sample" in screen, screen
+    assert status == 1, screen
+    assert "REFUSED: not confirmed; nothing was created." in screen
+    assert not (tmp_path / "remotes").exists()
+
+
+def assert_refuses_on_a_terminal_it_cannot_answer_on(tmp_path, **how):
+    """A terminal that opens is not always one the run can be answered on.
+    Here the run has one, and stdin is a pipe holding `yes`; `how` says what
+    is wrong with the terminal (`raw`, or `background`, as
+    `run_in_a_terminal` spells them). Setup must not draw the prompt at it:
+    it refuses with the route as it does with no terminal at all (#476) and
+    creates nothing. The wait is 30 s, so that a run that asks anyway FAILS
+    with its screen instead of waiting for a person who cannot answer."""
+    status, screen, _ = run_in_a_terminal(
+        piped("yes\nyes\n", "--project", "Sample", "--org", "demoorg",
+              "--local-remote-dir", str(tmp_path / "remotes"),
+              "--into", str(tmp_path / "work")),
+        cwd=REPO, env=terminal_env(), timeout=30, **how)
+    assert "Type yes to continue" not in screen, (
+        f"it asked at a terminal nobody can answer on:\n{screen}")
+    assert "Traceback" not in screen, screen
+    assert status == 2, f"status {status}:\n{screen}"
+    assert "--dry-run: nothing was created." in screen
+    assert_refuses_for_want_of_a_terminal(
+        screen[screen.index("REFUSED"):])
+    assert not (tmp_path / "remotes").exists()
+    assert not (tmp_path / "work").exists()
+
+
+@PTY_SKIP
+def test_a_terminal_in_raw_mode_is_no_terminal_to_ask_on(tmp_path):
+    """An assistant's full-screen interface owns the pane in raw mode, and
+    its tool shell shares that terminal: the person's Enter is a carriage
+    return there, so a read for the end of a line never ends, nothing is
+    echoed, and the run waits for the assistant's timeout with the route
+    unseen. A terminal that reads no whole lines is no terminal to ask on."""
+    assert_refuses_on_a_terminal_it_cannot_answer_on(tmp_path, raw=True)
+
+
+@PTY_SKIP
+def test_a_background_process_group_is_no_terminal_to_ask_on(tmp_path):
+    """`cat setup.sh | timeout N bash -s -- ...` typed in a shell, or any
+    runner that backgrounds a job sharing the terminal: a read of the
+    terminal from a background process group stops the run on SIGTTIN, and it
+    stays stopped. A terminal the run is not in the foreground of is no
+    terminal to ask on. Typed without the pipe the run's stdin IS the
+    terminal, and it never reaches this check."""
+    assert_refuses_on_a_terminal_it_cannot_answer_on(tmp_path,
+                                                     background=True)
+
+
+class _HungUpOs:
+    """`os`, as `ask` uses it, over a terminal that opened and whose read now
+    fails with EIO: the last process of its group orphaned, SIGTTIN ignored,
+    or the terminal hung up."""
+
+    def __init__(self):
+        self.closed = []
+
+    def write(self, descriptor, data):
+        return len(data)
+
+    def read(self, descriptor, count):
+        raise OSError(5, "Input/output error")
+
+    def close(self, descriptor):
+        self.closed.append(descriptor)
+
+
+def test_a_terminal_whose_read_fails_is_the_end_of_the_answer(monkeypatch):
+    """EIO from the read is end of input, never a traceback: the answer is an
+    empty line, which no question takes for a yes, and the terminal is closed
+    all the same."""
+    module = entry_point_module()
+    hung_up = _HungUpOs()
+    monkeypatch.setattr(sys, "stdin", _NoTerminal())
+    monkeypatch.setattr(module, "open_terminal", lambda: 7)
+    monkeypatch.setattr(module, "os", hung_up)
+    assert module.ask("Type yes to continue: ") == ""
+    assert hung_up.closed == [7]

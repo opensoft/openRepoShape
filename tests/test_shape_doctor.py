@@ -2761,8 +2761,8 @@ def test_a_sibling_at_the_right_origin_with_another_id_is_not_the_member(
     root, sibling = member_beside(holder, tmp_path)
     manifest = sibling / "project.yaml"
     manifest.write_text(
-        manifest.read_text(encoding="utf-8").replace("id: irrs",
-                                                     "id: somethingelse"),
+        manifest.read_text(encoding="utf-8").replace('id: "irrs"',
+                                                     'id: "somethingelse"'),
         encoding="utf-8")
     row = rows_of(doctor(standard, root, "--json"))["members"]
     entry = row["detail"]["members"][0]
@@ -5949,7 +5949,7 @@ def test_a_leg_the_manifest_points_outside_the_root_is_never_read(standard,
     manifest = project / "project.yaml"
     manifest.write_text(
         manifest.read_text(encoding="utf-8").replace(
-            "path: spec", "path: ../outside", 1), encoding="utf-8")
+            'path: "spec"', 'path: "../outside"', 1), encoding="utf-8")
     row = rows_of(doctor(standard, project, "--json"))["placement"]
     legs = {entry["role"]: entry for entry in row["detail"]["legs"]}
     assert "outside" in legs["spec"]["state"], legs
