@@ -839,13 +839,14 @@ class Addition(Row):
 
     def __init__(self, copy: Copy, present: bool, target_bytes: bytes,
                  link: tuple[str, str] | None = None,
-                 blocked: str | None = None):
+                 blocked: str | None = None, left_dead: str = ""):
         super().__init__(copy.path, "")
         self.source = copy.source
         self.executable = copy.executable
         self.present = present
         self.link = link
         self.blocked = blocked
+        self.left_dead = left_dead
         self.target_bytes = target_bytes
         self.digest = file_bytes_sha256(target_bytes)
         self.state = UPSTREAM_ADDED
@@ -855,6 +856,52 @@ class Addition(Row):
             self.detail = ("the standard added this file after this pin, but "
                            f"{blocked} in this root is not a directory, so "
                            f"--add refuses it until {blocked} is moved")
+        if left_dead:
+            self.detail += f"; {left_dead}"
+
+
+#: AN ADDED FILE THAT A COPIED FILE CALLS (#489): `{the added path: (the pinned
+#: copy that calls it, what stops working without it)}`. `apply` copies the
+#: copy the moment it changes and takes the added file only on `--add`, which
+#: is the human's word and per file, so a holder updated the way AGENTS.md
+#: prescribes holds the Makefile of a standard that has `scripts/siblings.py`
+#: and not the script. `check` and `apply` SAY so, in the line that already
+#: reports the file, rather than leave the person to find three make targets
+#: that cannot run; the Makefile refuses by name in the same case, and
+#: neither writes the file nor refuses the run. A fact about the standard's
+#: own files, so it is spelled here once, and
+#: `tests/test_family_makefile_siblings.py` holds the Makefile to it.
+CALLED_BY_A_COPY = {
+    "scripts/siblings.py": (
+        "Makefile", "`make siblings`, `make park` and `make resume`"),
+}
+
+
+def left_dead_by(path: str, rows: list[Row]) -> str:
+    """What a copy that calls `path` leaves that cannot run while `path` is not
+    added, or "" (#489).
+
+    TWO CALLERS COUNT, and they are the two the root can hold the standard's
+    own bytes in. `upstream-changed` is the one verdict whose bytes `apply`
+    writes on its own, so the copy it is about to put in front of a file it
+    does not add. `unchanged` is the root AFTER that `apply`: pinned at the
+    target, holding the target's copy, and every later `check` finds the
+    script `upstream-added` still, so the sentence has to be there on the
+    second `check` as much as on the first. A `locally-modified` or `both`
+    copy is kept or refused, and says nothing about what it calls.
+    """
+    called = CALLED_BY_A_COPY.get(path)
+    if called is None:
+        return ""
+    caller, what = called
+    states = {row.state for row in rows if row.path == caller}
+    if UPSTREAM_CHANGED in states:
+        return (f"the {caller} that `apply` copies calls it, so {what} "
+                "cannot run until it is added")
+    if UNCHANGED in states:
+        return (f"this root's {caller} already calls it, so {what} cannot "
+                "run until it is added")
+    return ""
 
 
 #: An NTFS junction's reparse tag. `stat` names IO_REPARSE_TAG_MOUNT_POINT on
@@ -965,7 +1012,8 @@ def find_additions(root: Path, rows: list[Row], upstream: Upstream,
         link = symlink_on_the_way(root, copy.path)
         additions.append(Addition(
             copy, link is not None or os.path.lexists(root / copy.path),
-            data, link, not_a_directory_on_the_way(root, copy.path)))
+            data, link, not_a_directory_on_the_way(root, copy.path),
+            left_dead_by(copy.path, rows)))
     return additions
 
 
@@ -2619,7 +2667,9 @@ def _note_untaken_additions(additions: list[Addition],
             take = (f"pass --add {add.path}" if add.blocked is None else
                     f"{add.blocked} in this root is not a directory, so "
                     f"--add refuses it until {add.blocked} is moved")
-            print(f"  note     {add.path} is new upstream; not added; {take}")
+            dead = f" ({add.left_dead})" if add.left_dead else ""
+            print(f"  note     {add.path} is new upstream; not added; "
+                  f"{take}{dead}")
 
 
 def _nothing_to_do(rows: list[Row], pinned: str, target: str,
