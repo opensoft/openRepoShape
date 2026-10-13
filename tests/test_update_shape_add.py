@@ -287,7 +287,7 @@ def pin_rows(root) -> dict:
 #: mistaken for one.
 STATES = ("unchanged", "upstream-changed", "upstream-added",
           "locally-modified", "both", "already-at-target", "upstream-removed",
-          "unmapped", "copy-missing")
+          "unmapped", "copy-missing", "copy-is-link")
 
 
 def verdicts(stdout: str) -> dict:

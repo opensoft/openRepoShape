@@ -1018,17 +1018,17 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
       <div class="out"><pre><code>NOTHING has been rolled back. What already exists is listed above; delete it by hand if you want a clean re-run</code></pre></div>
       <p>&mdash; and it is no less true of a failure anywhere else.</p>
       <ul class="plain">
-        <li>A second run is refused while the legs exist, and there is no <code>--force</code>,
-        because re-running over a live project is not a scaffold.</li>
+        <li>A second run is refused while they exist, and there is no <code>--force</code>.</li>
         <li>Delete what was created with <code>gh repo delete &lt;org&gt;/&lt;name&gt;</code>, which
-        needs the <code>delete_repo</code> scope; <code>gh repo delete --help</code> names
-        <code>gh auth refresh -s delete_repo</code> as how to get it. Or scaffold under a different
-        <code>--project</code>.</li>
-        <li><code>--reuse-empty-repo</code> covers exactly one case: an assembly ROOT that already
-        exists with ZERO commits, which is a reserved name rather than a project. It applies to the
-        root alone &mdash; an existing leg is refused whatever it holds, and a root that HAS commits
-        is a live repository, which <a href="#adopt"><code>adopt-project.py</code></a> converts in
-        place instead.</li>
+        needs the <code>delete_repo</code> scope (<code>gh auth refresh -s delete_repo</code>). Or
+        scaffold under a different <code>--project</code>, or re-run with
+        <code>--reuse-empty-repo</code>.</li>
+        <li><code>--reuse-empty-repo</code> reuses each of the three that has ZERO commits, a
+        reserved name rather than a project, and a leg whose one commit is the seed this scaffold
+        pushes, so a run a ruleset refused is finished by an operator holding the bypass right
+        re-running it. A leg with other commits is refused, and a root that HAS commits is a live
+        repository, which <a href="#adopt"><code>adopt-project.py</code></a> converts in place
+        instead.</li>
         <li><code>--visibility internal</code> is the third value every tool here accepts; only a
         GitHub Enterprise Cloud organisation offers it at all, and one that does not is refused by
         GitHub rather than by this tool.</li>
@@ -1802,8 +1802,9 @@ resume InkRouter                # on workstation B, and the estate is back</code
         setup.sh refuses because the organisation you were given resolves to opensoft, STOP and relay
         what it said; the fix is almost always an explicit <code>--org &lt;their-org&gt;</code>.</li>
         <li><strong>Never bypass an organisation ruleset.</strong> A ruleset that refuses a direct
-        push to <code>main</code> is doing its job; the exits are in the scaffold&rsquo;s own failure
-        message. <code>--admin</code> is not a remedy.</li>
+        push to <code>main</code> is doing its job; the exit is in the tool&rsquo;s own failure
+        message (for a scaffold or <code>family.py init</code>: an operator holding the bypass right
+        re-runs it with <code>--reuse-empty-repo</code>). <code>--admin</code> is not a remedy.</li>
         <li><strong>Never reset, stash or force-push to make a refused
         <a href="#park"><code>make park</code></a> or <code>make resume</code> succeed.</strong> A
         parked WIP commit is a real pushed commit, and <code>resume</code> refusing on divergence
@@ -1874,11 +1875,13 @@ resume InkRouter                # on workstation B, and the estate is back</code
       above drift, added (#424); the assistant&rsquo;s route when its shell has no terminal, added
       (#476); the one-liner asking at the person&rsquo;s own terminal, never reading the answer
       from the pipe, added (#492); the statements the v1.0.0 accuracy pass found false, corrected
-      here as in the README, added (#483); a taken clone path refused up front, added (#498); the
-      line-ending block an adoption appends to a root <code>.gitattributes</code> the source keeps,
-      and its verification as the source&rsquo;s bytes plus that block, added (#471) &mdash; a page
-      cannot name the commit that contains it, and the blob below is the fact a test checks.
-      README.md blob e6c41c9b35af4864c75150cb87f0c9f94e03b229. Every command, flag, exit code
+      here as in the README, added (#483); a taken clone path refused up front, added (#498);
+      <code>--reuse-empty-repo</code> reusing an empty leg and a leg holding the scaffold&rsquo;s
+      own seed, and the one ruleset exit that re-run is, added (#462); the line-ending block an
+      adoption appends to a root <code>.gitattributes</code> the source keeps, and its
+      verification as the source&rsquo;s bytes plus that block, added (#471) &mdash; a page cannot
+      name the commit that contains it, and the blob below is the fact a test checks.
+      README.md blob caeb53ee305fc8d81ccd86e39818e3cb6d91ed1f. Every command, flag, exit code
       and file name on this page is quoted from that README and from AGENTS.md.</p>
     </footer>
   </main>
