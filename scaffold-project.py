@@ -52,7 +52,12 @@ directory's is refused as `scaffold-name-too-long`.
 
 IDEMPOTENCY. It refuses to write into a remote or a working directory that
 already exists. There is no --force: re-running over a live project is not a
-scaffold, and the failure mode of getting it wrong is silent data loss.
+scaffold, and the failure mode of getting it wrong is silent data loss. The
+one exception is `--reuse-empty-repo`, which reuses each of the three remotes
+while it has ZERO commits, and a leg whose one commit is the seed this
+scaffold pushes (#462): a reserved name, or what a run whose later push an
+organisation's ruleset refused left behind. It never deletes, rewrites or
+force-pushes a remote.
 
 EXIT CODES: 0 done · 1 nothing (dry run prints and exits 0) · 2 refusal.
 """
@@ -211,9 +216,10 @@ def main(argv: list[str] | None = None) -> int:
                         default=None,
                         help="default: private for a fresh scaffold; with "
                              "--reuse-empty-repo and an existing assembly "
-                             "root, the two new legs INHERIT that root's own "
-                             "visibility instead (a mismatch with an explicit "
-                             "--visibility is a warning, not a refusal)")
+                             "root, the legs it creates INHERIT that root's "
+                             "own visibility instead (a mismatch with an "
+                             "explicit --visibility is a warning, not a "
+                             "refusal, and so is a reused leg's)")
     parser.add_argument("--pin-owner", default=NEUTRAL_PRODUCT_OWNER,
                         help="the organisation an UNQUALIFIED --pin name "
                              f"resolves under (default: {NEUTRAL_PRODUCT_OWNER}, "
@@ -259,10 +265,15 @@ def main(argv: list[str] | None = None) -> int:
                              "`gh repo create` (the TEST path; no network)")
     parser.add_argument("--no-push", action="store_true")
     parser.add_argument("--reuse-empty-repo", action="store_true",
-                        help="if <org>/<Project> already exists and has ZERO "
-                             "commits, use it as the assembly root instead of "
-                             "refusing. A repository with commits is still "
-                             "refused: that is a live project, not a slot.")
+                        help="if <org>/<Project>, <Project>-spec or "
+                             "<Project>-code already exists and has ZERO "
+                             "commits, use it instead of refusing, and a leg "
+                             "whose one commit is the seed this scaffold "
+                             "pushes too: an operator holding the bypass "
+                             "right finishes a run a ruleset refused by "
+                             "re-running it with this. A root with commits, "
+                             "and a leg with any other, is still refused: "
+                             "that is a live repository, not a slot.")
     parser.add_argument("--pin", action="append", default=[],
                         metavar="openProduct@COMMIT",
                         help="declare a neutral-product pin, e.g. "
@@ -306,47 +317,159 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
 
-def _reusable_remotes(names: dict, urls: dict, repositories: dict,
-                      local: bool, reuse_flag: bool) -> set[str]:
-    """Which remotes already exist, and whether that is allowed.
+#: The two legs and the template each is seeded from: what `_seed_legs`
+#: builds, and what `seed_tree` builds again to know a leg's seed (#462).
+LEG_TEMPLATES = {"spec": "spec-root", "code": "code-root"}
 
-    THE ONE REPOSITORY THAT MAY ALREADY EXIST is the assembly root, and only
-    with `--reuse-empty-repo`, and only with ZERO commits. An organisation
-    that creates the repository first and asks for the shape second is the
-    ordinary case, not a mistake; an EMPTY repository is a name that has been
-    reserved, and reserving a name is not starting a project. A repository
-    with commits is refused: that is a live project, and `adopt-project.py`
-    is the tool for one of those.
+
+def seed_tree(role: str, values: dict, tracking: str, scratch: Path) -> str:
+    """The tree of the one commit `_seed_legs` makes for the `role` leg
+    (#462), built as `_seed_legs` builds it and in `scratch`, so nothing is
+    written into the work directory before every remote has been asked.
+
+    `copy_tree` from the same template with the same values, `git init` on
+    the tracking branch and `stage_written`: the index `_seed_legs` commits.
+    Git names a tree by its content, so a run given the same values builds
+    the same tree whoever commits it and on whatever day. The values a leg's
+    template takes are the project's names, its id, display name and topic,
+    the two leg paths and the root's clone URL; no date and no commit.
     """
-    reused: set[str] = set()
-    for role in names:
-        target = Path(urls[role]) if local else repositories[role]
-        empty = (local_remote_is_empty(target) if local
-                 else remote_is_empty(target))
-        if empty is None:
-            continue
-        if role == "assembly" and reuse_flag and empty:
-            reused.add(role)
-            print(f"  reuse {target} (zero commits)")
-            continue
-        raise Refusal(
-            "scaffold-remote-exists",
-            f"{target} already exists" + ("" if local else " on GitHub")
-            + ("" if empty else " and has commits"),
-            _exists_remedy(role, empty, reuse_flag))
+    work = scratch / "seed"
+    written = copy_tree(SHAPE_ROOT / "templates" / LEG_TEMPLATES[role], work,
+                        values)
+    run(["git", "init", "-q", "-b", tracking, str(work)])
+    stage_written(work, written)
+    return run(["git", "write-tree"], cwd=work).lower()
+
+
+def only_commit(url: str, scratch: Path) -> tuple[str, str] | None:
+    """`(commit, tree)` when the repository at `url` holds exactly ONE commit
+    and every ref it has names it, else None (#462).
+
+    `git ls-remote` lists every ref, `HEAD`, a `seed/*` branch and a pull
+    request's included, and one object name across all of them is the first
+    half. That object is then fetched ALONE (`--depth=1`) into a bare
+    repository in `scratch`, never the history behind it, and a commit with
+    no parent is the second half. So a repository somebody works in is told
+    apart by its listing or by one commit, and is never cloned whole to be
+    refused. The same question on disk and on GitHub: both are a git URL.
+    """
+    tips = {line.split()[0].lower()
+            for line in run(["git", "ls-remote", url]).splitlines()
+            if line.strip()}
+    if len(tips) != 1:
+        return None
+    commit = tips.pop()
+    probe = scratch / "probe.git"
+    run(["git", "init", "-q", "--bare", "--template=", str(probe)])
+    run(["git", "fetch", "-q", "--depth=1", url, commit], cwd=probe)
+    if run(["git", "cat-file", "-t", commit], cwd=probe) != "commit":
+        return None
+    header = run(["git", "cat-file", "commit", commit],
+                 cwd=probe).split("\n\n", 1)[0].splitlines()
+    if any(line.startswith("parent ") for line in header):
+        return None
+    tree = next(line.split()[1] for line in header if line.startswith("tree "))
+    return commit, tree.lower()
+
+
+def _held_seed(role: str, url: str, values: dict, tracking: str,
+               scratch: Path) -> str | None:
+    """The commit a leg that is not empty holds, when it is the ONLY one and
+    its tree is the one this run would seed the leg with (#462); else None.
+
+    That is a leg a run of this scaffold pushed before a later push was
+    refused, by an organisation's ruleset or anything else, or one an
+    operator seeded by pushing that run's own clone: what Brett Heap ruled
+    the re-run accepts on 2026-10-12, "Accept the scaffold's own seed". The
+    commit's message, author and date are not asked: two runs never make
+    the same commit, and they make the same tree.
+    """
+    held = only_commit(url, scratch)
+    if held is None:
+        return None
+    commit, tree = held
+    return commit if tree == seed_tree(role, values, tracking, scratch) else None
+
+
+def _reusable_remotes(names: dict, urls: dict, repositories: dict,
+                      local: bool, reuse_flag: bool, values: dict,
+                      tracking: str) -> dict[str, str | None]:
+    """Which remotes already exist, and whether that is allowed: each one
+    `--reuse-empty-repo` reuses, mapped to the commit it holds, or to None
+    when it is empty.
+
+    THE ASSEMBLY ROOT may already exist only with `--reuse-empty-repo`, and
+    only with ZERO commits. An organisation that creates the repository
+    first and asks for the shape second is the ordinary case, not a mistake;
+    an EMPTY repository is a name that has been reserved, and reserving a
+    name is not starting a project. A root with commits is refused: that is
+    a live project, and `adopt-project.py` is the tool for one of those.
+
+    EACH LEG is reused on the same terms, and also when its one commit is
+    the seed this scaffold pushes (#462; Brett Heap, 2026-10-12, "Re-run
+    reuses empty legs" and "Accept the scaffold's own seed"). A run whose
+    push an organisation's ruleset refused left all three repositories
+    behind, empty or, for a leg pushed before the refusal, holding its seed,
+    and its re-run was refused as `scaffold-remote-exists` for them, with or
+    without the flag, so no exit finished it. Re-run with the flag by an
+    operator holding the bypass right, it reuses them and pushes the seed
+    itself. Any other leg with commits is still refused, and nothing here
+    deletes, rewrites or force-pushes a remote. "Empty" is asked as it
+    always was, of `remote_is_empty` or `local_remote_is_empty`; the seed is
+    asked only of a leg that is not empty.
+    """
+    reused: dict[str, str | None] = {}
+    with tempfile.TemporaryDirectory(prefix="openreposhape-seed-") as scratch:
+        for role in names:
+            target = Path(urls[role]) if local else repositories[role]
+            empty = (local_remote_is_empty(target) if local
+                     else remote_is_empty(target))
+            if empty is None:
+                continue
+            seed = (None if role == "assembly" or empty else
+                    _held_seed(role, urls[role], values, tracking,
+                               Path(scratch) / role))
+            if reuse_flag and (empty or seed):
+                reused[role] = seed
+                print(f"  reuse {target} " + (
+                    "(zero commits)" if empty else
+                    f"(one commit, {seed[:12]}: the seed this scaffold "
+                    "pushes)"))
+                continue
+            raise Refusal(
+                "scaffold-remote-exists",
+                f"{target} already exists" + ("" if local else " on GitHub")
+                + ("" if empty else " and has commits"),
+                _exists_remedy(role, empty, reuse_flag, seed is not None))
     return reused
 
 
-def _exists_remedy(role: str, empty: bool, reuse_flag: bool) -> str:
+def _exists_remedy(role: str, empty: bool, reuse_flag: bool,
+                   seeded: bool = False) -> str:
     """The remedy line for a remote that is already there.
 
-    Three different situations answer to three different exits, and a refusal
-    that named only one of them would send a human to the wrong one.
+    Each situation answers to its own exit, and a refusal that named only
+    one of them would send a human to the wrong one. `seeded` is a leg whose
+    one commit is this scaffold's seed (#462).
     """
     if role != "assembly":
-        return ("Remediation: the two legs must not exist yet — they are "
-                "created and seeded here. Delete them, or scaffold under a "
-                "different --project. There is no --force.")
+        if empty or seeded:
+            return ("Remediation: "
+                    + ("it has ZERO commits" if empty else
+                       "its one commit is the seed this scaffold pushes, "
+                       "left by a run that stopped after pushing it")
+                    + f", so re-run with --reuse-empty-repo to use it as the "
+                    f"{role} leg. A run an organisation's ruleset refused is "
+                    "finished that way, by an operator holding the bypass "
+                    "right.")
+        return ("Remediation: it holds commits other than the one seed this "
+                "scaffold would push to it, so it is not a slot this scaffold "
+                "may fill. Delete it, or scaffold under a different "
+                "--project. A leg a run of this scaffold seeded is reused "
+                "only when this run would seed it with the same tree, which "
+                "takes the same flags and the same openRepoShape. There is "
+                "no --force.")
     if empty and not reuse_flag:
         return ("Remediation: it has ZERO commits, so it is a reserved name "
                 "rather than a live project — re-run with --reuse-empty-repo "
@@ -879,8 +1002,8 @@ def _print_plan_actions(args, topic: str, local: bool) -> None:
     print("remotes      " + ("bare repositories on disk (no network)" if local
                              else f"gh repo create --{args.visibility}"))
     if args.reuse_empty_repo:
-        print("reuse        an EXISTING <Project> with zero commits is used as "
-              "the assembly root")
+        print("reuse        each of the three that EXISTS with zero commits "
+              "is used, and a leg whose one commit is this scaffold's seed")
     print("push         " + ("SKIPPED (--no-push)" if args.no_push else "yes"))
     print("topics       " + ("skipped for local remotes" if local
                              else f"gh repo edit --add-topic {topic}"))
@@ -902,21 +1025,25 @@ def _refuse_existing_trees(work_root: Path, names: dict) -> None:
 
 
 def _create_remotes(args, values: dict, repositories: dict, urls: dict,
-                    local: bool, reused: set) -> None:
+                    local: bool, reused: dict) -> None:
     """(k) The three remotes, spec and code first so a failure costs the
     cheapest thing. Split out of `_scaffold` for #138.
 
     It takes no `names`: every line here addresses a repository by the
     `<org>/<name>` the forge knows it as, or by its clone URL, and the bare
-    name is not one of the things it needs.
+    name is not one of the things it needs. A reused one (`reused`, from
+    `_reusable_remotes`) is not created, and keeps the visibility it has.
     """
     display = values["PROJECT_NAME"]
     project_id = values["PROJECT_ID"]
     print("\ncreating remotes")
     for role in ("spec", "code", "assembly"):
         if role in reused:
-            print(f"  reused {repositories[role]} (created by somebody else, "
-                  "zero commits)")
+            print(f"  reused {repositories[role]} (already there, "
+                  + ("zero commits)" if reused[role] is None else
+                     f"holding this scaffold's seed {reused[role][:12]})"))
+            if role != "assembly" and not local:
+                _reused_leg_visibility(args, repositories[role])
             continue
         if local:
             run(["git", "init", "-q", "--bare", "-b", args.tracking_branch,
@@ -931,6 +1058,21 @@ def _create_remotes(args, values: dict, repositories: dict, urls: dict,
             run(["gh", "repo", "create", repositories[role],
                  f"--{args.visibility}", "--description", description])
             print(f"  gh    {repositories[role]} ({args.visibility})")
+
+
+def _reused_leg_visibility(args, repository: str) -> None:
+    """(k″) A reused leg keeps the visibility the run that created it gave it
+    (#462), and a re-run whose visibility disagrees is told so, as
+    `_leg_visibility` tells it about a reused root. Nothing here changes a
+    repository's visibility. Never asked of a `--local-remote-dir` leg,
+    which has none.
+    """
+    seen = remote_visibility(repository)
+    if seen and seen != args.visibility:
+        print(f"WARNING {repository} is reused and is {seen} on GitHub, "
+              f"where this run's visibility is {args.visibility}. It keeps "
+              "the visibility it has: this run changes no repository's "
+              "visibility.", file=sys.stderr)
 
 
 def _private_leg_note(args, repositories: dict, local: bool) -> None:
@@ -954,37 +1096,61 @@ def _private_leg_note(args, repositories: dict, local: bool) -> None:
             print(hint)
 
 
+def _take_held_seed(work: Path, url: str, seed: str, tracking: str) -> str:
+    """(l′) A leg whose remote already holds this scaffold's seed (#462): the
+    work clone, its files just written, is put AT that commit rather than
+    given a new one.
+
+    A new commit would carry the same tree under another name, and pushing
+    it over the seed would be the rewrite a reuse never makes. So the commit
+    `_reusable_remotes` found is fetched, by name and alone, and the
+    tracking branch and the index are set to it; its tree is the one
+    `seed_tree` built from these values, which is what was just written. The
+    pin, the gitlink and the push that follows are then about the commit the
+    remote already has, and that push changes nothing where the tracking
+    branch already holds it.
+    """
+    run(["git", "init", "-q", "-b", tracking, str(work)])
+    run(["git", "remote", "add", "origin", url], cwd=work)
+    run(["git", "fetch", "-q", "origin", seed], cwd=work)
+    run(["git", "reset", "-q", seed], cwd=work)
+    return seed
+
+
 def _seed_legs(args, values: dict, names: dict, repositories: dict,
-               urls: dict, work_root: Path) -> dict | None:
+               urls: dict, work_root: Path, reused: dict) -> dict | None:
     """(l) The two legs: template, one commit, push.
 
     Returns the four template values the assembly root's own templates name —
     or None when a push was REFUSED, having already said so on stderr and
-    printed the ruleset hint. Split out of `_scaffold` for #138.
+    printed the ruleset hint. Split out of `_scaffold` for #138. A leg
+    `reused` maps to its seed is put at that commit (`_take_held_seed`).
     """
     display = values["PROJECT_NAME"]
     shape_commit = values["SHAPE_COMMIT"]
     leg_commits: dict[str, str] = {}
     leg_digests: dict[str, str] = {}
-    for role, template in (("spec", "spec-root"), ("code", "code-root")):
+    for role, template in LEG_TEMPLATES.items():
         work = work_root / names[role]
         written = copy_tree(SHAPE_ROOT / "templates" / template, work, values)
-        commit = git_init_commit(
-            work, f"Seed the {role} leg of {display}\n\n"
-                  f"Scaffolded from {SHAPE_REPOSITORY} @ {shape_commit}.",
-            args.tracking_branch, written)
+        if reused.get(role):
+            commit = _take_held_seed(work, urls[role], reused[role],
+                                     args.tracking_branch)
+        else:
+            commit = git_init_commit(
+                work, f"Seed the {role} leg of {display}\n\n"
+                      f"Scaffolded from {SHAPE_REPOSITORY} @ {shape_commit}.",
+                args.tracking_branch, written)
+            run(["git", "remote", "add", "origin", urls[role]], cwd=work)
         leg_commits[role] = commit.lower()
         leg_digests[role] = tree_digest(work, commit)
-        run(["git", "remote", "add", "origin", urls[role]], cwd=work)
         if not args.no_push:
             try:
                 run(["git", "push", "-q", "-u", "origin", args.tracking_branch],
                     cwd=work)
             except CommandFailed as exc:
                 print(exc.loudly(f"pushing the {role} leg"), file=sys.stderr)
-                print(RULESET_HINT.format(work=work, repo=repositories[role],
-                                          role=role,
-                                          local=args.tracking_branch,
+                print(RULESET_HINT.format(repo=repositories[role],
                                           tracking=args.tracking_branch),
                       file=sys.stderr)
                 return None
@@ -1100,10 +1266,7 @@ def _build_assembly_root(args, values: dict, names: dict, repositories: dict,
                 cwd=assembly)
         except CommandFailed as exc:
             print(exc.loudly("pushing the assembly root"), file=sys.stderr)
-            print(RULESET_HINT.format(work=assembly,
-                                      repo=repositories["assembly"],
-                                      role="assembly",
-                                      local=args.tracking_branch,
+            print(RULESET_HINT.format(repo=repositories["assembly"],
                                       tracking=args.tracking_branch),
                   file=sys.stderr)
             return False
@@ -1281,22 +1444,26 @@ def _scaffold(args) -> int:
                  else Path(tempfile.mkdtemp(prefix="openreposhape-")))
     work_root.mkdir(parents=True, exist_ok=True)
     _refuse_existing_trees(work_root, names)
-    # THE ONE REPOSITORY THAT MAY ALREADY EXIST is the assembly root, and only
-    # with `--reuse-empty-repo`, and only with ZERO commits. An organisation
-    # that creates the repository first and asks for the shape second is the
-    # ordinary case, not a mistake; an EMPTY repository is a name that has been
-    # reserved, and reserving a name is not starting a project. A repository
-    # with commits is refused exactly as before: that is a live project, and
-    # `adopt-project.py` is the tool for one of those.
+    # A REPOSITORY MAY ALREADY EXIST only with `--reuse-empty-repo`, and only
+    # with ZERO commits, or, for a leg, with this scaffold's own seed as its
+    # one commit (#462). An organisation that creates the repository first and
+    # asks for the shape second is the ordinary case, not a mistake; an EMPTY
+    # repository is a name that has been reserved, and reserving a name is not
+    # starting a project. So is a run a ruleset refused part-way, re-run by an
+    # operator holding the bypass right. A root with commits is refused
+    # exactly as before: that is a live project, and `adopt-project.py` is the
+    # tool for one of those. See `_reusable_remotes`.
     if local:
         args.local_remote_dir.resolve().mkdir(parents=True, exist_ok=True)
     reused = _reusable_remotes(names, urls, repositories, local,
-                               args.reuse_empty_repo)
+                               args.reuse_empty_repo, values,
+                               args.tracking_branch)
 
     _create_remotes(args, values, repositories, urls, local, reused)
     _private_leg_note(args, repositories, local)
 
-    leg_values = _seed_legs(args, values, names, repositories, urls, work_root)
+    leg_values = _seed_legs(args, values, names, repositories, urls, work_root,
+                            reused)
     if leg_values is None:
         return 2
     values.update(leg_values)
