@@ -1272,10 +1272,17 @@ def run_validator(ctx: Context, script: Path, args: list[str],
     # `tests/test_shape_doctor.py::test_the_doctor_writes_nothing` is what
     # holds the promise, and it found this.
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+    # AND NOTHING IT STARTS MAY ASK (#492). Stdin closed is not enough:
+    # `setup-project.py` asks at the CONTROLLING terminal when stdin is not
+    # one, so the machine row's preflight run from a person's terminal would
+    # offer `gh auth login` there and wait. A session of its own has no
+    # controlling terminal, so the child has none to ask on (POSIX; Windows
+    # has no `/dev/tty` and ignores the flag).
     proc = subprocess.run([sys.executable, str(script), *args],
                           cwd=str(ctx.root), capture_output=True, text=True,
                           encoding="utf-8", errors="replace", check=False,
-                          stdin=subprocess.DEVNULL, env=env)
+                          stdin=subprocess.DEVNULL, env=env,
+                          start_new_session=True)
     whole = (proc.stdout or "") + (proc.stderr or "")
     quoted = ""
     for line in whole.splitlines():
@@ -5588,10 +5595,11 @@ def check_machine(ctx: Context) -> Row:
     else -- git, a Python 3.9+, the bootstrap interpreter, `gh` and its login,
     the credential helper, and the autocrlf warning -- and re-listing those
     here would be two lists to keep in step, which is the duplication #50
-    removed. It is run with stdin CLOSED, so the "no terminal, no offer" rule
-    fires and nothing is offered, prompted for or installed: the doctor
-    diagnoses, and installing something is a different act with a different
-    consent.
+    removed. It is run with stdin CLOSED and in a session of its own, with no
+    controlling terminal (`run_validator`, #492), so the "no terminal, no
+    offer" rule fires and nothing is offered, prompted for or installed: the
+    doctor diagnoses, and installing something is a different act with a
+    different consent.
 
     THIS IS THE ONE ROW THAT CAN REACH A NETWORK, and it is `n/a` by status
     for a separate reason. The preflight asks `gh` its version, whether it is
