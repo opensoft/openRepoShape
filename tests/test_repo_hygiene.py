@@ -1212,10 +1212,15 @@ def test_the_documents_say_what_an_assistant_does_with_no_terminal(name):
     longer true and is no longer said.
 
     The page is read as text: tags dropped, entities decoded, whitespace
-    folded, so a re-wrap or a `<code>` around a flag does not fail it.
+    folded, so a re-wrap or a `<code>` around a flag does not fail it. Tags
+    are dropped from the `.html` page ONLY: a Markdown document names its
+    placeholders in angle brackets (`<Project>`, `<org>`) and may hold a bare
+    `<`, and the strip would take everything up to the next `>` out of what
+    it says.
     """
     text = (REPO / name).read_text(encoding="utf-8")
-    said = " ".join(html.unescape(re.sub(r"<[^>]+>", "", text)).split())
+    said = " ".join((html.unescape(re.sub(r"<[^>]+>", "", text))
+                     if name.endswith(".html") else text).split())
     assert re.search(r"stops after the plan.{0,400}?own terminal.{0,200}?"
                      r"never (?:from )?the pipe", said, re.IGNORECASE), (
         f"{name} does not say that setup stops after the plan where there is "

@@ -430,20 +430,20 @@ come from `$OPENREPOSHAPE_ORG` or from the command's own prompt instead of the
 flag, and is never defaulted. `--visibility private` is spelled out because the
 human says it rather than lets it default.
 
-**What Dana sees, in order.** (1) The preflight: git, the running interpreter,
-how bootstrap will run, and that `gh` is authenticated — and an offer to
-install anything missing, which Dana answers `yes` to. (2) The three names
-checked against the naming policy — `Atlas`, `Atlas-spec`, `Atlas-code`; a
-hyphenated or lowercase name is refused here with the rule printed. (3) The
-scaffold plan, a dry run of everything about to be created. (4) `This will
-create THREE repositories in 'Northwind'.` and `Type yes to continue:` — Dana
-types `yes`. If an AI agent is driving, it runs the command WITHOUT `--yes`; in
-a shell with no terminal the run stops after the plan, and the agent hands Dana
-the same command for her own terminal, which asks her even piped, reading the
-yes she types there, never the pipe or the agent (AGENTS.md's first rule). Then
-it creates the three repositories, writes the pins and the manifest, sets the
-topic `xf-project-atlas` on all three, clones the root as `./Atlas` where you
-ran it (or `--into <dir>`), and runs `scripts/bootstrap.py`.
+**What Dana sees, in order.** (1) The preflight: git, the running interpreter, how
+bootstrap will run, and that `gh` is authenticated — and, for `gh`, its login and
+its credential helper, an offer to run what is missing, which Dana answers `yes`
+to. (2) The three names checked against the naming policy — `Atlas`, `Atlas-spec`,
+`Atlas-code`; a hyphenated or lowercase name is refused here with the rule printed.
+(3) The scaffold plan, a dry run of everything about to be created. (4)
+`This will create THREE repositories in 'Northwind'.` and `Type yes to continue:` —
+Dana types `yes`. If an AI agent is driving, it runs the command WITHOUT `--yes`;
+in a shell with no terminal the run stops after the plan, and the agent hands Dana
+the same command for her own terminal, which asks her even piped, reading the yes
+she types there, never the pipe or the agent (AGENTS.md's first rule). Then it
+creates the three repositories, writes the pins and the manifest, sets the topic
+`xf-project-atlas` on all three, clones the root as `./Atlas` where you ran it (or
+`--into <dir>`), and runs `scripts/bootstrap.py`.
 
 > [!WARNING]
 > **If it fails part-way.** Nothing is created before the typed `yes` in (4):

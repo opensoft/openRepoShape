@@ -1876,3 +1876,79 @@ def test_a_missing_project_is_asked_for_at_the_terminal(tmp_path):
     assert status == 1, screen
     assert "REFUSED: not confirmed; nothing was created." in screen
     assert not (tmp_path / "remotes").exists()
+
+
+def assert_refuses_on_a_terminal_it_cannot_answer_on(tmp_path, **how):
+    """A terminal that opens is not always one the run can be answered on.
+    Here the run has one, and stdin is a pipe holding `yes`; `how` says what
+    is wrong with the terminal (`raw`, or `background`, as
+    `run_in_a_terminal` spells them). Setup must not draw the prompt at it:
+    it refuses with the route as it does with no terminal at all (#476) and
+    creates nothing. The wait is 30 s, so that a run that asks anyway FAILS
+    with its screen instead of waiting for a person who cannot answer."""
+    status, screen, _ = run_in_a_terminal(
+        piped("yes\nyes\n", "--project", "Sample", "--org", "demoorg",
+              "--local-remote-dir", str(tmp_path / "remotes"),
+              "--into", str(tmp_path / "work")),
+        cwd=REPO, env=terminal_env(), timeout=30, **how)
+    assert "Type yes to continue" not in screen, (
+        f"it asked at a terminal nobody can answer on:\n{screen}")
+    assert "Traceback" not in screen, screen
+    assert status == 2, f"status {status}:\n{screen}"
+    assert "--dry-run: nothing was created." in screen
+    assert_refuses_for_want_of_a_terminal(
+        screen[screen.index("REFUSED"):])
+    assert not (tmp_path / "remotes").exists()
+    assert not (tmp_path / "work").exists()
+
+
+@PTY_SKIP
+def test_a_terminal_in_raw_mode_is_no_terminal_to_ask_on(tmp_path):
+    """An assistant's full-screen interface owns the pane in raw mode, and
+    its tool shell shares that terminal: the person's Enter is a carriage
+    return there, so a read for the end of a line never ends, nothing is
+    echoed, and the run waits for the assistant's timeout with the route
+    unseen. A terminal that reads no whole lines is no terminal to ask on."""
+    assert_refuses_on_a_terminal_it_cannot_answer_on(tmp_path, raw=True)
+
+
+@PTY_SKIP
+def test_a_background_process_group_is_no_terminal_to_ask_on(tmp_path):
+    """`timeout N ./setup.sh` typed in a shell, or any runner that
+    backgrounds a job sharing the terminal: a read of the terminal from a
+    background process group stops the run on SIGTTIN, and it stays stopped.
+    A terminal the run is not in the foreground of is no terminal to ask
+    on."""
+    assert_refuses_on_a_terminal_it_cannot_answer_on(tmp_path,
+                                                     background=True)
+
+
+class _HungUpOs:
+    """`os`, as `ask` uses it, over a terminal that opened and whose read now
+    fails with EIO: the last process of its group orphaned, SIGTTIN ignored,
+    or the terminal hung up."""
+
+    def __init__(self):
+        self.closed = []
+
+    def write(self, descriptor, data):
+        return len(data)
+
+    def read(self, descriptor, count):
+        raise OSError(5, "Input/output error")
+
+    def close(self, descriptor):
+        self.closed.append(descriptor)
+
+
+def test_a_terminal_whose_read_fails_is_the_end_of_the_answer(monkeypatch):
+    """EIO from the read is end of input, never a traceback: the answer is an
+    empty line, which no question takes for a yes, and the terminal is closed
+    all the same."""
+    module = entry_point_module()
+    hung_up = _HungUpOs()
+    monkeypatch.setattr(sys, "stdin", _NoTerminal())
+    monkeypatch.setattr(module, "open_terminal", lambda: 7)
+    monkeypatch.setattr(module, "os", hung_up)
+    assert module.ask("Type yes to continue: ") == ""
+    assert hung_up.closed == [7]

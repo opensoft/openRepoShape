@@ -71,14 +71,14 @@ On Windows without WSL2, `Invoke-WebRequest https://raw.githubusercontent.com/op
 then `py setup-project.py <Project> --org <org> --visibility <…> --elected-by '<Name>'`
 is the same run again — two commands because a piped script cannot ask — still without `--yes`.
 
-In a checkout of openRepoShape, run `./setup.sh` the same way, still with the
-explicit `--org`: there is no fork to detect one from. Either form runs the
-preflight, checks the three names against the naming policy, prints the
-scaffold plan, and then asks. Show the human its output verbatim — the plan
-especially — and let them answer its prompt. "Go ahead" about something else is
-not a yes about this. Standing in a family FOLDER — `<Family>/`, holder cloned
-at `<Family>/<Family>` — is DETECTED and said in the plan with no flag: the
-project lands beside the holder, and the last next-command names the
+In a checkout of openRepoShape, run `./setup.sh` the same way, still with the explicit
+`--org`: only a fork's `origin` names an organisation to detect, and a clone of
+opensoft's own is refused without one. Either form runs the preflight, checks the
+three names against the naming policy, prints the scaffold plan, and then asks. Show
+the human its output verbatim — the plan especially — and let them answer its prompt.
+"Go ahead" about something else is not a yes about this. Standing in a family FOLDER —
+`<Family>/`, holder cloned at `<Family>/<Family>` — is DETECTED and said in the plan
+with no flag: the project lands beside the holder, and the last next-command names the
 `family.py add` that records the membership in the holder and nowhere else.
 
 No terminal in your shell, so setup stops after the plan: exit 2, `no terminal

@@ -1329,6 +1329,24 @@ def open_terminal():
     the device's answer and not its name's: a `/dev` somebody populated by
     hand - a chroot, a container image - can hold a regular file called
     `tty`, and a file never types `yes`.
+
+    A terminal that opens is not always one this run can be ANSWERED on, and
+    a prompt nobody can answer is worse than a refusal: it waits for the
+    assistant's tool timeout, and the refusal's route is never shown. It is
+    answerable only when BOTH hold:
+
+    - this run is in the terminal's FOREGROUND process group
+      (`tcgetpgrp`). A background group's read stops on SIGTTIN, or fails
+      with EIO when the group is orphaned or the signal is ignored - which is
+      what `timeout N ./setup.sh` typed in a shell is, as GNU `timeout` puts
+      the command in a group of its own;
+    - the terminal reads WHOLE LINES (`ICANON`). An assistant's full-screen
+      interface owns its pane in raw mode, where the person's Enter sends a
+      carriage return and a read for the end of a line never ends.
+
+    Neither is an answerable terminal, so it is no terminal: `None`, and the
+    gates refuse as they do with no terminal at all. Windows returned above
+    and never reaches `termios`.
     """
     if os.name == "nt":
         return None
@@ -1337,6 +1355,16 @@ def open_terminal():
     except OSError:
         return None
     if not os.isatty(descriptor):
+        os.close(descriptor)
+        return None
+    try:
+        import termios
+        answerable = (os.tcgetpgrp(descriptor) == os.getpgrp()
+                      and bool(termios.tcgetattr(descriptor)[3]
+                               & termios.ICANON))
+    except (OSError, ImportError):
+        answerable = False
+    if not answerable:
         os.close(descriptor)
         return None
     return descriptor
@@ -1388,7 +1416,12 @@ def ask(prompt: str) -> str:
         while unwritten:
             unwritten = unwritten[os.write(descriptor, unwritten):]
         while not answer.endswith(b"\n"):
-            byte = os.read(descriptor, 1)
+            try:
+                byte = os.read(descriptor, 1)
+            except OSError:
+                # EIO: the terminal went away or this group was orphaned
+                # after the check. End of input, never a traceback.
+                byte = b""
             if not byte:
                 break
             answer += byte

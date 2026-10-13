@@ -781,10 +781,34 @@ _CONTROLLING = ("import fcntl, os, sys, termios; "
                 "fcntl.ioctl(0, termios.TIOCSCTTY, 0); "
                 "os.execvp(sys.argv[1], sys.argv[1:])")
 
+#: The same terminal, the command run in a BACKGROUND process group of it: a
+#: `timeout N ./setup.sh` typed in a shell, or any runner that backgrounds a
+#: job sharing the terminal. `_CONTROLLING_IN_THE_BACKGROUND` stays the
+#: session's leader and its foreground group, and the command is a child in a
+#: group of its own, so a read of the terminal from it stops on SIGTTIN. A
+#: stopped command is killed and shows as a status of 128 + the signal, so a
+#: run that waits where it should have refused fails at once and leaves
+#: nothing stopped behind it.
+_CONTROLLING_IN_THE_BACKGROUND = """
+import fcntl, os, signal, sys, termios
+fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+child = os.fork()
+if child == 0:
+    os.setpgid(0, 0)
+    os.execvp(sys.argv[1], sys.argv[1:])
+status = os.waitpid(child, os.WUNTRACED)[1]
+if os.WIFSTOPPED(status):
+    os.killpg(child, signal.SIGKILL)
+    sys.exit(128 + os.WSTOPSIG(status))
+sys.exit(os.WEXITSTATUS(status) if os.WIFEXITED(status)
+         else 128 + os.WTERMSIG(status))
+"""
+
 
 def run_in_a_terminal(argv: list, *, cwd: Path, env: dict, answers=(),
                       prompt="Type yes to continue:",
-                      timeout: float = 180) -> tuple:
+                      timeout: float = 180, raw: bool = False,
+                      background: bool = False) -> tuple:
     """`argv` run as a person runs it in their own terminal: a
     pseudo-terminal is its controlling terminal and its stdin, stdout and
     stderr, so a pipe inside `argv` (`cat setup.sh | bash -s -- ...`) is the
@@ -799,10 +823,21 @@ def run_in_a_terminal(argv: list, *, cwd: Path, env: dict, answers=(),
     prompt nobody answers is the defect this exists to show. Reading stops
     once the run has exited and its output is drained, so a detached child
     still holding the terminal cannot keep the test waiting.
+
+    `raw` puts the terminal in RAW mode before the run starts, as an
+    assistant's full-screen interface leaves the pane it owns: nothing is
+    echoed and the Enter key sends a carriage return, so a read for the end
+    of a line never ends. `background` runs the command in a background
+    process group of the terminal, not its foreground one.
     """
     master, slave = os.openpty()
+    if raw:
+        import tty  # POSIX only, like the pty itself
+        tty.setraw(slave)
     try:
-        proc = subprocess.Popen([sys.executable, "-c", _CONTROLLING, *argv],
+        proc = subprocess.Popen([sys.executable, "-c",
+                                 _CONTROLLING_IN_THE_BACKGROUND if background
+                                 else _CONTROLLING, *argv],
                                 cwd=str(cwd), env=env, stdin=slave,
                                 stdout=slave, stderr=slave,
                                 start_new_session=True)
