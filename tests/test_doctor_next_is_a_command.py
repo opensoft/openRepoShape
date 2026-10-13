@@ -1,21 +1,25 @@
 # SPDX-License-Identifier: Apache-2.0
 """A doctor NEXT is the command and only the command (#277).
 
-THE DEFECT. Twenty-five of the doctor's NEXT builders ended the command with
+THE DEFECT. Twenty-nine of the doctor's NEXT builders ended the command with
 `   # <comment>`, and one printed prose in the command's place. Sixteen were
 there when this began (3ae0109). Doctor A (#276) then rewrote the `legs`
 tail and added two more (`lockstep_next` and the `members` git line), doctor
 B (#278, #298) added two (its crash line and its restore line), and lane 2's
 #237 (#267) added five, which landed while this was in CI (`pin_restore`
-four times and `unreadable_pin_row`). A tail was harmless in exactly the shells that read `#` as a comment where
-a word starts -- `sh -c`, bash, `zsh -c` -- which is how every test and
-every agent tool call had read one. An INTERACTIVE zsh without
-`interactivecomments` -- zsh's default, and macOS's login shell, the one a
-person pastes into -- reads `#` as a word. Pasted there, the manifest NEXT
-handed `# read its output in full` to the validator as arguments, ran `it
-names what it refused` as a second command and exited 127; the `legs` and
-`members` NEXTs ran the `make bootstrap` their comments put in backticks,
-in whatever directory the person was standing in.
+four times and `unreadable_pin_row`). Lane 2's #291 then added four, which
+landed while this waited to land: `pin_restore`'s three `git diff` lines
+for a file a person may have edited, and `unreadable_next`'s line for one
+no git command can put back. A tail was harmless in exactly the shells
+that read `#` as a comment where a word starts -- `sh -c`, bash, `zsh -c`
+-- which is how every test and every agent tool call had read one. An
+INTERACTIVE zsh without `interactivecomments` -- zsh's default, and macOS's
+login shell, the one a person pastes into -- reads `#` as a word. Pasted
+there, the manifest NEXT handed `# read its output in full` to the
+validator as arguments, ran `it names what it refused` as a second command
+and exited 127; the `legs` and `members` NEXTs ran the `make bootstrap`
+their comments put in backticks, in whatever directory the person was
+standing in.
 
 THE FIX IS A FIELD, NOT A SPELLING. Each sentence moved, verbatim, to the
 row's `why` -- `"why"` in `--json`, a `WHY` line under `NEXT` in the table,
@@ -68,6 +72,14 @@ from test_shape_doctor import (  # noqa: F401
     break_the_pin, doctor, doctor_module, holder, not_forty_hex, pin_with,
     project, recommit_a_good_pin, red_root, rows_of, scaffolded_here, stage,
     standard, standard_ahead, standard_of_another_history,
+)
+#: Lane 2's ways to make a file under `contracts/` not load (#291), from the
+#: module that owns them: the `manifest kinds` row's NEXTs are #291's, so the
+#: roots are too.
+from test_shape_doctor import (
+    NAMING_COPY, PROJECT_LINE, SLIP, SPEC_PIN, a_copy_conflicted_on_its_own,
+    append_to, insert_after_first_line, leg_pin_not_utf8,
+    own_pin_named_edited_with_a_slip,
 )
 #: Doctor A's ways to make a leg or a member red (#276), from the module that
 #: owns them: the `legs` and `members` lines are A's, so the roots are too.
@@ -337,6 +349,52 @@ def _pin_no_history(standard, project, holder, tmp_path):
     return _pin_row(standard, project, "none")
 
 
+def _kinds_row(standard, root, rel, restore):
+    """The `manifest kinds` row for a root where `rel` does not load, and the
+    proof that the fixture reached the branch it was made for (#291)."""
+    row = rows_of(doctor(standard, root, "--json"))["manifest-kinds"]
+    assert row["detail"]["restore"] == {rel: restore}, row["detail"]
+    return row
+
+
+def _pin_unmerged_shown(standard, project, holder, tmp_path):
+    # A copy the shape pin has a row for, conflicted on its own: the `diff`
+    # that shows the hunks git could not merge, and nothing taken whole.
+    a_copy_conflicted_on_its_own(project)
+    return _kinds_row(standard, project, NAMING_COPY, "unmerged")
+
+
+def _pin_uncommitted_shown(standard, project, holder, tmp_path):
+    # The copy's uncommitted change breaks it: the `diff HEAD` that shows it.
+    append_to(project / NAMING_COPY, SLIP)
+    return _kinds_row(standard, project, NAMING_COPY, "uncommitted")
+
+
+def _pin_committed_shown(standard, project, holder, tmp_path):
+    # A hand merge of the copy, committed with a slip: the `diff <it>~1`
+    # that shows every change since the newest copy that reads.
+    copy = project / NAMING_COPY
+    insert_after_first_line(copy, PROJECT_LINE)
+    append_to(copy, SLIP)
+    git("add", "--", NAMING_COPY, cwd=project)
+    commit_in(project, "the hand merge, with a slip")
+    return _kinds_row(standard, project, NAMING_COPY, "committed")
+
+
+def _unreadable_next_by_hand(standard, project, holder, tmp_path):
+    # A file of the project's own that does not load: no git command is
+    # named, and the NEXT is this doctor again.
+    rel, restore = own_pin_named_edited_with_a_slip(project)
+    return _kinds_row(standard, project, rel, restore)
+
+
+def _unreadable_next_restore(standard, project, holder, tmp_path):
+    # A leg pin that does not load: the branch of `unreadable_next` that
+    # hands on `pin_restore`'s command and, now, its `why`.
+    leg_pin_not_utf8(project)
+    return _kinds_row(standard, project, SPEC_PIN, "uncommitted")
+
+
 def _machine(standard, project, holder, tmp_path):
     # A preflight that is not ready, on every host: whether the real one is
     # depends on the machine, and the row's NEXT only exists when it is not.
@@ -359,8 +417,10 @@ def _way_in(standard, project, holder, tmp_path):
 #: One fixture per NEXT #277 converted, by the builder and branch it reaches,
 #: and how the sentence that used to follow `   # ` on it now opens -- moved
 #: VERBATIM, less the `#`, so these are the words main, doctors A and B and
-#: lane 2's #237 printed. Not `check_manifest_kinds`, whose prose NEXTs are lane 2's
-#: (#291), and not a `Refusal.remediation` printed as one.
+#: lane 2's #237 and #291 printed. Not the prose NEXTs `check_manifest_kinds`
+#: prints for a kind no gate here runs (#211, #327), and not a
+#: `Refusal.remediation` printed as one; its NEXT for a file that does not
+#: load (#291's `unreadable_next`) is here.
 CASES = {
     "validator_row-neither-readable": (
         _validator_neither_readable,
@@ -401,6 +461,28 @@ CASES = {
         _pin_no_history,
         "no commit in this root holds a pin to put back, so whether it was "
         "ever scaffolded or adopted is for a person to decide"),
+    "pin_restore-unmerged-shown": (
+        _pin_unmerged_shown,
+        "a merge left the copy conflicted, and this shows the hunks git could "
+        "not merge. A copy can hold an edit of the project"),
+    "pin_restore-uncommitted-shown": (
+        _pin_uncommitted_shown,
+        "HEAD holds a copy that reads, and this shows the uncommitted change "
+        "that breaks the copy here. A copy can hold an edit of the project"),
+    "pin_restore-committed-shown": (
+        _pin_committed_shown,
+        "the newest copy in its history that reads is the one before "),
+    "unreadable_next": (
+        _unreadable_next_by_hand,
+        "the reason names each file that does not load and why, and none is a "
+        "file this root declares a tool writes with a copy that reads in its "
+        "history, so what each should say -- a merge conflict resolved, a "
+        "hand edit put right -- is for a person to decide. This row reads "
+        "them again once they load"),
+    "unreadable_next-pin_restore": (
+        _unreadable_next_restore,
+        "puts back the pin as last committed and discards the uncommitted "
+        "change that broke it, which no tool of this standard writes"),
     "check_shape_currency-cannot-answer": (
         _shape_currency_cannot_answer,
         "this checkout of the standard does not carry the commit the pin "

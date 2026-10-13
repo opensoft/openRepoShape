@@ -4602,7 +4602,7 @@ def assert_no_registration(row: dict) -> None:
     for words in ("register the kind", "remove the file",
                   "MANIFEST_VALIDATORS"):
         assert words not in row["next"], (words, row["next"])
-    assert_a_plain_note(row["next"])
+    assert_a_plain_next(row)
 
 
 def shape_pin_conflicted(root: Path) -> list:
@@ -4716,7 +4716,7 @@ def test_a_file_a_tool_wrote_that_does_not_load_is_put_back_from_git(
     argv = pasted(row["next"])
     assert argv[:2] == ["git", "-C"], row["next"]
     assert argv[3:] == expected, argv
-    note = row["next"].split("   #", 1)[1]
+    note = row["why"]
     assert NOTE_SAYS[restore].format(what=what) in note, note
     assert "README.md" not in note and "a person merges" not in note, note
     if rel == SHAPE_PIN:
@@ -4850,7 +4850,7 @@ def test_a_file_git_cannot_put_back_is_left_to_a_person(standard, project,
     assert argv[0] == repo_shape.PYTHON, argv
     assert Path(argv[1]).name == DOCTOR and argv[2] == "--root", argv
     assert Path(argv[3]).resolve() == project.resolve(), argv
-    assert "for a person to decide" in row["next"].split("   #", 1)[1]
+    assert "for a person to decide" in row["why"], row
     before = (project / rel).read_bytes()
     proc = subprocess.run(argv, capture_output=True, text=True, check=False,
                           stdin=subprocess.DEVNULL,
@@ -5027,7 +5027,7 @@ def test_an_uncommitted_change_to_a_copy_is_shown_and_kept(standard,
     assert pasted(row["next"])[3:] == ["diff", "HEAD", "--", NAMING_COPY], \
         row["next"]
     assert "checkout" not in row["next"], row["next"]
-    assert "nothing is put back" in row["next"].split("   #", 1)[1]
+    assert "nothing is put back" in row["why"], row
     run_pasted(row["next"])
     assert copy.read_bytes() == before
     again = rows_of(doctor(standard, project, "--json"))["manifest-kinds"]
@@ -5220,7 +5220,7 @@ def test_a_copy_conflicted_on_its_own_is_shown_and_merged_by_a_person(
     assert_no_registration(row)
     assert pasted(row["next"])[3:] == ["diff", "--", NAMING_COPY], \
         row["next"]
-    note = row["next"].split("   #", 1)[1]
+    note = row["why"]
     assert "neither side is taken whole" in note, note
     assert "merge it by hand, keeping the hunks git merged" in note, note
     shown = run_read_only(standard, project, row)
@@ -5250,9 +5250,9 @@ def test_a_conflicted_copys_next_agrees_with_shape_currency_and_agents_md(
     """
     a_copy_conflicted_on_its_own(project)
     kinds, currency = kinds_and_currency(standard, project)
-    assert "merge it by hand" in kinds["next"].split("   #", 1)[1], kinds
+    assert "merge it by hand" in kinds["why"], kinds
     assert "checkout" not in kinds["next"], kinds["next"]
-    assert f"--accept-local {NAMING_COPY}" in currency["next"], currency
+    assert f"--accept-local {NAMING_COPY}" in currency["why"], currency
     merge_by_hand(project / NAMING_COPY)
     git("add", "--", NAMING_COPY, cwd=project)
     commit_in(project, "the naming copy merged by hand")
@@ -5261,7 +5261,7 @@ def test_a_conflicted_copys_next_agrees_with_shape_currency_and_agents_md(
     argv = pasted(currency["next"])
     assert Path(argv[1]).name == "update-shape.py" and argv[2] == "check", \
         currency["next"]
-    then = currency["next"].split("   #", 1)[1].split()
+    then = currency["why"].split()
     assert then[:2] == ["then", "apply"], currency["next"]
     assert then[then.index("--accept-local") + 1] == NAMING_COPY, then
     applied = run_script(standard / "update-shape.py", "apply", "--root",
@@ -5437,7 +5437,7 @@ def test_a_committed_hand_merge_of_a_copy_is_shown_not_rolled_back(
     assert_no_registration(row)
     assert pasted(row["next"])[3:] == ["diff", f"{breaking}~1", "--",
                                        NAMING_COPY], row["next"]
-    note = row["next"].split("   #", 1)[1]
+    note = row["why"]
     assert breaking[:12] in note and "nothing is rolled back" in note, note
     shown = run_read_only(standard, project, row)
     assert PROJECT_LINE.strip() in shown and SLIP.strip() in shown, shown
@@ -5511,12 +5511,12 @@ def test_a_neutral_product_pin_is_shown_never_put_back(standard, project,
     assert_no_registration(row)
     assert pasted(row["next"])[3:] == expected, row["next"]
     assert "No tool of this standard writes a neutral product pin" in \
-        row["next"].split("   #", 1)[1], row["next"]
+        row["why"], row
     # One `so` to a sentence (review of PR #358): the reason ended in its own
     # ", so every change to one was made by a person", and the note's ", so
     # neither side is taken whole" or ", so nothing is rolled back" followed.
     assert not any(sentence.count(", so ") > 1 for sentence in
-                   row["next"].split("   #", 1)[1].split(". ")), row["next"]
+                   row["why"].split(". ")), row["why"]
     run_read_only(standard, project, row)
     assert (project / NEUTRAL_PIN).read_bytes() == before
     assert b"2" * 40 in before

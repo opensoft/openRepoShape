@@ -2399,12 +2399,12 @@ def check_manifest_kinds(ctx: Context) -> Row:
         if beside is not None:
             parts.append(beside[0])
             fixes.append(FAMILY_BESIDE_FIX)
-        command = "; ".join(fixes)
+        command, why = "; ".join(fixes), None
         if unreadable:
-            restore, command = unreadable_next(ctx, unreadable)
+            restore, command, why = unreadable_next(ctx, unreadable)
             detail.update({"restore": restore, "refusals": refusals})
         return Row("manifest-kinds", LABEL_MANIFEST_KINDS, FINDING,
-                   "; ".join(parts) + aside, command, detail)
+                   "; ".join(parts) + aside, command, detail, why=why)
     return Row("manifest-kinds", LABEL_MANIFEST_KINDS, OK,
                f"{len(known)} manifest(s), every declared kind has a "
                f"registered validator{aside}", None, detail)
@@ -2637,10 +2637,10 @@ def pin_restore(ctx: Context, detail: dict | None = None,
     names another file `tool_written` admits -- a pin `project.yaml`
     declares, for a leg or a neutral product, or a copy the shape pin has a
     row for -- which is how the `manifest kinds` row answers each one that
-    does not load. The note says `copy` where the file is not a pin, and
+    does not load. The `why` says `copy` where the file is not a pin, and
     `pin_reads_at` says what reads. Only the shape pin takes more paths with
     it in a merge -- the copies `apply` writes in the same commit -- and
-    only its note names a conflicted manifest or README.md for a person.
+    only its `why` names a conflicted manifest or README.md for a person.
     Any other file is named alone. A leg pin moves with its gitlink, but
     `checkout --ours` on a conflicted gitlink exits 0 and leaves all three
     stages where they were, so naming it would be a command that changes
@@ -2667,15 +2667,17 @@ def pin_restore(ctx: Context, detail: dict | None = None,
     git_c = f"git -C {quote_arg(root)}"
     what = "pin" if pin.endswith("-pin.yaml") else "copy"
     shown = edited_by_hand(ctx, pin)
-    why = BY_HAND_WHY[what]
+    # Part of the `why` where the file is `shown`, and not the `why` itself.
+    by_hand = BY_HAND_WHY[what]
     raw = git_answer(["--no-optional-locks", "status", "--porcelain=v1",
                       "--", pin], root, binary=True)
     xy = raw.decode("utf-8", "replace")[:2] if raw else ""
     if xy in UNMERGED_STATUS and shown:
         return "unmerged", (
-            f"{git_c} diff -- {quote_arg(pin)}   # a merge left the {what} "
-            "conflicted, and this shows the hunks git could not merge. "
-            f"{why}, so neither side is taken whole: merge it by hand, "
+            f"{git_c} diff -- {quote_arg(pin)}"
+        ), (f"a merge left the {what} conflicted, and this shows the hunks "
+            "git could not merge. "
+            f"{by_hand}, so neither side is taken whole: merge it by hand, "
             "keeping the hunks git merged, then finish the merge as git says "
             "and run this doctor again")
     if xy in UNMERGED_STATUS:
@@ -2725,12 +2727,13 @@ def pin_restore(ctx: Context, detail: dict | None = None,
     elif pin_reads_at(ctx, "HEAD", pin):
         if xy and shown:
             return "uncommitted", (
-                f"{git_c} diff HEAD -- {quote_arg(pin)}   # HEAD holds a "
-                f"{what} that reads, and this shows the uncommitted change "
-                f"that breaks the {what} here. {why}. Git keeps no other copy "
-                "of the change until it is committed, so nothing is put back. "
-                f"Mend the change, or take the {what} as last committed once "
-                "nothing in it is worth keeping, then run this doctor again")
+                f"{git_c} diff HEAD -- {quote_arg(pin)}"
+            ), (f"HEAD holds a {what} that reads, and this shows the "
+                f"uncommitted change that breaks the {what} here. {by_hand}. "
+                "Git keeps no other copy of the change until it is "
+                "committed, so nothing is put back. Mend the change, or take "
+                f"the {what} as last committed once nothing in it is worth "
+                "keeping, then run this doctor again")
         if xy:
             return "uncommitted", (
                 f"{git_c} checkout HEAD -- {quote_arg(pin)}"
@@ -2760,7 +2763,7 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                 f"{git_c} diff {quote_arg(before)} -- {quote_arg(pin)}"
             ), (f"the newest {what} in its history that reads is the one "
                 f"before {breaking[:12]}, the commit that broke it, and this "
-                f"shows every change since. {why}, so nothing is rolled "
+                f"shows every change since. {by_hand}, so nothing is rolled "
                 f"back: mend the {what}, commit that and run this doctor "
                 "again")
         return "committed", (
@@ -2839,7 +2842,8 @@ def edited_by_hand(ctx: Context, rel: str) -> bool:
 
 
 #: Why `pin_restore` puts nothing back for a file `edited_by_hand`, by what
-#: its note calls the file. No `;`, apostrophe or backtick (#277).
+#: its `why` calls the file: part of that `why`, off the command's line
+#: (#277).
 BY_HAND_WHY = {
     "copy": ("A copy can hold an edit of the project, such as the merge by "
              "hand update-shape.py asks for where a copy changed on both "
@@ -2883,9 +2887,9 @@ def tool_written(ctx: Context, rel: str) -> bool:
     return rel in declared_pins(ctx) or rel in pinned_copies(ctx)
 
 
-#: The note on the `manifest kinds` row's next command where no file that
-#: does not load has a copy git can put back (#291). No `;`, apostrophe or
-#: backtick, so a pasted line is one command in any shell (#277).
+#: The `why` of the `manifest kinds` row's next command where no file that
+#: does not load has a copy git can put back (#291): the row's `why`, off
+#: the command's line, so a pasted line is one command in any shell (#277).
 UNREADABLE_BY_HAND = (
     "the reason names each file that does not load and why, and none is a "
     "file this root declares a tool writes with a copy that reads in its "
@@ -2894,9 +2898,12 @@ UNREADABLE_BY_HAND = (
     "once they load")
 
 
-def unreadable_next(ctx: Context, unreadable: list) -> tuple[dict, str]:
-    """`(restore, command)` for the `manifest kinds` row's files that do not
-    load (#291): each file's case, and the one command the row prints.
+def unreadable_next(ctx: Context, unreadable: list
+                    ) -> tuple[dict, str, str | None]:
+    """`(restore, command, why)` for the `manifest kinds` row's files that
+    do not load (#291): each file's case, the one command the row prints,
+    and the sentence that goes with that command -- the row's `why`, apart
+    from it and never a `   # ` tail on it (#277).
 
     A FILE A TOOL WROTE IS PUT BACK FROM GIT by `pin_restore`. That is the
     helper the `shape currency` row uses for the shape pin, so both rows
@@ -2914,24 +2921,27 @@ def unreadable_next(ctx: Context, unreadable: list) -> tuple[dict, str]:
     merge, their uncommitted work, their last commit -- and nothing in this
     standard says which bytes are right. Where no file has a command to
     name, the command is this doctor again, to run once a person has mended
-    the file, and its note says that what the file should say is theirs to
+    the file, and its `why` says that what the file should say is theirs to
     decide. #205's `manifest` row answers a `project.yaml` that does not
-    load the same way: the gate that refuses it, and that note.
+    load the same way: the gate that refuses it, and that `why`.
     """
     restore: dict[str, str] = {}
-    commands: dict[str, str] = {}
+    #: `(command, why)` for each file with a command, in the row's order.
+    commands: dict[str, tuple[str, str | None]] = {}
     for rel in unreadable:
         if tool_written(ctx, rel):
-            restore[rel], found = pin_restore(ctx, pin=rel)
+            restore[rel], found, why = pin_restore(ctx, pin=rel)
             if found:
-                commands[rel] = found
+                commands[rel] = (found, why)
         else:
             restore[rel] = "project"
-    command = commands.get(SHAPE_PIN) or next(iter(commands.values()), None)
+    command, why = (commands.get(SHAPE_PIN)
+                    or next(iter(commands.values()), (None, None)))
     if command is None:
         command = (f"{PYTHON} {quote_arg(ctx.shape / 'shape-doctor.py')} "
-                   f"--root {quote_arg(ctx.root)}   # {UNREADABLE_BY_HAND}")
-    return restore, command
+                   f"--root {quote_arg(ctx.root)}")
+        why = UNREADABLE_BY_HAND
+    return restore, command, why
 
 
 def unreadable_pin_row(ctx: Context, exc: Refusal) -> Row:
