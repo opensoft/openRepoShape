@@ -331,8 +331,14 @@ def open_upstream(spec: str) -> Upstream:
     A PATH IS USED IN PLACE AND NOTHING IS FETCHED. That is deliberate: it is
     what lets the tests run with no network, and it is also the honest answer
     for an organisation whose fork is the upstream. `owner/repo` is bare-cloned
-    into a temporary directory, which is the one place this tool touches a
-    network, and it refuses loudly rather than degrading to a guess.
+    into a temporary directory, which is the one place this tool fetches the
+    shape, and it refuses loudly rather than degrading to a guess. It is not
+    the only place `apply` can touch a network (#411): the project's own
+    `validate-pins.py` runs in this process's environment, so for a project
+    declaring `neutral_product_pins:` whose product has no local checkout it
+    asks `gh api` for the pinned tree with the operator's `gh` credentials
+    (`skip` line and exit 0 without `gh`, a login or a network), and `--push`
+    and `--pr` push the branch and open its pull request.
     """
     candidate = Path(spec).expanduser()
     if candidate.exists():
@@ -364,9 +370,9 @@ def open_upstream(spec: str) -> Upstream:
             "update-upstream-unresolvable",
             f"could not clone {url} (git exit {proc.returncode}): "
             f"{(proc.stderr or '').strip()}",
-            "Remediation: this is the one step that needs a network. Clone "
-            "the shape once by hand and pass `--upstream <path>` instead; "
-            "everything after it is offline.")
+            "Remediation: this is the one step that fetches the shape from a "
+            "network. Clone the shape once by hand and pass `--upstream "
+            "<path>` instead; nothing after it fetches the shape again.")
     return Upstream(temporary / "shape.git", spec, temporary=temporary)
 
 
@@ -1858,9 +1864,8 @@ def tracking_branch_of(manifest: dict | None) -> str:
 
     `main` where the manifest records none: the default `bootstrap.py`,
     `bump-leg.py` and `family.py` read the field with. The remote's own HEAD
-    is never asked: `apply` is otherwise offline, and a base taken from the
-    network could disagree with the one the `--branch` refusal and `--pr`
-    read from the manifest.
+    is never asked: a base taken from the network could disagree with the
+    one the `--branch` refusal and `--pr` read from the manifest.
     """
     return str((manifest or {}).get("tracking_branch") or "main")
 
