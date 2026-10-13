@@ -500,12 +500,12 @@ there does not advance the project. Advancing it is one lockstep commit in
 the root, written by the tool from a checkout of this standard:
 
 ```sh
+git -C ../Atlas switch -c <branch>           # the tool will not commit on main
 python3 scripts/bump-leg.py --root ../Atlas --leg code --to <40-hex commit>
 git -C ../Atlas push -u origin <branch>      # then open a pull request
 ```
 
-Editing the pin file by hand to make the validator agree is what the
-validator exists to refuse.
+Editing the pin by hand to make the validator agree is what it exists to refuse.
 
 **Variants.** An existing repository becomes the root in place with
 `adopt-project.py plan`, then `check`, then `execute`, the human answering
@@ -972,8 +972,7 @@ Moving those three facts by hand is how they come apart, so one command moves
 them together, run from a checkout of this standard:
 
 ```sh
-python3 scripts/bump-leg.py --root <path-to-the-project> --leg spec \
-    --to <40 hex commit>       # --dry-run prints the move and writes nothing
+python3 scripts/bump-leg.py --root <path> --leg spec --to <40 hex>   # --dry-run prints the move and writes nothing
 ```
 
 It fetches the commit into the leg, checks the leg out AT it, recomputes the
@@ -985,14 +984,15 @@ included — then runs the project's own `validate-pins.py` and
 `validate-manifest.py` and commits ONCE with explicit pathspecs.
 
 It REFUSES a `--to` that is not exactly 40 hex, a commit no branch of the leg's
-remote contains (including one committed inside the mount and never pushed — a
-pin the rest of the world cannot fetch is a root it cannot bootstrap), a dirty
-root, an untracked or ignored workflow file it would rewrite, a root standing on
-its own tracking branch (the next step is a pull request, never a push to the
-default branch), and a validator that goes red — rolling the pin, the workflow
-files, the leg's checkout and the index back first, so a refusal leaves the tree
-exactly as it was found. The leg is left DETACHED at the new commit; `make
-bootstrap` re-places it on its tracking branch AT the new pin.
+remote contains (including one committed in the mount and never pushed — a pin
+the rest of the world cannot fetch is a root it cannot bootstrap), a dirty root,
+an untracked or ignored workflow file it would rewrite, a root standing on its
+own tracking branch (the next step is a pull request, never a push to the
+default branch: `git switch -c <branch>` first; `--dry-run` writes nothing, so
+it runs there and prints that command), and a validator that goes red — rolling
+the pin, the workflow files, the leg's checkout and the index back first, so a
+refusal leaves the tree as it was found. The leg is left DETACHED at the new
+commit; `make bootstrap` re-places it on its tracking branch AT the new pin.
 
 ## Bootstrap is COPIED into the project, not fetched
 
