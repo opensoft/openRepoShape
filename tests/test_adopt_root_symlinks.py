@@ -733,15 +733,23 @@ EMPTY_SYMLINK = "plan-empty-symlink"
     pytest.param({CLAUDE: ""}, {CLAUDE: ROOT}, CLAUDE, id="at"),
     pytest.param({GITHUB: "ci", "ci": ""}, {GITHUB: ROOT, "ci": ROOT},
                  "ci", id="second-in-a-chain"),
+    pytest.param({"scripts": ""}, {"scripts": ROOT}, "scripts",
+                 id="above-the-scripts"),
+    pytest.param({"shape": ""}, {"shape": ROOT}, "shape",
+                 id="above-the-copies"),
 ])
 def test_a_link_with_an_empty_target_is_mains_to_report(
         adopter, no_filter_repo_probe, tmp_path, links, legs, empty):
     """Linux cannot hold a symlink to nothing, and every clone `execute`
     makes of the source checks it out, wherever the plan sends it. `main`
     (#303) names each such symlink in the source as `plan-empty-symlink`,
-    first in `check`'s list, with the fix in the source. A shape path that
-    runs through one, at, above or along a chain, gets no `plan-root-symlink`
-    beside it: one link, one finding, and `execute` refuses with `main`'s."""
+    with the fix in the source. A shape path that runs through one, at,
+    above or along a chain, gets no `plan-root-symlink` beside it: one link,
+    one finding, and `execute` refuses with `main`'s. Above `scripts` and
+    above `shape`, the empty target walked on as the root would be a fault
+    of its own (the scripts land in the root; a copy lands on the root's own
+    `README.md`), so those two cases hold the walk to marking the link
+    empty."""
     _, plan = planned(tmp_path, {}, links, legs)
     checked = check(plan)
     assert checked.returncode == 1, checked.stderr + checked.stdout
