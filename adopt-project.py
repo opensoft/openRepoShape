@@ -4293,7 +4293,8 @@ def _misplaced_script(walk: _Walk) -> str | None:
 def _links_at_a_copy(plan: Plan, tree: list) -> set[str]:
     """Each symlink the plan keeps AT the copy under `shape/` of a path the
     root holds: #262's `plan-root-blocks-shape-copy` names it, the shape's
-    copy written THROUGH it, earlier in `_entry_findings`' one list. Asked
+    copy written THROUGH it, earlier in `_entry_findings`' one list; and one
+    AT `project.yaml`, which #305's `plan-root-blocks-manifest` names. Asked
     as `_leg_findings` asks it, of a plan whose `legs` it can read, on a
     disk that keeps case and on one that ignores it."""
     if not isinstance(plan.legs, dict):
@@ -4323,7 +4324,14 @@ def _root_symlink_findings(plan: Plan, source: Source,
     (`_links_at_a_copy`), and is not said again here: one link, one
     finding. The copy is still walked, and a link the walk meets ABOVE it,
     or AT the copy of a path the root holds only through a symlink, is
-    this check's, because #262's rule follows no link.
+    this check's, because #262's rule follows no link. A symlink AT
+    `project.yaml` is #305's `plan-root-blocks-manifest`, which
+    `_shape_blocks` reports the same way, and is not said again either.
+
+    A walk that stops at a symlink with an empty target is #303's to say:
+    `plan-empty-symlink` names every such symlink in the source, first in
+    `_entry_findings`' list, with the fix in the source, so it is not said
+    again here, wherever in the walk's chain that symlink is.
     """
     findings: list[str] = []
     if not any(mode == SYMLINK_MODE for _, mode, _, _ in tree):
@@ -4334,7 +4342,7 @@ def _root_symlink_findings(plan: Plan, source: Source,
         for walk in _PlannedRoot(plan, source, tree, probe=probe,
                                  fold=fold).walks():
             why = walk.problem or _misplaced_script(walk)
-            if why is None or walk.links[0][0] in seen:
+            if why is None or walk.empty or walk.links[0][0] in seen:
                 continue
             seen.add(walk.links[0][0])
             findings.append(_root_symlink_finding(
@@ -4344,22 +4352,10 @@ def _root_symlink_findings(plan: Plan, source: Source,
 
 def _root_symlink_finding(walk: _Walk, why: str, aside: str) -> str:
     """The line `check` prints for a symlink `walk` cannot be written
-    through, and what to do.
-
-    A symlink with an empty target is fixed in the source. Both of the
-    clones `execute` makes of the source check every path out, wherever the
-    plan sends it, and Linux cannot hold a symlink to nothing: there `git
-    clone` stops at it ("unable to create symlink") after the leg
-    repositories exist. Where `core.symlinks` is false the clone holds a
-    plain file instead, so the sentence says only what is true on every
-    disk."""
+    through, and what to do. A walk that stopped at a symlink with an empty
+    target never comes here: that symlink is #303's `plan-empty-symlink`."""
     link, target = walk.links[0]
-    fix = (f"Give {_spelled(walk.empty)} a target in the source, or remove "
-           "it there, and re-run `plan`: Linux cannot hold a symlink to "
-           "nothing, and every clone `execute` makes of the source checks it "
-           "out, wherever the plan sends it."
-           if walk.empty else
-           f"Send {_spelled(link)} to a leg or `drop` it, or change where it "
+    fix = (f"Send {_spelled(link)} to a leg or `drop` it, or change where it "
            "points in the source and re-run `plan`.")
     return (f"FINDING {ROOT_SYMLINK}: the plan keeps {_spelled(link)} in the "
             f"root, a symlink to {_spelled(target)}, and "

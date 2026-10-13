@@ -724,23 +724,37 @@ def test_a_drive_letter_target_into_the_root_is_followed_off_windows(
     passed_alike(adopter, tmp_path, plan)
 
 
-def test_a_link_with_an_empty_target_is_fixed_in_the_source(
-        adopter, no_filter_repo_probe, tmp_path):
-    """Linux cannot hold a symlink to nothing: `git clone` there stops with
-    `unable to create symlink`, so on main `execute` made both legs and then
-    exited 2 with nothing said. Every clone `execute` makes of the source
-    checks the link out, wherever the plan sends it, so the finding says to
-    fix it in the source. (Where `core.symlinks` is false the clone holds a
-    plain file instead, so the finding claims no more than that.)"""
-    _, plan = planned(tmp_path, {}, {GITHUB: ""}, {GITHUB: ROOT})
-    line = (f"{FINDING}the plan keeps `.github` in the root, a symlink to "
-            f"``, and {ticked(WORKFLOW)}, a path the shape writes, runs "
-            "through it, but the symlink `.github` has an empty target, "
-            "which leads nowhere. Give `.github` a target in the source, or "
-            "remove it there, and re-run `plan`: Linux cannot hold a symlink "
-            "to nothing, and every clone `execute` makes of the source checks "
-            "it out, wherever the plan sends it.")
-    refused_alike(adopter, tmp_path, plan, line)
+#: `main`'s finding (#303) for a symlink of the source with an empty target.
+EMPTY_SYMLINK = "plan-empty-symlink"
+
+
+@pytest.mark.parametrize("links, legs, empty", [
+    pytest.param({GITHUB: ""}, {GITHUB: ROOT}, GITHUB, id="above"),
+    pytest.param({CLAUDE: ""}, {CLAUDE: ROOT}, CLAUDE, id="at"),
+    pytest.param({GITHUB: "ci", "ci": ""}, {GITHUB: ROOT, "ci": ROOT},
+                 "ci", id="second-in-a-chain"),
+])
+def test_a_link_with_an_empty_target_is_mains_to_report(
+        adopter, no_filter_repo_probe, tmp_path, links, legs, empty):
+    """Linux cannot hold a symlink to nothing, and every clone `execute`
+    makes of the source checks it out, wherever the plan sends it. `main`
+    (#303) names each such symlink in the source as `plan-empty-symlink`,
+    first in `check`'s list, with the fix in the source. A shape path that
+    runs through one, at, above or along a chain, gets no `plan-root-symlink`
+    beside it: one link, one finding, and `execute` refuses with `main`'s."""
+    _, plan = planned(tmp_path, {}, links, legs)
+    checked = check(plan)
+    assert checked.returncode == 1, checked.stderr + checked.stdout
+    assert symlink_findings(checked) == [], checked.stderr
+    said = [line for line in checked.stderr.splitlines()
+            if line.startswith(f"FINDING {EMPTY_SYMLINK}: ")]
+    assert len(said) == 1, checked.stderr
+    assert said[0].startswith(f"FINDING {EMPTY_SYMLINK}: {ticked(empty)} ")
+    refusal = refused_by(adopter, execute_args(tmp_path, plan))
+    assert refusal.code == EMPTY_SYMLINK
+    assert f"  {said[0]}" in refusal.detail.splitlines()
+    assert ROOT_SYMLINK not in refusal.detail
+    no_leg_was_created(tmp_path)
 
 
 # ---------------------------------------------------------------------------
