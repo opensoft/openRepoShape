@@ -755,10 +755,12 @@ def test_an_org_repo_run_names_its_clone_when_a_leg_repository_fails(
     refused at that clone (`source-unclonable`), but the notice read only
     the legs and the split off the disk, so it named no work directory. It
     names the clone. The run is not refused for its own clone: that is no
-    leg and not the split. `gh repo clone` is a local clone here."""
+    leg and not the split. `gh repo clone` is a local clone here. The plan
+    is in the source's own name, as `execute` refuses any other for an
+    `org/repo` source (#499)."""
     no_filter_repo_probe(adopter, monkeypatch)
     origin = make_source_repo(tmp_path / SOURCE, tree=SMALL_TREE, edits=())
-    plan = planned(tmp_path, origin)
+    plan = planned(tmp_path, origin, SOURCE)
     real_run = adopter.run
 
     def gh_clones_the_origin(args, *rest, **keywords):
@@ -1173,9 +1175,9 @@ def execute_args(tmp_path: Path, plan: Path) -> Namespace:
                      yes=True, work_dir=tmp_path / WORK)
 
 
-def planned(tmp_path: Path, source: Path) -> Path:
+def planned(tmp_path: Path, source: Path, project: str = ASSEMBLY) -> Path:
     plan = tmp_path / "adoption-plan.yaml"
-    written = write_plan(source, plan, project=ASSEMBLY)
+    written = write_plan(source, plan, project=project)
     assert written.returncode == 0, written.stderr + written.stdout
     return plan
 

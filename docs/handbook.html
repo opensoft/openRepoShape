@@ -1168,7 +1168,7 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
       <p class="eyebrow">Reference</p>
       <h2>Adopting an existing repository</h2>
       <p>A repository that already exists is converted <strong>in place</strong>. It KEEPS ITS NAME,
-      ITS IDENTITY AND ITS FULL HISTORY and becomes the assembly root, while
+      which <code>--project</code> must be, ITS IDENTITY AND ITS FULL HISTORY and becomes the assembly root, while
       <code>&lt;Project&gt;-spec</code> and <code>&lt;Project&gt;-code</code> are NEW repositories
       extracted with history-preserving filters. The source is never deleted, never renamed and
       never force-pushed; the only change to its history is ONE split commit, arriving on a branch
@@ -1870,9 +1870,9 @@ resume InkRouter                # on workstation B, and the estate is back</code
       above drift, added (#424); the assistant&rsquo;s route when its shell has no terminal, added
       (#476); the one-liner asking at the person&rsquo;s own terminal, never reading the answer
       from the pipe, added (#492); the statements the v1.0.0 accuracy pass found false,
-      corrected here as in the README, added (#483) &mdash; a page cannot name the commit
+      corrected here as in the README, added (#483); an adoption&rsquo;s <code>--project</code> as the source&rsquo;s own name, added (#499) &mdash; a page cannot name the commit
       that contains it, and the blob below is the fact a test checks.
-      README.md blob 1417b9ec0235675da8f73ca023756411bc3fbe8a. Every command, flag, exit code
+      README.md blob d19633d51e71b8fc25c5e68cc7c6f0ad59a65b8c. Every command, flag, exit code
       and file name on this page is quoted from that README and from AGENTS.md.</p>
     </footer>
   </main>
