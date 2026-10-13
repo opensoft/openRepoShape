@@ -1127,24 +1127,24 @@ shape files** (each leg's `AGENTS.md`, `CLAUDE.md` and `.gitignore` against
 `templates/<role>-root/`, a comparison: no leg file is pinned), **placement**
 (every tracked path of every leg, against the path policy), **agent files**,
 and **machine**. A FAMILY holder gets **family**, **manifest kinds**, **shape
-currency**, **placement** (`n/a`: no legs of its own), **agent files**,
-**members** and **machine**. Either, mid-merge, gets **merge** first: a
-`FINDING` naming the unmerged paths, or a `note` if none is left. A directory
-that is neither gets what it is CALLED under the naming policy, what IS in it,
-the way in and **machine** — and a repository the advisory is not silent about
-gets the **Triad** row, status `advisory`: said once and stepped over by the
-verdict (a leg gets its root).
+currency**, **placement** (`n/a`: no legs of its own), **agent files**, **members**
+and **machine**. Either, mid-merge, gets **merge** first: a `FINDING` naming the
+unmerged paths, or a `note` if none is left. A directory that is neither gets what
+it is CALLED under the naming policy, what IS in it, the way in and **machine** —
+and a repository the advisory is not silent about gets the **Triad** row, status
+`advisory`: said once and stepped over by the verdict (a leg gets its root).
 
 Every row is `ok`, `note`, `FINDING` or `n/a` — or `advisory`, the Triad row
 alone — and every one that is not `ok` names the exact command that fixes it,
-except the Triad row, which names none in any status. **Only a `FINDING` moves
-the verdict**, and `FINDING` means exactly *something else asserts this* — a
-validator, a pin row, a manifest, a gitlink. A difference nothing asserts is a
-`note`: printed, in `--json`, and stepped over by the verdict. That line was
-drawn after this command answered `INVALID` about a live estate whose every
-real gate was green, because a leg was missing a `.gitignore` that entered the
-standard *after* that project was scaffolded. A doctor that invents a rule to
-fail you by is not believed the next time. Then one verdict, and its exit code:
+except the Triad row, which names none in any status. **Only a `FINDING`
+moves the verdict**, and `FINDING` means exactly *something else asserts this* — a
+validator, a pin row, a manifest, a gitlink. A difference nothing asserts is
+a `note`: printed, in `--json`, and stepped over by the verdict. That line
+was drawn after this command answered `INVALID` about a live estate whose
+every real gate was green, because a leg was missing a `.gitignore` that
+entered the standard *after* that project was scaffolded. A doctor that
+invents a rule to fail you by is not believed the next time. Then one
+verdict, and its exit code:
 
 | verdict | exit | when |
 |---|---|---|
