@@ -35,11 +35,13 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from conftest import FILE_PROTOCOL, WINDOWS_SKIP, git, run_script
+from conftest import PTY_SKIP, REPO, run_in_a_terminal
 #: The neutral product's stand-in, from the module that scaffolds a declared
 #: descendant: a second way of building one would test a different one.
 from test_scaffold_pin_and_reuse import product_repo
@@ -849,3 +851,22 @@ def test_a_colon_standard_withholds_the_members_rows_lockstep_line_too(
     assert result.returncode == 3, result.stdout + result.stderr
     text = doctor(here, root)
     assert_no_pythonpath_line(result.stdout, text.stdout, text.stderr)
+
+
+@PTY_SKIP
+def test_the_doctor_in_a_persons_terminal_offers_nothing(tmp_path):
+    """#492: `setup-project.py` asks at the CONTROLLING terminal when stdin
+    is not one, and the `machine` row runs its `--preflight` with stdin
+    closed. From a person's own terminal, on a machine whose `gh` is not
+    logged in (the session's guard answers so), that preflight would offer
+    `gh auth login` there and the doctor would sit waiting on it. Its
+    children run in a session of their own, with no terminal to ask on: the
+    row reports, nothing is offered, and the doctor finishes."""
+    empty = tmp_path / "not-a-root"
+    empty.mkdir()
+    status, screen, _ = run_in_a_terminal(
+        [sys.executable, str(REPO / DOCTOR), "--root", str(empty)],
+        cwd=tmp_path, env=dict(os.environ), timeout=90)
+    assert "Type yes to continue:" not in screen, screen
+    assert "NOT A SHAPE ROOT" in screen, screen
+    assert status == 2, screen
