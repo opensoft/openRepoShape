@@ -241,8 +241,8 @@ def test_it_is_the_doctors_rule_on_any_ascii_value(doctor, platform):
 def test_the_two_alphabets_are_the_doctors(doctor):
     """The same two character sets, spelled as the same two patterns: the
     doctor anchors its with `^...$`, and these are asked with `fullmatch`."""
-    assert f"^{SHELL_BARE_POSIX.pattern}$" == doctor.UNQUOTED_POSIX.pattern
-    assert f"^{SHELL_BARE_NT.pattern}$" == doctor.UNQUOTED_NT.pattern
+    assert doctor.UNQUOTED_POSIX.pattern == f"^{SHELL_BARE_POSIX.pattern}$"
+    assert doctor.UNQUOTED_NT.pattern == f"^{SHELL_BARE_NT.pattern}$"
 
 
 # --- the commands, under a folder with a space in it --------------------------

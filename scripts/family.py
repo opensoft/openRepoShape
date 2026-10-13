@@ -164,6 +164,10 @@ MEMBERS_DIR = "members"
 #: -- named once so the two commits cannot spell the file differently.
 GITMODULES = ".gitmodules"
 FILE_PROTOCOL = ["-c", "protocol.file.allow=always"]
+#: What `git symbolic-ref HEAD` prints before a branch's name: the one
+#: spelling `_holder_branch` and `_member_head` strip to read a HEAD back as
+#: the branch it is on, named once so the two cannot differ.
+HEADS_PREFIX = "refs/heads/"
 
 #: `<org>/<Project>`, the only spelling `--member` accepts. A bare name would
 #: have to guess an owner, and a family whose members are in another
@@ -596,7 +600,7 @@ def _holder_branch(root: Path) -> str | None:
             "utf-8", "surrogateescape").strip()
     except CommandFailed:
         return None
-    return ref[len("refs/heads/"):] if ref.startswith("refs/heads/") else None
+    return ref[len(HEADS_PREFIX):] if ref.startswith(HEADS_PREFIX) else None
 
 
 #: A branch-name component the suggestion may use as it stands: dot-separated
@@ -3060,7 +3064,7 @@ def _member_head(member: Path) -> tuple[str | None, str | None]:
         ref = git_out(["symbolic-ref", "-q", "HEAD"], cwd=member)
     except Refusal:
         ref = ""
-    return at, (ref[len("refs/heads/"):] if ref.startswith("refs/heads/")
+    return at, (ref[len(HEADS_PREFIX):] if ref.startswith(HEADS_PREFIX)
                 else None)
 
 

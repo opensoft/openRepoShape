@@ -116,8 +116,8 @@ python3 scripts/family.py remove --family-root <path> --member <Project>
 
 Each writes ONE commit, with explicit pathspecs, moving the gitlink and the
 pin together, on the branch the holder stands on: it refuses the tracking
-branch, so make a branch first, as the block's first line does. Push it as the
-command's last line says and land it as a pull request.
+branch, so make a branch first, as the block's first line does. Push it as its
+`NEXT` line says and land it as a pull request.
 
 ## Private members in CI
 
