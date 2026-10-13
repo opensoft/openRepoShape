@@ -620,7 +620,9 @@ options:
                         writes; repeatable, kept in the order given
   --local-remote-dir LOCAL_REMOTE_DIR
                         resolve the leg's remote to a bare repository here
-                        instead of its origin (the TEST path; no network)
+                        instead of its origin (the TEST path; the leg needs no
+                        network, but the project's own validate-pins.py may
+                        still ask `gh api`)
   --dry-run             print what would move and change nothing
 ```
 
@@ -658,17 +660,27 @@ usage: family.py init [-h] --org ORG --family FAMILY [--id ID] [--name NAME]
                       [--local-remote-dir LOCAL_REMOTE_DIR] [--into DIR]
                       [--work-dir WORK_DIR] [--no-push] [--dry-run]
 
+Create a family holder. Before anything is created, and under --dry-run alike,
+the family.yaml it would write is put through the holder's own YAML reader and
+its own validate-family.py: a value either would not hold is refused and
+named.
+
 options:
   -h, --help            show this help message and exit
   --org ORG
   --family FAMILY       the holder's name, ONE CamelCase token, e.g. InkRouter
-  --id ID               lowercase family id
-  --name NAME           display name
+  --id ID               lowercase family id (default: --family lowercased)
+  --name NAME           display name (default: --family); validate-family.py
+                        holds it to the same rule
   --visibility {private,public,internal}
   --created-by CREATED_BY
+                        the human creating the family (default:
+                        GIT_AUTHOR_NAME, then `git config user.name`); not
+                        blank
   --created-on CREATED_ON
-                        YYYY-MM-DD
+                        YYYY-MM-DD (default: today)
   --tracking-branch TRACKING_BRANCH
+                        the branch the holder is created on (default: main)
   --reuse-empty-repo    if <org>/<Family> already exists and has ZERO commits,
                         use it as the holder instead of refusing. A repository
                         with commits is still refused: that is live, not a
@@ -816,12 +828,20 @@ options:
   --link-source [PRODUCT=]PATH
                         where a chain LINK's own tree is, so its
                         `neutral_product_pins:` can be read and the link
-                        VERIFIED — e.g. --link-source openXdox=../openXdox. A
-                        bare PATH applies to whichever link has no more
-                        specific answer. SHAPE_PIN_SOURCE_<PRODUCT> and a
-                        checkout beside the project are tried too. A link no
-                        source answers for is declared-unverified, which is a
-                        warning and not a finding.
+                        VERIFIED — e.g. --link-source openXdox=../openXdox.
+                        The text before the first `=` is a PRODUCT only when
+                        it names a chain link (an entry of --referent-chain,
+                        or of a leg's naming.referent_chain: under --project),
+                        and then that reading wins even over a directory
+                        spelled like the whole value (./PATH reads that
+                        directory); any other value is a bare PATH, which
+                        applies to whichever link has no more specific answer.
+                        Repeatable; a value no link used is noted.
+                        SHAPE_PIN_SOURCE_<PRODUCT> and a checkout beside the
+                        project are tried too. A link no source answers for is
+                        declared-unverified, and a source that cannot be read
+                        is named with the system's reason: both are warnings
+                        and not findings, an explicit source included.
   --explain             print every family each name satisfies, why one of
                         them won, and what the others are recorded as
   --quiet

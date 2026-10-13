@@ -253,6 +253,14 @@ def legs_arguments(tmp_path: Path, source=None) -> dict:
                 branch=BRANCH, tracking="main")
 
 
+class SplitPlan(dict):
+    """The plan `_commit_the_split` reads: `follow_ups` through `get`, for
+    the split message, and `entries`, which #189's `submodules:` record
+    is built from. These sources keep no submodule, so it has none."""
+
+    entries = ()
+
+
 def split_arguments(tmp_path: Path, source) -> dict:
     """What `cmd_execute` hands `_commit_the_split` once both legs are
     pushed. The leg commits are stand-ins: every step that would read them
@@ -261,7 +269,7 @@ def split_arguments(tmp_path: Path, source) -> dict:
     urls = leg_urls(tmp_path, names)
     urls[ROOT] = str(source.path)
     return dict(
-        plan={}, source=source, assembly=tmp_path / WORK / ASSEMBLY,
+        plan=SplitPlan(), source=source, assembly=tmp_path / WORK / ASSEMBLY,
         names=names, urls=urls, values={}, work_root=tmp_path / WORK,
         paths_for={SPEC: ["specs/"], CODE: ["src/"], "root": [README],
                    "drop": []},
