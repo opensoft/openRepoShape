@@ -31,6 +31,9 @@ The groups of tests:
   copy is #262's own finding, `plan-root-blocks-shape-copy`.
 - A case twin, `.GitHub` for `.github`, is followed as a macOS or Windows
   disk follows it, and refused on every disk (S1).
+- The file of each pin the plan declares, `contracts/<product>-pin.yaml`, is
+  a path the shape writes, before its own pin (#273), and is followed too;
+  a link AT one is #273's own finding, `plan-root-holds-pin`.
 - `core.symlinks=false` (#183): `execute` refuses, before any leg, a link the
   shape would write beneath, because the assembly's clone holds it as a file.
   A link AT a path the shape writes is then that file, which `place` writes
@@ -763,6 +766,296 @@ def test_a_link_with_an_empty_target_is_mains_to_report(
     assert f"  {said[0]}" in refusal.detail.splitlines()
     assert ROOT_SYMLINK not in refusal.detail
     no_leg_was_created(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# A declared pin's file (#273)
+# ---------------------------------------------------------------------------
+#
+# Since #273, `execute` writes `contracts/<product>-pin.yaml` for each pin the
+# plan declares, through `place`, after the copies and before the shape's own
+# pin. The walk follows those files too, so a link that only a pin's file
+# runs through, and that it cannot be written through, is refused before any
+# leg; walked without them, `check` passed such a link, and `execute` stopped
+# at one after both legs (rv183g's P1). A link AT a pin's file stays #273's
+# `plan-root-holds-pin`, one finding.
+
+GOVERNANCE = "governance"
+GLASS, LENS = "openGlass", "openLens"
+#: The name of the file `execute` writes the pin the plan declares on
+#: openGlass to, in `contracts/`; and where it lands through
+#: `contracts -> governance`.
+PIN_NAME = "openglass-pin.yaml"
+PIN_FILE = f"{CONTRACTS}/{PIN_NAME}"
+GOVERNANCE_PIN = f"{GOVERNANCE}/{PIN_NAME}"
+ROOT_HOLDS_PIN = "plan-root-holds-pin"
+PIN_MALFORMED = "plan-pin-malformed"
+PIN_UNRECORDED = "plan-pin-unrecorded"
+SHAPE_PIN = "contracts/shape-pin.yaml"
+#: What `plan` writes for a plan that declares no pin.
+NO_PIN = "pins: []\n"
+#: An absolute path where nothing is; `{b}` is the test's own directory.
+ABSOLUTE_PIN = "{b}/abs/pin.yaml"
+#: A `contracts/` the root keeps, with nothing at a pin's file.
+REAL_CONTRACTS = ({"contracts/README.md": "c\n"}, {"contracts/": ROOT})
+#: rv183g's source: `contracts -> governance`, a directory the root keeps.
+THROUGH_GOVERNANCE = ({"governance/README.md": "# governance\n"},
+                      {CONTRACTS: ROOT, "governance/": ROOT})
+
+
+def pin_row(product: str, commit: bool = True) -> str:
+    """One `pins:` entry as `plan --pin <product>@<commit>` records it, or,
+    without `commit`, the same entry with its commit left out."""
+    lines = [f"  - product: {product}",
+             f"    repository: opensoft/{product}",
+             f"    commit: \"{'0123456789abcdef' * 2}01234567\"",
+             f"    tree_sha256: \"{'0123456789abcdef' * 4}\"",
+             f"    digest_source: \"local-clone ({product})\""]
+    return "\n".join(lines if commit else lines[:2] + lines[3:]) + "\n"
+
+
+def declare(plan: Path, block: str) -> None:
+    """The plan's `pins: []` replaced by `block`, which starts with `pins:`,
+    as a hand edit would leave it: bytes, so LF everywhere."""
+    text = plan.read_bytes().decode(UTF8)
+    assert text.count(NO_PIN) == 1, "the plan was written with no pin"
+    plan.write_bytes(text.replace(NO_PIN, block, 1).encode(UTF8))
+
+
+def through_governance(base: Path, target: str, block: str) -> Path:
+    """The plan for rv183g's source, whose `governance/openglass-pin.yaml`
+    leads to `target`, with `block` as its `pins:`."""
+    files, legs = THROUGH_GOVERNANCE
+    _, plan = planned(base, files, {CONTRACTS: GOVERNANCE,
+                                    GOVERNANCE_PIN: target}, legs)
+    declare(plan, block)
+    return plan
+
+
+def planned_root(adopter, base: Path, plan: Path):
+    """`(the plan, its source, the walks' `_PlannedRoot`)`, as `check` reads
+    them, with symlinks taken to be checked out as symlinks."""
+    loaded = adopter.Plan.load(plan)
+    (base / WORK).mkdir(exist_ok=True)
+    source = loaded.open_source(None, base / WORK)
+    return loaded, source, adopter._PlannedRoot(
+        loaded, source, source.tree(), probe=adopter._SymlinkProbe(None))
+
+
+A_PIN = "pins:\n" + pin_row(GLASS)
+
+#: `(where governance/openglass-pin.yaml leads, why)`: rv183g's three, and
+#: one that dangles inside, which `place` writes the pin through and this
+#: branch refuses as it refuses AT-dangle-dir-present. `{b}` is the test's
+#: own directory and `{w}` the work directory.
+PIN_THROUGH = [
+    pytest.param(ABSOLUTE_PIN,
+                 f"the symlink {ticked(GOVERNANCE_PIN)} leads to "
+                 f"{ticked(ABSOLUTE_PIN)}, {ON_THIS_MACHINE}, and "
+                 "nothing is there", id="an-absolute-path-where-nothing-is"),
+    pytest.param("../../outside-pin.yaml",
+                 f"{climbs(GOVERNANCE_PIN)}, to "
+                 f"{ticked('{w}/outside-pin.yaml')}, where nothing is",
+                 id="out-of-the-root"),
+    pytest.param(PIN_NAME,
+                 f"it {too_many(GOVERNANCE_PIN)}: {TOO_MANY}", id="itself"),
+    pytest.param("nowhere.yaml",
+                 leads(GOVERNANCE_PIN, "governance/nowhere.yaml",
+                       NOT_IN_THE_TREE), id="nowhere-inside"),
+]
+
+
+def where(text: str, base: Path) -> str:
+    """`text` with `{b}` and `{w}` filled in for the test's directory."""
+    return text.format(b=base.as_posix(),
+                       w=(base / WORK).resolve().as_posix())
+
+
+@pytest.mark.parametrize(("target", "why"), PIN_THROUGH)
+def test_a_link_only_a_pins_file_runs_through_is_refused_before_any_leg(
+        adopter, no_filter_repo_probe, links_as_links, tmp_path, target,
+        why):
+    """rv183g's P1. No other path the shape writes meets
+    `governance/openglass-pin.yaml`; with `--pin openGlass@<commit>`,
+    `execute` writes the pin's file through it. It stopped there after both
+    legs on the first three (`materialize-outside`,
+    `materialize-symlink-loop`), and wrote the fourth through the link, which
+    this branch refuses as it refuses AT-dangle-dir-present. Now `check`
+    says each once, naming the first link and the pin's file, and `execute`
+    refuses with the same line before any leg."""
+    plan = through_governance(tmp_path, where(target, tmp_path), A_PIN)
+    refused_alike(adopter, tmp_path, plan,
+                  finding(CONTRACTS, GOVERNANCE, PIN_FILE,
+                          where(why, tmp_path)),
+                  WORK_FLAG, str(tmp_path / WORK))
+
+
+@pytest.mark.parametrize("target", [
+    pytest.param(case.values[0], id=case.id) for case in PIN_THROUGH])
+def test_without_a_pin_no_path_the_shape_writes_meets_that_link(
+        adopter, links_as_links, tmp_path, target):
+    """The control: the same source with no pin declared. No path the shape
+    writes runs through `governance/openglass-pin.yaml`, so it is not this
+    check's business."""
+    plan = through_governance(tmp_path, where(target, tmp_path), NO_PIN)
+    passed_alike(adopter, tmp_path, plan, WORK_FLAG, str(tmp_path / WORK))
+
+
+@needs_filter_repo
+@needs_disk_symlinks
+def test_without_a_pin_that_source_adopts(tmp_path):
+    """The control end to end: `contracts -> governance`, with
+    `governance/openglass-pin.yaml` leading to an absolute path where
+    nothing is, and no pin, adopts, the link kept as the source had it."""
+    target = where(ABSOLUTE_PIN, tmp_path)
+    plan = through_governance(tmp_path, target, NO_PIN)
+    result = execute(tmp_path, plan)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert VERIFIED in result.stdout
+    source = tmp_path / THING
+    assert split_modes(source)[GOVERNANCE_PIN] == SYMLINK
+    assert git("show", f"{BRANCH}:{GOVERNANCE_PIN}",
+               cwd=source).stdout == target
+
+
+@pytest.mark.parametrize(("link", "aside"), [
+    pytest.param(PIN_FILE, "", id="at-the-pins-file"),
+    pytest.param("contracts/OpenGlass-pin.yaml", CASE_ASIDE,
+                 id="a-case-twin-at-it"),
+])
+def test_a_link_at_a_pins_file_is_one_finding_by_the_rule_that_sees_it(
+        adopter, no_filter_repo_probe, links_as_links, tmp_path, link,
+        aside):
+    """A symlink kept AT a pin's file is #273's: `plan-root-holds-pin` names
+    it, on a disk that keeps case or, for a case twin, on one that ignores
+    it. The walk, which follows the pin's file now, meets the same link
+    leading nowhere and does not say it again: one link, one finding, and
+    `execute` refuses with #273's line."""
+    files, legs = REAL_CONTRACTS
+    _, plan = planned(tmp_path, files, {link: "nowhere.yaml"}, legs)
+    declare(plan, A_PIN)
+    checked = check(plan)
+    assert checked.returncode == 1, checked.stderr + checked.stdout
+    assert symlink_findings(checked) == [], checked.stderr
+    said = [line for line in checked.stderr.splitlines()
+            if line.startswith(f"FINDING {ROOT_HOLDS_PIN}: ")]
+    assert len(said) == 1, checked.stderr
+    assert said[0].startswith(f"FINDING {ROOT_HOLDS_PIN}: the plan keeps the "
+                              f"symlink {ticked(link)} "), said[0]
+    assert f"at {ticked(PIN_FILE)}{aside}, where `execute` writes" in said[0]
+    refusal = refused_by(adopter, execute_args(tmp_path, plan))
+    assert refusal.code == ROOT_HOLDS_PIN
+    assert f"  {said[0]}" in refusal.detail.splitlines()
+    assert ROOT_SYMLINK not in refusal.detail
+    no_leg_was_created(tmp_path)
+
+
+#: `pins:` blocks `execute` writes no pin file from, with the code `check`
+#: names each by.
+NOT_A_PIN = [
+    pytest.param("pins: 7\n", PIN_MALFORMED, id="a-number"),
+    pytest.param(f"pins: {GLASS}\n", PIN_MALFORMED, id="text"),
+    pytest.param("pins:\n  - 7\n", PIN_MALFORMED, id="an-entry-7"),
+    pytest.param(f"pins:\n  - {GLASS}\n", PIN_UNRECORDED, id="a-name-alone"),
+    pytest.param("pins:\n" + pin_row(GLASS, commit=False), PIN_UNRECORDED,
+                 id="no-commit"),
+]
+
+
+@pytest.mark.parametrize(("block", "code"), NOT_A_PIN)
+def test_a_pins_block_execute_writes_no_file_from_adds_no_path(
+        adopter, no_filter_repo_probe, links_as_links, tmp_path, block,
+        code):
+    """The walk reads the pins as `_leg_collision_findings` reads them,
+    `_declared_pins`: only the entries `execute` writes a file from. So a
+    `pins:` that is no list, or an entry that is no pin, adds no path to
+    walk and raises nothing, and the link only a pin's file would meet gets
+    no finding of its own: `check` names the `pins:` alone, with no
+    traceback, and `execute` refuses with that, before any leg. The walk is
+    asked directly too, as `_root_symlink_findings` makes it."""
+    plan = through_governance(tmp_path, where(ABSOLUTE_PIN, tmp_path), block)
+    checked = check(plan)
+    assert checked.returncode == 1, checked.stderr + checked.stdout
+    assert "Traceback" not in checked.stderr, checked.stderr
+    said = [line for line in checked.stderr.splitlines()
+            if line.startswith("FINDING ")]
+    assert said, checked.stderr
+    assert all(line.startswith(f"FINDING {code}: ") for line in said), said
+    refusal = refused_by(adopter, execute_args(tmp_path, plan))
+    assert refusal.code == code
+    assert ROOT_SYMLINK not in refusal.detail
+    no_leg_was_created(tmp_path)
+    loaded, source, walked = planned_root(adopter, tmp_path, plan)
+    assert walked.pins == []
+    assert [walk.path for walk in walked.walks()
+            if not walk.path.startswith(f"{SHAPE_DIR}/")] == list(
+                assembly_root_paths())
+    assert adopter._root_symlink_findings(loaded, source,
+                                          source.tree()) == []
+
+
+def test_the_walk_follows_each_pins_file_where_the_materializer_writes_it(
+        adopter, tmp_path):
+    """The pins the walk follows are those `execute` hands the materializer
+    (`_recorded_pins`), each product once, in the plan's order; and the
+    paths it follows are those the materializer writes when it is handed
+    them, in its order: each pin's file after the copies, and the shape's
+    own pin last."""
+    _, plan = planned(tmp_path, {}, {}, {})
+    declare(plan, "pins:\n" + pin_row(LENS) + pin_row(GLASS) + pin_row(LENS))
+    loaded, _, walked = planned_root(adopter, tmp_path, plan)
+    assert walked.pins == [LENS, GLASS]
+    assert walked.pins == list(adopter._recorded_pins(loaded))
+    target = tmp_path / ASSEMBLY
+    target.mkdir()
+    written = materialize_assembly_root(
+        REPO, target, template_values(), collision_dir=SHAPE_DIR,
+        neutral_pins={product: {} for product in walked.pins}).written
+    assert [walk.path for walk in walked.walks()
+            if not walk.path.startswith(f"{SHAPE_DIR}/")] == written
+    assert written == list(assembly_root_paths(walked.pins))
+    assert written[-3:] == ["contracts/openlens-pin.yaml", PIN_FILE,
+                            SHAPE_PIN]
+
+
+def test_a_link_to_a_pins_file_finds_the_pin_place_wrote_first(
+        adopter, links_as_links, tmp_path):
+    """rv183g's side effect: with a pin, `contracts/shape-pin.yaml ->
+    openglass-pin.yaml`. `place` writes the pin's file before the shape's
+    own pin, so it finds a file there and writes the shape's pin beside it,
+    under `shape/`, as it does for any path the root holds. The walk now
+    says the same, where it said the link led to what is not in the source
+    tree, and `check` prints no link finding for it. (The root's
+    `contracts/shape-pin.yaml` is then not the shape's pin, and `execute`'s
+    verification fails after both legs, as on `main` and as for a file the
+    source keeps there: a question of what the root keeps at the shape's
+    pin, not of where this link leads.)"""
+    files, legs = REAL_CONTRACTS
+    _, plan = planned(tmp_path, files, {SHAPE_PIN: PIN_NAME}, legs)
+    declare(plan, A_PIN)
+    checked = check(plan)
+    assert symlink_findings(checked) == [], checked.stderr
+    _, _, walked = planned_root(adopter, tmp_path, plan)
+    walks = {walk.path: walk for walk in walked.walks()}
+    shape_pin = walks[SHAPE_PIN]
+    assert (shape_pin.problem, shape_pin.landed, shape_pin.taken) == (
+        None, PIN_FILE, True)
+    copy = walks[f"{SHAPE_DIR}/{SHAPE_PIN}"]
+    assert (copy.problem, copy.links, copy.taken) == (None, [], False)
+
+
+@needs_disk_symlinks
+def test_the_materializer_writes_the_shapes_pin_beside_that_link(tmp_path):
+    """What the walk above predicts, on the disk: the pin's file is written
+    first, and the shape's pin beside the link, which is left as it was."""
+    target = tmp_path / ASSEMBLY
+    symlink(target / SHAPE_PIN, PIN_NAME)
+    result = materialize_assembly_root(
+        REPO, target, template_values(), collision_dir=SHAPE_DIR,
+        neutral_pins={GLASS: {}})
+    assert PIN_FILE in result.written
+    assert (SHAPE_PIN, f"{SHAPE_DIR}/{SHAPE_PIN}") in result.collisions
+    assert os.readlink(target / SHAPE_PIN) == PIN_NAME
 
 
 # ---------------------------------------------------------------------------

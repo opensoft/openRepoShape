@@ -4920,6 +4920,16 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
 # letter's path, is a place on this disk only on Windows. On Linux and macOS
 # it is a relative path, into a directory named `C:`, and it is followed as
 # one, as `open()` and the materializer follow it there.
+#
+# EACH DECLARED PIN'S FILE IS ONE OF THOSE PATHS (#273). `execute` hands the
+# materializer `_recorded_pins`, and `place` writes each
+# `contracts/<product>-pin.yaml` after the copies and before the shape's own
+# pin, so the walk follows `assembly_root_paths` of the same products, read
+# as `_leg_collision_findings` reads them (`_declared_pins`). Walked without
+# them, a link that only a pin's file runs through passed `check`, and
+# `execute` stopped at it after both legs; and a link to a pin's file was
+# taken to lead nowhere, though `place` meets the pin there. A symlink AT a
+# pin's file is #273's `plan-root-holds-pin`, said once there.
 
 #: The finding for a symlink the plan keeps in the root that the shape cannot
 #: write through.
@@ -5008,6 +5018,8 @@ class _PlannedRoot:
     a walk cannot follow (`_a_file_here`).
     `walks` adds what the shape itself writes, path by path, as `place` does,
     so `CLAUDE.md -> AGENTS.md` finds the `AGENTS.md` the shape wrote first.
+    The paths are those of the pins the plan declares too (`pins`), each
+    pin's file written before the shape's own pin (#273).
 
     A path is followed the way `open()` follows it in a checkout: each
     symlink from its own directory, `..` only from a directory, and a link
@@ -5043,6 +5055,12 @@ class _PlannedRoot:
         self.dirs.update(path for path, (mode, _) in self.entries.items()
                          if mode == GITLINK_MODE)
         self.assembly, self.beside = _work_dir_names(plan)
+        # The products whose pin files `execute` writes, each once, in the
+        # plan's order: `_recorded_pins` hands the materializer a mapping of
+        # the same pins. Only the entries `_read_pins` takes as pins, so a
+        # `pins:` that is no list, or an entry that is no pin, adds no path:
+        # those are `check`'s findings, and `execute` writes no file for them.
+        self.pins = list(dict.fromkeys(_declared_pins(plan)))
         self._targets: dict[str, str] = {}
         self._walks: list[_Walk] | None = None
 
@@ -5091,12 +5109,13 @@ class _PlannedRoot:
             self._folded.setdefault(here.casefold(), here)
 
     def walks(self) -> list[_Walk]:
-        """Each path the shape writes, followed, in the order `place` writes
-        them: the path itself, and its copy under the collision directory
-        where the path is already taken."""
+        """Each path the shape writes, each declared pin's file among them,
+        followed, in the order `place` writes them: the path itself, and its
+        copy under the collision directory where the path is already
+        taken."""
         if self._walks is None:
             self._walks = []
-            for path in assembly_root_paths():
+            for path in assembly_root_paths(self.pins):
                 self._place(path)
         return self._walks
 
@@ -5430,6 +5449,37 @@ def _links_at_a_copy(plan: Plan, tree: list) -> set[str]:
     return named
 
 
+def _links_at_a_pin(plan: Plan, tree: list) -> set[str]:
+    """Each symlink the plan keeps AT the file a declared pin is written to,
+    `contracts/<product>-pin.yaml`, that #273's `plan-root-holds-pin` names
+    (`_kept_pin_findings`): the walks follow each pin's file too, and the
+    link is not said again by them. Asked as `_kept_pin_findings` asks it,
+    in `_leg_findings`, of a plan whose `legs` it can read: of each declared
+    pin, on a disk that keeps case and, where that finds nothing there, on
+    one that ignores it."""
+    products = list(dict.fromkeys(_declared_pins(plan)))
+    if not products or not isinstance(plan.legs, dict):
+        return set()
+    kept = _kept_in_root(plan.entries, tree)
+    disks = (_KeptTree(kept, fold=False), _KeptTree(kept, fold=True))
+    named: set[str] = set()
+    for rel in map(neutral_pin_path, products):
+        # The disk `_kept_pin_findings` names its row from.
+        disk = next((one for one in disks if _holds_a_pin(one, rel)), None)
+        at = disk.at(rel) if disk else None
+        if at and at[1] == SYMLINK_MODE:
+            named.add(at[0])
+    return named
+
+
+def _holds_a_pin(disk: _KeptTree, rel: str) -> bool:
+    """Whether `_kept_pin_findings` finds, on `disk`, something the plan
+    keeps at the pin's file `rel` or under it, but a submodule."""
+    at = disk.at(rel)
+    return any(row[1] != GITLINK_MODE
+               for row in ([at] if at else disk.under(rel)))
+
+
 def _root_symlink_findings(plan: Plan, source: Source,
                            tree: list) -> list[str]:
     """A FINDING for each symlink the plan keeps in the root that a path the
@@ -5448,7 +5498,9 @@ def _root_symlink_findings(plan: Plan, source: Source,
     or AT the copy of a path the root holds only through a symlink, is
     this check's, because #262's rule follows no link. A symlink AT
     `project.yaml` is #305's `plan-root-blocks-manifest`, which
-    `_shape_blocks` reports the same way, and is not said again either.
+    `_shape_blocks` reports the same way, and is not said again either; nor
+    is a symlink AT a declared pin's file, #273's `plan-root-holds-pin`
+    (`_links_at_a_pin`).
 
     A walk that stops at a symlink with an empty target is #303's to say:
     `plan-empty-symlink` names every such symlink in the source, first in
@@ -5458,7 +5510,7 @@ def _root_symlink_findings(plan: Plan, source: Source,
     findings: list[str] = []
     if not any(mode == SYMLINK_MODE for _, mode, _, _ in tree):
         return findings
-    seen = _links_at_a_copy(plan, tree)
+    seen = _links_at_a_copy(plan, tree) | _links_at_a_pin(plan, tree)
     probe = _SymlinkProbe(source.work_root)
     for fold in (False, True):
         for walk in _PlannedRoot(plan, source, tree, probe=probe,
