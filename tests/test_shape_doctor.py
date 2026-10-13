@@ -42,7 +42,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import (FILE_PROTOCOL, REPO, WINDOWS_SKIP, git, rmtree,
+from conftest import (FILE_PROTOCOL, REPO, WINDOWS_SKIP,
+                      assert_read_through_git, clone_just_pushed, git, rmtree,
                       run_script)
 from gh_guard import PROBES as GH_PROBES
 
@@ -143,10 +144,8 @@ def scaffolded_here(standard, tmp_path_factory) -> dict:
     scaffold(standard, base, PROJECT)
     clones = base / "clones"
     clones.mkdir()
-    proc = subprocess.run(
-        ["git", *FILE_PROTOCOL, "clone", "-q", "--recurse-submodules",
-         str(base / "remotes" / f"{PROJECT}.git"), str(clones / PROJECT)],
-        capture_output=True, text=True, check=False)
+    proc = clone_just_pushed(base / "remotes" / f"{PROJECT}.git",
+                             clones / PROJECT)
     assert proc.returncode == 0, proc.stderr
     return {"base": base, "clone": clones / PROJECT}
 
@@ -157,6 +156,16 @@ def project(scaffolded_here, tmp_path) -> Path:
     target = tmp_path / PROJECT
     shutil.copytree(scaffolded_here["clone"], target, symlinks=True)
     return target
+
+
+def test_the_session_clone_was_read_through_git_not_through_the_remotes(
+        scaffolded_here):
+    """#440: `scaffolded_here` cloned what it had just pushed through the
+    transport, so the root and both legs are ONE PACK each. A plain-path
+    clone leaves the remotes' loose objects loose, and is the one that lost a
+    file to background maintenance on the macOS runner, erroring every test
+    in this file at setup (124 of them, then 118)."""
+    assert_read_through_git(scaffolded_here["clone"])
 
 
 def doctor(standard: Path, root, *args) -> subprocess.CompletedProcess:
@@ -5574,6 +5583,33 @@ def verdict_of(standard: Path, root: Path) -> tuple[str, dict]:
     return json.loads(result.stdout)["verdict"], rows_of(result)
 
 
+def assert_the_merge_is_unfinished(verdict: str, rows: dict,
+                                   paths: list) -> None:
+    """#424's rung over #485's state: while the index holds the copy and
+    the shape pin unmerged, before the NEXT and after it, since `checkout
+    --ours` writes the tree and leaves the index as it was, the verdict is
+    `INVALID (merge)` and the `merge` row names both, with git's read-only
+    `status` as its NEXT. The `shape currency` and `manifest kinds` rows
+    still answer, and what they print is what the person finishing the
+    merge reads."""
+    assert verdict == "INVALID (merge)", (verdict, rows)
+    merge = rows["merge"]
+    assert merge["status"] == "FINDING", merge
+    assert merge["detail"]["unmerged"] == sorted(paths), merge["detail"]
+    assert merge["detail"]["merging"] is True, merge["detail"]
+    argv = pasted(merge["next"])
+    assert argv[:2] == ["git", "-C"] and argv[3:] == ["status"], merge
+
+
+def assert_the_merge_is_finished(verdict: str, rows: dict,
+                                 state: str) -> None:
+    """Once the copy merged by hand is committed, the merge's own row is
+    gone, and it is the copy, kept unlike the pin, that keeps the root
+    from COMPLIANT: `state` is what `update-shape.py check` calls it."""
+    assert "merge" not in rows, rows["merge"]
+    assert verdict == f"DRIFTED (1 {state})", (verdict, rows)
+
+
 def assert_the_pin_alone_is_taken(currency: dict, kinds: dict,
                                   copy: str) -> None:
     """The shape pin's NEXT names the pin alone, both rows print it, and
@@ -5612,6 +5648,11 @@ def test_a_copy_conflicted_with_the_shape_pin_is_left_to_a_person(
     COMPLIANT until a person has merged it and, where the merge differs
     from the pin, re-pinned it with the `--accept-local` the `shape
     currency` row names. HEAD then holds every line of both sides.
+
+    Until the merge is committed the verdict is #424's `INVALID (merge)`,
+    the index holding the copy and the pin unmerged before the NEXT and
+    after it. Once it is, the `merge` row is gone and the verdict is the
+    copy's drift, so COMPLIANT still waits on the copy, not on the merge.
     """
     moved, s1, s2 = standard_appended(standard, tmp_path, NAMING_COPY,
                                       SHAPE_TAIL)
@@ -5624,7 +5665,9 @@ def test_a_copy_conflicted_with_the_shape_pin_is_left_to_a_person(
                                     person, ours)
     for line in (PROJECT_LINE, PROJECT_TAIL, SHAPE_TAIL):
         assert line in held, line
-    kinds, currency = kinds_and_currency(moved, project)
+    verdict, rows = verdict_of(moved, project)
+    assert_the_merge_is_unfinished(verdict, rows, [NAMING_COPY, SHAPE_PIN])
+    kinds, currency = rows["manifest-kinds"], rows["shape-currency"]
     run_pasted(currency["next"])
     assert (project / NAMING_COPY).read_bytes() == held, \
         "the NEXT took one side of the copy whole"
@@ -5632,7 +5675,7 @@ def test_a_copy_conflicted_with_the_shape_pin_is_left_to_a_person(
     assert kinds["detail"]["restore"] == {NAMING_COPY: "unmerged",
                                           SHAPE_PIN: "unmerged"}, kinds
     verdict, rows = verdict_of(moved, project)
-    assert verdict != "COMPLIANT", rows
+    assert_the_merge_is_unfinished(verdict, rows, [NAMING_COPY, SHAPE_PIN])
     kinds = rows["manifest-kinds"]
     assert kinds["detail"]["restore"] == {NAMING_COPY: "unmerged"}, kinds
     assert pasted(kinds["next"])[3:] == ["diff", "--", NAMING_COPY], kinds
@@ -5642,7 +5685,8 @@ def test_a_copy_conflicted_with_the_shape_pin_is_left_to_a_person(
     git("add", "--", NAMING_COPY, SHAPE_PIN, cwd=project)
     commit_in(project, "the copy merged by hand")
     verdict, rows = verdict_of(moved, project)
-    assert verdict != "COMPLIANT", rows
+    assert_the_merge_is_finished(
+        verdict, rows, "locally-modified" if ours == "upgrade" else "both")
     if ours == "upgrade":
         currency = rows["shape-currency"]
         then = currency["next"].split("   #", 1)[1].split()
@@ -5669,7 +5713,9 @@ def test_a_makefile_conflicted_with_the_shape_pin_keeps_the_projects_target(
     HEAD's Makefile had lost the project's target and the doctor said
     COMPLIANT. Now the Makefile keeps both sides through the NEXT, the
     doctor is not COMPLIANT until a person has merged it and accepted the
-    merge, and HEAD's Makefile then holds both targets.
+    merge, and HEAD's Makefile then holds both targets. Until the merge is
+    committed the verdict is #424's `INVALID (merge)`, and after it the
+    Makefile's drift.
     """
     moved, s1, s2 = standard_appended(standard, tmp_path, UPSTREAM_TARGET,
                                       NEWER_TARGET)
@@ -5677,19 +5723,21 @@ def test_a_makefile_conflicted_with_the_shape_pin_keeps_the_projects_target(
         moved, s1, s2, project, "Makefile",
         lambda r: append_to(r / "Makefile", OWN_TARGET), "upgrade")
     assert b"ship:" in held and b"doctor:" in held, held[-400:]
-    kinds, currency = kinds_and_currency(moved, project)
+    verdict, rows = verdict_of(moved, project)
+    assert_the_merge_is_unfinished(verdict, rows, ["Makefile", SHAPE_PIN])
+    kinds, currency = rows["manifest-kinds"], rows["shape-currency"]
     run_pasted(currency["next"])
     assert (project / "Makefile").read_bytes() == held, \
         "the NEXT took one side of the Makefile whole"
     assert_the_pin_alone_is_taken(currency, kinds, "Makefile")
     assert kinds["detail"]["restore"] == {SHAPE_PIN: "unmerged"}, kinds
     verdict, rows = verdict_of(moved, project)
-    assert verdict != "COMPLIANT", rows
+    assert_the_merge_is_unfinished(verdict, rows, ["Makefile", SHAPE_PIN])
     merge_by_hand(project / "Makefile")
     git("add", "--", "Makefile", SHAPE_PIN, cwd=project)
     commit_in(project, "the Makefile merged by hand")
     verdict, rows = verdict_of(moved, project)
-    assert verdict != "COMPLIANT", rows
+    assert_the_merge_is_finished(verdict, rows, "locally-modified")
     then = rows["shape-currency"]["next"].split("   #", 1)[1].split()
     assert then[then.index("--accept-local") + 1] == "Makefile", then
     applied = run_script(moved / "update-shape.py", "apply", "--root",
@@ -7384,8 +7432,8 @@ def adopted_cursor(standard, tmp_path_factory) -> dict:
                       "--work-dir", str(base / "work"))
     assert done.returncode == 0, done.stdout + done.stderr
     clone = base / "clone"
-    git(*FILE_PROTOCOL, "clone", "-q", "--recurse-submodules", "-b",
-        "adopt/three-repo-shape", str(source), str(clone), cwd=base)
+    proc = clone_just_pushed(source, clone, branch="adopt/three-repo-shape")
+    assert proc.returncode == 0, proc.stderr
     return {"clone": clone,
             "commit": git("rev-parse", "main", cwd=source).stdout.strip()}
 
@@ -7396,6 +7444,18 @@ def cursor_clone(adopted_cursor, tmp_path) -> Path:
     target = tmp_path / "Northwind"
     shutil.copytree(adopted_cursor["clone"], target, symlinks=True)
     return target
+
+
+@needs_filter_repo
+def test_the_adopted_clone_was_read_through_git_not_through_the_remotes(
+        adopted_cursor):
+    """#440: `execute` pushed the split branch into the source and each leg
+    into a bare remote a moment before `adopted_cursor` cloned them, so
+    the objects are loose there; read through the transport (as the
+    scaffolded session fixtures are) the root and both legs are ONE PACK
+    each, and read as plain paths (git's local clone) they stay loose.
+    """
+    assert_read_through_git(adopted_cursor["clone"])
 
 
 def cursor_placement(standard, root: Path) -> tuple:

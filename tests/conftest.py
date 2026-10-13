@@ -27,11 +27,14 @@ from __future__ import annotations
 
 import os
 import re
+import select
 import shlex
 import shutil
+import signal
 import stat
 import subprocess
 import sys
+import time
 from argparse import Namespace
 from pathlib import Path
 
@@ -59,6 +62,47 @@ ORG = "testorg"
 #: using bare repositories on disk as origins, not something a real project
 #: ever needs.
 FILE_PROTOCOL = ["-c", "protocol.file.allow=always"]
+
+
+def clone_just_pushed(remote: Path, dest: Path,
+                      branch: str | None = None
+                      ) -> subprocess.CompletedProcess:
+    """`git clone --recurse-submodules` of a bare remote a scaffold has JUST
+    pushed into, READ THROUGH GIT AND NOT THROUGH ITS FILES (#440).
+
+    A clone of a plain path is git's local clone: it walks the source's
+    `objects/` and links or copies each file in turn. The push that ended the
+    scaffold can leave maintenance running in the remote, which packs the
+    loose objects and deletes them mid-walk, and the clone dies `failed to
+    copy file to '<dest>/.git/objects/..': No such file or directory` (the
+    macOS runner, twice in 90 minutes on 2026-10-12). Upload-pack reads the
+    object store, which a repack does not break.
+
+    `--no-local` does that for the root. The two leg clones
+    `--recurse-submodules` makes are git's own, from the plain path
+    `.gitmodules` records, so each leg URL is rewritten to `file://` with a
+    `url.<base>.insteadOf` for the one command: a `-c` is not stored, so the
+    clone's own `origin` and `submodule.<name>.url` keep the plain paths. The
+    prefix is the directory RESOLVED, as `scaffold-project.py` writes it into
+    `.gitmodules`, in both of a Windows path's spellings.
+
+    `branch` is `-b <branch>`: `adopt-project.py execute` pushes its split
+    branch into the SOURCE, a plain repository, which is then `remote`.
+    The two legs it pushed into `--local-remote-dir` are read by the
+    rewrite only while that directory sits under `remote`'s parent.
+    """
+    remotes = remote.parent.resolve()
+    uri = remotes.as_uri().rstrip("/") + "/"
+    prefixes = dict.fromkeys([os.path.join(str(remotes), ""),
+                              remotes.as_posix().rstrip("/") + "/"])
+    rewrites = [arg for prefix in prefixes
+                for arg in ("-c", f"url.{uri}.insteadOf={prefix}")]
+    return subprocess.run(
+        ["git", *FILE_PROTOCOL, *rewrites, "clone", "-q", "--no-local",
+         *(["-b", branch] if branch else []),
+         "--recurse-submodules", str(remote), str(dest)],
+        capture_output=True, text=True, check=False)
+
 
 #: THE DEFAULT IDENTITY `git()` GIVES GIT (#279). A commit needs an author and
 #: a committer, and git guesses them from the passwd entry and a hostname with
@@ -156,6 +200,45 @@ def git(*args: str, cwd: Path, check: bool = True) -> subprocess.CompletedProces
         raise AssertionError(f"git {' '.join(args)} in {cwd} failed:\n"
                              f"{proc.stderr}{proc.stdout}")
     return proc
+
+
+def object_store(repo: Path) -> tuple[int, int]:
+    """`(loose objects, packs)` of one repository, from `git count-objects -v`
+    run in it. A submodule's working tree answers for its own store under the
+    superproject's `.git/modules/`."""
+    fields = dict(
+        line.split(": ", 1)
+        for line in git("count-objects", "-v", cwd=repo).stdout.splitlines())
+    return int(fields["count"]), int(fields["packs"])
+
+
+def assert_store_read_through_git(repo: Path, name: str) -> None:
+    """`repo`'s object store holds a pack and no loose object (#440).
+
+    A clone that walked the source's object files (git's local clone, which
+    is what a plain path gets) leaves them as the source had them: LOOSE, for
+    a repository somebody has just pushed 8 or 25 objects into. A clone made
+    through the transport receives one pack. That difference is the one
+    observable of the two, and it is what the macOS race needs: a clone that
+    never lists the source's `objects/` cannot lose a file from the list.
+    """
+    loose, packs = object_store(repo)
+    assert loose == 0, (
+        f"{name} holds {loose} loose objects: the clone read the source's "
+        "object files one by one (git's local clone) instead of through the "
+        "transport")
+    assert packs >= 1, f"{name} holds no pack: nothing was received"
+
+
+def assert_read_through_git(clone: Path,
+                            legs: tuple[str, ...] = ("spec", "code")) -> None:
+    """The assembly root at `clone` and each of its legs were read through
+    git (`assert_store_read_through_git`), not through the source's files.
+    The one assertion behind every #440 test that clones a scaffold: the two
+    session fixtures, `setup.sh` and `setup-project.py`."""
+    assert_store_read_through_git(clone, f"the root of {clone}")
+    for leg in legs:
+        assert_store_read_through_git(clone / leg, f"the {leg} leg of {clone}")
 
 
 def is_pin_source_name(name: str) -> bool:
@@ -313,10 +396,7 @@ def scaffolded(tmp_path_factory) -> dict:
     )
     assert result.returncode == 0, result.stderr + result.stdout
     clones.mkdir()
-    proc = subprocess.run(
-        ["git", *FILE_PROTOCOL, "clone", "-q", "--recurse-submodules",
-         str(remotes / f"{PROJECT}.git"), str(clones / PROJECT)],
-        capture_output=True, text=True, check=False)
+    proc = clone_just_pushed(remotes / f"{PROJECT}.git", clones / PROJECT)
     assert proc.returncode == 0, proc.stderr
     return {
         "base": base, "remotes": remotes, "work": work,
@@ -730,6 +810,153 @@ def pytest_runtest_teardown(item, nextitem):
     if found:
         pytest.fail(found, pytrace=False)
     return result
+
+
+def assert_refuses_for_want_of_a_terminal(stderr: str) -> None:
+    """What a run with no terminal prints where it would have asked (#476),
+    held to ONE reading by every test that reaches it.
+
+    The refusal is read by an AI assistant whose shell has no terminal and
+    whom AGENTS.md forbids `--yes`, so it must open with the exit that keeps
+    the human in charge, and `--yes` may appear only as the person's own
+    answer. That exit is the same command in the person's own terminal,
+    which asks there even piped (#492); only Windows, with no controlling
+    terminal to ask on, still needs the downloaded file. It is
+    `setup-project.py`'s one wording: `setup.sh` and the `openRepoShape`
+    command pass it through, so their tests hold the same text rather than
+    each spelling it again.
+    """
+    assert "no terminal to confirm on" in stderr, stderr
+    assert not re.search(r"re-?run\s+with\s+--yes|if you mean it", stderr,
+                         re.IGNORECASE), (
+        f"the refusal invites a re-run with --yes, the flag an assistant "
+        f"may not pass: {stderr!r}")
+    assert ("this same command in a terminal of their own, and it asks them "
+            "there" in stderr), stderr
+    assert "on Windows, from the downloaded file" in stderr, stderr
+    [yes_sentence] = [sentence for sentence in re.split(r"(?<=\.)\s+", stderr)
+                      if "--yes" in sentence]
+    assert "never an assistant's" in yes_sentence, yes_sentence
+    assert stderr.index("terminal of their own") < stderr.index("--yes"), (
+        f"the exit that keeps the human in charge comes first: {stderr!r}")
+
+
+#: THE PERSON'S OWN TERMINAL, IN A TEST (#492). The one-liner reads its yes
+#: from the CONTROLLING terminal when its stdin is the pipe the script came
+#: down, so a test that says it asks has to give the run one: a
+#: pseudo-terminal, made the controlling terminal of a session of the run's
+#: own. `subprocess` hands a child file descriptors and nothing more, so
+#: `_CONTROLLING`, run first by this interpreter, claims the terminal on its
+#: stdin (`TIOCSCTTY`) and then becomes the command. POSIX only: Windows has
+#: no controlling terminal to give, and its way in is the downloaded file.
+PTY_SKIP = pytest.mark.skipif(
+    os.name == "nt",
+    reason="a controlling terminal is POSIX; on Windows the way in is the "
+           "downloaded setup-project.py, and there is no /dev/tty to ask on")
+
+_CONTROLLING = ("import fcntl, os, sys, termios; "
+                "fcntl.ioctl(0, termios.TIOCSCTTY, 0); "
+                "os.execvp(sys.argv[1], sys.argv[1:])")
+
+#: The same terminal, the command run in a BACKGROUND process group of it: a
+#: piped run, `cat setup.sh | timeout N bash -s -- ...`, typed in a shell
+#: (GNU `timeout` puts its command in a group of its own), or any runner that
+#: backgrounds a job sharing the terminal. `_CONTROLLING_IN_THE_BACKGROUND`
+#: stays the session's leader and its foreground group, and the command is a
+#: child in a group of its own, so a read of the terminal from it stops on
+#: SIGTTIN. A stopped command is killed and shows as a status of 128 + the
+#: signal, so a run that waits where it should have refused fails at once and
+#: leaves nothing stopped behind it.
+_CONTROLLING_IN_THE_BACKGROUND = """
+import fcntl, os, signal, sys, termios
+fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+child = os.fork()
+if child == 0:
+    os.setpgid(0, 0)
+    os.execvp(sys.argv[1], sys.argv[1:])
+status = os.waitpid(child, os.WUNTRACED)[1]
+if os.WIFSTOPPED(status):
+    os.killpg(child, signal.SIGKILL)
+    sys.exit(128 + os.WSTOPSIG(status))
+sys.exit(os.WEXITSTATUS(status) if os.WIFEXITED(status)
+         else 128 + os.WTERMSIG(status))
+"""
+
+
+def run_in_a_terminal(argv: list, *, cwd: Path, env: dict, answers=(),
+                      prompt="Type yes to continue:",
+                      timeout: float = 180, raw: bool = False,
+                      background: bool = False) -> tuple:
+    """`argv` run as a person runs it in their own terminal: a
+    pseudo-terminal is its controlling terminal and its stdin, stdout and
+    stderr, so a pipe inside `argv` (`cat setup.sh | bash -s -- ...`) is the
+    only thing that is not the terminal. Each of `answers` is typed once the
+    screen shows its prompt after the answer before it - `prompt` is one
+    prompt for every answer, or one per answer, in order - `"EOF"` as Ctrl-D,
+    and nothing is typed anywhere else.
+
+    Returns `(exit status, the screen, how many answers were typed)`, with
+    the terminal's `\\r\\n` read as `\\n`. A run still going after `timeout`
+    seconds is killed and FAILS the test with its screen: a run waiting on a
+    prompt nobody answers is the defect this exists to show. Reading stops
+    once the run has exited and its output is drained, so a detached child
+    still holding the terminal cannot keep the test waiting.
+
+    `raw` puts the terminal in RAW mode before the run starts, as an
+    assistant's full-screen interface leaves the pane it owns: nothing is
+    echoed and the Enter key sends a carriage return, so a read for the end
+    of a line never ends. `background` runs the command in a background
+    process group of the terminal, not its foreground one.
+    """
+    master, slave = os.openpty()
+    if raw:
+        import tty  # POSIX only, like the pty itself
+        tty.setraw(slave)
+    try:
+        proc = subprocess.Popen([sys.executable, "-c",
+                                 _CONTROLLING_IN_THE_BACKGROUND if background
+                                 else _CONTROLLING, *argv],
+                                cwd=str(cwd), env=env, stdin=slave,
+                                stdout=slave, stderr=slave,
+                                start_new_session=True)
+    finally:
+        os.close(slave)
+    prompts = ([prompt] * len(answers) if isinstance(prompt, str)
+               else list(prompt))
+    screen, typed, since = b"", 0, 0
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise AssertionError(
+                    f"still running after {timeout}s, waiting on its "
+                    "terminal:\n" + screen.decode("utf-8", "replace"))
+            if not select.select([master], [], [], min(left, 1.0))[0]:
+                if proc.poll() is not None:
+                    break
+                continue
+            try:
+                chunk = os.read(master, 4096)
+            except OSError:  # EIO: the last holder of the terminal is gone
+                break
+            if not chunk:
+                break
+            screen += chunk
+            if typed < len(answers) and \
+                    prompts[typed].encode("utf-8") in screen[since:]:
+                answer = answers[typed]
+                os.write(master, b"\x04" if answer == "EOF"
+                         else answer.encode("utf-8"))
+                typed, since = typed + 1, len(screen)
+        status = proc.wait(timeout=max(deadline - time.monotonic(), 1.0))
+    finally:
+        if proc.poll() is None:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait()
+        os.close(master)
+    return (status, screen.decode("utf-8", "replace").replace("\r\n", "\n"),
+            typed)
 
 
 def spelled(path) -> str:

@@ -422,7 +422,10 @@ def test_check_finds_and_execute_refuses_a_hand_edited_value(
     assert found.returncode == 1, said(found)
     assert finding in found.stderr, said(found)
     assert refused.returncode == 2, said(refused)
-    assert PLAN_REFUSED in refused.stderr, said(refused)
+    # A name-only `pins:` item is `plan-pin-unrecorded` first (#273).
+    headline = (b"REFUSED plan-pin-unrecorded: " if key == "pins"
+                else PLAN_REFUSED)
+    assert headline in refused.stderr, said(refused)
     assert b"\n  " + finding in refused.stderr, said(refused)
     assert b"no leg repository was created" in refused.stderr
 
