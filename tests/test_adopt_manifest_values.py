@@ -89,12 +89,30 @@ PLAN_REFUSED = [
                  id="elected-on-basic-format"),
 ]
 
+#: An `elected_on:` that `election_date` refuses (`2026-W41-6` and `20261011`
+#: since #261) is ONE finding, #294's `election-date-malformed`, in the plan
+#: key's own words: `_manifest_values` does not ask the validator about a
+#: manifest whose reference that date chooses. The rows below that edit
+#: `elected_on:` expect it, and not the validator's `plan-manifest-invalid`.
+BAD_DATE = "election-date-malformed"
+
+
+def said_of(new: str) -> tuple[str, str, str]:
+    """`(the FINDING, the REFUSED prefix, the remediation)` that `check` and
+    `execute` give the value a row's edited line `new` holds."""
+    if new.startswith("elected_on:"):
+        return (f"FINDING {BAD_DATE}", f"REFUSED {BAD_DATE}",
+                "edit `elected_on:` in the plan file")
+    return (FINDING, "REFUSED plan-manifest-",
+            "correct each one named here in the plan")
+
+
 #: `(old line, new line, what `check` names)`: the same values, edited into a
 #: plan by hand, which is what a plan is for.
 #: A text value the reader reads as a number (`elected_on: "20261011"`) is
 #: not here but in `TEXT_THE_READER_MISREADS` below: where a misread rule is
 #: also in the list (#181) it is that rule's finding, and these rows name the
-#: validator's.
+#: validator's, or `said_of`'s for the date.
 PLAN_EDITS = [
     pytest.param("visibility: private", "visibility: secret",
                  ("visibility is 'secret'", "manifest-visibility"),
@@ -112,7 +130,8 @@ PLAN_EDITS = [
                  'reference: " "', ("reference is ' '", "manifest-reference"),
                  id="reference-blank"),
     pytest.param('elected_on: "2026-09-02"', 'elected_on: "2026-W41-6"',
-                 ("elected_on is '2026-W41-6'", "manifest-elected-on"),
+                 ("the plan's `elected_on:` is the text '2026-W41-6'",
+                  "not a day written YYYY-MM-DD"),
                  id="elected-on-iso-week"),
     pytest.param("org: testorg", "org: test+org",
                  ("org is 'test+org'", "manifest-leg-repository"),
@@ -250,15 +269,16 @@ def test_a_plan_with_no_such_edit_still_passes_check(world):
 
 @pytest.mark.parametrize("old, new, named", PLAN_EDITS)
 def test_check_finds_a_value_the_validator_refuses(world, old, new, named):
+    finding, _, remediation = said_of(new)
     plan = edited(world, old, new)
     result = run_script(ADOPT, "check", "--plan", str(plan))
     assert result.returncode == 1, result.stderr + result.stdout
     findings = [line for line in result.stderr.splitlines()
                 if line.startswith("FINDING ")]
-    assert [f for f in findings if f.startswith(FINDING)], result.stderr
+    assert [f for f in findings if f.startswith(finding)], result.stderr
     for fragment in named:
         assert fragment in result.stderr, result.stderr
-    assert "correct each one named here in the plan" in result.stderr
+    assert remediation in result.stderr
 
 
 @needs_filter_repo
@@ -266,6 +286,7 @@ def test_check_finds_a_value_the_validator_refuses(world, old, new, named):
 def test_execute_refuses_it_before_any_leg_exists(world, old, new, named):
     """Each row ended `adoption verified` on main, with both legs pushed and a
     first bootstrap that failed."""
+    finding, refused, _ = said_of(new)
     plan = edited(world, old, new)
     result = execute(world, plan)
     assert result.returncode == 2, result.stderr + result.stdout
@@ -273,8 +294,8 @@ def test_execute_refuses_it_before_any_leg_exists(world, old, new, named):
     # value another rule also judges (a number-looking `elected_on` is a
     # misread on #181) may be listed before this one, so what is asked is
     # that this finding is in it.
-    assert "REFUSED plan-manifest-" in result.stderr
-    assert f"{FINDING}: " in result.stderr
+    assert refused in result.stderr
+    assert f"{finding}: " in result.stderr
     for fragment in named:
         assert fragment in result.stderr, result.stderr
     assert "adoption verified" not in result.stdout
@@ -507,7 +528,7 @@ def test_check_finds_it_from_a_tree_with_no_git_as_in_a_checkout(
                              "--plan", str(plan))
     assert without_git.returncode == 1, (without_git.stderr
                                          + without_git.stdout)
-    assert FINDING in without_git.stderr, without_git.stderr
+    assert said_of(new)[0] in without_git.stderr, without_git.stderr
     for fragment in named:
         assert fragment in without_git.stderr, without_git.stderr
     in_checkout = run_script(ADOPT, "check", "--plan", str(plan))
@@ -665,6 +686,8 @@ def test_a_value_the_reader_reads_as_another_kind_is_named_as_read(
 #: which the template writes bare and the project's reader reads as a number
 #: or a boolean. The validator refuses each; where a misread rule is also in
 #: the list (#181) it refuses the same value, and the sentence should be one.
+#: `20261011` is also a date `election_date` refuses, so its one sentence is
+#: #294's (`said_of`), and the validator is not asked about it.
 TEXT_THE_READER_MISREADS = [
     pytest.param("id: northwind", 'id: "007"', "manifest-id: id is 7",
                  id="id-007"),
@@ -672,7 +695,7 @@ TEXT_THE_READER_MISREADS = [
                  "manifest-visibility: visibility is True",
                  id="visibility-true"),
     pytest.param('elected_on: "2026-09-02"', 'elected_on: "20261011"',
-                 "manifest-elected-on: elected_on is 20261011",
+                 "the plan's `elected_on:` is the text '20261011'",
                  id="elected-on-basic-format"),
 ]
 
@@ -700,7 +723,7 @@ def test_execute_refuses_a_text_value_the_reader_misreads_before_any_leg(
     plan = edited(world, old, new)
     result = execute(world, plan)
     assert result.returncode == 2, result.stderr + result.stdout
-    assert "REFUSED plan-manifest-" in result.stderr
+    assert said_of(new)[1] in result.stderr
     assert new.split(": ", 1)[1].strip('"') in result.stderr
     assert "adoption verified" not in result.stdout
     assert "Traceback" not in result.stderr
@@ -712,11 +735,17 @@ def test_a_text_value_the_reader_misreads_is_one_finding_on_this_rule_alone(
         adopter, world, old, new, named):
     """With nothing else asking the misread question the validator's finding
     is the only one, so `check` and `execute` still refuse the value: it must
-    not be dropped for want of a rule that is not here."""
+    not be dropped for want of a rule that is not here. A date `election_date`
+    refuses is the one finding of #294's rule, which the list always holds,
+    and the validator is not asked about it as well."""
     plan = adopter.Plan.load(edited(world, old, new))
     findings, remediation = adopter._manifest_findings(plan)
+    finding = said_of(new)[0]
+    if finding != FINDING:
+        assert (findings, remediation) == ([], [])
+        findings, remediation = adopter._plan_field_findings(plan)
     assert len(findings) == 1, findings
-    assert findings[0].startswith(FINDING)
+    assert findings[0].startswith(finding)
     assert named in findings[0]
     assert remediation
 

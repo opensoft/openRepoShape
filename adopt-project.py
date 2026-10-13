@@ -47,7 +47,10 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            the source's own submodules kept on one leg with their
            `.gitmodules`, registered there and never in the root, each
            relative url naming the same repository from the leg as from the
-           source. It prints what will happen and changes nothing.
+           source, and the split branch one `execute` can make: none of its
+           name where the split is pushed that the push cannot fast-forward,
+           and none git cannot hold beside it there or in the source. It
+           prints what will happen and changes nothing.
   execute  creates the two legs, extracts them with `git filter-repo`, makes
            the one split commit on a branch of the source, sets the
            `xf-project-<id>` topic on all three (skipped for local remotes),
@@ -2395,7 +2398,9 @@ def _manifest_values(plan: Plan, naming: NamingPolicy) -> dict | None:
     would build it from this plan, FOR VALIDATION AND NEVER FOR WRITING; None
     where the plan's names are not ones the naming policy classifies, which
     `check` and `execute` report in their own words (`_check_names`) and the
-    manifest cannot be rendered without.
+    manifest cannot be rendered without, and None where its `elected_on:` is
+    a date `election_date` refuses, which `_elected_on_findings` reports in
+    the plan key's own words (#294).
 
     `_template_table` is asked, not copied, and `execute`'s `_template_values`
     is that same table with the real commit and digest, so the table cannot
@@ -2405,7 +2410,8 @@ def _manifest_values(plan: Plan, naming: NamingPolicy) -> dict | None:
     `git` runs here and a checkout that cannot name its revision is asked the
     same question as any other. A refusal of the plan's own names, id,
     organisation or leg paths is raised here as it is by `check` and `execute`
-    a few lines later.
+    a few lines later. The organisation and the id are asked BEFORE the date
+    is: a bad date does not change which problem either command names first.
     """
     if not isinstance(plan.legs, dict):
         # The doctor's PLACEMENT plan writes `legs:` as a list (see
@@ -2418,7 +2424,21 @@ def _manifest_values(plan: Plan, naming: NamingPolicy) -> dict | None:
         _check_names(naming, names, pins)
     except Refusal:
         return None
+    # The organisation and the id are asked BEFORE the date's guard below.
+    # `checked_value` refuses an `org:` this tool will not put on a command
+    # line (`unsafe-value`; `execute` meets it first, in `_repository_urls`),
+    # and `Plan.project_id` refuses an `id:` that is not a project id
+    # (`plan-bad-id`; `_template_table` reads it again). After the guard,
+    # neither was asked of a plan whose date is a finding: `check` listed the
+    # date where `execute` refused the organisation, and refused the id where
+    # `execute` refused the date.
     org = checked_value("org", plan.get("org"))
+    _ = plan.project_id
+    if _elected_on_findings(plan):
+        # Reported in the plan key's own words (#294), and the reference the
+        # manifest records is chosen BY that date when the plan names none:
+        # there is no manifest to ask about until it is one.
+        return None
     repositories = {role: f"{org}/{name}" for role, name in names.items()}
     (_, spec_path), (_, code_path) = _plan_leg_paths(plan)
     return _template_table(
@@ -2430,8 +2450,8 @@ def _manifest_values(plan: Plan, naming: NamingPolicy) -> dict | None:
 def _manifest_findings(plan: Plan) -> tuple[list[str], list[str]]:
     """What the project's own validator would refuse of this plan's values,
     as `check` prints them (one FINDING each), and what it prints once after
-    them. `[]` and `[]` when it would pass, or when the plan's names are
-    refused in their own words (`_manifest_values`).
+    them. `[]` and `[]` when it would pass, or when the plan's names, or its
+    date, are refused in their own words (`_manifest_values`).
 
     EVERY VALUE IS ASKED, ONE THE PLAN'S READER READ AS NOT TEXT INCLUDED,
     and one #181's misread rule would also call misread: a value this rule
@@ -3966,6 +3986,163 @@ def _refused_by_policy(path: str) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Plan values `execute` read late, asked by `check` before any leg exists
+# ---------------------------------------------------------------------------
+#
+# Each value below was read by `execute` after `check` had said `plan ok`, and
+# nothing in between asked what it held. `check` now asks, and `execute`
+# refuses what it finds through `_refuse_what_check_finds`, before any leg
+# exists.
+#
+# `follow_ups:` (#293). `plan` writes it as a block list, and every reader
+# iterated the value with no test that it was one. A hand-edited
+# `follow_ups: 5` (or `true`, `1.5`, `false`) ended `check` in
+# `TypeError: 'int' object is not iterable`, a traceback with no FINDING
+# naming the key, and on main ended `execute` the same way in
+# `_commit_the_split`, after both legs were pushed; `abc` was written into the
+# split commit's message as three follow-ups, `a`, `b` and `c`, and an item
+# `- true` as `True`.
+#
+# `elected_on:` (#294). Nothing asked whether it was a date but
+# `_template_values`, and only for a plan with no `reference:`:
+# `default_reference` asked `election_date` after `_create_leg_remotes` had
+# made both legs, and the refusal named `--elected-on`, a flag neither `check`
+# nor `execute` takes. With `reference:` kept the date was never asked, and
+# `execute` wrote `someday` into the manifest. THE DATE IS ASKED OF
+# `election_date`, the rule `plan` asks of `--elected-on` and
+# `_template_values` of the plan's date, and of nothing else: what that rule
+# admits is #261's to decide, and a tighter rule there is asked here with no
+# edit. Only the words are this caller's, because the date came from the plan
+# file and not from a flag: the refusal `election_date` raises names
+# `--elected-on`, which is right for `plan` and wrong here.
+
+#: `check`'s finding for a `follow_ups:` that is not a list of text, and the
+#: code `execute` refuses it under (#293).
+BAD_FOLLOW_UPS = "plan-bad-follow-ups"
+
+#: Said once after the `follow_ups:` findings.
+FOLLOW_UPS_REMEDIATION = (
+    "Remediation: write `follow_ups:` in the plan file as `plan` writes it, "
+    "a list with one item of text per follow-up, each on its own line as "
+    "`  - \"<what is left to do>\"`, or `follow_ups: []` for none. `execute` "
+    "writes each item as one line of the split commit's message, so it takes "
+    "nothing else: a number or a boolean is not a list, text on the key's own "
+    "line would be written one character per follow-up, and an item that is "
+    "not text would be written as Python spells it (`True`, `None`).")
+
+
+def _read_as(value) -> str:
+    """What the plan's reader handed back for a value, in words, spelled as a
+    YAML plan spells it where that differs from Python (`true`, `null`)."""
+    if isinstance(value, bool):
+        return f"the boolean {str(value).lower()}"
+    if isinstance(value, (int, float)):
+        return f"the number {value!r}"
+    if isinstance(value, str):
+        return f"the text {value!r}"
+    if value is None:
+        return "null"
+    if isinstance(value, dict):
+        return f"a mapping of {len(value)} key(s)"
+    if isinstance(value, list):
+        return f"a list of {len(value)} item(s)"
+    return f"a value of type {type(value).__name__}"
+
+
+def _plan_follow_ups(plan: Plan) -> list[str]:
+    """The plan's follow-ups as `execute` writes them into the split commit's
+    message: each item of a `follow_ups:` LIST that is text, and nothing for a
+    `follow_ups:` that is absent, bare or anything but a list.
+
+    THE ONE READ, for the three readers (`_plan_values`,
+    `_print_what_will_happen`, `_commit_the_split`), so that none of them
+    iterates a number or spells a string out one character at a time. What it
+    leaves out is never silently dropped from a run: `_follow_ups_findings`
+    reports it in `check`, and `execute` has refused it through
+    `_refuse_what_check_finds` before the split commit is written.
+    """
+    value = plan.get("follow_ups", [])
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
+def _follow_ups_findings(plan: Plan) -> list[str]:
+    """A FINDING for a `follow_ups:` that is present and not a list, or for
+    each item of one that is not text; `[]` for a list of text, an empty
+    list and a bare key (#293)."""
+    value = plan.get("follow_ups")
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        return [f"FINDING {BAD_FOLLOW_UPS}: `follow_ups:` is "
+                f"{_read_as(value)}, not a list: `execute` writes each item "
+                "of a list into the split commit's message as one follow-up"]
+    return [f"FINDING {BAD_FOLLOW_UPS}: item {number} of `follow_ups:` is "
+            f"{_read_as(item)}, not text: `execute` writes each item into the "
+            "split commit's message as one line of text"
+            for number, item in enumerate(value, 1)
+            if not isinstance(item, str)]
+
+
+#: `check`'s finding for an `elected_on:` that `election_date` does not read,
+#: and the code `execute` refuses it under: the code `plan` refuses a bad
+#: `--elected-on` under, said here of the plan's key (#294).
+ELECTION_DATE_MALFORMED = "election-date-malformed"
+
+#: Said once after the `elected_on:` finding. It names the plan file's key and
+#: no flag: `check` and `execute` take none for the date.
+ELECTED_ON_REMEDIATION = (
+    "Remediation: edit `elected_on:` in the plan file to the day the shape "
+    "was elected, written as a zero-padded ISO date in quotes, e.g. "
+    "`elected_on: \"2026-09-02\"`: not 2026-9-2, and not a word like "
+    "'yesterday'. `execute` writes it into the project's `project.yaml`, and "
+    "a plan with no `reference:` has its reference chosen BY that date, so "
+    "it is read before anything is created.")
+
+
+def _elected_on_findings(plan: Plan) -> list[str]:
+    """A FINDING for an `elected_on:` that `election_date` does not read,
+    whether or not the plan has a `reference:` (#294); `[]` for a date it
+    reads and for no `elected_on:` at all, which `execute` fills with today's.
+
+    The value asked is the one `_template_values` takes, `str` of what the
+    plan holds, so the two cannot answer differently. `election_date`'s own
+    refusal is not passed on, because its words are `plan`'s: they name
+    `--elected-on`, which neither `check` nor `execute` takes. Only THAT
+    refusal is a finding about the date: any other `election_date` raises
+    is about something else (a rule it could not ask), and is raised as it
+    is.
+    """
+    elected_on = plan.get("elected_on")
+    if elected_on is None:
+        return []
+    try:
+        election_date(str(elected_on))
+    except Refusal as refused:
+        if refused.code != ELECTION_DATE_MALFORMED:
+            raise
+        chosen = ("" if plan.get("reference") else
+                  ", and, the plan naming no `reference:`, chooses the "
+                  "reference by it")
+        return [f"FINDING {ELECTION_DATE_MALFORMED}: the plan's `elected_on:` "
+                f"is {_read_as(elected_on)}, which is not a day written "
+                "YYYY-MM-DD, the form `execute` writes into the project's "
+                f"`project.yaml`{chosen}"]
+    return []
+
+
+def _plan_field_findings(plan: Plan) -> tuple[list[str], list[str]]:
+    """`_elected_on_findings` and `_follow_ups_findings`, in the order `plan`
+    writes the two keys (`elected_on:` before `follow_ups:`), and what `check`
+    prints once after them."""
+    dated, followed = _elected_on_findings(plan), _follow_ups_findings(plan)
+    return (dated + followed,
+            ([ELECTED_ON_REMEDIATION] if dated else [])
+            + ([FOLLOW_UPS_REMEDIATION] if followed else []))
+
+
 #: What a plan whose entry `entry_path_problem` refuses is told to do. Said by
 #: `check`, once after its findings, and by `execute`'s refusal.
 UNSAFE_PATH_REMEDIATION = (
@@ -4129,9 +4306,10 @@ def _entry_findings(plan: Plan, source: Source,
     read back as something else (#181), then the source's own submodules,
     then each value `execute` writes into a file that no file can hold
     (#255), then what the project's own `validate-manifest.py` would refuse
-    of the values `execute` writes into its manifest (#261), and last each
+    of the values `execute` writes into its manifest (#261), then each
     relative url of a kept submodule that names another repository from its
-    leg (#190).
+    leg (#190), and last each plan value `execute` reads late and
+    `_plan_field_findings` asks about (#293, #294).
 
     ONE LIST, read by `check` and by `execute`'s `_refuse_what_check_finds`.
     #168 and #166 each added findings to `check` and a refusal to `execute`
@@ -4167,7 +4345,10 @@ def _entry_findings(plan: Plan, source: Source,
     validator says is said of the manifest the value would be written into,
     which is the value's consequence; the byte, the break or the control is
     what the person retypes. Both are listed, and both refuse before any leg
-    exists. The relative urls of #190 still come after both, last.
+    exists. The relative urls of #190 still come after both, and last the
+    plan values `execute` reads late (#293, #294): an `elected_on:` that
+    `election_date` refuses is said there in the plan key's own words, and
+    `_manifest_values` does not ask the validator about it as well.
 
     A VALUE THE VALIDATOR REFUSES IS THE VALIDATOR'S ALONE (rv181f's G1,
     G2). The validator is asked about every value (`_manifest_findings`),
@@ -4180,6 +4361,10 @@ def _entry_findings(plan: Plan, source: Source,
     every value to it. So the two never both name one value, and every
     value #181 names is one `execute` writes as it stands, with the run
     still ending `adoption verified`, as its remediation says.
+    Where `_manifest_values` asks the validator about no manifest at all,
+    as for an `elected_on:` `election_date` refuses, #181 names no value
+    either (`_validator_judged`): the date is one finding, `_plan_field_findings`'s
+    (#293, #294).
     """
     tree = source.tree()
     unsafe, unsafe_remediation = _source_path_findings(plan, tree)
@@ -4192,15 +4377,365 @@ def _entry_findings(plan: Plan, source: Source,
         _submodule_findings(plan, source, tree, local_remote_dir)
     unwritable_findings, unwritable_remediation = _value_findings(plan)
     value_findings, value_remediation = _manifest_findings(plan)
+    field_findings, field_remediation = _plan_field_findings(plan)
     # Asked after the validator, whose judgement it follows; listed where
     # it always was, after the mount paths.
     misread = _misread_findings(plan)
     return (findings + misread + split + unwritable_findings + value_findings
-            + moved,
+            + moved + field_findings,
             unsafe_remediation
             + ([MANIFEST_MISREAD_REMEDIATION] if misread else [])
             + split_remediation + unwritable_remediation + value_remediation
-            + moved_remediation, notes)
+            + moved_remediation + field_remediation, notes)
+
+
+# ---------------------------------------------------------------------------
+# The split branch is a NEW branch where the split is pushed (#320)
+# ---------------------------------------------------------------------------
+#
+# `_commit_the_split` pushes the one split commit to `refs/heads/<adopt_branch>`
+# of the repository the split goes to: the source itself under
+# `--local-remote-dir` (`_remote_urls`), and otherwise the assembly
+# repository on GitHub, which an in-place adoption keeps as the source. And
+# `_extract_leg` clones the source, checks that branch out in the clone and
+# runs `git filter-repo`, which makes each of the clone's
+# `refs/remotes/origin/*` a branch. Two kinds of branch stop it, and `check`
+# passed both as `plan ok`:
+#
+# - THE SPLIT BRANCH ITSELF, where the split is pushed, at a commit the push
+#   cannot fast-forward: what an earlier run leaves there, verified or
+#   failed after its push. `execute` refuses it as `adopt-branch-exists`
+#   before any leg exists (`_refuse_a_split_branch_left_behind`, #188 N1).
+#   One at the source commit or behind it is pushed over, and verifies.
+# - A BRANCH IN GIT'S WAY OF IT, whose name is a directory of the split
+#   branch's, or lies under it: git cannot hold the two side by side. In the
+#   source it stops the extraction of either run, at `git filter-repo`;
+#   where the split is pushed, it stops that push. Nothing refused it.
+#   Measured on main at ec4a7a0 with git 2.43 and `git filter-repo` 2.47.0:
+#   a source branch `adopt` or `adopt/three-repo-shape/old` made both legs,
+#   two bare repositories or two `gh repo create`s, and the run exited 2 at
+#   the filter; a plan seeding both legs from a source holding `adopt`, and a
+#   GitHub assembly repository holding `adopt`, made both legs and exited 2
+#   at the push of the split.
+#
+# So `check` reports both, and `execute` refuses the second, before any leg
+# exists, as `plan-split-branch-taken`.
+#
+# ONE CODE FOR ONE SITUATION. `check`'s finding for the split branch itself
+# is `adopt-branch-exists`: the code `execute` refuses that branch under, and
+# the one `_left_by_the_split` tells a run that pushed its split the re-run
+# will meet. It is asked by that refusal's own rule (`_in_the_history_of`),
+# so a branch the push fast-forwards is no finding, and the two commands
+# cannot disagree about it, as #168 has them agree about every other finding.
+# A branch in the way is `plan-split-branch-taken` in both.
+#
+# WHERE `check` ASKS. It does not know whether `--local-remote-dir` will be
+# passed, so it asks the two places it can see without the network, and each
+# finding says which run it is about: the source's own branches, and, where
+# the source's `origin` is the assembly repository, what that remote held
+# when the source last fetched it -- for an `org/repo` source, which
+# `Source.open` clones, when it was cloned. A source branch in the way is
+# about both runs, said as the extraction's failure, unless the plan seeds
+# both legs and extracts nothing. The split branch's own name in the source
+# is about the run that pushes there alone: the extraction's `checkout -B`
+# shadows it in its clone.
+#
+# WHERE `execute` ASKS (`_refuse_a_branch_in_the_split_branchs_way`). Right
+# after `_refuse_a_split_branch_left_behind`, before `_confirm`: every
+# refusal of what an earlier run left keeps its place and its words, the
+# work directory first and then the split branch itself, and a leg
+# repository still there under `--local-remote-dir`, which
+# `_create_leg_remotes` refuses as `leg-remote-exists`, keeps its precedence
+# over this refusal as over that one. It lists the repository it pushes to
+# with `git ls-remote --heads`, as the push will meet it, and, without
+# `--local-remote-dir`, the source's own branches for the extraction,
+# reading no network for them.
+#
+# THE HISTORY SCAN IS NOT CHANGED (#226). `_exported_gitlink` reads
+# `--branches`, so a split branch the source keeps is in it, and
+# `_extract_leg`'s `git checkout -B` shadows that branch in the extraction's
+# clone: the scan can name a commit of it which the extraction never
+# exports. `check` names the branch first, before the entries' findings, and
+# its remediation says that such a finding stands until the branch is
+# deleted. `execute` refuses the scan's finding, in
+# `_refuse_what_check_finds`, before `_refuse_a_split_branch_left_behind`
+# asks for the branch. With the branch deleted neither holds it, and under
+# another `adopt_branch:` `git filter-repo` exports it, and fails on the tip
+# `.gitmodules` the scan's finding names (measured with git 2.43 and `git
+# filter-repo` 2.47.0).
+
+#: `check`'s finding, and the code of `execute`'s refusal, for a branch in
+#: git's way of the split branch where the split is pushed or extracted.
+SPLIT_BRANCH_TAKEN = "plan-split-branch-taken"
+#: `check`'s finding for the split branch itself where the split is pushed,
+#: at a commit the push cannot fast-forward: the code
+#: `_refuse_a_split_branch_left_behind` refuses that branch under.
+SPLIT_BRANCH_EXISTS = "adopt-branch-exists"
+#: How a finding names the run that pushes to each place `check` asks.
+LOCAL_RUN = "`execute --local-remote-dir`"
+GITHUB_RUN = "`execute` without `--local-remote-dir`"
+#: How a finding names the runs that extract a leg from the source: both.
+EITHER_RUN = "`execute`, with `--local-remote-dir` or without it,"
+
+#: What `check` says once after its findings when one of them is about the
+#: split branch.
+SPLIT_BRANCH_REMEDIATION = (
+    "Remediation: `execute` pushes its one split commit to the plan's "
+    "`adopt_branch:` in the repository the split goes to: the source itself "
+    "under `--local-remote-dir`, and otherwise the assembly repository on "
+    "GitHub. It moves a branch already there only as a fast-forward, and it "
+    "extracts each leg from a clone of the source with that branch checked "
+    "out, so a branch git cannot hold beside it, there or in the source, "
+    "stops either run. A run leaves its split branch where it pushed it, "
+    "verified or not, so an earlier run's split is what "
+    "`adopt-branch-exists` names most often: if that run verified and its "
+    "pull request is the adoption you want, review that instead. Otherwise "
+    "delete each branch a finding names, where it names it, once neither it "
+    "nor a pull request from it is wanted, or set `adopt_branch:` to a name "
+    "git can create there, and run `check` again. A branch named as the "
+    "source's `origin` last fetched it leaves `check`'s findings once `git "
+    "fetch --prune origin` in the source finds it gone there. A branch the "
+    "source itself holds is also in the history `check` reads for the "
+    "source's submodules, and `git filter-repo` exports it once the plan "
+    "names another branch, so a finding that names one of its commits "
+    "stands until that branch is deleted.")
+
+#: `execute`'s remediation for `plan-split-branch-taken`.
+SPLIT_BRANCH_TAKEN_REMEDIATION = (
+    "Remediation: no leg repository was created and nothing was pushed. Git "
+    "holds no branch whose name is a directory of another's, or lies under "
+    "it, so the plan's split branch cannot be made beside a branch named "
+    "above, where it is named. Delete that branch there, once neither it "
+    "nor a pull request from it is wanted, or set `adopt_branch:` in the "
+    "plan to a name git can create there, then run `check` and `execute` "
+    "again.")
+
+
+def _listed_branches(raw: bytes, prefix: str) -> dict[str, str]:
+    """`{branch: commit}` from `<oid> TAB <ref>` lines, as `git ls-remote`
+    and `git for-each-ref` print them, for each ref under `prefix`. A name
+    that is not UTF-8 keeps each byte as a surrogate, as `Source.tree`
+    keeps a path's (`_git_path`)."""
+    out: dict[str, str] = {}
+    for line in raw.splitlines():
+        oid, _, ref = line.partition(b"\t")
+        name = _git_path(ref)
+        if name.startswith(prefix) and name != prefix + "HEAD":
+            out[name[len(prefix):]] = oid.decode().strip().lower()
+    return out
+
+
+def _branches_at(url: str, cwd: Path) -> dict[str, str]:
+    """Every branch of the repository at `url`, as a push to it meets them:
+    `git ls-remote --heads`. One that cannot be listed fails as `run` fails
+    a command, `CommandFailed`, and in `execute` before any leg exists:
+    `_refuse_a_split_branch_left_behind` has just listed the same
+    repository, and a failure there is the same."""
+    args = ["git", *FILE_PROTOCOL, "ls-remote", "--heads", "--", url]
+    listed = subprocess.run(args, cwd=cwd, capture_output=True, check=False)
+    if listed.returncode:
+        raise CommandFailed(args, cwd, listed.returncode,
+                            listed.stderr.decode("utf-8", "replace"))
+    return _listed_branches(listed.stdout, "refs/heads/")
+
+
+def _in_the_way(branches: dict[str, str], branch: str) -> list[tuple]:
+    """`(name, commit)` of each of `branches` that stops `refs/heads/<branch>`
+    being created as a new branch: `branch` itself, first, then each whose
+    name is a directory of it or lies under it, which git cannot hold beside
+    it."""
+    return sorted(((name, commit) for name, commit in branches.items()
+                   if name == branch or name.startswith(branch + "/")
+                   or branch.startswith(name + "/")),
+                  key=lambda found: (found[0] != branch, found[0]))
+
+
+def _left_behind(where: str, run: str, branch: str, commit: str,
+                 source_commit: str) -> str:
+    """One `adopt-branch-exists` finding: `where` already has the split
+    branch `branch`, at `commit`, which is neither `source_commit` nor a
+    commit behind it, and `run` pushes the split there. Said as
+    `_refuse_a_split_branch_left_behind` says it."""
+    split = _spelled(branch)
+    return (f"{where} already has {split}, the branch {run} pushes its "
+            f"split commit to, at {commit[:12]}: neither the source commit "
+            f"{source_commit[:12]} nor a commit behind it. The split commit "
+            "is made on top of the source commit, and git moves a branch to "
+            "it without force only from that commit or one behind it, so "
+            "`execute` refuses that run before it creates a leg, as "
+            f"`{SPLIT_BRANCH_EXISTS}`. Delete {split} there, or set "
+            "`adopt_branch:` in the plan to a name no branch has there.")
+
+
+def _taken(where: str, run: str, branch: str, name: str,
+           commit: str) -> str:
+    """One `plan-split-branch-taken` finding about the push: `where` holds
+    the branch `name`, at `commit`, which git cannot hold beside the split
+    branch `branch`, and `run` pushes the split there."""
+    split, held = _spelled(branch), _spelled(name)
+    # git's own words, each name spelled as `_spelled` spells it, so a
+    # backtick a branch name may hold cannot end the quotation.
+    return (f"{where} holds the branch {held}, at {commit[:12]}. {run} "
+            f"pushes its split commit to {split} there, after both leg "
+            "repositories were created and pushed, and git cannot create "
+            f"{split} beside {held}: `'refs/heads/{held[1:-1]}' exists; "
+            f"cannot create 'refs/heads/{split[1:-1]}'`. Delete {held} "
+            "there, or set `adopt_branch:` in the plan to a branch git can "
+            "create there.")
+
+
+def _in_the_extraction(where: str, branch: str, name: str,
+                       commit: str) -> str:
+    """One `plan-split-branch-taken` finding: the source, `where`, holds the
+    branch `name` at `commit`, which git cannot hold beside the split branch
+    `branch`, and `_extract_leg`'s `git filter-repo` makes each branch of
+    the source a branch of a clone where `branch` is checked out. Either
+    run extracts, so the finding is about both."""
+    split, held = _spelled(branch), _spelled(name)
+    return (f"{where} holds the branch {held}, at {commit[:12]}. "
+            f"{EITHER_RUN} extracts a leg from a clone of the source with "
+            f"the plan's split branch {split} checked out in it, after both "
+            "leg repositories were created, and `git filter-repo` cannot "
+            f"create {held} beside {split} there: git holds no branch whose "
+            "name is a directory of another's, or lies under it. Delete "
+            f"{held} there, or set `adopt_branch:` in the plan to a branch "
+            "git can create there.")
+
+
+def _split_branch_findings(branch: str | None, places: list,
+                           source: Source | None = None) -> list[str]:
+    """One FINDING per branch that stops the split branch `branch` in each
+    of `places`, `(where, pushed_by, extracted, branches)`.
+
+    `pushed_by` is the run that pushes the split there, or None, and
+    `extracted` is whether `_extract_leg` clones it: the source, when a leg
+    is extracted. A branch in git's way is `plan-split-branch-taken`: about
+    the extraction, for either run, where it is extracted
+    (`_in_the_extraction`), and otherwise about the push (`_taken`).
+
+    The split branch's own name is asked only where the split is pushed,
+    because the extraction's `checkout -B` shadows it, and only by `check`,
+    which hands its `source` in: `adopt-branch-exists`, by
+    `_refuse_a_split_branch_left_behind`'s rule, so a branch the push
+    fast-forwards is none. `execute` leaves that branch to that function.
+    `branch` None is a split branch `execute` refuses as `unsafe-value`,
+    and nothing is asked about it here."""
+    found = []
+    for where, pushed_by, extracted, branches in (places if branch else []):
+        for name, commit in _in_the_way(branches, branch):
+            if name != branch and extracted:
+                found.append(f"FINDING {SPLIT_BRANCH_TAKEN}: "
+                             + _in_the_extraction(where, branch, name,
+                                                  commit))
+            elif name != branch and pushed_by:
+                found.append(f"FINDING {SPLIT_BRANCH_TAKEN}: "
+                             + _taken(where, pushed_by, branch, name, commit))
+            elif (name == branch and pushed_by and source is not None
+                  and not _in_the_history_of(source, commit)):
+                found.append(f"FINDING {SPLIT_BRANCH_EXISTS}: "
+                             + _left_behind(where, pushed_by, branch, commit,
+                                            source.commit))
+    return found
+
+
+def _extracts_a_leg(assigned: dict) -> bool:
+    """Whether `_build_the_legs` runs `_extract_leg`: not when the plan
+    seeds both legs (`seeded_legs`, one definition)."""
+    return len(seeded_legs(assigned)) < len(EXTRACTED_LEGS)
+
+
+def _assembly_repository(plan: Plan) -> str | None:
+    """`<org>/<assembly>`, the repository a run without `--local-remote-dir`
+    pushes the split to (`_repository_urls`), as the plan names it; None
+    where it names no organisation or no assembly root."""
+    legs = plan.legs if isinstance(plan.legs, dict) else {}
+    org, name = plan.get("org"), legs.get("assembly")
+    return f"{org}/{name}" if org and name else None
+
+
+def _branches_in(path: Path, refs: str) -> dict[str, str]:
+    """`_listed_branches` of the refs under `refs` in the repository at
+    `path`, read from it with `git for-each-ref`: no network."""
+    return _listed_branches(
+        git_out(["for-each-ref", "--format=%(objectname)%09%(refname)",
+                 refs], cwd=path, binary=True), refs)
+
+
+def _places_check_asks(plan: Plan, source: Source, extracting: bool) -> list:
+    """The places `check` asks for the split branch, `(where, pushed_by,
+    extracted, branches)`: the source, which a run with `--local-remote-dir`
+    pushes to and either run extracts from while `extracting`, and, where
+    the source's `origin` is the assembly repository, that repository's
+    branches as the source last fetched them, which a run without it pushes
+    to. `check` reads no network for either."""
+    places = [(f"the source {_shown(str(source.path))}", LOCAL_RUN,
+               extracting, _branches_at(str(source.path), source.path))]
+    assembly = _assembly_repository(plan)
+    if assembly and (source.repository or "").lower() == assembly.lower():
+        places.append((f"`{assembly}` on GitHub, as the source's `origin` "
+                       "last fetched it,", GITHUB_RUN, False,
+                       _branches_in(source.path, "refs/remotes/origin/")))
+    return places
+
+
+def _check_split_branch(plan: Plan, source: Source
+                        ) -> tuple[list[str], list[str]]:
+    """`_split_branch_findings` as `check` asks it, the split branch's own
+    name included, and what to print ONCE after every finding, as
+    `_submodule_findings` returns it. A split branch that is not a value
+    `execute` puts on a command line is not asked about: it is `execute`'s
+    refusal `unsafe-value`, before any leg exists."""
+    try:
+        branch = checked_value("adopt_branch",
+                               plan.get("adopt_branch", ADOPT_BRANCH))
+    except Refusal:
+        return [], []
+    extracting = _extracts_a_leg(assigned_paths(plan.entries))
+    found = _split_branch_findings(
+        branch, _places_check_asks(plan, source, extracting), source)
+    return found, [SPLIT_BRANCH_REMEDIATION] if found else []
+
+
+def _refuse_a_branch_in_the_split_branchs_way(
+        plan: Plan, source: Source, repositories: dict, urls: dict,
+        branch: str, local: bool, extracting: bool) -> None:
+    """Refuse a branch git cannot hold beside the split branch, where this
+    run pushes the split or, while `extracting`, in the source it extracts
+    the legs from, BEFORE a leg repository exists (#320): `check`'s finding
+    `plan-split-branch-taken`, which nothing refused.
+
+    `cmd_execute` runs it right after `_refuse_a_split_branch_left_behind`,
+    which asks for the split branch's own name, and it keeps that
+    function's precedence: a leg repository still there under
+    `--local-remote-dir` is `leg-remote-exists`'s to refuse, and this asks
+    nothing then.
+
+    Under `--local-remote-dir` the split is pushed to the source, which is
+    also what the extraction clones: one listing, `git ls-remote --heads`,
+    as the push will meet it, and each finding is `check`'s, word for word.
+    Without it, the source's own branches are asked for the extraction,
+    reading no network, and each finding is `check`'s, word for word; then
+    the assembly repository on GitHub, as the push will meet it, which
+    `check` reads as the source's `origin` last fetched it, if at all.
+    """
+    if local and any(Path(urls[role]).exists() for role in EXTRACTED_LEGS):
+        return
+    the_source = f"the source {_shown(str(source.path))}"
+    if local:
+        places = [(the_source, LOCAL_RUN, extracting,
+                   _branches_at(urls["assembly"], source.path))]
+    else:
+        places = [(the_source, None, True,
+                   _branches_in(source.path, "refs/heads/"))
+                  ] if extracting else []
+        places.append((f"`{repositories['assembly']}` on GitHub", GITHUB_RUN,
+                       False, _branches_at(urls["assembly"], source.path)))
+    found = _split_branch_findings(branch, places)
+    if found:
+        raise Refusal(SPLIT_BRANCH_TAKEN, "\n".join(
+            [f"{len(found)} finding(s) in {plan.path}:",
+             *(f"  {finding}" for finding in found)]),
+            SPLIT_BRANCH_TAKEN_REMEDIATION)
 
 
 def _topics_line(topic: str, local: bool) -> str:
@@ -4245,8 +4780,8 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
           f"{len(drops)} dropped")
     print("  the source is never deleted, never renamed, never force-pushed")
     print(_topics_line(topic, local))
-    for item in plan.get("follow_ups", []):
-        print(f"  follow-up: {_shown(str(item))}")
+    for item in _plan_follow_ups(plan):
+        print(f"  follow-up: {_shown(item)}")
 
 
 def cmd_check(args) -> int:
@@ -4268,8 +4803,13 @@ def cmd_check(args) -> int:
             "against a tree that has moved proves nothing about the tree that "
             "will be split.")
 
+    # Before the entries (#320): the history scan their findings make reads
+    # a split branch the source keeps, and the branch is named first.
+    taken, taken_remediation = _check_split_branch(plan, source)
+    findings.extend(taken)
     entry_findings, remediation, notes = _entry_findings(plan, source)
     findings.extend(entry_findings)
+    remediation = taken_remediation + remediation
 
     names = plan.names()
     pins = set(plan.pins)
@@ -5782,7 +6322,7 @@ def _commit_the_split(plan: Plan, source: Source, assembly: Path,
             print(f"  beside  {actual} (the source already has {intended}; "
                   "nothing was overwritten)")
 
-        follow_ups = [str(f) for f in plan.get("follow_ups", [])]
+        follow_ups = _plan_follow_ups(plan)
         message = _split_message(names, paths_for, leg_commits, spec_path,
                                  code_path, follow_ups,
                                  materialized.collisions, seeded)
@@ -5832,6 +6372,11 @@ def cmd_execute(args) -> int:
     # whose way out is "run `execute` again" then meets one that is free.
     _refuse_an_occupied_work_dir(work_root, names, seeded)
     _refuse_a_split_branch_left_behind(source, urls, branch, local)
+    # Then a branch in git's way of the split branch, which no run of this
+    # tool leaves behind (#320).
+    _refuse_a_branch_in_the_split_branchs_way(
+        plan, source, repositories, urls, branch, local,
+        _extracts_a_leg(paths_for))
     for line in plan.seeding_record_disagreements(seeded):
         print(line)
     topic = naming.topic_for(plan.project_id)
@@ -5842,10 +6387,12 @@ def cmd_execute(args) -> int:
     # rendered from `templates/<role>-root/` and needs it. The four leg
     # commit/digest values are the only ones that cannot be known yet; they
     # are filled in below, before the assembly root is materialized. And it
-    # is built before the legs' REPOSITORIES too: it can refuse (an
-    # `elected_on` that is not a date, a checkout of this standard that is
-    # not a git repository), and a refusal here used to leave both of them
-    # behind with nothing saying so (#188). It prints nothing.
+    # is built before the legs' REPOSITORIES too: it can refuse (a
+    # checkout of this standard that is not a git repository), and a
+    # refusal here used to leave both of them behind with nothing saying
+    # so (#188). An `elected_on:` that is not a date no longer reaches it:
+    # `_refuse_what_check_finds` has refused it above, as `check` finds it
+    # (#294). It prints nothing.
     shape_commit = git_out(["rev-parse", "HEAD"], cwd=SHAPE_ROOT).lower()
     values = _template_values(plan, names, repositories, urls, spec_path,
                               code_path, tracking, {}, {},
@@ -5992,13 +6539,16 @@ def _plan_values(plan: Plan) -> list[tuple[str, str, str]]:
     """`(what, value, where)` for each value of the plan's that `execute`
     writes into a file, as `str` makes it, which is how `_template_values`
     and `_commit_the_split` take it. A key the plan does not carry is filled
-    by this tool (`private`, today's date) and is left out."""
+    by this tool (`private`, today's date) and is left out. The follow-ups
+    are `_plan_follow_ups`', the items of text `_commit_the_split` writes; a
+    `follow_ups:` that is not a list of text is `plan-bad-follow-ups` (#293),
+    and is never iterated here."""
     fields = [(key, str(plan.get(key)), where)
               for key, where in WRITTEN_PLAN_VALUES.items()
               if plan.get(key) is not None]
     fields += [("a `pins:` item", pin, ROOT_MANIFEST) for pin in plan.pins]
-    return fields + [("a `follow_ups:` item", str(item), SPLIT_MESSAGE)
-                     for item in plan.get("follow_ups", [])]
+    return fields + [("a `follow_ups:` item", item, SPLIT_MESSAGE)
+                     for item in _plan_follow_ups(plan)]
 
 
 def _value_findings(plan: Plan) -> tuple[list[str], list[str]]:
