@@ -379,6 +379,9 @@ def test_a_member_whose_id_yaml_would_misread_is_pinned_under_that_id(
                          "--work-dir", str(tmp_path / "fam"))
     assert created.returncode == 0, created.stderr + created.stdout
     root = tmp_path / "fam" / HOLDER
+    # On a branch of its own, as a person adds members for a pull request:
+    # #487 (PR #507) makes `add` refuse the holder's tracking branch.
+    git("switch", "-q", "-c", "family/members", cwd=root)
     for project in members:
         added = run_script(FAMILY, "add", "--family-root", str(root),
                            "--member", f"{ORG}/{project}",
