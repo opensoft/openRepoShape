@@ -39,13 +39,15 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import unicodedata
 from pathlib import Path, PurePath
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from repo_shape import (  # noqa: E402
-    CHAIN_RECORD_FIELD, SAFE_ARG_RE, NamingPolicy, Refusal, checked_value,
-    double_quoted, file_sha256,
+    CHAIN_RECORD_FIELD, PATH_CLIMBS, PATH_ITSELF, PATH_NOT_CANONICAL,
+    SAFE_ARG_RE, NamingPolicy, Refusal, checked_value, double_quoted,
+    file_sha256, path_spelling_fault,
 )
 # The reader's own parse and its own comment rule, for "The two lines a pin
 # is moved by" below. `_strip_comment` is that module's private name and is
@@ -744,6 +746,19 @@ class CommandFailed(Exception):
         )
 
 
+#: Two fields name a branch, and they are NOT the same thing (#324):
+#:   `{tracking}` is the run's tracking branch (`--tracking-branch`): the
+#:   branch of the REMOTE the refused push targeted, and so the base a
+#:   seeding pull request lands on.
+#:   `{local}` is the ref in `{work}` that the refused push carried. Each
+#:   caller -- the scaffold's legs and assembly root, the family holder --
+#:   pushed the tracking branch BY NAME from a clone made on it, so each
+#:   passes the tracking branch for both; a push of `HEAD:` would name `HEAD`.
+#:   An adoption prints its own `ADOPT_RULESET_HINT` (`adopt-project.py`,
+#:   #177), which names the tracking branch the same way and no command.
+#: Every caller passes both, after `checked_value` has admitted the tracking
+#: branch, so each is a safe argument and neither is quoted here. A call that
+#: leaves one out fails `tests/test_ruleset_hint_tracking_branch.py`.
 RULESET_HINT = """
 If the organisation applies a ruleset requiring changes to arrive by pull
 request, a direct push to the default branch is refused BY DESIGN and must not
@@ -752,8 +767,8 @@ be worked around. Two legitimate exits:
   (1) have an operator holding the bypass right seed the default branch once,
       then re-run this scaffold; or
   (2) push a seed BRANCH and open a pull request:
-          git -C {work} push -u origin main:seed/scaffold
-          gh pr create --repo {repo} --base main --head seed/scaffold \\
+          git -C {work} push -u origin {local}:seed/scaffold
+          gh pr create --repo {repo} --base {tracking} --head seed/scaffold \\
               --title 'Seed the {role} leg' --body 'Scaffolded shape.'
 
 NOTHING has been rolled back. What already exists is listed above; delete it
@@ -804,6 +819,147 @@ def run(args: list[str], cwd: Path | None = None, capture: bool = True) -> str:
         raise CommandFailed(args, cwd, proc.returncode,
                             (proc.stderr or "") + (proc.stdout or ""))
     return (proc.stdout or "").strip()
+
+
+# ---------------------------------------------------------------------------
+# A branch name, asked of git (#283)
+# ---------------------------------------------------------------------------
+#
+# `checked_value` holds a `--tracking-branch` to an ALPHABET, which keeps an
+# option and a shell word off a command line, and the alphabet is wider than
+# the names git accepts as a branch: `~`, `a..b`, `x.lock`, `a/`, `/a`, `a//b`,
+# `.a` and `a.` are all inside it, and `git init -b` refuses each. Nothing
+# asked git, so `--dry-run` printed a plan and, against GitHub, the run
+# created all three repositories before the first `git init -b` died.
+#
+# GIT IS THE AUTHORITY on what a branch name is (`git check-ref-format
+# --branch`): it is ASKED, never copied here, so a rule git adds or relaxes is
+# ours the day the person upgrades. The question is its own function, beside
+# `refuse_bad_leg_paths` in what it is for: a value judged BEFORE a work
+# directory or a remote exists, and by `--dry-run` too.
+#
+# IT LIVES HERE AND NOT IN `scripts/repo_shape.py` for the reason the leg-path
+# rule does: that file is a SHAPE COPY every project digest-pins, and one
+# function added there would put an `upstream-changed scripts/repo_shape.py`
+# row in front of every project for a rule no project's own copy ever asks.
+
+BRANCH_REMEDIATION = (
+    "Remediation: pass a branch name git will create, such as `main` or "
+    "`release/1.2`: no `..`, no `//`, no `~`, no `/` at either end, no `.` at "
+    "the end, no part that starts with `.` or ends in `.lock`, and not "
+    "`HEAD`. `git check-ref-format --branch <name>` is the check, and `git "
+    "help check-ref-format` lists every rule.")
+
+#: When git could not answer at all, the name was never judged, and a remedy
+#: that says "pass another name" sends the person after the wrong thing.
+BRANCH_UNCHECKED_REMEDIATION = (
+    "Remediation: the name was not judged, because git could not answer the "
+    "question for any name. Fix what git's own words above name (a `git` "
+    "missing from PATH, a malformed global or system git config), check that "
+    "`git check-ref-format --branch main` prints `main`, then run this again.")
+
+#: A name every git creates as a branch. It is asked only after git refused
+#: the person's name: a git that refuses this one too could not answer.
+BRANCH_CONTROL = "main"
+
+
+def _ask_git_branch(name: str) -> str:
+    """`git check-ref-format --branch <name>`, asked of NO repository and
+    from no directory of the person's.
+
+    `--branch` sets up the repository it finds, so asked in the operator's
+    working directory it failed for EVERY name inside a repository git
+    cannot open (a `.git` file naming a gitdir that is gone, a `.git/config`
+    that does not parse) and in a directory removed under the person, where
+    a scaffold without the question succeeds; and a repository it did open
+    lent `@{-1}` its own reflog (review of a03abcf). An empty directory is
+    no repository as `--git-dir` and is a directory that exists as the
+    working directory, so the answer is the same wherever the person
+    stands, and git, having no repository, has nothing to expand.
+    """
+    nowhere = tempfile.mkdtemp(prefix="openreposhape-branch-")
+    try:
+        return run(["git", f"--git-dir={nowhere}", "check-ref-format",
+                    "--branch", name], cwd=Path(nowhere))
+    finally:
+        # Empty: git writes nothing there. A removal that fails (Windows can
+        # hold a directory a moment after the process in it ended) must not
+        # turn git's answer into a refusal.
+        shutil.rmtree(nowhere, ignore_errors=True)
+
+
+def _branch_verdict(what: str, value) -> tuple[str | None, str]:
+    """`(problem, remediation)`: `branch_problem`'s sentence, and the remedy
+    that fits it, which is about the NAME when git judged the name and about
+    GIT when git could not answer."""
+    text = str(value)
+    refused = f"{what} is {text!r}, which is not a branch name git will create"
+    unchecked = f"{what} is {text!r}, which could not be checked"
+    if text.startswith("-"):
+        return (f"{refused}: it begins with `-`, which git reads as an option",
+                BRANCH_REMEDIATION)
+    try:
+        answer = _ask_git_branch(text)
+    except CommandFailed as exc:
+        said = f" ({exc.output})" if exc.output else ""
+        # GIT'S REFUSAL, OR GIT'S FAILURE? Git's words are localised, so they
+        # are not read: git is asked about a name it always creates, and a
+        # git that refuses that too (a malformed global config, say) could
+        # not answer for any name, so this one was never judged.
+        try:
+            _ask_git_branch(BRANCH_CONTROL)
+        except (CommandFailed, OSError):
+            return (f"{unchecked}: `git check-ref-format --branch` fails for "
+                    f"`{BRANCH_CONTROL}` too, so git could not answer{said}",
+                    BRANCH_UNCHECKED_REMEDIATION)
+        return (f"{refused}: `git check-ref-format --branch` refuses it{said}",
+                BRANCH_REMEDIATION)
+    except ValueError as exc:
+        # The value cannot be an argument at all (a NUL, a lone surrogate):
+        # the answer is not git's, and the fault is the value's.
+        return (f"{unchecked}: `git check-ref-format --branch` could not be "
+                f"run ({exc})", BRANCH_REMEDIATION)
+    except OSError as exc:
+        # `git` itself is missing, or no empty directory could be made to ask
+        # it from: the answer is not git's, and the fault is not the name's.
+        return (f"{unchecked}: `git check-ref-format --branch` could not be "
+                f"run ({exc})", BRANCH_UNCHECKED_REMEDIATION)
+    if answer != text:
+        return (f"{refused}: `git check-ref-format --branch` reads it as "
+                f"{answer!r}, not as written", BRANCH_REMEDIATION)
+    return None, BRANCH_REMEDIATION
+
+
+def branch_problem(what: str, value) -> str | None:
+    """None when `git check-ref-format --branch` accepts `value` exactly as
+    written; otherwise the sentence that says what git made of it.
+
+    `what` names the value as the person met it (`--tracking-branch`,
+    `tracking_branch`), the way `leg_path_problem` is given its flag. Git is
+    asked with no repository in play (`_ask_git_branch`), so the verdict
+    does not depend on the directory the person runs the tool from. A name
+    git would EXPAND rather than echo (`@{-1}`) is refused too: the tool
+    writes the name it was given, so a spelling that means another branch
+    is not that branch. A leading `-` is refused without asking, so the value
+    is never an option to the question itself; `checked_value` has refused it
+    already for the tools that call that first. A git that cannot answer for
+    any name says so ("could not be checked"); it does not blame the name.
+    """
+    return _branch_verdict(what, value)[0]
+
+
+def refuse_bad_branch(refusal: str, what: str, value) -> None:
+    """Raise `Refusal(refusal)` when git would not create `value` as a branch,
+    or could not say.
+
+    `refusal` is the caller's own code (`scaffold-bad-tracking-branch`), so
+    each tool refuses in its own voice, as `refuse_bad_leg_paths` lets it.
+    The remedy is `BRANCH_REMEDIATION` when git judged the name, and
+    `BRANCH_UNCHECKED_REMEDIATION` when git could not answer at all.
+    """
+    problem, remediation = _branch_verdict(what, value)
+    if problem:
+        raise Refusal(refusal, problem, remediation)
 
 
 #: `-F -` reads the message from STDIN. Every argument is then a literal, and
@@ -865,9 +1021,10 @@ def env_commit(work: Path, message: str) -> None:
 def force_stage(work: Path, paths=()) -> None:
     """Stage exactly `paths`, FORCED past any ignore rule, and nothing else.
 
-    THE FORCED ADD THE SCAFFOLD, `family.py init`, `adopt-project.py`'S
-    SEEDED LEG AND `update-shape.py` SHARE; the seeded leg reaches it
-    through `git_init_commit`, as `stage_written` says. A file the shape
+    THE FORCED ADD THE SCAFFOLD, `family.py` (`init`, and every `add`, `bump`
+    and `remove` commit), `adopt-project.py`'S SEEDED LEG AND
+    `update-shape.py` SHARE; the seeded leg reaches it through
+    `git_init_commit`, as `stage_written` says. A file the shape
     wrote and pinned has to reach the commit whatever the operator's own
     excludes say — a global `core.excludesFile`, `.git/info/exclude`, a
     `.gitignore` the project keeps — because a pin row naming a file the
@@ -884,13 +1041,21 @@ def force_stage(work: Path, paths=()) -> None:
     No copy-list entry holds a glob character today; the day one does, it
     stages itself and no neighbour.
 
-    TWO CALLERS, AND ONLY ONE OF THEM SWEEPS FIRST. `stage_written` runs
-    `git add -A` before it, because it stages a tree this tool has just
-    made. `update-shape.py apply --add` calls this ALONE (#202): it writes
-    into a checkout somebody may be working in, where `-A` would stage their
-    work beside the shape's, and its plain `git add --` died on an ignored
-    addition after the copies, the pin and the branch were already written.
-    Empty, this runs nothing.
+    A CALLER THAT WRITES INTO A CHECKOUT SOMEBODY WORKS IN CALLS THIS ALONE,
+    NEVER AFTER A SWEEP. `stage_written` runs `git add -A` before it, and is
+    for a caller that stages a tree this tool has just made, where every path
+    is its own. In a checkout somebody may be working in, `-A` would stage
+    their work beside the shape's, so such a caller names its paths and
+    forces those and nothing else, and this function never sweeps: a caller
+    that wants a sweep makes it first, as `stage_written` does. The rule
+    began with `update-shape.py apply --add` (#202), whose plain `git add --`
+    died on an ignored addition after the copies, the pin and the branch were
+    already written. `family.py`'s commits took it up (#242), each in a
+    holder somebody may be working in: `add` stages the gitlink,
+    `.gitmodules` and `family.yaml`; `bump` the gitlink and `family.yaml`;
+    `remove` `.gitmodules` and `family.yaml`, the gitlink's deletion already
+    staged by its `git rm`. The next caller of that kind is bound by the same
+    rule without being named here. Empty, this runs nothing.
     """
     paths = list(paths)
     if paths:
@@ -916,10 +1081,12 @@ def stage_written(work: Path, written=()) -> None:
     landed, in `root_key`'s POSIX spelling, which `git` takes as a pathspec
     on Windows too. Empty, this is `git add -A -- .` and nothing else.
 
-    ONE HELPER, THREE CALLERS: `git_init_commit` (the scaffold's two legs and
-    `adopt-project.py`'s seeded leg), the scaffold's assembly root and
-    `family.py init`'s holder. The forced half is `force_stage`, which
-    `update-shape.py apply --add` calls on its own (#202).
+    A CALLER THAT HAS JUST MADE THE TREE IT STAGES CALLS THIS.
+    `git_init_commit` does (the scaffold's two legs and `adopt-project.py`'s
+    seeded leg), and so do the scaffold's assembly root and `family.py init`'s
+    holder. A caller that writes into a checkout somebody works in does not:
+    `-A` would stage their work beside the shape's, so it calls the forced
+    half, `force_stage`, on its own (#202, #242).
     """
     run(["git", "add", "-A", "--", "."], cwd=work)
     force_stage(work, written)
@@ -2374,6 +2541,14 @@ def copy_out(src: Path, dst: Path) -> None:
 # asks (see "Commit trailers" above for the same argument). This module
 # is in no copy list and both tools already import it.
 #
+# EXCEPT THE SEGMENTS, which a project's copy DOES ask (#189): its
+# `validate-manifest.py` holds each path `project.yaml`'s `submodules:`
+# records to the spelling Git records a path in, so
+# `repo_shape.path_spelling_fault` answers that for both rules, and
+# `_spelling_reason` below adds only what a TYPED path can get wrong -- a
+# drive letter and a backslash, which on POSIX are characters of a name Git
+# records -- and says every answer about a leg.
+#
 #   CANONICAL = a relative POSIX path of one or more segments, each non-empty
 #   and neither `.` nor `..`: no leading `/` or `./` (nor a drive letter), no
 #   trailing `/`, no `//`, no backslash. The two legs also take DIFFERENT
@@ -2437,8 +2612,28 @@ LEG_PATH_REMEDIATION = (
 )
 
 
+#: What each way a path's SEGMENTS can be misspelled means for a leg's mount
+#: path. `path_spelling_fault` asks the segments; the empty and absolute
+#: answers it also gives are `_spelling_reason`'s own, asked first, beside
+#: the drive letter and the backslash only a typed path can get wrong.
+LEG_SEGMENT_REASONS = {
+    PATH_CLIMBS: ("it has a `..` segment, so it names a different place than "
+                  "it spells and can climb out of the assembly root"),
+    PATH_ITSELF: ("it names the assembly root itself, and a leg is mounted "
+                  "INSIDE the root, not at it"),
+    PATH_NOT_CANONICAL: (
+        "Git records a mount without its `.` segments (a leading `./`), a "
+        "trailing `/` or a doubled `/`, so the mount and its `.gitmodules` "
+        "entry would name two different paths"),
+}
+
+
 def _spelling_reason(text: str) -> str | None:
-    """Why `text` is not a CANONICAL spelling of a leg path, or None."""
+    """Why `text` is not a CANONICAL spelling of a leg path, or None.
+
+    The segments are `repo_shape.path_spelling_fault`'s, the rule a
+    project's own validator also holds a recorded submodule path to (#189).
+    """
     if not text:
         return "it is empty"
     if text.startswith("/") or WINDOWS_ABSOLUTE_RE.match(text):
@@ -2447,18 +2642,7 @@ def _spelling_reason(text: str) -> str | None:
                 "its path is relative to it")
     if "\\" in text:
         return "it has a backslash, and a path here is written with `/`"
-    segments = text.split("/")
-    if ".." in segments:
-        return ("it has a `..` segment, so it names a different place than it "
-                "spells and can climb out of the assembly root")
-    if all(segment in ("", ".") for segment in segments):
-        return ("it names the assembly root itself, and a leg is mounted "
-                "INSIDE the root, not at it")
-    if "" in segments or "." in segments:
-        return ("Git records a mount without its `.` segments (a leading "
-                "`./`), a trailing `/` or a doubled `/`, so the mount and its "
-                "`.gitmodules` entry would name two different paths")
-    return None
+    return LEG_SEGMENT_REASONS.get(path_spelling_fault(text))
 
 
 def _unmountable_reason(text: str) -> str | None:

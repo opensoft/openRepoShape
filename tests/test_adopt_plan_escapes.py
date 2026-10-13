@@ -409,7 +409,7 @@ def test_a_source_directory_that_is_not_utf8_is_shown_spelled(adopter,
     except AssertionError as exc:
         pytest.skip(f"git will not work under b'caf\\xe9' here: {exc}")
     shown = adopter._spelled(str(source.resolve()))
-    assert "\\xe9" in shown
+    assert "\\udce9" in shown
     plan = tmp_path / PLAN_FILE
     strict = {"PYTHONIOENCODING": "utf-8:strict"}
 

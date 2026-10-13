@@ -305,9 +305,12 @@ flag goes on the Python entry point —
 which, run from a download, still clones the standard into a temporary
 directory first, and from a checkout clones nothing. What it leaves behind is
 `./Atlas` and three bare repositories in `./rehearsal`, both of which you can
-delete. `openRepoShape --help` and `setup.sh --help` list every flag, this one
-included; [`docs/cli.md`](docs/cli.md) is every tool's help and every
-subcommand's in one file, generated from the tools themselves.
+delete. `python3 setup-project.py --help` and, from a checkout, `setup.sh --help`
+list every flag, this one included. From a download, `setup.sh --help` clones
+nothing and lists none: it names `setup-project.py --help`, which answers
+offline from that one file too, and [`docs/cli.md`](docs/cli.md), every
+tool's help and every subcommand's in one file, generated from the tools
+themselves.
 
 Without installing anything — no fork, no manual clone — one command:
 
@@ -497,12 +500,12 @@ there does not advance the project. Advancing it is one lockstep commit in
 the root, written by the tool from a checkout of this standard:
 
 ```sh
+git -C ../Atlas switch -c <branch>           # the tool will not commit on main
 python3 scripts/bump-leg.py --root ../Atlas --leg code --to <40-hex commit>
 git -C ../Atlas push -u origin <branch>      # then open a pull request
 ```
 
-Editing the pin file by hand to make the validator agree is what the
-validator exists to refuse.
+Editing the pin by hand to make the validator agree is what it exists to refuse.
 
 **Variants.** An existing repository becomes the root in place with
 `adopt-project.py plan`, then `check`, then `execute`, the human answering
@@ -516,11 +519,11 @@ confers nothing and stays neutral.
 
 ### What setup.sh does
 
-`setup.sh` is a shim — about seventy lines of code (twice that with its comments)
-that find a Python 3.9 or newer, clone this standard into a temporary directory when
-you are not already in a checkout of it, and hand over to `setup-project.py`, which
-IS the flow. These are the commands that flow runs, in order, with no behaviour of
-its own (the first only in self-bootstrap mode, from the one-liner above):
+`setup.sh` is a shim that finds a Python 3.9 or newer, clones this standard into a
+temporary directory when you are not already in a checkout of it, and hands over to
+`setup-project.py`, which IS the flow. These are the commands that flow runs, in
+order, with no behaviour of its own (the first only in self-bootstrap mode, from the
+one-liner above):
 
 ```sh
 git clone --depth 1 https://github.com/opensoft/openRepoShape.git <tmp-dir>
@@ -969,8 +972,7 @@ Moving those three facts by hand is how they come apart, so one command moves
 them together, run from a checkout of this standard:
 
 ```sh
-python3 scripts/bump-leg.py --root <path-to-the-project> --leg spec \
-    --to <40 hex commit>       # --dry-run prints the move and writes nothing
+python3 scripts/bump-leg.py --root <path> --leg spec --to <40 hex>   # --dry-run prints the move and writes nothing
 ```
 
 It fetches the commit into the leg, checks the leg out AT it, recomputes the
@@ -982,14 +984,15 @@ included — then runs the project's own `validate-pins.py` and
 `validate-manifest.py` and commits ONCE with explicit pathspecs.
 
 It REFUSES a `--to` that is not exactly 40 hex, a commit no branch of the leg's
-remote contains (including one committed inside the mount and never pushed — a
-pin the rest of the world cannot fetch is a root it cannot bootstrap), a dirty
-root, an untracked or ignored workflow file it would rewrite, a root standing on
-its own tracking branch (the next step is a pull request, never a push to the
-default branch), and a validator that goes red — rolling the pin, the workflow
-files, the leg's checkout and the index back first, so a refusal leaves the tree
-exactly as it was found. The leg is left DETACHED at the new commit; `make
-bootstrap` re-places it on its tracking branch AT the new pin.
+remote contains (including one committed in the mount and never pushed — a pin
+the rest of the world cannot fetch is a root it cannot bootstrap), a dirty root,
+an untracked or ignored workflow file it would rewrite, a root standing on its
+own tracking branch (the next step is a pull request, never a push to the
+default branch: `git switch -c <branch>` first; `--dry-run` writes nothing, so
+it runs there and prints that command), and a validator that goes red — rolling
+the pin, the workflow files, the leg's checkout and the index back first, so a
+refusal leaves the tree as it was found. The leg is left DETACHED at the new
+commit; `make bootstrap` re-places it on its tracking branch AT the new pin.
 
 ## Bootstrap is COPIED into the project, not fetched
 

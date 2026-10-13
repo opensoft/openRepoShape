@@ -45,8 +45,12 @@ EXIT CODES
        recheckable neutral-product pin disagrees
     1  a FINDING: drift a reviewer can act on
     2  a REFUSAL: the question could not be asked — an uninitialized submodule,
-       an unresolvable commit, an unreadable pin. An unanswerable pin question
+       an unresolvable commit, an unreadable pin or workflow file (one that is
+       not UTF-8, or that this user cannot open). An unanswerable pin question
        is never an implicit pass.
+       No git to run is one too (`git-not-runnable`, #412), a git that is
+       missing, will not run or cannot be executed: the gitlinks and the
+       digests are read through git.
 """
 
 from __future__ import annotations
@@ -56,7 +60,10 @@ import os
 import re
 import stat
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from repo_shape import (  # noqa: E402
@@ -116,17 +123,99 @@ class Report:
         self.advise(text)
 
 
+class _Unreadable(NamedTuple):
+    """One workflow file that could not be read (#359): the line that names it,
+    and whether it failed on its ENCODING (`True`) or on being opened."""
+
+    line: str
+    encoding: bool
+
+
+def _read_workflow(root: Path, path: Path) -> tuple[str, _Unreadable | None]:
+    """`(text, None)` for a workflow file read as UTF-8, or `("", why)` for one
+    that cannot be (#359).
+
+    The line is `<path relative to root>: not UTF-8 at byte N (<reason>)`, in
+    the words `repo_shape.load_yaml` gives the same failure (#192), so a file
+    this script cannot read is named the way its other readers name one.
+    POSIX, on every platform, and never the absolute path: the reader pastes
+    it into git and into an editor that opens it from the root.
+    A file this user cannot open (`OSError`) is the same line with the
+    operating system's own reason, because it is the same unguarded read.
+    """
+    rel = path.relative_to(root).as_posix()
+    try:
+        return path.read_text(encoding="utf-8"), None
+    except UnicodeDecodeError as exc:
+        return "", _Unreadable(
+            f"{rel}: not UTF-8 at byte {exc.start} ({exc.reason})", True)
+    except OSError as exc:
+        return "", _Unreadable(
+            f"{rel}: cannot be read ({exc.strerror or type(exc).__name__})",
+            False)
+
+
+def _workflow_unreadable(files: list[_Unreadable]) -> Refusal:
+    """The ONE refusal for every workflow file that could not be read (#359).
+
+    EVERY FILE IS NAMED, in one refusal, so the operator repairs them in one
+    pass instead of meeting them one run at a time; `_workflow_refs` reads
+    them all before it raises. The first line follows the id and the rest
+    follow it, one file to a line, so `shape-doctor.py`, which quotes the
+    first `REFUSED` line of this script's output, quotes a file's name.
+    """
+    advice = ""
+    if any(one.encoding for one in files):
+        advice += (
+            "In each `not UTF-8` line the byte is counted from 0 at the start "
+            "of the file and is the first that is not UTF-8: re-save the file "
+            "as UTF-8 (a UTF-16 file with a byte-order mark needs converting, "
+            "not editing), or replace that byte with the character it was "
+            "meant to be, and commit it. ")
+    if not all(one.encoding for one in files):
+        advice += (
+            "A `cannot be read` file is not an encoding failure: this user "
+            "cannot open it, so restore read access to it. ")
+    return Refusal(
+        "workflow-unreadable",
+        "\n".join(one.line for one in files),
+        f"Remediation: {len(files)} workflow file(s) under "
+        ".github/workflows/ cannot be read, and every one is named above. "
+        "This validator reads every `.yml` and `.yaml` file there, whether or "
+        "not it names a leg, and neither skips one nor reads one lossily: a "
+        "workflow it skipped could hide a `@<sha>` reference that is out of "
+        "lockstep, which is what it exists to find, and a lossy read would "
+        "call green a tree that the project's other readers refuse. "
+        + advice + "Then run the same command again.")
+
+
 def _workflow_refs(root: Path) -> list[tuple[Path, str, str]]:
-    """Every (file, owner/repo, sha) `@<sha>` reference in the workflows."""
+    """Every (file, owner/repo, sha) `@<sha>` reference in the workflows, or
+    ONE refusal naming each workflow file that cannot be read (#359).
+
+    EVERY FILE IS READ, whether or not it names a leg: the file is opened
+    before it is known to hold a reference, so a UTF-16 workflow that names no
+    leg used to stop the run in a `UnicodeDecodeError` (a `ValueError`, which
+    `main()` does not catch: a traceback, exit 1 -- the code this validator
+    uses for a finding). It is a REFUSAL, exit 2, `workflow-unreadable`, as a
+    pin that is not UTF-8 is `yaml-unreadable`: the question cannot be asked.
+    """
     out: list[tuple[Path, str, str]] = []
+    unreadable: list[_Unreadable] = []
     workflows = root / ".github" / "workflows"
     if not workflows.is_dir():
         return out
     for path in sorted(workflows.iterdir()):
         if path.suffix not in (".yml", ".yaml") or not path.is_file():
             continue
-        for match in WORKFLOW_REF_RE.finditer(path.read_text(encoding="utf-8")):
+        text, problem = _read_workflow(root, path)
+        if problem is not None:
+            unreadable.append(problem)
+            continue
+        for match in WORKFLOW_REF_RE.finditer(text):
             out.append((path, match.group("repo"), match.group("sha").lower()))
+    if unreadable:
+        raise _workflow_unreadable(unreadable)
     return out
 
 
@@ -184,13 +273,69 @@ def _load_leg_pin(root: Path, role, path: str, repository: str,
     return pin, rel, commit
 
 
+@contextmanager
+def _git_runs(unread: str) -> Iterator[None]:
+    """The `git-not-runnable` refusal, exit 2, for a check that reads this
+    repository through git and could not start it (#412).
+
+    `git_out` raises `FileNotFoundError` when there is no git on PATH,
+    `PermissionError` when the `git` found there will not run, and a plain
+    `OSError` (`ENOEXEC`) when it is no program this machine can execute, a
+    binary for another architecture or a script with no shebang, and nothing
+    here caught any of them: the run ended in a traceback, which exits 1, a
+    FINDING's code, though nothing was found. The module's own exit codes
+    make 1 "drift a reviewer can act on" and 2 "the question could not be
+    asked ... never an implicit pass". So every call that runs git runs
+    inside this, and `unread` says which check it was and what it could not
+    read. ONE code, whichever check meets the missing git first; every one
+    of them is the same fact about the machine.
+
+    ONLY AN ERROR FROM STARTING GIT COUNTS, told apart two ways. The block
+    is around the git calls alone, never around a whole check: a pin file or
+    a submodule directory nobody may read is an `OSError` too, and it is not
+    this, nor is telling that operator to put git on PATH any help. And
+    inside a git call the class is not enough: `subprocess` raises the same
+    `FileNotFoundError` or `PermissionError` when the DIRECTORY it was to run
+    git in cannot be entered, and on POSIX names that directory in
+    `filename` where a program that will not start names `git`. So the rule
+    is the NAME: any `OSError` whose `filename` is `git` counts, `ENOEXEC`'s
+    included, and an error that names a directory or any other file passes
+    through unchanged, and so does any `OSError` that names none. The one
+    nameless error that counts is a `FileNotFoundError` or a
+    `PermissionError`: Windows' `CreateProcess` failures carry no filename,
+    so a missing git there is `[WinError 2]` with `filename` None, and
+    nothing says it was the directory.
+
+    `recorded_gitlink`'s `except Refusal` is not in the way: an `OSError` is
+    no `Refusal`, so a missing git reaches here instead of reading as "no
+    gitlink recorded", which would be a false `pin-gitlink-absent`.
+    """
+    try:
+        yield
+    except OSError as exc:
+        nameless = (exc.filename is None
+                    and isinstance(exc, (FileNotFoundError, PermissionError)))
+        if exc.filename != "git" and not nameless:
+            raise
+        raise Refusal(
+            "git-not-runnable",
+            f"{unread}: git could not be run ({exc.strerror or exc})",
+            "Remediation: put git on PATH and run `scripts/validate-pins.py` "
+            "again. This assembly root's lockstep gate reads each leg's "
+            "gitlink and recomputes its pinned tree digest through git, so "
+            "without it nothing says whether the pins agree, and a gate that "
+            "cannot answer is never a pass.") from exc
+
+
 def _check_gitlink_matches_pin(root: Path, role, path: str, commit: str,
                                rel: str, report: Report) -> str:
     """Fact 1 vs fact 2: the recorded gitlink against the pin file's
     `commit:`. Split from `_check_leg` for #132. Returns the gitlink so the
     caller can check it again against fact 3, the workflow references.
     """
-    gitlink = recorded_gitlink(root, path)
+    with _git_runs(f"the {role} leg's gitlink recorded at {path!r} could "
+                   "not be read"):
+        gitlink = recorded_gitlink(root, path)
     if gitlink is None:
         raise Refusal(
             "pin-gitlink-absent",
@@ -222,15 +367,20 @@ def _check_pin_digest(root: Path, path: str, commit: str, pin: dict, rel: str,
             "digest cannot be recomputed. Presence is not identity and an "
             "unreadable surface must fail rather than degrade.",
         )
-    try:
-        git_out(["rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}"],
-                cwd=submodule)
-    except Refusal as exc:
-        raise Refusal(
-            "pin-commit-unresolvable",
-            f"{path}: the pinned commit {commit} is not in that submodule's "
-            f"object store ({exc.detail})",
-        ) from exc
+    # `_git_runs` OUTSIDE the `try`: the refusal it raises is a `Refusal`, and
+    # inside, the `except Refusal` below would turn "no git to run" into
+    # `pin-commit-unresolvable`, which says the commit is missing.
+    with _git_runs(f"{path}: the pinned commit {commit[:12]} could not be "
+                   "looked up in that submodule"):
+        try:
+            git_out(["rev-parse", "--verify", "--quiet",
+                     f"{commit}^{{commit}}"], cwd=submodule)
+        except Refusal as exc:
+            raise Refusal(
+                "pin-commit-unresolvable",
+                f"{path}: the pinned commit {commit} is not in that "
+                f"submodule's object store ({exc.detail})",
+            ) from exc
     recorded = (pin.get("digests") or {}).get("tree_sha256")
     if not isinstance(recorded, str) or not SHA256_RE.match(recorded):
         report.finding("pin-digest-malformed",
@@ -243,7 +393,9 @@ def _check_pin_digest(root: Path, path: str, commit: str, pin: dict, rel: str,
             "unstated is a number, not an identity.",
         )
     else:
-        actual = tree_digest(submodule, commit)
+        with _git_runs(f"{path}: the tree digest at {commit[:12]} could not "
+                       "be recomputed"):
+            actual = tree_digest(submodule, commit)
         if actual.lower() != recorded.lower():
             report.finding(
                 "pin-digest-mismatch",
@@ -356,6 +508,14 @@ def _check_shape_pin(root: Path, manifest: dict, report: Report) -> None:
     pin, rel = _check_shape_pin_header(root, manifest, report)
     before = len(report.findings)
     files = pin.get("files") or []
+    if not isinstance(files, list):
+        # Asked, not assumed (#290): `files: 5` was iterated, and the run
+        # ended in a TypeError with no finding naming the pin.
+        report.finding("shape-pin-row",
+                       f"{rel}: `files:` is {files!r}, not a list of "
+                       "`path:`/`sha256:` rows, so nothing about the copied "
+                       "shape files is actually asserted")
+        return
     if not files:
         report.finding("shape-pin-no-files",
                        f"{rel}: no `files:` rows, so nothing about the copied "

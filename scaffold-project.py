@@ -77,7 +77,8 @@ from shape_materialize import (  # noqa: E402
     RULESET_HINT, SHAPE_REPOSITORY, CommandFailed,
     copy_tree, default_reference, descendant_note, election_date, env_commit,
     escape_what_stdout_cannot_encode, git_init_commit,
-    materialize_assembly_root, naming_block, run, stage_written,
+    materialize_assembly_root, naming_block, refuse_bad_branch, run,
+    stage_written,
 )
 # The leg-path rule `adopt-project.py` asks of its own paths (#179).
 from shape_materialize import refuse_bad_leg_paths  # noqa: E402
@@ -975,7 +976,10 @@ def _seed_legs(args, values: dict, names: dict, repositories: dict,
             except CommandFailed as exc:
                 print(exc.loudly(f"pushing the {role} leg"), file=sys.stderr)
                 print(RULESET_HINT.format(work=work, repo=repositories[role],
-                                          role=role), file=sys.stderr)
+                                          role=role,
+                                          local=args.tracking_branch,
+                                          tracking=args.tracking_branch),
+                      file=sys.stderr)
                 return None
         print(f"  {role:<9} {commit[:12]} tree {leg_digests[role][:12]}… "
               f"-> {urls[role]}")
@@ -1091,7 +1095,10 @@ def _build_assembly_root(args, values: dict, names: dict, repositories: dict,
             print(exc.loudly("pushing the assembly root"), file=sys.stderr)
             print(RULESET_HINT.format(work=assembly,
                                       repo=repositories["assembly"],
-                                      role="assembly"), file=sys.stderr)
+                                      role="assembly",
+                                      local=args.tracking_branch,
+                                      tracking=args.tracking_branch),
+                  file=sys.stderr)
             return False
     print(f"  assembly  {run(['git', 'rev-parse', 'HEAD'], cwd=assembly)[:12]} "
           f"-> {urls['assembly']}")
@@ -1198,6 +1205,23 @@ def _scaffold(args) -> int:
     pins, declared_pins, chain, link_pins = _declaration(args)
     _check_declared_names(policy, names, declared_pins, chain, link_pins)
     topic = policy.topic_for(project_id)
+    # THE BRANCH, ASKED OF GIT (#283). `checked_value`'s alphabet is wider
+    # than the names git accepts as a branch (`~`, `a..b`, `x.lock`, `a/`),
+    # and nothing asked git, so `--dry-run` printed a plan and, against
+    # GitHub, `gh repo create` had made all three repositories before the
+    # first `git init -b` died. Asked here a dry run refuses it as the real
+    # run would, before a work directory or a remote exists.
+    #
+    # HERE, AFTER `_declaration`, AND NOT BESIDE THE ALPHABET CHECK AT THE
+    # TOP: the refusals that come before `_identity` and `_declaration` start
+    # no process, and three test files hold that, each with a control that
+    # the first process is `git config user.name` or `_declaration`'s
+    # (`test_scaffold_pin_collisions`, `..._leg_path_collisions`,
+    # `..._referent_chain_links`). This one has to ask `git`. It still comes
+    # before `_shape_revision`, the work directory and every remote, so
+    # nothing exists when it refuses.
+    refuse_bad_branch("scaffold-bad-tracking-branch", "--tracking-branch",
+                      args.tracking_branch)
 
     shape_commit, shape_tree = _shape_revision()
     local, repositories, urls = _repository_urls(args, names)
