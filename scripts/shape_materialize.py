@@ -37,14 +37,20 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import unicodedata
 from pathlib import Path, PurePath
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from repo_shape import (  # noqa: E402
-    CHAIN_RECORD_FIELD, SAFE_ARG_RE, NamingPolicy, Refusal, checked_value,
-    double_quoted, file_sha256,
+    CHAIN_RECORD_FIELD, PATH_CLIMBS, PATH_ITSELF, PATH_NOT_CANONICAL,
+    SAFE_ARG_RE, NamingPolicy, Refusal, checked_value, double_quoted,
+    file_sha256, path_spelling_fault,
 )
+# The reader's own parse and its own comment rule, for "The two lines a pin
+# is moved by" below. `_strip_comment` is that module's private name and is
+# imported on purpose: it is the reader's rule for where a comment starts.
+from repo_shape import YamlError, _strip_comment, parse_yaml  # noqa: E402
 
 SHAPE_REPOSITORY = "opensoft/openRepoShape"
 
@@ -337,18 +343,32 @@ def election_date(elected_on: str) -> _dt.date:
 
     A date this cannot read is not one it will guess at: the guess would pick
     the reference, and the reference is a claim about a human's act.
+
+    THE FORM IS THE PROJECT'S OWN VALIDATOR'S (#261), on every Python.
+    `date.fromisoformat` reads `2026-W41-6` and `20261011` since Python 3.11,
+    and the project's `validate-manifest.py` refuses both: its `elected_on`
+    must match its own `DATE_RE`, asked here through the validator the
+    template carries (`manifest_validator`) and not copied. A date is read
+    only when that rule admits it AND it is a day on the calendar, so the
+    answer is the same on 3.9 and 3.14.
     """
+    text = str(elected_on)
     try:
-        return _dt.date.fromisoformat(str(elected_on))
+        if not manifest_validator().DATE_RE.match(text):
+            raise ValueError(f"{text!r} is not YYYY-MM-DD")
+        return _dt.date.fromisoformat(text)
     except ValueError as exc:
         raise Refusal(
             "election-date-malformed",
-            f"--elected-on {elected_on!r} is not a date; it takes YYYY-MM-DD "
+            f"--elected-on {elected_on!r} is not a YYYY-MM-DD date "
             "(and a plan file's `elected_on:` carries the same form)",
             "Remediation: re-run with a zero-padded ISO date, e.g. "
-            "--elected-on 2026-09-02 — not 2026-9-2 and not a word like "
-            "'yesterday'. The `reference:` the manifest records is chosen BY "
-            "that date, so it has to be readable before anything is written.",
+            "--elected-on 2026-09-02 — not 2026-9-2, not an ISO week or "
+            "basic-format date (`2026-W41-6`, `20261011`) that Python 3.11 "
+            "and later reads and the project's own validator refuses, and "
+            "not a word like 'yesterday'. The `reference:` the manifest "
+            "records is chosen BY that date, so it has to be readable before "
+            "anything is written.",
         ) from exc
 
 
@@ -377,6 +397,9 @@ NAMING_POLICY_YAML = "contracts/repository-naming.yaml"
 #: rather than importing one across a boundary neither module crosses
 #: otherwise.
 BOOTSTRAP = "scripts/bootstrap.py"
+#: And again for the project's manifest validator, which `COPIED_VERBATIM` and
+#: `EXECUTABLE` both carry and `manifest_validator` loads from the template.
+MANIFEST_VALIDATOR = "scripts/validate-manifest.py"
 
 #: Copied out of openRepoShape's OWN tree, so the project carries the standard
 #: it was cut from rather than a link to it.
@@ -388,7 +411,7 @@ COPIED_FROM_SHAPE = (
 #: Copied VERBATIM out of the assembly-root template (no substitution).
 COPIED_VERBATIM = (
     "scripts/validate-pins.py",
-    "scripts/validate-manifest.py",
+    MANIFEST_VALIDATOR,
     BOOTSTRAP,
     "Makefile",
     ".gitignore",
@@ -431,7 +454,7 @@ TEMPLATED = (
 #: Rendered only when the project DECLARES a neutral-product pin, and written
 #: once per declared pin at `neutral_pin_path(product)`.
 NEUTRAL_PIN_TEMPLATE = "contracts/neutral-product-pin.yaml"
-EXECUTABLE = ("scripts/validate-pins.py", "scripts/validate-manifest.py",
+EXECUTABLE = ("scripts/validate-pins.py", MANIFEST_VALIDATOR,
               BOOTSTRAP, VALIDATE_NAMING)
 #: The copy pin, rendered LAST by `_materialize` over the copies it digests.
 #: Named once because `assembly_root_paths` lists it beside the lists above,
@@ -711,6 +734,19 @@ class CommandFailed(Exception):
         )
 
 
+#: Two fields name a branch, and they are NOT the same thing (#324):
+#:   `{tracking}` is the run's tracking branch (`--tracking-branch`): the
+#:   branch of the REMOTE the refused push targeted, and so the base a
+#:   seeding pull request lands on.
+#:   `{local}` is the ref in `{work}` that the refused push carried. Each
+#:   caller -- the scaffold's legs and assembly root, the family holder --
+#:   pushed the tracking branch BY NAME from a clone made on it, so each
+#:   passes the tracking branch for both; a push of `HEAD:` would name `HEAD`.
+#:   An adoption prints its own `ADOPT_RULESET_HINT` (`adopt-project.py`,
+#:   #177), which names the tracking branch the same way and no command.
+#: Every caller passes both, after `checked_value` has admitted the tracking
+#: branch, so each is a safe argument and neither is quoted here. A call that
+#: leaves one out fails `tests/test_ruleset_hint_tracking_branch.py`.
 RULESET_HINT = """
 If the organisation applies a ruleset requiring changes to arrive by pull
 request, a direct push to the default branch is refused BY DESIGN and must not
@@ -719,8 +755,8 @@ be worked around. Two legitimate exits:
   (1) have an operator holding the bypass right seed the default branch once,
       then re-run this scaffold; or
   (2) push a seed BRANCH and open a pull request:
-          git -C {work} push -u origin main:seed/scaffold
-          gh pr create --repo {repo} --base main --head seed/scaffold \\
+          git -C {work} push -u origin {local}:seed/scaffold
+          gh pr create --repo {repo} --base {tracking} --head seed/scaffold \\
               --title 'Seed the {role} leg' --body 'Scaffolded shape.'
 
 NOTHING has been rolled back. What already exists is listed above; delete it
@@ -771,6 +807,147 @@ def run(args: list[str], cwd: Path | None = None, capture: bool = True) -> str:
         raise CommandFailed(args, cwd, proc.returncode,
                             (proc.stderr or "") + (proc.stdout or ""))
     return (proc.stdout or "").strip()
+
+
+# ---------------------------------------------------------------------------
+# A branch name, asked of git (#283)
+# ---------------------------------------------------------------------------
+#
+# `checked_value` holds a `--tracking-branch` to an ALPHABET, which keeps an
+# option and a shell word off a command line, and the alphabet is wider than
+# the names git accepts as a branch: `~`, `a..b`, `x.lock`, `a/`, `/a`, `a//b`,
+# `.a` and `a.` are all inside it, and `git init -b` refuses each. Nothing
+# asked git, so `--dry-run` printed a plan and, against GitHub, the run
+# created all three repositories before the first `git init -b` died.
+#
+# GIT IS THE AUTHORITY on what a branch name is (`git check-ref-format
+# --branch`): it is ASKED, never copied here, so a rule git adds or relaxes is
+# ours the day the person upgrades. The question is its own function, beside
+# `refuse_bad_leg_paths` in what it is for: a value judged BEFORE a work
+# directory or a remote exists, and by `--dry-run` too.
+#
+# IT LIVES HERE AND NOT IN `scripts/repo_shape.py` for the reason the leg-path
+# rule does: that file is a SHAPE COPY every project digest-pins, and one
+# function added there would put an `upstream-changed scripts/repo_shape.py`
+# row in front of every project for a rule no project's own copy ever asks.
+
+BRANCH_REMEDIATION = (
+    "Remediation: pass a branch name git will create, such as `main` or "
+    "`release/1.2`: no `..`, no `//`, no `~`, no `/` at either end, no `.` at "
+    "the end, no part that starts with `.` or ends in `.lock`, and not "
+    "`HEAD`. `git check-ref-format --branch <name>` is the check, and `git "
+    "help check-ref-format` lists every rule.")
+
+#: When git could not answer at all, the name was never judged, and a remedy
+#: that says "pass another name" sends the person after the wrong thing.
+BRANCH_UNCHECKED_REMEDIATION = (
+    "Remediation: the name was not judged, because git could not answer the "
+    "question for any name. Fix what git's own words above name (a `git` "
+    "missing from PATH, a malformed global or system git config), check that "
+    "`git check-ref-format --branch main` prints `main`, then run this again.")
+
+#: A name every git creates as a branch. It is asked only after git refused
+#: the person's name: a git that refuses this one too could not answer.
+BRANCH_CONTROL = "main"
+
+
+def _ask_git_branch(name: str) -> str:
+    """`git check-ref-format --branch <name>`, asked of NO repository and
+    from no directory of the person's.
+
+    `--branch` sets up the repository it finds, so asked in the operator's
+    working directory it failed for EVERY name inside a repository git
+    cannot open (a `.git` file naming a gitdir that is gone, a `.git/config`
+    that does not parse) and in a directory removed under the person, where
+    a scaffold without the question succeeds; and a repository it did open
+    lent `@{-1}` its own reflog (review of a03abcf). An empty directory is
+    no repository as `--git-dir` and is a directory that exists as the
+    working directory, so the answer is the same wherever the person
+    stands, and git, having no repository, has nothing to expand.
+    """
+    nowhere = tempfile.mkdtemp(prefix="openreposhape-branch-")
+    try:
+        return run(["git", f"--git-dir={nowhere}", "check-ref-format",
+                    "--branch", name], cwd=Path(nowhere))
+    finally:
+        # Empty: git writes nothing there. A removal that fails (Windows can
+        # hold a directory a moment after the process in it ended) must not
+        # turn git's answer into a refusal.
+        shutil.rmtree(nowhere, ignore_errors=True)
+
+
+def _branch_verdict(what: str, value) -> tuple[str | None, str]:
+    """`(problem, remediation)`: `branch_problem`'s sentence, and the remedy
+    that fits it, which is about the NAME when git judged the name and about
+    GIT when git could not answer."""
+    text = str(value)
+    refused = f"{what} is {text!r}, which is not a branch name git will create"
+    unchecked = f"{what} is {text!r}, which could not be checked"
+    if text.startswith("-"):
+        return (f"{refused}: it begins with `-`, which git reads as an option",
+                BRANCH_REMEDIATION)
+    try:
+        answer = _ask_git_branch(text)
+    except CommandFailed as exc:
+        said = f" ({exc.output})" if exc.output else ""
+        # GIT'S REFUSAL, OR GIT'S FAILURE? Git's words are localised, so they
+        # are not read: git is asked about a name it always creates, and a
+        # git that refuses that too (a malformed global config, say) could
+        # not answer for any name, so this one was never judged.
+        try:
+            _ask_git_branch(BRANCH_CONTROL)
+        except (CommandFailed, OSError):
+            return (f"{unchecked}: `git check-ref-format --branch` fails for "
+                    f"`{BRANCH_CONTROL}` too, so git could not answer{said}",
+                    BRANCH_UNCHECKED_REMEDIATION)
+        return (f"{refused}: `git check-ref-format --branch` refuses it{said}",
+                BRANCH_REMEDIATION)
+    except ValueError as exc:
+        # The value cannot be an argument at all (a NUL, a lone surrogate):
+        # the answer is not git's, and the fault is the value's.
+        return (f"{unchecked}: `git check-ref-format --branch` could not be "
+                f"run ({exc})", BRANCH_REMEDIATION)
+    except OSError as exc:
+        # `git` itself is missing, or no empty directory could be made to ask
+        # it from: the answer is not git's, and the fault is not the name's.
+        return (f"{unchecked}: `git check-ref-format --branch` could not be "
+                f"run ({exc})", BRANCH_UNCHECKED_REMEDIATION)
+    if answer != text:
+        return (f"{refused}: `git check-ref-format --branch` reads it as "
+                f"{answer!r}, not as written", BRANCH_REMEDIATION)
+    return None, BRANCH_REMEDIATION
+
+
+def branch_problem(what: str, value) -> str | None:
+    """None when `git check-ref-format --branch` accepts `value` exactly as
+    written; otherwise the sentence that says what git made of it.
+
+    `what` names the value as the person met it (`--tracking-branch`,
+    `tracking_branch`), the way `leg_path_problem` is given its flag. Git is
+    asked with no repository in play (`_ask_git_branch`), so the verdict
+    does not depend on the directory the person runs the tool from. A name
+    git would EXPAND rather than echo (`@{-1}`) is refused too: the tool
+    writes the name it was given, so a spelling that means another branch
+    is not that branch. A leading `-` is refused without asking, so the value
+    is never an option to the question itself; `checked_value` has refused it
+    already for the tools that call that first. A git that cannot answer for
+    any name says so ("could not be checked"); it does not blame the name.
+    """
+    return _branch_verdict(what, value)[0]
+
+
+def refuse_bad_branch(refusal: str, what: str, value) -> None:
+    """Raise `Refusal(refusal)` when git would not create `value` as a branch,
+    or could not say.
+
+    `refusal` is the caller's own code (`scaffold-bad-tracking-branch`), so
+    each tool refuses in its own voice, as `refuse_bad_leg_paths` lets it.
+    The remedy is `BRANCH_REMEDIATION` when git judged the name, and
+    `BRANCH_UNCHECKED_REMEDIATION` when git could not answer at all.
+    """
+    problem, remediation = _branch_verdict(what, value)
+    if problem:
+        raise Refusal(refusal, problem, remediation)
 
 
 #: `-F -` reads the message from STDIN. Every argument is then a literal, and
@@ -832,9 +1009,10 @@ def env_commit(work: Path, message: str) -> None:
 def force_stage(work: Path, paths=()) -> None:
     """Stage exactly `paths`, FORCED past any ignore rule, and nothing else.
 
-    THE FORCED ADD THE SCAFFOLD, `family.py init`, `adopt-project.py`'S
-    SEEDED LEG AND `update-shape.py` SHARE; the seeded leg reaches it
-    through `git_init_commit`, as `stage_written` says. A file the shape
+    THE FORCED ADD THE SCAFFOLD, `family.py` (`init`, and every `add`, `bump`
+    and `remove` commit), `adopt-project.py`'S SEEDED LEG AND
+    `update-shape.py` SHARE; the seeded leg reaches it through
+    `git_init_commit`, as `stage_written` says. A file the shape
     wrote and pinned has to reach the commit whatever the operator's own
     excludes say — a global `core.excludesFile`, `.git/info/exclude`, a
     `.gitignore` the project keeps — because a pin row naming a file the
@@ -851,13 +1029,21 @@ def force_stage(work: Path, paths=()) -> None:
     No copy-list entry holds a glob character today; the day one does, it
     stages itself and no neighbour.
 
-    TWO CALLERS, AND ONLY ONE OF THEM SWEEPS FIRST. `stage_written` runs
-    `git add -A` before it, because it stages a tree this tool has just
-    made. `update-shape.py apply --add` calls this ALONE (#202): it writes
-    into a checkout somebody may be working in, where `-A` would stage their
-    work beside the shape's, and its plain `git add --` died on an ignored
-    addition after the copies, the pin and the branch were already written.
-    Empty, this runs nothing.
+    A CALLER THAT WRITES INTO A CHECKOUT SOMEBODY WORKS IN CALLS THIS ALONE,
+    NEVER AFTER A SWEEP. `stage_written` runs `git add -A` before it, and is
+    for a caller that stages a tree this tool has just made, where every path
+    is its own. In a checkout somebody may be working in, `-A` would stage
+    their work beside the shape's, so such a caller names its paths and
+    forces those and nothing else, and this function never sweeps: a caller
+    that wants a sweep makes it first, as `stage_written` does. The rule
+    began with `update-shape.py apply --add` (#202), whose plain `git add --`
+    died on an ignored addition after the copies, the pin and the branch were
+    already written. `family.py`'s commits took it up (#242), each in a
+    holder somebody may be working in: `add` stages the gitlink,
+    `.gitmodules` and `family.yaml`; `bump` the gitlink and `family.yaml`;
+    `remove` `.gitmodules` and `family.yaml`, the gitlink's deletion already
+    staged by its `git rm`. The next caller of that kind is bound by the same
+    rule without being named here. Empty, this runs nothing.
     """
     paths = list(paths)
     if paths:
@@ -883,10 +1069,12 @@ def stage_written(work: Path, written=()) -> None:
     landed, in `root_key`'s POSIX spelling, which `git` takes as a pathspec
     on Windows too. Empty, this is `git add -A -- .` and nothing else.
 
-    ONE HELPER, THREE CALLERS: `git_init_commit` (the scaffold's two legs and
-    `adopt-project.py`'s seeded leg), the scaffold's assembly root and
-    `family.py init`'s holder. The forced half is `force_stage`, which
-    `update-shape.py apply --add` calls on its own (#202).
+    A CALLER THAT HAS JUST MADE THE TREE IT STAGES CALLS THIS.
+    `git_init_commit` does (the scaffold's two legs and `adopt-project.py`'s
+    seeded leg), and so do the scaffold's assembly root and `family.py init`'s
+    holder. A caller that writes into a checkout somebody works in does not:
+    `-A` would stage their work beside the shape's, so it calls the forced
+    half, `force_stage`, on its own (#202, #242).
     """
     run(["git", "add", "-A", "--", "."], cwd=work)
     force_stage(work, written)
@@ -1256,6 +1444,116 @@ def lane_trailer_argument(quote=None, env: dict | None = None) -> str:
         return ""
     spelled = quote(line) if quote else '"' + line + '"'
     return f" --trailer {spelled}"
+
+
+# ---------------------------------------------------------------------------
+# The two lines a pin is moved by (#323)
+# ---------------------------------------------------------------------------
+#
+# `update-shape.py` moves `commit:` and `digests.tree_sha256:` in
+# `contracts/shape-pin.yaml` and in a manifest's `shape:` block, and
+# `bump-leg.py` moves them in a leg's `contracts/<role>-pin.yaml`: three
+# rewriters, all of them LINE rewrites, because each file opens with
+# paragraphs a YAML round trip would delete. What it is to rewrite one of
+# those lines, and what it is to know the rewrite is right, is one answer
+# here rather than three that agree until they do not.
+#
+# THE LINE KEEPS EVERYTHING BUT ITS VALUE. Each rewriter used to find its
+# line by a fixed spelling (two spaces in front of `tree_sha256:`) and write
+# it back as a fixed line, so a `digests:` child indented four spaces — which
+# the reader and both validators accept — was refused as hand-edited, and a
+# trailing `# comment` on either line was dropped without a word (#323, the
+# same assumption #208 removed from the manifest's indentation).
+#
+# AND THE RESULT IS READ BACK. A line rewrite cannot carry every layout the
+# reader accepts — a value on the line below its key is the one that comes up
+# — so what it returns is read with `parse_yaml` and must give the target.
+#
+# IT LIVES HERE AND NOT IN `scripts/repo_shape.py`, which is a SHAPE COPY:
+# anything added there would put an `upstream-changed scripts/repo_shape.py`
+# row in front of every project in the estate for a helper none of them calls
+# (see "Commit trailers" above for the same argument). This module is in no
+# copy list and both tools already import it. `_strip_comment` is imported
+# from there by its private name on purpose: it IS the reader's definition of
+# where a comment starts, quotes included, and a second one is how a rewrite
+# and a reader come to disagree about which part of a line is the value.
+
+
+def is_nested_key(line: str, key: str) -> bool:
+    """Is `line` an INDENTED `<key>:` line, a child of some block, at any
+    depth? How a pin's `digests.tree_sha256` is found (#323): by the key, not
+    by a fixed count of spaces in front of it. Spaces only: the reader refuses
+    a tab as indentation."""
+    return line.startswith(" ") and line.lstrip(" ").startswith(key + ":")
+
+
+def with_scalar(line: str, key: str, value: str) -> str:
+    """`line`, a `<indent><key>: <old value>[  # comment]` line, with only the
+    old value replaced by `value` (double-quoted, as the scaffold writes it).
+
+    The indentation, the key, the spacing between the colon and the value
+    and a trailing comment, with the spacing in front of it, are the line's
+    own. A line with no comment loses its trailing whitespace, as it always
+    has. Callers FIND the line by `key`; one that is not that key's raises
+    `ValueError`, which no caller reaches.
+    """
+    body = _strip_comment(line)
+    indent = line[:len(line) - len(line.lstrip())]
+    key_part = body[len(indent):]
+    if not key_part.startswith(key + ":"):
+        raise ValueError(f"not a `{key}:` line: {line!r}")
+    after = key_part[len(key) + 1:]
+    spacing = after[:len(after) - len(after.lstrip())] or " "
+    tail = line[len(body):]
+    return (f"{indent}{key}:{spacing}{double_quoted(value)}"
+            f"{tail if tail.strip() else ''}")
+
+
+def pin_values_in(text: str, within: tuple = ()) -> tuple[str, str]:
+    """`commit` and `digests.tree_sha256` as the validators read them out of
+    `text`, beneath the keys `within` (`("shape",)` for a manifest's block),
+    or a `ValueError` saying why they cannot be read."""
+    where = "".join(f"{name}." for name in within)
+    try:
+        node = parse_yaml(text)
+    except YamlError as exc:
+        raise ValueError(str(exc)) from exc
+    for name in within:
+        node = node.get(name) if isinstance(node, dict) else None
+    commit = node.get("commit") if isinstance(node, dict) else None
+    digests = node.get("digests") if isinstance(node, dict) else None
+    tree = digests.get("tree_sha256") if isinstance(digests, dict) else None
+    if commit is None or tree is None:
+        raise ValueError(f"no `{where}commit` and `{where}digests."
+                         "tree_sha256` where the validator reads them")
+    return str(commit), str(tree)
+
+
+def rewrite_fault(before: str, after: str, commit: str, tree: str,
+                  within: tuple = ()) -> str | None:
+    """Why `after` does not read back to `commit` and `tree`, or None.
+
+    THE FAULT IS THIS TOOL'S ONLY WHEN IT IS: None also when `before` did not
+    read either. A file that read correctly before the rewrite and does not
+    after it was broken by the rewrite, and the caller's refusal says so. One
+    that did not read before — unparsable, or no pin where the validator
+    looks — was red before the command ran: that is left to the validators,
+    which name the project's own line, and blaming this tool for it would be
+    the same wrong answer turned around (#208).
+    """
+    try:
+        found = pin_values_in(after, within)
+        if found == (commit, tree):
+            return None
+        why = (f"it would read `commit: {found[0]}` and "
+               f"`tree_sha256: {found[1]}`")
+    except ValueError as exc:
+        why = f"the reader would refuse it: {exc}"
+    try:
+        pin_values_in(before, within)
+    except ValueError:
+        return None
+    return why
 
 
 def render(text: str, values: dict[str, str], source: str) -> str:
@@ -1785,6 +2083,14 @@ def copy_out(src: Path, dst: Path) -> None:
 # asks (see "Commit trailers" above for the same argument). This module
 # is in no copy list and both tools already import it.
 #
+# EXCEPT THE SEGMENTS, which a project's copy DOES ask (#189): its
+# `validate-manifest.py` holds each path `project.yaml`'s `submodules:`
+# records to the spelling Git records a path in, so
+# `repo_shape.path_spelling_fault` answers that for both rules, and
+# `_spelling_reason` below adds only what a TYPED path can get wrong -- a
+# drive letter and a backslash, which on POSIX are characters of a name Git
+# records -- and says every answer about a leg.
+#
 #   CANONICAL = a relative POSIX path of one or more segments, each non-empty
 #   and neither `.` nor `..`: no leading `/` or `./` (nor a drive letter), no
 #   trailing `/`, no `//`, no backslash. The two legs also take DIFFERENT
@@ -1848,8 +2154,28 @@ LEG_PATH_REMEDIATION = (
 )
 
 
+#: What each way a path's SEGMENTS can be misspelled means for a leg's mount
+#: path. `path_spelling_fault` asks the segments; the empty and absolute
+#: answers it also gives are `_spelling_reason`'s own, asked first, beside
+#: the drive letter and the backslash only a typed path can get wrong.
+LEG_SEGMENT_REASONS = {
+    PATH_CLIMBS: ("it has a `..` segment, so it names a different place than "
+                  "it spells and can climb out of the assembly root"),
+    PATH_ITSELF: ("it names the assembly root itself, and a leg is mounted "
+                  "INSIDE the root, not at it"),
+    PATH_NOT_CANONICAL: (
+        "Git records a mount without its `.` segments (a leading `./`), a "
+        "trailing `/` or a doubled `/`, so the mount and its `.gitmodules` "
+        "entry would name two different paths"),
+}
+
+
 def _spelling_reason(text: str) -> str | None:
-    """Why `text` is not a CANONICAL spelling of a leg path, or None."""
+    """Why `text` is not a CANONICAL spelling of a leg path, or None.
+
+    The segments are `repo_shape.path_spelling_fault`'s, the rule a
+    project's own validator also holds a recorded submodule path to (#189).
+    """
     if not text:
         return "it is empty"
     if text.startswith("/") or WINDOWS_ABSOLUTE_RE.match(text):
@@ -1858,18 +2184,7 @@ def _spelling_reason(text: str) -> str | None:
                 "its path is relative to it")
     if "\\" in text:
         return "it has a backslash, and a path here is written with `/`"
-    segments = text.split("/")
-    if ".." in segments:
-        return ("it has a `..` segment, so it names a different place than it "
-                "spells and can climb out of the assembly root")
-    if all(segment in ("", ".") for segment in segments):
-        return ("it names the assembly root itself, and a leg is mounted "
-                "INSIDE the root, not at it")
-    if "" in segments or "." in segments:
-        return ("Git records a mount without its `.` segments (a leading "
-                "`./`), a trailing `/` or a doubled `/`, so the mount and its "
-                "`.gitmodules` entry would name two different paths")
-    return None
+    return LEG_SEGMENT_REASONS.get(path_spelling_fault(text))
 
 
 def _unmountable_reason(text: str) -> str | None:
@@ -1997,3 +2312,465 @@ def refuse_bad_leg_paths(refusal: str, spec: tuple, code: tuple) -> None:
     problems = leg_path_problems(spec, code)
     if problems:
         raise Refusal(refusal, " ".join(problems), LEG_PATH_REMEDIATION)
+
+
+# ---------------------------------------------------------------------------
+# What a tool may write into the new project's manifest (#258, #261)
+# ---------------------------------------------------------------------------
+#
+# `scaffold-project.py` and `adopt-project.py` fill `templates/assembly-root/`
+# from values a person typed (`--id`, `--tracking-branch`, `--elected-by`,
+# `--elected-on`, `--reference`, `--org`, `--name`) or edited into a plan
+# (`visibility:`, `elected_by:`), and the new project then reads the result
+# with two programs of its own: its YAML reader (`repo_shape`) and its
+# `scripts/validate-manifest.py`. Neither tool asked either of them anything,
+# so a value the project could not hold was found by the project's FIRST
+# bootstrap, after the repositories existed:
+#
+#   * READ BACK AS SOMETHING ELSE (#258). The templates write `id:` and
+#     `tracking_branch:` bare, so `--id null`, `--id true`, `--tracking-branch
+#     true` and `--tracking-branch 007` became None, True and 7. The id left
+#     the project's gate red; the branch was silent, each leg sitting on a
+#     local `True` or `7` the remote does not have, with no upstream.
+#   * REFUSED BY THE VALIDATOR (#261). A blank `--elected-by` or `--reference`,
+#     `--elected-on 2026-W41-6` or `20261011` (which `date.fromisoformat` reads
+#     from Python 3.11), `--org test+org`, a plan's `visibility: secret` or
+#     `elected_by: null`: all accepted, and `adoption verified` or a scaffold
+#     exit 0 followed by a bootstrap that said no.
+#
+# THE CURE IS TO ASK, BEFORE ANYTHING IS CREATED, AND TO REFUSE. The two
+# questions below take the values a tool is about to record and put them
+# through the very programs the project will use, so there is no second
+# definition of either rule to keep in step:
+#
+#   `manifest_misreads`  renders each template line that carries one of the
+#       values, reads that line with the project's reader (`repo_shape.
+#       parse_yaml`, of which every project carries a copy) and refuses a
+#       value that does not come back as the same text. The TEMPLATE says
+#       which values are written bare and which quoted: a placeholder the
+#       template quotes is asked as the quoted line it is, so the day the
+#       templates quote `id:` and `tracking_branch:` (#259), those values
+#       read back and this refuses nothing, with no edit here.
+#   `manifest_invalid`   renders `project.yaml` from the whole substitution
+#       table, reads it, and runs the validator the template ships
+#       (`templates/assembly-root/scripts/validate-manifest.py`, loaded from
+#       that file, never re-implemented) over it. Whatever the validator says,
+#       now or after it learns another rule, is refused here in its words.
+#
+# REFUSED, NOT QUOTED OR CORRECTED, as #225, #181 and #251 refuse: a value
+# the manifest cannot hold has no spelling that is the same value (`007` as a
+# branch is a legal git name and a different number), and rewriting a
+# person's value for them is the silent retyping this refuses. Quoting the
+# templates is #259's decision, and one decision for every tool that renders
+# them.
+#
+# IT LIVES HERE AND NOT IN `scripts/repo_shape.py` OR THE VALIDATOR, which are
+# SHAPE COPIES: the materializer writes both into every project and
+# `contracts/shape-pin.yaml` digests them, so a rule moved into either would
+# put an `upstream-changed` row in front of every project in the estate for a
+# question no project's own copy asks of itself. The validator is LOADED, so
+# its definition stays the one place the rule is written.
+
+import importlib.util  # noqa: E402
+from repo_shape import YamlError, parse_yaml  # noqa: E402
+
+#: The assembly root's template directory, and the two files in it these
+#: questions read: the manifest, and the validator the project is given
+#: (`MANIFEST_VALIDATOR`, named beside the copy lists that carry it).
+ASSEMBLY_TEMPLATE = (Path(__file__).resolve().parent.parent / "templates"
+                     / "assembly-root")
+MANIFEST_TEMPLATE = "project.yaml"
+
+#: The names this module asks of the validator: its `elected_on` pattern and
+#: the function that makes every FINDING.
+VALIDATOR_ASKS = ("DATE_RE", "_findings")
+
+#: The templated files the project's reader reads: the manifest and the two
+#: leg pins. The materializer's own list, so a templated YAML file added there
+#: is asked about here without an edit.
+TEMPLATED_YAML = tuple(rel for rel in TEMPLATED if rel.endswith(".yaml"))
+
+
+def _placeholders_of(line: str) -> list[str]:
+    """The names of the placeholders `render` finds in `line`.
+
+    From `PLACEHOLDER_RE`, the pattern `render` itself uses to find one, and
+    not from a second spelling of its alphabet: a template line this counted
+    as one placeholder while `render` saw two would be rendered here with a
+    one-key table and refused as `template-unsubstituted`. When the pattern
+    is widened (#260 admits digits, for `{{SPEC_TREE_SHA256}}`) this follows.
+    """
+    return [token[2:-2] for token in PLACEHOLDER_RE.findall(line)]
+
+
+#: The validator modules already loaded, by the file they were loaded from.
+_VALIDATORS: dict = {}
+
+
+def manifest_validator(template_dir: Path = ASSEMBLY_TEMPLATE):
+    """The new project's own `scripts/validate-manifest.py`, as a module.
+
+    LOADED FROM THE TEMPLATE IT IS COPIED FROM, so what is asked is the rule
+    the project will apply and no second spelling of it exists. By path,
+    because the filename has a hyphen and cannot be imported by name
+    (`shape-doctor.py` loads the tools it asks the same way). The directory
+    the validator puts at the front of `sys.path` for its own sibling imports
+    is taken off again: `bootstrap` and `validate-pins` are modules of the
+    project and must not shadow anything of this process's.
+
+    NO BYTECODE IS WRITTEN. Importing a source file makes CPython write
+    `scripts/__pycache__/` beside it, and this file is a TEMPLATE: a `.pyc`
+    in `templates/assembly-root/` is a file nobody put there, which every
+    reader of that tree then meets (`tests/test_scaffold_leg_path_collisions.py`
+    reads each file under it as text). The same reason `shape-doctor.py` keeps
+    the interpreter's cache out of a tree it only reads.
+    """
+    path = Path(template_dir) / MANIFEST_VALIDATOR
+    module = _VALIDATORS.get(path)
+    if module is None:
+        spec = importlib.util.spec_from_file_location(
+            "openreposhape_validate_manifest", path)
+        module = importlib.util.module_from_spec(spec)
+        saved_path, saved_flag = list(sys.path), sys.dont_write_bytecode
+        sys.dont_write_bytecode = True
+        try:
+            spec.loader.exec_module(module)
+        except Exception as exc:  # a missing, unreadable or broken file
+            raise _validator_unusable(
+                "could not be loaded", f"{type(exc).__name__}: {exc}"
+            ) from exc
+        finally:
+            sys.path[:] = saved_path
+            sys.dont_write_bytecode = saved_flag
+        # What this module asks of it, so that a file that loads and lacks one
+        # is the same refusal and not an `AttributeError` where it is used.
+        for name in VALIDATOR_ASKS:
+            if not hasattr(module, name):
+                raise _validator_unusable(
+                    "could not be used", f"it has no `{name}`")
+        _VALIDATORS[path] = module
+    return module
+
+
+def _validator_unusable(what: str, why: str) -> Refusal:
+    """The refusal for a template validator that cannot be asked, and not a
+    traceback. It is a defect of the copy of the standard that was run and
+    not of any value, and it is said so. Nothing was created, because the
+    question is asked before anything exists; and a validator that cannot
+    answer lets no manifest through unasked."""
+    return Refusal(
+        "manifest-validator-unusable",
+        f"templates/assembly-root/{MANIFEST_VALIDATOR}, the validator this "
+        f"run asks about the manifest it would write, {what}: {why}",
+        "Remediation: this is a defect in the copy of this standard you ran, "
+        "not in your values: the file is missing, unreadable or broken "
+        "there, and nothing was created. Restore it from the standard's "
+        "repository, or reinstall the standard, and run again.")
+
+
+def _reading_in_words(reading) -> str:
+    """What the project's reader made of a value, as a sentence says it."""
+    if isinstance(reading, YamlError):
+        return f"nothing at all, because it refuses the line ({reading})"
+    if reading is None:
+        return "no value at all"
+    if isinstance(reading, bool):
+        return "the boolean " + ("true" if reading else "false")
+    if isinstance(reading, (int, float)):
+        return f"the number {reading!r}"
+    if isinstance(reading, str):
+        return f"the text {reading!r}"
+    return "a list" if isinstance(reading, list) else "a mapping"
+
+
+def _line_shown(line: str) -> str:
+    """`line` in backticks, or as Python spells it where it holds a character
+    a terminal shows as something else, so that one finding stays one line."""
+    return f"`{line}`" if line.isprintable() else repr(line)
+
+
+def _reading_of(rendered: str):
+    """What the project's reader makes of the one `key: value` line
+    `rendered`: the value, the `YamlError` it raised, or the whole answer
+    when it is not one key with one value (a value with a line break in it
+    can carry a second key into the file)."""
+    try:
+        parsed = parse_yaml(rendered.lstrip() + "\n")
+    except YamlError as exc:
+        return exc
+    if isinstance(parsed, dict) and len(parsed) == 1:
+        return next(iter(parsed.values()))
+    return parsed
+
+
+def _misread_rows(values: dict, what: dict, template_dir: Path
+                  ) -> dict[str, list[tuple]]:
+    """For each placeholder of `what` whose value the project's reader would
+    not read back as that same text: `(file, rendered line, reading)` for each
+    template line that carries it."""
+    found: dict[str, list] = {}
+    for rel in TEMPLATED_YAML:
+        text = (Path(template_dir) / rel).read_text(encoding="utf-8")
+        for line in text.splitlines():
+            keys = _placeholders_of(line)
+            if (len(keys) != 1 or keys[0] not in what
+                    or keys[0] not in values
+                    or line.lstrip().startswith("#")):
+                continue
+            key, value = keys[0], str(values[keys[0]])
+            rendered = render(line, {key: value}, rel).lstrip()
+            reading = _reading_of(rendered)
+            if not (isinstance(reading, str) and reading == value):
+                found.setdefault(key, []).append((rel, rendered, reading))
+    return found
+
+
+def manifest_misreads(values: dict, what: dict,
+                      template_dir: Path = ASSEMBLY_TEMPLATE) -> list[str]:
+    """A sentence for each value the project's reader would read back as
+    anything but that same text; `[]` when every one reads back.
+
+    `values` is the substitution table; `what` names the placeholders to ask
+    about and how the caller calls each (`{"PROJECT_ID": "--id"}`), and a
+    placeholder it does not name is not asked: a block value
+    (`NEUTRAL_PRODUCT_PINS`, a naming block) is not one line's scalar, and a
+    value a rule of its own already judged is not asked twice.
+
+    Each template line that carries exactly one of them is rendered with the
+    value, as `render` writes it, and read as the project reads it.
+    """
+    return [
+        f"{what[key]} is {str(values[key])!r}, which is written "
+        + " and ".join(f"into {rel} as {_line_shown(line)}"
+                       for rel, line, _ in rows)
+        + ", where the project's own YAML reader reads it back as "
+        + f"{_reading_in_words(rows[0][2])} and not as that text."
+        for key, rows in _misread_rows(values, what, template_dir).items()]
+
+
+def misread_placeholders(values: dict, what: dict,
+                         template_dir: Path = ASSEMBLY_TEMPLATE
+                         ) -> tuple[str, ...]:
+    """The placeholders of `what` whose value `manifest_misreads` would refuse,
+    for a caller that leaves those values to a misread rule of its own and
+    must not have the validator's question asked a second time of them
+    (`manifest_invalid`'s `not_text`)."""
+    return tuple(_misread_rows(values, what, template_dir))
+
+
+#: Which placeholder carries the value a finding of the validator is about,
+#: for the ones a tool is handed a value for. A finding with no row is still
+#: refused, in the validator's words and without a flag to point at.
+FINDING_PLACEHOLDER = {
+    "manifest-id": "PROJECT_ID", "manifest-topic": "PROJECT_ID",
+    "manifest-name": "PROJECT_NAME", "manifest-elected-by": "ELECTED_BY",
+    "manifest-elected-on": "ELECTED_ON", "manifest-reference": "REFERENCE",
+    "manifest-visibility": "VISIBILITY", "manifest-leg-repository": "ORG",
+}
+
+_FINDING_RE = re.compile(r"^FINDING (?P<code>[a-z0-9-]+): (?P<detail>.*)$",
+                         re.DOTALL)
+
+
+def _code_of(finding: str) -> str | None:
+    """The code of one `FINDING <code>: <detail>`, or None for a line that is
+    not one."""
+    match = _FINDING_RE.match(finding)
+    return match.group("code") if match else None
+
+
+def _sentences_of(findings: list[str], values: dict, what: dict,
+                  not_text: tuple = ()) -> list[str]:
+    """The FINDINGs of the validator as sentences: one for each value the
+    caller handed over, naming it and holding every finding about it (`--org`
+    is judged once for each of the three legs it names), and one for each
+    finding that is about none of them. A finding about a placeholder in
+    `not_text` is left out, as `manifest_invalid` says."""
+    by_value: dict[str, list[str]] = {}
+    sentences: list[str] = []
+    for finding in findings:
+        match = _FINDING_RE.match(finding)
+        if match is None:
+            sentences.append(finding)
+            continue
+        code, detail = match.group("code"), match.group("detail")
+        said = f"{code}: {detail if detail.endswith('.') else detail + '.'}"
+        key = FINDING_PLACEHOLDER.get(code)
+        if key is not None and key in not_text:
+            continue
+        if key in what and key in values:
+            by_value.setdefault(key, []).append(said)
+        else:
+            sentences.append("the manifest this run would write is one the "
+                             f"project's own validate-manifest.py refuses: "
+                             f"{said}")
+    return [f"{what[key]} is {str(values[key])!r}, which the project's own "
+            f"validate-manifest.py refuses: {' '.join(said)}"
+            for key, said in by_value.items()] + sentences
+
+
+def manifest_invalid(values: dict, policy: NamingPolicy, what: dict,
+                     template_dir: Path = ASSEMBLY_TEMPLATE,
+                     ignore: tuple = (), not_text: tuple = ()) -> list[str]:
+    """A sentence for each FINDING the project's own validator would make of
+    the `project.yaml` these `values` render; `[]` when it would pass.
+
+    `ignore` is the codes of findings the CALLER already reports by a rule of
+    its own in the same list (`adopt-project.py check` finds a leg path
+    `plan-bad-leg-path` and must not say it a second time as the validator's
+    `manifest-leg-path`); a caller that judges nothing earlier ignores none,
+    so that a rule it did not apply still refuses.
+
+    `not_text` is the placeholders whose value the caller READ as something
+    that is not text (a plan's `id: 007` is the number 7, and `str` of it is
+    what the template would write): that is a misread, which is judged in
+    words that say what was read and never in the retyped text, so the
+    validator's finding about such a value is left to that rule. A value the
+    plan holds as no value at all is not one of these: `execute` writes it as
+    blank, and the validator's finding about a blank is the one wanted.
+
+    The WHOLE manifest is rendered and read, so a rule about how one value
+    relates to another (`topic` to `id`, a leg's repository to its role) is
+    asked as the project asks it. `values` must be the complete table;
+    `policy` is the naming policy the project carries a copy of. A WARNING of
+    the validator (a chain link it cannot check offline) is a note and never
+    a refusal, exactly as the project's own exit code treats it.
+    """
+    template = (Path(template_dir) / MANIFEST_TEMPLATE).read_text(
+        encoding="utf-8")
+    try:
+        manifest = parse_yaml(render(template, values, MANIFEST_TEMPLATE))
+    except YamlError as exc:
+        return ["the manifest this run would write is a file the project's "
+                f"own YAML reader refuses: {exc}."]
+    validator = manifest_validator(template_dir)
+    try:
+        notes = validator._findings(manifest, policy, None)
+    except Exception as exc:  # the validator's own defect, never a finding
+        raise _validator_unusable(
+            "raised when it was asked", f"{type(exc).__name__}: {exc}"
+        ) from exc
+    return _sentences_of(
+        [note for note in notes if not note.startswith("WARNING")
+         and _code_of(note) not in ignore], values, what, not_text)
+
+
+#: The remediation, without the sentence only the caller can write (what was
+#: or was not created, whether `--dry-run` refuses the same).
+#:
+#: WHAT IT SAYS IS ONLY WHAT HOLDS FOR EVERY VALUE THE RULE REFUSES: the
+#: project's reader reads back something other than what was typed. What that
+#: does next differs by value and by reader, and it is NOT always a failure.
+#: `--tracking-branch 2026` and `1.5` scaffold, bootstrap and get their
+#: upstream today, because every reader of `tracking_branch` does `str()` and
+#: `str(2026)` is `2026` again (while `007` reads back as `7`, `1.50` as
+#: `1.5` and `0` as `main`). So the text names only the failures that do hold
+#: (an id that is not text fails the validator; `007` as a branch becomes the
+#: branch `7`) and says that a number which survives `str()` works because of
+#: the reader and is still a number to the project's own.
+MANIFEST_MISREAD_REMEDIATION = (
+    "Remediation: choose another value for each one named, as nothing here "
+    "will retype it for you. The templates write these values unquoted, so "
+    "the project's own YAML reader takes `null` and `~` for no value, `true` "
+    "and `false` for booleans, and `007`, `2026` or `1.5` for numbers: what "
+    "it reads back is not what was typed. What that does differs: an id "
+    "that is not text fails the project's own validate-manifest.py, and "
+    "`007` as a branch reads back as the branch `7`; `2026` or `1.5` as a "
+    "branch happens to work today, because the tools that read it turn the "
+    "number back into text, but it is still a number to the project's "
+    "reader and not a name. A value the reader takes for text (`atlas`, "
+    "`release-2026`, `v2`) passes.")
+MANIFEST_INVALID_REMEDIATION = (
+    "Remediation: choose a value the project's own validate-manifest.py "
+    "accepts; the words after each value are the validator's own, and a "
+    "project it refuses is one whose first bootstrap would fail.")
+
+
+def manifest_value_problems(values: dict, policy: NamingPolicy, what: dict,
+                            *, misreads: bool = True, ignore: tuple = (),
+                            not_text: tuple = (),
+                            template_dir: Path = ASSEMBLY_TEMPLATE
+                            ) -> list[tuple[str, str]]:
+    """`(kind, sentence)` for everything wrong with the values, `kind` being
+    `misread` or `invalid`; `[]` when the project would hold every one.
+
+    A misread comes FIRST and alone: a value the reader turns into something
+    else makes the manifest invalid in ways that are its consequence (`id:
+    null` fails the validator as `id is None`), so the sentence about the
+    value itself is the one worth reading. `misreads=False` asks only the
+    validator's question, for a tool whose YAML-misread rule is its own.
+    """
+    if misreads:
+        misread = manifest_misreads(values, what, template_dir)
+        if misread:
+            return [("misread", sentence) for sentence in misread]
+    return [("invalid", sentence) for sentence
+            in manifest_invalid(values, policy, what, template_dir, ignore,
+                                not_text)]
+
+
+def refuse_manifest_values(prefix: str, values: dict, policy: NamingPolicy,
+                           what: dict, tail: str, *,
+                           misreads: bool = True) -> None:
+    """Raise `Refusal(<prefix>-manifest-misread)` or `<prefix>-manifest-
+    invalid`, naming every value, when the project could not hold them; the
+    caller's own `prefix` (`scaffold`, `adopt`) says which tool refused, and
+    its `tail` finishes the remediation with what only it knows."""
+    problems = manifest_value_problems(values, policy, what,
+                                       misreads=misreads)
+    if problems:
+        kind = problems[0][0]
+        remedy = (MANIFEST_MISREAD_REMEDIATION if kind == "misread"
+                  else MANIFEST_INVALID_REMEDIATION)
+        raise Refusal(f"{prefix}-manifest-{kind}",
+                      " ".join(sentence for _, sentence in problems),
+                      f"{remedy} {tail}")
+
+
+# ---------------------------------------------------------------------------
+# A repository's name is also a directory's (#261)
+# ---------------------------------------------------------------------------
+#
+# `checked_value` holds a name to 255 characters, `SAFE_ARG_RE`'s limit, and
+# the tools then make a directory of it: `<work-dir>/<name>` for each of the
+# three, and under `--local-remote-dir` a bare `<name>.git` beside them. A
+# name is at most 255 bytes on ext4, APFS and NTFS alike, so a `--project` of
+# 247 to 250 characters passed every check and died in `Path.exists` with
+# `OSError: File name too long`, a traceback and exit 1, where the first
+# directory is asked about; the scaffold died the same way from 247, and from
+# 251 characters in the work directory, where adopt's `check` had already
+# refused the name `legs.spec` with `unsafe-value`.
+
+#: The longest name a file or a directory may have, in bytes.
+NAME_MAX = 255
+
+
+def refuse_unstorable_names(refusal: str, directories: list[str],
+                            bare: list[str] = ()) -> None:
+    """Raise `Refusal(refusal)` when a repository name cannot be a directory
+    name: each of `directories` is made as it stands under the work
+    directory, each of `bare` as `<name>.git` under `--local-remote-dir`."""
+    problems = []
+    for names, suffix, where in (
+            (directories, "", "the directory this run makes for it under "
+                              "its work directory"),
+            (bare, ".git", "the bare repository's directory under "
+                           "--local-remote-dir")):
+        for name in names:
+            size = len(f"{name}{suffix}".encode("utf-8"))
+            if size > NAME_MAX:
+                # BOTH ENDS: a name this long differs from the others by its
+                # tail, `-spec` or `-code`, which a cut at the front loses.
+                shown = (name if len(name) <= 27
+                         else f"{name[:12]}...{name[-12:]}")
+                problems.append(
+                    f"{shown}{suffix} is {size} bytes long, and {where} "
+                    f"may be at most {NAME_MAX}")
+    if problems:
+        raise Refusal(
+            refusal, "; ".join(problems) + ".",
+            "Remediation: nothing was created. Use a shorter --project: the "
+            "three repositories are named `<Project>`, `<Project>-spec` and "
+            "`<Project>-code`, and a disk keeps a name of at most "
+            f"{NAME_MAX} bytes, which under --local-remote-dir includes the "
+            "`.git` each bare repository adds.")

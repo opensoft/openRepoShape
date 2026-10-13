@@ -21,12 +21,17 @@ WHAT THIS MODULE OWNS
   - `file_sha256` — the per-file digest used by the shape pin's `files:` block,
     mirroring `neutral-product-pin`'s per-file `sha256` rows.
   - `NamingPolicy` — the classifier over `contracts/repository-naming.yaml`.
+  - `path_spelling_fault` — whether a path is spelled the one way Git
+    records it, asked of a leg's mount path and of a recorded submodule's.
   - `same_repository` and the remote-url arithmetic under it — the ONE
     definition of whether two remote spellings name one repository, which
     `shape-doctor.py` reports by and `scripts/siblings.py` refuses by.
   - `Refusal` — the fail-closed exception every validator raises, carrying a
     remediation string, because a refusal that names what is wrong without
     naming what to run puts the exit in tribal memory instead of the message.
+  - `spelled` and `escape_unencodable_stdout` — how both roots'
+    `bootstrap.py` print a person's text: what a terminal must not be handed
+    raw is escaped, and a stdout that cannot encode it never raises (#391).
 
 This file is COPIED into a scaffolded assembly root by `scaffold-project.py`
 and its sha256 is recorded in that project's `contracts/shape-pin.yaml`, so an
@@ -41,6 +46,7 @@ import os
 import re
 import subprocess
 import sys
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -344,10 +350,13 @@ def double_quoted(text: str) -> str:
     """`text` as a double-quoted scalar `_scalar` reads back as `text`.
 
     The subset's one writer quotes with this: `adopt-project.py`'s `y`, for
-    the adoption plan and for `shape-doctor.py`'s placement plan. It escapes
-    a backslash and a double quote, which would bend or end the quoting;
-    `\\n`, `\\r` and `\\t` by name; and every other character `str.isprintable`
-    refuses by its code point. PART OF THAT CLASS THE READER CANNOT TAKE
+    the adoption plan and for `shape-doctor.py`'s placement plan, and its
+    `submodule_record`, for the `submodules:` record `execute` appends to
+    `project.yaml`, which the doctor holds a submodule to only where a row
+    reads back as its path (#189). It escapes a backslash and a double
+    quote, which would bend or end the quoting; `\\n`, `\\r` and `\\t` by
+    name; and every other character `str.isprintable` refuses by its code
+    point. PART OF THAT CLASS THE READER CANNOT TAKE
     RAW. It reads a file line by line with `str.splitlines`, which ends a
     line at `\\n` and `\\r` -- the macOS folder icon is a file named
     `Icon\\r` -- and also at `\\x0b`, `\\x0c`, `\\x1c`-`\\x1e`, `\\x85`,
@@ -461,6 +470,31 @@ def _scalar(raw: str) -> Any:
     return text
 
 
+def _refuse_flow_indicator(text: str) -> None:
+    """Refuse a PLAIN scalar of a flow collection that holds `[`, `]`, `{` or
+    `}` (#301); a quoted one is `_scalar`'s to judge, and its brackets are
+    text.
+
+    In YAML a plain scalar inside a flow collection ENDS at any of the four,
+    as it ends at the `,` `_split_flow` splits at, so a scalar holding one is
+    never the text it looks like, and PyYAML refuses the document. `k: [a]]`
+    closes the sequence after `a` and leaves a `]` nothing opened, and
+    `k: [x [a, b]]` opens a sequence while an item is still being read.
+    `_split_flow` counts brackets to find its commas and never asked whether
+    the count went below zero or ended above it, so the rest was read as
+    text: `['a]']`, `['x [a, b]']`, and the key of `k: {a"]:}` as `a"]`
+    since #284 stopped reading that `"` as a quote. Refused, a stray
+    bracket typed into `pins: [a, b]]` is a `yaml-unparsable` naming it, not
+    the pin `b]`.
+    """
+    if text.startswith(('"', "'")):
+        return
+    held = next((char for char in text if char in "[]{}"), None)
+    if held is not None:
+        raise YamlError(f"a plain scalar in a flow collection holds `{held}`, "
+                        f"which ends it in YAML: {text!r}")
+
+
 def _flow_value(text: str) -> Any:
     """A flow entry is itself a flow collection when it OPENS with `[` or `{`.
 
@@ -468,8 +502,14 @@ def _flow_value(text: str) -> Any:
     and `'' in "[{"` is True for any string, so the test used to run `_flow`
     on it and refuse `{a: }` as `not a flow collection: ''`, a text nobody
     wrote. `_scalar('')` is the null a block `a:` reads.
+
+    ONE THAT OPENS NOTHING HOLDS NO BRACKET OR BRACE (#301): a plain item or
+    value holding one is refused by `_refuse_flow_indicator`.
     """
-    return _flow(text) if text.startswith(("[", "{")) else _scalar(text)
+    if text.startswith(("[", "{")):
+        return _flow(text)
+    _refuse_flow_indicator(text)
+    return _scalar(text)
 
 
 def _flow(text: str) -> Any:
@@ -506,10 +546,19 @@ def _split_key_flow(text: str) -> tuple[str, str] | None:
     names its line, and a flow collection has none to name, so this names the
     entry. A QUOTED key, `"? a"`, does not open with the `?`, and `?a` is not
     the indicator, which needs a space after it: both read as they did.
+
+    A PLAIN KEY HOLDS NO `]` OR `}` EITHER (#301). `_split_key` refuses a
+    `[` or `{` later in a key, and in a flow a closer ends the key as surely,
+    so `{a"]:}` read as the key `a"]` and `{]:}` as `]`, where PyYAML
+    refuses both. `_refuse_flow_indicator` refuses them; a quoted key is
+    still text.
     """
     if text.startswith("? "):
         raise YamlError(f"explicit keys are not supported: {text!r}")
-    return _split_key(text)
+    kv = _split_key(text)
+    if kv is not None and not text.startswith(('"', "'")):
+        _refuse_flow_indicator(kv[0])
+    return kv
 
 
 def _split_flow(body: str) -> list[str]:
@@ -828,9 +877,18 @@ def load_yaml(path: Path) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def git_out(args: list[str], cwd: Path, binary: bool = False) -> Any:
+def git_out(args: list[str], cwd: Path, binary: bool = False,
+            env: dict[str, str] | None = None) -> Any:
+    """`git <args>` in `cwd`, its stdout, or a `git-failed` refusal.
+
+    `env` is the whole environment git runs in, None for this process's
+    own. A git that cannot be STARTED (none on PATH) raises `OSError` from
+    here, never a refusal: whether that is a question the caller cannot
+    answer is the caller's to say (#368).
+    """
     proc = subprocess.run(
-        ["git", *args], cwd=str(cwd), capture_output=True, check=False
+        ["git", *args], cwd=str(cwd), capture_output=True, check=False,
+        env=env,
     )
     if proc.returncode != 0:
         raise Refusal(
@@ -990,10 +1048,28 @@ def file_sha256(path: Path) -> str:
 #: `<mode> SP <oid> SP <stage> TAB <path>` and `ls-tree` emits
 #: `<mode> SP <type> SP <oid> TAB <path>` — the same shape with a DIFFERENT
 #: third column, so the two cannot share one index.
+#:
+#: BOTH LISTINGS TAKE THE PATH LITERALLY (#367), with the global
+#: `--literal-pathspecs`. A pathspec is a glob to `ls-files`, so a row whose
+#: hand-edited `path:` was `members/*` read the first member's gitlink and
+#: answered with it, a neighbour's commit, for every caller. Not
+#: `:(literal)` magic on the path, which a caller's own exported
+#: `GIT_LITERAL_PATHSPECS=1` switches off, and then it matches nothing.
 GITLINK_LISTINGS = (
-    (["ls-files", "-s", "--"], 1, 2),
-    (["ls-tree", "HEAD", "--"], 2, None),
+    (["--literal-pathspecs", "ls-files", "-s", "--"], 1, 2),
+    (["--literal-pathspecs", "ls-tree", "HEAD", "--"], 2, None),
 )
+
+#: The two pathspec settings a caller's environment can carry that git
+#: refuses BESIDE `--literal-pathspecs` ("global 'literal' pathspec setting
+#: is incompatible with all other global pathspec settings", exit 128). Both
+#: listings would then fail, and `recorded_gitlink` reads a failed listing as
+#: "no gitlink here", so an operator who exports either would see every gate
+#: refuse a gitlink that is there. They are left out of those two git calls
+#: alone. `GIT_NOGLOB_PATHSPECS` stays: git takes it beside the literal
+#: setting, and with it the path is literal anyway.
+PATHSPEC_ENV_REFUSED_BESIDE_LITERAL = ("GIT_GLOB_PATHSPECS",
+                                       "GIT_ICASE_PATHSPECS")
 
 
 def recorded_gitlink(repo: Path, path: str) -> str | None:
@@ -1009,10 +1085,17 @@ def recorded_gitlink(repo: Path, path: str) -> str | None:
     bump and passes a stale pin. HEAD remains the fallback, for a path the
     commit records and the index does not hold at stage 0 — one the index
     never had, and one a conflicted merge holds only at stages 1, 2 and 3.
+
+    `path` IS TAKEN LITERALLY (#367): `members/*` is the entry of that name,
+    which no index holds, and never every gitlink a glob would match. A git
+    that cannot be started raises `OSError` through this, never "no
+    gitlink": only a listing git RAN and refused is read as nothing (#368).
     """
+    env = {name: value for name, value in os.environ.items()
+           if name.upper() not in PATHSPEC_ENV_REFUSED_BESIDE_LITERAL}
     for args, oid_at, stage_at in GITLINK_LISTINGS:
         try:
-            out = git_out([*args, path], cwd=repo)
+            out = git_out([*args, path], cwd=repo, env=env)
         except Refusal:
             continue
         for line in out.splitlines():
@@ -1092,11 +1175,83 @@ CHAIN_UNVERIFIED = "declared-unverified"
 #: ONE variable answers both questions asked of such a checkout: the digest
 #: `validate-pins.py` recomputes from it, and the chain-link declaration
 #: `resolve_referent` verifies against it.
+#:
+#: THE NAME IS NOT INJECTIVE (#275). `.`, `-` and `_` are all legal in a
+#: product's name and all become `_`, so `open-glass`, `open_glass` and
+#: `open.glass` share `SHAPE_PIN_SOURCE_OPEN_GLASS` while naming three pin
+#: files. Every existing name is kept, because an operator may have set it and
+#: the docs name it. What is done instead (`pin_source_env_collisions`): a
+#: variable two declared products share answers for NEITHER, wherever it is
+#: read; `scaffold-project.py --pin` refuses to create such a pair; and
+#: `validate-pins.py` NOTES a pair a project already declares, and never fails
+#: it, because the project did nothing wrong that an update could undo.
 PIN_SOURCE_ENV_PREFIX = "SHAPE_PIN_SOURCE_"
 
 
 def pin_source_env_name(product: str) -> str:
     return PIN_SOURCE_ENV_PREFIX + re.sub(r"[^A-Z0-9_]", "_", product.upper())
+
+
+def pin_product_key(product: str) -> str:
+    """What makes two declarations ONE product: the name its pin file carries,
+    `contracts/<product lowercased>-pin.yaml` (`neutral_pin_path` in
+    `shape_materialize.py` writes it; `validate-pins.py` reads it, and spells
+    it again because it ships into projects).
+
+    `lower()`, and not `casefold()`. The two agree over ASCII and part
+    company outside it: `casefold()` folds `ß` to `ss`, `ſ` to `s`, `ﬁ` to
+    `fi` and `ς` to `σ`, which `lower()` leaves alone, so `openß` and `openss`
+    are two pin files that a casefold took for one product (#275's re-review,
+    N2). Whether two names are the same pin is whether they are the same
+    file, so that is what is asked here, and
+    `tests/test_pin_source_env_collisions.py` holds it to `neutral_pin_path`.
+    """
+    return product.lower()
+
+
+def pin_source_env_collisions(products) -> dict[str, list[str]]:
+    """The variables two or more DISTINCT products share, each with them:
+    `{variable: [product, ...]}` (#275).
+
+    PURE, and the one place the question is answered, so `scaffold-project.py`,
+    `validate-pins.py` and the chain readers below cannot disagree about it.
+    `products` is any iterable of product NAMES (`openGlass`, never
+    `opensoft/openGlass@<sha>`): an entry that is not a non-empty string is
+    not a name and is left out, as `validate-pins.py` reports it as
+    malformed on its own.
+
+    DISTINCT MEANS DISTINCT PIN FILES (`pin_product_key`): `openGlass` and
+    `OpenGlass` are one product and name one variable rightly, and whether the
+    same product is declared twice is a different question, which
+    `scaffold-project.py` answers as `scaffold-pin-collides` (#241). A product
+    listed twice is therefore never a collision here, and two that differ in
+    more than the case `lower()` folds are, when `pin_source_env_name` maps
+    them to one name. That includes names no ASCII `--pin` can spell, such as
+    `openß` and `openss`, which share `SHAPE_PIN_SOURCE_OPENSS` and have two
+    pin files.
+
+    Variables are in the order their first product was given, and each
+    group's products are in that order too, each in the spelling it was first
+    given in. A variable only one product names is not in the result.
+    """
+    by_variable: dict[str, dict[str, str]] = {}
+    for product in products or ():
+        if not isinstance(product, str) or not product:
+            continue
+        group = by_variable.setdefault(pin_source_env_name(product), {})
+        group.setdefault(pin_product_key(product), product)
+    return {variable: list(group.values())
+            for variable, group in by_variable.items() if len(group) > 1}
+
+
+def pin_source_env_shared(products) -> set[str]:
+    """The `pin_product_key` of each of `products` whose variable another of
+    them shares (#275): the products a variable must not answer for, because
+    it does not say which. A caller asks `pin_product_key(name) in` the
+    result."""
+    return {pin_product_key(product)
+            for group in pin_source_env_collisions(products).values()
+            for product in group}
 
 
 def form_id(family_id: str, role_id: str | None) -> str:
@@ -1252,15 +1407,20 @@ def _chain_link_findings(chain, link_pins) -> tuple:
     available = _link_declarations(link_pins)
     warnings: list[str] = []
     unverified: list[str] = []
+    # A link whose variable another link of the chain shares is never offered
+    # that variable: it would be read for both (#275).
+    shared = pin_source_env_shared(chain)
     for holder, held in zip(chain, chain[1:]):
         declared = available.get(holder.casefold())
         if declared is None:
             unverified.append(holder)
+            alone = pin_product_key(holder) not in shared
+            offered = (f"a sibling checkout, {pin_source_env_name(holder)}, or"
+                       if alone else "a sibling checkout or")
             warnings.append(
                 f"{CHAIN_UNVERIFIED}: {holder} declaring a pin on {held} "
                 f"is a fact in {holder}'s own tree, which is not "
-                f"reachable here (a sibling checkout, "
-                f"{pin_source_env_name(holder)}, or --link-source "
+                f"reachable here ({offered} --link-source "
                 f"{holder}=<path> would let it be read). The recorded "
                 "chain still classifies.")
             continue
@@ -1857,6 +2017,55 @@ def checked_value(what: str, value, pattern: re.Pattern = SAFE_ARG_RE) -> str:
     return text
 
 
+# ---------------------------------------------------------------------------
+# A path spelled the one way Git records it (#179, #189)
+# ---------------------------------------------------------------------------
+#
+# Git records a path in exactly one spelling: relative to the top of its
+# repository, `/` between segments, and no segment empty, `.` or `..`.
+# `git update-index` refuses `./x`, `x/`, `a//b`, `a/./b`, `a/../b`, `/x` and
+# `.` alike as `Invalid path`, so a record that names a path in any other
+# spelling names one no tree holds, and nothing is ever found at it.
+#
+# TWO RULES ASK IT. The leg-path rule in `shape_materialize.py` asks it of a
+# leg's mount path (#179), and a project's own `validate-manifest.py` asks it
+# of each path `project.yaml`'s `submodules:` records (#189) -- which is why
+# it lives HERE: a project carries this file and not `shape_materialize.py`.
+# Each says the answer in its own sentence, about a leg or about a submodule.
+#
+# A BACKSLASH AND A DRIVE LETTER ARE NOT ASKED. On POSIX each is an ordinary
+# character of a name -- Git records `vendor/a\b` and `C:/x` there, refusing
+# them only on Windows -- and an adoption records a source submodule at
+# either. They are faults only in a path a PERSON types for commands that
+# Windows also runs, which is the leg-path rule's own question.
+
+#: The ways a path can fail to be spelled as Git records it, in the order
+#: `path_spelling_fault` asks: empty, absolute, climbing out with `..`,
+#: naming the top itself, and any other empty or `.` segment.
+PATH_EMPTY = "empty"
+PATH_ABSOLUTE = "absolute"
+PATH_CLIMBS = "climbs"
+PATH_ITSELF = "itself"
+PATH_NOT_CANONICAL = "not-canonical"
+
+
+def path_spelling_fault(text: str) -> str | None:
+    """Why `text` is not one path spelled as Git records it, as one of the
+    `PATH_*` codes above, or None when it is."""
+    if not text:
+        return PATH_EMPTY
+    if text.startswith("/"):
+        return PATH_ABSOLUTE
+    segments = text.split("/")
+    if ".." in segments:
+        return PATH_CLIMBS
+    if all(segment in ("", ".") for segment in segments):
+        return PATH_ITSELF
+    if "" in segments or "." in segments:
+        return PATH_NOT_CANONICAL
+    return None
+
+
 def accepts_role(found, role: str) -> bool:
     """Is `found` an acceptable classification for a leg DECLARED as `role`?
 
@@ -2379,20 +2588,26 @@ def declared_neutral_pins(manifest_path,
 
 def resolve_link_source(product: str, root: Path | None = None,
                         keyed_sources: dict | None = None,
-                        default_source=None) -> tuple[Path | None, str | None]:
+                        default_source=None,
+                        env_shared: bool = False
+                        ) -> tuple[Path | None, str | None]:
     """Where `product`'s own manifest can be read, if anywhere at all.
 
       1. `--link-source <product>=<path>` (case-insensitive on the name)
       2. `SHAPE_PIN_SOURCE_<PRODUCT>` in the environment
       3. a checkout sitting BESIDE this project (`../openXdox`)
       4. a bare `--link-source <path>` with no `product=` prefix
+
+    `env_shared` says another product asked about alongside this one names
+    the same variable, so rule 2 is skipped: a variable that does not say
+    which product it holds is not read for either (#275).
     """
     candidates: list[tuple[Path, str]] = []
     keyed = (keyed_sources or {}).get(product.casefold())
     if keyed is not None:
         candidates.append((Path(keyed), f"--link-source {product}=..."))
     env_name = pin_source_env_name(product)
-    env_value = os.environ.get(env_name)
+    env_value = None if env_shared else os.environ.get(env_name)
     if env_value:
         candidates.append((Path(env_value), f"${env_name}"))
     if root is not None:
@@ -2414,12 +2629,22 @@ def link_pins_from_trees(links, root: Path | None = None,
 
     A link whose tree is not on the disk is simply ABSENT from the mapping,
     which is what `NamingPolicy.resolve_referent` reads as declared-unverified.
+
+    A link whose `SHAPE_PIN_SOURCE_<PRODUCT>` another of `links` names too is
+    not read through it (#275): one tree would answer for two links, and a
+    chain verified against the wrong tree is worse than one left
+    declared-unverified. Only a hand-written chain can hold two such links:
+    `scaffold-project.py` takes every link but the first from the naming
+    policy's `open<Product>` form, which has no `-`, `.` or `_` to fold.
     """
     found: dict[str, set] = {}
+    links = list(links)
+    shared = pin_source_env_shared(repo_basename(str(link)) for link in links)
     for link in links:
         name = repo_basename(str(link))
         path, _how = resolve_link_source(name, root, keyed_sources,
-                                         default_source)
+                                         default_source,
+                                         pin_product_key(name) in shared)
         if path is None:
             continue
         pins = declared_neutral_pins(path, key)
@@ -2440,3 +2665,99 @@ def find_repo_root(start: Path) -> Path:
 def die(exc: Refusal, stream=sys.stderr) -> int:
     print(str(exc), file=stream)
     return 2
+
+
+# ---------------------------------------------------------------------------
+# Printing a person's text (#391)
+# ---------------------------------------------------------------------------
+#
+# BOTH ROOTS' `bootstrap.py` print what a manifest, a register row or the
+# disk says, before any validator has had its say about it. Each imports
+# these two from here, as it imports the YAML reader: this file is the one
+# library a project and a family holder carry beside it.
+
+#: The characters `spelled` writes as an escape, besides the bidirectional
+#: controls below: the controls (Cc), the surrogates (Cs), and the line and
+#: paragraph separators (Zl, Zp). Nothing else is escaped, `spelled` says why.
+ESCAPED_CATEGORIES = frozenset(("Cc", "Cs", "Zl", "Zp"))
+#: The bidirectional controls: U+061C, U+200E and U+200F, the embeddings and
+#: overrides U+202A to U+202E, and the isolates U+2066 to U+2069.
+ESCAPED_BIDI_CONTROLS = frozenset(
+    "\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")
+
+
+def escape_unencodable_stdout() -> None:
+    """A character stdout cannot encode is printed escaped, never raised on (#391).
+
+    WHAT WAS WRONG. Each root's `bootstrap.py` `main` printed the manifest's
+    `name` with a plain `print` before any step ran, so `name: "a\\ud83db"` (a
+    lone surrogate, which no UTF-8 stdout can write) or `name: "日本"` on a
+    stdout that is not UTF-8 (`PYTHONIOENCODING=ascii`, or the ANSI code page
+    Windows gives a stdout that is not the console) ended `make bootstrap` in a
+    `UnicodeEncodeError` traceback one step before `validate-manifest.py`, the
+    validator that names the problem, was reached. Their own wording raised on
+    such a stdout too, wherever it carries a dash or a middle dot.
+
+    A `strict` or `surrogateescape` stdout, the two handlers that raise, is
+    reconfigured ONCE, at the start of each root's `main`, to
+    `backslashreplace`, the handler stderr already has: what the stdout holds
+    is written as it was, and what it cannot hold as `\\u65e5`. Any other
+    handler, one somebody chose, is left alone, and the ENCODING is never
+    changed. `scripts/validate-pins.py` does the same for its report (#295).
+    The tools run from a checkout of the standard use
+    `shape_materialize.escape_what_stdout_cannot_encode` (#214), which no
+    project carries. This module is what every project and every family holder
+    carries beside its `bootstrap.py`, so both roots import this function and
+    `spelled` from here, where each is written once.
+
+    GUARDED, because failing to set a handler is no reason to refuse the run: a
+    stream a caller replaced may have no `reconfigure`, a closed one raises
+    `ValueError`, and `pythonw` has no stdout at all.
+    """
+    if getattr(sys.stdout, "errors", None) in ("strict", "surrogateescape"):
+        try:
+            sys.stdout.reconfigure(errors="backslashreplace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
+def spelled(value: object) -> str:
+    """`value` as ONE line of text, with what a terminal must not be handed
+    written as escapes (#391).
+
+    What `escape_unencodable_stdout` cannot do. A raw ESC or CR is encodable on
+    every stdout, so it reaches the terminal as the control it is, and a
+    manifest's `name` or a register row is a person's text. EXACTLY these
+    characters are written as the escape Python spells it (`\\x1b`, `\\r`,
+    `\\u2028`, `\\ud83d`, `\\u202e`), and no others:
+
+    - the controls (Unicode category Cc: C0, DEL and C1), which move a cursor,
+      clear a screen or end a line;
+    - the surrogates (Cs), which no UTF-8 text holds, so a lone one is named
+      whatever handler the stdout has;
+    - the line and paragraph separators (Zl and Zp, U+2028 and U+2029), which
+      end a line in some viewers, so the value would not stay on its line;
+    - the bidirectional controls (U+061C, U+200E, U+200F, U+202A to U+202E and
+      U+2066 to U+2069), which reorder the text around them so that a name
+      reads as another name.
+
+    EVERY OTHER CHARACTER PRINTS AS IT IS, as it did before this function
+    existed: the zero-width non-joiner a Persian or Indic name needs, the
+    zero-width joiner that makes an emoji sequence, the ideographic space of a
+    Japanese full name, the no-break space, the soft hyphen, and any other
+    format, space or unassigned character. `str.isprintable` is not the test:
+    it refuses all of those, which `validate-manifest.py` accepts and a UTF-8
+    terminal shows correctly, and what it counts as unassigned moves with the
+    interpreter's Unicode database. A backslash prints as it is too, so a name
+    holding the four characters `\\x1b` prints as one holding ESC does.
+
+    Each root's `bootstrap.py` applies it to every value it prints that it
+    read from the manifest, a register row or the disk, and to none of its
+    own wording.
+    """
+    return "".join(
+        char.encode("unicode_escape").decode("ascii")
+        if (char in ESCAPED_BIDI_CONTROLS
+            or unicodedata.category(char) in ESCAPED_CATEGORIES)
+        else char
+        for char in str(value))

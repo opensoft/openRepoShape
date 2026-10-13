@@ -15,6 +15,10 @@ a line feed into two patterns. Each of those is one test here, through `plan`
 itself except the failing grep, which `plan` cannot provoke, and the line
 feed, whose plan is #199's to write; each measured failing on main at
 a5b09c3, and `notes/` and `s?c/` are the controls that already passed there.
+The two spec directories that begin with `-` are asked of `plan` AND of
+`cross_leg_references`: since #319 `plan` asks about a path `execute` will
+not extract as it is named, so it answers neither `spec` and greps for
+neither, and the search #228 made literal is asked of the rules' own answer.
 
 The split's forced `git add -f` asks the same question of a path the shape
 wrote THROUGH a symlink the plan kept in the root: where it landed is the
@@ -83,6 +87,40 @@ def legs(plan: dict) -> dict:
     return {str(entry["path"]): entry["leg"] for entry in plan["paths"]}
 
 
+#: The spec directories `plan` ASKS about instead of answering `spec` (#319):
+#: `execute` will not extract a path that begins with `-` into a leg as it is
+#: named, so `root` or `drop` is the only answer it takes, no answer moves
+#: the directory to the spec leg, and the plan names no file for it. The
+#: rules still answer `spec`, and that is the answer #228's literal `git
+#: grep` is asked of, through `cross_leg_references`.
+ASKED = ("-notes/", "-Otouch pager-ran;/")
+
+
+def assert_asked(plan: dict, path: str) -> None:
+    """`path` is written as #319 writes a path `execute` refuses: `leg:
+    null`, `review_required: true`, and a question that gives the reason
+    and the two answers."""
+    [entry] = [entry for entry in plan["paths"] if str(entry["path"]) == path]
+    assert entry["leg"] is None, entry
+    assert entry["review_required"] is True, entry
+    question = str(entry["question"])
+    assert ("The rules put this path in the spec leg (rule "
+            in question), question
+    assert ("but `execute` will not extract it into a leg as it is named, "
+            "because it begins with `-`" in question), question
+    assert "So `root` or `drop` is the only answer `execute` takes" \
+        in question, question
+
+
+def ruled(adopter, source: Path, base: Path):
+    """The source as `plan` opens it, and the rules' answer for each of its
+    paths: `walk`'s entries, before `plan` asks about any of them."""
+    opened = adopter.Source.open(str(source), base / "work")
+    entries = adopter.walk(adopter.PathPolicy.load(adopter.PATH_POLICY),
+                           [(name, size) for name, _, _, size in opened.tree()])
+    return opened, entries
+
+
 @pytest.fixture(scope="module")
 def adopter():
     spec = importlib.util.spec_from_file_location("adopt_literal_names", ADOPT)
@@ -138,28 +176,47 @@ NAME_CLASSES = [
 
 @pytest.mark.parametrize(("tree", "spec_dir", "code", "hits"), NAME_CLASSES)
 def test_each_file_that_names_a_spec_directory_is_a_follow_up(
-        tmp_path, tree, spec_dir, code, hits):
+        adopter, tmp_path, tree, spec_dir, code, hits):
     """Exactly the code files that name the spec directory, each spelled as
     the tree spells it. On main: `-notes/` was git's usage error (exit 129)
     and no follow-up; `:cache` was searched as the pathspec `cache` and
     found nothing; `*` also searched the spec leg and named
     `code/notes/two.md`; and `Übersicht.py` was written
-    `code/"src/\\303\\234bersicht.py"`. `?` never widened, and does not."""
+    `code/"src/\\303\\234bersicht.py"`. `?` never widened, and does not.
+
+    The search is asked of the rules' answer, through
+    `cross_leg_references`, and the plan writes what it found -- except for
+    `-notes/`, which `plan` asks about (#319, ASKED) and so writes with no
+    follow-up: no answer `execute` takes moves it to the spec leg."""
     source = make_source_repo(tmp_path / "Thing", tree=tree, edits=())
     plan = planned(source, tmp_path)
     rows = legs(plan)
-    assert rows[spec_dir] == "spec", rows
+    opened, entries = ruled(adopter, source, tmp_path)
+    assert {e.path: e.leg for e in entries}[spec_dir] == "spec"
     assert all(rows[entry] == "code" for entry in code), rows
-    assert named(plan) == [follow_up(hit, spec_dir) for hit in hits]
+    found = [follow_up(hit, spec_dir) for hit in hits]
+    assert adopter.cross_leg_references(opened, entries, SPEC_PATH,
+                                        CODE_PATH) == found
+    if spec_dir in ASKED:
+        assert_asked(plan, spec_dir)
+        assert named(plan) == []
+    else:
+        assert rows[spec_dir] == "spec", rows
+        assert named(plan) == found
 
 
-def test_a_spec_directory_named_like_the_pager_option_runs_nothing(tmp_path):
+def test_a_spec_directory_named_like_the_pager_option_runs_nothing(adopter,
+                                                                 tmp_path):
     """`-O<cmd>` is `git grep --open-files-in-pager`, which git runs through
     a shell. Read as that option, the directory's name made the planned
     commit's hash the PATTERN, the WORKTREE was searched for it, and a
     tracked file holding it was handed to `<cmd>`: on main this created
     `pager-ran` in the source and wrote no follow-up. Now the name is the
-    pattern, the commit is the commit, and nothing runs."""
+    pattern, the commit is the commit, and nothing runs.
+
+    The name begins with `-`, so `plan` asks about it (#319, ASKED) and
+    searches for nothing; the search is asked of the rules' answer, `spec`,
+    through `cross_leg_references`, which is where the option was read."""
     spec_dir = "-Otouch pager-ran;/"
     source = make_source_repo(
         tmp_path / "Thing", edits=(),
@@ -178,8 +235,15 @@ def test_a_spec_directory_named_like_the_pager_option_runs_nothing(tmp_path):
     plan = planned(source, tmp_path)
 
     assert sorted(os.listdir(source)) == before, "git ran the pager"
-    assert legs(plan)[spec_dir] == "spec"
-    assert named(plan) == [follow_up("src/reader.py", spec_dir)]
+    assert_asked(plan, spec_dir)
+    assert named(plan) == []
+
+    opened, entries = ruled(adopter, source, tmp_path)
+    assert {e.path: e.leg for e in entries}[spec_dir] == "spec"
+    said = adopter.cross_leg_references(opened, entries, SPEC_PATH, CODE_PATH)
+
+    assert sorted(os.listdir(source)) == before, "git ran the pager"
+    assert said == [follow_up("src/reader.py", spec_dir)]
 
 
 def test_a_colour_setting_in_the_source_is_not_in_a_follow_up(tmp_path):
@@ -200,8 +264,8 @@ def test_a_colour_setting_in_the_source_is_not_in_a_follow_up(tmp_path):
 def test_a_name_with_a_line_break_or_a_byte_outside_utf8_is_one_spelled_line(
         tmp_path):
     """git's `-z` gives a name as its bytes, and the follow-up spells it as a
-    question spells a path: `\\n` for the line break, `\\xe9` for the byte,
-    on one line of UTF-8. On main each came back in git's C-quoted
+    question spells a path: `\\n` for the line break, `\\udce9` for the byte
+    (#329), on one line of UTF-8. On main each came back in git's C-quoted
     spelling, quotes and octal included. The two files are put in the TREE
     (`update-index -z --index-info`) and never on the disk, which macOS
     refuses for a name that is not UTF-8."""
@@ -221,7 +285,7 @@ def test_a_name_with_a_line_break_or_a_byte_outside_utf8_is_one_spelled_line(
 
     plan = planned(source, tmp_path)
 
-    assert named(plan) == [follow_up("src/caf\\xe9.py", "notes/"),
+    assert named(plan) == [follow_up("src/caf\\udce9.py", "notes/"),
                            follow_up("src/line\\nbreak.py", "notes/")]
 
 

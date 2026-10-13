@@ -489,6 +489,21 @@ def assert_no_traceback(result) -> None:
         assert "Traceback" not in output, output
 
 
+#: What `execute`'s refusal says of a plan `check` rejects, made before any
+#: leg exists, and the first words of the notice #445 prints after a failure
+#: once one does.
+NO_LEG_MADE = "no leg repository was created and nothing was pushed"
+LATE_NOTICE = "NOTHING has been rolled back"
+
+
+def assert_refused_before_any_leg(result) -> None:
+    """The refusal is `_refuse_what_check_finds`', made before any leg
+    exists: it says no leg was made, and no notice of what the run left
+    follows it, as one does a failure once a leg exists (#445)."""
+    assert NO_LEG_MADE in result.stderr, result.stderr
+    assert LATE_NOTICE not in result.stderr, result.stderr
+
+
 def findings_of(result) -> list[str]:
     return [line for line in result.stderr.splitlines()
             if line.startswith("FINDING ")]
@@ -653,6 +668,46 @@ def test_execute_refuses_an_elected_on_it_cannot_read_before_any_leg(
     assert f"the plan's `elected_on:` is the text {read!r}" in refusal.detail
     assert "edit `elected_on:` in the plan file" in refusal.remediation
     assert DATE_FLAG not in str(refusal)
+
+
+#: An `org:` or `id:` the plan refuses in its own words, by test id: the line
+#: `plan` writes, the hand edit, and the code `check` and `execute` both
+#: refuse it under. Beside an `elected_on:` that is a finding, the date's
+#: guard in `_manifest_values` used to return before either was asked, so
+#: the two commands named different first problems.
+REFUSED_BESIDE_A_BAD_DATE = {
+    "org-unsafe": ("org: testorg", 'org: "-evil"', "unsafe-value"),
+    "id-bad": ("id: northwind", 'id: "North Wind"', "plan-bad-id"),
+}
+
+
+@pytest.mark.parametrize("reference", [True, False],
+                         ids=["reference-kept", "no-reference"])
+@pytest.mark.parametrize("edit", sorted(REFUSED_BESIDE_A_BAD_DATE))
+def test_a_bad_date_does_not_change_what_check_and_execute_refuse_first(
+        adopter, world, edit, reference):
+    """A plan with `elected_on: someday` AND an `org:` or `id:` it refuses:
+    `check` and `execute` refuse it under the same code, the organisation's
+    or the id's, as they do with no date guard, and no leg is created. With
+    both asked after the guard, `check` listed only the date (exit 1) where
+    `execute` refused `unsafe-value`, and `check` refused `plan-bad-id` where
+    `execute` refused the date."""
+    line, edited, code = REFUSED_BESIDE_A_BAD_DATE[edit]
+    text = with_elected_on(world.answered, "someday", reference)
+    assert line in text, f"`plan` wrote no `{line}` line"
+    plan = write_edited(world, text.replace(line, edited, 1))
+
+    checked = run_check(plan)
+    assert checked.returncode == 2, checked.stderr + checked.stdout
+    assert_no_traceback(checked)
+    first = next((said for said in checked.stderr.splitlines()
+                  if said.startswith("REFUSED ")), "")
+    assert first.startswith(f"REFUSED {code}: "), checked.stderr
+
+    refusal = refused_by(adopter, execute_args(world.tmp, plan))
+    assert refusal.code == code
+    no_leg_was_created(world.tmp)
+    assert source_branches(world.source) == ["main"]
 
 
 @pytest.mark.parametrize("value,reference", [
@@ -1201,6 +1256,7 @@ def test_a_follow_ups_that_is_not_a_list_creates_no_leg_and_the_corrected_plan_r
     assert refused.returncode == 2, refused.stderr + refused.stdout
     assert f"REFUSED {BAD_FOLLOW_UPS_CODE}: " in refused.stderr
     assert_no_traceback(refused)
+    assert_refused_before_any_leg(refused)
     assert "creating the leg repositories" not in refused.stdout
     assert not remotes.exists(), "not even the directory the legs go in"
     assert source_branches(world.source) == ["main"]
@@ -1227,6 +1283,7 @@ def test_an_elected_on_it_cannot_read_creates_no_leg_and_the_corrected_plan_runs
     assert refused.returncode == 2, refused.stderr + refused.stdout
     assert f"REFUSED {DATE_CODE}: " in refused.stderr
     assert_no_traceback(refused)
+    assert_refused_before_any_leg(refused)
     assert DATE_FLAG not in refused.stderr
     assert "creating the leg repositories" not in refused.stdout
     assert not remotes.exists(), "not even the directory the legs go in"
