@@ -2090,6 +2090,29 @@ def clone_and_bootstrap(opts: Options, org: str, landing: Landing) -> dict:
 # 8. hand over
 # ---------------------------------------------------------------------------
 
+#: A word this host's shell reads as itself, needing no quotes:
+#: `scripts/repo_shape.py`'s `SHELL_BARE_NT` on Windows, else its
+#: `SHELL_BARE_POSIX`. This file runs before any checkout of the standard
+#: exists, so it carries its own copy of the rule, and
+#: `tests/test_family_printed_quoting.py` holds the two to one answer.
+SHELL_BARE = re.compile(r"[A-Za-z0-9_./:%+=\\-]+" if os.name == "nt"
+                        else r"[A-Za-z0-9_./:@%+=,-]+")
+
+
+def shell_word(value) -> str:
+    """`value` as ONE word of a command pasted into this host's shell: bare
+    where every character is itself to it, else in single quotes, doubled
+    inside for PowerShell, closed-escaped-reopened for `sh` (#486). A
+    leading `=` is quoted too, which zsh would expand."""
+    text = str(value)
+    if not text.startswith("=") and SHELL_BARE.fullmatch(text):
+        return text
+    if os.name == "nt":
+        return "'" + re.sub("(['\u2018\u2019\u201a\u201b])", r"\1\1",
+                            text) + "'"
+    return "'" + text.replace("'", "'\\''") + "'"
+
+
 def family_next_command(project: str, org: str, landing: Landing) -> None:
     """The LAST line of the next commands: who records the membership.
 
@@ -2104,9 +2127,18 @@ def family_next_command(project: str, org: str, landing: Landing) -> None:
     with the standard's own relative path: `family.py` needs the standard
     beside it, and it works before a holder is on disk at all (RULING of
     2026-09-09, ruling 1b).
+
+    A BRANCH FIRST, AND EVERY PATH ONE WORD (#487, #486). `add` refuses to
+    commit onto the holder's tracking branch, so the `git switch -c` that
+    makes the branch it suggests comes before it; and a holder under a
+    folder with a space in it must reach `--family-root` whole.
     """
-    say("    %s scripts/family.py add --family-root %s --member %s/%s"
-        % (PYTHON_CMD, landing.holder, org, project))
+    holder = shell_word(landing.holder)
+    say("    git -C %s switch -c family/add-%s" % (holder, project.lower()))
+    say("                           # a branch first: `add` refuses the")
+    say("                           #   holder's tracking branch")
+    say("    %s scripts/family.py add --family-root %s --member %s"
+        % (PYTHON_CMD, holder, shell_word("%s/%s" % (org, project))))
     say("                           # from a checkout of openRepoShape. The")
     say("                           #   HOLDER records the membership; this")
     say("                           #   project's manifest says nothing "
