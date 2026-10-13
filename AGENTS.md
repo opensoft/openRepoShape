@@ -353,7 +353,7 @@ git -C <path> push -u origin <branch>   # then open a pull request
    world cannot fetch is a root it cannot bootstrap. A red validator has
    already been rolled back; the finding above it is the thing to fix.
 5. The leg is left DETACHED at the new commit. `make bootstrap` in the root
-   re-places it on its tracking branch AT the new pin; say so in your relay.
+   puts it on its tracking branch AT the new pin, or says why not; relay which.
 6. **`--trailer "<Key>: <value>"` puts a line on the commit this writes.**
    Repeatable, kept in the order given, as `update-shape.py apply` and
    `family.py bump` take it. `--dry-run` prints them after the `old -> new`

@@ -991,7 +991,7 @@ and writes nothing else, so it runs there and prints that command), and a
 validator that goes red — rolling the pin, the workflow files, the leg's
 checkout and the index back first, so a refusal leaves the tree as it was found.
 The leg is left DETACHED at the new commit; `make bootstrap` re-places it on its
-tracking branch AT the new pin.
+tracking branch AT the new pin, or says why not.
 
 ## Bootstrap is COPIED into the project, not fetched
 
