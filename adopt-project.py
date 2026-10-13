@@ -7614,15 +7614,16 @@ def _neutral_product_pins(pins) -> str:
 
     EACH ENTRY IS SPELLED AS `y` SPELLS THE PLAN'S `product:`. Of the names
     `--pin` takes, `y` writes bare only one that begins with a letter, `_`
-    or `.`, so `openGlass` is the line it always was and `007` is `"007"`.
-    Where the reader would not read that bare spelling back as the same
-    text, which is `true`, `null` and the other keywords `y` leaves bare
-    (#181), the entry is double-quoted all the same. The reader is asked, as
+    or `.` and that the reader reads back as the same text, after `key: `
+    and as a `- ` item alike (#181), so `openGlass` is the line it always
+    was, `007` is `"007"`, and `true` and `null` are `"true"` and `"null"`.
+    The reader is asked once more of the entry as this list holds it, as
     `family.py` asks it of a member's id (#259), rather than a list of its
-    words. Such a name reaches here only from a plan edited by hand, because
-    `check` refuses the bare `product: true` that `plan` writes. The list is
-    a block placeholder, so `render` writes it as it stands, and nothing
-    else quotes it.
+    words, and an entry it would not read back as the same text is
+    double-quoted all the same. Such a name reaches here from `plan` as
+    well as from a plan edited by hand: `plan` records it quoted, and
+    `check` passes it. The list is a block placeholder, so `render` writes
+    it as it stands, and nothing else quotes it.
     """
     if not pins:
         return "[]"

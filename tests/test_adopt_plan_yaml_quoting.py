@@ -43,13 +43,15 @@ the end-to-end test clones and bootstraps what is still accepted.
 
 SINCE #259 THE TEMPLATES QUOTE THOSE LINES (main's 47b1e06): the id, the
 branch, the leg paths, the election date and the visibility are written
-between double quotes, which read back as typed, so each value of theirs
-the gate refused is planned, checked and written as given (`READ_BACK`).
-What `execute` still writes bare is each pin's product, in the manifest's
-`neutral_product_pins:` list, and the gate refuses that (`REFUSED`) until
-lane 2's #514 quotes it. The gate is asked of a line written bare once more
-where a test means its own answer (`bare_template`): how it names a value,
-and which values it asks about at all.
+between double quotes, which read back as typed. Since #514 (main's
+e6fbd748) `execute` quotes an item of the manifest's `neutral_product_pins:`
+list the reader would misread, so a pin's product reads back too. Each value
+the gate refused is planned, checked and written as given (`READ_BACK`), and
+on the shipped templates the gate finds nothing. It is asked of a line
+written bare once more where a test means its own answer (`bare_template`,
+`bare_pins`, in this process): how it names a value, which values it asks
+about at all, and what `plan`, `check` and `execute` do with its answer
+(`REFUSED`).
 
 THE PROJECT'S OWN VALIDATOR IS ASKED FIRST (#261, rv181f's G1). A value it
 refuses as the loader reads it -- `visibility: secret`, and `visibility:
@@ -61,6 +63,7 @@ writes in every mode, which is what its remediation says.
 from __future__ import annotations
 
 import argparse
+import functools
 import importlib.util
 import itertools
 import random
@@ -77,6 +80,7 @@ from conftest import (ADOPT, FILE_PROTOCOL, REPO, git, make_source_repo,
 sys.path.insert(0, str(REPO / "scripts"))
 import repo_shape  # noqa: E402
 from repo_shape import load_yaml, parse_yaml  # noqa: E402
+from shape_materialize import neutral_pin_path  # noqa: E402
 
 DOCTOR = REPO / "shape-doctor.py"
 
@@ -369,9 +373,10 @@ UNWRITABLE_FINDING = "FINDING plan-unwritable-value: "
 #: How `check` begins #261's line about a value the project's own
 #: validate-manifest.py refuses.
 INVALID_FINDING = "FINDING plan-manifest-invalid: "
-#: How #181's remediation begins, which no other remediation does.
-MANIFEST_MISREAD_REMEDIATION_START = (
-    "Remediation: choose another value for each one named. `execute` writes")
+#: How the remediation after the project's own validator's findings begins.
+VALIDATOR_REMEDIATION_START = (
+    "Remediation: choose a value the project's own validate-manifest.py "
+    "accepts")
 #: `true` as text, as a plan edited by hand quotes it, and `007` and
 #: `null` too.
 TRUE_TEXT = '"true"'
@@ -447,18 +452,26 @@ DOMAIN_USER_READ = "the text `CORP`, then a tab, then `om`"
 #: carries it: `'"CORP\tom"'`.
 QUOTED_DOMAIN_USER = f"'\"{DOMAIN_USER}\"'"
 
-#: `(flag, value, plan key, what the project's loader reads)`: a pin's
-#: product, which `execute` writes bare, as an item of the manifest's
-#: `neutral_product_pins:` list. At 76a6153 `--pin null` went through
-#: `execute` to `adoption verified` with the pin gone, and on main `--pin
-#: 007@<commit>` still ends `adoption verified` over a root whose own
-#: `validate-pins.py` refuses `entry 7` (lane 2's #514). The project's own
-#: validator makes no finding about what the loader reads of any of them, so
-#: each is #181's, at `plan` and in a plan. Since #273 a `--pin` is
-#: `<product>@<40 hex>` and a plan's pin a whole one (`flag_args`,
-#: `whole_pin`): the value is the pin's product. Once #514 quotes the list's
-#: items, each reads back as typed, and these rows are `READ_BACK`'s kind.
+#: `(flag, value, plan key, what the project's loader reads)`: values the
+#: project's loader misreads on a line written bare, the branch as
+#: `tracking_branch:` was before #259 (`bare_template`) and a pin's product
+#: as an item of the manifest's `neutral_product_pins:` list was before #514
+#: (`bare_pins`). At 76a6153 `--tracking-branch true` and `--pin null` went
+#: through `execute` to `adoption verified`, the legs pushed on one branch
+#: and put on another by the first bootstrap, and the pin gone; before #514
+#: `--pin 007@<commit>` did, over a root whose own `validate-pins.py` refused
+#: `entry 7`. The project's own validator, which reads the shipped
+#: templates, makes no finding about any of them, and each branch is one the
+#: source has (`holding`), so each is #181's, at `plan` and in a plan. Since
+#: #273 a `--pin` is `<product>@<40 hex>` and a plan's pin a whole one
+#: (`flag_args`, `whole_pin`): the value is the pin's product. On the
+#: templates shipped since #259, and since #514 for the pins, each reads back
+#: as typed (`READ_BACK`), so these rows ask the rule's own answer, in this
+#: process.
 REFUSED = [
+    (TRACKING_FLAG, "true", TRACKING_KEY, TRUE_READ),
+    (TRACKING_FLAG, "null", TRACKING_KEY, NO_VALUE),
+    (TRACKING_FLAG, "007", TRACKING_KEY, SEVEN_READ),
     (PIN_FLAG, "null", PINS_KEY, NO_VALUE),
     (PIN_FLAG, "True", PINS_KEY, TRUE_READ),
     (PIN_FLAG, "007", PINS_KEY, SEVEN_READ),
@@ -483,6 +496,9 @@ PROJECT_FLAG = "--project"
 #: back as typed, so each is planned, checked and written as given, with no
 #: finding of #181's or the validator's. A branch is asked of a source that
 #: has it (#479), and one row takes it from the source's default branch.
+#: The pins were `REFUSED`'s rows while the manifest's list wrote its items
+#: bare; since #514 (main's e6fbd748) `execute` writes each as `- "null"`,
+#: `- "True"` and `- "007"`, which read back as typed too.
 READ_BACK = [
     *[(TRACKING_FLAG, value) for value in ("true", "null", "007")],
     *[(SPEC_FLAG, value) for value in ("null", "Null", "NULL", "~", "true",
@@ -491,6 +507,7 @@ READ_BACK = [
     ("--id", "true"), ("--id", "null"),
     (PROJECT_FLAG, "True"), (PROJECT_FLAG, "Null"),
     (DEFAULT_BRANCH, "true"),
+    *[(PIN_FLAG, value) for value in ("null", "True", "007")],
 ]
 #: The placeholders #259 put between double quotes in the assembly root's
 #: templated YAML files, which `bare_template` writes bare again.
@@ -511,10 +528,23 @@ def checked(plan: Path):
 REMOTES = "remotes"
 
 
+def execute_argv(plan: Path, tmp_path: Path) -> list[str]:
+    """`execute`'s arguments for a run under local remotes."""
+    return ["execute", PLAN_OPTION, str(plan), "--yes",
+            "--local-remote-dir", str(tmp_path / REMOTES),
+            WORK_DIR_FLAG, str(tmp_path / "work")]
+
+
 def executed(plan: Path, tmp_path: Path):
-    return run_script(ADOPT, "execute", PLAN_OPTION, str(plan), "--yes",
-                      "--local-remote-dir", str(tmp_path / REMOTES),
-                      WORK_DIR_FLAG, str(tmp_path / "work"))
+    return run_script(ADOPT, *execute_argv(plan, tmp_path))
+
+
+def run_here(adopter, capsys, *argv: str) -> tuple[int, str, str]:
+    """`adopt-project.py <argv>` run in this process, where `bare_template`
+    and `bare_pins` reach it: `(exit, stdout, stderr)`."""
+    code = adopter.main(list(argv))
+    said = capsys.readouterr()
+    return code, said.out, said.err
 
 
 def branches_of(source: Path) -> str:
@@ -679,18 +709,20 @@ def carrying(plan: Path, text: str, key: str, spelled: str) -> None:
 @pytest.mark.parametrize("flag, value, reading", PLANNED,
                          ids=ids_of(PLANNED, 0, 1))
 def test_plan_refuses_a_value_the_projects_loader_would_misread(
-        answered_copy, glass, tmp_path, flag, value, reading):
+        adopter, answered_copy, glass, bare_template, bare_pins, tmp_path,
+        capsys, flag, value, reading):
     """Before the plan is written: the flag, the value, what the project's
-    loader would read, and the fix."""
+    loader would read, and the fix. Asked where the line is bare
+    (`bare_template`, `bare_pins`), in this process."""
     source, _ = answered_copy
     plan = tmp_path / PLAN_FILE
-    result = write_plan(source, plan,
-                        extra=flag_args(source, glass, flag, value))
-    assert result.returncode == 2, result.stdout + result.stderr
-    assert result.stderr.startswith("REFUSED adopt-manifest-misread: ")
+    code, _, stderr = run_here(adopter, capsys, *plan_argv(
+        source, plan, tmp_path, *flag_args(source, glass, flag, value)))
+    assert code == 2, stderr
+    assert stderr.startswith("REFUSED adopt-manifest-misread: "), stderr
     who, what = misread(FLAG_NAMED.get(flag, flag), value, reading)
-    assert who in result.stderr and what in result.stderr, result.stderr
-    assert "No plan was written." in result.stderr
+    assert who in stderr and what in stderr, stderr
+    assert "No plan was written." in stderr
     assert not plan.exists()
 
 
@@ -705,13 +737,15 @@ def bare_template(adopter, tmp_path, monkeypatch) -> Path:
     quoted written bare again, as it was before #259.
 
     The gate asks the line `execute` writes, and since #259 every line it
-    asks about but the pins' list is quoted, where no value is misread. What
-    it says of a line written bare -- how it names a value, and which values
-    it asks about at all -- is still the rule's own answer, and a test of
-    that is asked here, of the gate directly or of `plan` in this process.
-    No `check` run as a process of its own sees this copy, nor the leg-path
-    rule (`leg_path_problem`, #266) unless a test points it here too, nor
-    the validator, and `execute` never does. The copy is a templates
+    asks about but the pins' list is quoted, where no value is misread (the
+    pins' list since #514: `bare_pins`). What it says of a line written bare
+    -- how it names a value, which values it asks about at all, and what
+    `plan`, `check` and `execute` do with that answer -- is still the rule's
+    own answer, and a test of that is asked here, of the gate directly or of
+    `plan`, `check` or `execute` in this process (`run_here`). No run as a
+    process of its own sees this copy, nor the leg-path rule
+    (`leg_path_problem`, #266) unless a test points it here too, nor the
+    validator, which reads the shipped templates. The copy is a templates
     directory's `assembly-root`, as the shape's own is."""
     copy = tmp_path / "bare-templates" / "assembly-root"
     shipped = ""
@@ -730,18 +764,44 @@ def bare_template(adopter, tmp_path, monkeypatch) -> Path:
     return copy
 
 
-def planned_as_given(tmp_path: Path, flag: str, value: str) -> tuple[Path,
-                                                                     Path]:
+def pins_written_bare(pins) -> str:
+    """The manifest's `neutral_product_pins:` list as `_template_table`
+    wrote it before #514: each product bare, as it stands."""
+    if not pins:
+        return "[]"
+    return "\n" + "\n".join(f"  - {product}" for product in sorted(pins))
+
+
+@pytest.fixture
+def bare_pins(adopter, monkeypatch) -> None:
+    """The manifest's pins' list written bare again, as it was before #514
+    (main's e6fbd748), whose `_neutral_product_pins` quotes an item the
+    project's reader would misread and which `_template_table` takes the
+    list from. The gate asks that table (`_pin_field`), so on the shipped
+    code it finds no pin misread; what it says of a bare item -- how it
+    names a pin's product, at `plan` and in a plan, and which pins it asks
+    about at all -- is still the rule's own answer, asked here in this
+    process. The validator is asked of the same table, so a manifest its
+    reader refuses is the validator's here too."""
+    assert adopter._neutral_product_pins(["007"]) == '\n  - "007"', (
+        "#514's quotes moved")
+    monkeypatch.setattr(adopter, "_neutral_product_pins", pins_written_bare)
+
+
+def planned_as_given(tmp_path: Path, glass: tuple[Path, str], flag: str,
+                     value: str) -> tuple[Path, Path]:
     """`(source, plan)` for a `READ_BACK` row: `plan` given the flag, or the
     project an id is derived from, or a source whose default branch is the
-    value, then answered. A branch is one the source has (#479)."""
+    value, then answered. A branch is one the source has (#479), and a pin's
+    digest is read from the stand-in clone (`flag_args`)."""
     default = value if flag == DEFAULT_BRANCH else "main"
     source = make_source_repo(tmp_path / SOURCE_NAME, branch=default)
-    holding(source, flag, value)
+    extra = (() if flag in (DEFAULT_BRANCH, PROJECT_FLAG)
+             else flag_args(source, glass, flag, value))
     plan = tmp_path / PLAN_FILE
     written = write_plan(
         source, plan, project=value if flag == PROJECT_FLAG else PROJECT_NAME,
-        extra=() if flag in (DEFAULT_BRANCH, PROJECT_FLAG) else (flag, value))
+        extra=extra)
     assert written.returncode == 0, written.stdout + written.stderr
     assert "REFUSED" not in written.stderr, written.stderr
     for path, leg in ANSWERS:
@@ -758,9 +818,13 @@ def as_given(flag: str, value: str) -> str:
 def where_it_lands(flag: str) -> tuple[tuple, tuple]:
     """`(in the plan, in project.yaml)`: where the row's value lands in
     each, as the steps into what its loader reads. A leg is the second or
-    third of the manifest's `legs:`; the assembly is the first."""
+    third of the manifest's `legs:`; the assembly is the first. A pin is
+    the plan's one pin, by its product, and the manifest's one item of
+    `neutral_product_pins:`."""
     if flag in (TRACKING_FLAG, DEFAULT_BRANCH):
         return (TRACKING_KEY,), (TRACKING_KEY,)
+    if flag == PIN_FLAG:
+        return (PINS_KEY, 0, "product"), ("neutral_product_pins", 0)
     if flag in (SPEC_FLAG, CODE_FLAG):
         role = flag[2:6]
         return (("legs", f"{role}_path"),
@@ -778,13 +842,15 @@ def read_at(loaded, steps: tuple):
 @pytest.mark.parametrize("flag, value", READ_BACK,
                          ids=ids_of(READ_BACK, 0, 1))
 def test_a_value_the_template_quotes_is_planned_and_checked_as_given(
-        tmp_path, flag, value):
+        glass, tmp_path, flag, value):
     """`plan` refused each of these, as #181's misread or in the project's
     own validator's words (`manifest-leg-path`, `manifest-id`), while the
-    template wrote its line bare. Since #259 the line is quoted and reads
-    back as typed: `plan` writes the plan, which reads the value back as
-    given, and `check` passes it with no finding at all."""
-    _, plan = planned_as_given(tmp_path, flag, value)
+    template wrote its line bare, and a pin's product while the manifest's
+    list did. Since #259 the line is quoted, and since #514 the list's item
+    where the reader would misread it, and each reads back as typed: `plan`
+    writes the plan, which reads the value back as given, and `check`
+    passes it with no finding at all."""
+    _, plan = planned_as_given(tmp_path, glass, flag, value)
     in_plan, _ = where_it_lands(flag)
     assert read_at(load_yaml(plan), in_plan) == as_given(flag, value)
     result = checked(plan)
@@ -797,13 +863,16 @@ def test_a_value_the_template_quotes_is_planned_and_checked_as_given(
 @pytest.mark.parametrize("flag, value", READ_BACK,
                          ids=ids_of(READ_BACK, 0, 1))
 def test_execute_writes_a_value_the_template_quotes_as_given(
-        tmp_path, flag, value):
+        glass, tmp_path, flag, value):
     """`execute` refused each of these before any leg existed, as #181's
     misread or as the validator's. Since #259 it writes each between double
-    quotes, ends `adoption verified`, and the split's `project.yaml` reads
-    the value back as given; a leg path reads back from its pin's
-    `submodule_path:` too, and the legs are pushed on the branch."""
-    source, plan = planned_as_given(tmp_path, flag, value)
+    quotes, and since #514 a pin's product as a quoted item of the
+    manifest's list (`- "007"`); it ends `adoption verified`, and the
+    split's `project.yaml` reads the value back as given; a leg path reads
+    back from its pin's `submodule_path:` too, a pin's product from its own
+    `contracts/<product>-pin.yaml` (`product: "007"`, since #516), and the
+    legs are pushed on the branch."""
+    source, plan = planned_as_given(tmp_path, glass, flag, value)
     result = executed(plan, tmp_path)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "adoption verified" in result.stdout, result.stdout
@@ -815,6 +884,10 @@ def test_execute_writes_a_value_the_template_quotes_as_given(
 
     _, in_manifest = where_it_lands(flag)
     assert read_at(shown(MANIFEST), in_manifest) == as_given(flag, value)
+    if flag == PIN_FLAG:
+        manifest = git("show", f"{SPLIT_BRANCH}:{MANIFEST}", cwd=source)
+        assert f'\n  - "{value}"\n' in manifest.stdout, manifest.stdout
+        assert shown(neutral_pin_path(value))["product"] == value
     if flag in (SPEC_FLAG, CODE_FLAG):
         pin = shown(f"contracts/{flag[2:6]}-pin.yaml")
         assert pin[SUBMODULE_PATH] == value
@@ -876,25 +949,29 @@ def test_plan_takes_an_elector_from_git_the_manifests_quotes_read_back(
 
 @pytest.mark.parametrize("key, value, reading", CARRIED,
                          ids=ids_of(CARRIED, 0, 1))
-def test_check_reports_a_plan_carrying_one(adopter, answered_copy, tmp_path,
-                                           key, value, reading):
+def test_check_reports_a_plan_carrying_one(
+        adopter, answered_copy, bare_template, bare_pins, tmp_path, capsys,
+        key, value, reading):
     """A plan carrying the value -- spelled by the plan writer, so the plan
     itself reads it back -- is a FINDING, with the remediation once after.
-    It is #181's alone: the project's own validator, asked first, makes no
-    finding about what the loader reads of it, and `execute` writes it in
-    every mode."""
+    It is #181's alone, one finding: the project's own validator, asked
+    first, makes no finding about what the loader reads of it, and `execute`
+    writes it in every mode. Asked where the line is bare (`bare_template`,
+    `bare_pins`), in this process."""
     source, text = answered_copy
     holding(source, key, value)
     plan = tmp_path / PLAN_FILE
     carrying(plan, text, key, adopter.y(value))
-    result = checked(plan)
-    assert result.returncode == 1, result.stdout + result.stderr
+    code, stdout, stderr = run_here(adopter, capsys, "check", PLAN_OPTION,
+                                    str(plan))
+    assert code == 1, stdout + stderr
     who, what = misread(NAMED.get(key, key), value, reading)
-    assert f"{MISREAD_FINDING}{who}" in result.stderr
-    assert what in result.stderr, result.stderr
-    assert result.stderr.count(adopter.MANIFEST_MISREAD_REMEDIATION) == 1
-    assert INVALID_FINDING not in result.stderr, result.stderr
-    assert PLAN_OK not in result.stdout
+    (line,) = judged_lines(stderr)
+    assert line.startswith(f"{MISREAD_FINDING}{who}"), stderr
+    assert what in stderr, stderr
+    assert stderr.count("Remediation: ") == 1, stderr
+    assert stderr.count(adopter.MANIFEST_MISREAD_REMEDIATION) == 1
+    assert PLAN_OK not in stdout
 
 
 def judged_lines(stderr: str) -> list[str]:
@@ -1179,7 +1256,10 @@ def test_a_misread_branch_the_source_lacks_is_479s_finding_alone(
     misread one saying `execute` writes it and the run ends `adoption
     verified`, and `plan` refused it under that remediation. `plan` records
     it with #479's note, as main does, and `check` says #479's finding
-    alone."""
+    alone. Since #259 the shipped template quotes the branch, where `true`
+    reads back, so this passes there with the misread rule asking nothing;
+    `test_a_branch_execute_does_not_push_in_every_mode_is_never_misread`
+    asks the rule where the line is bare."""
     source, _ = answered
     plan = tmp_path / PLAN_FILE
     written = write_plan(source, plan, extra=(TRACKING_FLAG, "true"))
@@ -1215,7 +1295,11 @@ def test_a_misread_branch_origin_lacks_is_479s_finding_alone(
     the repository the split's pull request goes to, does not. `check`
     reads `origin`'s branches and finds it `plan-tracking-branch-missing`,
     which `execute` refuses before any leg exists in either mode, so it is
-    #479's finding alone, as at `plan`, though the source itself has it."""
+    #479's finding alone, as at `plan`, though the source itself has it.
+    On the shipped templates, which quote the branch since #259, this
+    passes with the misread rule asking nothing; the rule is asked where
+    the line is bare in
+    `test_a_branch_execute_does_not_push_in_every_mode_is_never_misread`."""
     source = with_origin(tmp_path, None)
     holding(source, TRACKING_KEY, "true")
     plan = tmp_path / PLAN_FILE
@@ -1257,7 +1341,10 @@ def test_a_misread_branch_only_origin_has_is_named_by_neither(
     into the source, which does not, and `execute` refuses it before any
     leg exists. `check` is not told the mode, so a sentence saying
     `execute` writes it would be false in one of them: `check` passes the
-    plan, as main does (`_pushed_in_every_mode`)."""
+    plan, as main does. On the shipped templates, which quote the branch
+    since #259, it passes because `true` reads back there; where the line
+    is bare, `_pushed_in_every_mode` is what keeps the rule silent
+    (`test_a_branch_execute_does_not_push_in_every_mode_is_never_misread`)."""
     _, plan = origin_only(tmp_path)
     result = checked(plan)
     assert result.returncode == 0, result.stdout + result.stderr
@@ -1280,6 +1367,115 @@ def test_execute_refuses_a_branch_only_origin_has_under_a_local_remote(
     ), result.stderr
     assert not (tmp_path / REMOTES).exists()
     assert SPLIT_BRANCH not in branches_of(source)
+
+
+def branch_source(tmp_path: Path, own: bool, origin: bool | None) -> Path:
+    """A source for the branch `true`: one of its own where `own`; a
+    fetched remote `origin` that has it where `origin` is True, lacks it
+    where False, and no `origin` at all where None."""
+    if origin is None:
+        source = make_source_repo(tmp_path / SOURCE_NAME)
+    else:
+        source = with_origin(tmp_path, "true" if origin else None)
+    if own:
+        holding(source, TRACKING_KEY, "true")
+    return source
+
+
+#: `(the source has `true`, its fetched `origin` has it, or None for no
+#: `origin`, how `check`'s one finding begins, or None where it passes the
+#: plan)`: #479's three tracking branches `execute` does not push the legs
+#: to in every mode, and refuses before any leg exists (69a743e, 94242a2).
+BRANCH_CASES = [
+    pytest.param(False, None,
+                 f"{BRANCH_MISSING}`true`, which is no branch of the source ",
+                 id="the-source-lacks-it"),
+    pytest.param(True, False,
+                 f"{BRANCH_MISSING}`true`, which is no branch of the "
+                 "source's remote `origin` ", id="origin-lacks-it"),
+    pytest.param(False, True, None, id="only-origin-has-it"),
+]
+
+
+@pytest.mark.parametrize("own, origin, finding", BRANCH_CASES)
+def test_a_branch_execute_does_not_push_in_every_mode_is_never_misread(
+        adopter, bare_template, tmp_path, capsys, own, origin, finding):
+    """Where `tracking_branch:` is written bare, as before #259
+    (`bare_template`), the loader misreads `true`, so the misread rule asks
+    git and then the source whether `execute` pushes the legs to it in
+    every mode (`_a_branch_execute_writes`, `_pushed_in_every_mode`). In
+    each of these it does not, and refuses it before any leg exists. So
+    `plan` records it, noting it where it is no branch of the source or of
+    its `origin`, and refuses nothing; `check` finds it #479's
+    `plan-tracking-branch-missing` alone, or passes the plan where only
+    `origin` has it, as main does; and neither says it is misread. In this
+    process."""
+    source = branch_source(tmp_path, own, origin)
+    plan = tmp_path / PLAN_FILE
+    code, stdout, stderr = run_here(adopter, capsys, *plan_argv(
+        source, plan, tmp_path, TRACKING_FLAG, "true"))
+    assert code == 0, stdout + stderr
+    assert (BRANCH_NOTED in stdout) == (finding is not None), stdout
+    assert MISREAD_CODE not in stdout + stderr
+    for path, leg in ANSWERS:
+        resolve(plan, path, leg)
+    code, stdout, stderr = run_here(adopter, capsys, "check", PLAN_OPTION,
+                                    str(plan))
+    assert MISREAD_FINDING not in stderr, stderr
+    assert adopter.MANIFEST_MISREAD_REMEDIATION not in stderr
+    if finding is None:
+        assert code == 0, stdout + stderr
+        assert PLAN_OK in stdout, stdout
+    else:
+        assert code == 1, stdout + stderr
+        assert finding in stderr, stderr
+
+
+@pytest.mark.parametrize("own, origin, pushed", [
+    pytest.param(False, None, False, id="the-source-lacks-it"),
+    pytest.param(True, False, False, id="origin-lacks-it"),
+    pytest.param(False, True, False, id="only-origin-has-it"),
+    pytest.param(True, True, True, id="both-have-it"),
+])
+def test_the_source_says_whether_execute_pushes_the_legs_to_a_branch(
+        adopter, tmp_path, own, origin, pushed):
+    """`_pushed_in_every_mode`: `execute` pushes the legs to a tracking
+    branch in every mode only where #479's question finds it -- among the
+    branches of the source's `origin` as the clone remembers them, or the
+    source's own where it has no `origin` (gh mode) -- and the source
+    itself has it (`--local-remote-dir`)."""
+    opened = adopter.Source.open(str(branch_source(tmp_path, own, origin)),
+                                 tmp_path / "work")
+    assert adopter._pushed_in_every_mode(opened, "true") is pushed
+
+
+def test_plan_asks_the_validator_before_the_misread_rule(
+        adopter, answered, bare_template, tmp_path, monkeypatch, capsys):
+    """rv181f's G1 at `plan`: the project's own validator is asked first,
+    and a value it refuses is refused in its words alone. On a bare `id:`
+    line, as before #259, `--id true` is read as a boolean: the validator
+    refuses it (`manifest-id`), and the misread rule would name it too. So
+    the validator is given the same bare copy (`bare_template`, with the
+    template's own `scripts/` beside it, asked through
+    `manifest_value_problems`), and `plan` refuses the id as
+    `adopt-manifest-invalid`, says nothing of a misread, and writes no plan.
+    On the shipped templates `true` reads back and is `READ_BACK`'s. In
+    this process."""
+    shutil.copytree(REPO / "templates" / "assembly-root" / "scripts",
+                    bare_template / "scripts")
+    materialize = sys.modules["shape_materialize"]
+    monkeypatch.setattr(materialize, "manifest_value_problems",
+                        functools.partial(materialize.manifest_value_problems,
+                                          template_dir=bare_template))
+    source, _ = answered
+    plan = tmp_path / PLAN_FILE
+    code, _, stderr = run_here(adopter, capsys, *plan_argv(
+        source, plan, tmp_path, "--id", "true"))
+    assert code == 2, stderr
+    assert stderr.startswith("REFUSED adopt-manifest-invalid: "), stderr
+    assert "manifest-id" in stderr, stderr
+    assert MISREAD_CODE not in stderr, stderr
+    assert not plan.exists()
 
 
 def test_plan_names_a_tracking_branch_it_took_from_the_source(
@@ -1326,22 +1522,25 @@ def test_the_source_is_asked_only_about_a_branch_the_loader_misreads(
 # --- a pin is `product@<40 hex>`, recorded whole (main's #273) --------------
 
 def test_a_pin_beside_a_273_finding_is_not_named_misread(
-        answered, tmp_path):
+        adopter, answered, bare_pins, tmp_path, capsys):
     """`execute` refuses a plan whose `pins:` has a finding of #273's
     before any leg exists, so it writes none of its pins: a misread
     sentence about the whole pin beside it would say otherwise. One wrong
-    `pins:` is #273's findings alone."""
+    `pins:` is #273's findings alone. Since #514 the pin `"null"` reads back
+    from the manifest's list, so it is asked where the list is written
+    bare (`bare_pins`), in this process."""
     _, text = answered
     plan = tmp_path / PLAN_FILE
     carrying(plan, text, PINS_KEY, QUOTED_NULL)
     edited = text_of(plan).replace("\npins:\n", "\npins:\n  - openX\n", 1)
     with plan.open("w", encoding=UTF8, newline="\n") as handle:
         handle.write(edited)
-    result = checked(plan)
-    assert result.returncode == 1, result.stdout + result.stderr
+    code, stdout, stderr = run_here(adopter, capsys, "check", PLAN_OPTION,
+                                    str(plan))
+    assert code == 1, stdout + stderr
     assert "FINDING plan-pin-unrecorded: `pins:` entry 1, 'openX'" in (
-        result.stderr), result.stderr
-    assert MISREAD_FINDING not in result.stderr, result.stderr
+        stderr), stderr
+    assert MISREAD_FINDING not in stderr, stderr
 
 
 def test_a_pin_whose_product_is_not_text_is_273s_finding_alone(
@@ -1364,7 +1563,7 @@ UNWRITABLE_DATE = '"2026-09-02\\nx"'
 #: `(plan key, as a plan edited by hand spells it)`: values no file
 #: `execute` writes can hold, which #255 names as `plan-unwritable-value`:
 #: a line break, in a value read back as one line, and a control character
-#: such as a tab. The date and the pins are written bare, where the
+#: such as a tab. Where the date and the pins were written bare, the
 #: project's loader would read each as something else too; the visibility
 #: is not one #181 judges (`NEVER_WRITTEN`). Beside a line break, the
 #: project's own validator lists the manifest such a value makes, as main
@@ -1414,43 +1613,37 @@ def test_execute_refuses_a_date_no_file_can_hold_as_unwritable_not_misread(
     assert SPLIT_BRANCH not in branches_of(source)
 
 
-#: `(plan key, as a plan edited by hand spells it, the one finding `check`
-#: prints about it)`: a value of each kind #181's gate and #261's validator
-#: (`plan-manifest-invalid`) divide between them. The validator is asked
-#: first, and a value it refuses as the loader reads it is its alone, text
-#: the loader misreads included (rv181f's G1); so is any value of a manifest
-#: its reader cannot read at all, and that one finding names no value twice
-#: (rv181f's G2). What the loader misreads and the validator accepts is
-#: #181's: since #259 a pin's product alone. `id: "007"`, `tracking_branch:
+#: `(plan key, as a plan edited by hand spells it)`: values #261's
+#: validator (`plan-manifest-invalid`) refuses as the loader reads them. The
+#: validator is asked first, and a value it refuses is its alone, text the
+#: loader misreads included (rv181f's G1). `id: "007"`, `tracking_branch:
 #: "007"` and `legs.spec_path: "null"` were a row each here, the first the
 #: validator's and the others #181's; since #259 each reads back and is no
-#: finding (main's `TEXT_THE_TEMPLATE_NOW_HOLDS`, and `READ_BACK`).
+#: finding (main's `TEXT_THE_TEMPLATE_NOW_HOLDS`, and `READ_BACK`). So were
+#: a pin `"null"`, #181's, and a pin `? x`, whose bare item made a manifest
+#: the validator's reader refuses (rv181f's G2); since #514 each item reads
+#: back. What is left of #181's is asked where a line is bare
+#: (`test_check_reports_a_plan_carrying_one`), and so is G2
+#: (`test_a_manifest_its_reader_refuses_is_the_validators_alone`).
 JUDGED_ONCE = [
-    pytest.param(PINS_KEY, '"? x"', INVALID_FINDING,
-                 id="pin-the-reader-refuses"),
-    pytest.param(PINS_KEY, QUOTED_NULL, MISREAD_FINDING, id="pin-text-misread"),
-    pytest.param(ELECTED_BY_KEY, '" "', INVALID_FINDING, id="elector-blank"),
-    pytest.param(VISIBILITY_KEY, "secret", INVALID_FINDING,
-                 id="visibility-secret"),
-    pytest.param(VISIBILITY_KEY, TRUE_TEXT, INVALID_FINDING,
-                 id="visibility-text-true"),
-    pytest.param(VISIBILITY_KEY, "true", INVALID_FINDING,
-                 id="visibility-boolean"),
-    pytest.param(VISIBILITY_KEY, "[secret]", INVALID_FINDING,
-                 id="visibility-list"),
+    pytest.param(ELECTED_BY_KEY, '" "', id="elector-blank"),
+    pytest.param(VISIBILITY_KEY, "secret", id="visibility-secret"),
+    pytest.param(VISIBILITY_KEY, TRUE_TEXT, id="visibility-text-true"),
+    pytest.param(VISIBILITY_KEY, "true", id="visibility-boolean"),
+    pytest.param(VISIBILITY_KEY, "[secret]", id="visibility-list"),
 ]
 
 
-@pytest.mark.parametrize("key, spelled, finding", JUDGED_ONCE)
+@pytest.mark.parametrize(KEY_SPELLED, JUDGED_ONCE)
 def test_check_judges_each_value_once_by_the_rule_true_of_it(
-        answered_copy, tmp_path, key, spelled, finding):
+        answered_copy, tmp_path, key, spelled):
     """At the merge of main dd8d0ea, `id: "007"` and `elected_on:
     "20260902"` were two findings each, #181's and the validator's, and a
     visibility that is not text was none. At 7ac2358 each was one, but
     #181's, whose remediation said `execute` writes the value and the run
     ends `adoption verified` where `execute` refuses it as the validator's
     (rv181f's G1), and `elected_on: "!"` was still two (G2). Each is one,
-    in the words of the rule true of it."""
+    in the validator's words."""
     source, text = answered_copy
     holding(source, key, parse_yaml(f"{key}: {spelled}\n")[key])
     plan = tmp_path / PLAN_FILE
@@ -1458,13 +1651,40 @@ def test_check_judges_each_value_once_by_the_rule_true_of_it(
     result = checked(plan)
     assert result.returncode == 1, result.stdout + result.stderr
     (line,) = judged_lines(result.stderr)
-    assert line.startswith(finding), result.stderr
-    remediation = (MANIFEST_MISREAD_REMEDIATION_START
-                   if finding == MISREAD_FINDING else
-                   "Remediation: choose a value the project's own "
-                   "validate-manifest.py accepts")
+    assert line.startswith(INVALID_FINDING), result.stderr
     assert result.stderr.count("Remediation: ") == 1, result.stderr
-    assert remediation in result.stderr, result.stderr
+    assert VALIDATOR_REMEDIATION_START in result.stderr, result.stderr
+
+
+def test_a_manifest_its_reader_refuses_is_the_validators_alone(
+        adopter, answered, bare_pins, tmp_path, capsys):
+    """rv181f's G2. Where the project's own reader refuses the whole
+    manifest a plan makes, no value of it can be said to pass the validator
+    (`manifest_judged` is None), so #181 leaves every value to it, and
+    `check` prints one finding of the two rules', the validator's, with its
+    remediation once. A pin `? x` made such a manifest while the pins' list
+    was written bare (`- ? x`, an explicit key). Since #514 `execute` quotes
+    it, and no plan value was found to make such a manifest of the shipped
+    templates (probed: each key the manifest is rendered from, with every
+    candidate here), so it is asked with the list written bare again
+    (`bare_pins`), in this process. The pin is #273's `plan-pin-malformed`
+    as well, as it was."""
+    _, text = answered
+    plan = tmp_path / PLAN_FILE
+    carrying(plan, text, PINS_KEY, '"? x"')
+    naming = adopter.NamingPolicy.load(adopter.NAMING_POLICY)
+    values = adopter._manifest_values(adopter.Plan.load(plan), naming)
+    assert adopter.manifest_judged(values, naming,
+                                   ignore=adopter.LEG_PATH_CODES) is None
+    code, _, stderr = run_here(adopter, capsys, "check", PLAN_OPTION,
+                               str(plan))
+    assert code == 1, stderr
+    (line,) = judged_lines(stderr)
+    assert line.startswith(f"{INVALID_FINDING}the manifest this run would "
+                           "write is a file the project's own YAML reader "
+                           "refuses: "), stderr
+    assert stderr.count("Remediation: ") == 1, stderr
+    assert VALIDATOR_REMEDIATION_START in stderr, stderr
 
 
 #: A leg path the validator refuses as text, which its finding about the
@@ -1474,14 +1694,15 @@ OUTSIDE_THE_ROOT = '"../x"'
 #: codes `check` leaves to `_leg_findings` are left out, what
 #: `manifest_judged` answers)`. The first and the last two were `id: "007"`
 #: and `legs.spec_path: "null"` while the template wrote those lines bare;
-#: since #259 each reads back, and the validator accepts it.
+#: since #259 each reads back, and the validator accepts it. A pin `? x`,
+#: whose manifest its reader refused while the pins' list was written bare,
+#: was a row here; since #514 it is asked with the list bare again
+#: (`test_a_manifest_its_reader_refuses_is_the_validators_alone`).
 JUDGED_BY_THE_VALIDATOR = [
     pytest.param(VISIBILITY_KEY, "secret", False, frozenset({"VISIBILITY"}),
                  id="its-finding-names-the-value"),
     pytest.param(TRACKING_KEY, QUOTED_007, False, frozenset(),
                  id="a-value-it-does-not-judge"),
-    pytest.param(PINS_KEY, '"? x"', False, None,
-                 id="its-reader-refuses-the-file"),
     pytest.param(SPEC_PATH_KEY, OUTSIDE_THE_ROOT, False, None,
                  id="a-finding-about-no-one-value"),
     pytest.param(SPEC_PATH_KEY, OUTSIDE_THE_ROOT, True, frozenset(),
@@ -1670,19 +1891,21 @@ PIN_WITH_A_TRAIL = [
 
 @pytest.mark.parametrize("trailed", PIN_WITH_A_TRAIL)
 def test_a_pin_ending_in_whitespace_is_273s_finding_alone(
-        adopter, answered, tmp_path, trailed):
+        adopter, answered, bare_pins, tmp_path, capsys, trailed):
     """`check` finds the pin `plan-pin-malformed`, and `execute` refuses it
     before any leg exists, so it is never written: one finding, #273's, and
-    no misread sentence saying `execute` writes it."""
+    no misread sentence saying `execute` writes it. Since #514 the manifest's
+    list quotes such an item, so it is asked where the list is written bare
+    (`bare_pins`), in this process."""
     _, text = answered
     plan = tmp_path / PLAN_FILE
     carrying(plan, text, PINS_KEY, trailed)
-    result = checked(plan)
-    assert result.returncode == 1, result.stdout + result.stderr
-    assert "FINDING plan-pin-malformed: `pins:` entry 1 " in result.stderr, (
-        result.stderr)
-    assert MISREAD_FINDING not in result.stderr, result.stderr
-    assert adopter.MANIFEST_MISREAD_REMEDIATION not in result.stderr
+    code, stdout, stderr = run_here(adopter, capsys, "check", PLAN_OPTION,
+                                    str(plan))
+    assert code == 1, stdout + stderr
+    assert "FINDING plan-pin-malformed: `pins:` entry 1 " in stderr, stderr
+    assert MISREAD_FINDING not in stderr, stderr
+    assert adopter.MANIFEST_MISREAD_REMEDIATION not in stderr
 
 
 #: Values the manifest's own double quotes misread while `render` pasted
@@ -1742,22 +1965,25 @@ def test_a_value_holding_a_placeholder_is_asked_as_render_puts_it_in_once(
 @pytest.mark.parametrize("key, value, reading", CARRIED,
                          ids=ids_of(CARRIED, 0, 1))
 def test_execute_refuses_a_plan_carrying_one_before_any_leg_exists(
-        adopter, answered_copy, tmp_path, key, value, reading):
+        adopter, answered_copy, bare_template, bare_pins, tmp_path, capsys,
+        key, value, reading):
     """The refused half of the end-to-end run: `execute` says no through
     #168's one list of `check`'s findings, before it creates a leg or
-    touches the source."""
+    touches the source. Asked where the line is bare (`bare_template`,
+    `bare_pins`), in this process."""
     source, text = answered_copy
     holding(source, key, value)
     plan = tmp_path / PLAN_FILE
     carrying(plan, text, key, adopter.y(value))
-    result = executed(plan, tmp_path)
-    assert result.returncode == 2, result.stdout + result.stderr
-    assert result.stderr.startswith("REFUSED plan-manifest-misread: ")
+    code, stdout, stderr = run_here(adopter, capsys,
+                                    *execute_argv(plan, tmp_path))
+    assert code == 2, stdout + stderr
+    assert stderr.startswith("REFUSED plan-manifest-misread: "), stderr
     who, what = misread(NAMED.get(key, key), value, reading)
-    assert f"{MISREAD_FINDING}{who}" in result.stderr
-    assert what in result.stderr
-    assert adopter.MANIFEST_MISREAD_REMEDIATION in result.stderr
-    assert INVALID_FINDING not in result.stderr, result.stderr
+    assert f"{MISREAD_FINDING}{who}" in stderr
+    assert what in stderr
+    assert adopter.MANIFEST_MISREAD_REMEDIATION in stderr
+    assert INVALID_FINDING not in stderr, stderr
     assert not (tmp_path / REMOTES).exists()
     assert SPLIT_BRANCH not in branches_of(source)
 
@@ -1848,25 +2074,29 @@ def one_pin_table(adopter, plan, product: str) -> dict | None:
 
 
 def test_the_gate_follows_the_loader_when_the_loader_learns_a_keyword(
-        adopter, answered, tmp_path, monkeypatch):
-    """ONE QUESTION, `loader_reading`, for the plan writer and the gate. Teach
-    the real reader that `yes` is a boolean and both change with no edit:
-    `y` quotes it, and a pin called `yes`, which `execute` writes bare in
-    the manifest's list, is refused. A branch or an id called `yes` is
-    not: since #259 `execute` writes each between double quotes, which the
-    reader reads back as the text whatever it has learnt."""
+        adopter, answered, bare_template, tmp_path, monkeypatch):
+    """ONE QUESTION, `loader_reading`, for the plan writer, the pins' list
+    and the gate. Teach the real reader that `yes` is a boolean and all
+    three change with no edit: `y` quotes it; `execute` writes a pin called
+    `yes` as `- "yes"`, because #514 asks the same reader, and the gate
+    passes that line; and a branch called `yes`, on a line written bare as
+    before #259 (`bare_template`), is refused. On the shipped templates a
+    branch is written between double quotes, which the reader reads back as
+    the text whatever it has learnt (`READ_BACK`)."""
     reads = repo_shape._scalar
-    fields = [adopter._field(TRACKING_KEY, TRACKING_PLACEHOLDER, "yes"),
-              adopter._field("id", "PROJECT_ID", "yes"),
-              pin_field(adopter, loaded_plan(adopter, answered, tmp_path),
-                        "yes")]
-    assert adopter.manifest_misreads(fields) == []
+    plan = loaded_plan(adopter, answered, tmp_path)
+    branch = adopter._field(TRACKING_KEY, TRACKING_PLACEHOLDER, "yes")
+    assert branch[2] == [(MANIFEST, "tracking_branch: yes")]
+    assert adopter.manifest_misreads(
+        [branch, pin_field(adopter, plan, "yes")]) == []
     monkeypatch.setattr(repo_shape, SCALAR_READER,
                         lambda raw: True if raw.strip() == "yes"
                         else reads(raw))
     assert adopter.y("yes") == QUOTED_YES
+    pin = pin_field(adopter, plan, "yes")
+    assert pin[2] == [(f"{MANIFEST}'s neutral_product_pins", '- "yes"')]
     assert [problem.split(" is ")[0] for problem
-            in adopter.manifest_misreads(fields)] == [PINS_KEY]
+            in adopter.manifest_misreads([branch, pin])] == [TRACKING_KEY]
 
 
 def test_the_template_line_says_whether_a_value_is_quoted(
@@ -1874,8 +2104,8 @@ def test_the_template_line_says_whether_a_value_is_quoted(
     """No list in `adopt-project.py` says which placeholders the templates
     quote: the line is read. `Null` is a person's name between the quotes
     of `elected_by:`, and a branch between those of `tracking_branch:`
-    since #259; as an item of the pins' list, which `execute` writes bare,
-    it is no product at all."""
+    since #259; as an item of the pins' list, which `execute` writes
+    `- "Null"` since #514, it is a product too."""
     assert adopter._written(ELECTED_BY_PLACEHOLDER, "Null") == [
         (MANIFEST, 'elected_by: "Null"')]
     assert adopter._written(TRACKING_PLACEHOLDER, "Null") == [
@@ -1885,33 +2115,27 @@ def test_the_template_line_says_whether_a_value_is_quoted(
         adopter._field(TRACKING_KEY, TRACKING_PLACEHOLDER, "Null")]) == []
     field = pin_field(adopter, loaded_plan(adopter, answered, tmp_path),
                       "Null")
-    assert field[2] == [(f"{MANIFEST}'s neutral_product_pins", "- Null")]
-    assert adopter.manifest_misreads([field]) != []
+    assert field[2] == [(f"{MANIFEST}'s neutral_product_pins", '- "Null"')]
+    assert adopter.manifest_misreads([field]) == []
 
 
 def test_the_gate_asks_the_table_execute_writes_the_pins_from(
         adopter, answered, tmp_path, monkeypatch):
     """`_pin_field` asks `_template_table`, the table `execute`'s
     `_template_values` writes the manifest from, and never a copy of how it
-    spells an item. So the day that table quotes each product, as lane 2's
-    #514 means to, the gate asks the quoted line and passes `null`, with no
-    edit of its own. Here the table is made to quote each item so."""
+    spells an item. Since #514 (main's e6fbd748) that table quotes a product
+    the project's reader would misread, and the gate asks the quoted line
+    and passes `null`, with no edit of its own. Made to write the item bare
+    again, as before #514 (`pins_written_bare`), the table's bare line is
+    the one the gate asks, and refuses."""
     plan = loaded_plan(adopter, answered, tmp_path)
-    assert adopter.manifest_misreads([pin_field(adopter, plan, "null")])
-    bare = adopter._template_table
-
-    def quoting(*args, **kwargs):
-        table = bare(*args, **kwargs)
-        first, *items = table[PINS_PLACEHOLDER].split("\n")
-        table[PINS_PLACEHOLDER] = "\n".join(
-            [first] + [f"  - {repo_shape.double_quoted(item[4:])}"
-                       for item in items])
-        return table
-
-    monkeypatch.setattr(adopter, "_template_table", quoting)
     field = pin_field(adopter, plan, "null")
     assert field[2] == [(f"{MANIFEST}'s neutral_product_pins", '- "null"')]
     assert adopter.manifest_misreads([field]) == []
+    monkeypatch.setattr(adopter, "_neutral_product_pins", pins_written_bare)
+    field = pin_field(adopter, plan, "null")
+    assert field[2] == [(f"{MANIFEST}'s neutral_product_pins", "- null")]
+    assert adopter.manifest_misreads([field])
 
 
 #: Where each placeholder lands in the RENDERED files, as their loader reads
@@ -2039,9 +2263,10 @@ def test_the_plan_writer_quotes_a_pin_whatever_refuses_it_later(
         adopter, answered, glass, tmp_path, monkeypatch):
     """`pins: [` was the one list of strings the plan wrote without `y`, so
     `--pin null` was `pins: [null]`: a null `Plan.load` drops. Since #273
-    `plan` writes each pin as a mapping through `y` (`_pin_lines`), and
-    refuses such a product before writing, so the writer is asked with the
-    gate taken away: the product is a string like any other in the plan."""
+    `plan` writes each pin as a mapping through `y` (`_pin_lines`). The
+    writer is asked with the gate taken away, so the answer is the writer's
+    alone, whatever refuses the product later: it is a string like any
+    other in the plan."""
     source, _ = answered
     path, commit = glass
     monkeypatch.setattr(adopter, "manifest_misreads", lambda _fields: [])
