@@ -43,8 +43,9 @@ from pathlib import Path, PurePath
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from repo_shape import (  # noqa: E402
-    CHAIN_RECORD_FIELD, SAFE_ARG_RE, NamingPolicy, Refusal, checked_value,
-    double_quoted, file_sha256,
+    CHAIN_RECORD_FIELD, PATH_CLIMBS, PATH_ITSELF, PATH_NOT_CANONICAL,
+    SAFE_ARG_RE, NamingPolicy, Refusal, checked_value, double_quoted,
+    file_sha256, path_spelling_fault,
 )
 # The reader's own parse and its own comment rule, for "The two lines a pin
 # is moved by" below. `_strip_comment` is that module's private name and is
@@ -733,6 +734,19 @@ class CommandFailed(Exception):
         )
 
 
+#: Two fields name a branch, and they are NOT the same thing (#324):
+#:   `{tracking}` is the run's tracking branch (`--tracking-branch`): the
+#:   branch of the REMOTE the refused push targeted, and so the base a
+#:   seeding pull request lands on.
+#:   `{local}` is the ref in `{work}` that the refused push carried. Each
+#:   caller -- the scaffold's legs and assembly root, the family holder --
+#:   pushed the tracking branch BY NAME from a clone made on it, so each
+#:   passes the tracking branch for both; a push of `HEAD:` would name `HEAD`.
+#:   An adoption prints its own `ADOPT_RULESET_HINT` (`adopt-project.py`,
+#:   #177), which names the tracking branch the same way and no command.
+#: Every caller passes both, after `checked_value` has admitted the tracking
+#: branch, so each is a safe argument and neither is quoted here. A call that
+#: leaves one out fails `tests/test_ruleset_hint_tracking_branch.py`.
 RULESET_HINT = """
 If the organisation applies a ruleset requiring changes to arrive by pull
 request, a direct push to the default branch is refused BY DESIGN and must not
@@ -741,8 +755,8 @@ be worked around. Two legitimate exits:
   (1) have an operator holding the bypass right seed the default branch once,
       then re-run this scaffold; or
   (2) push a seed BRANCH and open a pull request:
-          git -C {work} push -u origin main:seed/scaffold
-          gh pr create --repo {repo} --base main --head seed/scaffold \\
+          git -C {work} push -u origin {local}:seed/scaffold
+          gh pr create --repo {repo} --base {tracking} --head seed/scaffold \\
               --title 'Seed the {role} leg' --body 'Scaffolded shape.'
 
 NOTHING has been rolled back. What already exists is listed above; delete it
@@ -2069,6 +2083,14 @@ def copy_out(src: Path, dst: Path) -> None:
 # asks (see "Commit trailers" above for the same argument). This module
 # is in no copy list and both tools already import it.
 #
+# EXCEPT THE SEGMENTS, which a project's copy DOES ask (#189): its
+# `validate-manifest.py` holds each path `project.yaml`'s `submodules:`
+# records to the spelling Git records a path in, so
+# `repo_shape.path_spelling_fault` answers that for both rules, and
+# `_spelling_reason` below adds only what a TYPED path can get wrong -- a
+# drive letter and a backslash, which on POSIX are characters of a name Git
+# records -- and says every answer about a leg.
+#
 #   CANONICAL = a relative POSIX path of one or more segments, each non-empty
 #   and neither `.` nor `..`: no leading `/` or `./` (nor a drive letter), no
 #   trailing `/`, no `//`, no backslash. The two legs also take DIFFERENT
@@ -2132,8 +2154,28 @@ LEG_PATH_REMEDIATION = (
 )
 
 
+#: What each way a path's SEGMENTS can be misspelled means for a leg's mount
+#: path. `path_spelling_fault` asks the segments; the empty and absolute
+#: answers it also gives are `_spelling_reason`'s own, asked first, beside
+#: the drive letter and the backslash only a typed path can get wrong.
+LEG_SEGMENT_REASONS = {
+    PATH_CLIMBS: ("it has a `..` segment, so it names a different place than "
+                  "it spells and can climb out of the assembly root"),
+    PATH_ITSELF: ("it names the assembly root itself, and a leg is mounted "
+                  "INSIDE the root, not at it"),
+    PATH_NOT_CANONICAL: (
+        "Git records a mount without its `.` segments (a leading `./`), a "
+        "trailing `/` or a doubled `/`, so the mount and its `.gitmodules` "
+        "entry would name two different paths"),
+}
+
+
 def _spelling_reason(text: str) -> str | None:
-    """Why `text` is not a CANONICAL spelling of a leg path, or None."""
+    """Why `text` is not a CANONICAL spelling of a leg path, or None.
+
+    The segments are `repo_shape.path_spelling_fault`'s, the rule a
+    project's own validator also holds a recorded submodule path to (#189).
+    """
     if not text:
         return "it is empty"
     if text.startswith("/") or WINDOWS_ABSOLUTE_RE.match(text):
@@ -2142,18 +2184,7 @@ def _spelling_reason(text: str) -> str | None:
                 "its path is relative to it")
     if "\\" in text:
         return "it has a backslash, and a path here is written with `/`"
-    segments = text.split("/")
-    if ".." in segments:
-        return ("it has a `..` segment, so it names a different place than it "
-                "spells and can climb out of the assembly root")
-    if all(segment in ("", ".") for segment in segments):
-        return ("it names the assembly root itself, and a leg is mounted "
-                "INSIDE the root, not at it")
-    if "" in segments or "." in segments:
-        return ("Git records a mount without its `.` segments (a leading "
-                "`./`), a trailing `/` or a doubled `/`, so the mount and its "
-                "`.gitmodules` entry would name two different paths")
-    return None
+    return LEG_SEGMENT_REASONS.get(path_spelling_fault(text))
 
 
 def _unmountable_reason(text: str) -> str | None:

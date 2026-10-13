@@ -26,7 +26,9 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            A leg path over a path it keeps in the root itself is a NOTE,
            not a refusal: the answer is the person's to change.
   check    validates a plan against the source: each entry path bound for
-           a leg one `execute` will extract, every path covered exactly
+           a leg one `execute` will extract, no symlink in the source with
+           an empty target (Linux cannot make one, so a clone there checks
+           none out, whatever the plan answers), every path covered exactly
            once, no unresolved legs, leg names conforming to the naming
            policy, each leg's mount path one `execute` can mount
            (`spec`, `legs/spec`; never `spec/` or `./spec`, a name Git or
@@ -36,6 +38,7 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            into the root, `shape/`, or a source path the plan keeps there),
            no path kept in the root where the shape writes (a plain file at
            a directory it writes into, `.github`, `contracts` or `scripts`,
+           the source's own `project.yaml`, where it writes its manifest,
            or the source's own path at a copy it writes under `shape/`, in
            any case), and the source's own submodules kept on one leg with
            their `.gitmodules`, registered there and never in the root, each
@@ -46,7 +49,10 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            `xf-project-<id>` topic on all three (skipped for local remotes),
            and then VERIFIES by blob sha that every source path landed in
            exactly one place, and that the root's only submodules are the
-           two leg mounts, each at the commit pushed to its leg.
+           two leg mounts, each at the commit pushed to its leg. The split's
+           `project.yaml` records the leg each source submodule kept in a
+           leg was answered into, under `submodules:`, for `shape-doctor.py`
+           to check it against.
 
 THE PLAN IS AN ARTIFACT A HUMAN OR AN AI EDITS. That is why it is YAML with
 reasons in it rather than a pipe between two processes: the classifier is
@@ -2072,6 +2078,8 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
         print(line)
     for line in _kept_collision_notes(args, entries, tree):
         print(line)
+    for line in _empty_symlink_notes(tree):
+        print(line)
     unresolved = [e for e in entries if e.leg is None]
     print(f"\nplan written to {out}")
     if unresolved:
@@ -2469,6 +2477,25 @@ def _leg_findings(plan: Plan, tree: list | None) -> list[str]:
 # its copy goes to `shape/<path>`, which must then be free: nothing kept AT
 # it, no kept directory there, and no kept FILE on the way (#262).
 #
+# THE MANIFEST HAS NO COPY THAT STANDS IN FOR IT (#305). `project.yaml` is
+# the one path where the root holding the source's own is refused outright,
+# not asked about its copy: `shape-doctor.py`, the root's validators and
+# `make bootstrap` read the manifest at the root itself. Answered `root`
+# (which `plan`'s question used to offer), the source's own file stayed
+# there, `execute` wrote the shape's manifest beside it as
+# `shape/project.yaml`, said "nothing was overwritten" and `adoption
+# verified`, and the doctor called the assembly NOT A SHAPE ROOT, its first
+# `make bootstrap` failing naming, manifest and pins. A kept path AT it, or
+# a kept directory there, is `plan-root-blocks-manifest`; there is then no
+# copy to ask about, because the remediation takes the path out of the root.
+# A symlink there is one too, even one that leads nowhere, which `place`
+# writes the manifest THROUGH and which the doctor on Linux then reads as a
+# shape root: a clone that makes no symlinks holds the link as a file naming
+# its target, and #183 refuses a link to nothing at a shape path anyway.
+# The other paths the shape writes keep the copy and the follow-up to merge
+# it, which `plan` already predicts for a `Makefile` or a `README.md` it
+# keeps in the root itself.
+#
 # A SYMLINK OR A SUBMODULE is never a file on the way: a symlink above a shape
 # path or its copy is followed, or refused, by what #183 adds, and a submodule
 # the root keeps is `plan-submodule-root` (#166). Neither is a file where a
@@ -2501,6 +2528,13 @@ def _leg_findings(plan: Plan, tree: list | None) -> list[str]:
 #: root holds (#262).
 ROOT_BLOCKS_SHAPE = "plan-root-blocks-shape"
 ROOT_BLOCKS_COPY = "plan-root-blocks-shape-copy"
+#: And for a kept path where the shape writes its manifest (#305).
+ROOT_BLOCKS_MANIFEST = "plan-root-blocks-manifest"
+#: The shape's manifest, one of the paths `assembly_root_paths` lists: what
+#: `shape-doctor.py`, the root's validators and `make bootstrap` read at the
+#: assembly root, and what `contracts/path-classification.yaml` asks about
+#: under `ambiguous-project-yaml`, with no `root` among its answers.
+SHAPE_MANIFEST = "project.yaml"
 
 
 class _KeptTree:
@@ -2553,14 +2587,26 @@ class _KeptTree:
                 if self._key(row[0]).startswith(prefix)]
 
 
+def _kept_there(disk: _KeptTree, path: str) -> tuple[tuple, list]:
+    """What the plan keeps at `path` on `disk`: the group `("at", path)` and
+    the row AT it, or `("dir", path)` and the rows below a kept directory
+    there. A submodule is never one of them: it is `plan-submodule-root`'s
+    (#166), and said once there."""
+    at = disk.at(path)
+    rows = [row for row in ([at] if at else disk.under(path))
+            if row[1] != GITLINK_MODE]
+    return ("at" if at else "dir", path), rows
+
+
 def _shape_blocks(disk: _KeptTree) -> list[tuple]:
     """`(code, shape path, where it is written, group, kept rows)` for each
     path of `assembly_root_paths` that `place` would stop at or overwrite on
-    `disk`, in the order it writes them. The disk says both whether the root
-    already holds a path, so whether its copy is written at all, and whether
-    the place is free: a disk that ignores case holds `README.md` for a kept
-    `readme.md`. `group` names the one thing in the way, so that what one
-    kept path blocks is one finding."""
+    `disk`, in the order it writes them, and for the manifest, which no copy
+    stands in for, wherever the root holds it (#305). The disk says both
+    whether the root already holds a path, so whether its copy is written at
+    all, and whether the place is free: a disk that ignores case holds
+    `README.md` for a kept `readme.md`. `group` names the one thing in the
+    way, so that what one kept path blocks is one finding."""
     out = []
     for rel in assembly_root_paths():
         above = disk.file_above(rel)
@@ -2570,19 +2616,20 @@ def _shape_blocks(disk: _KeptTree) -> list[tuple]:
             continue
         if not disk.holds(rel):
             continue
+        if rel == SHAPE_MANIFEST:
+            group, rows = _kept_there(disk, rel)
+            if rows:
+                out.append((ROOT_BLOCKS_MANIFEST, rel, rel, group, rows))
+            continue
         copy = f"{COLLISION_DIR}/{rel}"
         above = disk.file_above(copy)
         if above:
             out.append((ROOT_BLOCKS_COPY, rel, copy, ("file", above[0]),
                         [above]))
             continue
-        at = disk.at(copy)
-        # A submodule is `plan-submodule-root`'s (#166), and said once there.
-        rows = [row for row in ([at] if at else disk.under(copy))
-                if row[1] != GITLINK_MODE]
+        group, rows = _kept_there(disk, copy)
         if rows:
-            out.append((ROOT_BLOCKS_COPY, rel, copy,
-                        ("at" if at else "dir", copy), rows))
+            out.append((ROOT_BLOCKS_COPY, rel, copy, group, rows))
     return out
 
 
@@ -2611,6 +2658,29 @@ def _blocked_sentence(code: str, rels: list[str], copies: list[str],
     them = "them" if len(rows) > 1 else "it"
     under = "" if entry == path else f" under the entry {_spelled(entry)}"
     fix = _fix_the_kept_path(entry)
+    if code == ROOT_BLOCKS_MANIFEST:
+        relation, aside = _overlap(rels[0], path)
+        spot = ("" if relation == "is" and not aside else
+                f", {'at' if relation == 'is' else 'inside'} "
+                f"{_first_and_more(rels)}{aside}")
+        found = ("directory" if relation == "contains"
+                 else _kind_of(mode).split()[-1])
+        beside = ("`execute` would write the shape's manifest beside it as "
+                  f"`{COLLISION_DIR}/{rels[0]}`")
+        written = (
+            f"Where it leads to something, {beside}, and where it leads "
+            "nowhere, through it, which a clone that makes no symlinks "
+            "holds as a file naming its target; either way it would say "
+            if relation == "is" and mode == SYMLINK_MODE else
+            f"{beside} and say ")
+        return (
+            f"the plan keeps {_kind_of(mode)} {named} in the assembly "
+            f"root{under}{spot}, where the shape writes its manifest. No "
+            "copy stands in for the manifest: `shape-doctor.py`, the root's "
+            f"validators and `make bootstrap` read {_first_and_more(rels)} "
+            "at the root itself, and there they would find the source's "
+            f"{found}. {written}`adoption verified`, after both leg "
+            f"repositories were created and pushed: {fix}.")
     if code == ROOT_BLOCKS_SHAPE:
         relation, aside = _overlap(rels[0], path)
         return (
@@ -3415,6 +3485,125 @@ UNSAFE_PATH_REMEDIATION = (
     "written on its own.")
 
 
+# ---------------------------------------------------------------------------
+# A symlink in the source whose target is empty (#303)
+# ---------------------------------------------------------------------------
+#
+# A source tree can hold a symlink whose target is EMPTY: a `120000` entry
+# whose blob is the empty blob. A checkout with `core.symlinks=false` writes
+# each link as a plain file holding its target, and emptying that file and
+# committing records one (git 2.43). `plan` and `check` never read a link's
+# target, so `check` said `plan ok`, and what `execute` did next turned on how
+# git checks a symlink out where it ran:
+#
+#   * Linux refuses a symlink to nothing (`symlink("")` fails with ENOENT),
+#     so where git makes symlinks there, its default, `execute`'s first
+#     clone of the source exited 128, `unable to checkout working tree`,
+#     after both leg repositories were created, WHATEVER THE PLAN ANSWERED
+#     for the link, `drop` included: `_extract_leg` and `_commit_the_split`
+#     each clone the whole source and only then take out what the plan
+#     sends elsewhere. Measured with the link in `docs/` (sent
+#     to the spec leg) and at the top level answered `root` and `drop`, and
+#     with both legs seeded, where the assembly's clone is the only one.
+#   * where `core.symlinks` is false, every clone held the link as an empty
+#     file and the run said `adoption verified`. The leg or the root the plan
+#     kept it in then could not be cloned on Linux where symlinks are made,
+#     nor could the assembly recursively; the root's own `validate` workflow
+#     runs on `ubuntu-latest`. Only `drop` gave an assembly that clones.
+#
+# So it is a fact of the SOURCE, readable from its tree before anything
+# exists, and no answer in the plan fixes it everywhere: `check` reports each
+# such link whatever the plan answers for it, and whatever `core.symlinks`
+# says where it runs, and `execute` refuses it before any leg exists (#168),
+# because a check that answered differently on another disk would pass a
+# plan the next machine cannot adopt. `drop` is not offered as the fix: it
+# is one only where symlinks are not made. The remediation is in the source.
+#
+# No target is read. `Source.tree()` lists each entry with `ls-tree -l`, and
+# the size of a symlink's blob is the length of its target, so an empty
+# target is a `120000` row of size 0, in a SHA-1 or a SHA-256 repository
+# alike. Only the commit being adopted is read: an empty symlink in the
+# history alone is never checked out by a clone, and `git filter-repo`
+# rewrites the history without a checkout.
+
+#: `check`'s finding for a symlink of the source's whose target is empty.
+EMPTY_SYMLINK = "plan-empty-symlink"
+#: How many of them `check` names one by one; past it, a count, as
+#: `plan-uncovered` counts the paths past its twentieth.
+EMPTY_SYMLINKS_NAMED = 20
+#: What a plan whose source holds one is told to do. Said by `check`, once
+#: after its findings, and by `execute`'s refusal, after its own remediation,
+#: which is about correcting the plan: this is about the source.
+EMPTY_SYMLINK_REMEDIATION = (
+    "Remediation: a symlink's target is a fact of the source, and no answer "
+    "in the plan changes it, `drop` included: `execute` clones the whole "
+    "source before it takes out anything the plan sends elsewhere, and where "
+    "git makes symlinks that clone stops at a symlink to nothing. Give each "
+    "such symlink a target in the source, or remove it there, commit, and "
+    "re-run `plan`: a plan is written against one commit of the source, and "
+    "`check` calls it `plan-stale` once the source has moved.")
+
+
+def empty_symlinks(tree: list) -> list[str]:
+    """The paths of `tree` (`Source.tree()`'s rows) that are symlinks with
+    an empty target: mode 120000, and a blob of size 0."""
+    return [path for path, mode, _, size in tree
+            if mode == SYMLINK_MODE and not size]
+
+
+def _empty_symlink_sentence(path: str) -> str:
+    """What `check` says of the empty symlink at `path`, and `plan` notes."""
+    return (f"{_spelled(path)} is a symlink whose target is empty at the "
+            "source commit, and Linux cannot make a symlink to nothing. "
+            "There, where git makes symlinks by default, each clone "
+            "`execute` makes of the source stops at it after both leg "
+            "repositories were created, whatever the plan answers for it; "
+            "and where `core.symlinks` is false the clone holds it as an "
+            "empty file, and the leg or root the plan keeps it in then "
+            "cannot be cloned on Linux, where the root's own `validate` "
+            "workflow runs")
+
+
+def _empty_symlink_findings(tree: list) -> tuple[list[str], list[str]]:
+    """A FINDING for each symlink of the source whose target is empty
+    (#303), as `check` prints it, the first EMPTY_SYMLINKS_NAMED one by one;
+    and what to print ONCE after every finding, as `_unsafe_path_findings`
+    does. Read from the tree alone: no answer of the plan's changes it."""
+    empty = empty_symlinks(tree)
+    found = [f"FINDING {EMPTY_SYMLINK}: {_empty_symlink_sentence(path)}."
+             for path in empty[:EMPTY_SYMLINKS_NAMED]]
+    if len(empty) > EMPTY_SYMLINKS_NAMED:
+        found.append(f"FINDING {EMPTY_SYMLINK}: … and "
+                     f"{len(empty) - EMPTY_SYMLINKS_NAMED} more symlinks "
+                     "whose target is empty")
+    return found, [EMPTY_SYMLINK_REMEDIATION] if found else []
+
+
+def _empty_symlink_notes(tree: list) -> list[str]:
+    """What `plan` says of each symlink of the source whose target is empty:
+    a NOTE in `check`'s words, and a line saying what follows. `plan` still
+    writes the plan, but no answer in it will pass `check`."""
+    notes: list[str] = []
+    for path in empty_symlinks(tree):
+        notes += [f"\nNOTE {_empty_symlink_sentence(path)}.",
+                  f"     `check` reports this as `{EMPTY_SYMLINK}` and "
+                  "`execute` refuses it, whatever the plan answers: give it "
+                  "a target in the source, or remove it there, commit, and "
+                  "re-run `plan`."]
+    return notes
+
+
+def _source_path_findings(plan: Plan, tree: list
+                          ) -> tuple[list[str], list[str]]:
+    """The findings `_entry_findings` lists first, about the source's own
+    paths, and what to print once after every finding for them: each entry
+    path `execute` will not extract (#196), then each symlink of the source
+    whose target is empty (#303)."""
+    unsafe, unsafe_remediation = _unsafe_path_findings(plan)
+    empty, empty_remediation = _empty_symlink_findings(tree)
+    return unsafe + empty, unsafe_remediation + empty_remediation
+
+
 def _unsafe_path_findings(plan: Plan) -> tuple[list[str], list[str]]:
     """`entry_path_problem` for each entry not answered `root` or `drop`, as
     `check` prints it, one FINDING each; and what to print ONCE after every
@@ -3467,6 +3656,12 @@ def _entry_findings(plan: Plan, source: Source,
     `plan-unsafe-path` for a plan that has one: a path that is a `git` option
     is refused as that, and never as the uncovered file it also leaves.
 
+    THEN THE SOURCE'S EMPTY SYMLINKS (#303), which no answer in the plan
+    fixes: the fix is a commit in the source, and the fresh `plan` after it
+    takes back every answer given before, so they are listed before the
+    findings about those answers (`_source_path_findings`). Their
+    remediation is said once after the findings, with the others.
+
     A VALUE NO FILE CAN HOLD IS SAID BEFORE THE VALIDATOR'S WORD ON IT (#255
     before #261). A lone surrogate, a line break or a bidi control in
     `visibility:` or `elected_on:` is both, and `_refuse_what_check_finds`
@@ -3478,7 +3673,7 @@ def _entry_findings(plan: Plan, source: Source,
     exists. The relative urls of #190 still come after both, last.
     """
     tree = source.tree()
-    unsafe, unsafe_remediation = _unsafe_path_findings(plan)
+    unsafe, unsafe_remediation = _source_path_findings(plan, tree)
     findings = (unsafe
                 + _coverage_findings([str(e.get("path"))
                                       for e in plan.entries],
@@ -4901,6 +5096,100 @@ def _where_it_landed(assembly: Path, written: str) -> str | None:
         if landed.is_relative_to(root) else None
 
 
+#: The key `execute` appends to the assembly's `project.yaml` (#189). The
+#: doctor reads it by this name through the module it loads, and the
+#: project's own `validate-manifest.py`, which imports nothing of this tool's,
+#: spells it once more.
+SUBMODULE_RECORD = "submodules"
+
+#: The comment above that block, in the manifest itself, because the
+#: manifest is read by people who never saw the plan it came from.
+SUBMODULE_RECORD_PREAMBLE = (
+    "",
+    "# THE SOURCE'S OWN SUBMODULES, and the leg each one was ANSWERED into",
+    "# when this repository was adopted (#189). Written once, by",
+    "# `adopt-project.py execute`, from the adoption plan: one row per",
+    "# submodule the split kept in a leg, its path inside that leg, the",
+    "# `resolution:` the plan gave the entry that covered it, and the source",
+    "# commit the plan was answered at. `shape-doctor.py` checks each",
+    "# submodule a leg holds against it. Like every field here, it confers",
+    "# nothing.",
+    f"{SUBMODULE_RECORD}:",
+)
+
+
+def submodule_record(entries: list, tree: list, commit: str) -> str:
+    """The `submodules:` block `execute` appends to `project.yaml`, or ""
+    when the split keeps no submodule of the source's in a leg (#189).
+
+    WHY THE ANSWER IS WRITTEN DOWN. Which leg holds a source submodule is a
+    human's answer under #166 -- `plan` asks it of every entry that covers a
+    gitlink, whatever rule its name matches -- and the plan that carries the
+    answer is not committed anywhere. Without a record, the assembly holds
+    `.cursor` in the code leg and nothing else, and `shape-doctor.py` cannot
+    tell that answer from a submodule added by hand, so the most it can say
+    is a note. With one, a submodule in the leg recorded is placed and one in
+    the other leg is MISPLACED, with the manifest as the evidence.
+
+    ONE ROW PER GITLINK KEPT IN A LEG, from `_answered_legs`, the reading
+    `check` holds the plan to: by the time `execute` calls this,
+    `_refuse_what_check_finds` has refused a gitlink no entry covers, one
+    covered twice, one left unanswered and one answered `root`. A gitlink
+    answered `drop` is in no leg, so nothing can be checked against it, and
+    one added at that path later is a gitlink no record covers. The path is
+    the gitlink's path in the source, which `git filter-repo` keeps as its
+    path in the leg. `resolution:` is written when the plan's entry has one;
+    a directory entry's answer covers every gitlink under it, so each row
+    carries that entry's line.
+
+    A SOURCE WITH NO SUBMODULE GETS "" and so the `project.yaml` -- and the
+    split -- it always got, byte for byte.
+
+    EVERY PATH AND REASON IS DOUBLE-QUOTED, by `repo_shape.double_quoted`,
+    the writer of the escapes the reader resolves (#199). Always quoted,
+    unlike `y`: a submodule may sit at `null`, `true` or `0001`, which a
+    plain scalar reads back as something that is not a path. And a character
+    `str.isprintable` refuses is spelled by its code point: NEL and U+2028
+    end a line for the reader, a no-break or zero-width space is another name
+    than the one it looks like, and the surrogate a byte that is not UTF-8 is
+    kept as cannot be written by `write_lf` at all, where `\\udce9` reads
+    back as that surrogate. So every row reads back as the name the doctor
+    holds the submodule at to it, and the manifest is written after both
+    legs exist. A name with a control character or a byte that is not UTF-8
+    in it is one the doctor reads no further: it reports it as a name no
+    report can carry.
+    """
+    gitlinks = [path for path, mode, _, _ in tree if mode == GITLINK_MODE]
+    kept = _kept_in_a_leg(_answered_legs(entries, gitlinks), gitlinks)
+    if not kept:
+        return ""
+    resolutions = {str(e.get("path")): _resolution_text(e.get("resolution"))
+                   for e in entries}
+    lines = list(SUBMODULE_RECORD_PREAMBLE)
+    for path, leg, entry in kept:
+        lines.append(f"  - path: {double_quoted(path)}")
+        lines.append(f"    leg: {leg}")
+        if resolutions.get(entry):
+            lines.append(
+                f"    resolution: {double_quoted(resolutions[entry])}")
+        lines.append(f'    source_commit: "{commit}"')
+    return "\n".join(lines) + "\n"
+
+
+def _resolution_text(resolution) -> str | None:
+    """A plan entry's `resolution:` as the text the record carries, or None.
+
+    A scalar is written as the plan's reader returned it. A blank one is no
+    reason, and a mapping or a list under the key is not one line of text,
+    so neither is written: the record's `resolution:` is optional, and a row
+    without one still says where the submodule was answered into.
+    """
+    if resolution is None or isinstance(resolution, (dict, list)):
+        return None
+    text = str(resolution)
+    return text if text.strip() else None
+
+
 def _commit_the_split(plan: Plan, source: Source, assembly: Path,
                       names: dict, urls: dict, values: dict, work_root: Path,
                       paths_for: dict, seeded: list, spec_path: str,
@@ -4960,9 +5249,17 @@ def _commit_the_split(plan: Plan, source: Source, assembly: Path,
                         spec_path, code_path)
 
         step = "committing the split"
+        # The plan's submodule answers outlive the plan only here (#189).
+        # An empty record appends nothing, so a source with no submodule
+        # gets the manifest it always got.
+        append = {"Makefile": ADOPT_MAKEFILE_BLOCK}
+        record = submodule_record(plan.entries, source.tree(),
+                                  source.commit)
+        if record:
+            append["project.yaml"] = record
         materialized = materialize_assembly_root(
             SHAPE_ROOT, assembly, values, collision_dir=COLLISION_DIR,
-            append={"Makefile": ADOPT_MAKEFILE_BLOCK})
+            append=append)
         for intended, actual in materialized.collisions:
             print(f"  beside  {actual} (the source already has {intended}; "
                   "nothing was overwritten)")
@@ -5927,6 +6224,54 @@ def _work_root(args) -> Path:
     return root
 
 
+def _leg_path_help(leg: str, default: str) -> str:
+    """`plan`'s `--help` for `--spec-path` and `--code-path` (#340): what the
+    flag is, what the plan records it as, and the two refusals `plan` makes on
+    it before it writes a plan, each by the code it prints. The two flags take
+    the one rule, so it is said from one place: `leg` is the role and
+    `default` the flag's default, which the examples of a spelling Git does
+    not keep are written from.
+
+    `tests/test_adopt_plan_leg_path_help.py` holds this to the tool: each
+    clause below names the value `plan` refuses for it, and each value the
+    help says is refused is. The spelling half is `leg_path_problem`'s, in the
+    order it asks (`scripts/shape_materialize.py`): the spelling, then the
+    names Git and Windows keep, then the alphabet `checked_value` allows (ASCII
+    only, 255 characters, nothing that begins with `-`). The collision half is
+    the scaffold's own sentence (#288) plus the half only an adoption has,
+    `shape/`, where `execute` writes its copy of a file the root already
+    holds. A mount over a source path the plan KEEPS in the root is not said
+    here, because `plan` refuses nothing for it (`_kept_collision_notes`).
+
+    THE LIST NEVER SAYS "ONLY". Each clause is a value `plan` refuses, and
+    each refusal prints the whole rule under `Remediation:`, where the closing
+    sentence sends the reader. A value the project's YAML reader would read
+    back as something other than text (`null`, `2026`: #225) is in none of
+    them: `plan` writes a plan for it, or refuses it under a clause or a code
+    another change adds, and this text is true either way. So it says nothing
+    of what `plan` ACCEPTS, because `plan` takes some values and does not
+    mount them where they were given (`null` is mounted at the default, #181).
+    """
+    return (
+        f"where the {leg} leg is mounted, as a path in the assembly root "
+        f"(default: {default}); the plan records it as `legs.{leg}_path`. "
+        "`plan` refuses it, before it writes a plan, as `adopt-bad-leg-path` "
+        "when the path is empty or `.`, is absolute, begins with `-` or is "
+        "longer than 255 characters; has a `..` segment, a backslash, a "
+        "segment that ends in a dot, or a character outside ASCII letters, "
+        "digits and `._/@+~-`; is not in Git's own spelling "
+        f"(`{default}/`, `./{default}` and `a//b` are not); has a segment "
+        "Git or Windows reserves (`.git`, `CON`); or is, holds or lies "
+        "inside the other leg's path, whatever the case. As "
+        "`adopt-leg-path-collides` it refuses a path that is, holds or lies "
+        "inside a FILE the shape writes into the root (`project.yaml` is "
+        "one, and `contracts` holds several), or that is at or under "
+        "`shape/`, whatever the case. The defaults `spec` and `code` pass. "
+        "Either refusal writes no plan and rewrites nothing, and its "
+        "`Remediation:` line states the whole rule; you pass the value "
+        "again.")
+
+
 def main(argv: list[str] | None = None) -> int:
     # FIRST, so that every `print` after it -- `--help` included -- escapes
     # a name stdout cannot encode rather than raising on it (#214).
@@ -5958,8 +6303,10 @@ def main(argv: list[str] | None = None) -> int:
                            "ratified from for one dated earlier — so "
                            "--elected-on chooses it.")
     plan.add_argument("--tracking-branch", default="main")
-    plan.add_argument("--spec-path", default="spec")
-    plan.add_argument("--code-path", default="code")
+    plan.add_argument("--spec-path", default="spec",
+                      help=_leg_path_help("spec", "spec"))
+    plan.add_argument("--code-path", default="code",
+                      help=_leg_path_help("code", "code"))
     plan.add_argument("--pin", action="append", default=[],
                       help="a neutral product this project declares a pin on "
                            "— a NAME only, e.g. --pin openGlass or --pin "

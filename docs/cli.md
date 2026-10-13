@@ -389,7 +389,45 @@ options:
                         so --elected-on chooses it.
   --tracking-branch TRACKING_BRANCH
   --spec-path SPEC_PATH
+                        where the spec leg is mounted, as a path in the
+                        assembly root (default: spec); the plan records it as
+                        `legs.spec_path`. `plan` refuses it, before it writes
+                        a plan, as `adopt-bad-leg-path` when the path is empty
+                        or `.`, is absolute, begins with `-` or is longer than
+                        255 characters; has a `..` segment, a backslash, a
+                        segment that ends in a dot, or a character outside
+                        ASCII letters, digits and `._/@+~-`; is not in Git's
+                        own spelling (`spec/`, `./spec` and `a//b` are not);
+                        has a segment Git or Windows reserves (`.git`, `CON`);
+                        or is, holds or lies inside the other leg's path,
+                        whatever the case. As `adopt-leg-path-collides` it
+                        refuses a path that is, holds or lies inside a FILE
+                        the shape writes into the root (`project.yaml` is one,
+                        and `contracts` holds several), or that is at or under
+                        `shape/`, whatever the case. The defaults `spec` and
+                        `code` pass. Either refusal writes no plan and
+                        rewrites nothing, and its `Remediation:` line states
+                        the whole rule; you pass the value again.
   --code-path CODE_PATH
+                        where the code leg is mounted, as a path in the
+                        assembly root (default: code); the plan records it as
+                        `legs.code_path`. `plan` refuses it, before it writes
+                        a plan, as `adopt-bad-leg-path` when the path is empty
+                        or `.`, is absolute, begins with `-` or is longer than
+                        255 characters; has a `..` segment, a backslash, a
+                        segment that ends in a dot, or a character outside
+                        ASCII letters, digits and `._/@+~-`; is not in Git's
+                        own spelling (`code/`, `./code` and `a//b` are not);
+                        has a segment Git or Windows reserves (`.git`, `CON`);
+                        or is, holds or lies inside the other leg's path,
+                        whatever the case. As `adopt-leg-path-collides` it
+                        refuses a path that is, holds or lies inside a FILE
+                        the shape writes into the root (`project.yaml` is one,
+                        and `contracts` holds several), or that is at or under
+                        `shape/`, whatever the case. The defaults `spec` and
+                        `code` pass. Either refusal writes no plan and
+                        rewrites nothing, and its `Remediation:` line states
+                        the whole rule; you pass the value again.
   --pin PIN             a neutral product this project declares a pin on — a
                         NAME only, e.g. --pin openGlass or --pin
                         opensoft/openGlass to name the owner explicitly.
@@ -622,17 +660,27 @@ usage: family.py init [-h] --org ORG --family FAMILY [--id ID] [--name NAME]
                       [--local-remote-dir LOCAL_REMOTE_DIR] [--into DIR]
                       [--work-dir WORK_DIR] [--no-push] [--dry-run]
 
+Create a family holder. Before anything is created, and under --dry-run alike,
+the family.yaml it would write is put through the holder's own YAML reader and
+its own validate-family.py: a value either would not hold is refused and
+named.
+
 options:
   -h, --help            show this help message and exit
   --org ORG
   --family FAMILY       the holder's name, ONE CamelCase token, e.g. InkRouter
-  --id ID               lowercase family id
-  --name NAME           display name
+  --id ID               lowercase family id (default: --family lowercased)
+  --name NAME           display name (default: --family); validate-family.py
+                        holds it to the same rule
   --visibility {private,public,internal}
   --created-by CREATED_BY
+                        the human creating the family (default:
+                        GIT_AUTHOR_NAME, then `git config user.name`); not
+                        blank
   --created-on CREATED_ON
-                        YYYY-MM-DD
+                        YYYY-MM-DD (default: today)
   --tracking-branch TRACKING_BRANCH
+                        the branch the holder is created on (default: main)
   --reuse-empty-repo    if <org>/<Family> already exists and has ZERO commits,
                         use it as the holder instead of refusing. A repository
                         with commits is still refused: that is live, not a
