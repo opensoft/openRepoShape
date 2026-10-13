@@ -101,6 +101,9 @@ from shape_materialize import unwritable_reason  # noqa: E402
 from shape_materialize import (  # noqa: E402
     assembly_root_paths, neutral_pin_path, shape_path_collisions,
 )
+# The project's own reader, and the writer of the double-quoted scalars it
+# reads back, asked of each `neutral_product_pins:` entry (#516).
+from repo_shape import YamlError, double_quoted, parse_yaml  # noqa: E402
 
 #: How a refusal names each value the manifest records (#258, #261). The leg
 #: paths are not here: `refuse_bad_leg_paths` asks for them (#179, #225).
@@ -1124,6 +1127,48 @@ def _set_topics(repositories: dict, topic: str, local: bool) -> None:
     print(f"  topic     {topic} set on all three")
 
 
+def _neutral_product_pins(products) -> str:
+    """`NEUTRAL_PRODUCT_PINS`, the manifest's list of the products `--pin`
+    declares: `[]`, or one `  - <product>` line for each, in the order the
+    pins were given, each spelled so that the project's own reader reads it
+    back as the text given (#516).
+
+    WRITTEN BARE, `  - 007` WAS THE NUMBER 7. `--pin 007@<commit>` scaffolded
+    and exited 0, and the root's own reader took the manifest's bare `007`
+    for 7, and `2026` and `1.5` for numbers, so its `validate-pins.py`
+    refused the entry as `neutral-pin-entry-malformed` and the project's
+    first CI run was red. `adopt-project.py execute` wrote the same line
+    (#514). The list is a block placeholder, so `render` writes it as it
+    stands, and nothing else quotes it.
+    """
+    if not products:
+        return "[]"
+    return "\n" + "\n".join(f"  - {_neutral_pin_entry(product)}"
+                            for product in products)
+
+
+def _neutral_pin_entry(product: str) -> str:
+    """One `neutral_product_pins:` entry: `product` bare where the project's
+    reader reads that entry back as `product`, and `double_quoted` (#284)
+    where it does not.
+
+    THE READER IS ASKED, as `family.py` asks it of a member's id (#259),
+    rather than a list of the words it takes for something else, and it is
+    asked of the LIST ENTRY: `  - -` is a list of its own, where `id: -` is
+    the text. A name it reads back bare, `openGlass` and every other plain
+    name, is the line it always was; `007`, `2026`, `1.5`, `true` and `null`
+    are double-quoted, and a double-quoted name always reads back.
+    """
+    try:
+        if parse_yaml(f"neutral_product_pins:\n  - {product}\n") \
+                == {"neutral_product_pins": [product]}:
+            return product
+    except YamlError:
+        # A spelling the reader refuses is not read back as anything.
+        pass
+    return double_quoted(product)
+
+
 def _scaffold(args) -> int:
     """The whole act, as the phases above, in the order they must happen.
 
@@ -1256,8 +1301,7 @@ def _scaffold(args) -> int:
         "DIGEST_DEFINITION": TREE_DIGEST_DEFINITION,
         "CLONE_URL": urls["assembly"],
         "ASSEMBLY_CLONE_URL": urls["assembly"],
-        "NEUTRAL_PRODUCT_PINS": ("[]" if not pins else
-                                 "\n" + "\n".join(f"  - {p}" for p in pins)),
+        "NEUTRAL_PRODUCT_PINS": _neutral_product_pins(pins),
         "ASSEMBLY_NAMING": naming_block(policy, names["assembly"], "assembly",
                                         declared_pins, chain=chain),
         "SPEC_NAMING": naming_block(policy, names["spec"], "spec", declared_pins),
