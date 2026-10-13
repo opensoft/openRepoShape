@@ -391,6 +391,34 @@ rules:
 
   # -- the honest residue ---------------------------------------------------
 
+  # THE SHAPE'S MANIFEST IS THE ASSEMBLY ROOT'S `project.yaml` (#305). A
+  # repository's own top-level `project.yaml` used to be asked the question
+  # below, which offers `root`. Answered so, `adopt-project.py execute` wrote
+  # the shape's manifest beside it as `shape/project.yaml` and said
+  # `adoption verified`, and `shape-doctor.py` then called the assembly NOT A
+  # SHAPE ROOT, its validators and first `make bootstrap` failing. So the
+  # file is asked a question of its own that does not offer `root`, and
+  # `adopt-project.py` refuses a plan that keeps it there anyway. As for
+  # `.gitmodules`, what `execute` does is said of a repository WHEN IT IS
+  # ADOPTED: `shape-doctor.py --placement-plan` prints this question too, for
+  # a leg already split.
+  - id: ambiguous-project-yaml
+    paths:
+      - "project.yaml"
+    leg: ambiguous
+    reason: >-
+      A top-level `project.yaml` of the repository's own. The assembly
+      root's `project.yaml` is the shape's manifest, which its validators,
+      `make bootstrap` and `shape-doctor.py` read there, so when a repository
+      is adopted its own file of that name goes to a leg or is dropped.
+    question: >-
+      Is this file a declaration the project has DECIDED (spec), or
+      configuration the implementation reads at run time (code)? Drop it if
+      neither leg needs it. `root` is not an answer for this file: the
+      assembly root's `project.yaml` is the shape's manifest, and
+      `adopt-project.py` refuses a plan that keeps the repository's own file
+      there.
+
   - id: ambiguous-top-level-yaml
     paths:
       - "*.yaml"
