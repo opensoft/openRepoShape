@@ -672,7 +672,7 @@ def test_a_source_on_another_branch_opens_its_pull_request_against_it(
     assert_pushed(github, branch)
     root = git("show", f"{SPLIT_BRANCH}:project.yaml",
                cwd=github / ORG / f"{NORTHWIND}.git").stdout
-    assert f"\ntracking_branch: {branch}\n" in root, root
+    assert f'\ntracking_branch: "{branch}"\n' in root, root
     assert "Base ref must be a branch" not in result.stderr
 
 
