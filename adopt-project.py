@@ -330,7 +330,7 @@ def _read_pins(plan: "Plan") -> tuple[list, list[str]]:
     plan's, or an edit's) or a mapping missing its commit or digest is
     `plan-pin-unrecorded`, and anything else `plan` never writes there is
     `plan-pin-malformed`."""
-    rows = plan.data.get("pins")
+    rows = plan.get("pins")
     if rows is None:
         return [], []
     if not isinstance(rows, list):
