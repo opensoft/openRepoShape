@@ -237,8 +237,8 @@ def test_a_missing_shape_pin_refuses(project):
 
 
 def test_a_pin_path_that_disagrees_with_the_manifest_is_a_finding(project):
-    edit_pin(project, "spec-pin.yaml", "submodule_path: spec",
-             "submodule_path: specification")
+    edit_pin(project, "spec-pin.yaml", 'submodule_path: "spec"',
+             'submodule_path: "specification"')
     result = validate(project)
     assert result.returncode == 1
     assert "pin-path-mismatch" in result.stderr
