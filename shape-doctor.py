@@ -2553,7 +2553,7 @@ def pin_at(ctx: Context, rev: str, pin: str = SHAPE_PIN):
     THE ROWS, NOT A YES, for the shape pin (review of PR #358): `rev` may
     be an index stage, `:2` or `:3`, and the rows of the side of a merge
     `pin_restore` takes whole are the copies that side's tool wrote, so
-    they are the conflicted files its note gives a person to merge (#485).
+    they are the conflicted files its `why` gives a person to merge (#485).
     """
     blob = git_answer(["cat-file", "blob", f"{rev}:./{pin}"],
                       ctx.root, binary=True)

@@ -10,9 +10,11 @@ B (#278, #298) added two (its crash line and its restore line), and lane 2's
 four times and `unreadable_pin_row`). Lane 2's #291 then added four, which
 landed while this waited to land: `pin_restore`'s three `git diff` lines
 for a file a person may have edited, and `unreadable_next`'s line for one
-no git command can put back. A tail was harmless in exactly the shells
-that read `#` as a comment where a word starts -- `sh -c`, bash, `zsh -c`
--- which is how every test and every agent tool call had read one. An
+no git command can put back. Lane 2's #496 rewrote the first of #267's,
+which now takes the pin alone and gives a copy conflicted beside it to a
+person. A tail was harmless in exactly the shells that read `#` as a
+comment where a word starts -- `sh -c`, bash, `zsh -c` -- which is how
+every test and every agent tool call had read one. An
 INTERACTIVE zsh without `interactivecomments` -- zsh's default, and macOS's
 login shell, the one a person pastes into -- reads `#` as a word. Pasted
 there, the manifest NEXT handed `# read its output in full` to the
@@ -78,7 +80,7 @@ from test_shape_doctor import (  # noqa: F401
 #: roots are too.
 from test_shape_doctor import (
     NAMING_COPY, PROJECT_LINE, SLIP, SPEC_PIN, a_copy_conflicted_on_its_own,
-    append_to, insert_after_first_line, leg_pin_not_utf8,
+    append_to, conflict_in, insert_after_first_line, leg_pin_not_utf8,
     own_pin_named_edited_with_a_slip,
 )
 #: Doctor A's ways to make a leg or a member red (#276), from the module that
@@ -309,6 +311,16 @@ def _pin_unmerged(standard, project, holder, tmp_path):
     return _pin_row(standard, project, "unmerged")
 
 
+def _pin_unmerged_copy_beside(standard, project, holder, tmp_path):
+    # #496 (#485): the pin and a copy it has a row for conflicted together.
+    # The NEXT takes the pin alone, and the `why` gives the copy to a
+    # person to merge by hand.
+    conflict_in(project, SHAPE_PIN, "commit", "Makefile")
+    row = _pin_row(standard, project, "unmerged")
+    assert row["detail"]["left_for_a_person"] == ["Makefile"], row
+    return row
+
+
 def _pin_uncommitted(standard, project, holder, tmp_path):
     # HEAD holds a pin that reads and the tree differs from it: `checkout HEAD`.
     break_the_pin(project, not_forty_hex)
@@ -417,10 +429,10 @@ def _way_in(standard, project, holder, tmp_path):
 #: One fixture per NEXT #277 converted, by the builder and branch it reaches,
 #: and how the sentence that used to follow `   # ` on it now opens -- moved
 #: VERBATIM, less the `#`, so these are the words main, doctors A and B and
-#: lane 2's #237 and #291 printed. Not the prose NEXTs `check_manifest_kinds`
-#: prints for a kind no gate here runs (#211, #327), and not a
-#: `Refusal.remediation` printed as one; its NEXT for a file that does not
-#: load (#291's `unreadable_next`) is here.
+#: lane 2's #237, #291 and #496 printed. Not the prose NEXTs
+#: `check_manifest_kinds` prints for a kind no gate here runs (#211, #327),
+#: and not a `Refusal.remediation` printed as one; its NEXT for a file that
+#: does not load (#291's `unreadable_next`) is here.
 CASES = {
     "validator_row-neither-readable": (
         _validator_neither_readable,
@@ -440,9 +452,14 @@ CASES = {
         "file"),
     "pin_restore-unmerged": (
         _pin_unmerged,
-        "--theirs takes the other side. Take one side whole for every path "
-        "named and never a hand-merged pin, then finish the merge as git "
-        "says and run this doctor again"),
+        "--theirs takes the other side. Take one side of the pin whole and "
+        "never a hand-merged pin, then finish the merge as git says and run "
+        "this doctor again"),
+    "pin_restore-unmerged-copy-beside": (
+        _pin_unmerged_copy_beside,
+        "--theirs takes the other side. Take one side of the pin whole and "
+        "never a hand-merged pin. Makefile is a copy conflicted too. A copy "
+        "can hold an edit of the project"),
     "pin_restore-uncommitted": (
         _pin_uncommitted,
         "puts back the pin as last committed and discards the uncommitted "

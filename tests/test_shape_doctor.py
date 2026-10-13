@@ -5655,8 +5655,9 @@ def assert_the_pin_alone_is_taken(currency: dict, kinds: dict,
         "checkout", "--ours", "--", SHAPE_PIN], currency["next"]
     assert currency["detail"]["left_for_a_person"] == [copy], currency
     assert kinds["next"] == currency["next"], (kinds, currency)
+    assert kinds["why"] == currency["why"], (kinds, currency)
     assert kinds["detail"]["left_for_a_person"] == [copy], kinds["detail"]
-    note = currency["next"].split("   #", 1)[1]
+    note = currency["why"]
     assert f"{copy} is a copy conflicted too" in note, note
     assert "merges it by hand, keeping the hunks git merged" in note, note
     assert "Take one side of the pin whole and never a hand-merged pin" \
@@ -5669,7 +5670,7 @@ def assert_the_pin_alone_is_taken(currency: dict, kinds: dict,
                   "refused as update-conflict and asks for --accept-local "
                   "on that path"):
         assert words in note, (words, note)
-    assert_a_plain_note(currency["next"])
+    assert_a_plain_next(currency)
 
 
 def re_pinned_from_the_merge(moved: Path, root: Path, currency: dict,
@@ -5686,7 +5687,7 @@ def re_pinned_from_the_merge(moved: Path, root: Path, currency: dict,
     `--accept-local` on that path. Either way that `apply --accept-local
     <copy>` re-pins the copy from the merge and the root is COMPLIANT.
     """
-    then = currency["next"].split("   #", 1)[1].split()
+    then = currency["why"].split()
     assert then[:2] == ["then", "apply"], currency["next"]
     args = then[2:]
     apply = (moved / "update-shape.py", "apply", "--root", str(root),
