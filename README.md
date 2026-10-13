@@ -303,14 +303,14 @@ checkout instead and nothing touches the network at all. On Windows the same
 flag goes on the Python entry point — `py setup-project.py Atlas --org
 <your-org> --local-remote-dir .\rehearsal` — which, run from a download, still
 clones the standard into a temporary directory first, and from a checkout clones
-nothing. What it leaves behind is `./Atlas`, three bare repositories in
-`./rehearsal` and the scaffold's three working trees, in the temporary directory
-its `Working trees are at` line names, all of which you can delete. `python3
-setup-project.py --help` and, from a checkout, `setup.sh --help` list every
-flag, this one included. From a download, `setup.sh --help` clones nothing and
-lists none: it names `setup-project.py --help`, which answers offline from that
-one file too, and [`docs/cli.md`](docs/cli.md), every tool's help and every
-subcommand's in one file, generated from the tools themselves.
+nothing. It leaves `./Atlas`, three bare repositories in `./rehearsal` and the
+scaffold's three working trees, in the temporary directory its `Working trees are
+at` line names, all deletable; a real run here refuses up front while `./Atlas`
+is there. `python3 setup-project.py --help` and, from a checkout, `setup.sh
+--help` list every flag, this one included. From a download, `setup.sh --help`
+clones nothing and lists none: it names `setup-project.py --help`, which answers
+offline from that one file too, and [`docs/cli.md`](docs/cli.md), every tool's
+help and every subcommand's in one file, generated from the tools themselves.
 
 Without installing anything — no fork, no manual clone — one command:
 
@@ -455,15 +455,15 @@ manifest, sets the topic `xf-project-atlas` on all three, clones the root as
 > created. A failed push says so in as many words — *NOTHING has been rolled
 > back. What already exists is listed above; delete it by hand if you want a
 > clean re-run* — and it is no less true of a failure anywhere else. A second
-> run is refused while the legs exist, and there is no `--force`, because
-> re-running over a live project is not a scaffold: delete what was created —
-> `gh repo delete <org>/<name>`, which needs the `delete_repo` scope, and
-> `gh repo delete --help` names `gh auth refresh -s delete_repo` as how to get
-> it — or scaffold under a different `--project`. `--reuse-empty-repo` covers
-> exactly one case: an assembly ROOT that already exists with ZERO commits,
-> which is a reserved name rather than a project. It applies to the root alone
-> — an existing leg is refused whatever it holds, and a root that HAS commits
-> is a live repository, which `adopt-project.py` converts in place instead.
+> run is refused while they exist, and there is no `--force`: delete what was
+> created — `gh repo delete <org>/<name>`, which needs the `delete_repo` scope
+> (`gh auth refresh -s delete_repo`) — or scaffold under a different
+> `--project`, or re-run with `--reuse-empty-repo`. That reuses each of the
+> three that has ZERO commits, a reserved name rather than a project, and a
+> leg whose one commit is the seed this scaffold pushes, so a run a ruleset
+> refused is finished by an operator holding the bypass right re-running it.
+> A leg with other commits is refused, and a root that HAS commits is a live
+> repository, which `adopt-project.py` converts in place instead.
 > `--visibility internal` is the third value every tool here accepts; only a
 > GitHub Enterprise Cloud organisation offers it at all, and one that does not
 > is refused by GitHub rather than by this tool.
@@ -521,8 +521,8 @@ confers nothing and stays neutral.
 `setup.sh` is a shim that finds a Python 3.9 or newer, clones this standard into a
 temporary directory when you are not already in a checkout of it, and hands over to
 `setup-project.py`, which IS the flow. These are the commands that flow runs, in
-order, with no behaviour of its own (the first only in self-bootstrap mode, from the
-one-liner above):
+order (the first only in self-bootstrap mode, from the one-liner above); before
+the second it refuses, creating nothing, if anything stands at `<into>/Atlas`:
 
 ```sh
 git clone --depth 1 https://github.com/opensoft/openRepoShape.git <tmp-dir>

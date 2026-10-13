@@ -24,7 +24,36 @@
 # refuses is reported too; either way the holder carries on to the next
 # member and exits non-zero at the end. A skip is not a pass, and a refusal
 # is never hidden. The dispatch clones nothing and fetches nothing.
+#
+# A HOLDER CUT BEFORE `scripts/siblings.py` EXISTED (2026-09-09, #76) may hold
+# this Makefile without it (#489). `update-shape.py` copies a changed Makefile
+# on `apply`, but takes an added file only on the human's word, per file
+# (`--add`), so a holder updated exactly as AGENTS.md prescribes can have
+# `siblings`, `park` and `resume` and not the script they run. Each of the
+# three asks first and, when the script is not there, REFUSES BY NAME instead
+# of dying on `can't open file`: it says what is missing and which command
+# takes it, and stops with make's own exit 2. The question is make's
+# `$(wildcard)` and the refusal is `$(error)`, so neither needs a shell
+# `test` or an `echo` and the answer is the same wherever make runs.
 PYTHON ?= python3
+# One message, three targets, so the three refusals cannot drift apart. It
+# names the file, why it can be missing, and the two commands that take it:
+# `check` to read the verdict, then `apply --add` once the human has said so.
+# A holder that took the file and then DELETED it is the one case `check` does
+# not call upstream-added (`copy-missing`: the pin has a row, and `--add`
+# refuses a pinned path), so the message ends with that exit.
+SIBLINGS_SCRIPT := scripts/siblings.py
+SIBLINGS_MISSING = $(SIBLINGS_SCRIPT), which this holder does not have. \
+    update-shape.py copies a changed Makefile but adds a new file only on the \
+    human's word, so a holder updated without --add $(SIBLINGS_SCRIPT) lands \
+    here. From a checkout of openRepoShape run `python3 update-shape.py check \
+    --root "$(CURDIR)"`, which reports $(SIBLINGS_SCRIPT) as upstream-added. \
+    When the human says to take it, run the apply command it prints with \
+    --add $(SIBLINGS_SCRIPT) added. If it reports copy-missing instead, a \
+    pinned copy was deleted: restore it from this holder's history rather \
+    than with --add
+SIBLINGS_GUARD = $(if $(wildcard $(SIBLINGS_SCRIPT)),,$(error make $(1) \
+    needs $(SIBLINGS_MISSING)))
 .DEFAULT_GOAL := help
 
 .PHONY: help bootstrap siblings validate pins park resume
@@ -46,6 +75,7 @@ bootstrap:
 	$(PYTHON) scripts/bootstrap.py
 
 siblings:
+	$(call SIBLINGS_GUARD,siblings)
 	$(PYTHON) scripts/siblings.py
 
 validate:
@@ -56,7 +86,9 @@ pins:
 	$(PYTHON) scripts/validate-family.py --pins
 
 park:
+	$(call SIBLINGS_GUARD,park)
 	$(PYTHON) scripts/siblings.py --make park --make-arg 'ARGS=$(ARGS)'
 
 resume:
+	$(call SIBLINGS_GUARD,resume)
 	$(PYTHON) scripts/siblings.py --make resume --make-arg 'ARGS=$(ARGS)'

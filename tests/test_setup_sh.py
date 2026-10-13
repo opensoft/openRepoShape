@@ -28,6 +28,10 @@ from conftest import assert_refuses_for_want_of_a_terminal
 
 from conftest import PTY_SKIP, run_in_a_terminal
 
+from conftest import (TAKEN_CLONE_PATHS,
+                      assert_a_rehearsals_clone_stops_the_real_run,
+                      assert_a_taken_clone_path_is_refused)
+
 SETUP = REPO / "setup.sh"
 DEGRADE_LINE = "authority is not wallet-carried in this org"
 
@@ -282,7 +286,7 @@ def test_an_internal_visibility_is_accepted(tmp_path):
     assert result.returncode == 0, result.stderr + result.stdout
     assert "visibility   internal" in result.stdout
     manifest = (tmp_path / "work" / "Sample" / "project.yaml").read_text()
-    assert "visibility: internal" in manifest
+    assert 'visibility: "internal"' in manifest
 
 
 def test_a_name_outside_the_naming_policy_stops_before_the_scaffold(tmp_path):
@@ -391,6 +395,19 @@ def test_passthrough_reaches_the_scaffold(tmp_path):
     assert result.returncode == 0, result.stderr
     manifest = (tmp_path / "work" / "Sample" / "project.yaml").read_text()
     assert 'reference: "a-staged-fragment.md"' in manifest
+
+
+def test_a_rehearsals_clone_stops_the_real_run_before_anything(tmp_path):
+    """#498, through the shim: `conftest.assert_a_rehearsals_clone_stops_
+    the_real_run`."""
+    assert_a_rehearsals_clone_stops_the_real_run(run_setup, tmp_path)
+
+
+@pytest.mark.parametrize("kind", TAKEN_CLONE_PATHS)
+def test_a_taken_clone_path_is_refused_before_anything(tmp_path, kind):
+    """#498, through the shim: `conftest.assert_a_taken_clone_path_is_
+    refused`."""
+    assert_a_taken_clone_path_is_refused(run_setup, tmp_path, kind)
 
 
 def test_no_test_here_depends_on_gh_being_authenticated():

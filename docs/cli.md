@@ -249,16 +249,14 @@ options:
   -h, --help            show this help message and exit
   --org ORG
   --project PROJECT     the assembly-root name, e.g. Atlas
-  --id ID               lowercase project id (default: --project lowercased).
-                        One the project's YAML reader would read as another
-                        type -- `null`, `true`, `007` -- is refused.
+  --id ID               lowercase project id (default: --project lowercased)
   --name NAME           display name
   --visibility {private,public,internal}
                         default: private for a fresh scaffold; with --reuse-
-                        empty-repo and an existing assembly root, the two new
-                        legs INHERIT that root's own visibility instead (a
+                        empty-repo and an existing assembly root, the legs it
+                        creates INHERIT that root's own visibility instead (a
                         mismatch with an explicit --visibility is a warning,
-                        not a refusal)
+                        not a refusal, and so is a reused leg's)
   --pin-owner PIN_OWNER
                         the organisation an UNQUALIFIED --pin name resolves
                         under (default: opensoft, where every neutral
@@ -282,9 +280,7 @@ options:
                         exist yet.
   --tracking-branch TRACKING_BRANCH
                         the branch every repository is created on (default:
-                        main). One the project's YAML reader would read as
-                        another type -- `null`, `true`, `007`, `2026` -- is
-                        refused.
+                        main)
   --spec-path SPEC_PATH
                         where the spec leg is mounted, as a path in the
                         assembly root (default: spec). A path that is, holds
@@ -302,10 +298,14 @@ options:
                         create bare repositories here instead of calling `gh
                         repo create` (the TEST path; no network)
   --no-push
-  --reuse-empty-repo    if <org>/<Project> already exists and has ZERO
-                        commits, use it as the assembly root instead of
-                        refusing. A repository with commits is still refused:
-                        that is a live project, not a slot.
+  --reuse-empty-repo    if <org>/<Project>, <Project>-spec or <Project>-code
+                        already exists and has ZERO commits, use it instead of
+                        refusing, and a leg whose one commit is the seed this
+                        scaffold pushes too: an operator holding the bypass
+                        right finishes a run a ruleset refused by re-running
+                        it with this. A root with commits, and a leg with any
+                        other, is still refused: that is a live repository,
+                        not a slot.
   --pin openProduct@COMMIT
                         declare a neutral-product pin, e.g. --pin
                         openGlass@<40 hex>. It writes

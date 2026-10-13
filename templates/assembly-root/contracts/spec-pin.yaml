@@ -19,7 +19,7 @@ kind: pinned_contract_manifest
 
 leg_role: spec
 source_repository: {{SPEC_REPOSITORY}}
-submodule_path: {{SPEC_PATH}}
+submodule_path: "{{SPEC_PATH}}"
 
 commit: "{{SPEC_COMMIT}}"
 revision_kind: commit

@@ -369,7 +369,7 @@ def test_a_legs_path_is_spelled_where_it_is_not_initialized(
     """A path the manifest holds that is no directory: step (a) says so, and
     says what to run, before any validator has had its say. A lone surrogate
     here raised from the `print`."""
-    edit(project, "project.yaml", "    path: spec", f"    path: {path}")
+    edit(project, "project.yaml", '    path: "spec"', f"    path: {path}")
     code, out, err = run(bootstrap_of(project), "--skip-validators",
                          encoding="utf-8:strict", tmp_path=tmp_path,
                          cwd=project)
@@ -383,7 +383,7 @@ def test_a_legs_path_is_spelled_where_it_is_not_initialized(
 def test_a_tracking_branch_git_will_not_make_is_spelled(project, tmp_path):
     """Passes on origin/main too, and is here to keep it: that line prints the
     branch with `!r`, and a repr has always escaped a control."""
-    edit(project, "project.yaml", "tracking_branch: main",
+    edit(project, "project.yaml", 'tracking_branch: "main"',
          r'tracking_branch: "a\x1bb"')
     code, out, err = run(bootstrap_of(project), "--skip-validators",
                          encoding="utf-8:strict", tmp_path=tmp_path,
@@ -401,7 +401,7 @@ def test_a_branch_name_is_spelled_in_every_line_that_names_it(project,
     """A branch git accepts and a terminal should not be handed raw: U+2028.
     The lines that name one: created (and where the remote's is), on, and the
     disagreement."""
-    edit(project, "project.yaml", "tracking_branch: main",
+    edit(project, "project.yaml", 'tracking_branch: "main"',
          r'tracking_branch: "tb\u2028x"')
     named = r"tb\u2028x"
     spec = project / "spec"
@@ -476,7 +476,8 @@ def test_a_register_and_its_path_are_spelled_when_it_cannot_be_read(
     separator, which does not parse: its path is on the `register:` line and
     again, with the reader's reason, on the `unreadable` one. Under a stdout
     that HOLDS a line separator, so a raw one would be written raw."""
-    edit(project, "project.yaml", "    path: spec", r'    path: "sp\u2028ec"')
+    edit(project, "project.yaml", '    path: "spec"',
+         r'    path: "sp\u2028ec"')
     register = (project / "sp\u2028ec" / "governance" / "review-authority"
                 / "register.yaml")
     register.parent.mkdir(parents=True)
