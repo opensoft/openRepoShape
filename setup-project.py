@@ -1797,6 +1797,38 @@ def scaffold(shape_root: Path, args: list) -> None:
 # 7. clone and bootstrap
 # ---------------------------------------------------------------------------
 
+def local_remotes_by_url(directory: str) -> list:
+    """The `git -c` arguments that make a clone read the bare repositories in
+    `directory` as `file://` URLs and not as plain paths (#440).
+
+    A plain path is git's LOCAL clone, which links or copies the source's
+    object files one by one and dies `failed to copy file to ...: No such
+    file or directory` when maintenance packs them away mid-walk; a `file://`
+    URL goes through upload-pack, which reads the object store and does not
+    care. `--no-local` is that for the root clone. Nothing reaches the two leg
+    clones `--recurse-submodules` makes from the plain path `.gitmodules`
+    records except a rewrite: `url.<base>.insteadOf` applies to the child
+    `git clone` too, and, being `-c`, leaves the paths the clone records (its
+    own `origin`, `submodule.<name>.url`) as they are.
+
+    THE PREFIX IS `Path.resolve()`, NOT `abspath`, on purpose: it is the
+    directory as `scaffold-project.py` wrote it into `.gitmodules`, which
+    resolves what `--local-remote-dir` names (macOS `/var` is `/private/var`,
+    Windows drops an 8.3 short name), and a prefix that does not match the
+    URL rewrites nothing, so the clone silently goes back to the local walk.
+    Both spellings of a Windows path (backslashes, slashes) are offered, for
+    the same reason.
+    """
+    resolved = Path(directory).resolve()
+    native = os.path.join(str(resolved), "")
+    slashes = resolved.as_posix().rstrip("/") + "/"
+    uri = resolved.as_uri().rstrip("/") + "/"
+    args = []
+    for prefix in dict.fromkeys([native, slashes]):
+        args += ["-c", "url.%s.insteadOf=%s" % (uri, prefix)]
+    return args
+
+
 def clone_and_bootstrap(opts: Options, org: str, landing: Landing) -> dict:
     # WHERE IT LANDS WAS DECIDED IN STEP (3), by `resolve_family`: `--into`
     # or, on the DEVELOPER PATH, the `..` of this checkout - a checkout's
@@ -1847,6 +1879,14 @@ def clone_and_bootstrap(opts: Options, org: str, landing: Landing) -> dict:
         # is specific to the test path; a real clone from GitHub needs none of
         # it.
         clone_cmd += ["-c", "protocol.file.allow=always"]
+        # AND IT IS READ THROUGH GIT, NOT THROUGH ITS FILES (#440). The
+        # scaffold pushed into those repositories a moment ago, and the clone
+        # of a plain path walks their `objects/` one file at a time, so git's
+        # background maintenance packing and deleting the loose objects
+        # mid-walk fails it, and the run REFUSES after all three repositories
+        # exist. `--no-local` (below) is for the root; the legs are what
+        # `local_remotes_by_url` is for.
+        clone_cmd += local_remotes_by_url(opts.local_remote_dir)
     if os.name == "nt":
         # THE CLONE THIS TOOL MAKES IS ALWAYS LF, whatever the machine is set
         # to. A project's `contracts/shape-pin.yaml` records a sha256 per
@@ -1858,8 +1898,10 @@ def clone_and_bootstrap(opts: Options, org: str, landing: Landing) -> dict:
         # the repository instead of of the clone, and reach clones this tool
         # never made. That is issue #51; this is what holds until then.
         clone_cmd += ["-c", "core.autocrlf=false"]
-    clone_cmd += ["clone", "-q", "--recurse-submodules", urls["assembly"],
-                  clone]
+    clone_cmd += ["clone", "-q"]
+    if opts.local_mode:
+        clone_cmd.append("--no-local")
+    clone_cmd += ["--recurse-submodules", urls["assembly"], clone]
     say("  " + " ".join(clone_cmd))
     cloned = run(clone_cmd)
     if cloned.returncode != 0:

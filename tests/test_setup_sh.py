@@ -22,7 +22,7 @@ import pytest
 
 from pathlib import Path
 
-from conftest import REPO, WINDOWS_SKIP, git
+from conftest import REPO, WINDOWS_SKIP, assert_read_through_git, git
 
 from conftest import assert_refuses_for_want_of_a_terminal
 
@@ -172,6 +172,11 @@ def test_the_assembly_root_is_cloned_where_into_says(setup_run):
     assert clone.is_dir(), f"{clone} does not exist"
     assert (clone / "project.yaml").is_file()
     assert (clone / ".gitmodules").is_file()
+
+
+def test_the_shims_clone_was_read_through_git_not_through_its_files(setup_run):
+    """#440, through `setup.sh`: see `assert_read_through_git`."""
+    assert_read_through_git(setup_run["clone"])
 
 
 def test_both_legs_are_on_main_after_bootstrap(setup_run):
