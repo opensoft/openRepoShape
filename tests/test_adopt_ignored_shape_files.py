@@ -23,8 +23,8 @@ symlink the plan kept in the root: the forced add stages a file where the link
 put it, and the check finds a pinned file through the split tree's own links,
 so it agrees with the first bootstrap. All repositories and remotes are local
 fixtures; no network is used. The end-to-end tests need `git filter-repo`; the
-others do not, so they run on the Windows job, which installs none -- except
-the ones that make a symlink on the DISK, which skip there.
+others do not, so they run on a machine that has none too. The ones that make
+a symlink on the DISK skip on Windows.
 """
 
 from __future__ import annotations

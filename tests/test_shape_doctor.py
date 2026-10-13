@@ -1552,11 +1552,12 @@ def no_adoption_offered(text: str = "", rows: dict | None = None,
 
     THE `machine` ROW IS THE ONE PLACE THE NAME MAY APPEAR, and it is
     UNCHANGED by #205 (`machine_row_unchanged`): on a workstation without
-    `git-filter-repo` -- the Windows CI job, by design -- it says that only
-    `adopt-project.py` needs that tool, in a COMPLIANT report exactly as
-    here. That is a sentence about the machine and never an offer to adopt
-    anything, so the text report is read around that row's one line, and the
-    row itself may name the tool only while the tool is missing. Everything
+    `git-filter-repo` -- never a CI runner since #471 installed it on all
+    three -- it says that only `adopt-project.py` needs that tool, in a
+    COMPLIANT report exactly as here. That is a sentence about the machine
+    and never an offer to adopt anything, so the text report is read around
+    that row's one line, and the row itself may name the tool only while the
+    tool is missing. Everything
     else -- the kind line, every reason, every NEXT, every `detail`, the
     verdict -- names it not at all, `plan` or no `plan`.
     """
