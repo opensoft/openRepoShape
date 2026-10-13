@@ -331,17 +331,16 @@ Shorter still, once: install the `openRepoShape` command and this becomes
 `openRepoShape Atlas --org <your-org>` — see the worked example below.
 
 The script clones this standard into a temporary directory (self-bootstrap:
-see below), checks your machine, checks the three names, shows the plan and
-asks once — then creates the three repositories, clones the assembly root and
-bootstraps it, and removes the temporary directory. `--yes` skips the
-question, and it REFUSES `--org opensoft` without `--allow-upstream-org`,
-because that would scaffold three repositories into opensoft's own namespace.
+see below), checks your machine and the three names, shows the plan and asks
+once, at your terminal, never reading the answer from the pipe; then creates
+the three repositories, clones and bootstraps the assembly root, and removes
+the temporary directory. `--yes` skips the question. It REFUSES
+`--org opensoft` without `--allow-upstream-org`: that namespace is opensoft's.
 
 Every scaffolded project pins `opensoft/openRepoShape` directly — the
 **shape pin**, `contracts/shape-pin.yaml` — and `update-shape.py` reads
 straight from upstream, so no per-organisation fork is needed to run this or
-to stay current: a fork is only for contributing changes to the standard
-itself.
+to stay current: a fork is only for contributing changes to the standard.
 
 ### From a checkout (the developer path)
 
@@ -431,19 +430,20 @@ come from `$OPENREPOSHAPE_ORG` or from the command's own prompt instead of the
 flag, and is never defaulted. `--visibility private` is spelled out because the
 human says it rather than lets it default.
 
-**What Dana sees, in order.** (1) The preflight: git, the running interpreter,
-how bootstrap will run, and that `gh` is authenticated — and, for anything
-missing, an offer to install it that Dana answers `yes` to. (2) The three names
-checked against the naming policy — `Atlas`, `Atlas-spec`, `Atlas-code`; a
-hyphenated or lowercase name is refused here with the rule printed. (3) The
-scaffold plan, a dry run of everything about to be created. (4) `This will
-create THREE repositories in 'Northwind'.` and `Type yes to continue:` — Dana
-types `yes`. If an AI agent is driving, the agent runs the command WITHOUT
-`--yes` and Dana types the answer; the agent never does (AGENTS.md's first
-rule). Then it creates the three repositories, writes the pins and the
-manifest, sets the topic `xf-project-atlas` on all three, clones the root into
-the directory you ran the command from, as `./Atlas` (or where `--into <dir>`
-says), and runs `scripts/bootstrap.py` (what `make bootstrap` runs).
+**What Dana sees, in order.** (1) The preflight: git, the running interpreter, how
+bootstrap will run, and that `gh` is installed and authenticated — and, for `gh`, an
+offer to install it, log it in or set up git's credential helper, whichever is
+missing, which Dana answers `yes` to. (2) The three names checked against the naming
+policy — `Atlas`, `Atlas-spec`, `Atlas-code`; a hyphenated or lowercase name is
+refused here with the rule printed. (3) The scaffold plan, a dry run of everything
+about to be created. (4) `This will create THREE repositories in 'Northwind'.` and
+`Type yes to continue:` — Dana types `yes`. If an AI agent is driving, it runs the
+command WITHOUT `--yes`; in a shell with no terminal the run stops after the plan,
+and the agent hands Dana the same command for her own terminal, which asks her even
+piped, reading the yes she types there, never the pipe or the agent (AGENTS.md's
+first rule). Then it creates the three repositories, writes the pins and the
+manifest, sets the topic `xf-project-atlas` on all three, clones the root as
+`./Atlas` where you ran it (or `--into <dir>`), and runs `scripts/bootstrap.py`.
 
 > [!WARNING]
 > **If it fails part-way.** Nothing is created before the typed `yes` in (4):

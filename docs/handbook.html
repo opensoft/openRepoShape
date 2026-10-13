@@ -925,6 +925,10 @@ sudo dnf install gh</code></pre></div>
           <li><code>--yes</code> skips the scaffold question only. It does not answer an install
           offer, <code>gh auth login</code> or <code>gh auth setup-git</code>.</li>
           <li>With no terminal attached there is no offer at all.</li>
+          <li>Every question is asked at your terminal, even when the script arrived down a pipe
+          (<code>curl &hellip; | bash -s --</code>): the answer is read from the terminal, never
+          from the pipe. Windows has no such terminal to open, which is why its way in downloads
+          the file first.</li>
           <li>Homebrew is never run for you: on a Mac without <code>brew</code> the preflight names
           <a href="https://brew.sh">brew.sh</a> and stops there.</li>
         </ul>
@@ -1755,7 +1759,8 @@ resume InkRouter                # on workstation B, and the estate is back</code
       <ul class="plain">
         <li><strong>Never create a repository without the human&rsquo;s explicit confirmation.</strong>
         Run <code>./setup.sh</code> (or the one-liner) WITHOUT <code>--yes</code> and let it ask. The
-        human types <code>yes</code> at its prompt; you never answer it for them.</li>
+        human types <code>yes</code> at its prompt; you never answer it for them. With no terminal,
+        see the paragraph after this list.</li>
         <li><strong>Never answer an install prompt.</strong> The preflight asks
         <code>Type yes to continue:</code> for each thing it offers to run &mdash; an install,
         <code>gh auth login</code>, <code>gh auth setup-git</code>. The human types it; you never
@@ -1776,8 +1781,13 @@ resume InkRouter                # on workstation B, and the estate is back</code
       </ul>
       <p>Beyond those: show the human the tool&rsquo;s output verbatim &mdash; the plan especially
       &mdash; and let them answer its prompt; &ldquo;go ahead&rdquo; about something else is not a
-      yes about this. Read a refusal rather than retrying: each one names what to run instead,
-      or, for some, the VALUE to change &mdash; among them a <code>--spec-path</code> or
+      yes about this. An assistant&rsquo;s shell almost never has a terminal, so setup stops after
+      the plan &mdash; exit 2, <code>no terminal to confirm on</code> &mdash; and that is the rule
+      working, not a fault: give the human the same command to run in their OWN terminal, where
+      it asks them, the one-liner too &mdash; setup reads the answer from that terminal and never
+      from the pipe &mdash; and never pass <code>--yes</code> yourself. Read a refusal rather than
+      retrying: each one names what to run instead, or, for some, the VALUE to change &mdash;
+      among them a <code>--spec-path</code> or
       <code>--code-path</code> that is, holds or lies inside a file the shape writes, and a
       <code>--pin</code> the shape cannot write, both before anything is created &mdash; and there
       is no <code>--force</code>, deliberately. Relay the finished block &mdash; the clone
@@ -1829,11 +1839,13 @@ resume InkRouter                # on workstation B, and the estate is back</code
       read a project&rsquo;s own validators can make, the <code>gh api</code> recheck of a neutral
       product&rsquo;s pin, said where this page and the README had said &ldquo;offline&rdquo;,
       added (#411); the doctor&rsquo;s <strong>merge</strong> row, and <code>INVALID (merge)</code>
-      above drift, added (#424); <code>--reuse-empty-repo</code> reusing an empty leg and a leg
+      above drift, added (#424); the assistant&rsquo;s route when its shell has no terminal, added
+      (#476); the one-liner asking at the person&rsquo;s own terminal, never reading the answer
+      from the pipe, added (#492); <code>--reuse-empty-repo</code> reusing an empty leg and a leg
       holding the scaffold&rsquo;s own seed, and the one ruleset exit that re-run is, added (#462)
       &mdash; a page cannot name the commit that contains it, and the blob below is the fact a test
       checks.
-      README.md blob 1236513967729bca86f3ef0e947ba5ab35b42131. Every command, flag, exit code
+      README.md blob 7bb0c42c93ef949bc3ba0814423f4dbe874c8f31. Every command, flag, exit code
       and file name on this page is quoted from that README and from AGENTS.md.</p>
     </footer>
   </main>
