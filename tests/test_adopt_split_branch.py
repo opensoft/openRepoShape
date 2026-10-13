@@ -45,6 +45,7 @@ needs_filter_repo = pytest.mark.skipif(
 
 TAKEN = "plan-split-branch-taken"
 BRANCH_EXISTS = "adopt-branch-exists"
+REMOTE_UNREADABLE = "adopt-remote-unreadable"
 UNREADABLE = "plan-gitmodules-unreadable"
 SPLIT_BRANCH = "adopt/three-repo-shape"
 PROJECT, ORG = "Northwind", "testorg"
@@ -519,16 +520,26 @@ def test_execute_refuses_a_repository_it_cannot_list(adopter, tmp_path,
                                                      monkeypatch):
     """No `testorg/Northwind` where git is pointed: the push of the split
     would fail there after both legs were made, so nothing is made. The
-    first to list it is `_refuse_a_split_branch_left_behind`, as on main,
-    and its `git ls-remote` fails the run before `gh repo create`."""
+    first to list it is `_refuse_a_tracking_branch_the_remote_lacks` (#479),
+    which asks it for the tracking branch before
+    `_refuse_a_split_branch_left_behind` asks for the split branch. It refuses
+    what `git ls-remote` cannot read as `adopt-remote-unreadable`, before
+    `gh repo create`, and the failed command is the refusal's `__cause__`."""
     source = small_source(tmp_path)
     plan = plan_for(source, tmp_path)
     github_at(tmp_path / "nowhere", monkeypatch)
     asked = no_gh(adopter, monkeypatch)
-    with pytest.raises(adopter.CommandFailed) as caught:
+    with pytest.raises(adopter.Refusal) as caught:
         adopter.cmd_execute(execute_args(plan, tmp_path, local=False))
-    assert caught.value.args_list[:2] == ["git", "ls-remote"]
-    assert f"https://github.com/{ORG}/{PROJECT}.git" in caught.value.args_list
+    assert caught.value.code == REMOTE_UNREADABLE
+    url = f"https://github.com/{ORG}/{PROJECT}.git"
+    assert caught.value.detail.startswith(
+        f"`git ls-remote` could not read `{url}`, "), caught.value.detail
+    assert "no leg repository was created" in caught.value.remediation
+    cause = caught.value.__cause__
+    assert isinstance(cause, adopter.CommandFailed), cause
+    assert cause.args_list[:2] == ["git", "ls-remote"]
+    assert url in cause.args_list
     assert asked == []
 
 
