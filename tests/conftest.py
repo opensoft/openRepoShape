@@ -855,9 +855,12 @@ def assert_refuses_for_want_of_a_terminal(stderr: str) -> None:
 #: `assert_a_taken_clone_path_is_refused` makes each one.
 TAKEN_CLONE_PATHS = ("empty directory", "file", "directory")
 
-#: The refusal's two ways out: deleting is offered only for what holds
-#: nothing of anybody's.
+#: The refusal's ways out: deleting is offered outright only for what holds
+#: nothing of anybody's, and for what only LOOKS like a rehearsal's clone on
+#: the person's own condition (#498, review round 1).
 DISCARD_IT = "Move or delete it, then run this again."
+DISCARD_IT_IF_UNUSED = ("Move it, or delete it if nothing in it is yours, then "
+                        "run this again.")
 KEEP_IT = "Move it, or choose another --into, then run this again."
 
 
@@ -879,9 +882,10 @@ def assert_a_rehearsals_clone_stops_the_real_run(run, tmp_path: Path) -> None:
     """README's own order, in one folder: rehearse with `--local-remote-dir
     ./rehearsal`, then run for real (a second `--local-remote-dir` stands in
     for GitHub). The rehearsal names its clone path in the plan and leaves
-    `./Sample` behind; the real run refuses in step (3), names that clone
-    as the rehearsal's and offers to delete it, and creates nothing. On main
-    it created all three repositories and only then refused, in step (7)."""
+    `./Sample` behind; the real run refuses in step (3), says that clone
+    LOOKS like the rehearsal's, offers deleting it only if nothing in it is
+    the person's, and creates nothing. On main it created all three
+    repositories and only then refused, in step (7)."""
     here = tmp_path / "here"
     clone = os.path.abspath(str(here / "Sample"))
     rehearsal = run("--project", "Sample", "--yes", "--org", "demoorg",
@@ -895,10 +899,10 @@ def assert_a_rehearsals_clone_stops_the_real_run(run, tmp_path: Path) -> None:
     real = run("--project", "Sample", "--yes", "--org", "demoorg",
                "--local-remote-dir", str(here / "real"), "--into", str(here))
     rest = refused_in_step_three(real, clone)
-    assert rest.startswith("It is the clone a rehearsal left behind: its "
-                           "`origin` is "), rest
-    assert ("a repository on this disk, as `--local-remote-dir` makes one. "
-            + DISCARD_IT) in rest, rest
+    assert rest.startswith("It looks like the clone a rehearsal left behind: "
+                           "its `origin` is "), rest
+    assert rest.endswith("a repository on this disk, as `--local-remote-dir` "
+                         "makes one. " + DISCARD_IT_IF_UNUSED), rest
     assert not (here / "real").exists(), "the real run created repositories"
     assert (here / "Sample" / "project.yaml").is_file()
 

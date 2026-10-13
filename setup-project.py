@@ -1666,11 +1666,17 @@ def resolve_family(opts: Options, shape_root: Path) -> Landing:
 # 3c. the clone path, while nothing exists
 # ---------------------------------------------------------------------------
 
-#: THE TWO WAYS OUT OF A TAKEN CLONE PATH. Deleting is offered only for what
-#: this tool can tell is worth nothing: an empty directory, and the clone a
-#: rehearsal left behind. Anything else is somebody's, and is moved, or the
-#: project is put somewhere else; this tool deletes and moves nothing itself.
+#: THE WAYS OUT OF A TAKEN CLONE PATH. This tool deletes and moves nothing
+#: itself, and it offers deleting only as strongly as it KNOWS that nothing
+#: is lost. An empty directory holds nothing: move or delete it. What looks
+#: like a rehearsal's clone is a GUESS - a real working clone of a local, NAS
+#: or UNC repository named `<Project>.git` looks the same, unpushed commits
+#: and all - so deleting is offered on the person's own condition (#498,
+#: review round 1). Anything else is somebody's: move it, or put the project
+#: somewhere else.
 DISCARD_IT = "Move or delete it, then run this again."
+DISCARD_IT_IF_UNUSED = ("Move it, or delete it if nothing in it is yours, then "
+                        "run this again.")
 KEEP_IT = "Move it, or choose another --into, then run this again."
 
 
@@ -1685,6 +1691,8 @@ def origin_recorded_in(clone: str) -> str:
     config --file` reads that one file, with no includes and no URL
     rewriting. A `.git` FILE (a worktree, a submodule) keeps its config
     elsewhere, so there is nothing here to read and the caller says less.
+    And no git runs INSIDE a directory this tool did not make: its config
+    can name a command (`core.fsmonitor`) that `git status` executes.
 
     A value carrying a control character is not echoed: it would print a
     line this tool did not write (`CONTROL_RE`).
@@ -1708,42 +1716,55 @@ def is_on_this_disk(url: str) -> bool:
 def without_credentials(url: str) -> str:
     """`url` with any `user:token@` after its scheme dropped: an `origin` is
     echoed into a refusal an assistant may relay, and a token is not part of
-    what is there."""
-    return re.sub(r"(?<=://)[^/@]*@", "", url, count=1)
+    what is there. Up to the LAST `@` before the path, because a password
+    holding a bare `@` would otherwise leave its tail on the screen."""
+    return re.sub(r"(?<=://)[^/]*@", "", url, count=1)
 
 
 def what_stands_at(clone: str, project: str) -> tuple:
-    """`(one sentence saying what is at clone, whether it can be thrown
-    away)`, or `("", False)` when this cannot tell.
+    """`(one sentence saying what is at clone, the way out)`; the sentence
+    is "" when this cannot tell.
 
     A REHEARSAL'S CLONE IS THE CASE THIS EXISTS FOR (#498). README's
     "Rehearse first" leaves `./<Project>` behind, cloned from the bare
     `<dir>/<Project>.git` that `--local-remote-dir` made, and the real run
-    that follows it in the same folder lands on exactly that path. It is
-    told apart by all three of: an `origin` on this disk, named
-    `<Project>.git`, and a `project.yaml` at its root. A clone of a
-    repository on GitHub, or of a local mirror under another name, is
-    somebody's working copy and is never offered for deletion.
+    that follows it in the same folder lands on exactly that path. It LOOKS
+    like one when all three hold: an `origin` on this disk, named
+    `<Project>.git`, and a `project.yaml` at its root. That is said as a
+    look, never as a fact, and deleting it is offered only "if nothing in
+    it is yours": a working clone of a local or network repository meets
+    all three, and this tool cannot see its unpushed work without running
+    git inside it (`origin_recorded_in` says why it does not).
+
+    A SYMBOLIC LINK IS SAID TO BE ONE, first, and never offered for
+    deletion: `os.path.isdir` follows it, and `rm -r <path>/` on the
+    advice "delete it" would act on its target.
     """
     try:
+        if os.path.islink(clone):
+            target = os.readlink(clone)
+            if not target or CONTROL_RE.search(target):
+                return "It is a symbolic link.", KEEP_IT
+            return "It is a symbolic link to %s." % target, KEEP_IT
         if not os.path.isdir(clone):
-            return "", False
+            return "", KEEP_IT
         if not os.path.lexists(os.path.join(clone, ".git")):
             if os.listdir(clone):
-                return "It is a directory that is not a git clone.", False
-            return "It is an empty directory.", True
+                return "It is a directory that is not a git clone.", KEEP_IT
+            return "It is an empty directory.", DISCARD_IT
     except OSError:
-        return "", False
+        return "", KEEP_IT
     origin = origin_recorded_in(clone)
     if not origin:
-        return "It is a git repository.", False
+        return "It is a directory holding a `.git`.", KEEP_IT
+    shown = without_credentials(origin)
     if (is_on_this_disk(origin)
             and os.path.basename(origin.rstrip("/\\")) == project + ".git"
             and os.path.isfile(os.path.join(clone, "project.yaml"))):
-        return ("It is the clone a rehearsal left behind: its `origin` is %s, "
-                "a repository on this disk, as `--local-remote-dir` makes "
-                "one." % origin), True
-    return "It is a clone of %s." % without_credentials(origin), False
+        return ("It looks like the clone a rehearsal left behind: its `origin` "
+                "is %s, a repository on this disk, as `--local-remote-dir` "
+                "makes one." % shown), DISCARD_IT_IF_UNUSED
+    return "It is a clone of %s." % shown, KEEP_IT
 
 
 def refuse_a_taken_clone_path(clone: str, project: str) -> None:
@@ -1771,11 +1792,11 @@ def refuse_a_taken_clone_path(clone: str, project: str) -> None:
     """
     if not os.path.lexists(clone):
         return
-    what, disposable = what_stands_at(clone, project)
+    what, way_out = what_stands_at(clone, project)
     die(" ".join(part for part in (
         "%s already exists, and that is where this project would be cloned, "
         "so the run stops here and nothing was created." % clone,
-        what, DISCARD_IT if disposable else KEEP_IT) if part))
+        what, way_out) if part))
 
 
 # ---------------------------------------------------------------------------
