@@ -224,7 +224,11 @@ def test_a_shape_copy_removed_with_its_original_stays_copy_missing(
     gone too, so the row stays `copy-missing` and is refused. The refusal's
     remedy is that state's own, with or without `--accept-local`: the copy
     goes back from history, never the re-run with `--accept-local` that was
-    refused in the same words. The doctor's `pins` row keeps the gate."""
+    refused in the same words. The doctor's `pins` row keeps the gate.
+
+    It no longer says this command never records a deletion (review of PR
+    #512, NIT-1): `apply` records one, a merged-away row's, so the sentence
+    says which deletion it never records."""
     git("rm", "-q", "--", "shape/.gitignore", ".gitignore", cwd=root)
     git("commit", "-q", "-m", "Remove both", cwd=root)
     before = pin_files(root)
@@ -238,8 +242,10 @@ def test_a_shape_copy_removed_with_its_original_stays_copy_missing(
         assert refused.returncode == 2, refused.stdout + refused.stderr
         assert "REFUSED update-conflict" in refused.stderr, refused.stderr
         assert ("Remediation: shape/.gitignore is pinned and gone from the "
-                "root, so --accept-local has no bytes to keep") \
-            in refused.stderr, refused.stderr
+                "root, so --accept-local has no bytes to keep, and this "
+                "command never records the deletion of a copy the project "
+                "still needs.") in refused.stderr, refused.stderr
+        assert "never records a deletion" not in refused.stderr
         assert "re-run this with --accept-local" not in refused.stderr
         assert pin_files(root) == before
 
@@ -279,6 +285,54 @@ def test_a_pinned_copy_deleted_elsewhere_stays_copy_missing(standard, root):
     pins_row = rows_of(result)["pins"]
     assert "merged_away" not in pins_row["detail"], pins_row
     assert "update-shape.py" not in pins_row["next"], pins_row
+
+
+def test_a_deletion_not_yet_committed_comes_back_from_head(standard, root):
+    """`rm`, then `apply`: the common way to meet `copy-missing` (review of
+    PR #512, NIT-2). No commit removed the copy, so the parent of the commit
+    that removed it is no exit, and `git log -1 -- <path>` names the commit
+    that ADDED it. The remediation names both exits, and the one for a
+    deletion not yet committed, run as it names it, puts the copy back:
+    `check` then has nothing to do, and nothing was written before."""
+    (root / ".gitattributes").unlink()
+    before = pin_files(root)
+    head = git("rev-parse", "HEAD", cwd=root).stdout
+    manifest = (root / "project.yaml").read_bytes()
+
+    refused = update_shape(standard, root, "apply", "--yes")
+    assert refused.returncode == 2, refused.stdout + refused.stderr
+    assert "REFUSED update-conflict" in refused.stderr, refused.stderr
+    assert "    .gitattributes: pinned but absent" in refused.stderr
+    assert ("Put each copy back from this project's own history: a deletion "
+            "not yet committed comes back with `git checkout HEAD -- <path>` "
+            "in the project, and a committed one from the parent of the "
+            "commit that removed it, which `git log -1 -- <path>` names.") \
+        in refused.stderr, refused.stderr
+    after = (pin_files(root), git("rev-parse", "HEAD", cwd=root).stdout,
+             (root / "project.yaml").read_bytes())
+    assert after == (before, head, manifest), \
+        "the refused apply wrote something"
+
+    git("checkout", "HEAD", "--", ".gitattributes", cwd=root)
+    checked = update_shape(standard, root, "check")
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    assert "nothing to do" in checked.stdout, checked.stdout
+
+
+def test_the_currency_rows_counts_name_a_merged_away_row(standard, root):
+    """The `shape currency` row's reason counts a merged-away row (review of
+    PR #512, NIT-3): it counted the five original states alone, so one such
+    row read `10 unchanged / 0 upstream-changed / ...` over eleven rows and
+    named its path under no count, in the row whose `apply` drops it. Its
+    counts now sum to the rows."""
+    merge_away(root, ".gitignore")
+    currency = rows_of(doctor(standard, root, "--json"))["shape-currency"]
+    summary = currency["reason"].split(" (pinned ", 1)[0]
+    assert summary.endswith(" / 1 merged-away"), currency["reason"]
+    said = {state: int(count) for count, state in
+            (part.split(" ", 1) for part in summary.split(" / "))}
+    assert sum(said.values()) == sum(currency["detail"]["counts"].values()), \
+        (said, currency["detail"]["counts"])
 
 
 def test_the_plans_follow_up_says_what_happens_to_the_row(adopted_here):

@@ -3081,10 +3081,19 @@ def check_shape_currency(ctx: Context) -> Row:
         added = [add for add in additions if not add.present]
         reported = list(rows) + added
         counts = us.counted(reported)
+        # A MERGED-AWAY ROW IS COUNTED WHERE THERE IS ONE (#502, review of PR
+        # #512). The five states every root has a word for are always
+        # printed; without `merged-away` beside them the counts fell one
+        # short of the rows for each such row, and the path `named` below
+        # stood under no count, in the reason of the very row whose `apply`
+        # drops it. Zero is left unsaid, so a root with no such row reads
+        # as it always did.
+        states = (us.UNCHANGED, us.UPSTREAM_CHANGED, us.LOCALLY_MODIFIED,
+                  us.BOTH, us.UPSTREAM_ADDED)
+        if counts.get(us.MERGED_AWAY):
+            states += (us.MERGED_AWAY,)
         summary = " / ".join(f"{counts.get(state, 0)} {state}"
-                             for state in (us.UNCHANGED, us.UPSTREAM_CHANGED,
-                                           us.LOCALLY_MODIFIED, us.BOTH,
-                                           us.UPSTREAM_ADDED))
+                             for state in states)
         by_state: dict[str, list[str]] = {}
         for row in reported:
             by_state.setdefault(row.state, []).append(row.path)

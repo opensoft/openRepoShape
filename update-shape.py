@@ -2693,12 +2693,21 @@ def conflict_remediation(conflicts: list[Row]) -> str:
     merge by hand and re-run with that flag, which `_refuse_conflicts`
     honours on a `both` row alone, so for a pinned copy the root no longer
     holds the re-run printed the same refusal. Such a copy has no bytes for
-    the flag to keep, and this command never records a deletion, so the copy
-    goes back from the project's own history. A `shape/` copy merged into
-    the file it collided with does not reach here while that file is at the
-    root: `classify` calls it `merged-away`, and `apply` drops its row. The
-    sentence says so, because a person who removed the copy without the
-    merge reads it here.
+    the flag to keep, and this command never records the deletion of a copy
+    the project still needs -- the only rows it drops are merged-away
+    copies', below -- so the copy goes back from the project's own history.
+    WHERE IN THAT HISTORY DEPENDS ON WHETHER THE DELETION WAS COMMITTED
+    (review of PR #512): an `rm` or `git rm` not yet committed leaves the
+    copy in HEAD, and `git checkout HEAD -- <path>` puts it back, as the
+    doctor's own line for a lost `repo_shape.py` does; a committed one is in
+    the parent of the commit that removed it, which `git log -1 -- <path>`
+    names. Naming the parent alone sent the common case -- an `rm`, then
+    `apply` -- to a removing commit that does not exist, and that `git log`
+    names the commit that ADDED the copy instead. A `shape/` copy merged
+    into the file it collided with does not reach here while that file is
+    at the root: `classify` calls it `merged-away`, and `apply` drops its
+    row. The sentence says so, because a person who removed the copy
+    without the merge reads it here.
 
     The other three states keep `MERGE_BY_HAND`, after it where a
     `copy-missing` row is named too.
@@ -2709,13 +2718,15 @@ def conflict_remediation(conflicts: list[Row]) -> str:
     verb = "is" if len(missing) == 1 else "are"
     said = (f"Remediation: {', '.join(missing)} {verb} pinned and gone from "
             "the root, so --accept-local has no bytes to keep, and this "
-            "command never records a deletion. Put each copy back from "
-            "this project's own history: the parent of the commit that "
-            "removed it holds it, and `git log -1 -- <path>` in the project "
-            "names that commit. Then run this again. A `shape/` copy merged "
-            "into the file it collided with is not refused: with that file "
-            "at the root, `check` reports it merged-away and `apply` drops "
-            "its row.")
+            "command never records the deletion of a copy the project "
+            "still needs. Put each copy back from this project's own "
+            "history: a deletion not yet committed comes back with "
+            "`git checkout HEAD -- <path>` in the project, and a committed "
+            "one from the parent of the commit that removed it, which "
+            "`git log -1 -- <path>` names. Then run this again. A `shape/` "
+            "copy merged into the file it collided with is not refused: "
+            "with that file at the root, `check` reports it merged-away and "
+            "`apply` drops its row.")
     if len(missing) < len(conflicts):
         said += f" For the others, {MERGE_BY_HAND}"
     return said
