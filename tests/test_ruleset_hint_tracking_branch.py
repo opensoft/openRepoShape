@@ -323,7 +323,9 @@ def run_the_tool(case: str, tracking: str, tmp_path, env: dict, work: Path,
                  *extra: str):
     """Run the tool that prints `case`'s hint into `work`, against the
     remotes in `tmp_path / "remotes"`, with `--tracking-branch <tracking>`.
-    An adoption's source is on `master` and its plan is written once."""
+    An adoption's source is on `master`, with the tracking branch beside it,
+    since `execute` refuses a tracking branch the source lacks (#479), and its
+    plan is written once."""
     where = ("--local-remote-dir", str(tmp_path / "remotes"),
              "--work-dir", str(work))
     if case.startswith("scaffold"):
@@ -340,6 +342,7 @@ def run_the_tool(case: str, tracking: str, tmp_path, env: dict, work: Path,
     if not plan.exists():
         source = make_source_repo(tmp_path / "IRRS", SPEC_ONLY_TREE,
                                   branch="master", edits=EDITS)
+        git("branch", tracking, cwd=source)
         written = write_plan(source, plan, project="Redwood",
                              extra=("--tracking-branch", tracking,
                                     "--allow-empty-leg", "code"))
