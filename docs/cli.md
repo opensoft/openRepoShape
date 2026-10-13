@@ -626,7 +626,9 @@ options:
                         writes; repeatable, kept in the order given
   --local-remote-dir LOCAL_REMOTE_DIR
                         resolve the leg's remote to a bare repository here
-                        instead of its origin (the TEST path; no network)
+                        instead of its origin (the TEST path; the leg needs no
+                        network, but the project's own validate-pins.py may
+                        still ask `gh api`)
   --dry-run             print what would move and change nothing
 ```
 
