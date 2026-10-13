@@ -143,9 +143,19 @@ order, and step 4 is the one you must not skip.
    it is the human's word, not your convenience.
 7. **Read the verification table back to them.** It accounts for every source
    path at the source commit, by blob sha, in exactly one of {spec leg, code
-   leg, root tree} or as `drop`. If it exits non-zero, STOP and relay it: the
+   leg, root tree} or as `drop`. If it exits non-zero, STOP and relay it, and
+   take the way out THAT exit prints. Exit 1, a failed verification: the
    source is untouched — nothing is deleted, `main` is where it was, the split
-   is on a branch — so the exit is to fix the plan and re-run into fresh legs.
+   is on a branch — so fix the plan, delete the split branch, and re-run into
+   fresh legs and a fresh `--work-dir`, or none. Exit 2 saying `IS pushed`
+   (GitHub only: `gh pr create` or the topic refused) comes after both legs
+   and the split are pushed and verified: finish with the command it prints
+   and never re-run into fresh legs, which abandons that pair.
+
+`execute` also records the plan's answers about the source's submodules in
+the split's `project.yaml`, under `submodules:` — per submodule a leg keeps,
+its `path`, `leg`, `resolution:` and `source_commit`. It confers nothing,
+nothing rewrites it, and the doctor holds each submodule to it.
 
 `execute` opens a pull request, because these organisations are pull-request
 only. Never suggest a direct push to the default branch, and never `--admin`.
@@ -237,7 +247,10 @@ which writes that file and nothing else — see 4.
    `review_required: true` is a question the policy is ASKING, not a defect
    found: answering it on their behalf puts a fact in their tree that nobody
    decided. The plan is `kind: placement-plan` and is not an adoption plan;
-   never hand one to `adopt-project.py`, which refuses it by name.
+   never hand one to `adopt-project.py`, which refuses it by name. A
+   submodule is judged by the adoption's `submodules:` record, not a rule
+   (`rule: null`, `confidence: recorded`), and is a `note` where no row names
+   it. One moved on purpose stays MISPLACED: its row is the human's to change.
 5. **`NOT A SHAPE ROOT` is a question for the human, not a task.** There is
    no `project.yaml` and no `family.yaml`. The two ways in are
    `adopt-project.py plan` (a repository that already exists, converted in
@@ -318,6 +331,7 @@ checkout of this standard, pointed at the project.
 ```sh
 python3 scripts/bump-leg.py --root <path> --leg spec --to <40 hex> --dry-run
 # 1. show the human the printed `old -> new` line
+git -C <path> switch -c <branch>   # 3. never commit on the tracking branch
 python3 scripts/bump-leg.py --root <path> --leg spec --to <40 hex>
 git -C <path> push -u origin <branch>   # then open a pull request
 ```
@@ -329,22 +343,21 @@ git -C <path> push -u origin <branch>   # then open a pull request
    agree.** The digest is RECOMPUTED from the leg's own objects, never
    adjusted to fit; a hand-written one turns the check into a formality and
    hides exactly the drift it exists to find.
-3. **The commit is made on a BRANCH and lands as a pull request.** The tool
-   refuses to commit onto the tracking branch for that reason. Never suggest
-   a direct push to the default branch, and never `--admin`.
+3. **The commit is made on a BRANCH, created BEFORE the real run, and lands
+   as a pull request.** A new project stands on its tracking branch; the dry
+   run runs there and prints the `git switch -c`, but the real run is refused.
+   Never suggest a direct push to the default branch, and never `--admin`.
 4. **A refusal is not something to work around.** A commit no branch of the
    leg's remote contains must be PUSHED, not pinned — a pin the rest of the
    world cannot fetch is a root it cannot bootstrap. A red validator has
    already been rolled back; the finding above it is the thing to fix.
 5. The leg is left DETACHED at the new commit. `make bootstrap` in the root
-   re-places it on its tracking branch AT the new pin; say so when you relay
-   the result.
+   re-places it on its tracking branch AT the new pin; say so in your relay.
 6. **`--trailer "<Key>: <value>"` puts a line on the commit this writes.**
-   Repeatable, kept in the order given — the same flag `update-shape.py
-   apply` and `family.py bump` already take. `--dry-run` prints the
-   trailers it would write, after the `old -> new` line, so the human reads
-   them before they land rather than after. A lane passes its `Lane:` line
-   and this estate's `Co-Authored-By:` there, not by amending afterwards.
+   Repeatable, kept in the order given, as `update-shape.py apply` and
+   `family.py bump` take it. `--dry-run` prints them after the `old -> new`
+   line, so the human reads them before they land. A lane passes its `Lane:`
+   line and this estate's `Co-Authored-By:` there, not by amending.
 
 ## Creating a family, and adding a member
 
