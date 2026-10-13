@@ -223,7 +223,7 @@ def test_every_row_of_a_compliant_project_is_ok_or_na(standard, project):
         assert row["status"] in ("ok", "n/a"), (name, row)
         assert row["status"] != "FINDING", (name, row)
         assert set(row) == {"id", "label", "status", "reason", "next",
-                            "detail"}
+                            "why", "detail"}
     # The project carries its OWN validators, so those are what ran.
     assert rows["pins"]["detail"]["own_copy"] is True
     assert rows["manifest"]["detail"]["own_copy"] is True
@@ -295,6 +295,24 @@ def test_an_edited_shape_copy_is_drift_and_names_update_shape(standard,
 
 # --- the standard has moved on ---------------------------------------------
 
+def standard_ahead(standard: Path, tmp_path: Path, path: str = "README.md",
+                   appended: str = "\nA fix.\n",
+                   message: str = "An upstream change to a file no project "
+                                  "copies") -> Path:
+    """A COPY of the standard at `<tmp>/standard-ahead`, with one more commit
+    that appends `appended` to `path`. By default that is `README.md`, a file
+    no copy list names, so nothing a project holds can differ and the pin
+    alone is behind. One helper, because the tests here and the ones in
+    `tests/test_doctor_next_is_a_command.py` each built it by hand (#277)."""
+    ahead = tmp_path / "standard-ahead"
+    shutil.copytree(standard, ahead, symlinks=True)
+    target = ahead / path
+    target.write_text(target.read_text(encoding="utf-8") + appended,
+                      encoding="utf-8")
+    commit_all(ahead, message)
+    return ahead
+
+
 @pytest.fixture
 def advanced_standard(standard, tmp_path) -> Path:
     """A COPY of the standard with one more commit on a copied template.
@@ -304,14 +322,9 @@ def advanced_standard(standard, tmp_path) -> Path:
     `standard`, and advancing it in place would make them all say `SHAPE
     BEHIND` depending on the order they ran in.
     """
-    ahead = tmp_path / "standard-ahead"
-    shutil.copytree(standard, ahead, symlinks=True)
-    target = ahead / UPSTREAM_TARGET
-    target.write_text(target.read_text(encoding="utf-8")
-                      + "\n# an upstream fix, after this project was cut\n",
-                      encoding="utf-8")
-    commit_all(ahead, "An upstream fix to a copied file")
-    return ahead
+    return standard_ahead(standard, tmp_path, UPSTREAM_TARGET,
+                          "\n# an upstream fix, after this project was cut\n",
+                          "An upstream fix to a copied file")
 
 
 def test_a_project_behind_the_standard_is_compliant_but_behind(
@@ -1398,7 +1411,8 @@ def test_a_directory_that_is_not_a_repository_says_scaffold(standard,
     assert ("setup-project.py" if os.name == "nt" else "setup.sh") in \
         rows["way-in"]["next"], rows["way-in"]["next"]
     assert "--org <your-org>" in rows["way-in"]["next"]
-    assert "without --yes" in rows["way-in"]["next"]
+    # Said beside the command, never on it (#277).
+    assert "without --yes" in rows["way-in"]["why"]
     assert rows["way-in"]["detail"]["git_repository"] is False
     assert "an ordinary directory" in rows["contents"]["reason"]
 
@@ -1678,8 +1692,10 @@ def test_the_json_report_of_an_unloaded_manifest_is_the_same_report(
     assert manifest["detail"]["manifest"] == "project.yaml"
     assert manifest["detail"]["own_copy"] is True
     assert_next_runs_the_roots_own(manifest, project, "validate-manifest.py")
-    assert "the file to fix is" in manifest["next"], manifest["next"]
-    assert "project.yaml" in manifest["next"].split("#", 1)[1]
+    # The file to fix is named in the row's `why`, off the command's line
+    # (#277).
+    assert "the file to fix is" in manifest["why"], manifest["why"]
+    assert "project.yaml" in manifest["why"]
 
     for name in WAITING_ROWS:
         row = rows[name]
@@ -1802,7 +1818,8 @@ def test_a_family_yaml_that_does_not_load_is_invalid_and_not_absent(
     assert family["reason"] == \
         f"family.yaml does not load: {loader_line(refusal)}", family
     assert_next_runs_the_roots_own(family, root, "validate-family.py")
-    assert "family.yaml" in family["next"].split("#", 1)[1]
+    # Named in the row's `why`, off the command's line (#277).
+    assert "family.yaml" in family["why"], family["why"]
     members = rows["members"]
     assert members["status"] == "n/a", members
     assert members["detail"]["waits_on"] == "family", members
@@ -2206,13 +2223,8 @@ def test_a_pin_behind_with_no_file_differing_is_still_behind(standard,
     there too, because `apply` would move the pin alone. Reporting COMPLIANT
     would have made the verdict disagree with the sentence that defines it.
     """
-    ahead = tmp_path / "standard-ahead"
-    shutil.copytree(standard, ahead, symlinks=True)
     # A file no copy list names, so nothing a project holds can differ.
-    (ahead / "README.md").write_text(
-        (ahead / "README.md").read_text(encoding="utf-8") + "\nA fix.\n",
-        encoding="utf-8")
-    commit_all(ahead, "An upstream change to a file no project copies")
+    ahead = standard_ahead(standard, tmp_path)
     result = doctor(ahead, project, "--json")
     assert result.returncode == 1, result.stdout + result.stderr
     payload = json.loads(result.stdout)
@@ -2285,6 +2297,122 @@ def test_a_deleted_pinned_agent_file_is_not_an_add(standard, project):
     assert "checkout --" in row["next"], row["next"]
 
 
+@WINDOWS_SKIP
+def test_a_pinned_copy_kept_as_a_link_is_drifted_by_name(standard, project,
+                                                         tmp_path):
+    """`AGENTS-shape.md` moved outside the root, a committed symlink in its
+    place, with the bytes unchanged (#286).
+
+    `update-shape.py` reads that row as `copy-is-link`, a conflict its
+    `apply` refuses: git holds the link, not the bytes the pin's digest
+    describes. The doctor names it the way it names `copy-missing` --
+    `DRIFTED (1 copy-is-link)` -- rather than reaching a verdict whose
+    parenthesis says nothing about the file. Main read through the link and
+    called this root COMPLIANT.
+    """
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    shutil.move(str(project / "AGENTS-shape.md"),
+                str(outside / "AGENTS-shape.md"))
+    (project / "AGENTS-shape.md").symlink_to(outside / "AGENTS-shape.md")
+    commit_all(project, "keep AGENTS-shape.md as a link")
+
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 1, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["verdict"] == "DRIFTED (1 copy-is-link)", payload["verdict"]
+    row = rows_of(result)["shape-currency"]
+    assert row["status"] == "FINDING", row
+    assert row["detail"]["counts"] == {"copy-is-link": 1,
+                                       "unchanged": 10}, row["detail"]
+    assert row["detail"]["conflicts"] == ["AGENTS-shape.md"], row["detail"]
+    assert "AGENTS-shape.md" in row["reason"], row["reason"]
+
+
+def keep_as_committed_link(root: Path, linked: str, tmp_path: Path) -> Path:
+    """`linked` moved beside the root, a symlink to it left in its place and
+    committed, so the link is what git holds. Returns where it points."""
+    end = tmp_path / "outside" / Path(linked).name
+    end.parent.mkdir(exist_ok=True)
+    shutil.move(str(root / linked), str(end))
+    (root / linked).symlink_to(end, target_is_directory=end.is_dir())
+    commit_all(root, f"keep {linked} as a link")
+    return end
+
+
+def assert_a_linked_record_is_their_finding(result, linked: str,
+                                            record: str) -> None:
+    """The `shape-currency` row for a root that keeps `record`, or the
+    directory above it, as a committed link at `linked` (#286).
+
+    A STATEMENT ABOUT THEIR REPOSITORY. `update-shape.py` refuses to
+    re-pin through the link, and the doctor had filed that refusal with
+    the ones about THIS checkout of the standard: `CANNOT ANSWER`, exit 3,
+    with a `git fetch --all` that changes nothing. It is a finding now:
+    `INVALID (shape-currency)`, exit 1, the refusal quoted, and the NEXT is
+    the refusal's own remedy.
+    """
+    payload = json.loads(result.stdout)
+    assert (payload["verdict"], payload["exit"]) == (
+        "INVALID (shape-currency)", 1), payload["verdict"]
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "cannot-answer" not in result.stderr, result.stderr
+    row = rows_of(result)["shape-currency"]
+    assert row["status"] == "FINDING", row
+    assert "environment" not in row["detail"], row["detail"]
+    assert row["detail"]["error"] == "update-rewrite-symlink", row["detail"]
+    assert (row["detail"]["path"], row["detail"]["link"]) == (
+        record, linked), row["detail"]
+    assert "REFUSED update-rewrite-symlink: `apply` would rewrite " \
+        f"{record}, but {linked} in this root is a symlink" in row["reason"], \
+        row["reason"]
+    assert "fetch" not in row["next"], row["next"]
+    assert row["next"].startswith(f"replace {linked} with the file or "
+                                  "directory it points at"), row["next"]
+    assert "run this doctor again" in row["next"], row["next"]
+    # Every other row reads THROUGH the link and finds nothing wrong: the
+    # verdict is this row's alone.
+    red = [key for key, other in rows_of(result).items()
+           if other["status"] == "FINDING"]
+    assert red == ["shape-currency"], red
+
+
+@WINDOWS_SKIP
+@pytest.mark.parametrize("linked, record", [
+    pytest.param("contracts/shape-pin.yaml", "contracts/shape-pin.yaml",
+                 id="pin-at-a-link"),
+    pytest.param("contracts", "contracts/shape-pin.yaml",
+                 id="contracts-directory-link"),
+    pytest.param("project.yaml", "project.yaml", id="manifest-at-a-link"),
+])
+def test_a_pin_or_manifest_kept_as_a_link_is_a_finding_not_cannot_answer(
+        standard, project, tmp_path, linked, record):
+    """The pin, the `contracts` directory above it, or `project.yaml` kept
+    as a committed link, with the bytes unchanged and the pin naming this
+    standard's commit. Main read through the link and said COMPLIANT; #286
+    made `update-shape.py` refuse the root, and the doctor then answered
+    CANNOT ANSWER. Neither is the truth: `apply` cannot re-pin this root
+    until the link is replaced, and that is the root's to fix."""
+    keep_as_committed_link(project, linked, tmp_path)
+    result = doctor(standard, project, "--json")
+    assert_a_linked_record_is_their_finding(result, linked, record)
+
+
+@WINDOWS_SKIP
+def test_a_family_manifest_kept_as_a_link_is_a_finding_not_cannot_answer(
+        standard, holder, tmp_path):
+    """A family holder's manifest is `family.yaml`, and `apply` rewrites it
+    as it rewrites an assembly root's `project.yaml`: the doctor asks after
+    the manifest of the KIND of root it was pointed at."""
+    root = tmp_path / FAMILY_NAME
+    shutil.copytree(holder["root"], root, symlinks=True)
+    keep_as_committed_link(root, "family.yaml", tmp_path)
+    result = doctor(standard, root, "--json")
+    assert json.loads(result.stdout)["kind"] == "family", result.stdout
+    assert_a_linked_record_is_their_finding(result, "family.yaml",
+                                            "family.yaml")
+
+
 #: How the `leg shape files` row spells a copy ON THIS HOST. `cp` is not a
 #: program on Windows, it is an alias of `Copy-Item` (Microsoft's own
 #: reference: "PowerShell includes the following aliases for `Copy-Item`:
@@ -2303,8 +2431,9 @@ def powershell_tokens(line: str) -> list[str]:
     Doe\\...'` -- and a test that split on whitespace tore that value in
     half and then failed a correct command. `#` has the same shape of
     answer: it opens a comment where a TOKEN starts and is an ordinary
-    character anywhere else, so a path with one in it survives and the
-    trailing `# and the rest are RENDERED...` the row appends does not.
+    character anywhere else, so a path with one in it survives and a
+    trailing `# and the rest are RENDERED...` does not. (The row appended
+    that note until #277 moved it to its `why`; `RENDERED_NOTE` keeps it.)
 
     Verbatim `'...'` only, because that is the one quoting `quote_arg`
     emits: nothing inside is expanded and an apostrophe is doubled.
@@ -2343,11 +2472,11 @@ def copied_paths(line: str, platform: str | None = None) -> tuple[str, str]:
     """The source and the target back out of the row's copy line.
 
     `shlex` on POSIX because that is the reader's own parser there --
-    `comments=True` so it drops the row's trailing `#` note the way the
-    shell would, rather than a naive `split("#")` cutting a path that has
-    one in it. On Windows the cmdlet's spelling, read by a parser that
-    knows PowerShell's verbatim string; `platform` so either branch can be
-    asserted from either host, as `copy_command` itself can be.
+    `comments=True` so it drops a trailing `#` note the way `sh` would,
+    rather than a naive `split("#")` cutting a path that has one in it. On
+    Windows the cmdlet's spelling, read by a parser that knows PowerShell's
+    verbatim string; `platform` so either branch can be asserted from either
+    host, as `copy_command` itself can be.
     """
     if (os.name if platform is None else platform) != "nt":
         parts = shlex.split(line, comments=True)
@@ -2371,7 +2500,8 @@ def test_a_missing_rendered_leg_file_is_not_offered_a_cp(standard, project):
     row = rows_of(doctor(standard, project, "--json"))["leg-shape-files"]
     assert row["status"] == "note"
     assert not row["next"].startswith(COPY_VERB), row["next"]
-    assert "RENDERED" in row["next"], row["next"]
+    # What the file IS is the row's `why`; the NEXT is a command (#277).
+    assert "RENDERED" in row["why"], row["why"]
 
     (project / "spec" / "CLAUDE.md").unlink()
     row = rows_of(doctor(standard, project, "--json"))["leg-shape-files"]
@@ -2464,9 +2594,9 @@ def test_the_copy_line_is_literal_where_cp_is_a_cmdlet(platform, source,
 #: A path that breaks a naive parser three ways at once -- a space, an
 #: apostrophe (doubled inside PowerShell's verbatim string, closed-escaped-
 #: reopened by `sh`'s) and a `#`, which opens a comment where a TOKEN starts
-#: and is an ordinary character anywhere else. The row appends a real
-#: trailing comment of its own when only some of the missing files are
-#: copyable, so a reader of these lines has to tell those two apart
+#: and is an ordinary character anywhere else. The row appended a real
+#: trailing comment of its own when only some of the missing files were
+#: copyable, so a reader of these lines had to tell those two apart
 #: (Copilot, PR #107). Each row is its own platform's spelling of a path,
 #: and both are asserted from whichever host runs the suite.
 AWKWARD_COPY = [
@@ -2476,10 +2606,12 @@ AWKWARD_COPY = [
      "C:\\work #2\\O'Brien\\spec\\CLAUDE.md"),
 ]
 
-#: What `check_leg_shape_files` appends when some of the missing files are
-#: RENDERED per project and only the rest can be copied -- a real trailing
-#: comment on a real line, kept here verbatim so the parser above is proved
-#: against what the row actually prints.
+#: What `check_leg_shape_files` APPENDED, until #277, when some of the
+#: missing files are RENDERED per project and only the rest can be copied --
+#: a real trailing comment on a real line. The row now prints that sentence
+#: as its `why`, on a line of its own, and its NEXT is the copy alone; the
+#: note is kept here verbatim so the parser above is still proved to drop a
+#: comment without taking a `#` inside a quotation with it.
 RENDERED_NOTE = ("   # and the rest are RENDERED per project (placeholders): "
                  "scaffold-project.py writes those, and copying a template "
                  "verbatim would not")
@@ -2495,8 +2627,8 @@ def test_the_copy_line_is_read_back_by_the_quoting_it_was_written_with(
     space and then fails a command that was perfectly correct, and truncates
     a path with a `#` in it before the assertion is even made (Copilot, PR
     #107). Both shells' quoting is now read by something that knows it, and
-    the row's own trailing comment is dropped without taking a `#` that sits
-    inside a quotation with it.
+    a trailing comment is dropped without taking a `#` that sits inside a
+    quotation with it.
     """
     module = doctor_module(REPO)
     line = module.copy_command(source, target, platform) + RENDERED_NOTE
@@ -3597,12 +3729,7 @@ def test_shape_behind_names_the_pin_when_no_file_differs(standard, project,
     was a clause contradicting its own verdict — and it fired on both real
     estates on this machine, which makes it the common case.
     """
-    ahead = tmp_path / "standard-ahead"
-    shutil.copytree(standard, ahead, symlinks=True)
-    (ahead / "README.md").write_text(
-        (ahead / "README.md").read_text(encoding="utf-8") + "\nA fix.\n",
-        encoding="utf-8")
-    commit_all(ahead, "An upstream change to a file no project copies")
+    ahead = standard_ahead(standard, tmp_path)
     result = doctor(ahead, project, "--json")
     payload = json.loads(result.stdout)
     assert result.returncode == 1
@@ -3650,10 +3777,16 @@ def behind_row(standard, root, lane: str | None):
 def test_the_apply_a_behind_row_prints_carries_the_lane_when_one_is_set(
         advanced_standard, project):
     """The copied-file branch of the row: `--trailer` last, after
-    `--branch`, quoted whole so the paste survives the space in it."""
-    plain = behind_row(advanced_standard, project, None)["next"]
-    lane = behind_row(advanced_standard, project, LANE)["next"]
-    assert lane == plain + f" --trailer 'Lane: {LANE}'"
+    `--branch`, quoted whole so the paste survives the space in it.
+
+    THE `apply` IS THE ROW'S `why` since #277 -- the words that followed
+    `   # ` on its NEXT line -- and the trailer is read there. The NEXT, the
+    `check`, is the same line with or without a lane."""
+    plain = behind_row(advanced_standard, project, None)
+    laned = behind_row(advanced_standard, project, LANE)
+    assert laned["next"] == plain["next"]
+    lane = laned["why"]
+    assert lane == plain["why"] + f" --trailer 'Lane: {LANE}'"
     assert shlex.split(lane)[-2:] == ["--trailer", f"Lane: {LANE}"]
     assert "Co-Authored-By" not in lane, (
         "the second trailer names a person or a model, which no environment "
@@ -3664,16 +3797,12 @@ def test_the_behind_pin_only_row_carries_it_too(standard, project, tmp_path):
     """The other branch of the same row -- no copied file differs and the pin
     alone is behind -- because it spells its own apply and would otherwise be
     the one line in the report that forgot."""
-    ahead = tmp_path / "standard-ahead"
-    shutil.copytree(standard, ahead, symlinks=True)
-    (ahead / "README.md").write_text(
-        (ahead / "README.md").read_text(encoding="utf-8") + "\nA fix.\n",
-        encoding="utf-8")
-    commit_all(ahead, "An upstream change to a file no project copies")
+    ahead = standard_ahead(standard, tmp_path)
     row = behind_row(ahead, project, LANE)
     assert row["detail"]["behind_pin_only"] is True
-    assert row["next"].endswith(f" --trailer 'Lane: {LANE}'")
-    assert shlex.split(row["next"])[-2:] == ["--trailer", f"Lane: {LANE}"]
+    assert row["why"].endswith(f" --trailer 'Lane: {LANE}'")
+    assert shlex.split(row["why"])[-2:] == ["--trailer", f"Lane: {LANE}"]
+    assert "--trailer" not in row["next"], row["next"]
 
 
 def test_a_row_says_nothing_about_a_lane_when_none_is_set(advanced_standard,
@@ -3681,20 +3810,39 @@ def test_a_row_says_nothing_about_a_lane_when_none_is_set(advanced_standard,
     """Today's report, byte for byte, for everybody who is not in a lane."""
     row = behind_row(advanced_standard, project, None)
     assert "--trailer" not in row["next"]
-    assert row["next"].rstrip().endswith("--branch shape/update-"
-                                         + row["detail"]["standard"][:12])
+    assert "--trailer" not in row["why"]
+    assert row["why"].rstrip().endswith("--branch shape/update-"
+                                        + row["detail"]["standard"][:12])
 
 
 def test_no_other_row_grows_a_trailer(advanced_standard, project):
     """A `Lane:` trailer belongs on an `apply` and nowhere else: the row is
     naming the flag of a command that writes a commit, not decorating every
-    remediation in the table."""
+    remediation in the table. Read in `next` AND `why`, since the `apply`
+    moved to the second (#277)."""
     result = run_script(advanced_standard / DOCTOR, "--root", str(project),
                         "--json", env={"LANES_LANE": LANE})
     rows = rows_of(result)
     carrying = [name for name, row in rows.items()
-                if row["next"] and "--trailer" in row["next"]]
+                if "--trailer" in (row["next"] or "") + (row["why"] or "")]
     assert carrying == ["shape-currency"], rows
+
+
+def standard_of_another_history(standard: Path, tmp_path: Path) -> Path:
+    """A standard that does not carry the commit a project's pin names: the
+    standard's files under a history of their own, so the `shape currency`
+    row is the CANNOT ANSWER one, exit 3. One helper, for the test below and
+    the ones in `tests/test_doctor_next_is_a_command.py` (#277)."""
+    stranger = tmp_path / "stranger"
+    stranger.mkdir()
+    for name in ("contracts", "scripts", "templates"):
+        shutil.copytree(standard / name, stranger / name, symlinks=True)
+    for name in ("update-shape.py", "shape-doctor.py", "scaffold-project.py",
+                 "setup-project.py", "setup.sh", "openRepoShape"):
+        shutil.copy2(standard / name, stranger / name)
+    git("init", "-q", "-b", "main", ".", cwd=stranger)
+    commit_all(stranger, "A standard with a history of its own")
+    return stranger
 
 
 def test_a_pin_this_standard_cannot_resolve_is_exit_three(standard, project,
@@ -3706,15 +3854,7 @@ def test_a_pin_this_standard_cannot_resolve_is_exit_three(standard, project,
     `INVALID`, telling somebody their repository was wrong on the evidence
     that our copy of the standard was short a commit.
     """
-    stranger = tmp_path / "stranger"
-    stranger.mkdir()
-    for name in ("contracts", "scripts", "templates"):
-        shutil.copytree(standard / name, stranger / name, symlinks=True)
-    for name in ("update-shape.py", "shape-doctor.py", "scaffold-project.py",
-                 "setup-project.py", "setup.sh", "openRepoShape"):
-        shutil.copy2(standard / name, stranger / name)
-    git("init", "-q", "-b", "main", ".", cwd=stranger)
-    commit_all(stranger, "A standard with a history of its own")
+    stranger = standard_of_another_history(standard, tmp_path)
     result = doctor(stranger, project, "--json")
     assert result.returncode == 3, result.stdout + result.stderr
     payload = json.loads(result.stdout)
@@ -3815,14 +3955,22 @@ READ_PIN_CODES = frozenset(param.values[1] for param in ROOT_PIN_FAULTS)
 def pasted(line: str) -> list[str]:
     """The argv the reader's own shell makes of a printed NEXT.
 
-    `shlex` on POSIX, over the command before the row's `   #` note, the way
+    `shlex` on POSIX, over the whole line, the way
     `test_a_red_validators_next_command_is_runnable` reads one; on Windows
-    PowerShell's reading, through `powershell_tokens`, which drops the note
-    itself and unquotes `quote_arg`'s verbatim strings.
+    PowerShell's reading, through `powershell_tokens`, which unquotes
+    `quote_arg`'s verbatim strings and, as PowerShell does, ends the line at
+    a `#` that opens a token.
+
+    THE WHOLE LINE ON POSIX, NOT THE PART BEFORE A `   #` (#277). The row's
+    sentence is its `why` and the NEXT is the command alone, so there is no
+    note to cut off. A reader that cut one off anyway would pass a NEXT that
+    had grown a tail back, and the argv assertions below would stop proving
+    the move. (`tests/test_doctor_next_is_a_command.py` holds the same NEXTs
+    to that on every OS.)
     """
     if os.name == "nt":
         return powershell_tokens(line)
-    return shlex.split(line.split("   #", 1)[0])
+    return shlex.split(line)
 
 
 def run_pasted(line: str) -> None:
@@ -3832,16 +3980,20 @@ def run_pasted(line: str) -> None:
     assert proc.returncode == 0, line + "\n" + proc.stdout + proc.stderr
 
 
-def assert_a_plain_note(line: str) -> None:
-    """The NEXT's `   #` note holds no `;`, apostrophe or backtick (#277).
+def assert_a_plain_next(row: dict) -> None:
+    """The NEXT is the command alone and the sentence is the row's `why`
+    (#277).
 
-    Pasted into an interactive zsh that does not take `#` as a comment, a
-    `;` starts a second command, an apostrophe opens a quotation nothing
-    closes and a backtick runs whatever follows it.
+    The sentence rode on the line as `   # <note>` until #277, and this
+    asserted the note held no `;`, apostrophe or backtick: pasted into an
+    interactive zsh that does not take `#` as a comment, a `;` starts a
+    second command, an apostrophe opens a quotation nothing closes and a
+    backtick runs whatever follows it. Nothing follows the command now, so
+    what is asserted is that none of the sentence is on the line, and that
+    it is said in `why`.
     """
-    note = line.split("   #", 1)[1]
-    for char in (";", "'", "`"):
-        assert char not in note, (char, line)
+    assert "   #" not in row["next"], row["next"]
+    assert row["why"], row
 
 
 def commit_in(root: Path, message: str, *args: str) -> str:
@@ -3898,7 +4050,7 @@ def test_a_root_pin_that_does_not_read_is_invalid_not_cannot_answer(
     assert pasted(row["next"])[:2] == ["git", "-C"], row["next"]
     assert "fetch" not in row["next"]
     assert "update-shape.py" not in row["next"]
-    assert_a_plain_note(row["next"])
+    assert_a_plain_next(row)
     plain = doctor(standard, project)
     assert plain.returncode == 1, plain.stdout + plain.stderr
     assert "CANNOT ANSWER" not in plain.stdout
@@ -4058,22 +4210,26 @@ def test_a_pin_broken_in_a_commit_is_put_back_from_before_that_commit(
     argv = pasted(row["next"])
     assert argv[:2] == ["git", "-C"], row["next"]
     assert argv[3:] == ["checkout", f"{breaking}~1", "--", SHAPE_PIN], argv
-    assert breaking[:12] in row["next"].split("   #", 1)[1], row["next"]
-    assert_a_plain_note(row["next"])
+    assert breaking[:12] in row["why"], row["why"]
+    assert_a_plain_next(row)
     run_pasted(row["next"])
     compliant_again(standard, project)
 
 
-def test_the_issues_own_merge_takes_one_side_of_the_shapes_files_whole(
-        standard, project):
+def test_the_issues_own_merge_takes_only_the_pin_whole(standard, project):
     """The issue's reproduction: two branches rewrite `commit:`, then merge.
 
     The pin is `UU`, and so are `Makefile`, a shape copy, and a file of the
-    project's own. The NEXT takes one side whole of every conflicted file the
-    shape writes and of no other, so the project's own file is left to its
-    owner. Run, the pin reads again: the row then answers about the commit
-    it names, which in this fixture is no commit at all.
+    project's own. The NEXT took one side whole of the pin and the
+    Makefile, as one tool's output. But a copy can hold an edit of the
+    project, kept by `apply --accept-local`, and taken whole the other
+    side's copy dropped it (#485). So the NEXT takes the pin alone, and its
+    note and `left_for_a_person` give the Makefile to a person to merge by
+    hand. The project's own file is left to its owner, unnamed. Run, the
+    pin reads again and the Makefile is as the merge left it: the row then
+    answers about the commit the pin names, which here is no commit at all.
     """
+    makefile = project / "Makefile"
     own = project / "notes.md"
     own.write_bytes(b"base\n")
     git("add", "--", "notes.md", cwd=project)
@@ -4102,11 +4258,17 @@ def test_the_issues_own_merge_takes_one_side_of_the_shapes_files_whole(
     assert row["next"].startswith("git -C "), row["next"]
     assert "checkout --ours -- " in row["next"], row["next"]
     argv = pasted(row["next"])
-    assert argv[3:] == ["checkout", "--ours", "--", "Makefile", SHAPE_PIN], \
-        argv
-    assert "left_for_a_person" not in row["detail"], row["detail"]
-    assert_a_plain_note(row["next"])
+    assert argv[3:] == ["checkout", "--ours", "--", SHAPE_PIN], argv
+    assert row["detail"]["left_for_a_person"] == ["Makefile"], row["detail"]
+    note = row["why"]
+    assert "Makefile is a copy conflicted too" in note, note
+    assert "merges it by hand, keeping the hunks git merged" in note, note
+    assert "notes.md" not in row["next"] and "notes.md" not in note, row
+    assert_a_plain_next(row)
+    held = makefile.read_bytes()
+    assert b"# edit-a" in held and b"# edit-b" in held, held[-200:]
     run_pasted(row["next"])
+    assert makefile.read_bytes() == held, "the NEXT took the Makefile whole"
     again = rows_of(doctor(standard, project, "--json"))["shape-currency"]
     assert again["detail"]["error"] not in READ_PIN_CODES, again
     assert again["detail"]["error"] == "update-revision-unresolvable", again
@@ -4121,7 +4283,7 @@ def test_a_readme_conflicted_over_the_projects_own_lines_is_left_to_a_person(
     README.md holds no `Shape:` line here, so nothing in it is the shape's,
     and where it holds one every other line is still the project's own.
     Taken whole, edit-a's paragraph went with it (review of PR #267). The
-    NEXT takes the pin alone, and its note and `left_for_a_person` say that
+    NEXT takes the pin alone, and its `why` and `left_for_a_person` say that
     README.md is a person's to merge.
     """
     readme = project / "README.md"
@@ -4150,10 +4312,10 @@ def test_a_readme_conflicted_over_the_projects_own_lines_is_left_to_a_person(
     assert pasted(row["next"])[3:] == [
         "checkout", "--ours", "--", SHAPE_PIN], row["next"]
     assert row["detail"]["left_for_a_person"] == ["README.md"], row["detail"]
-    note = row["next"].split("   #", 1)[1]
+    note = row["why"]
     assert "README.md is conflicted too" in note, note
     assert "a person merges it" in note, note
-    assert_a_plain_note(row["next"])
+    assert_a_plain_next(row)
     run_pasted(row["next"])
     assert b"only edit-a wrote" in readme.read_bytes(), \
         "edit-a's paragraph was dropped"
@@ -4186,9 +4348,12 @@ def test_the_issues_two_apply_merge_leaves_the_projects_manifest_to_a_person(
     paragraph, lines of its own far from any `apply` writes. Git merges both
     cleanly, and `project.yaml` is still `UU` over its `shape:` block.
     Taking `project.yaml` whole dropped the rename, and the doctor then said
-    COMPLIANT (review of PR #267). The NEXT takes the files the shape writes
-    whole, `project.yaml` is left to a person, and the rename survives the
-    NEXT, that person's merge and the merge commit.
+    COMPLIANT (review of PR #267). The NEXT takes the pin whole, and
+    `project.yaml` is left to a person, and the rename survives the NEXT,
+    that person's merge and the merge commit. So is the `UU` Makefile: it
+    was taken whole with the pin until a copy kept by `--accept-local` was
+    found to lose its edit that way (#485), and now the person merges it
+    too, here to the side the NEXT took, which is the pin's own copy.
 
     The row is `check_shape_currency`'s own, asked in process: without
     #232 a `project.yaml` that does not load is NOT A SHAPE ROOT and the
@@ -4226,31 +4391,38 @@ def test_the_issues_two_apply_merge_leaves_the_projects_manifest_to_a_person(
     assert row["detail"]["error"] == "yaml-unparsable", row["detail"]
     assert row["detail"]["restore"] == "unmerged", row["detail"]
     assert pasted(row["next"])[3:] == [
-        "checkout", "--ours", "--", "Makefile", SHAPE_PIN], row["next"]
-    assert row["detail"]["left_for_a_person"] == ["project.yaml"], \
+        "checkout", "--ours", "--", SHAPE_PIN], row["next"]
+    assert row["detail"]["left_for_a_person"] == ["Makefile",
+                                                  "project.yaml"], \
         row["detail"]
-    note = row["next"].split("   #", 1)[1]
+    note = row["why"]
     assert "project.yaml is conflicted too" in note, note
-    assert_a_plain_note(row["next"])
+    assert "Makefile is a copy conflicted too" in note, note
+    assert_a_plain_next(row)
+    held = (project / "Makefile").read_bytes()
     run_pasted(row["next"])
     assert b'name: "Atlas Renamed"' in manifest.read_bytes(), \
         "shape/a's rename was dropped"
     assert b"only shape/a wrote" in readme.read_bytes()
+    assert (project / "Makefile").read_bytes() == held, \
+        "the NEXT took the Makefile whole"
     again = module.check_shape_currency(module.Context(project)).as_dict()
     assert again["detail"].get("error") not in READ_PIN_CODES, again
-    # A person's merge of `project.yaml`: each conflicting hunk to the side
-    # the NEXT took, each clean one kept, over git's own three stages.
-    stages = []
-    for number in (1, 2, 3):
-        held = subprocess.run(["git", "show", f":{number}:project.yaml"],
-                              cwd=str(project), capture_output=True,
-                              check=True).stdout
-        stages.append(tmp_path / f"project.yaml.{number}")
-        stages[-1].write_bytes(held)
-    subprocess.run(["git", "merge-file", "--ours", str(stages[1]),
-                    str(stages[0]), str(stages[2])],
-                   capture_output=True, check=True)
-    manifest.write_bytes(stages[1].read_bytes())
+    # A person's merge of `project.yaml` and of the Makefile: each
+    # conflicting hunk to the side the NEXT took, each clean one kept, over
+    # git's own three stages.
+    for name in ("project.yaml", "Makefile"):
+        stages = []
+        for number in (1, 2, 3):
+            held = subprocess.run(["git", "show", f":{number}:{name}"],
+                                  cwd=str(project), capture_output=True,
+                                  check=True).stdout
+            stages.append(tmp_path / f"{name}.{number}")
+            stages[-1].write_bytes(held)
+        subprocess.run(["git", "merge-file", "--ours", str(stages[1]),
+                        str(stages[0]), str(stages[2])],
+                       capture_output=True, check=True)
+        (project / name).write_bytes(stages[1].read_bytes())
     git("add", "--", "project.yaml", "Makefile", SHAPE_PIN, cwd=project)
     commit_in(project, "merge shape/a")
     kept = git("show", "HEAD:project.yaml", cwd=project).stdout
@@ -4313,8 +4485,8 @@ def test_a_merge_where_only_the_other_side_holds_a_pin_takes_theirs(
     assert row["detail"]["restore"] == "unmerged", row["detail"]
     assert pasted(row["next"])[3:] == [
         "checkout", "--theirs", "--", SHAPE_PIN], row["next"]
-    assert "only that side" in row["next"].split("   #", 1)[1]
-    assert_a_plain_note(row["next"])
+    assert "only that side" in row["why"], row["why"]
+    assert_a_plain_next(row)
     run_pasted(row["next"])
     again = rows_of(doctor(standard, project, "--json"))["shape-currency"]
     assert again["detail"]["error"] == "update-revision-unresolvable", again
@@ -4339,8 +4511,8 @@ def test_two_commits_that_each_broke_the_pin_are_reached_past(standard,
     assert row["detail"]["restore"] == "committed", row["detail"]
     assert pasted(row["next"])[3:] == [
         "checkout", f"{first}~1", "--", SHAPE_PIN], row["next"]
-    assert first[:12] in row["next"].split("   #", 1)[1], row["next"]
-    assert_a_plain_note(row["next"])
+    assert first[:12] in row["why"], row["why"]
+    assert_a_plain_next(row)
     run_pasted(row["next"])
     compliant_again(standard, project)
 
@@ -4388,7 +4560,7 @@ def assert_hidden(standard: Path, root: Path, code: str, letter: str) -> None:
     argv = pasted(row["next"])
     assert argv[3:] == ["ls-files", "-v", "--", SHAPE_PIN], row["next"]
     assert "checkout" not in argv, row["next"]
-    assert_a_plain_note(row["next"])
+    assert_a_plain_next(row)
     shown = subprocess.run(argv, capture_output=True, text=True, check=False)
     assert shown.returncode == 0, shown.stderr
     assert shown.stdout == f"{letter} {SHAPE_PIN}\n", shown.stdout
@@ -4466,7 +4638,7 @@ def test_a_pin_with_no_good_copy_in_its_history_keeps_the_check_next(
     assert "update-shape.py" in row["next"] and " check " in row["next"]
     assert "checkout" not in row["next"], row["next"]
     assert "fetch" not in row["next"]
-    assert_a_plain_note(row["next"])
+    assert_a_plain_next(row)
 
 
 def test_the_doctor_writes_no_bytecode_into_the_standard(standard, project,
@@ -4574,7 +4746,7 @@ def assert_no_registration(row: dict) -> None:
     for words in ("register the kind", "remove the file",
                   "MANIFEST_VALIDATORS"):
         assert words not in row["next"], (words, row["next"])
-    assert_a_plain_note(row["next"])
+    assert_a_plain_next(row)
 
 
 def shape_pin_conflicted(root: Path) -> list:
@@ -4688,7 +4860,7 @@ def test_a_file_a_tool_wrote_that_does_not_load_is_put_back_from_git(
     argv = pasted(row["next"])
     assert argv[:2] == ["git", "-C"], row["next"]
     assert argv[3:] == expected, argv
-    note = row["next"].split("   #", 1)[1]
+    note = row["why"]
     assert NOTE_SAYS[restore].format(what=what) in note, note
     assert "README.md" not in note and "a person merges" not in note, note
     if rel == SHAPE_PIN:
@@ -4822,7 +4994,7 @@ def test_a_file_git_cannot_put_back_is_left_to_a_person(standard, project,
     assert argv[0] == repo_shape.PYTHON, argv
     assert Path(argv[1]).name == DOCTOR and argv[2] == "--root", argv
     assert Path(argv[3]).resolve() == project.resolve(), argv
-    assert "for a person to decide" in row["next"].split("   #", 1)[1]
+    assert "for a person to decide" in row["why"], row
     before = (project / rel).read_bytes()
     proc = subprocess.run(argv, capture_output=True, text=True, check=False,
                           stdin=subprocess.DEVNULL,
@@ -4999,7 +5171,7 @@ def test_an_uncommitted_change_to_a_copy_is_shown_and_kept(standard,
     assert pasted(row["next"])[3:] == ["diff", "HEAD", "--", NAMING_COPY], \
         row["next"]
     assert "checkout" not in row["next"], row["next"]
-    assert "nothing is put back" in row["next"].split("   #", 1)[1]
+    assert "nothing is put back" in row["why"], row
     run_pasted(row["next"])
     assert copy.read_bytes() == before
     again = rows_of(doctor(standard, project, "--json"))["manifest-kinds"]
@@ -5192,7 +5364,7 @@ def test_a_copy_conflicted_on_its_own_is_shown_and_merged_by_a_person(
     assert_no_registration(row)
     assert pasted(row["next"])[3:] == ["diff", "--", NAMING_COPY], \
         row["next"]
-    note = row["next"].split("   #", 1)[1]
+    note = row["why"]
     assert "neither side is taken whole" in note, note
     assert "merge it by hand, keeping the hunks git merged" in note, note
     shown = run_read_only(standard, project, row)
@@ -5220,16 +5392,17 @@ def test_a_conflicted_copys_next_agrees_with_shape_currency_and_agents_md(
     NEXT, run as its note spells it, ends COMPLIANT with every line of
     both sides in the copy and its pin.
 
-    THE FLAG IS THE PERSON'S, NOT THE ROW'S (#501). The note's `apply`
+    THE FLAG IS THE PERSON'S, NOT THE ROW'S (#501). The `why`'s `apply`
     carries no `--accept-local`: run as printed it is refused
     `update-local-drift`, which asks whether the project keeps the merge,
     and with the person's `--accept-local` on the copy it ends COMPLIANT.
     """
     a_copy_conflicted_on_its_own(project)
     kinds, currency = kinds_and_currency(standard, project)
-    assert "merge it by hand" in kinds["next"].split("   #", 1)[1], kinds
+    assert "merge it by hand" in kinds["why"], kinds
     assert "checkout" not in kinds["next"], kinds["next"]
-    assert "--accept-local" not in currency["next"], currency
+    assert "--accept-local" not in currency["next"] + currency["why"], \
+        currency
     merge_by_hand(project / NAMING_COPY)
     git("add", "--", NAMING_COPY, cwd=project)
     commit_in(project, "the naming copy merged by hand")
@@ -5238,8 +5411,8 @@ def test_a_conflicted_copys_next_agrees_with_shape_currency_and_agents_md(
     argv = pasted(currency["next"])
     assert Path(argv[1]).name == "update-shape.py" and argv[2] == "check", \
         currency["next"]
-    then = currency["next"].split("   #", 1)[1].split()
-    assert then[:2] == ["then", "apply"], currency["next"]
+    then = currency["why"].split()
+    assert then[:2] == ["then", "apply"], currency["why"]
     assert "--accept-local" not in then, then
     apply = (standard / "update-shape.py", "apply", "--root", str(project),
              "--upstream", str(standard), *then[2:])
@@ -5419,7 +5592,7 @@ def test_a_committed_hand_merge_of_a_copy_is_shown_not_rolled_back(
     assert_no_registration(row)
     assert pasted(row["next"])[3:] == ["diff", f"{breaking}~1", "--",
                                        NAMING_COPY], row["next"]
-    note = row["next"].split("   #", 1)[1]
+    note = row["why"]
     assert breaking[:12] in note and "nothing is rolled back" in note, note
     shown = run_read_only(standard, project, row)
     assert PROJECT_LINE.strip() in shown and SLIP.strip() in shown, shown
@@ -5493,15 +5666,309 @@ def test_a_neutral_product_pin_is_shown_never_put_back(standard, project,
     assert_no_registration(row)
     assert pasted(row["next"])[3:] == expected, row["next"]
     assert "No tool of this standard writes a neutral product pin" in \
-        row["next"].split("   #", 1)[1], row["next"]
+        row["why"], row
     # One `so` to a sentence (review of PR #358): the reason ended in its own
     # ", so every change to one was made by a person", and the note's ", so
     # neither side is taken whole" or ", so nothing is rolled back" followed.
     assert not any(sentence.count(", so ") > 1 for sentence in
-                   row["next"].split("   #", 1)[1].split(". ")), row["next"]
+                   row["why"].split(". ")), row["why"]
     run_read_only(standard, project, row)
     assert (project / NEUTRAL_PIN).read_bytes() == before
     assert b"2" * 40 in before
+
+
+# --- the shape pin and a copy conflicted together (#485) --------------------
+#
+# Review of PR #358 (probes OD and OD2), filed as #485. Two branches that
+# each re-pin the shape: on one a person edits a copy and keeps the edit
+# with `update-shape.py apply --accept-local`, the exit the `shape currency`
+# row names for it; on the other `apply` takes a newer standard that wrote
+# the same end of that copy. Merged, the shape pin and the copy are both
+# conflicted. The NEXT took the copy whole with the pin, as one tool's
+# output, and with the update side as `--ours` the person's lines were gone,
+# the hunk git had merged with them, and the doctor then said COMPLIANT.
+# Now the NEXT takes the pin alone, and the copy is a person's to merge, as
+# a copy conflicted on its own is.
+
+#: The project's own Makefile target, and the one the standard's newer
+#: Makefile gains: both at the end of the file, so git cannot merge them.
+OWN_TARGET = b"\n# the project's own target\nship:\n\t@echo shipping Atlas\n"
+NEWER_TARGET = b"\n# a target the standard gained\ndoctor:\n\t@echo doctor\n"
+
+
+def standard_appended(standard: Path, tmp_path: Path, rel: str,
+                      tail: bytes) -> tuple:
+    """`(a copy of standard, S1, S2)`: S1 is the commit every project here
+    is scaffolded at, S2 one more commit appending `tail` to the standard's
+    `rel`, so `apply --at S2` re-copies the file made from it. A copy, with
+    its `.git`, so the session's `standard` is left as every test finds it.
+    """
+    moved = tmp_path / "moved" / "openRepoShape"
+    shutil.copytree(standard, moved, symlinks=True)
+    s1 = git("rev-parse", "HEAD", cwd=moved).stdout.strip()
+    append_to(moved / rel, tail)
+    commit_all(moved, f"{rel} gains a line")
+    return moved, s1, git("rev-parse", "HEAD", cwd=moved).stdout.strip()
+
+
+def apply_and_commit(moved: Path, root: Path, *args: str) -> None:
+    """The real `update-shape.py apply --yes`, and what it wrote committed."""
+    applied = run_script(moved / "update-shape.py", "apply", "--root",
+                         str(root), "--upstream", str(moved), "--yes", *args)
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    commit_all(root, "update-shape.py apply " + " ".join(args))
+
+
+def two_shape_updates_merged(moved: Path, s1: str, s2: str, root: Path,
+                             copy: str, edit, ours: str) -> bytes:
+    """Probe OD's state, built with the real `update-shape.py`.
+
+    Branch `local`: `edit` changes `copy`, committed, then kept with `apply
+    --at S1 --accept-local <copy>`, which re-pins it from the project's
+    bytes. Branch `upgrade`: `apply --at S2`, which re-copies it from the
+    newer standard and re-pins the shape. Both from HEAD, and `ours`
+    merges the other, which leaves the copy and the shape pin `UU`. The
+    copy's bytes as the merge left them.
+    """
+    base = git("rev-parse", "HEAD", cwd=root).stdout.strip()
+    git("checkout", "-q", "-b", "local", base, cwd=root)
+    edit(root)
+    git("add", "--", copy, cwd=root)
+    commit_in(root, f"the project's own edit of {copy}")
+    apply_and_commit(moved, root, "--at", s1, "--accept-local", copy)
+    git("checkout", "-q", "-b", "upgrade", base, cwd=root)
+    apply_and_commit(moved, root, "--at", s2)
+    git("checkout", "-q", ours, cwd=root)
+    theirs = "local" if ours == "upgrade" else "upgrade"
+    merged = subprocess.run(["git", "merge", "-q", theirs], cwd=str(root),
+                            capture_output=True, text=True, check=False,
+                            env={**os.environ, **GIT_IDENTITY})
+    assert merged.returncode != 0, merged.stdout + merged.stderr
+    status = git("status", "--porcelain=v1", cwd=root).stdout
+    assert f"UU {copy}" in status and f"UU {SHAPE_PIN}" in status, status
+    return (root / copy).read_bytes()
+
+
+def verdict_of(standard: Path, root: Path) -> tuple[str, dict]:
+    result = doctor(standard, root, "--json")
+    return json.loads(result.stdout)["verdict"], rows_of(result)
+
+
+def assert_the_merge_is_unfinished(verdict: str, rows: dict,
+                                   paths: list) -> None:
+    """#424's rung over #485's state: while the index holds the copy and
+    the shape pin unmerged, before the NEXT and after it, since `checkout
+    --ours` writes the tree and leaves the index as it was, the verdict is
+    `INVALID (merge)` and the `merge` row names both, with git's read-only
+    `status` as its NEXT. The `shape currency` and `manifest kinds` rows
+    still answer, and what they print is what the person finishing the
+    merge reads."""
+    assert verdict == "INVALID (merge)", (verdict, rows)
+    merge = rows["merge"]
+    assert merge["status"] == "FINDING", merge
+    assert merge["detail"]["unmerged"] == sorted(paths), merge["detail"]
+    assert merge["detail"]["merging"] is True, merge["detail"]
+    argv = pasted(merge["next"])
+    assert argv[:2] == ["git", "-C"] and argv[3:] == ["status"], merge
+
+
+def assert_the_merge_is_finished(verdict: str, rows: dict,
+                                 state: str) -> None:
+    """Once the copy merged by hand is committed, the merge's own row is
+    gone, and it is the copy, kept unlike the pin, that keeps the root
+    from COMPLIANT: `state` is what `update-shape.py check` calls it."""
+    assert "merge" not in rows, rows["merge"]
+    assert verdict == f"DRIFTED (1 {state})", (verdict, rows)
+
+
+def assert_the_pin_alone_is_taken(currency: dict, kinds: dict,
+                                  copy: str) -> None:
+    """The shape pin's NEXT names the pin alone, both rows print it, and
+    its `why` and `left_for_a_person` give the copy to a person."""
+    assert currency["detail"]["restore"] == "unmerged", currency["detail"]
+    assert pasted(currency["next"])[3:] == [
+        "checkout", "--ours", "--", SHAPE_PIN], currency["next"]
+    assert currency["detail"]["left_for_a_person"] == [copy], currency
+    assert kinds["next"] == currency["next"], (kinds, currency)
+    assert kinds["why"] == currency["why"], (kinds, currency)
+    assert kinds["detail"]["left_for_a_person"] == [copy], kinds["detail"]
+    note = currency["why"]
+    assert f"{copy} is a copy conflicted too" in note, note
+    assert "merges it by hand, keeping the hunks git merged" in note, note
+    assert "Take one side of the pin whole and never a hand-merged pin" \
+        in note, note
+    assert "every path named" not in note, note
+    for words in ("update-shape.py apply --accept-local on that copy "
+                  "re-pins it from the merge",
+                  "The shape currency row never names it",
+                  "check calls the copy locally-modified, the apply the row "
+                  "names is refused as update-local-drift",
+                  "where check calls it both, as update-conflict, and "
+                  "either refusal asks for --accept-local on that path"):
+        assert words in note, (words, note)
+    assert_a_plain_next(currency)
+
+
+def re_pinned_from_the_merge(moved: Path, root: Path, currency: dict,
+                             copy: str, ours: str) -> None:
+    """The `why`'s last sentences, followed from the `shape currency` row
+    both ways round (review of PR #496, F1), to COMPLIANT.
+
+    The row's `apply` names no `--accept-local` either way round, as
+    AGENTS.md's rule 3 wants (#501): run as spelled it moves nothing and
+    asks for the flag on that path. With the update side's pin taken, the
+    copy as merged is `locally-modified`, and the refusal is
+    `update-local-drift`; with the person's side's pin taken, behind the
+    standard the copy was merged from, it is `both`, and the refusal is
+    `update-conflict`. Either way the person's `apply --accept-local
+    <copy>` re-pins the copy from the merge and the root is COMPLIANT.
+    """
+    then = currency["why"].split()
+    assert then[:2] == ["then", "apply"], currency["why"]
+    args = then[2:]
+    apply = (moved / "update-shape.py", "apply", "--root", str(root),
+             "--upstream", str(moved))
+    assert "--accept-local" not in args, then
+
+    def held() -> tuple:
+        return (git("rev-parse", "HEAD", cwd=root).stdout,
+                git("branch", "--list", cwd=root).stdout,
+                git("status", "--porcelain=v1", cwd=root).stdout,
+                (root / copy).read_bytes())
+
+    before = held()
+    refused = run_script(*apply, *args)
+    said = refused.stdout + refused.stderr
+    assert refused.returncode == 2, said
+    if ours == "upgrade":
+        assert "update-local-drift" in said, said
+        assert f"--accept-local {copy}" in said, said
+    else:
+        assert "update-conflict" in said and f"    {copy}: " in said, said
+        assert "--accept-local on that path" in said, said
+    assert held() == before, "the refused apply moved something"
+    args = [*args, "--accept-local", copy]
+    applied = run_script(*apply, *args)
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    compliant_again(moved, root)
+
+
+@pytest.mark.parametrize("ours", [
+    pytest.param("upgrade", id="the-update-side-ours"),
+    pytest.param("local", id="the-persons-side-ours"),
+])
+def test_a_copy_conflicted_with_the_shape_pin_is_left_to_a_person(
+        standard, project, tmp_path, ours):
+    """Probe OD (#485): the naming copy edited and accepted on `local`, its
+    end rewritten by an upgrade on `upgrade`, merged either way.
+
+    The NEXT was `checkout --ours -- <copy> contracts/shape-pin.yaml`.
+    With the update side as ours it dropped the project's line, which git
+    had merged, and its tail; the merge finished, the doctor said
+    COMPLIANT. With the person's side as ours it dropped the upgrade's.
+
+    Now, run as pasted, it leaves the copy as the merge left it. The
+    `manifest kinds` row's `restore` calls the copy `unmerged`, the case
+    it is in, where it said `project` while its NEXT overwrote the file.
+    The next run names the copy's read-only `diff`, and the doctor is not
+    COMPLIANT until a person has merged it and, where the merge differs
+    from the pin, re-pinned it with `apply --accept-local` on their word:
+    the `shape currency` row's `apply` never names the flag (#501), and
+    refused, it asks for it, `update-local-drift` for a `locally-modified`
+    copy and `update-conflict` for a `both` one. HEAD then holds every
+    line of both sides, either way round.
+
+    Until the merge is committed the verdict is #424's `INVALID (merge)`,
+    the index holding the copy and the pin unmerged before the NEXT and
+    after it. Once it is, the `merge` row is gone and the verdict is the
+    copy's drift, so COMPLIANT still waits on the copy, not on the merge.
+    """
+    moved, s1, s2 = standard_appended(standard, tmp_path, NAMING_COPY,
+                                      SHAPE_TAIL)
+
+    def person(r: Path) -> None:
+        insert_after_first_line(r / NAMING_COPY, PROJECT_LINE)
+        append_to(r / NAMING_COPY, PROJECT_TAIL)
+
+    held = two_shape_updates_merged(moved, s1, s2, project, NAMING_COPY,
+                                    person, ours)
+    for line in (PROJECT_LINE, PROJECT_TAIL, SHAPE_TAIL):
+        assert line in held, line
+    verdict, rows = verdict_of(moved, project)
+    assert_the_merge_is_unfinished(verdict, rows, [NAMING_COPY, SHAPE_PIN])
+    kinds, currency = rows["manifest-kinds"], rows["shape-currency"]
+    run_pasted(currency["next"])
+    assert (project / NAMING_COPY).read_bytes() == held, \
+        "the NEXT took one side of the copy whole"
+    assert_the_pin_alone_is_taken(currency, kinds, NAMING_COPY)
+    assert kinds["detail"]["restore"] == {NAMING_COPY: "unmerged",
+                                          SHAPE_PIN: "unmerged"}, kinds
+    verdict, rows = verdict_of(moved, project)
+    assert_the_merge_is_unfinished(verdict, rows, [NAMING_COPY, SHAPE_PIN])
+    kinds = rows["manifest-kinds"]
+    assert kinds["detail"]["restore"] == {NAMING_COPY: "unmerged"}, kinds
+    assert pasted(kinds["next"])[3:] == ["diff", "--", NAMING_COPY], kinds
+    shown = run_read_only(moved, project, kinds)
+    assert PROJECT_TAIL.strip() in shown and SHAPE_TAIL.strip() in shown
+    merge_by_hand(project / NAMING_COPY)
+    git("add", "--", NAMING_COPY, SHAPE_PIN, cwd=project)
+    commit_in(project, "the copy merged by hand")
+    verdict, rows = verdict_of(moved, project)
+    assert_the_merge_is_finished(
+        verdict, rows, "locally-modified" if ours == "upgrade" else "both")
+    re_pinned_from_the_merge(moved, project, rows["shape-currency"],
+                             NAMING_COPY, ours)
+    kept = git("show", f"HEAD:{NAMING_COPY}", cwd=project).stdout
+    for line in (PROJECT_LINE, PROJECT_TAIL, SHAPE_TAIL):
+        assert line.decode() in kept, line
+
+
+@pytest.mark.parametrize("ours", [
+    pytest.param("upgrade", id="the-update-side-ours"),
+    pytest.param("local", id="the-persons-side-ours"),
+])
+def test_a_makefile_conflicted_with_the_shape_pin_keeps_the_projects_target(
+        standard, project, tmp_path, ours):
+    """Probe OD2 (#485), the copy a project most often edits. The project
+    appends its own target to the Makefile and keeps it with
+    `--accept-local`, and the standard's newer Makefile appends another.
+    Either branch merges the other (review of PR #496, N2).
+
+    The NEXT named `Makefile` with the pin, and once the merge was finished
+    HEAD's Makefile had lost the other side's target and, with the update
+    side as ours, the doctor said COMPLIANT. Now the Makefile keeps both
+    sides through the NEXT, the doctor is not COMPLIANT until a person has
+    merged it and accepted the merge, and HEAD's Makefile then holds both
+    targets. Until the merge is committed the verdict is #424's `INVALID
+    (merge)`, and after it the Makefile's drift: `locally-modified` with
+    the update side's pin taken, `both` with the person's.
+    """
+    moved, s1, s2 = standard_appended(standard, tmp_path, UPSTREAM_TARGET,
+                                      NEWER_TARGET)
+    held = two_shape_updates_merged(
+        moved, s1, s2, project, "Makefile",
+        lambda r: append_to(r / "Makefile", OWN_TARGET), ours)
+    assert b"ship:" in held and b"doctor:" in held, held[-400:]
+    verdict, rows = verdict_of(moved, project)
+    assert_the_merge_is_unfinished(verdict, rows, ["Makefile", SHAPE_PIN])
+    kinds, currency = rows["manifest-kinds"], rows["shape-currency"]
+    run_pasted(currency["next"])
+    assert (project / "Makefile").read_bytes() == held, \
+        "the NEXT took one side of the Makefile whole"
+    assert_the_pin_alone_is_taken(currency, kinds, "Makefile")
+    assert kinds["detail"]["restore"] == {SHAPE_PIN: "unmerged"}, kinds
+    verdict, rows = verdict_of(moved, project)
+    assert_the_merge_is_unfinished(verdict, rows, ["Makefile", SHAPE_PIN])
+    merge_by_hand(project / "Makefile")
+    git("add", "--", "Makefile", SHAPE_PIN, cwd=project)
+    commit_in(project, "the Makefile merged by hand")
+    verdict, rows = verdict_of(moved, project)
+    assert_the_merge_is_finished(
+        verdict, rows, "locally-modified" if ours == "upgrade" else "both")
+    re_pinned_from_the_merge(moved, project, rows["shape-currency"],
+                             "Makefile", ours)
+    kept = git("show", "HEAD:Makefile", cwd=project).stdout
+    assert "ship:" in kept and "doctor:" in kept, kept[-400:]
 
 
 # --- placement: code in spec, spec in code (#99) ----------------------------
@@ -7682,9 +8149,9 @@ def test_the_way_in_row_matches_the_host_platform_end_to_end(standard,
     here.mkdir()
     (here / "notes.txt").write_text("nothing to see\n", encoding="utf-8")
     scaffolds = module.check_the_way_in(module.Context(here))
-    assert scaffolds.next_command == (
-        module.scaffold_command(module.SHAPE_ROOT, "Loose", os.name)
-        + "   # without --yes; it asks"), scaffolds.next_command
+    assert scaffolds.next_command == module.scaffold_command(
+        module.SHAPE_ROOT, "Loose", os.name), scaffolds.next_command
+    assert scaffolds.why == "without --yes; it asks", scaffolds.why
     # The other way in, from the same directory once it is a repository.
     git("init", "-q", "-b", "main", ".", cwd=here)
     adopts = module.check_the_way_in(module.Context(here))
@@ -8321,8 +8788,8 @@ def pasted_from_elsewhere(command: str, tmp_path: Path):
     The three things a reader's shell can have that the doctor's child did
     not: a different working directory (the line names every path absolutely,
     so it needs none), a different environment (this is the one under test),
-    and the whole line -- trailing `#` comment and all -- rather than an argv
-    the test split. `PYTHONDONTWRITEBYTECODE` is the one thing put back, so
+    and the whole line, exactly as printed, rather than an argv the test
+    split. `PYTHONDONTWRITEBYTECODE` is the one thing put back, so
     that running the standard's validators from the session's `standard`
     leaves no `__pycache__` in it, as every other paste here does.
     """
@@ -8374,9 +8841,12 @@ def test_a_template_validators_next_command_runs_when_it_is_pasted(
     # is the traceback, exit 1, and says nothing about the project.
     scripts = doctor_module(standard).quote_arg(standard.resolve() / "scripts",
                                                 "posix")
-    assert row["next"].startswith(f"PYTHONPATH={scripts} python3 "), row["next"]
+    # `env`, not a bare `NAME=value` prefix, which csh and tcsh cannot run
+    # (#277).
+    assert row["next"].startswith(f"env PYTHONPATH={scripts} python3 "), \
+        row["next"]
     bare = pasted_from_elsewhere(
-        row["next"].removeprefix(f"PYTHONPATH={scripts} "), tmp_path)
+        row["next"].removeprefix(f"env PYTHONPATH={scripts} "), tmp_path)
     assert bare.returncode == 1, bare.stdout + bare.stderr
     assert "ModuleNotFoundError: No module named 'repo_shape'" in \
         bare.stdout + bare.stderr, bare.stdout + bare.stderr
@@ -8404,9 +8874,9 @@ def test_a_template_validators_next_runs_when_pasted_into_powershell(
 
     TWO THINGS ABOUT `-Command`. A native command's non-zero exit is
     `$LASTEXITCODE`, and `-Command` ends the session with 1 whatever it was,
-    so `; exit $LASTEXITCODE` is appended -- to the COMMAND, with the row's
-    trailing `   # ...` comment cut off first, because PowerShell reads a
-    comment to the end of the line and would swallow the `exit` with it. And
+    so `; exit $LASTEXITCODE` is appended to the line as printed -- which is
+    the command alone since #277, with no trailing `#` comment to swallow
+    the `exit` the way PowerShell reads one, to the end of the line. And
     the output is read as BYTES and decoded here as UTF-8 with replacement,
     on purpose: the finding id this asserts is ASCII, and what the console's
     code page does to anything else is not under test. Nothing is fed to
@@ -8421,7 +8891,7 @@ def test_a_template_validators_next_runs_when_pasted_into_powershell(
     assert row["status"] == "FINDING", row
     assert row["detail"]["own_copy"] is False, row
     assert row["next"].startswith("$env:PYTHONPATH = '"), row["next"]
-    line = row["next"].split("   # ", 1)[0]
+    line = row["next"]
     env = {name: value for name, value in os.environ.items()
            if name.upper() != "PYTHONPATH"}
     env["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -8456,11 +8926,11 @@ def test_a_template_validators_row_carries_the_same_next_in_text_and_json(
     expected = module.validator_command(shape, shape / spec["template"],
                                         False, ["--root", root])
     assert expected.startswith("$env:PYTHONPATH = " if os.name == "nt"
-                               else "PYTHONPATH="), expected
-    assert row["next"].startswith(expected + "   # "), (expected, row["next"])
+                               else "env PYTHONPATH="), expected
+    # THE COMMAND ALONE, and what to do with its output beside it (#277).
+    assert row["next"] == expected, (expected, row["next"])
     assert row["next"] in doctor(standard, root).stdout
-    assert row["next"].split("#", 1)[1].strip().startswith(
-        "read its output in full"), row["next"]
+    assert row["why"].startswith("read its output in full"), row["why"]
 
 
 @pytest.mark.parametrize("case", sorted(TEMPLATE_FALLBACK))
@@ -8483,8 +8953,9 @@ def test_a_roots_own_validators_next_command_is_unchanged(
     module = doctor_module(standard)
     assert row["next"] == (
         f"{module.PYTHON} {module.quote_arg(root / spec['own'])} --root "
-        f"{module.quote_arg(root)}   # read its output in full; it names "
-        "what it refused"), row["next"]
+        f"{module.quote_arg(root)}"), row["next"]
+    # The sentence that rode on the line as `   # ...` until #277.
+    assert row["why"] == "read its output in full; it names what it refused"
     assert "PYTHONPATH" not in row["next"], row["next"]
     assert_next_runs_the_roots_own(row, root, Path(spec["own"]).name)
 
@@ -8837,7 +9308,7 @@ def test_an_unloaded_manifests_template_next_command_runs_when_it_is_pasted(
     assert Path(row["detail"]["validator"]).name == script, row
     assert Path(row["detail"]["validator"]).resolve() != \
         (root / own).resolve(), row
-    assert row["next"].startswith("PYTHONPATH="), row["next"]
+    assert row["next"].startswith("env PYTHONPATH="), row["next"]
 
     pasted = pasted_from_elsewhere(row["next"], tmp_path)
     whole = pasted.stdout + pasted.stderr
@@ -8853,7 +9324,8 @@ def test_an_unloaded_manifests_own_copy_next_command_is_unchanged(
         standard, project, holder, tmp_path, kind, case):
     """The same row, the root's own copy present: no environment, and the
     line is what #205 printed -- the interpreter, the root's own validator
-    as a path, `--root` the root, and the comment that names the file to fix.
+    as a path, `--root` the root -- with the sentence that names the file to
+    fix as the row's `why`, where #277 moved the comment that used to end it.
     """
     if kind == "family":
         root = tmp_path / FAMILY_NAME
@@ -8871,11 +9343,12 @@ def test_an_unloaded_manifests_own_copy_next_command_is_unchanged(
     row = rows_of(doctor(standard, root, "--json"))[row_id]
     assert row["detail"]["own_copy"] is True, row
     module = doctor_module(standard)
-    assert row["next"].startswith(
+    assert row["next"] == (
         f"{module.PYTHON} {module.quote_arg(root / own)} --root "
-        f"{module.quote_arg(root)}   # the file to fix is "
-        f"{module.quote_arg(root / name)}, where the line above says; "), \
-        row["next"]
+        f"{module.quote_arg(root)}"), row["next"]
+    assert row["why"].startswith(
+        f"the file to fix is {module.quote_arg(root / name)}, where the line "
+        "above says; "), row["why"]
     assert "PYTHONPATH" not in row["next"], row["next"]
 
 
@@ -8886,10 +9359,12 @@ def test_an_unloaded_manifests_own_copy_next_command_is_unchanged(
 #: before it for PowerShell -- and what each does to a path that needs quoting.
 VALIDATOR_TEMPLATE = "templates/assembly-root/scripts/validate-manifest.py"
 VALIDATOR_COMMAND = [
-    # `sh`: `NAME=value command ...`, and a root's own copy has none.
+    # `sh`: `env NAME=value command ...` -- `env`, which csh, tcsh and fish
+    # run too, where a bare `NAME=value` prefix is `sh` syntax (#277) -- and
+    # a root's own copy has none.
     ("posix", PurePosixPath("/srv/openRepoShape"), False, PurePosixPath(
         "/srv/work/Atlas"),
-     "PYTHONPATH=/srv/openRepoShape/scripts python3 "
+     "env PYTHONPATH=/srv/openRepoShape/scripts python3 "
      "/srv/openRepoShape/templates/assembly-root/scripts/validate-manifest.py "
      "--root /srv/work/Atlas"),
     ("posix", PurePosixPath("/srv/openRepoShape"), True, PurePosixPath(
@@ -8900,7 +9375,7 @@ VALIDATOR_COMMAND = [
     # and the assignment's quote closes at the value's end.
     ("posix", PurePosixPath("/srv/my shape"), False, PurePosixPath(
         "/srv/work/Atlas"),
-     "PYTHONPATH='/srv/my shape/scripts' python3 "
+     "env PYTHONPATH='/srv/my shape/scripts' python3 "
      "'/srv/my shape/templates/assembly-root/scripts/validate-manifest.py' "
      "--root /srv/work/Atlas"),
     # PowerShell: `$env:NAME = 'value'; command ...`, the value ALWAYS quoted.
@@ -8925,7 +9400,7 @@ VALIDATOR_COMMAND = [
     # path on `sh` is quoted whole, every `\` a literal character.
     ("posix", PureWindowsPath(r"C:\srv\openRepoShape"), False,
      PureWindowsPath(r"C:\work\Atlas"),
-     r"PYTHONPATH='C:\srv\openRepoShape\scripts' python3 "
+     r"env PYTHONPATH='C:\srv\openRepoShape\scripts' python3 "
      r"'C:\srv\openRepoShape\templates\assembly-root\scripts"
      r"\validate-manifest.py' --root 'C:\work\Atlas'"),
 ]
@@ -8952,8 +9427,9 @@ def test_the_posix_validator_line_is_read_back_whole_by_sh_quoting():
     """A standard at an awkward path arrives as one value, apostrophe and all.
 
     `shlex.split` is the reader's own shell for the `sh` dialect, as it is
-    for every other line asserted that way here: the first word is the
-    assignment whole, the next the interpreter, the next the template.
+    for every other line asserted that way here: the first word is `env`
+    (#277), the next the assignment whole, the next the interpreter, the
+    next the template.
     """
     module = doctor_module(REPO)
     shape = PurePosixPath("/srv/Jane O'Neill/open Repo Shape")
@@ -8961,6 +9437,7 @@ def test_the_posix_validator_line_is_read_back_whole_by_sh_quoting():
         shape, shape / VALIDATOR_TEMPLATE, False,
         ["--root", PurePosixPath("/srv/work dir/Atlas")], "posix")
     assert shlex.split(line) == [
+        "env",
         "PYTHONPATH=/srv/Jane O'Neill/open Repo Shape/scripts", "python3",
         f"/srv/Jane O'Neill/open Repo Shape/{VALIDATOR_TEMPLATE}", "--root",
         "/srv/work dir/Atlas"], line
@@ -9219,12 +9696,7 @@ def test_the_pin_alone_clause_and_the_readme_note_never_say_opposite_things(
     precisely the case it is made most often.
     """
     pinned = git("rev-parse", "HEAD", cwd=standard).stdout.strip()
-    ahead = tmp_path / "standard-ahead"
-    shutil.copytree(standard, ahead, symlinks=True)
-    (ahead / "README.md").write_text(
-        (ahead / "README.md").read_text(encoding="utf-8") + "\nA fix.\n",
-        encoding="utf-8")
-    commit_all(ahead, "An upstream change to a file no project copies")
+    ahead = standard_ahead(standard, tmp_path)
     target = git("rev-parse", "HEAD", cwd=ahead).stdout.strip()
     assert pinned != target, "fixture: the standard has moved past the pin"
 

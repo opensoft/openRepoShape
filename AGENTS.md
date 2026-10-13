@@ -34,9 +34,9 @@ almost always an explicit `--org <their-org>`. Pass `--allow-upstream-org`
 only if the human asks for it in those words.
 
 **Never bypass an organisation ruleset.** A ruleset that refuses a direct push
-to `main` is doing its job; the exits are in the scaffold's own failure message
-(seed by pull request, or ask an operator with the bypass right). `--admin` is
-not a remedy.
+to `main` is doing its job; the exit is in the tool's own failure message (for
+a scaffold or `family.py init`: an operator holding the bypass right re-runs
+it with `--reuse-empty-repo`). `--admin` is not a remedy.
 
 ## 1. Confirm what you are about to do
 
@@ -85,15 +85,15 @@ to confirm on`. Give the human the same command for THEIR OWN terminal, where
 it asks them, the one-liner too: setup reads the answer from that terminal and
 never from the pipe. Never pass `--yes` yourself.
 
-If it refuses, read the refusal: each one names what to run instead, or, for
-some, the VALUE to change. Two you can foresee from your flags, both before
-anything is created: `scaffold-leg-path-collides` (a `--spec-path` or
-`--code-path` that is, holds or lies inside a FILE the shape writes into the
-assembly root: `project.yaml` is one, and `contracts` holds
-`contracts/spec-pin.yaml`; the defaults `spec` and `code` pass) and
-`scaffold-pin-collides` (a `--pin` the shape cannot write, below). Both go
-after `--`. Relay the refusal and ask the human for the value; never choose
-another yourself. Do not retry with `--force`; there is none, deliberately.
+If it refuses, read the refusal: each one names what to run instead, or, for some, the
+VALUE to change. Three you can foresee, all before anything is created:
+`scaffold-leg-path-collides` (a `--spec-path` or `--code-path` that is, holds or lies
+inside a FILE the shape writes into the assembly root: `project.yaml` is one, and
+`contracts` holds `contracts/spec-pin.yaml`; the defaults `spec` and `code` pass) and
+`scaffold-pin-collides` (a `--pin` the shape cannot write, below), both after `--`;
+and anything already at `<into>/<Project>`, a rehearsal's clone included. Relay the
+refusal and ask the human for the value, or to move or delete what is there; never do
+either yourself. Do not retry with `--force`; there is none, deliberately.
 
 ## 3. It finishes the job
 
@@ -107,10 +107,10 @@ copied and digest-pinned — and you read that before touching the project.
 
 ## If setup.sh cannot be used
 
-The same steps by hand, in order: `validate-repository-naming.py --explain` on
-the three names, `scaffold-project.py --dry-run`, an explicit human yes,
-`scaffold-project.py` for real, then `git clone --recurse-submodules` and
-`python3 scripts/bootstrap.py`. README's "What setup.sh does" carries the exact commands.
+The same steps by hand, in order: a free clone path, `validate-repository-naming.py
+--explain` on the three names, `scaffold-project.py --dry-run`, an explicit human yes,
+`scaffold-project.py` for real, then `git clone --recurse-submodules` and `python3
+scripts/bootstrap.py`. README's "What setup.sh does" carries the exact commands.
 
 ## Adopting an existing repository
 
@@ -413,10 +413,10 @@ python3 scripts/family.py siblings --family-root <path>
    different repository is reported and skipped; the exit is the human's
    hand, not an overwrite.
 6. `update-shape.py` updates a family root exactly as it updates a project,
-   and the same four refusals apply. It mirrors into `family.yaml`. An
-   existing holder receives `scripts/siblings.py` that way: `check` reports
-   it as `upstream-added` and `apply --add scripts/siblings.py` takes it, on
-   the human's word, per file.
+   with the same four refusals, and mirrors into `family.yaml`. An existing
+   holder receives `scripts/siblings.py` that way: `check` reports it as
+   `upstream-added`, `apply --add scripts/siblings.py` takes it on the human's
+   word, per file, and without it `make siblings`, `park` and `resume` refuse.
 
 ## Parking and resuming
 

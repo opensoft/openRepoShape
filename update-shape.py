@@ -73,6 +73,15 @@ recording an identity, so this tool never records one it cannot justify:
     branch, and the refusal names the step that failed and lists what it
     put back. A re-run then finds the tree it found the first time, rather
     than an uncommitted re-pin it would read as already done.
+  * Nothing is written THROUGH A SYMLINK (#239, #286). A rewrite opens the
+    file where it stands, so a pinned copy, `contracts/shape-pin.yaml` or
+    the manifest kept as a link — or under a directory link — would have the
+    standard's bytes land at the link's end, outside the root if that is
+    where it points, while git, which holds the link, commits none of them.
+    `check` calls such a copy `copy-is-link` and `apply` refuses it; both
+    refuse a linked pin or manifest. Each refusal is `update-rewrite-symlink`,
+    before anything is written, as `--add` refuses a link at a path it would
+    create as `update-add-symlink`.
 
 ONLY THE PIN'S OWN ROWS ARE CONSIDERED. The set of shape files is read from
 `contracts/shape-pin.yaml`, never re-derived from this repository's copy
@@ -254,8 +263,9 @@ def root_kind(root: Path) -> Kind:
 
 
 #: States a pinned row can be in. The first four are the vocabulary the task
-#: of updating a project is actually about; the last three are the ways the
-#: question cannot be asked, and each of them refuses rather than guessing.
+#: of updating a project is actually about; the last four are the ways the
+#: question cannot be asked, or its answer written, and each of them refuses
+#: rather than guessing.
 UNCHANGED = "unchanged"
 UPSTREAM_CHANGED = "upstream-changed"
 #: Not a state a pinned ROW can be in: a path the upstream's copy lists name at
@@ -278,13 +288,20 @@ MERGED_AWAY = "merged-away"
 UPSTREAM_REMOVED = "upstream-removed"
 UNMAPPED = "unmapped"
 COPY_MISSING = "copy-missing"
+#: A pinned copy the root keeps as a SYMLINK, or under one (#286). The bytes
+#: can be compared — they are read through the link — but the answer cannot be
+#: written: a rewrite lands at the link's end, which git does not commit. So
+#: it is a fourth way the question cannot be asked, whatever the upstream did,
+#: and `apply` refuses it by name. A DANGLING link stays `copy-missing`: there
+#: is no file to read, and that refusal already writes nothing.
+COPY_IS_LINK = "copy-is-link"
 
 #: Anything here is a merge or a decision, never a byte copy.
-CONFLICTS = (BOTH, UPSTREAM_REMOVED, UNMAPPED, COPY_MISSING)
+CONFLICTS = (BOTH, UPSTREAM_REMOVED, UNMAPPED, COPY_MISSING, COPY_IS_LINK)
 ORDER = (UPSTREAM_CHANGED, UPSTREAM_ADDED, BOTH, LOCALLY_MODIFIED,
          MERGED_AWAY,
          ALREADY_AT_TARGET, UPSTREAM_REMOVED, UNMAPPED, COPY_MISSING,
-         UNCHANGED)
+         COPY_IS_LINK, UNCHANGED)
 
 
 # ---------------------------------------------------------------------------
@@ -422,6 +439,9 @@ class Row:
         self.detail = ""
         self.target_bytes: bytes | None = None
         self.digest = self.recorded
+        #: `symlink_on_the_way`'s answer for this path — the link and where
+        #: it points — when there is one, which makes the row `copy-is-link`.
+        self.link: tuple[str, str] | None = None
 
     @property
     def is_conflict(self) -> bool:
@@ -453,7 +473,20 @@ def pin_rows_remediation(root: Path) -> str:
 
 
 def read_pin(root: Path) -> tuple[dict, list[Row]]:
+    """The root's `contracts/shape-pin.yaml` and its rows, or a refusal that
+    says why this command cannot use it.
+
+    A PIN KEPT AS A SYMLINK, OR UNDER ONE, IS ONE IT CANNOT USE (#286), and
+    that is asked FIRST, by `lstat`: `apply` rewrites the pin where it
+    stands, so the re-pin would land at the link's end while the commit
+    `--branch` makes holds the unchanged link. Asked before `is_file()`,
+    which follows a link, so a dangling one is named as the link it is
+    rather than as a pin that "does not exist".
+    """
     pin_path = root / "contracts" / "shape-pin.yaml"
+    linked = linked_record(root)
+    if linked is not None:
+        raise rewrite_link_refusal([linked])
     if not pin_path.is_file():
         raise Refusal(
             "update-pin-missing",
@@ -615,7 +648,11 @@ def _classify_row(root: Path, row: Row, upstream: Upstream, pinned: str,
 
     THE THREE EXITS HERE ARE THE ONES WHERE THERE IS NOTHING TO COMPARE: the
     root has no file at this path, no upstream path corresponds to it, or the
-    upstream has none at the target commit. Each is a decision for a human
+    upstream has none at the target commit. A FOURTH COMES SECOND (#286):
+    the file is there, but the path is a symlink or sits under one, so
+    whatever the comparison said could not be written where git would commit
+    it. It is asked after `is_file()`, which follows the link, so a DANGLING
+    link is still `copy-missing`. Each is a decision for a human
     rather than a difference this tool can act on, so `_row_verdict` below is
     only ever reached holding the root's bytes and the target's bytes for
     certain. THE PINNED BLOB IS THE EXCEPTION and is passed on as `None` when
@@ -631,6 +668,12 @@ def _classify_row(root: Path, row: Row, upstream: Upstream, pinned: str,
         row.state = COPY_MISSING
         row.detail = ("pinned but absent from the root; a human decides "
                       "whether it was deleted on purpose")
+        return
+    link = symlink_on_the_way(root, row.path)
+    if link is not None:
+        row.state = COPY_IS_LINK
+        row.link = link
+        row.detail = linked_copy_detail(row.path, link)
         return
     source = source_for(row.path, upstream, target, kind)
     row.source = source
@@ -895,13 +938,14 @@ class Addition(Row):
 
     def __init__(self, copy: Copy, present: bool, target_bytes: bytes,
                  link: tuple[str, str] | None = None,
-                 blocked: str | None = None):
+                 blocked: str | None = None, left_dead: str = ""):
         super().__init__(copy.path, "")
         self.source = copy.source
         self.executable = copy.executable
         self.present = present
         self.link = link
         self.blocked = blocked
+        self.left_dead = left_dead
         self.target_bytes = target_bytes
         self.digest = file_bytes_sha256(target_bytes)
         self.state = UPSTREAM_ADDED
@@ -911,6 +955,52 @@ class Addition(Row):
             self.detail = ("the standard added this file after this pin, but "
                            f"{blocked} in this root is not a directory, so "
                            f"--add refuses it until {blocked} is moved")
+        if left_dead:
+            self.detail += f"; {left_dead}"
+
+
+#: AN ADDED FILE THAT A COPIED FILE CALLS (#489): `{the added path: (the pinned
+#: copy that calls it, what stops working without it)}`. `apply` copies the
+#: copy the moment it changes and takes the added file only on `--add`, which
+#: is the human's word and per file, so a holder updated the way AGENTS.md
+#: prescribes holds the Makefile of a standard that has `scripts/siblings.py`
+#: and not the script. `check` and `apply` SAY so, in the line that already
+#: reports the file, rather than leave the person to find three make targets
+#: that cannot run; the Makefile refuses by name in the same case, and
+#: neither writes the file nor refuses the run. A fact about the standard's
+#: own files, so it is spelled here once, and
+#: `tests/test_family_makefile_siblings.py` holds the Makefile to it.
+CALLED_BY_A_COPY = {
+    "scripts/siblings.py": (
+        "Makefile", "`make siblings`, `make park` and `make resume`"),
+}
+
+
+def left_dead_by(path: str, rows: list[Row]) -> str:
+    """What a copy that calls `path` leaves that cannot run while `path` is not
+    added, or "" (#489).
+
+    TWO CALLERS COUNT, and they are the two the root can hold the standard's
+    own bytes in. `upstream-changed` is the one verdict whose bytes `apply`
+    writes on its own, so the copy it is about to put in front of a file it
+    does not add. `unchanged` is the root AFTER that `apply`: pinned at the
+    target, holding the target's copy, and every later `check` finds the
+    script `upstream-added` still, so the sentence has to be there on the
+    second `check` as much as on the first. A `locally-modified` or `both`
+    copy is kept or refused, and says nothing about what it calls.
+    """
+    called = CALLED_BY_A_COPY.get(path)
+    if called is None:
+        return ""
+    caller, what = called
+    states = {row.state for row in rows if row.path == caller}
+    if UPSTREAM_CHANGED in states:
+        return (f"the {caller} that `apply` copies calls it, so {what} "
+                "cannot run until it is added")
+    if UNCHANGED in states:
+        return (f"this root's {caller} already calls it, so {what} cannot "
+                "run until it is added")
+    return ""
 
 
 #: An NTFS junction's reparse tag. `stat` names IO_REPARSE_TAG_MOUNT_POINT on
@@ -1021,8 +1111,24 @@ def find_additions(root: Path, rows: list[Row], upstream: Upstream,
         link = symlink_on_the_way(root, copy.path)
         additions.append(Addition(
             copy, link is not None or os.path.lexists(root / copy.path),
-            data, link, not_a_directory_on_the_way(root, copy.path)))
+            data, link, not_a_directory_on_the_way(root, copy.path),
+            left_dead_by(copy.path, rows)))
     return additions
+
+
+def link_said(path: str, link: tuple[str, str]) -> str:
+    """`<name> in this root is a symlink[, on the way to <path>], pointing at
+    '<where>'`: the one phrase every refusal and verdict about a link on
+    `path`'s way prints, `link` being `symlink_on_the_way`'s answer.
+
+    WHERE THE LINK POINTS IS QUOTED, `!r`, because it is the operator's text
+    and a file name may hold a newline: printed as it is, a target spelled
+    `out<LF>REFUSED fake` puts a line on stderr that reads as a second
+    refusal (#239).
+    """
+    name, points = link
+    above = "" if name == path else f", on the way to {path}"
+    return f"{name} in this root is a symlink{above}, pointing at {points!r}"
 
 
 def link_refusal(path: str, link: tuple[str, str]) -> Refusal:
@@ -1031,27 +1137,119 @@ def link_refusal(path: str, link: tuple[str, str]) -> Refusal:
     `resolve_additions` finds the link, and again by `Rollback.write_added`
     for one that arrived after that.
 
-    WHERE THE LINK POINTS IS QUOTED, `!r`, because it is the operator's text
-    and a file name may hold a newline: printed as it is, a target spelled
-    `out<LF>REFUSED fake` puts a line on stderr that reads as a second
-    refusal. And the promise is `--add`'s alone: a pinned copy, or the pin,
-    kept as a link is still rewritten through it.
+    THE PROMISE IS THE WHOLE COMMAND'S (#286). It said `--add`'s alone while
+    a pinned copy, or the pin, kept as a link was still rewritten through
+    it; `rewrite_link_refusal` now refuses those, so the sentence is true of
+    every write `apply` makes. It says SYMLINK, not "link": a HARD link is
+    another name for the same bytes, which `Rollback.write` still writes
+    through everywhere but the README.
     """
-    name, points = link
-    above = "" if name == path else f", on the way to {path}"
+    name = link[0]
     return Refusal(
         "update-add-symlink",
-        f"--add {path} names a file the upstream's lists add, but {name} in "
-        f"this root is a symlink{above}, pointing at {points!r}. A write at "
+        f"--add {path} names a file the upstream's lists add, but "
+        f"{link_said(path, link)}. A write at "
         f"{path} would go THROUGH it, to wherever it leads — outside this "
-        "root, if that is where it points — and `--add` never writes through "
-        "a link",
+        "root, if that is where it points — and this command never writes "
+        "through a symlink",
         f"Remediation: if the link is yours to keep, leave {path} alone: "
         "`check` stops reporting a path the root holds, and the standard's "
         "file is yours to carry in whatever the link leads to. To take the "
         f"standard's file instead, remove or move {name} and run this command "
         f"again with the same --add: with nothing at {path} it is written "
         "there, as for any addition.")
+
+
+def linked_copy_detail(path: str, link: tuple[str, str]) -> str:
+    """A `copy-is-link` row's detail: the link, and what is done about it.
+    `check` prints it under the row, and `apply` names the same link in
+    `rewrite_link_refusal` (#286)."""
+    return (f"{link_said(path, link)}; `apply` never writes through one, so "
+            "replace the link with what it points at, or take the update by "
+            "hand at the link's end")
+
+
+def linked_record(root: Path, kind: Kind | None = None
+                  ) -> tuple[str, tuple[str, str]] | None:
+    """The first RECORD `apply` rewrites that the root keeps as a symlink,
+    or under one, as `(record, link)`, `link` being `symlink_on_the_way`'s
+    answer for it; None when neither is (#286). The records are
+    `contracts/shape-pin.yaml` and then `kind.manifest`; with no `kind`, the
+    pin alone, which is all `read_pin` reads.
+
+    ONE QUESTION, AND EVERYONE WHO NEEDS IT ASKS THIS ONE. `read_pin`
+    refuses a linked pin and `prepare` a linked manifest, each with
+    `rewrite_link_refusal` over this answer. `shape-doctor.py` asks it
+    FIRST, before it reads the pin or opens this checkout as the upstream:
+    a linked record is a fact about the ROOT, which keeps a link where
+    `apply` has to write, and not this checkout of the standard failing to
+    ask about a commit. Asking the same function is how the doctor tells the
+    two apart by which read refused, rather than by a list of refusal codes.
+    """
+    records = ["contracts/shape-pin.yaml"]
+    if kind is not None:
+        records.append(kind.manifest)
+    for record in records:
+        link = symlink_on_the_way(root, record)
+        if link is not None:
+            return record, link
+    return None
+
+
+def rewrite_link_refusal(linked: list[tuple[str, tuple[str, str]]],
+                         arrived: bool = False) -> Refusal:
+    """`update-rewrite-symlink`: a file `apply` REWRITES is a symlink in the
+    root, or sits under one (#286). `linked` is `[(path, link)]`, `link`
+    being `symlink_on_the_way`'s answer for `path`.
+
+    `--add`'s `update-add-symlink` is the same refusal for a file `apply`
+    would CREATE. This one is for the three it OVERWRITES — a pinned copy,
+    `contracts/shape-pin.yaml`, the kind's manifest — which `Rollback.write`
+    opens where they stand, so each write lands at the link's end, outside
+    the root if that is where it points. git holds the LINK there, not those
+    bytes, so the commit `--branch` makes would leave them out while the run
+    printed them among what it committed, and the pin would record a digest
+    of bytes no commit carries. Raised before any write: by `read_pin` for
+    the pin, by `prepare` for the manifest, by `cmd_apply` for every
+    `copy-is-link` row at once — and, with `arrived`, by `Rollback.write`
+    for a link that came after `prepare` looked.
+
+    ONE PATH IS ONE LINE, as `update-add-symlink` is. `read_pin` and
+    `prepare` always name one, and the doctor quotes this refusal, for the
+    record `linked_record` names, inside one line of its table, which a
+    detail spread over three lines broke into three. Several `copy-is-link`
+    rows are a list, one path a line, as `update-conflict` lists its own.
+    """
+    many = len(linked) > 1
+    sentences = (["It was not there when this run looked: it arrived while "
+                  "`apply` ran, after this run had decided what to write."]
+                 if arrived else [])
+    sentences.append(
+        "A rewrite goes THROUGH a link, to wherever it leads — outside this "
+        "root, if that is where it points — and git, which holds the link "
+        "and not those bytes, commits none of them: the commit `--branch` "
+        "makes would not hold what this run wrote. This command never "
+        "writes through a symlink")
+    if many:
+        detail = ("`apply` would rewrite these files, but each is a symlink "
+                  "in this root, or sits under one:\n"
+                  + "\n".join(f"    {path}: {link_said(path, link)}"
+                              for path, link in linked)
+                  + "".join(f"\n  {sentence}" for sentence in sentences))
+    else:
+        path, link = linked[0]
+        detail = " ".join([f"`apply` would rewrite {path}, but "
+                           f"{link_said(path, link)}.", *sentences])
+    return Refusal(
+        "update-rewrite-symlink",
+        detail,
+        "Remediation: replace "
+        + ("each link" if many else "the link")
+        + " with what it points at — the same bytes at the same path, so git "
+        "holds them there rather than a link — commit that, and run this "
+        "command again. A root that keeps a link takes the update by hand, "
+        "at the link's end, and re-pins by hand: the upstream's bytes are "
+        "`git show <target>:<source path>` in a shape clone.")
 
 
 def resolve_additions(rows: list[Row], additions: list[Addition],
@@ -1715,6 +1913,12 @@ def prepare(args) -> tuple[Path, dict, list[Row], list[Addition], Upstream,
         raise Refusal("update-root-missing", f"{root} is not a directory")
     kind = root_kind(root)
     pin, rows = read_pin(root)
+    # THE MANIFEST IS THE OTHER RECORD `apply` REWRITES, so a link at it, or
+    # above it, is refused here as `read_pin` refuses one at the pin (#286):
+    # before the upstream is opened, and before any byte is written.
+    linked = linked_record(root, kind)
+    if linked is not None:
+        raise rewrite_link_refusal([linked])
     pinned = str(pin["commit"]).lower()
     declared = str(pin.get("source_repository") or SHAPE_REPOSITORY)
     upstream = open_upstream(str(args.upstream or declared))
@@ -2228,7 +2432,21 @@ class Rollback:
         before the ledger has promised anything, so a refusal raised over a
         write that could not happen rolls back a tree this ledger can
         actually restore.
+
+        NEVER THROUGH A SYMLINK (#286). `r+b` follows a link, at the path or
+        on its way down. `prepare` refuses a linked pin or manifest and
+        `apply` a `copy-is-link` row, but this runs later — after `confirm`
+        has waited for a human — and a link can arrive in between. So the
+        path is walked again here and a link refused by name before anything
+        is read or recorded, and `cmd_apply`'s refusal arm puts back what
+        was written before it. What the walk cannot see is a link that
+        arrives in the instant between it and the open, as
+        `write_added` cannot see one that arrives above its path.
         """
+        rel = self._name(path)
+        link = symlink_on_the_way(self.root, rel)
+        if link is not None:
+            raise rewrite_link_refusal([(rel, link)], arrived=True)
         with path.open("r+b") as handle:
             self.written.setdefault(path, handle.read())
             handle.seek(0)
@@ -2646,6 +2864,21 @@ def _refuse_unknown_accept_local(rows: list[Row], accepted: set) -> None:
             "refusal, so a mistyped path is reported as a mistyped path.")
 
 
+def _refuse_linked_copies(rows: list[Row]) -> None:
+    """`update-rewrite-symlink` for every `copy-is-link` row at once (#286).
+
+    ASKED BEFORE `update-conflict`, though the rows count among the
+    conflicts `check` names: that refusal's remedy is a hand merge and
+    `--accept-local`, and neither is the answer for a link. `--accept-local`
+    on such a path accepts nothing — there is no local edit to trust, only
+    a place this command does not write.
+    """
+    linked = [(row.path, row.link) for row in rows
+              if row.state == COPY_IS_LINK and row.link is not None]
+    if linked:
+        raise rewrite_link_refusal(linked)
+
+
 def _refuse_conflicts(rows: list[Row], accepted: set) -> None:
     """The `update-conflict` refusal, split out of `cmd_apply` for #133.
 
@@ -2659,7 +2892,9 @@ def _refuse_conflicts(rows: list[Row], accepted: set) -> None:
     and re-pinned from what is on disk. The other three conflict states
     (upstream-removed, unmapped, copy-missing) have no such exit: there is no
     local edit to trust a word about, so `--accept-local` naming one of those
-    is simply not among the paths this can ever exclude.
+    is simply not among the paths this can ever exclude. The fifth,
+    `copy-is-link`, never reaches here: `_refuse_linked_copies` refuses it
+    first, under its own name.
     """
     conflicts = [row for row in rows
                  if row.is_conflict
@@ -2768,7 +3003,9 @@ def _note_untaken_additions(additions: list[Addition],
             take = (f"pass --add {add.path}" if add.blocked is None else
                     f"{add.blocked} in this root is not a directory, so "
                     f"--add refuses it until {add.blocked} is moved")
-            print(f"  note     {add.path} is new upstream; not added; {take}")
+            dead = f" ({add.left_dead})" if add.left_dead else ""
+            print(f"  note     {add.path} is new upstream; not added; "
+                  f"{take}{dead}")
 
 
 def _nothing_to_do(rows: list[Row], pinned: str, target: str,
@@ -2986,6 +3223,7 @@ def cmd_apply(args) -> int:
                   f"{upstream.repository} @ {target[:12]}, which the pin "
                   "already names")
             return 0
+        _refuse_linked_copies(rows)
         _refuse_conflicts(rows, accepted)
         _refuse_local_drift(rows, accepted)
         if args.branch:

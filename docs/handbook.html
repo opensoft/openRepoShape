@@ -866,10 +866,10 @@ sudo dnf install gh</code></pre></div>
             <p data-platform="linux" class="aside">Honestly: it still reaches GitHub before the run starts &mdash; to
             fetch <code>setup.sh</code>, then for the self-bootstrap clone of this standard into a
             temporary directory. Run the same flag on <code>./setup.sh</code> from a checkout
-            instead and nothing touches the network at all. What it leaves behind is
-            <code>./Atlas</code>, three bare repositories in <code>./rehearsal</code>, and the
-            scaffold&rsquo;s three working trees in the temporary directory its
-            <code>Working trees are at</code> line names, all of which you can delete.</p>
+            instead and nothing touches the network at all. It leaves <code>./Atlas</code>, three
+            bare repositories in <code>./rehearsal</code>, and the scaffold&rsquo;s three working
+            trees in the temporary directory its <code>Working trees are at</code> line names, all
+            deletable; a real run here refuses up front while <code>./Atlas</code> is there.</p>
             <p data-platform="mac wsl" class="aside">Honestly: it still reaches GitHub before the run starts &mdash; to
             fetch <code>setup.sh</code>, then for the self-bootstrap clone of this standard into a
             temporary directory. Run the same flag on <code>./setup.sh</code> from a checkout
@@ -953,8 +953,8 @@ sudo dnf install gh</code></pre></div>
         <p>It is a shim that finds a Python 3.9 or newer, clones this standard into a temporary
         directory when you are not already in a checkout of it, and hands over to
         <code>setup-project.py</code>, which IS the flow. These are the commands that flow runs,
-        in order, with no behaviour of its own (the first only in self-bootstrap mode, from the
-        one-liner):</p>
+        in order (the first only in self-bootstrap mode, from the one-liner); before the second
+        it refuses, creating nothing, if anything stands at <code>&lt;into&gt;/Atlas</code>:</p>
         <div class="code" data-lang="sh"><pre><code>git clone --depth 1 https://github.com/opensoft/openRepoShape.git &lt;tmp-dir&gt;
 python3 scripts/validate-repository-naming.py --explain Atlas Atlas-spec Atlas-code
 python3 scaffold-project.py --org &lt;your-org&gt; --project Atlas --dry-run
@@ -1018,17 +1018,17 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
       <div class="out"><pre><code>NOTHING has been rolled back. What already exists is listed above; delete it by hand if you want a clean re-run</code></pre></div>
       <p>&mdash; and it is no less true of a failure anywhere else.</p>
       <ul class="plain">
-        <li>A second run is refused while the legs exist, and there is no <code>--force</code>,
-        because re-running over a live project is not a scaffold.</li>
+        <li>A second run is refused while they exist, and there is no <code>--force</code>.</li>
         <li>Delete what was created with <code>gh repo delete &lt;org&gt;/&lt;name&gt;</code>, which
-        needs the <code>delete_repo</code> scope; <code>gh repo delete --help</code> names
-        <code>gh auth refresh -s delete_repo</code> as how to get it. Or scaffold under a different
-        <code>--project</code>.</li>
-        <li><code>--reuse-empty-repo</code> covers exactly one case: an assembly ROOT that already
-        exists with ZERO commits, which is a reserved name rather than a project. It applies to the
-        root alone &mdash; an existing leg is refused whatever it holds, and a root that HAS commits
-        is a live repository, which <a href="#adopt"><code>adopt-project.py</code></a> converts in
-        place instead.</li>
+        needs the <code>delete_repo</code> scope (<code>gh auth refresh -s delete_repo</code>). Or
+        scaffold under a different <code>--project</code>, or re-run with
+        <code>--reuse-empty-repo</code>.</li>
+        <li><code>--reuse-empty-repo</code> reuses each of the three that has ZERO commits, a
+        reserved name rather than a project, and a leg whose one commit is the seed this scaffold
+        pushes, so a run a ruleset refused is finished by an operator holding the bypass right
+        re-running it. A leg with other commits is refused, and a root that HAS commits is a live
+        repository, which <a href="#adopt"><code>adopt-project.py</code></a> converts in place
+        instead.</li>
         <li><code>--visibility internal</code> is the third value every tool here accepts; only a
         GitHub Enterprise Cloud organisation offers it at all, and one that does not is refused by
         GitHub rather than by this tool.</li>
@@ -1798,8 +1798,9 @@ resume InkRouter                # on workstation B, and the estate is back</code
         setup.sh refuses because the organisation you were given resolves to opensoft, STOP and relay
         what it said; the fix is almost always an explicit <code>--org &lt;their-org&gt;</code>.</li>
         <li><strong>Never bypass an organisation ruleset.</strong> A ruleset that refuses a direct
-        push to <code>main</code> is doing its job; the exits are in the scaffold&rsquo;s own failure
-        message. <code>--admin</code> is not a remedy.</li>
+        push to <code>main</code> is doing its job; the exit is in the tool&rsquo;s own failure
+        message (for a scaffold or <code>family.py init</code>: an operator holding the bypass right
+        re-runs it with <code>--reuse-empty-repo</code>). <code>--admin</code> is not a remedy.</li>
         <li><strong>Never reset, stash or force-push to make a refused
         <a href="#park"><code>make park</code></a> or <code>make resume</code> succeed.</strong> A
         parked WIP commit is a real pushed commit, and <code>resume</code> refusing on divergence
@@ -1815,14 +1816,14 @@ resume InkRouter                # on workstation B, and the estate is back</code
       it asks them, the one-liner too &mdash; setup reads the answer from that terminal and never
       from the pipe &mdash; and never pass <code>--yes</code> yourself. Read a refusal rather than
       retrying: each one names what to run instead, or, for some, the VALUE to change &mdash;
-      among them a <code>--spec-path</code> or
-      <code>--code-path</code> that is, holds or lies inside a file the shape writes, and a
-      <code>--pin</code> the shape cannot write, both before anything is created &mdash; and there
-      is no <code>--force</code>, deliberately. Relay the finished block &mdash; the clone
-      path, the three repository URLs and the next commands &mdash; and say that the line
-      <code>authority is not wallet-carried in this org</code> is a report and not a fault. The new
-      project carries <code>AGENTS-shape.md</code> at its assembly root, and you read that before
-      touching the project.</p>
+      among them a <code>--spec-path</code> or <code>--code-path</code> that is, holds or lies
+      inside a file the shape writes, a <code>--pin</code> the shape cannot write, and anything
+      already at <code>&lt;into&gt;/&lt;Project&gt;</code>, for the human to move or delete, all
+      before anything is created &mdash; and there is no <code>--force</code>, deliberately. Relay
+      the finished block &mdash; the clone path, the three repository URLs and the next commands
+      &mdash; and say that the line <code>authority is not wallet-carried in this org</code> is a
+      report and not a fault. The new project carries <code>AGENTS-shape.md</code> at its assembly
+      root, and you read that before touching the project.</p>
       <p><strong>What you must not tell them:</strong> that the shape confers anything &mdash; or
       that membership of a family does &mdash; or that a <code>&lt;user&gt;-wip</code> workspace
       repository does, which holds no code, elects nothing and is membership of nothing. Electing
@@ -1869,10 +1870,13 @@ resume InkRouter                # on workstation B, and the estate is back</code
       added (#411); the doctor&rsquo;s <strong>merge</strong> row, and <code>INVALID (merge)</code>
       above drift, added (#424); the assistant&rsquo;s route when its shell has no terminal, added
       (#476); the one-liner asking at the person&rsquo;s own terminal, never reading the answer
-      from the pipe, added (#492); the statements the v1.0.0 accuracy pass found false,
-      corrected here as in the README, added (#483); the <code>merged-away</code> verdict, whose row <code>apply</code> drops, added (#502) &mdash; a page cannot name the commit
-      that contains it, and the blob below is the fact a test checks.
-      README.md blob 2977f247db321d1f21f8dc15931e87ef42193f97. Every command, flag, exit code
+      from the pipe, added (#492); the statements the v1.0.0 accuracy pass found false, corrected
+      here as in the README, added (#483); a taken clone path refused up front, added (#498);
+      <code>--reuse-empty-repo</code> reusing an empty leg and a leg holding the scaffold&rsquo;s
+      own seed, and the one ruleset exit that re-run is, added (#462); the
+      <code>merged-away</code> verdict, whose row <code>apply</code> drops, added (#502) &mdash; a
+      page cannot name the commit that contains it, and the blob below is the fact a test checks.
+      README.md blob c4f819a1f8aa48a54135e15f5395ab113b7f0da4. Every command, flag, exit code
       and file name on this page is quoted from that README and from AGENTS.md.</p>
     </footer>
   </main>

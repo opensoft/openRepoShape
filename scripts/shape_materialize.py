@@ -785,30 +785,60 @@ class CommandFailed(Exception):
         )
 
 
-#: Two fields name a branch, and they are NOT the same thing (#324):
-#:   `{tracking}` is the run's tracking branch (`--tracking-branch`): the
-#:   branch of the REMOTE the refused push targeted, and so the base a
-#:   seeding pull request lands on.
-#:   `{local}` is the ref in `{work}` that the refused push carried. Each
-#:   caller -- the scaffold's legs and assembly root, the family holder --
-#:   pushed the tracking branch BY NAME from a clone made on it, so each
-#:   passes the tracking branch for both; a push of `HEAD:` would name `HEAD`.
-#:   An adoption prints its own `ADOPT_RULESET_HINT` (`adopt-project.py`,
-#:   #177), which names the tracking branch the same way and no command.
-#: Every caller passes both, after `checked_value` has admitted the tracking
-#: branch, so each is a safe argument and neither is quoted here. A call that
-#: leaves one out fails `tests/test_ruleset_hint_tracking_branch.py`.
+#: What a scaffold whose push was refused prints, and `FAMILY_RULESET_HINT`
+#: what `family.py init` prints (#462). ONE EXIT, AND IT WORKS: an operator
+#: holding the bypass right re-runs the same command with `--reuse-empty-repo`,
+#: whose own pushes are the seed. Brett Heap ruled it on 2026-10-12, "Offer
+#: only exits that work": the pull request these offered as a second exit had
+#: no base, because the refused push was the first into a repository `gh repo
+#: create` had just made without a README, and the seed branch it pushed made
+#: that repository non-empty, so the re-run refused it. The re-run was
+#: refused for the scaffold's own legs too, until "Re-run reuses empty legs"
+#: and "Accept the scaffold's own seed": `--reuse-empty-repo` reuses each of
+#: the three repositories while it has zero commits, and a leg whose one
+#: commit is the seed this scaffold pushes, which is a leg pushed before a
+#: later push was refused (`scaffold-project.py`'s `_reusable_remotes`).
+#: Pushing a seed first is what the hint must not invite: it makes a
+#: repository the re-run refuses.
+#: The PR route is still NAMED, as one that cannot finish, so nobody reaches
+#: for it again. `{tracking}` is the run's tracking branch, the branch the
+#: refused push targeted (#324), and `{repo}` the repository it was refused
+#: at; every caller passes both, after `checked_value` has admitted the
+#: tracking branch, so neither is quoted here. `adopt-project.py` prints its
+#: own, `ADOPT_RULESET_HINT`: a re-run into its legs is `leg-remote-exists`.
+#: A call that leaves a field out fails
+#: `tests/test_ruleset_hint_tracking_branch.py`.
 RULESET_HINT = """
 If the organisation applies a ruleset requiring changes to arrive by pull
 request, a direct push to the default branch is refused BY DESIGN and must not
-be worked around. Two legitimate exits:
+be worked around. ONE exit finishes this scaffold: an operator holding the
+bypass right re-runs it, the same command with --reuse-empty-repo added (after
+`--` through setup.sh) and a new --work-dir or none. That run's own pushes are
+the seed, so push nothing first: it reuses each repository this run left
+empty, and a leg whose one commit is the seed this scaffold pushes, and it
+refuses a repository that holds anything else. A seed branch and a pull
+request cannot finish it: {repo} has no {tracking} for that pull request to
+target.
 
-  (1) have an operator holding the bypass right seed the default branch once,
-      then re-run this scaffold; or
-  (2) push a seed BRANCH and open a pull request:
-          git -C {work} push -u origin {local}:seed/scaffold
-          gh pr create --repo {repo} --base {tracking} --head seed/scaffold \\
-              --title 'Seed the {role} leg' --body 'Scaffolded shape.'
+NOTHING has been rolled back. What already exists is listed above; delete it
+by hand if you want a clean re-run.
+"""
+
+#: `family.py init`'s, for the same reason and with the same two fields
+#: (#462). The holder is the one repository `init` makes, so its refused push
+#: leaves it empty, and `family.py init --reuse-empty-repo` reuses an empty
+#: holder and refuses one with commits. The re-run lands elsewhere: the first
+#: run's holder clone is still where it landed, and `init` refuses a holder
+#: directory that is not empty (`family-target-exists`).
+FAMILY_RULESET_HINT = """
+If the organisation applies a ruleset requiring changes to arrive by pull
+request, a direct push to the default branch is refused BY DESIGN and must not
+be worked around. ONE exit finishes this family: an operator holding the
+bypass right re-runs `family.py init`, the same command with
+--reuse-empty-repo added and a new --into or --work-dir. That run's own push
+is the seed, so push nothing first: it reuses the holder while it is empty,
+and refuses it once it has a commit. A seed branch and a pull request cannot
+finish it: {repo} has no {tracking} for that pull request to target.
 
 NOTHING has been rolled back. What already exists is listed above; delete it
 by hand if you want a clean re-run.
@@ -2725,6 +2755,33 @@ def copy_out(src: Path, dst: Path) -> None:
 #     `check` say what `execute` was always going to say instead of `check`
 #     passing a plan `execute` then refuses. The alphabet is `checked_value`'s
 #     own (`SAFE_ARG_RE`): it is asked here, not copied.
+#
+# LAST, A PATH THE PROJECT MUST READ BACK AS WRITTEN (#225). The assembly
+# root's `project.yaml` holds each leg path on a `path:` line, and the leg's
+# pin, `contracts/<role>-pin.yaml`, on a `submodule_path:` line. The project
+# reads both with its own copy of `repo_shape`'s YAML reader. Written bare
+# there, as the templates wrote them when #225 was found, `null`, `~`,
+# `true`, `False`, `2026` and `1.5` are read as no value, a boolean or a
+# number. Every one of those is in
+# the alphabet above, so `--spec-path 2026` scaffolded three repositories
+# whose first bootstrap then failed `manifest-leg-path: leg 'spec': path is
+# 2026`, and `adopt-project.py execute` said `adoption verified` before the
+# same bootstrap failed. Such a value is refused, with no spelling offered:
+# there is none that names the same directory.
+#
+#   * THE TEMPLATES ARE READ, AND THE READER IS ASKED. The rule finds every
+#     YAML template line that holds a leg path, renders the value into it
+#     with `render`, as the scaffold and `execute` do, and asks the reader
+#     what it gives back. It keeps no copy of the line and no list of the
+#     reader's words: a copy goes stale the day a template quotes the
+#     placeholder (#259), and a list the day the reader learns a word. Where
+#     every such line is quoted, every value `checked_value` admits reads
+#     back, and the rule refuses none, with no edit here.
+#   * `yes`, `0x1F`, `1e3` and `.inf` are text to this reader today (YAML 1.1
+#     or 1.2 would read some of them otherwise), so they are paths here, and
+#     a reader that learned one would refuse it on a bare line with no edit.
+#   * `tests/test_leg_path_yaml_scalars.py` finds the template lines on its
+#     own and holds the rule's verdict to what each line reads back.
 
 #: `D:\work\Thing` or `D:/work/Thing` — a Windows absolute path, in either
 #: spelling. `_spelling_reason` below asks it whether a leg path is a drive
@@ -2757,9 +2814,11 @@ LEG_PATH_REMEDIATION = (
     "names (`.git`, `git~1`, `.gitmodules`, in any case), ends in a dot or a "
     "space, or is a Windows device name (`CON`, `PRN`, `AUX`, `NUL`, "
     "`COM1`-`COM9`, `LPT1`-`LPT9`, with or without an extension); the whole "
-    f"value matches {SAFE_ARG_RE.pattern} and does not begin with `-`; and "
-    "the two legs take different paths, neither inside the other, whatever "
-    "the case."
+    f"value matches {SAFE_ARG_RE.pattern} and does not begin with `-`; the "
+    "project's YAML reader reads it back as the same text from every line "
+    "the project writes it into (a bare line reads `null`, `~`, `true`, "
+    "`False`, `2026` and `1.5` as something else); and the two legs take "
+    "different paths, neither inside the other, whatever the case."
 )
 
 
@@ -2816,6 +2875,117 @@ def _unmountable_reason(text: str) -> str | None:
     return None
 
 
+#: The templates the rule below reads its lines from: the shape's own
+#: `templates/`, which both tools render a project from (`SHAPE_ROOT /
+#: "templates"`, and this file is `SHAPE_ROOT/scripts/`). A test points it
+#: at a copy whose lines it has quoted or left bare.
+LEG_PATH_TEMPLATES = Path(__file__).resolve().parents[1] / "templates"
+
+#: The placeholders a leg path is rendered into.
+LEG_PATH_PLACEHOLDERS = ("SPEC_PATH", "CODE_PATH")
+
+#: What `_leg_path_lines` found under each templates directory it was asked.
+_LEG_PATH_LINES: dict[Path, tuple[tuple[str, str, str], ...]] = {}
+
+
+def _leg_path_lines(templates: Path) -> tuple[tuple[str, str, str], ...]:
+    """Every line of every YAML template under `templates` that holds a leg
+    path, as `(tree, file, line)`: `tree` is the template tree
+    (`assembly-root`) and `file` the path the line is written to inside it
+    (`contracts/spec-pin.yaml`).
+
+    FOUND, NOT LISTED, the way `tests/test_leg_path_yaml_scalars.py` finds
+    them, so a template that writes a leg path another way, or in another
+    file, changes what this rule asks with no edit here. A Markdown
+    template's `{{SPEC_PATH}}/` is prose no YAML reader reads, so only `.yaml`
+    and `.yml` files are asked. The shallowest file comes first, so a
+    sentence names `project.yaml` before the pins. Read once per process.
+    """
+    if templates in _LEG_PATH_LINES:
+        return _LEG_PATH_LINES[templates]
+    found = []
+    for path in sorted(templates.rglob("*"),
+                       key=lambda p: (len(p.parts), p.as_posix())):
+        if path.suffix not in (".yaml", ".yml") or not path.is_file():
+            continue
+        tree, _, file = path.relative_to(templates).as_posix().partition("/")
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if any("{{" + key + "}}" in line for key in LEG_PATH_PLACEHOLDERS):
+                found.append((tree, file, line))
+    _LEG_PATH_LINES[templates] = tuple(found)
+    return _LEG_PATH_LINES[templates]
+
+
+def _read_back(tree: str, file: str, rendered: str):
+    """What the project's reader gives back from one rendered `key: value`
+    line, read on its own: its scalar reads the same there as inside its
+    block."""
+    read = parse_yaml(rendered + "\n")
+    if not (isinstance(read, dict) and len(read) == 1):
+        raise Refusal("template-leg-path-line",
+                      f"templates/{tree}/{file}: `{rendered}` is not one "
+                      "`key: value` line, which is the one form the leg-path "
+                      "rule reads a leg path back from",
+                      "Remediation: this is a defect in the shape's "
+                      "templates, not in your invocation.")
+    return next(iter(read.values()))
+
+
+def _listed(names: list[str]) -> str:
+    """`a`, `a and b`, `a, b and c`."""
+    return (names[0] if len(names) == 1
+            else ", ".join(names[:-1]) + " and " + names[-1])
+
+
+def _read_as(value) -> str:
+    """What the YAML reader made of a value, in words: `the number 1.5`."""
+    if value is None:
+        return "no value at all"
+    if isinstance(value, bool):
+        return f"the boolean {str(value).lower()}"
+    if isinstance(value, (int, float)):
+        return f"the number {value!r}"
+    return NOT_TEXT_KINDS.get(type(value), repr(value))
+
+
+def _misread_reason(text: str) -> str | None:
+    """Why the project would read a leg path written as `text` back as
+    something else, or None when every line it is written into reads back
+    `text`.
+
+    Each template line that holds a leg path is RENDERED with `text` by
+    `render`, under its file's name, as the scaffold and `execute` render it,
+    and read back by the reader the project ships (`parse_yaml`, which every
+    assembly root carries a copy of). A bare line reads `2026` as a number; a
+    quoted one (#259) reads it back. The sentence quotes each line that
+    misreads, as rendered. Asked after `checked_value`, whose alphabet holds
+    no space, quote, backslash, bracket, brace, `#`, `:`, `&`, `*` or `!`, so
+    each line parses, bare or quoted, and a bare value is a plain scalar.
+    """
+    values = dict.fromkeys(LEG_PATH_PLACEHOLDERS, text)
+    misread: dict[tuple[str, str], list[str]] = {}
+    reads = []
+    for tree, file, line in _leg_path_lines(LEG_PATH_TEMPLATES):
+        rendered = render(line, values, file).strip()
+        read = _read_back(tree, file, rendered)
+        if read != text:
+            files = misread.setdefault((tree, rendered), [])
+            if f"`{file}`" not in files:
+                files.append(f"`{file}`")
+            reads.append(read)
+    if not misread:
+        return None
+    trees: dict[str, list[str]] = {}
+    for (tree, rendered), files in misread.items():
+        trees.setdefault(tree, []).append(
+            f"as `{rendered}` in {_listed(files)}")
+    where = "; ".join(
+        f"the {tree.replace('-', ' ')} writes a leg path {' and '.join(lines)}"
+        for tree, lines in trees.items())
+    return (f"{where}, and the project's own YAML reader reads that as "
+            f"{_read_as(reads[0])}, so its first bootstrap would fail")
+
+
 def _canonical_spelling(text: str) -> str | None:
     """The canonical spelling of `text`, where one exists, else None.
 
@@ -2828,7 +2998,8 @@ def _canonical_spelling(text: str) -> str | None:
     path and one with a `..` have no such spelling -- they name another place,
     and picking it for the person is the rewrite this refuses -- and neither
     has a result this check, or `checked_value`, would itself refuse
-    (`./.git` is not answered `.git`, nor `-x/` `-x`).
+    (`./.git` is not answered `.git`, nor `-x/` `-x`, nor `2026/` `2026`
+    while a template line would read `2026` back as a number).
     """
     if text.startswith(("/", "\\")):
         return None
@@ -2840,9 +3011,10 @@ def _canonical_spelling(text: str) -> str | None:
     if _unmountable_reason(candidate) is not None:
         return None
     try:
-        return checked_value("leg path", candidate)
+        checked = checked_value("leg path", candidate)
     except Refusal:
         return None
+    return None if _misread_reason(checked) else checked
 
 
 def leg_path_problem(what: str, value) -> str | None:
@@ -2852,7 +3024,8 @@ def leg_path_problem(what: str, value) -> str | None:
 
     Asked in this order: the SPELLING (canonical or not), then the NAMES Git
     and Windows keep, then the alphabet `checked_value` allows on a command
-    line, so that `plan`, `check` and `execute` refuse the same values.
+    line, then whether the project reads it back as the text it is (#225),
+    so that `plan`, `check` and `execute` refuse the same values.
 
     `what` is how the caller names the value -- `--spec-path`, or
     `legs.spec_path` for one read out of a plan -- so the sentence points at
@@ -2875,6 +3048,10 @@ def leg_path_problem(what: str, value) -> str | None:
         checked_value(what, value)
     except Refusal as exc:
         return f"{exc.detail}."
+    misread = _misread_reason(value)
+    if misread:
+        return (f"{what} is {value!r}, which the project would not read back "
+                f"as text: {misread}.")
     return None
 
 
