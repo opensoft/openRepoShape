@@ -1013,7 +1013,10 @@ def _create_holder_worktree(args, work: Path, values: dict, shape_commit: str,
     except CommandFailed as exc:
         print(exc.loudly("pushing the family holder"), file=sys.stderr)
         print(RULESET_HINT.format(work=work, repo=repository,
-                                  role="family"), file=sys.stderr)
+                                  role="family",
+                                  local=args.tracking_branch,
+                                  tracking=args.tracking_branch),
+              file=sys.stderr)
         return 2
     return None
 
@@ -3642,6 +3645,72 @@ def _print_trailers(trailers: list[str]) -> None:
         print("trailers     none")
 
 
+def _checked_to_names_a_commit(member: Path, path: str, row: dict,
+                               commit: str) -> None:
+    """`member-to-not-a-commit` for a `--to` that is 40 hex and names, in the
+    member's objects, something that is not a commit: an annotated tag, a
+    tree or a blob (#405). `bump` and `bump --dry-run` both ask it, after
+    the fetch and before the checkout, so the two runs make one refusal and
+    the holder is left byte for byte as it was.
+
+    AN ANNOTATED TAG'S OWN ID IS 40 HEX, and it is what `git rev-parse v2`
+    prints for a release tag. `COMMIT_RE` passed it, the checkout PEELED it
+    to the commit it names, which the gitlink then recorded, and the row
+    recorded the tag's id as typed: `bump` exited 0 with a commit the
+    holder's own `validate-family.py` refused as `member-gitlink-mismatch`,
+    and the dry run printed the two ids side by side on its `commit` and
+    `gitlink` lines.
+
+    REFUSED, NOT PEELED, as `bump-leg.py` refuses the same `--to` for a leg:
+    its `validate-pins.py` goes red on the tag's id in the pin and the bump
+    is rolled back, exit 2. The pin is the id the person typed and the
+    `old -> new` line is what they read, so the refusal names the commit the
+    tag peels to (through a tag of a tag too, `^{}`) and the re-run is
+    theirs. A tree's or a blob's id, or a tag of one, is named for what it
+    is, as `add --at` names one (`member-at-unknown`); before, both runs
+    failed on it in git's words, exit 2, from the dry run's resolve or the
+    real run's checkout.
+
+    AN ID THE MEMBER DOES NOT HOLD is not asked here. The dry run's resolve
+    and the real run's checkout fail on it in git's words, exit 2, as they
+    always have.
+    """
+    try:
+        kind = run(["git", "cat-file", "-t", commit], cwd=member)
+    except CommandFailed:
+        return
+    if kind == "commit":
+        return
+    try:
+        peeled = run(["git", "rev-parse", "-q", "--verify", f"{commit}^{{}}"],
+                     cwd=member).lower()
+        names = run(["git", "cat-file", "-t", peeled], cwd=member)
+    except CommandFailed:
+        peeled, names = "", ""
+    repository = row.get("repository")
+    if names == "commit":
+        raise Refusal(
+            "member-to-not-a-commit",
+            f"--to {commit} is an annotated tag in {repository}, not a "
+            f"commit; the commit it names is {peeled}",
+            f"Remediation: pass that commit, `--to {peeled}`. A pin is a "
+            "commit or it is nothing: checking the tag out would put "
+            f"{peeled[:12]} in the gitlink at {path} and the tag's own id in "
+            "the row, which `validate-family.py` refuses as "
+            "`member-gitlink-mismatch`.")
+    if kind != "tag":
+        what = f"names a {kind}"
+    elif names in ("tree", "blob"):
+        what = f"is an annotated tag of a {names}"
+    else:
+        what = "is an annotated tag"
+    raise Refusal(
+        "member-to-not-a-commit",
+        f"--to {commit} {what} in {repository}, not a commit",
+        "Remediation: pass the commit itself — `git log --format=%H` in "
+        f"{path} lists them. A pin is a commit or it is nothing.")
+
+
 def _bump_dry_run(family: Family, row: dict, path: str, commit: str,
                   trailers: list[str], fetched: bool) -> int:
     """`bump --dry-run`, entered after the member is fetched (or the fetch
@@ -3881,6 +3950,10 @@ def cmd_bump(args) -> int:
         fetched = False
         print(f"  note: could not fetch {path} from its origin; the commit "
               "must already be in its object store", file=sys.stderr)
+    # WHAT `--to` NAMES IS ASKED OF THE FETCHED OBJECTS (#405), before the
+    # dry run leaves and before the checkout: a tag, a tree or a blob is
+    # refused by both runs alike, with nothing in the holder moved.
+    _checked_to_names_a_commit(member, path, row, commit)
     if args.dry_run:
         return _bump_dry_run(family, row, path, commit, args.trailer,
                              fetched)
