@@ -30,7 +30,10 @@ from conftest import (FILE_PROTOCOL, ORG, REPO, WINDOWS_SKIP, git,
 #: The trailer helpers and the two lines a lane's run lands, imported from
 #: the file that owns those rules rather than retyped — see
 #: `tests/test_commit_trailers.py`.
-from test_commit_trailers import LANE, TRAILERS, message_of, trailers_of
+from test_commit_trailers import (
+    ENVIRONMENTS, LANE, NON_ASCII_BYTES, POSIX_ONLY, TRAILERS, argv_of,
+    environment, message_bytes_of, message_of, trailer_bytes_of, trailers_of,
+)
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import Refusal, file_sha256, load_yaml, tree_digest  # noqa: E402
@@ -168,10 +171,10 @@ def check(root, upstream_and_project, *extra):
                       *extra)
 
 
-def apply(root, upstream_and_project, *extra):
+def apply(root, upstream_and_project, *extra, env=None):
     return run_script(UPDATE, "apply", "--root", str(root), "--yes",
                       "--upstream", str(upstream_and_project["upstream"]),
-                      "--at", upstream_and_project["b"], *extra)
+                      "--at", upstream_and_project["b"], *extra, env=env)
 
 
 #: Every verdict `check` can print, in the column it prints them in.
@@ -1183,6 +1186,78 @@ def test_no_trailer_leaves_the_commit_carrying_none(root,
         "the copies are not hand-edited and the digests are recomputed, not "
         "adjusted.\n")
     assert "Lane:" not in message_of(root)
+
+
+@ENVIRONMENTS
+def test_a_non_ascii_trailer_lands_as_typed_under_any_locale_and_git(
+        root, upstream_and_project, tmp_path, git_kind, locale):
+    """#322: `--trailer "Co-Authored-By: José ..."` lands as the bytes typed.
+
+    THE CELL THAT WAS BROKEN is `old-git-c-locale`: a git without `commit
+    --trailer` takes the trailer in the stdin message, a `C` locale reads the
+    argument as lone surrogates, and the helper's `errors="replace"` wrote
+    each as `?` (and `--trailer` itself was refused at the command line as
+    "not a trailer"). The stand-in git REFUSES the option, so a run that
+    passed it would fail rather than pass; the other three cells are the
+    ones that already worked and now share the one rule."""
+    env = environment(tmp_path, git_kind, locale)
+    result = apply(root, upstream_and_project, "--branch",
+                   "shape/update-utf8", "--trailer", argv_of(NON_ASCII_BYTES),
+                   "--trailer", TRAILERS[0], env=env)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert message_bytes_of(root).endswith(
+        b"\n\n" + NON_ASCII_BYTES + b"\n" + TRAILERS[0].encode() + b"\n")
+    assert trailer_bytes_of(root) == [NON_ASCII_BYTES,
+                                      TRAILERS[0].encode()], (
+        "and git reads them back as the trailer block, byte for byte")
+
+
+@POSIX_ONLY
+@pytest.mark.parametrize("locale", ["c", "utf8"])
+def test_a_trailer_that_is_not_utf8_is_refused_by_name_and_nothing_is_written(
+        root, upstream_and_project, tmp_path, locale):
+    """A Latin-1 `é` is a byte no character stands for. The commit would have
+    carried it as `?` or as a byte that is not UTF-8, so the run is refused
+    at the command line, naming the trailer by its bytes, before the root is
+    read: no branch, no copy, no pin."""
+    typed = b"Co-Authored-By: Jos\xe9 <jose@example.invalid>"
+    result = apply(root, upstream_and_project, "--branch", "shape/update-bad",
+                   "--trailer", argv_of(typed),
+                   env=environment(tmp_path, "old", locale))
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "usage:" in result.stderr
+    assert "--trailer" in result.stderr
+    assert "not UTF-8 text" in result.stderr
+    assert repr(typed) in result.stderr
+    assert load_yaml(root / "contracts" / "shape-pin.yaml")["commit"].lower() \
+        == upstream_and_project["a"], "argparse refused before anything ran"
+    assert git("branch", "--list", "shape/update-bad", cwd=root).stdout == ""
+    assert git("status", "--porcelain", cwd=root).stdout == ""
+
+
+@POSIX_ONLY
+def test_commit_on_branch_refuses_a_trailer_that_is_no_text(
+        update_shape, root):
+    """A caller that reaches the commit without the command line's own check
+    gets the same refusal. It is raised AFTER the branch exists, so the
+    ledger `apply` runs under is what puts the branch back: no commit, and
+    the branch HEAD started on is checked out again."""
+    start = git("rev-parse", "--abbrev-ref", "HEAD", cwd=root).stdout.strip()
+    head = git("rev-parse", "HEAD", cwd=root).stdout.strip()
+    ledger = update_shape.Rollback(root)
+    with pytest.raises(Refusal) as caught:
+        update_shape.commit_on_branch(
+            root, "shape/update-bad", ["project.yaml"], "a" * 40,
+            SimpleNamespace(repository="opensoft/openRepoShape"), 1,
+            update_shape.PROJECT_KIND, [],
+            [argv_of(b"Co-Authored-By: Jos\xe9")], ledger=ledger)
+
+    assert caught.value.code == "trailer-not-utf8"
+    assert ledger.undo() is not None, "the branch it made was undone"
+    assert git("rev-parse", "HEAD", cwd=root).stdout.strip() == head
+    assert git("rev-parse", "--abbrev-ref", "HEAD",
+               cwd=root).stdout.strip() == start
+    assert git("branch", "--list", "shape/update-bad", cwd=root).stdout == ""
 
 
 def test_a_trailer_without_branch_is_refused_like_push_and_pr(
