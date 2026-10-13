@@ -217,8 +217,7 @@ under WSL2 ships both, so there `gh` is the only install; step 4 opens with a
 preflight that names anything missing and where to get it. `git` itself comes
 from `xcode-select --install` on macOS, `sudo apt-get install -y git` on Debian
 and Ubuntu, `sudo dnf install -y git` on Fedora and `winget install --id Git.Git
--e` on Windows — the same commands `setup-project.py --preflight` offers to run
-for you.
+-e` on Windows — the same commands `setup-project.py --preflight` offers to run.
 
 **2. Log in.** `gh auth login`, as the account that will own the act — a
 member of the organisation who can create repositories there. Accept the
@@ -316,16 +315,16 @@ subcommand's in one file, generated from the tools themselves.
 Without installing anything — no fork, no manual clone — one command:
 
 ```sh
-bash <(curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup.sh) \
-    --org <your-org> --project Atlas
+curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup.sh \
+    | bash -s -- --org <your-org> --project Atlas
 ```
 
 An organisation whose policy blocks raw GitHub downloads can fetch the same
 bytes through the API instead:
 
 ```sh
-bash <(gh api repos/opensoft/openRepoShape/contents/setup.sh --jq .content \
-    | base64 --decode) --org <your-org> --project Atlas
+gh api repos/opensoft/openRepoShape/contents/setup.sh --jq .content \
+    | base64 --decode | bash -s -- --org <your-org> --project Atlas
 ```
 
 Shorter still, once: install the `openRepoShape` command and this becomes
@@ -414,9 +413,9 @@ curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoTools/main/openRep
 Or type the long line, on a machine you would rather install nothing on:
 
 ```sh
-bash <(curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup.sh) \
-    --org Northwind --project Atlas \
-    --visibility private --elected-by 'Dana Okafor'
+curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup.sh \
+    | bash -s -- --org Northwind --project Atlas \
+      --visibility private --elected-by 'Dana Okafor'
 ```
 
 #### Run
@@ -680,9 +679,8 @@ family deliberately does not hold. The chain is RECORDED, never inferred — the
 descendant's own `naming.referent_chain: [openXdox, openDox]` names the pin it
 holds first and the referent its name claims last, and
 `validate-repository-naming.py --pins openXdox --referent-chain
-openXdox,openDox` asks the same question for one name. A DIRECT PIN STAYS
-SUFFICIENT: this is an addition, and `MedxChart` answers exactly as it did on
-2026-09-02.
+openXdox,openDox` asks the same of one name. A DIRECT PIN STAYS SUFFICIENT: this
+is an addition, and `MedxChart` answers exactly as it did on 2026-09-02.
 
 Each link past the first is a declaration in ANOTHER tree — `openXdox` declaring
 `neutral_product_pins: [openDox]` — and it is read where that tree happens to be
@@ -972,7 +970,7 @@ Moving those three facts by hand is how they come apart, so one command moves
 them together, run from a checkout of this standard:
 
 ```sh
-python3 scripts/bump-leg.py --root <path> --leg spec --to <40 hex>   # --dry-run prints the move and writes nothing
+python3 scripts/bump-leg.py --root <path> --leg spec --to <40 hex>   # --dry-run prints the move; it fetches into the leg and writes nothing else
 ```
 
 It fetches the commit into the leg, checks the leg out AT it, recomputes the
@@ -988,11 +986,12 @@ remote contains (including one committed in the mount and never pushed — a pin
 the rest of the world cannot fetch is a root it cannot bootstrap), a dirty root,
 an untracked or ignored workflow file it would rewrite, a root standing on its
 own tracking branch (the next step is a pull request, never a push to the
-default branch: `git switch -c <branch>` first; `--dry-run` writes nothing, so
-it runs there and prints that command), and a validator that goes red — rolling
-the pin, the workflow files, the leg's checkout and the index back first, so a
-refusal leaves the tree as it was found. The leg is left DETACHED at the new
-commit; `make bootstrap` re-places it on its tracking branch AT the new pin.
+default branch: `git switch -c <branch>` first; `--dry-run` fetches into the leg
+and writes nothing else, so it runs there and prints that command), and a
+validator that goes red — rolling the pin, the workflow files, the leg's
+checkout and the index back first, so a refusal leaves the tree as it was found.
+The leg is left DETACHED at the new commit; `make bootstrap` re-places it on its
+tracking branch AT the new pin.
 
 ## Bootstrap is COPIED into the project, not fetched
 
@@ -1177,11 +1176,11 @@ adoption's own policy — `contracts/path-classification.yaml`, walked with
 `adopt-project.py`'s own `walk()`, so there is no second copy of that
 classification to drift — over every tracked path of every mounted leg, and
 names the paths the policy would have put somewhere else, each with the rule id
-that judged it, and a submodule in the other leg than its `submodules:`
-record's. What belongs to **every** repository is never judged: the four files
-`templates/spec-root/` and `templates/code-root/` themselves ship (`README.md`,
-`AGENTS.md`, `CLAUDE.md`, `.gitignore`), read from those templates at run time
-so the scaffold's own output can never be a finding, plus `LICENSE`,
+that judged it, and a submodule in a leg other than the one its `submodules:`
+record names. What belongs to **every** repository is never judged: the four
+files `templates/spec-root/` and `templates/code-root/` themselves ship
+(`README.md`, `AGENTS.md`, `CLAUDE.md`, `.gitignore`), read from those templates
+at run time so the scaffold's own output can never be a finding, plus `LICENSE`,
 `.gitattributes`, `CODEOWNERS`, `.github/**` and the rest of the forge furniture
 — `--json` prints the whole list under `everywhere`, because what a report
 declined to look at belongs in the report. A path the policy will not call
@@ -1277,12 +1276,13 @@ you. With no estate around it either, `park` lists every estate it finds under
 your projects directory and ASKS whether to park them all (with no terminal on
 stdin it refuses and names `--all`); `park --all`, or `-a`, parks them all
 unasked, in name order, continuing past a refusal and skipping a standalone root
-with no Speckit overlay (Brett Heap's RULING of 2026-09-10, superseding #91).
-`resume` has no `--all`, and its bare form still refuses — rebuilding every
-estate on a fresh machine by accident is the opposite risk from failing to park
-the one you meant. `--repo <owner/name>` names the estate by the `origin` of a
-clone you ALREADY have, in any url spelling; it never clones one, because
-`resume` is the command that clones and it clones from the record.
+with no Speckit overlay (Brett Heap's RULINGs of 2026-09-10, the later
+superseding #91's unasked sweep). `resume` has no `--all`, and its bare form
+still refuses — rebuilding every estate on a fresh machine by accident is the
+opposite risk from failing to park the one you meant. `--repo <owner/name>`
+names the estate by the `origin` of a clone you ALREADY have, in any url
+spelling; it never clones one, because `resume` is the command that clones and
+it clones from the record.
 
 **What they leave behind, said out loud.** `park` finishes by printing what
 did NOT park and why none of it is park's to touch: commits on a `main` that

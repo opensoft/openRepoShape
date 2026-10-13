@@ -55,9 +55,9 @@ visibility they want, ask — do not assume. `elected_by` records whose act it w
 ## 2. Run the one-liner, without `--yes`
 
 ```sh
-bash <(curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup.sh) \
-    --org <org> --project <Project> \
-    --visibility <private|public|internal> --elected-by '<Name>'
+curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup.sh \
+    | bash -s -- --org <org> --project <Project> \
+      --visibility <private|public|internal> --elected-by '<Name>'
 ```
 
 `openRepoShape <Project> --org <org> --visibility <…> --elected-by '<Name>'`
@@ -230,13 +230,12 @@ command) run `./shape-doctor.py --root <path>` from a checkout.
    rendered `AGENTS.md`. It never moves the verdict. Report it; propose a
    change only if the human asks.
 3. **A FINDING names its fix, and you run THAT.** Every one carries the exact
-   next command, where one can be named — `update-shape.py check …` and the
-   `apply` it leads to, `git submodule update …` (in a holder, its
-   `scripts/bootstrap.py`), the project's own validator. Run the one the row
-   names. Do not improvise a repair, and never edit a pinned file, a digest or a
-   manifest to make a row go green: that is the hand-edited pin this standard
-   spends a section refusing. Each of those commands keeps its own refusals, and
-   they all still apply.
+   next command, where one can be named — `update-shape.py check …` and its
+   `apply`, `git submodule update …` (in a holder, its `scripts/bootstrap.py`),
+   the project's own validator. Run the one the row names. Do not improvise a
+   repair, and never edit a pinned file, a digest or a manifest to make a row go
+   green: that is the hand-edited pin this standard spends a section refusing.
+   Each of those commands keeps its own refusals, and they all still apply.
 4. **`placement` says what is in the wrong leg, and you never move a file
    to answer it.** It runs the adoption's own path policy over each mounted
    leg and names the paths it would have put elsewhere — code in the spec
@@ -284,11 +283,10 @@ git -C <path> push -u origin shape/update-<sha>   # then open a pull request
 
 1. **`check` first, always.** It writes nothing and prints one verdict per
    PINNED file: `unchanged`, `upstream-changed`, `locally-modified` (the project
-   edited its own copy) or `both`; also `already-at-target` and
-   `upstream-removed`, `unmapped` and `copy-missing`; `apply` refuses the last
-   three. A file with no row in `contracts/shape-pin.yaml` is not a shape copy
-   and is none of your business — an adopted project merged some of them away on
-   purpose.
+   edited its own copy), `both`, `already-at-target`, `upstream-removed`,
+   `unmapped` or `copy-missing`; `apply` refuses the last three. A file with no
+   row in `contracts/shape-pin.yaml` is not a shape copy and is none of your
+   business — an adopted project merged some of them away on purpose.
 2. **Show the human the verdicts and let them say yes.** Re-pinning records
    which openRepoShape this project is a copy of. Do not pass `--yes` on your
    own initiative.
@@ -391,27 +389,29 @@ python3 scripts/family.py siblings --family-root <path>
 2. **A family pins ASSEMBLY ROOTS, never legs.** `--member <org>/<Project>`,
    never `<Project>-spec`. The tool refuses a leg, and the refusal is
    correct: a leg has no `project.yaml` and belongs to its own root.
-3. **Each of `add`, `bump` and `remove` writes ONE commit** moving the gitlink
-   and the pin together. Land it as a pull request; never suggest a push to the
-   default branch. Do not hand-edit `family.yaml`'s `members:` block — the tool
-   rewrites it wholesale. `bump` takes the same repeatable `--trailer "<Key>:
-   <value>"` as `update-shape.py apply`, for the lines its commit must end with.
+3. **Each of `add`, `bump` and `remove` writes ONE commit** moving the
+   gitlink and the pin together. Land it as a pull request; never suggest a
+   push to the default branch. Do not hand-edit `family.yaml`'s `members:`
+   block — the tool rewrites it wholesale. `bump` takes the same repeatable
+   `--trailer "<Key>: <value>"` as `update-shape.py apply`, for the lines its
+   commit must end with.
 4. **The member must be scaffolded or adopted FIRST.** A family cannot make a
    project out of a repository; it can only pin one that already is.
 5. **`make siblings` in the holder — or `family.py siblings --family-root
-   <path>`, the same file — places the WORKSTATION layout**: each member cloned
-   BESIDE the holder, in the family folder, on its tracking branch, with its own
-   bootstrap run. Two copies of every member is intended: `members/<Project>`
-   inside the holder is pinned and DETACHED, for `bootstrap` and `validate`; the
-   sibling is where the human works. **What it never does, and neither do you:**
-   it MOVES NOTHING — when the parent folder is not named after the family it
-   warns and prints an `mv`, and running that `mv` yourself relocates a checkout
-   out from under a shell, an editor and every agent lane, and breaks any linked
-   worktree (its `.git` file carries an absolute path). It also never touches an
-   existing clone beyond `git fetch`: no checkout, no reset, no pull, because
-   somebody is working in there. A directory that is a clone of a different
-   repository is reported and skipped; the exit is the human's hand, not an
-   overwrite.
+   <path>`, the same file — places the WORKSTATION layout**: each member
+   cloned BESIDE the holder, in the family folder, on its tracking branch,
+   with its own bootstrap run. Two copies of every member is intended:
+   `members/<Project>` inside the holder is pinned and DETACHED, for
+   `bootstrap` and `validate`; the sibling is where the human works.
+   **What it never does, and neither do you:** it MOVES NOTHING — when the
+   parent folder is not named after the family it warns and prints an `mv`,
+   and running that `mv` yourself relocates a checkout out from under a
+   shell, an editor and every agent lane, and breaks any linked worktree
+   (its `.git` file carries an absolute path). It also never touches an
+   existing clone beyond `git fetch`: no checkout, no reset, no pull,
+   because somebody is working in there. A directory that is a clone of a
+   different repository is reported and skipped; the exit is the human's
+   hand, not an overwrite.
 6. `update-shape.py` updates a family root exactly as it updates a project,
    and the same four refusals apply. It mirrors into `family.yaml`. An
    existing holder receives `scripts/siblings.py` that way: `check` reports
