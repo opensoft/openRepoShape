@@ -668,16 +668,19 @@ def test_a_value_the_reader_reads_as_another_kind_is_named_as_read(
         world, old, new):
     """`id: 007` is the number 7 and `elected_on: 20260902` another number:
     what the template would write is `str` of what was read, which the plan
-    never said. The validator refuses what is read, so the finding is its
+    never said. The validator refuses the id as read, so the finding is its
     alone, and names the value by what was read before the text `execute`
     would write (tests/test_adopt_plan_yaml_quoting.py, `NOT_TEXT_INVALID`);
-    #181's misread rule leaves to it every value it refuses (rv181f's G1)."""
+    #181's misread rule leaves to it every value it refuses (rv181f's G1).
+    The date is #294's one finding (`said_of`)."""
     plan = edited(world, old, new)
     result = run_script(ADOPT, "check", "--plan", str(plan))
     (finding,) = [line for line in result.stderr.splitlines()
-                  if line.startswith(FINDING)]
+                  if line.startswith("FINDING ")]
     assert "1 finding(s)" in result.stderr, result.stderr
-    assert ", read out of the plan as the number " in finding, finding
+    assert finding.startswith(said_of(new)[0]), finding
+    if said_of(new)[0] == FINDING:
+        assert ", read out of the plan as the number " in finding, finding
 
 
 # --- a text value the reader misreads: judged once, not twice ---------------
@@ -760,7 +763,11 @@ def test_where_the_validator_judges_it_the_misread_rule_says_nothing(
     validator's before anything exists (rv181f's G1)."""
     plan = adopter.Plan.load(edited(world, old, new))
     assert adopter._misread_findings(plan) == []
-    (finding,), _ = adopter._manifest_findings(plan)
+    findings, _ = adopter._manifest_findings(plan)
+    if said_of(new)[0] != FINDING:
+        assert findings == []
+        findings, _ = adopter._plan_field_findings(plan)
+    (finding,) = findings
     assert named in finding
 
 
@@ -801,7 +808,7 @@ def test_a_text_value_the_reader_misreads_is_one_finding_in_the_list_check_print
     value = new.split(": ", 1)[1].strip('"')
     about = [f for f in findings if value in f]
     assert len(about) == 1, findings
-    assert about[0].startswith(FINDING), findings
+    assert about[0].startswith(said_of(new)[0]), findings
 
 
 # --- a validator that cannot be asked ---------------------------------------

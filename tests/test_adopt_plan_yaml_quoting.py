@@ -367,10 +367,8 @@ MANIFEST_MISREAD_REMEDIATION_START = (
 TRUE_TEXT = '"true"'
 QUOTED_007 = '"007"'
 QUOTED_NULL = '"null"'
-#: How `plan`'s and `check`'s codes for #181's rule end, and the
-#: validator's code for an election date.
+#: How `plan`'s and `check`'s codes for #181's rule end.
 MISREAD_CODE = "manifest-misread"
-ELECTED_ON_CODE = "manifest-elected-on"
 #: The plan key of the assembly's name, which an id nobody set comes from.
 ASSEMBLY_KEY = "legs.assembly"
 #: The election date a plan below is written with.
@@ -463,17 +461,6 @@ VALIDATORS = [
     ("--id", "true", "id", f"{ID_SAID}True; it must match "),
     ("--id", "null", "id", f"{ID_SAID}None; it must match "),
 ]
-#: `(plan key, value, the validator's words)` that only an edited plan can
-#: carry here: `plan` refuses `--elected-on 20260902` as
-#: `election-date-malformed` on every Python since #261, which holds the date
-#: to the validator's own `YYYY-MM-DD`. The loader reads it as a number, and
-#: the validator refuses that (`manifest-elected-on`): its finding alone.
-#: No visibility is here: `plan` takes one from a fixed choice, and none
-#: other is #181's (`_execute_gets_to_write`, `NEVER_WRITTEN`).
-EDITED_ONLY = [
-    (ELECTED_ON_KEY, DATE_DIGITS, f"{ELECTED_ON_CODE}: elected_on is "
-     f"{DATE_DIGITS}, expected an ISO date YYYY-MM-DD"),
-]
 #: #181's, as `plan` is given it, and as a plan carries it.
 PLANNED = [(flag, value, reading) for flag, value, _, reading in REFUSED]
 CARRIED = [(key, value, reading) for _, value, key, reading in REFUSED] \
@@ -482,8 +469,10 @@ CARRIED = [(key, value, reading) for _, value, key, reading in REFUSED] \
 PLANNED_INVALID = [
     (flag, value, said) for flag, value, _, _, said in LEG_PATHS] + [
     (flag, value, said) for flag, value, _, said in VALIDATORS]
-CARRIED_INVALID = [(key, value, said) for _, value, key, said in VALIDATORS] \
-    + EDITED_ONLY
+#: No date is here: an `elected_on:` `election_date` refuses is #294's
+#: finding alone (`LATE_DATES`). No visibility is either: `plan` takes one
+#: from a fixed choice, and none other is #181's (`NEVER_WRITTEN`).
+CARRIED_INVALID = [(key, value, said) for _, value, key, said in VALIDATORS]
 
 
 def ids_of(rows, key: int, value: int) -> list[str]:
@@ -1044,13 +1033,7 @@ def test_execute_refuses_a_date_no_file_can_hold_as_unwritable_not_misread(
 #: #181's: a branch, a pin, a leg path (`check` leaves its codes to
 #: `_leg_findings`), and a date read back as other text that is a date.
 JUDGED_ONCE = [
-    pytest.param(ELECTED_ON_KEY, f'"{DATE_DIGITS}"', INVALID_FINDING,
-                 id="date-text-misread"),
     pytest.param("id", QUOTED_007, INVALID_FINDING, id="id-text-misread"),
-    pytest.param(ELECTED_ON_KEY, DATE_DIGITS, INVALID_FINDING,
-                 id="date-read-as-a-number"),
-    pytest.param(ELECTED_ON_KEY, '"!"', INVALID_FINDING,
-                 id="date-the-reader-refuses"),
     pytest.param(PINS_KEY, '"? x"', INVALID_FINDING,
                  id="pin-the-reader-refuses"),
     pytest.param(TRACKING_KEY, QUOTED_007, MISREAD_FINDING,
@@ -1058,8 +1041,6 @@ JUDGED_ONCE = [
     pytest.param(PINS_KEY, QUOTED_NULL, MISREAD_FINDING, id="pin-text-misread"),
     pytest.param(SPEC_PATH_KEY, QUOTED_NULL, MISREAD_FINDING,
                  id="leg-path-text-misread"),
-    pytest.param(ELECTED_ON_KEY, "'\"2026-09-02\"'", MISREAD_FINDING,
-                 id="date-read-as-another-date"),
     pytest.param(ELECTED_BY_KEY, '" "', INVALID_FINDING, id="elector-blank"),
     pytest.param(VISIBILITY_KEY, "secret", INVALID_FINDING,
                  id="visibility-secret"),
@@ -1105,7 +1086,7 @@ JUDGED_BY_THE_VALIDATOR = [
                  id="its-finding-names-the-value"),
     pytest.param(TRACKING_KEY, QUOTED_007, False, frozenset(),
                  id="a-value-it-does-not-judge"),
-    pytest.param(ELECTED_ON_KEY, '"!"', False, None,
+    pytest.param(PINS_KEY, '"? x"', False, None,
                  id="its-reader-refuses-the-file"),
     pytest.param(SPEC_PATH_KEY, QUOTED_NULL, False, None,
                  id="a-finding-about-no-one-value"),
@@ -1147,12 +1128,49 @@ def test_no_value_passes_a_validator_that_is_not_asked(
     assert adopter._misread_findings(loaded) == []
 
 
+#: How a plan edited by hand spells an `elected_on:` that `election_date`
+#: refuses. #294's rule (`_plan_field_findings`) names it as
+#: `election-date-malformed`, in the plan key's own words, and `execute`
+#: refuses it before any leg exists. `_manifest_values` then renders no
+#: manifest, so the validator is asked nothing and #181 names no value
+#: (`_validator_judged`): the date is one finding. Before the merge of main
+#: 965420b, the first three and the last two were the validator's, and the
+#: fourth, a date in its own quotes, #181's.
+LATE_DATES = [
+    pytest.param(f'"{DATE_DIGITS}"', id="text-misread"),
+    pytest.param(DATE_DIGITS, id="read-as-a-number"),
+    pytest.param('"!"', id="the-reader-refuses"),
+    pytest.param("'\"2026-09-02\"'", id="read-as-another-date"),
+    pytest.param("[a]", id="list"),
+    pytest.param("{a: b}", id="mapping"),
+]
+
+
+@pytest.mark.parametrize("spelled", LATE_DATES)
+def test_check_leaves_a_date_election_date_refuses_to_that_rule(
+        adopter, answered, tmp_path, spelled):
+    """One finding, #294's, and no misread finding or remediation beside it:
+    #181's would say `execute` writes the date and the run would still end
+    `adoption verified`, where `execute` refuses it before any leg exists."""
+    _, text = answered
+    plan = tmp_path / PLAN_FILE
+    carrying(plan, text, ELECTED_ON_KEY, spelled)
+    result = checked(plan)
+    assert result.returncode == 1, result.stdout + result.stderr
+    findings = [line for line in result.stderr.splitlines()
+                if line.startswith("FINDING ")]
+    assert len(findings) == 1, result.stderr
+    assert findings[0].startswith("FINDING election-date-malformed: "), (
+        result.stderr)
+    assert adopter.MANIFEST_MISREAD_REMEDIATION not in result.stderr
+    assert adopter._misread_findings(adopter.Plan.load(plan)) == []
+
 #: `(plan key, as a plan edited by hand spells it, how the validator's
 #: sentence names it, the validator's code)`: read as not text, each is
 #: named by what was read, as #181 names such a value, before the text
 #: `execute` would write for it. The validator refuses what the loader
-#: reads of each, so each is its finding alone (rv181f's G1); the id and
-#: the dates were #181's at 7ac2358.
+#: reads of each, so each is its finding alone (rv181f's G1); the id was
+#: #181's at 7ac2358. A date read as not text is #294's (`LATE_DATES`).
 NOT_TEXT_INVALID = [
     pytest.param(VISIBILITY_KEY, "true", "visibility, read out of the plan "
                  "as the boolean true, is 'True',",
@@ -1162,15 +1180,6 @@ NOT_TEXT_INVALID = [
                  "manifest-visibility", id="visibility-list"),
     pytest.param("id", "007", "id, read out of the plan as the number 7, is "
                  "'7',", "manifest-id", id="id-number"),
-    pytest.param(ELECTED_ON_KEY, DATE_DIGITS, "elected_on, read out of the "
-                 f"plan as the number {DATE_DIGITS}, is '{DATE_DIGITS}',",
-                 ELECTED_ON_CODE, id="date-number"),
-    pytest.param(ELECTED_ON_KEY, "[a]", "elected_on, read out of the plan "
-                 "as a list, is \"['a']\",", ELECTED_ON_CODE,
-                 id="date-list"),
-    pytest.param(ELECTED_ON_KEY, "{a: b}", "elected_on, read out of the "
-                 "plan as a mapping, is \"{'a': 'b'}\",",
-                 ELECTED_ON_CODE, id="date-mapping"),
 ]
 
 
