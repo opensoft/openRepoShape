@@ -34,6 +34,9 @@ WHAT THIS MODULE OWNS
   - `spelled` and `escape_unencodable_stdout` — how both roots'
     `bootstrap.py` print a person's text: what a terminal must not be handed
     raw is escaped, and a stdout that cannot encode it never raises (#391).
+  - `shell_quoted` and `shell_line` — how `scripts/family.py` and a holder's
+    `scripts/siblings.py` spell a path in a command a person pastes, so that
+    it reaches the command as ONE argument in `sh` or PowerShell (#486).
 
 This file is COPIED into a scaffolded assembly root by `scaffold-project.py`
 and its sha256 is recorded in that project's `contracts/shape-pin.yaml`, so an
@@ -2940,3 +2943,79 @@ def spelled(value: object) -> str:
             or unicodedata.category(char) in ESCAPED_CATEGORIES)
         else char
         for char in str(value))
+
+
+# ---------------------------------------------------------------------------
+# How a command a person pastes spells a path (#486)
+# ---------------------------------------------------------------------------
+#
+# `scripts/family.py` and a family holder's `scripts/siblings.py` print
+# commands for a person to paste, and printed every path in them bare. A
+# family folder whose path holds a space is ordinary ("My Projects" on macOS,
+# a Windows profile directory), and under a holder at `.../my work/Sonata/
+# Sonata` the `rm -rf` of a cached object store split into `rm -rf .../my`,
+# an absolute directory that is NOT the store, and a second argument relative
+# to wherever the person stood. `siblings.py` is a copy every holder carries,
+# and this file is the one library a holder carries beside it, so the quoting
+# both use is written here, once.
+
+#: A word `sh` reads as itself, needing no quotes: letters, digits and the
+#: punctuation a path, a flag, a commit or a branch name is spelled with. `~`
+#: is absent, because a leading one is expanded, and so is every character
+#: `sh` reads as syntax. `shape-doctor.py`'s `UNQUOTED_POSIX`, the same set.
+SHELL_BARE_POSIX = re.compile(r"[A-Za-z0-9_./:@%+=,-]+")
+#: PowerShell's, and NOT the same set: it gains the backslash a Windows path
+#: is spelled with and loses `,`, PowerShell's list separator, and `@`, which
+#: leading is splatting. `shape-doctor.py`'s `UNQUOTED_NT`, the same set.
+SHELL_BARE_NT = re.compile(r"[A-Za-z0-9_./:%+=\\-]+")
+#: What PowerShell takes for a single quote: the apostrophe and the four
+#: typographic single quotes, which a folder name on macOS or Windows can
+#: hold. Inside a verbatim string each is written by doubling it.
+POWERSHELL_SINGLE_QUOTES = frozenset("'‘’‚‛")
+
+
+def shell_quoted(value: object, platform: str | None = None) -> str:
+    """`value` as ONE word of a command a person pastes into the shell of
+    `platform` (`os.name` when None): bare where that shell reads every
+    character of it as itself, else whole, in single quotes (#486).
+
+    THE DOCTOR'S RULE, `shape-doctor.py`'s `quote_arg`, which has quoted
+    every path its NEXT lines print since #101/#102: `sh` and PowerShell are
+    two dialects, and each reads the other's escape as a different value
+    with no error to say so. `sh` closes the quotation, escapes the
+    apostrophe and reopens it (`'O'\\''Brien'`), and `shlex.split` hands
+    that back as the value that went in; PowerShell doubles it inside a
+    verbatim string (`'O''Brien'`), where `\\` is an ordinary character.
+    What needs no quoting is left alone, so an ordinary path prints as it
+    always did. `platform` lets a test ask for either dialect on any host.
+
+    ONE DIFFERENCE FROM THE DOCTOR, ON PURPOSE. Its report is pure ASCII, so
+    `quote_arg` flattens a value to ASCII before it quotes it, and a path
+    holding `é` is printed as some other path. A command that deletes or
+    moves a directory has to name THAT directory, so nothing here is
+    flattened. The typographic single quotes are the price: PowerShell reads
+    each of them as an apostrophe, so each is doubled too. On a value made
+    of ASCII the two functions give the same answer, which
+    `tests/test_family_printed_quoting.py` holds them to, but one:
+
+    A WORD THAT BEGINS WITH `=` IS QUOTED, in both dialects. zsh, the login
+    shell macOS ships, expands a bare `=word` to the path of the command
+    `word` (its EQUALS option, on by default), so `=ls` reaches the command
+    as `/bin/ls` and `=x` as an error. `=` anywhere else is itself to every
+    shell, and quoting a leading one costs PowerShell nothing. The doctor's
+    `quote_arg` still leaves it bare: a known gap, named where #486 lands.
+    """
+    text = str(value)
+    windows = (os.name if platform is None else platform) == "nt"
+    bare = SHELL_BARE_NT if windows else SHELL_BARE_POSIX
+    if not text.startswith("=") and bare.fullmatch(text):
+        return text
+    if windows:
+        return "'" + "".join(char * 2 if char in POWERSHELL_SINGLE_QUOTES
+                             else char for char in text) + "'"
+    return "'" + text.replace("'", "'\\''") + "'"
+
+
+def shell_line(words, platform: str | None = None) -> str:
+    """`words` as one command line, each spelled by `shell_quoted` (#486)."""
+    return " ".join(shell_quoted(word, platform) for word in words)

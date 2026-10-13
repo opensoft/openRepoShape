@@ -55,7 +55,11 @@ subcommand runs that file rather than a second copy of its logic.
 EXIT CODES: 0 done, or a `--dry-run` printed what it would do · 1 nothing to
 do · 2 a refusal, and a refusal made before the first write is the same
 refusal under `--dry-run`. Every subcommand takes `--dry-run`: `init`, `add`,
-`bump`, `remove` and `siblings` (#326).
+`bump`, `remove` and `siblings` (#326). ONE EXCEPTION, THE BRANCH (#487): a
+real `add`, `bump` or `remove` refuses to commit onto the holder's tracking
+branch, or onto no branch at all, as `bump-leg.py` does for a leg; a dry run
+commits nothing, so it runs on any branch and says where the real run's commit
+would land, or that it would refuse there and the command that makes a branch.
 `siblings` exits with the template script's own code, unchanged. A `bump` whose
 commit would record nothing — the member is already pinned at `--to`, in the
 gitlink and in `family.yaml` alike — is `nothing`: it says `nothing to do`, as
@@ -149,6 +153,9 @@ from repo_shape import YamlError, parse_yaml  # noqa: E402
 from shape_materialize import (  # noqa: E402
     FAMILY_TEMPLATED, PLACEHOLDER_RE, render,
 )
+# How every command this prints for a person to paste spells its paths
+# (#486), the quoting the holder's `scripts/siblings.py` uses too.
+from repo_shape import shell_line, shell_quoted  # noqa: E402
 
 NAMING_POLICY = SHAPE_ROOT / "contracts" / "repository-naming.yaml"
 MANIFEST = "family.yaml"
@@ -171,6 +178,11 @@ GITMODULES_UNREADABLE = (
     "submodules can be cloned from it as it stands. Mend the file by hand "
     f"(`git config -f {GITMODULES} --list` says where it breaks), then run "
     "this again.")
+
+#: What `git symbolic-ref HEAD` prints before a branch's name: the one
+#: spelling `_holder_branch` and `_member_head` strip to read a HEAD back as
+#: the branch it is on, named once so the two cannot differ.
+HEADS_PREFIX = "refs/heads/"
 
 #: `<org>/<Project>`, the only spelling `--member` accepts. A bare name would
 #: have to guess an owner, and a family whose members are in another
@@ -611,6 +623,117 @@ def _read_member_project(path: Path, project: str, repository: str,
     return project_id
 
 
+# ---------------------------------------------------------------------------
+# The branch an act commits on (#487)
+# ---------------------------------------------------------------------------
+#
+# AGENTS.md says each of `add`, `bump` and `remove` writes ONE commit, to land
+# as a pull request, never as a push to the default branch. Nothing made the
+# branch that pull request needs: after `init` the holder stands on its
+# tracking branch, and all three committed straight onto it, while `add`
+# printed `git -C <holder> push -u origin <branch>`, a placeholder no
+# repository has (`src refspec ... does not match any`), and `bump` and
+# `remove` printed no NEXT at all. `bump-leg.py` refuses exactly this for a
+# leg (`bump-leg-on-tracking-branch`). So the real run of each refuses the
+# tracking branch and a HEAD on no branch, before it reads the member or
+# writes anything, with the `git switch -c` that makes a branch; and each
+# act that commits ends with ONE pasteable line that pushes the branch it
+# committed on.
+
+
+def _holder_branch(root: Path) -> str | None:
+    """The branch the holder's HEAD is on, or None: detached, or a HEAD
+    that names something other than a branch."""
+    try:
+        ref = _git_bytes(["symbolic-ref", "-q", "HEAD"], root).decode(
+            "utf-8", "surrogateescape").strip()
+    except CommandFailed:
+        return None
+    return ref[len(HEADS_PREFIX):] if ref.startswith(HEADS_PREFIX) else None
+
+
+#: A branch-name component the suggestion may use as it stands: dot-separated
+#: words of lowercase letters, digits, `_` and `-`, which no git rule refuses
+#: but a trailing `.lock`, which is checked beside it.
+BRANCH_WORD_RE = re.compile(r"[a-z0-9][a-z0-9_-]*(?:\.[a-z0-9_-]+)*")
+
+
+def _suggested_branch(verb: str, name: str, commit: str | None = None) -> str:
+    """The branch a refusal suggests for one act (#487): `family/<verb>-
+    <member>`, with the commit's first twelve for `bump`, as `bump-leg.py`
+    suggests `bump/<leg>-<sha12>`. The member is its row's `id:` (`bump`,
+    `remove`), or its name lowercased (`add`, which has not read the member
+    yet); one that is not a plain branch word is said as `member`."""
+    word = name.lower()
+    if not BRANCH_WORD_RE.fullmatch(word) or word.endswith(".lock"):
+        word = "member"
+    return f"family/{verb}-{word}" + (f"-{commit[:12]}" if commit else "")
+
+
+def _switch_command(root: Path, branch: str) -> str:
+    """`git -C <holder> switch -c <branch>`, every word spelled by
+    `shell_quoted` for the reader's shell (#486)."""
+    return shell_line(["git", "-C", root, "switch", "-c", branch])
+
+
+def _checked_branch(family: "Family", verb: str, suggested: str) -> str:
+    """The branch `verb`'s ONE commit lands on: the one the holder stands
+    on, refused when that is the holder's tracking branch or there is none
+    (#487). Asked by the real run, after the refusals about the arguments
+    and the holder and before the member is read or anything is written;
+    `--dry-run` asks `_branch_said` instead."""
+    branch = _holder_branch(family.root)
+    if branch is not None and branch != family.tracking():
+        return branch
+    remedy = ("Remediation: these organisations are pull-request only, so "
+              "make a branch for the change and run the same command "
+              f"again:\n    {_switch_command(family.root, suggested)}\n"
+              "then push that branch and open a pull request, as the NEXT "
+              "line the command ends with says. `--dry-run` runs on any "
+              "branch.")
+    if branch is None:
+        raise Refusal(
+            "family-holder-detached",
+            f"{family.root} is not on a branch, so `{verb}` would write a "
+            "commit no branch holds, with nothing to push and open a pull "
+            "request from. No git command that writes was run and nothing "
+            "was written.", remedy)
+    raise Refusal(
+        "family-on-tracking-branch",
+        f"{family.root} is on {branch!r}, which {MANIFEST} declares as the "
+        f"holder's tracking branch, and `{verb}` will not write a commit "
+        "whose only next step is a push to the default branch. No git "
+        "command that writes was run and nothing was written.", remedy)
+
+
+def _branch_said(family: "Family", verb: str, suggested: str) -> list[str]:
+    """The `branch` line a dry run prints (#487): where the real run's
+    commit lands, or that the real run refuses here, by its code, and the
+    command that makes a branch, on a line of its own."""
+    branch = _holder_branch(family.root)
+    tracking = family.tracking()
+    if branch is not None and branch != tracking:
+        return [f"branch       {branch}: the commit lands there, for a pull "
+                f"request against {tracking}"]
+    code, where = (("family-holder-detached", "the holder is on no branch")
+                   if branch is None else
+                   ("family-on-tracking-branch",
+                    f"{branch} is the holder's tracking branch"))
+    return [f"branch       {where}, where a real {verb} refuses ({code}); "
+            "make a branch first:",
+            f"             {_switch_command(family.root, suggested)}"]
+
+
+def _print_next(family: "Family", branch: str) -> None:
+    """The NEXT an act that committed ends with (#487): ONE pasteable line
+    that pushes the branch the commit is on, every word quoted for the
+    reader's shell (#486), then the pull request it is for."""
+    print("\nNEXT  " + shell_line(["git", "-C", family.root, "push", "-u",
+                                    "origin", branch]))
+    print(f"      then open a pull request against {family.tracking()}; "
+          "never push to it directly")
+
+
 def _commit_one(root: Path, message: str, paths: list[str],
                 add: list[str] | None = None,
                 trailers: list[str] = ()) -> str:
@@ -765,6 +888,96 @@ SIBLINGS_SCRIPT = (SHAPE_ROOT / "templates" / "family-root" / "scripts" /
                    "siblings.py")
 
 
+def _family_script() -> str:
+    """This file as the person who ran it names it from where they stand
+    (#488): the path its NEXT lines run it by.
+
+    `init`'s NEXT STEPS printed `Path(__file__).name`, `family.py`, which
+    runs only from `scripts/`. AGENTS.md runs `init` from the standard's
+    root, where that line failed `can't open file`, exit 2. So the path is
+    RELATIVE TO THE DIRECTORY THE COMMAND WAS RUN FROM: from the root it is
+    `scripts/family.py`, as `setup-project.py`, `validate-family.py`,
+    AGENTS.md and README spell it, and from anywhere else it is the path
+    that reaches this file from there. It is absolute where no relative path
+    exists, another drive on Windows, or where that directory is gone.
+    """
+    here = Path(__file__).resolve()
+    try:
+        return os.path.relpath(here, Path.cwd())
+    except (ValueError, OSError):
+        return str(here)
+
+
+def _add_command(holder: Path, org: str) -> str:
+    """The `add` that grows the holder at `holder`, as `init` prints it:
+    ONE line, so it pastes into PowerShell too, with this file's path, the
+    holder's and the organisation each spelled by `shell_quoted` for the
+    reader's shell (#486). A holder under `my work/` used to print
+    `--family-root .../my work/Orbit`, two arguments to argparse.
+    `<Project>` is left for the person to fill in."""
+    return (f"{PYTHON} {shell_quoted(_family_script())} add --family-root "
+            f"{shell_quoted(holder)} --member {shell_quoted(org)}/<Project>")
+
+
+def _standard_checkout(start: Path) -> Path | None:
+    """The checkout of openRepoShape that `start` is, or lies inside, or
+    None (#488).
+
+    A checkout is a directory holding `scripts/family.py` beside
+    `templates/family-root/`, which is what this file needs of its own
+    (`SIBLINGS_SCRIPT`, `FAMILY_TEMPLATE`), so it is found whatever the
+    directory is called and whichever copy of the standard is asked: this
+    one, another clone, an install. `os.path`'s tests, which answer False
+    for a directory this user cannot search rather than raising.
+    """
+    for directory in (start, *start.parents):
+        if os.path.isfile(directory / "scripts" / "family.py") and \
+                os.path.isdir(directory / "templates" / "family-root"):
+            return directory
+    return None
+
+
+def _refuse_landing_in_standard(into: Path, holder: Path,
+                                family: str) -> None:
+    """`family-landing-in-standard`: with neither `--into` nor `--work-dir`,
+    `init` refuses to land inside a checkout of openRepoShape (#488).
+
+    AGENTS.md spelled the command `python3 scripts/family.py init ...`, a
+    path that runs from the standard's root, and `--into` defaults to where
+    the person stands, so the command followed exactly printed `landing
+    <standard>/<Family>/<Family>` with no word, and `make siblings` would
+    then have cloned every member into the standard's tree too. README's
+    example passes `--into ..`, and so does AGENTS.md's now; this is the
+    refusal for the run that does not. An explicit `--into` or `--work-dir`
+    is somebody's choice of a place and is not second-guessed.
+
+    THE REMEDY NAMES `--into ..` FROM THE ROOT, and from deeper inside the
+    checkout the relative path that reaches its parent from there, so the
+    printed flag lands the family beside the checkout wherever the person
+    stands. Asked before anything is created, under `--dry-run` alike.
+    """
+    checkout = _standard_checkout(into)
+    if checkout is None:
+        return
+    beside = checkout.parent
+    try:
+        parent = os.path.relpath(beside, into)
+    except ValueError:  # another drive on Windows
+        parent = str(beside)
+    raise Refusal(
+        "family-landing-in-standard",
+        f"with neither --into nor --work-dir the holder lands where you are "
+        f"standing, at {holder}, which is inside {checkout}, a checkout of "
+        "openRepoShape itself (it holds scripts/family.py and "
+        "templates/family-root/). The family would be part of the "
+        "standard's tree, and `make siblings` would clone every member into "
+        "it too. Nothing was created, and `--dry-run` refuses the same.",
+        f"Remediation: pass `--into {parent}` to land it beside this "
+        f"checkout, at {beside / family / family}, or `--into <dir>` for any "
+        "other parent directory; `--work-dir <dir>` is the override "
+        "(`<dir>/<Family>`, no family folder). There is no --force.")
+
+
 def _landing(args, family: str) -> tuple[Path | None, Path]:
     """`(the family folder, the holder)` — WHERE `init` PUTS THINGS.
 
@@ -785,22 +998,27 @@ def _landing(args, family: str) -> tuple[Path | None, Path]:
     `--work-dir` keeps today's semantics untouched (`<work-dir>/<Family>`, no
     folder made) because every test and every rehearsal in this suite passes
     it, and a flag that quietly changed meaning is worse than a second flag.
+
+    THE DEFAULT IS REFUSED INSIDE A CHECKOUT OF THE STANDARD (#488,
+    `_refuse_landing_in_standard`), after the holder-already-here question:
+    a holder that exists there is the more specific answer.
     """
     if args.work_dir is not None:
         return None, args.work_dir.expanduser().resolve() / family
     into = (args.into or Path.cwd()).expanduser().resolve()
-    if into.name == family:
-        if (into / family / MANIFEST).is_file():
-            raise Refusal(
-                "family-holder-already-here",
-                f"{into} is already the {family} family folder and its holder "
-                f"is at {into / family}, so there is nothing to init",
-                "Remediation: `family.py add --family-root "
-                f"{into / family} --member <org>/<Project>` grows it, and "
-                "`make siblings` in the holder puts each member's working "
-                "clone beside it. There is no --force.")
-        return into, into / family
-    return into / family, into / family / family
+    if into.name == family and (into / family / MANIFEST).is_file():
+        raise Refusal(
+            "family-holder-already-here",
+            f"{into} is already the {family} family folder and its holder "
+            f"is at {into / family}, so there is nothing to init",
+            f"Remediation: `{_add_command(into / family, args.org)}` grows "
+            "it, and `make siblings` in the holder puts each member's "
+            "working clone beside it. There is no --force.")
+    folder, holder = ((into, into / family) if into.name == family else
+                      (into / family, into / family / family))
+    if args.into is None:
+        _refuse_landing_in_standard(into, holder, family)
+    return folder, holder
 
 
 def _checked_family_identity(args) -> tuple[str, str, str]:
@@ -1095,19 +1313,28 @@ def _finish_holder_remote(args, repository: str, topic: str,
 def _print_next_steps(args, work: Path, folder: Path | None) -> None:
     """The NEXT STEPS block `init` ends with.
 
-    Split from `cmd_init` for #136.
+    Split from `cmd_init` for #136. A BRANCH FIRST (#487): the holder stands
+    on its tracking branch, where `add` refuses to commit, so the block
+    opens with the `git switch -c` that makes the branch `add` suggests.
+
+    ONE COMMAND A LINE, `cd` apart from `make siblings`: Windows PowerShell
+    5.1, the shell `setup-project.py` documents, rejects `&&` between two
+    statements, and these lines are quoted for the shell of the host (#486).
     """
+    switch = shell_line(["git", "-C", work, "switch", "-c"])
     print(f"""
 NEXT STEPS
 
-    {PYTHON} {Path(__file__).name} add --family-root {work} \\
-        --member {args.org}/<Project>
-    cd {work} && make siblings
+    {switch} family/add-<project>
+    {_add_command(work, args.org)}
+    cd {shell_quoted(work)}
+    make siblings
 
 `add` mounts the member at {MEMBERS_DIR}/<Project>, records its pin, and
-writes ONE commit; land it as a pull request. `make siblings` then puts each
-member's WORKING clone beside the holder, in the family folder, on its
-tracking branch.
+writes ONE commit on that branch: it refuses {args.tracking_branch}, the
+holder's tracking branch. Push the branch as its NEXT line says and land it
+as a pull request. `make siblings` then puts each member's WORKING clone
+beside the holder, in the family folder, on its tracking branch.
 
 TWO COPIES OF EVERY MEMBER, on purpose: pinned and DETACHED inside the holder
 under {MEMBERS_DIR}/ (what `make bootstrap` and `make validate` read), and a
@@ -1773,7 +2000,10 @@ def _checked_mount_path(root: Path, project: str, path: str) -> None:
         # gave `MEMBERS/Atlas`, and kept its file too), or both, while
         # `.gitmodules` and the manifest say `path`.
         variant = name[:len(path)]
-        spelled = " ".join(sorted({entry[0][:len(path)] for entry in held}))
+        spellings = sorted({entry[0][:len(path)] for entry in held})
+        # QUOTED (#486), each one: it names an index entry somebody else
+        # made, and that is not held to a member's alphabet.
+        spelled = " ".join(shell_quoted(name) for name in spellings)
         raise Refusal(
             "member-path-taken",
             f"the family root's index holds `{name}` ({kind}){more}"
@@ -1785,7 +2015,7 @@ def _checked_mount_path(root: Path, project: str, path: str) -> None:
             "Remediation: this is a half-finished add or a hand edit. `git rm "
             f"-r --cached -- {spelled}` takes it out of the index and touches "
             "no file; "
-            + ("then " if spelled == path else
+            + ("then " if spellings == [path] else
                "where HEAD holds it too, commit that removal first, since the "
                f"add's own commit names {path} alone: otherwise HEAD keeps "
                "the other spelling beside the member, or, with "
@@ -1857,6 +2087,31 @@ def _checked_mount_path(root: Path, project: str, path: str) -> None:
                f"index's), or `git checkout HEAD -- {GITMODULES}`."))
 
 
+def _deletion(store: Path) -> list[str]:
+    """The lines that let a person delete an object store `git rm` left
+    behind: the directory alone on its own line, to be checked before
+    anything is pasted, then the one command that deletes it and nothing
+    else (#486).
+
+    THE ONE DESTRUCTIVE COMMAND THIS FILE PRINTS, and it printed its path
+    bare: under a holder at `.../my work/Sonata/Sonata` a shell split `rm
+    -rf .../my work/Sonata/Sonata/.git/modules/members/Beacon` into `rm -rf
+    .../my`, an absolute directory that is NOT the store (a `Code` beside
+    the `Code Projects` the holder is in), and a second argument relative to
+    wherever the person stood. So its one argument is quoted, by
+    `repo_shape.shell_quoted`, for the POSIX shell `rm -rf` is a command of
+    (Git Bash is one on Windows; PowerShell refuses `-rf` and deletes
+    nothing), and the sentence says which shell.
+
+    NAMED IN POSIX, as git spells `.git/modules/<path>` and as the person
+    who retypes it does.
+    """
+    shown = store.as_posix()
+    return ["It is this directory:", f"    {shown}",
+            "and in a POSIX shell (Git Bash on Windows) this deletes it and "
+            "nothing else:", f"    rm -rf {shell_quoted(shown, 'posix')}"]
+
+
 def _checked_add_target(family: Family, repository: str, project: str,
                         path: str, at: str | None) -> str | None:
     """Every refusal `add` makes about the HOLDER and its own arguments,
@@ -1907,9 +2162,10 @@ def _checked_add_target(family: Family, repository: str, project: str,
             "write over it",
             "Remediation: if nothing unpushed lives in it — and nothing does "
             "unless somebody committed inside the mount — delete it and "
-            f"re-run:\n    rm -rf {cached.as_posix()}\nIt is left behind by "
-            "`git rm` on purpose, which is why this tool will not remove it "
-            "for you.")
+            "re-run. "
+            + "\n".join(_deletion(cached))
+            + "\nIt is left behind by `git rm` on purpose, which is why this "
+            "tool will not remove it for you.")
     # The pin is written into a `members:` block `write_members` has to be
     # able to find; a manifest it would refuse is refused NOW, while there is
     # nothing to undo.
@@ -2546,7 +2802,7 @@ def _resolves(root: Path, spec: str) -> bool:
 
 def _add_dry_run(family: Family, repository: str, project: str, path: str,
                  url: str, protocol: list[str], commit: str, at: str | None,
-                 trailers: list[str]) -> int:
+                 trailers: list[str], suggested: str) -> int:
     """`add --dry-run` (#326), entered once every refusal `add` makes before
     its first write has been asked — the holder's (`_checked_add_target`),
     the member's (`_probe_member`) and whether the `id:` the probe read is
@@ -2649,6 +2905,8 @@ def _add_dry_run(family: Family, repository: str, project: str, path: str,
     print(f"row          as {MANIFEST} would carry it:")
     for line in _member_lines(row):
         print(line)
+    for line in _branch_said(family, "add", suggested):
+        print(line)
     _print_trailers(trailers)
     print(f"\n--dry-run: nothing was changed in the holder. {repository} was "
           "read from throwaway clones in temporary directories outside the "
@@ -2663,8 +2921,10 @@ def cmd_add(args) -> int:
     would write and change nothing in the holder (#326, `_add_dry_run`).
 
     IN THIS ORDER, AND ONLY THIS ORDER: the holder's refusals
-    (`_checked_add_target`), then the member's (`_probe_member`, of a
-    throwaway clone), then the member's id against the rows
+    (`_checked_add_target`), then the branch the commit lands on, which the
+    real run refuses on the tracking branch or none (`_checked_branch`,
+    #487) and a dry run only reports, then the member's (`_probe_member`, of
+    a throwaway clone), then the member's id against the rows
     (`_checked_member_id`, #330), and only then the mount, the pin and the
     commit (`_mount_and_pin`), inside a `MountRollback` that puts the holder
     back if anything still fails and says what it put back.
@@ -2680,6 +2940,9 @@ def cmd_add(args) -> int:
     repository, project = _checked_member(args.member)
     path = _member_path(project)
     at = _checked_add_target(family, repository, project, path, args.at)
+    suggested = _suggested_branch("add", project)
+    branch = None if args.dry_run else _checked_branch(family, "add",
+                                                         suggested)
 
     url = _member_url(repository, args.local_remote_dir)
     protocol = FILE_PROTOCOL if args.local_remote_dir is not None else []
@@ -2700,7 +2963,7 @@ def cmd_add(args) -> int:
     # before `MountRollback` is taken and anything is mounted (#326).
     if args.dry_run:
         return _add_dry_run(family, repository, project, path, url,
-                            protocol, commit, at, args.trailer)
+                            protocol, commit, at, args.trailer, suggested)
 
     rollback = MountRollback(family.root, path)
     print(f"mounting {repository} at {path}", flush=True)
@@ -2722,8 +2985,7 @@ def cmd_add(args) -> int:
     print(f"  {project:<16} {commit[:12]} tree {digest[:12]}… "
           f"(project {project_id})")
     print(f"  committed {head[:12]}: .gitmodules, {path}, {MANIFEST}")
-    print(f"\nNEXT  git -C {family.root} push -u origin <branch> && open a "
-          "pull request")
+    _print_next(family, branch)
     return 0
 
 
@@ -2867,7 +3129,7 @@ def _member_head(member: Path) -> tuple[str | None, str | None]:
         ref = git_out(["symbolic-ref", "-q", "HEAD"], cwd=member)
     except Refusal:
         ref = ""
-    return at, (ref[len("refs/heads/"):] if ref.startswith("refs/heads/")
+    return at, (ref[len(HEADS_PREFIX):] if ref.startswith(HEADS_PREFIX)
                 else None)
 
 
@@ -3777,7 +4039,7 @@ def _checked_to_names_a_commit(member: Path, path: str, row: dict,
 
 
 def _bump_dry_run(family: Family, row: dict, path: str, commit: str,
-                  trailers: list[str], fetched: bool) -> int:
+                  trailers: list[str], fetched: bool, suggested: str) -> int:
     """`bump --dry-run`, entered after the member is fetched (or the fetch
     failed, `fetched` False, and said so) and before it is checked out
     (#326): the answers a real `bump` gives, and no write.
@@ -3839,6 +4101,8 @@ def _bump_dry_run(family: Family, row: dict, path: str, commit: str,
           f"{resolved[:12]}")
     print(f"row          as {MANIFEST} would carry it:")
     for line in _member_lines(new):
+        print(line)
+    for line in _branch_said(family, "bump", suggested):
         print(line)
     _print_trailers(trailers)
     how = (f"`git fetch` ran in {path}, as a real bump's does, which is how "
@@ -4008,6 +4272,13 @@ def cmd_bump(args) -> int:
             "Remediation: `git submodule update --init " + path + "`, or "
             "`make bootstrap`, which resolves a credential for a private "
             "member first.")
+    # THE BRANCH BEFORE THE FETCH (#487): the real run's commit needs one
+    # that is not the tracking branch, and a refusal is cheaper before the
+    # member's remote is asked anything. The dry run reports it instead.
+    suggested = _suggested_branch("bump", str(row.get("id") or project),
+                                  commit)
+    branch = None if args.dry_run else _checked_branch(family, "bump",
+                                                         suggested)
     fetched = True
     try:
         run(["git", "fetch", "-q", "origin"], cwd=member)
@@ -4021,11 +4292,14 @@ def cmd_bump(args) -> int:
     _checked_to_names_a_commit(member, path, row, commit)
     if args.dry_run:
         return _bump_dry_run(family, row, path, commit, args.trailer,
-                             fetched)
+                             fetched, suggested)
     _checked_bump_target(family, row, path, commit)
     rollback = PinRollback(family.root, path, "bump", (MANIFEST,))
-    return _put_back_on_failure(rollback, lambda: _bump_and_pin(
+    code = _put_back_on_failure(rollback, lambda: _bump_and_pin(
         family, row, path, commit, args.trailer, rollback))
+    if code == 0:
+        _print_next(family, branch)
+    return code
 
 
 # ---------------------------------------------------------------------------
@@ -4265,14 +4539,17 @@ def _unmount_and_drop(family: Family, row: dict, path: str) -> int:
     # `.git/modules/<path>`, and so does the human who deletes it.
     cached = family.root / ".git" / "modules" / path
     if cached.exists():
-        print(f"  NOTE {cached.as_posix()} still holds that member's object "
-              "store. `git rm` leaves it on purpose, in case somebody "
-              "committed inside the mount; delete it (`rm -rf`) before adding "
-              "this member back.")
+        # The directory alone on a line, then the command, quoted (#486),
+        # exactly as `add`'s `member-git-dir-cached` names the same store.
+        print("  NOTE that member's object store is left behind. `git rm` "
+              "leaves it on purpose, in case somebody committed inside the "
+              "mount; delete it before adding this member back. "
+              + "\n  ".join(_deletion(cached)))
     return 0
 
 
-def _remove_dry_run(family: Family, row: dict, path: str) -> int:
+def _remove_dry_run(family: Family, row: dict, path: str,
+                    suggested: str) -> int:
     """`remove --dry-run` (#326): what a real `remove` would take out, and
     no git command that writes.
 
@@ -4342,6 +4619,8 @@ def _remove_dry_run(family: Family, row: dict, path: str) -> int:
         "deleted with everything in it: `git submodule deinit -f` discards "
         "uncommitted work in the member, and `git rm` the directory"
         if os.path.lexists(root / path) else "not on disk"))
+    for line in _branch_said(family, "remove", suggested):
+        print(line)
     print("\n--dry-run: nothing was changed: the index, .gitmodules, "
           f"{MANIFEST}, the work tree and the holder's git config are as they "
           "were, and no git command that writes was run.")
@@ -4369,9 +4648,12 @@ def cmd_remove(args) -> int:
     # the same refusal, as it makes every one above.
     _checked_one_section(family.root, project, path)
     # Every refusal above is the same under `--dry-run`, which leaves here,
-    # before the unmount, the real run's first write (#326).
+    # before the unmount, the real run's first write (#326), and reports the
+    # branch the real run refuses (#487) rather than refusing it.
+    suggested = _suggested_branch("remove", str(row.get("id") or project))
     if args.dry_run:
-        return _remove_dry_run(family, row, path)
+        return _remove_dry_run(family, row, path, suggested)
+    branch = _checked_branch(family, "remove", suggested)
     # WHAT CAN BE ASKED BEFORE THE UNMOUNT IS (#365); what fails after it is
     # put back (`PinRollback`). A `members:` block this tool will not rewrite
     # was refused after `deinit` and `git rm`, with the member unmounted and
@@ -4383,8 +4665,11 @@ def cmd_remove(args) -> int:
     _checked_index_unlocked(family.root, path)
     rollback = PinRollback(family.root, path, "remove",
                            (GITMODULES, MANIFEST), unmount=True)
-    return _put_back_on_failure(
+    code = _put_back_on_failure(
         rollback, lambda: _unmount_and_drop(family, row, path))
+    if code == 0:
+        _print_next(family, branch)
+    return code
 
 
 # ---------------------------------------------------------------------------
@@ -4433,6 +4718,15 @@ def cmd_siblings(args) -> int:
 # ---------------------------------------------------------------------------
 
 
+#: What `add`, `bump` and `remove` each say in `--help` about the branch
+#: their commit lands on (#487).
+BRANCH_RULE = ("Its ONE commit lands on the branch the holder stands on: "
+               "the real run refuses the holder's tracking branch and a HEAD "
+               "on no branch, naming the `git switch -c` that makes one, and "
+               "ends by printing the `git push` of that branch. --dry-run "
+               "runs on any branch.")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="family.py", description=__doc__.splitlines()[0],
@@ -4477,7 +4771,9 @@ def build_parser() -> argparse.ArgumentParser:
                            "`gh repo create` (the TEST path; no network)")
     init.add_argument("--into", type=Path, default=None, metavar="DIR",
                       help="the PARENT directory the family folder is made "
-                           "in (default: the directory you are standing in). "
+                           "in (default: the directory you are standing in, "
+                           "which is refused inside a checkout of "
+                           "openRepoShape: from its root, pass `--into ..`). "
                            "The holder lands at <into>/<Family>/<Family>, "
                            "beside where `make siblings` clones the members.")
     init.add_argument("--work-dir", type=Path, default=None,
@@ -4488,7 +4784,9 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--dry-run", action="store_true")
     init.set_defaults(func=cmd_init)
 
-    add = subparsers.add_parser("add", help="mount and pin a member")
+    add = subparsers.add_parser(
+        "add", help="mount and pin a member",
+        description="Mount and pin a member. " + BRANCH_RULE)
     add.add_argument("--family-root", required=True)
     add.add_argument("--member", required=True, metavar="ORG/PROJECT",
                      help="the member's ASSEMBLY ROOT, `<org>/<Project>` — "
@@ -4513,7 +4811,10 @@ def build_parser() -> argparse.ArgumentParser:
                           "nothing")
     add.set_defaults(func=cmd_add)
 
-    bump = subparsers.add_parser("bump", help="move a member's pin")
+    bump = subparsers.add_parser(
+        "bump", help="move a member's pin",
+        description="Move a member's gitlink and pin together. "
+                    + BRANCH_RULE)
     bump.add_argument("--family-root", required=True)
     bump.add_argument("--member", required=True, metavar="PROJECT")
     bump.add_argument("--to", required=True, metavar="COMMIT",
@@ -4532,7 +4833,9 @@ def build_parser() -> argparse.ArgumentParser:
                            "if there is nothing to do")
     bump.set_defaults(func=cmd_bump)
 
-    remove = subparsers.add_parser("remove", help="unmount a member")
+    remove = subparsers.add_parser(
+        "remove", help="unmount a member",
+        description="Unmount a member and drop its row. " + BRANCH_RULE)
     remove.add_argument("--family-root", required=True)
     remove.add_argument("--member", required=True, metavar="PROJECT")
     remove.add_argument("--dry-run", action="store_true",
