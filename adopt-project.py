@@ -6969,6 +6969,52 @@ def _refuse_an_unwritable_clone_url(url: str) -> None:
             "`https://github.com/<org>/<name>.git`.")
 
 
+def _neutral_product_pins(pins) -> str:
+    """`NEUTRAL_PRODUCT_PINS`, the manifest's list of the products the plan
+    pins: `[]`, or one `  - <product>` line for each, sorted, each spelled so
+    that the project's own reader reads it back as the text `plan` recorded
+    (#514).
+
+    WRITTEN BARE, `  - 007` WAS THE NUMBER 7. `plan` records the product
+    quoted (`_pin_lines`), so `check` and `execute` read the text `007`,
+    write `contracts/007-pin.yaml` and say `adoption verified`. The root's
+    own reader then took the manifest's bare `007` for 7, and `2026` and
+    `1.5` for numbers, and its `validate-pins.py` refused the entry as
+    `neutral-pin-entry-malformed`, so the project's first CI run was red.
+
+    EACH ENTRY IS SPELLED AS `y` SPELLS THE PLAN'S `product:`. Of the names
+    `--pin` takes, `y` writes bare only one that begins with a letter, `_`
+    or `.`, so `openGlass` is the line it always was and `007` is `"007"`.
+    Where the reader would not read that bare spelling back as the same
+    text, which is `true`, `null` and the other keywords `y` leaves bare
+    (#181), the entry is double-quoted all the same. The reader is asked, as
+    `family.py` asks it of a member's id (#259), rather than a list of its
+    words. Such a name reaches here only from a plan edited by hand, because
+    `check` refuses the bare `product: true` that `plan` writes. The list is
+    a block placeholder, so `render` writes it as it stands, and nothing
+    else quotes it.
+    """
+    if not pins:
+        return "[]"
+    return "\n" + "\n".join(f"  - {_neutral_pin_entry(product)}"
+                            for product in sorted(pins))
+
+
+def _neutral_pin_entry(product: str) -> str:
+    """One `neutral_product_pins:` entry: `y`'s spelling of `product` where
+    the project's reader reads it back as `product`, and `product`
+    double-quoted where it does not."""
+    spelled = y(product)
+    try:
+        if parse_yaml(f"neutral_product_pins:\n  - {spelled}\n") \
+                == {"neutral_product_pins": [product]}:
+            return spelled
+    except YamlError:
+        # A spelling the reader refuses is not read back as anything.
+        pass
+    return double_quoted(product)
+
+
 def _template_values(plan: Plan, names, repositories, urls, spec_path,
                      code_path, tracking, leg_commits, leg_digests,
                      shape_commit, pins, naming) -> dict[str, str]:
@@ -7027,9 +7073,7 @@ def _template_table(plan: Plan, names, repositories, urls, spec_path,
         "CODE_COMMIT": leg_commits.get("code", ""),
         "SPEC_TREE_SHA256": leg_digests.get("spec", ""),
         "CODE_TREE_SHA256": leg_digests.get("code", ""),
-        "NEUTRAL_PRODUCT_PINS": ("[]" if not pins else
-                                 "\n" + "\n".join(f"  - {p}"
-                                                  for p in sorted(pins))),
+        "NEUTRAL_PRODUCT_PINS": _neutral_product_pins(pins),
         "ASSEMBLY_NAMING": naming_block(naming, names["assembly"], "assembly",
                                         pins),
         "SPEC_NAMING": naming_block(naming, names["spec"], "spec", pins),

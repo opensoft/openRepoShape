@@ -101,6 +101,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -758,7 +759,9 @@ def parent_folder_warning(root: Path, family: str) -> str | None:
         "shell, an editor",
         "        and any LINKED WORKTREE (its `.git` file carries an absolute "
         "path), so it",
-        "        is yours to run, when nothing is standing in it:",
+        "        is yours to run, when nothing is standing in it, in a POSIX "
+        "shell (Git Bash",
+        "        on Windows):",
         "",
     ]
     wanted = folder.parent / family
@@ -767,12 +770,19 @@ def parent_folder_warning(root: Path, family: str) -> str | None:
         # `<parent>/<Family>` IS the holder itself and the move needs a
         # staging name — `mv A A/A` cannot be spelled in one command.
         staged = folder.parent / f"{family}.holder"
-        lines += [f"            mv {root} {staged}",
-                  f"            mkdir -p {wanted}",
-                  f"            mv {staged} {wanted / family}"]
+        steps = [["mv", root, staged], ["mkdir", "-p", wanted],
+                 ["mv", staged, wanted / family]]
     else:
-        lines += [f"            mkdir -p {wanted}",
-                  f"            mv {root} {wanted / family}"]
+        steps = [["mkdir", "-p", wanted], ["mv", root, wanted / family]]
+    # EVERY PATH QUOTED (#486): under `my work/` a bare `mv` moved nothing
+    # and pasted as four arguments. Quoted for the POSIX shell `mv` and
+    # `mkdir -p` are commands of, as the sentence above says, by the standard
+    # library's `shlex.join` and NOT `repo_shape.shell_line`: a holder that
+    # kept an older `repo_shape.py` (`update-shape.py apply --accept-local`)
+    # must still be able to run this file, and an import of a name its copy
+    # lacks would stop `make siblings`, `park` and `resume` dead.
+    lines += [f"            {shlex.join(str(word) for word in step)}"
+              for step in steps]
     lines += ["",
               "        Then re-run `make siblings` from the moved holder; the "
               "members are",
