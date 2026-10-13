@@ -2197,9 +2197,12 @@ def _misread_findings(plan: Plan) -> list[str]:
     THE VALIDATOR IS ASKED FIRST, as `check` asks it (`_manifest_findings`,
     the same `ignore`), and a value it makes a finding about is its alone:
     `id: "007"` is `manifest-id: id is 7`, as on main, and not also this.
-    Where it refuses the whole file (`elected_on: "!"`, which its reader
-    cannot read) or makes a finding about no one value, no value can be
-    said to pass it, so every value is its, as on main (rv181f's G1, G2).
+    Where it refuses the whole file (a pin `? x`, which its reader cannot
+    read) or makes a finding about no one value, no value can be said to
+    pass it, so every value is its, as on main (rv181f's G1, G2); and where
+    it is asked about no manifest (`_manifest_values` is None, as for an
+    `elected_on:` `election_date` refuses, #294's finding), this rule names
+    no value either.
     That is what makes this rule's remediation true of every value it
     follows: `execute` writes it as it stands, and the run would still end
     `adoption verified`. A leg path the loader reads as no value is still
@@ -2457,8 +2460,9 @@ def _manifest_findings(plan: Plan) -> tuple[list[str], list[str]]:
     and one #181's misread rule would also call misread: a value this rule
     refuses is this rule's alone, and the misread rule leaves it here
     (`_misread_findings`, rv181f's G1). So `id: "007"` is `manifest-id: id
-    is 7`, as on main, `elected_on: 20260902` and `visibility: true` are
-    this rule's too, and one wrong value is one finding. A value read as not
+    is 7`, as on main, `visibility: true` is this rule's too, and one wrong
+    value is one finding. (`elected_on: 20260902` is #294's, and this rule
+    is not asked about it: `_manifest_values`.) A value read as not
     text is named by what was read (`_named_as_read`), because the sentence
     goes on to quote `str` of it, the text `execute` would write and not
     what the plan says.
