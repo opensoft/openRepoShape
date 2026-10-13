@@ -16,7 +16,7 @@ default one (`tracking_branch: main` recorded), and a default one whose
 manifest records NO tracking branch at all — which `validate-manifest.py`
 accepts and which every other tool (`bootstrap.py`, `bump-leg.py`,
 `family.py`, `commit_on_branch`'s own refusal) reads as `main`. The remote's
-HEAD is never consulted for that last case: `apply` is otherwise offline.
+HEAD is never consulted for that last case: the base comes from the manifest.
 
 THE UPSTREAM IS A CLONE OF THIS REPOSITORY, the project is scaffolded out of
 it into bare repositories in a temporary directory, and `gh` is stubbed at the
