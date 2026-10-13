@@ -93,20 +93,19 @@ and is reported beside the advisory, and nothing fails on its account.
 Command Line Tools supply `git`, `make` and a `python3` — install them with
 `xcode-select --install`, or type `git` once on a fresh Mac and the installer
 offers itself; step 4 opens with a preflight that prints the `python3` it found
-and refuses anything below 3.9. If it refuses the one the Tools supplied —
-older macOS shipped 3.8 — install a newer one from
-<https://www.python.org/downloads/> or with `brew install python`, and the
-preflight will find it first on `PATH`. `gh` comes from Homebrew, which is its
-own install if `brew` is absent (<https://brew.sh>): on Apple Silicon Homebrew
-lives in `/opt/homebrew`, which is on no `PATH` by default, and its installer
-finishes by printing the line that puts it there — run that line, or the next
-shell cannot find `brew`. Then `brew install gh`, and `brew install
-git-filter-repo` only if you are ADOPTING an existing repository rather than
-scaffolding a new one. The stock `/bin/bash` is 3.2 and is enough: `setup.sh`
-and the `openRepoShape` command use no syntax newer than that, and CI runs the
-whole suite on `macos-latest`, parsing both there with `/bin/bash` itself. That
-the login shell is zsh changes nothing — both entry points are run under `bash`
-explicitly.
+and refuses anything below 3.9. If it refuses the one the Tools supplied — older
+macOS shipped 3.8 — install a newer one from <https://www.python.org/downloads/>
+or with `brew install python`, and the preflight will find it first on `PATH`.
+`gh` comes from Homebrew, which is its own install if `brew` is absent
+(<https://brew.sh>): on Apple Silicon Homebrew lives in `/opt/homebrew`, which
+is on no `PATH` by default, and its installer finishes by printing the line that
+puts it there — run that line, or the next shell cannot find `brew`. Then `brew
+install gh`, and `brew install git-filter-repo` only if you are ADOPTING an
+existing repository rather than scaffolding a new one. The stock `/bin/bash` is
+3.2 and is enough: `setup.sh` and the `openRepoShape` command use no syntax
+newer than that, and CI runs the whole suite on `macos-latest`, parsing both
+there with `/bin/bash` itself. That the login shell is zsh changes nothing —
+both entry points are run under `bash` explicitly.
 
 </details>
 
@@ -172,15 +171,17 @@ run the four steps below INSIDE the WSL shell.
 > [!NOTE]
 > **The tool offers the rest.** The four steps below are the reference — what
 > each platform needs, and how to install it by hand. You do not have to: step 4
-> opens with a preflight that names what is missing, prints the command for THIS
-> machine and asks once — `Type yes to continue:`, the same words it asks
-> everything else with — then runs it and carries on. Nothing is installed
-> without that typed `yes`; `--yes` does not answer it, and with no terminal
-> attached there is no offer at all. Homebrew is the one install never run for
-> you: on a Mac without `brew` the preflight names <https://brew.sh> and stops
-> there. To check a machine and stop, creating nothing, run
-> `openRepoShape --preflight` — `py setup-project.py --preflight` on Windows —
-> which exits 0 when everything is present and 1 when it is not.
+> opens with a preflight that names what is missing and, for `gh`, its login and
+> its credential helper, prints the command for THIS machine and asks once —
+> `Type yes to continue:`, the same words it asks everything else with — then
+> runs it and carries on. Nothing is installed without that typed `yes`; `--yes`
+> does not answer it, and with no terminal attached there is no offer at all.
+> Homebrew is the one install never run for you: on a Mac without `brew` the
+> preflight names <https://brew.sh> and stops there. To check a machine and
+> stop, creating nothing, run `openRepoShape --preflight` — `py setup-project.py
+> --preflight` on Windows — which exits 0 when everything is present and 1 when
+> it is not (`openRepoShape --preflight` exits 2 when `git` or a Python 3.9 or
+> newer is missing).
 
 **1. Install the GitHub CLI**, `gh`. The official instructions are at
 <https://cli.github.com/> (and <https://github.com/cli/cli#installation>):
@@ -211,13 +212,12 @@ sudo dnf config-manager addrepo --from-repofile=https://cli.github.com/packages/
 sudo dnf install gh
 ```
 
-`git` and Python 3.9 or newer are needed too (see Requirements below).
-Ubuntu under WSL2 ships both, so there `gh` is the only install; step 4
-opens with a preflight that names anything missing and where to get it.
-`git` itself comes from `xcode-select --install` on macOS, `sudo apt-get
-install -y git` on Debian and Ubuntu, `sudo dnf install -y git` on Fedora and
-`winget install --id Git.Git -e` on Windows — the same commands that preflight
-offers to run for you.
+`git` and Python 3.9 or newer are needed too (see Requirements below). Ubuntu
+under WSL2 ships both, so there `gh` is the only install; step 4 opens with a
+preflight that names anything missing and where to get it. `git` itself comes
+from `xcode-select --install` on macOS, `sudo apt-get install -y git` on Debian
+and Ubuntu, `sudo dnf install -y git` on Fedora and `winget install --id Git.Git
+-e` on Windows — the same commands `setup-project.py --preflight` offers to run.
 
 **2. Log in.** `gh auth login`, as the account that will own the act — a
 member of the organisation who can create repositories there. Accept the
@@ -266,12 +266,12 @@ for, refusals and all.
 openRepoShape <Project> --org <your-org>
 ```
 
-`<Project>` is one positional CamelCase name (e.g. `Atlas`); `--org` is
-required — from the flag, `$OPENREPOSHAPE_ORG`, or the command's own prompt
-— and add `--visibility private` if you want that. It shows the plan and
-asks once, `Type yes to continue:`; type `yes`. Afterwards `./<Project>` is
-the cloned root. The worked example below walks through what this produces,
-prompt by prompt.
+`<Project>` is one positional CamelCase name (e.g. `Atlas`); `--org` is required
+— from the flag, `$OPENREPOSHAPE_ORG`, or the command's own prompt — and
+`--visibility` defaults to `private`: add `--visibility public` (or `internal`)
+if you want that. It shows the plan and asks once, `Type yes to continue:`; type
+`yes`. Afterwards `./<Project>` is the cloned root. The worked example below
+walks through what this produces, prompt by prompt.
 
 **Joining a family.** `--family <Family>` lands the clone at
 `<Family>/<Project>` instead of `<Project>` — the plain folder that holds a
@@ -300,17 +300,17 @@ run to read before an organisation is involved. It still reaches GitHub before
 the run starts — to fetch `setup.sh`, then for the self-bootstrap clone of this
 standard into a temporary directory; run the same flag on `./setup.sh` from a
 checkout instead and nothing touches the network at all. On Windows the same
-flag goes on the Python entry point —
-`py setup-project.py Atlas --org <your-org> --local-remote-dir .\rehearsal` —
-which, run from a download, still clones the standard into a temporary
-directory first, and from a checkout clones nothing. What it leaves behind is
-`./Atlas` and three bare repositories in `./rehearsal`, both of which you can
-delete. `python3 setup-project.py --help` and, from a checkout, `setup.sh --help`
-list every flag, this one included. From a download, `setup.sh --help` clones
-nothing and lists none: it names `setup-project.py --help`, which answers
-offline from that one file too, and [`docs/cli.md`](docs/cli.md), every
-tool's help and every subcommand's in one file, generated from the tools
-themselves.
+flag goes on the Python entry point — `py setup-project.py Atlas --org
+<your-org> --local-remote-dir .\rehearsal` — which, run from a download, still
+clones the standard into a temporary directory first, and from a checkout clones
+nothing. What it leaves behind is `./Atlas`, three bare repositories in
+`./rehearsal` and the scaffold's three working trees, in the temporary directory
+its `Working trees are at` line names, all of which you can delete. `python3
+setup-project.py --help` and, from a checkout, `setup.sh --help` list every
+flag, this one included. From a download, `setup.sh --help` clones nothing and
+lists none: it names `setup-project.py --help`, which answers offline from that
+one file too, and [`docs/cli.md`](docs/cli.md), every tool's help and every
+subcommand's in one file, generated from the tools themselves.
 
 Without installing anything — no fork, no manual clone — one command:
 
@@ -369,15 +369,14 @@ create repositories in. `make` is not used by the entry point — it runs
 Or run `openRepoShape --preflight`, which checks this machine, offers what is
 missing and creates nothing.
 
-**2. Login.** `gh auth login`, as the account that will own the act: a member
-of `Northwind` with permission to create repositories there, or an owner —
+**2. Login.** `gh auth login`, as the account that will own the act: a member of
+`Northwind` with permission to create repositories there, or an owner —
 `scaffold-project.py` creates the three with `gh repo create` under whatever
 account `gh auth status` shows. Accept the offer to configure git's credential
-helper, or run `gh auth setup-git`: the first commits go up with a plain
-`git push` over HTTPS, and without it the three repositories are created and
-the push fails. `--elected-by` authenticates nothing — it is only the name
-`project.yaml` records as whose act the election was, and it defaults to the
-`gh` login.
+helper, or run `gh auth setup-git`: the first commits go up with a plain `git
+push` over HTTPS, and without it the three repositories are created and the push
+fails. `--elected-by` authenticates nothing — it is only the name `project.yaml`
+records as whose act the election was, and it defaults to the `gh` login.
 
 #### Install the command
 
@@ -434,7 +433,7 @@ human says it rather than lets it default.
 bootstrap will run, and that `gh` is installed and authenticated — and, for `gh`, an
 offer to install it, log it in or set up git's credential helper, whichever is
 missing, which Dana answers `yes` to. (2) The three names checked against the naming
-policy — `Atlas`, `Atlas-spec`, `Atlas-code`; a hyphenated or lowercase name is
+policy — `Atlas`, `Atlas-spec`, `Atlas-code`; a hyphenated project name is
 refused here with the rule printed. (3) The scaffold plan, a dry run of everything
 about to be created. (4) `This will create THREE repositories in 'Northwind'.` and
 `Type yes to continue:` — Dana types `yes`. If an AI agent is driving, it runs the
@@ -567,13 +566,14 @@ flowchart LR
 
 The six naming families live in `contracts/repository-naming.yaml`: neutral
 products `open<Product>`, domain descendants `<Domainx><Product>`, installs
-`<X>-Install`, project legs as above, family holders (below), and one form
-that is no repository of a project at all — a person's own workspace
-repository `<user>-wip` (#81, and
-[below](#carrying-in-flight-work-to-another-workstation)). The leg suffixes
-are lowercase and hyphenated precisely so they sit in a different visual class
-from every other family, all of which are CamelCase words. Every repository of
-a project also carries the GitHub topic `xf-project-<id>`.
+`<X>-Install`, project legs as above, family holders (below), and one form that
+is no repository of a project at all — a person's own workspace repository
+`<user>-wip` (#81, and
+[below](#carrying-in-flight-work-to-another-workstation)). The leg suffixes are
+lowercase and hyphenated precisely so they sit in a different visual class from
+the neutral-product, domain-descendant and family forms, all of which are
+CamelCase words. Every repository of a project also carries the GitHub topic
+`xf-project-<id>`.
 
 ### Reading private legs in CI: a GitHub App first, `SHAPE_LEGS_TOKEN` as fallback
 
@@ -608,26 +608,26 @@ only to PUBLIC repositories, so on a private one `secrets.SHAPE_LEGS_APP_ID`
 is silently empty and `validate` goes GREEN with the pin check skipped. Set
 both per repository, or upgrade to Team; the creating tools check and say so.
 
-The root repository is always readable by the workflow's own default token,
-so `actions/checkout` never carries a `token:` override. Putting a legs
-credential there was itself the next defect, on the first real use of the PAT
-(MedxSoft/MedxEHR and MedxSoft/MedxGlass, runs 33821509948 and 33821512605):
-a token correctly scoped to `contents:read` on the legs alone cannot read
-the root, so `actions/checkout` itself failed with a 403 before any check
-ran. Whichever credential resolves is read only inside the guarded "fetch the
-legs (submodules)" step, scoped to that step's `env:`, and used through a
-`git -c url.<...>.insteadOf=<...>` rewrite covering both HTTPS and SSH leg
-URLs — never persisted onto the root checkout.
+The root repository is always readable by the workflow's own default token, so
+`actions/checkout` never carries a `token:` override. Putting a legs credential
+there was itself the next defect, on the first real use of the PAT
+(MedxSoft/MedxEHR and MedxSoft/MedxGlass, runs 33821509948 and 33821512605): a
+token correctly scoped to `contents:read` on the legs alone cannot read the
+root, so `actions/checkout` itself failed with a 403 before any check ran.
+Whichever credential resolves is read only inside the guarded "fetch the legs
+(submodules)" step, scoped to that step's `env:`, and used through a `git -c
+url.<...>.insteadOf=<...>` rewrite covering both HTTPS and scp-form SSH
+(`git@github.com:`) leg URLs — never persisted onto the root checkout.
 
-`validate` tries the App first: a `mint a leg-reader token from the GitHub
-App` step (`actions/create-github-app-token`, pinned by commit) runs when
-both App secrets are present, scoped by `repositories:` to the legs
-`.gitmodules` names that this repository's own owner also owns — an
-installation token is per-owner, so a leg under a different owner is excluded
-with a warning and can only be reached via `SHAPE_LEGS_TOKEN` — and falls back
-to the PAT when the App is not configured. A configured App that fails to
-mint is a misconfiguration, not a degrade, and fails the job outright, naming
-both secrets and the required installation.
+`validate` tries the App first: a `mint a leg-reader token from the GitHub App`
+step (`actions/create-github-app-token`, pinned by commit) runs when both App
+secrets are present, scoped by `repositories:` to the legs `.gitmodules` names
+that this repository's own owner also owns — an installation token is per-owner,
+so a leg under a different owner is excluded with a warning, and
+`SHAPE_LEGS_TOKEN` is read only when the App is not configured, so that leg is
+reachable only with the App secrets removed. A configured App that fails to mint
+is a misconfiguration, not a degrade, and fails the job outright, naming both
+secrets and the required installation.
 
 Without either credential the workflow still degrades instead of failing: it
 checks out the root without submodules, attempts `git submodule update --init
@@ -678,22 +678,22 @@ is pinned by its descendants at the LAYER: `codexDox` pins `openXdox`, and
 family deliberately does not hold. The chain is RECORDED, never inferred — the
 descendant's own `naming.referent_chain: [openXdox, openDox]` names the pin it
 holds first and the referent its name claims last, and
-`validate-repository-naming.py --referent-chain openXdox,openDox` asks the same
-question for one name. A DIRECT PIN STAYS SUFFICIENT: this is an addition, and
-`MedxChart` answers exactly as it did on 2026-09-02.
+`validate-repository-naming.py --pins openXdox --referent-chain
+openXdox,openDox` asks the same of one name. A DIRECT PIN STAYS SUFFICIENT: this
+is an addition, and `MedxChart` answers exactly as it did on 2026-09-02.
 
-Each link past the first is a declaration in ANOTHER tree — `openXdox`
-declaring `neutral_product_pins: [openDox]` — and it is read where that tree
-happens to be on the disk: `--link-source [PRODUCT=]<path>`,
-`SHAPE_PIN_SOURCE_<PRODUCT>`, or a checkout beside the root, the same lookup
+Each link past the first is a declaration in ANOTHER tree — `openXdox` declaring
+`neutral_product_pins: [openDox]` — and it is read where that tree happens to be
+on the disk: `--link-source PRODUCT=<path>`, `SHAPE_PIN_SOURCE_<PRODUCT>`, a
+checkout beside the root, then a bare `--link-source <path>`: the same lookup
 order `validate-pins.py` uses below for the same checkout. A link no tree
-answers for is reported `declared-unverified` — a warning, never a finding,
-and the name still classifies — because the recorded declaration is the
-offline fact and the tree is the stronger check, available or not. A link that
-IS readable and declares something else BREAKS the chain: the residual
-assembly-root reading wins, the overlap is recorded, and the message names the
-link that broke. `LedgerxWallet` -> `openXwallet` -> `openWallet` is the same
-shape, and `openWallet` need not exist anywhere for that to be the answer.
+answers for is reported `declared-unverified` — a warning, never a finding, and
+the name still classifies — because the recorded declaration is the offline fact
+and the tree is the stronger check, available or not. A link that IS readable
+and declares something else BREAKS the chain: the residual assembly-root reading
+wins, the overlap is recorded, and the message names the link that broke.
+`LedgerxWallet` -> `openXwallet` -> `openWallet` is the same shape, and
+`openWallet` need not exist anywhere for that to be the answer.
 
 **`validate-pins.py` rechecks the referent too, not only the declaration.**
 Each `neutral_product_pins:` entry's `contracts/<product lowercased>-pin.yaml`
@@ -717,14 +717,13 @@ confers nothing, so `openDox` mounting `openDox-spec` and `openDox-code` is a
 fact about LAYOUT and not a claim about neutrality: exactly the reasoning that
 already lets a declared descendant be a root. `open` in front still WINS the
 classification — the manifest records `form: neutral-product, role: assembly`
-with `also_matches: [project-leg/assembly]`, so the overlap the scaffold used
-to compute and then throw away is now recorded like every other one, and
+with `also_matches: [project-leg/assembly]`, so the overlap the scaffold used to
+compute and then throw away is now recorded like every other one, and
 `validate-repository-naming.py --explain --role assembly openDox` names the
 admission. The legs are untouched: `openDox-spec` carries the lowercase suffix
-and is an ordinary project leg, a descendant of nothing and a neutral product
-of nothing. `<X>-Install` is admitted into nothing at all — it carries a
-hyphen, so it satisfies no leg form to be admitted into, and is still refused
-as any leg.
+and is an ordinary project leg, a descendant of nothing and a neutral product of
+nothing. `<X>-Install` is admitted into nothing at all — it carries a hyphen, so
+it satisfies no leg form to be admitted into, and is still refused as any leg.
 
 ## Adopting an existing repository
 
@@ -732,8 +731,8 @@ A repository that already exists is converted **in place**, by
 `adopt-project.py`, and this is a ruling (**Brett Heap, 2026-09-02**): it KEEPS
 ITS NAME, ITS IDENTITY AND ITS FULL HISTORY and becomes the assembly root, while
 `<Project>-spec` and `<Project>-code` are NEW repositories extracted with
-history-preserving filters. The source is never deleted, never renamed and
-never force-pushed; the only change to it is ONE split commit, arriving on a
+history-preserving filters. The source is never deleted, never renamed and never
+force-pushed; the only change to its history is ONE split commit, arriving on a
 branch by pull request — the organisations this serves are pull-request only,
 and a tool needing a bypass cannot be used where it is needed.
 
@@ -759,15 +758,16 @@ drifts.
 | `.specify/`, `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, … , `.cursor/`, `.roo/` | **root** | project-level workflow tooling spanning both legs |
 | `examples/golden-run/` | **asked** | acceptance evidence the spec cites, or a test fixture? |
 
-The contracts decision costs something, and the plan says so instead of
-letting it be discovered later: `scripts/validate.py` reads `contracts/*.yaml`
-from beside it and must now read ACROSS the root. `plan` finds every such file
-with `git grep` and writes it into `follow_ups:`; the root Makefile it
-materializes exports `CONTRACTS_DIR ?= $(CURDIR)/spec/contracts`. The tool
-does not make the edit — naming it is the honest half, making it silently
-would be the dangerous one. And `.specify/` and the ten identical assistant
-stubs stay at the root because an assistant reading `CLAUDE.md` from inside
-the code leg would be told about specifications it cannot see.
+The contracts decision costs something, and the plan says so instead of letting
+it be discovered later: `scripts/validate.py` reads `contracts/*.yaml` from
+beside it and must now read ACROSS the root. `plan` finds every such file with
+`git grep` and lists up to eight per directory in `follow_ups:`, counting the
+rest; the root Makefile it materializes exports `CONTRACTS_DIR ?=
+$(CURDIR)/spec/contracts`. The tool does not make the edit — naming it is the
+honest half, making it silently would be the dangerous one. And `.specify/` and
+the ten identical assistant stubs stay at the root because an assistant reading
+`CLAUDE.md` from inside the code leg would be told about specifications it
+cannot see.
 
 ### Ambiguous is an answer, and nothing is overwritten
 
@@ -807,23 +807,22 @@ scaffold writes — and the split mounts and pins it like an extracted one.
 
 The plan records `seeding.code.seeded_from_template: true` and the template it
 would use; `check` WARNS and still passes, because a spec-only repository is a
-legitimate thing to adopt; the verification table reads `code: 0 of N source
-paths (seeded from template)` and still accounts for every source path by blob
-sha. `execute` refuses without `--allow-empty-leg code`, in the plan or on its
-own command line: a plan that lost its code paths to a bad edit looks
-identical from here, so the consent is a human's word rather than an
-inference. Where the recorded block and the entries disagree — somebody
-answered an ambiguous path INTO the empty leg, which is the plan working — the
-entries win and it is a note, not a refusal.
+legitimate thing to adopt; the verification table's `code` row reads `0 of N
+source paths (seeded from template)`, and the table still accounts for every
+source path by blob sha. `execute` refuses without `--allow-empty-leg code`, in
+the plan or on its own command line: a plan that lost its code paths to a bad
+edit looks identical from here, so the consent is a human's word rather than an
+inference. Where the recorded block and the entries disagree — somebody answered
+an ambiguous path INTO the empty leg, which is the plan working — the entries
+win and it is a note, not a refusal.
 
 ## Families: a holder for projects that ship separately
 
 Ruled by **Brett Heap on 2026-09-04**, about InkRouter: *"InkRouter is a set of
-microservices and they deploy separately as api's. so maybe they each need
-their own assembly repo. So probably InkRouter is only something that can
-download all the others easily? like a holder folder and some utilities for
-the family of services. Then IRRS would be assembly and IRRS-spec and
-IRRS-code."*
+microservices and they deploy separately as api's. so maybe they each need their
+own assembly repo. So probably InkRouter is only something that can download all
+the others easily? like a holder folder and some utilities for the family of
+services. Then IRRS would be assembly and IRRS-spec and IRRS-code."*
 
 A **family** is a repository that pins other projects' **assembly roots** as
 submodules under `members/` and carries the utilities to fetch and bootstrap
@@ -937,11 +936,10 @@ copy of without changing any existing name's answer.
 
 ## The double pin, and the lockstep invariant
 
-Each leg is pinned TWICE, in the same commit: by the **gitlink** git records
-for the submodule, and by **`contracts/<role>-pin.yaml`** carrying
-`revision_kind: commit`, the 40-hex commit, and a sha256 digest. A tag is never
-the referent — a tag can be moved and a commit cannot — and a pin never
-expresses a range.
+Each leg is pinned TWICE, in the same commit: by the **gitlink** git records for
+the submodule, and by **`contracts/<role>-pin.yaml`** carrying `revision_kind:
+commit`, the 40-hex commit, and a sha256 digest. A tag is never the referent — a
+tag can be moved and a commit cannot — and a pin never expresses a range.
 
 Three things therefore move together, in ONE commit:
 
@@ -955,16 +953,16 @@ for months, seven consecutive pin-syncs from 2026-08-25 moved the gitlink
 alone, and `validate` was red on every pull request for a day — unnoticed
 because the check runs on pull requests only, so `main` never reports it.
 
-**What is digested.** `sorted-ls-tree-r-v1`: the sha256 of the sorted
-`git ls-tree -r -z <commit>` listing — each record `<mode> SP <type> SP <oid>
-TAB <path>` with the path unquoted, sorted bytewise, joined with LF. Not
-`git archive`: its tar bytes carry a pax header naming the commit, uname/gname,
-an mtime, and `export-ignore` handling from `.gitattributes`, so the same
-commit can digest differently across git versions and platforms — which is
-disqualifying for a number two machines must agree on. The `ls-tree` listing is
-a complete content address (mode catches permission changes, oid catches
-content, `160000 commit <oid>` catches a nested pin moving) and reproduces from
-nothing but git's plumbing.
+**What is digested.** `sorted-ls-tree-r-v1`: the sha256 of the sorted `git
+ls-tree -r -z <commit>` listing — each record `<mode> SP <type> SP <oid> TAB
+<path>` with the path unquoted, sorted bytewise, each followed by LF, the last
+one included. Not `git archive`: its tar bytes carry a pax header naming the
+commit, uname/gname, an mtime, and `export-ignore` handling from
+`.gitattributes`, so the same commit can digest differently across git versions
+and platforms — which is disqualifying for a number two machines must agree on.
+The `ls-tree` listing is a complete content address (mode catches permission
+changes, oid catches content, `160000 commit <oid>` catches a nested pin moving)
+and reproduces from nothing but git's plumbing.
 
 ### Advancing a leg: `scripts/bump-leg.py`
 
@@ -972,7 +970,7 @@ Moving those three facts by hand is how they come apart, so one command moves
 them together, run from a checkout of this standard:
 
 ```sh
-python3 scripts/bump-leg.py --root <path> --leg spec --to <40 hex>   # --dry-run prints the move and writes nothing
+python3 scripts/bump-leg.py --root <path> --leg spec --to <40 hex>   # --dry-run prints the move; it fetches into the leg and writes nothing else
 ```
 
 It fetches the commit into the leg, checks the leg out AT it, recomputes the
@@ -988,11 +986,12 @@ remote contains (including one committed in the mount and never pushed — a pin
 the rest of the world cannot fetch is a root it cannot bootstrap), a dirty root,
 an untracked or ignored workflow file it would rewrite, a root standing on its
 own tracking branch (the next step is a pull request, never a push to the
-default branch: `git switch -c <branch>` first; `--dry-run` writes nothing, so
-it runs there and prints that command), and a validator that goes red — rolling
-the pin, the workflow files, the leg's checkout and the index back first, so a
-refusal leaves the tree as it was found. The leg is left DETACHED at the new
-commit; `make bootstrap` re-places it on its tracking branch AT the new pin.
+default branch: `git switch -c <branch>` first; `--dry-run` fetches into the leg
+and writes nothing else, so it runs there and prints that command), and a
+validator that goes red — rolling the pin, the workflow files, the leg's
+checkout and the index back first, so a refusal leaves the tree as it was found.
+The leg is left DETACHED at the new commit; `make bootstrap` re-places it on its
+tracking branch AT the new pin, or says why not.
 
 ## Bootstrap is COPIED into the project, not fetched
 
@@ -1041,8 +1040,10 @@ HAND: re-copy, re-pin, re-validate. `update-shape.py` is that, as one command:
 `check` prints one verdict per file the pin names, and the verdict is the
 product: **`unchanged`**, **`upstream-changed`** (the bytes differ between the
 pinned commit and the target), **`locally-modified`** (the project's bytes
-differ from the pinned digest — drift it introduced) or **`both`**. It exits 1
-when there is anything to do, so it can be a scheduled job.
+differ from the pinned digest — drift it introduced) or **`both`**; also
+`already-at-target` (the root has the target's bytes) and `upstream-removed`,
+`unmapped` and `copy-missing`; `apply` refuses the last three. It exits 1 when
+there is anything to do, so it can be a scheduled job.
 
 `apply` copies the `upstream-changed` files, rewrites `contracts/shape-pin.yaml`
 (`commit`, `digests.tree_sha256` recomputed over the upstream tree under the
@@ -1054,13 +1055,13 @@ either goes red.
 **What it refuses, and why the refusals are the feature.** A `locally-modified`
 file keeps its bytes and is named in a refusal unless the human passes
 `--accept-local <path>` — recomputing that row silently would turn a drift
-finding into a digest that agrees with the project's own edited bytes, which
-is the standard quietly recording someone's edit as if it were upstream's. A
-file changed on **both** sides is refused outright: two
-edits to one file is a merge, and a merge is a human's judgement. So is a copy
-that was never verbatim — `adopt-project.py` appends a `CONTRACTS_DIR` block to
-an adopted Makefile, and copying the upstream bytes over that would delete it
-without saying so.
+finding into a digest that agrees with the project's own edited bytes, which is
+the standard quietly recording someone's edit as if it were upstream's. A file
+changed on **both** sides is refused until a human merges it, commits the merge
+and re-runs with `--accept-local <path>`: two edits to one file is a merge, and
+a merge is a human's judgement. So is a copy that was never verbatim —
+`adopt-project.py` appends a `CONTRACTS_DIR` block to an adopted Makefile, and
+copying the upstream bytes over that would delete it without saying so.
 
 **Only the pin's own rows are RE-SYNCED.** The file list is read from
 `contracts/shape-pin.yaml` and never re-derived from this repository's copy
@@ -1135,28 +1136,29 @@ and a repository the advisory is not silent about gets the **Triad** row, status
 `advisory`: said once and stepped over by the verdict (a leg gets its root).
 
 Every row is `ok`, `note`, `FINDING` or `n/a` — or `advisory`, the Triad row
-alone — and every one that is not `ok` names the exact command that fixes it,
-except the Triad row, which names none in any status. **Only a `FINDING`
-moves the verdict**, and `FINDING` means exactly *something else asserts this* — a
-validator, a pin row, a manifest, a gitlink. A difference nothing asserts is
-a `note`: printed, in `--json`, and stepped over by the verdict. That line
-was drawn after this command answered `INVALID` about a live estate whose
-every real gate was green, because a leg was missing a `.gitignore` that
-entered the standard *after* that project was scaffolded. A doctor that
-invents a rule to fail you by is not believed the next time. Then one
-verdict, and its exit code:
+alone — and a row that is not `ok` names the exact command that fixes it
+whenever there is one to run, except the Triad row, which names none in any
+status. **Only a `FINDING` moves the verdict**, and `FINDING` means exactly
+*something else asserts this* — a validator, a pin row, a manifest, a gitlink. A
+difference nothing asserts is a `note`: printed, in `--json`, and stepped over
+by the verdict. That line was drawn after this command answered `INVALID` about
+a live estate whose every real gate was green, because a leg was missing a
+`.gitignore` that entered the standard *after* that project was scaffolded. A
+doctor that invents a rule to fail you by is not believed the next time. Then
+one verdict, and its exit code:
 
 | verdict | exit | when |
 |---|---|---|
-| `COMPLIANT` | 0 | every row ok, and the pin names this standard's commit |
-| `COMPLIANT, SHAPE BEHIND (n upstream-changed, m upstream-added)` | 1 | valid, and the standard has moved on |
-| `DRIFTED (…)` | 1 | a copy was edited here, or a leg is off its pin |
+| `COMPLIANT` | 0 | no row is a `FINDING`, and the pin names this standard's commit |
+| `COMPLIANT, SHAPE BEHIND (n upstream-changed, m upstream-added)`, or `(pin <a> -> <b>, no copied file differs)` | 1 | valid, and the standard has moved on |
+| `DRIFTED (…)` | 1 | a copy was edited, deleted or no longer maps onto the standard, or a leg (a member, in a holder) is off its pin |
 | `MISPLACED (n paths)` | 1 | a tracked path sits in a leg the path policy puts elsewhere, or a submodule in a leg other than the one its `submodules:` record names |
 | `INVALID (<rows>)` | 1 | a validator went red, or (`merge`) the index holds an unmerged path |
 | `NOT A SHAPE ROOT` | 2 | neither manifest is there — adopt, or scaffold |
 
-Exit 3 is usage or environment — nothing about it is a statement about the
-tree you pointed at: no such path, a `shape-doctor.py` not sitting in a
+Exit 3 is usage or environment (a flag argparse rejects is exit 2) — nothing about
+it is a statement about the tree you pointed at: no such path, a refused
+`--placement-plan`, a `shape-doctor.py` not sitting in a
 checkout of the standard, or a pin naming a commit **this** checkout does not
 carry (`CANNOT ANSWER`). **Drift outranks a red validator** on the verdict
 line, deliberately — an edited shape copy is exactly what makes
@@ -1173,19 +1175,20 @@ what turns the other rows red, and no fix commits until it is finished.
 adoption's own policy — `contracts/path-classification.yaml`, walked with
 `adopt-project.py`'s own `walk()`, so there is no second copy of that
 classification to drift — over every tracked path of every mounted leg, and
-names the paths the policy would have put somewhere else, each with the rule
-id that judged it. What belongs to **every** repository is never judged: the
-four files `templates/spec-root/` and `templates/code-root/` themselves ship
-(`README.md`, `AGENTS.md`, `CLAUDE.md`, `.gitignore`), read from those
-templates at run time so the scaffold's own output can never be a finding,
-plus `LICENSE`, `.gitattributes`, `CODEOWNERS`, `.github/**` and the rest of
-the forge furniture — `--json` prints the whole list under `everywhere`,
-because what a report declined to look at belongs in the report. A path the
-policy will not call carries `review_required` and is a **`note`**: it is a
-question for a human, and an unanswered question is never a finding. One
-`git ls-files` per leg, one process for the classifying, and a directory whose
-files agree is ONE path however many are under it — so a leg of several
-thousand files answers in seconds and reads in a line.
+names the paths the policy would have put somewhere else, each with the rule id
+that judged it, and a submodule in a leg other than the one its `submodules:`
+record names. What belongs to **every** repository is never judged: the four
+files `templates/spec-root/` and `templates/code-root/` themselves ship
+(`README.md`, `AGENTS.md`, `CLAUDE.md`, `.gitignore`), read from those templates
+at run time so the scaffold's own output can never be a finding, plus `LICENSE`,
+`.gitattributes`, `CODEOWNERS`, `.github/**` and the rest of the forge furniture
+— `--json` prints the whole list under `everywhere`, because what a report
+declined to look at belongs in the report. A path the policy will not call
+carries `review_required` and is a **`note`**: it is a question for a human, and
+an unanswered question is never a finding. One `git ls-files` per leg, one
+process for the classifying, and a directory whose files agree is ONE path
+however many are under it — so a leg of several thousand files answers in
+seconds and reads in a line.
 
 **And the doctor still moves nothing.** A path changing legs is a pull request
 on the leg it leaves, a pull request on the leg it joins, and one pin bump in
@@ -1200,14 +1203,13 @@ Its entries are `adopt-project.py plan`'s entries exactly — `path`, `leg`,
 file is in today) and an empty `resolution:`, so a person who has resolved an
 adoption plan has already resolved this one. It carries `kind: placement-plan`
 and **not** `adoption-plan`, deliberately: an adoption plan is the input to
-`adopt-project.py execute`, which creates two repositories and rewrites
-history, and a file that called itself one would be that command aimed at a
-project that is already split. `adopt-project.py` refuses this kind by name,
-and the refusal says which tool consumes one. A later `--fix --plan <file>`
-will carry a **resolved** plan out by paired leg pull requests and a pin bump,
-printing what it will do and asking first; until then the moves are yours.
-`--placement-plan` is the only thing this command writes, and it writes only
-the file you name.
+`adopt-project.py execute`, which creates two repositories and rewrites history,
+and a file that called itself one would be that command aimed at a project that
+is already split. `adopt-project.py` refuses this kind by name, and the refusal
+says which tool consumes one. A later `--fix --plan <file>` will carry a
+**resolved** plan out by paired leg pull requests and a pin bump, printing what
+it will do and asking first; until then the moves are yours. `--placement-plan`
+is the only thing this command writes, and it writes only the file you name.
 
 **`machine` is the one row that is not about the repository**, so it is `n/a`
 by status and can never move the verdict: a workstation with no `gh` is not
@@ -1264,23 +1266,23 @@ That flag is the only thing in this standard that writes
 `${AGENT_PROTOCOL_ROOT:-$HOME/.agents}/workspace.yaml` (default: `~/.agents`), and it
 writes it only because you named the repository. Afterwards `resume <Name>` needs no flag.
 
-**How the estate is found.** `<Name>` is a folder under your projects
-directory: `~/projects/<Name>`, then `~/Projects/<Name>` — people spell it
-both ways — or wherever `$PROJECTS_DIR` points. A FAMILY folder
-(`<Name>/<Name>/family.yaml`) wins over a standalone root
-(`<Name>/project.yaml`) of the same name, because the holder is what drives
-the members. With no `<Name>` the estate around the current directory is used:
-the nearest holder beside you, or project root above you. With no estate
-around it either, `park` PARKS EVERY ESTATE it finds under your projects
-directory instead of refusing (Brett Heap's RULING of 2026-09-10, #91,
-superseding ruling 3 of #82 for this one case): it lists what it found, then
-runs itself on each one in name order, continuing past a refusal. `resume`
-deliberately keeps that old refusal for its own bare form — rebuilding every
-estate on a fresh machine by accident is the opposite risk from failing to
-park the one you meant. `--repo <owner/name>` names the estate by the
-`origin` of a clone you ALREADY have, in any url spelling; it never clones
-one, because `resume` is the command that clones and it clones from the
-record.
+**How the estate is found.** `<Name>` is a folder under your projects directory:
+`~/projects/<Name>`, then `~/Projects/<Name>` — people spell it both ways — or
+wherever `$PROJECTS_DIR` points. A FAMILY folder (`<Name>/<Name>/family.yaml`)
+wins over a standalone root (`<Name>/project.yaml`) of the same name, because
+the holder is what drives the members. With no `<Name>` the estate around the
+current directory is used: the nearest holder beside you, or project root above
+you. With no estate around it either, `park` lists every estate it finds under
+your projects directory and ASKS whether to park them all (with no terminal on
+stdin it refuses and names `--all`); `park --all`, or `-a`, parks them all
+unasked, in name order, continuing past a refusal and skipping a standalone root
+with no Speckit overlay (Brett Heap's RULINGs of 2026-09-10, the later
+superseding #91's unasked sweep). `resume` has no `--all`, and its bare form
+still refuses — rebuilding every estate on a fresh machine by accident is the
+opposite risk from failing to park the one you meant. `--repo <owner/name>`
+names the estate by the `origin` of a clone you ALREADY have, in any url
+spelling; it never clones one, because `resume` is the command that clones and
+it clones from the record.
 
 **What they leave behind, said out loud.** `park` finishes by printing what
 did NOT park and why none of it is park's to touch: commits on a `main` that
@@ -1301,9 +1303,8 @@ left behind, which is the point of printing that report.
 **This repository implements neither, deliberately** (ruled by Brett Heap,
 2026-09-09, #77). The WIP commit, the push, the `git worktree add`, the
 `.specify/feature.json` rewrite and the soft reset are the **Speckit git
-extension's**, which `setup-openspeckit` installs — one implementation. The
-two targets are three lines each and refuse BY NAME when the overlay is not
-there:
+extension's**, which `setup-openspeckit` installs — one implementation. The two
+targets are three lines each and refuse BY NAME when the overlay is not there:
 
     make park needs the Speckit worktree overlay; install it with: setup-openspeckit
 
@@ -1344,17 +1345,16 @@ which carries no feature branch at all.
 > a tool that discards somebody's pushed commit to make its own record fit.
 
 A FAMILY holder carries both verbs too and runs each member's own — **in the
-members' WORKING CLONES BESIDE THE HOLDER**, through `scripts/siblings.py
---make park`, and never in `members/<Project>`. That is the layout's own
-rule: the pinned copy is detached, for `bootstrap` and `validate`, and the
-sibling is where a person works, so the sibling is where the features and the
-worktrees are. A holder that parked the pinned copies would report "nothing
-to park" for every member while the work sat untouched next door. The
-dispatch clones nothing and fetches nothing; a member with no working clone is
-reported and SKIPPED naming `make siblings`, a member whose verb refuses has
-that refusal printed where it happened, and the holder exits non-zero if any
-member was skipped or refused. A skip is not a pass, and a refusal is never
-hidden.
+members' WORKING CLONES BESIDE THE HOLDER**, through `scripts/siblings.py --make
+park`, and never in `members/<Project>`. That is the layout's own rule: the
+pinned copy is detached, for `bootstrap` and `validate`, and the sibling is
+where a person works, so the sibling is where the features and the worktrees
+are. A holder that parked the pinned copies would report "nothing to park" for
+every member while the work sat untouched next door. The dispatch clones nothing
+and fetches nothing; a member with no working clone is reported and SKIPPED
+naming `make siblings`, a member whose verb refuses has that refusal printed
+where it happened, and the holder exits non-zero if any member was skipped or
+refused. A skip is not a pass, and a refusal is never hidden.
 
 > [!WARNING]
 > **Native Windows parks nothing.** The extension's `park` and `resume` are
