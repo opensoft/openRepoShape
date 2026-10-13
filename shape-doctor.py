@@ -2363,7 +2363,7 @@ def check_manifest_kinds(ctx: Context) -> Row:
             fixes.append(FAMILY_BESIDE_FIX)
         command = "; ".join(fixes)
         if unreadable:
-            restore, command = unreadable_next(ctx, unreadable)
+            restore, command = unreadable_next(ctx, unreadable, detail)
             detail.update({"restore": restore, "refusals": refusals})
         return Row("manifest-kinds", LABEL_MANIFEST_KINDS, FINDING,
                    "; ".join(parts) + aside, command, detail)
@@ -2515,7 +2515,7 @@ def pin_at(ctx: Context, rev: str, pin: str = SHAPE_PIN):
     THE ROWS, NOT A YES, for the shape pin (review of PR #358): `rev` may
     be an index stage, `:2` or `:3`, and the rows of the side of a merge
     `pin_restore` takes whole are the copies that side's tool wrote, so
-    they are what it names with the pin.
+    they are the conflicted files its note gives a person to merge (#485).
     """
     blob = git_answer(["cat-file", "blob", f"{rev}:./{pin}"],
                       ctx.root, binary=True)
@@ -2544,23 +2544,43 @@ def pin_restore(ctx: Context, detail: dict | None = None,
     these that applies decides, as `detail["restore"]`:
 
       unmerged     a merge left the pin conflicted. `checkout --ours`, or
-                   `--theirs` where only that side holds a pin, of every
-                   conflicted path the shape writes WHOLE -- the pin, and
-                   the copies that side's pin has `files:` rows for, their
-                   collision copies included -- because a merge of two
-                   `update-shape.py apply` runs conflicts in them together,
-                   and one side taken whole is one tool's output. Those rows
-                   and not this standard's copy lists: a file the pin has no
-                   row for is not a shape copy, though the lists name its
-                   path (review of PR #358).
-                   The manifest and README.md are never named, though `apply`
-                   writes lines of them: every other line is the project's
-                   own, and one side taken whole drops the other side's
-                   edits, the hunks git merged cleanly included (review of
-                   PR #267). Where either is conflicted the note says a
-                   person merges it, and `detail["left_for_a_person"]` lists
-                   it. A file of the project's own is never named: its merge
-                   is theirs.
+                   `--theirs` where only that side holds a pin, of THE PIN
+                   ALONE, which only a tool writes, so one side taken whole
+                   is one tool's output.
+                   A copy is never named with it (#485), though a merge of
+                   two `update-shape.py apply` runs conflicts in the two
+                   together: a copy can hold an edit of the project, kept by
+                   `apply --accept-local` on one side, and taken whole the
+                   other side's copy dropped it, the hunks git merged
+                   cleanly with it, and the doctor then said COMPLIANT. The
+                   copies are the files the taken side's pin has `files:`
+                   rows for, their collision copies included -- those rows
+                   and not this standard's copy lists, since a file the pin
+                   has no row for is not a shape copy, though the lists
+                   name its path (review of PR #358). Where one of them is
+                   conflicted the note says a person merges it by hand,
+                   keeping the hunks git merged, as a copy conflicted on its
+                   own is merged, and that `update-shape.py apply
+                   --accept-local` on a copy merged unlike the pin re-pins
+                   it from the merge. The `shape currency` row names it
+                   where `check` calls the copy `locally-modified`, as it
+                   does with the update side's pin taken. With the
+                   person's side's pin taken, behind the standard the copy
+                   was merged from, `check` calls it `both`, and the row's
+                   `apply` is refused `update-conflict` and asks for it
+                   (review of PR #496). The row never names it for `both`:
+                   AGENTS.md's rule 3 is never to pass it to make a refusal
+                   go away, and nothing here tells a copy merged by hand
+                   from one nobody merged.
+                   The manifest and README.md are never named either, though
+                   `apply` writes lines of them: every other line is the
+                   project's own, and one side taken whole drops the other
+                   side's edits, the hunks git merged cleanly included
+                   (review of PR #267). Where either is conflicted the note
+                   says a person merges it.
+                   `detail["left_for_a_person"]` lists every file the note
+                   gives a person. A file of the project's own is never
+                   named: its merge is theirs.
       uncommitted  HEAD holds a pin that reads, and the tree or the index
                    differs from it. `checkout HEAD`, which drops a change no
                    tool of this standard leaves uncommitted.
@@ -2597,10 +2617,10 @@ def pin_restore(ctx: Context, detail: dict | None = None,
     declares, for a leg or a neutral product, or a copy the shape pin has a
     row for -- which is how the `manifest kinds` row answers each one that
     does not load. The note says `copy` where the file is not a pin, and
-    `pin_reads_at` says what reads. Only the shape pin takes more paths with
-    it in a merge -- the copies `apply` writes in the same commit -- and
-    only its note names a conflicted manifest or README.md for a person.
-    Any other file is named alone. A leg pin moves with its gitlink, but
+    `pin_reads_at` says what reads. Only the shape pin's note names other
+    paths of a merge, for a person to merge by hand: the copies `apply`
+    writes in the same commit, and a conflicted manifest or README.md.
+    Every pin is named alone. A leg pin moves with its gitlink, but
     `checkout --ours` on a conflicted gitlink exits 0 and leaves all three
     stages where they were, so naming it would be a command that changes
     nothing. Finishing the merge takes the gitlink, and the `pins` row then
@@ -2640,7 +2660,6 @@ def pin_restore(ctx: Context, detail: dict | None = None,
     if xy in UNMERGED_STATUS:
         us = ctx.update_shape()
         kind = us.root_kind(root)
-        whole = {pin}
         # `<mode> SP <object> SP <stage> TAB <path>`, one record per stage.
         stages: dict[str, set] = {}
         listing = git_answer(["ls-files", "-u", "-z"], root, binary=True)
@@ -2654,33 +2673,53 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                        ("--theirs", b"3") if b"3" in pin_stages else
                        (None, None))
         if side:
-            if pin == SHAPE_PIN:
-                whole.update(pin_at(ctx, f":{stage.decode()}") or ())
-            note = ("--theirs takes the other side. Take one side whole"
-                    if b"3" in pin_stages and side == "--ours"
+            note = (f"--theirs takes the other side. Take one side of the "
+                    f"{what} whole" if b"3" in pin_stages and side == "--ours"
                     else f"only that side of the merge holds a {what}. Take "
                     "it whole")
-            named = sorted(name for name, held in stages.items()
-                           if name in whole and stage in held)
-            left = (sorted(name for name in (kind.manifest, us.README)
-                           if name in stages) if pin == SHAPE_PIN else [])
-            then = ", then finish"
-            if left:
+            lines, copies = [], []
+            if pin == SHAPE_PIN:
+                lines = sorted(name for name in (kind.manifest, us.README)
+                               if name in stages)
+                copies = sorted(name for name in set(
+                    pin_at(ctx, f":{stage.decode()}") or ())
+                    if name in stages)
+            then, after = ", then finish", ""
+            if lines or copies:
                 if detail is not None:
-                    detail["left_for_a_person"] = left
-                says = ("are conflicted too and hold lines of the project, "
-                        "so a person merges them" if len(left) > 1 else
-                        "is conflicted too and holds lines of the project, "
-                        "so a person merges it")
-                then = (f". {' and '.join(left)} {says}, keeping the lines "
-                        "update-shape.py writes from the side taken here. "
-                        "Then finish")
+                    detail["left_for_a_person"] = sorted(lines + copies)
+                said = []
+                if lines:
+                    said.append(
+                        f"{' and '.join(lines)} "
+                        + ("are conflicted too and hold lines of the "
+                           "project, so a person merges them" if len(lines) > 1
+                           else "is conflicted too and holds lines of the "
+                           "project, so a person merges it")
+                        + ", keeping the lines update-shape.py writes from "
+                        "the side taken here")
+                if copies:
+                    said.append(
+                        f"{' and '.join(copies)} "
+                        + ("are copies conflicted too" if len(copies) > 1
+                           else "is a copy conflicted too")
+                        + f". {BY_HAND_WHY['copy']}, so neither side is "
+                        "taken whole: a person merges "
+                        + ("each" if len(copies) > 1 else "it")
+                        + " by hand, keeping the hunks git merged")
+                    after = (". Where a copy as merged differs from the pin, "
+                             "update-shape.py apply --accept-local on that "
+                             "copy re-pins it from the merge. The shape "
+                             "currency row names it where update-shape.py "
+                             "check calls the copy locally-modified, and "
+                             "where check calls it both, the apply the row "
+                             "names is refused as update-conflict and asks "
+                             "for --accept-local on that path")
+                then = ". " + ". ".join(said) + ". Then finish"
             return "unmerged", (
-                f"{git_c} checkout {side} -- "
-                + " ".join(quote_arg(name) for name in named)
-                + f"   # {note} for every path named and never a "
-                f"hand-merged {what}{then} the merge as git says and run "
-                "this doctor again")
+                f"{git_c} checkout {side} -- {quote_arg(pin)}   # {note} and "
+                f"never a hand-merged {what}{then} the merge as git says and "
+                f"run this doctor again{after}")
     elif pin_reads_at(ctx, "HEAD", pin):
         if xy and shown:
             return "uncommitted", (
@@ -2853,7 +2892,8 @@ UNREADABLE_BY_HAND = (
     "once they load")
 
 
-def unreadable_next(ctx: Context, unreadable: list) -> tuple[dict, str]:
+def unreadable_next(ctx: Context, unreadable: list,
+                    detail: dict | None = None) -> tuple[dict, str]:
     """`(restore, command)` for the `manifest kinds` row's files that do not
     load (#291): each file's case, and the one command the row prints.
 
@@ -2876,16 +2916,33 @@ def unreadable_next(ctx: Context, unreadable: list) -> tuple[dict, str]:
     the file, and its note says that what the file should say is theirs to
     decide. #205's `manifest` row answers a `project.yaml` that does not
     load the same way: the gate that refuses it, and that note.
+
+    WHAT THE SHAPE PIN'S MERGE LEAVES TO A PERSON IS SAID HERE TOO (#485).
+    While the shape pin does not read, no row says what is a copy, so a
+    copy conflicted beside it is not `tool_written`. The side of the merge
+    `pin_restore` takes does say, and its note gives each such copy to a
+    person. That copy's case is `unmerged`, the one it has once the pin
+    reads, and not `project`, and `detail` gets the `left_for_a_person`
+    the `shape currency` row's has, so both rows say the same of the same
+    command.
     """
     restore: dict[str, str] = {}
     commands: dict[str, str] = {}
+    held: dict = {}
     for rel in unreadable:
         if tool_written(ctx, rel):
-            restore[rel], found = pin_restore(ctx, pin=rel)
+            restore[rel], found = pin_restore(
+                ctx, held if rel == SHAPE_PIN else None, pin=rel)
             if found:
                 commands[rel] = found
         else:
             restore[rel] = "project"
+    left = held.get("left_for_a_person", [])
+    for rel in left:
+        if restore.get(rel) == "project":
+            restore[rel] = "unmerged"
+    if left and detail is not None:
+        detail["left_for_a_person"] = left
     command = commands.get(SHAPE_PIN) or next(iter(commands.values()), None)
     if command is None:
         command = (f"{PYTHON} {quote_arg(ctx.shape / 'shape-doctor.py')} "
@@ -2922,7 +2979,7 @@ def unreadable_pin_row(ctx: Context, exc: Refusal) -> Row:
     THE NEXT PUTS BACK THE PIN A TOOL WROTE, NEVER A FETCH. `pin_restore`
     names the git command from the pin's own state, and run as printed it
     ends at `COMPLIANT` or at a row that reads the pin, but for what its
-    note leaves to a person: a conflicted manifest or README.md, or an index
+    note gives a person: a conflicted copy, manifest or README.md, or an index
     flag that hides the pin. Naming the tool that refused, `update-shape.py
     check`, was a dead end (review of PR #267): it reads the pin with the
     same `read_pin`, refuses it the same way, and its remediation is about
