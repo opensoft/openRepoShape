@@ -1075,17 +1075,17 @@ assumed.** A pin can only record what existed the day it was written, so
 `AGENTS-shape.md` — added to both root templates after MedxEHR, MedxGlass,
 MedxScribe and the InkRouter members were cut — reached none of them. `check`
 therefore also reports **`upstream-added`**: a path the UPSTREAM's copy lists
-name AT THE TARGET COMMIT (read out of that commit's own
-`shape_materialize.py`, so the answer is the target's lists and not this
-checkout's) that the pin has no row for and the root has no file at. It counts
-as something to do, so `check` still exits 1. `apply` writes NONE of them
-unless `--add <path>` names one, per file: `apply --at <commit> --yes --add
-AGENTS-shape.md` copies it, chmods it if the materializer would, appends its
-`sha256` row and moves the pin, all inside the same transaction and rolled back
-whole if a validator goes red. Without `--add` it says `not added; pass --add
-<path>` and re-pins the rest. `--add` refuses a path that is already pinned,
-one the target's lists do not name — and one the root ALREADY has a file at,
-because two files with one name is a merge and this command copies bytes. A
+name AT THE TARGET COMMIT (read out of that commit's own `shape_materialize.py`,
+so the answer is the target's lists and not this checkout's) that the pin has no
+row for and the root has no file at. It counts as something to do, so `check`
+still exits 1. `apply` writes NONE of them unless `--add <path>` names one, per
+file: `apply --at <commit> --yes --add AGENTS-shape.md` copies it, chmods it if
+the materializer would, names it in a root `.gitattributes` block of #471,
+appends its `sha256` row and moves the pin, all inside the same transaction and
+rolled back whole if a validator goes red. Without `--add` it says `not added;
+pass --add <path>` and re-pins the rest. `--add` refuses a path that is already
+pinned, one the target's lists do not name — and one the root ALREADY has a file
+at, because two files with one name is a merge and this command copies bytes. A
 project that declines an addition has no way to say so yet: it will be reported
 by every `check` until it is taken or a file arrives at that path.
 
