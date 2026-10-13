@@ -435,8 +435,8 @@ def test_the_branch_is_spelled_in_the_lines_that_name_it(root):
     `tests/test_bootstrap_spelling.py`: they are not what is asked."""
     manifest = root / "project.yaml"
     text = manifest.read_bytes()
-    assert text.count(b"tracking_branch: main\n") == 1, text
-    manifest.write_bytes(text.replace(b"tracking_branch: main\n",
+    assert text.count(b'tracking_branch: "main"\n') == 1, text
+    manifest.write_bytes(text.replace(b'tracking_branch: "main"\n',
                                       b'tracking_branch: "tb\\u2028x"\n'))
     named = r"tb\u2028x"
     leg = root / "spec"
@@ -476,8 +476,8 @@ def test_the_branch_and_its_upstream_are_spelled_in_the_move_back(root):
     tracking that ref, and the leg detached at the pin."""
     manifest = root / "project.yaml"
     text = manifest.read_bytes()
-    assert text.count(b"tracking_branch: main\n") == 1, text
-    manifest.write_bytes(text.replace(b"tracking_branch: main\n",
+    assert text.count(b'tracking_branch: "main"\n') == 1, text
+    manifest.write_bytes(text.replace(b'tracking_branch: "main"\n',
                                       b'tracking_branch: "tb\\u2028x"\n'))
     raw = "tb\u2028x"
     leg = root / "spec"
@@ -700,8 +700,9 @@ def test_the_command_that_brings_the_branch_forward_is_shell_quoted(
     git("mv", "spec", "my spec", cwd=fresh)
     manifest = fresh / "project.yaml"
     text = manifest.read_bytes()
-    assert text.count(b"path: spec\n") == 1, text
-    manifest.write_bytes(text.replace(b"path: spec\n", b'path: "my spec"\n'))
+    assert text.count(b'path: "spec"\n') == 1, text
+    manifest.write_bytes(text.replace(b'path: "spec"\n',
+                                      b'path: "my spec"\n'))
     leg = fresh / "my spec"
     pin = rev(leg)
     ahead = leg_main_ahead["ahead"]
