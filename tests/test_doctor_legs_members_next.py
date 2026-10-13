@@ -28,9 +28,9 @@ fixtures' remotes are bare repositories on disk, which git refuses as a
 submodule URL by default -- and never `GIT_ALLOW_PROTOCOL`, which would
 override git's `user` policy for the whole run.
 
-WHAT IS ASSERTED IS WHAT THE COMMAND DOES, and the explanation after it is
+WHAT IS ASSERTED IS WHAT THE COMMAND DOES, and the explanation beside it is
 read through `why_of` alone, so that moving the `   # ` tail into a field of
-its own (#277) changes one helper here and not every test.
+its own (#277) changed one helper here and not every test.
 
 The fixtures are `test_shape_doctor`'s, imported rather than rebuilt: a
 project or a holder made any other way would be a different one.
@@ -66,9 +66,6 @@ PASTE_ENV = {**{k: v for k, v in os.environ.items() if k != "PYTHONPATH"},
              "GIT_CONFIG_VALUE_0": "always",
              "PYTHONDONTWRITEBYTECODE": "1"}
 
-#: The three characters between a NEXT's command and its explanation.
-TAIL = "   # "
-
 #: The git line's own words after `git -C <root>`: `--init` for a mount the
 #: clone never registered, `--recursive` for a member's own legs, and
 #: `--checkout` so that a configured `submodule.<name>.update` (rebase, merge,
@@ -79,14 +76,15 @@ UPDATE = "submodule update --init --recursive --checkout"
 # --- reading a row ----------------------------------------------------------
 
 def command_of(row: dict) -> str:
-    """The command a row hands over, without its explanation."""
-    return (row["next"] or "").partition(TAIL)[0]
+    """The command a row hands over: its NEXT, which is only the command
+    (#277)."""
+    return row["next"] or ""
 
 
 def why_of(row: dict) -> str:
-    """The sentence that explains the command: today the `   # ` tail, and
-    the row's own `why` once #277 moves it there."""
-    return row.get("why") or (row["next"] or "").partition(TAIL)[2]
+    """The sentence that explains the command: the row's own `why`, which
+    used to be the NEXT's `   # ` tail (#277)."""
+    return row["why"] or ""
 
 
 def row_of(standard: Path, root: Path, row_id: str) -> dict:
