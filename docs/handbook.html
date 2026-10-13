@@ -1454,10 +1454,13 @@ openRepoShape --doctor                 # the repository you are standing in
       policy), <strong>agent files</strong> and <strong>machine</strong>. A
       <a href="#families">family holder</a> gets <strong>family</strong>, <strong>manifest
       kinds</strong>, <strong>shape currency</strong>, <strong>placement</strong>
-      (<code>n/a</code> &mdash; a holder has no legs of its own), <strong>members</strong> and
-      <strong>machine</strong>; a directory that is neither gets what it is CALLED under the naming
-      policy, what IS in it, and the way in &mdash; and a repository the advisory is not silent
-      about gets the <strong>Triad</strong> row, status <code>advisory</code>: the
+      (<code>n/a</code> &mdash; a holder has no legs of its own), <strong>agent files</strong>,
+      <strong>members</strong> and <strong>machine</strong>. Either one in the middle of a merge
+      gets <strong>merge</strong> first: a <code>FINDING</code> naming the unmerged paths, or a
+      <code>note</code> if nothing is left unmerged. A directory that is neither gets what it is
+      CALLED under the naming policy, what IS in it, the way in and <strong>machine</strong>
+      &mdash; and a repository the advisory is not silent about gets the
+      <strong>Triad</strong> row, status <code>advisory</code>: the
       <a href="#confers">preference</a> said once and stepped over by the verdict (a leg gets its
       assembly root).</p>
       <p>Every row is <code>ok</code>, <code>note</code>, <code>FINDING</code> or
@@ -1476,8 +1479,8 @@ openRepoShape --doctor                 # the repository you are standing in
           <tr><td><code>COMPLIANT</code></td><td>0</td><td>every row ok, and the pin names this standard&rsquo;s commit</td></tr>
           <tr><td><code>COMPLIANT, SHAPE BEHIND (n upstream-changed, m upstream-added)</code></td><td>1</td><td>valid, and the standard has moved on</td></tr>
           <tr><td><code>DRIFTED (&hellip;)</code></td><td>1</td><td>a copy was edited here, or a leg is off its pin</td></tr>
-          <tr><td><code>MISPLACED (n paths)</code></td><td>1</td><td>a tracked path sits in a leg the path policy puts elsewhere</td></tr>
-          <tr><td><code>INVALID (&lt;rows&gt;)</code></td><td>1</td><td>a validator went red</td></tr>
+          <tr><td><code>MISPLACED (n paths)</code></td><td>1</td><td>a tracked path sits in a leg the path policy puts elsewhere, or a submodule in a leg other than the one its <code>submodules:</code> record names</td></tr>
+          <tr><td><code>INVALID (&lt;rows&gt;)</code></td><td>1</td><td>a validator went red, or (<code>merge</code>) the index holds an unmerged path</td></tr>
           <tr><td><code>NOT A SHAPE ROOT</code></td><td>2</td><td>neither manifest is there &mdash; adopt, or scaffold</td></tr>
         </tbody>
       </table>
@@ -1491,6 +1494,8 @@ openRepoShape --doctor                 # the repository you are standing in
       either way, with its own next command. <code>MISPLACED</code> sits between the two: a path in
       the wrong leg is a fact about the shape that no validator, pin or manifest here can see, while
       a red validator names itself in the table whether or not it also names the verdict line.
+      <strong>An unfinished merge outranks all three</strong>, as <code>INVALID (merge)</code>: the
+      conflict is what turns the other rows red, and no fix commits until it is finished.
       <code>--json</code> is the same report as one object,
       each row carrying its <code>id</code>.</p>
 
@@ -1826,9 +1831,10 @@ resume InkRouter                # on workstation B, and the estate is back</code
       never the tracking branch, and printing the push of it, added (#487); the one network
       read a project&rsquo;s own validators can make, the <code>gh api</code> recheck of a neutral
       product&rsquo;s pin, said where this page and the README had said &ldquo;offline&rdquo;,
-      added (#411) &mdash; a page cannot name the commit that contains it, and the blob below is
-      the fact a test checks.
-      README.md blob 9978536a8e1c4b533de52b55cd3c954c6430c5b4. Every command, flag, exit code
+      added (#411); the doctor&rsquo;s <strong>merge</strong> row, and <code>INVALID (merge)</code>
+      above drift, added (#424) &mdash; a page cannot name the commit that contains it, and the
+      blob below is the fact a test checks.
+      README.md blob 66e8f5d041d3830cb541d8aa8a432f13e580ea5a. Every command, flag, exit code
       and file name on this page is quoted from that README and from AGENTS.md.</p>
     </footer>
   </main>
