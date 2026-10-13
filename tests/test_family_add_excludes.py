@@ -178,6 +178,8 @@ def empty_holder(tmp_path) -> Path:
     assert created.returncode == 0, created.stderr + created.stdout
     root = tmp_path / "work" / "Contoso"
     assert not (root / "members").exists()
+    # On a branch, as `add` requires: it refuses the tracking branch (#487).
+    git("switch", "-q", "-c", "family/add", cwd=root)
     return root
 
 

@@ -419,6 +419,8 @@ def holder(standard, tmp_path_factory) -> dict:
         "--work-dir", str(base / "fam"))
     assert created.returncode == 0, created.stderr + created.stdout
     root = base / "fam" / FAMILY_NAME
+    # On a branch, as `add` requires: it refuses the tracking branch (#487).
+    git("switch", "-q", "-c", "family/members", cwd=root)
     added = run_script(standard / "scripts" / "family.py", "add",
                        "--family-root", str(root),
                        "--member", f"{FAMILY_NAME}/{FAMILY_MEMBER}",

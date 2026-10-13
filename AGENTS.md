@@ -360,6 +360,7 @@ that ship together already are.
 
 ```sh
 python3 scripts/family.py init --org <org> --family <Name> --into .. [--reuse-empty-repo]
+git -C <path> switch -c family/add-<project>   # a branch first: see 3
 python3 scripts/family.py add  --family-root <path> --member <org>/<Project>
 python3 scripts/family.py bump --family-root <path> --member <Project> --to <sha>
 python3 scripts/family.py siblings --family-root <path>
@@ -378,14 +379,14 @@ python3 scripts/family.py siblings --family-root <path>
    Say the landing path back to the human: the doubled `<Family>/<Family>` is
    deliberate and reads like a mistake until somebody explains it.
 2. **A family pins ASSEMBLY ROOTS, never legs.** `--member <org>/<Project>`,
-   never `<Project>-spec`. The tool refuses a leg, and the refusal is
-   correct: a leg has no `project.yaml` and belongs to its own root.
+   never `<Project>-spec`: a leg has no `project.yaml`, and is rightly refused.
 3. **Each of `add`, `bump` and `remove` writes ONE commit** moving the
-   gitlink and the pin together. Land it as a pull request; never suggest a
-   push to the default branch. Do not hand-edit `family.yaml`'s `members:`
+   gitlink and the pin together, on a branch you make first (see above): the
+   tracking branch is refused (`family-on-tracking-branch`). Push the branch
+   as its `NEXT` line says and land it as a pull request; never suggest a
+   push to the default branch. Never hand-edit `family.yaml`'s `members:`
    block — the tool rewrites it wholesale. `bump` takes the same repeatable
-   `--trailer "<Key>: <value>"` as `update-shape.py apply`, for the lines its
-   commit must end with.
+   `--trailer "<Key>: <value>"` as `update-shape.py apply`.
 4. **The member must be scaffolded or adopted FIRST.** A family cannot make a
    project out of a repository; it can only pin one that already is.
 5. **`make siblings` in the holder — or `family.py siblings --family-root
@@ -398,11 +399,10 @@ python3 scripts/family.py siblings --family-root <path>
    parent folder is not named after the family it warns and prints an `mv`,
    and running that `mv` yourself relocates a checkout out from under a
    shell, an editor and every agent lane, and breaks any linked worktree
-   (its `.git` file carries an absolute path). It also never touches an
-   existing clone beyond `git fetch`: no checkout, no reset, no pull,
-   because somebody is working in there. A directory that is a clone of a
-   different repository is reported and skipped; the exit is the human's
-   hand, not an overwrite.
+   (its `.git` file carries an absolute path). An existing clone gets only
+   `git fetch` — no checkout, no reset, no pull — because somebody works in
+   there; one of a different repository is reported and skipped, and the
+   exit is the human's hand, not an overwrite.
 6. `update-shape.py` updates a family root exactly as it updates a project,
    and the same four refusals apply. It mirrors into `family.yaml`. An
    existing holder receives `scripts/siblings.py` that way: `check` reports

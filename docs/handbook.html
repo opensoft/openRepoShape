@@ -1245,12 +1245,14 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
     …six more, added as they arrive
   IRRS/  IRSS/  …               the same members as WORKING clones, on main</code></pre></div>
       <div class="code" data-lang="sh"><pre><code>python3 scripts/family.py init --org InkRouter --family InkRouter --into .. --reuse-empty-repo
+git -C ../InkRouter/InkRouter switch -c family/add-irrs
 python3 scripts/family.py add  --family-root ../InkRouter/InkRouter --member InkRouter/IRRS
 python3 scripts/family.py bump --family-root ../InkRouter/InkRouter --member IRRS --to &lt;40 hex&gt;
 python3 scripts/family.py remove --family-root ../InkRouter/InkRouter --member IRRS
 python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></pre></div>
       <p><code>add</code>, <code>bump</code> and <code>remove</code> each write ONE commit, with
-      explicit pathspecs, moving the gitlink and <code>members[].pin</code> together &mdash; the
+      explicit pathspecs, on a branch made first (the tracking branch is refused) and print its
+      push, moving the gitlink and <code>members[].pin</code> together &mdash; the
       same lockstep rule an assembly root applies to its legs, and
       <code>scripts/validate-family.py</code> refuses when they disagree. Each row also records the
       member&rsquo;s own <code>project.yaml</code> <code>id</code>, so the validator can check the
@@ -1799,9 +1801,11 @@ resume InkRouter                # on workstation B, and the estate is back</code
       name, added (#289); <code>bump-leg.py</code> refusing a workflow file, the workflows directory
       or the leg&rsquo;s pin that this user cannot open, by name, added (#383); what
       <code>setup.sh --help</code> does from a download, which clones nothing, and which commands
-      list every flag, added (#341) &mdash; a page cannot name the commit that contains it, and
+      list every flag, added (#341); <code>family.py</code> <code>add</code>, <code>bump</code> and
+      <code>remove</code> committing on a branch made first, never the tracking branch, and
+      printing the push of it, added (#487) &mdash; a page cannot name the commit that contains it, and
       the blob below is the fact a test checks.
-      README.md blob 5465d135ca7263010ee354424041f90c4553d2e7. Every command, flag, exit code
+      README.md blob ae6ebea4c39bffeaeaa8fc624741e68ec0438653. Every command, flag, exit code
       and file name on this page is quoted from that README and from AGENTS.md.</p>
     </footer>
   </main>
