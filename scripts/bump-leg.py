@@ -47,7 +47,28 @@ WHAT IT REFUSES, and why each is a refusal rather than a warning:
     git's spelling, never refused as untracked.
   * the root standing on its own tracking branch. The next step this prints
     would then be a push to the default branch, and these organisations are
-    pull-request only.
+    pull-request only. `--dry-run` commits nothing, so it runs there, and ends
+    by naming the `git switch -c` the real run needs (#477).
+  * a workflow file under `.github/workflows/`, or the leg's
+    `contracts/<role>-pin.yaml`, that is not UTF-8 (a Latin-1 comment, a
+    UTF-16 file with a byte-order mark): `bump-leg-workflow-unreadable` and
+    `bump-leg-pin-unreadable`, naming each file and its first bad byte, before
+    anything is written and under `--dry-run` as well (#289). Never read
+    lossily — the rewritten text is written back, and would carry U+FFFD
+    where the operator's byte was — and never skipped, since `validate-pins.py`
+    reads every workflow file on disk and cannot read it either. A workflow
+    file git does not track is refused the same way and marked `(untracked or
+    ignored)`: it needs the re-save and no commit, where a tracked one is
+    committed after it.
+  * the same two ids for a file or a directory this user cannot OPEN (#383):
+    a workflow file, `.github/workflows/` itself or the leg's pin that the
+    operating system refuses (`Permission denied`) or fails to read, naming
+    the path and the system's own reason. The remedy is to make it readable
+    by this user (`chmod u+r`, or fix who owns it) and run the same command
+    again, not a re-save. Refused before anything is written, under
+    `--dry-run` as well, whether or not the file names the leg, and a line
+    for a file git does not track is marked as it is for a file that is not
+    UTF-8.
   * a validator that goes red after the rewrite. Every byte is rolled back
     first — the pin file, the workflow files, the leg's checkout and the index
     — so a refusal leaves the tree exactly as it was found.
@@ -73,12 +94,16 @@ commit · 2 a refusal.
 from __future__ import annotations
 
 import argparse
+import errno
 import os
 import re
+import shlex
+import stat
 import subprocess
 import sys
 from functools import partial
 from pathlib import Path
+from typing import Callable
 
 SHAPE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
@@ -88,7 +113,8 @@ from repo_shape import (  # noqa: E402
 )
 from shape_materialize import (  # noqa: E402
     CommandFailed, captured_child_environment, check_program, commit_trailers,
-    escape_what_stdout_cannot_encode, run, trailer_line, write_lf,
+    escape_what_stdout_cannot_encode, is_nested_key, rewrite_fault, run,
+    trailer_line, with_scalar, write_lf,
 )
 
 MANIFEST = "project.yaml"
@@ -227,17 +253,31 @@ def rewrite_pin(text: str, commit: str, digest: str) -> str:
 
     Each replacement must fire exactly once or this refuses: a pin file this
     tool did not recognise is not a pin file it may edit.
+
+    EACH OF THE TWO LINES KEEPS ITS OWN LAYOUT (#323). `commit:` is found at
+    column 0 and `tree_sha256:` as any INDENTED line that begins with it, so a
+    `digests:` child at any depth the reader accepts is recognised, and only
+    the value after the key changes: the indentation, the spacing and a
+    trailing `# comment` are the line's own. They were written back as
+    `commit: "<sha>"` and `  tree_sha256: "<digest>"`, so a child indented
+    four spaces was refused as hand-edited and a comment was dropped.
+
+    WHAT IS RETURNED HAS BEEN READ BACK, as `update-shape.py`'s pin and
+    manifest rewrites are (`shape_materialize.rewrite_fault`): a layout this
+    line rewrite cannot carry is refused HERE as this tool's failure, before
+    any byte is written. The digest is the one this command RECOMPUTED from
+    the leg's own objects; the read-back only asks that it landed.
     """
     out: list[str] = []
     seen = {"commit": 0, "tree_sha256": 0}
     for line in text.splitlines():
         if line.startswith("commit:"):
             seen["commit"] += 1
-            out.append(f'commit: "{commit}"')
+            out.append(with_scalar(line, "commit", commit))
             continue
-        if line.startswith("  tree_sha256:"):
+        if is_nested_key(line, "tree_sha256"):
             seen["tree_sha256"] += 1
-            out.append(f'  tree_sha256: "{digest}"')
+            out.append(with_scalar(line, "tree_sha256", digest))
             continue
         out.append(line)
     for key, count in seen.items():
@@ -248,9 +288,23 @@ def rewrite_pin(text: str, commit: str, digest: str) -> str:
                 "was expected, so this tool will not rewrite it",
                 "Remediation: the pin was hand-edited into a shape this tool "
                 "does not recognise. Fix it by hand this once — `commit:` at "
-                "column 0 and `  tree_sha256:` under `digests:` — or re-"
-                "scaffold.")
-    return "\n".join(out) + "\n"
+                "column 0 and `tree_sha256:` indented under `digests:` — or "
+                "re-scaffold.")
+    rewritten = "\n".join(out) + "\n"
+    why = rewrite_fault(text, rewritten, commit, digest)
+    if why is not None:
+        raise Refusal(
+            "bump-leg-pin-unrecognised",
+            "the pin file reads as it stands, but this tool's rewrite of it "
+            f"does not read back to the target ({why}), so this tool will not "
+            "write it",
+            "Remediation: the fault is this tool's line rewrite, not the "
+            "project's pin. Put each of `commit:` and `tree_sha256:` on one "
+            "line with its quoted value, as the scaffold writes them, leave "
+            "both values as they are — this command recomputes the digest, "
+            "nobody edits it to fit — and run the same command again; this "
+            "tool will not guess at a pin it does not recognise.")
+    return rewritten
 
 
 def _tracked_workflows(root: Path, workflows: Path) -> set[str]:
@@ -266,6 +320,299 @@ def _tracked_workflows(root: Path, workflows: Path) -> set[str]:
                    workflows.relative_to(root).as_posix()],
                   cwd=root, binary=True)
     return {os.fsdecode(name) for name in raw.split(b"\0") if name}
+
+
+def _not_utf8(root: Path, path: Path, exc: UnicodeDecodeError) -> str:
+    """`<path relative to root>: not UTF-8 at byte N (<reason>)`, in the
+    words `repo_shape.load_yaml` gives the same failure (#192), so a file this
+    tool cannot read is named the way every other reader names one."""
+    return (f"{path.relative_to(root).as_posix()}: not UTF-8 at byte "
+            f"{exc.start} ({exc.reason})")
+
+
+#: The `OSError`s that `Path.is_file()` and `Path.is_dir()` answered False to
+#: on Python 3.9 to 3.13 (pathlib's `_ignore_error`), because each means there
+#: is nothing at the name to open: no such file, a part of the path that is
+#: not a directory, a bad descriptor, a symlink loop, and Windows' "not
+#: ready", "invalid name" and "cannot resolve". Every other one was raised.
+_ABSENT_ERRNOS = (errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP)
+_ABSENT_WINERRORS = (21, 123, 1921)
+
+
+def _is_a(path: Path, kind: Callable[[int], bool]) -> bool:
+    """Whether `path` is there and of `kind` (`stat.S_ISREG`, `stat.S_ISDIR`),
+    raising the `OSError` of a `stat` the operating system REFUSED (#383).
+
+    NOT `Path.is_file()` OR `Path.is_dir()`, whose answer depends on the
+    Python. Up to 3.13 they raised a refused `stat` (`PermissionError`) and
+    answered False only when nothing was there; from 3.14 they call
+    `os.path.isfile` and `isdir`, which answer False to ANY `OSError`. On 3.14
+    the pin inside a `contracts/` this user cannot search was "missing"
+    (`bump-leg-pin-missing`, whose remedy restores a file that is there), and
+    every file in a `.github/workflows/` this user can list but not search
+    was skipped as no file at all: the bump went ahead, `validate-pins.py`
+    found the workflow "pinned but absent", and the run was rolled back as
+    `bump-leg-validators-red`. Asked here, every Python answers as 3.9 to
+    3.13 did, and a refused `stat` is a refusal that names the path.
+    """
+    try:
+        mode = path.stat().st_mode
+    except OSError as exc:
+        if (exc.errno in _ABSENT_ERRNOS
+                or getattr(exc, "winerror", None) in _ABSENT_WINERRORS):
+            return False
+        raise
+    except ValueError:
+        # a name the operating system cannot take at all (a NUL in it)
+        return False
+    return kind(mode)
+
+
+def _os_reason(exc: OSError) -> str:
+    """The operating system's own words for `exc` (`Permission denied`), or
+    what Python made of it when there are none (an `OSError` raised with no
+    errno carries no `strerror`)."""
+    return exc.strerror or str(exc)
+
+
+def _cannot_open(root: Path, path: Path, exc: OSError, *,
+                 directory: bool = False) -> str:
+    """`<path relative to root>: cannot be read: <reason>` (`cannot be listed`
+    for a directory, named with a trailing `/`), in the shape `_not_utf8`
+    gives a file this tool cannot decode, so a line says what failed on which
+    file and the two causes read alike (#383)."""
+    shown = path.relative_to(root).as_posix() + ("/" if directory else "")
+    return (f"{shown}: cannot be {'listed' if directory else 'read'}: "
+            f"{_os_reason(exc)}")
+
+
+def _cannot_open_advice(errors: list[OSError]) -> str:
+    """What to do about a file or a directory the operating system refused,
+    for each cause present in `errors`, ending in a space so it joins the
+    sentence after it (#383).
+
+    NOT the re-save advice a file that is not UTF-8 is given: its bytes were
+    never the trouble, and no edit to them makes a file readable. A refusal
+    of permission (`PermissionError`, which is `EACCES` and `EPERM`) is put
+    right by the mode or the owner; any other `OSError` (a file removed or
+    replaced while this ran, an I/O error, a path that stopped being a file)
+    is not a permission and is not told to `chmod`.
+    """
+    advice = ""
+    if any(isinstance(error, PermissionError) for error in errors):
+        advice += ("Make what this user may not open readable by this "
+                   "user: `chmod u+r` on a file, `chmod u+rx` on a directory "
+                   "(and on every directory above it inside the root), or "
+                   "fix who owns it. ")
+    if any(not isinstance(error, PermissionError) for error in errors):
+        advice += ("Where the operating system gave another reason, put a "
+                   "regular file this user can open back in its place, or "
+                   "take away one nobody wants, and make sure nothing is "
+                   "changing the directory while this runs. ")
+    return advice
+
+
+def _pin_unopened_refusal(root: Path, pin_path: Path,
+                          exc: OSError) -> Refusal:
+    """`bump-leg-pin-unreadable` for a pin the operating system refused, the
+    id a pin that is not UTF-8 has, with this cause's own remedy (#383)."""
+    return Refusal(
+        "bump-leg-pin-unreadable",
+        _cannot_open(root, pin_path, exc),
+        "Remediation: this tool must read the leg's pin to rewrite "
+        "`commit:` and `digests.tree_sha256` in it, and "
+        "`scripts/validate-pins.py` reads it too. "
+        + _cannot_open_advice([exc])
+        + "Then run the same command again. Nothing in the working "
+        "tree, the index or the leg's checkout was changed.")
+
+
+def _leg_pin_text(root: Path, pin_path: Path) -> str:
+    """The leg's `contracts/<role>-pin.yaml` as text, or a refusal naming it
+    when it is not UTF-8 (#289) or this user cannot open it (#383).
+
+    Read here rather than through `load_yaml` because `rewrite_pin` is a LINE
+    REWRITE of the file's own text, which a parsed mapping cannot be. A
+    `UnicodeDecodeError` is a `ValueError`: nothing on the path catches it and
+    `main()` names `Refusal` and `CommandFailed` alone, so it ended the run in
+    a traceback, exit 1, under `--dry-run` as well, because this read comes
+    before that early return. It comes before anything is written, so the
+    refusal promises only what is true: the working tree, the index and the
+    leg's checkout are as they were. (The leg's object store was fetched into
+    already, which `--dry-run` says it does.)
+
+    THE OPERATING SYSTEM'S REFUSAL IS THE SAME REFUSAL, BY ANOTHER CAUSE
+    (#383). A pin this user may not open raised `PermissionError`, which is
+    an `OSError` and no `Refusal`: the same traceback, exit 1, from this same
+    read, with `--dry-run` no different. The id is the one a pin that is not
+    UTF-8 has, so one id says "this tool cannot read the leg's pin" whatever
+    the reason, with the cause's own detail and its own remedy.
+    """
+    try:
+        return pin_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise _pin_unopened_refusal(root, pin_path, exc) from exc
+    except UnicodeDecodeError as exc:
+        raise Refusal(
+            "bump-leg-pin-unreadable",
+            _not_utf8(root, pin_path, exc),
+            "Remediation: this tool rewrites `commit:` and "
+            "`digests.tree_sha256` in this file as UTF-8 text, and reads no "
+            "file lossily, because the rewritten text is written back and "
+            "would carry U+FFFD where your byte was. Byte "
+            f"{exc.start}, counting from 0 at the start of the file, is the "
+            "first that is not UTF-8: re-save the file as UTF-8, or replace "
+            "that byte with the character it was meant to be, commit it, and "
+            "run the same command again. Nothing in the working tree, the "
+            "index or the leg's checkout was changed.") from exc
+
+
+def _workflow_children(root: Path, workflows: Path) -> list[Path]:
+    """The entries of `workflows`, sorted — or a refusal naming the directory
+    when this user cannot list it (#383).
+
+    `plan_workflows` lists the directory for the names git is compared with,
+    and `_workflow_texts` lists it again to read the files, so both go through
+    here. A directory this user may not list raised `PermissionError` out of
+    `iterdir`, which `main()` does not catch: a traceback, exit 1, naming
+    Python's error and no refusal. It reads as CLEAN to git
+    (`git status --porcelain` prints its `Permission denied` on stderr, writes
+    nothing to stdout and exits 0), so `_ensure_root_clean` lets the run
+    through to here. The listing is before anything is written, under
+    `--dry-run` as well, so the refusal promises only what is true: the
+    working tree, the index and the leg's checkout are as they were.
+    """
+    try:
+        return sorted(workflows.iterdir())
+    except OSError as exc:
+        raise _workflows_dir_refusal(root, workflows, exc) from exc
+
+
+def _workflows_dir_refusal(root: Path, workflows: Path,
+                           exc: OSError) -> Refusal:
+    """`bump-leg-workflow-unreadable` for the DIRECTORY, named as one."""
+    return Refusal(
+        "bump-leg-workflow-unreadable",
+        _cannot_open(root, workflows, exc, directory=True),
+        "Remediation: this tool reads every workflow file in the directory "
+        "named above, whether or not it names this leg, and "
+        "`scripts/validate-pins.py` reads them too, so a directory it cannot "
+        "list is one it cannot bump. "
+        + _cannot_open_advice([exc])
+        + "Then run the same command again. Nothing in the working tree, "
+        "the index or the leg's checkout was changed.")
+
+
+def _workflow_texts(root: Path, workflows: Path, tracked: set[str],
+                    listed: set[str]) -> list[tuple[Path, str]]:
+    """Every `.yml` and `.yaml` file in `workflows`, read as UTF-8 — or ONE
+    refusal naming each that is not (#289) or that this user cannot open
+    (#383).
+
+    EVERY FILE IS READ, whether or not it names the leg, so a file that is not
+    UTF-8 is REFUSED BY NAME and never skipped, never read lossily.
+    `read_text(encoding="utf-8")` on a Latin-1 comment or a UTF-16 file with a
+    byte-order mark raised `UnicodeDecodeError`, which nothing caught: a
+    traceback, exit 1, under `--dry-run` too, because this read comes before
+    that early return. Skipping the file would leave `validate-pins.py`, which
+    reads every workflow on disk, unable to read it either, and
+    `errors="replace"` would write U+FFFD over the operator's byte into the
+    lockstep commit. All of them are named at once, so the operator re-saves
+    each in one pass instead of meeting them one run at a time. The read is
+    before anything is written, so the refusal promises only what is true:
+    the working tree, the index and the leg's checkout are as they were.
+
+    EACH LINE SAYS WHETHER GIT TRACKS THE FILE, because the advice differs.
+    A tracked file is committed after the re-save. One git does not track,
+    untracked or ignored, needs only the re-save: committing it would put a
+    draft on the bump branch, which `plan_workflows` refuses an untracked
+    file for (#207), and `git add` refuses an ignored one. `tracked` and
+    `listed` are `plan_workflows`' own, and `_tracked_spelling` answers with
+    them, so a tracked file the disk spells another way (#332) is not marked.
+    It is asked only of a file already refused and reads no file (`tracked` is
+    in hand, `_same_file` is a `stat`), so every read still comes before
+    anything is written.
+
+    THE OPERATING SYSTEM'S REFUSAL IS THE SAME REFUSAL, BY ANOTHER CAUSE
+    (#383). A file this user may not open raised `PermissionError`, an
+    `OSError` that `main()` does not catch either: the same traceback, exit 1,
+    `--dry-run` included. Any `OSError` of the read or of the `stat` before
+    it (`_is_a`, which a directory this user can list but not search
+    refuses) is named the same way, as a line of its own with the system's
+    reason, whether or not the file names the leg; a file that is not UTF-8
+    and one that cannot be opened meet in ONE refusal, each group with its own
+    header and its own advice, because the re-save the first needs does
+    nothing for the second. Each line says whether git tracks the file as
+    before, and a file that was only unreadable is never told to be
+    committed: restoring a mode changes no content, so there is nothing to
+    commit for it, tracked or not.
+    """
+    texts: list[tuple[Path, str]] = []
+    unreadable: list[tuple[str, bool]] = []
+    unopened: list[tuple[str, bool, OSError]] = []
+    for path in _workflow_children(root, workflows):
+        try:
+            if (path.suffix not in (".yml", ".yaml")
+                    or not _is_a(path, stat.S_ISREG)):
+                continue
+            texts.append((path, path.read_text(encoding="utf-8")))
+        except UnicodeDecodeError as exc:
+            held = _tracked_spelling(root, path, tracked, listed) is not None
+            unreadable.append((_not_utf8(root, path, exc), held))
+        except OSError as exc:
+            held = _tracked_spelling(root, path, tracked, listed) is not None
+            unopened.append((_cannot_open(root, path, exc), held, exc))
+    if unreadable or unopened:
+        marked = "  (untracked or ignored)"
+        detail: list[str] = []
+        advice = ""
+        if unreadable:
+            detail.append(
+                f"{len(unreadable)} workflow file(s) are not UTF-8:\n"
+                + "\n".join(f"    {line}" + ("" if held else marked)
+                            for line, held in unreadable))
+            advice += (
+                "this tool rewrites each workflow file as UTF-8 "
+                "text and reads none lossily, because the rewritten text is "
+                "written back and would carry U+FFFD where your byte was; "
+                "`scripts/validate-pins.py` reads every workflow file on "
+                "disk as UTF-8 too, so skipping one would only move the "
+                "failure there. In each line above, the byte is counted from "
+                "0 at the start of the file and is the first that is not "
+                "UTF-8: re-save every file named as UTF-8 (a UTF-16 file "
+                "with a byte-order mark needs converting, not editing), "
+                "whether or not it names this leg. ")
+            if any(held for _, held in unreadable):
+                advice += "Commit each file git tracks. "
+            if not all(held for _, held in unreadable):
+                advice += ("A file marked (untracked or ignored) needs no "
+                           "commit, only the re-save: committing it would "
+                           "put it on this branch, so either leave it "
+                           "uncommitted or move it out of "
+                           ".github/workflows/ until the bump has landed. ")
+        if unopened:
+            detail.append(
+                f"{len(unopened)} workflow file(s) cannot be opened:\n"
+                + "\n".join(f"    {line}" + ("" if held else marked)
+                            for line, held, _ in unopened))
+            advice += (
+                "Each file named as cannot be opened is one this tool "
+                "cannot rewrite, and `scripts/validate-pins.py` reads every "
+                "workflow file on disk too, whether or not it names this "
+                "leg, so skipping one would only move the failure there. "
+                + _cannot_open_advice([error for _, _, error in unopened])
+                + "No commit is needed for a file that could not be opened: "
+                "made readable, it has no change to commit. ")
+            if not all(held for _, held, _ in unopened):
+                advice += ("A file marked (untracked or ignored) is not in "
+                           "the repository: it can also be moved out of "
+                           ".github/workflows/ until the bump has landed. ")
+        raise Refusal(
+            "bump-leg-workflow-unreadable", "\n".join(detail),
+            "Remediation: " + advice
+            + "Then run the same command again. Nothing in the working "
+            "tree, the index or the leg's checkout was changed.")
+    return texts
 
 
 def _same_file(first: Path, second: Path) -> bool:
@@ -359,17 +706,23 @@ def plan_workflows(root: Path, repository: str,
     names the path git tracks and no other, and the rewrite reaches the one
     file through it, read through the disk's name and written through
     git's, which the filesystem has already said are the same file.
+
+    A file that is not UTF-8, or that this user cannot open, is a refusal
+    (`_workflow_texts`, #289 and #383), and so is the directory itself when
+    this user cannot list it (`_workflow_children`, #383).
     """
     plans: list[tuple[Path, str, int]] = []
     workflows = root / ".github" / "workflows"
-    if not workflows.is_dir():
-        return plans
+    try:
+        if not _is_a(workflows, stat.S_ISDIR):
+            return plans
+    except OSError as exc:
+        # a directory above `workflows` this user cannot search (#383)
+        raise _workflows_dir_refusal(root, workflows, exc) from exc
     tracked = _tracked_workflows(root, workflows)
-    listed = {child.name for child in workflows.iterdir()}
+    listed = {child.name for child in _workflow_children(root, workflows)}
     untracked: list[tuple[str, int]] = []
-    for path in sorted(workflows.iterdir()):
-        if path.suffix not in (".yml", ".yaml") or not path.is_file():
-            continue
+    for path, text in _workflow_texts(root, workflows, tracked, listed):
         moved = 0
 
         def swap(match: re.Match) -> str:
@@ -382,7 +735,6 @@ def plan_workflows(root: Path, repository: str,
             return (f"{match.group('repo')}{match.group('path') or ''}"
                     f"@{commit}")
 
-        text = path.read_text(encoding="utf-8")
         rewritten = WORKFLOW_REF_RE.sub(swap, text)
         if not moved:
             continue
@@ -650,13 +1002,16 @@ def _ensure_root_clean(root: Path) -> None:
 
 
 def _branch_to_bump_from(root: Path, project: "Project", role: str,
-                         commit: str) -> str:
+                         commit: str, *, dry_run: bool = False) -> str:
     """The branch on which the bump commits, refused if there is none or
     it is the project's own tracking branch.
 
     Split from `cmd_bump` for #136: these organisations are pull-request
     only, so a bump is refused before it ever makes a commit whose only
-    next step would be a push to the default branch.
+    next step would be a push to the default branch. A `--dry-run` makes no
+    commit, so on the tracking branch it is let through and ends by naming
+    the branch the real run needs (#477); a root on no branch at all is
+    refused either way.
     """
     branch = current_branch(root)
     if branch is None:
@@ -666,7 +1021,7 @@ def _branch_to_bump_from(root: Path, project: "Project", role: str,
             "open a pull request from",
             "Remediation: `git -C " + str(root) + " switch -c bump/"
             + f"{role}-{commit[:12]}` and re-run.")
-    if branch == project.tracking:
+    if branch == project.tracking and not dry_run:
         raise Refusal(
             "bump-leg-on-tracking-branch",
             f"{root} is on {branch!r}, which {MANIFEST} declares as this "
@@ -722,12 +1077,19 @@ def _recorded_leg_commit(root: Path, path: str) -> str:
 
 
 def _leg_pin_path(root: Path, pin_rel: str) -> Path:
-    """The leg's `contracts/<role>-pin.yaml`, refused if it does not exist.
+    """The leg's `contracts/<role>-pin.yaml`, refused if it does not exist or
+    cannot be reached (#383).
 
     Split from `cmd_bump` for #136.
     """
     pin_path = root / pin_rel
-    if not pin_path.is_file():
+    try:
+        present = _is_a(pin_path, stat.S_ISREG)
+    except OSError as exc:
+        # `contracts/` this user cannot search: the `stat` is refused, which
+        # is not an absent file (#383)
+        raise _pin_unopened_refusal(root, pin_path, exc) from exc
+    if not present:
         raise Refusal(
             "bump-leg-pin-missing",
             f"{pin_rel} does not exist, so half of the invariant has nothing "
@@ -1075,7 +1437,8 @@ def cmd_bump(args) -> int:
     commit = _checked_target_commit(args.to)
 
     _ensure_root_clean(root)
-    branch = _branch_to_bump_from(root, project, role, commit)
+    branch = _branch_to_bump_from(root, project, role, commit,
+                                  dry_run=args.dry_run)
     submodule = _initialized_submodule(root, path)
     was = _recorded_leg_commit(root, path)
 
@@ -1085,7 +1448,7 @@ def cmd_bump(args) -> int:
     digest = tree_digest(submodule, commit)
     pin_rel = f"contracts/{role}-pin.yaml"
     pin_path = _leg_pin_path(root, pin_rel)
-    pin_text = pin_path.read_text(encoding="utf-8")
+    pin_text = _leg_pin_text(root, pin_path)
     plans = plan_workflows(root, repository, commit)
 
     print(f"commit       {was[:12]} -> {commit[:12]}")
@@ -1106,6 +1469,14 @@ def cmd_bump(args) -> int:
               "fetched into, which is how the digest above was computed; the "
               "working tree, the pin, the workflows and the index are "
               "untouched.")
+        if branch == project.tracking:
+            # LAST, after everything a dry run on a branch prints, so that
+            # line is the whole of the difference between the two (#477).
+            # The command is quoted, so a root under `My Projects/` pastes.
+            print(f"\nthe real run needs a branch: {root} is on {branch!r}, "
+                  "the tracking branch. Create one first with: "
+                  + shlex.join(["git", "-C", str(root), "switch", "-c",
+                                f"bump/{role}-{commit[:12]}"]))
         return 0
 
     # ---- the rewrite and the commit, remembered byte for byte so a failure

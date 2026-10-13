@@ -49,6 +49,24 @@ WHAT IS CHECKED
     A link of the chain is VERIFIED against that link's own manifest when its
     tree is beside this root, and reported as `declared-unverified` — a
     WARNING, not a finding — when it is not. The whole check is OFFLINE.
+  - `submodules`, OPTIONAL: the record an adoption writes of the leg each
+    source submodule was answered into (#189). Absent is fine, because a
+    project with no source submodule has none, and nor does one adopted
+    before the record existed. Present, it is a list of mappings, one per
+    submodule a leg keeps:
+      `path`           the submodule's path inside its leg, spelled the one
+                       way Git records a path -- relative, `/` between
+                       segments, none empty, `.` or `..` -- and named by one
+                       row only. A backslash or a drive letter is a
+                       character of the name, which Git records on POSIX.
+      `leg`            `spec` or `code`: the assembly root keeps no
+                       submodule but its legs.
+      `resolution`     OPTIONAL text: the reason the adoption plan gave.
+      `source_commit`  OPTIONAL, 40 hex: the source commit it was answered
+                       at.
+    `adopt-project.py execute` writes it, once, from the adoption plan, and
+    `shape-doctor.py` holds each submodule a leg keeps to the row naming its
+    path. A row whose `path` or `leg` is refused here holds nothing there.
 
 EXIT CODES: 0 valid · 1 findings · 2 refusal (the file is missing or unreadable)
 """
@@ -62,10 +80,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from repo_shape import (  # noqa: E402
-    CHAIN_RECORD_FIELD, COMMIT_RE, PROJECT_ID_RE, SHA256_RE,
-    TREE_DIGEST_DEFINITION, VISIBILITY_CHOICES, NamingPolicy, Refusal,
-    accepts_role, find_repo_root, link_pins_from_trees, load_yaml,
-    repo_basename,
+    CHAIN_RECORD_FIELD, COMMIT_RE, PATH_NOT_CANONICAL, PROJECT_ID_RE,
+    SHA256_RE, TREE_DIGEST_DEFINITION, VISIBILITY_CHOICES, NamingPolicy,
+    Refusal, accepts_role, find_repo_root, link_pins_from_trees, load_yaml,
+    path_spelling_fault, repo_basename,
 )
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -378,9 +396,32 @@ def _name_finding(manifest: dict) -> list[str]:
     """`name`.
 
     Split from `_findings` for #132.
+
+    A NAME HOLDING A LONE SURROGATE IS A FINDING (#280). The double-quoted
+    escape `"a\\ud83db"` reads as one, as PyYAML's own Python reader reads it
+    (libyaml refuses the file). The reader keeps that escape on purpose: it
+    is how an adoption plan spells a path byte that is not UTF-8 (#199). A
+    display name is text a person chose, and no UTF-8 file, commit message
+    or console can hold a surrogate, so this file's `manifest ok` line
+    raised `UnicodeEncodeError` on it; `make validate` and `shape-doctor.py`
+    reported that traceback, while `bump-leg.py` and `update-shape.py apply`
+    passed the name, and the bump wrote it into its commit as `a?b`. Every
+    launcher now meets this finding instead. A pair of `\\u` escapes is two
+    surrogates here, as it is to PyYAML, so the finding asks for the
+    character itself or its one `\\U` escape.
     """
-    if not isinstance(manifest.get("name"), str) or not manifest.get("name").strip():
-        return [_finding("manifest-name", f"name is {manifest.get('name')!r}")]
+    name = manifest.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return [_finding("manifest-name", f"name is {name!r}")]
+    surrogate = next((char for char in name if "\ud800" <= char <= "\udfff"),
+                     None)
+    if surrogate is not None:
+        return [_finding(
+            "manifest-name",
+            f"name is {name!r}, which holds U+{ord(surrogate):04X}, a lone "
+            "surrogate: no UTF-8 file, commit message or console can hold "
+            "it. Write each character as itself, or as one `\\U` escape "
+            "(`\\U0001F600`, not the pair `\\uD83D\\uDE00`).")]
     return []
 
 
@@ -624,6 +665,102 @@ def _leg_findings(leg, policy: NamingPolicy, pins: set[str], root,
     return out
 
 
+#: The legs a source submodule may be recorded in (#189). The assembly is not
+#: one of them: the root keeps no submodule but its two legs.
+SUBMODULE_LEGS = ("spec", "code")
+
+
+#: What a recorded `path` is, said beside one that is not.
+SUBMODULE_PATH = ("it is the submodule's path inside its leg, relative and "
+                  "without `..`")
+
+
+def _submodule_path_problem(path, seen: set) -> str | None:
+    """Why one recorded `path` is not a submodule's path inside its leg, or
+    None. Records a good one in `seen`, so a second row for it is named.
+
+    SPELLED THE ONE WAY GIT RECORDS A PATH (`repo_shape.path_spelling_fault`,
+    the rule a leg's mount path is held to as well). The doctor finds a
+    submodule by the path its leg's index records, and Git records none with
+    a leading `./`, a trailing `/`, a doubled `/` or a `.` segment, so a row
+    spelled that way would name nothing the doctor could ever hold to it.
+    A backslash or a drive letter is accepted: on POSIX each is a character
+    of a name Git records, and an adoption records a submodule at one.
+    """
+    fault = path_spelling_fault(path) if isinstance(path, str) else None
+    if fault == PATH_NOT_CANONICAL:
+        return (f"path is {path!r}; Git records no path with a `.` segment, "
+                "a trailing `/` or a doubled `/`, so no submodule is ever at "
+                "it")
+    if fault is not None or not isinstance(path, str):
+        return f"path is {path!r}; {SUBMODULE_PATH}"
+    if path in seen:
+        return f"path {path!r} is recorded twice"
+    seen.add(path)
+    return None
+
+
+def _submodule_row_findings(index: int, row, seen: set) -> list[str]:
+    """One row of the `submodules:` record.
+
+    Split from `_submodules_findings` so that each reads as one question.
+    """
+    where = f"submodules[{index}]"
+    if not isinstance(row, dict):
+        return [_finding(
+            "manifest-submodules",
+            f"{where} is {row!r}, expected a mapping with `path:` and "
+            "`leg:`")]
+    out = []
+    problem = _submodule_path_problem(row.get("path"), seen)
+    if problem:
+        out.append(_finding("manifest-submodule-path", f"{where}: {problem}"))
+    if row.get("leg") not in SUBMODULE_LEGS:
+        out.append(_finding(
+            "manifest-submodule-leg",
+            f"{where}: leg is {row.get('leg')!r}, expected one of "
+            f"{list(SUBMODULE_LEGS)}: the assembly root keeps no submodule "
+            "but its legs"))
+    resolution = row.get("resolution")
+    if resolution is not None and not isinstance(resolution, str):
+        out.append(_finding(
+            "manifest-submodule-resolution",
+            f"{where}: resolution is {resolution!r}, expected the text the "
+            "adoption plan gave"))
+    commit = row.get("source_commit")
+    if commit is not None and not COMMIT_RE.match(str(commit)):
+        out.append(_finding(
+            "manifest-submodule-commit",
+            f"{where}: source_commit is {commit!r}, not 40 hex"))
+    return out
+
+
+def _submodules_findings(manifest: dict) -> list[str]:
+    """`submodules`, OPTIONAL: the leg each source submodule was answered
+    into when this project was adopted (#189).
+
+    A RECORD IS CHECKED BECAUSE SOMETHING READS IT. `shape-doctor.py` holds
+    every submodule a leg keeps to the row naming its path, and calls one in
+    the other leg MISPLACED; a row it could not read would leave that
+    submodule unchecked, and nothing would say so. Absent is fine: a project
+    with no submodule of its source's has nothing to record, and nor does
+    one adopted before the record was written.
+    """
+    rows = manifest.get("submodules")
+    if rows is None:
+        return []
+    if not isinstance(rows, list):
+        return [_finding(
+            "manifest-submodules",
+            f"submodules is {rows!r}, expected a list of `path:` and `leg:` "
+            "records")]
+    seen: set[str] = set()
+    out: list[str] = []
+    for index, row in enumerate(rows):
+        out.extend(_submodule_row_findings(index, row, seen))
+    return out
+
+
 def _owners_span_finding(owners: set[str]) -> list[str]:
     """Do the legs span more than one organisation?
 
@@ -649,6 +786,7 @@ def _findings(manifest: dict, policy: NamingPolicy, root=None) -> list[str]:
     out.extend(_reference_finding(manifest))
     out.extend(_visibility_finding(manifest))
     out.extend(_shape_findings(manifest))
+    out.extend(_submodules_findings(manifest))
 
     legs = manifest.get("legs")
     if not isinstance(legs, list) or not legs:
