@@ -173,6 +173,9 @@ from shape_materialize import (  # noqa: E402
 # Whether a value this tool writes into a file is text a file can hold
 # (#255), asked beside `one_printable_line`, the trailer's question.
 from shape_materialize import unwritable_reason  # noqa: E402
+# Whether git creates a tracking branch as it is written (#283), asked only
+# of one the project's loader misreads (`_a_branch_git_creates`, #181).
+from shape_materialize import branch_problem  # noqa: E402
 
 #: The naming policy this tool classifies leg names against. One constant,
 #: because three spellings of the same path is how the second one goes stale.
@@ -2043,7 +2046,11 @@ def manifest_misreads(fields) -> list[str]:
 
 def _flag_fields(args, given: set, pins: list[str]) -> list[tuple]:
     """`plan`'s values as it is about to record them, each named by its flag,
-    and by where `plan` took it from when `given` says it was not passed."""
+    and by where `plan` took it from when `given` says it was not passed.
+
+    Less a tracking branch the loader misreads that git will not create
+    (`_a_branch_git_creates`): `plan` records it, as on main, and `execute`
+    dies at `git init -b`, before it writes anything."""
     def flag(key: str) -> str:
         spelled = "--" + key.replace("_", "-")
         if key in FLAG_DEFAULTS and key not in given:
@@ -2052,7 +2059,9 @@ def _flag_fields(args, given: set, pins: list[str]) -> list[tuple]:
 
     fields = [_field(flag("id"), ID_PLACEHOLDER, args.id)]
     fields += [_field(flag(key), placeholder, getattr(args, key))
-               for key, placeholder in MANIFEST_FIELDS.items()]
+               for key, placeholder in MANIFEST_FIELDS.items()
+               if key != TRACKING_KEY
+               or _a_branch_git_creates(flag(key), getattr(args, key))]
     fields += [_field(f"--{role}-path", placeholder,
                       getattr(args, f"{role}_path"))
                for role, placeholder in LEG_PATH_PLACEHOLDERS.items()]
@@ -2104,7 +2113,10 @@ def _execute_gets_to_write(key: str, value) -> bool:
     Nor for any other value no file can hold (`unwritable_reason`): `check`
     names it as `plan-unwritable-value`, and `execute` refuses a plan
     holding it before any leg exists (#255), so one wrong value is one
-    finding, and none says the run gets further."""
+    finding, and none says the run gets further.
+
+    Nor for a tracking branch the loader misreads that git will not create
+    (`_a_branch_git_creates`)."""
     if key == VISIBILITY_KEY:
         return str(value) in VISIBILITY_CHOICES
     if key not in GIT_ARGUMENT_KEYS:
@@ -2113,7 +2125,24 @@ def _execute_gets_to_write(key: str, value) -> bool:
         checked_value(key, value)
     except Refusal:
         return False
-    return True
+    return _a_branch_git_creates(key, value)
+
+
+def _a_branch_git_creates(what: str, value) -> bool:
+    """False for a tracking branch the project's loader misreads that git
+    will not create (`branch_problem`, #283): `~`, which the loader reads as
+    no value. `execute` hands the branch to `git init -b` when it creates
+    the leg repositories, and dies there, before it writes anything, as on
+    main; so a sentence saying it writes the branch, and that the run would
+    still end `adoption verified`, would be false (rv181f's H1). Main's
+    `execute` asks git nothing about the branch before that, which is not
+    this rule's to change.
+
+    Git is asked ONLY about a branch the loader misreads. One it reads back
+    is no concern of this rule's, and a plan whose values all read back
+    starts no process."""
+    field = _field(what, MANIFEST_FIELDS[TRACKING_KEY], value)
+    return not manifest_misreads([field]) or branch_problem(what, value) is None
 
 
 def _plan_fields(plan: Plan) -> list[tuple[str, tuple]]:
@@ -2126,7 +2155,7 @@ def _plan_fields(plan: Plan) -> list[tuple[str, tuple]]:
     default of this tool's own (`main`, `private`, today's date), and none of
     those is misread. So is a value `execute` never gets as far as writing
     (`_execute_gets_to_write`): it refuses it first, as `unsafe-value` or as
-    #255's `plan-unwritable-value`, or `gh` does. A leg path is asked about
+    #255's `plan-unwritable-value`, or `gh` or `git` does. A leg path is asked about
     only when it is text with no `plan-bad-leg-path` of its own, so one
     wrong value is one finding. An id `Plan.project_id` refuses, or a
     refused leg name it is derived from, is refused on its own account by

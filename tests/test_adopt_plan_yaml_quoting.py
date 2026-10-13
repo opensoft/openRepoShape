@@ -888,8 +888,13 @@ def test_the_misread_rule_names_a_set_id_by_what_was_read(
 #: the validator accepts as read, so nothing names them, as on main: with
 #: `--local-remote-dir` the run ends `adoption verified`, the field read as
 #: that (rv181f's G3, a residual this change shares with main).
+#:
+#: So is a branch the loader misreads that git will not create, `~`, read
+#: as no value: `execute` dies at `git init -b ~` before it writes anything,
+#: as on main (rv181f's H1, a residual this change shares with main too).
 NEVER_WRITTEN = [
     pytest.param(TRACKING_KEY, QUOTED_DOMAIN_USER, id=TRACKING_KEY),
+    pytest.param(TRACKING_KEY, '"~"', id="tracking_branch-tilde"),
     pytest.param(VISIBILITY_KEY, TRUE_TEXT, id=VISIBILITY_KEY),
     *[pytest.param(VISIBILITY_KEY, spelled, id=f"visibility-{name}")
       for spelled, name in [
@@ -917,6 +922,45 @@ def test_check_says_nothing_misread_of_a_value_execute_never_writes(
     assert adopter.MANIFEST_MISREAD_REMEDIATION not in result.stderr
 
 
+#: A tracking branch the loader reads as no value, and git will not create.
+BRANCH_GIT_REFUSES = "~"
+
+
+def test_plan_records_a_branch_git_will_not_create_as_on_main(
+        answered, tmp_path):
+    """`plan` refused `--tracking-branch ~` as misread, with a remediation
+    saying `execute` writes it and the run would still end `adoption
+    verified`. `execute` dies at `git init -b ~` before it writes anything,
+    so `plan` says nothing of it, as on main (rv181f's H1)."""
+    source, _ = answered
+    plan = tmp_path / PLAN_FILE
+    result = write_plan(source, plan,
+                        extra=(TRACKING_FLAG, BRANCH_GIT_REFUSES))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "adopt-manifest-misread" not in result.stderr, result.stderr
+
+
+def test_git_is_asked_only_about_a_branch_the_loader_misreads(
+        adopter, monkeypatch):
+    """`branch_problem` starts git. It is asked about `~` and `true`, which
+    the loader misreads, and not about `develop`, which it reads back, so a
+    plan whose values all read back starts no process. Git creates `true`,
+    so that one is still the misread rule's (`REFUSED`)."""
+    asked = []
+    real = adopter.branch_problem
+
+    def recorded(what, value):
+        asked.append(value)
+        return real(what, value)
+
+    monkeypatch.setattr(adopter, "branch_problem", recorded)
+    assert adopter._execute_gets_to_write(TRACKING_KEY, "develop")
+    assert not adopter._execute_gets_to_write(TRACKING_KEY,
+                                              BRANCH_GIT_REFUSES)
+    assert adopter._execute_gets_to_write(TRACKING_KEY, "true")
+    assert asked == [BRANCH_GIT_REFUSES, "true"]
+
+
 @needs_filter_repo
 def test_execute_refuses_that_branch_as_unsafe_before_any_leg_exists(
         answered_copy, tmp_path):
@@ -942,9 +986,10 @@ UNWRITABLE_DATE = '"2026-09-02\\nx"'
 #: a line break, in a value read back as one line, and a control character
 #: such as a tab. The date and the pins are written bare, where the
 #: project's loader would read each as something else too; the visibility
-#: is not one #181 judges (`NEVER_WRITTEN`). The project's own validator
-#: lists the manifest such a value makes beside #255's finding, as main has
-#: it (#255 before #261, `_entry_findings`).
+#: is not one #181 judges (`NEVER_WRITTEN`). Beside a line break, the
+#: project's own validator lists the manifest such a value makes, as main
+#: has it (#255 before #261, `_entry_findings`); a pin holding a tab is
+#: #255's finding alone.
 UNWRITABLE = [
     pytest.param(ELECTED_ON_KEY, UNWRITABLE_DATE, id=ELECTED_ON_KEY),
     pytest.param(VISIBILITY_KEY, '"private\\nx"', id=VISIBILITY_KEY),
