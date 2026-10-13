@@ -1205,7 +1205,10 @@ def _seed_legs(args, values: dict, names: dict, repositories: dict,
             except CommandFailed as exc:
                 print(exc.loudly(f"pushing the {role} leg"), file=sys.stderr)
                 print(RULESET_HINT.format(work=work, repo=repositories[role],
-                                          role=role), file=sys.stderr)
+                                          role=role,
+                                          local=args.tracking_branch,
+                                          tracking=args.tracking_branch),
+                      file=sys.stderr)
                 return None
         print(f"  {role:<9} {commit[:12]} tree {leg_digests[role][:12]}… "
               f"-> {urls[role]}")
@@ -1321,7 +1324,10 @@ def _build_assembly_root(args, values: dict, names: dict, repositories: dict,
             print(exc.loudly("pushing the assembly root"), file=sys.stderr)
             print(RULESET_HINT.format(work=assembly,
                                       repo=repositories["assembly"],
-                                      role="assembly"), file=sys.stderr)
+                                      role="assembly",
+                                      local=args.tracking_branch,
+                                      tracking=args.tracking_branch),
+                  file=sys.stderr)
             return False
     print(f"  assembly  {run(['git', 'rev-parse', 'HEAD'], cwd=assembly)[:12]} "
           f"-> {urls['assembly']}")
